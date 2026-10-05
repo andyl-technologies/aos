@@ -1,6 +1,6 @@
 //! Immutable per-object mirror originals and bounded storage-local progress.
 //!
-//! Native selects upstream trust and a reconciled managed R2 writer. A Worker
+//! Native selects upstream trust and a reconciled admitted writer. A Worker
 //! moves and verifies bytes under this original; fresh storage-work plans admit
 //! each bounded mutation. Scheduler leases never replace originals or settle
 //! unknown effects. The private stage and final provider incarnations are part
@@ -15,6 +15,16 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use crate::storage_work::{valid_provider_version, StorageObjectIdentity, StorageWorkPlan};
+
+pub mod external;
+
+pub use external::{MirrorExternalClosure, MirrorExternalDestination, MirrorStageRetention};
+
+#[cfg(test)]
+mod tests;
+
+#[cfg(test)]
+pub(crate) use tests::external_original as external_test_original;
 
 /// Maximum bytes buffered for one producer multipart part.
 pub const MIRROR_PART_BYTES: u64 = 8 * 1024 * 1024;
@@ -95,7 +105,7 @@ impl MirrorVerification {
     }
 }
 
-/// Retains one trust-selected source and its original managed destination.
+/// Retains one trust-selected source and its original admitted destination.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MirrorOriginal {
@@ -123,14 +133,17 @@ pub struct MirrorOriginal {
     pub placement_resource_version: i64,
     /// Original writer specification version.
     pub write_spec_version: i64,
-    /// Original managed deployment binding.
+    /// Original selected binding, including an independently admitted External writer.
     pub binding_id: i64,
     /// Original binding resource version.
     pub binding_resource_version: i64,
     /// Exact physical placement prefix.
     pub placement_prefix: String,
-    /// Independently accepted managed profile, private policy and runtime digest.
+    /// Independently accepted destination profile, private policy and runtime digest.
     pub protected_profile_digest: String,
+    /// Exact admitted External destination; omitted for existing managed originals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_destination: Option<MirrorExternalDestination>,
     /// Content proof selected by Native after trust verification.
     pub verification: MirrorVerification,
 }
@@ -198,33 +211,62 @@ impl MirrorOriginal {
             serde_json::to_vec(self)?.len() <= 64 * 1024,
             "mirror original exceeds its retained bound"
         );
-        self.verification.validate()
+        self.verification.validate()?;
+        if let Some(destination) = &self.external_destination {
+            destination.validate_for(self)?;
+        }
+        Ok(())
     }
 
     /// Binds a fresh mutation plan to the exact retained original.
     ///
     /// # Errors
-    /// Returns an error when any managed destination pin differs.
+    /// Returns an error when any selected destination pin or effect cutoff differs.
     pub fn validate_plan(&self, plan: &StorageWorkPlan) -> Result<()> {
         self.validate()?;
         ensure!(
-            plan.binding_kind == "deployment_r2"
-                && plan.binding_snapshot_revision.is_none()
-                && plan.credential_references.is_empty()
-                && plan.placement_id == self.placement_id
+            plan.placement_id == self.placement_id
                 && plan.placement_resource_version == self.placement_resource_version
                 && plan.binding_id == self.binding_id
                 && plan.binding_resource_version == self.binding_resource_version
                 && plan.placement_prefix == self.placement_prefix,
             "mirror plan changed its original destination"
         );
+        match &self.external_destination {
+            Some(destination) => destination.validate_plan(plan)?,
+            None => ensure!(
+                plan.binding_kind == "deployment_r2"
+                    && plan.binding_snapshot_revision.is_none()
+                    && plan.credential_references.is_empty(),
+                "managed mirror control changed its original executor"
+            ),
+        }
         Ok(())
     }
 
     /// Returns the reserved private physical source key for this original.
     #[must_use]
     pub fn stage_key(&self) -> String {
-        format!(".aos-direct-upload/mirror/{}/source", self.job_id)
+        match &self.external_destination {
+            Some(destination) => format!(
+                "{}/mirror/{}/source",
+                destination.protected_profile.profile.staging_prefix, self.job_id
+            ),
+            None => format!(".aos-direct-upload/mirror/{}/source", self.job_id),
+        }
+    }
+
+    /// Returns the exact physical final key including the External binding prefix.
+    #[must_use]
+    pub fn destination_key(&self) -> String {
+        let relative = crate::keymap::r2_key(&self.placement_prefix, &self.path);
+        match &self.external_destination {
+            Some(destination) => crate::keymap::r2_key(
+                &destination.protected_profile.profile.selector.association.binding_prefix,
+                &relative,
+            ),
+            None => relative,
+        }
     }
 }
 
@@ -244,7 +286,7 @@ pub enum MirrorStep {
     VerifyStage,
     /// Reserves the final physical key and creates a destination upload.
     BeginPromotion,
-    /// Copies a bounded group of exact source ranges beside R2.
+    /// Copies a bounded group of exact source ranges beside the selected storage.
     CopyParts { first_part: u32, maximum_parts: u32 },
     /// Completes the exact retained final manifest under the final-key guard.
     CompletePromotion,
@@ -323,6 +365,12 @@ pub struct MirrorProgress {
     pub stage_parts: Vec<MirrorPart>,
     /// Acknowledged private stage identity before content verification.
     pub stage_object: Option<StorageObjectIdentity>,
+    /// Actual External stage completion receipt; absent on the managed wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage_closure: Option<MirrorExternalClosure>,
+    /// Explicit private residual cost; neither ACK nor replay deletes these bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage_retention: Option<MirrorStageRetention>,
     /// Positive stage content proof under the retained provider incarnation.
     pub verified: Option<MirrorVerifiedObject>,
     /// Positive final multipart upload identity under the physical-key guard.
@@ -331,6 +379,9 @@ pub struct MirrorProgress {
     pub destination_parts: Vec<MirrorPart>,
     /// Positive final receipt, derived only from the verified immutable stage.
     pub destination: Option<MirrorVerifiedObject>,
+    /// Actual External final completion receipt; absent on the managed wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_closure: Option<MirrorExternalClosure>,
 }
 
 impl MirrorProgress {
@@ -389,13 +440,18 @@ impl MirrorProgress {
             }
         }
         if let Some(object) = &self.stage_object {
-            validate_object(object, &original.stage_key(), original.verification.size())?;
+            validate_object(object, &original.stage_key(), original.verification.size(), original.external_destination.is_some())?;
             ensure!(
                 self.stage_parts.iter().map(|part| part.size).sum::<u64>()
                     == original.verification.size(),
                 "mirror stage has an incomplete original manifest"
             );
         }
+        validate_closure(original, self.stage_object.as_ref(), self.stage_closure.as_ref(), false)?;
+        ensure!(self.stage_retention == if original.external_destination.is_some()
+            && self.stage_object.is_some() {
+                Some(MirrorStageRetention::RetainedForQualifiedCleanup)
+            } else { None }, "mirror private residual state differs from its positive stage");
         if let Some(verified) = &self.verified {
             validate_verified(verified, original, &original.stage_key())?;
             ensure!(
@@ -407,7 +463,7 @@ impl MirrorProgress {
             validate_verified(
                 destination,
                 original,
-                &crate::keymap::r2_key(&original.placement_prefix, &original.path),
+                &original.destination_key(),
             )?;
             let verified = self
                 .verified
@@ -428,6 +484,8 @@ impl MirrorProgress {
                 "mirror destination changed its original source ranges"
             );
         }
+        validate_closure(original, self.destination.as_ref().map(|value| &value.object),
+            self.destination_closure.as_ref(), true)?;
         // A receipt wraps this progress in the existing 128 KiB Durable
         // Object value ceiling. Keep space for its exact physical key and
         // effect identity; the public control ceiling remains 256 KiB.
@@ -452,17 +510,34 @@ impl MirrorProgress {
     }
 }
 
-fn validate_object(object: &StorageObjectIdentity, key: &str, size: u64) -> Result<()> {
+fn validate_object(object: &StorageObjectIdentity, key: &str, size: u64, external: bool) -> Result<()> {
     ensure!(
         object.key == key
             && object.size == size
-            && object
-                .provider_version
-                .as_deref()
-                .is_some_and(valid_provider_version)
+            && match object.provider_version.as_deref() {
+                Some(version) => valid_provider_version(version),
+                None => external,
+            }
             && crate::surface_write::strong_if_match_etag(&object.etag).is_ok(),
         "mirror provider incarnation differs from original"
     );
+    Ok(())
+}
+
+fn validate_closure(
+    original: &MirrorOriginal,
+    object: Option<&StorageObjectIdentity>,
+    closure: Option<&MirrorExternalClosure>,
+    destination: bool,
+) -> Result<()> {
+    match (original.external_destination.as_ref(), object, closure) {
+        (Some(_), Some(object), Some(closure)) => {
+            closure.validate_for(original, destination)?;
+            ensure!(closure.object == *object, "mirror closure changed its provider receipt");
+        }
+        (_, None, None) | (None, Some(_), None) => {}
+        _ => anyhow::bail!("mirror External completion closure missing or substituted"),
+    }
     Ok(())
 }
 
@@ -471,7 +546,7 @@ fn validate_verified(
     original: &MirrorOriginal,
     key: &str,
 ) -> Result<()> {
-    validate_object(&verified.object, key, original.verification.size())?;
+    validate_object(&verified.object, key, original.verification.size(), original.external_destination.is_some())?;
     ensure!(
         hex_digest(&verified.sha256),
         "mirror observed digest is invalid"

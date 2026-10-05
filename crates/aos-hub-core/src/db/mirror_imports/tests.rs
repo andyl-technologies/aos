@@ -151,6 +151,7 @@ pub(crate) async fn original(db: &Database) -> MirrorOriginal {
         binding_resource_version: binding.resource_version,
         placement_prefix: placement.prefix,
         protected_profile_digest: "3".repeat(64),
+        external_destination: None,
         verification: MirrorVerification::Sha256 {
             sha256: "1".repeat(64),
             size: 11,
@@ -184,10 +185,13 @@ pub(crate) fn progress(original: &MirrorOriginal) -> MirrorProgress {
         upstream_etag: Some("\"upstream\"".into()),
         stage_upload_id: Some("stage-upload".into()),
         stage_parts: vec![part.clone()],
+        stage_closure: None,
+        stage_retention: None,
         stage_object: Some(object),
         verified: Some(verified.clone()),
         destination_upload_id: Some("destination-upload".into()),
         destination_parts: vec![part],
+        destination_closure: None,
         destination: Some(MirrorVerifiedObject {
             object: StorageObjectIdentity {
                 key: crate::keymap::r2_key(&original.placement_prefix, &original.path),

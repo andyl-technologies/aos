@@ -13,6 +13,7 @@ pub(super) struct Selection {
     pub(super) placement: SurfacePlacementRecord,
     pub(super) binding: BindingRecord,
     pub(super) profile_digest: String,
+    pub(super) external_destination: Option<aos_hub_core::mirror_work::MirrorExternalDestination>,
     registry_resource_version: i64,
 }
 
@@ -31,15 +32,21 @@ impl Selection {
             .binding(placement.binding_id)
             .await?
             .context("selected mirror binding disappeared")?;
-        ensure!(
-            binding.kind == "deployment_r2" && binding.is_instance_default,
-            "hybrid mirror requires the managed deployment R2 writer"
-        );
+        let external_destination = if binding.kind == "deployment_r2" && binding.is_instance_default {
+            None
+        } else {
+            Some(work.mirror_external_destination(db, &binding).await?)
+        };
+        let profile_digest = match &external_destination {
+            Some(destination) => destination.protected_profile.digest()?,
+            None => work.mirror_managed_profile_digest()?,
+        };
         let selected = Self {
             source,
             placement,
             binding,
-            profile_digest: work.mirror_managed_profile_digest()?,
+            profile_digest,
+            external_destination,
             registry_resource_version: registry.resource_version,
         };
         selected.validate_current(db, work, registry).await?;
@@ -84,10 +91,20 @@ impl Selection {
                 && binding.id == self.binding.id
                 && binding.resource_version == self.binding.resource_version
                 && binding.kind == self.binding.kind
-                && binding.is_instance_default
-                && work.mirror_managed_profile_digest()? == self.profile_digest,
+                && binding.is_instance_default == self.binding.is_instance_default,
             "mirror discovery configuration or destination changed; restart verification"
         );
+        match &self.external_destination {
+            Some(destination) => ensure!(
+                work.mirror_external_destination(db, &binding).await? == *destination,
+                "mirror External prerequisite changed; restart verification"
+            ),
+            None => ensure!(
+                binding.kind == "deployment_r2" && binding.is_instance_default
+                    && work.mirror_managed_profile_digest()? == self.profile_digest,
+                "mirror managed prerequisite changed; restart verification"
+            ),
+        }
         Ok(())
     }
 }

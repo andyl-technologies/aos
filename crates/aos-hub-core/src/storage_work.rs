@@ -162,7 +162,7 @@ pub enum StorageWorkOperation {
         /// Current qualified managed provider and workflow commitment.
         protected_profile_digest: String,
     },
-    /// Advances one retained managed-R2 mirror original beside storage.
+    /// Advances one retained mirror original on its independently admitted writer.
     MirrorTransfer {
         /// Immutable Native-selected source and destination pins.
         original: crate::mirror_work::MirrorOriginal,
@@ -1030,18 +1030,17 @@ impl StorageWorkPlan {
                     || target.binding_id != self.binding_id
                     || target.binding_resource_version != self.binding_resource_version
                     || target.placement_prefix != self.placement_prefix
-                    || self.binding_kind != "deployment_r2"
                 {
                     return Err(StorageWorkError::InvalidPlan);
                 }
             }
             StorageWorkOperation::InspectMirrorMembership { query } => {
-                if self.binding_kind != "deployment_r2" || query.validate().is_err() {
+                if query.validate().is_err() {
                     return Err(StorageWorkError::InvalidPlan);
                 }
             }
             StorageWorkOperation::InspectMirrorTreeInventory { query } => {
-                if self.binding_kind != "deployment_r2" || query.validate().is_err() {
+                if query.validate().is_err() {
                     return Err(StorageWorkError::InvalidPlan);
                 }
             }
@@ -1058,7 +1057,7 @@ impl StorageWorkPlan {
                     .map_err(|_| StorageWorkError::InvalidPlan)?;
             }
             StorageWorkOperation::InspectMirrorPack { inspection } => {
-                if self.binding_kind != "deployment_r2" || inspection.validate().is_err() {
+                if inspection.validate().is_err() {
                     return Err(StorageWorkError::InvalidPlan);
                 }
             }

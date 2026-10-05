@@ -21,9 +21,10 @@ use crate::{direct_upload::config, hybrid_object::HybridObjectGuard};
 
 pub(crate) const PHYSICAL_PATH: &str = "/mirror-final-guard-batch";
 pub(crate) const CANDIDATE_PHYSICAL_PATH: &str = "/mirror-candidate-final-guard-batch";
-const ITEM_INDEX_HEADER: &str = "x-aos-mirror-guard-item-index";
+pub(crate) const FUNCTIONAL_PHYSICAL_PATH: &str = "/external-mirror-functional-final-guard-batch";
+pub(crate) const ITEM_INDEX_HEADER: &str = "x-aos-mirror-guard-item-index";
 
-async fn authenticate(
+pub(crate) async fn authenticate(
     request: &mut Request,
     env: &Env,
     candidate: bool,
@@ -50,11 +51,7 @@ async fn authenticate(
         &env.var("HUB_DEPLOYMENT_ID")?.to_string(),
         latest_now(env)?,
     )?;
-    let execution = if candidate {
-        MirrorGuardExecution::ControlledCandidate
-    } else {
-        MirrorGuardExecution::Hosted
-    };
+    let execution = super::selected_execution(request, env, candidate)?;
     ensure!(
         lookup.execution == execution
             && lookup.issuer == issuer(env)?
@@ -74,7 +71,7 @@ pub(crate) async fn fetch(
     match relay(&mut request, env, candidate).await {
         Ok((signed, body)) => {
             let response = response(signed)?;
-            if !candidate {
+            if !candidate && request.url()?.path() == MIRROR_GUARD_BATCH_LOOKUP_PATH {
                 crate::control_receipt::emit_buffered_response(
                     MIRROR_GUARD_BATCH_LOOKUP_PATH,
                     &body,
@@ -132,8 +129,7 @@ async fn relay_one(
     candidate: bool,
 ) -> Result<MirrorGuardBatchObservation> {
     let item = &lookup.items[index];
-    let full_key =
-        aos_hub_core::keymap::r2_key(&item.original.placement_prefix, &item.original.path);
+    let full_key = item.original.destination_key();
     let address = format!(
         "{}:{}",
         lookup.deployment_id,
@@ -143,10 +139,10 @@ async fn relay_one(
     headers.set(MIRROR_GUARD_SIGNATURE_HEADER, signature)?;
     headers.set(ITEM_INDEX_HEADER, &index.to_string())?;
     headers.set("x-aos-hybrid-object-key", &full_key)?;
-    let path = if candidate {
-        CANDIDATE_PHYSICAL_PATH
-    } else {
-        PHYSICAL_PATH
+    let path = match lookup.execution {
+        MirrorGuardExecution::Hosted => PHYSICAL_PATH,
+        MirrorGuardExecution::ControlledCandidate => CANDIDATE_PHYSICAL_PATH,
+        MirrorGuardExecution::ControlledExternalFunctional => FUNCTIONAL_PHYSICAL_PATH,
     };
     let mut init = RequestInit::new();
     init.with_method(Method::Post)
@@ -154,8 +150,11 @@ async fn relay_one(
         .with_body(Some(js_sys::Uint8Array::from(body).into()));
     let internal = Request::new_with_init(&format!("https://physical-guard{path}"), &init)?;
     lookup.validate(&lookup.deployment_id, latest_now(env)?)?;
+    let (binding, address) = if item.original.external_destination.is_some() {
+        ("EXTERNAL_OBJECT_GUARD", crate::external_object::mirror_guard_address(env, &item.original)?)
+    } else { ("HYBRID_OBJECT_GUARD", address) };
     let result = env
-        .durable_object("HYBRID_OBJECT_GUARD")?
+        .durable_object(binding)?
         .id_from_name(&address)?
         .get_stub()?
         .fetch_with_request(internal)

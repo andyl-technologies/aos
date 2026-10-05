@@ -207,6 +207,36 @@ impl QualifiedConfig {
             credentials,
         ))
     }
+
+    /// Resolves one mirror-selected profile against actual installed material.
+    ///
+    /// This does not manufacture a Direct upload placement or grant mirror
+    /// approval. The mirror caller separately checks its signed application
+    /// selection and independently installed workflow purpose.
+    ///
+    /// # Errors
+    /// Refuses missing, ambiguous, changed or expired prerequisite profiles.
+    pub(crate) async fn mirror_profile(&self, env: &Env, digest: &str) -> Result<DirectProtectedProfile> {
+        self.latest_now()?;
+        let mut selected = self.accepted_external.iter().filter(|profile|
+            profile.digest().is_ok_and(|actual| actual == digest));
+        let Some(expected) = selected.next() else {
+            let managed = self.managed(env)?.0;
+            ensure!(managed.digest()? == digest, "mirror selected prerequisite is not installed");
+            return Ok(managed);
+        };
+        ensure!(selected.next().is_none(), "mirror External prerequisite is ambiguous");
+        let mut actual = crate::external_object::resolve_external_profiles(
+            env, &[expected.profile.selector.clone()]).await?;
+        self.latest_now()?;
+        ensure!(actual.len() == 1, "mirror External resolution omitted its exact selector");
+        let resolved = actual.pop().ok_or_else(|| anyhow::anyhow!("mirror External profile absent"))?;
+        ensure!(resolved == expected.profile && expected.runtime_qualification == self.runtime,
+            "mirror External publication or runtime changed");
+        let profile = DirectProtectedProfile::external(resolved, self.runtime.clone())?;
+        ensure!(profile.digest()? == digest, "mirror External profile commitment changed");
+        Ok(profile)
+    }
 }
 
 /// Resolves provider identity or an explicitly nonhosted source-built identity.

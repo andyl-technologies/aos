@@ -11,6 +11,8 @@ use crate::mirror_work::{digest, MirrorOriginal, MirrorProgress};
 
 use super::{Database, SurfaceTarget};
 
+mod external;
+
 #[cfg(test)]
 pub(crate) mod tests;
 
@@ -357,11 +359,15 @@ impl Database {
                 && writer.write_spec_version == original.write_spec_version
                 && writer.prefix == original.placement_prefix
                 && binding.id == original.binding_id
-                && binding.resource_version == original.binding_resource_version
-                && binding.kind == "deployment_r2"
-                && binding.is_instance_default,
+                && binding.resource_version == original.binding_resource_version,
             "mirror original no longer has current Native authority"
         );
+        if original.external_destination.is_some() {
+            self.validate_external_mirror_binding(original, &binding).await?;
+        } else {
+            ensure!(binding.kind == "deployment_r2" && binding.is_instance_default,
+                "managed mirror original changed binding kind");
+        }
         Ok(())
     }
 
@@ -386,7 +392,10 @@ impl Database {
             "mirror original exceeds its bound"
         );
         let original_digest = digest(original)?;
-        self.backend.execute(
+        let (binding_kind, instance_default) = original.external_destination.as_ref()
+            .map_or(("deployment_r2", 1_i64), |external| (external.binding_kind.as_str(), 0_i64));
+        let mut statements = Self::mirror_external_authority_locks(original)?;
+        statements.push(CheckedStatement::unchecked(
             "INSERT INTO mirror_import_objects
                  (job_id, registry_id, original_digest, original_json, state, created_at, updated_at, source_path, source_path_digest, copy_operation_id)
              SELECT ?1, ?2, ?3, ?4, 'admitted', ?5, ?5, ?15, ?16, ?17
@@ -398,9 +407,9 @@ impl Database {
                              AND p.resource_version = ?10 AND p.write_spec_version = ?11
                              AND p.prefix = ?12 AND p.effective_write_enabled = 1
                              AND b.id = ?13 AND b.resource_version = ?14
-                             AND b.kind = 'deployment_r2' AND b.is_instance_default = 1)
+                             AND b.kind = ?18 AND b.is_instance_default = ?19)
              ON CONFLICT(job_id) DO NOTHING",
-            &vals![
+            vals![
                 original.job_id,
                 original.registry_id,
                 original_digest,
@@ -417,9 +426,12 @@ impl Database {
                 original.binding_resource_version,
                 original.path,
                 original.source_path_digest(),
-                original.copy_operation_id
+                original.copy_operation_id,
+                binding_kind,
+                instance_default
             ],
-        ).await?;
+        ));
+        self.backend.checked_batch(&statements).await?;
         let retained = self
             .mirror_import(&original.job_id)
             .await?
@@ -461,7 +473,10 @@ impl Database {
                 "mirror observation replaced the original upstream incarnation"
             );
             ensure!(
-                progress.stage_parts.starts_with(&prior.stage_parts)
+                prior.stage_closure.as_ref().is_none_or(|value| progress.stage_closure.as_ref() == Some(value))
+                    && prior.destination_closure.as_ref().is_none_or(|value| progress.destination_closure.as_ref() == Some(value))
+                    && prior.stage_retention.as_ref().is_none_or(|value| progress.stage_retention.as_ref() == Some(value))
+                    && progress.stage_parts.starts_with(&prior.stage_parts)
                     && progress
                         .destination_parts
                         .starts_with(&prior.destination_parts)
@@ -525,7 +540,10 @@ impl Database {
             "mirror final publication requires independent guard proof and atomic catalogue accounting"
         );
         self.validate_mirror_import_authority(original).await?;
-        self.backend.checked_batch(&[CheckedStatement::exact(
+        let (binding_kind, instance_default) = original.external_destination.as_ref()
+            .map_or(("deployment_r2", 1_i64), |external| (external.binding_kind.as_str(), 0_i64));
+        let mut statements = Self::mirror_external_authority_locks(original)?;
+        statements.push(CheckedStatement::exact(
             "UPDATE mirror_import_objects SET progress_json = ?2, state = ?3,
                     commit_digest = ?4, updated_at = ?5
               WHERE job_id = ?1 AND original_digest = ?6
@@ -539,13 +557,14 @@ impl Database {
                               AND p.resource_version = ?10 AND p.write_spec_version = ?11
                               AND p.prefix = ?12 AND p.effective_write_enabled = 1
                               AND b.id = ?13 AND b.resource_version = ?14
-                              AND b.kind = 'deployment_r2' AND b.is_instance_default = 1)",
+                              AND b.kind = ?17 AND b.is_instance_default = ?18)",
             vals![original.job_id, progress_json, state, commit_digest, now, digest(original)?, prior_json,
                 original.registry_resource_version, original.placement_id, original.placement_resource_version,
                 original.write_spec_version, original.placement_prefix, original.binding_id, original.binding_resource_version,
-                original.mirror_resource_version, original.upstream_base],
+                original.mirror_resource_version, original.upstream_base, binding_kind, instance_default],
             1,
-        )]).await?;
+        ));
+        self.backend.checked_batch(&statements).await?;
         self.mirror_import(&original.job_id)
             .await?
             .context("mirror observation disappeared")

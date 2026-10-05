@@ -212,6 +212,32 @@ impl NativeDirectUploadAcceptances {
             .context("direct acceptance missing or expired")
     }
 
+    /// Returns the immutable window of one already verified External profile.
+    ///
+    /// This metadata projection creates no dispatch or mirror permission.
+    ///
+    /// # Errors
+    /// Refuses a missing, changed, expired or ambiguous accepted profile.
+    pub(crate) fn external_profile_window(
+        &self,
+        deployment: &str,
+        origin: &str,
+        profile_digest: &str,
+        now: u64,
+    ) -> Result<(u64, u64, String)> {
+        let mut accepted = self.accepted.iter().filter(|item| {
+            item.deployment == deployment
+                && item.origin == origin
+                && item.issued_at <= now
+                && now < item.expires_at
+                && matches!(item.profile, DirectProtectedProfile::External { .. })
+                && item.profile.digest().is_ok_and(|digest| digest == profile_digest)
+        });
+        let selected = accepted.next().context("External prerequisite profile absent or expired")?;
+        ensure!(accepted.next().is_none(), "External prerequisite profile is ambiguous");
+        Ok((selected.issued_at, selected.expires_at, self.evidence_digest.clone()))
+    }
+
     /// Selects one independently verified Managed profile for metadata recovery.
     ///
     /// This grants no dispatch permission. A physical cleanup producer must

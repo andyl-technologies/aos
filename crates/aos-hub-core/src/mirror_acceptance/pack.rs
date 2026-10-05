@@ -28,6 +28,8 @@ pub const MIRROR_PACK_ACCEPTANCE_MAX_BYTES: usize = 64 * 1024;
 pub enum MirrorPackAcceptancePurpose {
     /// Upstream SHA-256 Git pair and bounded decoded selection inspection.
     ManagedR2PackInspectionV1,
+    /// The same bounded upstream parser with an admitted External destination.
+    ExternalPackInspectionV1,
 }
 
 /// Pins all parser allocations and independently reserved producer capacity.
@@ -233,6 +235,9 @@ impl MirrorPackAcceptanceArtifact {
         self.validate_dispatch_time(latest_now)?;
         ensure!(
             self.version == 1
+                && matches!((self.purpose, mirror.purpose),
+                    (MirrorPackAcceptancePurpose::ManagedR2PackInspectionV1, super::MirrorAcceptancePurpose::ManagedR2MirrorV1)
+                    | (MirrorPackAcceptancePurpose::ExternalPackInspectionV1, super::MirrorAcceptancePurpose::ExternalMirrorV1))
                 && self.execution == mirror.execution
                 && self.mirror_artifact_sha256 == digest(mirror)?
                 && self.source_digest == mirror.source_digest
@@ -352,10 +357,8 @@ impl MirrorPackAcceptanceArtifact {
                 && self.maximum_wall_millis <= 600_000,
             "pack inspection memory, capacity, Native boundary or runtime observations absent"
         );
-        if let Some(crate::direct_upload::DirectProtectedProfile::Managed {
-            runtime_qualification,
-            ..
-        }) = &mirror.protected_profile
+        if let Some(crate::direct_upload::DirectProtectedProfile::Managed { runtime_qualification, .. }
+            | crate::direct_upload::DirectProtectedProfile::External { runtime_qualification, .. }) = &mirror.protected_profile
         {
             ensure!(
                 self.maximum_provider_requests
@@ -384,7 +387,11 @@ impl MirrorPackAcceptanceArtifact {
             bytes.len() <= MIRROR_PACK_ACCEPTANCE_MAX_BYTES,
             "pack inspection signature payload exceeds bound"
         );
-        Ok([DOMAIN, bytes.as_slice()].concat())
+        let domain = match self.purpose {
+            MirrorPackAcceptancePurpose::ManagedR2PackInspectionV1 => DOMAIN,
+            MirrorPackAcceptancePurpose::ExternalPackInspectionV1 => b"aos.hub.accepted-external-mirror-pack-inspection.v1\0",
+        };
+        Ok([domain, bytes.as_slice()].concat())
     }
 
     /// Verifies the installed reviewer role and exact measured prerequisite.
@@ -447,6 +454,18 @@ impl MirrorPackAcceptanceArtifact {
 pub fn mirror_pack_acceptance_key(deployment: &str, source: &str, script: &str) -> Result<String> {
     let ordinary = super::mirror_acceptance_key(deployment, source, script)?;
     Ok(format!("mirror-pack-inspection-v1:{}", digest(&ordinary)?))
+}
+
+
+/// Addresses External pack inspection by its exact admitted mirror prerequisite.
+///
+/// # Errors
+/// Refuses malformed commitment bytes; no Managed slot is shared.
+pub fn external_mirror_pack_acceptance_key(mirror_artifact_digest: &str) -> Result<String> {
+    ensure!(crate::direct_upload::valid_direct_digest(mirror_artifact_digest),
+        "external pack prerequisite commitment malformed");
+    Ok(format!("external-mirror-pack-inspection-v1:{}",
+        digest(&("aos.external-mirror-pack-registry.v1", mirror_artifact_digest))?))
 }
 
 #[cfg(test)]

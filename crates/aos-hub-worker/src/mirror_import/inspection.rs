@@ -43,7 +43,7 @@ impl InventoryAuthority {
             _ => anyhow::bail!("not a semantic cache plan"),
         };
         let config = QualifiedConfig::load(env).await?;
-        let (profile, _) = config.managed(env)?;
+        let profile = config.mirror_profile(env, expected_profile).await?;
         ensure!(
             profile.digest()? == expected_profile,
             "inventory profile changed"
@@ -55,6 +55,7 @@ impl InventoryAuthority {
             8 * 1024 * 1024,
         )
         .await?;
+        accepted.require_plan_scope(plan)?;
         Ok(Self::Production {
             config,
             accepted,
@@ -463,7 +464,7 @@ pub(crate) async fn execute(env: &Env, plan: &StorageWorkPlan) -> Result<Storage
     };
     let config = QualifiedConfig::load(env).await?;
     let deployment = env.var("HUB_DEPLOYMENT_ID")?.to_string();
-    let (profile, _) = config.managed(env)?;
+    let profile = config.mirror_profile(env, profile_digest).await?;
     ensure!(
         profile.digest()? == *profile_digest,
         "pack inspection profile changed"
@@ -475,6 +476,7 @@ pub(crate) async fn execute(env: &Env, plan: &StorageWorkPlan) -> Result<Storage
         8 * 1024 * 1024,
     )
     .await?;
+    accepted.require_plan_scope(plan)?;
     let current = || -> Result<()> { accepted.check(config.latest_now()?) };
     let before_dispatch = || -> Result<()> {
         current()?;

@@ -23,6 +23,7 @@ fn original() -> MirrorOriginal {
         binding_resource_version: 7,
         protected_profile_digest: "3".repeat(64),
         placement_prefix: "mirror".into(),
+        external_destination: None,
         verification: MirrorVerification::Nar {
             file_sha256: Some("1".repeat(64)),
             file_size: 11,
@@ -68,10 +69,13 @@ fn progress(original: &MirrorOriginal) -> MirrorProgress {
         upstream_etag: Some("\"upstream-etag\"".into()),
         stage_upload_id: Some("private-stage-upload".into()),
         stage_parts: vec![part.clone()],
+        stage_closure: None,
+        stage_retention: None,
         stage_object: Some(stage),
         verified: Some(verified),
         destination_upload_id: Some("private-final-upload".into()),
         destination_parts: vec![part],
+        destination_closure: None,
         destination: Some(destination),
     }
 }

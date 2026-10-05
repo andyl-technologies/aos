@@ -1,4 +1,4 @@
-//! Purpose-separated review of the managed mirror producer and its measurements.
+//! Purpose-separated review of admitted mirror producers and their measurements.
 //!
 //! Direct upload approval remains a prerequisite. It does not cover upstream
 //! fetching, NAR decoding, mirror journals, acknowledgement or buffer admission.
@@ -28,6 +28,7 @@ pub use evidence::*;
 
 pub mod live;
 pub mod pack;
+pub mod external_controlled;
 
 #[cfg(test)]
 mod tests;
@@ -52,13 +53,15 @@ pub const MIRROR_METADATA_BUFFER_BYTES: u64 = 256 * 1024;
 pub enum MirrorAcceptancePurpose {
     /// Upstream fetching, verification and guarded managed R2 publication.
     ManagedR2MirrorV1,
+    /// Upstream fetching, verification and guarded admitted External publication.
+    ExternalMirrorV1,
 }
 
 /// Distinguishes production execution from evidence-only controlled runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MirrorAcceptanceExecution {
-    /// Actual hosted Worker and managed R2 measurements.
+    /// Actual hosted Worker and selected provider measurements.
     Hosted,
     /// Source-built controlled runner; cannot grant production admission.
     Controlled,
@@ -139,12 +142,18 @@ pub struct MirrorAcceptanceArtifact {
     pub source_digest: String,
     /// Actual hosted version metadata or derived controlled source identity.
     pub script_version: String,
-    /// Complete actual managed material, policy and prerequisite runtime profile.
+    /// Complete actual selected material, policy and prerequisite runtime profile.
     pub protected_profile: Option<DirectProtectedProfile>,
     /// Actual raw controlled profile; mutually exclusive with production facts.
     pub candidate_profile: Option<MirrorCandidateProfile>,
     /// Exact independently verified prerequisite direct evidence commitment.
     pub direct_evidence_sha256: Option<String>,
+    /// Exact independently installed External mirror transport domain.
+    ///
+    /// The reviewer joins this commitment to actual provider closure and Read
+    /// observations. A Direct or Copy purpose does not authorize this domain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_domain_sha256: Option<String>,
     /// Fixed admitted buffer and decoding geometry.
     pub geometry: MirrorProducerGeometry,
     /// Largest encoded or plain object admitted by this mirror acceptance.
@@ -202,26 +211,33 @@ impl MirrorAcceptanceArtifact {
                 && (1..=MIRROR_MAX_OBJECT_BYTES).contains(&self.maximum_object_bytes),
             "mirror acceptance identity, geometry or validity differs"
         );
+        ensure!(match self.purpose {
+            MirrorAcceptancePurpose::ManagedR2MirrorV1 => self.external_domain_sha256.is_none(),
+            MirrorAcceptancePurpose::ExternalMirrorV1 => self.external_domain_sha256.as_deref()
+                .is_some_and(valid_direct_digest),
+        }, "mirror purpose differs from its installed transport commitment");
         match self.execution {
             MirrorAcceptanceExecution::Hosted => {
-                let Some(
-                    profile @ DirectProtectedProfile::Managed {
-                        profile: raw,
-                        runtime_qualification,
-                        ..
-                    },
-                ) = &self.protected_profile
-                else {
-                    anyhow::bail!("hosted mirror acceptance requires managed profile");
-                };
+                let profile = self.protected_profile.as_ref().ok_or_else(||
+                    anyhow::anyhow!("hosted mirror prerequisite profile absent"))?;
                 profile.validate()?;
+                let runtime_qualification = match (self.purpose, profile) {
+                    (MirrorAcceptancePurpose::ManagedR2MirrorV1,
+                        DirectProtectedProfile::Managed { profile: raw, runtime_qualification, .. }) => {
+                        ensure!(raw.deployment_id == self.deployment_id,
+                            "managed mirror prerequisite deployment differs");
+                        runtime_qualification
+                    }
+                    (MirrorAcceptancePurpose::ExternalMirrorV1,
+                        DirectProtectedProfile::External { runtime_qualification, .. }) => runtime_qualification,
+                    _ => anyhow::bail!("mirror purpose differs from its prerequisite profile"),
+                };
                 ensure!(
                     self.candidate_profile.is_none()
                         && self
                             .direct_evidence_sha256
                             .as_deref()
                             .is_some_and(valid_direct_digest)
-                        && raw.deployment_id == self.deployment_id
                         && self.maximum_object_bytes
                             <= runtime_qualification.maximum_object_bytes.get()
                         && !self.script_version.starts_with("emulated-"),
@@ -238,7 +254,8 @@ impl MirrorAcceptanceArtifact {
                     &candidate.private_stage_policy,
                 )?;
                 ensure!(
-                    self.protected_profile.is_none()
+                    self.purpose == MirrorAcceptancePurpose::ManagedR2MirrorV1
+                        && self.protected_profile.is_none()
                         && self.direct_evidence_sha256.is_none()
                         && candidate.profile.deployment_id == self.deployment_id
                         && self.script_version
@@ -267,7 +284,11 @@ impl MirrorAcceptanceArtifact {
             bytes.len() <= MIRROR_ACCEPTANCE_MAX_BYTES,
             "mirror signature payload exceeds bound"
         );
-        Ok([DOMAIN, bytes.as_slice()].concat())
+        let domain = match self.purpose {
+            MirrorAcceptancePurpose::ManagedR2MirrorV1 => DOMAIN,
+            MirrorAcceptancePurpose::ExternalMirrorV1 => b"aos.hub.accepted-external-mirror-producer.v1\0",
+        };
+        Ok([domain, bytes.as_slice()].concat())
     }
 
     /// Verifies the installed reviewer role and exact measured candidate.
@@ -347,6 +368,25 @@ pub fn mirror_acceptance_key(deployment: &str, source: &str, script: &str) -> Re
     hash.update(b"aos.hub.mirror-acceptance-address.v1\0");
     hash.update(encode_direct_control(&(deployment, source, script))?);
     Ok(format!("mirror-v1:{}", hex::encode(hash.finalize())))
+}
+
+/// Addresses a separately reviewed External profile on the same installed script.
+///
+/// # Errors
+/// Refuses malformed runtime identities or a non-External prerequisite profile.
+pub fn external_mirror_acceptance_key(
+    deployment: &str,
+    source: &str,
+    script: &str,
+    profile: &DirectProtectedProfile,
+) -> Result<String> {
+    mirror_acceptance_key(deployment, source, script)?;
+    ensure!(matches!(profile, DirectProtectedProfile::External { .. }),
+        "External mirror address requires an External profile");
+    let mut hash = Sha256::new();
+    hash.update(b"aos.hub.external-mirror-acceptance-address.v1\0");
+    hash.update(encode_direct_control(&(deployment, source, script, profile.digest()?))?);
+    Ok(format!("external-mirror-v1:{}", hex::encode(hash.finalize())))
 }
 
 /// Commits actual raw candidate material without claiming accepted runtime.

@@ -162,6 +162,10 @@ pub(crate) async fn dispatch_selected(
     item_index: Option<usize>,
 ) -> Result<(MirrorProgress, u64)> {
     let (original, step) = selected_item(plan, item_index)?;
+    if original.external_destination.is_some() {
+        ensure!(!candidate, "External mirror cannot borrow Managed candidate authority");
+        return crate::external_object::dispatch_external_mirror(env, plan, body, signature, item_index).await;
+    }
     let destination = matches!(
         step,
         MirrorStep::Status { destination: true }

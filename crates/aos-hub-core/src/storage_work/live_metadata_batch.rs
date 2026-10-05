@@ -89,8 +89,8 @@ pub fn validate_targets(
 ) -> Result<()> {
     validate_selection(targets)?;
     ensure!(
-        plan.binding_kind == "deployment_r2",
-        "live batch requires managed R2"
+        matches!(plan.binding_kind.as_str(), "deployment_r2" | "s3" | "r2"),
+        "live batch requires a supported storage-local executor"
     );
     for target in targets {
         ensure!(

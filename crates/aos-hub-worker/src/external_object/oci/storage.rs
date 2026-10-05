@@ -416,7 +416,7 @@ pub(super) async fn closed_for_lookup(
             && head.stage.is_none()
             && head.oci.is_none() && head.mirror.is_none()
             && head.observation.is_none()
-            && head.copy.is_none() && head.mirror.is_none()
+            && head.copy.is_none()
             && session.phase == Phase::Closed
             && session.pending.is_none()
             && session.closed.as_ref() == Some(expected),

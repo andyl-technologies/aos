@@ -82,6 +82,7 @@ pub(super) fn roundtrip(
         binding_resource_version: 1,
         placement_prefix: prefix.into(),
         protected_profile_digest: profile_digest.into(),
+        external_destination: None,
         verification,
     };
     original.job_id = original.identity().unwrap();
@@ -114,10 +115,13 @@ pub(super) fn roundtrip(
         upstream_etag: None,
         stage_upload_id: Some("stage-upload".into()),
         stage_parts: vec![part.clone()],
+        stage_closure: None,
+        stage_retention: None,
         stage_object: Some(object),
         verified: Some(verified),
         destination_upload_id: Some("final-upload".into()),
         destination_parts: vec![part],
+        destination_closure: None,
         destination: Some(destination),
     };
     MirrorRoundtripMeasurement {
@@ -165,6 +169,7 @@ pub(super) fn artifact() -> MirrorAcceptanceArtifact {
         protected_profile: Some(profile),
         candidate_profile: None,
         direct_evidence_sha256: Some("99".repeat(32)),
+        external_domain_sha256: None,
         geometry: MirrorProducerGeometry::current(),
         maximum_object_bytes: MIRROR_MAX_OBJECT_BYTES,
         issued_at: 100,
@@ -229,6 +234,76 @@ fn sign(artifact: &mut MirrorAcceptanceArtifact) -> String {
     let key = SigningKey::from_bytes(&[0xa1; 32]);
     artifact.signature = hex::encode(key.sign(&artifact.signing_bytes().unwrap()).to_bytes());
     hex::encode(key.verifying_key().to_bytes())
+}
+
+#[test]
+fn external_mirror_requires_its_own_purpose_and_signed_profile_bytes() {
+    let mut value = artifact();
+    let mut original = crate::mirror_work::external_test_original();
+    let destination = original.external_destination.as_mut().unwrap();
+    destination.protected_profile.runtime_qualification.maximum_object_bytes = WireInteger::new(MIRROR_MAX_OBJECT_BYTES);
+    destination.protected_profile.runtime_qualification.maximum_parallel_provider_requests = WireInteger::new(8);
+    let profile = DirectProtectedProfile::external(destination.protected_profile.profile.clone(),
+        destination.protected_profile.runtime_qualification.clone()).unwrap();
+    original.protected_profile_digest = profile.digest().unwrap();
+    value.purpose = MirrorAcceptancePurpose::ExternalMirrorV1;
+    value.evidence.safety.iter_mut().find(|sample| sample.case == MirrorSafetyCase::UnknownCleanup)
+        .unwrap().case = MirrorSafetyCase::RetainedStageWithoutDelete;
+    value.external_domain_sha256 = Some("41".repeat(32));
+    value.protected_profile = Some(profile.clone());
+    for sample in &mut value.evidence.roundtrips {
+        let mut selected = original.clone();
+        selected.path = sample.original.path.clone();
+        selected.verification = sample.original.verification.clone();
+        selected.job_id = selected.identity().unwrap();
+        sample.original = selected;
+        sample.progress.original_digest = digest(&sample.original).unwrap();
+        let stage_key = sample.original.stage_key();
+        sample.progress.stage_object.as_mut().unwrap().key = stage_key.clone();
+        sample.progress.verified.as_mut().unwrap().object.key = stage_key;
+        sample.progress.destination.as_mut().unwrap().object.key = sample.original.destination_key();
+        let authority = &original.external_destination.as_ref().unwrap().protected_profile.profile.write_cohort.authority;
+        let closure = |object: StorageObjectIdentity| crate::mirror_work::MirrorExternalClosure {
+            scope: crate::storage_authority::control::StorageAuthorityObjectScope {
+                guard_namespace_id: authority.guard_namespace_id.clone(),
+                physical_authority_id: authority.authority_id.clone(),
+                full_key: object.key.clone(),
+            },
+            guard_stamp: crate::storage_authority::StorageGuardStamp {
+                physical_authority_id: authority.authority_id.clone(),
+                incarnation: crate::storage_authority::GuardIncarnation::parse("1").unwrap(),
+            },
+            receipt_digest: "ab".repeat(32),
+            object,
+        };
+        sample.progress.stage_closure = Some(closure(sample.progress.stage_object.clone().unwrap()));
+        sample.progress.stage_retention = Some(crate::mirror_work::MirrorStageRetention::RetainedForQualifiedCleanup);
+        sample.progress.destination_closure = Some(closure(sample.progress.destination.as_ref().unwrap().object.clone()));
+        sample.commit_digest = sample.progress.commit_digest(&sample.original).unwrap();
+    }
+    let public = sign(&mut value);
+    value.require_production("deployment-1", "https://hub.example.org", &"88".repeat(32),
+        "script-version-1", &profile, &"99".repeat(32), &public, 150).unwrap();
+    let external_bytes = value.signing_bytes().unwrap();
+
+    let mut false_cleanup = value.clone();
+    false_cleanup.evidence.safety.iter_mut().find(|sample| sample.case == MirrorSafetyCase::RetainedStageWithoutDelete)
+        .unwrap().case = MirrorSafetyCase::UnknownCleanup;
+    let false_public = sign(&mut false_cleanup);
+    assert!(false_cleanup.verify(&false_public, 150).is_err());
+
+
+    let mut changed = value.clone();
+    changed.purpose = MirrorAcceptancePurpose::ManagedR2MirrorV1;
+    assert_ne!(changed.signing_bytes().unwrap(), external_bytes);
+    assert!(changed.verify(&public, 150).is_err());
+    changed = value.clone();
+    changed.protected_profile = Some(super::tests::profile());
+    assert!(changed.verify(&public, 150).is_err());
+
+    assert_ne!(external_mirror_acceptance_key("deployment-1", &"88".repeat(32),
+        "script-version-1", &profile).unwrap(),
+        mirror_acceptance_key("deployment-1", &"88".repeat(32), "script-version-1").unwrap());
 }
 
 fn production(artifact: &MirrorAcceptanceArtifact, key: &str) -> Result<()> {

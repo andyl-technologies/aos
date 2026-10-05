@@ -39,11 +39,7 @@ impl RemoteStorageWorkClient {
             .binding(placement.binding_id)
             .await?
             .context("inventory binding disappeared")?;
-        ensure!(
-            binding.kind == "deployment_r2",
-            "inventory requires managed R2"
-        );
-        let profile = self.mirror_managed_profile_digest()?;
+        let profile = self.mirror_destination_profile_digest(db, &binding).await?;
         use aos_hub_core::mirror_tree_inventory::MirrorTreeInventorySource;
         let selected_source = match index_path {
             Some(index_path) => MirrorTreeInventorySource::Pack {
@@ -103,7 +99,7 @@ impl RemoteStorageWorkClient {
                 && current_placement.prefix == placement.prefix
                 && current_binding.resource_version == binding.resource_version
                 && current_binding.kind == binding.kind
-                && self.mirror_managed_profile_digest()? == profile,
+                && self.mirror_destination_profile_digest(db, &current_binding).await? == profile,
             "inventory SQL authority changed during execution"
         );
         match result.outcome {
@@ -136,11 +132,7 @@ impl RemoteStorageWorkClient {
             .binding(placement.binding_id)
             .await?
             .context("pack inspection binding disappeared")?;
-        ensure!(
-            binding.kind == "deployment_r2",
-            "pack inspection requires managed R2"
-        );
-        let profile_digest = self.mirror_managed_profile_digest()?;
+        let profile_digest = self.mirror_destination_profile_digest(db, &binding).await?;
         let inspection = MirrorPackInspection {
             registry_id: registry.id,
             registry_resource_version: registry.resource_version,
@@ -183,7 +175,7 @@ impl RemoteStorageWorkClient {
                 && current_placement.prefix == placement.prefix
                 && current_binding.resource_version == binding.resource_version
                 && current_binding.kind == binding.kind
-                && self.mirror_managed_profile_digest()? == profile_digest,
+                && self.mirror_destination_profile_digest(db, &current_binding).await? == profile_digest,
             "pack inspection SQL authority changed during execution"
         );
         let StorageWorkOutcome::GitPackProjection { projection } = result.outcome else {

@@ -875,7 +875,9 @@ pub(in crate::external_object) async fn verify_observable_destination(
     match visible.kind {
         super::super::state::VisibleKind::CopyDestination
         | super::super::state::VisibleKind::OciStage
-        | super::super::state::VisibleKind::OciDestination => {
+        | super::super::state::VisibleKind::OciDestination
+        | super::super::state::VisibleKind::MirrorStage
+        | super::super::state::VisibleKind::MirrorDestination => {
             anyhow::bail!("OCI visibility requires its own retained original and readback");
         }
         super::super::state::VisibleKind::MetadataPut => {

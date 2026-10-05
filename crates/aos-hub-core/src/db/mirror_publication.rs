@@ -634,6 +634,8 @@ fn journal_statement(
     commit: Option<&str>,
     now: i64,
 ) -> Result<CheckedStatement> {
+    let (binding_kind, instance_default) = original.external_destination.as_ref()
+        .map_or(("deployment_r2", 1_i64), |external| (external.binding_kind.as_str(), 0_i64));
     let mutation = if commit.is_some() {
         "state = 'committed', commit_digest = ?2, updated_at = ?3, publication_commit_version = 7"
     } else {
@@ -654,13 +656,13 @@ fn journal_statement(
               WHERE p.id = ?13 AND p.registry_id = mirror_import_objects.registry_id
                 AND p.resource_version = ?14 AND p.write_spec_version = ?15 AND p.prefix = ?16
                 AND p.effective_write_enabled = 1 AND b.id = ?17 AND b.resource_version = ?18
-                AND b.kind = 'deployment_r2' AND b.is_instance_default = 1)"),
+                AND b.kind = ?19 AND b.is_instance_default = ?20)"),
         vals![original.job_id, commit, now, digest(original)?, serde_json::to_string(original)?,
             serde_json::to_string(progress)?, original.path, original.source_path_digest(),
             original.copy_operation_id, original.registry_resource_version, original.mirror_resource_version,
             original.upstream_base, original.placement_id, original.placement_resource_version,
             original.write_spec_version, original.placement_prefix, original.binding_id,
-            original.binding_resource_version],
+            original.binding_resource_version, binding_kind, instance_default],
         1,
     ))
 }

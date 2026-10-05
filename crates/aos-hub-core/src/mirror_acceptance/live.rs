@@ -27,6 +27,8 @@ pub const LIVE_ACCEPTANCE_MAX_BYTES: usize = 32 * 1024;
 pub enum MirrorLivePurpose {
     /// Fresh GET/HEAD, bounded metadata and uncached release pack responses.
     ManagedMirrorLiveDeliveryV1,
+    /// Fresh upstream delivery selected by an admitted External destination.
+    ExternalMirrorLiveDeliveryV1,
 }
 
 /// Names the actual boundary exercised by an independently reviewed raw report.
@@ -145,6 +147,9 @@ impl MirrorLiveAcceptanceArtifact {
         self.validate_dispatch_time(now)?;
         ensure!(
             self.version == 1
+                && matches!((self.purpose, mirror.purpose),
+                    (MirrorLivePurpose::ManagedMirrorLiveDeliveryV1, super::MirrorAcceptancePurpose::ManagedR2MirrorV1)
+                    | (MirrorLivePurpose::ExternalMirrorLiveDeliveryV1, super::MirrorAcceptancePurpose::ExternalMirrorV1))
                 && self.execution == mirror.execution
                 && self.mirror_artifact_sha256 == digest(mirror)?
                 && self.maximum_bytes > 0
@@ -225,7 +230,11 @@ impl MirrorLiveAcceptanceArtifact {
             bytes.len() <= LIVE_ACCEPTANCE_MAX_BYTES,
             "live signing payload too large"
         );
-        Ok([DOMAIN, bytes.as_slice()].concat())
+        let domain = match self.purpose {
+            MirrorLivePurpose::ManagedMirrorLiveDeliveryV1 => DOMAIN,
+            MirrorLivePurpose::ExternalMirrorLiveDeliveryV1 => b"aos.hub.accepted-external-mirror-live-delivery.v1\0",
+        };
+        Ok([domain, bytes.as_slice()].concat())
     }
 
     /// Verifies the existing reviewer role and exact hosted prerequisite.

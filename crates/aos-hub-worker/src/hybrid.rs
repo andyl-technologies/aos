@@ -157,6 +157,20 @@ pub async fn fetch(request: Request, env: &Env, context: &worker::Context) -> Re
         #[cfg(not(feature = "do-e2e"))]
         return Response::error("not found", 404);
     }
+    if path == aos_hub_core::mirror_guard::MIRROR_EXTERNAL_FUNCTIONAL_GUARD_LOOKUP_PATH {
+        #[cfg(feature = "do-e2e")]
+        return crate::mirror_import::guard_proof::fetch(request, env, false).await;
+
+        #[cfg(not(feature = "do-e2e"))]
+        return Response::error("not found", 404);
+    }
+    if path == aos_hub_core::mirror_guard::batch::MIRROR_EXTERNAL_FUNCTIONAL_GUARD_BATCH_LOOKUP_PATH {
+        #[cfg(feature = "do-e2e")]
+        return crate::mirror_import::guard_proof::batch::fetch(request, env, false).await;
+
+        #[cfg(not(feature = "do-e2e"))]
+        return Response::error("not found", 404);
+    }
     if path == aos_hub_core::mirror_guard::MIRROR_GUARD_LOOKUP_PATH {
         return crate::mirror_import::guard_proof::fetch(request, env, false).await;
     }

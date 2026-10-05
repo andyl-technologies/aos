@@ -45,15 +45,21 @@ impl RemoteStorageWorkClient {
         #[cfg(test)]
         let candidate = self.controlled_mirror.as_ref();
         #[cfg(test)]
+        let functional = self.controlled_external_mirror.as_ref();
+        #[cfg(test)]
         let selected = candidate.map(|candidate| {
             (
                 candidate.issuer.source_digest.clone(),
                 candidate.issuer.script_version.clone(),
                 candidate.uncertainty,
             )
-        });
+        }).or_else(|| functional.map(|selected| (
+            selected.issuer.source_digest.clone(), selected.issuer.script_version.clone(), selected.uncertainty,
+        )));
         #[cfg(not(test))]
         let selected: Option<(String, String, u64)> = None;
+        #[cfg(test)]
+        if let Some(selected) = functional { selected.require_held(original)?; }
         let (source_digest, script_version, uncertainty) = match selected {
             Some(selected) => selected,
             None => {
@@ -74,6 +80,9 @@ impl RemoteStorageWorkClient {
                 MirrorGuardExecution::ControlledCandidate,
                 aos_hub_core::mirror_guard::MIRROR_CANDIDATE_GUARD_LOOKUP_PATH,
             )
+        } else if functional.is_some() {
+            (MirrorGuardExecution::ControlledExternalFunctional,
+                aos_hub_core::mirror_guard::MIRROR_EXTERNAL_FUNCTIONAL_GUARD_LOOKUP_PATH)
         } else {
             (MirrorGuardExecution::Hosted, MIRROR_GUARD_LOOKUP_PATH)
         };

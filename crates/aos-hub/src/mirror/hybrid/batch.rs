@@ -136,7 +136,7 @@ pub(super) async fn publish(
     let mut first_failure = None;
     for object in prepared {
         if object.committed {
-            match super::archived_progress(work, &object.original, &object.verified).await {
+            match super::archived_progress(db, work, &object.original, &object.verified).await {
                 Ok(_) => completed += 1,
                 Err(error) if first_failure.is_none() => first_failure = Some(error),
                 Err(_) => {}
@@ -338,10 +338,11 @@ async fn preflight(
         return Ok(retained);
     }
     db.validate_mirror_import_authority(&item.original).await?;
-    ensure!(
-        work.mirror_managed_profile_digest()? == item.original.protected_profile_digest,
-        "mirror phase accepted profile changed"
-    );
+    let binding = db.binding(item.original.binding_id).await?
+        .context("mirror phase binding disappeared")?;
+    ensure!(work.mirror_destination_profile_digest(db, &binding).await?
+        == item.original.protected_profile_digest,
+        "mirror phase accepted profile changed");
     if matches!(
         item.step,
         MirrorStep::BeginPromotion | MirrorStep::CopyParts { .. } | MirrorStep::CompletePromotion
@@ -372,23 +373,8 @@ async fn exchange(
             .0
             .original;
         let items = group.iter().map(|(item, _, _)| item.clone()).collect();
-        let now = aos_hub_core::clock::now_unix_secs();
-        let plan = aos_hub_core::storage_work::StorageWorkPlan {
-            version: 1,
-            plan_id: uuid::Uuid::new_v4().simple().to_string(),
-            deployment_id: work.deployment_id().into(),
-            issued_at: now,
-            expires_at: now.checked_add(30).context("mirror phase clock overflow")?,
-            placement_id: first.placement_id,
-            placement_resource_version: first.placement_resource_version,
-            binding_id: first.binding_id,
-            binding_resource_version: first.binding_resource_version,
-            binding_kind: "deployment_r2".into(),
-            placement_prefix: first.placement_prefix.clone(),
-            binding_snapshot_revision: None,
-            credential_references: Vec::new(),
-            operation: StorageWorkOperation::MirrorTransferBatch { items },
-        };
+        let plan = super::control::plan(db, work, first,
+            StorageWorkOperation::MirrorTransferBatch { items }).await?;
         let result = work.execute(&plan).await?;
         let StorageWorkOutcome::MirrorBatch { items } = result.outcome else {
             anyhow::bail!("mirror phase transport returned another result");

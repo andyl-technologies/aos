@@ -26,6 +26,12 @@ mod copy;
 mod mirror;
 
 #[cfg(target_arch = "wasm32")]
+pub(crate) use mirror::dispatch as dispatch_external_mirror;
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) use mirror::guard_address as mirror_guard_address;
+
+#[cfg(target_arch = "wasm32")]
 pub(crate) use copy::{
     execute_scan_read, fetch_control as fetch_copy, fetch_metadata as fetch_copy_metadata,
 };

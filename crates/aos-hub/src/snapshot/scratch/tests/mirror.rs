@@ -28,6 +28,7 @@ fn original(registry_id: i64) -> MirrorOriginal {
         binding_resource_version: 7,
         protected_profile_digest: "3".repeat(64),
         placement_prefix: "mirror".into(),
+        external_destination: None,
         verification: MirrorVerification::Sha256 {
             sha256: "1".repeat(64),
             size: 11,
@@ -61,10 +62,13 @@ fn progress(original: &MirrorOriginal) -> MirrorProgress {
         upstream_etag: Some("\"source-etag\"".into()),
         stage_upload_id: Some("private-stage-upload".into()),
         stage_parts: vec![part.clone()],
+        stage_closure: None,
+        stage_retention: None,
         stage_object: Some(stage),
         verified: Some(verified.clone()),
         destination_upload_id: Some("private-final-upload".into()),
         destination_parts: vec![part],
+        destination_closure: None,
         destination: Some(MirrorVerifiedObject {
             object: StorageObjectIdentity {
                 key: aos_hub_core::keymap::r2_key(&original.placement_prefix, &original.path),

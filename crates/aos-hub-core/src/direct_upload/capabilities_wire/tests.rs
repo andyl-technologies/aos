@@ -163,6 +163,14 @@ pub(crate) fn profile() -> DirectExternalStorageCapabilities {
     }
 }
 
+/// Builds a structural mirror fixture from the same exact publication as its profile.
+pub(crate) fn mirror_prerequisite() -> (DirectProtectedExternalProfile, LeaseCohort) {
+    let publication = publication();
+    let list = LeaseCohort::from_publication(&publication, EXECUTOR, "association-one",
+        LeasePurpose::List, "managed/binding", vec![LeaseEffect::List]).unwrap();
+    (DirectProtectedExternalProfile::new(profile(), runtime_reference()).unwrap(), list)
+}
+
 pub(crate) fn runtime_reference() -> DirectRuntimeQualification {
     DirectRuntimeQualification {
         version: 1,

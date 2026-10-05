@@ -74,6 +74,9 @@ pub(in crate::external_object) async fn current(
         VisibleKind::OciStage | VisibleKind::OciDestination => {
             super::super::oci::closed_copy_source(storage, object, &head.scope).await?
         }
+        VisibleKind::MirrorStage | VisibleKind::MirrorDestination => {
+            super::super::mirror::closed_source(storage, object, head).await?
+        }
         VisibleKind::CopyDestination => {
             super::storage::closed_copy_source(storage, head, object).await?
         }

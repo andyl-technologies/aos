@@ -18,6 +18,7 @@ use crate::fetch::SurfaceFetch as _;
 use crate::storage_work::RemoteStorageWorkClient;
 
 mod batch;
+mod control;
 mod discovery;
 mod live;
 mod publication;
@@ -206,6 +207,7 @@ async fn admit_object(
         binding_resource_version: binding.resource_version,
         placement_prefix: placement.prefix.clone(),
         protected_profile_digest: selected.profile_digest.clone(),
+        external_destination: selected.external_destination.clone(),
         verification,
     };
     original.job_id = original.identity()?;
@@ -273,7 +275,7 @@ async fn publish_object(
         committed,
     } = prepared;
     if committed {
-        return archived_progress(work, &original, &verified).await;
+        return archived_progress(db, work, &original, &verified).await;
     }
     let retained = db
         .mirror_import(&original.job_id)
@@ -382,32 +384,15 @@ fn prepared(
 }
 
 async fn archived_progress(
+    db: &Database,
     work: &RemoteStorageWorkClient,
     original: &MirrorOriginal,
     verified: &aos_hub_core::mirror_work::MirrorVerifiedObject,
 ) -> Result<MirrorProgress> {
-    let now = aos_hub_core::clock::now_unix_secs();
-    let plan = aos_hub_core::storage_work::StorageWorkPlan {
-        version: 1,
-        plan_id: uuid::Uuid::new_v4().simple().to_string(),
-        deployment_id: work.deployment_id().into(),
-        issued_at: now,
-        expires_at: now
-            .checked_add(30)
-            .context("mirror status expiry overflow")?,
-        placement_id: original.placement_id,
-        placement_resource_version: original.placement_resource_version,
-        binding_id: original.binding_id,
-        binding_resource_version: original.binding_resource_version,
-        binding_kind: "deployment_r2".into(),
-        binding_snapshot_revision: None,
-        credential_references: vec![],
-        placement_prefix: original.placement_prefix.clone(),
-        operation: StorageWorkOperation::MirrorTransfer {
-            original: original.clone(),
-            step: MirrorStep::Status { destination: true },
-        },
-    };
+    let plan = control::plan(db, work, original, StorageWorkOperation::MirrorTransfer {
+        original: original.clone(),
+        step: MirrorStep::Status { destination: true },
+    }).await?;
     let StorageWorkOutcome::MirrorProgress { progress } = work.execute(&plan).await?.outcome else {
         anyhow::bail!("mirror archived status returned another result");
     };
@@ -479,10 +464,6 @@ async fn run_publication_step(
         "mirror control changed retained original"
     );
     db.validate_mirror_import_authority(original).await?;
-    ensure!(
-        work.mirror_managed_profile_digest()? == original.protected_profile_digest,
-        "mirror accepted profile changed original"
-    );
     let placement = db
         .surface_placement(original.placement_id)
         .await?
@@ -491,6 +472,9 @@ async fn run_publication_step(
         .binding(original.binding_id)
         .await?
         .context("mirror binding disappeared")?;
+    ensure!(work.mirror_destination_profile_digest(db, &binding).await?
+        == original.protected_profile_digest,
+        "mirror accepted profile changed original");
     if matches!(
         step,
         MirrorStep::BeginPromotion | MirrorStep::CopyParts { .. } | MirrorStep::CompletePromotion
@@ -510,15 +494,9 @@ async fn run_publication_step(
         .await?;
     }
     let status = matches!(step, MirrorStep::Status { .. });
-    let plan = work.plan_for_placement(
-        &placement,
-        &binding,
-        StorageWorkOperation::MirrorTransfer {
-            original: original.clone(),
-            step,
-        },
-        aos_hub_core::clock::now_unix_secs(),
-    )?;
+    let plan = control::plan(db, work, original, StorageWorkOperation::MirrorTransfer {
+        original: original.clone(), step,
+    }).await?;
     let result = work.execute(&plan).await?;
     let StorageWorkOutcome::MirrorProgress { progress } = result.outcome else {
         anyhow::bail!("Worker returned another mirror result");
@@ -557,28 +535,10 @@ async fn acknowledge(
                 == Some(progress.commit_digest(original)?.as_str()),
         "mirror ACK lacks exact retained SQL commit"
     );
-    let now = aos_hub_core::clock::now_unix_secs();
-    let plan = aos_hub_core::storage_work::StorageWorkPlan {
-        version: 1,
-        plan_id: uuid::Uuid::new_v4().simple().to_string(),
-        deployment_id: work.deployment_id().into(),
-        issued_at: now,
-        expires_at: now.checked_add(30).context("mirror ACK expiry overflow")?,
-        placement_id: original.placement_id,
-        placement_resource_version: original.placement_resource_version,
-        binding_id: original.binding_id,
-        binding_resource_version: original.binding_resource_version,
-        binding_kind: "deployment_r2".into(),
-        binding_snapshot_revision: None,
-        credential_references: vec![],
-        placement_prefix: original.placement_prefix.clone(),
-        operation: StorageWorkOperation::MirrorTransfer {
-            original: original.clone(),
-            step: MirrorStep::Acknowledge {
-                commit_digest: progress.commit_digest(original)?,
-            },
-        },
-    };
+    let plan = control::plan(db, work, original, StorageWorkOperation::MirrorTransfer {
+        original: original.clone(),
+        step: MirrorStep::Acknowledge { commit_digest: progress.commit_digest(original)? },
+    }).await?;
     let StorageWorkOutcome::MirrorProgress {
         progress: acknowledged,
     } = work.execute(&plan).await?.outcome

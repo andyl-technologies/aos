@@ -127,6 +127,7 @@ impl Database {
                 vals![binding_id, version], 1,
             ));
         }
+        locks.extend(Self::mirror_external_authority_locks(original)?);
         let writer = self
             .reconciled_surface_writer(super::super::SurfaceTarget::Registry(original.registry_id))
             .await?;

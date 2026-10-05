@@ -69,6 +69,8 @@ pub(super) enum VisibleKind {
     CopyDestination,
     OciStage,
     OciDestination,
+    MirrorStage,
+    MirrorDestination,
 }
 
 impl VisibleReceipt {
@@ -84,7 +86,9 @@ impl VisibleReceipt {
                     VisibleKind::DestinationClose
                     | VisibleKind::CopyDestination
                     | VisibleKind::OciStage
-                    | VisibleKind::OciDestination => self
+                    | VisibleKind::OciDestination
+                    | VisibleKind::MirrorStage
+                    | VisibleKind::MirrorDestination => self
                         .stage_configuration
                         .as_ref()
                         .is_some_and(|value| digest_string(value)),
@@ -314,6 +318,7 @@ impl Head {
                     .is_none_or(|visible| !matches!(
                         visible.kind,
                         VisibleKind::OciStage | VisibleKind::OciDestination
+                            | VisibleKind::MirrorStage | VisibleKind::MirrorDestination
                     )),
             "ordinary metadata PUT cannot replace a retained OCI incarnation"
         );

@@ -23,6 +23,9 @@ pub mod batch;
 pub const MIRROR_GUARD_LOOKUP_PATH: &str = "/_internal/storage/mirror-final-guard";
 /// Identifies the controlled, reserved-namespace guard lookup.
 pub const MIRROR_CANDIDATE_GUARD_LOOKUP_PATH: &str = "/__hub/mirror-candidate-guard";
+
+/// Reads only an independently reviewed emulator External mirror final receipt.
+pub const MIRROR_EXTERNAL_FUNCTIONAL_GUARD_LOOKUP_PATH: &str = "/__hub/external-mirror-functional-guard";
 /// Authenticates a mirror guard control with its independent role key.
 pub const MIRROR_GUARD_SIGNATURE_HEADER: &str = "x-aos-mirror-guard-signature";
 /// Bounds both canonical lookup and reply envelopes.
@@ -35,10 +38,12 @@ const REPLY_DOMAIN: &[u8] = b"aos.hub.mirror-final-guard-reply.v1\0";
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MirrorGuardExecution {
-    /// Proves a currently held ordinary managed publication.
+    /// Proves a currently held ordinary admitted mirror publication.
     Hosted,
     /// Proves only a reserved controlled destination, never hosted acceptance.
     ControlledCandidate,
+    /// Proves a finite admitted External functional probe, never Hosted approval.
+    ControlledExternalFunctional,
 }
 
 /// Pins the actual independently selected guard implementation.
@@ -324,8 +329,15 @@ fn validate_execution(original: &MirrorOriginal, execution: MirrorGuardExecution
             "controlled mirror proof cannot authorize production"
         ),
         MirrorGuardExecution::ControlledCandidate => ensure!(
-            reserved && segments.len() == 3 && hex(segments[1], 32) && segments[2] == "final",
+            original.external_destination.is_none()
+                && reserved && segments.len() == 3 && hex(segments[1], 32) && segments[2] == "final",
             "controlled mirror guard escaped its reserved namespace"
+        ),
+        MirrorGuardExecution::ControlledExternalFunctional => ensure!(
+            original.external_destination.is_some() && reserved && segments.len() == 4
+                && hex(segments[1], 32) && segments[2] == "final"
+                && matches!(segments[3], "full" | "pull-through"),
+            "controlled External mirror guard escaped its finite destination"
         ),
     }
     Ok(())
@@ -344,7 +356,7 @@ fn validate_issuer(issuer: &MirrorGuardIssuer, execution: MirrorGuardExecution) 
             !issuer.script_version.starts_with("emulated-"),
             "emulated guard cannot issue hosted proof"
         ),
-        MirrorGuardExecution::ControlledCandidate => ensure!(
+        MirrorGuardExecution::ControlledCandidate | MirrorGuardExecution::ControlledExternalFunctional => ensure!(
             issuer.script_version == format!("emulated-{}", issuer.source_digest),
             "controlled guard script differs from compiled source"
         ),

@@ -23,6 +23,7 @@ fn item(index: usize) -> MirrorGuardBatchItem {
         binding_resource_version: 8,
         placement_prefix: "managed".into(),
         protected_profile_digest: "22".repeat(32),
+        external_destination: None,
         verification: MirrorVerification::Sha256 {
             sha256: "33".repeat(32),
             size: 0,

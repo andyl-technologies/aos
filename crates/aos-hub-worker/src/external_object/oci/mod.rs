@@ -26,7 +26,7 @@ pub(crate) use runtime::{fetch, stage};
 mod tests;
 
 #[cfg(target_arch = "wasm32")]
-mod transport;
+pub(super) mod transport;
 
 #[cfg(target_arch = "wasm32")]
 mod projection;

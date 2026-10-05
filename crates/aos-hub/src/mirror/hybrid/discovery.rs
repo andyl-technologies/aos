@@ -63,6 +63,10 @@ impl<'a> MetadataDiscovery<'a> {
             url::Url::parse(upstream)?.scheme() == "https",
             "hybrid mirror source requires HTTPS"
         );
+        #[cfg(test)]
+        if let Some(upstream) = work.controlled_external_mirror_metadata(upstream)? {
+            return Ok(Self::from_upstream(db, work, registry, upstream));
+        }
         let upstream = crate::fetch::HttpFetch::new(upstream)
             .await
             .for_mirror_metadata();

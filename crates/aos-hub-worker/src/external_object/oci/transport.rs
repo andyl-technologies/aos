@@ -11,9 +11,23 @@ use futures_util::{future::{select, Either}, FutureExt as _};
 use worker::{Fetch, Request, Response, State};
 use crate::oci_projection::lifetime::Owner;
 
-pub(super) async fn fetch_owned<R: 'static>(
+pub(in crate::external_object) async fn fetch_owned<R: 'static>(
     state: &State,
     request: Request,
+    owner: Rc<Owner<R>>,
+    fresh: Rc<dyn Fn() -> Result<()>>,
+) -> Result<(Response, Option<Rc<crate::direct_digest::Reader>>)> {
+    response_owned(state, async move {
+        crate::direct_upload::provider_capacity::record_dispatch();
+        Fetch::Request(request).send().await
+    }, owner, fresh).await
+}
+
+/// Retains physical resources across an owned response promise and its reader.
+/// The caller owns dispatch accounting; a DO relay is not an SDK operation.
+pub(in crate::external_object) async fn response_owned<R: 'static>(
+    state: &State,
+    response: impl Future<Output = worker::Result<Response>> + 'static,
     owner: Rc<Owner<R>>,
     fresh: Rc<dyn Fn() -> Result<()>>,
 ) -> Result<(Response, Option<Rc<crate::direct_digest::Reader>>)> {
@@ -23,13 +37,14 @@ pub(super) async fn fetch_owned<R: 'static>(
         if let Err(error) = held.check_open().and_then(|_| dispatch()) {
             return Rc::new(RefCell::new(Some(Err(error))));
         }
-        crate::direct_upload::provider_capacity::record_dispatch();
-        let response = Fetch::Request(request).send().await;
+        let response = response.await;
         if held.check_open().is_err() {
             if let Ok(response) = response {
                 if let worker::ResponseBody::Stream(stream) = response.body() {
+                    let mut raw = super::byte_stream::UnhandedStream::new(stream.clone().into());
                     if let Ok(reader) = crate::direct_digest::Reader::new(stream.clone().into()) {
                         reader.cancel();
+                        raw.disarm();
                     }
                 }
             }
@@ -37,8 +52,15 @@ pub(super) async fn fetch_owned<R: 'static>(
         }
         let result = response.map_err(anyhow::Error::from).and_then(|response| {
             let reader = match response.body() {
-                worker::ResponseBody::Stream(stream) => Some(held.attach(
-                    crate::direct_digest::Reader::new(stream.clone().into())?)?),
+                worker::ResponseBody::Stream(stream) => {
+                    // If BYOB construction fails, the actual returned native
+                    // stream still receives a cancellation attempt before the
+                    // physical resources can be released.
+                    let mut raw = super::byte_stream::UnhandedStream::new(stream.clone().into());
+                    let reader = crate::direct_digest::Reader::new(stream.clone().into())?;
+                    raw.disarm();
+                    Some(held.attach(reader)?)
+                },
                 _ => None,
             };
             Ok((response, reader))
@@ -54,7 +76,7 @@ pub(super) async fn fetch_owned<R: 'static>(
     }, &|| { owner.check_open()?; fresh() }).await
 }
 
-pub(super) async fn bounded<T>(
+pub(in crate::external_object) async fn bounded<T>(
     work: impl Future<Output = Result<T>>,
     fresh: &dyn Fn() -> Result<()>,
 ) -> Result<T> {

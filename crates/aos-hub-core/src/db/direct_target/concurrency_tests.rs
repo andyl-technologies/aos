@@ -530,6 +530,7 @@ async fn mirror_reimport_preserves_direct_charge(db: &Database, object_id: i64) 
         binding_resource_version: binding.resource_version,
         placement_prefix: placement.prefix,
         protected_profile_digest: "3".repeat(64),
+        external_destination: None,
         verification: MirrorVerification::Sha256 {
             sha256: "d".repeat(64),
             size: 1,

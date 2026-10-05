@@ -7,7 +7,7 @@
 use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
 
-use super::{MirrorAcceptanceArtifact, MirrorAcceptanceExecution};
+use super::{MirrorAcceptanceArtifact, MirrorAcceptanceExecution, MirrorAcceptancePurpose};
 use crate::direct_upload::{valid_direct_digest, DirectProtectedProfile};
 use crate::mirror_work::{
     MirrorOriginal, MirrorProgress, MirrorVerification, MIRROR_MAX_OBJECT_BYTES,
@@ -27,6 +27,8 @@ pub enum MirrorSafetyCase {
     UnknownPromotion,
     /// Lost private cleanup response retains its unknown deletion.
     UnknownCleanup,
+    /// An exact committed External stage remains retained without Delete authority.
+    RetainedStageWithoutDelete,
     /// Positive part prefix replays without another mutation.
     PositivePrefixReplay,
     /// Lost Native acknowledgement replays the exact committed original.
@@ -35,7 +37,7 @@ pub enum MirrorSafetyCase {
     ArchivedAcknowledgement,
     /// Actual persistent runtime restart retains originals and unknown effects.
     Restart,
-    /// Changed managed profile or binding refuses dispatch.
+    /// Changed admitted profile or binding refuses dispatch.
     ChangedBinding,
     /// Changed upstream or source incarnation refuses publication.
     ChangedSource,
@@ -221,6 +223,11 @@ impl MirrorAcceptanceEvidence {
         for sample in &self.roundtrips {
             sample.original.validate()?;
             sample.progress.validate(&sample.original)?;
+            ensure!(
+                sample.original.external_destination.is_some()
+                    == (artifact.purpose == MirrorAcceptancePurpose::ExternalMirrorV1),
+                "mirror roundtrip executor differs from its accepted purpose"
+            );
             let final_object = sample
                 .progress
                 .destination
@@ -281,10 +288,8 @@ impl MirrorAcceptanceEvidence {
                 && workload.maximum_step_cpu_millis <= workload.installed_cpu_limit_millis,
             "mirror workload does not cover admitted size, capacity or Native byte boundary"
         );
-        if let Some(DirectProtectedProfile::Managed {
-            runtime_qualification,
-            ..
-        }) = &artifact.protected_profile
+        if let Some(DirectProtectedProfile::Managed { runtime_qualification, .. }
+            | DirectProtectedProfile::External { runtime_qualification, .. }) = &artifact.protected_profile
         {
             ensure!(
                 u64::from(workload.peak_provider_requests)
@@ -304,6 +309,25 @@ impl MirrorAcceptanceEvidence {
                     && valid_direct_digest(&measurement.observation_sha256),
                 "mirror safety measurement duplicates, fails or lacks evidence"
             );
+        }
+        // External mirrors keep the positive private stage when Delete is not
+        // qualified. Requiring a deletion experiment would invent a capability;
+        // accepting that retention as Managed cleanup would hide a requirement.
+        let external = artifact.purpose == MirrorAcceptancePurpose::ExternalMirrorV1;
+        ensure!(
+            !cases.contains(&if external { MirrorSafetyCase::UnknownCleanup }
+                else { MirrorSafetyCase::RetainedStageWithoutDelete }),
+            "mirror safety experiment belongs to another cleanup contract"
+        );
+        if artifact.execution == MirrorAcceptanceExecution::Hosted {
+            use MirrorSafetyCase::*;
+            let required: std::collections::BTreeSet<_> = [UnknownCreate, UnknownPart,
+                UnknownClose, UnknownPromotion,
+                if external { RetainedStageWithoutDelete } else { UnknownCleanup },
+                PositivePrefixReplay, LostNativeAcknowledgement, ArchivedAcknowledgement,
+                Restart, ChangedBinding, ChangedSource, NativeRevocation, ExpiredPlan,
+                PrivateNamespace, MetadataDuringBulk].into_iter().collect();
+            ensure!(cases == required, "hosted mirror safety experiments are incomplete");
         }
         ensure!(
             self.safety.len() <= 15,

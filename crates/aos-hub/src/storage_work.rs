@@ -65,6 +65,7 @@ mod live_metadata_batch_fixture;
 #[cfg(test)]
 mod mirror_candidate;
 mod mirror_guard;
+mod mirror_external;
 mod mirror_inspection;
 mod mirror_membership;
 mod oci_cleanup;
@@ -151,6 +152,8 @@ pub struct RemoteStorageWorkClient {
     oci_sdk_emulation: Option<crate::oci_sdk_emulation::NativeOciSdkEmulation>,
     #[cfg(test)]
     controlled_mirror: Option<mirror_candidate::ControlledMirrorAuthority>,
+    #[cfg(test)]
+    controlled_external_mirror: Option<mirror_external::controlled::FunctionalAuthority>,
     http: reqwest::Client,
     semantic_observation_http: reqwest::Client,
     in_flight: Semaphore,
@@ -217,6 +220,8 @@ impl RemoteStorageWorkClient {
             oci_sdk_emulation: None,
             #[cfg(test)]
             controlled_mirror: None,
+            #[cfg(test)]
+            controlled_external_mirror: None,
             http,
             semantic_observation_http: external_observation::http_client()?,
             in_flight: Semaphore::new(MAX_IN_FLIGHT_STORAGE_PLANS),

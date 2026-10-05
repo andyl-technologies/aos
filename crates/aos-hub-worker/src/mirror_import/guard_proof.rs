@@ -15,8 +15,30 @@ pub(crate) mod batch;
 
 pub(crate) const PHYSICAL_PATH: &str = "/mirror-final-guard";
 pub(crate) const CANDIDATE_PHYSICAL_PATH: &str = "/mirror-candidate-final-guard";
+pub(crate) const FUNCTIONAL_PHYSICAL_PATH: &str = "/external-mirror-functional-final-guard";
 
-fn key(env: &Env) -> Result<StorageWorkKey> {
+// Path selection is independent of the signed execution field. A caller cannot
+// send an emulator proof to the production endpoint or enable the fixture there.
+pub(crate) fn selected_execution(request: &Request, env: &Env, candidate: bool) -> Result<MirrorGuardExecution> {
+    let path = request.url()?.path().to_owned();
+    let functional = matches!(path.as_str(), MIRROR_EXTERNAL_FUNCTIONAL_GUARD_LOOKUP_PATH
+        | FUNCTIONAL_PHYSICAL_PATH
+        | aos_hub_core::mirror_guard::batch::MIRROR_EXTERNAL_FUNCTIONAL_GUARD_BATCH_LOOKUP_PATH
+        | batch::FUNCTIONAL_PHYSICAL_PATH);
+    if functional {
+        ensure!(!candidate && cfg!(feature = "do-e2e")
+            && env.var("HUB_EXTERNAL_MIRROR_FUNCTIONAL_PROBE")?.to_string() == "1",
+            "External functional guard unavailable in this execution");
+        Ok(MirrorGuardExecution::ControlledExternalFunctional)
+    } else if candidate {
+        ensure!(cfg!(feature = "do-e2e"), "Managed candidate guard unavailable in production");
+        Ok(MirrorGuardExecution::ControlledCandidate)
+    } else {
+        Ok(MirrorGuardExecution::Hosted)
+    }
+}
+
+pub(crate) fn key(env: &Env) -> Result<StorageWorkKey> {
     let secret = env.secret("HUB_MIRROR_GUARD_KEY")?.to_string();
     ensure!(
         secret != env.secret("HUB_STORAGE_WORK_KEY")?.to_string(),
@@ -28,10 +50,14 @@ fn key(env: &Env) -> Result<StorageWorkKey> {
             "mirror guard role must differ from candidate producer authority"
         );
     }
+    if let Ok(physical) = env.secret("HUB_EXTERNAL_OBJECT_GUARD_KEY") {
+        ensure!(secret != physical.to_string(),
+            "mirror readback role must differ from the physical mutation role");
+    }
     Ok(StorageWorkKey::new(secret)?)
 }
 
-fn issuer(env: &Env) -> Result<MirrorGuardIssuer> {
+pub(crate) fn issuer(env: &Env) -> Result<MirrorGuardIssuer> {
     let source = option_env!("AOS_HUB_WORKER_SOURCE_DIGEST")
         .filter(|source| aos_hub_core::direct_upload::valid_direct_digest(source))
         .ok_or_else(|| anyhow::anyhow!("compiled mirror guard identity absent"))?;
@@ -42,11 +68,11 @@ fn issuer(env: &Env) -> Result<MirrorGuardIssuer> {
 }
 
 /// Uses the installed bounded UTC projection without renewing dispatch approval.
-fn latest_now(env: &Env) -> Result<u64> {
+pub(crate) fn latest_now(env: &Env) -> Result<u64> {
     config::guard_latest_now(env)
 }
 
-async fn authenticate(
+pub(crate) async fn authenticate(
     request: &mut Request,
     env: &Env,
     candidate: bool,
@@ -78,11 +104,7 @@ async fn authenticate(
             == config::integer(env, "HUB_DIRECT_UPLOAD_CLOCK_UNCERTAINTY_SECONDS")?.get(),
         "mirror guard challenge changed independently selected clock uncertainty"
     );
-    let execution = if candidate {
-        MirrorGuardExecution::ControlledCandidate
-    } else {
-        MirrorGuardExecution::Hosted
-    };
+    let execution = selected_execution(request, env, candidate)?;
     ensure!(
         lookup.execution == execution && lookup.issuer == issuer(env)?,
         "mirror guard challenge selected another execution or implementation"
@@ -107,8 +129,7 @@ pub(crate) async fn fetch(
 
 async fn relay(request: &mut Request, env: &Env, candidate: bool) -> Result<Response> {
     let (lookup, body, signature) = authenticate(request, env, candidate).await?;
-    let full_key =
-        aos_hub_core::keymap::r2_key(&lookup.original.placement_prefix, &lookup.original.path);
+    let full_key = lookup.original.destination_key();
     let address = format!(
         "{}:{}",
         lookup.deployment_id,
@@ -117,23 +138,26 @@ async fn relay(request: &mut Request, env: &Env, candidate: bool) -> Result<Resp
     let headers = Headers::new();
     headers.set(MIRROR_GUARD_SIGNATURE_HEADER, &signature)?;
     headers.set("x-aos-hybrid-object-key", &full_key)?;
-    let path = if candidate {
-        CANDIDATE_PHYSICAL_PATH
-    } else {
-        PHYSICAL_PATH
+    let path = match lookup.execution {
+        MirrorGuardExecution::Hosted => PHYSICAL_PATH,
+        MirrorGuardExecution::ControlledCandidate => CANDIDATE_PHYSICAL_PATH,
+        MirrorGuardExecution::ControlledExternalFunctional => FUNCTIONAL_PHYSICAL_PATH,
     };
     let mut init = RequestInit::new();
     init.with_method(Method::Post)
         .with_headers(headers)
         .with_body(Some(js_sys::Uint8Array::from(body.as_slice()).into()));
     let internal = Request::new_with_init(&format!("https://physical-guard{path}"), &init)?;
+    let (binding, address) = if lookup.original.external_destination.is_some() {
+        ("EXTERNAL_OBJECT_GUARD", crate::external_object::mirror_guard_address(env, &lookup.original)?)
+    } else { ("HYBRID_OBJECT_GUARD", address) };
     let mut response = env
-        .durable_object("HYBRID_OBJECT_GUARD")?
+        .durable_object(binding)?
         .id_from_name(&address)?
         .get_stub()?
         .fetch_with_request(internal)
         .await?;
-    if !candidate {
+    if lookup.execution == MirrorGuardExecution::Hosted {
         crate::control_receipt::emit_forwarded_response(
             MIRROR_GUARD_LOOKUP_PATH,
             &body,

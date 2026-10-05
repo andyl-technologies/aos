@@ -47,6 +47,9 @@ pub use logical::*;
 pub use logical_refs::*;
 pub use managed_profile::*;
 pub use protected_profile::*;
+
+#[cfg(test)]
+pub(crate) use capabilities_wire::tests::mirror_prerequisite as mirror_test_prerequisite;
 pub use runtime_qualification::*;
 pub use selected_complete::*;
 pub use service::*;

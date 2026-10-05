@@ -88,6 +88,7 @@ pub(super) fn roundtrip(
         binding_resource_version: 1,
         placement_prefix: prefix.into(),
         protected_profile_digest: profile_digest.into(),
+        external_destination: None,
         verification,
     };
     original.job_id = original.identity().unwrap();
@@ -120,10 +121,13 @@ pub(super) fn roundtrip(
         upstream_etag: None,
         stage_upload_id: Some("stage-upload".into()),
         stage_parts: vec![part.clone()],
+        stage_closure: None,
+        stage_retention: None,
         stage_object: Some(object),
         verified: Some(verified),
         destination_upload_id: Some("final-upload".into()),
         destination_parts: vec![part],
+        destination_closure: None,
         destination: Some(destination),
     };
     MirrorRoundtripMeasurement {
@@ -171,6 +175,7 @@ pub(super) fn artifact() -> MirrorAcceptanceArtifact {
         protected_profile: Some(profile),
         candidate_profile: None,
         direct_evidence_sha256: Some("99".repeat(32)),
+        external_domain_sha256: None,
         geometry: MirrorProducerGeometry::current(),
         maximum_object_bytes: MIRROR_MAX_OBJECT_BYTES,
         issued_at: 100,

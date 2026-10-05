@@ -20,6 +20,7 @@ fn plan() -> StorageWorkPlan {
         binding_resource_version: 1,
         placement_prefix: format!(".aos-mirror-qualification/{}/final", "a".repeat(32)),
         protected_profile_digest: "3".repeat(64),
+        external_destination: None,
         verification: MirrorVerification::Sha256 {
             sha256: "1".repeat(64),
             size: 11,
