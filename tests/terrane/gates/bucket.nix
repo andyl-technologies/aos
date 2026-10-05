@@ -140,7 +140,19 @@ in {
     run_core_bucket_test bucket::keys::tests::publication_payload_keys_preserve_mutability_and_control_separation
     printf 'PASS: bucket-key-registry native layout and pure protected-key conformance\n' > "$out/result"
   '';
-  bucket-file-layout = gate "bucket-file-layout" ["selection_tests::nested_ref_names_coexist_without_changing_refname_grammar" "version_tests::v2_migrated_numbered_log_coexists_with_a_numeric_descendant_ref" "version_tests::v2_registered_ref_classes_preserve_public_names_and_reopen" "content_tests::portable_copy_reopens_as_the_same_bucket_layout"];
+  bucket-file-layout = gate "bucket-file-layout" [
+    "selection_tests::nested_ref_names_coexist_without_changing_refname_grammar"
+    "version_tests::v2_migrated_numbered_log_coexists_with_a_numeric_descendant_ref"
+    "version_tests::v2_registered_ref_classes_preserve_public_names_and_reopen"
+    "content_tests::portable_copy_reopens_as_the_same_bucket_layout"
+    "copy_tests::portable_copy_resolves_exact_projection_and_selected_log_closure"
+    "copy_tests::portable_copy_preserves_absent_ref_history_and_recreation"
+    "copy_tests::portable_copy_requires_genuine_destination_registration"
+    "copy_tests::portable_copy_preserves_burn_visibility_without_old_artifacts"
+    "copy_tests::portable_copy_recovers_exact_pending_activation_at_every_boundary"
+    "copy_tests::portable_copy_after_interrupted_source_projection_uses_selected_pointer"
+    "copy_tests::portable_copy_cancellation_keeps_actual_activation_exclusion"
+  ];
   bucket-file-atomic-write = sourceGate "bucket-file-atomic-write" ''
     cd crates
     ${focusedTests}

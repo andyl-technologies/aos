@@ -161,6 +161,14 @@ Authoritative gate qualification remains pending. Retirement/restore and
 destination copy activation still need complete production implementations;
 the raw retirement-association and existing-registration refusals stay intact.
 
+D-108 closes the copied-destination Pending recovery locator gap using an
+additive protected staging key and the existing commit encoding. Its shared
+key-separation witness passes the hermetic `bucket-key-registry` gate and
+both mandatory formatters. The `bucket-file-layout` gate retains its four
+original cases and now requires seven additional complete copy, history,
+registration, burn, recovery and cancellation witnesses. Missing witnesses
+fail explicitly; implementation and full qualification remain pending.
+
 The preceding completed full qualification records candidate
 `15540ef204ec`, which combines reviewed source discovery, immutable lookup,
 repeatable I/P/G maintenance, separate verifier/preparation work, common Memo
