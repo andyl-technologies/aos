@@ -1175,11 +1175,14 @@ signed, and existing output paths are never replaced.
 ### Close and sign the bundle
 
 Before closing the bundle, prepare a reviewed canonical advisory disposition.
-It binds the exact plan and SBOM, identifies each public advisory snapshot used
-for review, and must contain no unresolved release blockers. The disposition
-feeds the `build-integrity` observation that every profile requires, `build`
-included, so a bundle with unresolved advisories cannot reach any destination,
-staging or production:
+It binds the exact plan and SBOM and identifies each public advisory snapshot
+used for review. The disposition feeds the `build-integrity` observation that
+every profile requires, `build` included. The registry tier decides what an
+unresolved advisory means: a production-tier plan (`andyl/main`) requires an
+empty `unresolved_advisories` list, so its bundle cannot reach any
+destination with an advisory open. A testing-tier plan (`andyl/experimental`
+and its epochs) accepts listed unresolved advisories, and the
+`sbom-and-advisory-dispositions` observation states how many remain:
 
 ```json
 {"authority_id":"release-security-review","plan_digest":"sha256:...","reviewed_at":"2026-09-03T13:30:00Z","sbom_digest":"sha256:...","schema_version":"aos.release.advisory-disposition/v1","sources":[{"name":"osv","snapshot":"sha256:..."}],"unresolved_advisories":[]}
