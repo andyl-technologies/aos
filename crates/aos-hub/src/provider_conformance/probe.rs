@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use aos_hub_core::{
     direct_upload::{DirectChecksumAlgorithm, DirectPart, DirectPartChecksum, WireInteger},
     s3surface::{self, Method},
@@ -14,7 +14,7 @@ use md5::{Digest as _, Md5};
 
 use super::{
     config::Loaded,
-    journal::{digest, write_new, Journal},
+    journal::{Journal, digest, write_new},
     model::{Intent, ObjectReceipt, Original, PartReceipt, Phase, Report, ResultKind},
     transport::{self, Request, Response},
 };

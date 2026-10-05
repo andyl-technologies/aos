@@ -21,8 +21,8 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use anyhow::{ensure, Context as _, Result};
-use serde_json::{json, Value};
+use anyhow::{Context as _, Result, ensure};
+use serde_json::{Value, json};
 
 use super::journal::{digest, read, write_new};
 use super::model::{Intent, Observation, Phase, Report, ResponseCommitment, ResultKind};
@@ -232,13 +232,8 @@ fn validate(report: &Report, journal: &Path) -> Result<u64> {
         );
         expected_observations += 1;
     }
-    let conditional = phase_observations(
-        report,
-        Phase::RejectWrongConditionalRange,
-        1,
-        false,
-        &[412],
-    )?;
+    let conditional =
+        phase_observations(report, Phase::RejectWrongConditionalRange, 1, false, &[412])?;
     let observed = conditional[0];
     // None records an absent provider code, never a synthesized XML error.
     ensure!(

@@ -1,6 +1,6 @@
 //! Bounded operator HTTPS dispatch with durable originals and value-free errors.
 
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use sha2::{Digest as _, Sha256};
 
 use super::{

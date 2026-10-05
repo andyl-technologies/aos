@@ -6,11 +6,11 @@ use std::{
 };
 
 use axum::{
+    Router,
     body::{Body, Bytes},
     extract::{Request, State},
     response::Response,
     routing::any,
-    Router,
 };
 use base64::Engine as _;
 use md5::{Digest as _, Md5};
@@ -422,10 +422,12 @@ async fn actual_tls_pipeline_retains_closed_observations_without_authorizing_a_p
         Phase::ProviderCopyPart,
         Phase::SourceFinalRead,
     ] {
-        assert!(report
-            .observations
-            .iter()
-            .any(|observation| observation.phase == phase));
+        assert!(
+            report
+                .observations
+                .iter()
+                .any(|observation| observation.phase == phase)
+        );
     }
     let json = std::str::from_utf8(&bytes).unwrap();
     for forbidden in [
@@ -506,10 +508,16 @@ fn empty_conditional_denial_is_phase_specific_and_requires_exact_consumed_bytes(
         content_range: None,
     };
 
-    assert_eq!(super::transport::conditional_range_denied(&empty()).unwrap(), None);
+    assert_eq!(
+        super::transport::conditional_range_denied(&empty()).unwrap(),
+        None
+    );
     let mut no_length = empty();
     no_length.content_length = None;
-    assert_eq!(super::transport::conditional_range_denied(&no_length).unwrap(), None);
+    assert_eq!(
+        super::transport::conditional_range_denied(&no_length).unwrap(),
+        None
+    );
 
     for status in [200, 206, 404, 500, 503] {
         let mut changed = empty();
@@ -557,9 +565,11 @@ async fn actual_empty_412_retains_no_error_code_and_projects_only_the_same_sourc
     let journal = root.join("journal");
     let original_report = std::fs::read(&report_file).unwrap();
     let report: Report = serde_json::from_slice(&original_report).unwrap();
-    let index = report.observations.iter().position(|value| {
-        value.phase == Phase::RejectWrongConditionalRange
-    }).unwrap();
+    let index = report
+        .observations
+        .iter()
+        .position(|value| value.phase == Phase::RejectWrongConditionalRange)
+        .unwrap();
     let observation = &report.observations[index];
     assert_eq!(observation.status, 412);
     assert_eq!(observation.response_bytes, 0);
@@ -599,9 +609,14 @@ async fn actual_empty_412_retains_no_error_code_and_projects_only_the_same_sourc
         write(&observation_file, &serde_json::to_vec(observation).unwrap());
         write(&response_file, &serde_json::to_vec(&received).unwrap());
         write(&report_file, &serde_json::to_vec(&changed).unwrap());
-        assert!(super::export_provider_copy_contract(
-            &report_file, &journal, &root.join(format!("invalid-{field}.json"))
-        ).is_err());
+        assert!(
+            super::export_provider_copy_contract(
+                &report_file,
+                &journal,
+                &root.join(format!("invalid-{field}.json"))
+            )
+            .is_err()
+        );
     }
     write(&observation_file, &original_observation);
     write(&response_file, &original_response);
@@ -617,45 +632,72 @@ async fn actual_empty_412_retains_no_error_code_and_projects_only_the_same_sourc
             _ => unreachable!(),
         }
         write(&intent_file, &serde_json::to_vec(&intent).unwrap());
-        assert!(super::export_provider_copy_contract(
-            &report_file, &journal, &root.join(format!("invalid-{field}.json"))
-        ).is_err());
+        assert!(
+            super::export_provider_copy_contract(
+                &report_file,
+                &journal,
+                &root.join(format!("invalid-{field}.json"))
+            )
+            .is_err()
+        );
     }
     write(&intent_file, &original_intent);
 
-    let head_index = report.observations.iter().position(|value| value.phase == Phase::SourceHead).unwrap();
+    let head_index = report
+        .observations
+        .iter()
+        .position(|value| value.phase == Phase::SourceHead)
+        .unwrap();
     let mut changed: Report = serde_json::from_slice(&original_report).unwrap();
     changed.observations[head_index].etag = Some("\"different-source\"".into());
-    write(&journal.join(format!("{head_index:03}.observation.json")),
-        &serde_json::to_vec(&changed.observations[head_index]).unwrap());
+    write(
+        &journal.join(format!("{head_index:03}.observation.json")),
+        &serde_json::to_vec(&changed.observations[head_index]).unwrap(),
+    );
     write(&report_file, &serde_json::to_vec(&changed).unwrap());
-    assert!(super::export_provider_copy_contract(
-        &report_file, &journal, &root.join("invalid-head.json")
-    ).is_err());
+    assert!(
+        super::export_provider_copy_contract(
+            &report_file,
+            &journal,
+            &root.join("invalid-head.json")
+        )
+        .is_err()
+    );
     assert_eq!(fixture.state.lock().unwrap().requests, before);
 }
 
 #[tokio::test]
 async fn empty_late_part_service_failure_and_incomplete_412_remain_unknown() {
-    for fault in [Fault::EmptyLatePart, Fault::ConditionalServiceFailure, Fault::IncompleteConditional] {
+    for fault in [
+        Fault::EmptyLatePart,
+        Fault::ConditionalServiceFailure,
+        Fault::IncompleteConditional,
+    ] {
         let fixture = Fixture::new(fault).await;
         assert!(fixture.run().await.is_err());
         assert!(!fixture.directory.path().join("report.json").exists());
         let journal = fixture.directory.path().join("journal");
-        let status: serde_json::Value = serde_json::from_str(
-            &provider_conformance_status(&journal).unwrap()
-        ).unwrap();
+        let status: serde_json::Value =
+            serde_json::from_str(&provider_conformance_status(&journal).unwrap()).unwrap();
         assert_eq!(status["unknown_operation_ids"].as_array().unwrap().len(), 1);
         let index = status["observations"].as_array().unwrap().len();
         let intent: super::model::Intent = serde_json::from_slice(
-            &std::fs::read(journal.join(format!("{index:03}.intent.json"))).unwrap()
-        ).unwrap();
-        assert!(intent.phase == if fault == Fault::EmptyLatePart {
-            Phase::LatePartAfterComplete
-        } else {
-            Phase::RejectWrongConditionalRange
-        });
-        assert!(!journal.join(format!("{index:03}.observation.json")).exists());
+            &std::fs::read(journal.join(format!("{index:03}.intent.json"))).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            intent.phase
+                == if fault == Fault::EmptyLatePart {
+                    Phase::LatePartAfterComplete
+                } else {
+                    Phase::RejectWrongConditionalRange
+                }
+        );
+        assert!(
+            !journal
+                .join(format!("{index:03}.observation.json"))
+                .exists()
+        );
     }
 }
 
@@ -715,12 +757,14 @@ async fn versionless_copy_contract_projects_only_complete_actual_tls_journal() {
         .observations
         .retain(|value| value.phase != Phase::RejectWrongConditionalRange);
     write(&report, &serde_json::to_vec(&changed).unwrap());
-    assert!(super::export_provider_copy_contract(
-        &report,
-        &journal,
-        &root.join("missing-negative.json")
-    )
-    .is_err());
+    assert!(
+        super::export_provider_copy_contract(
+            &report,
+            &journal,
+            &root.join("missing-negative.json")
+        )
+        .is_err()
+    );
     write(&report, &original);
 
     // A larger declared range cannot be inferred from multipart writer geometry.
@@ -735,23 +779,23 @@ async fn versionless_copy_contract_projects_only_complete_actual_tls_journal() {
     let mut intent: super::model::Intent = serde_json::from_slice(&intent_bytes).unwrap();
     intent.size += 1;
     write(&intent_file, &serde_json::to_vec(&intent).unwrap());
-    assert!(super::export_provider_copy_contract(
-        &report,
-        &journal,
-        &root.join("unobserved-range.json")
-    )
-    .is_err());
+    assert!(
+        super::export_provider_copy_contract(
+            &report,
+            &journal,
+            &root.join("unobserved-range.json")
+        )
+        .is_err()
+    );
     write(&intent_file, &intent_bytes);
 
     let mut changed: Report = serde_json::from_slice(&original).unwrap();
     changed.source.size += 1;
     write(&report, &serde_json::to_vec(&changed).unwrap());
-    assert!(super::export_provider_copy_contract(
-        &report,
-        &journal,
-        &root.join("wrong-content.json")
-    )
-    .is_err());
+    assert!(
+        super::export_provider_copy_contract(&report, &journal, &root.join("wrong-content.json"))
+            .is_err()
+    );
     assert_eq!(fixture.state.lock().unwrap().requests, before);
 }
 
@@ -783,9 +827,11 @@ async fn lost_complete_reply_retains_original_forever_and_status_never_replays()
             .join(format!("journal/{pending:03}.intent.json")),
     )
     .unwrap();
-    assert!(std::str::from_utf8(&original)
-        .unwrap()
-        .contains("complete_source"));
+    assert!(
+        std::str::from_utf8(&original)
+            .unwrap()
+            .contains("complete_source")
+    );
     assert!(!std::str::from_utf8(&original).unwrap().contains("X-Amz-"));
 }
 
