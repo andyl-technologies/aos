@@ -336,7 +336,7 @@ in {
                   f"test \"$({SYSTEMCTL} show --property=Result --value {unit})\" = success "
                   f"&& ! {SYSTEMCTL} is-active --quiet {unit}", timeout=1200,
               )
-          runtime.wait_until_succeeds(f"{CURL} --fail --silent http://127.0.0.1:18080/health | {pkgs.grep}/bin/grep -Fx {shlex.quote(response)}", timeout=300)
+          runtime.wait_until_succeeds(f"{CURL} --fail --silent http://127.0.0.1:18080/health | ${pkgs.grep}/bin/grep -Fx {shlex.quote(response)}", timeout=300)
           after = inspection()
           retain_recovery(sequence, held, resumed, before, after, previous_response, response)
           runtime.succeed(f"{COREUTILS}/rm -f {TARGET}")
