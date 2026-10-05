@@ -13,6 +13,13 @@ use crate::{
     SchedulerCeiling,
 };
 
+#[cfg(test)]
+thread_local! {
+    // Models an intervening consumer between the empty preflight and admission.
+    pub(super) static PREFLIGHT_CONSUMER: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 struct PreemptionEnqueueGuard<'a>(&'a AtomicBool);
 
 impl Drop for PreemptionEnqueueGuard<'_> {
@@ -91,7 +98,7 @@ impl LiveVcpuTimeCallbackState {
             // owner and its still-pending mailbox command untouched.
             return Ok(raw_ceiling);
         }
-        let Some(published) = self
+        let Some(_published) = self
             .slot
             .get()
             .pending_preemption_command()
@@ -102,6 +109,10 @@ impl LiveVcpuTimeCallbackState {
             // the next query; it needs no enqueue ownership or atomic RMW.
             return Ok(raw_ceiling);
         };
+        #[cfg(test)]
+        if let Some(consume) = PREFLIGHT_CONSUMER.with_borrow_mut(Option::take) {
+            consume();
+        }
         if self
             .preemption_enqueue_active
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -113,6 +124,17 @@ impl LiveVcpuTimeCallbackState {
             return Ok(raw_ceiling);
         }
         let _guard = PreemptionEnqueueGuard(&self.preemption_enqueue_active);
+        // The preflight snapshot does not belong to this enqueue owner. An
+        // intervening query may consume it before our CAS succeeds, so reload
+        // under ownership instead of injecting a stale command.
+        let Some(published) = self
+            .slot
+            .get()
+            .pending_preemption_command()
+            .map_err(|source| LiveVcpuTimeCallbackError::PreemptionMailbox { source })?
+        else {
+            return Ok(raw_ceiling);
+        };
         let command = published.command;
         if command.ceiling_tick > effective_ceiling {
             // The mailbox is published before the RUN that owns it. Keep the
