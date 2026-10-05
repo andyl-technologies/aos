@@ -88,7 +88,7 @@ pub(super) async fn sign<T: Serialize>(
         payload_digest: Sha256Digest::of_bytes(digest.as_bytes()),
         approval_policy_digest: scope.approval_policy_digest,
     };
-    let signer = ExternalSigner::new(config.signer.executable.clone(), config.signer.timeout())?;
+    let signer = ExternalSigner::configured(&config.signer)?;
     let response = signer
         .sign_ed25519_payload(
             &request,
