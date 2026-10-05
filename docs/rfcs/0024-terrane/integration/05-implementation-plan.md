@@ -1170,6 +1170,24 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   authority checks, completed index owner maintenance/publication and DRV-19
   root-associated collection remain incomplete. No formal task merge, checkbox
   or freeze advances.
+  A source audit confirms that ordinary maintenance emits the selected
+  `index-roots` wrapper and a binding transition without constructing the
+  property-mutated owner. DRV-25/26 require the acyclic construction step:
+  independently check selected I/P/G data against candidate entries, preserve
+  unrelated owner properties and bindings while producing owner R, then form
+  detached Q/q and optional unchanged common Memo records from R. Selected
+  immutable associations do not establish current coverage or publication;
+  missing inline values remain gaps, and retained maintenance snapshots remain
+  bound to their original source until separately prepared for R. Shared
+  `checks.terrane.integration.index-completion` now declares five exact groups
+  for initial binding, preservation, divergent binding replacement, refusal
+  and post-binding common Memo/work separation. The requested declaration
+  check exits 1 with zero selected tests. Registry completeness, core no-std,
+  application target compilation and both mandatory formatters pass; the
+  four declared file images match all three actual compilation/check inputs.
+  These results qualify shared declarations only. Full verification, property
+  mutation, arena allocation and graph copying must remain separate from
+  DRV-29's incremental accounting. No task checkbox or milestone advances.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
   codec, value-plus-object opaque keys and D-104's contextual primary/gap/route

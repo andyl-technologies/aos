@@ -3,6 +3,9 @@
 pub mod carrier;
 pub mod evaluation;
 
+/// Constructs owner-local index bindings before forming detached recipes.
+pub mod completion;
+
 /// Queries immutable index rows and local occurrence routes with measured work.
 pub mod lookup;
 

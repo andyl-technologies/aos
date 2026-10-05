@@ -201,6 +201,7 @@ in {
   integration.attribute-reference-models = import ./attribute-models.nix {inherit sourceGate;};
   integration.index-format = import ./index-format.nix {inherit sourceGate;};
   integration.index-evaluation = import ./index-evaluation.nix {inherit sourceGate;};
+  integration.index-completion = import ./index-completion.nix {inherit sourceGate;};
   integration.index-query = import ./index-query.nix {inherit sourceGate;};
   integration.memo-format = import ./memo-format.nix {inherit sourceGate;};
   integration.memo-evaluation = import ./memo-evaluation.nix {inherit sourceGate;};
