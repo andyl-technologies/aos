@@ -1697,6 +1697,7 @@ in
                   "control-observer", "control-delivery",
                   "stopped-control-rearm", "template-control-drain", "net-stop-chain",
                   "aio-fork-custody", "stop-context",
+                  "tcg-fast-paths",
               ):
                   with (source_root / f"{name}.result").open("w") as result:
                       subprocess.run([
@@ -1710,6 +1711,8 @@ in
                 control-deferred.result control-observer.result control-delivery.result \
                 stopped-control-rearm.result template-control-drain.result net-stop-chain.result \
                 aio-fork-custody.result stop-context.result
+              cat tcg-fast-paths.result
+              grep -q '^PASS production TCG fast paths:' tcg-fast-paths.result
               grep -Fxq 'PASS production TX/stop/clock/RR: batches, race, completion settlement, paused ack, explicit retry' \
                 net-output-stop.result
               grep -Fxq 'PASS lifecycle production encode/rebind: full save retained, canonical custody independence, guest frontier sensitivity, invalid rebind refusal' \
@@ -4253,7 +4256,8 @@ in
                 "$out/share/aos/crucible/procfd-flags.compile-command.json"
               for name in net-output-stop lifecycle-projection control-deferred \
                 control-observer control-delivery stopped-control-rearm \
-                template-control-drain net-stop-chain aio-fork-custody stop-context; do
+                template-control-drain net-stop-chain aio-fork-custody stop-context \
+                tcg-fast-paths; do
                 install -m 644 "$name.result" \
                   "$out/share/aos/crucible/$name.result"
                 install -m 644 "$name-proof/compile-command.json" \

@@ -215,6 +215,7 @@ in rec {
     qemuDiagnosticPatchesDevOnly = import ./phase1-qemu-diagnostic-patches-dev-only.nix {inherit pkgs lib;};
     qemuSimCorrectness = import ./phase1-qemu-sim-correctness.nix {inherit pkgs lib;};
     qemuSimBatchTcgExec = import ./phase1-qemu-sim-batch-tcg-exec.nix {inherit pkgs lib;};
+    qemuTcgFastPaths = import ./phase1-qemu-tcg-fast-paths.nix {inherit pkgs;};
     qemuBlockShmem = import ./phase1-qemu-block-shmem.nix {inherit pkgs lib;};
     qemuNinePShmem = import ./phase1-qemu-9p-shmem.nix {inherit pkgs lib;};
     qmpCommand = import ./qmp-command.nix {inherit pkgs;};

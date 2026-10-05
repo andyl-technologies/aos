@@ -1,4 +1,4 @@
-From 39a0e603dd25905ada9f87276485375f9836b70c Mon Sep 17 00:00:00 2001
+From 435646d8fa5b6b25ce2c46de2e1e737dc4d229f8 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Sat, 3 Oct 2026 07:08:17 +0000
 Subject: [PATCH] Integrate deterministic execution and private fork I/O
@@ -30,6 +30,12 @@ publication to the existing paused owner. Preserve the original request
 counters, stop-clearing rearm, flush and callback ownership checks.
 Exercise reader-before-publication and reader-after-publication ordering,
 no-request behavior, and nested next-generation exactly-once completion.
+
+Avoid empty fault-queue mutex and clock work with an atomically published
+pending count, retaining lifecycle and custom deadlines. Observe instruction
+completion icount only after finding an active execution context. Exercise
+production queue transitions, restored counts, cross-thread publication,
+active completion/exception semantics, and causal negative controls.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -501,7 +507,7 @@ index 44e84344f3b37897c2158aa055b58f33f5f82d43..2b719a55b62e84fc57dee93bb91ab18c
      return cflags;
  }
 diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
-index 257211235dbb94d6d9cce1862126bc248c399f17..6f128868307771540d4e01321f968c4ac0df2f62 100644
+index 257211235dbb94d6d9cce1862126bc248c399f17..0dcae4f6a1cfc8dc14e03436b9d665e812531694 100644
 --- a/accel/tcg/cpu-exec.c
 +++ b/accel/tcg/cpu-exec.c
 @@ -18,6 +18,7 @@
@@ -564,7 +570,7 @@ index 257211235dbb94d6d9cce1862126bc248c399f17..6f128868307771540d4e01321f968c4a
      /* Non-buggy compilers preserve this; assert the correct value. */
      g_assert(cpu == current_cpu);
 +    qemu_crucible_fault_instruction_execution_complete(
-+        cpu, qemu_crucible_fault_observed_icount(), true);
++        cpu, true);
 +    qemu_crucible_fault_register_execution_complete(cpu);
 +    qemu_crucible_fault_memory_fetch_stage_discard(cpu);
  
@@ -660,7 +666,7 @@ index 257211235dbb94d6d9cce1862126bc248c399f17..6f128868307771540d4e01321f968c4a
 +            trace_exec_tb(tb, s.pc);
 +            cpu_tb_exec(cpu, tb, &tb_exit);
 +            qemu_crucible_fault_instruction_execution_complete(
-+                cpu, qemu_crucible_fault_observed_icount(), false);
++                cpu, false);
 +            qemu_crucible_fault_register_execution_complete(cpu);
 +            cpu_exec_exit(cpu);
 +        }
@@ -685,7 +691,7 @@ index 257211235dbb94d6d9cce1862126bc248c399f17..6f128868307771540d4e01321f968c4a
 +    qemu_crucible_fault_instruction_execution_begin(cpu, pc);
      tb = cpu_tb_exec(cpu, tb, tb_exit);
 +    qemu_crucible_fault_instruction_execution_complete(
-+        cpu, qemu_crucible_fault_observed_icount(), false);
++        cpu, false);
 +    qemu_crucible_fault_register_execution_complete(cpu);
 +    if (unlikely(fault_boundary)) {
 +        qatomic_set_mb(&cpu->exit_request, 1);
@@ -60527,7 +60533,7 @@ index 1c31de60f9406a93f04dcc04f435a40596c4cef4..9bf1523320ff6c7a4635eb0b11faa4fd
   */
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..d0d220265a2b6901b4363ae49e18e3ce074f0ae0
+index 0000000000000000000000000000000000000000..3443f40be65faca01be5fff8c83b84ed21266803
 --- /dev/null
 +++ b/include/qemu/crucible-fault.h
 @@ -0,0 +1,813 @@
@@ -60913,7 +60919,7 @@ index 0000000000000000000000000000000000000000..d0d220265a2b6901b4363ae49e18e3ce
 +void qemu_crucible_fault_instruction_execution_begin(
 +    CPUState *cpu, uint64_t pc);
 +void qemu_crucible_fault_instruction_execution_complete(
-+    CPUState *cpu, uint64_t observed_icount, bool exceptional);
++    CPUState *cpu, bool exceptional);
 +void qemu_crucible_fault_instruction_port_io(
 +    CPUState *cpu, bool is_write, uint32_t port, const uint8_t *value,
 +    uint8_t size, bool completed);
@@ -87601,10 +87607,10 @@ index 0000000000000000000000000000000000000000..165f4fb9345c1c9661721e7d2a259889
 +}
 diff --git a/plugins/crucible-fault-instruction.c b/plugins/crucible-fault-instruction.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..9bf4ab1eb74cc812c9a20d521d839aad32c0ecdb
+index 0000000000000000000000000000000000000000..6cc81eafbf3ae3373d183d0429abac88e4f9acad
 --- /dev/null
 +++ b/plugins/crucible-fault-instruction.c
-@@ -0,0 +1,3303 @@
+@@ -0,0 +1,3305 @@
 +/*
 + * Crucible architecture instruction faults
 + *
@@ -89893,11 +89899,12 @@ index 0000000000000000000000000000000000000000..9bf4ab1eb74cc812c9a20d521d839aad
 +}
 +
 +void qemu_crucible_fault_instruction_execution_complete(
-+    CPUState *cpu, uint64_t observed_icount, bool exceptional)
++    CPUState *cpu, bool exceptional)
 +{
 +    CrucibleInstructionContext *context =
 +        crucible_instruction_context(cpu, false);
 +    CrucibleInstructionState after = { 0 };
++    uint64_t observed_icount;
 +    g_autoptr(GByteArray) port_io_evidence = NULL;
 +
 +    if (crucible_instruction_event_terminal_latched) {
@@ -89909,6 +89916,7 @@ index 0000000000000000000000000000000000000000..9bf4ab1eb74cc812c9a20d521d839aad
 +    if (!context || !context->executing || !context->rule) {
 +        return;
 +    }
++    observed_icount = qemu_crucible_fault_observed_icount();
 +    context->executing = false;
 +    if (context->contributors && exceptional) {
 +        /* Result faults select only instructions that commit a result. */
@@ -114775,10 +114783,10 @@ index 0000000000000000000000000000000000000000..d035f6c68a7d8e4bff25b4d76130f01f
 +}
 diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..c232cb93777acd760b6fac2b298648132c98ea05
+index 0000000000000000000000000000000000000000..69dba27cb08fa26f74d985c06994aef4896f052c
 --- /dev/null
 +++ b/plugins/crucible-fault.c
-@@ -0,0 +1,1625 @@
+@@ -0,0 +1,1645 @@
 +/*
 + * Crucible deterministic fault command registry and dispatcher
 + *
@@ -114792,6 +114800,7 @@ index 0000000000000000000000000000000000000000..c232cb93777acd760b6fac2b29864813
 +#include "exec/icount.h"
 +#include "exec/tb-flush.h"
 +#include "hw/core/cpu.h"
++#include "qemu/atomic.h"
 +#include "qemu/crucible-fault.h"
 +#include "qemu/error-report.h"
 +#include "qemu/module.h"
@@ -114840,6 +114849,11 @@ index 0000000000000000000000000000000000000000..c232cb93777acd760b6fac2b29864813
 +    QTAILQ_HEAD_INITIALIZER(crucible_pending_faults);
 +static QTAILQ_HEAD(, CrucibleCompletedFault) crucible_completed_faults =
 +    QTAILQ_HEAD_INITIALIZER(crucible_completed_faults);
++/*
++ * A zero load linearizes an empty query before a concurrent submission
++ * publishes its count. An acknowledged submission happens before subsequent
++ * queries; nonzero queries still take the lock before inspecting the queue.
++ */
 +static size_t crucible_pending_count;
 +static size_t crucible_completed_count;
 +static size_t crucible_deferred_count;
@@ -115489,7 +115503,7 @@ index 0000000000000000000000000000000000000000..c232cb93777acd760b6fac2b29864813
 +    if (payload_len > handler->capability.maximum_payload_bytes ||
 +        crucible_fault_handler_pending_count(handler) >=
 +            handler->capability.maximum_pending_commands ||
-+        crucible_pending_count + crucible_deferred_count +
++        qatomic_read(&crucible_pending_count) + crucible_deferred_count +
 +                crucible_completed_count >=
 +            CRUCIBLE_FAULT_RESULT_QUEUE_CAPACITY) {
 +        return crucible_fault_complete_rejected_submit(
@@ -115536,7 +115550,7 @@ index 0000000000000000000000000000000000000000..c232cb93777acd760b6fac2b29864813
 +        }
 +    }
 +    crucible_fault_insert_pending(pending);
-+    crucible_pending_count++;
++    qatomic_inc(&crucible_pending_count);
 +    g_mutex_unlock(&crucible_fault_lock);
 +    return 0;
 +}
@@ -115549,7 +115563,7 @@ index 0000000000000000000000000000000000000000..c232cb93777acd760b6fac2b29864813
 +    QTAILQ_FOREACH(pending, &crucible_pending_faults, link) {
 +        if (pending->command.command_sequence == command_sequence) {
 +            QTAILQ_REMOVE(&crucible_pending_faults, pending, link);
-+            crucible_pending_count--;
++            qatomic_dec(&crucible_pending_count);
 +            if (pending->handler->free_state) {
 +                pending->handler->free_state(pending->handler_state);
 +            }
@@ -115615,7 +115629,7 @@ index 0000000000000000000000000000000000000000..c232cb93777acd760b6fac2b29864813
 +            break;
 +        }
 +        QTAILQ_REMOVE(&crucible_pending_faults, pending, link);
-+        crucible_pending_count--;
++        qatomic_dec(&crucible_pending_count);
 +        g_mutex_unlock(&crucible_fault_lock);
 +        result_payload = g_byte_array_new();
 +        memset(&result, 0, sizeof(result));
@@ -115729,8 +115743,12 @@ index 0000000000000000000000000000000000000000..c232cb93777acd760b6fac2b29864813
 +{
 +    CruciblePendingFault *pending;
 +    bool found = false;
-+    int64_t observed_tick = qemu_plugin_sim_tick_observed();
++    int64_t observed_tick;
 +
++    if (!qatomic_load_acquire(&crucible_pending_count)) {
++        return false;
++    }
++    observed_tick = qemu_plugin_sim_tick_observed();
 +    if (observed_tick < 0 || qemu_plugin_icount_raw() != icount) {
 +        return false;
 +    }
@@ -115751,10 +115769,15 @@ index 0000000000000000000000000000000000000000..c232cb93777acd760b6fac2b29864813
 +{
 +    CruciblePendingFault *pending;
 +    uint64_t next_tick = UINT64_MAX;
-+    uint64_t raw_now = qemu_plugin_icount_raw();
++    uint64_t raw_now;
 +    uint64_t remaining_instructions;
-+    int64_t observed_tick = qemu_plugin_sim_tick_observed();
++    int64_t observed_tick;
 +
++    if (!qatomic_load_acquire(&crucible_pending_count)) {
++        return UINT64_MAX;
++    }
++    raw_now = qemu_plugin_icount_raw();
++    observed_tick = qemu_plugin_sim_tick_observed();
 +    if (observed_tick < 0) {
 +        return UINT64_MAX;
 +    }
@@ -115784,13 +115807,15 @@ index 0000000000000000000000000000000000000000..c232cb93777acd760b6fac2b29864813
 +    uint64_t next = UINT64_MAX;
 +    CruciblePendingFault *pending;
 +
-+    g_mutex_lock(&crucible_fault_lock);
-+    QTAILQ_FOREACH(pending, &crucible_pending_faults, link) {
-+        if (pending->command.phase == phase) {
-+            next = MIN(next, pending->command.target_tick);
++    if (qatomic_load_acquire(&crucible_pending_count)) {
++        g_mutex_lock(&crucible_fault_lock);
++        QTAILQ_FOREACH(pending, &crucible_pending_faults, link) {
++            if (pending->command.phase == phase) {
++                next = MIN(next, pending->command.target_tick);
++            }
 +        }
++        g_mutex_unlock(&crucible_fault_lock);
 +    }
-+    g_mutex_unlock(&crucible_fault_lock);
 +
 +    if (phase == CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY &&
 +        qemu_crucible_fault_lifecycle_downtime_pending()) {
@@ -116042,7 +116067,8 @@ index 0000000000000000000000000000000000000000..c232cb93777acd760b6fac2b29864813
 +    uint8_t reserved[24] = { 0 };
 +
 +    g_mutex_lock(&crucible_fault_lock);
-+    if (crucible_pending_count > CRUCIBLE_FAULT_RESULT_QUEUE_CAPACITY ||
++    if (qatomic_read(&crucible_pending_count) >
++            CRUCIBLE_FAULT_RESULT_QUEUE_CAPACITY ||
 +        crucible_completed_count > CRUCIBLE_FAULT_RESULT_QUEUE_CAPACITY ||
 +        crucible_deferred_count > CRUCIBLE_FAULT_RESULT_QUEUE_CAPACITY ||
 +        g_hash_table_size(crucible_deferred_source_ticks) !=
@@ -116060,7 +116086,8 @@ index 0000000000000000000000000000000000000000..c232cb93777acd760b6fac2b29864813
 +    crucible_fault_vmstate_append_u32(payload, 0);
 +    crucible_fault_vmstate_append_u64(payload,
 +                                      crucible_max_command_sequence);
-+    crucible_fault_vmstate_append_u32(payload, crucible_pending_count);
++    crucible_fault_vmstate_append_u32(
++        payload, qatomic_read(&crucible_pending_count));
 +    crucible_fault_vmstate_append_u32(payload, crucible_completed_count);
 +    crucible_fault_vmstate_append_u32(payload, crucible_deferred_count);
 +    crucible_fault_vmstate_append_u32(
@@ -116375,7 +116402,8 @@ index 0000000000000000000000000000000000000000..c232cb93777acd760b6fac2b29864813
 +    g_hash_table_unref(crucible_deferred_source_ticks);
 +    crucible_deferred_source_ticks =
 +        g_steal_pointer(&state->deferred_source_ticks);
-+    crucible_pending_count = state->pending_count;
++    /* Stopped-owner restore release-publishes the rebuilt queue under its lock. */
++    qatomic_store_release(&crucible_pending_count, state->pending_count);
 +    crucible_completed_count = state->completed_count;
 +    crucible_deferred_count = state->deferred_count;
 +    crucible_max_command_sequence = state->max_command_sequence;
@@ -176659,6 +176687,809 @@ index 0000000000000000000000000000000000000000..9ecf614260a8e6ed71e5e873d6e33bde
 +    for case in ["stopped-reader", "admitted-reader", "no-request"]:
 +        print(f"case={case}", flush=True)
 +        subprocess.run([str(binary), case], cwd=arguments.output_dir, check=True)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/tests/unit/test-crucible-tcg-fast-paths.py b/tests/unit/test-crucible-tcg-fast-paths.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..13ca7573b80183e1f73489c4b268a2e07b767cb3
+--- /dev/null
++++ b/tests/unit/test-crucible-tcg-fast-paths.py
+@@ -0,0 +1,797 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Exercise queue and instruction-completion production bodies.
++
++Real GLib mutexes, queues and QEMU atomics execute submit, cancel, dispatch,
++VMState save/replacement and coordinate queries. Architecture snapshots and
++instruction evidence are bounded providers; no translated guest executes here.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import runpy
++import shlex
++import subprocess
++
++
++ROOT = Path(__file__).resolve().parents[2]
++definition = runpy.run_path(str(Path(__file__).with_name(
++    "test-crucible-net-output-stop.py")))["definition"]
++
++PRELUDE = r"""
++#include <errno.h>
++#include <limits.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++#include <glib.h>
++#include "qemu/typedefs.h"
++#define qemu_build_assert(condition) _Static_assert(condition, #condition)
++#include "qemu/atomic.h"
++#include "qemu/queue.h"
++#include "plugins/qemu-plugin.h"
++#define error_report(...) g_error(__VA_ARGS__)
++
++/* Only scalar ABI symbols needed by these extracted bodies are supplied. */
++#define CRUCIBLE_FAULT_COMMAND_ABI_MAJOR 1
++#define CRUCIBLE_FAULT_COMMAND_ABI_MINOR 0
++#define CRUCIBLE_FAULT_COMMAND_FLAG_PREPARE_ONLY 1
++#define CRUCIBLE_FAULT_COMMAND_QUERY_CAPABILITIES 1
++#define CRUCIBLE_FAULT_COMMAND_BOUNDARY_PROBE 2
++#define CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY 1
++#define CRUCIBLE_FAULT_PHASE_DEVICE 5
++#define CRUCIBLE_FAULT_HARD_PAYLOAD_BYTES 65536
++#define CRUCIBLE_SIM_TICKS_PER_INSTRUCTION 1000
++#define QEMU_CRUCIBLE_FAULT_STATUS_DEFERRED_INTERNAL UINT16_MAX
++#define CRUCIBLE_FAULT_STATUS_APPLIED 1
++#define CRUCIBLE_FAULT_STATUS_PREPARED 2
++#define CRUCIBLE_FAULT_STATUS_MALFORMED_COMMAND 3
++#define CRUCIBLE_FAULT_STATUS_DUPLICATE_SEQUENCE 4
++#define CRUCIBLE_FAULT_STATUS_UNSUPPORTED_CAPABILITY 5
++#define CRUCIBLE_FAULT_STATUS_INVALID_PHASE 6
++#define CRUCIBLE_FAULT_STATUS_RESOURCE_LIMIT 7
++#define CRUCIBLE_FAULT_STATUS_GUEST_REJECTED 8
++#define CRUCIBLE_FAULT_STATUS_NOT_APPLICABLE 9
++#define CRUCIBLE_FAULT_STATUS_PAST_BOUNDARY 10
++#define CRUCIBLE_FAULT_STATUS_INTERNAL_ERROR 11
++#define CRUCIBLE_COMMAND_VMSTATE_MAGIC "CRUFCMD4"
++#define CRUCIBLE_COMMAND_VMSTATE_VERSION 4
++#define CRUCIBLE_COMMAND_VMSTATE_HEADER_BYTES 96
++#define CRUCIBLE_INSTRUCTION_MAX_BYTES 32
++#define CRUCIBLE_INSTRUCTION_MAX_DESTINATIONS 4
++#define CRUCIBLE_INSTRUCTION_CLASS_X86_DEVICE_IO 0x01000008U
++#define CRUCIBLE_NODE_FAULT_FIELD_P1 1
++#define CRUCIBLE_NODE_FAULT_FIELD_P3 3
++#define CRUCIBLE_NODE_FAULT_FIELD_P4 4
++#define CRUCIBLE_NODE_FAULT_OPERATION_APPLY 1
++#define QEMU_CRUCIBLE_MODEL_PHASE_AFTER_INSTRUCTION 12
++#define CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED 1
++#define CRUCIBLE_FAULT_EVENT_OUTCOME_ERROR 2
++
++typedef struct QemuCrucibleFaultHandler QemuCrucibleFaultHandler;
++typedef struct QemuCrucibleFaultRule QemuCrucibleFaultRule;
++typedef void (*QemuCrucibleFaultBoundaryObserverFn)(uint16_t, uint64_t);
++typedef uint64_t (*QemuCrucibleFaultBoundaryDeadlineFn)(uint16_t);
++
++/* Prototypes retain public function diagnostics in this bounded translation. */
++void qemu_plugin_crucible_exact_boundary_enter(void);
++void qemu_plugin_crucible_exact_boundary_leave(void);
++void qemu_crucible_fault_registry_seal(void);
++void qemu_crucible_fault_dispatch_boundary(uint16_t, uint64_t);
++bool qemu_crucible_fault_has_pending_at_or_before(uint16_t, uint64_t);
++uint64_t qemu_crucible_fault_next_icount(uint16_t);
++uint64_t qemu_crucible_fault_next_boundary_deadline(uint16_t);
++int64_t qemu_crucible_fault_clamp_budget(uint16_t, uint64_t, int64_t);
++void qemu_crucible_fault_instruction_execution_complete(CPUState *, bool);
++uint64_t qemu_crucible_fault_observed_icount(void);
++
++static void stw_be_p(void *address, uint16_t value)
++{
++    uint16_t encoded = GUINT16_TO_BE(value);
++    memcpy(address, &encoded, sizeof(encoded));
++}
++
++static void stl_be_p(void *address, uint32_t value)
++{
++    uint32_t encoded = GUINT32_TO_BE(value);
++    memcpy(address, &encoded, sizeof(encoded));
++}
++
++static void stq_be_p(void *address, uint64_t value)
++{
++    uint64_t encoded = GUINT64_TO_BE(value);
++    memcpy(address, &encoded, sizeof(encoded));
++}
++"""
++
++QUEUE_PROVIDERS = r"""
++static unsigned int lock_reads, tick_reads, raw_reads, observed_reads;
++static uint64_t raw_now = 7;
++static int64_t tick_now = 7000;
++static bool downtime;
++static uint64_t downtime_deadline = 9000;
++static unsigned int deadline_reads, boundary_entries, boundary_leaves;
++static unsigned int observer_calls, prepare_calls, commit_calls, completions;
++static bool defer_commit;
++
++static void counted_mutex_lock(GMutex *mutex)
++{
++    if (mutex == &crucible_fault_lock) {
++        qatomic_inc(&lock_reads);
++    }
++    g_mutex_lock(mutex);
++}
++#define g_mutex_lock counted_mutex_lock
++
++uint64_t qemu_plugin_icount_raw(void)
++{
++    qatomic_inc(&raw_reads);
++    return raw_now;
++}
++
++int64_t qemu_plugin_sim_tick_observed(void)
++{
++    qatomic_inc(&tick_reads);
++    return tick_now;
++}
++
++uint64_t qemu_crucible_fault_observed_icount(void)
++{
++    observed_reads++;
++    return raw_now;
++}
++
++int qemu_plugin_crucible_single_threaded_rr(void)
++{
++    return 1;
++}
++
++void qemu_crucible_fault_registry_seal(void)
++{
++    crucible_registry_sealed = true;
++}
++
++static bool qemu_crucible_fault_lifecycle_downtime_pending(void)
++{
++    return downtime;
++}
++
++static uint64_t qemu_crucible_fault_lifecycle_downtime_deadline(void)
++{
++    return downtime_deadline;
++}
++
++static void qemu_crucible_fault_lifecycle_downtime_boundary(
++    uint16_t phase, uint64_t icount)
++{
++    g_assert_cmpuint(phase, ==, CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY);
++    g_assert_cmpuint(icount, ==, raw_now);
++}
++
++void qemu_plugin_crucible_exact_boundary_enter(void)
++{
++    boundary_entries++;
++}
++
++void qemu_plugin_crucible_exact_boundary_leave(void)
++{
++    boundary_leaves++;
++}
++"""
++
++INSTRUCTION_PROVIDERS = r"""
++struct QemuCrucibleFaultRule { int unused; };
++typedef struct QObject { int unused; } QObject;
++struct CPUState { uint64_t pc; bool exit_request; };
++
++/* Only completion-owned fields matter; this is not a native layout claim. */
++typedef struct CrucibleInstructionContext {
++    QemuCrucibleFaultRule *rule;
++    GPtrArray *contributors;
++    CrucibleInstructionMetadata metadata;
++    CrucibleInstructionState before_state, command_before_state;
++    uint32_t mutation_kind, replay_remaining, replay_ordinal, replay_total;
++    bool executing, replaying;
++} CrucibleInstructionContext;
++
++static CrucibleInstructionContext instruction_context;
++static QemuCrucibleFaultRule rule;
++static bool has_context, crucible_instruction_event_terminal_latched;
++static unsigned int clears, snapshots, events, impulses, failures, transforms;
++static uint16_t last_outcome;
++static uint64_t last_coordinate;
++
++static CrucibleInstructionContext *crucible_instruction_context(
++    CPUState *cpu, bool create)
++{
++    (void)cpu;
++    g_assert_false(create);
++    return has_context ? &instruction_context : NULL;
++}
++
++static void crucible_instruction_context_clear(CrucibleInstructionContext *ctx)
++{
++    clears++;
++    ctx->rule = NULL;
++    ctx->executing = false;
++}
++
++static int crucible_instruction_system_snapshot(
++    uint64_t icount, CrucibleInstructionState *state, void *error)
++{
++    (void)error;
++    g_assert_cmpuint(icount, ==, raw_now);
++    snapshots++;
++    state->state_sha256[0] = snapshots;
++    return 0;
++}
++
++static const QObject *qemu_crucible_fault_rule_json(
++    const QemuCrucibleFaultRule *selected, int field)
++{
++    static const QObject mutation;
++    g_assert_true(selected == &rule);
++    g_assert_cmpint(field, ==, CRUCIBLE_NODE_FAULT_FIELD_P4);
++    return &mutation;
++}
++
++static bool qemu_crucible_fault_rule_occurs_nested(
++    const QemuCrucibleFaultRule *selected, int field, const char *name)
++{
++    g_assert_true(selected == &rule);
++    g_assert_cmpint(field, ==, CRUCIBLE_NODE_FAULT_FIELD_P1);
++    g_assert_cmpstr(name, ==, "occurrence");
++    return true;
++}
++
++static bool crucible_instruction_rule_hash(
++    const QemuCrucibleFaultRule *selected, int field, const uint8_t **hash)
++{
++    static const uint8_t destination[32];
++    g_assert_true(selected == &rule);
++    g_assert_cmpint(field, ==, CRUCIBLE_NODE_FAULT_FIELD_P3);
++    *hash = destination;
++    return true;
++}
++
++static int qemu_crucible_fault_register_result_transform(
++    CPUState *cpu, const uint8_t *destination, const QObject *mutation,
++    uint64_t icount, uint16_t phase, uint8_t before[32], uint8_t after[32],
++    GByteArray *detail)
++{
++    (void)cpu;
++    g_assert_nonnull(destination);
++    g_assert_nonnull(mutation);
++    g_assert_cmpuint(icount, ==, raw_now);
++    g_assert_cmpuint(phase, ==, QEMU_CRUCIBLE_MODEL_PHASE_AFTER_INSTRUCTION);
++    memset(before, 1, 32);
++    memset(after, 2, 32);
++    g_byte_array_append(detail, before, 32);
++    transforms++;
++    return 0;
++}
++
++static bool crucible_instruction_register_evidence_valid(
++    const GByteArray *detail, uint64_t icount)
++{
++    g_assert_cmpuint(detail->len, ==, 32);
++    g_assert_cmpuint(icount, ==, raw_now);
++    return true;
++}
++
++static bool crucible_instruction_event(
++    const QemuCrucibleFaultRule *selected,
++    const CrucibleInstructionMetadata *metadata, uint32_t kind,
++    uint32_t ordinal, uint32_t total, uint16_t outcome, uint64_t icount,
++    const CrucibleInstructionState *before, const CrucibleInstructionState *after,
++    const uint8_t *detail, size_t length)
++{
++    (void)metadata;
++    (void)kind;
++    (void)ordinal;
++    (void)total;
++    (void)before;
++    (void)after;
++    (void)detail;
++    (void)length;
++    g_assert_true(selected == &rule);
++    last_coordinate = icount;
++    last_outcome = outcome;
++    events++;
++    return true;
++}
++
++static void crucible_instruction_impulse_complete(
++    const QemuCrucibleFaultRule *selected, uint64_t icount,
++    const uint8_t before[32], const uint8_t after[32])
++{
++    (void)before;
++    (void)after;
++    g_assert_true(selected == &rule);
++    g_assert_cmpuint(icount, ==, raw_now);
++    impulses++;
++}
++
++static uint16_t qemu_crucible_fault_rule_operation(
++    const QemuCrucibleFaultRule *selected)
++{
++    g_assert_true(selected == &rule);
++    return CRUCIBLE_NODE_FAULT_OPERATION_APPLY;
++}
++
++static bool crucible_instruction_fail_closed(
++    CPUState *cpu, CrucibleInstructionContext *ctx)
++{
++    failures++;
++    cpu->exit_request = true;
++    crucible_instruction_context_clear(ctx);
++    return true;
++}
++
++static GByteArray *crucible_instruction_port_io_evidence(
++    const CrucibleInstructionContext *ctx)
++{
++    (void)ctx;
++    return g_byte_array_new();
++}
++
++static void cpu_set_pc(CPUState *cpu, uint64_t pc)
++{
++    cpu->pc = pc;
++}
++
++static void cpu_exit(CPUState *cpu)
++{
++    cpu->exit_request = true;
++}
++"""
++
++CHECKS = r"""
++static int prepare(const struct qemu_plugin_crucible_fault_command *command,
++                   const uint8_t *payload, size_t length, void *state,
++                   struct qemu_plugin_crucible_fault_result *result,
++                   GByteArray *evidence)
++{
++    (void)command;
++    (void)payload;
++    (void)length;
++    (void)state;
++    (void)result;
++    (void)evidence;
++    prepare_calls++;
++    return 0;
++}
++
++static void commit(const struct qemu_plugin_crucible_fault_command *command,
++                   const uint8_t *payload, size_t length, void *state,
++                   struct qemu_plugin_crucible_fault_result *result,
++                   GByteArray *evidence)
++{
++    (void)command;
++    (void)payload;
++    (void)length;
++    (void)state;
++    (void)evidence;
++    commit_calls++;
++    result->status = defer_commit ? QEMU_CRUCIBLE_FAULT_STATUS_DEFERRED_INTERNAL :
++        CRUCIBLE_FAULT_STATUS_APPLIED;
++    result->applied_icount = result->observed_icount;
++}
++
++static const QemuCrucibleFaultHandler handler = {
++    .capability = {
++        .command_kind = CRUCIBLE_FAULT_COMMAND_BOUNDARY_PROBE,
++        .semantic_version = 1,
++        .phase_mask = UINT32_MAX,
++        .maximum_pending_commands = 4096,
++        .name = "probe", .payload_schema = "empty",
++    },
++    .prepare = prepare, .commit = commit,
++};
++
++static struct qemu_plugin_crucible_fault_command command(uint64_t sequence)
++{
++    return (struct qemu_plugin_crucible_fault_command) {
++        .abi_major = CRUCIBLE_FAULT_COMMAND_ABI_MAJOR,
++        .abi_minor = CRUCIBLE_FAULT_COMMAND_ABI_MINOR,
++        .command_kind = CRUCIBLE_FAULT_COMMAND_BOUNDARY_PROBE,
++        .phase = CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY,
++        .semantic_version = 1, .command_sequence = sequence,
++        .target_icount = raw_now, .authorization_ceiling_icount = UINT64_MAX,
++        .target_tick = tick_now, .authorization_ceiling_tick = INT64_MAX,
++    };
++}
++
++static CrucibleFaultCommandVmstate *staged(unsigned int count)
++{
++    CrucibleFaultCommandVmstate *state = g_new0(CrucibleFaultCommandVmstate, 1);
++    QTAILQ_INIT(&state->pending);
++    QTAILQ_INIT(&state->completed);
++    state->seen_sequences = g_hash_table_new_full(g_int64_hash, g_int64_equal,
++                                                 g_free, NULL);
++    state->deferred_source_ticks = g_hash_table_new_full(
++        g_int64_hash, g_int64_equal, g_free, g_free);
++    for (unsigned int i = 0; i < count; i++) {
++        CruciblePendingFault *pending = g_new0(CruciblePendingFault, 1);
++        guint64 *sequence = g_new(guint64, 1);
++        pending->handler = &handler;
++        pending->command = command(i + 1);
++        *sequence = i + 1;
++        g_hash_table_add(state->seen_sequences, sequence);
++        QTAILQ_INSERT_TAIL(&state->pending, pending, link);
++    }
++    state->pending_count = count;
++    state->max_command_sequence = count;
++    return state;
++}
++
++static void completion(void *opaque)
++{
++    g_assert_true(opaque == &completions);
++    completions++;
++}
++
++static void observer(uint16_t phase, uint64_t icount)
++{
++    g_assert_cmpuint(phase, ==, CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY);
++    g_assert_cmpuint(icount, ==, raw_now);
++    observer_calls++;
++}
++
++static uint64_t deadline(uint16_t phase)
++{
++    deadline_reads++;
++    return phase == CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY ? 8000 : UINT64_MAX;
++}
++
++static void empty_queries(void)
++{
++    unsigned int locks = qatomic_read(&lock_reads);
++    unsigned int ticks = qatomic_read(&tick_reads);
++    unsigned int raw = qatomic_read(&raw_reads);
++    g_assert_false(qemu_crucible_fault_has_pending_at_or_before(1, raw_now));
++    g_assert_cmpuint(qemu_crucible_fault_next_icount(1), ==, UINT64_MAX);
++    g_assert_cmpint(qemu_crucible_fault_clamp_budget(1, raw_now, 19), ==, 19);
++    g_assert_cmpuint(qemu_crucible_fault_next_boundary_deadline(1), ==, 8000);
++    g_assert_cmpuint(qatomic_read(&lock_reads), ==, locks);
++    g_assert_cmpuint(qatomic_read(&tick_reads), ==, ticks);
++    g_assert_cmpuint(qatomic_read(&raw_reads), ==, raw);
++}
++
++static void saved_count(unsigned int expected)
++{
++    g_autoptr(GByteArray) bytes = g_byte_array_new();
++    uint32_t encoded;
++    g_assert_cmpint(crucible_fault_command_vmstate_encode(bytes), ==, 0);
++    memcpy(&encoded, bytes->data + 24, sizeof(encoded));
++    g_assert_cmpuint(GUINT32_FROM_BE(encoded), ==, expected);
++}
++
++static void queue_checks(void)
++{
++    struct qemu_plugin_crucible_fault_command first = command(10);
++    struct qemu_plugin_crucible_fault_command second = command(11);
++    unsigned int callbacks;
++
++    empty_queries();
++    g_assert_cmpuint(deadline_reads, >, 0);
++    downtime = true;
++    downtime_deadline = 6000;
++    g_assert_cmpuint(qemu_crucible_fault_next_boundary_deadline(1), ==, 6000);
++    downtime = false;
++
++    g_assert_cmpint(qemu_plugin_crucible_fault_submit(&first, NULL, 0), ==, 0);
++    g_assert_cmpuint(qatomic_load_acquire(&crucible_pending_count), ==, 1);
++    g_assert_true(qemu_crucible_fault_has_pending_at_or_before(1, raw_now));
++    g_assert_false(qemu_crucible_fault_has_pending_at_or_before(2, raw_now));
++    g_assert_false(qemu_crucible_fault_has_pending_at_or_before(1, raw_now + 1));
++    g_assert_cmpuint(qemu_crucible_fault_next_icount(1), ==, raw_now);
++    g_assert_cmpuint(qemu_crucible_fault_next_icount(2), ==, UINT64_MAX);
++    g_assert_cmpuint(qemu_crucible_fault_next_boundary_deadline(1), ==, tick_now);
++    saved_count(1);
++    g_assert_cmpint(qemu_plugin_crucible_fault_cancel(10), ==, 0);
++    g_assert_cmpint(qemu_plugin_crucible_fault_cancel(10), ==, -ENOENT);
++    saved_count(0);
++    empty_queries();
++
++    first.command_sequence = 12;
++    first.target_tick += 2000;
++    g_assert_cmpint(qemu_plugin_crucible_fault_submit(&first, NULL, 0), ==, 0);
++    g_assert_cmpuint(qemu_crucible_fault_next_icount(1), ==, raw_now + 2);
++    tick_now = -1;
++    g_assert_false(qemu_crucible_fault_has_pending_at_or_before(1, raw_now));
++    g_assert_cmpuint(qemu_crucible_fault_next_icount(1), ==, UINT64_MAX);
++    tick_now = 7000;
++    g_assert_cmpint(qemu_plugin_crucible_fault_cancel(12), ==, 0);
++
++    g_assert_cmpint(qemu_plugin_crucible_fault_submit(&second, NULL, 0), ==, 0);
++    callbacks = completions;
++    qemu_crucible_fault_dispatch_boundary(1, raw_now);
++    g_assert_cmpuint(qatomic_load_acquire(&crucible_pending_count), ==, 0);
++    g_assert_cmpuint(prepare_calls, ==, 1);
++    g_assert_cmpuint(commit_calls, ==, 1);
++    g_assert_cmpuint(completions, ==, callbacks + 1);
++    g_assert_cmpuint(QTAILQ_FIRST(&crucible_completed_faults)->result.applied_icount,
++                     ==, raw_now);
++    empty_queries();
++
++    crucible_fault_command_vmstate_commit(staged(2));
++    saved_count(2);
++    g_assert_cmpuint(qatomic_load_acquire(&crucible_pending_count), ==, 2);
++    qemu_crucible_fault_dispatch_boundary(1, raw_now);
++    g_assert_cmpuint(qatomic_load_acquire(&crucible_pending_count), ==, 0);
++    crucible_fault_command_vmstate_commit(staged(1));
++    g_assert_true(qemu_crucible_fault_has_pending_at_or_before(1, raw_now));
++    crucible_fault_command_vmstate_commit(staged(0));
++    saved_count(0);
++    empty_queries();
++
++    first = command(20);
++    defer_commit = true;
++    g_assert_cmpint(qemu_plugin_crucible_fault_submit(&first, NULL, 0), ==, 0);
++    callbacks = completions;
++    qemu_crucible_fault_dispatch_boundary(1, raw_now);
++    g_assert_cmpuint(qatomic_load_acquire(&crucible_pending_count), ==, 0);
++    g_assert_cmpuint(crucible_deferred_count, ==, 1);
++    g_assert_cmpuint(completions, ==, callbacks);
++    defer_commit = false;
++    crucible_fault_command_vmstate_commit(staged(0));
++    g_assert_cmpuint(boundary_entries, ==, boundary_leaves);
++    g_assert_cmpuint(observer_calls, ==, boundary_entries);
++}
++
++typedef struct Handshake { GAsyncQueue *published, *acknowledged; } Handshake;
++
++static gpointer queue_writer(gpointer opaque)
++{
++    Handshake *handshake = opaque;
++    for (unsigned int i = 0; i < 1000; i++) {
++        struct qemu_plugin_crucible_fault_command item = command(100 + i);
++        g_assert_cmpint(qemu_plugin_crucible_fault_submit(&item, NULL, 0), ==, 0);
++        g_async_queue_push(handshake->published, GINT_TO_POINTER(1));
++        g_async_queue_pop(handshake->acknowledged);
++        g_assert_cmpint(qemu_plugin_crucible_fault_cancel(item.command_sequence),
++                        ==, 0);
++        g_async_queue_push(handshake->published, GINT_TO_POINTER(2));
++        g_async_queue_pop(handshake->acknowledged);
++    }
++    return NULL;
++}
++
++static bool race_done;
++
++static gpointer racing_writer(gpointer opaque)
++{
++    (void)opaque;
++    for (unsigned int i = 0; i < 10000; i++) {
++        struct qemu_plugin_crucible_fault_command item = command(2000 + i);
++        g_assert_cmpint(qemu_plugin_crucible_fault_submit(&item, NULL, 0), ==, 0);
++        g_assert_cmpint(qemu_plugin_crucible_fault_cancel(item.command_sequence),
++                        ==, 0);
++    }
++    qatomic_store_release(&race_done, true);
++    return NULL;
++}
++
++static void concurrent_checks(void)
++{
++    Handshake handshake = { g_async_queue_new(), g_async_queue_new() };
++    GThread *writer = g_thread_new("fault-writer", queue_writer, &handshake);
++    for (unsigned int i = 0; i < 1000; i++) {
++        g_assert_cmpint(GPOINTER_TO_INT(g_async_queue_pop(handshake.published)),
++                        ==, 1);
++        g_assert_true(qemu_crucible_fault_has_pending_at_or_before(1, raw_now));
++        g_async_queue_push(handshake.acknowledged, GINT_TO_POINTER(1));
++        g_assert_cmpint(GPOINTER_TO_INT(g_async_queue_pop(handshake.published)),
++                        ==, 2);
++        empty_queries();
++        g_async_queue_push(handshake.acknowledged, GINT_TO_POINTER(1));
++    }
++    g_thread_join(writer);
++    g_async_queue_unref(handshake.published);
++    g_async_queue_unref(handshake.acknowledged);
++
++    writer = g_thread_new("racing-writer", racing_writer, NULL);
++    do {
++        qemu_crucible_fault_has_pending_at_or_before(1, raw_now);
++        qemu_crucible_fault_next_icount(1);
++        qemu_crucible_fault_next_boundary_deadline(1);
++    } while (!qatomic_load_acquire(&race_done));
++    g_thread_join(writer);
++    empty_queries();
++    g_assert_cmpuint(qatomic_load_acquire(&crucible_pending_count), ==, 0);
++}
++
++static void active_instruction(void)
++{
++    memset(&instruction_context, 0, sizeof(instruction_context));
++    has_context = true;
++    instruction_context.rule = &rule;
++    instruction_context.executing = true;
++}
++
++static void instruction_checks(void)
++{
++    CPUState cpu = { 0 };
++    CrucibleInstructionContributor contributor = { .rule = &rule };
++    g_autoptr(GPtrArray) contributors = g_ptr_array_new();
++    unsigned int before;
++
++    has_context = false;
++    qemu_crucible_fault_instruction_execution_complete(&cpu, false);
++    has_context = true;
++    qemu_crucible_fault_instruction_execution_complete(&cpu, true);
++    instruction_context.rule = &rule;
++    qemu_crucible_fault_instruction_execution_complete(&cpu, false);
++    g_assert_cmpuint(observed_reads, ==, 0);
++    g_assert_cmpuint(snapshots, ==, 0);
++
++    active_instruction();
++    crucible_instruction_event_terminal_latched = true;
++    qemu_crucible_fault_instruction_execution_complete(&cpu, false);
++    g_assert_cmpuint(observed_reads, ==, 0);
++    g_assert_null(instruction_context.rule);
++    crucible_instruction_event_terminal_latched = false;
++
++    active_instruction();
++    qemu_crucible_fault_instruction_execution_complete(&cpu, false);
++    g_assert_cmpuint(observed_reads, ==, 1);
++    g_assert_cmpuint(last_coordinate, ==, raw_now);
++    g_assert_cmpuint(last_outcome, ==, CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED);
++    g_assert_cmpuint(impulses, ==, 1);
++    g_assert_false(cpu.exit_request);
++
++    active_instruction();
++    qemu_crucible_fault_instruction_execution_complete(&cpu, true);
++    g_assert_cmpuint(observed_reads, ==, 2);
++    g_assert_cmpuint(last_outcome, ==, CRUCIBLE_FAULT_EVENT_OUTCOME_ERROR);
++    g_assert_cmpuint(failures, ==, 1);
++    g_assert_true(cpu.exit_request);
++
++    active_instruction();
++    cpu.exit_request = false;
++    instruction_context.metadata.pc = 0x1234;
++    instruction_context.mutation_kind = 3;
++    instruction_context.replay_remaining = 1;
++    qemu_crucible_fault_instruction_execution_complete(&cpu, false);
++    g_assert_true(instruction_context.replaying);
++    g_assert_cmpuint(instruction_context.replay_remaining, ==, 0);
++    g_assert_cmpuint(instruction_context.replay_ordinal, ==, 1);
++    g_assert_cmpuint(cpu.pc, ==, 0x1234);
++    g_assert_true(cpu.exit_request);
++
++    active_instruction();
++    g_ptr_array_add(contributors, &contributor);
++    instruction_context.contributors = contributors;
++    qemu_crucible_fault_instruction_execution_complete(&cpu, false);
++    g_assert_true(contributor.terminalized);
++    g_assert_cmpuint(transforms, ==, 1);
++    g_assert_cmpuint(last_coordinate, ==, raw_now);
++
++    active_instruction();
++    instruction_context.contributors = contributors;
++    before = snapshots;
++    qemu_crucible_fault_instruction_execution_complete(&cpu, true);
++    g_assert_cmpuint(snapshots, ==, before);
++    g_assert_cmpuint(transforms, ==, 1);
++    g_assert_null(instruction_context.rule);
++    g_assert_cmpuint(events, ==, 4);
++    g_assert_cmpuint(observed_reads, ==, 5);
++    g_assert_cmpuint(clears, >, 0);
++}
++
++int main(void)
++{
++    crucible_fault_handlers = g_ptr_array_new();
++    g_ptr_array_add(crucible_fault_handlers, (void *)&handler);
++    crucible_seen_sequences = g_hash_table_new_full(g_int64_hash, g_int64_equal,
++                                                   g_free, NULL);
++    crucible_deferred_source_ticks = g_hash_table_new_full(
++        g_int64_hash, g_int64_equal, g_free, g_free);
++    crucible_boundary_observers = g_ptr_array_new();
++    g_ptr_array_add(crucible_boundary_observers, observer);
++    crucible_boundary_deadlines = g_ptr_array_new();
++    g_ptr_array_add(crucible_boundary_deadlines, deadline);
++    crucible_fault_completion_cb = completion;
++    crucible_fault_completion_userdata = &completions;
++
++    queue_checks();
++    concurrent_checks();
++    instruction_checks();
++
++    crucible_fault_command_vmstate_commit(staged(0));
++    g_hash_table_unref(crucible_seen_sequences);
++    g_hash_table_unref(crucible_deferred_source_ticks);
++    g_ptr_array_unref(crucible_fault_handlers);
++    g_ptr_array_unref(crucible_boundary_observers);
++    g_ptr_array_unref(crucible_boundary_deadlines);
++    puts("PASS production TCG fast paths: empty queue/no clocks, active dispatch, cancel/restore, concurrent publication, lazy completion");
++    return 0;
++}
++"""
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--negative-control", choices=["queue", "completion", "restore"])
++    arguments = parser.parse_args()
++    arguments.output_dir.mkdir(parents=True, exist_ok=True)
++    queue = (ROOT / "plugins/crucible-fault.c").read_text()
++    header = (ROOT / "include/qemu/crucible-fault.h").read_text()
++    instruction = (ROOT / "plugins/crucible-fault-instruction.c").read_text()
++    handlers = header[header.index("typedef int (*QemuCrucibleFaultValidateFn)"):
++                      header.index("void qemu_crucible_fault_register(")]
++    globals_ = queue[queue.index("#define CRUCIBLE_FAULT_RESULT_QUEUE_CAPACITY"):
++                     queue.index("static void crucible_fault_flush_complete_on_cpu(")]
++    signatures = [
++        "static void crucible_fault_vmstate_append_u16(",
++        "static void crucible_fault_vmstate_append_u32(",
++        "static void crucible_fault_vmstate_append_u64(",
++        "static void crucible_fault_vmstate_encode_command(",
++        "static void crucible_fault_vmstate_encode_result(",
++        "static const QemuCrucibleFaultHandler *\ncrucible_fault_find_handler(",
++        "static size_t crucible_fault_handler_pending_count(",
++        "static int crucible_fault_pending_compare(",
++        "static void crucible_fault_insert_pending(",
++        "static bool crucible_fault_accept_sequence(",
++        "static void crucible_fault_result_rejected(",
++        "static void crucible_fault_payload_sha256(",
++        "static void crucible_fault_queue_result(",
++        "static int crucible_fault_reject_submit(",
++        "static int crucible_fault_complete_rejected_submit(",
++        "int qemu_plugin_crucible_fault_submit(",
++        "int qemu_plugin_crucible_fault_cancel(",
++        "void qemu_crucible_fault_dispatch_boundary(",
++        "bool qemu_crucible_fault_has_pending_at_or_before(",
++        "uint64_t qemu_crucible_fault_next_icount(",
++        "uint64_t qemu_crucible_fault_next_boundary_deadline(",
++        "int64_t qemu_crucible_fault_clamp_budget(",
++        "static void crucible_fault_command_vmstate_free_pending(",
++        "static void crucible_fault_command_vmstate_free_completed(",
++        "static void crucible_fault_command_vmstate_free(",
++        "static void crucible_fault_command_registry_hash(",
++        "static gint crucible_fault_command_u64_compare(",
++        "static int crucible_fault_command_vmstate_encode(",
++        "static void crucible_fault_command_vmstate_commit(",
++    ]
++    bodies = "\n\n".join(definition(queue, signature) for signature in signatures)
++    types = instruction[instruction.index("typedef struct CrucibleInstructionMetadata {"):
++                        instruction.index("typedef struct CrucibleInstructionContext {")]
++    completion = definition(instruction,
++                            "void qemu_crucible_fault_instruction_execution_complete(")
++    if arguments.negative_control == "queue":
++        for result in ["false", "UINT64_MAX"]:
++            guard = ("    if (!qatomic_load_acquire(&crucible_pending_count)) {\n"
++                     f"        return {result};\n    }}\n")
++            assert bodies.count(guard) == 1
++            bodies = bodies.replace(guard, "")
++    elif arguments.negative_control == "completion":
++        statement = "    observed_icount = qemu_crucible_fault_observed_icount();\n"
++        assert completion.count(statement) == 1
++        completion = completion.replace(statement, "")
++        completion = completion.replace("    uint64_t observed_icount;",
++                                        statement.strip())
++        completion = completion.replace("observed_icount =", "uint64_t observed_icount =", 1)
++    elif arguments.negative_control == "restore":
++        statement = "    qatomic_store_release(&crucible_pending_count, state->pending_count);\n"
++        assert bodies.count(statement) == 1
++        bodies = bodies.replace(statement, "")
++    generated = arguments.output_dir / "tcg-fast-paths.c"
++    generated.write_text(PRELUDE + handlers + globals_ + QUEUE_PROVIDERS + bodies +
++                         types + INSTRUCTION_PROVIDERS + completion + CHECKS)
++    binary = arguments.output_dir / "tcg-fast-paths"
++    command = [os.environ.get("CC", "cc"),
++               *shlex.split(os.environ.get("CFLAGS", "")),
++               str(generated), "-o", str(binary),
++               *shlex.split(os.environ.get("LDFLAGS", ""))]
++    (arguments.output_dir / "compile-command.json").write_text(
++        json.dumps({"cwd": os.getcwd(), "argv": command}, indent=2) + "\n")
++    subprocess.run(command, check=True)
++    subprocess.run([str(binary)], cwd=arguments.output_dir, check=True)
 +
 +
 +if __name__ == "__main__":
