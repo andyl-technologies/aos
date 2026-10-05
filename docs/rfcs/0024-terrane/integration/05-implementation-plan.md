@@ -216,6 +216,13 @@ exiting, preserving the original failure status and successful execution checks.
 The earlier four isolated gate failures discarded that output during sandbox
 teardown; their exact failed cases remain unknown, and no cause is inferred.
 
+A separate local disclosure diagnostic selects the original nested-occurrence
+case under its original `std,send,tokio` profile. Its hermetic harness enables
+test-only denial-site reporting explicitly, preserves failed output and status,
+and requires the exact case to exist and execute. Both mandatory formatters,
+Nix evaluation and inner/outer AOS Bash syntax pass; execution and attribution
+remain pending. This diagnostic is outside the conformance gate aggregate.
+
 The preceding completed full qualification records candidate
 `15540ef204ec`, which combines reviewed source discovery, immutable lookup,
 repeatable I/P/G maintenance, separate verifier/preparation work, common Memo
