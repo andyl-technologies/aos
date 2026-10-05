@@ -1,4 +1,4 @@
-From c0bdda17ff0196c1f8be49fdebb5508e57407d4f Mon Sep 17 00:00:00 2001
+From 250a6b448ea0901bef47955122a3d7db82ed5193 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Sat, 3 Oct 2026 07:08:17 +0000
 Subject: [PATCH] Integrate deterministic execution and private fork I/O
@@ -813,7 +813,7 @@ index 257211235dbb94d6d9cce1862126bc248c399f17..0dcae4f6a1cfc8dc14e03436b9d665e8
              /* Try to align the host and virtual clocks
                 if the guest is in advance */
 diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
-index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac88d94860a 100644
+index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..4b7b3f9e442a941df9ba23e4169a34a7f3cadfd4 100644
 --- a/accel/tcg/cputlb.c
 +++ b/accel/tcg/cputlb.c
 @@ -21,6 +21,7 @@
@@ -914,7 +914,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
  
      case MO_ATOM_IFALIGN_PAIR:
      case MO_ATOM_WITHIN16_PAIR:
-@@ -2152,26 +2186,81 @@ static uint64_t do_ld_beN(CPUState *cpu, MMULookupPageData *p,
+@@ -2152,26 +2186,82 @@ static uint64_t do_ld_beN(CPUState *cpu, MMULookupPageData *p,
          if (atom == MO_ATOM_IFALIGN_PAIR
              ? p->size == half_size
              : p->size >= half_size) {
@@ -974,12 +974,13 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
 +        (access_class == QEMU_CRUCIBLE_MEMORY_FETCH ?
 +         qemu_crucible_fault_memory_fetch_rules_active() :
 +         qemu_crucible_fault_memory_cpu_rules_active());
-+    vaddr instruction_pc = 0;
-+    uint32_t instruction_ordinal = 0;
-+    bool has_instruction = cpu_get_fault_instruction_identity(
-+        ra, &instruction_pc, &instruction_ordinal);
 +
 +    if (active) {
++        vaddr instruction_pc = 0;
++        uint32_t instruction_ordinal = 0;
++        bool has_instruction = cpu_get_fault_instruction_identity(
++            ra, &instruction_pc, &instruction_ordinal);
++
 +        qemu_crucible_fault_memory_transaction_begin(
 +            access_class, cpu->cpu_index, address, length,
 +            qemu_crucible_fault_observed_icount(), has_instruction,
@@ -998,7 +999,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
      int size = p->size;
      uint64_t b;
      MemOp atom;
-@@ -2187,16 +2276,22 @@ static Int128 do_ld16_beN(CPUState *cpu, MMULookupPageData *p,
+@@ -2187,16 +2277,22 @@ static Int128 do_ld16_beN(CPUState *cpu, MMULookupPageData *p,
      atom = mop & MO_ATOM_MASK;
      switch (atom) {
      case MO_ATOM_SUBALIGN:
@@ -1027,7 +1028,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
  
      case MO_ATOM_IFALIGN_PAIR:
          /*
-@@ -2206,9 +2301,16 @@ static Int128 do_ld16_beN(CPUState *cpu, MMULookupPageData *p,
+@@ -2206,9 +2302,16 @@ static Int128 do_ld16_beN(CPUState *cpu, MMULookupPageData *p,
      case MO_ATOM_IFALIGN:
      case MO_ATOM_WITHIN16:
      case MO_ATOM_NONE:
@@ -1047,7 +1048,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
          break;
  
      default:
-@@ -2218,14 +2320,156 @@ static Int128 do_ld16_beN(CPUState *cpu, MMULookupPageData *p,
+@@ -2218,14 +2321,156 @@ static Int128 do_ld16_beN(CPUState *cpu, MMULookupPageData *p,
      return int128_make128(b, a);
  }
  
@@ -1206,7 +1207,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
  }
  
  static uint16_t do_ld_2(CPUState *cpu, MMULookupPageData *p, int mmu_idx,
-@@ -2244,6 +2488,21 @@ static uint16_t do_ld_2(CPUState *cpu, MMULookupPageData *p, int mmu_idx,
+@@ -2244,6 +2489,21 @@ static uint16_t do_ld_2(CPUState *cpu, MMULookupPageData *p, int mmu_idx,
          if (memop & MO_BSWAP) {
              ret = bswap16(ret);
          }
@@ -1228,7 +1229,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
      }
      return ret;
  }
-@@ -2264,6 +2523,21 @@ static uint32_t do_ld_4(CPUState *cpu, MMULookupPageData *p, int mmu_idx,
+@@ -2264,6 +2524,21 @@ static uint32_t do_ld_4(CPUState *cpu, MMULookupPageData *p, int mmu_idx,
          if (memop & MO_BSWAP) {
              ret = bswap32(ret);
          }
@@ -1250,7 +1251,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
      }
      return ret;
  }
-@@ -2284,6 +2558,21 @@ static uint64_t do_ld_8(CPUState *cpu, MMULookupPageData *p, int mmu_idx,
+@@ -2284,6 +2559,21 @@ static uint64_t do_ld_8(CPUState *cpu, MMULookupPageData *p, int mmu_idx,
          if (memop & MO_BSWAP) {
              ret = bswap64(ret);
          }
@@ -1272,7 +1273,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
      }
      return ret;
  }
-@@ -2291,19 +2580,64 @@ static uint64_t do_ld_8(CPUState *cpu, MMULookupPageData *p, int mmu_idx,
+@@ -2291,19 +2581,64 @@ static uint64_t do_ld_8(CPUState *cpu, MMULookupPageData *p, int mmu_idx,
  static uint8_t do_ld1_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
                            uintptr_t ra, MMUAccessType access_type)
  {
@@ -1339,7 +1340,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
      MMULookupLocals l;
      bool crosspage;
      uint16_t ret;
-@@ -2311,6 +2645,9 @@ static uint16_t do_ld2_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
+@@ -2311,6 +2646,9 @@ static uint16_t do_ld2_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
  
      cpu_req_mo(cpu, TCG_MO_LD_LD | TCG_MO_ST_LD);
      crosspage = mmu_lookup(cpu, addr, oi, ra, access_type, &l);
@@ -1349,7 +1350,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
      if (likely(!crosspage)) {
          return do_ld_2(cpu, &l.page[0], l.mmu_idx, access_type, l.memop, ra);
      }
-@@ -2329,12 +2666,17 @@ static uint16_t do_ld2_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
+@@ -2329,12 +2667,17 @@ static uint16_t do_ld2_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
  static uint32_t do_ld4_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
                             uintptr_t ra, MMUAccessType access_type)
  {
@@ -1367,7 +1368,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
      if (likely(!crosspage)) {
          return do_ld_4(cpu, &l.page[0], l.mmu_idx, access_type, l.memop, ra);
      }
-@@ -2350,12 +2692,17 @@ static uint32_t do_ld4_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
+@@ -2350,12 +2693,17 @@ static uint32_t do_ld4_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
  static uint64_t do_ld8_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
                             uintptr_t ra, MMUAccessType access_type)
  {
@@ -1385,7 +1386,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
      if (likely(!crosspage)) {
          return do_ld_8(cpu, &l.page[0], l.mmu_idx, access_type, l.memop, ra);
      }
-@@ -2371,6 +2718,8 @@ static uint64_t do_ld8_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
+@@ -2371,6 +2719,8 @@ static uint64_t do_ld8_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
  static Int128 do_ld16_mmu(CPUState *cpu, vaddr addr,
                            MemOpIdx oi, uintptr_t ra)
  {
@@ -1394,7 +1395,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
      MMULookupLocals l;
      bool crosspage;
      uint64_t a, b;
-@@ -2379,6 +2728,9 @@ static Int128 do_ld16_mmu(CPUState *cpu, vaddr addr,
+@@ -2379,6 +2729,9 @@ static Int128 do_ld16_mmu(CPUState *cpu, vaddr addr,
  
      cpu_req_mo(cpu, TCG_MO_LD_LD | TCG_MO_ST_LD);
      crosspage = mmu_lookup(cpu, addr, oi, ra, MMU_DATA_LOAD, &l);
@@ -1404,7 +1405,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
      if (likely(!crosspage)) {
          if (unlikely(l.page[0].flags & TLB_MMIO)) {
              ret = do_ld16_mmio_beN(cpu, l.page[0].full, 0, addr, 16,
-@@ -2392,6 +2744,21 @@ static Int128 do_ld16_mmu(CPUState *cpu, vaddr addr,
+@@ -2392,6 +2745,21 @@ static Int128 do_ld16_mmu(CPUState *cpu, vaddr addr,
              if (l.memop & MO_BSWAP) {
                  ret = bswap128(ret);
              }
@@ -1426,7 +1427,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
          }
          return ret;
      }
-@@ -2536,6 +2903,35 @@ static uint64_t do_st_leN(CPUState *cpu, MMULookupPageData *p,
+@@ -2536,6 +2904,35 @@ static uint64_t do_st_leN(CPUState *cpu, MMULookupPageData *p,
      } else if (unlikely(p->flags & TLB_DISCARD_WRITE)) {
          return val_le >> (p->size * 8);
      }
@@ -1462,7 +1463,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
  
      /*
       * It is a given that we cross a page and therefore there is no atomicity
-@@ -2544,7 +2940,8 @@ static uint64_t do_st_leN(CPUState *cpu, MMULookupPageData *p,
+@@ -2544,7 +2941,8 @@ static uint64_t do_st_leN(CPUState *cpu, MMULookupPageData *p,
      atom = mop & MO_ATOM_MASK;
      switch (atom) {
      case MO_ATOM_SUBALIGN:
@@ -1472,7 +1473,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
  
      case MO_ATOM_IFALIGN_PAIR:
      case MO_ATOM_WITHIN16_PAIR:
-@@ -2554,14 +2951,16 @@ static uint64_t do_st_leN(CPUState *cpu, MMULookupPageData *p,
+@@ -2554,14 +2952,16 @@ static uint64_t do_st_leN(CPUState *cpu, MMULookupPageData *p,
          if (atom == MO_ATOM_IFALIGN_PAIR
              ? p->size == half_size
              : p->size >= half_size) {
@@ -1491,7 +1492,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
  
      default:
          g_assert_not_reached();
-@@ -2584,6 +2983,19 @@ static uint64_t do_st16_leN(CPUState *cpu, MMULookupPageData *p,
+@@ -2584,6 +2984,19 @@ static uint64_t do_st16_leN(CPUState *cpu, MMULookupPageData *p,
      } else if (unlikely(p->flags & TLB_DISCARD_WRITE)) {
          return int128_gethi(val_le) >> ((size - 8) * 8);
      }
@@ -1511,7 +1512,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
  
      /*
       * It is a given that we cross a page and therefore there is no atomicity
-@@ -2593,15 +3005,18 @@ static uint64_t do_st16_leN(CPUState *cpu, MMULookupPageData *p,
+@@ -2593,15 +3006,18 @@ static uint64_t do_st16_leN(CPUState *cpu, MMULookupPageData *p,
      switch (atom) {
      case MO_ATOM_SUBALIGN:
          store_parts_leN(p->haddr, 8, int128_getlo(val_le));
@@ -1533,7 +1534,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
  
      case MO_ATOM_IFALIGN_PAIR:
          /*
-@@ -2612,8 +3027,9 @@ static uint64_t do_st16_leN(CPUState *cpu, MMULookupPageData *p,
+@@ -2612,8 +3028,9 @@ static uint64_t do_st16_leN(CPUState *cpu, MMULookupPageData *p,
      case MO_ATOM_WITHIN16:
      case MO_ATOM_NONE:
          stq_le_p(p->haddr, int128_getlo(val_le));
@@ -1545,7 +1546,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
  
      default:
          g_assert_not_reached();
-@@ -2621,14 +3037,32 @@ static uint64_t do_st16_leN(CPUState *cpu, MMULookupPageData *p,
+@@ -2621,14 +3038,32 @@ static uint64_t do_st16_leN(CPUState *cpu, MMULookupPageData *p,
  }
  
  static void do_st_1(CPUState *cpu, MMULookupPageData *p, uint8_t val,
@@ -1581,7 +1582,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
      }
  }
  
-@@ -2643,11 +3077,23 @@ static void do_st_2(CPUState *cpu, MMULookupPageData *p, uint16_t val,
+@@ -2643,11 +3078,23 @@ static void do_st_2(CPUState *cpu, MMULookupPageData *p, uint16_t val,
      } else if (unlikely(p->flags & TLB_DISCARD_WRITE)) {
          /* nothing */
      } else {
@@ -1606,7 +1607,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
      }
  }
  
-@@ -2662,11 +3108,23 @@ static void do_st_4(CPUState *cpu, MMULookupPageData *p, uint32_t val,
+@@ -2662,11 +3109,23 @@ static void do_st_4(CPUState *cpu, MMULookupPageData *p, uint32_t val,
      } else if (unlikely(p->flags & TLB_DISCARD_WRITE)) {
          /* nothing */
      } else {
@@ -1631,7 +1632,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
      }
  }
  
-@@ -2681,36 +3139,104 @@ static void do_st_8(CPUState *cpu, MMULookupPageData *p, uint64_t val,
+@@ -2681,36 +3140,104 @@ static void do_st_8(CPUState *cpu, MMULookupPageData *p, uint64_t val,
      } else if (unlikely(p->flags & TLB_DISCARD_WRITE)) {
          /* nothing */
      } else {
@@ -1739,7 +1740,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
      if (likely(!crosspage)) {
          do_st_2(cpu, &l.page[0], val, l.mmu_idx, l.memop, ra);
          return;
-@@ -2721,18 +3247,23 @@ static void do_st2_mmu(CPUState *cpu, vaddr addr, uint16_t val,
+@@ -2721,18 +3248,23 @@ static void do_st2_mmu(CPUState *cpu, vaddr addr, uint16_t val,
      } else {
          b = val, a = val >> 8;
      }
@@ -1765,7 +1766,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
      if (likely(!crosspage)) {
          do_st_4(cpu, &l.page[0], val, l.mmu_idx, l.memop, ra);
          return;
-@@ -2749,11 +3280,16 @@ static void do_st4_mmu(CPUState *cpu, vaddr addr, uint32_t val,
+@@ -2749,11 +3281,16 @@ static void do_st4_mmu(CPUState *cpu, vaddr addr, uint32_t val,
  static void do_st8_mmu(CPUState *cpu, vaddr addr, uint64_t val,
                         MemOpIdx oi, uintptr_t ra)
  {
@@ -1782,7 +1783,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
      if (likely(!crosspage)) {
          do_st_8(cpu, &l.page[0], val, l.mmu_idx, l.memop, ra);
          return;
-@@ -2770,6 +3306,8 @@ static void do_st8_mmu(CPUState *cpu, vaddr addr, uint64_t val,
+@@ -2770,6 +3307,8 @@ static void do_st8_mmu(CPUState *cpu, vaddr addr, uint64_t val,
  static void do_st16_mmu(CPUState *cpu, vaddr addr, Int128 val,
                          MemOpIdx oi, uintptr_t ra)
  {
@@ -1791,7 +1792,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
      MMULookupLocals l;
      bool crosspage;
      uint64_t a, b;
-@@ -2777,6 +3315,9 @@ static void do_st16_mmu(CPUState *cpu, vaddr addr, Int128 val,
+@@ -2777,6 +3316,9 @@ static void do_st16_mmu(CPUState *cpu, vaddr addr, Int128 val,
  
      cpu_req_mo(cpu, TCG_MO_LD_ST | TCG_MO_ST_ST);
      crosspage = mmu_lookup(cpu, addr, oi, ra, MMU_DATA_STORE, &l);
@@ -1801,7 +1802,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
      if (likely(!crosspage)) {
          if (unlikely(l.page[0].flags & TLB_MMIO)) {
              if ((l.memop & MO_BSWAP) != MO_LE) {
-@@ -2786,11 +3327,29 @@ static void do_st16_mmu(CPUState *cpu, vaddr addr, Int128 val,
+@@ -2786,11 +3328,29 @@ static void do_st16_mmu(CPUState *cpu, vaddr addr, Int128 val,
          } else if (unlikely(l.page[0].flags & TLB_DISCARD_WRITE)) {
              /* nothing */
          } else {
@@ -1832,7 +1833,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
          }
          return;
      }
-@@ -2825,6 +3384,93 @@ static void do_st16_mmu(CPUState *cpu, vaddr addr, Int128 val,
+@@ -2825,6 +3385,93 @@ static void do_st16_mmu(CPUState *cpu, vaddr addr, Int128 val,
      }
  }
  
@@ -1926,7 +1927,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
  #include "ldst_common.c.inc"
  
  /*
-@@ -2856,6 +3502,12 @@ static void do_st16_mmu(CPUState *cpu, vaddr addr, Int128 val,
+@@ -2856,6 +3503,12 @@ static void do_st16_mmu(CPUState *cpu, vaddr addr, Int128 val,
  #include "atomic_template.h"
  #endif
  
@@ -165932,6 +165933,433 @@ index 0000000000000000000000000000000000000000..ee2bb16e87d73feab53496231bcb3f46
 +                    test_rr_timer_notify_queues_work_only_while_parked);
 +    return g_test_run();
 +}
+diff --git a/tests/unit/test-crucible-lazy-memory-identity.py b/tests/unit/test-crucible-lazy-memory-identity.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..9e64ac2c400b56793077d3f913f62e21ae82285e
+--- /dev/null
++++ b/tests/unit/test-crucible-lazy-memory-identity.py
+@@ -0,0 +1,421 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Exercise production memory guards and instruction identity helpers.
++
++Production eligibility, start, cleanup/finish, class predicates, begin wrapper
++and both identity helpers run unchanged. GLib holds the bounded memory index.
++TB region lookup, unwind data, observed icount, rule-family registries and
++transaction callback effects are bounded providers. No translated guest,
++real unwind-table decoding, exception longjmp, scheduler or native migration
++execution is claimed. Early C scope exits test the actual cleanup attribute;
++explicit finish/disarm models the existing call-site ownership convention.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import runpy
++import shlex
++import subprocess
++
++
++ROOT = Path(__file__).resolve().parents[2]
++definition = runpy.run_path(str(Path(__file__).with_name(
++    "test-crucible-net-output-stop.py")))["definition"]
++
++PRELUDE = r"""
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++#include <glib.h>
++
++typedef uint64_t vaddr;
++typedef struct CPUState { unsigned int cpu_index; } CPUState;
++typedef struct TranslationBlock { unsigned int icount; } TranslationBlock;
++typedef struct MMULookupLocals {
++    struct { unsigned int flags; } page[2];
++} MMULookupLocals;
++typedef struct QemuCrucibleFaultRule { unsigned int tag; } QemuCrucibleFaultRule;
++#define TLB_MMIO 1
++#define INSN_START_WORDS 2
++#define ICOUNT_PRECISE 1
++#define CRUCIBLE_FAULT_COMMAND_CPU_REGISTER_TRANSFORM 3
++
++bool cpu_get_fault_instruction_identity_with_tb(
++    uintptr_t, vaddr *, uint32_t *, const TranslationBlock **);
++bool cpu_get_fault_instruction_identity(uintptr_t, vaddr *, uint32_t *);
++bool qemu_crucible_fault_memory_rules_active(void);
++bool qemu_crucible_fault_memory_fetch_rules_active(void);
++bool qemu_crucible_fault_memory_cpu_rules_active(void);
++bool qemu_crucible_fault_register_rules_active(void);
++bool qemu_crucible_fault_instruction_rules_active(void);
++/* BEGIN_PROTOTYPE */
++
++static GPtrArray *crucible_node_rules;
++static GArray *crucible_memory_gpa_index, *crucible_memory_gva_index;
++static bool crucible_memory_recursive;
++static uint32_t crucible_memory_access_classes;
++static const char *accel = "sim";
++static int icount_mode = ICOUNT_PRECISE;
++static bool register_rule, instruction_rule, instruction_context;
++static unsigned int identities, regions, unwinds, observations;
++static unsigned int fetch_predicates, cpu_predicates, accelerator_reads;
++static unsigned int begins, ends;
++static bool transaction_open;
++static uintptr_t expected_ra = 0x12345;
++static TranslationBlock provided_tb = { .icount = 19 };
++static bool missing_tb;
++static int unwind_left = 7;
++static uint64_t raw_icount = UINT64_C(0x123456789abcdef);
++static uint64_t provided_pc = UINT64_C(0x8765432100);
++
++static struct {
++    unsigned int access_class, actor;
++    uint64_t address, observed, pc;
++    size_t length;
++    bool has_instruction;
++    uint32_t ordinal;
++} received;
++
++static const char *current_accel_name(void)
++{
++    accelerator_reads++;
++    return accel;
++}
++
++static int icount_enabled(void)
++{
++    return icount_mode;
++}
++
++/* One region and one unwind row deliberately bound the helper's inputs. */
++static TranslationBlock *tcg_tb_lookup(uintptr_t ra)
++{
++    regions++;
++    g_assert_cmpuint(ra, ==, expected_ra);
++    return missing_tb ? NULL : &provided_tb;
++}
++
++static int cpu_unwind_data_from_tb(TranslationBlock *tb, uintptr_t ra,
++                                   uint64_t *data)
++{
++    unwinds++;
++    g_assert_true(tb == &provided_tb);
++    g_assert_cmpuint(ra, ==, expected_ra);
++    data[0] = provided_pc;
++    data[1] = UINT64_MAX;
++    return unwind_left;
++}
++
++static uint64_t qemu_crucible_fault_observed_icount(void)
++{
++    observations++;
++    return raw_icount;
++}
++
++static void node_memory_transaction_begin(
++    enum QemuCrucibleMemoryAccessClass access_class, uint32_t actor,
++    uint64_t address, size_t length, uint64_t observed, bool has_instruction,
++    uint64_t pc, uint32_t ordinal, bool fetch, bool cpu, const void *ticket)
++{
++    g_assert_false(transaction_open);
++    g_assert_false(fetch);
++    g_assert_true(cpu);
++    g_assert_null(ticket);
++    transaction_open = true;
++    begins++;
++    received.access_class = access_class;
++    received.actor = actor;
++    received.address = address;
++    received.length = length;
++    received.observed = observed;
++    received.has_instruction = has_instruction;
++    received.pc = pc;
++    received.ordinal = ordinal;
++}
++
++static void qemu_crucible_fault_memory_transaction_end(void)
++{
++    g_assert_true(transaction_open);
++    transaction_open = false;
++    ends++;
++}
++
++static void qemu_crucible_fault_rule_foreach(
++    unsigned int tag, void (*visit)(const QemuCrucibleFaultRule *, void *),
++    void *opaque)
++{
++    QemuCrucibleFaultRule rule = { .tag = tag };
++
++    g_assert_cmpuint(tag, ==, CRUCIBLE_FAULT_COMMAND_CPU_REGISTER_TRANSFORM);
++    if (register_rule) {
++        visit(&rule, opaque);
++    }
++}
++
++static bool crucible_instruction_rule_registry_active(void)
++{
++    return instruction_rule;
++}
++
++static bool crucible_instruction_contexts_active(void)
++{
++    return instruction_context;
++}
++"""
++
++COUNTERS = r"""
++/* Count entry to the unchanged production identity and class predicates. */
++static bool counted_identity(uintptr_t ra, vaddr *pc, uint32_t *ordinal)
++{
++    identities++;
++    return cpu_get_fault_instruction_identity(ra, pc, ordinal);
++}
++#define cpu_get_fault_instruction_identity counted_identity
++
++static bool counted_fetch(void)
++{
++    fetch_predicates++;
++    return qemu_crucible_fault_memory_fetch_rules_active();
++}
++#define qemu_crucible_fault_memory_fetch_rules_active counted_fetch
++
++static bool counted_cpu(void)
++{
++    cpu_predicates++;
++    return qemu_crucible_fault_memory_cpu_rules_active();
++}
++#define qemu_crucible_fault_memory_cpu_rules_active counted_cpu
++"""
++
++CHECKS = r"""
++static void reset_counts(void)
++{
++    g_assert_false(transaction_open);
++    identities = regions = unwinds = observations = 0;
++    fetch_predicates = cpu_predicates = accelerator_reads = 0;
++    begins = ends = 0;
++    memset(&received, 0, sizeof(received));
++}
++
++static void guarded_access(enum QemuCrucibleMemoryAccessClass access_class,
++                           bool eligible, uintptr_t ra, unsigned int finish)
++{
++    CPUState cpu = { .cpu_index = 31 };
++    CrucibleFaultMemoryTransactionGuard transaction
++        CRUCIBLE_MEMORY_TRANSACTION_GUARD =
++        crucible_fault_memory_transaction_start(
++            &cpu, access_class, UINT64_C(0xabcdef0100), 13, ra, eligible);
++
++    if (finish == 1) {
++        return;
++    }
++    if (finish == 2 && transaction.active) {
++        qemu_crucible_fault_memory_transaction_end();
++        transaction.active = false;
++    }
++}
++
++static void inactive_checks(void)
++{
++    const unsigned int classes[] = {
++        QEMU_CRUCIBLE_MEMORY_FETCH,
++        QEMU_CRUCIBLE_MEMORY_CPU_LOAD,
++        QEMU_CRUCIBLE_MEMORY_CPU_STORE,
++    };
++
++    /* All unrelated rule combinations use their production active queries. */
++    for (unsigned int unrelated = 0; unrelated < 8; unrelated++) {
++        register_rule = unrelated & 1;
++        instruction_rule = unrelated & 2;
++        instruction_context = unrelated & 4;
++        g_assert_cmpint(qemu_crucible_fault_register_rules_active(), ==,
++                        register_rule);
++        g_assert_cmpint(qemu_crucible_fault_instruction_rules_active(), ==,
++                        instruction_rule || instruction_context);
++
++        for (unsigned int c = 0; c < G_N_ELEMENTS(classes); c++) {
++            for (unsigned int state = 0; state < 9; state++) {
++                MMULookupLocals lookup = { 0 };
++                bool crosspage = state == 8;
++
++                crucible_memory_access_classes = state == 0 ? 0 : 7;
++                crucible_memory_recursive = state == 1;
++                accel = state == 2 ? "tcg" : "sim";
++                icount_mode = state == 3 ? 0 : ICOUNT_PRECISE;
++                GPtrArray *saved_rules = crucible_node_rules;
++                if (state == 4) {
++                    crucible_node_rules = NULL;
++                }
++                g_array_set_size(crucible_memory_gpa_index, state == 5 ? 0 : 1);
++                lookup.page[0].flags = state == 6 ? TLB_MMIO : 0;
++                lookup.page[1].flags = state == 8 ? TLB_MMIO : 0;
++                bool eligible = state != 7 &&
++                    crucible_fault_memory_pages_eligible(&lookup, crosspage);
++
++                reset_counts();
++                guarded_access(classes[c], eligible, expected_ra, state % 3);
++                g_assert_cmpuint(identities, ==, 0);
++                g_assert_cmpuint(regions, ==, 0);
++                g_assert_cmpuint(unwinds, ==, 0);
++                g_assert_cmpuint(observations, ==, 0);
++                g_assert_cmpuint(begins, ==, 0);
++                g_assert_cmpuint(ends, ==, 0);
++                g_assert_cmpuint(fetch_predicates, ==,
++                    eligible && classes[c] == QEMU_CRUCIBLE_MEMORY_FETCH);
++                g_assert_cmpuint(cpu_predicates, ==,
++                    eligible && classes[c] != QEMU_CRUCIBLE_MEMORY_FETCH);
++                if (!eligible || state == 0) {
++                    g_assert_cmpuint(accelerator_reads, ==, 0);
++                }
++                crucible_node_rules = saved_rules;
++            }
++        }
++    }
++    puts("PASS production lazy memory identity: inactive FETCH/LOAD/STORE, MMIO on either page, ineligible and unrelated register/instruction rules avoid identity/region/unwind/icount callbacks");
++}
++
++static void active_checks(void)
++{
++    const unsigned int classes[] = {
++        QEMU_CRUCIBLE_MEMORY_FETCH,
++        QEMU_CRUCIBLE_MEMORY_CPU_LOAD,
++        QEMU_CRUCIBLE_MEMORY_CPU_STORE,
++    };
++
++    crucible_memory_recursive = false;
++    accel = "sim";
++    icount_mode = ICOUNT_PRECISE;
++    crucible_memory_access_classes = 7;
++    g_array_set_size(crucible_memory_gpa_index, 1);
++
++    for (unsigned int c = 0; c < G_N_ELEMENTS(classes); c++) {
++        for (unsigned int failure = 0; failure < 4; failure++) {
++            missing_tb = failure == 2;
++            unwind_left = failure == 3 ? -1 : 7;
++            uintptr_t ra = failure == 1 ? 0 : expected_ra;
++            bool valid = failure == 0;
++
++            for (unsigned int finish = 0; finish < 3; finish++) {
++                reset_counts();
++                guarded_access(classes[c], true, ra, finish);
++                g_assert_false(transaction_open);
++                g_assert_cmpuint(identities, ==, 1);
++                g_assert_cmpuint(regions, ==, ra != 0);
++                g_assert_cmpuint(unwinds, ==, ra != 0 && !missing_tb);
++                g_assert_cmpuint(observations, ==, 1);
++                g_assert_cmpuint(begins, ==, 1);
++                g_assert_cmpuint(ends, ==, 1);
++                g_assert_cmpuint(fetch_predicates, ==,
++                                classes[c] == QEMU_CRUCIBLE_MEMORY_FETCH);
++                g_assert_cmpuint(cpu_predicates, ==,
++                                classes[c] != QEMU_CRUCIBLE_MEMORY_FETCH);
++                g_assert_cmpuint(received.access_class, ==, classes[c]);
++                g_assert_cmpuint(received.actor, ==, 31);
++                g_assert_cmpuint(received.address, ==, UINT64_C(0xabcdef0100));
++                g_assert_cmpuint(received.length, ==, 13);
++                g_assert_cmpuint(received.observed, ==, raw_icount);
++                g_assert_cmpint(received.has_instruction, ==, valid);
++                g_assert_cmpuint(received.pc, ==, valid ? provided_pc : 0);
++                g_assert_cmpuint(received.ordinal, ==, valid ? 12 : 0);
++            }
++        }
++    }
++    missing_tb = false;
++    unwind_left = 7;
++    vaddr pc = 0;
++    uint32_t ordinal = 0;
++    const TranslationBlock *tb = NULL;
++    g_assert_true(cpu_get_fault_instruction_identity_with_tb(
++        expected_ra, &pc, &ordinal, &tb));
++    g_assert_true(tb == &provided_tb);
++    g_assert_cmpuint(pc, ==, provided_pc);
++    g_assert_cmpuint(ordinal, ==, 12);
++    puts("PASS production lazy memory identity: valid identity and RA/TB/unwind failures retain exact begin arguments and observed icount; ordinary exit, early scope exit and explicit finish/disarm each balance cleanup");
++}
++
++int main(void)
++{
++    crucible_node_rules = g_ptr_array_new();
++    crucible_memory_gpa_index = g_array_new(false, false, sizeof(uint64_t));
++    crucible_memory_gva_index = g_array_new(false, false, sizeof(uint64_t));
++    inactive_checks();
++    active_checks();
++    g_ptr_array_unref(crucible_node_rules);
++    g_array_unref(crucible_memory_gpa_index);
++    g_array_unref(crucible_memory_gva_index);
++    return 0;
++}
++"""
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--negative-control", choices=["eager-identity"])
++    arguments = parser.parse_args()
++    arguments.output_dir.mkdir(parents=True, exist_ok=True)
++
++    cputlb = (ROOT / "accel/tcg/cputlb.c").read_text()
++    translate = (ROOT / "accel/tcg/translate-all.c").read_text()
++    node = (ROOT / "plugins/crucible-fault-node.c").read_text()
++    register = (ROOT / "plugins/crucible-fault-register.c").read_text()
++    instruction = (ROOT / "plugins/crucible-fault-instruction.c").read_text()
++    header = (ROOT / "include/qemu/crucible-fault.h").read_text()
++    classes = header[header.index("enum QemuCrucibleMemoryAccessClass {"):
++                     header.index("enum QemuCrucibleFwCfgDmaDirection {")]
++    guard = cputlb[cputlb.index("typedef struct CrucibleFaultMemoryTransactionGuard {"):
++                   cputlb.index("static bool crucible_fault_memory_pages_eligible(")]
++    start = definition(cputlb, "static CrucibleFaultMemoryTransactionGuard\n"
++                       "crucible_fault_memory_transaction_start(")
++    if arguments.negative_control:
++        lazy = ("    if (active) {\n"
++                "        vaddr instruction_pc = 0;\n"
++                "        uint32_t instruction_ordinal = 0;\n"
++                "        bool has_instruction = cpu_get_fault_instruction_identity(\n"
++                "            ra, &instruction_pc, &instruction_ordinal);\n\n")
++        eager = ("    vaddr instruction_pc = 0;\n"
++                 "    uint32_t instruction_ordinal = 0;\n"
++                 "    bool has_instruction = cpu_get_fault_instruction_identity(\n"
++                 "        ra, &instruction_pc, &instruction_ordinal);\n\n"
++                 "    if (active) {\n")
++        assert start.count(lazy) == 1
++        start = start.replace(lazy, eager)
++
++    begin = definition(node, "void qemu_crucible_fault_memory_transaction_begin(")
++    bodies = "\n\n".join([
++        definition(translate, "bool cpu_get_fault_instruction_identity_with_tb("),
++        definition(translate, "bool cpu_get_fault_instruction_identity("),
++        *[definition(node, signature) for signature in [
++            "bool qemu_crucible_fault_memory_rules_active(",
++            "bool qemu_crucible_fault_memory_fetch_rules_active(",
++            "bool qemu_crucible_fault_memory_cpu_rules_active(",
++        ]],
++        definition(register, "static void crucible_register_active_visit("),
++        definition(register, "bool qemu_crucible_fault_register_rules_active("),
++        definition(instruction, "bool qemu_crucible_fault_instruction_rules_active("),
++        begin,
++    ])
++    prototype = begin[:begin.index("{")].rstrip() + ";"
++    generated = arguments.output_dir / "lazy-memory-identity.c"
++    generated.write_text("\n\n".join([
++        "/* SPDX-License-Identifier: GPL-2.0-or-later */", classes,
++        PRELUDE.replace("/* BEGIN_PROTOTYPE */", prototype), bodies, COUNTERS,
++        guard, definition(cputlb, "static bool crucible_fault_memory_pages_eligible("),
++        start, CHECKS,
++    ]))
++    binary = arguments.output_dir / "lazy-memory-identity"
++    command = [os.environ.get("CC", "cc"),
++               *shlex.split(os.environ.get("CFLAGS", "")),
++               str(generated), "-o", str(binary),
++               *shlex.split(os.environ.get("LDFLAGS", ""))]
++    (arguments.output_dir / "compile-command.json").write_text(
++        json.dumps({"cwd": os.getcwd(), "argv": command}, indent=2) + "\n")
++    subprocess.run(command, check=True)
++    print("Compiled production lazy memory identity fixture", flush=True)
++    subprocess.run([str(binary)], cwd=arguments.output_dir, check=True)
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-lifecycle-projection.py b/tests/unit/test-crucible-lifecycle-projection.py
 new file mode 100644
 index 0000000000000000000000000000000000000000..44a597e40e108dd747f6b15429cf7b58581d484e
