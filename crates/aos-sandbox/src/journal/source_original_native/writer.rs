@@ -749,14 +749,7 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
             return Err(invalid("original Release admission owner shape"));
         }
 
-        let mut after = journal.state.clone();
-        for record in owners.records() {
-            let value = record.value().ok_or(JournalError::InvalidTransaction)?;
-            after.insert(
-                (RecordNamespace::SourceProviderAuthority, record.key().to_vec()),
-                value.to_vec(),
-            );
-        }
+        let after = super::super::root_original_inventory::materialize(&journal.state, owners);
         let proposal = propose_native_held_lifecycle_v1(
             super::owner_views(&journal.state),
             super::owner_views(&after),
