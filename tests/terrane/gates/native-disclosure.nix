@@ -6,8 +6,14 @@
   qualifySuite = package: features: selector: required: ''
     cargo test --frozen --offline -p ${package} --lib ${features} ${lib.escapeShellArg selector} -- --list > "$TMPDIR/inventory.log"
     python3 ../tests/terrane/check_native_gate.py inventory "$TMPDIR/inventory.log" ${lib.escapeShellArg (builtins.toJSON required)}
-    cargo test --frozen --offline -p ${package} --lib ${features} ${lib.escapeShellArg selector} > "$TMPDIR/native.log"
-    python3 ../tests/terrane/check_native_gate.py execution "$TMPDIR/native.log" ${lib.escapeShellArg (builtins.toJSON required)}
+    # Failed case output must survive teardown of the local test sandbox.
+    if cargo test --frozen --offline -p ${package} --lib ${features} ${lib.escapeShellArg selector} > "$TMPDIR/native.log"; then
+      python3 ../tests/terrane/check_native_gate.py execution "$TMPDIR/native.log" ${lib.escapeShellArg (builtins.toJSON required)}
+    else
+      native_test_status=$?
+      cat "$TMPDIR/native.log" >&2
+      exit "$native_test_status"
+    fi
   '';
 
   nativeSuite = selector: names:

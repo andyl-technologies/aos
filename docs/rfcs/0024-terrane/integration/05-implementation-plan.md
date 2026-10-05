@@ -203,6 +203,19 @@ pending; the new producer entry points are unused until that adoption. This
 shared prerequisite grants no collection, deletion or age authority and
 advances no task checkbox or milestone freeze.
 
+The owning registry now also requires eight actual native creation/journal
+witnesses in `bucket-file-atomic-write` and an exact external journal-key
+association witness in `bucket-key-registry`. Missing witnesses fail explicitly;
+the preceding eight-case atomic result does not qualify these additional cases.
+Registry completeness and both mandatory formatters pass. The atomic request
+refuses its first missing creator case; the key request stops at the preceding
+missing native staging-key case. All nine creator selectors occur in the actual
+rendered check scripts, whose inner and outer AOS Bash syntax passes.
+Native disclosure gate failures now emit their captured case output before
+exiting, preserving the original failure status and successful execution checks.
+The earlier four isolated gate failures discarded that output during sandbox
+teardown; their exact failed cases remain unknown, and no cause is inferred.
+
 The preceding completed full qualification records candidate
 `15540ef204ec`, which combines reviewed source discovery, immutable lookup,
 repeatable I/P/G maintenance, separate verifier/preparation work, common Memo

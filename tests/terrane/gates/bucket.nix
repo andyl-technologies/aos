@@ -44,6 +44,17 @@
     "publication::held_read_tests::burns::index_alias_filter_preserves_missing_bodies_and_original_error_priority"
   ];
 
+  nativeCreationTests = [
+    "native_creation_commits_pack_and_index_from_real_container_writers"
+    "native_creation_selects_pending_before_any_artifact_mutation"
+    "native_creation_preserves_imported_unknown_and_existing_versions"
+    "native_creation_recreation_uses_fresh_nonce_for_equal_bytes"
+    "native_creation_refuses_owned_journals_and_invalid_preimages"
+    "native_creation_sync_failures_never_acknowledge_unqualified_versions"
+    "native_creation_cancellation_retains_actual_exclusion_through_completion"
+    "native_creation_readonly_and_unavailable_retention_create_nothing"
+  ];
+
   focusedTests = ''
     run_bucket_test() {
       test_name=$1
@@ -140,6 +151,7 @@ in {
     run_bucket_test bucket::publication::control::tests::activation_staging_accepts_only_its_exact_protected_key
     run_core_bucket_test bucket::keys::tests::protected_delete_operations_require_canonical_cas_keys
     run_core_bucket_test bucket::keys::tests::publication_payload_keys_preserve_mutability_and_control_separation
+    run_bucket_test store::native_effect::publication::creation_tests::native_creation_keys_remain_external_and_exactly_associated
     printf 'PASS: bucket-key-registry native layout and pure protected-key conformance\n' > "$out/result"
   '';
   bucket-file-layout = gate "bucket-file-layout" [
@@ -166,7 +178,8 @@ in {
     run_bucket_test store::native_effect::tests::directory::failed_parent_sync_never_acknowledges_directory_repair
     run_bucket_test store::native_effect::tests::directory::replacement_after_creation_preserves_the_same_owner_decoy
     run_bucket_test store::native_effect::tests::root_owned_leaf_policy_preserves_actual_operator_ancestor
-    printf 'PASS: native atomic writes and descriptor-bound private directories\n' > "$out/result"
+    ${builtins.concatStringsSep "\n" (map (test: "run_bucket_test store::native_effect::publication::creation_tests::${test}") nativeCreationTests)}
+    printf 'PASS: native atomic writes, descriptor-bound private directories and creation journals\n' > "$out/result"
   '';
   bucket-file-cas = gate "bucket-file-cas" (heldContentTests ++ controlFenceTests ++ protectedReadTests ++ ["publication::held_read_tests::record_parent_batches_preserve_entries_duplicates_and_exact_gets" "publication::held_read_tests::record_parent_short_batches_refuse_before_exact_reads_or_effects" "publication::held_read_tests::unsafe_protected_record_parent_precedes_later_missing_parent" "publication::held_read_tests::unsafe_payload_record_parent_precedes_later_metadata_failure" "publication::held_read_tests::payload_parent_batch_final_check_rejects_ancestry_change_after_exact_read" "publication::held_read_tests::short_native_metadata_batch_is_rejected_before_selected_reads_or_effects" "publication::held_read_tests::unsafe_native_ancestor_precedes_later_missing_path_error" "publication::held_read_tests::held_ref_reads_match_ordinary_and_refresh_after_own_publication" "publication::held_read_tests::held_ref_read_rechecks_ancestry_with_unchanged_selected_bytes" "publication::held_read_tests::held_chain_final_check_rejects_real_ancestry_permission_change" "publication::held_read_tests::held_chain_reads_preserve_exact_gets_and_reduce_repeated_metadata" "held_tests::held_buckets_identity_matches_independently_opened_physical_namespace" "version_tests::v2_effects_refuse_changed_version_under_the_actual_root_exclusion" "held_tests::held_buckets_source_readonly_destination_durable_and_independent_reopen" "held_tests::held_buckets_inverse_transactions_finish_in_canonical_order" "held_tests::held_buckets_reject_same_root_and_hardlinked_coordination_inode" "held_tests::held_buckets_cancellation_releases_both_namespace_guards" "held_tests::held_buckets_source_revision_cannot_change_before_destination_cas" "held_tests::held_buckets_cancellation_while_waiting_second_releases_first" "tests::whole_record_cas_has_one_winner_across_independent_opens" "tests::stable_exclusion_inode_survives_cas_and_reopen" "fault_tests::failed_final_cas_sync_requires_authoritative_reread_after_possible_application" "selection_tests::complete_ref_inventory_survives_reopen_index_publication_and_ref_removal" "selection_tests::legacy_unknown_inventory_refuses_unregistered_existing_and_new_advances" "selection_tests::opening_an_existing_empty_root_is_not_fresh_initialization_authority" "fault_tests::first_ref_inventory_is_durable_before_an_indeterminate_head_install" "selection_tests::a_head_missing_from_a_complete_inventory_is_corruption"]);
   bucket-mutability-classes = gate "bucket-mutability-classes" ["tests::tags_and_reflogs_never_replace_existing_bytes" "content_tests::repeated_put_preserves_first_encoding_and_survives_reopen"];
