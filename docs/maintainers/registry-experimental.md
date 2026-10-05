@@ -137,8 +137,14 @@ the first canonical registry base:
 apr create andyl-experimental \
   --trust-key "$ANDYL_EXPERIMENTAL_TRUST_KEY" \
   --trust-key-id experimental-v1 \
+  --roster-key andyl-experimental-provenance-v1="$ANDYL_EXPERIMENTAL_PROVENANCE_TRUST_KEY" \
   --key "$ANDYL_EXPERIMENTAL_REGISTRY_KEY"
 ```
+
+`--roster-key` commits the package-provenance signer as a second active
+`keys.toml` key in the root commit: the release's package-provenance signer
+must be an active roster key, and a first release plans from the clone's
+single root commit, so the key cannot be added by a later commit.
 
 The Hub slug and signed release identity are `andyl/experimental`; the clone name and
 trust-line prefix are `andyl-experimental`. Keep this clone clean and at its
