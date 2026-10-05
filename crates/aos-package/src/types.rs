@@ -1642,7 +1642,7 @@ pub struct BootProviderState {
 pub struct ModuleLibraryIdentity {
     /// Locates the immutable library artifact root.
     pub store_path: String,
-    /// Contains the admitted SHA-256 NAR hash in SRI form.
+    /// Contains the admitted NAR identity as `sha256:<lowercase-hex>`.
     pub nar_hash: String,
     /// Contains the admitted NAR byte length.
     pub nar_size: u64,
@@ -1792,18 +1792,10 @@ impl ImageGenerationState {
             {
                 bail!("native image evaluation descriptor is not a canonical store member");
             }
-            use base64::Engine as _;
-            let encoded = generation
-                .module_library
-                .nar_hash
-                .strip_prefix("sha256-")
-                .context("native module library requires an SHA-256 SRI NAR identity")?;
-            let decoded = base64::engine::general_purpose::STANDARD.decode(encoded)?;
-            if decoded.len() != 32
-                || base64::engine::general_purpose::STANDARD.encode(&decoded) != encoded
-                || generation.module_library.nar_size == 0
-            {
-                bail!("native module library NAR identity is malformed or empty");
+            aos_contract::Sha256Digest::parse(&generation.module_library.nar_hash)
+                .context("native module library requires a canonical SHA-256 NAR identity")?;
+            if generation.module_library.nar_size == 0 {
+                bail!("native module library NAR size is empty");
             }
         }
 
@@ -3051,7 +3043,7 @@ pin = "v2026.02"
                     module_library: ModuleLibraryIdentity {
                         store_path: "/nix/store/11111111111111111111111111111111-module-library"
                             .into(),
-                        nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
+                        nar_hash: format!("sha256:{}", "0".repeat(64)),
                         nar_size: 1,
                     },
                     evaluation_descriptor:
@@ -3077,7 +3069,7 @@ pin = "v2026.02"
                     module_library: crate::types::ModuleLibraryIdentity {
                         store_path: "/nix/store/11111111111111111111111111111111-module-library"
                             .into(),
-                        nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
+                        nar_hash: format!("sha256:{}", "0".repeat(64)),
                         nar_size: 1,
                     },
                     evaluation_descriptor:

@@ -281,7 +281,7 @@ mod tests {
             kernel_path: None,
             module_library: crate::types::ModuleLibraryIdentity {
                 store_path: "/nix/store/11111111111111111111111111111111-module-library".into(),
-                nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
+                nar_hash: format!("sha256:{}", "0".repeat(64)),
                 nar_size: 1,
             },
             evaluation_descriptor:
