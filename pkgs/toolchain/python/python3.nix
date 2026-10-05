@@ -284,29 +284,7 @@ in
       {
         name = "install";
         script = ''
-          ${
-            if isDarwinCross
-            then ''
-              make install
-              # CPython records its configure directory in target sysconfig
-              # metadata. Downstream extension builds need the flags, not the
-              # ephemeral sandbox path from the Linux builder.
-              sed -i "s|$PWD|.|g" \
-                "$out/lib/python3.14/_sysconfig_vars__darwin_darwin.json" \
-                "$out/lib/python3.14/_sysconfigdata__darwin_darwin.py" \
-                "$out/lib/python3.14/config-3.14-darwin/Makefile"
-              find "$out/lib/python3.14/__pycache__" \
-                -name '_sysconfigdata__darwin_darwin.*.pyc' -delete
-            ''
-            else "make install"
-          }
-          # Ensure 'python' symlink exists alongside 'python3'
-          if [ ! -e $out/bin/python ]; then
-            ln -sf python3 $out/bin/python
-          fi
-
-          # Install jinja2 + markupsafe (needed by systemd's meson build)
-          # Manual install: copy pure-Python packages to site-packages
+          # Stage bundled packages before CPython's site-packages compilation.
           SITE=$out/lib/python3.14/site-packages
           mkdir -p $SITE
 
@@ -314,9 +292,35 @@ in
           tar xf ${markupsafeSrc}
           cp -r MarkupSafe-2.1.5/src/markupsafe $SITE/
 
-          # Jinja2 — pure Python
           tar xf ${jinja2Src}
           cp -r jinja2-3.1.4/src/jinja2 $SITE/
+
+          # Nix manages these immutable bytes and normalizes source mtimes.
+          # Upstream compiles every optimization level with PYTHON_FOR_BUILD.
+          make install COMPILEALL_OPTS="-j$NIX_BUILD_CORES --invalidation-mode=unchecked-hash"
+
+          ${
+            if isDarwinCross
+            then ''
+              # CPython records its configure directory in target sysconfig
+              # metadata. Downstream extension builds need the flags, not the
+              # ephemeral sandbox path from the Linux builder.
+              sed -i "s|$PWD|.|g" \
+                "$out/lib/python3.14/_sysconfig_vars__darwin_darwin.json" \
+                "$out/lib/python3.14/_sysconfigdata__darwin_darwin.py" \
+                "$out/lib/python3.14/config-3.14-darwin/Makefile"
+              # Compile the rewritten source with the matching build interpreter;
+              # compiling target metadata does not import or execute its module.
+              ${buildPackages.python3}/bin/python3 -m compileall \
+                --invalidation-mode=unchecked-hash -o 0 -o 1 -o 2 -f \
+                "$out/lib/python3.14/_sysconfigdata__darwin_darwin.py"
+            ''
+            else ""
+          }
+          # Ensure 'python' symlink exists alongside 'python3'
+          if [ ! -e $out/bin/python ]; then
+            ln -sf python3 $out/bin/python
+          fi
         '';
       }
     ];
