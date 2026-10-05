@@ -9,6 +9,7 @@
   pkg-config,
   meson,
   ninja,
+  binutils,
   python3,
   python3-pygdbmi,
   setuptools,
@@ -117,6 +118,10 @@
     if stdenv.isCross
     then buildPackages.python3
     else python3;
+  buildBinutils =
+    if stdenv.isCross
+    then buildPackages.binutils
+    else binutils;
   buildMeson =
     if stdenv.isCross
     then buildPackages.meson
@@ -524,6 +529,7 @@ in
             buildPackages.pkg-config
             buildMeson
             buildPackages.ninja
+            buildBinutils
             buildPython
             buildSetuptools
             buildDistlib
@@ -538,6 +544,7 @@ in
             pkg-config
             meson
             ninja
+            buildBinutils
             python3
             setuptools
             distlib
@@ -4202,6 +4209,19 @@ in
                 vof.bin; do
                 test -f "$out/share/qemu/$firmware"
                 chmod a-x "$out/share/qemu/$firmware"
+              done
+            ''}
+
+            ${lib.optionalString (!stdenv.hostPlatform.isDarwin) ''
+              # ELF-relative function ranges survive stripping and let local
+              # profilers resolve samples without retaining DWARF or paths.
+              for executable in "$out"/bin/qemu-system-*; do
+                [ -f "$executable" ] || continue
+                executable_name=''${executable##*/}
+                ${buildPython}/bin/python3 ${./_qemu-function-map.py} \
+                  --nm ${buildBinutils}/bin/nm \
+                  --executable "$executable" \
+                  --output "$out/share/qemu/symbols/$executable_name.tsv"
               done
             ''}
 
