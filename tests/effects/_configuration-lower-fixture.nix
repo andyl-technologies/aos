@@ -12,7 +12,7 @@
     packages = [pkgs.aos-configuration-lower pkgs.systemd];
     operatorModules = [
       ../../pkgs/system/_aos-host-policy/configuration-lower.nix
-      {
+      ({config, ...}: {
         aos.abilities.configuration.operations.file.effects.materialized.input = {
           path = "/etc/runtime-config/materialized.conf";
           content = "host-owned\n";
@@ -29,7 +29,26 @@
         aos.activation.retire = [(builtins.hashString "sha256" "unconfigured-retained-effect")];
         aos.abilities.configuration.operations.file.effects.live.input = {
           path = "/etc/runtime-config/live.conf";
-          fragments = ["runtime-only\n"];
+          fragments = [{credentialPath = "/run/credentials/runtime-secret";}];
+        };
+        aos.abilities.configuration.operations.file.effects.literalFragments = {
+          lifetime = "persistent";
+          input = {
+            path = "/etc/runtime-config/fragments.conf";
+            fragments = ["first\n" "second\n"];
+            mode = "0600";
+            owner = "root";
+            group = "root";
+          };
+        };
+        aos.abilities.configuration.operations.file.effects.deferred.input = {
+          path = "/etc/runtime-config/deferred.conf";
+          fragments = [config.aos.abilities.configuration.operations.file.effects.materialized.outputs.resource];
+        };
+        aos.abilities.configuration.operations.file.effects.structured.input = {
+          path = "/etc/runtime-config/structured.json";
+          format = "json";
+          value = {policy = true;};
         };
         aos.filesystems.etcTrees = [
           {
@@ -73,7 +92,7 @@
           # The selected systemd defaults also materialize the native CA bundle.
           storePaths = [(toString tree) (toString pkgs.bash) (toString pkgs.ca-certificates)];
         };
-      }
+      })
     ];
   };
   graph = evaluated.deployment.graph.nodes;

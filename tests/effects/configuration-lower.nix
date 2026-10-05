@@ -49,4 +49,30 @@ in {
     id = fileId "live";
     lifetime = "instance";
   }; true;
+  orderedLiteralFragments = assert input.files."runtime-config/fragments.conf"
+  == {
+    kind = "text";
+    text = "first\nsecond\n";
+    mode = "0600";
+  }; true;
+  literalFragmentOwnership = assert input.ownership.files."runtime-config/fragments.conf" == (fileEffect "literalFragments").contract.owner;
+  assert (fileEffect "literalFragments").input.owner == "root";
+  assert (fileEffect "literalFragments").input.group == "root"; true;
+  literalFragmentLifetimeIdentity = assert input.fileEffects."runtime-config/fragments.conf"
+  == {
+    id = fileId "literalFragments";
+    lifetime = "persistent";
+  }; true;
+  deferredDeclarationRemainsLive = assert !(input.files ? "runtime-config/deferred.conf");
+  assert input.fileEffects."runtime-config/deferred.conf"
+  == {
+    id = fileId "deferred";
+    lifetime = "instance";
+  }; true;
+  structuredDeclarationRemainsLive = assert !(input.files ? "runtime-config/structured.json");
+  assert input.fileEffects."runtime-config/structured.json"
+  == {
+    id = fileId "structured";
+    lifetime = "instance";
+  }; true;
 }

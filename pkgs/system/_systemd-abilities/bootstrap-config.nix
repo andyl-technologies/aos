@@ -4,6 +4,7 @@
   lib,
   ...
 }: let
+  literalText = import ../_aos-host-policy/literal-text.nix;
   services = import ./bootstrap-services.nix {
     inherit config lib;
     pkgs = {};
@@ -17,17 +18,14 @@
     input = effect.input;
     relativePath = lib.removePrefix "/etc/" input.path;
     normalized = builtins.all (part: !(builtins.elem part ["" "." ".."])) (lib.splitString "/" relativePath);
-    content =
-      if builtins.isString input.content
-      then input.content
-      else if builtins.all builtins.isString input.fragments
-      then lib.concatStringsSep "" input.fragments
-      else throw "Early service configuration '${name}' requires runtime values and cannot enter the image.";
+    content = literalText input;
   in
     if input.format != "text" || !builtins.isString input.path || !lib.hasPrefix "/etc/" input.path || !normalized
     then throw "Early service configuration '${name}' must declare literal text beneath /etc."
     else if !(builtins.elem input.owner [null "root"]) || !(builtins.elem input.group [null "root"])
     then throw "Early service configuration '${name}' requires an identity unavailable to the image file projection."
+    else if content == null
+    then throw "Early service configuration '${name}' requires runtime values and cannot enter the image."
     else {
       path = relativePath;
       owner = effect.contract.owner;
