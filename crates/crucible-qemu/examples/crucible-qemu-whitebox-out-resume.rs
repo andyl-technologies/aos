@@ -3,11 +3,13 @@
 //! A tiny ROM reuses one RAM buffer for canonical registration, setup, semantic
 //! marker and selectable request frames. The production plugin decodes those
 //! frames through its original register and guest-memory readers. This test
-//! isolates TCG callback replay; it does not execute Linux or an observer child.
+//! isolates TCG callback replay. A separate Linux entry exercises the original
+//! SDK in CPL3, with and without a static no-SDK child process.
 //!
 //! ```text
 //! crucible-qemu-whitebox-out-resume firmware OUTPUT [normal|late-register]
 //! crucible-qemu-whitebox-out-resume run QEMU PLUGIN ROM CGROUP_ROOT RUN_ROOT MODE
+//! crucible-qemu-whitebox-out-resume run-linux QEMU PLUGIN KERNEL INITRD CGROUP_ROOT RUN_ROOT PROFILE
 //! ```
 
 #![forbid(unsafe_code)]
@@ -34,6 +36,9 @@ use crucible_qemu::{
 
 #[path = "crucible-qemu-whitebox-out-resume/firmware.rs"]
 mod firmware;
+
+#[path = "crucible-qemu-whitebox-out-resume/linux.rs"]
+mod linux;
 
 const NODE: &str = "whitebox-out-resume";
 const SELECTABLE: &str = "out.ready";
@@ -81,11 +86,29 @@ fn run() -> Result<(), Box<dyn Error>> {
         [command, qemu, plugin, rom, cgroup, root, mode] if command == Path::new("run") => {
             flight(qemu, plugin, rom, cgroup, root, Mode::parse(mode)?)
         }
-        _ => Err(
-            "expected firmware OUTPUT MODE or run QEMU PLUGIN ROM CGROUP_ROOT RUN_ROOT MODE".into(),
-        ),
+        [command, qemu, plugin, kernel, initrd, cgroup, root, profile]
+            if command == Path::new("run-linux") =>
+        {
+            linux::flight(qemu, plugin, kernel, initrd, cgroup, root, profile)
+        }
+        _ => Err("expected firmware OUTPUT MODE, run QEMU PLUGIN ROM CGROUP_ROOT RUN_ROOT MODE, or run-linux QEMU PLUGIN KERNEL INITRD CGROUP_ROOT RUN_ROOT PROFILE".into()),
     }
 }
+
+#[derive(Clone, Copy)]
+struct ProbePolicy {
+    ceiling_ps: u64,
+    completion_timeout: Duration,
+    fixed_buffer: Option<u64>,
+    profile: &'static str,
+}
+
+const ROM_POLICY: ProbePolicy = ProbePolicy {
+    ceiling_ps: CEILING_PS,
+    completion_timeout: COMPLETION_TIMEOUT,
+    fixed_buffer: Some(BUFFER),
+    profile: "real-mode-rom-shared-buffer",
+};
 
 fn catalog() -> Result<SelectableCatalogPlan, Box<dyn Error>> {
     Ok(SelectableCatalogPlan::new(
@@ -109,6 +132,23 @@ fn flight(
     root: &Path,
     mode: Mode,
 ) -> Result<(), Box<dyn Error>> {
+    let config = QemuLiveNodeStepGateConfig::new(qemu, plugin, rom, rom, root)
+        .with_firmware_boot()
+        .with_vm_shape(64, 1)
+        .with_whitebox(QemuLaunchPluginSwitch::On)
+        .with_selectable_catalog_plan(catalog()?)
+        .with_completion_timeout(COMPLETION_TIMEOUT);
+    run_owned(qemu, cgroup, root, mode, config, ROM_POLICY)
+}
+
+fn run_owned(
+    qemu: &Path,
+    cgroup: &Path,
+    root: &Path,
+    mode: Mode,
+    config: QemuLiveNodeStepGateConfig,
+    policy: ProbePolicy,
+) -> Result<(), Box<dyn Error>> {
     let host = LinuxQemuAttemptHostConfig::new(
         cgroup,
         root,
@@ -123,12 +163,6 @@ fn flight(
     )?;
     let mut factory = LinuxQemuAttemptHostFactory::open(host)?;
     let mut owner = factory.begin(1, 512 * 1024 * 1024, 1024 * 1024 * 1024)?;
-    let config = QemuLiveNodeStepGateConfig::new(qemu, plugin, rom, rom, root)
-        .with_firmware_boot()
-        .with_vm_shape(64, 1)
-        .with_whitebox(QemuLaunchPluginSwitch::On)
-        .with_selectable_catalog_plan(catalog()?)
-        .with_completion_timeout(COMPLETION_TIMEOUT);
     let mut directory = owner.prepare_generation_run_directory(config.resource_requirements())?;
     directory.prepare_fresh_artifacts_guarded(qemu, None, owner.process_contract()?)?;
     let launch = config.with_run_directory(directory.path());
@@ -142,7 +176,7 @@ fn flight(
         )?,
     )?;
 
-    let result = drive(&mut node, mode);
+    let result = drive(&mut node, mode, policy);
     let shutdown = node.shutdown_child();
     drop(node);
     drop(directory);
@@ -173,14 +207,18 @@ fn flight(
             "late-register"
         }
     );
-    println!("guest_profile=real-mode-rom-shared-buffer");
+    println!("guest_profile={}", policy.profile);
     println!("native_stop_resume=original-selectable-handoff");
     println!("owned_cleanup=complete");
     Ok(())
 }
 
-fn drive(node: &mut QemuNode, mode: Mode) -> Result<Option<QemuShutdownReport>, Box<dyn Error>> {
-    let first = boundary(node, 2, "first")?;
+fn drive(
+    node: &mut QemuNode,
+    mode: Mode,
+    policy: ProbePolicy,
+) -> Result<Option<QemuShutdownReport>, Box<dyn Error>> {
+    let (first, buffer) = boundary(node, 2, "first", policy, policy.fixed_buffer)?;
     require_marker(&first, "first")?;
     let [setup, marker_event] = first.as_slice() else {
         return Err("first boundary must retain setup and one semantic frame".into());
@@ -211,7 +249,7 @@ fn drive(node: &mut QemuNode, mode: Mode) -> Result<Option<QemuShutdownReport>, 
         // The VM result also requires the original fatal catalog-refusal row.
         // A generic step error alone is not the negative control's authority.
         let error = match node.advance_to_ceiling(Icount {
-            retired: CEILING_PS,
+            retired: policy.ceiling_ps,
         }) {
             Ok(_) => return Err("late registration unexpectedly advanced".into()),
             Err(error) => error,
@@ -219,7 +257,7 @@ fn drive(node: &mut QemuNode, mode: Mode) -> Result<Option<QemuShutdownReport>, 
         let QemuNodeError::Crashed { status, shutdown } = error else {
             return Err(error.into());
         };
-        require_refusal_crash_status(&status)?;
+        require_refusal_crash_status_with_budget(&status, policy.completion_timeout)?;
         // The public crash type carries exit/timeout context, not the plugin's
         // fatal error. The gate separately requires that exact original row.
         eprintln!("late-register crash: status={status:?}; shutdown={shutdown:?}");
@@ -227,7 +265,7 @@ fn drive(node: &mut QemuNode, mode: Mode) -> Result<Option<QemuShutdownReport>, 
         return Ok(Some(*shutdown));
     }
 
-    let second = boundary(node, 3, "second")?;
+    let (second, _) = boundary(node, 3, "second", policy, Some(buffer))?;
     require_marker(&second, "second")?;
     if second.len() != 1 {
         return Err("second boundary replayed an earlier observable frame".into());
@@ -246,13 +284,21 @@ fn drive(node: &mut QemuNode, mode: Mode) -> Result<Option<QemuShutdownReport>, 
     println!("registration_sequence=1");
     println!("request_sequences=2,3");
     println!("distinct_semantic_frames=first,second");
-    println!("same_guest_buffer={BUFFER}");
+    println!("same_guest_buffer={buffer}");
     Ok(None)
 }
 
 // The driver reports the remaining budget at the original bounded wait,
 // rather than promising the full configured budget in its crash payload.
+#[cfg(test)]
 fn require_refusal_crash_status(status: &QemuNodeRunStatus) -> Result<(), Box<dyn Error>> {
+    require_refusal_crash_status_with_budget(status, COMPLETION_TIMEOUT)
+}
+
+fn require_refusal_crash_status_with_budget(
+    status: &QemuNodeRunStatus,
+    completion_timeout: Duration,
+) -> Result<(), Box<dyn Error>> {
     let QemuNodeRunStatus::Crashed(crashed) = status else {
         return Err(format!("late registration did not retain a crash status: {status:?}").into());
     };
@@ -263,7 +309,7 @@ fn require_refusal_crash_status(status: &QemuNodeRunStatus) -> Result<(), Box<dy
         QemuCrashCause::BoundedAwaitTimeout(timeout) => {
             timeout.operation == "advance completion"
                 && !timeout.timeout.is_zero()
-                && timeout.timeout <= COMPLETION_TIMEOUT
+                && timeout.timeout <= completion_timeout
         }
         _ => false,
     };
@@ -312,10 +358,17 @@ fn boundary(
     node: &mut QemuNode,
     sequence: u64,
     instance: &str,
-) -> Result<Vec<ObservableEvent>, Box<dyn Error>> {
-    let observed = SimulationBackend::step_to(node, VirtualTime { ticks: CEILING_PS })?;
+    policy: ProbePolicy,
+    expected_buffer: Option<u64>,
+) -> Result<(Vec<ObservableEvent>, u64), Box<dyn Error>> {
+    let observed = SimulationBackend::step_to(
+        node,
+        VirtualTime {
+            ticks: policy.ceiling_ps,
+        },
+    )?;
     let AdvanceOutcome::Paused { at } = observed.outcome else {
-        return Err("ROM did not reach an original selectable pause".into());
+        return Err("guest did not reach an original selectable pause".into());
     };
     let events = SimulationBackend::drain_observable_events(node)?;
     let requests = node.drain_pending_selectable_requests()?;
@@ -329,7 +382,7 @@ fn boundary(
         || request.reply_capacity() != 128
         || request.narrowed_domain().is_some()
         || pending.vcpu_index() != 0
-        || pending.guest_virtual_address() != BUFFER
+        || !buffer_matches(expected_buffer, pending.guest_virtual_address())
         || observed.reached.ticks != at.retired
         || at.retired
             != pending
@@ -351,7 +404,11 @@ fn boundary(
         )?;
         node.enqueue_selectable_reply(pending, &reply)?;
     }
-    Ok(events)
+    Ok((events, pending.guest_virtual_address()))
+}
+
+fn buffer_matches(expected: Option<u64>, observed: u64) -> bool {
+    observed != 0 && expected.is_none_or(|address| address == observed)
 }
 
 fn require_marker(events: &[ObservableEvent], expected: &str) -> Result<(), Box<dyn Error>> {
