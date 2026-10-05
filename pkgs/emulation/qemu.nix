@@ -1746,10 +1746,11 @@ in
                 control-deferred.result control-observer.result control-delivery.result \
                 stopped-control-rearm.result template-control-drain.result net-stop-chain.result \
                 aio-fork-custody.result stop-context.result control-continuation.result
-              for case in reader-before-park reader-after-park reader-after-handoff; do
+              for case in reader-before-park reader-after-park reader-after-handoff \
+                idle-reader-before-park idle-reader-after-park; do
                 grep -Fxq "NATIVE_CONTROL_DELIVERY_PASS case=$case" control-continuation.result
               done
-              test "$(grep -c '^NATIVE_CONTROL_DELIVERY_PASS ' control-continuation.result)" -eq 3
+              test "$(grep -c '^NATIVE_CONTROL_DELIVERY_PASS ' control-continuation.result)" -eq 5
               grep -Fxq 'CONDITIONAL_SETTLEMENT_REFUSAL_PASS: modeled bridge only; no native retry contract' \
                 control-continuation.result
               grep -Fxq 'PASS production TX/stop/clock/RR: batches, race, completion settlement, paused ack, explicit retry' \

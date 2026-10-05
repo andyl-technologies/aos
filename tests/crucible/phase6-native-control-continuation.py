@@ -3,7 +3,8 @@
 
 The selected QEMU fixture supplies bounded CPU/device topology. This extension
 executes its genuine registered reader, control generation/scheduling bodies,
-running RR ceiling wait and claim, poll-ready handoff, and QemuEvent algorithm.
+running RR ceiling wait and claim, nested all-halted idle control wait,
+poll-ready handoff, and QemuEvent algorithm.
 Pthreads, eventfd, poll and futex are real. A bounded AIO slice provider replaces
 GLib dispatch; CPU execution and Rust bridge settlement are explicit providers.
 No guest, linked QEMU translation unit, or physical failure attribution is proved.
@@ -74,10 +75,23 @@ static int original_fd, aio_fd;
 static void (*registered_reader)(void *);
 static void *registered_opaque;
 static unsigned host_writes, reader_bytes, reader_drains, reader_calls;
-static unsigned rr_parks, callback_return_notifications;
+static unsigned rr_parks, idle_parks, callback_return_notifications;
 static bool rr_finished, source_delivered, pump_ready, pump_cleared;
-static bool refuse_first, force_handoff, fixture_finished;
+static bool refuse_first, force_handoff, idle_case, fixture_finished;
 static uint32_t shared_request = 54008, shared_ack = 54008;
+static const uint64_t idle_deadline = 31;
+
+/* CPU-list membership and calibrated ceiling are explicit topology providers. */
+#define QTAILQ_IN_USE(member, field) ((member)->in_list)
+static unsigned cpu_list_generation_id_get(void) { return 7; }
+static bool crucible_sim_shmem_dispatch_registered(void) { return idle_case; }
+static uint64_t crucible_sim_shmem_max_advance_icount(void) { return 17; }
+static int qemu_poll_ns(GPollFD *descriptors, unsigned count, int64_t timeout)
+{
+    g_assert_cmpuint(count, ==, 1);
+    g_assert_cmpint(timeout, ==, 0);
+    return g_poll(descriptors, count, 0);
+}
 
 static void rr_crucible_sim_handoff_main_loop(void);
 static void rr_crucible_sim_notify_dispatch_ceiling(void);
@@ -142,6 +156,12 @@ static void qemu_cpu_kick(CPUState *target)
 static void qemu_cond_wait_bql(void *condition)
 {
     g_assert_true(locked);
+    if (idle_case) {
+        pthread_mutex_lock(&fixture_state);
+        idle_parks++;
+        pthread_cond_broadcast(&fixture_changed);
+        pthread_mutex_unlock(&fixture_state);
+    }
     locked = false;
     g_assert_cmpint(pthread_cond_wait(&fixture_halt, &fixture_bql), ==, 0);
     locked = true;
@@ -278,13 +298,33 @@ static void *rr_owner(void *opaque)
 {
     locked = false;
     current_cpu = &cpu;
-    rr_replay_mutex_lock();
-    bql_lock();
-    rr_crucible_sim_wait_at_dispatch_ceiling();
-    g_assert_true(qemu_plugin_crucible_rr_control_boundary_pending());
-    /* Exact outer-loop order: release replay ownership before RR claim/wait. */
-    rr_replay_mutex_unlock();
-    rr_crucible_sim_acknowledge_control_boundary();
+    if (idle_case) {
+        QemuPluginCrucibleIdleWaitProduction wait = {
+            .cpu = &cpu, .vcpu_index = 0, .cpu_list_generation = 7,
+        };
+        uint64_t target = 0;
+        bool target_bound = false;
+
+        /* rr_wait_io_event enters the idle callback without replay ownership. */
+        bql_lock();
+        g_assert_false(rr_replay_mutex_owned);
+        g_assert_true(cpu.halted);
+        g_assert_cmpuint(raw_icount, <, idle_deadline);
+        /* The SDK's original nested loop, not a second manual callback. */
+        while (qemu_plugin_crucible_idle_wait_for_control_boundary(
+                   &wait, 0, &target, &target_bound)) {
+        }
+        g_assert_true(target_bound);
+        g_assert_cmpuint(target, ==, 1);
+    } else {
+        rr_replay_mutex_lock();
+        bql_lock();
+        rr_crucible_sim_wait_at_dispatch_ceiling();
+        g_assert_true(qemu_plugin_crucible_rr_control_boundary_pending());
+        /* Exact outer-loop order: release replay ownership before RR claim/wait. */
+        rr_replay_mutex_unlock();
+        rr_crucible_sim_acknowledge_control_boundary();
+    }
     g_assert_cmpuint(raw_icount, ==, 17);
     g_assert_false(qemu_plugin_crucible_control_boundary_outstanding());
     bql_unlock();
@@ -297,16 +337,21 @@ static void *rr_owner(void *opaque)
 
 int main(int argc, char **argv)
 {
-    bool before_park = argc == 2 && strcmp(argv[1], "reader-before-park") == 0;
+    bool before_park = argc == 2 &&
+        (strcmp(argv[1], "reader-before-park") == 0 ||
+         strcmp(argv[1], "idle-reader-before-park") == 0);
     pthread_t main_thread, rr_thread;
 
     g_assert_cmpint(argc, ==, 2);
+    idle_case = strncmp(argv[1], "idle-reader-", 12) == 0;
     refuse_first = strcmp(argv[1], "pending-settlement") == 0;
     force_handoff = refuse_first || strcmp(argv[1], "reader-after-handoff") == 0;
     pump_ready = !refuse_first;
     locked = false;
     current_cpu = NULL;
     cpu.halt_cond = &fixture_halt;
+    cpu.created = cpu.in_list = true;
+    cpu.halted = idle_case;
     qemu_plugin_control_boundary_cb = observe_control;
     original_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     aio_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
@@ -324,14 +369,16 @@ int main(int argc, char **argv)
     if (!before_park) {
         g_assert_cmpint(pthread_create(&rr_thread, NULL, rr_owner, NULL), ==, 0);
         pthread_mutex_lock(&fixture_state);
-        while (rr_parks == 0) {
+        while ((idle_case ? idle_parks : rr_parks) == 0) {
             pthread_cond_wait(&fixture_changed, &fixture_state);
         }
         pthread_mutex_unlock(&fixture_state);
-        /* Wait for the real event CAS, not just the earlier trace hook. */
-        while (qatomic_load_acquire(&rr_dispatch_ceiling_event.value) !=
-               (unsigned)EV_BUSY) {
-            sched_yield();
+        if (!idle_case) {
+            /* Wait for the real event CAS, not just the earlier trace hook. */
+            while (qatomic_load_acquire(&rr_dispatch_ceiling_event.value) !=
+                   (unsigned)EV_BUSY) {
+                sched_yield();
+            }
         }
     }
     host_writes++;
@@ -380,12 +427,15 @@ int main(int argc, char **argv)
     printf("case=%s host_writes=%u reader_calls=%u reader_bytes=%u "
            "drains=%u callbacks=%u native_complete=%" PRIu64 " "
            "modeled_request=%u modeled_ack=%u pump_ready=%d "
-           "handoff=%" PRIu64 "/%" PRIu64 "/%" PRIu64 "\n",
+           "handoff=%" PRIu64 "/%" PRIu64 "/%" PRIu64
+           " idle_parks=%u raw=%" PRIu64 " ceiling=%" PRIu64
+           " modeled_idle_deadline=%" PRIu64 "\n",
            argv[1], host_writes, reader_calls, reader_bytes, reader_drains,
            control_calls, qemu_plugin_rr_control_complete_generation,
            shared_request, shared_ack, pump_ready,
            rr_main_loop_dispatch_requested, rr_main_loop_dispatch_completed,
-           rr_main_loop_dispatch_acknowledged);
+           rr_main_loop_dispatch_acknowledged, idle_parks, raw_icount,
+           crucible_sim_shmem_max_advance_icount(), idle_deadline);
     fflush(stdout);
     g_assert_cmpuint(shared_ack, ==, shared_request + 1);
     qemu_event_destroy(&rr_dispatch_ceiling_event);
@@ -409,13 +459,15 @@ def main():
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--case", required=True, choices=["all",
         "reader-before-park", "reader-after-park", "reader-after-handoff",
-        "pending-settlement"])
+        "idle-reader-before-park", "idle-reader-after-park", "pending-settlement"])
     arguments = parser.parse_args()
     root = arguments.qemu_source.resolve()
     support = runpy.run_path(str(root / "tests/unit/test-crucible-control-deferred.py"))
     definition = support["definition"]
     network = support["SUPPORT"]
     prelude = network["PRELUDE"]
+    prelude = prelude.replace("bool running, stop, stopped, unplug, exit_request;",
+        "bool running, stop, stopped, unplug, exit_request;\n    bool created, in_list, halted;")
     prelude = prelude.replace("static CPUState cpu, *first_cpu = &cpu, *current_cpu;",
         "static CPUState cpu, *first_cpu = &cpu;\nstatic _Thread_local CPUState *current_cpu;")
     prelude = prelude.replace("static bool locked = true, self = true, has_control = true, mttcg;",
@@ -424,6 +476,7 @@ def main():
         "static void replay_mutex_lock(void)", "static void bql_unlock(void)",
         "static void bql_lock(void)", "static void qemu_cpu_kick(CPUState *target)",
         "static void qemu_cond_broadcast(void *condition)",
+        "static bool crucible_sim_shmem_dispatch_registered(void)",
         "static void rr_crucible_sim_notify_dispatch_ceiling(void)",
         "static void qemu_plugin_control_drain_notify(void)"]
     for signature in replacements:
@@ -456,8 +509,16 @@ def main():
             "static uint64_t rr_crucible_sim_begin_main_loop_handoff(void)",
             "static void rr_crucible_sim_finish_main_loop_handoff(uint64_t generation)",
             "static void rr_crucible_sim_handoff_main_loop(void)\n{"],
-        "plugins/api-system.c": ["int qemu_plugin_register_wake_fd(int fd)"]}
+        "plugins/api-system.c": [
+            "int qemu_plugin_register_wake_fd(int fd)",
+            "static bool qemu_plugin_crucible_idle_cpu_is_current_member(",
+            "static bool qemu_plugin_crucible_idle_wait_for_control_boundary("]}
     extracted = []
+    source = (root / "plugins/api-system.c").read_text()
+    start = source.index("typedef struct QemuPluginCrucibleIdleWaitProduction {")
+    end = source.index("} QemuPluginCrucibleIdleWaitProduction;", start)
+    end += len("} QemuPluginCrucibleIdleWaitProduction;")
+    bodies += "\n\n" + source[start:end]
     for path, signatures in selections.items():
         source = (root / path).read_text()
         for signature in signatures:
@@ -483,6 +544,8 @@ def main():
             "Real pthread replay/BQL locks and condition wait; bounded AIO slices replace GLib",
             "Controlled after-handoff schedule delays main-loop lock acquisition until the actual RR ready-source claim; it changes no native predicate",
             "Real kernel eventfd/poll; registration captures the actual selected reader",
+            "Idle cases use the actual nested idle control wait and membership helper; one halted CPU, list generation and unchanged raw ceiling are explicit providers",
+            "Initial SDK futex wait, actual Rust idle callback, virtual timer and full CPU execution are not exercised by the idle composition",
             "Actual QemuEvent bodies and selected Linux futex header",
             "No active generic wake epoch, CPU work, lifecycle stop or guest execution",
             "Scalar modeled shared request/ack and bridge readiness; no Rust bridge or shared-memory proof",
@@ -500,7 +563,8 @@ def main():
                        check=True, timeout=10)
         return
 
-    for case in ("reader-before-park", "reader-after-park", "reader-after-handoff"):
+    for case in ("reader-before-park", "reader-after-park", "reader-after-handoff",
+                 "idle-reader-before-park", "idle-reader-after-park"):
         result = subprocess.run([str(binary), case], cwd=arguments.output_dir,
                                 capture_output=True, text=True, check=True, timeout=10)
         (arguments.output_dir / f"{case}.stdout").write_text(result.stdout)
