@@ -182,14 +182,18 @@ assert builtins.elem caseProfile ["full" "single-guest"]; let
         exit 1
       fi
 
-      if ! ${pkgs.coreutils}/bin/timeout -k 30 1800 \
+      # Preserve the test's status while streaming its original captured output.
+      set +e
+      ${pkgs.coreutils}/bin/timeout -k 30 1800 \
         ${flight}/bin/crucible-daemon-hot-fork-equivalence-flight \
-        --ignored --exact "$name" --nocapture > "$log" 2>&1; then
-        cat "$log"
+        --ignored --exact "$name" --nocapture 2>&1 \
+        | ${pkgs.coreutils}/bin/tee "$log"
+      case_status=("''${PIPESTATUS[@]}")
+      set -e
+      if [ "''${case_status[0]}" -ne 0 ] || [ "''${case_status[1]}" -ne 0 ]; then
         ${pkgs.util-linux}/bin/dmesg | tail -n 60
         exit 1
       fi
-      cat "$log"
       summary_count=$(${pkgs.grep}/bin/grep -Ec \
         '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(\.[0-9]+)?s$' \
         "$log" || true)

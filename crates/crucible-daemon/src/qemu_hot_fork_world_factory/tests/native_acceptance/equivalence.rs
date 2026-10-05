@@ -317,11 +317,13 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
         Arc::clone(&artifacts),
         &checkpoint_context,
     );
+    eprintln!("single-guest-equivalence phase=checkpoint-source-launched");
     let checkpoint_boundary = drive_to_pending_boundary(
         &mut checkpoint_source,
         &source,
         EquivalenceTopology::SingleNode,
     );
+    eprintln!("single-guest-equivalence phase=checkpoint-source-choice-reached");
     let checkpoints = checkpoint_store();
     let capture = QemuFreshAttemptLifecycleOwner::capture_attempt_checkpoint(
         &mut checkpoint_source,
@@ -337,6 +339,7 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
         .root();
     QemuFreshAttemptLifecycleOwner::shutdown(&mut checkpoint_source)
         .expect("shutdown single-node checkpoint source");
+    eprintln!("single-guest-equivalence phase=checkpoint-captured-source-stopped");
     let baked = capture_replay_genesis(
         &paths,
         "single-replay-genesis",
@@ -346,6 +349,8 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
         &input,
         0xa7,
     );
+
+    eprintln!("single-guest-equivalence phase=replay-genesis-captured");
 
     let thin_context = native_execution_context(&input, 0xa6);
     let mut thin_reference = begin_fresh(
@@ -371,6 +376,8 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
     QemuFreshAttemptLifecycleOwner::shutdown(&mut thin_reference)
         .expect("shutdown single-node thin reference");
 
+    eprintln!("single-guest-equivalence phase=thin-reference-complete");
+
     let execution_source_context = native_execution_context(&input, 0xa1);
     let mut execution_source = begin_fresh(
         &paths,
@@ -386,6 +393,7 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
         EquivalenceTopology::SingleNode,
     );
     assert_eq!(execution_boundary, checkpoint_boundary);
+    eprintln!("single-guest-equivalence phase=execution-source-choice-matched");
     let execution_world = execution_source
         .prepare_hot_fork_source_world()
         .expect("prepare single-node execution source");
@@ -403,6 +411,8 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
         topology: EquivalenceTopology::SingleNode,
     });
 
+    eprintln!("single-guest-equivalence phase=execution-hot-child-complete");
+
     let exact_input = execution_input_for_scenario_configuration(
         source.clone(),
         checkpoint_boundary.configuration.clone(),
@@ -419,6 +429,7 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
         },
         0xa8,
     );
+    eprintln!("single-guest-equivalence phase=exact-reference-checkpoint-promoted");
     let exact_context =
         native_execution_context(&exact_input, 0xa2).with_resume_checkpoint(Some(exact_checkpoint));
     let mut exact_reference = begin_exact(
@@ -452,6 +463,8 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
     QemuFreshAttemptLifecycleOwner::shutdown(&mut exact_reference)
         .expect("shutdown single-node exact reference");
 
+    eprintln!("single-guest-equivalence phase=exact-reference-complete");
+
     let (template_checkpoints, template_checkpoint) = promote_exact_checkpoint(
         &paths,
         "single-replay-oracle-template",
@@ -464,6 +477,7 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
         },
         0xa9,
     );
+    eprintln!("single-guest-equivalence phase=exact-template-checkpoint-promoted");
     let exact_template_context = native_execution_context(&exact_input, 0xa3)
         .with_resume_checkpoint(Some(template_checkpoint));
     let mut exact_template_source = begin_exact(
@@ -488,6 +502,7 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
         EquivalenceTopology::SingleNode,
     );
     assert_eq!(exact_template_boundary, checkpoint_boundary);
+    eprintln!("single-guest-equivalence phase=exact-template-choice-matched");
     let exact_world = exact_template_source
         .prepare_hot_fork_source_world()
         .expect("prepare single-node exact-restore source");
@@ -506,6 +521,8 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
         topology: EquivalenceTopology::SingleNode,
     });
 
+    eprintln!("single-guest-equivalence phase=exact-hot-child-complete");
+
     assert_continuation_equivalent("single-node exact restore", &exact, &thin);
     assert_continuation_equivalent(
         "single-node execution-created hot fork",
@@ -514,6 +531,7 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
     );
     assert_continuation_equivalent("single-node exact-created hot fork", &exact_hot, &thin);
 
+    eprintln!("single-guest-equivalence phase=all-continuations-equivalent");
     println!("hot_fork_equivalence=true");
     println!("topology=single-node");
     println!("state=block,ninep,guest-choice,measurement");
