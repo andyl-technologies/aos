@@ -1070,6 +1070,32 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   owner commits and the positive native safe-index case remain separate
   obligations. This declaration does not qualify implementation.
   No formal task merge, checkbox or milestone freeze advances.
+  The reviewed unpublished loader candidate `b8728e93cfbb` implements the
+  immutable loading prerequisite through Node-only whole `get` calls. Raw
+  identity, root/internal placement, semantic carrier roles and independently
+  selected source roots remain distinct; shared bytes suppress only repeated
+  reads. Caller-owned source reconstruction checks physical child geometry and
+  exact canonical bytes before complete pure owner-to-I/P/G verification and
+  query preparation. Loading, reconstruction, preparation and query work have
+  separate reports; these event counts do not claim total or incremental cost.
+  Independent review required and verified internal primary/gap-tree witnesses,
+  isolated summary corruptions and exact independently enumerated loading and
+  reconstruction reports. The final source also checks an empty unbound owner
+  as typed incomplete evidence. All five reviewed file images match the final
+  owning-check and application-compile source. Four exact loading groups pass
+  one case each with no ignored cases; the full default-feature Nextest run
+  `1df0c59c-2534-4dd4-adfa-59d8389f97ce` passes 138 tests with zero skips.
+  Nine existing Node/Memo/index/no-std checks, both mandatory formatters, build
+  and strict rustdoc pass in their recorded source scopes. Application
+  compilation retains 109 executables across 29 packages and 72 integration
+  targets without execution. Strict all-target native Clippy remains red with
+  36 library and 16 test errors outside the five loader files; no suppression
+  was added. The implementation is assembled only in unpublished combined
+  candidate `9ec056b4f8b3`; formal task merges remain withheld while the full
+  trunk floor is red. Current producer, authority and trust checks, complete
+  coverage decisions, Memo runtime integration, same-commit maintenance,
+  corrected-owner rebuild/publication and positive native safe-index
+  materialization remain incomplete. No task or milestone status advances.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
   codec, value-plus-object opaque keys and D-104's contextual primary/gap/route
