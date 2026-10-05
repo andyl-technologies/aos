@@ -232,3 +232,25 @@ pub(super) fn denied(response: &Response, codes: &[&str], statuses: &[u16]) -> R
     code.map(str::to_owned)
         .ok_or_else(|| anyhow::anyhow!("provider returned an unqualified refusal code"))
 }
+
+/// Observes a failed conditional range without inventing a provider error code.
+///
+/// A completely consumed empty 412 is an HTTP precondition refusal, not an XML
+/// provider receipt. Other negative experiments still require their exact code.
+///
+/// # Errors
+/// Refuses inconsistent empty commitments, other statuses, or an unqualified
+/// nonempty provider error document.
+pub(super) fn conditional_range_denied(response: &Response) -> Result<Option<String>> {
+    if response.status == 412 && response.body.is_empty() {
+        ensure!(
+            response.bytes == 0
+                && response.sha256 == super::journal::digest(b"")
+                && response.content_length.is_none_or(|length| length == 0),
+            "conditional refusal lacks a complete empty response commitment"
+        );
+        return Ok(None);
+    }
+
+    denied(response, &["PreconditionFailed"], &[412]).map(Some)
+}

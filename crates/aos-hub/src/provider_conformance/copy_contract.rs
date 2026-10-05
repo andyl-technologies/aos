@@ -88,6 +88,7 @@ fn validate(report: &Report, journal: &Path) -> Result<u64> {
 
     let mut operation_ids = BTreeSet::new();
     let mut maximum_read_range = 0;
+    let mut source_head_seen = false;
     for (index, observed) in report.observations.iter().enumerate() {
         let intent: Intent = serde_json::from_slice(&read(
             &journal.join(format!("{index:03}.intent.json")),
@@ -111,6 +112,23 @@ fn validate(report: &Report, journal: &Path) -> Result<u64> {
                 && response.provider_request_id == observed.provider_request_id,
             "copy phase intent/received reply/observation correlation differs"
         );
+        if observed.phase == Phase::SourceHead {
+            ensure!(
+                matches!(observed.result, ResultKind::Positive)
+                    && observed.status == 200
+                    && intent.key
+                        == report
+                            .source
+                            .key
+                            .strip_prefix(&format!("{}/", report.original.private_staging_prefix))
+                            .context("source HEAD escaped selected scope")?
+                    && intent.source_etag.as_deref() == Some(&report.source.etag)
+                    && observed.etag.as_deref() == Some(&report.source.etag)
+                    && observed.provider_version == report.source.provider_version,
+                "copy negative range lacks the same positively observed source HEAD"
+            );
+            source_head_seen = true;
+        }
         if observed.phase == Phase::SourceRangeRead {
             ensure!(
                 observed.status == 206
@@ -132,13 +150,25 @@ fn validate(report: &Report, journal: &Path) -> Result<u64> {
             maximum_read_range = maximum_read_range.max(intent.size);
         }
         if observed.phase == Phase::RejectWrongConditionalRange {
+            let wrong_etag = intent
+                .source_etag
+                .as_deref()
+                .context("copy negative range omitted its condition")?;
             ensure!(
-                intent
-                    .source_etag
-                    .as_ref()
-                    .is_some_and(|tag| tag != &report.source.etag)
+                source_head_seen
+                    && intent.key
+                        == report
+                            .source
+                            .key
+                            .strip_prefix(&format!("{}/", report.original.private_staging_prefix))
+                            .context("negative range escaped selected source")?
+                    && aos_hub_core::surface_write::strong_if_match_etag(wrong_etag)? == wrong_etag
+                    && wrong_etag != report.source.etag
                     && intent.first_byte == Some(0)
-                    && intent.size == 65536,
+                    && intent.size == 65536
+                    && intent.expected_sha256.is_none()
+                    && observed.actual_size.is_none()
+                    && observed.actual_sha256.is_none(),
                 "copy negative range lacks a distinct exact condition"
             );
         }
@@ -187,11 +217,6 @@ fn validate(report: &Report, journal: &Path) -> Result<u64> {
     }
     for (phase, statuses, code) in [
         (Phase::RejectBadChecksum, &[400][..], "BadDigest"),
-        (
-            Phase::RejectWrongConditionalRange,
-            &[412][..],
-            "PreconditionFailed",
-        ),
         (Phase::LatePartAfterComplete, &[404][..], "NoSuchUpload"),
         (Phase::LatePartAfterAbort, &[404][..], "NoSuchUpload"),
     ] {
@@ -207,6 +232,24 @@ fn validate(report: &Report, journal: &Path) -> Result<u64> {
         );
         expected_observations += 1;
     }
+    let conditional = phase_observations(
+        report,
+        Phase::RejectWrongConditionalRange,
+        1,
+        false,
+        &[412],
+    )?;
+    let observed = conditional[0];
+    // None records an absent provider code, never a synthesized XML error.
+    ensure!(
+        match observed.error_code.as_deref() {
+            Some("PreconditionFailed") => true,
+            None => observed.response_bytes == 0 && observed.response_sha256 == digest(b""),
+            Some(_) => false,
+        },
+        "copy conditional refusal lacks an exact provider code or empty HTTP response"
+    );
+    expected_observations += 1;
     for phase in [Phase::AnonymousIncompleteRead, Phase::AnonymousRead] {
         phase_observations(report, phase, 1, false, &[401, 403, 404])?;
         expected_observations += 1;

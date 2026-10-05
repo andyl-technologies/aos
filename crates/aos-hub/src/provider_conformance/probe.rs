@@ -221,6 +221,17 @@ impl Probe {
         )
     }
 
+    async fn conditional_range_refusal(&mut self, intent: Intent, request: Request) -> Result<()> {
+        ensure!(
+            intent.phase == Phase::RejectWrongConditionalRange,
+            "conditional refusal selected a different experiment"
+        );
+        let exchange = transport::dispatch(&self.loaded, &self.journal, intent, request).await?;
+        let (exchange, response) = exchange.read(&self.journal, METADATA_LIMIT, true).await?;
+        let code = transport::conditional_range_denied(&response)?;
+        exchange.finish(&mut self.journal, &response, ResultKind::Denied, None, code)
+    }
+
     async fn complete(
         &mut self,
         phase: Phase,
@@ -570,7 +581,7 @@ pub(super) async fn run(loaded: Loaded, directory: &Path, output: &Path) -> Resu
     negative.first_byte = Some(0);
     negative.size = 65536;
     probe
-        .refusal(
+        .conditional_range_refusal(
             negative,
             Request {
                 method: reqwest::Method::GET,
@@ -582,8 +593,6 @@ pub(super) async fn run(loaded: Loaded, directory: &Path, output: &Path) -> Resu
                     .collect(),
                 body: None,
             },
-            &["PreconditionFailed"],
-            &[412],
         )
         .await?;
     probe

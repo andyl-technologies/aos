@@ -38,10 +38,20 @@ struct Object {
 enum Fault {
     None,
     Versionless,
+    EmptyConditionalVersionless,
+    ConditionalServiceFailure,
+    IncompleteConditional,
+    EmptyLatePart,
     LostComplete,
     CopyError,
     ChangedSource,
     EchoCredential,
+}
+
+impl Fault {
+    fn versionless(self) -> bool {
+        matches!(self, Self::Versionless | Self::EmptyConditionalVersionless)
+    }
 }
 
 struct Provider {
@@ -125,6 +135,9 @@ async fn execute(State(state): State<Arc<Mutex<Provider>>>, request: Request) ->
     if let Some(upload_id) = query.get("uploadId") {
         if !provider.uploads.contains_key(upload_id) {
             provider.late_parts += 1;
+            if provider.fault == Fault::EmptyLatePart {
+                return response(404, Body::empty());
+            }
             return error(404, "NoSuchUpload");
         }
         assert_eq!(provider.uploads[upload_id].key, key);
@@ -245,22 +258,38 @@ async fn execute(State(state): State<Arc<Mutex<Provider>>>, request: Request) ->
             .status(200)
             .header("etag", &object.etag)
             .header("content-length", object.bytes.len());
-        if provider.fault != Fault::Versionless {
+        if !provider.fault.versionless() {
             reply = reply.header("x-amz-version-id", &object.version);
         }
         return reply.body(Body::empty()).unwrap();
     }
     assert_eq!(request.method, "GET");
-    if provider.fault == Fault::Versionless {
+    if provider.fault.versionless() {
         assert!(!query.contains_key("versionId"));
     }
     assert!(query["X-Amz-SignedHeaders"].contains("if-match"));
     if request.headers["if-match"].to_str().unwrap() != object.etag {
         assert!(query["X-Amz-SignedHeaders"].contains("range"));
+        match provider.fault {
+            Fault::EmptyConditionalVersionless => return response(412, Body::empty()),
+            Fault::ConditionalServiceFailure => return response(503, Body::empty()),
+            Fault::IncompleteConditional => {
+                return response(
+                    412,
+                    Body::from_stream(futures_util::stream::once(async {
+                        Err::<Bytes, _>(std::io::Error::new(
+                            std::io::ErrorKind::ConnectionReset,
+                            "fixture incomplete conditional reply",
+                        ))
+                    })),
+                );
+            }
+            _ => {}
+        }
         return error(412, "PreconditionFailed");
     }
     let mut builder = Response::builder().header("etag", &object.etag);
-    if provider.fault != Fault::Versionless {
+    if !provider.fault.versionless() {
         builder = builder.header("x-amz-version-id", &object.version);
     }
     if let Some(range) = request.headers.get("range") {
@@ -461,6 +490,173 @@ fn report_range_bytes(report: &std::path::Path, journal: &std::path::Path) -> u6
         })
         .max()
         .unwrap()
+}
+
+#[test]
+fn empty_conditional_denial_is_phase_specific_and_requires_exact_consumed_bytes() {
+    let empty = || super::transport::Response {
+        status: 412,
+        body: Vec::new(),
+        bytes: 0,
+        sha256: digest(b""),
+        etag: None,
+        version: None,
+        request_id: None,
+        content_length: Some(0),
+        content_range: None,
+    };
+
+    assert_eq!(super::transport::conditional_range_denied(&empty()).unwrap(), None);
+    let mut no_length = empty();
+    no_length.content_length = None;
+    assert_eq!(super::transport::conditional_range_denied(&no_length).unwrap(), None);
+
+    for status in [200, 206, 404, 500, 503] {
+        let mut changed = empty();
+        changed.status = status;
+        assert!(super::transport::conditional_range_denied(&changed).is_err());
+    }
+    for body in [" ", "<Error/>", "<Error><Code>AccessDenied</Code></Error>"] {
+        let mut changed = empty();
+        changed.body = body.as_bytes().to_vec();
+        changed.bytes = changed.body.len() as u64;
+        changed.sha256 = digest(&changed.body);
+        changed.content_length = Some(changed.bytes);
+        assert!(super::transport::conditional_range_denied(&changed).is_err());
+    }
+    for field in ["bytes", "hash", "length"] {
+        let mut changed = empty();
+        match field {
+            "bytes" => changed.bytes = 1,
+            "hash" => changed.sha256 = digest(b"other"),
+            "length" => changed.content_length = Some(1),
+            _ => unreachable!(),
+        }
+        assert!(super::transport::conditional_range_denied(&changed).is_err());
+    }
+
+    // The generic multipart/privacy parser never learns the empty exception.
+    let mut late = empty();
+    late.status = 404;
+    assert!(super::transport::denied(&late, &["NoSuchUpload"], &[404]).is_err());
+    assert!(super::transport::denied(&empty(), &["PreconditionFailed"], &[412]).is_err());
+}
+
+#[tokio::test]
+async fn actual_empty_412_retains_no_error_code_and_projects_only_the_same_source() {
+    let fixture = Fixture::new(Fault::EmptyConditionalVersionless).await;
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(
+        fixture.directory.path(),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    fixture.run().await.unwrap();
+    let root = fixture.directory.path();
+    let report_file = root.join("report.json");
+    let journal = root.join("journal");
+    let original_report = std::fs::read(&report_file).unwrap();
+    let report: Report = serde_json::from_slice(&original_report).unwrap();
+    let index = report.observations.iter().position(|value| {
+        value.phase == Phase::RejectWrongConditionalRange
+    }).unwrap();
+    let observation = &report.observations[index];
+    assert_eq!(observation.status, 412);
+    assert_eq!(observation.response_bytes, 0);
+    assert_eq!(observation.response_sha256, digest(b""));
+    assert!(observation.error_code.is_none());
+    assert!(observation.actual_size.is_none());
+    assert!(observation.actual_sha256.is_none());
+
+    let before = fixture.state.lock().unwrap().requests;
+    super::export_provider_copy_contract(&report_file, &journal, &root.join("empty-contract.json"))
+        .unwrap();
+    assert_eq!(fixture.state.lock().unwrap().requests, before);
+
+    let observation_file = journal.join(format!("{index:03}.observation.json"));
+    let response_file = journal.join(format!("{index:03}.response.json"));
+    let intent_file = journal.join(format!("{index:03}.intent.json"));
+    let original_observation = std::fs::read(&observation_file).unwrap();
+    let original_response = std::fs::read(&response_file).unwrap();
+    let original_intent = std::fs::read(&intent_file).unwrap();
+
+    // Keep report/journal correlations equal so these exercise the empty receipt
+    // predicate, rather than being refused only as an edited report.
+    for field in ["bytes", "hash", "code", "data"] {
+        let mut changed: Report = serde_json::from_slice(&original_report).unwrap();
+        let observation = &mut changed.observations[index];
+        match field {
+            "bytes" => observation.response_bytes = 1,
+            "hash" => observation.response_sha256 = digest(b"other"),
+            "code" => observation.error_code = Some("AccessDenied".into()),
+            "data" => observation.actual_size = Some(0),
+            _ => unreachable!(),
+        }
+        let mut received: super::model::ResponseCommitment =
+            serde_json::from_slice(&original_response).unwrap();
+        received.response_bytes = observation.response_bytes;
+        received.response_sha256 = observation.response_sha256.clone();
+        write(&observation_file, &serde_json::to_vec(observation).unwrap());
+        write(&response_file, &serde_json::to_vec(&received).unwrap());
+        write(&report_file, &serde_json::to_vec(&changed).unwrap());
+        assert!(super::export_provider_copy_contract(
+            &report_file, &journal, &root.join(format!("invalid-{field}.json"))
+        ).is_err());
+    }
+    write(&observation_file, &original_observation);
+    write(&response_file, &original_response);
+    write(&report_file, &original_report);
+
+    for field in ["key", "same_condition", "weak_condition", "range"] {
+        let mut intent: super::model::Intent = serde_json::from_slice(&original_intent).unwrap();
+        match field {
+            "key" => intent.key.push_str("-other"),
+            "same_condition" => intent.source_etag = Some(report.source.etag.clone()),
+            "weak_condition" => intent.source_etag = Some("W/\"wrong\"".into()),
+            "range" => intent.first_byte = Some(1),
+            _ => unreachable!(),
+        }
+        write(&intent_file, &serde_json::to_vec(&intent).unwrap());
+        assert!(super::export_provider_copy_contract(
+            &report_file, &journal, &root.join(format!("invalid-{field}.json"))
+        ).is_err());
+    }
+    write(&intent_file, &original_intent);
+
+    let head_index = report.observations.iter().position(|value| value.phase == Phase::SourceHead).unwrap();
+    let mut changed: Report = serde_json::from_slice(&original_report).unwrap();
+    changed.observations[head_index].etag = Some("\"different-source\"".into());
+    write(&journal.join(format!("{head_index:03}.observation.json")),
+        &serde_json::to_vec(&changed.observations[head_index]).unwrap());
+    write(&report_file, &serde_json::to_vec(&changed).unwrap());
+    assert!(super::export_provider_copy_contract(
+        &report_file, &journal, &root.join("invalid-head.json")
+    ).is_err());
+    assert_eq!(fixture.state.lock().unwrap().requests, before);
+}
+
+#[tokio::test]
+async fn empty_late_part_service_failure_and_incomplete_412_remain_unknown() {
+    for fault in [Fault::EmptyLatePart, Fault::ConditionalServiceFailure, Fault::IncompleteConditional] {
+        let fixture = Fixture::new(fault).await;
+        assert!(fixture.run().await.is_err());
+        assert!(!fixture.directory.path().join("report.json").exists());
+        let journal = fixture.directory.path().join("journal");
+        let status: serde_json::Value = serde_json::from_str(
+            &provider_conformance_status(&journal).unwrap()
+        ).unwrap();
+        assert_eq!(status["unknown_operation_ids"].as_array().unwrap().len(), 1);
+        let index = status["observations"].as_array().unwrap().len();
+        let intent: super::model::Intent = serde_json::from_slice(
+            &std::fs::read(journal.join(format!("{index:03}.intent.json"))).unwrap()
+        ).unwrap();
+        assert!(intent.phase == if fault == Fault::EmptyLatePart {
+            Phase::LatePartAfterComplete
+        } else {
+            Phase::RejectWrongConditionalRange
+        });
+        assert!(!journal.join(format!("{index:03}.observation.json")).exists());
+    }
 }
 
 #[tokio::test]
