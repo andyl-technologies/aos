@@ -48,6 +48,13 @@ const RELEASE: &str = "1.0.0";
 const TARGET_TAG: &str = "stable";
 const TEST_JWT_SECRET: &[u8] = b"native-container-publication-secret";
 
+// Static notices locate an unfinished test operation when nextest terminates
+// the process. They disclose no arguments, credentials, or publication data;
+// a returned subprocess still passes through its original status checks.
+fn publication_phase(phase: &'static str, edge: &'static str) {
+    eprintln!("NATIVE-CONTAINER-PUBLICATION phase={phase} edge={edge}");
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ControlObservation {
     method: String,
@@ -88,9 +95,14 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
     let workspace = tempfile::tempdir()?;
     let home = workspace.path().join("home");
     fs::create_dir_all(&home)?;
+    publication_phase("registry-authoring", "begin");
     let (trust_key, key_path, authoring_registry) = create_authoring_registry(&home)?;
+    publication_phase("registry-authoring", "returned");
+    publication_phase("hub-setup", "begin");
     let hub = spawn_hub(workspace.path(), &trust_key).await?;
+    publication_phase("hub-setup", "returned");
 
+    publication_phase("signed-graph", "begin");
     let fixture = oci_support::fixture();
     let mut release = oci_support::add_signed_release_graph(&fixture);
     let signature_input = signature_input(&release);
@@ -101,7 +113,9 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
     fs::write(&release_path, &release_bytes)?;
     let signature_input_path = workspace.path().join("signature-input.json");
     fs::write(&signature_input_path, to_canonical_json(&signature_input)?)?;
+    publication_phase("signed-graph", "returned");
 
+    publication_phase("local-refusals", "begin");
     assert_local_publication_rejections(
         &hub,
         workspace.path(),
@@ -112,6 +126,8 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
     )
     .await?;
 
+    publication_phase("local-refusals", "returned");
+    publication_phase("bootstrap", "begin");
     // Bootstrap a real signed predecessor, then author an unpublished revision
     // on an ordinary branch. The local alias differs from the Hub namespace.
     run_apr(
@@ -146,10 +162,12 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
         &hub,
         &workspace.path().join("bootstrap-surface"),
     )?;
+    publication_phase("bootstrap", "returned");
     git_output(
         &authoring_registry,
         &["checkout", "-b", "dplecki/container-candidate"],
     )?;
+    publication_phase("attachment-refusals", "begin");
     assert_apr_attachment_rejections(
         &home,
         &key_path,
@@ -157,6 +175,8 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
         &signature_input_path,
         &authoring_registry,
     )?;
+    publication_phase("attachment-refusals", "returned");
+    publication_phase("prepare-candidate", "begin");
     let preparation = run_apr_output(
         &home,
         &[
@@ -180,10 +200,12 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
             &hub.bearer,
         ],
     )?;
+    publication_phase("prepare-candidate", "returned");
     assert!(
         !preparation.status.success(),
         "the second required OCI placement is still absent"
     );
+    publication_phase("inspect-candidate", "begin");
     let store =
         aos_package::registry::staging::LocalStageStore::open_read_only(&authoring_registry)?;
     let prepared = store.show("native-container").with_context(|| {
@@ -254,6 +276,8 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
             .all(|release| release.semver != RELEASE)
     );
 
+    publication_phase("inspect-candidate", "returned");
+    publication_phase("stage-distribution", "begin");
     let reference = format!("{}/aos:{TARGET_TAG}", hub.authority);
     let staged = run_publish(
         &hub,
@@ -286,6 +310,8 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
         .oci_repository_closed_graph(repository.id, &roots)
         .await?;
     assert_eq!(graph.len(), 18, "complete staged release graph");
+    publication_phase("stage-distribution", "returned");
+    publication_phase("replicate-graph", "begin");
     for object in &graph {
         let path = hub
             .surface
@@ -313,8 +339,10 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
             .await?;
         assert_eq!(evidence.placement_id, hub.replica_placement_id);
     }
+    publication_phase("replicate-graph", "returned");
     assert_tag(&hub.db, repository.id, None).await?;
 
+    publication_phase("resume-stage", "begin");
     run_apr(
         &home,
         &[
@@ -333,12 +361,14 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
             &hub.bearer,
         ],
     )?;
+    publication_phase("resume-stage", "returned");
     let ready = store.show("native-container")?;
     assert_eq!(
         ready.state,
         aos_registry_surface::staging::StageState::Ready
     );
     assert!(hub.db.oci_tags(repository.id, 10, None).await?.is_empty());
+    publication_phase("finalize-release", "begin");
     run_apr(
         &home,
         &[
@@ -356,6 +386,7 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
             &hub.bearer,
         ],
     )?;
+    publication_phase("finalize-release", "returned");
     let finalized = store.show("native-container")?;
     assert_eq!(
         finalized.state,
@@ -389,6 +420,7 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
     )?;
     assert_eq!(committed_sidecar, release_bytes);
 
+    publication_phase("channel-publication-index", "begin");
     publish_signed_registry_surface(
         &home,
         &authoring_registry,
@@ -434,6 +466,8 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
         "signed APR channel did not converge all 256 partitions"
     );
 
+    publication_phase("channel-publication-index", "returned");
+    publication_phase("container-publication", "begin");
     let published = run_publish(
         &hub,
         workspace.path(),
@@ -460,6 +494,7 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
     assert_control_sequence(&hub, None, release.oci.index.digest);
     assert_tag(&hub.db, repository.id, Some(release.oci.index.digest)).await?;
 
+    publication_phase("container-publication", "returned");
     let referrers = hub
         .db
         .oci_referrers(repository.id, release.oci.index.digest, None)
@@ -483,6 +518,7 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
     assert_eq!(artifact_types, expected_types);
 
     hub.observations.lock().unwrap().clear();
+    publication_phase("publication-retry", "begin");
     let retried = run_publish(
         &hub,
         workspace.path(),
@@ -504,6 +540,7 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
         Some(release.oci.index.digest),
         release.oci.index.digest,
     );
+    publication_phase("publication-retry", "returned");
     let tags = hub.db.oci_tags(repository.id, 10, None).await?;
     assert_eq!(tags.len(), 2);
     let stable_tag = tags
@@ -524,6 +561,7 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
     assert_eq!(version_tag.source_kind, "release");
     assert_eq!(version_tag.resource_version, 1);
 
+    publication_phase("production-pull", "begin");
     let pull_reference = RegistryReference::parse(&reference)?;
     let client = RegistryClient::new(&pull_reference, Some(&hub.origin), Some(hub.bearer.clone()))?;
     let pull_destination = workspace.path().join("pulled-layout");
@@ -539,6 +577,7 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
     );
     assert_eq!(pulled.manifest.digest, fixture.manifest_descriptor.digest);
     assert_eq!(pulled.layers, vec![fixture.layer_descriptor.clone()]);
+    publication_phase("production-pull", "returned");
 
     Ok(())
 }
@@ -841,6 +880,7 @@ fn publish_signed_registry_surface(
     if let Some(head) = public_head {
         fs::write(surface.join("HEAD"), head)?;
     }
+    publication_phase("aos-hub-publication-child", "begin");
     let output = Command::new(env!("CARGO_BIN_EXE_aos"))
         .env("HOME", home)
         .args(["hub", "registry", "publish", "upload", &hub.registry.slug])
@@ -849,6 +889,7 @@ fn publish_signed_registry_surface(
         .args(["--hub", &hub.origin, "--token", &hub.bearer])
         .output()
         .context("running typed Hub registry publication")?;
+    publication_phase("aos-hub-publication-child", "returned");
     if !output.status.success() {
         bail!(
             "aos hub registry publish upload failed:\nstdout:\n{}\nstderr:\n{}",
@@ -1510,7 +1551,10 @@ fn publish_output(
             .arg("--registry-stage")
             .arg(workspace.join("registry-stage.json"));
     }
-    command.output().context("running aos container publish")
+    publication_phase("aos-container-child", "begin");
+    let result = command.output().context("running aos container publish");
+    publication_phase("aos-container-child", "returned");
+    result
 }
 
 fn run_apr(home: &Path, arguments: &[&str]) -> Result<String> {
@@ -1531,7 +1575,8 @@ fn run_apr(home: &Path, arguments: &[&str]) -> Result<String> {
 }
 
 fn run_apr_output(home: &Path, arguments: &[&str]) -> Result<Output> {
-    Command::new(env!("CARGO_BIN_EXE_apr"))
+    publication_phase("apr-child", "begin");
+    let result = Command::new(env!("CARGO_BIN_EXE_apr"))
         .env("HOME", home)
         .env("USER", "registry-test")
         .env("LOGNAME", "registry-test")
@@ -1543,7 +1588,9 @@ fn run_apr_output(home: &Path, arguments: &[&str]) -> Result<Output> {
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .args(arguments)
         .output()
-        .with_context(|| format!("running apr {}", display_arguments(arguments)))
+        .with_context(|| format!("running apr {}", display_arguments(arguments)));
+    publication_phase("apr-child", "returned");
+    result
 }
 
 fn display_arguments(arguments: &[&str]) -> String {
@@ -1574,12 +1621,14 @@ fn assert_failure_contains(output: &Output, needle: &str) {
 }
 
 fn git_output(registry: &Path, arguments: &[&str]) -> Result<Vec<u8>> {
+    publication_phase("git-child", "begin");
     let output = Command::new("git")
         .args(arguments)
         .current_dir(registry)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .output()?;
+    publication_phase("git-child", "returned");
     if !output.status.success() {
         bail!(
             "git {} failed: {}",
