@@ -38,6 +38,8 @@ mod child;
 mod evidence;
 #[path = "equivalence/siblings.rs"]
 mod siblings;
+#[path = "equivalence/source_watchdog.rs"]
+mod source_watchdog;
 
 use self::campaign_perf::measure_campaign_planner_queue_at_boundary;
 use self::child::{
@@ -308,22 +310,29 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
     .expect("build single-node equivalence scenario");
 
     let input = execution_input_for_scenario(source.clone());
-    let checkpoint_context = native_execution_context(&input, 0xa0);
-    let mut checkpoint_source = begin_fresh(
-        &paths,
-        "single-checkpoint-source",
-        7_000,
-        &source,
-        Arc::clone(&artifacts),
-        &checkpoint_context,
-    );
-    eprintln!("single-guest-equivalence phase=checkpoint-source-launched");
-    let checkpoint_boundary = drive_to_pending_boundary(
-        &mut checkpoint_source,
-        &source,
-        EquivalenceTopology::SingleNode,
-    );
-    eprintln!("single-guest-equivalence phase=checkpoint-source-choice-reached");
+    let (checkpoint_context, (mut checkpoint_source, checkpoint_boundary)) =
+        source_watchdog::run_source_stage(
+            native_execution_context(&input, 0xa0),
+            source_watchdog::SOURCE_STAGE_HOST_WATCHDOG_MS,
+            |checkpoint_context| {
+                let mut checkpoint_source = begin_fresh(
+                    &paths,
+                    "single-checkpoint-source",
+                    7_000,
+                    &source,
+                    Arc::clone(&artifacts),
+                    checkpoint_context,
+                );
+                eprintln!("single-guest-equivalence phase=checkpoint-source-launched");
+                let checkpoint_boundary = drive_to_pending_boundary(
+                    &mut checkpoint_source,
+                    &source,
+                    EquivalenceTopology::SingleNode,
+                );
+                eprintln!("single-guest-equivalence phase=checkpoint-source-choice-reached");
+                (checkpoint_source, checkpoint_boundary)
+            },
+        );
     let checkpoints = checkpoint_store();
     let capture = QemuFreshAttemptLifecycleOwner::capture_attempt_checkpoint(
         &mut checkpoint_source,

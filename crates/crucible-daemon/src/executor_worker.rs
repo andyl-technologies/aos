@@ -746,7 +746,7 @@ impl AttemptExecutionContext {
             .map(AssignmentHostWatchdog::remaining)
     }
 
-    fn with_host_watchdog(mut self, watchdog: AssignmentHostWatchdog) -> Self {
+    pub(crate) fn with_host_watchdog(mut self, watchdog: AssignmentHostWatchdog) -> Self {
         self.host_watchdog = Some(watchdog);
         self
     }
