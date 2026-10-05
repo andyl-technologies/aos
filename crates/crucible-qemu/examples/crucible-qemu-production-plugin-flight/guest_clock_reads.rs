@@ -24,6 +24,11 @@ use crucible_qemu::{
 };
 use serde::Serialize;
 
+#[path = "guest_clock_reads/failure_context.rs"]
+mod failure_context;
+
+use failure_context::{Context, Phase, Stage};
+
 const CLOCKS: [&str; 4] = ["realtime", "monotonic", "gettimeofday", "tsc"];
 const BEFORE: &str = "clock.read.before";
 const AFTER: &str = "clock.read.after";
@@ -165,7 +170,8 @@ fn run_once(
     let mut directory = owner.prepare_generation_run_directory(config.resource_requirements())?;
     directory.prepare_fresh_artifacts_guarded(qemu, None, owner.process_contract()?)?;
     let launch = config.clone().with_run_directory(directory.path());
-    let mut node = launch_qemu_production_fresh_node(
+    let mut context = Context::new(hostile);
+    let launch_result = launch_qemu_production_fresh_node(
         &launch,
         QemuProductionFreshLaunchAdmission::admit(
             &launch,
@@ -177,86 +183,110 @@ fn run_once(
                 "plugin-flight-crash",
             ),
         )?,
-    )?;
+    );
+    let mut node = failure_context::retain_error(launch_result, || context.report(None))?;
     let pid = node.process_id();
-    let (boot, boot_boundary) = barrier(&mut node, 2, "boot", true)?;
-    super::authenticate_readiness_marker(
-        &boot,
-        Icount {
-            retired: boot_boundary.logical_ps,
-        },
-    )?;
-    let (first, first_boundary) = barrier(&mut node, 3, "clock-0", false)?;
-    let mut reads = validate_batch_mode(&first, 0, runtime_anchor)?;
-    let mut events = retained(&boot);
-    events.extend(retained(&first));
+    let result = (|| -> Result<_, Box<dyn Error>> {
+        let (boot, boot_boundary) = barrier(&mut node, 2, "boot", true, &mut context, Stage::Boot)?;
+        super::authenticate_readiness_marker(
+            &boot,
+            Icount {
+                retired: boot_boundary.logical_ps,
+            },
+        )?;
+        let (first, first_boundary) =
+            barrier(&mut node, 3, "clock-0", false, &mut context, Stage::Clock0)?;
+        let mut reads = validate_batch_mode(&first, 0, runtime_anchor)?;
+        let mut events = retained(&boot);
+        events.extend(retained(&first));
 
-    let halted = node.advance_to_next_idle(Icount {
-        retired: super::READINESS_ADMISSION_CEILING,
-    })?;
-    let AdvanceOutcome::Paused { at } = halted else {
-        return Err("clock-read guest did not enter its original all-vCPU idle wait".into());
-    };
-    if !SimulationBackend::drain_observable_events(&mut node)?.is_empty()
-        || !node.selectable_reply_is_checkpoint_quiescent()
-    {
-        return Err(
-            "clock-read idle boundary retained unexpected events or an unconsumed reply".into(),
-        );
-    }
-    let idle = node.idle_state()?;
-    let deadline = idle
-        .next_deadline
-        .ok_or("clock-read idle deadline missing")?;
-    let armed = node.logical_time_calibration()?;
-    if idle.current_icount != at || deadline <= at || armed.logical_icount != at.retired {
-        return Err("clock-read idle coordinates do not bind the original completion".into());
-    }
-    let prior = node.virtual_timer_fire_witness()?;
-    if hostile {
-        // The adversary withholds an original grant. It supplies no timestamp
-        // to QEMU or the guest and does not issue a QMP stop/resume.
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    super::time_ownership::hold(&mut node, armed)?;
-    let wake = SimulationBackend::step_to(
-        &mut node,
-        VirtualTime {
-            ticks: deadline.retired,
-        },
-    )?;
-    let after = node.logical_time_calibration()?;
-    let timer = node
-        .virtual_timer_fire_witness()?
-        .ok_or("actual timer callback witness missing")?;
-    if wake.reached.ticks != deadline.retired
-        || after.logical_icount != deadline.retired
-        || after.raw_icount != armed.raw_icount
-        || prior.is_some_and(|old| old.generation == timer.generation)
-        || timer.completed != 1
-        || timer.reserved != 0
-        || timer.deadline_tick != deadline.retired
-        || timer.armed_raw_icount != armed.raw_icount
-        || timer.fired_raw_icount != armed.raw_icount
-        || timer.fired_expire_ps != timer.deadline_ps
-        || timer.fired_virtual_ps != deadline.retired
-    {
-        return Err(
-            "clock-read timer wake did not authenticate the original raw/logical transition".into(),
-        );
-    }
-    if !SimulationBackend::drain_observable_events(&mut node)?.is_empty() {
-        return Err("guest executed clock reads before the exact timer-wake boundary".into());
-    }
+        context.set(Stage::Idle, Phase::Operation);
+        let halted = node.advance_to_next_idle(Icount {
+            retired: super::READINESS_ADMISSION_CEILING,
+        })?;
+        context.set(Stage::Idle, Phase::Validation);
+        let AdvanceOutcome::Paused { at } = halted else {
+            return Err("clock-read guest did not enter its original all-vCPU idle wait".into());
+        };
+        if !SimulationBackend::drain_observable_events(&mut node)?.is_empty()
+            || !node.selectable_reply_is_checkpoint_quiescent()
+        {
+            return Err(
+                "clock-read idle boundary retained unexpected events or an unconsumed reply".into(),
+            );
+        }
+        let idle = node.idle_state()?;
+        let deadline = idle
+            .next_deadline
+            .ok_or("clock-read idle deadline missing")?;
+        let armed = node.logical_time_calibration()?;
+        if idle.current_icount != at || deadline <= at || armed.logical_icount != at.retired {
+            return Err("clock-read idle coordinates do not bind the original completion".into());
+        }
+        let prior = node.virtual_timer_fire_witness()?;
+        if hostile {
+            // The adversary withholds an original grant. It supplies no timestamp
+            // to QEMU or the guest and does not issue a QMP stop/resume.
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        super::time_ownership::hold(&mut node, armed)?;
+        context.set(Stage::Timer, Phase::Operation);
+        let wake = SimulationBackend::step_to(
+            &mut node,
+            VirtualTime {
+                ticks: deadline.retired,
+            },
+        )?;
+        context.set(Stage::Timer, Phase::Validation);
+        let after = node.logical_time_calibration()?;
+        let timer = node
+            .virtual_timer_fire_witness()?
+            .ok_or("actual timer callback witness missing")?;
+        if wake.reached.ticks != deadline.retired
+            || after.logical_icount != deadline.retired
+            || after.raw_icount != armed.raw_icount
+            || prior.is_some_and(|old| old.generation == timer.generation)
+            || timer.completed != 1
+            || timer.reserved != 0
+            || timer.deadline_tick != deadline.retired
+            || timer.armed_raw_icount != armed.raw_icount
+            || timer.fired_raw_icount != armed.raw_icount
+            || timer.fired_expire_ps != timer.deadline_ps
+            || timer.fired_virtual_ps != deadline.retired
+        {
+            return Err(
+                "clock-read timer wake did not authenticate the original raw/logical transition"
+                    .into(),
+            );
+        }
+        if !SimulationBackend::drain_observable_events(&mut node)?.is_empty() {
+            return Err("guest executed clock reads before the exact timer-wake boundary".into());
+        }
 
-    let (second, second_boundary) = barrier(&mut node, 4, "clock-1", false)?;
-    reads.extend(validate_batch_mode(&second, 1, runtime_anchor)?);
-    events.extend(retained(&second));
-    validate_forward_returns(&reads)?;
-    let shutdown = node.shutdown_child()?;
-    if !shutdown.reaped || shutdown.leaked {
-        return Err("clock-read guest was not cleanly reaped by its original owner".into());
-    }
+        let (second, second_boundary) =
+            barrier(&mut node, 4, "clock-1", false, &mut context, Stage::Clock1)?;
+        reads.extend(validate_batch_mode(&second, 1, runtime_anchor)?);
+        events.extend(retained(&second));
+        validate_forward_returns(&reads)?;
+        context.set(Stage::Clock1, Phase::Cleanup);
+        let shutdown = node.shutdown_child()?;
+        if !shutdown.reaped || shutdown.leaked {
+            return Err("clock-read guest was not cleanly reaped by its original owner".into());
+        }
+        Ok((
+            reads,
+            boot_boundary,
+            first_boundary,
+            second_boundary,
+            armed,
+            deadline,
+            timer,
+            events,
+        ))
+    })();
+    let (reads, boot_boundary, first_boundary, second_boundary, armed, deadline, timer, events) =
+        failure_context::retain_error(result, || context.report(Some(&mut node)))?;
+
     drop(node);
     drop(directory);
     owner.finish()?;
@@ -277,13 +307,17 @@ fn barrier(
     sequence: u64,
     instance: &str,
     release: bool,
+    context: &mut Context,
+    stage: Stage,
 ) -> Result<(Vec<ObservableEvent>, Boundary), Box<dyn Error>> {
+    context.set(stage, Phase::Operation);
     let observation = SimulationBackend::step_to(
         node,
         VirtualTime {
             ticks: super::READINESS_ADMISSION_CEILING,
         },
     )?;
+    context.set(stage, Phase::Validation);
     let AdvanceOutcome::Paused { at } = observation.outcome else {
         return Err("clock-read guest missed its authenticated selectable barrier".into());
     };
@@ -330,8 +364,10 @@ fn barrier(
             [0; 32],
             [0; 32],
         )?;
+        context.set(stage, Phase::Operation);
         node.enqueue_selectable_reply(pending, &reply)?;
     }
+    context.set(stage, Phase::Validation);
     Ok((events, boundary))
 }
 
