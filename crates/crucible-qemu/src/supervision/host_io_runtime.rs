@@ -53,6 +53,7 @@ mod boundary;
 mod control;
 mod deadline;
 mod device_service;
+mod device_wait_observation;
 mod performance;
 mod wait_observation;
 use boundary::*;

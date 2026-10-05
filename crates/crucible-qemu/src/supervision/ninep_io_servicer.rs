@@ -1007,6 +1007,18 @@ impl QemuLive9pIoServicer {
         self.frames_delivered
     }
 
+    /// Copies the literal sorted completion head without delivering it.
+    pub(crate) fn completion_head_observation(
+        &self,
+    ) -> (Option<u64>, Option<(crucible_shmem::FrameDeliveryKey, u32)>) {
+        let core = self.device.core();
+        (
+            core.next_exact_local_event(),
+            core.next_pending_response()
+                .map(|pending| (pending.key, pending.response.request_id)),
+        )
+    }
+
     /// Returns the device's next completion icount, when a response is in flight.
     ///
     /// This is the exact device horizon: a blocked guest cannot complete its 9p

@@ -268,6 +268,7 @@ impl LiveVcpuTimeCallbackState {
         slot: u32,
         generation: u64,
     ) {
+        self.device_wait_witness.rebind();
         if self.control_callback_witness.is_enabled() {
             self.control_stage_identity = Some(ControlStageIdentity {
                 backing,

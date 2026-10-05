@@ -15,6 +15,7 @@ use crucible_shmem::{
 };
 
 mod block_wait;
+mod device_wait_observations;
 pub(super) mod fault_event_control;
 mod network_custody;
 mod network_output;
@@ -22,6 +23,7 @@ mod preemption;
 mod preflight_cases;
 
 pub(super) extern "C" fn test_icount_raw() -> u64 {
+    TEST_ICOUNT_RAW_READS.set(TEST_ICOUNT_RAW_READS.get() + 1);
     TEST_ICOUNT_RAW.get()
 }
 
@@ -35,6 +37,7 @@ thread_local! {
     static TEST_QUEUED_ADVANCE_STATUS: Cell<std::os::raw::c_int> = const { Cell::new(0) };
     static TEST_REQUEST_VMSTOP_CALLS: Cell<u64> = const { Cell::new(0) };
     static TEST_REQUEST_VMSTOP_STATUS: Cell<std::os::raw::c_int> = const { Cell::new(0) };
+    static TEST_ICOUNT_RAW_READS: Cell<u64> = const { Cell::new(0) };
     static TEST_ICOUNT_RAW: Cell<u64> = const { Cell::new(0) };
     pub(super) static TEST_SIM_TICK: Cell<i64> = const { Cell::new(0) };
     static TEST_IDLE_WAKE_WAIT_CALLS: Cell<u64> = const { Cell::new(0) };

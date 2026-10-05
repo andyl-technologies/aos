@@ -85,6 +85,9 @@ use thiserror::Error;
 
 use crate::QemuLiveBlockIoServicerCheckpoint;
 
+// One immutable device borrow captures the deadline and its sorted reply head.
+type CompletionHeadObservation = (Option<u64>, Option<(crucible_shmem::FrameDeliveryKey, u32)>);
+
 /// In-flight request-queue capacity for the servicer's I/O core.
 const SERVICER_INBOX_CAPACITY: u64 = 16;
 /// In-flight response-queue capacity for the servicer's I/O core.
@@ -1875,6 +1878,26 @@ impl QemuLiveBlockIoServicer {
     #[must_use]
     pub const fn frames_delivered(&self) -> usize {
         self.frames_delivered
+    }
+
+    /// Observes the deadline and its actual sorted response head under one device borrow.
+    ///
+    /// The returned identity is host diagnostic evidence only. It never consumes a
+    /// response or substitutes a later request for the minimum's original owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original device-lock error when its authoritative owner is poisoned.
+    pub(crate) fn completion_head_observation(
+        &self,
+    ) -> Result<CompletionHeadObservation, QemuLiveBlockIoServicerError> {
+        let device = self.device.lock()?;
+        let deadline = device.next_exact_local_event();
+        let head = device
+            .core()
+            .next_pending_response()
+            .map(|pending| (pending.key, pending.response.request_id));
+        Ok((deadline, head))
     }
 
     /// Returns the device's next completion icount, when a response is in flight.

@@ -40,6 +40,7 @@ pub(super) struct ClampExpectation {
 /// Keeps diagnostic-only state outside checkpoints and runtime counters.
 pub(super) struct WaitObservation {
     remaining: u16,
+    pub(super) device_deadlines: Cell<Option<super::device_wait_observation::DeviceDeadlines>>,
     slice_timeout: Duration,
     slice_remaining: Duration,
     consumed_slices: Duration,
@@ -64,6 +65,7 @@ impl WaitObservation {
 
     fn with_budget(maximum: u16) -> Self {
         Self {
+            device_deadlines: Cell::new(None),
             remaining: if (1..=256).contains(&maximum) {
                 maximum
             } else {
@@ -76,6 +78,10 @@ impl WaitObservation {
             region_inode: None,
             host_published_device_deadline: Cell::new(None),
         }
+    }
+
+    pub(super) fn is_enabled(&self) -> bool {
+        self.remaining != 0
     }
 
     pub(super) fn begin(&mut self, timeout: Duration) {
@@ -138,6 +144,8 @@ struct RingIndices {
     fault_command: Option<(u64, u64)>,
     fault_event: Option<(u64, u64)>,
     fault_result: Option<(u64, u64)>,
+    block: Option<((u64, u64), (u64, u64))>,
+    ninep: Option<((u64, u64), (u64, u64))>,
 }
 
 impl QemuLiveHostIoRuntime {
@@ -214,13 +222,34 @@ impl QemuLiveHostIoRuntime {
             .fault_result_transport_mut(self.vm_slot)
             .ok()
             .map(|transport| (transport.ring.read_index(), transport.ring.write_index()));
+        let block = self.device_ring_frontiers(crucible_shmem::SLOT_BLK_IO as u32);
+        let ninep = self.device_ring_frontiers(crucible_shmem::SLOT_9P_IO as u32);
         RingIndices {
+            block,
+            ninep,
             tx: network.map(|indices| indices.0),
             rx: network.map(|indices| indices.1),
             fault_command,
             fault_event,
             fault_result,
         }
+    }
+
+    fn device_ring_frontiers(&mut self, source: u32) -> Option<((u64, u64), (u64, u64))> {
+        let pair = self
+            .region
+            .node_directed_ring_pair_mut(self.vm_slot, self.vm_slot, source, source, self.vm_slot)
+            .ok()?;
+        Some((
+            (
+                pair.first.header.read_index(),
+                pair.first.header.write_index(),
+            ),
+            (
+                pair.second.header.read_index(),
+                pair.second.header.write_index(),
+            ),
+        ))
     }
 }
 
@@ -237,7 +266,7 @@ fn write_observation(
     // Legacy *_icount slot coordinates are picosecond ticks; only the raw
     // logical-time partner counts retired instructions (shmem::TICKS_PER_NS).
     // None explicitly means unavailable, including advance's absent ACK fence.
-    writeln!(
+    write!(
         sink,
         "CRUCIBLE-HOST-WAIT-V1 phase={phase} slot={} region_inode={:?} current_ps={} max_ps={} idle_ps={} raw_instructions={} status={} device_active={} publish_gen={} wake={} observed_ack={} expected_ack={:?} request={:?} request_fault_frontier={:?} observed_fault_frontier={} request_capture={:?} observed_capture={} expected_current_ps={:?} expected_idle_ps={:?} acknowledgement_seen={:?} device_progress={:?} scheduler_pending_gen={:?} device_pending_gen={:?} host_remaining_ms={} host_published_device_deadline_ps={:?} tx_read_write={:?} rx_read_write={:?} fault_command_read_write={:?} fault_event_read_write={:?} fault_result_read_write={:?}",
         runtime.vm_slot,
@@ -273,7 +302,17 @@ fn write_observation(
         indices.fault_command,
         indices.fault_event,
         indices.fault_result,
-    )
+    )?;
+    write!(
+        sink,
+        " block_io={:?} ninep_io={:?}",
+        indices.block, indices.ninep
+    )?;
+    super::device_wait_observation::write_deadlines(
+        sink,
+        runtime.wait_observation.device_deadlines.get(),
+    )?;
+    writeln!(sink)
 }
 
 #[cfg(test)]

@@ -220,7 +220,7 @@ impl IoCore {
 
     /// Returns the next computed response without crossing its delivery boundary.
     #[must_use]
-    pub(crate) fn next_pending_response(&self) -> Option<&PendingResponse> {
+    pub fn next_pending_response(&self) -> Option<&PendingResponse> {
         self.inflight.entries().first()
     }
 
