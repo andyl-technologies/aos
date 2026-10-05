@@ -98,17 +98,12 @@ impl LiveVcpuTimeCallbackState {
             // owner and its still-pending mailbox command untouched.
             return Ok(raw_ceiling);
         }
-        let Some(_published) = self
-            .slot
-            .get()
-            .pending_preemption_command()
-            .map_err(|source| LiveVcpuTimeCallbackError::PreemptionMailbox { source })?
-        else {
+        if !self.slot.get().has_pending_preemption_command() {
             // The host publishes a command before its owning RUN grant. An
             // empty acquire observation leaves later publication pending for
             // the next query; it needs no enqueue ownership or atomic RMW.
             return Ok(raw_ceiling);
-        };
+        }
         #[cfg(test)]
         if let Some(consume) = PREFLIGHT_CONSUMER.with_borrow_mut(Option::take) {
             consume();
@@ -124,9 +119,9 @@ impl LiveVcpuTimeCallbackState {
             return Ok(raw_ceiling);
         }
         let _guard = PreemptionEnqueueGuard(&self.preemption_enqueue_active);
-        // The preflight snapshot does not belong to this enqueue owner. An
-        // intervening query may consume it before our CAS succeeds, so reload
-        // under ownership instead of injecting a stale command.
+        // Only the admitted owner may decode and validate command fields. An
+        // intervening consumer may acknowledge the advisory sequence hint and
+        // let the host replace those fields before our CAS succeeds.
         let Some(published) = self
             .slot
             .get()

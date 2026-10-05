@@ -138,6 +138,76 @@ fn preemption_consumed_between_preflight_and_enqueue_admission_is_not_reinjected
     TEST_PREEMPTION_COMMAND.with_borrow(|command| assert_eq!(*command, None));
 }
 
+#[test]
+fn preemption_republished_after_advisory_hint_is_decoded_under_enqueue_ownership() {
+    super::TEST_ICOUNT_RAW.set(0);
+    TEST_PREEMPTION_COMMAND.with_borrow_mut(|command| *command = None);
+    let slot = Arc::new(NodeSlot::new(KIND_VM));
+    let ceiling = authorize_advance_ceiling(0, 5000, None).unwrap();
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
+        .unwrap();
+    let mut state = super::test_live_state(1, 1, 0, &slot).unwrap();
+    state.preemption_injector =
+        PluginPreemptionInjector::require(Some(capture_preemption)).unwrap();
+    let sequence = slot
+        .publish_preemption_command(test_preemption_command())
+        .unwrap();
+    let replacement = crucible_shmem::SchedulerPreemptionCommand {
+        at_tick: 3500,
+        kind: SchedulerPreemptionKind::InterruptAt {
+            target_vcpu: 0,
+            irq: 42,
+        },
+        ..test_preemption_command()
+    };
+    let competing_consumer = Arc::clone(&slot);
+
+    // The first consumer completes admission after our hint. Its acknowledgement
+    // permits the host to replace every payload field before our guard is owned.
+    super::super::preemption::PREFLIGHT_CONSUMER.with_borrow_mut(|hook| {
+        *hook = Some(Box::new(move || {
+            std::thread::spawn(move || {
+                competing_consumer
+                    .acknowledge_preemption_command(sequence)
+                    .unwrap();
+                assert_eq!(
+                    competing_consumer
+                        .publish_preemption_command(replacement)
+                        .unwrap(),
+                    sequence.wrapping_add(1),
+                );
+            })
+            .join()
+            .unwrap();
+        }));
+    });
+    assert_eq!(state.max_advance_icount(), Ok(100));
+
+    assert_eq!(
+        slot.consumed_preemption_sequence(),
+        sequence.wrapping_add(1)
+    );
+    assert!(!state.preemption_enqueue_active.load(Ordering::Acquire));
+    TEST_PREEMPTION_COMMAND.with_borrow(|command| {
+        assert_eq!(
+            *command,
+            Some((
+                3500,
+                2500,
+                5000,
+                crate::QEMU_PREEMPTION_KIND_INTERRUPT_AT,
+                0,
+                42,
+                0
+            )),
+        );
+    });
+
+    TEST_PREEMPTION_COMMAND.with_borrow_mut(|command| *command = None);
+    assert_eq!(state.max_advance_icount(), Ok(100));
+    TEST_PREEMPTION_COMMAND.with_borrow(|command| assert_eq!(*command, None));
+}
+
 extern "C" fn capture_preemption(
     at_icount: u64,
     deadline_icount: u64,
