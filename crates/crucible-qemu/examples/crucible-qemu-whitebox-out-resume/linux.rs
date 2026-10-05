@@ -10,11 +10,18 @@ const LINUX_POLICY: ProbePolicy = ProbePolicy {
     profile: "linux-cpl3-parent-buffer",
 };
 
+/// Keeps the three distinct immutable Linux boot artifacts together.
+#[derive(Clone, Copy)]
+pub(super) struct BootArtifacts<'a> {
+    pub(super) kernel: &'a Path,
+    pub(super) initrd: &'a Path,
+    pub(super) firmware: &'a Path,
+}
+
 pub(super) fn flight(
     qemu: &Path,
     plugin: &Path,
-    kernel: &Path,
-    initrd: &Path,
+    guest: BootArtifacts<'_>,
     cgroup: &Path,
     root: &Path,
     profile: &Path,
@@ -30,23 +37,67 @@ pub(super) fn flight(
     } else {
         Mode::Normal
     };
-    let config = QemuLiveNodeStepGateConfig::new(qemu, plugin, kernel, kernel, root)
-        .with_initrd(initrd)
-        .with_vm_shape(128, 1)
-        .with_kernel_cmdline(format!(
-            "console=ttyS0 panic=-1 quiet rdinit=/init crucible_out_probe={profile}"
-        ))
-        .with_whitebox(QemuLaunchPluginSwitch::On)
-        .with_selectable_catalog_plan(catalog()?)
-        .with_completion_timeout(LINUX_POLICY.completion_timeout);
+    let config = configuration(qemu, plugin, guest, root, profile)?;
     run_owned(qemu, cgroup, root, mode, config, LINUX_POLICY)?;
     println!("linux_profile={profile}");
     Ok(())
 }
 
+fn configuration(
+    qemu: &Path,
+    plugin: &Path,
+    guest: BootArtifacts<'_>,
+    root: &Path,
+    profile: &str,
+) -> Result<QemuLiveNodeStepGateConfig, Box<dyn Error>> {
+    Ok(
+        QemuLiveNodeStepGateConfig::new(qemu, plugin, guest.kernel, guest.firmware, root)
+            .with_initrd(guest.initrd)
+            .with_vm_shape(128, 1)
+            .with_kernel_cmdline(format!(
+                "console=ttyS0 panic=-1 quiet rdinit=/init crucible_out_probe={profile}"
+            ))
+            .with_whitebox(QemuLaunchPluginSwitch::On)
+            .with_selectable_catalog_plan(catalog()?)
+            .with_completion_timeout(LINUX_POLICY.completion_timeout),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn linux_configuration_retains_the_distinct_firmware_artifact() -> Result<(), Box<dyn Error>> {
+        let guest = BootArtifacts {
+            kernel: Path::new("/aos/kernel/bzImage"),
+            initrd: Path::new("/aos/guest/initrd.img"),
+            firmware: Path::new("/aos/qemu/share/qemu/bios-256k.bin"),
+        };
+        let config = configuration(
+            Path::new("/aos/qemu/bin/qemu-system-x86_64"),
+            Path::new("/aos/plugin/lib/plugin.so"),
+            guest,
+            Path::new("/run/crucible"),
+            "exec-child",
+        )?;
+        let wrong_firmware = configuration(
+            Path::new("/aos/qemu/bin/qemu-system-x86_64"),
+            Path::new("/aos/plugin/lib/plugin.so"),
+            BootArtifacts {
+                firmware: guest.kernel,
+                ..guest
+            },
+            Path::new("/run/crucible"),
+            "exec-child",
+        )?;
+
+        assert_ne!(
+            config, wrong_firmware,
+            "the BIOS input must affect the actual launch configuration"
+        );
+        Ok(())
+    }
 
     #[test]
     fn linux_buffer_identity_stays_bound_to_the_first_original_request() {

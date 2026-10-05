@@ -120,6 +120,7 @@ assert builtins.elem profile ["rom" "linux"]; let
       ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
       ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
       ${pkgs.linux}/boot/vmlinuz-* ${guest}/initrd.img \
+      ${pkgs.qemu-crucible}/share/qemu/bios-256k.bin \
       /sys/fs/cgroup/crucible "/tmp/attempts/$mode" "$mode" \
     '';
   testing = import ../../lib/testing {inherit pkgs lib;};

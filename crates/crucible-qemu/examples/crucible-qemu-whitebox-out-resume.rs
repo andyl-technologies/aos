@@ -9,7 +9,7 @@
 //! ```text
 //! crucible-qemu-whitebox-out-resume firmware OUTPUT [normal|late-register]
 //! crucible-qemu-whitebox-out-resume run QEMU PLUGIN ROM CGROUP_ROOT RUN_ROOT MODE
-//! crucible-qemu-whitebox-out-resume run-linux QEMU PLUGIN KERNEL INITRD CGROUP_ROOT RUN_ROOT PROFILE
+//! crucible-qemu-whitebox-out-resume run-linux QEMU PLUGIN KERNEL INITRD FIRMWARE CGROUP_ROOT RUN_ROOT PROFILE
 //! ```
 
 #![forbid(unsafe_code)]
@@ -86,12 +86,19 @@ fn run() -> Result<(), Box<dyn Error>> {
         [command, qemu, plugin, rom, cgroup, root, mode] if command == Path::new("run") => {
             flight(qemu, plugin, rom, cgroup, root, Mode::parse(mode)?)
         }
-        [command, qemu, plugin, kernel, initrd, cgroup, root, profile]
+        [command, qemu, plugin, kernel, initrd, firmware, cgroup, root, profile]
             if command == Path::new("run-linux") =>
         {
-            linux::flight(qemu, plugin, kernel, initrd, cgroup, root, profile)
+            linux::flight(
+                qemu,
+                plugin,
+                linux::BootArtifacts { kernel, initrd, firmware },
+                cgroup,
+                root,
+                profile,
+            )
         }
-        _ => Err("expected firmware OUTPUT MODE, run QEMU PLUGIN ROM CGROUP_ROOT RUN_ROOT MODE, or run-linux QEMU PLUGIN KERNEL INITRD CGROUP_ROOT RUN_ROOT PROFILE".into()),
+        _ => Err("expected firmware OUTPUT MODE, run QEMU PLUGIN ROM CGROUP_ROOT RUN_ROOT MODE, or run-linux QEMU PLUGIN KERNEL INITRD FIRMWARE CGROUP_ROOT RUN_ROOT PROFILE".into()),
     }
 }
 

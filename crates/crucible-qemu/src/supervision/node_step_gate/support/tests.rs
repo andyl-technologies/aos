@@ -225,6 +225,47 @@ fn diskless_launch_material_retains_firmware() {
 }
 
 #[test]
+fn diskless_linux_probe_preserves_distinct_kernel_initrd_and_bios_arguments() {
+    let kernel = "/nix/store/33333333333333333333333333333333-kernel/bzImage";
+    let initrd = "/nix/store/55555555555555555555555555555555-guest/initrd.img";
+    let firmware = "/nix/store/44444444444444444444444444444444-qemu/share/qemu/bios-256k.bin";
+    let config = QemuLiveNodeStepGateConfig::new(
+        "/nix/store/11111111111111111111111111111111-qemu/bin/qemu-system-x86_64",
+        "/nix/store/22222222222222222222222222222222-plugin/lib/crucible-plugin.so",
+        kernel,
+        firmware,
+        "/run/crucible",
+    )
+    .with_initrd(initrd)
+    .with_vm_shape(128, 1)
+    .with_whitebox(QemuLaunchPluginSwitch::On);
+    let profile = launch_profile_candidate(config.architecture)
+        .with_memory_mib(config.memory_mib)
+        .with_smp_vcpus(config.smp_vcpus)
+        .try_into_deterministic()
+        .unwrap_or_else(|error| panic!("launch profile: {error}"));
+    let vm = vm_launch_config(&config, "vm-a");
+    let plugin = live_node_plugin_base(&config).with_fault_target_node("vm-a");
+    let command = whitebox_probe_command(&config, &profile, &vm, plugin)
+        .unwrap_or_else(|error| panic!("Linux probe command: {error}"));
+
+    for (flag, value) in [
+        ("-kernel", kernel),
+        ("-initrd", initrd),
+        ("-bios", firmware),
+    ] {
+        let values: Vec<_> = command
+            .args()
+            .windows(2)
+            .filter(|pair| pair[0] == flag)
+            .map(|pair| pair[1].as_str())
+            .collect();
+        assert_eq!(values, [value], "actual launch argument {flag}");
+    }
+    assert!(!command.args().iter().any(|arg| arg == "-drive"));
+}
+
+#[test]
 fn campaign_marker_parking_survives_child_launch_profile_clone() {
     let base = QemuLiveNodeStepGateConfig::new(
         "/aos/bin/qemu-system-x86_64",
