@@ -287,6 +287,7 @@ pub use journal::{
     StorageNativeIssuanceHistoryDataV1, StorageNativeIssuanceHistoryErrorV1,
 };
 pub use lifecycle_authority::{
+    SnapshotDerivedStoragePreparationV3, prepare_snapshot_derived_storage_v3,
     AtomicStorageLifecyclePublicationErrorV1, compile_atomic_storage_lifecycle_template_v1,
     compile_storage_create_preparation_template_v1,
     prepare_atomic_storage_lifecycle_authority_effect_v1,

@@ -40,6 +40,38 @@ pub(crate) struct ControllerBrokerPlanSignerV1 {
     mount_authority: SigningAuthority,
 }
 
+/// Retains the real canonical preparation, expanded key and signing message.
+/// This local DATA owner cannot dispatch a Storage request.
+pub(crate) struct PreparedSnapshotPlanV3 {
+    preparation: Option<BrokerPlanPreparation>,
+    key: SigningKey,
+    message: aos_sandbox_core::PreparedStatementSigningV1,
+}
+
+impl PreparedSnapshotPlanV3 {
+    pub(crate) fn preparation(&self) -> Result<&BrokerPlanPreparation, ControllerBrokerPlanSignerError> {
+        self.preparation.as_ref().ok_or(ControllerBrokerPlanSignerError::Completion)
+    }
+
+    pub(crate) fn key_message_loan(
+        &self,
+    ) -> Result<aos_sandbox_core::PreparedStatementKeyLoanV1<'_>, ControllerBrokerPlanSignerError> {
+        self.message.key_message_loan(&self.key)
+            .map_err(|_| ControllerBrokerPlanSignerError::Signature)
+    }
+
+    pub(crate) fn complete(
+        &mut self,
+        signature: &aos_sandbox_core::SignatureBytes,
+        now_seconds: i64,
+    ) -> Result<SignedBrokerPlan, ControllerBrokerPlanSignerError> {
+        let preparation = self.preparation.take()
+            .ok_or(ControllerBrokerPlanSignerError::Completion)?;
+        preparation.complete(ReturnedSignature::Bytes(signature.clone()), now_seconds)
+            .map_err(ControllerBrokerPlanSignerError::SnapshotCompletion)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ControllerBrokerPlanSignerError {
     #[error("controller broker-plan credential is invalid or unreadable")]
@@ -48,9 +80,36 @@ pub(crate) enum ControllerBrokerPlanSignerError {
     Signature,
     #[error("controller broker-plan signature failed policy verification")]
     Completion,
+    #[error("Snapshot broker-plan completion failed: {0}")]
+    SnapshotCompletion(aos_sandbox::AuthorizationPreparationError),
 }
 
 impl ControllerBrokerPlanSignerV1 {
+    /// Prepares only the genuine operation-owned Snapshot derivative.
+    pub(crate) fn prepare_snapshot_plan_v3(
+        &self,
+        original: &aos_sandbox::SnapshotDerivedStoragePreparationV3,
+    ) -> Result<PreparedSnapshotPlanV3, ControllerBrokerPlanSignerError> {
+        let plan = original.plan();
+        let [grant] = plan.grants() else {
+            return Err(ControllerBrokerPlanSignerError::Completion);
+        };
+        if plan.audience() != BrokerAudience::Storage || plan.protocol() != ProtocolId::StorageBroker
+            || grant.verb() != aos_sandbox_core::BrokerVerb::StorageAtomicSnapshot
+            || grant.target() != aos_sandbox_core::BrokerGrantTarget::Assignment
+            || grant.maximum_descriptors() != 0
+        {
+            return Err(ControllerBrokerPlanSignerError::Completion);
+        }
+        let preparation = BrokerPlanPreparation::new(plan.clone(), self.authority.clone())
+            .map_err(|_| ControllerBrokerPlanSignerError::Completion)?;
+        let key = SigningKey::from_bytes(&self.seed);
+        let message = aos_sandbox_core::PreparedStatementSigningV1::new(
+            preparation.signing_request().statement().clone(),
+        ).map_err(|_| ControllerBrokerPlanSignerError::Signature)?;
+        Ok(PreparedSnapshotPlanV3 { preparation: Some(preparation), key, message })
+    }
+
     /// Returns the broker-plan public key for separate-purpose key isolation.
     pub(crate) fn verifying_key_bytes(&self) -> [u8; 32] {
         SigningKey::from_bytes(&self.seed)

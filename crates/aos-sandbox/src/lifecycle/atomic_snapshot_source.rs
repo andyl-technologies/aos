@@ -24,7 +24,7 @@
 use aos_proto::aos::sandbox::local::v1::{
     ApplyAtomicStorageSnapshotRequest, BrokerMethod, BrokerRequestEnvelope,
 };
-use aos_sandbox_core::{ObjectDigest, OperationId};
+use aos_sandbox_core::{ObjectDigest, OperationId, RawPairedClockSample};
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
 };
@@ -36,8 +36,10 @@ use super::{
     LifecycleAuthenticatedAtomicStorageSuccessorV1, LifecycleAuthenticatedStorageInventoryV1,
     LifecycleEffectObservationV1, LifecyclePhase6ErrorV1, LifecycleSnapshotBarrierV1,
     LiveRuntimeFenceV1,
+    CurrentLifecycleCoordinationV1,
 };
 use crate::PreparedAuthorityEffectV1;
+use crate::lifecycle_authority::{DerivedSourceRecordV3, SnapshotSourceOriginalV3};
 use crate::journal::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
 
 const NAMESPACE: RecordNamespace = RecordNamespace::LifecycleAtomicSnapshotSource;
@@ -48,6 +50,10 @@ const DIGEST_DOMAIN_V2: &[u8] = b"aos.sandbox.lifecycle.atomic-snapshot-source.v
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.lifecycle.atomic-snapshot-source-transaction.v1\0";
 const RECORD_BYTES_V1: usize = 8 + 1 + 16 + (18 * 32) + 16 + 8 + 8 + 32;
 const RECORD_BYTES_V2: usize = RECORD_BYTES_V1 + 32;
+const MAGIC_V3: &[u8; 8] = b"AOSLSS03";
+const DIGEST_DOMAIN_V3: &[u8] = b"aos.sandbox.lifecycle.atomic-snapshot-source.v3\0";
+const TRANSACTION_DOMAIN_V3: &[u8] = b"aos.sandbox.lifecycle.snapshot-derived-transaction.v3\0";
+const FIXED_BYTES_V3: usize = 616;
 
 #[derive(Clone, Copy)]
 enum VerifiedRecoveryKind {
@@ -94,6 +100,13 @@ pub enum LifecycleAtomicSnapshotSourceCompletionV1 {
 pub enum LifecycleAtomicSnapshotSourceRecoveryV1 {
     /// No source attempt exists for this operation.
     Absent,
+    /// Selected original custody is debt, not a legacy dispatch reservation.
+    OriginalPrerequisite {
+        /// Closed unsigned, signed, reserved or terminal stage (0 through 3).
+        stage: u8,
+        /// Digest of the complete retained canonical original record.
+        record: ObjectDigest,
+    },
     /// The exact request has a durable reservation; resume its original session.
     Pending {
         /// The original broker request ID.
@@ -126,6 +139,74 @@ pub struct LifecycleAtomicSnapshotSourceStoreV1<'a> {
 }
 
 impl<'a> LifecycleAtomicSnapshotSourceStoreV1<'a> {
+    pub(crate) fn same_original_inventory_v3(
+        outcome: &AuthenticatedBrokerMethodOutcomeV1,
+        expected: &LifecycleAuthenticatedStorageInventoryV1,
+    ) -> Result<bool, LifecycleAtomicSnapshotSourceErrorV1> {
+        same_signed_inventory(outcome, expected)
+    }
+
+    pub(crate) fn capture_original_v3(
+        current: &CurrentLifecycleOperationV1<'_>,
+        coordination: &CurrentLifecycleCoordinationV1<'_>,
+    ) -> Result<SnapshotSourceOriginalV3, LifecycleAtomicSnapshotSourceErrorV1> {
+        capture_snapshot_source_original_v3(current, coordination)
+    }
+
+    // Fully encoded, nonissuing future shapes enter the SAME ordered native
+    // preflight. Real signatures, group receipts and predecessor membership
+    // are still required and repriced at each eventual actual append.
+    pub(crate) fn derived_suffix_v3(
+        journal: &Journal,
+        unsigned: &DerivedSourceRecordV3,
+        body: &[u8],
+        packet: &[u8],
+    ) -> Result<Vec<JournalTransaction>, LifecycleAtomicSnapshotSourceErrorV1> {
+        let seed = if unsigned.stage == 0 { unsigned.digest() } else { unsigned.original };
+        let mut transactions = vec![unsigned.transaction(seed)?];
+        let mut signed = DerivedSourceRecordV3::decode(&unsigned.encode())?;
+        if unsigned.stage == 0 {
+            signed.stage = 1;
+            signed.original = seed;
+            signed.request_id = [1; 16];
+            signed.sections[9] = body.to_vec();
+            signed.sections[10] = packet.to_vec();
+        } else if unsigned.stage != 1 || signed.sections[9] != body || signed.sections[10] != packet {
+            return Err(LifecycleAtomicSnapshotSourceErrorV1::Stale);
+        }
+        checked_derived_length(journal, &signed.sections.each_ref().map(Vec::as_slice))?;
+        if unsigned.stage == 0 { transactions.push(signed.transaction(seed)?); }
+        let group = LifecycleAtomicDatasetSnapshotPlanV1::from_canonical_wire_bytes(&signed.sections[1])
+            .map_err(stale_lifecycle)?;
+        let common = SourceRecord {
+            version: 2, operation: signed.operation, operation_record: signed.digests[0],
+            projection: seed, plan: signed.digests[7], effect: seed,
+            publication: signed.digests[5], template: seed, request_id: signed.request_id,
+            request_body: digest(body), request_packet: digest(packet),
+            predecessor: signed.digests[8], predecessor_packet: digest(&signed.sections[2]),
+            generation: group.inventory_generation(), source: *group.inventory_source().as_bytes(),
+            session: signed.digests[9], checkpoint: signed.digests[10], completion: None,
+        };
+        signed.stage = 2;
+        signed.sections[11] = common.encode();
+        checked_derived_length(journal, &signed.sections.each_ref().map(Vec::as_slice))?;
+        signed.validate()?;
+        transactions.push(signed.transaction(seed)?);
+        signed.stage = 3;
+        signed.sections[11] = SourceRecord {
+            completion: Some(SourceCompletion {
+                signed_request: seed, signed_outcome: seed, successor: seed,
+                successor_packet: seed, successor_generation: group.inventory_generation()
+                    .checked_add(1).ok_or(LifecycleAtomicSnapshotSourceErrorV1::Stale)?,
+                program: seed, observation: seed,
+            }),
+            ..common
+        }.encode();
+        signed.validate()?;
+        transactions.push(signed.transaction(seed)?);
+        Ok(transactions)
+    }
+
     /// Wraps an already opened protected controller journal.
     #[must_use]
     pub const fn new(journal: &'a mut Journal) -> Self {
@@ -147,6 +228,17 @@ impl<'a> LifecycleAtomicSnapshotSourceStoreV1<'a> {
         self.journal.ensure_protected_authority()?;
         let mut pending = Vec::new();
         for (key, bytes) in self.journal.records(NAMESPACE) {
+            if bytes.starts_with(MAGIC_V3) {
+                let record = DerivedSourceRecordV3::decode(bytes)?;
+                if key != record.operation.as_slice() {
+                    return Err(LifecycleAtomicSnapshotSourceErrorV1::Corrupt);
+                }
+                pending.push((OperationId::from_bytes(record.operation),
+                    LifecycleAtomicSnapshotSourceRecoveryV1::OriginalPrerequisite {
+                        stage: record.stage, record: ObjectDigest::from_bytes(record.digest()),
+                    }));
+                continue;
+            }
             let record = SourceRecord::decode(bytes)?;
             if key != record.operation.as_slice() {
                 return Err(LifecycleAtomicSnapshotSourceErrorV1::Corrupt);
@@ -179,6 +271,15 @@ impl<'a> LifecycleAtomicSnapshotSourceStoreV1<'a> {
         self.journal.ensure_protected_authority()?;
         let mut completed = Vec::new();
         for (key, bytes) in self.journal.records(NAMESPACE) {
+            if bytes.starts_with(MAGIC_V3) {
+                let record = DerivedSourceRecordV3::decode(bytes)?;
+                if key != record.operation.as_slice() {
+                    return Err(LifecycleAtomicSnapshotSourceErrorV1::Corrupt);
+                }
+                // Terminal prerequisite custody is not archive-retirement
+                // permission. The full Snapshot producer owns that join.
+                continue;
+            }
             let record = SourceRecord::decode(bytes)?;
             if key != record.operation.as_slice() {
                 return Err(LifecycleAtomicSnapshotSourceErrorV1::Corrupt);
@@ -623,6 +724,17 @@ impl<'a> LifecycleAtomicSnapshotSourceStoreV1<'a> {
         operation: OperationId,
     ) -> Result<LifecycleAtomicSnapshotSourceRecoveryV1, LifecycleAtomicSnapshotSourceErrorV1> {
         self.journal.ensure_protected_authority()?;
+        if let Some(bytes) = self.journal.get(NAMESPACE, operation.as_bytes()) {
+            if bytes.starts_with(MAGIC_V3) {
+                let record = DerivedSourceRecordV3::decode(bytes)?;
+                if &record.operation != operation.as_bytes() {
+                    return Err(LifecycleAtomicSnapshotSourceErrorV1::Corrupt);
+                }
+                return Ok(LifecycleAtomicSnapshotSourceRecoveryV1::OriginalPrerequisite {
+                    stage: record.stage, record: ObjectDigest::from_bytes(record.digest()),
+                });
+            }
+        }
         let Some(record) = self.load(operation.into_bytes())? else {
             return Ok(LifecycleAtomicSnapshotSourceRecoveryV1::Absent);
         };
@@ -722,6 +834,337 @@ impl<'a> LifecycleAtomicSnapshotSourceStoreV1<'a> {
         self.journal.commit(&transaction)?;
         Ok(())
     }
+}
+
+pub(crate) fn capture_snapshot_source_original_v3(
+    current: &CurrentLifecycleOperationV1<'_>,
+    coordination: &CurrentLifecycleCoordinationV1<'_>,
+) -> Result<SnapshotSourceOriginalV3, LifecycleAtomicSnapshotSourceErrorV1> {
+    let transaction = coordination.coordination().transaction();
+    let source = transaction.admitted_source()
+        .ok_or(LifecycleAtomicSnapshotSourceErrorV1::Stale)?;
+    source.require_current(transaction, current.operation()).map_err(stale_lifecycle)?;
+    if coordination.projection_root() != current.projection_root() {
+        return Err(LifecycleAtomicSnapshotSourceErrorV1::Stale);
+    }
+    source.encoded_length().map_err(stale_lifecycle)?;
+    let admitted_operation = super::encode_operation_record_v1(source.original())
+        .map_err(stale_lifecycle)?;
+    let mut digests = [[0; 32]; 11];
+    digests[0] = *current.record().digest().as_bytes();
+    digests[1] = *source.record().digest().as_bytes();
+    digests[2] = *source.projection_root().as_bytes();
+    digests[3] = *source.commitment().as_bytes();
+    Ok(SnapshotSourceOriginalV3 {
+        operation: current.operation().operation_id().into_bytes(),
+        digests, admitted_operation,
+    })
+}
+
+impl SnapshotSourceOriginalV3 {
+    pub(crate) fn require_current(
+        &self,
+        current: &CurrentLifecycleOperationV1<'_>,
+        coordination: &CurrentLifecycleCoordinationV1<'_>,
+    ) -> Result<(), LifecycleAtomicSnapshotSourceErrorV1> {
+        let transaction = coordination.coordination().transaction();
+        let source = transaction.admitted_source()
+            .ok_or(LifecycleAtomicSnapshotSourceErrorV1::Stale)?;
+        source.require_current(transaction, current.operation()).map_err(stale_lifecycle)?;
+        if self.operation != current.operation().operation_id().into_bytes()
+            || self.digests[0] != *current.record().digest().as_bytes()
+            || self.digests[1] != *source.record().digest().as_bytes()
+            || self.digests[2] != *source.projection_root().as_bytes()
+            || self.digests[3] != *source.commitment().as_bytes()
+            || coordination.projection_root() != current.projection_root()
+            || self.admitted_operation != super::encode_operation_record_v1(source.original())
+                .map_err(stale_lifecycle)?
+        {
+            return Err(LifecycleAtomicSnapshotSourceErrorV1::Stale);
+        }
+        Ok(())
+    }
+}
+
+impl DerivedSourceRecordV3 {
+    pub(crate) fn new(
+        journal: &Journal,
+        original: &SnapshotSourceOriginalV3,
+        clock: RawPairedClockSample,
+        deadline: u64,
+        sections: [&[u8]; 12],
+    ) -> Result<Self, LifecycleAtomicSnapshotSourceErrorV1> {
+        checked_derived_length(journal, &sections)?;
+        let record = Self {
+            stage: 0, operation: original.operation, digests: original.digests,
+            request_id: [0; 16], clock, deadline, original: [0; 32],
+            sections: sections.map(<[u8]>::to_vec),
+        };
+        record.validate()?;
+        Ok(record)
+    }
+
+    pub(crate) fn retain_signed_original(
+        &mut self,
+        journal: &Journal,
+        request_id: [u8; 16],
+        body: &[u8],
+        packet: &[u8],
+    ) -> Result<(), LifecycleAtomicSnapshotSourceErrorV1> {
+        if self.stage != 0 || request_id == [0; 16] {
+            return Err(LifecycleAtomicSnapshotSourceErrorV1::Stale);
+        }
+
+        let mut sections = self.sections.each_ref().map(Vec::as_slice);
+        sections[9] = body;
+        sections[10] = packet;
+        checked_derived_length(journal, &sections)?;
+
+        self.original = self.digest();
+        self.stage = 1;
+        self.request_id = request_id;
+        self.sections[9] = body.to_vec();
+        self.sections[10] = packet.to_vec();
+        Ok(())
+    }
+
+    fn validate(&self) -> Result<(), LifecycleAtomicSnapshotSourceErrorV1> {
+        use aos_sandbox_core::format::{decode_broker_authorization_plan, decode_ownership_lease,
+            decode_signature, decode_signature_statement};
+        use aos_sandbox_core::{BrokerAudience, BrokerGrantTarget, BrokerVerb, DecodeLimits,
+            ProtocolId, SignaturePurpose};
+        if self.operation == [0; 16] || self.stage > 3
+            || self.digests.contains(&[0; 32])
+            || self.deadline <= self.clock.boottime_nanoseconds()
+            || self.sections[..9].iter().any(Vec::is_empty)
+            || (self.stage == 0 && (self.request_id != [0; 16]
+                || self.sections[9..].iter().any(|section| !section.is_empty())
+                || self.original != [0; 32]))
+            || (self.stage > 0 && (self.request_id == [0; 16]
+                || self.sections[9..11].iter().any(Vec::is_empty)
+                || self.original == [0; 32]))
+            || (self.stage <= 1 && !self.sections[11].is_empty())
+        {
+            return Err(LifecycleAtomicSnapshotSourceErrorV1::Corrupt);
+        }
+        let operation = super::decode_operation_record_v1(&self.sections[0])
+            .map_err(stale_lifecycle)?;
+        if operation.operation_id().as_bytes() != &self.operation
+            || super::format::record_digest(&self.sections[0]).map_err(stale_lifecycle)?
+                .digest().as_bytes() != &self.digests[1]
+        {
+            return Err(LifecycleAtomicSnapshotSourceErrorV1::Corrupt);
+        }
+        let group = LifecycleAtomicDatasetSnapshotPlanV1::from_canonical_wire_bytes(&self.sections[1])
+            .map_err(stale_lifecycle)?;
+        let plan = decode_broker_authorization_plan(&self.sections[3], DecodeLimits::default())
+            .map_err(|_| LifecycleAtomicSnapshotSourceErrorV1::Corrupt)?;
+        let statement = decode_signature_statement(&self.sections[4], DecodeLimits::default())
+            .map_err(|_| LifecycleAtomicSnapshotSourceErrorV1::Corrupt)?;
+        let lease = decode_ownership_lease(&self.sections[5], DecodeLimits::default())
+            .map_err(|_| LifecycleAtomicSnapshotSourceErrorV1::Corrupt)?;
+        let lease_signature = decode_signature(&self.sections[6], DecodeLimits::default())
+            .map_err(|_| LifecycleAtomicSnapshotSourceErrorV1::Corrupt)?;
+        let receipt = crate::ownership_authority::OwnershipTransactionReceiptV1::from_canonical_bytes(&self.sections[7])
+            .map_err(|_| LifecycleAtomicSnapshotSourceErrorV1::Corrupt)?;
+        let receipt_signature = decode_signature(&self.sections[8], DecodeLimits::default())
+            .map_err(|_| LifecycleAtomicSnapshotSourceErrorV1::Corrupt)?;
+        let [grant] = plan.grants() else { return Err(LifecycleAtomicSnapshotSourceErrorV1::Corrupt); };
+        if group.commitment().as_bytes() != &self.digests[7]
+            || group.inventory().as_bytes() != &self.digests[8]
+            || group.target_sandbox() != plan.assignment().sandbox()
+            || plan.audience() != BrokerAudience::Storage || plan.protocol() != ProtocolId::StorageBroker
+            || grant.verb() != BrokerVerb::StorageAtomicSnapshot || grant.target() != BrokerGrantTarget::Assignment
+            || grant.maximum_descriptors() != 0
+            || grant.argument_commitment() != aos_sandbox_core::BrokerArgumentCommitment::for_canonical_bytes(&self.sections[1])
+            || statement.purpose() != SignaturePurpose::BrokerAuthorization
+            || statement.subject().digest().as_bytes() != &digest(&self.sections[3])
+            || statement.issued_seconds() != plan.issued_seconds()
+            || statement.expires_seconds() != Some(plan.expires_seconds())
+            || lease.assignment().sandbox() != plan.assignment().sandbox()
+            || lease.assignment().incarnation() != plan.assignment().incarnation()
+            || lease.assignment().epoch() != plan.assignment().epoch()
+            || lease.assignment().digest() != plan.assignment().digest() || lease.node() != plan.node()
+            || lease_signature.statement().purpose() != SignaturePurpose::OwnershipLease
+            || lease_signature.statement().subject().digest().as_bytes() != &digest(&self.sections[5])
+            || lease_signature.statement().signer() != plan.ownership_authority()
+            || receipt.lease_descriptor().digest().as_bytes() != &digest(&self.sections[5])
+            || receipt_signature.statement().subject().digest().as_bytes() != &digest(&self.sections[7])
+        {
+            return Err(LifecycleAtomicSnapshotSourceErrorV1::Corrupt);
+        }
+        if self.stage > 0 {
+            let template = ApplyAtomicStorageSnapshotRequest::decode_from_slice(&self.sections[9])
+                .map_err(|_| LifecycleAtomicSnapshotSourceErrorV1::Corrupt)?;
+            let envelope = aos_sandbox_protocol::decode_request_envelope(&self.sections[10], ProtocolId::StorageBroker, 0)
+                .map_err(|_| LifecycleAtomicSnapshotSourceErrorV1::Corrupt)?;
+            let body = ApplyAtomicStorageSnapshotRequest::decode_from_slice(envelope.body())
+                .map_err(|_| LifecycleAtomicSnapshotSourceErrorV1::Corrupt)?;
+            let artifacts = envelope.authorization().ok_or(LifecycleAtomicSnapshotSourceErrorV1::Corrupt)?;
+            let signature = decode_signature(artifacts.broker_plan_signature(), DecodeLimits::default())
+                .map_err(|_| LifecycleAtomicSnapshotSourceErrorV1::Corrupt)?;
+            let header = body.header.as_option().ok_or(LifecycleAtomicSnapshotSourceErrorV1::Corrupt)?;
+            let template_header = template.header.as_option().ok_or(LifecycleAtomicSnapshotSourceErrorV1::Corrupt)?;
+            if envelope.method() != BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
+                || !envelope.descriptors().is_empty()
+                || template.encode_to_vec() != self.sections[9] || body.encode_to_vec() != envelope.body()
+                || template_header.request_id.as_slice() != self.request_id
+                || header.request_id.as_slice() != self.request_id
+                || header.deadline_boottime_nanoseconds != self.deadline
+                || template_header.deadline_boottime_nanoseconds != 0
+                || body.canonical_plan != self.sections[1] || template.canonical_plan != self.sections[1]
+                || body.fence != template.fence || body.header.as_option().map(|h| h.audience) != template.header.as_option().map(|h| h.audience)
+                || artifacts.broker_plan() != self.sections[3]
+                || signature.statement() != &statement
+                || artifacts.ownership_lease() != self.sections[5]
+                || artifacts.ownership_lease_signature() != self.sections[6]
+            { return Err(LifecycleAtomicSnapshotSourceErrorV1::Corrupt); }
+        }
+        if self.stage >= 2 {
+            let common = SourceRecord::decode(&self.sections[11])?;
+            if common.version != 2 || common.operation != self.operation
+                || common.request_id != self.request_id
+                || common.operation_record != self.digests[0]
+                || common.plan != self.digests[7]
+                || common.predecessor != self.digests[8]
+                || common.session != self.digests[9]
+                || common.checkpoint != self.digests[10]
+                || common.completion.is_some() != (self.stage == 3)
+            {
+                return Err(LifecycleAtomicSnapshotSourceErrorV1::Corrupt);
+            }
+        }
+        Ok(())
+    }
+
+    fn body(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(FIXED_BYTES_V3 - 32
+            + self.sections.iter().map(Vec::len).sum::<usize>());
+        bytes.extend_from_slice(MAGIC_V3);
+        bytes.extend_from_slice(&3u16.to_be_bytes());
+        bytes.push(self.stage);
+        bytes.extend_from_slice(&[0; 5]);
+        bytes.extend_from_slice(&self.operation);
+        for digest in self.digests { bytes.extend_from_slice(&digest); }
+        bytes.extend_from_slice(&self.request_id);
+        bytes.extend_from_slice(&self.clock.host_boot_id());
+        bytes.extend_from_slice(&self.clock.provenance().as_bytes());
+        bytes.extend_from_slice(&self.clock.wall_seconds().to_be_bytes());
+        bytes.extend_from_slice(&self.clock.boottime_nanoseconds().to_be_bytes());
+        bytes.extend_from_slice(&self.deadline.to_be_bytes());
+        bytes.extend_from_slice(&self.original);
+        for section in &self.sections {
+            bytes.extend_from_slice(&(section.len() as u64).to_be_bytes());
+        }
+        for section in &self.sections { bytes.extend_from_slice(section); }
+        bytes
+    }
+
+    pub(crate) fn digest(&self) -> [u8; 32] {
+        Sha256::new().chain_update(DIGEST_DOMAIN_V3).chain_update(self.body()).finalize().into()
+    }
+
+    pub(crate) fn encode(&self) -> Vec<u8> {
+        let mut bytes = self.body();
+        let digest: [u8; 32] = Sha256::new().chain_update(DIGEST_DOMAIN_V3)
+            .chain_update(&bytes).finalize().into();
+        bytes.extend_from_slice(&digest);
+        bytes
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self, LifecycleAtomicSnapshotSourceErrorV1> {
+        if bytes.len() < FIXED_BYTES_V3 { return Err(LifecycleAtomicSnapshotSourceErrorV1::Corrupt); }
+        let mut input = bytes;
+        if take::<8>(&mut input)? != *MAGIC_V3 || take::<2>(&mut input)? != 3u16.to_be_bytes() {
+            return Err(LifecycleAtomicSnapshotSourceErrorV1::Corrupt);
+        }
+        let stage = take::<1>(&mut input)?[0];
+        if take::<5>(&mut input)? != [0; 5] { return Err(LifecycleAtomicSnapshotSourceErrorV1::Corrupt); }
+        let operation = take(&mut input)?;
+        let mut digests = [[0; 32]; 11];
+        for digest in &mut digests { *digest = take(&mut input)?; }
+        let request_id = take(&mut input)?;
+        let boot = take(&mut input)?;
+        let provenance = aos_sandbox_core::RawClockProvenance::new_untrusted(take(&mut input)?)
+            .map_err(|_| LifecycleAtomicSnapshotSourceErrorV1::Corrupt)?;
+        let clock = RawPairedClockSample::new_untrusted(provenance, boot,
+            i64::from_be_bytes(take(&mut input)?), u64::from_be_bytes(take(&mut input)?))
+            .map_err(|_| LifecycleAtomicSnapshotSourceErrorV1::Corrupt)?;
+        let deadline = u64::from_be_bytes(take(&mut input)?);
+        let original = take(&mut input)?;
+        let mut lengths = [0usize; 12];
+        let mut total = FIXED_BYTES_V3;
+        for length in &mut lengths {
+            *length = usize::try_from(u64::from_be_bytes(take(&mut input)?))
+                .map_err(|_| LifecycleAtomicSnapshotSourceErrorV1::Corrupt)?;
+            total = total.checked_add(*length).ok_or(LifecycleAtomicSnapshotSourceErrorV1::Corrupt)?;
+        }
+        if total != bytes.len() { return Err(LifecycleAtomicSnapshotSourceErrorV1::Corrupt); }
+        let mut sections = std::array::from_fn(|_| Vec::new());
+        for (section, length) in sections.iter_mut().zip(lengths) {
+            *section = input.get(..length).ok_or(LifecycleAtomicSnapshotSourceErrorV1::Corrupt)?.to_vec();
+            input = &input[length..];
+        }
+        let checksum = take::<32>(&mut input)?;
+        let record = Self { stage, operation, digests, request_id, clock, deadline, original, sections };
+        record.validate()?;
+        if checksum != record.digest() { return Err(LifecycleAtomicSnapshotSourceErrorV1::Corrupt); }
+        Ok(record)
+    }
+
+    pub(crate) fn transaction(&self, original: [u8; 32]) -> Result<JournalTransaction, JournalError> {
+        let digest = Sha256::new().chain_update(TRANSACTION_DOMAIN_V3)
+            .chain_update(original).chain_update(self.operation).chain_update([self.stage])
+            .finalize();
+        let mut id = [0; 16];
+        id.copy_from_slice(&digest[..16]);
+        JournalTransaction::new(id, vec![JournalRecord::put(NAMESPACE, self.operation.to_vec(), self.encode())])
+    }
+
+    pub(crate) fn append(
+        &self,
+        journal: &mut Journal,
+    ) -> Result<crate::journal::CommitResult, LifecycleAtomicSnapshotSourceErrorV1> {
+        journal.ensure_protected_authority()?;
+        self.validate()?;
+        checked_derived_length(journal, &self.sections.each_ref().map(Vec::as_slice))?;
+        let prior = journal.get(NAMESPACE, &self.operation);
+        if self.stage == 0 {
+            if prior.is_some() { return Err(LifecycleAtomicSnapshotSourceErrorV1::Stale); }
+        } else {
+            let prior = DerivedSourceRecordV3::decode(prior.ok_or(LifecycleAtomicSnapshotSourceErrorV1::Stale)?)?;
+            if prior.stage.checked_add(1) != Some(self.stage)
+                || prior.operation != self.operation || prior.digests != self.digests
+                || prior.clock != self.clock || prior.deadline != self.deadline
+                || prior.sections[..9] != self.sections[..9]
+                || (self.stage == 1 && prior.digest() != self.original)
+                || (self.stage > 1 && (prior.original != self.original
+                    || prior.request_id != self.request_id || prior.sections[9..11] != self.sections[9..11]))
+            {
+                return Err(LifecycleAtomicSnapshotSourceErrorV1::Stale);
+            }
+        }
+        if self.stage == 1 {
+            let remaining = LifecycleAtomicSnapshotSourceStoreV1::derived_suffix_v3(
+                journal, self, &self.sections[9], &self.sections[10],
+            )?;
+            journal.preflight_transactions(&remaining)?;
+        }
+        Ok(journal.commit(&self.transaction(if self.stage == 0 { self.digest() } else { self.original })?)?)
+    }
+}
+
+fn checked_derived_length(
+    journal: &Journal,
+    sections: &[&[u8]; 12],
+) -> Result<usize, LifecycleAtomicSnapshotSourceErrorV1> {
+    let length = sections.iter().try_fold(FIXED_BYTES_V3,
+        |total, section| total.checked_add(section.len()))
+        .ok_or(LifecycleAtomicSnapshotSourceErrorV1::Corrupt)?;
+    if length.checked_add(23).is_none_or(|bytes| bytes > journal.configured_limits().maximum_record_bytes) {
+        return Err(JournalError::LimitExceeded("Snapshot original record bytes").into());
+    }
+    Ok(length)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

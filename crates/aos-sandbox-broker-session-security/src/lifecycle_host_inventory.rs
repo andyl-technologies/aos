@@ -2151,6 +2151,37 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         Ok(&mut self.0.session)
     }
 
+    /// Compares the borrowed Snapshot predecessor with this exact live Session.
+    ///
+    /// This retains the original terminal owner on failure and grants no group
+    /// dispatch or physical dataset-currentness permission.
+    ///
+    /// # Errors
+    ///
+    /// Refuses another resident exchange, missing predecessor custody, or any
+    /// changed protected terminal, endpoint or live peer binding.
+    pub(crate) fn compare_atomic_snapshot_predecessor_v3(
+        &mut self,
+        predecessor: &DormantAtomicStorageInventoryPredecessorV1,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        if self.0.pending.is_some()
+            || self.0.authority_effects.has_pending()
+            || self.0.output_registration.is_some()
+            || self.0.git_coverage.is_some()
+            || self.has_pending_nix_generation()
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+
+        let currentness = predecessor.currentness.as_ref()
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        if currentness.outcome != predecessor.outcome {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+
+        self.0.session.compare_atomic_snapshot_predecessor_v3(currentness)
+    }
+
     /// Returns the signed-hello/context checkpoint bound to this Storage session.
     pub(crate) fn historical_checkpoint_digest(
         &self,

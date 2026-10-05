@@ -53,6 +53,7 @@ pub use capability::{
     Grant, InvalidGrant,
 };
 pub use crypto::{
+    PreparedStatementKeyLoanV1, PreparedStatementSigningV1,
     SignatureVerificationError, VerifiedSignature, sign_statement, signature_signing_message,
     verify_signature,
 };
