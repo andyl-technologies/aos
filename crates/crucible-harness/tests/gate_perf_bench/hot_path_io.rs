@@ -52,13 +52,18 @@ const HOT_PATH_OWNERS: &[HotPathOwner] = &[
             "pub struct QemuLiveBlockIoServicer",
             "pub fn service(",
             ".process_one_shmem_request(",
-            ".advance_to_shmem(",
+            ".advance_to_mapped_ring(",
         ],
         &["wake.write_all(&1_u64.to_ne_bytes())"],
     ),
     owner(
         "crucible-qemu/src/supervision/ninep_io_servicer.rs",
-        &["pub struct QemuLive9pIoServicer", "pub fn service("],
+        &[
+            "pub struct QemuLive9pIoServicer",
+            "pub fn service(",
+            ".advance_to_mapped_ring(",
+            ".advance_to_mapped_ring_with_commit_status(",
+        ],
         &[],
     ),
     scoped_owner(
