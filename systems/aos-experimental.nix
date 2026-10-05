@@ -4,6 +4,11 @@
 
   aos.profiles.experimentalRelease.enable = true;
 
+  # The finalized x86_64 logical disk compresses to 817 MiB with the release
+  # zstd settings, above the 768 MiB budget inherited from systems/edge.nix.
+  # Image finalization is the only step that enforces this budget.
+  aos.image.budgets.maxDownloadMiB = 1024;
+
   # The converted disk formats exceed the compressed raw image budget.
   # Arm exports carry the full recovery ESP and the larger root payload.
   aos.image.budgets.maxConvertedDownloadMiB =
