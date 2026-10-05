@@ -25,7 +25,7 @@ use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
 use crate::deployment::model::{Deployment, ResolvedPackages};
-use crate::deployment::retention::{ArtifactAdmission, NixStore};
+use crate::deployment::retention::{AdmittedArtifact, ArtifactAdmission, NixStore};
 use crate::deployment::transaction::{Transactions, journal_limits};
 use crate::store::verification::verify_store_object_in;
 
@@ -925,7 +925,7 @@ impl Admission {
 }
 
 impl ArtifactAdmission for Admission {
-    fn admit(&mut self, root: &str) -> Result<()> {
+    fn admit(&mut self, root: &str) -> Result<AdmittedArtifact> {
         check_root(root)?;
         if let Some(receipt) = self.receipts.get(root) {
             // The receipt cannot contain its own NAR identity. Its document
@@ -939,7 +939,7 @@ impl ArtifactAdmission for Admission {
                 Sha256Digest::of_bytes(&bytes) == receipt.digest,
                 "retained image receipt changed"
             );
-            return Ok(());
+            return Ok(AdmittedArtifact::authenticated());
         }
         let admitted = self
             .roots

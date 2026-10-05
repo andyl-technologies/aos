@@ -17,7 +17,7 @@ use aos_ability_runtime::journal::JournalLimits;
 use aos_doc_model::runtime::RuntimeDocument;
 use aos_package::deployment::evaluation::{Evaluation, PackageResolver, resolve_packages};
 use aos_package::deployment::model::{Deployment, Envelope, ModuleDependency};
-use aos_package::deployment::retention::{ArtifactAdmission, NixStore};
+use aos_package::deployment::retention::{AdmittedArtifact, ArtifactAdmission, NixStore};
 use aos_package::deployment::transaction::{DeploymentStore as _, Transactions};
 use aos_package::native_deployment::{EvaluationInput, evaluate_input};
 use serde::Deserialize;
@@ -54,12 +54,12 @@ impl PackageResolver for Catalog {
 struct FixtureAdmission(BTreeSet<String>);
 
 impl ArtifactAdmission for FixtureAdmission {
-    fn admit(&mut self, root: &str) -> Result<()> {
+    fn admit(&mut self, root: &str) -> Result<AdmittedArtifact> {
         ensure!(
             self.0.contains(root),
             "artifact is outside the fixture closure: {root}"
         );
-        Ok(())
+        Ok(AdmittedArtifact::authenticated())
     }
 }
 

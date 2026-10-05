@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 use super::{RetainedStoreRoots, retained_store_roots};
 use crate::deployment::handler::HandlerArtifacts;
 use crate::deployment::model::{Deployment, ResolvedPackages};
-use crate::deployment::retention::{ArtifactAdmission, generation_roots};
+use crate::deployment::retention::{AdmittedArtifact, ArtifactAdmission, generation_roots};
 use crate::deployment::transaction::{DeploymentStore, Transactions, inspect, journal_limits};
 
 fn root(name: &str) -> String {
@@ -130,7 +130,7 @@ struct Admission {
 }
 
 impl ArtifactAdmission for Admission {
-    fn admit(&mut self, candidate: &str) -> Result<()> {
+    fn admit(&mut self, candidate: &str) -> Result<AdmittedArtifact> {
         ensure!(
             [
                 root("handler"),
@@ -141,7 +141,7 @@ impl ArtifactAdmission for Admission {
             "fixture rejects an unauthenticated artifact"
         );
         self.calls.insert(candidate.to_owned());
-        Ok(())
+        Ok(AdmittedArtifact::authenticated())
     }
 }
 

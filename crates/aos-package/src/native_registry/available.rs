@@ -220,7 +220,7 @@ impl RegistryAdmission {
     }
 
     fn admit_input(&mut self, root: &str) -> Result<()> {
-        crate::deployment::retention::ArtifactAdmission::admit(self, root)
+        crate::deployment::retention::ArtifactAdmission::admit(self, root).map(|_| ())
     }
 }
 

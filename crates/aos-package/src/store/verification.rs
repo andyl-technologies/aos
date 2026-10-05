@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 use aos_contract::Sha256Digest;
 use aos_core::nix::configure_aos_nix_store;
 
+use crate::deployment::retention::AdmittedArtifact;
+
 const STORE_VERIFY_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const STORE_VERIFY_ERROR_LIMIT: u64 = 64 * 1024;
 const STORE_VERIFY_OUTPUT_LIMIT: u64 = 16 * 1024 * 1024;
@@ -27,7 +29,7 @@ pub(crate) fn verify_store_object_in(
     expected_size: u64,
     expected_references: &[String],
     executable: Option<&Path>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<AdmittedArtifact> {
     use anyhow::{Context as _, ensure};
 
     let (root, suffix) = crate::deployment::nix::store_root_and_suffix(Path::new(store_path))
@@ -58,7 +60,12 @@ pub(crate) fn verify_store_object_in(
         "store object {store_path} NAR size mismatch: expected {expected_size}, observed {actual_size}"
     );
 
-    Ok(())
+    Ok(match executable {
+        Some(executable) => {
+            AdmittedArtifact::registered(store_path, &live_store_command(Some(executable))?)
+        }
+        None => AdmittedArtifact::authenticated(),
+    })
 }
 
 pub(crate) fn query_store_paths_in(

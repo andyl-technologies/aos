@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::deployment::evaluation::PackageResolver;
 use crate::deployment::model::{Envelope, ModuleDependency, ModuleSource};
-use crate::deployment::retention::ArtifactAdmission;
+use crate::deployment::retention::{AdmittedArtifact, ArtifactAdmission};
 use crate::registry::{Registry, RegistrySet, ReleaseTrustReceipt, store_path_hash};
 use crate::store::verification::{
     dump_store_path_identity_in, query_reference_hashes_in, query_store_paths_in,
@@ -292,7 +292,7 @@ impl RegistryAdmission {
 }
 
 impl ArtifactAdmission for RegistryAdmission {
-    fn admit(&mut self, root: &str) -> Result<()> {
+    fn admit(&mut self, root: &str) -> Result<AdmittedArtifact> {
         let Some(evidence) = self.evidence.get(root) else {
             return self.image.admit(root);
         };
