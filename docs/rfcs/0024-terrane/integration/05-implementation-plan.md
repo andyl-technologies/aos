@@ -219,9 +219,15 @@ teardown; their exact failed cases remain unknown, and no cause is inferred.
 A separate local disclosure diagnostic selects the original nested-occurrence
 case under its original `std,send,tokio` profile. Its hermetic harness enables
 test-only denial-site reporting explicitly, preserves failed output and status,
-and requires the exact case to exist and execute. Both mandatory formatters,
-Nix evaluation and inner/outer AOS Bash syntax pass; execution and attribution
-remain pending. This diagnostic is outside the conformance gate aggregate.
+and requires the exact case to exist and execute. The first instrumented exact
+Cargo invocation returns success, but interleaved diagnostic output interrupts
+the ordinary checker's named status line; the harness exits with a validation
+failure and discards captured output. That passing non-reproduction establishes
+no cause or fix for the earlier denial. The dedicated harness now emits output
+before validating its one-case summary, retaining exact discovery and filtering;
+ordinary conformance checkers are unchanged. The corrected harness has passing
+format, evaluation and inner/outer AOS Bash syntax checks, with no new execution
+claim. This diagnostic is outside the conformance gate aggregate.
 
 The preceding completed full qualification records candidate
 `15540ef204ec`, which combines reviewed source discovery, immutable lookup,

@@ -13,7 +13,11 @@ in
     if TERRANE_TEST_DENIAL_CALLSITE=1 cargo test --frozen --offline -p terrane --lib \
       --no-default-features --features std,send,tokio ${selector} \
       -- --exact --nocapture --test-threads=1 > "$TMPDIR/native.log" 2>&1; then
-      python3 ../tests/terrane/check_native_gate.py execution "$TMPDIR/native.log" '${required}'
+      cat "$TMPDIR/native.log"
+      # Nocapture diagnostics can interrupt libtest's named status line. Exact
+      # discovery and the identical exact filter bind this one-case summary.
+      python3 -c 'import pathlib, re, sys; output = pathlib.Path(sys.argv[1]).read_text(); sys.exit(0 if re.search(r"test result: ok\. 1 passed; 0 failed; 0 ignored;", output) else "exact diagnostic did not execute one passing, non-ignored case")' \
+        "$TMPDIR/native.log"
     else
       native_test_status=$?
       cat "$TMPDIR/native.log" >&2
