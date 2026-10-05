@@ -180,6 +180,12 @@ in
       pname = "crucible-phase9-campaign-mode-${name}-${mode}";
       version = "0";
       src = null;
+      passthru.campaignModeReceipt = {
+        schemaVersion = 1;
+        executor = fleet;
+        inherit mode gate toplevel;
+        configurationIdentity = expectedConfigurationIdentity;
+      };
       buildDeps = [authority fleet pkgs.coreutils pkgs.findutils pkgs.gawk pkgs.grep];
       phases = [
         {

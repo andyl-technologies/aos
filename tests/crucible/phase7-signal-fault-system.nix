@@ -35,7 +35,7 @@
     hotForkEquivalence
     campaignContinuity
   ];
-  runtimeInputs = [pkgs.coreutils pkgs.grep];
+  runtimeInputs = [pkgs.coreutils pkgs.grep] ++ lib.optional (campaignComposition != null) pkgs.sed;
   authoritativeGate = pkgs.mkDerivation {
     pname = "crucible-phase7-signal-fault-system";
     version = "0";
@@ -124,23 +124,31 @@
   expectedConfigurationIdentity =
     campaignComposition.system.config.aos.services.crucibleCampaign._runtimeIdentity;
   expectedToplevel = campaignComposition.system.config.system.build.toplevel;
+  receiptOf = gate: let
+    receipt = gate.passthru.campaignModeReceipt;
+  in
+    assert builtins.attrNames receipt == ["configurationIdentity" "executor" "gate" "mode" "schemaVersion" "toplevel"];
+    assert receipt.schemaVersion == 1;
+    assert receipt.executor.type == "derivation";
+    assert receipt.mode == campaignComposition.mode;
+    assert receipt.configurationIdentity == expectedConfigurationIdentity;
+    assert toString receipt.toplevel == toString expectedToplevel; receipt;
   authenticationScript = ''
     set -eu
-    authenticate_same_mode() {
-      result="$1"
-      test -f "$result"
-      test "$(grep -Fxc PASS "$result")" -eq 1
-      test "$(grep -Fxc 'campaign_mode=${campaignComposition.mode}' "$result")" -eq 1
-      test "$(grep -Fxc 'campaign_configuration_identity=${expectedConfigurationIdentity}' "$result")" -eq 1
-      test "$(grep -Fxc 'campaign_toplevel=${expectedToplevel}' "$result")" -eq 1
-      test "$(grep -Ec '^executor_derivation=/nix/store/[0-9a-z]+-.+\.drv$' "$result")" -eq 1
-      test "$(grep -c '^campaign_mode=' "$result")" -eq 1
-      test "$(grep -c '^campaign_configuration_identity=' "$result")" -eq 1
-      test "$(grep -c '^campaign_toplevel=' "$result")" -eq 1
-      test "$(grep -c '^executor_derivation=' "$result")" -eq 1
-    }
+    . ${./_phase9-campaign-gate-matrix-authenticate.sh}
 
-    ${lib.concatMapStringsSep "\n" (gate: "authenticate_same_mode ${lib.escapeShellArg (resultOf gate)}") gateInputs}
+    ${lib.concatMapStringsSep "\n" (gate: let
+      receipt = receiptOf gate;
+      arguments = [
+        (resultOf gate)
+        receipt.gate
+        receipt.mode
+        receipt.configurationIdentity
+        (toString receipt.toplevel)
+        (toString receipt.executor)
+      ];
+    in "authenticate_campaign_matrix_raw_result ${lib.concatMapStringsSep " " lib.escapeShellArg arguments}")
+    gateInputs}
   '';
   aggregateScript = (builtins.elemAt authoritativeGate.passthru.phases 0).script;
 in
@@ -153,7 +161,7 @@ in
       authoritativeAttr = attrPath;
       executionFamily = "qemu-runtime";
       name = "signal-fault-system";
-      runtimeClosures = gateInputs;
+      runtimeClosures = gateInputs ++ [./_phase9-campaign-gate-matrix-authenticate.sh];
       runtimeScript = authenticationScript + aggregateScript;
     }
   else authoritativeGate
