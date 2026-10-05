@@ -147,7 +147,7 @@ fn compare_original_source_applying_transaction_v5(
     require_owner_binding(&floor, owner.data())?;
     require_mutations(&records[..4], &owner)?;
 
-    let after = prospective_state(before, before_bytes, records, limits)?;
+    let after = prospective_state(before, before_bytes, transaction, limits)?;
     canonical_reservations(&after)?;
 
     Ok(OriginalSourceAppendCandidateV5 {
@@ -225,7 +225,7 @@ fn compare_original_source_requested_transaction_v5(
         ),
     )?;
 
-    let after = prospective_state(before, before_bytes, records, limits)?;
+    let after = prospective_state(before, before_bytes, transaction, limits)?;
     canonical_reservations(&after)?;
 
     Ok(OriginalSourceAppendCandidateV5 {
@@ -439,24 +439,12 @@ fn bounded_snapshot_bytes(state: &State, limits: JournalLimits) -> Result<usize,
 fn prospective_state(
     before: &State,
     before_bytes: usize,
-    records: &[JournalRecord],
+    transaction: &JournalTransaction,
     limits: JournalLimits,
 ) -> Result<State, JournalError> {
-    validate_materialized_change(before, before_bytes, records, limits)?;
+    validate_materialized_change(before, before_bytes, transaction.records(), limits)?;
 
-    let mut after = before.clone();
-    for record in records {
-        let key = (record.namespace(), record.key().to_vec());
-        match record.value() {
-            Some(value) => {
-                after.insert(key, value.to_vec());
-            }
-            None => {
-                after.remove(&key);
-            }
-        }
-    }
-    Ok(after)
+    Ok(super::root_original_inventory::materialize(before, transaction))
 }
 
 fn invalid(reason: &'static str) -> JournalError {

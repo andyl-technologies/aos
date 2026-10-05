@@ -354,7 +354,7 @@ pub(super) fn compare_source_capacity_union_at_physical_cuts_v5(
     let after = match transaction {
         Some(transaction) => {
             crate::journal::validate_transaction(transaction, limits)?;
-            prospective_state(before, before_bytes, transaction.records(), limits)?
+            prospective_state(before, before_bytes, transaction, limits)?
         }
         None => before.clone(),
     };
