@@ -107,6 +107,15 @@
       grep -Fxq 'same_guest_buffer=20480' /tmp/normal.result
       grep -Fxq 'late_register_step_refused=true' /tmp/late-register.result
       test "$(grep -Fc 'selectable registration arrived after catalog freeze; kind=register id=out.ready seq=1 prev=1 done=2' /tmp/late-register.log)" -eq 1
+      # Both owned processes are reaped before forwarding diagnostic tails.
+      for mode in normal late-register; do
+        echo "CRUCIBLE_OUT_RESUME_STDERR_''${mode}_BEGIN"
+        echo "original_bytes=$(wc -c < "/tmp/$mode.log")"
+        tail -c 16384 "/tmp/$mode.log" > "/tmp/$mode.stderr-tail"
+        ${pkgs.coreutils}/bin/base64 -w 0 "/tmp/$mode.stderr-tail"
+        printf '\n'
+        echo "CRUCIBLE_OUT_RESUME_STDERR_''${mode}_END"
+      done
       echo CRUCIBLE_OUT_RESUME_RESULT_BEGIN
       cat /tmp/normal.result /tmp/late-register.result
       echo 'original_late_registration_refusal=true'
@@ -118,7 +127,7 @@ in
     pname = "crucible-phase2-whitebox-out-resume";
     version = "0";
     src = null;
-    buildDeps = [pkgs.coreutils pkgs.grep pkgs.sed vmTest];
+    buildDeps = [pkgs.coreutils pkgs.gawk pkgs.grep pkgs.sed vmTest];
     passthru = {inherit flight guest vmTest;};
     phases = [
       {
@@ -134,6 +143,45 @@ in
             /^CRUCIBLE_OUT_RESUME_RESULT_/d
             p
           }' "$out/vm-serial.log" > "$out/result"
+          # Each frame carries one original byte count and one encoded tail.
+          for mode in normal late-register; do
+            begin="CRUCIBLE_OUT_RESUME_STDERR_''${mode}_BEGIN"
+            end="CRUCIBLE_OUT_RESUME_STDERR_''${mode}_END"
+            awk -v begin="$begin" -v end="$end" '
+              $0 == begin {
+                if (state != 0) exit 1
+                state = 1
+                next
+              }
+              $0 == end {
+                if (state != 1 || payload_lines != 2) exit 1
+                state = 2
+                next
+              }
+              state == 1 {
+                if (payload_lines == 0 && $0 !~ /^original_bytes=(0|[1-9][0-9]*)$/) exit 1
+                if (payload_lines == 1 && (length($0) > 21848 || $0 !~ /^[A-Za-z0-9+\/=]*$/)) exit 1
+                if (payload_lines >= 2) exit 1
+                print
+                payload_lines += 1
+              }
+              END { if (state != 2) exit 1 }
+            ' "$out/vm-serial.log" > "$TMPDIR/$mode.stderr-frame"
+            original_bytes=$(sed -n '1s/^original_bytes=//p' "$TMPDIR/$mode.stderr-frame")
+            sed -n '2p' "$TMPDIR/$mode.stderr-frame" \
+              | ${pkgs.coreutils}/bin/base64 -d > "$out/$mode.stderr.log"
+            retained_bytes=$(wc -c < "$out/$mode.stderr.log")
+            test "$retained_bytes" -le 16384
+            if test "$original_bytes" -gt 16384; then
+              test "$retained_bytes" -eq 16384
+              truncated=true
+            else
+              test "$retained_bytes" -eq "$original_bytes"
+              truncated=false
+            fi
+            printf 'capture=tail\nmaximum_bytes=16384\noriginal_bytes=%s\nretained_bytes=%s\ntruncated=%s\n' \
+              "$original_bytes" "$retained_bytes" "$truncated" > "$out/$mode.stderr.scope"
+          done
           test "$(grep -Fxc PASS "$out/result")" -eq 2
           grep -Fxq 'original_late_registration_refusal=true' "$out/result"
         '';
