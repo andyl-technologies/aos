@@ -168,6 +168,17 @@ both mandatory formatters. The `bucket-file-layout` gate retains its four
 original cases and now requires seven additional complete copy, history,
 registration, burn, recovery and cancellation witnesses. Missing witnesses
 fail explicitly; implementation and full qualification remain pending.
+`bucket-key-registry` and `bucket-file-cas` also require the exact protected
+staging-key witness; its native implementation remains pending qualification.
+
+The admission candidate's corrected test observer passes all six owning tests
+out of 431 declared cases; 425 cases are outside that scoped run. Strict
+private rustdoc, application compilation and both mandatory formatters pass
+on the corrected source. Application compilation retains metadata for
+109 executables across 29 packages, including 72 integration targets, without
+execution. Focused strict native Clippy still fails on inherited unused code;
+it reports no owned diagnostic. Earlier passing gates used the prior observer
+and do not qualify the corrected source or complete trunk floor.
 
 The preceding completed full qualification records candidate
 `15540ef204ec`, which combines reviewed source discovery, immutable lookup,

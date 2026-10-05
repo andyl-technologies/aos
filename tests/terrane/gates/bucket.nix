@@ -27,6 +27,7 @@
   ];
 
   protectedReadTests = [
+    "publication::control::tests::activation_staging_accepts_only_its_exact_protected_key"
     "publication::control::tests::protected_native_consumer_preserves_complete_selected_record_transcript"
     "publication::control::tests::protected_native_consumer_preserves_missing_parent_and_leaf_absence"
     "publication::control::tests::protected_native_consumer_rejects_unsafe_parent_before_later_missing_parent"
@@ -136,6 +137,7 @@ in {
     cd crates
     ${focusedTests}
     run_bucket_test bucket::tests::unknown_keys_are_not_refs_and_symlinks_fail_closed
+    run_bucket_test bucket::publication::control::tests::activation_staging_accepts_only_its_exact_protected_key
     run_core_bucket_test bucket::keys::tests::protected_delete_operations_require_canonical_cas_keys
     run_core_bucket_test bucket::keys::tests::publication_payload_keys_preserve_mutability_and_control_separation
     printf 'PASS: bucket-key-registry native layout and pure protected-key conformance\n' > "$out/result"
