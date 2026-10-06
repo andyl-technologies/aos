@@ -325,13 +325,28 @@ fn replay_rows(state: &State) -> Result<SourceFirstSuccessorRowsV2, JournalError
         .map(|bytes| SourceFirstSuccessorPendingV2::decode(bytes)
             .map(|pending| pending.project()).map_err(|_| JournalError::ProtectedBoundary))
         .transpose()?;
-    if let Some(pending) = super::source_tree_genesis::current_rows(state)?.pending {
+    let genesis = super::source_tree_genesis::current_rows(state)?;
+    if let Some(pending) = genesis.pending.as_ref() {
         if selected.is_some() {
             return Err(JournalError::ProtectedBoundary);
         }
-        return current_project_genesis_rows_v3(state, pending.project);
+        let project = pending.project;
+        if project.as_bytes() == &[0; 16] {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        return current_family_with_genesis_data(
+            state,
+            SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected: None },
+            Some(project),
+            Some(genesis),
+        ).map(SourceProjectFamilyDataV3::into_successor);
     }
-    current_project_rows_v3(state, selected)
+    current_family_with_genesis_data(
+        state,
+        SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected },
+        None,
+        Some(genesis),
+    ).map(SourceProjectFamilyDataV3::into_successor)
 }
 
 fn current_rows_with_recipe(
@@ -354,6 +369,18 @@ fn current_family_with_genesis_selection(
     state: &State,
     recipe: SourceSuccessorFamilyRecipeV3,
     genesis_selection: Option<ProjectId>,
+) -> Result<SourceProjectFamilyDataV3, JournalError> {
+    current_family_with_genesis_data(state, recipe, genesis_selection, None)
+}
+
+// Replay moves the whole genesis DATA parsed from this same immutable State.
+// Its maps remain resident during the successor scan; ordinary callers still
+// decode at the original point below, after that scan and the singleton check.
+fn current_family_with_genesis_data(
+    state: &State,
+    recipe: SourceSuccessorFamilyRecipeV3,
+    genesis_selection: Option<ProjectId>,
+    decoded_genesis: Option<super::source_tree_genesis::SourceGenesisRowsV1>,
 ) -> Result<SourceProjectFamilyDataV3, JournalError> {
     let mut rows = SourceFirstSuccessorRowsV2 {
         receipts: BTreeMap::new(),
@@ -393,7 +420,10 @@ fn current_family_with_genesis_selection(
     if recipe == SourceSuccessorFamilyRecipeV3::SingleProjectV2 && rows.receipts.len() > 1 {
         return Err(JournalError::ProtectedBoundary);
     }
-    let genesis = super::source_tree_genesis::current_rows(state)?;
+    let genesis = match decoded_genesis {
+        Some(genesis) => genesis,
+        None => super::source_tree_genesis::current_rows(state)?,
+    };
     for (project, receipt) in &rows.receipts {
         let predecessor = genesis.receipts.get(project)
             .ok_or(JournalError::ProtectedBoundary)?;
