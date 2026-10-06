@@ -478,16 +478,14 @@ impl CanaryAssociationV2 {
         genesis: &DeploymentGenesisV1, purpose: &CanaryPurposeV2,
     ) -> Result<(), DeploymentWireErrorV1> {
         request.encode()?;
-        let original = StorageCanaryExportRequestV1::decode(&request.request)
-            .map_err(|_| DeploymentWireErrorV1)?;
         let fields = &self.fields;
         if fields.purpose != purpose.digest() || fields.node != genesis.node
             || fields.deployment != genesis.deployment
             || fields.genesis != array(purpose.bytes(), 16)?
             || fields.nonce != request.nonce || fields.boot != request.boot
             || fields.not_before != request.not_before || fields.deadline != request.deadline
-            || fields.job_digest != original.job_digest
-            || fields.request_digest != original.digest().map_err(|_| DeploymentWireErrorV1)?
+            || fields.job_digest != request.marker[144..176]
+            || fields.request_digest != request.marker[16..48]
             || fields.storage != request.storage
             || fields.storage_profile != purpose.contract(160)?
             || fields.storage_policy != purpose.contract(192)?
