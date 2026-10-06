@@ -1,9 +1,9 @@
 //! `crucible-api` owns the versioned programmatic API surface.
 //!
-//! Spec index: RFC-0010 files 21.
+//! Implementation contract: Host lifecycle composition, exact checkpoints, and temporal graph APIs.
 //!
-//! This L4 crate will define the session lifecycle, stepping, query, and
-//! temporal-graph API types described by RFC-0010 file 21. It is a
+//! This L4 crate defines the session lifecycle, stepping, query, and
+//! temporal-graph API types. It is a
 //! safe boundary over versioned data and dispatch shapes.
 //!
 //! Module map: [`client`] owns the transport-agnostic [`ControlClient`] trait

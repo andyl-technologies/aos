@@ -1,7 +1,7 @@
 //! SPDX-License-Identifier: MIT OR Apache-2.0
 //! `crucible-shmem` implements the public shared-memory process ABI.
 //!
-//! Spec index: RFC-0010 files 13.
+//! Implementation contract: Versioned shared-memory layouts, checked offsets, and process ownership.
 //!
 //! This permissively dual-licensed L1 crate is the Rust implementation of the
 //! versioned, independently implementable process ABI declared by

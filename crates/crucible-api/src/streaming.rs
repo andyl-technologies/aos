@@ -1,6 +1,6 @@
 //! Streaming `Control` and `Watch`+`Send` API facade.
 //!
-//! RFC-0010 T-API-4 introduces the typed attach-and-drive shape shared by the
+//! This module owns the typed attach-and-drive shape shared by the
 //! bidirectional `Control` stream and the `Watch` plus unary `Send` pair. This
 //! module keeps the surface intentionally thin: both command paths advertise the
 //! same session command set and dispatch accepted commands through the same

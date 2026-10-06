@@ -91,7 +91,7 @@ impl PluginCallbackCapabilities {
 ///
 /// The recorder accepts only the canonical [`PluginRegistrationStep`] order. A
 /// failed current step records a diagnostic and permanently blocks every later
-/// step, matching the fail-loud registration contract from RFC-0010.
+/// step, preserving fail-closed registration and typed failure reporting.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct PluginRegistrationSequence {
     completed_steps: Vec<PluginRegistrationStep>,

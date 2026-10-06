@@ -1,6 +1,6 @@
 //! Discovery and lifecycle unary control-plane API.
 //!
-//! This module owns the RFC-0010 T-API-3 boundary. It provides typed unary
+//! This module owns unary lifecycle operations. It provides typed unary
 //! methods for `Hello`, `ListScenarios`, `CreateSession`, `ResumeSession`,
 //! `ListSessions`, and `DestroySession`, backed by the same
 //! `crucible-session` actor and lock-free live mirror used by the lower

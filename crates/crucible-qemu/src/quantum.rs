@@ -1,6 +1,6 @@
 //! QEMU per-quantum shared-memory hot path.
 //!
-//! RFC-0010 T-QEMU-12 requires the QEMU node step to be a shared-memory-only
+//! The QEMU node step is a shared-memory-only
 //! cycle: observe the plugin-published node report, publish the scheduler's
 //! ceiling, wake the parked plugin through the node-slot futex word, observe a
 //! a plugin report at the authorized boundary in the same shared-memory slot,

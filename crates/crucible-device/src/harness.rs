@@ -1,8 +1,8 @@
 //! The in-process device test harness and the idle-vs-busy-poll proof.
 //!
-//! RFC-0010 §15.7 states that, because each I/O sub-node is a node with a
-//! request inbox and a response outbox, every device is **testable without a
-//! real QEMU**: a test constructs the node, enqueues a sequence of requests at
+//! Each I/O sub-node owns a request inbox and response outbox, so every
+//! device is **testable without real QEMU**: a test constructs the node,
+//! enqueues a sequence of requests at
 //! chosen request-icounts, advances the clock to chosen limits, and asserts the
 //! resulting responses, their delivery icounts, and the device-visible state
 //! ([IO-27]). This module owns that harness and makes it reusable across the
@@ -742,8 +742,8 @@ where
 
 /// The §15.8 busy-poll spike conclusion, recorded as a documented constant.
 ///
-/// RFC-0010 §15.8 / [IO-30] asks the implementation to *characterize* guest
-/// busy-polling during a blocking I/O and to record whether a mitigation is
+/// The device timing contract requires characterizing guest busy-polling
+/// during blocking I/O and recording whether a mitigation is
 /// warranted — a spike result, not a live measurement. [`BusyPollSpike`] is the
 /// data shape of that conclusion; [`BUSY_POLL_SPIKE`] is the recorded finding.
 ///

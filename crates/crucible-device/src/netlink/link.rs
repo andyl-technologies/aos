@@ -1,6 +1,6 @@
 //! The network-link sub-node: a directed `A -> B` edge that schedules frames.
 //!
-//! This module owns [`NetLink`], the link sub-node of RFC-0010 §15.4. A link
+//! This module owns [`NetLink`], the scheduled network-link sub-node. A link
 //! carries [`Frame`]s from a source VM node to a destination over the
 //! [`SLOT_NET_ROUTER`] shmem slot: given a frame emitted by the source at icount
 //! `t`, the link computes the destination

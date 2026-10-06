@@ -18,7 +18,7 @@ pub(crate) use map::BoundedMap;
 mod set;
 pub(crate) use set::BoundedSet;
 
-/// RFC-0014's compiled hard ceiling for one fat checkpoint artifact.
+/// Compiled hard ceiling for one encoded exact checkpoint artifact.
 pub(crate) const HARD_FAT_CHECKPOINT_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 
 /// Failure to admit or serialize a bounded CBOR envelope.

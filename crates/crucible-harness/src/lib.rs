@@ -1,10 +1,10 @@
 //! `crucible-harness` owns cross-crate determinism gate scaffolding.
 //!
-//! Spec index: RFC-0010 files 24, 27.
+//! Implementation contract: Executable conformance gates, independent replay checks, and ownership inventories.
 //!
 //! This test-only workspace member hosts the fingerprint comparator, divergence
 //! bisector, replay-oracle checker, ABI golden-vector runner, adversarial-host
-//! driver, and mock e2e gate driver described by RFC-0010 files 24 and 27.
+//! driver, and mock end-to-end gate driver.
 //!
 //! The crate also exposes the canonical gate catalog used by the RFC lint and
 //! the isolable Cargo targets used by gate wiring. It is not an L0-L4 runtime
@@ -13,7 +13,7 @@
 //! Module map: [`abi`] compares golden vectors, [`adversarial`] compares
 //! hostile-profile runs, [`divergence`] localizes mismatches, [`e2e`] runs the
 //! mock end-to-end determinism gate, [`fingerprint`] compares fingerprint
-//! streams, [`campaign_gates`] records RFC-0020 execution contracts,
+//! streams, [`campaign_gates`] records campaign execution contracts,
 //! [`gate_targets`] indexes Cargo gate targets, [`perf`] owns the
 //! cost-model perf-bench gate substrate, [`phase_plan`] records the ordered gate
 //! occurrences, [`replay_oracle`] compares replay hashes, [`reproduction`] owns
@@ -49,7 +49,7 @@ pub struct HarnessComponentSpec {
     pub gate: &'static str,
 }
 
-/// The cross-crate harness components required by RFC-0010 file 27.
+/// The cross-crate harness components for deterministic execution validation.
 pub const HARNESS_COMPONENTS: &[HarnessComponentSpec] = &[
     HarnessComponentSpec {
         name: "fingerprint comparator",
@@ -84,7 +84,7 @@ pub fn harness_components() -> &'static [HarnessComponentSpec] {
     HARNESS_COMPONENTS
 }
 
-/// A canonical determinism gate from RFC-0010 section 24.
+/// A canonical determinism gate with declared evidence requirements.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GateSpec {
     /// The normative gate name, including the `gate:` prefix.
@@ -129,7 +129,7 @@ pub enum GateStatus {
     Implemented,
 }
 
-/// The canonical RFC-0010 gate catalog.
+/// The canonical deterministic execution gate catalog.
 pub const CANONICAL_GATES: &[GateSpec] = &[
     GateSpec {
         name: "gate:harness-lint",

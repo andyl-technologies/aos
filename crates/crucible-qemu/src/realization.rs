@@ -1,6 +1,6 @@
 //! QEMU VM realization branch coordination.
 //!
-//! This module owns the RFC-0010 T-QEMU-6 single `instantiate` path. Lifecycle
+//! This module owns the single validated `instantiate` path. Lifecycle
 //! owners derive the exact requested configuration before calling it. It selects
 //! between version-nine exact-checkpoint restore, ancestor replay, and baked-genesis load in
 //! the required priority order while keeping the true cold boot inside `bake`.

@@ -1,6 +1,6 @@
 //! Event-graph control-flow spine.
 //!
-//! RFC-0010 file 17a defines scenario control flow as a graph of events. This
+//! Scenario control flow is a deterministic graph of events. This
 //! module owns the first, condition-agnostic layer of that model: an [`Event`]
 //! binds an optional [`Condition`] to an [`Action`] and a [`FirePolicy`], while
 //! [`EventGraphState`] is the only local producer of fired actions. The

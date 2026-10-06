@@ -14,7 +14,7 @@
 //! replacement state, and bounded RSP packet classification. The binary entry
 //! point owns Unix-socket transport, connection supervision, and protocol I/O.
 //!
-//! Spec index: RFC-0010 files 36.
+//! Implementation contract: Authenticated interactive debugging across the process boundary.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]

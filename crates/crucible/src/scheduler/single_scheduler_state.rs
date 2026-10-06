@@ -306,7 +306,7 @@ impl SingleScheduler {
     }
 
     /// Installs a deterministic exact-completion I/O sub-node (disk/9p) on its target VM node
-    /// (RFC-0010 [IO-1], [IO-3], §15.1).
+    /// with completion coordinates owned by deterministic device timing.
     ///
     /// The sub-node's in-flight head delivery icount is the **real** source of the
     /// owning node's exact I/O-completion horizon term, so an otherwise-idle
@@ -676,7 +676,7 @@ impl SingleScheduler {
     }
 
     /// RESOLVEs every device completion for `node` due at or before
-    /// `consumer_icount` (RFC-0010 [SCHED-29], [SCHED-30], §8.9.4).
+    /// `consumer_icount` in canonical exact-delivery order.
     ///
     /// Drains each targeting sub-node's due completions in the canonical
     /// `(delivery_icount, src_node, seq)` order, mints each event's `sequence`

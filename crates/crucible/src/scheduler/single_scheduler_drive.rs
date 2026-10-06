@@ -1059,7 +1059,7 @@ impl SingleScheduler {
         // live effective topology* is held at a *moving* cap (`vt(n) +
         // lookahead(n)`), not a genuine local quiescence point: as the global
         // frontier climbs, that bound climbs with it. Parking such a node `Idle` is
-        // the freeze defect of RFC-0010 [SCHED-7]/[SCHED-8] - the only
+        // a topology-horizon freeze defect: the only
         // `Idle -> Runnable` re-promotion path (`effective_node_activity`) requires
         // a non-halted or pending-input vCPU, so a network/disk sub-node, or a VM
         // whose vCPUs are all halted with no pending input, would never be re-PICKed

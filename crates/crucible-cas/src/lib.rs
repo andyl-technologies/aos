@@ -1,16 +1,16 @@
 //! Content-addressed storage primitives for Crucible.
 //!
-//! `crucible-cas` owns the small standalone substrate required by RFC-0010:
+//! `crucible-cas` owns a standalone content-addressed substrate:
 //! BLAKE3 content keys, a minimal `put`/`get`/`has` store interface, local and
 //! in-memory implementations, a fleet-visible shared implementation, and a
 //! dependency-gated invalidation query. The crate intentionally has
-//! no dependency on RFC-0007 `ratchet` crates; any future shared substrate must
+//! no dependency on `ratchet` crates; any future shared substrate must
 //! adapt behind this crate's public interface and pass `gate:content-address`
 //! and `gate:replay-oracle` unchanged.
 //!
-//! Spec index: RFC-0010 files 35.
+//! Implementation contract: Content-addressed objects, durable references, authenticated closures, and bounded storage operations.
 //!
-//! Future RFC-0007 integration: RFC-0007 is the future home for a shared
+//! Future shared-store integration may supply a shared
 //! content-addressed store plus dependency-gated invalidation substrate. The
 //! narrow interface is exactly [`DagStore::put`], [`DagStore::get`],
 //! [`DagStore::has`], and [`InvalidationQuery::evaluate`]. [`SharedDagStore`] is
@@ -19,9 +19,9 @@
 //! Merge invariant: thin adapter behind that unchanged interface.
 //! No Crucible ABI or determinism contract may change, and the adapter replaces
 //! these internals only after `gate:content-address`, `gate:replay-oracle`, and
-//! `gate:e2e-determinism` pass unchanged. Until then, no RFC-0007 dependency
+//! `gate:e2e-determinism` pass unchanged. Until then, no ratchet dependency
 //! exists.
-//! Standalone rule: no RFC-0007 dependency exists.
+//! Standalone rule: no ratchet dependency exists.
 //!
 //! Module map: the crate root owns [`ContentHash`], [`DagStore`],
 //! [`MemoryDagStore`], [`LocalDagStore`], [`SharedDagStore`],
@@ -33,7 +33,7 @@
 //! [`CampaignFreshLineageRoots`], [`CampaignManifest`],
 //! [`CampaignProvenance`], [`CampaignContinuitySeedDecision`], and the
 //! invalidation types [`DependencySnapshot`], [`InvalidationQuery`], and
-//! [`InvalidationDecision`]. [`content_store`] owns RFC-0020's streaming,
+//! [`InvalidationDecision`]. [`content_store`] owns streaming,
 //! domain-separated immutable-blob and mutable-ref contracts plus its closed
 //! composition-graph validator. [`content_envelope`] owns the generic canonical
 //! child-bearing object format used by storage, transfer, and closure walkers
@@ -267,7 +267,7 @@ impl DagStore for MemoryDagStore {
     }
 }
 
-/// Filesystem-backed [`DagStore`] using the RFC-0010 two-level layout.
+/// Filesystem-backed [`DagStore`] using the hash-prefixed two-level layout.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct LocalDagStore {
     root: PathBuf,

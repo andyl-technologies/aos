@@ -1,6 +1,6 @@
 //! Built-in worked-example scenario corpus.
 //!
-//! This module owns the shipped RFC-0010 example artifacts that double as
+//! This module owns the shipped deterministic example artifacts that double as
 //! determinism fixtures. Each fixture is a regular content-addressed
 //! [`ScenarioDefForm`] plus a deterministic
 //! double-backed run script that proves the scenario can pass and reproduce.
@@ -51,16 +51,16 @@ use crate::trigger::{
 /// Version label for the built-in worked-example corpus.
 pub const BUILT_IN_EXAMPLE_CORPUS_VERSION: &str = "crucible.example-corpus.v2";
 
-/// Stable corpus name for the RFC-0010 A.1 happy-path example.
+/// Stable corpus name for the built-in happy-path example.
 pub const HAPPY_PATH_SCENARIO_NAME: &str = "happy-path.scn";
 
-/// Stable corpus name for the RFC-0010 A.2 partition-recovery example.
+/// Stable corpus name for the built-in partition-recovery example.
 pub const PARTITION_RECOVERY_SCENARIO_NAME: &str = "partition-recovery.scn";
 
-/// Stable corpus name for the RFC-0010 A.3 crash+restart example.
+/// Stable corpus name for the built-in crash-and-restart example.
 pub const CRASH_RESTART_SCENARIO_NAME: &str = "crash-restart.scn";
 
-/// Stable built-in family name for the RFC-0010 A.4 fault-campaign example.
+/// Stable built-in family name for the built-in fault-campaign example.
 pub const FAULT_CAMPAIGN_FAMILY_NAME: &str = "fault-campaign.fam";
 
 /// Whether the built-in example corpus requires a Crucible guest-side component.
@@ -151,7 +151,7 @@ pub struct ExampleScenarioVerifyReport {
     pub fingerprint_stream: Vec<u8>,
 }
 
-/// Deterministic proof report for the RFC-0010 A.4 fault-campaign example.
+/// Deterministic proof report for the built-in fault-campaign example.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FaultCampaignExampleReport {
     /// Stable built-in family name used by the CLI and corpus checks.
@@ -363,7 +363,7 @@ pub fn built_in_example_corpus() -> Result<Vec<ExampleScenarioFixture>, ExampleC
     ])
 }
 
-/// Builds the RFC-0010 A.1 happy-path client/server scenario fixture.
+/// Builds the built-in happy-path client/server scenario fixture.
 ///
 /// # Errors
 ///
@@ -446,7 +446,7 @@ pub fn happy_path_scenario() -> Result<ExampleScenarioFixture, ExampleCorpusErro
     })
 }
 
-/// Builds the RFC-0010 A.2 three-node partition-recovery scenario fixture.
+/// Builds the built-in three-node partition-recovery scenario fixture.
 ///
 /// # Errors
 ///
@@ -489,7 +489,7 @@ pub fn partition_recovery_scenario() -> Result<ExampleScenarioFixture, ExampleCo
     })
 }
 
-/// Builds the RFC-0010 A.3 node crash+restart scenario fixture.
+/// Builds the built-in node crash-and-restart scenario fixture.
 ///
 /// # Errors
 ///
@@ -532,7 +532,7 @@ pub fn crash_restart_scenario() -> Result<ExampleScenarioFixture, ExampleCorpusE
     })
 }
 
-/// Builds the RFC-0010 A.4 fault-campaign scenario family.
+/// Builds the built-in fault-campaign scenario family.
 ///
 /// # Errors
 ///
@@ -555,7 +555,7 @@ pub fn fault_campaign_family() -> Result<ScenarioFamily, ExampleCorpusError> {
     )
 }
 
-/// Runs the RFC-0010 A.4 fault-campaign proof with the default fuzz budget.
+/// Runs the built-in fault-campaign proof with the default fuzz budget.
 ///
 /// # Errors
 ///
@@ -568,7 +568,7 @@ pub fn run_fault_campaign_example_default() -> Result<FaultCampaignExampleReport
     ))
 }
 
-/// Runs the RFC-0010 A.4 fault-campaign proof.
+/// Runs the built-in fault-campaign proof.
 ///
 /// # Errors
 ///

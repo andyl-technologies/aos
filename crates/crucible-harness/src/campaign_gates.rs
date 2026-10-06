@@ -1,10 +1,10 @@
-//! Executable gate contracts for RFC-0020 campaign requirements.
+//! Executable gate contracts for distributed campaign requirements.
 //!
-//! RFC-0020 defines gates beyond the original RFC-0010 determinism catalog.
+//! Distributed campaigns add gates beyond the core determinism catalog.
 //! This registry records whether each campaign gate has an isolable automated
 //! target wired to a Nix check.
 
-/// The executable contract attached to an RFC-0020 gate.
+/// The executable contract attached to a campaign gate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CampaignGateContract {
     /// One or more isolable Cargo targets or product flights wired to a Nix check.
@@ -97,7 +97,7 @@ const fn integration_target(
     }
 }
 
-/// A canonical gate referenced by RFC-0020 requirement traceability.
+/// A canonical gate referenced by campaign requirement traceability.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CampaignGateSpec {
     /// Canonical gate name, including the `gate:` prefix.
@@ -384,7 +384,7 @@ const CAMPAIGN_ENVOY_PRODUCT_NIX_SOURCES: &[&str] = &[
     "tests/crucible/phase9-campaign-envoy-product-lifecycle.nix",
 ];
 
-/// Canonical RFC-0020 campaign gate catalog.
+/// Canonical distributed campaign gate catalog.
 pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
     automated(
         "gate:abi-conformance",
@@ -980,13 +980,13 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
     ),
 ];
 
-/// Returns every RFC-0020 gate in stable lexical order.
+/// Returns every distributed campaign gate in stable lexical order.
 #[must_use]
 pub fn campaign_gates() -> &'static [CampaignGateSpec] {
     CAMPAIGN_GATES
 }
 
-/// Finds an RFC-0020 gate by its canonical name.
+/// Finds a distributed campaign gate by its canonical name.
 #[must_use]
 pub fn find_campaign_gate(name: &str) -> Option<&'static CampaignGateSpec> {
     CAMPAIGN_GATES.iter().find(|gate| gate.name == name)

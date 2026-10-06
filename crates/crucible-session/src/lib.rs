@@ -1,8 +1,8 @@
 //! `crucible-session` owns the live session actor.
 //!
-//! Spec index: RFC-0010 files 20.
+//! Implementation contract: Session control and lifecycle coordination at quantum boundaries.
 //!
-//! This L4 crate will drive one live runtime state, accept control requests at quantum boundaries, and expose the session semantics specified by RFC-0010 file 20. It contains no raw QEMU or shared-memory access.
+//! This L4 crate drives one live runtime state, accepts control requests at quantum boundaries, and exposes typed session semantics. It contains no raw QEMU or shared-memory access.
 //!
 //! Module map: the crate root owns [`SessionDriver`], [`Engine`], and [`SessionActor`]; [`validation`] owns replay and validation DAG adapters.
 

@@ -1,7 +1,7 @@
 //! SPDX-License-Identifier: GPL-2.0-only
 //! `crucible-qemu-plugin` owns the in-VM QEMU plugin.
 //!
-//! Spec index: RFC-0010 files 11, 12.
+//! Implementation contract: GPL-side guest observation, deterministic execution fences, and host paging.
 //!
 //! License boundary: this crate is GPL-2.0-only because its `cdylib` is loaded
 //! into QEMU and directly implements QEMU plugin entry points and callbacks.
@@ -10,9 +10,9 @@
 //! Crucible host/runtime crates in production. Host/plugin communication stays
 //! within the versioned socket control protocol and shared-memory process ABI.
 //!
-//! This L2 crate builds the `cdylib` loaded by QEMU. Later tasks will add the
-//! QEMU TCG plugin entry points, time-control hooks, and device callbacks
-//! specified by its indexed RFC-0010 files. It is an unsafe-boundary crate
+//! This L2 crate builds the `cdylib` loaded by QEMU. It implements TCG plugin
+//! entry points, time-control hooks, and device callbacks through versioned
+//! process protocols. It is an unsafe-boundary crate
 //! because the plugin speaks QEMU's C ABI and may read guest memory.
 //!
 //! Module map: `abi` owns the raw QEMU plugin `cdylib` entry point and capability

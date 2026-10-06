@@ -1,7 +1,7 @@
 //! `crucible` is the CLI entry point for the Crucible control plane.
-//! Spec index: RFC-0010 files 23.
+//! Implementation contract: Operator commands for execution, campaigns, debugging, and storage maintenance.
 //! This L4 binary crate remains a thin client over the control, session, and
-//! campaign-service APIs specified by RFC-0010 and RFC-0020.
+//! campaign-service APIs with typed lifecycle and resource contracts.
 //!
 //! Module map: the binary root owns argument dispatch, while command modules
 //! remain transport clients over the session, API, and campaign-service crates.
@@ -912,7 +912,7 @@ struct CampaignFixtureArgs {
 
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 enum CampaignFixtureCommand {
-    /// Generate the adaptive network-recovery campaign from RFC-0020.
+    /// Generate the adaptive network-recovery campaign.
     WorkedNetwork(CampaignWorkedNetworkFixtureArgs),
 }
 

@@ -1,6 +1,6 @@
 //! The network-link sub-node: inter-VM frame delivery with deterministic faults.
 //!
-//! This module assembles the network-link sub-node of RFC-0010 §15.4 from two
+//! This module assembles the scheduled network-link sub-node from two
 //! focused submodules and re-exports their public surface:
 //!
 //! - [`fault`]: the effective fault table ([`LinkFaults`]) and the pure,

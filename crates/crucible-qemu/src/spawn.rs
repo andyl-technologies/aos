@@ -1,7 +1,7 @@
 //! Linux QEMU process spawning with fixed inherited descriptors.
 //!
-//! This module owns the Linux-only process boundary required by RFC-0010
-//! T-QEMU-7. It creates the per-node control socket pair, shared-memory memfd,
+//! This module owns the Linux process boundary for contained guest execution.
+//! It creates the per-node control socket pair, shared-memory memfd,
 //! and wake eventfd before `exec`, maps the child descriptors to the fixed
 //! plugin fd numbers, clears the inherited host environment, and sets
 //! `PR_SET_PDEATHSIG=SIGKILL` in the child.

@@ -1,6 +1,6 @@
 //! Mapping from canonical gate names to isolable Cargo component tests.
 //!
-//! RFC-0010 file 27 requires each per-layer determinism gate to have an
+//! Each per-layer determinism gate has an
 //! addressable test target in the crate that owns it. A mapped target proves
 //! its crate-level contribution; it does not by itself discharge an aggregate
 //! gate that also requires packaged processes, VM execution, or host variation.
@@ -18,7 +18,7 @@ pub struct GateTargetSpec {
     pub required_features: &'static [&'static str],
 }
 
-/// Cargo test targets for the RFC-0010 crate-structure gate map.
+/// Cargo test targets for the per-layer crate-structure gate map.
 pub const GATE_TARGETS: &[GateTargetSpec] = &[
     GateTargetSpec {
         gate: "gate:harness-lint",

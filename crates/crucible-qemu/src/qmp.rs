@@ -1,6 +1,6 @@
 //! Minimal typed QMP client.
 //!
-//! RFC-0010 QEMU-19 limits QMP use to capability negotiation, typed VM
+//! This module limits QMP use to capability negotiation, typed VM
 //! status/topology, hot-fork-readiness observation, bounded QEMU-owned resource
 //! inventories, the reversible plugin callback barrier, and QEMU's retained
 //! template-preparation coordinator, plus crate-owned snapshot maintenance,

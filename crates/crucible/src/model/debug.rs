@@ -1728,7 +1728,7 @@ pub struct DebugSymbolResolutionPolicy {
 }
 
 impl DebugSymbolResolutionPolicy {
-    /// Builds the RFC-0010 no-symbol-server policy.
+    /// Builds the debug policy without a symbol server.
     #[must_use]
     pub const fn no_symbol_server() -> Self {
         Self {
@@ -1765,7 +1765,7 @@ pub struct DebugMultiVcpuPolicy {
 }
 
 impl DebugMultiVcpuPolicy {
-    /// Builds the RFC-0010 multi-vCPU debug policy.
+    /// Builds the multi-vCPU debug policy.
     #[must_use]
     pub const fn coherent_round_robin_threads() -> Self {
         Self {
@@ -1804,7 +1804,7 @@ pub struct DebugReadMutationBoundaryPolicy {
 }
 
 impl DebugReadMutationBoundaryPolicy {
-    /// Builds the RFC-0010 read/mutate boundary policy.
+    /// Builds the debug read and mutation boundary policy.
     #[must_use]
     pub const fn read_only_default_with_explicit_branching() -> Self {
         Self {
@@ -1839,7 +1839,7 @@ pub struct DebugReverseLatencyPolicy {
 }
 
 impl DebugReverseLatencyPolicy {
-    /// Builds the RFC-0010 reverse-latency risk policy.
+    /// Builds the reverse-execution latency risk policy.
     #[must_use]
     pub const fn performance_only_checkpoint_cadence() -> Self {
         Self {
@@ -1884,7 +1884,7 @@ pub struct DebugCliSurfaceContract {
 }
 
 impl DebugCliSurfaceContract {
-    /// Builds the RFC-0010 `crucible debug` surface contract.
+    /// Builds the `crucible debug` surface contract.
     #[must_use]
     pub fn rfc0010() -> Self {
         Self {

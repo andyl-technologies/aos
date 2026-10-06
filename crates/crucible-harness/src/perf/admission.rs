@@ -74,7 +74,7 @@ impl HostParallelismAdmission {
     }
 }
 
-/// Returns the canonical RFC 0010 host-parallelism admission register.
+/// Returns the canonical host-parallelism admission register.
 #[must_use]
 pub fn canonical_host_parallelism_admissions() -> Vec<HostParallelismAdmission> {
     vec![

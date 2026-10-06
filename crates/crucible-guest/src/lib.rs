@@ -1,6 +1,6 @@
 //! `crucible-guest` owns the optional in-guest white-box emitter.
 //!
-//! Spec index: RFC-0010 files 16; RFC-0020 file 02.
+//! Implementation contract: Optional guest markers, typed selectable requests, and introspection helpers.
 //!
 //! This guest-side library is wrapped by the `crucible-guest` static
 //! command-line emitter. It builds marker payloads from the shared
@@ -810,7 +810,7 @@ fn ring_x86_64(port: u16, frame: &mut [u8]) -> Result<(), GuestEmitterError> {
         let pointer = frame.as_mut_ptr() as usize;
         let len = frame.len();
         // SAFETY: the inline assembly is the private implementation of the
-        // RFC-0010 Linux x86_64 doorbell ABI. `pointer` and `len` describe the
+        // Linux x86_64 marker doorbell ABI. `pointer` and `len` describe the
         // live mutable frame slice for the duration of the instruction, and the
         // reserved port comes from the shared ABI table.
         unsafe {
@@ -859,7 +859,7 @@ fn ring_aarch64(immediate: u8, frame: &mut [u8]) -> Result<(), GuestEmitterError
         let pointer = frame.as_mut_ptr() as usize;
         let len = frame.len();
         // SAFETY: the inline assembly is the private implementation of the
-        // RFC-0010 Linux aarch64 doorbell ABI. `pointer` and `len` describe the
+        // Linux aarch64 marker doorbell ABI. `pointer` and `len` describe the
         // live mutable frame slice in x0/x1 for the duration of the instruction,
         // and the reserved immediate is checked against the shared ABI table.
         unsafe {

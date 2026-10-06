@@ -90,7 +90,7 @@ pub trait Backend {
 
 /// Pluggable session backend boundary used by the control plane.
 ///
-/// `SimulationBackend` is the L4-facing backend contract from RFC-0010 §20.10.
+/// `SimulationBackend` defines the backend contract consumed by session execution.
 /// The scheduler remains the only source of timing authority: callers pass a
 /// virtual-time ceiling to [`SimulationBackend::step_to`], and implementations
 /// report what they observed while advancing toward that ceiling. They do not

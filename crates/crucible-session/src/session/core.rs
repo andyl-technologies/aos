@@ -87,7 +87,7 @@ pub fn drive_engine_concurrent_quantum<L: crucible::ConcurrentQuantumLoop>(
 
 /// Explicit run state for the Crucible engine.
 ///
-/// The closed state set is the control-plane contract from RFC-0010 §10:
+/// The control plane admits only the following closed lifecycle states:
 /// configuration loaded, actively running bounded quanta, paused at a quantum
 /// boundary, or terminal.
 #[derive(Clone, Debug, PartialEq, Eq)]

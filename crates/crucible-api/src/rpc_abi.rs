@@ -1,6 +1,6 @@
 //! Versioned control-plane RPC ABI and frozen golden vectors.
 //!
-//! The current corpus is the ABI-conformance seed for RFC-0010 file 21. It
+//! The current corpus seeds ABI conformance for typed lifecycle messages. It
 //! deliberately freezes a small canonical envelope vocabulary before the full
 //! reference client lands: explicit `Hello` version negotiation, `Attached`
 //! version echoing, mutating request/response pairs including breakpoint

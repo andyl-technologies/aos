@@ -1,6 +1,6 @@
 //! Transport-agnostic control client trait and client handles.
 //!
-//! This module owns the RFC-0010 file 21.1 boundary: callers use one typed
+//! This module owns the typed client boundary: callers use one typed
 //! [`ControlClient`] trait while implementations choose either the same-process
 //! session actor path or the HTTP/2 RPC path. The two paths intentionally share
 //! [`ControlWireModel`], which is backed by the frozen RPC ABI message encoder.
