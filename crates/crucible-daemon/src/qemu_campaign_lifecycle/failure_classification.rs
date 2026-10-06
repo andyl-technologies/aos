@@ -37,6 +37,9 @@ pub(crate) fn production_lifecycle_failure_class(
     }
 
     match error {
+        QemuAttemptProductionVmLifecycleError::ModelCopy(_) => {
+            SchedulerOperationalFailureClass::Retryable
+        }
         QemuAttemptProductionVmLifecycleError::ResourceInstallation(
             QemuVmRealizationError::ExecutorUnavailable { .. },
         ) => SchedulerOperationalFailureClass::Retryable,
@@ -47,6 +50,7 @@ pub(crate) fn production_lifecycle_failure_class(
         | QemuAttemptProductionVmLifecycleError::ScenarioIdentityMismatch
         | QemuAttemptProductionVmLifecycleError::InvalidNodeCount(_)
         | QemuAttemptProductionVmLifecycleError::ResourceRefusal(_)
+        | QemuAttemptProductionVmLifecycleError::HostRamAdmission(_)
         | QemuAttemptProductionVmLifecycleError::HostWatchdogExpired
         | QemuAttemptProductionVmLifecycleError::InvalidResumeBoundary
         | QemuAttemptProductionVmLifecycleError::InvalidAppRandomBranchReplay(_)
@@ -60,5 +64,37 @@ pub(crate) fn production_lifecycle_failure_class(
         | QemuAttemptProductionVmLifecycleError::CheckpointRestore(_) => {
             SchedulerOperationalFailureClass::Terminal
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::error::Error;
+
+    #[test]
+    fn admitted_model_copy_refusal_remains_typed_operational_failure() {
+        let source = crucible::owned_decode::DecodeAdmissionError::new(std::io::Error::other(
+            "explicit fixture metadata refusal",
+        ));
+        let error = QemuAttemptProductionVmLifecycleError::ModelCopy(Box::new(source));
+        let failure = classify_production_lifecycle_failure(error);
+        let AttemptWorkerFailure::Retryable(error) = failure else {
+            panic!("metadata exhaustion must remain infrastructure failure");
+        };
+        let source = error
+            .source()
+            .unwrap_or_else(|| panic!("typed cause is retained"));
+        assert!(
+            source
+                .downcast_ref::<crucible::owned_decode::DecodeAdmissionError>()
+                .is_some()
+        );
+        assert!(
+            source
+                .source()
+                .and_then(|source| source.downcast_ref::<std::io::Error>())
+                .is_some()
+        );
     }
 }

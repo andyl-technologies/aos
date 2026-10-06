@@ -528,35 +528,16 @@ pub(super) fn retained_exact_ram_from_manifest(
     existing: &ProductionExactRamCheckpoint,
     boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
 ) -> Result<ProductionExactRamCheckpoint, SchedulerError> {
-    if manifest.layers.len() != existing.layers.len() {
+    if manifest.paged.root_object.as_str() != existing.ram.object_id().encode()
+        || manifest.paged.root_record != existing.ram.record().encode()
+        || manifest.paged.identity != existing.identity
+    {
         return Err(store_error(
-            "exact RAM layer count changed while installing retained leases",
+            "RAM root changed while installing retained leases",
         ));
     }
-    let layers = manifest
-        .layers
-        .iter()
-        .zip(&existing.layers)
-        .map(|(layer, existing)| {
-            Ok(ProductionExactRamLayer {
-                kind: layer.kind,
-                identity: layer.identity,
-                parent: layer.parent,
-                topology: layer.topology,
-                ram_regions: layer.ram_regions,
-                ram_records: layer.ram_records,
-                content_sha256: layer.content_sha256,
-                artifact: install_retained_artifact_from_manifest(
-                    &existing.artifact,
-                    directory,
-                    &layer.artifact,
-                    boundary,
-                )?,
-            })
-        })
-        .collect::<Result<Vec<_>, SchedulerError>>()?;
-    ProductionExactRamCheckpoint::new(
-        manifest.parent_closure,
+    ProductionExactRamCheckpoint::from_paged_capture(
+        manifest.paged.identity,
         manifest.device_content_sha256,
         install_retained_artifact_from_manifest(
             &existing.device_artifact,
@@ -564,7 +545,8 @@ pub(super) fn retained_exact_ram_from_manifest(
             &manifest.device,
             boundary,
         )?,
-        layers,
+        existing.catalog.clone(),
+        existing.ram.clone(),
     )
 }
 

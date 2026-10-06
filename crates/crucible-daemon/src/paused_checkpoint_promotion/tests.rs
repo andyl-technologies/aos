@@ -18,8 +18,8 @@ use crucible_cas::content_store::DirectoryBlobBackend;
 use super::*;
 use crate::executor_supervisor::AllowAllAttemptAdmission;
 use crate::{
-    AttemptExecutionContext, AttemptRuntimeState, AttemptStateCas,
-    CheckpointPromotionExecutionBasis, ExecutorCapacity, MemoryAssignmentLedger,
+    AttemptRuntimeState, AttemptStateCas, CheckpointPromotionExecutionBasis, ExecutorCapacity,
+    MemoryAssignmentLedger,
 };
 
 pub(crate) struct RepositoryPromotionFixture {
@@ -30,134 +30,6 @@ pub(crate) struct RepositoryPromotionFixture {
     pub(crate) capacity: ExecutorCapacity,
     pub(crate) source: ScenarioDefForm,
     pub(crate) initial: Configuration,
-}
-
-impl<'a> ProductionPausedCheckpointPromotionTarget<'a> {
-    fn from_test_recovery(
-        recovery: &'a mut PausedCheckpointPromotionRecovery,
-        attempt: &'a CrucibleAttemptExecution,
-        initial: &'a Configuration,
-        post_selection: Option<&'a Configuration>,
-        run_state_root: &'a Path,
-        cancellation: &'a ExecutionCancellation,
-    ) -> Self {
-        let key = recovery.key();
-        let execution = recovery.execution();
-        let raw = recovery.source();
-        let basis = recovery.promotion_basis();
-        let selected_checkpoint = recovery.selected_checkpoint();
-
-        Self {
-            key,
-            execution,
-            raw,
-            source: attempt.scenario(),
-            initial,
-            post_selection,
-            run_state_root,
-            cancellation,
-            resources: basis.resources(),
-            start_mode: basis.start_mode(),
-            attempt,
-            replay_store: None,
-            selected_checkpoint,
-        }
-    }
-}
-
-/// Runs the production replay-oracle promotion path for one native test resume.
-///
-/// The returned root carries durable source-bound replay evidence. The caller
-/// must separately supply one selected-root authority for each guarded launch;
-/// production creates that authority only after durable attempt admission.
-// crucible-lint: allow rust-allow -- this fixture preserves the complete production promotion input.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn promote_test_checkpoint_for_resume<F>(
-    checkpoints: &ExactCheckpointStore,
-    raw: ExactCheckpointId,
-    attempt: &CrucibleAttemptExecution,
-    initial: &Configuration,
-    post_selection: Option<&Configuration>,
-    run_state_root: &Path,
-    context: &AttemptExecutionContext,
-    factory: &mut F,
-) -> ExactCheckpointId
-where
-    F: ProductionPausedCheckpointReplayFactory,
-{
-    let runtime = context
-        .runtime_basis()
-        .expect("native promotion fixture has an execution basis");
-    let resources = context.resources();
-    let retention = context.retention();
-    let start_mode = context.start_mode();
-    let retention_policy = context.retention_policy();
-    let daemon_epoch = crucible_campaign::DaemonEpoch::from_bytes([0x5d; 16])
-        .expect("native promotion fixture daemon epoch");
-    let execution_basis = attempt_execution_basis_digest_for_start_mode(
-        runtime.key().lineage(),
-        runtime.key().attempt(),
-        resources,
-        retention,
-        start_mode,
-        retention_policy,
-    );
-    let state = AttemptRuntimeState::Paused {
-        execution_basis,
-        origin: context.execution_origin(),
-        daemon_epoch,
-        execution: runtime.execution(),
-        checkpoint: raw,
-        promotion_basis: Some(CheckpointPromotionExecutionBasis::new_for_start_mode(
-            resources,
-            retention,
-            start_mode,
-            retention_policy,
-        )),
-    };
-    let mut ledger = MemoryAssignmentLedger::default();
-    assert_eq!(
-        ledger
-            .compare_exchange_attempt(runtime.key(), None, Some(state))
-            .expect("seed native paused checkpoint promotion"),
-        AttemptStateCas::Advanced
-    );
-    let capacity = ExecutorCapacity::new(
-        1,
-        resources.maximum_vcpus(),
-        resources.maximum_resident_bytes(),
-        resources.maximum_disk_bytes(),
-        resources.maximum_execution_quanta(),
-    )
-    .expect("native promotion fixture capacity");
-    let mut supervisor =
-        LocalExecutorSupervisor::new(ledger, AllowAllAttemptAdmission, daemon_epoch, capacity);
-    let mut recovery = supervisor
-        .paused_checkpoint_promotion_recovery(runtime.key())
-        .expect("load native paused checkpoint promotion")
-        .expect("native paused checkpoint is promotable");
-    let target = ProductionPausedCheckpointPromotionTarget::from_test_recovery(
-        &mut recovery,
-        attempt,
-        initial,
-        post_selection,
-        run_state_root,
-        context.cancellation(),
-    );
-    let prepared =
-        validate_and_prepare_production_paused_checkpoint_promotion(checkpoints, target, factory)
-            .expect("validate native checkpoint against the production replay oracle");
-    let staged = match stage_prepared_paused_checkpoint_promotion(&mut supervisor, prepared)
-        .expect("stage native checkpoint replay promotion")
-    {
-        PausedCheckpointPromotionStageOutcome::Publish(staged) => staged,
-        PausedCheckpointPromotionStageOutcome::Finished { .. } => {
-            panic!("fresh native checkpoint promotion did not reach publication")
-        }
-    };
-    publish_staged_paused_checkpoint_promotion(checkpoints, *staged)
-        .expect("publish native replay-validated checkpoint")
-        .promoted()
 }
 
 #[test]
@@ -242,13 +114,22 @@ fn checkpoint_replay_requires_the_exact_segmented_event_offset() {
 
 #[test]
 fn repository_evidence_seals_stages_and_reconciles_after_native_retirement() {
+    let ram_retention = crucible_cas::ram::RamRetentionAuthority::new(Arc::new(
+        crucible_cas::content_store::MemoryRefBackend::new(),
+    ));
+
     let repository = tempfile::tempdir().expect("create repository checkpoint fixture");
     let backend = Arc::new(DirectoryBlobBackend::new(
         "promotion-lifecycle-test",
         repository.path(),
     ));
-    let checkpoints = ExactCheckpointStore::new(backend.clone(), 64 * 1024 * 1024)
-        .expect("admit checkpoint store");
+    let checkpoints =
+        ExactCheckpointStore::new(backend.clone(), 64 * 1024 * 1024, ram_retention.clone())
+            .expect("admit checkpoint store")
+            .with_ram_root_resources(
+                crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+                    .expect("finite component RAM-root credit"),
+            );
     let fixture = prepare_repository_promotion_fixture(&checkpoints);
     let mut ledger = MemoryAssignmentLedger::default();
     assert_eq!(
@@ -344,8 +225,12 @@ fn repository_evidence_seals_stages_and_reconciles_after_native_retirement() {
     )
     .expect("same-process restore authenticates promoted evidence after reconciliation");
 
-    let reopened = ExactCheckpointStore::new(backend, 64 * 1024 * 1024)
-        .expect("reopen durable checkpoint store");
+    let reopened = ExactCheckpointStore::new(backend, 64 * 1024 * 1024, ram_retention.clone())
+        .expect("reopen durable checkpoint store")
+        .with_ram_root_resources(
+            crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+                .expect("finite component RAM-root credit"),
+        );
     crate::exact_checkpoint_restore::install_attempt_production_resume_checkpoint(
         &reopened,
         promoted,
@@ -374,13 +259,21 @@ fn repository_evidence_seals_stages_and_reconciles_after_native_retirement() {
 
 #[test]
 fn identical_replay_root_can_reconcile_a_later_pause_execution() {
+    let ram_retention = crucible_cas::ram::RamRetentionAuthority::new(Arc::new(
+        crucible_cas::content_store::MemoryRefBackend::new(),
+    ));
+
     let repository = tempfile::tempdir().expect("create repository checkpoint fixture");
     let backend = Arc::new(DirectoryBlobBackend::new(
         "promotion-repeat-test",
         repository.path(),
     ));
-    let checkpoints =
-        ExactCheckpointStore::new(backend, 64 * 1024 * 1024).expect("admit checkpoint store");
+    let checkpoints = ExactCheckpointStore::new(backend, 64 * 1024 * 1024, ram_retention.clone())
+        .expect("admit checkpoint store")
+        .with_ram_root_resources(
+            crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+                .expect("finite component RAM-root credit"),
+        );
     let first = prepare_repository_promotion_fixture(&checkpoints);
     let key = first.key;
     let first_execution = first.state.execution();
@@ -494,13 +387,22 @@ fn identical_replay_root_can_reconcile_a_later_pause_execution() {
 
 #[test]
 fn staged_promotion_reconstitutes_its_reconcile_claim_after_store_restart() {
+    let ram_retention = crucible_cas::ram::RamRetentionAuthority::new(Arc::new(
+        crucible_cas::content_store::MemoryRefBackend::new(),
+    ));
+
     let repository = tempfile::tempdir().expect("create repository checkpoint fixture");
     let backend = Arc::new(DirectoryBlobBackend::new(
         "promotion-restart-test",
         repository.path(),
     ));
-    let checkpoints = ExactCheckpointStore::new(backend.clone(), 64 * 1024 * 1024)
-        .expect("admit checkpoint store");
+    let checkpoints =
+        ExactCheckpointStore::new(backend.clone(), 64 * 1024 * 1024, ram_retention.clone())
+            .expect("admit checkpoint store")
+            .with_ram_root_resources(
+                crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+                    .expect("finite component RAM-root credit"),
+            );
     let fixture = prepare_repository_promotion_fixture(&checkpoints);
     let mut ledger = MemoryAssignmentLedger::default();
     assert_eq!(
@@ -530,8 +432,12 @@ fn staged_promotion_reconstitutes_its_reconcile_claim_after_store_restart() {
     };
     drop(checkpoints);
 
-    let reopened = ExactCheckpointStore::new(backend, 64 * 1024 * 1024)
-        .expect("reopen checkpoint store after staged publication");
+    let reopened = ExactCheckpointStore::new(backend, 64 * 1024 * 1024, ram_retention.clone())
+        .expect("reopen checkpoint store after staged publication")
+        .with_ram_root_resources(
+            crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+                .expect("finite component RAM-root credit"),
+        );
     let mut restarted = LocalExecutorSupervisor::new(
         supervisor.into_ledger(),
         AllowAllAttemptAdmission,
@@ -580,13 +486,22 @@ fn staged_promotion_reconstitutes_its_reconcile_claim_after_store_restart() {
 
 #[test]
 fn forged_staged_pair_cannot_reconstitute_a_reconcile_claim() {
+    let ram_retention = crucible_cas::ram::RamRetentionAuthority::new(Arc::new(
+        crucible_cas::content_store::MemoryRefBackend::new(),
+    ));
+
     let repository = tempfile::tempdir().expect("create repository checkpoint fixture");
     let backend = Arc::new(DirectoryBlobBackend::new(
         "promotion-forged-pair-test",
         repository.path(),
     ));
-    let checkpoints = ExactCheckpointStore::new(backend.clone(), 64 * 1024 * 1024)
-        .expect("admit checkpoint store");
+    let checkpoints =
+        ExactCheckpointStore::new(backend.clone(), 64 * 1024 * 1024, ram_retention.clone())
+            .expect("admit checkpoint store")
+            .with_ram_root_resources(
+                crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+                    .expect("finite component RAM-root credit"),
+            );
     let fixture = prepare_repository_promotion_fixture(&checkpoints);
     let raw = fixture.state.checkpoint().expect("raw paused checkpoint");
     let execution = fixture.state.execution();
@@ -611,8 +526,12 @@ fn forged_staged_pair_cannot_reconstitute_a_reconcile_claim() {
     );
     drop(checkpoints);
 
-    let reopened = ExactCheckpointStore::new(backend, 64 * 1024 * 1024)
-        .expect("reopen checkpoint store after forged staging");
+    let reopened = ExactCheckpointStore::new(backend, 64 * 1024 * 1024, ram_retention.clone())
+        .expect("reopen checkpoint store after forged staging")
+        .with_ram_root_resources(
+            crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+                .expect("finite component RAM-root credit"),
+        );
     let mut work = Vec::new();
     supervisor
         .visit_checkpoint_promotion_restart_work(&mut |item| work.push(item))
@@ -650,14 +569,15 @@ pub(crate) fn prepare_repository_promotion_fixture(
         .expect("build authenticated checkpoint fixture");
     let source = fixture.source().clone();
     let initial = Configuration::genesis(source.scenario_def());
-    let raw = checkpoints
+    let mut raw = checkpoints
         .prepare_production_closure(fixture.closure().clone())
         .expect("prepare raw closure");
     let raw_root = raw.root();
     checkpoints
         .publish_production_closure(&raw)
         .expect("publish raw closure");
-    raw.retire_native_source()
+    drop(fixture);
+    raw.retire_native_source(checkpoints)
         .expect("retire native checkpoint catalog");
 
     let cancellation = ExecutionCancellation::default();

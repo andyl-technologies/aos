@@ -151,7 +151,45 @@ impl ProductionVmLifecycleConfig {
                 kernel_cmdline_prefix: None,
             },
         );
+        Self::with_initial_guest_assets(
+            executable,
+            plugin,
+            architecture,
+            guest_assets,
+            run_state_root,
+        )
+    }
+
+    /// Builds a non-executable configuration for authenticating imported artifacts.
+    ///
+    /// The configuration binds concrete native artifacts and durable storage,
+    /// but supplies no guest images. An admitted owner must adopt authenticated
+    /// guest assets before requesting a native realization; launch without them
+    /// refuses the missing architecture-specific assets.
+    #[must_use]
+    pub fn for_artifact_authentication(
+        executable: impl Into<PathBuf>,
+        plugin: impl Into<PathBuf>,
+        run_state_root: impl Into<PathBuf>,
+    ) -> Self {
+        Self::with_initial_guest_assets(
+            executable,
+            plugin,
+            VmArchitecture::X86_64,
+            BTreeMap::new(),
+            run_state_root,
+        )
+    }
+
+    fn with_initial_guest_assets(
+        executable: impl Into<PathBuf>,
+        plugin: impl Into<PathBuf>,
+        architecture: VmArchitecture,
+        guest_assets: BTreeMap<VmArchitecture, ProductionVmGuestAssets>,
+        run_state_root: impl Into<PathBuf>,
+    ) -> Self {
         Self {
+            decode_custody: None,
             executable: executable.into(),
             plugin: plugin.into(),
             native_guest_architecture: architecture,
@@ -165,6 +203,9 @@ impl ProductionVmLifecycleConfig {
             maximum_host_workers: quantum_loop::MAX_PRODUCTION_QEMU_HOST_WORKERS,
             rendezvous_interval_ticks: None,
             completion_timeout: Duration::from_secs(240),
+            host_operation_supervisor: None,
+            host_ram_registration_factory: None,
+            ram_catalog_provider: None,
             unbounded_advance_completion: false,
             coverage: QemuLaunchPluginSwitch::Off,
             rr_control_boundary_trace: false,
@@ -288,6 +329,58 @@ impl ProductionVmLifecycleConfig {
     pub const fn with_completion_timeout(mut self, timeout: Duration) -> Self {
         self.completion_timeout = timeout;
         self
+    }
+
+    /// Attaches live host operation budgets independently of modeled inputs.
+    #[must_use]
+    pub fn with_host_operation_supervisor(
+        mut self,
+        supervisor: crucible_linux_resource::host_supervision::HostOperationSupervisor,
+    ) -> Self {
+        self.host_operation_supervisor = Some(supervisor);
+        self
+    }
+
+    /// Returns the original-start live operational supervision owner.
+    #[must_use]
+    pub fn host_operation_supervisor(
+        &self,
+    ) -> Option<&crucible_linux_resource::host_supervision::HostOperationSupervisor> {
+        self.host_operation_supervisor.as_ref()
+    }
+
+    /// Attaches independently retained physical quota authority for catalogs.
+    #[must_use]
+    pub fn with_ram_catalog_provider(
+        mut self,
+        provider: Arc<dyn super::ProductionRamCatalogProvider>,
+    ) -> Self {
+        self.ram_catalog_provider = Some(provider);
+        self
+    }
+
+    /// Returns the durable quota and service owner for checkpoint catalogs.
+    #[must_use]
+    pub fn ram_catalog_provider(&self) -> Option<&Arc<dyn super::ProductionRamCatalogProvider>> {
+        self.ram_catalog_provider.as_ref()
+    }
+
+    /// Attaches the live independently admitted RAM ownership allocator.
+    #[must_use]
+    pub fn with_host_ram_registration_factory(
+        mut self,
+        factory: Arc<dyn super::ProductionHostRamRegistrationFactory>,
+    ) -> Self {
+        self.host_ram_registration_factory = Some(factory);
+        self
+    }
+
+    /// Returns the retained allocator for the complete operational RAM world.
+    #[must_use]
+    pub fn host_ram_registration_factory(
+        &self,
+    ) -> Option<&Arc<dyn super::ProductionHostRamRegistrationFactory>> {
+        self.host_ram_registration_factory.as_ref()
     }
 
     /// Keeps lifecycle transport bounds but renews quantum polling slices.
@@ -515,8 +608,9 @@ impl ProductionVmLifecycleLoop {
     ///
     /// Prepared resume paths use this to keep request-local checkpoint and run
     /// state directories alive through every restored process generation. The
-    /// owner is declared after process and run-directory fields so it is
-    /// released only after those resources have begun teardown.
+    /// owner is declared last, after process, directory and backing fields.
+    /// Admission custody can therefore inspect final cleanup proof after all
+    /// lifecycle-held borrowers have closed, retaining uncertain reservations.
     #[must_use]
     pub fn with_retained_resource_owner(mut self, owner: impl Send + 'static) -> Self {
         self.retained_resource_owners.push(Box::new(owner));
@@ -534,7 +628,11 @@ mod tests {
     fn recovery_root_replacement_is_clone_local() {
         let base =
             ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "shared-state");
-        let worker = base.clone().with_run_state_root("worker-state/worker-001");
+        let copied = admitted_clone::copy_component_configuration(&base);
+        let worker = copied
+            .try_clone_admitted()
+            .unwrap_or_else(|error| panic!("component worker copy: {error}"))
+            .with_run_state_root("worker-state/worker-001");
 
         assert_eq!(base.run_state_root(), Path::new("shared-state"));
         assert_eq!(
@@ -569,7 +667,7 @@ mod tests {
         let config =
             ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state")
                 .with_bounded_scheduler_preemption_flights(vec![first.clone(), second.clone()]);
-        let clone = config.clone();
+        let clone = admitted_clone::copy_component_configuration(&config);
 
         let first_claim = config
             .claim_bounded_scheduler_preemption()
@@ -591,8 +689,10 @@ mod tests {
     fn daemon_debug_evidence_follows_startup_authorization() {
         let base =
             ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state");
-        let denied = base
-            .clone()
+        let copied = admitted_clone::copy_component_configuration(&base);
+        let denied = copied
+            .try_clone_admitted()
+            .unwrap_or_else(|error| panic!("component debug copy: {error}"))
             .with_debug_gdbstubs_for_all_nodes("127.0.0.1:1")
             .with_authorized_debug_gdbstubs_for_all_nodes(
                 "127.0.0.1:0",

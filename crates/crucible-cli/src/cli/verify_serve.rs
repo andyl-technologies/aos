@@ -8,6 +8,73 @@ pub(super) use artifact_capture::*;
 
 #[path = "verify_serve/packaged_executor.rs"]
 mod packaged_executor;
+
+pub(crate) use packaged_executor::GuardedCampaignRunDeployment;
+
+/// Opens one genuine owner under the complete deployed host resource policy.
+///
+/// # Errors
+/// Refuses invalid campaign identity, a semantic request above the authored
+/// ceiling, or failed real actor, namespace, registry, and quota admission.
+pub(crate) fn open_guarded_campaign_owner(
+    deployment: &GuardedCampaignRunDeployment,
+    lifecycle: crucible_api::ProductionVmLifecycleConfig,
+    seed: crucible_session::engine::Seed,
+    resources: crucible_campaign::AttemptResourceLimits,
+) -> Result<crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignOwner, CliError> {
+    let campaign = crucible_campaign::CampaignName::new(format!(
+        "guarded-campaign-run-{:016x}",
+        seed.decision_rng_root_seed(),
+    ))
+    .map_err(|error| backend_error(format!("guarded campaign identity is invalid: {error}")))?;
+    let state = if lifecycle.run_state_root().is_absolute() {
+        lifecycle.run_state_root().to_path_buf()
+    } else {
+        std::env::current_dir()?.join(lifecycle.run_state_root())
+    };
+    let config = deployment.execution_config(lifecycle, campaign, &state, resources)?;
+    crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignOwner::open(config)
+        .map_err(|error| backend_error(format!("guarded campaign admission failed: {error}")))
+}
+
+/// Creates a guarded request with the original admitted owner and lifecycle.
+///
+/// # Errors
+/// Refuses real owner admission or an incompatible native lifecycle identity.
+pub(crate) fn configured_guarded_campaign_request(
+    deployment: &GuardedCampaignRunDeployment,
+    scenario: crucible_session::engine::ScenarioDefForm,
+    seed: crucible_session::engine::Seed,
+    qemu_build_id: String,
+    lifecycle: crucible_api::ProductionVmLifecycleConfig,
+    resources: crucible_campaign::AttemptResourceLimits,
+) -> Result<crucible_daemon::qemu_campaign_lifecycle::GuardedDefaultCampaignRunRequest, CliError> {
+    let owner = open_guarded_campaign_owner(deployment, lifecycle, seed, resources)?;
+    guarded_campaign_request(owner, scenario, seed, qemu_build_id)
+}
+
+/// Binds a request to an existing admitted owner and authenticated lifecycle.
+///
+/// # Errors
+/// Refuses an incompatible native artifact identity or campaign configuration.
+pub(crate) fn guarded_campaign_request(
+    owner: crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignOwner,
+    scenario: crucible_session::engine::ScenarioDefForm,
+    seed: crucible_session::engine::Seed,
+    qemu_build_id: String,
+) -> Result<crucible_daemon::qemu_campaign_lifecycle::GuardedDefaultCampaignRunRequest, CliError> {
+    crucible_daemon::qemu_campaign_lifecycle::GuardedDefaultCampaignRunRequest::new(
+        scenario,
+        seed,
+        env!("CARGO_PKG_VERSION"),
+        qemu_build_id,
+        owner,
+    )
+    .map_err(|error| backend_error(format!("guarded campaign configuration failed: {error}")))
+}
+
+/// Shared complete resource schema for independently authored host services.
+pub(super) type HostOwnerResourcesDeployment = packaged_executor::HostOwnerResourcesDeployment;
 pub(crate) fn load_guarded_campaign_deployment(
     explicit: Option<&Path>,
 ) -> Result<packaged_executor::GuardedCampaignRunDeployment, CliError> {

@@ -28,8 +28,12 @@ use crate::content_store::{
     BlobHandle, ContentId, DurabilityRequirement, ImmutableBlobBackend, StoreError,
 };
 
+mod backing;
 mod codec;
+pub use backing::maximum_encoded_ram_graph_bytes;
 mod inventory;
+mod metadata;
+pub use metadata::AdmittedRamRootMetadata;
 mod retention;
 pub use retention::{FencedRamRetention, RamRetentionAuthority};
 mod object_source;
@@ -50,6 +54,35 @@ pub use tree::{RamPageChange, RamPageReader, RamVerificationReport};
 
 /// Maximum canonical bytes in a single RAM metadata or page object.
 pub const MAX_RAM_OBJECT_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Bounds allocation payloads before opening retained RAM root metadata.
+///
+/// The bound covers authenticated envelope input, child catalogs, canonical
+/// re-encoding, the portable root decoder and retained tree references. All
+/// RAM envelope decoders reject more than the portable region limit before
+/// allocating child tables. Allocator and process overhead need additional
+/// independently admitted resident headroom.
+///
+/// # Errors
+/// Returns an error if the codec bounds cannot be composed without overflow.
+pub fn maximum_ram_root_decoding_bytes() -> Result<u64, RamStoreError> {
+    let limits = crucible_ram::Limits::default();
+    let envelope = ContentEnvelope::decoding_memory_bound(
+        usize::try_from(MAX_RAM_OBJECT_BYTES)
+            .map_err(|_| RamStoreError::Limit("root allocation"))?,
+        limits.max_regions,
+    )?;
+    let record = RootRecord::decoding_memory_bound(limits).map_err(logical)?;
+    let catalogs = limits
+        .max_regions
+        .checked_mul(std::mem::size_of::<codec::TreeRef>())
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or(RamStoreError::Limit("root allocation"))?;
+    envelope
+        .checked_add(record)
+        .and_then(|bytes| bytes.checked_add(catalogs))
+        .ok_or(RamStoreError::Limit("root allocation"))
+}
 
 /// Hard resource bounds for one RAM operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -138,8 +171,11 @@ pub trait RamRetention: Send + Sync {
 /// Authenticated root metadata together with its live storage-retention owner.
 #[derive(Clone)]
 pub struct LeasedRamRoot {
-    record: RootRecord,
-    regions: Vec<codec::TreeRef>,
+    record: Arc<RootRecord>,
+    regions: Arc<[codec::TreeRef]>,
+    // A destination transfer may share these decoded allocations. Their
+    // original admission stays live even when storage retention is replaced.
+    metadata_custody: Arc<dyn RamRootLease>,
     lease: Arc<dyn RamRootLease>,
 }
 

@@ -53,7 +53,10 @@ mod boundary;
 mod control;
 mod deadline;
 mod device_service;
+pub(crate) mod operational_wait;
 mod performance;
+use crucible_linux_resource::host_supervision::HostOperationClass;
+use operational_wait::OperationPollBudget;
 mod wait_observation;
 use boundary::*;
 
@@ -67,6 +70,9 @@ use boundary::*;
 /// is driven once per advance poll so a guest blocked on real block I/O can make
 /// progress.
 pub struct QemuLiveHostIoRuntime {
+    ram_control_registration: Option<crate::ram_control::RamControlRegistration>,
+    host_operation_supervisor:
+        Option<crucible_linux_resource::host_supervision::HostOperationSupervisor>,
     region: MappedSetupRegion,
     wake: Arc<File>,
     vm_slot: u32,
@@ -96,6 +102,7 @@ pub struct QemuLiveHostIoRuntime {
     fault_event_canonical_current_offset: usize,
     /// Plan-authored aggregate event-record ceiling reported by LIMIT-2.
     fault_event_configured_limit: usize,
+    launch_cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
 }
 
 mod servicing;
@@ -152,6 +159,63 @@ pub trait QemuNinepFaultCoordinator: Send {
 }
 
 impl QemuLiveHostIoRuntime {
+    fn private_hot_fork_ring_alias(
+        &self,
+        descriptor: BorrowedFd<'_>,
+    ) -> Result<bool, rustix::io::Errno> {
+        let metadata = rustix::fs::fstat(descriptor)?;
+        let source = self.region.backing_identity();
+        Ok(metadata.st_dev == source.device() && metadata.st_ino == source.inode())
+    }
+
+    fn validate_private_hot_fork_ring(
+        &self,
+        descriptor: BorrowedFd<'_>,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let aliases = self
+            .private_hot_fork_ring_alias(descriptor)
+            .map_err(|error| {
+                QemuAsyncDriverRuntimeError::new(
+                    "clone hot-fork host-I/O continuation",
+                    format!("cannot authenticate child ring identity: {error}"),
+                )
+            })?;
+        if aliases {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "clone hot-fork host-I/O continuation",
+                "child host-I/O ring aliases the retained source mapping",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn with_launch_cleanup(
+        mut self,
+        cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
+    ) -> Self {
+        self.launch_cleanup = cleanup;
+        self
+    }
+    /// Retains the admitted RAM owner until all physical cleanup completes.
+    #[must_use]
+    pub fn with_ram_control_registration(
+        mut self,
+        registration: crate::ram_control::RamControlRegistration,
+    ) -> Self {
+        self.ram_control_registration = Some(registration);
+        self
+    }
+
+    /// Attaches the execution owner's original-start live operation supervisor.
+    #[must_use]
+    pub fn with_host_operation_supervisor(
+        mut self,
+        supervisor: crucible_linux_resource::host_supervision::HostOperationSupervisor,
+    ) -> Self {
+        self.host_operation_supervisor = Some(supervisor);
+        self
+    }
+
     fn wait_for_poll_interval(&mut self, remaining: Duration) {
         self.performance.pending_sleep();
         thread::sleep(self.poll_interval.min(remaining));
@@ -235,6 +299,8 @@ impl QemuLiveHostIoRuntime {
             wake: Arc::new(wake),
             vm_slot,
             poll_interval,
+            host_operation_supervisor: None,
+            ram_control_registration: None,
             performance: performance::PerformanceDiagnostics::from_environment(shmem_fd),
             wait_observation: wait_observation::WaitObservation::from_environment(shmem_fd),
             advance_wait_deadline: AdvanceWaitDeadline::default(),
@@ -251,6 +317,7 @@ impl QemuLiveHostIoRuntime {
             fault_event_staging_limit: HARD_FAULT_EVENT_CAPACITY as usize,
             fault_event_canonical_current_offset: 0,
             fault_event_configured_limit: HARD_FAULT_EVENT_CAPACITY as usize,
+            launch_cleanup: None,
         })
     }
 
@@ -492,7 +559,193 @@ impl QemuLiveHostIoRuntime {
     }
 }
 
+impl Drop for QemuLiveHostIoRuntime {
+    fn drop(&mut self) {
+        let Some(cleanup) = &self.launch_cleanup else {
+            return;
+        };
+        if !cleanup.is_published() || !cleanup.cleanup_proven() {
+            return;
+        }
+        if let Some(registration) = &self.ram_control_registration {
+            // Node fields reap the child and join its source before this
+            // runtime drops. Closing registry custody releases no capacity;
+            // final cleanup custody follows local descriptor/lease disposal.
+            let _ = registration
+                .registrar
+                .prepare_retirement_after_cleanup(registration.target);
+        }
+    }
+}
+
+#[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+fn reader_probe_error(message: impl Into<String>) -> crate::QemuNodeChannelError {
+    crate::QemuNodeChannelError::new("probe retained host reader ownership", message)
+}
+
 impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
+    #[cfg(any(test, feature = "test-support"))]
+    fn host_service_allocator_for_test(
+        &self,
+    ) -> Option<crucible_linux_resource::host_services::HostServiceAllocator> {
+        self.ram_control_registration
+            .as_ref()
+            .map(|registration| registration.host_services.clone())
+    }
+
+    #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+    fn probe_hot_fork_reader_alias_for_test(
+        &mut self,
+        descriptor: BorrowedFd<'_>,
+        ninep: bool,
+    ) -> Result<crate::QemuNodeChannelError, crate::QemuNodeChannelError> {
+        if ninep {
+            let servicer = self
+                .ninep
+                .as_ref()
+                .ok_or_else(|| reader_probe_error("source has no actual 9p reader"))?;
+            return match servicer
+                .servicer
+                .validate_private_hot_fork_reader(descriptor)
+            {
+                Err(
+                    error @ super::ninep_io_servicer::QemuLive9pIoServicerError::SourceMappingAlias,
+                ) => Ok(reader_probe_error(error.to_string())),
+                Err(error) => Err(reader_probe_error(error.to_string())),
+                Ok(()) => Err(reader_probe_error("9p reader accepted the source mapping")),
+            };
+        }
+
+        if !self
+            .private_hot_fork_ring_alias(descriptor)
+            .map_err(|error| reader_probe_error(error.to_string()))?
+        {
+            return Err(reader_probe_error(
+                "network continuation candidate is not the source mapping",
+            ));
+        }
+        match self.validate_private_hot_fork_ring(descriptor) {
+            Err(error) => Ok(reader_probe_error(error.to_string())),
+            Ok(()) => Err(reader_probe_error(
+                "network continuation accepted the source mapping",
+            )),
+        }
+    }
+
+    fn reserve_fault_manifest_metadata(
+        &self,
+        bytes: u64,
+    ) -> Result<crate::QemuFaultManifestMetadataLease, QemuAsyncDriverRuntimeError> {
+        let registration = self.ram_control_registration.as_ref().ok_or_else(|| {
+            QemuAsyncDriverRuntimeError::new(
+                "reserve fault manifest metadata",
+                "runtime has no admitted node service allocator",
+            )
+        })?;
+        let cleanup = self.launch_cleanup.as_ref().ok_or_else(|| {
+            QemuAsyncDriverRuntimeError::new(
+                "reserve fault manifest metadata",
+                "runtime has no retained native cleanup authority",
+            )
+        })?;
+        if bytes == 0 {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "reserve fault manifest metadata",
+                "metadata request is empty",
+            ));
+        }
+        let charged = bytes
+            .checked_add(crucible_linux_resource::host_services::HostServiceLease::metadata_bytes())
+            .ok_or_else(|| {
+                QemuAsyncDriverRuntimeError::new(
+                    "reserve fault manifest metadata",
+                    "metadata loan accounting overflows",
+                )
+            })?;
+        let service = registration
+            .host_services
+            .reserve_resources(0, 0, charged)
+            .map_err(|error| {
+                QemuAsyncDriverRuntimeError::new(
+                    "reserve fault manifest metadata",
+                    error.to_string(),
+                )
+            })?;
+        Ok(crate::QemuFaultManifestMetadataLease::new(
+            service,
+            cleanup.clone(),
+        ))
+    }
+
+    fn retire_host_ram_after_cleanup(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
+        if self
+            .launch_cleanup
+            .as_ref()
+            .is_some_and(|cleanup| !cleanup.is_published())
+        {
+            return Ok(());
+        }
+        let Some(registration) = &self.ram_control_registration else {
+            return Ok(());
+        };
+        let supervisor = self.host_operation_supervisor.as_ref().ok_or_else(|| {
+            QemuAsyncDriverRuntimeError::new(
+                "retire host RAM resources",
+                "registered RAM owner has no live cleanup supervisor",
+            )
+        })?;
+        let cleanup = supervisor
+            .begin(crucible_linux_resource::host_supervision::HostOperationClass::Cleanup)
+            .map_err(|error| {
+                QemuAsyncDriverRuntimeError::operational_supervision(
+                    "retire host RAM resources",
+                    error,
+                )
+            })?;
+        loop {
+            cleanup.wait_slice().map_err(|error| {
+                QemuAsyncDriverRuntimeError::operational_supervision(
+                    "retire host RAM resources",
+                    error,
+                )
+            })?;
+            if registration
+                .registrar
+                .prepare_retirement_after_cleanup(registration.target)
+                .is_ok()
+            {
+                cleanup.complete().map_err(|error| {
+                    QemuAsyncDriverRuntimeError::operational_supervision(
+                        "retire host RAM resources",
+                        error,
+                    )
+                })?;
+                self.ram_control_registration = None;
+                return Ok(());
+            }
+            cleanup.wait_for_change().map_err(|error| {
+                QemuAsyncDriverRuntimeError::operational_supervision(
+                    "retire host RAM resources",
+                    error,
+                )
+            })?;
+        }
+    }
+
+    fn set_host_operation_supervisor(
+        &mut self,
+        supervisor: crucible_linux_resource::host_supervision::HostOperationSupervisor,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.host_operation_supervisor = Some(supervisor);
+        Ok(())
+    }
+
+    fn host_operation_supervisor(
+        &self,
+    ) -> Option<&crucible_linux_resource::host_supervision::HostOperationSupervisor> {
+        self.host_operation_supervisor.as_ref()
+    }
+
     fn renew_advance_completion_poll(
         &mut self,
         timeout: Duration,
@@ -527,6 +780,7 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         region_len: u64,
         console: Option<crate::QemuHotForkChildConsoleObservation>,
     ) -> Result<Box<dyn QemuHostIoRuntime>, QemuAsyncDriverRuntimeError> {
+        self.validate_private_hot_fork_ring(shmem_fd)?;
         if self.console.is_some() != console.is_some() {
             return Err(QemuAsyncDriverRuntimeError::new(
                 "clone hot-fork host-I/O continuation",
@@ -698,22 +952,23 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         &mut self,
         timeout: Duration,
     ) -> Result<bool, QemuAsyncDriverRuntimeError> {
-        if timeout.is_zero() {
-            return Err(QemuAsyncDriverRuntimeError::new(
-                "probe checkpoint device boundary",
-                "checkpoint device probe timeout is zero",
-            ));
-        }
+        let deadline = OperationPollBudget::begin(
+            self.host_operation_supervisor.as_ref(),
+            HostOperationClass::Quiescence,
+            timeout,
+            "probe checkpoint device boundary",
+        )?;
         let request = self.signal_wake(None)?;
-        let attempts = bounded_poll_attempts(timeout, self.poll_interval);
-        let deadline = HostSupervisionDeadline::start(timeout);
         let mut last_observed = None;
-        for attempt in 0..attempts {
-            if !deadline.has_time_remaining() {
+        loop {
+            if deadline
+                .remaining("probe checkpoint device boundary")?
+                .is_none()
+            {
                 break;
             }
 
-            self.drain_fault_events_for_pump(
+            self.drain_fault_events_for_operation(
                 self.fault_event_staging_limit,
                 &deadline,
                 timeout,
@@ -737,13 +992,12 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
                 device_progress,
             ));
             if control_boundary_request_is_acknowledged(request, &snapshot) {
+                deadline.complete("probe checkpoint device boundary")?;
                 return Ok(!device_progress && snapshot.device_io_active == 0);
             }
-            if attempt + 1 < attempts {
-                let Some(remaining) = deadline.remaining() else {
-                    break;
-                };
-                self.wait_for_poll_interval(remaining);
+            {
+                self.performance.pending_sleep();
+                deadline.wait(self.poll_interval, "probe checkpoint device boundary")?;
             }
         }
         Err(QemuAsyncDriverRuntimeError::new(
@@ -765,12 +1019,12 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         &mut self,
         timeout: Duration,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
-        if timeout.is_zero() {
-            return Err(QemuAsyncDriverRuntimeError::new(
-                "publish current execution fingerprint",
-                "execution fingerprint control-boundary timeout is zero",
-            ));
-        }
+        let deadline = OperationPollBudget::begin(
+            self.host_operation_supervisor.as_ref(),
+            HostOperationClass::FingerprintUpdate,
+            timeout,
+            "publish current execution fingerprint",
+        )?;
 
         let fingerprint_request = self
             .region
@@ -779,15 +1033,17 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
             .request_capture_v1();
         let fingerprint_acknowledgement = fingerprint_request.wrapping_add(1);
         let request = self.signal_wake(Some(fingerprint_request))?;
-        let attempts = bounded_poll_attempts(timeout, self.poll_interval);
-        let deadline = HostSupervisionDeadline::start(timeout);
         let mut last_observed = None;
-        for attempt in 0..attempts {
-            if !deadline.has_time_remaining() {
+        let mut attempt = 0_u64;
+        loop {
+            if deadline
+                .remaining("publish current execution fingerprint")?
+                .is_none()
+            {
                 break;
             }
 
-            self.drain_fault_events_for_pump(
+            self.drain_fault_events_for_operation(
                 self.fault_event_staging_limit,
                 &deadline,
                 timeout,
@@ -815,6 +1071,7 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
                     // The digest worker publishes the sample before its release
                     // acknowledgement. This acquire load therefore makes the
                     // exact sample visible through the independent mapping.
+                    deadline.complete("publish current execution fingerprint")?;
                     return Ok(());
                 }
                 if fingerprint_ack != fingerprint_request {
@@ -827,14 +1084,13 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
                     ));
                 }
             }
-            if attempt + 1 < attempts {
-                let Some(remaining) = deadline.remaining() else {
-                    break;
-                };
+            {
                 if attempt % 16 == 15 {
                     self.write_wake_doorbell()?;
                 }
-                self.wait_for_poll_interval(remaining);
+                self.performance.pending_sleep();
+                deadline.wait(self.poll_interval, "publish current execution fingerprint")?;
+                attempt = attempt.wrapping_add(1);
             }
         }
 
@@ -860,19 +1116,12 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         &mut self,
         timeout: Duration,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
-        if timeout.is_zero() {
-            return Err(QemuAsyncDriverRuntimeError::new(
-                "quiesce for checkpoint",
-                "checkpoint pause timeout is zero",
-            ));
-        }
-        let mut deadline = AdvanceWaitDeadline::default();
-        if !deadline.start(timeout) {
-            return Err(QemuAsyncDriverRuntimeError::new(
-                "quiesce for checkpoint",
-                "checkpoint pause timeout exceeds the host supervision clock range",
-            ));
-        }
+        let deadline = OperationPollBudget::begin(
+            self.host_operation_supervisor.as_ref(),
+            HostOperationClass::Quiescence,
+            timeout,
+            "quiesce for checkpoint",
+        )?;
         let mut initial_snapshot = self
             .region
             .node_slot(self.vm_slot)
@@ -894,7 +1143,9 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
                 .map_err(map_slot_error)?
                 .snapshot();
         }
-        let remaining = deadline.remaining().unwrap_or_default();
+        let remaining = deadline
+            .remaining("quiesce for checkpoint")?
+            .unwrap_or_default();
         if remaining.is_zero() {
             return Err(QemuAsyncDriverRuntimeError::new(
                 "quiesce for checkpoint",
@@ -973,14 +1224,13 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
                 return self.fail_checkpoint_pause(source);
             }
         }
-        let attempts = bounded_poll_attempts(remaining, self.poll_interval);
         let mut last_observed = None;
-        for attempt in 0..attempts {
-            if !deadline
-                .remaining()
-                .is_some_and(|remaining| !remaining.is_zero())
-            {
-                break;
+        let mut attempt = 0_u64;
+        loop {
+            match deadline.remaining("quiesce for checkpoint") {
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                Err(source) => return self.fail_checkpoint_pause(source),
             }
 
             let snapshot = match self.region.node_slot(self.vm_slot).map_err(map_slot_error) {
@@ -1039,12 +1289,12 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
                 // suppresses request-coroutine wakeups while this stop is
                 // pending, so the handoff cannot admit post-pause I/O.
                 self.write_wake_doorbell()?;
+                if let Err(source) = deadline.complete("quiesce for checkpoint") {
+                    return self.fail_checkpoint_pause(source);
+                }
                 return Ok(());
             }
-            if attempt + 1 < attempts {
-                let Some(remaining) = deadline.remaining() else {
-                    break;
-                };
+            {
                 // Publishing the clamped ceiling already wakes the plugin's
                 // scheduler futex. Do not ring the main-loop eventfd here: a
                 // control-only wake can admit a latent block poll after the
@@ -1060,7 +1310,11 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
                 {
                     return self.fail_checkpoint_pause(source);
                 }
-                self.wait_for_poll_interval(remaining);
+                self.performance.pending_sleep();
+                if let Err(source) = deadline.wait(self.poll_interval, "quiesce for checkpoint") {
+                    return self.fail_checkpoint_pause(source);
+                }
+                attempt = attempt.wrapping_add(1);
             }
         }
         let detail = last_observed.map_or_else(

@@ -403,11 +403,17 @@ mod tests {
             region_ordinal: 6,
             page_index: 7,
         };
-        let bytes = request.encode().unwrap();
+        let bytes = request
+            .encode()
+            .unwrap_or_else(|error| panic!("invalid page fixture: {error}"));
 
         assert_eq!(bytes.len(), RAM_PAGE_REQUEST_BYTES);
         assert_eq!(&bytes[84..92], &5_u64.to_be_bytes());
-        assert_eq!(RamPageRequest::decode(&bytes).unwrap(), request);
+        assert_eq!(
+            RamPageRequest::decode(&bytes)
+                .unwrap_or_else(|error| panic!("invalid page fixture: {error}")),
+            request
+        );
         assert!(RamPageRequest::decode(&bytes[..103]).is_err());
         let mut trailing = bytes.to_vec();
         trailing.push(0);
@@ -423,7 +429,9 @@ mod tests {
             page: &[1],
             proof: &[2],
         };
-        let mut bytes = response.encode().unwrap();
+        let mut bytes = response
+            .encode()
+            .unwrap_or_else(|error| panic!("invalid page fixture: {error}"));
         bytes[96..100].copy_from_slice(&u32::MAX.to_be_bytes());
         bytes.truncate(RAM_PAGE_RESPONSE_HEADER_BYTES);
         let mut input = io::Cursor::new(bytes);
@@ -444,9 +452,15 @@ mod tests {
             page: &[],
             proof: &[],
         };
-        let bytes = response.encode().unwrap();
+        let bytes = response
+            .encode()
+            .unwrap_or_else(|error| panic!("invalid page fixture: {error}"));
 
-        assert_eq!(RamPageResponse::decode(&bytes).unwrap(), response);
+        assert_eq!(
+            RamPageResponse::decode(&bytes)
+                .unwrap_or_else(|error| panic!("invalid page fixture: {error}")),
+            response
+        );
         assert!(
             RamPageResponse {
                 page: &[0],
@@ -469,7 +483,9 @@ mod tests {
             page: &[],
             proof: &[],
         };
-        let mut bytes = response.encode().unwrap();
+        let mut bytes = response
+            .encode()
+            .unwrap_or_else(|error| panic!("invalid page fixture: {error}"));
         bytes[93] = 1;
         assert!(RamPageResponse::decode(&bytes).is_err());
         assert!(

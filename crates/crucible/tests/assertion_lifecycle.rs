@@ -127,7 +127,9 @@ fn lifecycle_states_progress_and_terminal_outcomes_distinguish_passed_from_satis
         lifecycle_or_panic(&evaluator, "after-terminal"),
         PropertyLifecycleState::Declared
     );
-    evaluator.observe_prefix(&prefix(1), &mut oracle);
+    evaluator
+        .observe_prefix(&prefix(1), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     assert_eq!(
         lifecycle_or_panic(&evaluator, "after-terminal"),
@@ -150,7 +152,9 @@ fn lifecycle_states_progress_and_terminal_outcomes_distinguish_passed_from_satis
         PropertyLifecycleState::Passing
     );
 
-    let report = evaluator.finalize_prefix(&prefix(3), &mut oracle);
+    let report = evaluator
+        .finalize_prefix(&prefix(3), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     assert_eq!(report.verdict(), &AssertionRunVerdict::Passed);
     assert_eq!(report.outcomes().len(), 5);
@@ -194,7 +198,9 @@ fn assertion_checkpoint_round_trip_preserves_temporal_continuation() {
     let final_prefix = prefix(3);
     let mut original = HostAssertionEvaluator::new(&properties);
     let mut original_oracle = linted_host_oracle(lifecycle_oracle);
-    original.observe_prefix(&first_prefix, &mut original_oracle);
+    original
+        .observe_prefix(&first_prefix, &mut original_oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     let encoded = original
         .checkpoint()
@@ -215,8 +221,12 @@ fn assertion_checkpoint_round_trip_preserves_temporal_continuation() {
         .expect("restore assertion continuation");
     let mut restored_oracle = linted_host_oracle(lifecycle_oracle);
     assert_eq!(
-        restored.finalize_prefix(&final_prefix, &mut restored_oracle),
-        original.finalize_prefix(&final_prefix, &mut original_oracle)
+        restored
+            .finalize_prefix(&final_prefix, &mut restored_oracle)
+            .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}")),
+        original
+            .finalize_prefix(&final_prefix, &mut original_oracle)
+            .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"))
     );
 }
 
@@ -268,7 +278,9 @@ fn edge_outcomes_carry_lifecycle_and_verdict_disposition() {
             },
         );
 
-    let report = evaluator.finalize_prefix(&prefix(1), &mut oracle);
+    let report = evaluator
+        .finalize_prefix(&prefix(1), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     assert!(report.verdict().is_failed());
     assert_eq!(
@@ -317,7 +329,9 @@ fn empty_log_always_remains_declared_and_reports_never_evaluated() {
     let mut evaluator = HostAssertionEvaluator::new(&properties);
     let mut oracle = linted_host_oracle(|_state: ObservedState<'_>, _leaf: ConditionLeaf<'_>| true);
 
-    let report = evaluator.finalize_prefix(&ConditionEventLogPrefix::genesis(), &mut oracle);
+    let report = evaluator
+        .finalize_prefix(&ConditionEventLogPrefix::genesis(), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     assert_eq!(report.verdict(), &AssertionRunVerdict::Passed);
     assert_eq!(

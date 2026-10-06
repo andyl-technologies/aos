@@ -104,7 +104,11 @@ pub struct FingerprintSample {
     pub component_failures: u32,
     /// Byte count covered by [`Self::ram_digest`].
     pub ram_bytes: u64,
-    /// Content digest of the guest's writable RAM.
+    /// edition-1 BLAKE3 execution-scope RAM root.
+    ///
+    /// The root binds the complete canonical topology and selected region trees.
+    /// It is independent of host residency, storage placement, and pager policy.
+    /// ABI version 31 refuses predecessors that supplied a flat RAM digest.
     pub ram_digest: [u8; FINGERPRINT_DIGEST_BYTES],
     /// Byte count covered by [`Self::device_state_digest`].
     pub device_state_bytes: u64,

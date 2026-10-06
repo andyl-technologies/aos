@@ -1552,7 +1552,10 @@ fn drive_modeled_attempt_inner(
             lifecycle,
             context,
             QemuFreshPendingObservation {
-                input: input.clone(),
+                input: input
+                    .try_clone_admitted()
+                    .map_err(QemuFreshModeledDriverError::from)
+                    .map_err(AttemptWorkerFailure::Retryable)?,
                 configuration,
                 stop,
                 event_log,
@@ -1588,7 +1591,10 @@ fn drive_modeled_attempt_inner(
             lifecycle,
             context,
             QemuFreshPendingObservation {
-                input: input.clone(),
+                input: input
+                    .try_clone_admitted()
+                    .map_err(QemuFreshModeledDriverError::from)
+                    .map_err(AttemptWorkerFailure::Retryable)?,
                 configuration,
                 stop: ModeledStop::ReplayBoundary,
                 event_log,
@@ -1618,7 +1624,10 @@ fn drive_modeled_attempt_inner(
             lifecycle,
             context,
             QemuFreshPendingObservation {
-                input: input.clone(),
+                input: input
+                    .try_clone_admitted()
+                    .map_err(QemuFreshModeledDriverError::from)
+                    .map_err(AttemptWorkerFailure::Retryable)?,
                 configuration,
                 stop: initial_stop,
                 event_log,
@@ -1657,7 +1666,10 @@ fn drive_modeled_attempt_inner(
             lifecycle,
             context,
             QemuFreshPendingObservation {
-                input: input.clone(),
+                input: input
+                    .try_clone_admitted()
+                    .map_err(QemuFreshModeledDriverError::from)
+                    .map_err(AttemptWorkerFailure::Retryable)?,
                 configuration,
                 stop: primary_stop_at(input.attempt().stop(), terminal_at, completed_quanta),
                 event_log,
@@ -1698,7 +1710,10 @@ fn drive_modeled_attempt_inner(
             lifecycle,
             context,
             QemuFreshPendingObservation {
-                input: input.clone(),
+                input: input
+                    .try_clone_admitted()
+                    .map_err(QemuFreshModeledDriverError::from)
+                    .map_err(AttemptWorkerFailure::Retryable)?,
                 configuration,
                 stop: ModeledStop::ReplayBoundary,
                 event_log,
@@ -1720,7 +1735,10 @@ fn drive_modeled_attempt_inner(
             lifecycle,
             context,
             QemuFreshPendingObservation {
-                input: input.clone(),
+                input: input
+                    .try_clone_admitted()
+                    .map_err(QemuFreshModeledDriverError::from)
+                    .map_err(AttemptWorkerFailure::Retryable)?,
                 configuration,
                 stop: primary_stop_at(input.attempt().stop(), terminal_at, completed_quanta),
                 event_log,
@@ -1749,7 +1767,10 @@ fn drive_modeled_attempt_inner(
             lifecycle,
             context,
             QemuFreshPendingObservation {
-                input: input.clone(),
+                input: input
+                    .try_clone_admitted()
+                    .map_err(QemuFreshModeledDriverError::from)
+                    .map_err(AttemptWorkerFailure::Retryable)?,
                 configuration,
                 stop: primary_stop_at(input.attempt().stop(), terminal_at, completed_quanta),
                 event_log,
@@ -1895,7 +1916,10 @@ fn drive_modeled_attempt_inner(
                 lifecycle,
                 context,
                 QemuFreshPendingObservation {
-                    input: input.clone(),
+                    input: input
+                        .try_clone_admitted()
+                        .map_err(QemuFreshModeledDriverError::from)
+                        .map_err(AttemptWorkerFailure::Retryable)?,
                     configuration,
                     stop: ModeledStop::ReplayBoundary,
                     event_log,
@@ -1993,7 +2017,10 @@ fn drive_modeled_attempt_inner(
                     lifecycle,
                     context,
                     QemuFreshPendingObservation {
-                        input: input.clone(),
+                        input: input
+                            .try_clone_admitted()
+                            .map_err(QemuFreshModeledDriverError::from)
+                            .map_err(AttemptWorkerFailure::Retryable)?,
                         configuration,
                         stop: ModeledStop::ReplayBoundary,
                         event_log,
@@ -2042,7 +2069,10 @@ fn drive_modeled_attempt_inner(
             lifecycle,
             context,
             QemuFreshPendingObservation {
-                input: input.clone(),
+                input: input
+                    .try_clone_admitted()
+                    .map_err(QemuFreshModeledDriverError::from)
+                    .map_err(AttemptWorkerFailure::Retryable)?,
                 configuration,
                 stop,
                 event_log,
@@ -2261,6 +2291,7 @@ fn classify_scheduler_error(
 ) -> AttemptWorkerFailure<QemuFreshModeledDriverError> {
     let class = match &error {
         SchedulerError::OperationalBoundary { class, .. } => Some(*class),
+        SchedulerError::Evaluation { .. } => Some(SchedulerOperationalFailureClass::Retryable),
         SchedulerError::Backend(_)
         | SchedulerError::BoundaryViolation { .. }
         | SchedulerError::ResourceLimit { .. }

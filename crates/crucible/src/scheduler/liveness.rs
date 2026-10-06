@@ -478,6 +478,11 @@ pub enum SchedulerOperationalFailureClass {
 /// An error produced by the scheduler boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SchedulerError {
+    /// Predicate evaluation refused its original resource admission.
+    Evaluation {
+        /// Original typed evaluation error retained without diagnostic conversion.
+        source: std::sync::Arc<crate::EngineError>,
+    },
     /// A backend operation failed while driven by the scheduler.
     Backend(BackendError),
     /// A component attempted to bypass the scheduler boundary.
@@ -525,6 +530,7 @@ pub enum SchedulerError {
 impl fmt::Display for SchedulerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Evaluation { source } => write!(f, "scheduler evaluation refused: {source}"),
             Self::Backend(error) => write!(f, "backend failed under scheduler control: {error}"),
             Self::BoundaryViolation { message } => f.write_str(message),
             Self::OperationalBoundary { message, .. } => f.write_str(message),
@@ -550,7 +556,22 @@ impl fmt::Display for SchedulerError {
     }
 }
 
-impl Error for SchedulerError {}
+impl Error for SchedulerError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Evaluation { source } => Some(source.as_ref()),
+            _ => None,
+        }
+    }
+}
+
+impl From<crate::EngineError> for SchedulerError {
+    fn from(source: crate::EngineError) -> Self {
+        Self::Evaluation {
+            source: std::sync::Arc::new(source),
+        }
+    }
+}
 
 impl From<BackendError> for SchedulerError {
     fn from(error: BackendError) -> Self {

@@ -4,10 +4,7 @@
 //! module. This module owns host service setup and cleanup, including the
 //! packaged campaign executor and its separate operational watchdog.
 
-use super::packaged_executor::{
-    load_campaign_run_deployment, prepare_cli_packaged_executor,
-    resolve_guarded_campaign_deployment_path,
-};
+use super::packaged_executor::prepare_cli_packaged_executor;
 use super::*;
 use crate::cli_campaign_import::apply_campaign_import_manifests;
 use crate::cli_campaign_store::load_campaign_repository_store;
@@ -107,12 +104,14 @@ where
             .take()
             .ok_or_else(|| serve_error("production QEMU configuration disappeared"))?;
         let config = production_session_lifecycle_config(campaign_config, &debug_authorization);
-        let packaged_campaign_config = config.clone();
-        let observation_config = config.clone();
+        let packaged_campaign_config = config;
         let observation_qemu_build_id = production_qemu_build_id
             .take()
             .ok_or_else(|| serve_error("production QEMU identity disappeared"))?;
-        let observation_deployment = cli.campaign_deployment.clone();
+        let observation_factory = Arc::new(std::sync::OnceLock::<
+            crucible_daemon::qemu_campaign_lifecycle::RemoteObservationResumeFactory,
+        >::new());
+        let resume_factory = Arc::clone(&observation_factory);
         let mut control_plane = LifecycleControlPlane::new_with_fallible_source_factory(
             "crucible-cli-qemu-daemon",
             Vec::new(),
@@ -128,27 +127,12 @@ where
             },
         )
         .with_resume_observation_loop_factory(move |request, configuration, context| {
-            let deployment_path =
-                resolve_guarded_campaign_deployment_path(observation_deployment.as_deref())
-                    .map_err(
-                        |error| crucible_api::LifecycleApiError::ResumeObservationSource {
-                            message: format!("resolve guarded campaign deployment: {error}"),
-                        },
-                    )?;
-            let deployment = load_campaign_run_deployment(&deployment_path).map_err(|error| {
-                crucible_api::LifecycleApiError::ResumeObservationSource {
-                    message: format!("load guarded campaign deployment: {error}"),
-                }
-            })?;
-            crucible_daemon::qemu_campaign_lifecycle::RemoteObservationResumeFactory::new(
-                env!("CARGO_PKG_VERSION"),
-                observation_qemu_build_id.clone(),
-                observation_config.clone(),
-                deployment.host,
-                deployment.resources,
-                deployment.verify_determinism_findings,
-            )
-            .resume_loop(request, configuration, context)
+            resume_factory
+                .get()
+                .ok_or_else(|| crucible_api::LifecycleApiError::ResumeObservationSource {
+                    message: String::from("observation resume requires an attached campaign owner"),
+                })?
+                .resume_loop(request, configuration, context)
         })
         .with_resume_replay_closure_validator(validate_remote_resume_replay_closure);
         if let Some(max_sessions) = args.max_sessions {
@@ -164,10 +148,35 @@ where
             });
         let campaign_service = open_local_campaign_service(
             args,
-            Some(&packaged_campaign_config),
+            Some(packaged_campaign_config),
             Some(campaign_debug_lifecycle),
             None,
         )?;
+        if let Some((owner, verify_findings)) = campaign_service
+            .as_ref()
+            .and_then(|service| service.guarded_owner.clone())
+        {
+            let factory =
+                crucible_daemon::qemu_campaign_lifecycle::RemoteObservationResumeFactory::new(
+                    env!("CARGO_PKG_VERSION"),
+                    observation_qemu_build_id,
+                    owner,
+                    verify_findings,
+                )
+                .map_err(|error| serve_error(format!("observation resume owner error: {error}")))?;
+            observation_factory
+                .set(factory)
+                .map_err(|_| serve_error("observation resume owner was already installed"))?;
+        }
+        if let Some(control) = campaign_service
+            .as_ref()
+            .and_then(|service| service.host_operational_control.clone())
+        {
+            control_plane
+                .lock()
+                .await
+                .set_host_operational_control(control);
+        }
         announce_campaign_service(cli, campaign_service.as_ref());
         return run_bound_daemon_services(
             listener,
@@ -225,6 +234,11 @@ pub(crate) fn production_session_lifecycle_config(
 pub(crate) struct PreparedLocalCampaignService {
     service: crucible_daemon::CampaignLocalService,
     socket_path: PathBuf,
+    host_operational_control: Option<crucible_api::host_operational::SharedHostOperationalControl>,
+    guarded_owner: Option<(
+        crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignOwner,
+        bool,
+    )>,
 }
 
 struct CliCampaignDebugLifecycleAdmission<F> {
@@ -266,7 +280,7 @@ impl PreparedLocalCampaignService {
 
 pub(crate) fn open_local_campaign_service(
     args: &ServeArgs,
-    production_qemu: Option<&crucible_api::ProductionVmLifecycleConfig>,
+    production_qemu: Option<crucible_api::ProductionVmLifecycleConfig>,
     campaign_debug_lifecycle: Option<Arc<dyn crucible_daemon::CampaignDebugLifecycleAdmission>>,
     private_target_attempt: Option<crucible_campaign::AttemptId>,
 ) -> Result<Option<PreparedLocalCampaignService>, CliError> {
@@ -422,6 +436,26 @@ pub(crate) fn open_local_campaign_service(
     if let Some(lifecycle) = campaign_debug_lifecycle {
         prepared = prepared.with_campaign_debug_lifecycle(lifecycle);
     }
+    let guarded_owner = packaged_executor
+        .as_ref()
+        .map(|packaged| {
+            prepared
+                .guarded_campaign_owner(&packaged.executor)
+                .map(|owner| (owner, packaged.verify_determinism_findings))
+                .map_err(|error| serve_error(format!("guarded resume owner error: {error}")))
+        })
+        .transpose()?;
+    let host_operational_control = if let Some(packaged) = packaged_executor.as_ref() {
+        let registry = packaged.executor.host_operational_registry();
+        for principal in &args.host_operator_certificate {
+            registry.grant_principal(principal).map_err(|error| {
+                serve_error(format!("host operational authorization error: {error}"))
+            })?;
+        }
+        Some(Arc::new(registry) as crucible_api::host_operational::SharedHostOperationalControl)
+    } else {
+        None
+    };
     let service = if let Some(packaged) = packaged_executor {
         prepared.bind_with_runtimes_and_executor(runtimes, packaged.executor)
     } else if runtimes.is_empty() {
@@ -433,101 +467,9 @@ pub(crate) fn open_local_campaign_service(
     Ok(Some(PreparedLocalCampaignService {
         service,
         socket_path: socket.clone(),
+        host_operational_control,
+        guarded_owner,
     }))
-}
-
-/// Private packaged campaign execution without an unrelated TCP control listener.
-pub(crate) struct PrivatePackagedCampaignRun<'a> {
-    pub(crate) state: &'a Path,
-    pub(crate) policy: &'a Path,
-    pub(crate) authority: &'a Path,
-    pub(crate) campaign_socket: &'a Path,
-    pub(crate) executor_socket: &'a Path,
-    pub(crate) deployment: &'a Path,
-    pub(crate) campaign: &'a str,
-    pub(crate) target_attempt: crucible_campaign::AttemptId,
-    pub(crate) lifecycle: &'a crucible_api::ProductionVmLifecycleConfig,
-    pub(crate) timeout: Duration,
-}
-
-/// Runs one imported campaign until its authenticated completion becomes visible.
-///
-/// # Errors
-///
-/// Returns an error if the private service fails, the completion check fails,
-/// or the bounded execution deadline expires.
-pub(crate) fn run_private_packaged_campaign_until<F>(
-    run: PrivatePackagedCampaignRun<'_>,
-    mut completed: F,
-) -> Result<(), CliError>
-where
-    F: FnMut() -> Result<bool, CliError>,
-{
-    let args = ServeArgs {
-        listen: String::from("127.0.0.1:0"),
-        max_sessions: None,
-        production_qemu: true,
-        qemu_rendezvous_ticks: None,
-        qemu_quantum_budget: None,
-        read_only: false,
-        tls_cert: None,
-        tls_key: None,
-        client_ca: None,
-        trusted_unauthenticated_bind: false,
-        debug_role: Vec::new(),
-        campaign_socket: Some(run.campaign_socket.to_path_buf()),
-        campaign_state: Some(run.state.to_path_buf()),
-        campaign_policy: Some(run.policy.to_path_buf()),
-        campaign_store: None,
-        campaign_maintenance_interval_ms: None,
-        campaign_maintenance_write_back_transfers: None,
-        campaign_maintenance_s3_nodes: None,
-        campaign_maintenance_s3_uploads: None,
-        campaign_component_authority: Some(run.authority.to_path_buf()),
-        campaign_import_manifest: Vec::new(),
-        campaign_runtime: vec![run.campaign.to_owned()],
-        campaign_runtime_all: false,
-        campaign_executor_socket: vec![run.executor_socket.to_path_buf()],
-        campaign_packaged_executor: Some(run.deployment.to_path_buf()),
-        campaign_socket_mode: 0o600,
-    };
-    let prepared =
-        open_local_campaign_service(&args, Some(run.lifecycle), None, Some(run.target_attempt))?
-            .ok_or_else(|| serve_error("private packaged campaign service was not prepared"))?;
-    let shutdown = prepared.service.shutdown_handle();
-    let thread = std::thread::Builder::new()
-        .name(String::from("crucible-private-campaign"))
-        .spawn(move || prepared.service.serve().map_err(Box::new))
-        .map_err(|error| serve_error(format!("private campaign service thread error: {error}")))?;
-    let deadline = crate::host_boundary::HostWaitDeadline::after(run.timeout);
-    let result = loop {
-        match completed() {
-            Ok(true) => break Ok(()),
-            Ok(false) if thread.is_finished() => {
-                break Err(serve_error(
-                    "private packaged campaign service stopped early",
-                ));
-            }
-            Ok(false) if !deadline.expired() => {
-                deadline.pause(Duration::from_millis(100));
-            }
-            Ok(false) => break Err(serve_error("private packaged campaign execution timed out")),
-            Err(error) => break Err(error),
-        }
-    };
-    shutdown.shutdown();
-    let joined = thread
-        .join()
-        .map_err(|_| serve_error("private packaged campaign service thread panicked"))?
-        .map_err(|error| campaign_service_join_error(&error));
-    // A branch failure must not hide a separate failure to reap its executor.
-    match (result, joined) {
-        (Ok(()), Ok(_)) => Ok(()),
-        (Err(error), Ok(_)) | (Ok(()), Err(error)) => Err(error),
-        (Err(error), Err(cleanup)) => Err(serve_error(format!(
-            "{error}; private packaged campaign cleanup also failed: {cleanup}"
-        ))),
-    }
 }
 
 pub(crate) fn campaign_executor_endpoint(
@@ -935,6 +877,26 @@ pub(crate) fn validate_serve_invocation(args: &ServeArgs) -> Result<(), CliError
         ));
     }
     let _ = debug_authorization_policy(args)?;
+    if !args.host_operator_certificate.is_empty() {
+        if tls_file_count != 3 || args.campaign_packaged_executor.is_none() {
+            return Err(usage_error(
+                "--host-operator-certificate requires mutual TLS and a packaged campaign executor",
+            ));
+        }
+        let mut unique = std::collections::BTreeSet::new();
+        for fingerprint in &args.host_operator_certificate {
+            if fingerprint.len() != 64
+                || !fingerprint
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                || !unique.insert(fingerprint)
+            {
+                return Err(usage_error(
+                    "host operator certificates must be unique lowercase 64-digit fingerprints",
+                ));
+            }
+        }
+    }
     Ok(())
 }
 

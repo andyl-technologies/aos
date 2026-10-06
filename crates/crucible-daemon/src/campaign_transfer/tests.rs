@@ -640,19 +640,27 @@ fn directory_object_path(root: &Path, id: crucible_cas::content_store::ContentId
 
 #[test]
 fn imported_promoted_checkpoint_survives_fresh_store_and_idempotent_retry() {
+    use crucible_cas::content_store::RefStoreAdmin;
+
     let temporary = tempfile::tempdir().expect("transfer fixture");
     let source_backend = Arc::new(DirectoryBlobBackend::new(
         "source",
         temporary.path().join("source-objects"),
     ));
-    let source = CampaignRepository::new(
+    let source_refs = Arc::new(DirectoryRefBackend::new(
+        temporary.path().join("source-refs"),
+    ));
+    let source = CampaignRepository::new(source_backend.clone(), source_refs.clone());
+    let source_checkpoints = ExactCheckpointStore::new(
         source_backend.clone(),
-        Arc::new(DirectoryRefBackend::new(
-            temporary.path().join("source-refs"),
-        )),
+        64 * 1024 * 1024,
+        source.ram_retention_authority(),
+    )
+    .expect("source checkpoints")
+    .with_ram_root_resources(
+        crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+            .expect("finite component RAM-root credit"),
     );
-    let source_checkpoints =
-        ExactCheckpointStore::new(source_backend, 64 * 1024 * 1024).expect("source checkpoints");
     let native_root = temporary.path().join("native");
     fs::create_dir(&native_root).expect("native fixture directory");
     let production = build_authenticated_production_checkpoint_codec_fixture(&native_root)
@@ -734,14 +742,16 @@ fn imported_promoted_checkpoint_survives_fresh_store_and_idempotent_retry() {
     };
     let pinned = source.apply_pin("source", &pin).expect("pin campaign");
 
-    let raw = source_checkpoints
+    let mut raw = source_checkpoints
         .prepare_production_closure(production.closure().clone())
         .expect("prepare raw checkpoint");
     let raw_root = raw.root();
     source_checkpoints
         .publish_production_closure(&raw)
         .expect("publish raw checkpoint");
-    raw.retire_native_source().expect("retire native source");
+    drop(production);
+    raw.retire_native_source(&source_checkpoints)
+        .expect("retire native source");
     let cancellation = ExecutionCancellation::default();
     let mut installed = install_attempt_production_exact_checkpoint(
         &source_checkpoints,
@@ -796,11 +806,52 @@ fn imported_promoted_checkpoint_survives_fresh_store_and_idempotent_retry() {
     source
         .authenticated_closure_ids([pinned.new_snapshot.content_id()])
         .expect("campaign snapshot closure");
-    assert!(
-        source
-            .authenticated_closure_ids([promoted_root.content_id()])
-            .is_err()
-    );
+    let complete_closure = source
+        .authenticated_closure_ids([promoted_root.content_id()])
+        .expect("complete authenticated promoted closure");
+
+    // Release source readers before borrowing the selected namespace's exclusive
+    // inventory authority. The durable selected root remains independently owned.
+    drop(installed);
+    drop(promoted);
+    drop(raw);
+    {
+        let inventory = source_refs
+            .acquire_ref_inventory_fence()
+            .expect("selected source inventory authority");
+        let split = source
+            .authenticated_storage_closure([promoted_root.content_id()], inventory.as_ref())
+            .expect("authenticated metadata and RAM frontier");
+        assert_eq!(split.ram_roots().len(), 1);
+
+        let ram_store = crucible_cas::ram::RamStore::new(
+            source_backend,
+            DurabilityRequirement::new(1, false).expect("RAM durability"),
+            crucible_cas::ram::RamStoreLimits::default(),
+        )
+        .expect("selected source RAM store");
+        let mut expected_closure = split.objects().clone();
+        for ram_root in split.ram_roots() {
+            ram_store
+                .visit_inventory_graph(*ram_root, inventory.as_ref(), &mut |object| {
+                    expected_closure.insert(object);
+                    Ok(())
+                })
+                .expect("authenticate every RAM descendant");
+        }
+        assert!(expected_closure.contains(&promoted_root.content_id()));
+        assert!(
+            expected_closure.iter().any(|object| {
+                object.kind() == crucible_cas::content_store::ObjectKind::RamTree
+            })
+        );
+        assert!(
+            expected_closure.iter().any(|object| {
+                object.kind() == crucible_cas::content_store::ObjectKind::RamExtent
+            })
+        );
+        assert_eq!(complete_closure, expected_closure);
+    }
     let mut resolver = ExactPinCampaignArchiveCheckpointResolver::new(
         &source,
         &source_checkpoints,
@@ -829,9 +880,16 @@ fn imported_promoted_checkpoint_survives_fresh_store_and_idempotent_retry() {
             temporary.path().join("destination-refs"),
         )),
     );
-    let destination_checkpoints =
-        ExactCheckpointStore::new(destination_backend.clone(), 64 * 1024 * 1024)
-            .expect("fresh destination checkpoints");
+    let destination_checkpoints = ExactCheckpointStore::new(
+        destination_backend.clone(),
+        64 * 1024 * 1024,
+        destination.ram_retention_authority(),
+    )
+    .expect("fresh destination checkpoints")
+    .with_ram_root_resources(
+        crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+            .expect("finite component RAM-root credit"),
+    );
     let selection_root = temporary.path().join("destination-exact-pins");
     let mut destination_pins =
         DirectoryExactPinMaterializationStore::open(&selection_root).expect("destination pins");
@@ -892,8 +950,16 @@ fn imported_promoted_checkpoint_survives_fresh_store_and_idempotent_retry() {
     drop(destination_pins);
     drop(destination_checkpoints);
 
-    let restarted_checkpoints = ExactCheckpointStore::new(destination_backend, 64 * 1024 * 1024)
-        .expect("restarted destination checkpoints");
+    let restarted_checkpoints = ExactCheckpointStore::new(
+        destination_backend,
+        64 * 1024 * 1024,
+        destination.ram_retention_authority(),
+    )
+    .expect("restarted destination checkpoints")
+    .with_ram_root_resources(
+        crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+            .expect("finite component RAM-root credit"),
+    );
     let mut restarted_pins =
         DirectoryExactPinMaterializationStore::open(&selection_root).expect("reopened pins");
     let mut source_journal = DirectoryCampaignTransferJournal::open(&source_journal_root)

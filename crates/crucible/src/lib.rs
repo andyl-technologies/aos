@@ -37,6 +37,8 @@ pub mod example_corpus;
 mod local_backend;
 pub mod model;
 pub mod node_time;
+pub mod owned_decode;
+mod predicate_regex;
 pub mod scheduler;
 #[cfg(feature = "test-double")]
 mod sim_backend;
@@ -52,9 +54,9 @@ pub use backend::{
     BackendIoNativeCaps, BackendIoQueueSnapshot, BackendNetworkCompletedFaultPhase,
     BackendNetworkFaultContinuation, BackendNetworkFaultCursor, BackendNetworkFaultCursorError,
     BackendNetworkOutput, BackendNetworkOutputCodecError, BackendNetworkPreservedAvailability,
-    BackendNetworkRoute, BackendPhysicalStop, BackendSnapshot, ExecutionFingerprint,
-    ExecutionHorizon, FingerprintSample, GdbAttachInfo, GdbListen, SimulationBackend,
-    StepObservation, deterministic_node_mac, deterministic_node_mac_string,
+    BackendNetworkRoute, BackendOperationalFailureKind, BackendPhysicalStop, BackendSnapshot,
+    ExecutionFingerprint, ExecutionHorizon, FingerprintSample, GdbAttachInfo, GdbListen,
+    SimulationBackend, StepObservation, deterministic_node_mac, deterministic_node_mac_string,
 };
 #[cfg(any(test, feature = "test-double"))]
 pub use backend::{MockSimulationBackend, MockSimulationBackendState};

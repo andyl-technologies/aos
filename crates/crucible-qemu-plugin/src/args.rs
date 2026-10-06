@@ -14,7 +14,11 @@ use std::collections::BTreeSet;
 use thiserror::Error;
 
 mod app_random;
+mod ram_control;
+mod ram_resources;
 mod resource_limits;
+pub use ram_control::PluginRamControlArgs;
+pub use ram_resources::PluginRamResources;
 mod whitebox;
 pub use app_random::{
     AppRandomArgsParseError, PLUGIN_ARG_APP_RANDOM_BRANCH_AFTERS,
@@ -59,6 +63,16 @@ pub const PLUGIN_ARG_FINGERPRINT: &str = "fingerprint";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginArgs {
     sim_fd: i32,
+    ram_control: Option<PluginRamControlArgs>,
+    ram_spill_descriptor: Option<i32>,
+    ram_spill_quota: Option<u64>,
+    ram_outer_cap: Option<crucible_protocol::ram_control::RamControlOuterCap>,
+    ram_metadata_budget: Option<u64>,
+    ram_resources: Option<PluginRamResources>,
+    ram_initial_budgets: Option<
+        [crucible_protocol::ram_control::RamControlBudget;
+            crucible_protocol::ram_control::RAM_CONTROL_BUDGET_COUNT],
+    >,
     slot: u32,
     fault_node_hash: [u8; 32],
     process_generation: u64,
@@ -102,9 +116,70 @@ impl PluginArgs {
         let coverage = parse_optional_switch(&parsed, PLUGIN_ARG_COVERAGE)?;
         let fingerprint = parse_optional_switch(&parsed, PLUGIN_ARG_FINGERPRINT)?;
         let inherited_fds = parse_inherited_fds(&parsed)?;
+        let ram_metadata_budget = match parsed.value("ram_metadata_budget") {
+            None => None,
+            Some(value) => match value.parse::<u64>() {
+                Ok(bytes) if bytes > 0 && bytes.to_string() == value => Some(bytes),
+                _ => return Err(PluginArgsParseError::InvalidRamMetadataBudget),
+            },
+        };
+        let ram_control = ram_control::parse(&parsed, sim_fd, inherited_fds)?;
+        let ram_spill_descriptor = match parsed.value("ram_spill_fd") {
+            None => None,
+            Some(value) => match value.parse::<i32>() {
+                Ok(fd)
+                    if fd > 2
+                        && fd.to_string() == value
+                        && fd != sim_fd
+                        && fd != 10
+                        && !ram_control.is_some_and(|control| control.descriptor == fd)
+                        && !inherited_fds
+                            .is_some_and(|fds| fds.shmem_fd == fd || fds.wake_fd == fd) =>
+                {
+                    Some(fd)
+                }
+                _ => return Err(PluginArgsParseError::InvalidRamSpillDescriptor),
+            },
+        };
+        if ram_spill_descriptor.is_some() && ram_control.is_none() {
+            return Err(PluginArgsParseError::InvalidRamSpillDescriptor);
+        }
+        let ram_resources = ram_resources::parse(&parsed)?;
+        let ram_spill_quota = match parsed.value("ram_spill_quota") {
+            None => None,
+            Some(value) => match value.parse::<u64>() {
+                Ok(bytes) if bytes > 0 && bytes.to_string() == value => Some(bytes),
+                _ => return Err(PluginArgsParseError::InvalidRamSpillDescriptor),
+            },
+        };
+        if ram_spill_descriptor.is_some() != ram_spill_quota.is_some()
+            || ram_spill_quota.is_some_and(|quota| {
+                !ram_resources.is_some_and(|resources| quota <= resources.backing_peak_bytes)
+            })
+        {
+            return Err(PluginArgsParseError::InvalidRamSpillDescriptor);
+        }
+        let ram_outer_cap = ram_resources::parse_outer(&parsed)?;
+        let ram_initial_budgets = ram_resources::parse_budgets(&parsed)?;
+        if ram_resources
+            .is_some_and(|resources| Some(resources.metadata_bytes) != ram_metadata_budget)
+        {
+            return Err(PluginArgsParseError::InvalidRamResources);
+        }
+        if ram_control.is_some_and(|control| control.target.owner_generation != process_generation)
+        {
+            return Err(PluginArgsParseError::InvalidRamControl);
+        }
 
         Ok(Self {
             sim_fd,
+            ram_control,
+            ram_spill_descriptor,
+            ram_spill_quota,
+            ram_outer_cap,
+            ram_metadata_budget,
+            ram_resources,
+            ram_initial_budgets,
             slot,
             fault_node_hash,
             process_generation,
@@ -124,6 +199,55 @@ impl PluginArgs {
     #[must_use]
     pub const fn sim_fd(&self) -> i32 {
         self.sim_fd
+    }
+
+    /// Returns the independently authenticated pager-control endpoint.
+    #[must_use]
+    pub const fn ram_control(&self) -> Option<PluginRamControlArgs> {
+        self.ram_control
+    }
+
+    /// Returns the private disk-backed spill descriptor admitted at launch.
+    #[must_use]
+    pub const fn ram_spill_descriptor(&self) -> Option<i32> {
+        self.ram_spill_descriptor
+    }
+
+    /// Returns the separately admitted private spill-file quota.
+    #[must_use]
+    pub const fn ram_spill_quota(&self) -> Option<u64> {
+        self.ram_spill_quota
+    }
+
+    /// Returns the independently admitted native RAM metadata allowance.
+    ///
+    /// Runtime installation refuses a missing allowance before starting a guest.
+    #[must_use]
+    pub const fn ram_metadata_budget(&self) -> Option<u64> {
+        self.ram_metadata_budget
+    }
+
+    /// Returns the exact independently admitted resource envelope, if supplied.
+    pub const fn ram_resources(&self) -> Option<PluginRamResources> {
+        self.ram_resources
+    }
+
+    /// Returns the same-kernel original-start operational cap binding.
+    #[must_use]
+    pub const fn ram_outer_cap(
+        &self,
+    ) -> Option<crucible_protocol::ram_control::RamControlOuterCap> {
+        self.ram_outer_cap
+    }
+
+    /// Returns the actual host's initial live budget roster before control Hello.
+    pub const fn ram_initial_budgets(
+        &self,
+    ) -> Option<
+        [crucible_protocol::ram_control::RamControlBudget;
+            crucible_protocol::ram_control::RAM_CONTROL_BUDGET_COUNT],
+    > {
+        self.ram_initial_budgets
     }
 
     /// Returns the launch-argument slot index.
@@ -249,6 +373,18 @@ impl PluginSwitch {
 /// An error produced while parsing QEMU plugin launch arguments.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum PluginArgsParseError {
+    /// Spill custody is noncanonical, incomplete, or aliases another native role.
+    #[error("invalid private RAM spill descriptor")]
+    InvalidRamSpillDescriptor,
+    /// Resource admission is incomplete, noncanonical, or inconsistent with metadata.
+    #[error("invalid admitted RAM resource envelope")]
+    InvalidRamResources,
+    /// Native RAM metadata allowance is zero, overflowing, or noncanonical.
+    #[error("RAM metadata budget must be a canonical positive byte count")]
+    InvalidRamMetadataBudget,
+    /// Pager launch authority is incomplete, reused, noncanonical, or aliases IPC.
+    #[error("invalid independent pager controller setup")]
+    InvalidRamControl,
     /// A required key was absent.
     #[error("missing required plugin argument `{key}`")]
     MissingRequiredKey {
@@ -554,7 +690,12 @@ fn is_known_key(key: &str) -> bool {
             | PLUGIN_ARG_CAMPAIGN_MARKER_PARKING
             | PLUGIN_ARG_COVERAGE
             | PLUGIN_ARG_FINGERPRINT
-    ) || app_random::is_key(key)
+    ) || key == "ram_metadata_budget"
+        || key == "ram_spill_fd"
+        || key == "ram_spill_quota"
+        || ram_control::is_key(key)
+        || ram_resources::is_key(key)
+        || app_random::is_key(key)
         || resource_limits::is_key(key)
 }
 

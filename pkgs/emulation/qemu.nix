@@ -22,6 +22,7 @@
   libcap-ng,
   libusb1,
   libgcrypt,
+  blake3-c,
   gnutls,
   fuse3,
   gcc-libs,
@@ -388,7 +389,8 @@
       fuse3
       samba-smbd
     ]
-    ++ lib.optional stdenv.hostPlatform.isLinux gcc-libs;
+    ++ lib.optional stdenv.hostPlatform.isLinux gcc-libs
+    ++ lib.optional applyCruciblePatch blake3-c;
   qemuRuntimeRpath = builtins.concatStringsSep ":" (map (dependency: "${dependency}/lib") qemuRuntimeDeps);
   fullUpstreamTestGuestRoots =
     [
@@ -449,6 +451,7 @@
     test_python=build/pyvenv/bin/python3
     test_perl=${buildPerl}/bin/perl
     test_shell=${buildBash}/bin/bash
+    qtest_launcher_shell=${buildBash}/bin/bash
     ${lib.optionalString fullUpstreamTestSuiteOnly ''
       test_certtool=${buildGnutls}/bin/certtool
       test_mformat=${buildMtools}/bin/mformat
@@ -616,6 +619,24 @@ in
               grep -q 'ldid -S"$ENTITLEMENT" "$SRC"' scripts/entitlement.sh
               ! grep -Eq '^(Rez|SetFile|codesign) ' scripts/entitlement.sh
             ''}
+            # Configure reexecutes itself after entering the build directory.
+            # Its interpreter must remain available inside the hermetic sandbox.
+            sed -i "1s|^#!.*|#!$CONFIG_SHELL|" configure
+            # The native qtest launcher also invokes a shell from C. Normalize
+            # that explicit interpreter before compiling any test binary.
+            test "$(grep -F -c 'execlp("/bin/sh", "sh",' tests/qtest/libqtest.c)" -eq 1
+            sed -i 's|execlp("/bin/sh", "sh",|execlp("${buildBash}/bin/bash", "bash",|' \
+              tests/qtest/libqtest.c
+            find scripts -type f \
+              -exec grep -IlE '^#![[:space:]]*(/bin/(ba)?sh|/usr/bin/env (ba)?sh)' {} + \
+              | while IFS= read -r script; do
+                sed -i \
+                  -e "1s|^#![[:space:]]*/bin/sh|#!$CONFIG_SHELL|" \
+                  -e "1s|^#![[:space:]]*/bin/bash|#!$CONFIG_SHELL|" \
+                  -e "1s|^#![[:space:]]*/usr/bin/env sh|#!$CONFIG_SHELL|" \
+                  -e "1s|^#![[:space:]]*/usr/bin/env bash|#!$CONFIG_SHELL|" \
+                  "$script"
+              done
             # Patch Python shebangs for Nix sandbox
             find . -type f -name '*.py' | while read f; do
               if head -1 "$f" | grep -q '^#!'; then
@@ -675,7 +696,7 @@ in
               else ""
             }
 
-            ./configure \
+            "$CONFIG_SHELL" ./configure \
               --prefix=$out \
               --extra-cflags='-DQEMU_CRUCIBLE_BUILD_ID="${qemuBuildIdentity}" -DQEMU_CRUCIBLE_ATOMIC_PATCH_HASH="${atomicPatchHash}" -DQEMU_CRUCIBLE_SHMEM_HEADER_HASH="${shmemHeaderHash}"' \
               ${qemuConfigureFlagsScript}
@@ -1696,7 +1717,7 @@ in
                   "net-output-stop", "lifecycle-projection", "control-deferred",
                   "control-observer", "control-delivery",
                   "stopped-control-rearm", "template-control-drain", "net-stop-chain",
-                  "aio-fork-custody", "stop-context",
+                  "aio-fork-custody", "stop-context", "ram-arena",
               ):
                   with (source_root / f"{name}.result").open("w") as result:
                       subprocess.run([
@@ -1709,7 +1730,10 @@ in
               cat net-output-stop.result lifecycle-projection.result \
                 control-deferred.result control-observer.result control-delivery.result \
                 stopped-control-rearm.result template-control-drain.result net-stop-chain.result \
-                aio-fork-custody.result stop-context.result
+                aio-fork-custody.result stop-context.result ram-arena.result
+              grep -Fxq 'RAM_ARENA_AUTHORITY_PASS: private/preallocated/partial geometry; shared and mutable readonly-file refusal; real sealed inode/COW authority; unmigratable ROMD producer dirty obligations' \
+                ram-arena.result
+              cp ram-arena.result "$out/share/aos/crucible/ram-arena.result"
               grep -Fxq 'PASS production TX/stop/clock/RR: batches, race, completion settlement, paused ack, explicit retry' \
                 net-output-stop.result
               grep -Fxq 'PASS lifecycle production encode/rebind: full save retained, canonical custody independence, guest frontier sensitivity, invalid rebind refusal' \
@@ -1741,6 +1765,34 @@ in
                 stop-context.result
               build/tests/unit/test-vmstate --tap \
                 -p /vmstate/subsection/prefix-boundary
+              set +e
+              QTEST_QEMU_BINARY="$PWD/build/qemu-system-x86_64" \
+                QTEST_QEMU_ARGS="-L $PWD/pc-bios" \
+                timeout -k 5 300 build/tests/qtest/ahci-test --tap --verbose \
+                --seed=R02S00000000000000000000000000000000 \
+                -p /x86_64/ahci/identify \
+                -p /x86_64/ahci/io/dma/lba28/fragmented \
+                -p /x86_64/ahci/migrate/dma/simple \
+                -p /x86_64/ahci/migrate/dma/halted \
+                -p /x86_64/ahci/migrate/ncq/simple \
+                -p /x86_64/ahci/migrate/ncq/halted \
+                -p /x86_64/ahci/reset/simple \
+                -p /x86_64/ahci/reset/pending_callback \
+                > ahci-coherent-ram-qtests.raw.tap
+              ahci_status=$?
+              set -e
+              cat ahci-coherent-ram-qtests.raw.tap
+              test "$ahci_status" -eq 0
+              # Preserve each verdict while removing temporary spawn paths and
+              # elapsed host-time comments from the installed evidence.
+              sed -e '/^# starting QEMU:/d' \
+                -e '/^# slow test .* executed in [0-9.]* secs$/d' \
+                ahci-coherent-ram-qtests.raw.tap > ahci-coherent-ram-qtests.tap
+              cat ahci-coherent-ram-qtests.tap
+              test "$(grep -E -c '^ok [0-9]+ /x86_64/ahci/' \
+                ahci-coherent-ram-qtests.tap)" -eq 8
+              cp ahci-coherent-ram-qtests.tap \
+                "$out/share/aos/crucible/ahci-coherent-ram-qtests.tap"
               QTEST_QEMU_BINARY="$PWD/build/qemu-system-x86_64" \
                 timeout -k 5 60 build/tests/qtest/qmp-cmd-test --tap \
                 -p /x86_64/qmp/crucible-adopt-launch-fdsets \
@@ -1820,14 +1872,10 @@ in
               test "$(grep -F -x -c \
                 '    dc->vmsd = &vmstate_e1000;' \
                 hw/net/e1000.c)" -eq 1
+              ! grep -F -q 'strcmp(current_accel_name(), "sim")' \
+                hw/i386/multiboot.c
               test "$(grep -F -x -c \
-                '        if (strcmp(current_accel_name(), "sim") == 0) {' \
-                hw/i386/multiboot.c)" -eq 1
-              test "$(grep -F -x -c \
-                '            mbs.mb_buf = g_malloc0(mb_kernel_size);' \
-                hw/i386/multiboot.c)" -eq 1
-              test "$(grep -F -x -c \
-                '            mbs.mb_buf = g_malloc(mb_kernel_size);' \
+                '        mbs.mb_buf = g_malloc0(mb_kernel_size);' \
                 hw/i386/multiboot.c)" -eq 1
               test "$(grep -F -x -c \
                 '        !qemu_plugin_request_time_control() ||' \
@@ -1835,6 +1883,21 @@ in
               test "$(grep -F -x -c \
                 '    qemu_plugin_register_sim_shmem_dispatch_cb(' \
                 tests/tcg/plugins/crucible-fingerprint-observer.c)" -eq 1
+              for resident_fixture in \
+                crucible-fingerprint-observer.c \
+                crucible-idle-wait-liveness.c \
+                crucible-exact-tb-exit.c \
+                crucible-resident-ram-observer.c; do
+                test "$(grep -F -c 'crucible_fixture_install_resident_ram()' \
+                  "tests/tcg/plugins/$resident_fixture")" -eq 1
+              done
+              for resident_owner_call in \
+                qemu_plugin_crucible_ram_set_metadata_budget_v1 \
+                qemu_plugin_crucible_register_ram_admission_v1 \
+                qemu_plugin_crucible_register_ram_root_observer_v1; do
+                test "$(grep -F -c "$resident_owner_call(" \
+                  tests/tcg/plugins/crucible-resident-ram.h)" -eq 1
+              done
               python3 - <<'PYTHON'
               import re
               from pathlib import Path
@@ -3950,9 +4013,16 @@ in
               python3 tests/qtest/crucible-multiboot-gap.py \
                 --qemu build/qemu-system-x86_64 \
                 --data-dir pc-bios \
+                --resident-plugin build/tests/tcg/plugins/libcrucible-resident-ram-observer.so \
                 > multiboot-gap.txt
               cat multiboot-gap.txt
-              grep -F -x -q 'multiboot_sim_intersegment_gap_zero=true' \
+              grep -F -x -q 'multiboot_loader_intersegment_gap_zero=true' \
+                multiboot-gap.txt
+              grep -F -x -q 'multiboot_sim_unmanaged_execution_refused=true' \
+                multiboot-gap.txt
+              grep -F -x -q 'multiboot_resident_sim_intersegment_gap_zero=true' \
+                multiboot-gap.txt
+              grep -F -x -q 'multiboot_resident_sim_guest_entry=true' \
                 multiboot-gap.txt
               build/tests/unit/test-crucible-idle-wait --tap \
                 --seed=R02S00000000000000000000000000000000 \
@@ -4050,6 +4120,7 @@ in
                       "build/qemu-system-aarch64",
                       "-machine", "virt",
                       "-accel", "sim",
+                      "-plugin", "build/tests/tcg/plugins/libcrucible-resident-ram-observer.so",
                       "-cpu", "cortex-a57",
                       "-icount", "shift=0,align=off,sleep=off",
                       "-S",
@@ -4239,6 +4310,13 @@ in
 
             mkdir -p "$out/share/aos/crucible"
             ${lib.optionalString runCrucibleChecks ''
+              # Downstream native component probes share the same bounded
+              # resident inventory owner; these artifacts do not qualify paging.
+              mkdir -p "$out/share/aos/crucible/native-tests"
+              install -m 644 tests/tcg/plugins/crucible-resident-ram.h \
+                "$out/share/aos/crucible/native-tests/crucible-resident-ram.h"
+              install -m 755 build/tests/tcg/plugins/libcrucible-resident-ram-observer.so \
+                "$out/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so"
               install -m 644 block-backend-tests.tap \
                 "$out/share/aos/crucible/block-backend-tests.tap"
               install -m 644 aio-hot-fork-tests.tap \

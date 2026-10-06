@@ -484,11 +484,11 @@
       ${fingerprintResult}
     grep -Fxq PASS ${restoreLatencyResult}
     grep -Fxq \
-      'restore_latency_measurement=descriptor-restore-through-cont-ack' \
+      'managed_lazy_restore_measurement=cold-launch-through-first-quantum' \
       ${restoreLatencyResult}
-    grep -Eq '^direct_restore_to_runnable_us=[1-9][0-9]*$' \
+    grep -Eq '^managed_lazy_restore_cold_launch_to_first_quantum_ns=[1-9][0-9]*$' \
       ${restoreLatencyResult}
-    grep -Eq '^delta_restore_to_runnable_us=[1-9][0-9]*$' \
+    grep -Eq '^managed_lazy_restore_missing_installs=[1-9][0-9]*$' \
       ${restoreLatencyResult}
     grep -Fxq PASS ${segmentReplayResult}
     grep -Fxq 'gate=gate:segment-parallel-replay' ${segmentReplayResult}
@@ -561,9 +561,9 @@
       -e 's/^on_demand_boundary_stream_bit_identical=/metric_fingerprint_boundary_identity=/p' \
       ${fingerprintResult} >> "$out/result"
     sed -n \
-      -e 's/^direct_restore_to_runnable_us=/metric_direct_restore_to_runnable_us=/p' \
-      -e 's/^delta_restore_to_runnable_us=/metric_delta_restore_to_runnable_us=/p' \
-      -e 's/^restore_latency_measurement=/metric_restore_latency_source=/p' \
+      -e 's/^managed_lazy_restore_cold_launch_to_first_quantum_ns=/metric_cold_launch_to_first_quantum_ns=/p' \
+      -e 's/^managed_lazy_restore_missing_installs=/metric_lazy_restore_missing_installs=/p' \
+      -e 's/^managed_lazy_restore_measurement=/metric_restore_latency_source=/p' \
       ${restoreLatencyResult} >> "$out/result"
     sed -n \
       -e 's/^admission_class=/metric_segment_replay_class=/p' \

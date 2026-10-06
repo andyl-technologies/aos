@@ -321,7 +321,7 @@ mod guarded_launcher_ops {
     ///
     /// This capability receives the exact paired snapshot and the sealed
     /// child-process contract retained by its atomic request. Implementations must reject any snapshot other than
-    /// the one whose authenticated version-nine descriptors were committed into
+    /// the one whose authenticated authenticated paged descriptors were committed into
     /// their prepared run-directory authority, and must use only a guarded
     /// child-spawn path.
     pub(crate) trait Exact {
@@ -380,7 +380,10 @@ trait QemuFailedLaunchChildSource {
 mod admission;
 mod replay_physical;
 use admission::QemuReplayValidationNodeLauncher;
-pub use admission::{QemuReplayValidationExactAdmission, QemuReplayValidationThinAdmission};
+pub use admission::{
+    QemuReplayValidationExactAdmission, QemuReplayValidationRegistrationPreparation,
+    QemuReplayValidationThinAdmission,
+};
 
 /// Realization executor backed by one active QEMU node at a time.
 pub struct QemuReplayValidationExecutor {

@@ -33,6 +33,55 @@ pub struct RootRecord {
 }
 
 impl RootRecord {
+    /// Returns retained root metadata, including the complete shared topology.
+    ///
+    /// A shared topology is included conservatively. Callers may account for
+    /// sharing only when another retained admission lease owns that allocation.
+    /// Allocator bookkeeping and process memory overhead remain external.
+    ///
+    /// # Errors
+    /// Returns [`RamError::Overflow`] if the retained allocation sizes cannot
+    /// be represented or composed.
+    pub fn metadata_bytes(&self) -> Result<u64, RamError> {
+        let roots = self
+            .roots
+            .capacity()
+            .checked_mul(std::mem::size_of::<RegionTreeDigest>())
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>()))
+            .ok_or(RamError::Overflow)?;
+        self.topology
+            .metadata_bytes()?
+            .checked_add(u64::try_from(roots).map_err(|_| RamError::Overflow)?)
+            .ok_or(RamError::Overflow)
+    }
+
+    /// Bounds encoded input and decoder allocation payloads before reading a root.
+    ///
+    /// This bound includes one maximum encoded record, its retained descriptors
+    /// and identifiers, selected roots, the temporary descriptor vector used
+    /// to construct the shared topology, and descriptor validation/hash scratch.
+    /// It covers requested Rust allocation payloads; allocator bookkeeping and
+    /// process memory overhead require separate admission.
+    ///
+    /// # Errors
+    /// Returns [`RamError::Overflow`] if the caller's bounds cannot be composed.
+    pub fn decoding_memory_bound(limits: Limits) -> Result<u64, RamError> {
+        let regions = limits.max_regions.min(4096);
+        let per_region = 2 * std::mem::size_of::<RegionDescriptor>()
+            + 255
+            + std::mem::size_of::<RegionTreeDigest>();
+        let bytes = regions
+            .checked_mul(per_region)
+            .and_then(|bytes| bytes.checked_add(limits.max_record_bytes))
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>()))
+            .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<usize>()))
+            .and_then(|bytes| {
+                bytes.checked_add(std::mem::size_of::<RegionDescriptor>() + 255 + 269)
+            })
+            .ok_or(RamError::Overflow)?;
+        u64::try_from(bytes).map_err(|_| RamError::Overflow)
+    }
+
     /// Binds selected roots, in inventory order, to a complete topology and scope.
     ///
     /// # Errors

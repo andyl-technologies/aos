@@ -13,7 +13,6 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use crucible_campaign::{CAMPAIGN_OBJECT_PROFILE_POLICY_V1, CampaignObjectProfiler};
-use crucible_daemon::LinuxProjectQuotaBinder;
 use crucible_daemon::campaign_store_composition::{
     ContentId, DirectoryRefBackend, DurabilityRequirement, ImmutableBlobBackend,
     MAX_STORE_GRAPH_VERIFY_LOGICAL_BYTES, MAX_STORE_GRAPH_VERIFY_PLACEMENTS, ObjectKind,
@@ -24,6 +23,7 @@ use crucible_daemon::campaign_store_composition::{
     StoreNamespaceOperation, StoreNodeId, StoreNodeSpec, StoreObjectProfilePolicyId,
     StorePhysicalQuotaPolicyId, StoreS3EndpointId, StoreTierPolicy,
 };
+use crucible_daemon::{CampaignQuotaServiceConfig, LinuxProjectQuotaBinder};
 use rustix::fs::{Mode, OFlags};
 use serde::Deserialize;
 
@@ -80,7 +80,16 @@ struct CampaignStoreDeployment {
     namespaces: Vec<AuthoredNamespacePolicy>,
     #[serde(default)]
     physical_quota_policies: Vec<String>,
+    #[serde(default)]
+    physical_quota_service: Option<AuthoredQuotaService>,
     nodes: Vec<AuthoredStoreNode>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthoredQuotaService {
+    lifetime_ms: u64,
+    resources: crate::cli_verify_serve::HostOwnerResourcesDeployment,
 }
 
 #[derive(Debug, Deserialize)]
@@ -597,9 +606,32 @@ fn load_campaign_repository_graph(
         ));
     }
     let mut physical_quotas = StoreGraphPhysicalQuotaBinders::new();
+    let quota_binder = match (
+        configured_physical_quotas.is_empty(),
+        deployment.physical_quota_service,
+    ) {
+        (true, None) => None,
+        (false, Some(service)) => Some(Arc::new(
+            LinuxProjectQuotaBinder::new(CampaignQuotaServiceConfig {
+                lifetime: std::time::Duration::from_millis(service.lifetime_ms),
+                resources: service.resources.resources(),
+            })
+            .map_err(|error| {
+                campaign_store_error(format!("physical-quota service admission failed: {error}"))
+            })?,
+        )),
+        _ => {
+            return Err(campaign_store_error(
+                "physical-quota service must be authored exactly when quota policies are configured",
+            ));
+        }
+    };
     for policy in configured_physical_quotas {
+        let binder = quota_binder
+            .as_ref()
+            .ok_or_else(|| campaign_store_error("physical-quota service authority is absent"))?;
         physical_quotas
-            .insert(policy, Arc::new(LinuxProjectQuotaBinder::new()))
+            .insert(policy, binder.clone())
             .map_err(|error| {
                 campaign_store_error(format!("duplicate physical-quota policy: {error}"))
             })?;
@@ -1693,5 +1725,35 @@ policy = "crucible.campaign.object-profile.v1"
             .collect::<Vec<_>>()
             .join(", ");
         format!("[{kinds}]")
+    }
+
+    #[test]
+    fn standalone_quota_service_requires_the_complete_authored_resource_contract() {
+        let authored = r#"lifetime_ms = 60000
+[resources]
+resident_peak_bytes = 1048576
+backing_peak_bytes = 1048576
+metadata_bytes = 4096
+staging_bytes = 131072
+paging_io_slots = 1
+cpu_slots = 1
+task_slots = 1
+file_descriptors = 36
+"#;
+        let parsed = toml::from_str::<AuthoredQuotaService>(authored)
+            .unwrap_or_else(|error| panic!("parse explicit standalone service: {error}"));
+        assert_eq!(parsed.lifetime_ms, 60000);
+        assert_eq!(parsed.resources.resources().file_descriptors, 36);
+        assert!(
+            toml::from_str::<AuthoredQuotaService>(&authored.replace("cpu_slots = 1\n", ""))
+                .is_err()
+        );
+        assert!(
+            toml::from_str::<AuthoredQuotaService>(&authored.replace(
+                "lifetime_ms = 60000",
+                "lifetime_ms = 60000\nclock_origin = 1"
+            ))
+            .is_err()
+        );
     }
 }

@@ -50,10 +50,23 @@ pub(super) struct RecordedPhysicalQuotaBinding {
     pub(super) maximum_inodes: u64,
 }
 
-#[derive(Default)]
 pub(super) struct RecordingPhysicalQuotaGuard {
     pub(super) allowed: AtomicBool,
     pub(super) calls: AtomicUsize,
+    resources: crate::content_store::test_resources::FixtureResourceBudget,
+}
+
+impl Default for RecordingPhysicalQuotaGuard {
+    fn default() -> Self {
+        Self {
+            allowed: AtomicBool::new(false),
+            calls: AtomicUsize::new(0),
+            resources: crate::content_store::test_resources::FixtureResourceBudget::new(
+                128,
+                256 * 1024 * 1024,
+            ),
+        }
+    }
 }
 
 impl RecordingPhysicalQuotaGuard {
@@ -63,6 +76,15 @@ impl RecordingPhysicalQuotaGuard {
 }
 
 impl StorePhysicalQuotaGuard for RecordingPhysicalQuotaGuard {
+    fn reserve_resources(
+        &self,
+        descriptors: u64,
+        resident_bytes: u64,
+    ) -> Result<Arc<dyn Send + Sync>, StoreError> {
+        self.verify()?;
+        self.resources.reserve(descriptors, resident_bytes)
+    }
+
     fn verify(&self) -> Result<(), StoreError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.allowed.load(Ordering::SeqCst) {

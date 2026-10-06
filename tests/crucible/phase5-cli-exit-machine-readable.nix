@@ -159,7 +159,7 @@
       }
       {
         label = "exit code mapping regression";
-        needle = "cli_exit_machine_readable_mapping_matches_rfc_15";
+        needle = "cli_exit_machine_readable_mapping_matches_contract";
       }
       {
         label = "final outcome output regression";

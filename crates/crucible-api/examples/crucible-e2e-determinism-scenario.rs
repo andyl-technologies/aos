@@ -167,7 +167,7 @@ fn representative_scenario() -> Result<ScenarioDefForm, Box<dyn Error>> {
         .action(Action::pass())
         .build_with_assertions_for_world(assertion_ids.clone(), &world)?;
     let plan = Plan::from_event_graph_with_assertions_for_world(&world, assertion_ids, graph)?
-        .with_fault_signals(representative_fault_plan()?);
+        .with_fault_signals(representative_fault_plan()?)?;
 
     Ok(ScenarioDefForm::from_components_with_app_random_draw_cap(
         &world,

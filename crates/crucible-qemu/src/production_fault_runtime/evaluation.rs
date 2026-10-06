@@ -120,10 +120,12 @@ impl ProductionFaultRuntime {
         same_coordinate_sequence: u64,
         nodes: &mut QemuNodeSet,
     ) -> Result<BindingEvaluation, ProductionFaultRuntimeError> {
+        self.memory_service_evidence.begin_boundary();
         self.apply_event_staging_capacity(nodes, &[], None)?;
         let Some(runtime) = self.runtime.as_ref() else {
             self.drain_qemu_observations(nodes, coordinate, 0)?;
             if self.pending_qemu_observations.is_empty() {
+                self.memory_service_evidence.commit_boundary();
                 return Ok(BindingEvaluation::default());
             }
             return Err(BackendError::Rejected {
@@ -198,6 +200,7 @@ impl ProductionFaultRuntime {
         qemu_observations.append(&mut evaluation.observations);
         evaluation.observations = qemu_observations;
         publication.publish(self);
+        self.memory_service_evidence.commit_boundary();
         Ok(evaluation)
     }
 
@@ -333,6 +336,7 @@ impl ProductionFaultRuntime {
                     self.resource_limits,
                 )
             })?;
+        let mut memory_service_occurrence = None;
         for (node, events) in &self.pending_qemu_events {
             for event in events {
                 let action_identity = ContentHash {
@@ -385,6 +389,11 @@ impl ProductionFaultRuntime {
                     .into());
                 }
                 validate_node_event_evidence(event, action)?;
+                if let Some(occurrence) =
+                    super::memory_service_evidence::parse_occurrence(event, boundary)?
+                {
+                    memory_service_occurrence = Some(occurrence);
+                }
                 if let Some(decision) = node_lifecycle_decision(
                     node,
                     action_identity,
@@ -451,6 +460,8 @@ impl ProductionFaultRuntime {
         self.pending_node_lifecycle.extend(lifecycle_decisions);
         self.pending_qemu_observations.extend(observations);
         self.pending_qemu_events.clear();
+        self.memory_service_evidence
+            .stage(memory_service_occurrence);
         Ok(())
     }
 }

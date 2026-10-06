@@ -4,6 +4,7 @@
   attrPath ? "checks.crucible.phase5.gates.campaignStoreComposition",
   taskIds ? ["T-CAM-5.5" "T-CAM-5.6" "T-CAM-5.7"],
   dependencies ? [],
+  nativeFindingIntegration,
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -64,6 +65,11 @@ in
           fi
 
           target="$TMPDIR/crucible-campaign-store-composition-target"
+          # Both public integration binaries execute all four native selectors
+          # under the separately retained kernel/quota/cgroup flight.
+          test -f ${nativeFindingIntegration}/result
+          grep -Fxq cli_native_executions=8 ${nativeFindingIntegration}/result
+          grep -Fxq gate=gate:cli-native-finding-integration ${nativeFindingIntegration}/result
           component_test=same_campaign_survives_direct_rpc_and_independent_component_restarts
           component_listing=$(cargo test \
             --frozen \
@@ -92,7 +98,11 @@ in
             -p crucible-cli \
             --features test-double \
             --test gate_campaign_store_composition \
-            -- --test-threads=1
+            -- --test-threads=1 \
+            --skip campaign_store_process::finding_exact_vm::packaged_finding_bundle_fork_write_is_noncanonical \
+            --skip campaign_store_process::finding_exact_vm::packaged_finding_bundle_replays_without_source_owner \
+            --skip campaign_store_process::finding_exact_vm::packaged_finding_bundle_retains_selected_fault_and_guest_response \
+            --skip campaign_store_process::public_campaign_debug_opens_authenticated_finding_at_fast_midpoint
           socket_listing=$(cargo test \
             --frozen --offline --target-dir "$target" \
             --manifest-path crates/Cargo.toml \

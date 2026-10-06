@@ -233,6 +233,7 @@ in
                 libcap-ng = null;
                 libusb1 = null;
                 libgcrypt = null;
+                blake3-c = null;
                 gnutls = null;
                 fuse3 = null;
                 gcc-libs = "/aos-gcc-libs";

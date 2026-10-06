@@ -130,6 +130,7 @@ pub struct QemuHotForkSchedulerNodeContinuation {
     endpoint_stage: QemuHotForkPluginEndpointStageProof,
     host_io_binding: crucible::model::ContentHash,
     checkpoint_cancellation: OwnedFd,
+    ram: Option<Box<QemuHotForkRamContinuation>>,
 }
 
 impl std::fmt::Debug for QemuHotForkSchedulerNodeContinuation {
@@ -161,6 +162,7 @@ impl QemuHotForkSchedulerNodeContinuation {
             console_spool,
             node_state,
             checkpoint_cancellation,
+            ram,
         } = continuation;
         let channels = QemuNodeChannels {
             plugin_control: Box::new(endpoint),
@@ -180,6 +182,7 @@ impl QemuHotForkSchedulerNodeContinuation {
             endpoint_stage,
             host_io_binding,
             checkpoint_cancellation,
+            ram,
         }
     }
 
@@ -270,6 +273,22 @@ impl QemuHotForkSchedulerNodeContinuation {
             ));
         }
 
+        if let Some(ram) = &mut self.ram
+            && let Err(source) = ram.activate()
+        {
+            return Err(QemuHotForkSchedulerNodeInstallError::new(
+                self, process, source,
+            ));
+        }
+
+        let launch_cleanup = self.ram.as_ref().map(|ram| ram.cleanup.clone());
+        let process = match &launch_cleanup {
+            Some(cleanup) => {
+                super::process_control::retain_external_launch_cleanup(process, cleanup.clone())
+            }
+            None => process,
+        };
+
         let Self {
             request,
             channels,
@@ -281,6 +300,7 @@ impl QemuHotForkSchedulerNodeContinuation {
             endpoint_stage,
             host_io_binding,
             checkpoint_cancellation,
+            ram,
         } = self;
         let console_observation = console_spool.map(|spool| QemuConsoleObservation { node, spool });
         let authority = QemuHotForkInstalledNodeAuthority {
@@ -302,6 +322,8 @@ impl QemuHotForkSchedulerNodeContinuation {
             #[cfg(target_os = "linux")]
             hot_fork_child_files_stage: None,
             hot_fork_plugin_endpoint_stage: None,
+            hot_fork_ram_stage: None,
+            hot_fork_ram_continuation: ram,
             _hot_fork_scheduler_authority: Some(authority),
             lifecycle_state: QemuNodeLifecycleState::Running,
             shutdown_policy,
@@ -330,6 +352,8 @@ impl QemuHotForkSchedulerNodeContinuation {
             setup_fault_command_sequence_floor: state.setup_fault_command_sequence_floor,
             next_fault_event_sequence: state.next_fault_event_sequence,
             fault_event_terminal_failure: None,
+            // External fork custody uses its separately installed process authority.
+            _launch_cleanup: launch_cleanup,
         })
     }
 }

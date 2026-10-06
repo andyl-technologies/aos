@@ -10,8 +10,46 @@ mod block_coordinator;
 mod network_output;
 
 #[test]
+fn hot_fork_network_rejects_duplicate_source_ring() -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
+    use std::os::fd::AsFd;
+    use std::os::unix::net::UnixStream;
+
+    let allocation =
+        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 2))?;
+    let layout = allocation.layout();
+    let mut source = File::from(crate::spawn::memfd_region(layout.region_size)?);
+    source.write_all(&allocation.setup_region_bytes()?)?;
+    let (wake, _peer) = UnixStream::pair()?;
+    let runtime =
+        QemuLiveHostIoRuntime::from_shmem_fd(source.as_fd(), wake.as_fd(), layout.region_size, 0)?;
+    let duplicate = source.try_clone()?;
+
+    assert!(runtime.private_hot_fork_ring_alias(duplicate.as_fd())?);
+    assert!(
+        runtime
+            .validate_private_hot_fork_ring(duplicate.as_fd())
+            .is_err()
+    );
+
+    let private = File::from(crate::spawn::memfd_region(layout.region_size)?);
+    runtime.validate_private_hot_fork_ring(private.as_fd())?;
+    Ok(())
+}
+
+#[test]
 fn on_demand_fingerprint_host_waits_for_exact_capture_request_ack()
 -> Result<(), Box<dyn std::error::Error>> {
+    fingerprint_capture_ack_fixture(false)
+}
+
+#[test]
+fn supervised_fingerprint_wait_ignores_obsolete_static_timeout()
+-> Result<(), Box<dyn std::error::Error>> {
+    fingerprint_capture_ack_fixture(true)
+}
+
+fn fingerprint_capture_ack_fixture(supervised: bool) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::{Read, Write};
     use std::os::fd::AsFd;
     use std::os::unix::net::UnixStream;
@@ -32,10 +70,20 @@ fn on_demand_fingerprint_host_waits_for_exact_capture_request_ack()
         Duration::from_millis(1),
     )?;
     drop(wake);
-
-    let host = std::thread::spawn(move || {
-        runtime.publish_current_execution_fingerprint(Duration::from_secs(1))
-    });
+    if supervised {
+        runtime = runtime.with_host_operation_supervisor(
+            crucible_linux_resource::host_supervision::HostOperationSupervisor::new(
+                crucible_linux_resource::host_supervision::HostOperationBudgets::default(),
+                Some(Duration::from_secs(2)),
+            )?,
+        );
+    }
+    let timeout = if supervised {
+        Duration::ZERO
+    } else {
+        Duration::from_secs(1)
+    };
+    let host = std::thread::spawn(move || runtime.publish_current_execution_fingerprint(timeout));
     let mut wake_notification = [0_u8; std::mem::size_of::<u64>()];
     wake_notifications.read_exact(&mut wake_notification)?;
     assert_eq!(u64::from_ne_bytes(wake_notification), 1);
@@ -107,9 +155,9 @@ pub(crate) fn staged_fault_event_runtime(
     )?;
     let timeout = Duration::from_secs(1);
 
-    let rejected = runtime.drain_fault_events_for_pump(
+    let rejected = runtime.drain_fault_events_for_operation(
         0,
-        &HostSupervisionDeadline::start(timeout),
+        &OperationPollBudget::Fixture(HostSupervisionDeadline::start(timeout)),
         timeout,
         "test rejected host fault-event drain",
     );
@@ -122,9 +170,9 @@ pub(crate) fn staged_fault_event_runtime(
     );
     assert!(runtime.staged_fault_events.is_empty());
 
-    runtime.drain_fault_events_for_pump(
+    runtime.drain_fault_events_for_operation(
         1,
-        &HostSupervisionDeadline::start(timeout),
+        &OperationPollBudget::Fixture(HostSupervisionDeadline::start(timeout)),
         timeout,
         "test admitted host fault-event drain",
     )?;
@@ -233,9 +281,9 @@ fn expired_fault_event_deadline_distinguishes_empty_and_pending_rings()
         Duration::from_millis(1),
     )?;
 
-    runtime.drain_fault_events_for_pump(
+    runtime.drain_fault_events_for_operation(
         1,
-        &HostSupervisionDeadline::start(Duration::ZERO),
+        &OperationPollBudget::Fixture(HostSupervisionDeadline::start(Duration::ZERO)),
         Duration::ZERO,
         "test empty fault-event drain",
     )?;
@@ -270,9 +318,9 @@ fn expired_fault_event_deadline_distinguishes_empty_and_pending_rings()
         },
         b"x",
     )?;
-    let rejected = runtime.drain_fault_events_for_pump(
+    let rejected = runtime.drain_fault_events_for_operation(
         1,
-        &HostSupervisionDeadline::start(Duration::ZERO),
+        &OperationPollBudget::Fixture(HostSupervisionDeadline::start(Duration::ZERO)),
         Duration::ZERO,
         "test pending fault-event drain",
     );

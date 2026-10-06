@@ -188,12 +188,33 @@ impl SelectableVmstopHandoff {
     }
 }
 
+/// Initializes native RAM resources before observer callbacks are published.
+fn install_ram_management(
+    args: &PluginArgs,
+    plugin_id: QemuPluginId,
+) -> Result<(), crate::ram_error::RamError> {
+    #[cfg(target_os = "linux")]
+    {
+        crate::paged_ram::install(args, plugin_id)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (args, plugin_id);
+        Err(crate::ram_error::RamError::Invariant(
+            "host RAM management requires Linux",
+        ))
+    }
+}
+
 /// Registrar for the joined live vCPU, time, network, block, and 9p callbacks.
 pub(crate) struct LiveVcpuTimeCallbackRegistrar {
     plugin_id: QemuPluginId,
     execution_model: QemuPluginExecutionModel,
     target_architecture: QemuPluginTargetArchitecture,
     capabilities: LiveVcpuTimeCallbackCapabilities,
+    install_ram_observer: fn() -> Result<(), crate::ram_error::RamError>,
+    preflight_ram_observer: fn() -> Result<(), crate::ram_error::RamError>,
+    install_ram_management: fn(&PluginArgs, QemuPluginId) -> Result<(), crate::ram_error::RamError>,
 }
 
 impl LiveVcpuTimeCallbackRegistrar {
@@ -208,7 +229,22 @@ impl LiveVcpuTimeCallbackRegistrar {
             execution_model,
             target_architecture,
             capabilities,
+            install_ram_observer: crate::ram_fingerprint::install,
+            preflight_ram_observer: crate::ram_fingerprint::preflight,
+            install_ram_management,
         }
+    }
+
+    /// Supplies the RAM installation fixture for tests of unrelated callbacks.
+    #[cfg(test)]
+    pub(crate) fn with_test_ram_observer_installer(
+        mut self,
+        install: fn() -> Result<(), crate::ram_error::RamError>,
+    ) -> Self {
+        self.install_ram_observer = install;
+        self.preflight_ram_observer = install;
+        self.install_ram_management = |_, _| Ok(());
+        self
     }
 
     fn required_capabilities(
@@ -325,7 +361,12 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
     fn preflight(&self, args: &PluginArgs) -> Result<(), OwnedCallbackRegistrationError> {
         self.required_capabilities(args)
             .map(|_capabilities| ())
-            .map_err(live_callback_registration_error)
+            .map_err(live_callback_registration_error)?;
+        (self.preflight_ram_observer)().map_err(|message| {
+            live_callback_registration_error(LiveVcpuTimeCallbackError::RamObserverSetup {
+                message,
+            })
+        })
     }
 
     fn register(
@@ -336,6 +377,16 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
         let capabilities = self
             .required_capabilities(args)
             .map_err(live_callback_registration_error)?;
+        (self.install_ram_management)(args, self.plugin_id).map_err(|message| {
+            live_callback_registration_error(LiveVcpuTimeCallbackError::RamObserverSetup {
+                message,
+            })
+        })?;
+        (self.install_ram_observer)().map_err(|message| {
+            live_callback_registration_error(LiveVcpuTimeCallbackError::RamObserverSetup {
+                message,
+            })
+        })?;
         let fingerprint = if args.fingerprint().is_on() {
             Some(PluginFingerprintSampling::resolve().ok_or_else(|| {
                 live_callback_registration_error(

@@ -83,7 +83,7 @@ impl RamStore {
         let id = match coordinate {
             RamObjectCoordinate::Root => {
                 let (record, catalogs) = self.read_root(root.object_id(), work)?;
-                if record != root.record || catalogs != root.regions {
+                if &record != root.record.as_ref() || catalogs.as_slice() != root.regions.as_ref() {
                     return Err(RamStoreError::Invalid(
                         "transfer source root metadata changed",
                     ));

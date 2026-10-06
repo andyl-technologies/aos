@@ -423,7 +423,7 @@ in
     ];
 
     meta = {
-      description = "RFC-0010 phase 5 CLI determinism-ergonomics gate for ${taskList}";
+      description = "Crucible CLI determinism-ergonomics gate for ${taskList}";
       passthru = {
         inherit attrPath taskIds dependencies;
         failureText = failureText;

@@ -1,12 +1,14 @@
 //! SPDX-License-Identifier: MIT OR Apache-2.0
 //! Implements portable logical RAM identities and independent observation epochs.
 //!
+//! Implementation contract: Paged RAM logical identity, persistent Merkle trees, and independent write epochs.
+//!
 //! The crate implements the canonical format's fixed 4096-byte logical pages, unkeyed
 //! BLAKE3-256 domains, ordered region trees, and scoped topology commitments.
 //! It contains no QEMU dependencies, callbacks, native addresses, or storage
 //! authority. Both sides of the public process boundary may use its codecs.
 //!
-//! [`Topology`] validates byte ownership and scope membership. [`RegionTree`]
+//! Module map: [`Topology`] validates byte ownership and scope membership. [`RegionTree`]
 //! shares immutable subtrees and [`RamSnapshot`] freezes their logical identity.
 //! [`RootRecord`] and [`PageProof`] carry checked portable evidence, while
 //! [`DirtyTracker`] retains separate fingerprint, checkpoint, paging, and transfer

@@ -1959,7 +1959,17 @@ pub(super) fn directory_checkpoint_inspection_store(
         "guest-choice-checkpoint-inspection",
         &fixture.objects,
     ));
-    Ok(ExactCheckpointStore::new(backend, 1024 * 1024 * 1024)?)
+    let repository = crucible_campaign::CampaignRepository::new(
+        backend.clone(),
+        Arc::new(crucible_cas::content_store::DirectoryRefBackend::new(
+            fixture._temporary.path().join("refs"),
+        )),
+    );
+    Ok(ExactCheckpointStore::new(
+        backend,
+        1024 * 1024 * 1024,
+        repository.ram_retention_authority(),
+    )?)
 }
 
 fn wait_for_promoted_checkpoint_with_store(

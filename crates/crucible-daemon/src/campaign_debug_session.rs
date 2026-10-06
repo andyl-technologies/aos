@@ -15,9 +15,8 @@ use crucible_api::{
     SessionRetentionUpdateError,
 };
 use crucible_campaign::{
-    AttemptResourceLimits, AttemptRetentionPolicyDisposition, CampaignFindingObject, CampaignHash,
-    CampaignName, CampaignRepository, CampaignServiceFailure, CampaignSnapshotId,
-    ExactCheckpointId, ExecutionRetentionIntent, FindingExactPins, FindingId,
+    CampaignFindingObject, CampaignHash, CampaignName, CampaignRepository, CampaignServiceFailure,
+    CampaignSnapshotId, ExactCheckpointId, FindingExactPins, FindingId,
     GetCampaignFindingObjectResponse,
 };
 
@@ -27,12 +26,14 @@ use crate::crucible_artifact::{
     decode_crucible_configuration_artifact_from_repository,
 };
 use crate::executor_supervisor::SelectedExactCheckpointRoot;
+use crate::packaged_qemu_executor::guarded::RetainedOperationError;
+use crate::packaged_qemu_executor::{RetainedTemplateService, RetainedTemplateServiceFactory};
 use crate::qemu_campaign_resume::QemuExactResumeBasis;
 use crate::qemu_resource_guard::QemuAttemptSelectedHostResourceFactory;
 use crate::{
-    AttemptExecutionContext, CampaignDebugCheckpointRole, CampaignDebugControlService,
+    CampaignDebugCheckpointRole, CampaignDebugControlService,
     ComposedQemuAttemptResourceGuardFactory, ExactCheckpointStore, ExecutionCancellation,
-    ExecutionCheckpointRequest, LoadedProductionExactCheckpoint, OpenCampaignDebugSessionRequest,
+    LoadedProductionExactCheckpoint, OpenCampaignDebugSessionRequest,
     OpenCampaignDebugSessionResponse, QemuAttemptHostResourceFactory, QemuAttemptHostResourceOwner,
     QemuAttemptProcessResourceGuard, QemuAttemptProductionVmLifecycleFactory,
     SharedQemuAttemptHostResourceFactory, decode_crucible_scenario_artifact,
@@ -58,6 +59,7 @@ pub struct PreparedCampaignDebugLifecycle {
     pub(crate) configuration: Configuration,
     pub(crate) checkpoint: Checkpoint,
     pub(crate) retention: SessionLifetimeRetention,
+    pub(crate) decoding: Option<crucible::owned_decode::DecodeBudget>,
     pub(crate) build_loop: Box<
         dyn FnOnce() -> Result<ProductionVmLifecycleLoop, CampaignDebugLifecycleBuildError> + Send,
     >,
@@ -89,17 +91,18 @@ impl PreparedCampaignDebugLifecycle {
             configuration,
             checkpoint,
             retention,
+            decoding,
             build_loop,
         } = self;
         let seed = source.scenario_def().seed();
         lifecycle
-            .admit_authenticated_read_only_session(
+            .admit_authenticated_read_only_session_with_decode_budget(
                 source,
                 configuration,
                 checkpoint,
                 seed,
                 retention,
-                build_loop,
+                (decoding, build_loop),
             )
             .await
     }
@@ -107,16 +110,33 @@ impl PreparedCampaignDebugLifecycle {
 
 /// Stable opaque failure from guarded production lifecycle construction.
 #[derive(Debug, thiserror::Error)]
-#[error("guarded campaign debug lifecycle construction failed: {message}")]
+#[error("guarded campaign debug lifecycle construction failed: {source}")]
 pub struct CampaignDebugLifecycleBuildError {
-    message: String,
+    #[source]
+    source: RetainedOperationError,
+}
+
+impl CampaignDebugLifecycleBuildError {
+    fn new(source: impl std::error::Error + Send + 'static) -> Self {
+        Self {
+            source: RetainedOperationError::new(source),
+        }
+    }
+}
+
+/// Linear root authentication and the session's actual physical Service slot.
+struct AuthenticatedDebugRestore {
+    checkpoint: ExactCheckpointId,
+    selected: Option<SelectedExactCheckpointRoot>,
+    service: Arc<Mutex<Option<RetainedTemplateService>>>,
+    operation: Arc<crucible_linux_resource::host_supervision::HostOperationGuard>,
 }
 
 type GuardedResumeBuilder = dyn Fn(
         &ScenarioDef,
         &ScenarioDefForm,
         &Configuration,
-        ExactCheckpointId,
+        AuthenticatedDebugRestore,
     ) -> Result<ProductionVmLifecycleLoop, CampaignDebugLifecycleBuildError>
     + Send
     + Sync;
@@ -124,15 +144,16 @@ type GuardedResumeBuilder = dyn Fn(
 /// Cloneable owner capability for inspecting and restoring packaged checkpoints.
 pub struct CampaignDebugQemuCapability {
     checkpoints: Arc<ExactCheckpointStore>,
-    pub(crate) build_resume: Arc<GuardedResumeBuilder>,
+    services: RetainedTemplateServiceFactory,
+    build_resume: Arc<GuardedResumeBuilder>,
 }
 
 impl CampaignDebugQemuCapability {
     pub(crate) fn new<H>(
         checkpoints: Arc<ExactCheckpointStore>,
-        lifecycle: ProductionVmLifecycleConfig,
+        lifecycle: impl Into<Arc<ProductionVmLifecycleConfig>>,
         shared: SharedQemuAttemptHostResourceFactory<H>,
-        resources: AttemptResourceLimits,
+        services: RetainedTemplateServiceFactory,
     ) -> Self
     where
         H: QemuAttemptHostResourceFactory + QemuAttemptSelectedHostResourceFactory + Send + 'static,
@@ -140,42 +161,70 @@ impl CampaignDebugQemuCapability {
         crate::ComposedQemuAttemptResourceGuard<H::Owner>:
             QemuAttemptProcessResourceGuard + Send + 'static,
     {
+        let lifecycle = lifecycle.into();
         let restore_checkpoints = Arc::clone(&checkpoints);
         let build_resume = Arc::new(
             move |scenario: &ScenarioDef,
                   source: &ScenarioDefForm,
                   configuration: &Configuration,
-                  checkpoint: ExactCheckpointId| {
-                let context = AttemptExecutionContext::new(
-                    resources,
-                    ExecutionRetentionIntent::Discard,
-                    ExecutionCancellation::default(),
-                    ExecutionCheckpointRequest::default(),
-                    AttemptRetentionPolicyDisposition::Disabled,
-                )
-                .with_resume_checkpoint(Some(checkpoint))
-                .install_selected_checkpoint(Some(
-                    SelectedExactCheckpointRoot::after_authenticated_campaign_finding(checkpoint),
-                ));
+                  mut restore: AuthenticatedDebugRestore| {
+                // Session retention keeps the actual Service beyond restore.
+                // Final discharge still requires the registry's physical
+                // process, source-worker, and descriptor cleanup proof.
+                let mut retained = restore.service.lock().map_err(|_| {
+                    CampaignDebugLifecycleBuildError::new(std::io::Error::other(
+                        "campaign debug Service custody is unavailable",
+                    ))
+                })?;
+                let service = retained.as_mut().ok_or_else(|| {
+                    CampaignDebugLifecycleBuildError::new(std::io::Error::other(
+                        "campaign debug authentication Service is absent",
+                    ))
+                })?;
+                service
+                    .bind_authenticated_finding_debug(restore.checkpoint, &mut restore.selected)
+                    .map_err(CampaignDebugLifecycleBuildError::new)?;
+                restore.operation.wait_slice().map_err(|error| {
+                    service.context().cancellation().cancel();
+                    CampaignDebugLifecycleBuildError::new(error)
+                })?;
+
                 let resource_guards = ComposedQemuAttemptResourceGuardFactory::new(shared.clone());
                 let mut factory = QemuAttemptProductionVmLifecycleFactory::new(
-                    lifecycle.clone(),
+                    Arc::clone(&lifecycle),
                     resource_guards,
                 );
-                factory
-                    .begin_resume(
-                        &restore_checkpoints,
-                        checkpoint,
-                        QemuExactResumeBasis::new(scenario, source, configuration, None),
-                        &context,
-                    )
-                    .map_err(|error| CampaignDebugLifecycleBuildError {
-                        message: error.to_string(),
-                    })
+                match factory.begin_resume(
+                    &restore_checkpoints,
+                    restore.checkpoint,
+                    QemuExactResumeBasis::new(scenario, source, configuration, None),
+                    service.context(),
+                ) {
+                    Ok(lifecycle) => {
+                        if let Err(error) = restore.operation.complete() {
+                            drop(lifecycle);
+                            if let Some(service) = retained.take() {
+                                service.retain_after_unknown_cleanup();
+                            }
+                            return Err(CampaignDebugLifecycleBuildError::new(error));
+                        }
+                        Ok(lifecycle)
+                    }
+                    Err(error) => {
+                        // Launch failure can retain host resources before a
+                        // node enters the registry. An empty ledger is not
+                        // sufficient evidence to release this Service.
+                        if let Some(service) = retained.take() {
+                            service.retain_after_unknown_cleanup();
+                        }
+                        Err(CampaignDebugLifecycleBuildError::new(error))
+                    }
+                }
             },
         );
         Self {
             checkpoints,
+            services,
             build_resume,
         }
     }
@@ -414,6 +463,29 @@ impl CanonicalCampaignDebugController {
             return Err(CampaignServiceFailure::IntegrityFailure);
         }
 
+        let authentication = self
+            .qemu
+            .services
+            .start_for_archive_authentication(&source, ExecutionCancellation::default())
+            .map_err(|_| CampaignServiceFailure::Unavailable)?;
+        let cancellation = authentication.context().cancellation().clone();
+        let supervisor = authentication
+            .context()
+            .host_operation_supervisor()
+            .ok_or(CampaignServiceFailure::Unavailable)?;
+        let operation = Arc::new(
+            supervisor
+                .begin(crucible_linux_resource::host_supervision::HostOperationClass::Restore)
+                .map_err(|_| CampaignServiceFailure::Unavailable)?,
+        );
+        let mut selection_boundary = || {
+            operation.wait_slice().map(|_| ()).map_err(|_| {
+                cancellation.cancel();
+                CampaignServiceFailure::Unavailable
+            })
+        };
+        selection_boundary()?;
+
         let SelectedCampaignDebugCheckpoint {
             role,
             checkpoint,
@@ -421,19 +493,35 @@ impl CanonicalCampaignDebugController {
             configuration,
             modeled_checkpoint,
             ..
-        } = select_finding_debug_checkpoint(
+        } = select_finding_debug_checkpoint_with_boundary(
             &source,
             &reproduction_configuration,
             finding.finding().exact_pin_retention(),
             &self.qemu.checkpoints,
+            &cancellation,
+            &mut selection_boundary,
         )?;
+        selection_boundary()?;
         let response_encoding = OpenCampaignDebugSessionResponse::prepare_encoding(checkpoint)
             .map_err(|_| CampaignServiceFailure::InvalidRequest)?;
         let build_resume = Arc::clone(&self.qemu.build_resume);
-        let build_source = source.clone();
-        let build_configuration = configuration.clone();
-        let scenario = source.scenario_def();
-        let build_scenario = scenario.clone();
+        let service = Arc::new(Mutex::new(Some(authentication)));
+        let restore = AuthenticatedDebugRestore {
+            checkpoint,
+            selected: Some(
+                SelectedExactCheckpointRoot::after_authenticated_campaign_finding(checkpoint),
+            ),
+            service: Arc::clone(&service),
+            operation,
+        };
+        let build_source = source
+            .try_clone_admitted()
+            .map_err(|_| CampaignServiceFailure::ResourceExhausted)?;
+        let build_configuration = configuration
+            .try_clone_admitted()
+            .map_err(|_| CampaignServiceFailure::ResourceExhausted)?;
+        let configuration_id = configuration.id();
+        let build_scenario = source.scenario_def();
         let destroy_inventory = Arc::clone(&self.inventory);
         let destroy_request = request.clone();
         let admitted = admit_with_inventory(&self.inventory, request, finding, |finding| {
@@ -441,6 +529,7 @@ impl CanonicalCampaignDebugController {
                 _finding_proof: finding,
                 _checkpoint: loaded,
                 _reservation: Arc::clone(&reservation),
+                _service: service,
             }))
             .with_destroy_callback(move || {
                 destroy_inventory
@@ -449,22 +538,23 @@ impl CanonicalCampaignDebugController {
             });
             let lifecycle = PreparedCampaignDebugLifecycle {
                 source,
-                configuration: configuration.clone(),
+                configuration,
                 checkpoint: modeled_checkpoint,
                 retention,
+                decoding: crucible::owned_decode::current_budget(),
                 build_loop: Box::new(move || {
                     build_resume(
                         &build_scenario,
                         &build_source,
                         &build_configuration,
-                        checkpoint,
+                        restore,
                     )
                 }),
             };
             self.lifecycle.admit(lifecycle)
         })?;
         reservation.bind_session(admitted.session);
-        Ok(response_encoding.finish(request, role, configuration.id(), admitted.session))
+        Ok(response_encoding.finish(request, role, configuration_id, admitted.session))
     }
 }
 
@@ -492,11 +582,13 @@ fn admit_with_inventory<T>(
 }
 
 /// Applies the live debug selection rule to one authenticated finding pin set.
-pub(crate) fn select_finding_debug_checkpoint(
+pub(crate) fn select_finding_debug_checkpoint_with_boundary(
     source: &ScenarioDefForm,
     reproduction: &Configuration,
     pins: &FindingExactPins,
     checkpoints: &ExactCheckpointStore,
+    cancellation: &ExecutionCancellation,
+    boundary: &mut dyn FnMut() -> Result<(), CampaignServiceFailure>,
 ) -> Result<SelectedCampaignDebugCheckpoint, CampaignServiceFailure> {
     let roles = [
         (
@@ -513,17 +605,21 @@ pub(crate) fn select_finding_debug_checkpoint(
     let mut selected: Option<SelectedCampaignDebugCheckpoint> = None;
     for (role, candidates) in roles {
         for checkpoint in candidates {
+            boundary()?;
             let loaded = checkpoints
-                .load_attempt_checkpoint(*checkpoint)
+                .load_production_closure_with_cancellation(*checkpoint, cancellation)
                 .map_err(|_| CampaignServiceFailure::IntegrityFailure)?;
             if loaded.scenario() != source.scenario_def().id() {
                 return Err(CampaignServiceFailure::IntegrityFailure);
             }
             let loaded = Arc::new(loaded);
-            let decoded = loaded
-                .decode_semantic_checkpoint(source, &ExecutionCancellation::default())
+            let decoded = checkpoints
+                .decode_semantic_checkpoint(&loaded, source, cancellation)
                 .map_err(|_| CampaignServiceFailure::IntegrityFailure)?;
-            let configuration = decoded.configuration().clone();
+            let configuration = decoded
+                .configuration()
+                .try_clone_admitted()
+                .map_err(|_| CampaignServiceFailure::ResourceExhausted)?;
             if !reproduction
                 .schedule
                 .decisions()
@@ -575,6 +671,7 @@ struct DebugSessionRetention {
     _finding_proof: GetCampaignFindingObjectResponse,
     _checkpoint: Arc<LoadedProductionExactCheckpoint>,
     _reservation: Arc<DebugSessionReservationLease>,
+    _service: Arc<Mutex<Option<RetainedTemplateService>>>,
 }
 
 /// Breaks equal complete-closure costs by semantic proximity, then root ID.
@@ -658,6 +755,33 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[test]
+    fn build_failure_retains_its_original_descriptor_until_final_drop() {
+        #[derive(Debug, thiserror::Error)]
+        #[error("restore failure retains source descriptor")]
+        struct DescriptorFailure {
+            _file: Arc<std::fs::File>,
+        }
+
+        let directory =
+            TempDir::new().unwrap_or_else(|error| panic!("descriptor fixture directory: {error}"));
+        let descriptor = Arc::new(
+            std::fs::File::create(directory.path().join("source"))
+                .unwrap_or_else(|error| panic!("source descriptor: {error}")),
+        );
+        let retained_descriptor = Arc::downgrade(&descriptor);
+        let failure =
+            CampaignDebugLifecycleBuildError::new(DescriptorFailure { _file: descriptor });
+
+        assert!(std::error::Error::source(&failure).is_some());
+        assert!(retained_descriptor.upgrade().is_some());
+        assert!(failure.to_string().contains("retains source descriptor"));
+
+        drop(failure);
+
+        assert!(retained_descriptor.upgrade().is_none());
+    }
 
     struct AllowFindingRead;
 
@@ -908,7 +1032,7 @@ mod tests {
     }
 
     fn checkpoint_id(label: &str) -> ExactCheckpointId {
-        let content = ContentId::for_bytes(ObjectKind::ExactManifest, 5, label.as_bytes());
+        let content = ContentId::for_bytes(ObjectKind::ExactManifest, 6, label.as_bytes());
         ExactCheckpointId::parse(&format!(
             "crucible.executor.exact-checkpoint-root@{}",
             content.encode()

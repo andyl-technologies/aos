@@ -68,13 +68,151 @@ impl RamRetention for Retention {
     }
 }
 
-fn store(path: &std::path::Path, limits: RamStoreLimits) -> RamStore {
+struct FixtureRamQuota(crate::content_store::test_resources::FixtureResourceBudget);
+
+impl crate::content_store::StorePhysicalQuotaGuard for FixtureRamQuota {
+    fn decoded_metadata_limit(&self) -> Result<u64, StoreError> {
+        Ok(256 << 20)
+    }
+
+    fn verify(&self) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    fn reserve_resources(
+        &self,
+        descriptors: u64,
+        resident_bytes: u64,
+    ) -> Result<Arc<dyn Send + Sync>, StoreError> {
+        self.0.reserve(descriptors, resident_bytes)
+    }
+}
+
+struct FixtureCatalogSupervisor(Arc<FixtureRamQuota>);
+
+struct FixtureCatalogOperation;
+
+impl crate::content_store::SqliteCatalogOperation for FixtureCatalogOperation {
+    fn check(&self) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    fn complete(self: Box<Self>) -> Result<(), StoreError> {
+        Ok(())
+    }
+}
+
+impl crate::content_store::SqliteCatalogSupervisor for FixtureCatalogSupervisor {
+    fn reserve_resident_bytes(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, StoreError> {
+        self.0.0.reserve(0, bytes)
+    }
+
+    fn begin(
+        &self,
+        _kind: crate::content_store::SqliteCatalogOperationKind,
+    ) -> Result<Box<dyn crate::content_store::SqliteCatalogOperation>, StoreError> {
+        Ok(Box::new(FixtureCatalogOperation))
+    }
+}
+
+fn admitted_store(
+    path: &std::path::Path,
+    limits: RamStoreLimits,
+) -> (RamStore, Arc<FixtureRamQuota>) {
+    let quota = Arc::new(FixtureRamQuota(
+        crate::content_store::test_resources::FixtureResourceBudget::new(128, 256 << 20),
+    ));
+    let backend = SqliteBlobBackend::open_with_physical_quota(
+        "ram-test",
+        path,
+        quota.clone(),
+        i64::MAX as u64,
+        Arc::new(FixtureCatalogSupervisor(quota.clone())),
+    )
+    .unwrap();
     RamStore::new(
-        Arc::new(SqliteBlobBackend::open("ram-test", path).unwrap()),
+        backend,
         DurabilityRequirement::new(1, false).unwrap(),
         limits,
     )
+    .map(|store| (store, quota))
     .unwrap()
+}
+
+fn store(path: &std::path::Path, limits: RamStoreLimits) -> RamStore {
+    admitted_store(path, limits).0
+}
+
+#[test]
+fn admitted_root_credit_survives_facades_and_last_shared_metadata_clone() {
+    let directory = tempfile::tempdir().unwrap();
+    let (store, quota) = admitted_store(directory.path(), RamStoreLimits::default());
+    let retention = Retention::default();
+    let captured = store
+        .capture(
+            topology(4096),
+            Scope::Exact,
+            &mut patterned,
+            &retention,
+            &mut || Ok(()),
+        )
+        .unwrap();
+    let root = store
+        .open_with_metadata_resources(
+            retention.retain_root(captured.object_id()).unwrap(),
+            &mut || Ok(()),
+        )
+        .unwrap();
+    let cloned = root.clone();
+    assert!(Arc::ptr_eq(&root.record, &cloned.record));
+    drop(captured);
+    drop(root);
+    drop(store);
+
+    assert!(quota.0.usage().unwrap().1 >= maximum_ram_root_decoding_bytes().unwrap());
+    assert_eq!(cloned.record().scope(), Scope::Exact);
+    drop(cloned);
+    assert_eq!(quota.0.usage().unwrap(), (0, 0));
+}
+
+#[test]
+fn admitted_root_refuses_missing_authority_and_discovery_retains_its_credit() {
+    let directory = tempfile::tempdir().unwrap();
+    let (store, quota) = admitted_store(directory.path(), RamStoreLimits::default());
+    let retention = Retention::default();
+    let captured = store
+        .capture(
+            topology(4096),
+            Scope::Exact,
+            &mut patterned,
+            &retention,
+            &mut || Ok(()),
+        )
+        .unwrap();
+    let bare_directory = tempfile::tempdir().unwrap();
+    let bare = RamStore::new(
+        Arc::new(SqliteBlobBackend::open("bare", bare_directory.path()).unwrap()),
+        DurabilityRequirement::new(1, false).unwrap(),
+        RamStoreLimits::default(),
+    )
+    .unwrap();
+    assert!(matches!(
+        bare.open_with_metadata_resources(
+            retention.retain_root(captured.object_id()).unwrap(),
+            &mut || Ok(()),
+        ),
+        Err(RamStoreError::Store(StoreError::Unsupported {
+            capability: "decoded-metadata-resources"
+        }))
+    ));
+    let baseline = quota.0.usage().unwrap();
+    let discovery = store
+        .inspect_root_with_metadata_resources(captured.object_id(), &mut || Ok(()))
+        .unwrap();
+    assert!(quota.0.usage().unwrap().1 >= baseline.1 + maximum_ram_root_decoding_bytes().unwrap());
+    assert_eq!(discovery.record(), captured.record());
+    drop(discovery);
+    assert_eq!(quota.0.usage().unwrap(), baseline);
 }
 
 fn topology(length: u64) -> Topology {
@@ -88,6 +226,52 @@ fn topology(length: u64) -> Topology {
 fn patterned(_: &RegionDescriptor, index: u64, bytes: &mut [u8]) -> Result<(), RamStoreError> {
     bytes.fill((index % 251) as u8);
     Ok(())
+}
+
+#[test]
+fn encoded_backing_bound_covers_four_unique_graphs_with_partial_regions() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = store(directory.path(), RamStoreLimits::default());
+    let retention = Retention::default();
+    let topology = Topology::new(
+        vec![
+            RegionDescriptor::new("main", RegionClass::MutableMain, 5 * 4096 + 19).unwrap(),
+            RegionDescriptor::new("device", RegionClass::MutableDevice, 123).unwrap(),
+        ],
+        Limits::default(),
+    )
+    .unwrap();
+    let bound = maximum_encoded_ram_graph_bytes(&topology, 4).unwrap();
+    let mut roots = Vec::new();
+    for version in 0..4_u8 {
+        roots.push(
+            store
+                .capture(
+                    topology.clone(),
+                    Scope::Exact,
+                    &mut |region, index, bytes| {
+                        bytes.fill(version * 32 + index as u8 + u8::from(region.id() == "device"));
+                        Ok(())
+                    },
+                    &retention,
+                    &mut || Ok(()),
+                )
+                .unwrap(),
+        );
+    }
+    let persisted = retention
+        .objects
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|id| store.backend.read(*id, None).unwrap().logical_length())
+        .sum::<u64>();
+
+    assert!(persisted <= bound);
+    assert!(bound > 4 * topology.total_logical_bytes());
+    assert_eq!(roots.len(), 4);
+    assert!(maximum_encoded_ram_graph_bytes(&topology, 0).is_err());
+    assert!(maximum_encoded_ram_graph_bytes(&topology, u64::MAX).is_err());
 }
 
 #[test]
@@ -931,4 +1115,163 @@ fn dense_ram_capture_rejects_insufficient_packed_index_before_reading_pages() {
     assert!(retention.objects.lock().unwrap().is_empty());
     ram.admit_ram_publication(&topology(4096 * 8 + 17), Scope::Exact)
         .unwrap();
+}
+
+/// Declares an oversized object without permitting any stream allocation/read.
+struct OversizedSource {
+    length: u64,
+    opens: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl crate::content_store::BlobSource for OversizedSource {
+    fn logical_length(&self) -> u64 {
+        self.length
+    }
+
+    fn open(&self) -> Result<Box<dyn std::io::Read + Send>, StoreError> {
+        self.opens.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(StoreError::Unsupported {
+            capability: "stream must not open",
+        })
+    }
+}
+
+struct OversizedBackend {
+    backend: Arc<dyn ImmutableBlobBackend>,
+    source: BlobHandle,
+}
+
+impl ImmutableBlobBackend for OversizedBackend {
+    fn name(&self) -> &str {
+        self.backend.name()
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        self.backend.capabilities()
+    }
+
+    fn contains(&self, _: ContentId) -> Result<bool, StoreError> {
+        Ok(true)
+    }
+
+    fn read(&self, _: ContentId, _: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
+        Ok(self.source.clone())
+    }
+
+    fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
+        self.backend.put_if_absent(id, source)
+    }
+}
+
+#[test]
+fn oversized_ram_objects_are_rejected_before_opening_the_stream() {
+    let directory = tempfile::tempdir().unwrap();
+    let backend: Arc<dyn ImmutableBlobBackend> =
+        Arc::new(SqliteBlobBackend::open("oversized-test", directory.path()).unwrap());
+    for (kind, maximum_bytes) in [
+        (ObjectKind::RamTree, 4096),
+        (ObjectKind::RamExtent, 8192),
+        (ObjectKind::ExactManifest, MAX_RAM_OBJECT_BYTES),
+    ] {
+        let opens = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let source = BlobHandle::new(Arc::new(OversizedSource {
+            length: maximum_bytes + 1,
+            opens: opens.clone(),
+        }));
+        let store = RamStore::new(
+            Arc::new(OversizedBackend {
+                backend: backend.clone(),
+                source,
+            }),
+            DurabilityRequirement::new(1, false).unwrap(),
+            RamStoreLimits::default(),
+        )
+        .unwrap();
+        let id = ContentId::for_bytes(kind, 1, b"untrusted oversized object");
+        let mut boundary = || Ok(());
+        let mut work = Work::new(store.limits, &mut boundary);
+
+        assert!(matches!(
+            store.read_envelope(id, &mut work),
+            Err(RamStoreError::Limit("single canonical object"))
+        ));
+        assert_eq!(opens.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(work.io_bytes, 0);
+    }
+}
+
+#[test]
+fn leased_root_clones_share_the_origin_metadata_allocation() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = store(directory.path(), RamStoreLimits::default());
+    let retention = Retention::default();
+    let root = store
+        .capture(
+            topology(8193),
+            Scope::Exact,
+            &mut patterned,
+            &retention,
+            &mut || Ok(()),
+        )
+        .unwrap();
+    let cloned = root.clone();
+    assert!(Arc::ptr_eq(&root.record, &cloned.record));
+    assert!(Arc::ptr_eq(&root.regions, &cloned.regions));
+    assert!(Arc::ptr_eq(&root.lease, &cloned.lease));
+    assert!(Arc::ptr_eq(
+        &root.metadata_custody,
+        &cloned.metadata_custody
+    ));
+    let id = root.object_id();
+    drop(root);
+    assert_eq!(cloned.object_id(), id);
+    store.verify(&cloned, &mut || Ok(())).unwrap();
+}
+
+#[test]
+fn shared_transfer_metadata_retains_its_origin_until_destination_reader_closes() {
+    let source_directory = tempfile::tempdir().unwrap();
+    let destination_directory = tempfile::tempdir().unwrap();
+    let source_store = store(source_directory.path(), RamStoreLimits::default());
+    let destination_store = store(destination_directory.path(), RamStoreLimits::default());
+    let source_retention = Retention::default();
+    let destination_retention = Retention::default();
+    let source = source_store
+        .capture(
+            topology(8193),
+            Scope::Exact,
+            &mut patterned,
+            &source_retention,
+            &mut || Ok(()),
+        )
+        .unwrap();
+    let origin = Arc::downgrade(&source.metadata_custody);
+    let transferred = source_store
+        .transfer_to(
+            &source,
+            &destination_store,
+            &destination_retention,
+            &mut || Ok(()),
+        )
+        .unwrap();
+    assert!(Arc::ptr_eq(&source.record, &transferred.root().record));
+    assert!(Arc::ptr_eq(&source.regions, &transferred.root().regions));
+    assert!(Arc::ptr_eq(
+        &source.metadata_custody,
+        &transferred.root().metadata_custody
+    ));
+    assert!(!Arc::ptr_eq(&source.lease, &transferred.root().lease));
+    drop(source);
+    assert!(
+        origin.upgrade().is_some(),
+        "destination reader still borrows the origin allocation"
+    );
+    destination_store
+        .verify(transferred.root(), &mut || Ok(()))
+        .unwrap();
+    drop(transferred);
+    assert!(
+        origin.upgrade().is_none(),
+        "final physical metadata borrower releases the origin"
+    );
 }

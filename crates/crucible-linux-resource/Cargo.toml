@@ -10,5 +10,8 @@ workspace = true
 
 [dependencies]
 libc = { workspace = true }
-rustix = { workspace = true }
+rustix = { workspace = true, features = ["time"] }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

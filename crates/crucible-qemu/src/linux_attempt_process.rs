@@ -46,6 +46,7 @@ pub struct LinuxQemuAttemptProcessConfig {
     child_user_id: u32,
     child_group_id: u32,
     maximum_tasks: u32,
+    maximum_file_descriptors: u64,
     finish_timeout: Duration,
 }
 
@@ -68,6 +69,7 @@ impl LinuxQemuAttemptProcessConfig {
         child_user_id: u32,
         child_group_id: u32,
         maximum_tasks: u32,
+        maximum_file_descriptors: u64,
         finish_timeout: Duration,
     ) -> Result<Self, QemuVmRealizationError> {
         let cgroup_root = cgroup_root.into();
@@ -95,6 +97,11 @@ impl LinuxQemuAttemptProcessConfig {
                 "QEMU task ceiling is outside the supported bound",
             ));
         }
+        if maximum_file_descriptors < 16 {
+            return Err(invalid_config(
+                "QEMU descriptor ceiling must accommodate fixed launch descriptors",
+            ));
+        }
         if !(MIN_LINUX_QEMU_PROCESS_FINISH_TIMEOUT..=MAX_LINUX_QEMU_PROCESS_FINISH_TIMEOUT)
             .contains(&finish_timeout)
         {
@@ -108,6 +115,7 @@ impl LinuxQemuAttemptProcessConfig {
             child_user_id,
             child_group_id,
             maximum_tasks,
+            maximum_file_descriptors,
             finish_timeout,
         })
     }
@@ -140,6 +148,12 @@ impl LinuxQemuAttemptProcessConfig {
     #[must_use]
     pub const fn maximum_tasks(&self) -> u32 {
         self.maximum_tasks
+    }
+
+    /// Returns the hard per-process descriptor limit installed before execution.
+    #[must_use]
+    pub const fn maximum_file_descriptors(&self) -> u64 {
+        self.maximum_file_descriptors
     }
 
     /// Returns the bounded normal-finish wait.
@@ -248,6 +262,7 @@ impl LinuxQemuAttemptProcessFactory {
         let owner = match CgroupAttemptProcessOwner::start(
             group,
             maximum_writable_bytes,
+            self.config.maximum_file_descriptors,
             self.config.child_user_id,
             self.config.child_group_id,
             exact_checkpoint_root,
@@ -295,6 +310,14 @@ impl LinuxQemuAttemptProcessOwner {
             self.maximum_resident_bytes,
             self.maximum_writable_bytes,
         )
+    }
+
+    pub(crate) fn memory_control(
+        &self,
+    ) -> Result<crate::linux_cgroup::LinuxQemuCgroupMemoryControl, QemuVmRealizationError> {
+        self.owner
+            .memory_control()
+            .map_err(|error| map_owner_error("pin live QEMU memory control", &error))
     }
 
     /// Returns the sealed child-process launch contract while active.
@@ -610,6 +633,10 @@ fn map_owner_error(
     }
 }
 
+// Fixture policy reserves a finite descriptor ceiling independently of vCPU count.
+#[cfg(test)]
+const TEST_HOST_FILE_DESCRIPTORS: u64 = 1_024;
+
 #[cfg(test)]
 mod tests {
     // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts.
@@ -629,6 +656,7 @@ mod tests {
             65_533,
             65_532,
             64,
+            TEST_HOST_FILE_DESCRIPTORS,
             Duration::from_secs(1),
         )
     }
@@ -645,6 +673,7 @@ mod tests {
                 0,
                 65_532,
                 64,
+                TEST_HOST_FILE_DESCRIPTORS,
                 Duration::from_secs(1),
             )
             .is_err()
@@ -656,6 +685,7 @@ mod tests {
                 65_533,
                 65_532,
                 MAX_LINUX_QEMU_CGROUP_TASKS + 1,
+                TEST_HOST_FILE_DESCRIPTORS,
                 Duration::from_secs(1),
             )
             .is_err()
@@ -667,6 +697,7 @@ mod tests {
                 65_533,
                 65_532,
                 64,
+                TEST_HOST_FILE_DESCRIPTORS,
                 Duration::from_millis(1),
             )
             .is_err()

@@ -18,6 +18,7 @@ pub(in crate::vm_lifecycle) fn recover_published_checkpoint_catalog(
     run_state_root: &Path,
     scenario: &ScenarioDef,
     source: &ScenarioDefForm,
+    provider: Option<&Arc<dyn ProductionRamCatalogProvider>>,
 ) -> Result<BTreeMap<ContentHash, ContentHash>, LifecycleApiError> {
     let parent = closure_parent(run_state_root, scenario.id());
     let entries = match fs::read_dir(&parent) {
@@ -74,7 +75,8 @@ pub(in crate::vm_lifecycle) fn recover_published_checkpoint_catalog(
                 entry.path().display()
             ))
         })?;
-        let checkpoint = load_exact_checkpoint_set(run_state_root, scenario, source, identity)?;
+        let checkpoint =
+            load_exact_checkpoint_set(run_state_root, scenario, source, identity, provider)?;
         let configuration = checkpoint.configuration.id();
         if catalog.insert(configuration, identity).is_some() {
             return Err(loop_factory_error(format!(
@@ -97,6 +99,7 @@ pub(in crate::vm_lifecycle) fn reconcile_indeterminate_publication(
     scenario: &ScenarioDef,
     source: &ScenarioDefForm,
     identity: ContentHash,
+    provider: Option<&Arc<dyn ProductionRamCatalogProvider>>,
 ) -> Result<Option<ContentHash>, SchedulerError> {
     let parent = closure_parent(run_state_root, scenario.id());
     let destination = parent.join(identity.to_hex());
@@ -106,8 +109,9 @@ pub(in crate::vm_lifecycle) fn reconcile_indeterminate_publication(
         }
         return Ok(None);
     }
-    let checkpoint = load_exact_checkpoint_set(run_state_root, scenario, source, identity)
-        .map_err(lifecycle_scheduler_error)?;
+    let checkpoint =
+        load_exact_checkpoint_set(run_state_root, scenario, source, identity, provider)
+            .map_err(lifecycle_scheduler_error)?;
     enforce_published_checkpoint_count(&parent, source.plan().fault_signals().resource_limits())?;
     Ok(Some(checkpoint.configuration.id()))
 }
@@ -183,7 +187,11 @@ mod tests {
         };
         let faults = crucible::model::FaultSignalPlan::new(Vec::new(), Vec::new(), limits)
             .expect("build exact checkpoint resource contract");
-        let plan = fixture.plan().clone().with_fault_signals(faults);
+        let plan = fixture
+            .plan()
+            .clone()
+            .with_fault_signals(faults)
+            .unwrap_or_else(|error| panic!("build checkpoint fault plan: {error}"));
         let source = ScenarioDefForm::from_components_with_app_random_draw_cap(
             fixture.world(),
             &plan,
@@ -199,8 +207,14 @@ mod tests {
         fs::create_dir_all(&closure).expect("create checkpoint closure directory");
         fs::write(closure.join(MANIFEST_FILE), b"12345678").expect("write over-authored manifest");
 
-        let error = load_exact_checkpoint_set(root.path(), &scenario, &source, identity)
-            .expect_err("manifest bytes must be admitted before decode");
+        let error = load_exact_checkpoint_set(
+            root.path(),
+            &scenario,
+            &source,
+            identity,
+            Some(&super::test_support::test_ram_catalog_provider()),
+        )
+        .expect_err("manifest bytes must be admitted before decode");
 
         assert!(matches!(
             error,

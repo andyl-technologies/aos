@@ -1746,6 +1746,19 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       crucible-controller = callPackage ./tools/crucible/crucible.nix {
         controllerOnly = true;
       };
+      # The kernel flight uses the unqualified controller above. Its immutable
+      # output qualifies only the downstream suite, avoiding a build cycle.
+      crucible = callPackage ./tools/crucible/crucible.nix {
+        pagingQualificationReceipt =
+          if !stdenv.isCross && stdenv.hostPlatform.system == "x86_64-linux"
+          then
+            import ../tests/crucible/ram-live-paging.nix {
+              pkgs = self;
+              inherit lib;
+              attrPath = "checks.crucible.ram.livePaging";
+            }
+          else null;
+      };
       sqliteStatic = callPackage ./db/sqlite.nix {enableStatic = true;};
 
       # Interpreter-free git for the system image (shares git.nix's source and

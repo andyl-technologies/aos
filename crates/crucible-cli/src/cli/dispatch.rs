@@ -70,6 +70,9 @@ pub(super) fn cli_parse_error_exit_code(error: &clap::Error) -> i32 {
 pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
     let thin_plan = plan_cli_invocation(cli);
     execute_cli_dispatch_plan(&thin_plan, &mut NullOperationRecorder)?;
+    if let Commands::Host(args) = &cli.command {
+        return run_host_invocation(cli, args);
+    }
     if let Commands::Campaign(args) = &cli.command {
         return run_campaign_invocation(cli, args);
     }
@@ -436,7 +439,8 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
         | Commands::Debug(_)
         | Commands::Serve(_)
         | Commands::Campaign(_)
-        | Commands::Store(_) => Ok(()),
+        | Commands::Store(_)
+        | Commands::Host(_) => Ok(()),
         Commands::Completions(args) => {
             write_completions(args.shell, &mut io::stdout());
             Ok(())

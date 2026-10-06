@@ -1,4 +1,4 @@
-//! Checks the RFC-0010 T-API-6 streaming cursor contract.
+//! Checks bounded streaming cursors and replay-safe cursor advancement.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

@@ -58,11 +58,10 @@ fn inputs() -> PluginNvcpuFingerprintInputs {
     }
 }
 
-fn captured_material(seed: u8, observed_bytes: u64) -> CapturedFingerprintMaterial {
+fn captured_material(seed: u8) -> CapturedFingerprintMaterial {
     CapturedFingerprintMaterial {
         file: sealed_material(seed),
         material_length: 1,
-        observed_bytes,
     }
 }
 
@@ -70,11 +69,11 @@ fn captured_sample() -> CapturedFingerprintSample {
     let mut sample = sample_metadata(100_000, &inputs(), digest_bytes(0xC0))
         .unwrap_or_else(|error| panic!("sample metadata should assemble: {error}"));
     sample.ram_bytes = 64 * 1024 * 1024;
+    sample.ram_digest = [0xA0; 32];
     sample.device_state_bytes = 4096;
     CapturedFingerprintSample {
         sample,
-        ram: captured_material(0xA0, 64 * 1024 * 1024),
-        device: captured_material(0xB0, 4096),
+        device: captured_material(0xB0),
     }
 }
 
@@ -98,57 +97,16 @@ fn assert_returned_descriptor_closed(fd: RawFd, device: u64, inode: u64) {
 }
 
 #[test]
-fn aggregate_capture_rejects_an_aliased_descriptor_before_ownership_transfer() {
-    let material = sealed_material(0xA0);
-    let metadata = material
-        .metadata()
-        .unwrap_or_else(|error| panic!("test material metadata: {error}"));
-    let fd = material.into_raw_fd();
-    let Err(error) = capture_files(fd, 1, 1, fd, 1, 1) else {
-        panic!("aliased descriptors must be rejected");
-    };
-
-    assert!(matches!(
-        error,
-        FingerprintSamplerError::InvalidCaptureDescriptor {
-            component: "descriptor set"
-        }
-    ));
-    assert_returned_descriptor_closed(fd, metadata.dev(), metadata.ino());
-}
-
-#[test]
-fn aggregate_capture_rejects_distinct_descriptors_for_the_same_memfd() {
-    let material = sealed_material(0xA0);
-    let metadata = material
-        .metadata()
-        .unwrap_or_else(|error| panic!("test material metadata: {error}"));
-    let ram_fd = material.into_raw_fd();
-    // SAFETY: `ram_fd` is live and `dup` returns a distinct owned descriptor.
-    let device_fd = unsafe { libc::dup(ram_fd) };
-    assert!(device_fd >= 0);
-
-    let Err(error) = capture_files(ram_fd, 1, 1, device_fd, 1, 1) else {
-        panic!("descriptors for one memfd must be rejected");
-    };
-    assert!(matches!(
-        error,
-        FingerprintSamplerError::InvalidCaptureDescriptor {
-            component: "descriptor set"
-        }
-    ));
-    assert_returned_descriptor_closed(ram_fd, metadata.dev(), metadata.ino());
-    assert_returned_descriptor_closed(device_fd, metadata.dev(), metadata.ino());
-}
-
-#[test]
 fn aggregate_capture_rejects_zero_component_evidence() {
-    let mut captured = QemuFingerprintMaterialFds {
+    let mut captured = QemuFingerprintCaptureV2 {
+        schema: 2,
+        logical_edition: 1,
+        ram_digest: [1; 32],
         ram_bytes: 1,
         device_bytes: 1,
         device_schema_digest: digest_bytes(0xC0),
         device_schema_sections: 1,
-        ..QemuFingerprintMaterialFds::default()
+        ..QemuFingerprintCaptureV2::default()
     };
 
     captured.ram_bytes = 0;
@@ -187,13 +145,13 @@ fn aggregate_capture_rejects_a_descriptor_without_close_on_exec() {
     assert_eq!(unsafe { libc::fcntl(fd, libc::F_SETFD, 0) }, 0);
     let fd = file.into_raw_fd();
 
-    let Err(error) = capture_file(fd, 1, 1, "guest RAM") else {
+    let Err(error) = capture_file(fd, 1, "device state") else {
         panic!("a descriptor without close-on-exec must be rejected");
     };
     assert!(matches!(
         error,
         FingerprintSamplerError::InvalidCaptureDescriptor {
-            component: "guest RAM"
+            component: "device state"
         }
     ));
     assert_returned_descriptor_closed(fd, metadata.dev(), metadata.ino());
@@ -201,7 +159,9 @@ fn aggregate_capture_rejects_a_descriptor_without_close_on_exec() {
 
 #[test]
 fn detached_capture_digests_every_component_into_the_slot_sample() {
-    let sample = captured_sample().digest();
+    let sample = captured_sample()
+        .digest()
+        .unwrap_or_else(|error| panic!("complete material should digest: {error}"));
 
     assert_eq!(sample.sample_icount, 100_000);
     assert_eq!(sample.vcpu_count, 2);
@@ -210,7 +170,7 @@ fn detached_capture_digests_every_component_into_the_slot_sample() {
     assert_eq!(sample.rr_switch_quantum, 4096);
     assert_eq!(sample.component_failures, 0);
     assert_eq!(sample.ram_bytes, 64 * 1024 * 1024);
-    assert_eq!(sample.ram_digest, digest_bytes(0xA0));
+    assert_eq!(sample.ram_digest, [0xA0; 32]);
     assert_eq!(sample.device_state_bytes, 4096);
     assert_eq!(sample.device_state_digest, digest_bytes(0xB0));
     assert_eq!(sample.device_state_schema_digest, digest_bytes(0xC0));
@@ -223,8 +183,57 @@ fn detached_capture_digests_every_component_into_the_slot_sample() {
 }
 
 #[test]
+fn detached_capture_refuses_incomplete_component_material() {
+    let mut captured = captured_sample();
+    captured.device.material_length = 2;
+
+    assert_eq!(
+        captured.digest(),
+        Err(FingerprintSamplerError::DigestRead {
+            component: "device state",
+            remaining_bytes: 1,
+        })
+    );
+}
+
+#[test]
 fn resolve_fails_closed_without_the_patched_qemu() {
     // The aggregate capture exports exist only inside patched QEMU, so the
     // complete sampling capability fails closed in a standalone test process.
     assert!(PluginFingerprintSampling::resolve().is_none());
+}
+
+#[test]
+fn aggregate_capture_rejects_wrong_ram_identity_contract() {
+    let mut captured = QemuFingerprintCaptureV2 {
+        schema: 2,
+        logical_edition: 1,
+        ram_scope: 0,
+        reserved: 0,
+        ram_digest: [1; 32],
+        ram_bytes: 1,
+        device_bytes: 1,
+        device_schema_digest: [2; 32],
+        device_schema_sections: 1,
+        ..QemuFingerprintCaptureV2::default()
+    };
+    assert!(validate_capture_evidence(&captured).is_ok());
+    captured.ram_scope = 1;
+    assert_eq!(
+        validate_capture_evidence(&captured),
+        Err(FingerprintSamplerError::InvalidCaptureEvidence)
+    );
+    captured.ram_scope = 0;
+    captured.logical_edition = 2;
+    assert_eq!(
+        validate_capture_evidence(&captured),
+        Err(FingerprintSamplerError::InvalidCaptureEvidence)
+    );
+    captured.logical_edition = 1;
+    captured.schema = 1;
+    assert_eq!(
+        validate_capture_evidence(&captured),
+        Err(FingerprintSamplerError::InvalidCaptureEvidence)
+    );
+    assert_eq!(std::mem::size_of::<QemuFingerprintCaptureV2>(), 120);
 }

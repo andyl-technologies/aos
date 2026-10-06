@@ -782,7 +782,7 @@ mod tests {
     fn checkpoint(label: &[u8]) -> Result<ExactCheckpointId, Box<dyn Error>> {
         Ok(ExactCheckpointId::try_from(ContentId::for_bytes(
             ObjectKind::ExactManifest,
-            5,
+            6,
             label,
         ))?)
     }
@@ -1097,7 +1097,13 @@ mod tests {
             "campaign-run-exact-retention-checkpoints",
             checkpoint_directory.path(),
         ));
-        let checkpoints = Arc::new(ExactCheckpointStore::new(checkpoint_backend, u64::MAX)?);
+        let checkpoints = Arc::new(ExactCheckpointStore::new(
+            checkpoint_backend,
+            u64::MAX,
+            repository.ram_retention_authority(),
+        )?.with_ram_root_resources(
+            crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()?,
+        ));
         let prepared = checkpoints.prepare_production_closure(fixture.closure().clone())?;
         let checkpoint = checkpoints.publish_production_closure(&prepared)?.root();
         let source = CampaignRunFindingExactRetentionSource::new(
@@ -1107,7 +1113,8 @@ mod tests {
         let loaded = Arc::new(source.checkpoints.load_attempt_checkpoint(checkpoint)?);
         let stored_scenario = source.campaign.load_scenario_artifact(scenario_artifact)?;
         let decoded_source = crate::decode_crucible_scenario_artifact(&stored_scenario)?;
-        let decoded_checkpoint = loaded.decode_semantic_checkpoint(
+        let decoded_checkpoint = source.checkpoints.decode_semantic_checkpoint(
+            &loaded,
             &decoded_source,
             &crate::ExecutionCancellation::default(),
         )?;

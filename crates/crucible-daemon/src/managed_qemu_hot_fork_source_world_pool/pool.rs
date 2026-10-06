@@ -843,7 +843,9 @@ where
 
         let source_reusable = match lease.source.lock() {
             Ok(mut source) => {
-                record_identity.matches(&source) && source.fork_continuation().is_ok()
+                record_identity.matches(&source)
+                    && source.restore_retained_service_supervisor().is_ok()
+                    && source.fork_continuation().is_ok()
             }
             Err(_error) => false,
         };

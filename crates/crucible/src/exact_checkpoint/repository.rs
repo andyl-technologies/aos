@@ -103,5 +103,6 @@ pub fn authenticate_exact_checkpoint_repository(
         manifest_id: children.manifest,
         manifest_bytes: body.manifest_bytes,
         objects: inventory,
+        ram_roots: children.ram_roots,
     })
 }

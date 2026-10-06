@@ -327,6 +327,7 @@ impl ProductionVmLifecycleLoop {
             &self.config.run_state_root,
             &self.source,
             identity,
+            self.config.ram_catalog_provider(),
             &mut || match boundary() {
                 Ok(()) => Ok(()),
                 Err(error) => {
@@ -392,6 +393,11 @@ impl ProductionVmLifecycleLoop {
                 }
             };
         let emitted_events = runtime.emitted_events().to_vec();
+        let memory_service_occurrence = runtime.memory_service_occurrence().map_err(|error| {
+            SchedulerError::BoundaryViolation {
+                message: format!("capture native memory-service occurrence: {error}"),
+            }
+        })?;
         drop(runtime);
 
         let network = self.inner.network_output_interceptor();
@@ -565,6 +571,7 @@ impl ProductionVmLifecycleLoop {
             resolved_effect_trace,
             locked_effect_trace,
             emitted_events,
+            memory_service_occurrence,
             network_outages,
             network_queues,
             block_devices,
@@ -1148,7 +1155,7 @@ impl ProductionVmLifecycleLoop {
             .with_timer_fires(scheduler.trigger_actions().armed_timers.clone())
             .with_scheduler_quiescence(scheduler.quiescence()?)
             .with_world_white_box_policies(&self.trigger_world);
-        let firings = pass.evaluate_event_graph(&entrypoints, &mut self.trigger_state);
+        let firings = pass.evaluate_event_graph(&entrypoints, &mut self.trigger_state)?;
         if firings.is_empty() {
             return Ok(None);
         }
@@ -1214,7 +1221,7 @@ impl ProductionVmLifecycleLoop {
             let assertion_outcomes = self.assertion_evaluator.observe_prefix(
                 self.inner.loop_impl().condition_event_log_prefix(),
                 &mut self.assertion_oracle,
-            );
+            )?;
             let assertion_events = assertion_outcomes
                 .iter()
                 .filter_map(assertion_state_event_from_outcome)
@@ -1240,7 +1247,7 @@ impl ProductionVmLifecycleLoop {
                 &self.trigger_graph,
                 &mut self.trigger_state,
                 scheduler.frontier(),
-            );
+            )?;
             if firings.is_empty() && !assertions_changed {
                 return Ok(appends);
             }

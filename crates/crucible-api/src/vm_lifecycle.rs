@@ -35,11 +35,11 @@ use crucible_qemu::{
 };
 use crucible_qemu::{
     ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint, ProductionNetworkStateCheckpoint,
-    QemuExactCheckpointCaptureResult, QemuHostIoCheckpoint, QemuLaunchResourceRequirements,
-    QemuNode, QemuNodeLifecycleDecision, QemuNodeLifecycleIntent as LifecycleMutationIntent,
-    QemuPreparedRunDirectory, QemuProcessIdentity, QemuReplayOracleMatch, QemuSharedBlockDevice,
-    QemuVmSnapshot as ExactSnapshotHandle, QmpCheckpointIdentity, QmpCheckpointRamKind,
-    linux_process_identity, quarantine_orphaned_qemu_process,
+    QemuHostIoCheckpoint, QemuLaunchResourceRequirements, QemuNode, QemuNodeLifecycleDecision,
+    QemuNodeLifecycleIntent as LifecycleMutationIntent, QemuPreparedRunDirectory,
+    QemuProcessIdentity, QemuReplayOracleMatch, QemuSharedBlockDevice,
+    QemuVmSnapshot as ExactSnapshotHandle, QmpCheckpointIdentity, linux_process_identity,
+    quarantine_orphaned_qemu_process,
 };
 #[cfg(target_os = "linux")]
 use crucible_qemu::{
@@ -77,8 +77,9 @@ pub use checkpoint_store::{
 pub use checkpoint_store::{
     DecodedProductionExactCheckpoint, PreparedProductionReplayOraclePromotion,
     ProductionBakedSnapshotCatalog, ProductionBakedSnapshotSet, ProductionExactCheckpointClosure,
-    ProductionExactCheckpointObject, ProductionExactCheckpointRetirement,
-    ProductionExactCheckpointRetirementError, ProductionExactCheckpointRetirementReport,
+    ProductionExactCheckpointObject, ProductionExactCheckpointReadSources,
+    ProductionExactCheckpointRetirement, ProductionExactCheckpointRetirementError,
+    ProductionExactCheckpointRetirementReport, ProductionPagedRamSource,
     ProductionVmExactNodeRestoreAdmissions, decode_authenticated_production_exact_checkpoint,
     open_exact_checkpoint_closure, retire_production_exact_checkpoint_catalog,
 };
@@ -95,11 +96,11 @@ pub use fault_implementation::{
 mod hot_fork;
 #[cfg(target_os = "linux")]
 pub use hot_fork::{
-    ProductionVmExactHotForkSourceBoundary, ProductionVmHotForkIoNodeBoundary,
-    ProductionVmHotForkIoNodeKind, ProductionVmHotForkNodeBoundary,
-    ProductionVmHotForkNodeServiceState, ProductionVmHotForkSourceWorld,
-    ProductionVmHotForkSourceWorldPreparationFailure, ProductionVmHotForkSourceWorldResourceUsage,
-    ProductionVmHotForkWorldContinuation,
+    ProductionHotForkCleanupObserver, ProductionVmExactHotForkSourceBoundary,
+    ProductionVmHotForkIoNodeBoundary, ProductionVmHotForkIoNodeKind,
+    ProductionVmHotForkNodeBoundary, ProductionVmHotForkNodeServiceState,
+    ProductionVmHotForkSourceWorld, ProductionVmHotForkSourceWorldPreparationFailure,
+    ProductionVmHotForkSourceWorldResourceUsage, ProductionVmHotForkWorldContinuation,
 };
 #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
 pub use hot_fork::{
@@ -149,8 +150,10 @@ fn selectable_catalog_checkpoint_ready(
 mod test_support;
 
 /// Immutable artifacts and bounds for local production QEMU execution.
-#[derive(Clone)]
 pub struct ProductionVmLifecycleConfig {
+    decode_custody: Option<crucible::owned_decode::DecodeCustody>,
+    host_ram_registration_factory: Option<Arc<dyn ProductionHostRamRegistrationFactory>>,
+    ram_catalog_provider: Option<Arc<dyn ProductionRamCatalogProvider>>,
     executable: PathBuf,
     plugin: PathBuf,
     native_guest_architecture: VmArchitecture,
@@ -164,6 +167,8 @@ pub struct ProductionVmLifecycleConfig {
     maximum_host_workers: usize,
     rendezvous_interval_ticks: Option<u64>,
     completion_timeout: Duration,
+    host_operation_supervisor:
+        Option<crucible_linux_resource::host_supervision::HostOperationSupervisor>,
     unbounded_advance_completion: bool,
     coverage: QemuLaunchPluginSwitch,
     rr_control_boundary_trace: bool,
@@ -181,6 +186,190 @@ pub struct ProductionVmLifecycleConfig {
     world_artifacts: Option<Arc<dyn DagStore>>,
     bounded_scheduler_preemption: Option<BoundedSchedulerPreemptionFlights>,
 }
+
+/// Shared storage and descriptor custody for one durable native RAM catalog.
+///
+/// The provider returns clones of one cached tuple per catalog directory. This
+/// keeps SQLite's retained descriptor lifetime and the shared deletion fence
+/// inside the same service reservation, including between captures.
+#[derive(Clone)]
+pub struct ProductionRamCatalogStorage {
+    /// Quota-verified backend with a single retained pair of SQLite connections.
+    pub backend: Arc<dyn crucible_cas::content_store::ImmutableBlobBackend>,
+    /// Exact physical quota and independently retained service authority.
+    pub quota: Arc<dyn crucible_cas::content_store::StorePhysicalQuotaGuard>,
+    /// Shared deletion exclusion held until authenticated catalog retirement.
+    pub retention_fence: Arc<std::fs::File>,
+}
+
+/// Retains catalog quota and service custody during authenticated deletion.
+///
+/// Dropping a receipt neither reopens catalog admission nor releases resource
+/// ownership. A failed deletion remains pending and retryable in its provider.
+pub trait ProductionRamCatalogRetirement: Send + Sync {
+    /// Reauthenticates complete directory deletion before discharging custody.
+    ///
+    /// The enclosing persistent root service remains reserved while any durable
+    /// catalog or checkpoint metadata survives. This only retires this catalog.
+    ///
+    /// # Errors
+    /// Refuses incomplete or unauthenticated deletion, retained readers, namespace
+    /// drift, or unavailable resource ownership authority.
+    fn finish_deleted(&self) -> Result<(), crucible_cas::content_store::StoreError>;
+}
+
+/// Retained physical quota and service authority for durable checkpoint catalogs.
+///
+/// Implementations own an independently admitted service until authenticated
+/// retirement of their entire persistent root. Assignment completion and the
+/// last reader dropping do not authorize releasing that reservation.
+pub trait ProductionRamCatalogProvider: Send + Sync {
+    /// Reserves resident allocation payloads before decoding retained root metadata.
+    ///
+    /// The returned credit retains the original service authority until the
+    /// final decoded root and every source borrower are dropped.
+    ///
+    /// # Errors
+    /// Refuses unavailable service capacity, closed catalog admission, namespace
+    /// drift, or cancellation under the original service supervision.
+    fn reserve_root_metadata(
+        &self,
+        directory: &Path,
+        bytes: u64,
+    ) -> Result<Arc<dyn Send + Sync>, crucible_cas::content_store::StoreError>;
+
+    /// Creates or authenticates a catalog directory within the exact quota root.
+    ///
+    /// The provider excludes symlink, mount and project-identity escapes and
+    /// retains an initial bounded descendant audit and continuing namespace
+    /// exclusion. Created directories must inherit the authenticated project.
+    /// The returned guard retains the service receipt and revalidates the quota.
+    ///
+    /// # Errors
+    /// Refuses unavailable quota authority, mismatched paths or project identity,
+    /// exhausted physical bytes/inodes, or canceled supervision.
+    fn prepare_directory(
+        &self,
+        directory: &Path,
+    ) -> Result<
+        Arc<dyn crucible_cas::content_store::StorePhysicalQuotaGuard>,
+        crucible_cas::content_store::StoreError,
+    >;
+
+    /// Opens or clones one cached backend and deletion fence for this directory.
+    ///
+    /// The implementation admits descriptors before any open, establishes shared
+    /// deletion exclusion, and initializes SQLite using the verified quota and
+    /// heap ceiling. It retains the cached tuple through durable catalog life;
+    /// repeated captures never open another pair of connections or fence.
+    ///
+    /// # Errors
+    /// Refuses unavailable service capacity, namespace or quota drift, missing
+    /// deletion exclusion, or durable backend initialization failure.
+    fn open_catalog(
+        &self,
+        directory: &Path,
+    ) -> Result<ProductionRamCatalogStorage, crucible_cas::content_store::StoreError>;
+
+    /// Closes catalog admission and prepares an idle cached tuple for deletion.
+    ///
+    /// This atomically excludes new opens, refuses external backend/fence/source
+    /// holders, and detaches the shared SQLite backend and fence. Quota, service
+    /// and descriptor receipts stay retained in a pending provider record until
+    /// authenticated deletion succeeds. Retrying returns that same authority.
+    ///
+    /// # Errors
+    /// Refuses active readers/captures, unavailable ownership, or namespace drift.
+    fn begin_catalog_retirement(
+        &self,
+        directory: &Path,
+    ) -> Result<Arc<dyn ProductionRamCatalogRetirement>, crucible_cas::content_store::StoreError>;
+
+    /// Returns the independently reserved process-wide SQLite allocator ceiling.
+    ///
+    /// SQLite's hard heap ceiling is global and can only decrease through the
+    /// catalog constructor. This entitlement covers all SQLite heaps in the
+    /// process; Rust transport and metadata buffers need separate reservations.
+    fn maximum_sqlite_heap_bytes(&self) -> u64;
+}
+
+/// Host-local allocator for exact live RAM ownership and admitted launch resources.
+pub trait ProductionHostRamRegistrationFactory: Send + Sync {
+    /// Partitions the complete admitted world before any node can be prepared.
+    ///
+    /// # Errors
+    /// Refuses inconsistent repeated world shapes or a complete partition that
+    /// cannot retain the required metadata, scratch, guest peak and backing.
+    fn configure_world(
+        &self,
+        shapes: &[ProductionHostRamLaunchShape],
+    ) -> Result<(), HostRamAdmissionError>;
+
+    /// Binds the launch-scoped operational authority for one admitted node.
+    ///
+    /// # Errors
+    /// Refuses an unknown node or replacement after its generation is prepared.
+    fn bind_node_registrar(
+        &self,
+        node: &str,
+        registrar: Arc<dyn crucible_qemu::ram_control::RamControlRegistrar>,
+    ) -> Result<(), HostRamAdmissionError>;
+
+    /// Returns disjoint native peaks after the complete world has been partitioned.
+    ///
+    /// # Errors
+    /// Refuses an unconfigured world, arithmetic overflow or missing retained
+    /// host and backing ownership.
+    fn native_world_limits(
+        &self,
+    ) -> Result<ProductionHostRamNativeWorldLimits, HostRamAdmissionError>;
+
+    /// Reserves the pinned controller descriptor before the native authority is created.
+    ///
+    /// # Errors
+    /// Refuses missing world ownership or exhausted independently authored host
+    /// service descriptor capacity. Non-native fixtures may return no lease.
+    fn reserve_native_controller_resources(
+        &self,
+    ) -> Result<
+        Option<crucible_linux_resource::host_services::HostServiceLease>,
+        HostRamAdmissionError,
+    >;
+
+    /// Binds the same live kernel authority that enforces the native world peaks.
+    ///
+    /// # Errors
+    /// Refuses absent native authority, a stale or different guard incarnation,
+    /// or kernel ceilings inconsistent with the retained complete partition.
+    fn bind_native_resource_controller(
+        &self,
+        controller: Option<crucible_qemu::LinuxQemuNativeResourceController>,
+    ) -> Result<(), HostRamAdmissionError>;
+
+    /// Reserves one fresh generation before native launch and sealed-inventory checks.
+    ///
+    /// Declared RAM is an input bound, not proof of the realized native topology.
+    /// The native startup handshake must validate the complete sealed inventory
+    /// against the returned entitlement before the first guest instruction.
+    ///
+    /// # Errors
+    /// Returns a diagnostic when exact ownership, metadata, staging, complete
+    /// resident peak, backing, or worker/descriptor admission cannot be retained.
+    fn prepare(
+        &self,
+        node: &str,
+        process_generation: u64,
+        declared_ram_bytes: u64,
+        vcpus: u32,
+    ) -> Result<crucible_qemu::ram_control::RamControlRegistration, HostRamAdmissionError>;
+}
+
+mod ram_resources;
+pub use ram_resources::{
+    HostRamAdmissionError, HostRamBootstrapLimits, ProductionHostRamLaunchRequirements,
+    ProductionHostRamLaunchShape, ProductionHostRamNativeWorldLimits, ProductionHostRamPartition,
+    partition_host_ram_launch_resources,
+};
 
 #[derive(Clone)]
 struct BoundedSchedulerPreemptionFlights {
@@ -400,35 +589,7 @@ impl ProductionVmExactCheckpointTarget {
     fn machine_state_artifacts(&self) -> impl Iterator<Item = &ProductionCheckpointArtifact> {
         self.native_materialization()
             .into_iter()
-            .flat_map(|(_, exact_ram, _)| {
-                std::iter::once(&exact_ram.device_artifact)
-                    .chain(exact_ram.layers.iter().map(|layer| &layer.artifact))
-            })
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum ProductionExactRamKind {
-    Direct,
-    Delta,
-}
-
-impl From<QmpCheckpointRamKind> for ProductionExactRamKind {
-    fn from(kind: QmpCheckpointRamKind) -> Self {
-        match kind {
-            QmpCheckpointRamKind::Direct => Self::Direct,
-            QmpCheckpointRamKind::Delta => Self::Delta,
-        }
-    }
-}
-
-impl From<ProductionExactRamKind> for QmpCheckpointRamKind {
-    fn from(kind: ProductionExactRamKind) -> Self {
-        match kind {
-            ProductionExactRamKind::Direct => Self::Direct,
-            ProductionExactRamKind::Delta => Self::Delta,
-        }
+            .flat_map(|(_, exact_ram, _)| std::iter::once(&exact_ram.device_artifact))
     }
 }
 
@@ -457,176 +618,56 @@ impl From<ProductionExactCheckpointIdentity> for QmpCheckpointIdentity {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct ProductionExactRamLayer {
-    kind: ProductionExactRamKind,
-    identity: ProductionExactCheckpointIdentity,
-    parent: Option<ProductionExactCheckpointIdentity>,
-    topology: ContentHash,
-    ram_regions: u64,
-    ram_records: u64,
-    content_sha256: ContentHash,
-    artifact: ProductionCheckpointArtifact,
-}
-
-impl ProductionExactRamLayer {
-    pub(super) fn from_capture(
-        capture: &QemuExactCheckpointCaptureResult,
-        content_sha256: ContentHash,
-        artifact: ProductionCheckpointArtifact,
-    ) -> Result<Self, SchedulerError> {
-        if artifact.length != capture.ram_bytes() {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from(
-                    "exact RAM artifact length differs from QEMU's capture report",
-                ),
-            });
-        }
-
-        Ok(Self {
-            kind: capture.ram_kind().into(),
-            identity: capture.identity().into(),
-            parent: capture.parent().map(Into::into),
-            topology: capture.topology(),
-            ram_regions: capture.ram_regions(),
-            ram_records: capture.ram_records(),
-            content_sha256,
-            artifact,
-        })
-    }
-}
-
-#[derive(Clone, Debug)]
 pub(super) struct ProductionExactRamCheckpoint {
-    parent_closure: Option<ContentHash>,
     identity: ProductionExactCheckpointIdentity,
     device_content_sha256: ContentHash,
     device_artifact: ProductionCheckpointArtifact,
-    layers: Vec<ProductionExactRamLayer>,
+    catalog: checkpoint_store::paged::PagedRamCatalog,
+    ram: crucible_cas::ram::LeasedRamRoot,
 }
 
 impl ProductionExactRamCheckpoint {
-    pub(super) fn new(
-        parent_closure: Option<ContentHash>,
-        device_content_sha256: ContentHash,
-        device_artifact: ProductionCheckpointArtifact,
-        layers: Vec<ProductionExactRamLayer>,
-    ) -> Result<Self, SchedulerError> {
-        let identity = layers.last().map(|layer| layer.identity).ok_or_else(|| {
-            SchedulerError::BoundaryViolation {
-                message: String::from("exact RAM checkpoint has no direct base"),
-            }
-        })?;
-        let checkpoint = Self {
-            parent_closure,
-            identity,
-            device_content_sha256,
-            device_artifact,
-            layers,
-        };
-        checkpoint.validate()?;
-
-        Ok(checkpoint)
-    }
-
-    pub(super) fn validate(&self) -> Result<(), SchedulerError> {
-        if self.layers.is_empty()
-            || self.layers.len() > crucible::exact_checkpoint::MAX_EXACT_CHECKPOINT_RAM_LAYERS
-        {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from("exact RAM checkpoint has an invalid layer count"),
-            });
-        }
-        let Some(first) = self.layers.first() else {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from("exact RAM checkpoint has no direct base"),
-            });
-        };
-        if first.kind != ProductionExactRamKind::Direct || first.parent.is_some() {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from(
-                    "exact RAM checkpoint chain does not start with a direct layer",
-                ),
-            });
-        }
-        if (self.layers.len() > 1) != self.parent_closure.is_some() {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from(
-                    "exact RAM parent-closure provenance differs from the retained chain",
-                ),
-            });
-        }
-        let topology = first.topology;
-        for pair in self.layers.windows(2) {
-            let [parent, child] = pair else {
-                continue;
-            };
-            if child.kind != ProductionExactRamKind::Delta
-                || child.parent != Some(parent.identity)
-                || child.topology != topology
-            {
-                return Err(SchedulerError::BoundaryViolation {
-                    message: String::from("exact RAM checkpoint delta chain is not contiguous"),
-                });
-            }
-        }
-        if self.layers.iter().any(|layer| {
-            layer.ram_regions == 0 || layer.artifact.length == 0 || layer.artifact.sparse
-        }) || self.device_artifact.length == 0
-            || self.device_artifact.sparse
-        {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from("exact RAM checkpoint contains empty QEMU artifacts"),
-            });
-        }
-        Ok(())
-    }
-
-    pub(super) const fn requires_direct_compaction(&self) -> bool {
-        self.layers.len() >= crucible::exact_checkpoint::MAX_EXACT_CHECKPOINT_RAM_LAYERS
-    }
-
-    /// Builds the retained chain for one admitted direct or delta capture.
-    ///
-    /// A direct capture rebases the chain and deliberately drops all parent
-    /// provenance. A delta capture appends to the authenticated parent chain.
+    /// Binds one complete leased exact RAM image to the same native device cut.
     ///
     /// # Errors
     ///
-    /// Returns an error when a delta has no retained parent, allocation fails,
-    /// or the resulting direct-then-delta chain is invalid.
-    pub(super) fn from_captured_layer(
-        parent_closure: Option<ContentHash>,
-        parent: Option<Self>,
-        capture_kind: ProductionExactRamKind,
+    /// Returns an error when device VMState is empty or sparse, or the RAM
+    /// image lacks exact coverage.
+    fn from_paged_capture(
+        identity: ProductionExactCheckpointIdentity,
         device_content_sha256: ContentHash,
         device_artifact: ProductionCheckpointArtifact,
-        layer: ProductionExactRamLayer,
+        catalog: checkpoint_store::paged::PagedRamCatalog,
+        ram: crucible_cas::ram::LeasedRamRoot,
     ) -> Result<Self, SchedulerError> {
-        if capture_kind == ProductionExactRamKind::Direct {
-            // A direct capture is a complete replacement. The published parent
-            // owner remains live until durable publication, but it must not be
-            // reachable from the replacement manifest.
-            return Self::new(None, device_content_sha256, device_artifact, vec![layer]);
-        }
-
-        let mut layers = parent
-            .ok_or_else(|| SchedulerError::BoundaryViolation {
-                message: String::from("delta exact checkpoint lost its authenticated parent chain"),
-            })?
-            .layers;
-        layers
-            .try_reserve_exact(1)
-            .map_err(|error| SchedulerError::BoundaryViolation {
-                message: format!("extend exact RAM checkpoint layers: {error}"),
-            })?;
-        layers.push(layer);
-
-        Self::new(
-            parent_closure,
+        let checkpoint = Self {
+            identity,
             device_content_sha256,
             device_artifact,
-            layers,
-        )
+            catalog,
+            ram,
+        };
+        checkpoint.validate()?;
+        Ok(checkpoint)
+    }
+
+    /// Validates the complete RAM and device realization shape.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty or sparse device artifact or wrong RAM scope.
+    pub(super) fn validate(&self) -> Result<(), SchedulerError> {
+        if self.device_artifact.length == 0 || self.device_artifact.sparse {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("exact checkpoint has an empty or sparse device VMState"),
+            });
+        }
+        if self.ram.record().scope() != crucible_ram::Scope::Exact {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("exact checkpoint requires a complete exact-scope RAM root"),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -696,6 +737,7 @@ struct RepositoryExactRestoreAuthority {
     configuration: Arc<Configuration>,
     scheduler: Arc<SingleSchedulerCheckpoint>,
     open: Arc<dyn Fn(ContentHash) -> std::io::Result<Box<dyn std::io::Read + Send>> + Send + Sync>,
+    ram_sources: BTreeMap<NodeId, ProductionPagedRamSource>,
 }
 
 impl std::fmt::Debug for RepositoryExactRestoreAuthority {
@@ -726,6 +768,9 @@ impl RepositoryExactRestoreAuthority {
                 snapshot,
                 paused,
                 open: Arc::clone(&self.open),
+                ram_source: self.ram_sources.remove(node).ok_or_else(|| {
+                    loop_factory_error("exact restore lost its retained RAM source")
+                })?,
             },
         })
     }
@@ -749,6 +794,9 @@ impl RepositoryExactRestoreAuthority {
                 snapshot,
                 paused,
                 open: Arc::clone(&self.open),
+                ram_source: self.ram_sources.remove(node).ok_or_else(|| {
+                    loop_factory_error("exact replay lost its retained RAM source")
+                })?,
             },
             process_generation,
         })
@@ -1001,6 +1049,12 @@ pub struct ProductionFaultEvidenceSnapshot {
     pub locked_effect_trace: Option<ResolvedEffectTrace>,
     /// Signal events emitted in authoritative evaluation order.
     pub emitted_events: Vec<crucible::model::ReferencedSignalEvent>,
+    /// Last Applied native memory-service occurrence at the committed boundary.
+    ///
+    /// This fixed-size diagnostic follows node/event traversal order and does
+    /// not represent all accesses or survive restore. Full occurrence coverage
+    /// remains authenticated by the canonical event log.
+    pub memory_service_occurrence: Option<crucible_qemu::QemuMemoryServiceOccurrence>,
     /// Network outages active at `frontier`.
     pub network_outages: Vec<ProductionNetworkOutageEvidence>,
     /// Live network queues with at least one reservation.
@@ -1099,7 +1153,7 @@ pub struct ProductionVmLifecycleLoop {
     run_manifest: ProductionRunManifest,
     scenario: ScenarioDef,
     source: ScenarioDefForm,
-    config: ProductionVmLifecycleConfig,
+    config: Arc<ProductionVmLifecycleConfig>,
     checkpoint_targets: BTreeMap<ContentHash, quantum_loop::ExactCheckpointPublicationState>,
     exact_ram_parents: BTreeMap<ContentHash, ProductionExactRamPublishedParent>,
     repository_exact_ram_rebase: Option<ProductionRepositoryExactRamRebase>,
@@ -1115,9 +1169,12 @@ pub struct ProductionVmLifecycleLoop {
     _run_directory: ProductionRunDirectory,
     // Disk pins close after authenticated reap, before aggregate quota release.
     retained_hot_fork_disk_owners: Vec<Box<dyn Send>>,
-    retained_resource_owners: Vec<Box<dyn Send>>,
     hot_fork_backing_files:
         BTreeMap<NodeId, Vec<hot_fork::disk_basis::ImmutableHotForkBackingFile>>,
+    // External admission custody closes after every native and backing borrower.
+    retained_resource_owners: Vec<Box<dyn Send>>,
+    // Declared last so copied model storage closes before its original credits.
+    input_decode_custody: Option<crucible::owned_decode::DecodeCustody>,
 }
 
 /// Exact scheduler/evidence boundary exposed after production checkpoint restore.
@@ -1211,6 +1268,7 @@ struct ProductionVmExactNodeRestoreBasis {
     snapshot: ExactSnapshotHandle,
     paused: bool,
     open: Arc<dyn Fn(ContentHash) -> std::io::Result<Box<dyn std::io::Read + Send>> + Send + Sync>,
+    ram_source: ProductionPagedRamSource,
 }
 
 impl std::fmt::Debug for ProductionVmExactNodeRestoreAdmission {
@@ -1407,6 +1465,8 @@ fn admit_atomic_exact_restore(
         process_contract,
         target,
         streams,
+        crucible_qemu::QemuPagedRamRestoreSource::new(Arc::new(admission.ram_source))
+            .map_err(|error| loop_factory_error(format!("admit leased RAM source: {error}")))?,
     )
     .map_err(|error| loop_factory_error(format!("admit atomic exact restore: {error}")))
 }
@@ -1763,7 +1823,14 @@ impl ProductionVmNodeReplayLaunchProfile {
     /// Binds one immutable launch profile to its exact World node.
     #[must_use]
     pub fn new(node: NodeId, launch: QemuLiveNodeStepGateConfig) -> Self {
-        Self { node, launch }
+        Self {
+            node,
+            // A replay profile retains immutable launch facts. Each replay
+            // leg must acquire a fresh admitted operational owner at launch.
+            launch: launch
+                .without_ram_control_registration()
+                .without_host_operation_supervisor(),
+        }
     }
 
     /// Returns the exact World node described by this profile.
@@ -2128,7 +2195,9 @@ fn finish_reaped_node_lease_map(
 
 mod checkpoint_recovery;
 use checkpoint_recovery::durable_run_state_api_error;
+mod admitted_clone;
 mod config;
+pub use admitted_clone::ProductionVmLifecycleConfigCloneError;
 mod construction;
 use construction::build_production_vm_lifecycle_loop_with_restore;
 mod helpers;
@@ -2425,8 +2494,15 @@ pub fn authenticate_production_vm_exact_hot_fork_source_boundary(
     scenario: &ScenarioDef,
     source: &ScenarioDefForm,
     closure: ContentHash,
+    ram_catalog_provider: Option<&Arc<dyn ProductionRamCatalogProvider>>,
 ) -> Result<ProductionVmExactHotForkSourceBoundary, LifecycleApiError> {
-    let checkpoint = load_exact_checkpoint_set(run_state_root, scenario, source, closure)?;
+    let checkpoint = load_exact_checkpoint_set(
+        run_state_root,
+        scenario,
+        source,
+        closure,
+        ram_catalog_provider,
+    )?;
     ProductionVmExactHotForkSourceBoundary::from_exact_checkpoint(&checkpoint)
         .map_err(|error| loop_factory_error(format!("authenticate hot-fork boundary: {error}")))
 }
@@ -2527,7 +2603,7 @@ where
         block_bindings,
         ninep_bindings,
         active_host_io,
-    } = continuation.into_restore_parts(node_generations, run_state_root);
+    } = continuation.into_restore_parts(node_generations, run_state_root)?;
     build_production_vm_lifecycle_loop_with_restore(
         scenario,
         source,

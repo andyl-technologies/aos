@@ -26,6 +26,10 @@
       expected = "library";
     }
     {
+      package = "crucible-ram";
+      expected = "library";
+    }
+    {
       package = "crucible-device";
       expected = "library";
     }

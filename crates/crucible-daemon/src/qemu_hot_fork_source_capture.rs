@@ -357,6 +357,14 @@ pub struct AuthenticatedExactQemuHotForkSource {
 }
 
 impl AuthenticatedExactQemuHotForkSource {
+    pub(crate) fn with_cleanup_observer(
+        mut self,
+        observer: std::sync::Arc<dyn crucible_api::vm_lifecycle::ProductionHotForkCleanupObserver>,
+    ) -> Self {
+        self.source = self.source.with_cleanup_observer(observer);
+        self
+    }
+
     pub(crate) fn into_parts(
         self,
     ) -> (
@@ -382,13 +390,16 @@ impl AuthenticatedExactQemuHotForkSource {
 }
 
 impl AuthenticatedCanonicalQemuHotForkSource {
-    pub(crate) fn into_parts(self) -> (QemuHotForkSourceWorldKey, ProductionVmHotForkSourceWorld) {
-        (self.key, self.source)
+    pub(crate) fn with_cleanup_observer(
+        mut self,
+        observer: std::sync::Arc<dyn crucible_api::vm_lifecycle::ProductionHotForkCleanupObserver>,
+    ) -> Self {
+        self.source = self.source.with_cleanup_observer(observer);
+        self
     }
 
-    #[cfg(test)]
-    pub(crate) const fn source_world_for_test(&self) -> &ProductionVmHotForkSourceWorld {
-        &self.source
+    pub(crate) fn into_parts(self) -> (QemuHotForkSourceWorldKey, ProductionVmHotForkSourceWorld) {
+        (self.key, self.source)
     }
 
     #[cfg(test)]

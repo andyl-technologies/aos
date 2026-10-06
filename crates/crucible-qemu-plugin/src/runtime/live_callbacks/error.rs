@@ -108,6 +108,13 @@ pub enum LiveVcpuTimeCallbackError {
         "fingerprint sampling requested but QEMU is missing the aggregate fingerprint observer"
     )]
     FingerprintCapabilityUnavailable,
+    /// Installing the process-wide logical RAM observer failed.
+    #[error("logical RAM observer setup failed: {message}")]
+    RamObserverSetup {
+        /// Native capability or registration failure.
+        #[source]
+        message: crate::ram_error::RamError,
+    },
     /// Capturing a boundary fingerprint sample failed.
     #[error("{boundary} fingerprint sampling failed: {message}")]
     FingerprintSample {

@@ -11,3 +11,19 @@ workspace = true
 [dependencies]
 blake3 = { workspace = true }
 thiserror = { workspace = true }
+
+[features]
+test-support = ["dep:sha2", "dep:serde_json"]
+
+[dependencies.sha2]
+workspace = true
+optional = true
+
+[dependencies.serde_json]
+workspace = true
+optional = true
+
+[[example]]
+name = "ram-hash-benchmark"
+path = "examples/ram_hash_benchmark.rs"
+required-features = ["test-support"]

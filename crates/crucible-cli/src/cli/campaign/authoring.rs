@@ -39,15 +39,37 @@ pub(super) fn read_bounded_bytes(
     })?;
     let maximum = u64::try_from(maximum_bytes)
         .map_err(|_| backend_error(format!("{kind} bound exceeds u64")))?;
+    let mut reader = file.take(maximum.saturating_add(1));
     let mut bytes = Vec::new();
-    file.take(maximum.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|error| {
+    crucible_session::engine::owned_decode::charge_bytes(std::mem::size_of::<[u8; 4096]>() as u64)
+        .map_err(|error| backend_error(format!("{kind} scratch admission failed: {error}")))?;
+    let mut chunk = [0_u8; 4096];
+    loop {
+        let count = reader.read(&mut chunk).map_err(|error| {
             CliError::Io(io::Error::new(
                 error.kind(),
                 format!("could not read {kind} at {}: {error}", path.display()),
             ))
         })?;
+        if count == 0 {
+            break;
+        }
+        let required = bytes
+            .len()
+            .checked_add(count)
+            .ok_or_else(|| backend_error(format!("{kind} length overflow")))?;
+        if required > bytes.capacity() {
+            let growth = bytes
+                .capacity()
+                .saturating_mul(2)
+                .max(required)
+                .min(maximum_bytes.saturating_add(1));
+            let additional = growth - bytes.len();
+            crucible_session::engine::owned_decode::reserve_vec(&mut bytes, additional)
+                .map_err(|error| backend_error(format!("{kind} admission failed: {error}")))?;
+        }
+        bytes.extend_from_slice(&chunk[..count]);
+    }
     if bytes.len() > maximum_bytes {
         return Err(usage_error(format!("{kind} exceeds {maximum_bytes} bytes")));
     }
@@ -177,6 +199,21 @@ pub(super) fn write_new_bundle<T>(
     kind: &str,
     populate: impl FnOnce(&Path, &Path) -> Result<T, CliError>,
 ) -> Result<(PathBuf, T), CliError> {
+    write_new_bundle_with_boundary(path, kind, populate, &mut || Ok(()))
+}
+
+/// Atomically installs one new bundle while checking its host operation owner.
+///
+/// # Errors
+/// Returns authoring I/O errors or operational cancellation before publication;
+/// a failure after rename retains the installed directory for reconciliation.
+pub(super) fn write_new_bundle_with_boundary<T>(
+    path: &Path,
+    kind: &str,
+    populate: impl FnOnce(&Path, &Path) -> Result<T, CliError>,
+    boundary: &mut dyn FnMut() -> Result<(), CliError>,
+) -> Result<(PathBuf, T), CliError> {
+    boundary()?;
     let file_name = path
         .file_name()
         .filter(|name| !name.is_empty())
@@ -209,6 +246,7 @@ pub(super) fn write_new_bundle<T>(
         })?;
 
     let value = populate(temporary.path(), &output)?;
+    boundary()?;
     File::open(temporary.path())
         .and_then(|directory| directory.sync_all())
         .map_err(|error| {
@@ -220,6 +258,7 @@ pub(super) fn write_new_bundle<T>(
                 ),
             ))
         })?;
+    boundary()?;
     rustix::fs::renameat_with(CWD, temporary.path(), CWD, &output, RenameFlags::NOREPLACE)
         .map_err(|error| {
             let error = io::Error::from_raw_os_error(error.raw_os_error());
@@ -243,6 +282,104 @@ pub(super) fn write_new_bundle<T>(
                 ),
             ))
         })?;
+    boundary()?;
 
     Ok((output, value))
+}
+
+#[cfg(test)]
+mod publication_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn canceled_prepared_bundle_does_not_become_visible() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = tempfile::tempdir()?;
+        let output = directory.path().join("bundle");
+        let prepared = Cell::new(false);
+        let mut boundary = || {
+            if prepared.get() {
+                Err(backend_error("operation canceled"))
+            } else {
+                Ok(())
+            }
+        };
+
+        let result = write_new_bundle_with_boundary(
+            &output,
+            "test bundle",
+            |staged, _| {
+                write_new_record(&staged.join("payload"), "test payload", b"authenticated")?;
+                prepared.set(true);
+                Ok(())
+            },
+            &mut boundary,
+        );
+
+        assert!(result.is_err());
+        assert!(!output.exists());
+        assert_eq!(fs::read_dir(directory.path())?.count(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn late_cancellation_retains_installed_bundle_for_reconciliation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let output = directory.path().join("bundle");
+        let mut boundary = || {
+            if output.exists() {
+                Err(backend_error("operation canceled"))
+            } else {
+                Ok(())
+            }
+        };
+
+        let result = write_new_bundle_with_boundary(
+            &output,
+            "test bundle",
+            |staged, _| write_new_record(&staged.join("payload"), "test payload", b"authenticated"),
+            &mut boundary,
+        );
+
+        assert!(result.is_err());
+        assert_eq!(fs::read(output.join("payload"))?, b"authenticated");
+        Ok(())
+    }
+
+    #[test]
+    fn file_reads_refuse_growth_past_the_original_metadata_account()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // This component fixture models only compact-codec credits, never
+        // filesystem quota, native execution or a physical resident claim.
+        struct ComponentDecodeAuthority;
+
+        impl crucible_session::engine::owned_decode::DecodeResourceAuthority for ComponentDecodeAuthority {
+            fn reserve(
+                &self,
+                _bytes: u64,
+            ) -> Result<
+                Arc<dyn Send + Sync>,
+                crucible_session::engine::owned_decode::DecodeAdmissionError,
+            > {
+                Ok(Arc::new(()))
+            }
+        }
+
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("input");
+        fs::write(&path, vec![0_u8; 128 * 1024])?;
+        let budget = crucible_session::engine::owned_decode::DecodeBudget::new(
+            Arc::new(ComponentDecodeAuthority),
+            64 * 1024,
+        )?;
+        let _scope = budget.enter();
+
+        let result = read_bounded_bytes(&path, "test artifact", 256 * 1024);
+
+        assert!(result.is_err());
+        assert!(budget.check().is_err());
+        Ok(())
+    }
 }

@@ -517,7 +517,7 @@ impl ActiveStep {
         &self,
         outcome: &QuantumOutcome,
         event_log_len_before: u64,
-    ) -> Result<bool, ConditionEvaluationError> {
+    ) -> Result<bool, SessionError> {
         if let Some(target) = self.target_frontier {
             return Ok(outcome.frontier >= target);
         }
@@ -526,18 +526,22 @@ impl ActiveStep {
                 event_log_len_before,
                 outcome.frontier,
                 SchedulerEvaluationBoundaryKind::Quantum,
-            )?
+            )
         } else {
             ConditionEventLogPrefix::from_scheduler_event_log_entries_with_base_sequence(
                 outcome.event_log_entries.clone(),
                 event_log_len_before,
-            )?
-        };
+            )
+        }
+        .map_err(|error| SessionError::BreakpointConditionPrefix {
+            reason: error.to_string(),
+        })?;
         let mut pass = ConditionEvaluationPass::from_log_prefix(
             prefix,
             StepConditionLeaves::from_outcome(outcome),
         );
-        Ok(pass.evaluate_assertion_condition(&self.breakpoint.predicate))
+        pass.evaluate_assertion_condition(&self.breakpoint.predicate)
+            .map_err(|error| SessionError::Scheduler(error.into()))
     }
 }
 

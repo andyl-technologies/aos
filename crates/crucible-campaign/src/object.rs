@@ -265,7 +265,7 @@ impl CampaignRecordKind {
             Self::Finding => 4,
             Self::FindingCandidateBundle => 7,
             Self::FindingTriageReplayEvidence => 2,
-            Self::ArchiveManifest | Self::ArchiveInventoryPage => RECORD_SCHEMA_VERSION,
+            Self::ArchiveManifest | Self::ArchiveInventoryPage => 2,
             Self::PlannerCandidateGuidance | Self::PlannerCandidateBudget => 2,
             Self::BudgetLedger => 3,
             Self::PlannerBeamCandidate => 2,

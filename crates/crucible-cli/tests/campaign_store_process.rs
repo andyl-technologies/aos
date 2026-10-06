@@ -916,12 +916,120 @@ root = {write_destination_root:?}
     }
 }
 
+#[cfg(feature = "packaged-midpoint-flight")]
+struct NativeFindingInspection {
+    checkpoints: crucible_daemon::ExactCheckpointStore,
+    backend: Arc<dyn crucible_cas::content_store::ImmutableBlobBackend>,
+    authority: Arc<dyn crucible_cas::content_store::StorePhysicalQuotaGuard>,
+}
+
 impl FlightFixture {
     #[cfg(feature = "packaged-midpoint-flight")]
     fn new_debug_authorized() -> Result<Self, Box<dyn Error>> {
         let mut fixture = Self::new()?;
         fixture.service_mode = FlightServiceMode::Debugger;
+        fixture.install_native_store_policy()?;
         Ok(fixture)
+    }
+
+    #[cfg(feature = "packaged-midpoint-flight")]
+    fn install_native_store_policy(&self) -> Result<(), Box<dyn Error>> {
+        let Some(project) = std::env::var_os("CRUCIBLE_FLIGHT_STORE_PROJECT") else {
+            // Argument-only component fixtures never execute this native policy.
+            return Ok(());
+        };
+        let project = project
+            .to_str()
+            .ok_or("native store project is not UTF-8")?
+            .parse::<u32>()?;
+        let refs = self._temporary.path().join("refs");
+        fs::write(
+            &self.store,
+            format!(
+                r#"schema = "crucible.campaign-repository-store"
+version = 2
+root = "bounded-primary"
+admitted_kinds = ["campaign-fact", "campaign-snapshot", "merkle-node", "scenario", "configuration", "policy", "exact-manifest", "ram-extent", "disk-extent", "device-state", "observation", "finding", "projection", "trace"]
+ref_directory = {refs:?}
+physical_quota_policies = ["native/source-store"]
+
+[physical_quota_service]
+lifetime_ms = 2700000
+[physical_quota_service.resources]
+resident_peak_bytes = 134217728
+backing_peak_bytes = 16777216
+metadata_bytes = 67108864
+staging_bytes = 8388608
+paging_io_slots = 1
+cpu_slots = 1
+task_slots = 1
+file_descriptors = 128
+
+[[nodes]]
+id = "bounded-primary"
+[nodes.spec]
+kind = "physical-quota"
+child = "primary"
+policy = "native/source-store"
+project_id = {project}
+maximum_physical_bytes = 2147483648
+maximum_inodes = 262144
+
+[[nodes]]
+id = "primary"
+[nodes.spec]
+kind = "directory"
+root = {objects:?}
+"#,
+                objects = self.objects
+            ),
+        )?;
+        fs::set_permissions(&self.store, fs::Permissions::from_mode(0o600))?;
+        Ok(())
+    }
+
+    #[cfg(feature = "packaged-midpoint-flight")]
+    fn inspection_store(&self) -> Result<NativeFindingInspection, Box<dyn Error>> {
+        use crucible_cas::content_store::StorePhysicalQuotaBinder;
+        let project = std::env::var("CRUCIBLE_FLIGHT_STORE_PROJECT")?.parse::<u32>()?;
+        let service = crucible_daemon::LinuxProjectQuotaBinder::new(
+            crucible_daemon::CampaignQuotaServiceConfig {
+                lifetime: Duration::from_secs(2700),
+                resources: crucible_api::host_operational::HostResourceVector {
+                    resident_peak_bytes: 134217728,
+                    backing_peak_bytes: 16777216,
+                    metadata_bytes: 67108864,
+                    staging_bytes: 8388608,
+                    paging_io_slots: 1,
+                    cpu_slots: 1,
+                    task_slots: 1,
+                    file_descriptors: 128,
+                },
+            },
+        )?;
+        let authority = service.bind(&self.objects, project, 2147483648, 262144)?;
+        let backend = DirectoryBlobBackend::new_with_physical_quota(
+            "midpoint-selection-inspection",
+            &self.objects,
+            authority.clone(),
+        )?;
+        let repository = crucible_campaign::CampaignRepository::new(
+            backend.clone(),
+            Arc::new(crucible_cas::content_store::DirectoryRefBackend::new(
+                self._temporary.path().join("refs"),
+            )),
+        );
+        let checkpoints = crucible_daemon::ExactCheckpointStore::new(
+            backend.clone(),
+            1073741824,
+            repository.ram_retention_authority(),
+        )?
+        .with_ram_root_resources(authority.clone());
+        Ok(NativeFindingInspection {
+            checkpoints,
+            backend,
+            authority,
+        })
     }
 
     fn new() -> Result<Self, Box<dyn Error>> {

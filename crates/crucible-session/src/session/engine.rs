@@ -917,16 +917,18 @@ impl<L> Engine<L> {
                 if let Some(quiescence) = self.scheduler_quiescence.clone() {
                     pass = pass.with_scheduler_quiescence(quiescence);
                 }
-                let is_true = pass.evaluate_assertion_condition(&spec.predicate);
-                (
+                let is_true = pass
+                    .evaluate_assertion_condition(&spec.predicate)
+                    .map_err(SchedulerError::from)?;
+                Ok::<_, SchedulerError>((
                     id,
                     spec.clone(),
                     was_true,
                     is_true,
                     pass.once_latches().to_vec(),
-                )
+                ))
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
 
         for (id, spec, was_true, is_true, once_latches) in evaluations {
             if is_true && !was_true {
@@ -2027,10 +2029,7 @@ impl<L: QuantumLoop> Engine<L> {
         let step_completion = if let Some(step) = self.active_step.as_ref() {
             Some((
                 step.mode,
-                step.is_complete(&outcome, current_event_log_len)
-                    .map_err(|error| SessionError::BreakpointConditionPrefix {
-                        reason: error.to_string(),
-                    })?,
+                step.is_complete(&outcome, current_event_log_len)?,
             ))
         } else {
             None

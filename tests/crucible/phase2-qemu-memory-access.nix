@@ -136,6 +136,8 @@ in
               -I${qemuPackage}/include/qemu \
               -I${qemuPackage}/include \
               $(pkg-config --cflags glib-2.0) \
+              -DCRUCIBLE_FIXTURE_RESIDENT_OWNER \
+              -I${qemuPackage}/share/aos/crucible/native-tests \
               ${pluginSource}/crucible-memory-access.c \
               -o crucible-memory-access.so \
               $(pkg-config --libs glib-2.0)
@@ -143,6 +145,8 @@ in
               -I${qemuPackage}/include/qemu \
               -I${qemuPackage}/include \
               $(pkg-config --cflags glib-2.0) \
+              -DCRUCIBLE_FIXTURE_RESIDENT_OWNER \
+              -I${qemuPackage}/share/aos/crucible/native-tests \
               ${pluginSource}/crucible-memory-dma.c \
               -o crucible-memory-dma.so \
               $(pkg-config --libs glib-2.0)

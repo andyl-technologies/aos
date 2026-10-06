@@ -93,6 +93,9 @@ mod native_acceptance;
 #[path = "tests/world_fork_atomicity.rs"]
 mod world_fork_atomicity;
 
+#[path = "tests/operational.rs"]
+mod operational;
+
 #[cfg(feature = "destructive-recovery-faults")]
 const WORLD_FORK_PREFLIGHT_FAILURE_CHILD_ENVIRONMENT: &str =
     "CRUCIBLE_DESTRUCTIVE_RECOVERY_WORLD_FORK_PREFLIGHT_FAILURE_CHILD";
@@ -1493,14 +1496,10 @@ fn execution_context(
     input: &CrucibleAttemptExecution,
     execution_byte: u8,
 ) -> AttemptExecutionContext {
-    AttemptExecutionContext::new(
+    operational::service_context(
         AttemptResourceLimits::new(8, 8 << 30, 8 << 30, 64).expect("resources"),
-        ExecutionRetentionIntent::Discard,
-        ExecutionCancellation::default(),
-        ExecutionCheckpointRequest::default(),
-        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
+        execution_basis(input, execution_byte),
     )
-    .with_runtime_basis(execution_basis(input, execution_byte))
 }
 
 fn branch_replay_guest_pending(
@@ -1522,3 +1521,6 @@ fn branch_replay_guest_pending(
 mod branch_runner;
 #[path = "tests/reconciliation.rs"]
 mod reconciliation;
+
+pub(crate) use native_acceptance::assert_native_atomic_resources_private;
+pub(crate) use native_acceptance::assert_native_sibling_resources_private;

@@ -3,6 +3,32 @@
 use std::error::Error;
 use std::fmt;
 
+/// Classifies an infrastructure failure independently of guest execution.
+///
+/// These categories carry no host clock coordinates and never describe a
+/// modeled guest outcome. Concrete adapters retain their original typed cause.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BackendOperationalFailureKind {
+    /// An applicable host deadline elapsed.
+    Expired,
+    /// Operational cancellation stopped continuation.
+    Canceled,
+    /// The requested infrastructure policy was invalid or unbounded.
+    InvalidPolicy,
+    /// The caller's policy revision was stale.
+    RevisionConflict,
+    /// The infrastructure operation roster was full.
+    CapacityExhausted,
+    /// An operation identity or revision could not advance.
+    IdentityExhausted,
+    /// Meaningful progress moved backward.
+    ProgressRegressed,
+    /// Infrastructure ownership could not be established.
+    Unavailable,
+    /// A completed operation was used again.
+    Terminal,
+}
+
 /// Reports a backend-boundary failure.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BackendError {
@@ -14,6 +40,13 @@ pub enum BackendError {
     /// The backend rejected a request.
     Rejected {
         /// A deterministic diagnostic message.
+        message: String,
+    },
+    /// Infrastructure supervision stopped a backend operation.
+    OperationalFailure {
+        /// Actionable failure category independent of the diagnostic text.
+        kind: BackendOperationalFailureKind,
+        /// Concrete adapter diagnostic for the retained original cause.
         message: String,
     },
     /// A backend-owned production resource reservation failed.
@@ -38,6 +71,7 @@ impl fmt::Display for BackendError {
                 write!(f, "backend capability {capability} is unsupported")
             }
             Self::Rejected { message } => f.write_str(message),
+            Self::OperationalFailure { message, .. } => f.write_str(message),
             Self::ResourceLimit {
                 field,
                 current,

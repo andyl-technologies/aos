@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! u32 body_length (big endian, at most 4096)
-//! u32 schema_version = 1
+//! u32 schema_version = 3
 //! u8 message_tag
 //! bytes[32] session
 //! u64 request_sequence (nonzero, strictly increasing)
@@ -19,11 +19,20 @@
 
 use std::io::{Read, Write};
 
+mod outer;
+pub use outer::{
+    RAM_CONTROL_OUTER_BYTES, RamControlOuterCap, RamControlOuterState, decode_ram_control_outer,
+    encode_ram_control_outer,
+};
+
 mod admission;
-pub use admission::{RamControlInventoryRegion, RamControlInventoryReport, RamControlResources};
+pub use admission::{
+    RamControlInventoryRegion, RamControlInventoryReport, RamControlOwnerInventory,
+    RamControlResources,
+};
 
 /// Current independent pager control schema.
-pub const RAM_CONTROL_VERSION: u32 = 1;
+pub const RAM_CONTROL_VERSION: u32 = 3;
 /// Maximum framed message body, checked before reading or allocating a body.
 pub const RAM_CONTROL_MAX_BYTES: usize = 4096;
 /// Fixed operation-class roster in canonical supervision order.
@@ -148,6 +157,13 @@ pub const RAM_LIMIT_KNOWN_MASK: u32 = 63;
 /// Bounded measurement snapshot from the independent worker.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RamControlReply {
+    /// Actual kernel probe made by the native owner under its child credentials.
+    ///
+    /// Absence means no authenticated successful probe has been published.
+    /// Transport presence alone does not establish backend qualification.
+    pub kernel_probe: Option<RamControlKernelProbe>,
+    /// Successful operational transitions, absent without actual paging authority.
+    pub activity: Option<RamControlActivity>,
     /// Request disposition, independent of convergence.
     pub disposition: RamControlDisposition,
     /// Complete logical RAM bytes from the actual sealed native inventory.
@@ -191,6 +207,54 @@ pub struct RamControlReply {
     pub convergence: RamControlConvergence,
 }
 
+/// Closed kernel fault coverage requested by an actual native probe.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RamControlKernelProbeMode {
+    /// Kernel- and user-originated faults; USER_MODE_ONLY was not requested.
+    FullKernel = 1,
+}
+
+/// Immutable facts from successful native userfaultfd API negotiation.
+///
+/// These operational facts belong to the authenticated controller incarnation.
+/// They never enter guest state, semantic fingerprints, or transferred RAM roots.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RamControlKernelProbe {
+    /// Effective user identifier of the actual probing QEMU child.
+    pub effective_uid: u32,
+    /// Effective group identifier of the actual probing QEMU child.
+    pub effective_gid: u32,
+    /// Actual feature mask returned by its successful UFFDIO_API ioctl.
+    pub features: u64,
+    /// Actual fault-coverage mode used when opening the probed descriptor.
+    pub mode: RamControlKernelProbeMode,
+}
+
+/// Successful native paging transitions independent of physical RSS measurement.
+///
+/// These counters provide operational evidence only. Their presence never grants
+/// eviction safety, changes guest state or contributes to a RAM digest.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RamControlActivity {
+    /// Missing-page copies completed under their actual page generation.
+    pub successful_missing_installs: u64,
+    /// Authenticated installations triggered by read-first missing faults.
+    pub successful_missing_read_installs: u64,
+    /// Authenticated installations triggered by write-first missing faults.
+    pub successful_missing_write_installs: u64,
+    /// Authenticated write-protection transitions completed.
+    pub write_protect_transitions: u64,
+    /// Preserved page records successfully reread and verified.
+    pub preservation_reads: u64,
+    /// Page generations successfully preserved in private backing.
+    pub preservation_writes: u64,
+    /// Physical page removal operations successfully completed.
+    pub physical_discards: u64,
+    /// Authenticated prefetch copies completed under their current generation.
+    pub prefetched_pages: u64,
+}
+
 /// A request handled independently of replay, BQL, and guest execution locks.
 // crucible-lint: allow rust-allow -- the closed fourteen-class roster stays inline so decoding needs no variant-sized allocation; every complete record is bounded to 4096 bytes.
 #[allow(clippy::large_enum_variant)]
@@ -206,6 +270,8 @@ pub enum RamControlRequest {
         policy_revision: u64,
         /// Admitted reservation revision (zero identifies initial admission).
         reservation_revision: u64,
+        /// Exact reserve-before-apply resource envelope for this revision.
+        resources: RamControlResources,
         /// Complete normalized policy.
         policy: RamControlPolicy,
     },
@@ -224,6 +290,13 @@ pub enum RamControlRequest {
         topology_generation: u64,
         /// Complete retained resource vector after host admission.
         resources: RamControlResources,
+        /// Separately admitted page-padded private spill quota.
+        spill_quota_bytes: u64,
+    },
+    /// Synchronizes the same original-start cap independently of policy revision.
+    SyncOuterCap {
+        /// Authenticated operational cap identity, revision and immutable anchor.
+        cap: RamControlOuterCap,
     },
     /// Stop claiming work for the selected nonzero operation generation.
     Cancel {

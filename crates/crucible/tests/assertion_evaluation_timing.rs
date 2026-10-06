@@ -82,8 +82,12 @@ fn eventually_evaluates_deadline_point_between_recorded_prefixes() {
             },
         );
 
-    evaluator.observe_prefix(&observable_prefix(3, vec![trigger.clone()]), &mut oracle);
-    let report = evaluator.finalize_prefix(&observable_prefix(10, vec![trigger]), &mut oracle);
+    evaluator
+        .observe_prefix(&observable_prefix(3, vec![trigger.clone()]), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    let report = evaluator
+        .finalize_prefix(&observable_prefix(10, vec![trigger]), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     assert_eq!(report.verdict(), &AssertionRunVerdict::Passed);
     assert_eq!(
@@ -113,8 +117,12 @@ fn eventually_can_satisfy_at_exact_deadline_event_inside_later_prefix() {
     let mut evaluator = HostAssertionEvaluator::new(&properties);
     let mut oracle = BlackBoxHostOracle;
 
-    evaluator.observe_prefix(&observable_prefix(3, vec![request.clone()]), &mut oracle);
-    let report = evaluator.finalize_prefix(&observable_prefix(10, vec![request, ack]), &mut oracle);
+    evaluator
+        .observe_prefix(&observable_prefix(3, vec![request.clone()]), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    let report = evaluator
+        .finalize_prefix(&observable_prefix(10, vec![request, ack]), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     assert_eq!(report.verdict(), &AssertionRunVerdict::Passed);
     assert_eq!(
@@ -151,11 +159,15 @@ fn offline_checker_observes_relevant_events_before_later_terminal_boundary() {
         event_log[..1].to_vec(),
     )
     .expect("ack prefix should be checked");
-    evaluator.observe_prefix(&ack_prefix, &mut oracle);
+    evaluator
+        .observe_prefix(&ack_prefix, &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
     let terminal_prefix =
         crucible::test_support::condition_prefix_from_scheduler_entries_for_test(event_log.clone())
             .expect("terminal prefix should be checked");
-    let online = evaluator.finalize_prefix(&terminal_prefix, &mut oracle);
+    let online = evaluator
+        .finalize_prefix(&terminal_prefix, &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
     let offline = OfflineAssertionChecker::new()
         .check_run(&properties, &event_log)
         .expect("offline assertion timing check should grade retained log");
@@ -245,11 +257,17 @@ fn after_quiescence_evaluates_once_at_terminal_prefix() {
             },
         );
 
-    evaluator.observe_prefix(&observable_prefix(3, Vec::new()), &mut oracle);
-    evaluator.observe_prefix(&observable_prefix(7, Vec::new()), &mut oracle);
+    evaluator
+        .observe_prefix(&observable_prefix(3, Vec::new()), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    evaluator
+        .observe_prefix(&observable_prefix(7, Vec::new()), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
     assert!(evaluated_at.borrow().is_empty());
 
-    let report = evaluator.finalize_prefix(&observable_prefix(10, Vec::new()), &mut oracle);
+    let report = evaluator
+        .finalize_prefix(&observable_prefix(10, Vec::new()), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     assert_eq!(report.verdict(), &AssertionRunVerdict::Passed);
     assert_eq!(*evaluated_at.borrow(), vec![10]);

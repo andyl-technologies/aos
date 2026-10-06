@@ -140,7 +140,7 @@ pub(crate) fn plan_debug_invocation(
         verb,
         session_commands,
         engine_operations,
-        surface_contract: crucible::DebugCliSurfaceContract::rfc0010(),
+        surface_contract: crucible::DebugCliSurfaceContract::standard(),
         owns_debug_state: false,
         raw_gdb_single_step_allowed: false,
         non_canonical_branch_label: (explicit_fork || guest_shell)
@@ -148,7 +148,7 @@ pub(crate) fn plan_debug_invocation(
     };
     if !plan.proves_t_dbg_8() {
         return Err(CliError::Backend(
-            "debug planner does not satisfy the RFC-0010 debug surface contract".to_string(),
+            "debug planner does not satisfy the validated debug surface contract".to_string(),
         ));
     }
     Ok(plan)

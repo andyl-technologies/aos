@@ -82,6 +82,11 @@ fn run() -> Result<(), String> {
         child_user_id,
         child_group_id,
         64,
+        TEST_HOST_FILE_DESCRIPTORS,
+        TEST_HOST_SERVICE_TASKS,
+        TEST_HOST_SERVICE_FILE_DESCRIPTORS,
+        TEST_HOST_SERVICE_RESIDENT_BYTES,
+        TEST_WATCHER_SERVICE_RESIDENT_BYTES,
         4096,
         std::time::Duration::from_secs(15),
     )
@@ -419,3 +424,14 @@ fn usage(program: &str) -> String {
 fn main() {
     eprintln!("crucible-qemu-live-plugin-install requires Linux");
 }
+
+// Fixture policy reserves an explicit finite descriptor ceiling independently of vCPU count.
+const TEST_HOST_FILE_DESCRIPTORS: u64 = 1_024;
+
+// Host-side pager workers and sockets have independent finite fixture entitlements.
+const TEST_HOST_SERVICE_TASKS: u64 = 4;
+const TEST_HOST_SERVICE_FILE_DESCRIPTORS: u64 = 32;
+
+// Operational services retain their own authored memory budgets outside QEMU.
+const TEST_HOST_SERVICE_RESIDENT_BYTES: u64 = 8 * 1024 * 1024;
+const TEST_WATCHER_SERVICE_RESIDENT_BYTES: u64 = 1024 * 1024;

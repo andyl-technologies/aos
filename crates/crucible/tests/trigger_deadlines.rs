@@ -26,7 +26,7 @@ fn evaluate(
             false
         })
         .with_timer_fires(timers.clone());
-    Ok(pass.evaluate_event_graph(graph, state))
+    Ok(pass.evaluate_event_graph(graph, state)?)
 }
 
 #[test]
@@ -233,16 +233,19 @@ fn leading_node_prefix_cannot_consume_a_global_time_trigger() -> TestResult {
     let before = state.to_compact_binary();
     assert!(
         pass.evaluate_event_graph_at_frontier(&graph, &mut state, VirtualTime { ticks: 0 })
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
             .is_empty()
     );
     assert_eq!(state.to_compact_binary(), before);
     assert_eq!(
         pass.evaluate_event_graph_at_frontier(&graph, &mut state, VirtualTime { ticks: 7 })
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
             .len(),
         1
     );
     assert!(
         pass.evaluate_event_graph_at_frontier(&graph, &mut state, VirtualTime { ticks: 7 })
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
             .is_empty()
     );
     Ok(())

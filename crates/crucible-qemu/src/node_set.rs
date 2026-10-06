@@ -45,6 +45,8 @@ mod concurrent;
 #[cfg(target_os = "linux")]
 #[path = "node_set/disk_seal.rs"]
 mod disk_seal;
+#[path = "node_set/fault_channels.rs"]
+mod fault_channels;
 #[path = "node_set/fault_events.rs"]
 mod fault_events;
 #[path = "node_set/lifecycle.rs"]
@@ -71,6 +73,8 @@ pub struct QemuNodeSetPreparedHotForkTemplate {
     source_process: QemuProcessIdentity,
     template_generation: u64,
     maximum_ring_image_bytes: usize,
+    retained_service_supervisor:
+        Option<crucible_linux_resource::host_supervision::HostOperationSupervisor>,
     identity: QemuHotForkTemplateIdentity,
 }
 
@@ -151,10 +155,110 @@ pub struct QemuNodeSetPreparedHotForkSource<'a> {
 
 #[cfg(target_os = "linux")]
 impl QemuNodeSetPreparedHotForkSource<'_> {
+    /// Retains fresh independently admitted RAM resources before child creation.
+    ///
+    /// The supplied owner and original-start supervisor belong to the target
+    /// attempt. Immutable source pages retain their real backing lease, while
+    /// control sockets, source namespaces and preservation files are fresh.
+    ///
+    /// # Errors
+    /// Refuses a stale source, reused stage, insufficient service entitlement,
+    /// unavailable disk preservation, or failed bounded descriptor setup.
+    pub fn prepare_child_ram(
+        &mut self,
+        registration: crate::ram_control::RamControlRegistration,
+        supervisor: crucible_linux_resource::host_supervision::HostOperationSupervisor,
+        directory: &crate::QemuPreparedRunDirectory,
+        custody: crate::QemuRamLaunchCustody,
+    ) -> Result<(), crate::QemuNodeChannelError> {
+        self.validate_prepared().map_err(|error| {
+            crate::QemuNodeChannelError::new("prepare child RAM", error.to_string())
+        })?;
+        self.source
+            .prepare_hot_fork_child_ram(registration, supervisor, directory, custody)
+    }
+
     /// Returns the exact source process incarnation bound during preparation.
     #[must_use]
     pub const fn process_identity(&self) -> &QemuProcessIdentity {
         &self.prepared.source_process
+    }
+
+    /// Duplicates a real source descriptor for deliberate native isolation tests.
+    ///
+    /// The retained process, template, inventory and kernel object are checked
+    /// before exposing the duplicate. The returned handle retains its explicit
+    /// host service reservation through any ambiguous descriptor import.
+    ///
+    /// # Errors
+    /// Refuses stale ownership, an absent native role, insufficient capacity,
+    /// an expired original operation, or a kernel ptrace/pidfd policy refusal.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn duplicate_native_descriptor_for_test(
+        &mut self,
+        role: crate::node::QemuTestNativeSourceDescriptorRole,
+        allocator: &crucible_linux_resource::host_services::HostServiceAllocator,
+    ) -> Result<
+        crate::node::QemuTestNativeSourceDescriptor,
+        crate::node::QemuTestNativeSourceDescriptorError,
+    > {
+        self.validate_prepared()?;
+        self.source.duplicate_native_descriptor_for_test(
+            &self.prepared.source_process,
+            self.prepared.template_generation,
+            role,
+            allocator,
+        )
+    }
+
+    /// Exercises a real source-object substitution under the retained template.
+    ///
+    /// Successful evidence requires the actual guard refusal, unchanged source
+    /// incarnation and retained stage, and exact imported-descriptor release.
+    ///
+    /// # Errors
+    /// Returns retained descriptor custody for uncertain effects or release;
+    /// kernel policy refusals and missing real host scopes fail qualification.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_native_source_isolation_for_test(
+        &mut self,
+        kind: crate::node::QemuTestNativeAliasKind,
+        allocator: &crucible_linux_resource::host_services::HostServiceAllocator,
+    ) -> Result<crate::node::QemuTestNativeAliasRejection, crate::node::QemuTestNativeAliasProbeError>
+    {
+        self.validate_prepared()
+            .map_err(crate::node::QemuTestNativeSourceDescriptorError::from)?;
+        self.source.probe_native_source_isolation_for_test(
+            &self.prepared.source_process,
+            self.prepared.template_generation,
+            kind,
+            allocator,
+        )
+    }
+
+    /// Returns the source registration's existing node-local service allocator.
+    ///
+    /// The clone shares its original capacity accounting and never creates an
+    /// inferred entitlement for a qualification probe.
+    ///
+    /// # Errors
+    /// Refuses a stale prepared source or runtime without genuine registration.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn host_service_allocator_for_test(
+        &mut self,
+    ) -> Result<
+        crucible_linux_resource::host_services::HostServiceAllocator,
+        crate::QemuNodeChannelError,
+    > {
+        self.validate_prepared()?;
+        self.source
+            .native_source_service_allocator_for_test()
+            .ok_or_else(|| {
+                crate::QemuNodeChannelError::new(
+                    "borrow native source service allocator",
+                    "source runtime has no admitted registration",
+                )
+            })
     }
 
     /// Returns the exact configuration authenticated during preparation.
@@ -948,6 +1052,7 @@ impl QemuNodeSet {
             source_process,
             template_generation: state.generation(),
             maximum_ring_image_bytes,
+            retained_service_supervisor: self.node_mut(node)?.host_operation_supervisor().cloned(),
             identity: QemuHotForkTemplateIdentity::new_prepared(
                 configuration,
                 event_log,
@@ -1071,6 +1176,55 @@ impl QemuNodeSet {
                 message: format!("query retained hot-fork template: {error}"),
             })?;
         validate_prepared_hot_fork_token(prepared, &current_process, &state)
+    }
+
+    /// Attaches borrowed operation authority without consulting a completed cap.
+    ///
+    /// The retained process incarnation is checked locally before attachment.
+    /// Subsequent prepared-source queries authenticate the complete native seal
+    /// under this new caller's original operation cap. Physical capacity stays
+    /// owned by the independently retained source reservation.
+    ///
+    /// # Errors
+    /// Returns an error for changed process ownership or detached live channels.
+    #[cfg(target_os = "linux")]
+    pub fn attach_retained_source_supervisor(
+        &mut self,
+        prepared: &QemuNodeSetPreparedHotForkTemplate,
+        supervisor: crucible_linux_resource::host_supervision::HostOperationSupervisor,
+    ) -> Result<(), BackendError> {
+        if self.process_identity(&prepared.node)? != prepared.source_process {
+            return Err(BackendError::Rejected {
+                message: format!(
+                    "retained source `{}` changed process incarnation",
+                    prepared.node.name
+                ),
+            });
+        }
+        self.node_mut(&prepared.node)?
+            .attach_host_operation_supervisor(supervisor)
+            .map_err(|source| BackendError::Rejected {
+                message: source.to_string(),
+            })
+    }
+
+    /// Restores the source's independently retained service budget roster.
+    ///
+    /// # Errors
+    /// Refuses changed native process ownership, absent original service
+    /// authority, or transports that cannot retain the original live owner.
+    #[cfg(target_os = "linux")]
+    pub fn restore_retained_service_supervisor(
+        &mut self,
+        prepared: &QemuNodeSetPreparedHotForkTemplate,
+    ) -> Result<(), BackendError> {
+        let supervisor = prepared
+            .retained_service_supervisor
+            .clone()
+            .ok_or_else(|| BackendError::Rejected {
+                message: "retained source lacks original service supervision".into(),
+            })?;
+        self.attach_retained_source_supervisor(prepared, supervisor)
     }
 
     /// Borrows one prepared source through its exact retained-template token.
@@ -1515,159 +1669,6 @@ impl QemuNodeSet {
             .map_err(BackendError::from)
     }
 
-    /// Returns the exact QEMU fault capabilities admitted for `node`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BackendError`] when `node` is not live in this set.
-    pub fn fault_capabilities(
-        &self,
-        node: &NodeId,
-    ) -> Result<&[FaultCapabilityRowV1], BackendError> {
-        if self.permanently_closed.contains(node) {
-            return Err(BackendError::Rejected {
-                message: format!(
-                    "QEMU node `{}` is permanently failed and cannot accept faults",
-                    node.name
-                ),
-            });
-        }
-        self.nodes
-            .get(node)
-            .map(QemuNode::fault_capabilities)
-            .ok_or_else(|| BackendError::Rejected {
-                message: format!("QEMU backend set has no node `{}`", node.name),
-            })
-    }
-
-    /// Reports whether one live node's launch manifest admits a guest ready marker.
-    #[must_use]
-    pub fn admits_ready_marker(
-        &self,
-        node: &crucible::model::FaultObjectId,
-        marker: &crucible::model::FaultObjectId,
-    ) -> bool {
-        self.nodes
-            .iter()
-            .find(|(id, _node)| id.name == node.as_str())
-            .is_some_and(|(_id, node)| node.ready_markers().contains(marker))
-    }
-
-    /// Derives the node capability manifest common to every live QEMU process.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BackendError`] when a capability identifier is invalid. An
-    /// empty node set advertises no executable node effects.
-    pub fn fault_capability_manifest(
-        &self,
-    ) -> Result<crucible::model::FaultCapabilityManifest, BackendError> {
-        use crucible::model::{FaultCapabilityId, FaultCapabilityManifest, FaultObjectId};
-        let mut common = self
-            .nodes
-            .values()
-            .next()
-            .map(|node| {
-                node.fault_capabilities()
-                    .iter()
-                    .map(|row| row.command_kind)
-                    .collect::<std::collections::BTreeSet<_>>()
-            })
-            .unwrap_or_default();
-        for node in self.nodes.values().skip(1) {
-            let supported = node
-                .fault_capabilities()
-                .iter()
-                .map(|row| row.command_kind)
-                .collect::<std::collections::BTreeSet<_>>();
-            common.retain(|kind| supported.contains(kind));
-        }
-        let implementations = crate::fault_implementation::node_effect_implementation_registry()
-            .map_err(|error| BackendError::Rejected {
-                message: format!("invalid compiled node fault implementation registry: {error}"),
-            })?;
-        let capabilities = common
-            .into_iter()
-            .filter_map(crate::fault_implementation::effect_kind_for_command)
-            .map(|effect| {
-                implementations
-                    .require_implemented(effect)
-                    .map(|contract| contract.effect.descriptor().capability)
-                    .map_err(|error| BackendError::Rejected {
-                        message: format!(
-                            "live QEMU advertised an unimplemented fault command: {error}"
-                        ),
-                    })
-            })
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .map(FaultCapabilityId::parse)
-            .collect::<Result<std::collections::BTreeSet<_>, _>>()
-            .map_err(|error| BackendError::Rejected {
-                message: error.to_string(),
-            })?;
-        let backend =
-            FaultObjectId::parse("node-qemu").map_err(|error| BackendError::Rejected {
-                message: error.to_string(),
-            })?;
-        Ok(FaultCapabilityManifest {
-            backend,
-            capabilities,
-            bounds: BTreeMap::new(),
-        })
-    }
-
-    /// Publishes one authenticated QEMU fault command for `node`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BackendError`] when the node is absent or its mapped command
-    /// transport rejects the command.
-    pub fn enqueue_fault_command(
-        &mut self,
-        node: &NodeId,
-        header: FaultCommandHeaderV1,
-        payload: &[u8],
-    ) -> Result<(), BackendError> {
-        self.node_mut(node)?
-            .enqueue_fault_command(header, payload)
-            .map_err(|source| BackendError::Rejected {
-                message: source.to_string(),
-            })
-    }
-
-    /// Removes one completed QEMU fault result for `node`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BackendError`] when the node is absent or its mapped result
-    /// transport is corrupt.
-    pub fn dequeue_fault_result(
-        &mut self,
-        node: &NodeId,
-    ) -> Result<Option<DequeuedFaultResult>, BackendError> {
-        self.node_mut(node)?
-            .dequeue_fault_result()
-            .map_err(|source| BackendError::Rejected {
-                message: source.to_string(),
-            })
-    }
-
-    /// Drains every authenticated QEMU rule event grouped by scheduler node.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BackendError`] when any node transport or sequence is invalid.
-    pub(crate) fn visit_fault_event_nodes<E>(
-        &mut self,
-        mut visit: impl FnMut(&NodeId, &mut QemuNode) -> Result<(), E>,
-    ) -> Result<(), E> {
-        for (node, backend) in &mut self.nodes {
-            visit(node, backend)?;
-        }
-        Ok(())
-    }
-
     /// Verifies and reaps one child after authenticated terminal lifecycle evidence.
     ///
     /// # Errors
@@ -1756,151 +1757,6 @@ impl QemuNodeSet {
         self.node_mut(node)?
             .complete_terminal_lifecycle_exit(action, evidence, process_generation)
             .map_err(BackendError::from)
-    }
-
-    pub(crate) fn apply_fault_command_at_current_boundary_with_limits(
-        &mut self,
-        node: &NodeId,
-        header: FaultCommandHeaderV1,
-        payload: &[u8],
-        result_buffer: Vec<u8>,
-        maximum_event_records: usize,
-    ) -> Result<DequeuedFaultResult, QemuNodeError> {
-        self.node_mut_for_fault_command(node)?
-            .apply_fault_command_at_current_boundary_with_limits(
-                header,
-                payload,
-                result_buffer,
-                maximum_event_records,
-            )
-    }
-
-    pub(crate) fn apply_fault_preparation_at_current_boundary(
-        &mut self,
-        node: &NodeId,
-        header: FaultCommandHeaderV1,
-        payload: &[u8],
-        maximum_payload_bytes: usize,
-        maximum_event_records: usize,
-    ) -> Result<DequeuedFaultResult, QemuNodeError> {
-        self.node_mut_for_fault_command(node)?
-            .apply_fault_preparation_at_current_boundary(
-                header,
-                payload,
-                maximum_payload_bytes,
-                maximum_event_records,
-            )
-    }
-
-    /// Reads one live node's logical fault-command tick, including idle advances.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BackendError`] when the node is absent, permanently closed,
-    /// or its shared-memory hot path cannot be read.
-    pub(crate) fn fault_command_tick(&mut self, node: &NodeId) -> Result<u64, BackendError> {
-        self.node_mut(node)?
-            .current_icount()
-            .map(|current| current.retired)
-            .map_err(BackendError::from)
-    }
-
-    /// Reserves one strictly increasing fault-command sequence for `node`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BackendError`] when the node is absent or its sequence space
-    /// is exhausted.
-    pub fn reserve_fault_command_sequence(&mut self, node: &NodeId) -> Result<u64, BackendError> {
-        self.node_mut(node)?
-            .reserve_fault_command_sequence()
-            .map_err(BackendError::from)
-    }
-
-    /// Iterates next fault-command sequences without building an intermediate map.
-    pub(crate) fn fault_command_sequence_entries(
-        &self,
-    ) -> impl ExactSizeIterator<Item = (&NodeId, u64)> {
-        self.nodes
-            .iter()
-            .map(|(node, backend)| (node, backend.next_fault_command_sequence()))
-    }
-
-    /// Iterates next required fault-event sequences without an intermediate map.
-    pub(crate) fn fault_event_sequence_entries(
-        &self,
-    ) -> impl ExactSizeIterator<Item = (&NodeId, u64)> {
-        self.nodes
-            .iter()
-            .map(|(node, backend)| (node, backend.next_fault_event_sequence()))
-    }
-
-    /// Returns one node's next required fault-event sequence.
-    pub(crate) fn fault_event_sequence(&self, node: &NodeId) -> Option<u64> {
-        self.nodes
-            .get(node)
-            .map(QemuNode::next_fault_event_sequence)
-    }
-
-    /// Atomically restores canonically ordered command and event continuations.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BackendError`] without mutation when either node membership
-    /// differs or any sequence is invalid for its shared-memory ABI.
-    pub(crate) fn restore_ordered_fault_sequences(
-        &mut self,
-        command_sequences: &[(NodeId, u64)],
-        event_sequences: &[(NodeId, u64)],
-    ) -> Result<(), BackendError> {
-        if self
-            .nodes
-            .keys()
-            .ne(command_sequences.iter().map(|(node, _sequence)| node))
-            || self
-                .nodes
-                .keys()
-                .ne(event_sequences.iter().map(|(node, _sequence)| node))
-        {
-            return Err(BackendError::Rejected {
-                message: String::from(
-                    "QEMU fault-sequence checkpoint node membership differs from live nodes",
-                ),
-            });
-        }
-        for (node, sequence) in command_sequences {
-            self.nodes
-                .get(node)
-                .ok_or_else(|| BackendError::Rejected {
-                    message: format!("QEMU fault checkpoint names unknown node `{}`", node.name),
-                })?
-                .validate_fault_command_sequence_restore(*sequence)
-                .map_err(BackendError::from)?;
-        }
-        for (node, sequence) in event_sequences {
-            self.nodes
-                .get(node)
-                .ok_or_else(|| BackendError::Rejected {
-                    message: format!("QEMU fault checkpoint names unknown node `{}`", node.name),
-                })?
-                .validate_fault_event_sequence_restore(*sequence)
-                .map_err(BackendError::from)?;
-        }
-
-        for (((_node, backend), (_command_node, command)), (_event_node, event)) in self
-            .nodes
-            .iter_mut()
-            .zip(command_sequences)
-            .zip(event_sequences)
-        {
-            backend
-                .restore_fault_command_sequence(*command)
-                .map_err(BackendError::from)?;
-            backend
-                .restore_fault_event_sequence(*event)
-                .map_err(BackendError::from)?;
-        }
-        Ok(())
     }
 
     fn node_mut(&mut self, node: &NodeId) -> Result<&mut QemuNode, BackendError> {
@@ -2033,9 +1889,9 @@ impl SimulationBackend for QemuNodeSet {
     fn dispatch_contract(&self) -> crucible::BackendDispatchContract {
         // This adapter implements the selected installed protocol, not the
         // unimplemented native Source admission contract.
-        const _: () = assert!(crucible_protocol::CONTROL_PROTOCOL_VERSION == 3);
-        const _: () = assert!(crucible_shmem::ABI_VERSION == 30);
-        crucible::BackendDispatchContract::ControlV3
+        const _: () = assert!(crucible_protocol::CONTROL_PROTOCOL_VERSION == 4);
+        const _: () = assert!(crucible_shmem::ABI_VERSION == 31);
+        crucible::BackendDispatchContract::CeilingControl
     }
 
     fn step_node_with_admission(
@@ -2562,6 +2418,7 @@ mod tests {
             source_process: process.clone(),
             template_generation: 1,
             maximum_ring_image_bytes: usize::MAX,
+            retained_service_supervisor: None,
             identity: QemuHotForkTemplateIdentity::new_prepared(
                 ContentHash::from_bytes(b"configuration-a"),
                 EventLog::new(),
@@ -2597,6 +2454,7 @@ mod tests {
             source_process: process.clone(),
             template_generation: 1,
             maximum_ring_image_bytes: usize::MAX,
+            retained_service_supervisor: None,
             identity: QemuHotForkTemplateIdentity::new_prepared(
                 ContentHash::from_bytes(b"configuration-a"),
                 EventLog::new(),
@@ -2645,6 +2503,7 @@ mod tests {
             source_process,
             template_generation: 1,
             maximum_ring_image_bytes: usize::MAX,
+            retained_service_supervisor: None,
             identity: QemuHotForkTemplateIdentity::new_prepared(
                 ContentHash::from_bytes(b"configuration-a"),
                 EventLog::new(),

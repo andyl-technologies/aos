@@ -8,7 +8,7 @@ in
     pname = "crucible-phase9-campaign-gate-matrix-contract";
     version = "0";
     src = null;
-    buildDeps = [pkgs.coreutils pkgs.grep pkgs.sed];
+    buildDeps = [pkgs.coreutils pkgs.grep pkgs.sed pkgs.gawk];
     phases = [
       {
         name = "check-campaign-gate-matrix-binding";
@@ -106,16 +106,16 @@ in
           cat > perf-disabled <<'RESULT'
           PASS
           gate=gate:perf-bench
-          metric_direct_restore_to_runnable_us=125
-          metric_delta_restore_to_runnable_us=95
-          metric_restore_latency_source=descriptor-restore-through-cont-ack
+          metric_cold_launch_to_first_quantum_ns=125000
+          metric_lazy_restore_missing_installs=95
+          metric_restore_latency_source=cold-launch-through-first-quantum
           RESULT
           cat > perf-enabled <<'RESULT'
           PASS
           gate=gate:perf-bench
-          metric_direct_restore_to_runnable_us=140
-          metric_delta_restore_to_runnable_us=101
-          metric_restore_latency_source=descriptor-restore-through-cont-ack
+          metric_cold_launch_to_first_quantum_ns=140000
+          metric_lazy_restore_missing_installs=101
+          metric_restore_latency_source=cold-launch-through-first-quantum
           RESULT
           normalize_campaign_matrix_semantic_result \
             gate:perf-bench perf-disabled perf-disabled.semantic
@@ -123,11 +123,46 @@ in
             gate:perf-bench perf-enabled perf-enabled.semantic
           cmp perf-disabled.semantic perf-enabled.semantic
 
-          sed 's/metric_delta_restore_to_runnable_us=101/metric_delta_restore_to_runnable_us=unbounded/' \
+          sed 's/metric_cold_launch_to_first_quantum_ns=140000/metric_cold_launch_to_first_quantum_ns=unbounded/' \
             perf-enabled > perf-invalid
           if normalize_campaign_matrix_semantic_result \
               gate:perf-bench perf-invalid perf-invalid.semantic; then
             echo "invalid restore metric was normalized" >&2
+            exit 1
+          fi
+
+          for invalid_value in 0 4500000000001 999999999999999999999; do
+            sed "s/metric_cold_launch_to_first_quantum_ns=140000/metric_cold_launch_to_first_quantum_ns=$invalid_value/" \
+              perf-enabled > perf-invalid-duration
+            if normalize_campaign_matrix_semantic_result \
+                gate:perf-bench perf-invalid-duration perf-invalid-duration.semantic; then
+              echo "invalid native duration was normalized" >&2
+              exit 1
+            fi
+          done
+          for invalid_value in 0 18446744073709551616 unbounded; do
+            sed "s/metric_lazy_restore_missing_installs=101/metric_lazy_restore_missing_installs=$invalid_value/" \
+              perf-enabled > perf-invalid-installs
+            if normalize_campaign_matrix_semantic_result \
+                gate:perf-bench perf-invalid-installs perf-invalid-installs.semantic; then
+              echo "invalid native activity was normalized" >&2
+              exit 1
+            fi
+          done
+
+          cp perf-enabled perf-duplicate-duration
+          echo metric_cold_launch_to_first_quantum_ns=140000 >> perf-duplicate-duration
+          if normalize_campaign_matrix_semantic_result \
+              gate:perf-bench perf-duplicate-duration perf-duplicate-duration.semantic; then
+            echo "duplicate native duration was normalized" >&2
+            exit 1
+          fi
+
+          sed 's/metric_cold_launch_to_first_quantum_ns=/metric_delta_restore_to_runnable_us=/' \
+            perf-enabled > perf-predecessor
+          if normalize_campaign_matrix_semantic_result \
+              gate:perf-bench perf-predecessor perf-predecessor.semantic; then
+            echo "predecessor metric was normalized" >&2
             exit 1
           fi
 

@@ -1,6 +1,130 @@
 //! Logical and physical quota admission and recovery tests.
 
 use super::*;
+use crate::content_store::composition::VerifiedStore;
+
+#[test]
+fn decoded_metadata_projection_retains_original_owner_and_refuses_ambiguous_routes()
+-> Result<(), StoreError> {
+    let root = TempDir::new().unwrap_or_else(|error| panic!("metadata owner fixture: {error}"));
+    let raw = DirectoryBlobBackend::new("unadmitted", root.path());
+    assert!(matches!(
+        raw.metadata_resources(),
+        Err(StoreError::Unsupported { .. })
+    ));
+
+    let guard = Arc::new(RecordingPhysicalQuotaGuard::default());
+    guard.set_allowed(true);
+    let original: Arc<dyn StorePhysicalQuotaGuard> = guard.clone();
+    let leaf =
+        DirectoryBlobBackend::new_with_physical_quota("admitted", root.path(), original.clone())?;
+    let verified: Arc<dyn ImmutableBlobBackend> = Arc::new(VerifiedStore::new("verified", leaf));
+    let routed = RoutedStore::new(
+        "routed",
+        BTreeMap::from([
+            (ObjectKind::ExactManifest, verified.clone()),
+            (ObjectKind::RamExtent, verified.clone()),
+        ]),
+    )?;
+    let authority = routed.metadata_resources()?;
+    assert!(Arc::ptr_eq(&original, &authority));
+    let retained = authority.reserve_resources(0, 64)?;
+    drop(routed);
+    drop(verified);
+    drop(original);
+    guard.set_allowed(false);
+    assert!(matches!(
+        authority.reserve_resources(0, 1),
+        Err(StoreError::Quota)
+    ));
+    drop(retained);
+
+    let independent = Arc::new(RecordingPhysicalQuotaGuard::default());
+    independent.set_allowed(true);
+    guard.set_allowed(true);
+    let first = DirectoryBlobBackend::new_with_physical_quota("first", root.path(), guard)?;
+    let second = DirectoryBlobBackend::new_with_physical_quota("second", root.path(), independent)?;
+    let ambiguous = RoutedStore::new(
+        "ambiguous",
+        BTreeMap::from([
+            (ObjectKind::ExactManifest, first),
+            (ObjectKind::RamExtent, second),
+        ]),
+    )?;
+    assert!(matches!(
+        ambiguous.metadata_resources(),
+        Err(StoreError::Unsupported {
+            capability: "shared-decoded-metadata-resources",
+        })
+    ));
+    Ok(())
+}
+
+#[test]
+fn directory_quota_handle_and_reader_keep_descriptor_custody_after_facade_drop()
+-> Result<(), StoreError> {
+    let root = TempDir::new().unwrap_or_else(|error| panic!("directory loan fixture: {error}"));
+    let raw = DirectoryBlobBackend::new("raw-fixture", root.path());
+    let source = BlobHandle::from_bytes(b"retained directory source".to_vec());
+    let id = ContentId::for_bytes(ObjectKind::Trace, 1, b"retained directory source");
+    raw.put_if_absent(id, &source)?;
+
+    let guard = Arc::new(RecordingPhysicalQuotaGuard::default());
+    guard.set_allowed(true);
+    let backend = DirectoryBlobBackend::new_with_physical_quota(
+        "admitted-fixture",
+        root.path(),
+        guard.clone(),
+    )?;
+    let mut handles = Vec::new();
+    for _ in 0..128 {
+        handles.push(backend.read(id, None)?);
+    }
+    assert!(matches!(backend.read(id, None), Err(StoreError::Quota)));
+    let handle = handles
+        .pop()
+        .unwrap_or_else(|| panic!("retained handle is missing"));
+    let mut reader = handle.open()?;
+    drop(handles);
+    drop(handle);
+    drop(backend);
+    // The facade and all handles are gone, but the reader still pins one real
+    // descriptor and the authority that admitted it.
+    assert!(matches!(
+        guard.reserve_resources(128, 1),
+        Err(StoreError::Quota)
+    ));
+    let mut bytes = Vec::new();
+    reader
+        .read_to_end(&mut bytes)
+        .map_err(|source| StoreError::StreamIo {
+            operation: "read-directory-loan-fixture",
+            source,
+        })?;
+    assert_eq!(bytes, b"retained directory source");
+    drop(reader);
+    let restored = guard.reserve_resources(128, 1)?;
+    drop(restored);
+    Ok(())
+}
+
+#[test]
+fn directory_ref_publication_credit_outlives_facade() -> Result<(), StoreError> {
+    let root = TempDir::new().unwrap_or_else(|error| panic!("reference loan fixture: {error}"));
+    let guard = Arc::new(RecordingPhysicalQuotaGuard::default());
+    guard.set_allowed(true);
+    let refs = DirectoryRefBackend::new_with_physical_quota(root.path(), guard.clone())?;
+    let publication = refs.acquire_publication_guard()?;
+    drop(refs);
+    assert!(matches!(
+        guard.reserve_resources(128, 1),
+        Err(StoreError::Quota)
+    ));
+    drop(publication);
+    let restored = guard.reserve_resources(128, 1)?;
+    drop(restored);
+    Ok(())
+}
 
 #[test]
 fn physical_quota_binds_exact_leaf_limits_and_survives_restart_and_admin() {

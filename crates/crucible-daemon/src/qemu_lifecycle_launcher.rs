@@ -29,6 +29,7 @@ struct TerminalCheckpointImport {
     source: crucible::ScenarioDefForm,
     cancellation: ExecutionCancellation,
     published_root: Option<crucible::ContentHash>,
+    _decode_custody: Option<crucible::owned_decode::DecodeCustody>,
 }
 
 /// Guarded production lifecycle launcher for one admitted QEMU attempt.
@@ -69,6 +70,7 @@ where
             source,
             cancellation,
             published_root: None,
+            _decode_custody: crucible::owned_decode::current_custody(),
         });
         self
     }
@@ -376,8 +378,9 @@ where
             .load_production_closure_with_cancellation(publication.root(), &terminal.cancellation)
             .map(Arc::new)
             .map_err(|error| launcher_message(format!("load terminal checkpoint: {error}")))?;
-        let decoded = loaded
-            .decode_semantic_checkpoint(&terminal.source, &terminal.cancellation)
+        let decoded = terminal
+            .checkpoints
+            .decode_semantic_checkpoint(&loaded, &terminal.source, &terminal.cancellation)
             .map_err(|error| launcher_message(format!("decode terminal checkpoint: {error}")))?;
         self.owner.check_operational_boundary()?;
         terminal.published_root = Some(crucible::ContentHash {
@@ -455,7 +458,7 @@ where
             let _ = (admission, run_directories);
             Err(abort_unspawned_generation(
                 lease,
-                launcher_message("exact restore requires descriptor-backed v9 state on Linux"),
+                launcher_message("exact restore requires descriptor-backed paged state on Linux"),
             ))
         }
     }

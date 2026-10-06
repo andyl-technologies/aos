@@ -179,7 +179,7 @@ fn control_v3_refuses_horizon_results_outside_the_exact_published_ceiling() {
             )
             .unwrap_or_else(|error| panic!("bounded preparation: {error}"));
         for run in &mut prepared.runs {
-            run.dispatch_contract = crate::BackendDispatchContract::ControlV3;
+            run.dispatch_contract = crate::BackendDispatchContract::CeilingControl;
         }
         let completed = prepared
             .runs
@@ -415,7 +415,7 @@ fn control_v3_strict_delivery_cap_uses_shared_time_and_rebased_counter_floor() {
         .prepare_host_concurrent_quantum_for_contract(
             request,
             2,
-            crate::BackendDispatchContract::ControlV3,
+            crate::BackendDispatchContract::CeilingControl,
         )
         .unwrap_or_else(|error| panic!("strict mapped preparation: {error}"));
 

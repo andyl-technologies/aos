@@ -101,6 +101,7 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
     fn commit_exact_checkpoint(
         &mut self,
         identity: crate::QmpCheckpointIdentity,
+        _capture_generation: u64,
     ) -> Result<crate::QmpCheckpointEpochState, QemuNodeChannelError> {
         self.log
             .lock()
@@ -116,6 +117,7 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
     fn abort_exact_checkpoint(
         &mut self,
         identity: crate::QmpCheckpointIdentity,
+        _capture_generation: u64,
         expected_committed: Option<crate::QmpCheckpointIdentity>,
     ) -> Result<crate::QmpCheckpointEpochState, QemuNodeChannelError> {
         self.log

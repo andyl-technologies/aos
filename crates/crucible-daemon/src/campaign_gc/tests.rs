@@ -68,7 +68,9 @@ use crate::{
 };
 
 mod physical_quota;
+mod ram_readers;
 mod s3;
+mod streaming_batches;
 
 #[derive(Default)]
 struct TestCampaignTransferRoots {

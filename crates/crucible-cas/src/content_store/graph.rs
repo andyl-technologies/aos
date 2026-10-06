@@ -1517,6 +1517,10 @@ impl ImmutableBlobBackend for StoreGraph {
         self.root_id.as_str()
     }
 
+    fn metadata_resources(&self) -> Result<Arc<dyn super::StorePhysicalQuotaGuard>, StoreError> {
+        self.root.metadata_resources()
+    }
+
     fn capabilities(&self) -> BackendCapabilities {
         self.root.capabilities()
     }
@@ -2358,12 +2362,14 @@ fn instantiate(
             if let Some(repack) = state.packed_repack.get_mut(child) {
                 repack.physical_quota = Some(Arc::clone(&guard));
             }
-            let store = Arc::new(PhysicalQuotaStore::new(
-                id.as_str(),
-                child_backend,
-                child_admin,
-                guard,
-            )?);
+            let store = PhysicalQuotaStore::new(id.as_str(), child_backend, child_admin, guard)?;
+            let store = match nodes.get(child) {
+                Some(StoreNodeSpec::Directory { root }) => {
+                    store.with_directory_costs(DirectoryBlobBackend::quota_resource_costs(root)?)
+                }
+                _ => store,
+            };
+            let store = Arc::new(store);
             state.physical.insert(id.clone(), store.clone());
             store
         }

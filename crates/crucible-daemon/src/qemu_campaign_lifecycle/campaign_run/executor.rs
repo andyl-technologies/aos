@@ -1,48 +1,51 @@
-//! Synchronous planner and executor adapters for one guarded default campaign.
-
-use std::collections::BTreeMap;
-use std::convert::Infallible;
-use std::error::Error;
-use std::fmt;
-use std::sync::{Arc, Mutex, Weak};
+//! Admitted campaign execution and canonical local planner accounting.
+//!
+//! Production requests require the shared executor actor. Explicit component
+//! fixtures live in a separately compiled module and grant no physical authority.
 
 use crate::automatic_finding_runner::{
     CampaignRunFindingExactRetentionSource, FindingExactRetentionSource,
 };
-use crate::executor_supervisor::{AttemptCheckpointHandoff, ExecutionCheckpointHandoff};
 use crate::executor_worker::{
     publish_prepared_semantic_attempt_result, validate_prepared_semantic_attempt_result,
 };
 use crate::{
-    AttemptAdmissionValidator, AttemptExecutionContext, AttemptExecutionDisposition,
-    AttemptExecutionKey, AttemptExecutionModel, AttemptExecutionProduct,
-    AttemptExecutionReconciliationStep, AttemptResultPreparationError,
-    AttemptResultPreparationFailure, AttemptResultPublicationFailure, AttemptWorkerFailure,
-    CapturedAttemptCheckpoint, CheckpointCompletionOutcome, CheckpointHandoffFailure,
-    CheckpointPublicationOutcome, CheckpointResultAbortError, CheckpointResultAbortToken,
-    CheckpointResultStageOutcome, CompletionValidationFailure, ExactCheckpointStore,
-    ExactCheckpointStoreError, ExecutionCancellation, ExecutionCheckpointRequest, ExecutorCapacity,
-    ExecutorCapacityError, LocalExecutorError, LocalExecutorSupervisor, MemoryAssignmentLedger,
-    PreparedAttemptCheckpoint, PreparedAttemptWorkResult, RepositoryAttemptAdmission,
-    RepositoryAttemptWorker, RepositoryAttemptWorkerError, abort_checkpoint_result,
+    AttemptExecutionDisposition, AttemptExecutionKey, AttemptExecutionModel,
+    AttemptExecutionProduct, AttemptExecutionReconciliationStep, AttemptResultPreparationError,
+    AttemptResultPreparationFailure, AttemptResultPublicationFailure, CheckpointCompletionOutcome,
+    CheckpointPublicationOutcome, CheckpointResultStageOutcome, ExecutionCancellation,
+    PreparedAttemptWorkResult, RepositoryAttemptWorker, RepositoryAttemptWorkerError,
     prepare_attempt_result, publish_staged_checkpoint_result,
     reconcile_published_checkpoint_result, stage_prepared_checkpoint_result,
 };
-use crucible_campaign::{
-    AssignmentId, AttemptExecutionScope, AttemptResourceLimits, CampaignCodecError,
-    CampaignExecutorStore, CampaignHash, CancelAttemptExecutionDisposition,
-    CancelAttemptExecutionRequest, CancelAttemptExecutionResponse,
-    CheckpointAttemptExecutionDisposition, CheckpointAttemptExecutionRequest,
-    CheckpointAttemptExecutionResponse, DaemonEpoch, ExecutorControlService, ExecutorRejection,
-    ExecutorResumeService, ExecutorService, ExecutorStatusService, GetAttemptExecutionDisposition,
-    GetAttemptExecutionRequest, GetAttemptExecutionResponse, ObservationId,
-    PlannerExecutionSupervisor, PlannerRequest, PurePlannerEngine,
-    ResumeAttemptExecutionDisposition, ResumeAttemptExecutionRequest,
-    ResumeAttemptExecutionResponse, SubmitAttemptDisposition, SubmitAttemptRequest,
-    SubmitAttemptResponse, SupervisedPlannerExecution,
+#[cfg(any(test, feature = "test-support"))]
+use crate::{
+    AttemptWorkerFailure, CheckpointResultAbortError, CompletionValidationFailure,
+    ExactCheckpointStore, ExactCheckpointStoreError, ExecutorCapacityError, LocalExecutorError,
+    RepositoryAttemptAdmission,
 };
+use crucible_campaign::PurePlannerEngine;
+#[cfg(any(test, feature = "test-support"))]
+use crucible_campaign::{AttemptResourceLimits, DaemonEpoch};
+use crucible_campaign::{
+    CampaignCodecError, CampaignExecutorStore, CancelAttemptExecutionRequest,
+    CancelAttemptExecutionResponse, CheckpointAttemptExecutionRequest,
+    CheckpointAttemptExecutionResponse, ExecutorControlService, ExecutorResumeService,
+    ExecutorService, ExecutorStatusService, GetAttemptExecutionRequest,
+    GetAttemptExecutionResponse, ObservationId, PlannerExecutionSupervisor, PlannerRequest,
+    ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse, SubmitAttemptDisposition,
+    SubmitAttemptRequest, SubmitAttemptResponse, SupervisedPlannerExecution,
+};
+#[cfg(any(test, feature = "test-support"))]
+use std::convert::Infallible;
+use std::error::Error;
+use std::fmt;
+use std::sync::Arc;
 
 use super::DEFAULT_RUN_RECONCILIATION_STEPS;
+mod admitted;
+#[cfg(any(test, feature = "test-support"))]
+mod component;
 
 pub(super) struct LocalPlannerMeter;
 
@@ -158,74 +161,43 @@ pub(super) struct SynchronousCampaignExecutor<M> {
     exact_retention: Arc<dyn FindingExactRetentionSource>,
     exact_inventory: Arc<CampaignRunFindingExactRetentionSource>,
     worker: RepositoryAttemptWorker<M>,
-    admission: RepositoryAttemptAdmission,
-    daemon_epoch: DaemonEpoch,
-    resources: AttemptResourceLimits,
     cancellation: ExecutionCancellation,
-    assignments: BTreeMap<AssignmentId, CampaignHash>,
-    completed: BTreeMap<AttemptExecutionKey, ObservationId>,
-    checkpoint_capture: Option<SynchronousCheckpointCapture>,
-}
-
-type CheckpointCaptureSupervisor =
-    LocalExecutorSupervisor<MemoryAssignmentLedger, RepositoryAttemptAdmission>;
-
-struct SynchronousCheckpointCapture {
-    supervisor: Arc<Mutex<CheckpointCaptureSupervisor>>,
-    checkpoints: Arc<ExactCheckpointStore>,
-}
-
-struct SynchronousCheckpointHandoff {
-    supervisor: Weak<Mutex<CheckpointCaptureSupervisor>>,
-    checkpoints: Arc<ExactCheckpointStore>,
-    queued: crate::QueuedAttempt,
-}
-
-impl fmt::Debug for SynchronousCheckpointHandoff {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("SynchronousCheckpointHandoff")
-            .field("execution", &self.queued.execution())
-            .field("attempt", &self.queued.request().attempt())
-            .finish_non_exhaustive()
-    }
-}
-
-impl AttemptCheckpointHandoff for SynchronousCheckpointHandoff {
-    fn prepare_and_stage(
-        &self,
-        capture: &CapturedAttemptCheckpoint,
-    ) -> Result<PreparedAttemptCheckpoint, CheckpointHandoffFailure> {
-        let prepared = self
-            .checkpoints
-            .prepare_attempt_checkpoint_with_cancellation(capture, self.queued.cancellation())
-            .map_err(|error| match error {
-                ExactCheckpointStoreError::Canceled => CheckpointHandoffFailure::Canceled,
-                error if error.is_retryable() => CheckpointHandoffFailure::Retryable,
-                _ => CheckpointHandoffFailure::Terminal,
-            })?;
-        let Some(supervisor) = self.supervisor.upgrade() else {
-            return Err(CheckpointHandoffFailure::Terminal);
-        };
-        let mut supervisor =
-            lock_capture_supervisor(&supervisor).map_err(|_| CheckpointHandoffFailure::Terminal)?;
-        match supervisor.stage_checkpoint_publication_before_teardown(&self.queued, prepared.root())
-        {
-            Ok(CheckpointPublicationOutcome::Staged)
-            | Ok(CheckpointPublicationOutcome::AlreadyStaged)
-            | Ok(CheckpointPublicationOutcome::AlreadyPaused) => Ok(prepared),
-            Ok(CheckpointPublicationOutcome::NotCurrent)
-                if self.queued.cancellation().is_canceled() =>
-            {
-                Err(CheckpointHandoffFailure::Canceled)
-            }
-            Ok(CheckpointPublicationOutcome::NotCurrent) => Err(CheckpointHandoffFailure::Terminal),
-            Err(_) => Err(CheckpointHandoffFailure::Terminal),
-        }
-    }
+    admitted: Option<super::GuardedCampaignOwner>,
+    caller_supervisor: Option<crucible_linux_resource::host_supervision::HostOperationSupervisor>,
+    #[cfg(any(test, feature = "test-support"))]
+    component: Option<component::ComponentExecutionState>,
 }
 
 impl<M> SynchronousCampaignExecutor<M> {
+    pub(super) fn under_caller(
+        mut self,
+        supervisor: &crucible_linux_resource::host_supervision::HostOperationSupervisor,
+    ) -> Self {
+        self.caller_supervisor = Some(supervisor.clone());
+        self
+    }
+
+    pub(super) fn new_admitted(
+        store: CampaignExecutorStore,
+        exact_retention: Arc<CampaignRunFindingExactRetentionSource>,
+        model: M,
+        cancellation: ExecutionCancellation,
+        owner: super::GuardedCampaignOwner,
+    ) -> Self {
+        Self {
+            worker: RepositoryAttemptWorker::new(store.clone(), model),
+            store,
+            exact_inventory: Arc::clone(&exact_retention),
+            exact_retention,
+            cancellation,
+            admitted: Some(owner),
+            caller_supervisor: None,
+            #[cfg(any(test, feature = "test-support"))]
+            component: None,
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn new(
         store: CampaignExecutorStore,
         exact_retention: Arc<CampaignRunFindingExactRetentionSource>,
@@ -235,65 +207,77 @@ impl<M> SynchronousCampaignExecutor<M> {
         resources: AttemptResourceLimits,
         cancellation: ExecutionCancellation,
     ) -> Self {
-        let exact_inventory = Arc::clone(&exact_retention);
         Self {
             worker: RepositoryAttemptWorker::new(store.clone(), model),
             store,
+            exact_inventory: Arc::clone(&exact_retention),
             exact_retention,
-            exact_inventory,
-            admission,
-            daemon_epoch,
-            resources,
             cancellation,
-            assignments: BTreeMap::new(),
-            completed: BTreeMap::new(),
-            checkpoint_capture: None,
+            admitted: None,
+            caller_supervisor: None,
+            component: Some(component::ComponentExecutionState::new(
+                admission,
+                daemon_epoch,
+                resources,
+            )),
         }
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn with_checkpoint_capture(
         mut self,
         checkpoints: Arc<ExactCheckpointStore>,
-    ) -> Result<Self, ExecutorCapacityError> {
-        let capacity = ExecutorCapacity::new(
-            1,
-            self.resources.maximum_vcpus(),
-            self.resources.maximum_resident_bytes(),
-            self.resources.maximum_disk_bytes(),
-            self.resources.maximum_execution_quanta(),
-        )?;
-        let supervisor = LocalExecutorSupervisor::new(
-            MemoryAssignmentLedger::default(),
-            self.admission.clone(),
-            self.daemon_epoch,
-            capacity,
-        );
-        self.checkpoint_capture = Some(SynchronousCheckpointCapture {
-            supervisor: Arc::new(Mutex::new(supervisor)),
-            checkpoints,
-        });
+    ) -> Result<Self, ComponentCaptureConfigurationError> {
+        let component = self
+            .component
+            .as_mut()
+            .ok_or(ComponentCaptureConfigurationError::MissingAuthority)?;
+        component
+            .configure_capture(checkpoints)
+            .map_err(ComponentCaptureConfigurationError::Capacity)?;
         Ok(self)
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Debug)]
+pub(super) enum ComponentCaptureConfigurationError {
+    MissingAuthority,
+    Capacity(ExecutorCapacityError),
+}
+
 #[derive(Debug)]
 pub(super) enum SynchronousCampaignExecutorError<E> {
+    Admitted(Box<dyn Error + Send + Sync>),
+    AuthorityUnavailable,
     Protocol(crucible_campaign::CampaignCodecError),
+    #[cfg(any(test, feature = "test-support"))]
     Repository(crucible_campaign::CampaignRepositoryError),
     Preparation(Box<AttemptResultPreparationFailure>),
     Publication(AttemptResultPublicationFailure),
     Execution(crate::AttemptWorkerFailure<E>),
     Reconciliation(crate::AttemptWorkerFailure<E>),
+    #[cfg(any(test, feature = "test-support"))]
     Completion(CompletionValidationFailure),
+    #[cfg(any(test, feature = "test-support"))]
     CaptureUnavailable,
+    #[cfg(any(test, feature = "test-support"))]
     CaptureSupervisorPoisoned,
+    #[cfg(any(test, feature = "test-support"))]
     CaptureSupervisor(LocalExecutorError<Infallible>),
+    #[cfg(any(test, feature = "test-support"))]
     CaptureExecution(AttemptWorkerFailure<RepositoryAttemptWorkerError<E>>),
+    #[cfg(any(test, feature = "test-support"))]
     CaptureCandidate(Box<AttemptResultPreparationFailure>),
+    #[cfg(any(test, feature = "test-support"))]
     CaptureCheckpoint(ExactCheckpointStoreError),
+    #[cfg(any(test, feature = "test-support"))]
     CaptureUnexpectedSemanticResult,
+    #[cfg(any(test, feature = "test-support"))]
     CaptureAbort(Box<CheckpointResultAbortError<LocalExecutorError<Infallible>>>),
+    #[cfg(any(test, feature = "test-support"))]
     CaptureNativeRetirement(crucible_api::ProductionExactCheckpointRetirementError),
+    #[cfg(any(test, feature = "test-support"))]
     CaptureNotPaused,
     UnexpectedCheckpoint,
     ReconciliationLimit,
@@ -302,46 +286,62 @@ pub(super) enum SynchronousCampaignExecutorError<E> {
 impl<E: fmt::Display> fmt::Display for SynchronousCampaignExecutorError<E> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::AuthorityUnavailable => {
+                formatter.write_str("executor has no admitted execution authority")
+            }
+            Self::Admitted(error) => write!(formatter, "admitted campaign execution: {error}"),
             Self::Protocol(error) => write!(formatter, "executor protocol: {error}"),
+            #[cfg(any(test, feature = "test-support"))]
             Self::Repository(error) => write!(formatter, "executor repository: {error}"),
             Self::Preparation(error) => write!(formatter, "executor result preflight: {error}"),
             Self::Publication(error) => write!(formatter, "executor result publication: {error}"),
             Self::Execution(error) => write!(formatter, "executor model: {error}"),
             Self::Reconciliation(error) => write!(formatter, "executor reconciliation: {error}"),
+            #[cfg(any(test, feature = "test-support"))]
             Self::Completion(reason) => {
                 write!(formatter, "executor completion validation: {reason:?}")
             }
+            #[cfg(any(test, feature = "test-support"))]
             Self::CaptureUnavailable => {
                 formatter.write_str("executor exact capture store is not configured")
             }
+            #[cfg(any(test, feature = "test-support"))]
             Self::CaptureSupervisorPoisoned => {
                 formatter.write_str("executor exact capture supervisor lock is poisoned")
             }
+            #[cfg(any(test, feature = "test-support"))]
             Self::CaptureSupervisor(error) => {
                 write!(formatter, "executor exact capture supervisor: {error}")
             }
+            #[cfg(any(test, feature = "test-support"))]
             Self::CaptureExecution(error) => {
                 write!(formatter, "executor exact capture worker: {error}")
             }
+            #[cfg(any(test, feature = "test-support"))]
             Self::CaptureCandidate(error) => {
                 write!(
                     formatter,
                     "executor exact capture returned a candidate: {error}"
                 )
             }
+            #[cfg(any(test, feature = "test-support"))]
             Self::CaptureCheckpoint(error) => {
                 write!(formatter, "executor exact checkpoint: {error}")
             }
+            #[cfg(any(test, feature = "test-support"))]
             Self::CaptureUnexpectedSemanticResult => {
                 formatter.write_str("executor exact capture returned a semantic observation")
             }
+            #[cfg(any(test, feature = "test-support"))]
             Self::CaptureAbort(error) => write!(formatter, "executor exact capture abort: {error}"),
+            #[cfg(any(test, feature = "test-support"))]
             Self::CaptureNativeRetirement(error) => {
                 write!(
                     formatter,
                     "executor exact capture source retirement: {error}"
                 )
             }
+            #[cfg(any(test, feature = "test-support"))]
             Self::CaptureNotPaused => {
                 formatter.write_str("executor exact capture did not reach durable paused state")
             }
@@ -359,447 +359,36 @@ where
 {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::Admitted(error) => Some(error.as_ref()),
             Self::Protocol(error) => Some(error),
+            #[cfg(any(test, feature = "test-support"))]
             Self::Repository(error) => Some(error),
             Self::Preparation(error) => Some(error),
             Self::Publication(error) => Some(error),
             Self::Execution(error) | Self::Reconciliation(error) => Some(error),
+            #[cfg(any(test, feature = "test-support"))]
             Self::CaptureSupervisor(error) => Some(error),
+            #[cfg(any(test, feature = "test-support"))]
             Self::CaptureExecution(error) => Some(error),
+            #[cfg(any(test, feature = "test-support"))]
             Self::CaptureCandidate(error) => Some(error),
+            #[cfg(any(test, feature = "test-support"))]
             Self::CaptureCheckpoint(error) => Some(error),
+            #[cfg(any(test, feature = "test-support"))]
             Self::CaptureAbort(error) => Some(error),
+            #[cfg(any(test, feature = "test-support"))]
             Self::CaptureNativeRetirement(error) => Some(error),
+            #[cfg(any(test, feature = "test-support"))]
             Self::Completion(_)
             | Self::CaptureUnavailable
             | Self::CaptureSupervisorPoisoned
             | Self::CaptureUnexpectedSemanticResult
-            | Self::CaptureNotPaused
-            | Self::UnexpectedCheckpoint
-            | Self::ReconciliationLimit => None,
-        }
-    }
-}
-
-impl<M> ExecutorService for SynchronousCampaignExecutor<M>
-where
-    M: AttemptExecutionModel,
-    M::Error: Error + 'static,
-{
-    type Error = SynchronousCampaignExecutorError<M::Error>;
-
-    fn submit_attempt(
-        &mut self,
-        request: &SubmitAttemptRequest,
-    ) -> Result<SubmitAttemptResponse, Self::Error> {
-        if request.execution_scope() != AttemptExecutionScope::Semantic {
-            return self.submit_checkpoint_capture(request);
-        }
-        if request.daemon_epoch() != self.daemon_epoch {
-            return SubmitAttemptResponse::new(
-                request,
-                SubmitAttemptDisposition::Rejected {
-                    reason: ExecutorRejection::Unauthorized,
-                },
-            )
-            .map_err(SynchronousCampaignExecutorError::Protocol);
-        }
-        if request.resources() != self.resources {
-            return SubmitAttemptResponse::new(
-                request,
-                SubmitAttemptDisposition::Rejected {
-                    reason: ExecutorRejection::Incompatible,
-                },
-            )
-            .map_err(SynchronousCampaignExecutorError::Protocol);
-        }
-        if request.execution_scope() != AttemptExecutionScope::Semantic {
-            return SubmitAttemptResponse::new(
-                request,
-                SubmitAttemptDisposition::Rejected {
-                    reason: ExecutorRejection::Incompatible,
-                },
-            )
-            .map_err(SynchronousCampaignExecutorError::Protocol);
-        }
-        if let Err(reason) = self.admission.validate(request) {
-            return SubmitAttemptResponse::new(
-                request,
-                SubmitAttemptDisposition::Rejected { reason },
-            )
-            .map_err(SynchronousCampaignExecutorError::Protocol);
-        }
-        let request_digest = request.request_digest();
-        if self
-            .assignments
-            .get(&request.assignment())
-            .is_some_and(|retained| retained != &request_digest)
-        {
-            return SubmitAttemptResponse::new(
-                request,
-                SubmitAttemptDisposition::Rejected {
-                    reason: ExecutorRejection::ConflictingAssignment,
-                },
-            )
-            .map_err(SynchronousCampaignExecutorError::Protocol);
-        }
-        self.assignments
-            .entry(request.assignment())
-            .or_insert(request_digest);
-
-        let key = AttemptExecutionKey::for_request(request);
-        if let Some(observation) = self.completed.get(&key).copied() {
-            self.admission
-                .validate_completion(request, observation)
-                .map_err(SynchronousCampaignExecutorError::Completion)?;
-            return SubmitAttemptResponse::new(
-                request,
-                SubmitAttemptDisposition::AlreadyCompleted { observation },
-            )
-            .map_err(SynchronousCampaignExecutorError::Protocol);
-        }
-        let input = crate::resolve_attempt_execution_input_with_resources(
-            &self.store,
-            key,
-            request.resources(),
-        )
-        .map_err(SynchronousCampaignExecutorError::Repository)?;
-        let context = AttemptExecutionContext::new(
-            request.resources(),
-            request.retention(),
-            self.cancellation.clone(),
-            ExecutionCheckpointRequest::default(),
-            request.retention_policy(),
-        );
-        let product = match self.worker.model_mut().execute(&input, &context) {
-            Ok(product) => product,
-            Err(failure) => {
-                reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-                return Err(SynchronousCampaignExecutorError::Execution(failure));
-            }
-        };
-        let result = match product {
-            AttemptExecutionProduct::PreparedSemantic(result) => Ok(*result),
-            AttemptExecutionProduct::ExactCheckpoint(_) => {
-                reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-                return Err(SynchronousCampaignExecutorError::UnexpectedCheckpoint);
-            }
-        };
-        let result = match result {
-            Ok(result) => result,
-            Err(error) => {
-                reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-                return Err(SynchronousCampaignExecutorError::Preparation(Box::new(
-                    AttemptResultPreparationFailure::Result(error),
-                )));
-            }
-        };
-        if let Err(error) = validate_prepared_semantic_attempt_result(&self.store, key, &result) {
-            reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-            return Err(SynchronousCampaignExecutorError::Preparation(Box::new(
-                error,
-            )));
-        }
-        let observation = match publish_prepared_semantic_attempt_result(
-            &self.store,
-            self.exact_retention.as_ref(),
-            &result,
-        ) {
-            Ok(observation) => observation,
-            Err(error) => {
-                reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-                return Err(SynchronousCampaignExecutorError::Publication(error));
-            }
-        };
-        if let Err(reason) = self.admission.validate_completion(request, observation) {
-            reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-            return Err(SynchronousCampaignExecutorError::Completion(reason));
-        }
-        reconcile_model(
-            self.worker.model_mut(),
-            AttemptExecutionDisposition::Observation(observation),
-        )?;
-        self.completed.insert(key, observation);
-        SubmitAttemptResponse::new(
-            request,
-            SubmitAttemptDisposition::AlreadyCompleted { observation },
-        )
-        .map_err(SynchronousCampaignExecutorError::Protocol)
-    }
-}
-
-impl<M> SynchronousCampaignExecutor<M>
-where
-    M: AttemptExecutionModel,
-    M::Error: Error + 'static,
-{
-    fn submit_checkpoint_capture(
-        &mut self,
-        request: &SubmitAttemptRequest,
-    ) -> Result<SubmitAttemptResponse, SynchronousCampaignExecutorError<M::Error>> {
-        let capture = self
-            .checkpoint_capture
-            .as_ref()
-            .ok_or(SynchronousCampaignExecutorError::CaptureUnavailable)?;
-        let supervisor = Arc::clone(&capture.supervisor);
-        let checkpoints = Arc::clone(&capture.checkpoints);
-        let response = {
-            let mut supervisor = lock_capture_supervisor(&supervisor)
-                .map_err(|_| SynchronousCampaignExecutorError::CaptureSupervisorPoisoned)?;
-            supervisor
-                .submit_attempt(request)
-                .map_err(SynchronousCampaignExecutorError::CaptureSupervisor)?
-        };
-        if !matches!(
-            response.disposition(),
-            SubmitAttemptDisposition::Accepted { .. }
-        ) {
-            return Ok(response);
-        }
-
-        let mut queued = {
-            let mut capture_supervisor = lock_capture_supervisor(&supervisor)
-                .map_err(|_| SynchronousCampaignExecutorError::CaptureSupervisorPoisoned)?;
-            capture_supervisor
-                .next_queued()
-                .ok_or(SynchronousCampaignExecutorError::CaptureNotPaused)?
-        };
-        let handoff = SynchronousCheckpointHandoff {
-            supervisor: Arc::downgrade(&supervisor),
-            checkpoints: Arc::clone(&checkpoints),
-            queued: queued.reconciliation_copy(),
-        };
-        queued.install_checkpoint_handoff(ExecutionCheckpointHandoff::new(Arc::new(handoff)));
-
-        let work = self.worker.execute(queued);
-        let prepared = match prepare_attempt_result(&self.store, &checkpoints, work) {
-            Ok(PreparedAttemptWorkResult::ExactCheckpoint(prepared)) => *prepared,
-            Ok(PreparedAttemptWorkResult::Observation(prepared)) => {
-                let queued = prepared.queued().reconciliation_copy();
-                let cleanup = stop_capture_terminally(&supervisor, &queued);
-                reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-                cleanup.map_err(SynchronousCampaignExecutorError::CaptureSupervisor)?;
-                return Err(SynchronousCampaignExecutorError::CaptureUnexpectedSemanticResult);
-            }
-            Err(AttemptResultPreparationError::Worker { queued, failure }) => {
-                let cleanup = stop_capture_after_worker_failure(&supervisor, &queued, &failure);
-                reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-                cleanup.map_err(SynchronousCampaignExecutorError::CaptureSupervisor)?;
-                return Err(SynchronousCampaignExecutorError::CaptureExecution(failure));
-            }
-            Err(AttemptResultPreparationError::Candidate { pending, source }) => {
-                let (queued, _) = pending.into_parts();
-                let cleanup = stop_capture_terminally(&supervisor, &queued);
-                reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-                cleanup.map_err(SynchronousCampaignExecutorError::CaptureSupervisor)?;
-                return Err(SynchronousCampaignExecutorError::CaptureCandidate(source));
-            }
-            Err(AttemptResultPreparationError::Checkpoint { pending, source }) => {
-                let (queued, checkpoint) = pending.into_parts();
-                let retirement = checkpoint_result_retirement(checkpoint);
-                let cleanup = stop_capture_terminally(&supervisor, &queued);
-                let retirement = retire_checkpoint_source(retirement);
-                reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-                cleanup.map_err(SynchronousCampaignExecutorError::CaptureSupervisor)?;
-                retirement?;
-                return Err(SynchronousCampaignExecutorError::CaptureCheckpoint(*source));
-            }
-        };
-
-        let checkpoint = prepared.root();
-        let staged = match lock_capture_supervisor(&supervisor) {
-            Ok(mut capture_supervisor) => {
-                stage_prepared_checkpoint_result(&mut capture_supervisor, prepared)
-            }
-            Err(_) => {
-                let cleanup = abort_checkpoint_capture(
-                    &supervisor,
-                    CheckpointResultAbortToken::Prepared(Box::new(prepared)),
-                );
-                reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-                cleanup?;
-                return Err(SynchronousCampaignExecutorError::CaptureSupervisorPoisoned);
-            }
-        };
-        let staged = match staged {
-            Ok(CheckpointResultStageOutcome::Publish(staged)) => staged,
-            Ok(CheckpointResultStageOutcome::Finished {
-                prepared,
-                outcome: CheckpointPublicationOutcome::AlreadyPaused,
-                ..
-            }) => {
-                let retirement = retire_checkpoint_source(prepared.native_retirement());
-                self.exact_inventory
-                    .retain_checkpoint(checkpoint)
-                    .map_err(|_| SynchronousCampaignExecutorError::CaptureNotPaused)?;
-                reconcile_model(
-                    self.worker.model_mut(),
-                    AttemptExecutionDisposition::ExactCheckpoint(checkpoint),
-                )?;
-                retirement?;
-                return Ok(response);
-            }
-            Ok(CheckpointResultStageOutcome::Finished { prepared, .. }) => {
-                let cleanup = abort_checkpoint_capture(
-                    &supervisor,
-                    CheckpointResultAbortToken::Prepared(prepared),
-                );
-                reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-                cleanup?;
-                return Err(SynchronousCampaignExecutorError::CaptureNotPaused);
-            }
-            Err(error) => {
-                let source = error.source;
-                let cleanup = abort_checkpoint_capture(
-                    &supervisor,
-                    CheckpointResultAbortToken::Prepared(error.prepared),
-                );
-                reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-                cleanup?;
-                return Err(SynchronousCampaignExecutorError::CaptureSupervisor(source));
-            }
-        };
-        let published = match publish_staged_checkpoint_result(&checkpoints, *staged) {
-            Ok(published) => published,
-            Err(error) => {
-                let source = error.source;
-                let cleanup = abort_checkpoint_capture(
-                    &supervisor,
-                    CheckpointResultAbortToken::Staged(error.staged),
-                );
-                reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-                cleanup?;
-                return Err(SynchronousCampaignExecutorError::CaptureCheckpoint(source));
-            }
-        };
-        let completion = match lock_capture_supervisor(&supervisor) {
-            Ok(mut capture_supervisor) => {
-                reconcile_published_checkpoint_result(&mut capture_supervisor, published)
-            }
-            Err(_) => {
-                let cleanup = abort_checkpoint_capture(
-                    &supervisor,
-                    CheckpointResultAbortToken::Published(Box::new(published)),
-                );
-                reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-                cleanup?;
-                return Err(SynchronousCampaignExecutorError::CaptureSupervisorPoisoned);
-            }
-        };
-        match completion {
-            Ok(
-                CheckpointCompletionOutcome::Paused | CheckpointCompletionOutcome::AlreadyPaused,
-            ) => {
-                self.exact_inventory
-                    .retain_checkpoint(checkpoint)
-                    .map_err(|_| SynchronousCampaignExecutorError::CaptureNotPaused)?;
-                reconcile_model(
-                    self.worker.model_mut(),
-                    AttemptExecutionDisposition::ExactCheckpoint(checkpoint),
-                )?;
-                Ok(response)
-            }
-            Ok(CheckpointCompletionOutcome::NotCurrent) => {
-                reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-                Err(SynchronousCampaignExecutorError::CaptureNotPaused)
-            }
-            Err(error) => {
-                let source = error.source;
-                let cleanup = abort_checkpoint_capture(
-                    &supervisor,
-                    CheckpointResultAbortToken::Published(error.published),
-                );
-                reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-                cleanup?;
-                Err(SynchronousCampaignExecutorError::CaptureSupervisor(source))
+            | Self::CaptureNotPaused => None,
+            Self::AuthorityUnavailable | Self::UnexpectedCheckpoint | Self::ReconciliationLimit => {
+                None
             }
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct CaptureSupervisorPoisoned;
-
-fn lock_capture_supervisor<V>(
-    supervisor: &Arc<Mutex<LocalExecutorSupervisor<MemoryAssignmentLedger, V>>>,
-) -> Result<
-    std::sync::MutexGuard<'_, LocalExecutorSupervisor<MemoryAssignmentLedger, V>>,
-    CaptureSupervisorPoisoned,
-> {
-    supervisor.lock().map_err(|_| CaptureSupervisorPoisoned)
-}
-
-fn lock_capture_supervisor_for_cleanup<V>(
-    supervisor: &Arc<Mutex<LocalExecutorSupervisor<MemoryAssignmentLedger, V>>>,
-) -> std::sync::MutexGuard<'_, LocalExecutorSupervisor<MemoryAssignmentLedger, V>> {
-    // A poisoned owner rejects every new operation. Cleanup alone recovers the
-    // retained linear state so native resources can be retired or quarantined.
-    supervisor
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-fn stop_capture_after_worker_failure<E>(
-    supervisor: &Arc<Mutex<CheckpointCaptureSupervisor>>,
-    queued: &crate::QueuedAttempt,
-    failure: &AttemptWorkerFailure<E>,
-) -> Result<(), LocalExecutorError<Infallible>> {
-    let mut supervisor = lock_capture_supervisor_for_cleanup(supervisor);
-    match failure {
-        AttemptWorkerFailure::Canceled(_) => supervisor
-            .stage_and_reconcile_cancellation(queued)
-            .map(|_| ()),
-        AttemptWorkerFailure::Retryable(_) | AttemptWorkerFailure::Terminal(_) => supervisor
-            .stage_and_reconcile_terminal_failure(queued)
-            .map(|_| ()),
-    }
-}
-
-fn stop_capture_terminally(
-    supervisor: &Arc<Mutex<CheckpointCaptureSupervisor>>,
-    queued: &crate::QueuedAttempt,
-) -> Result<(), LocalExecutorError<Infallible>> {
-    lock_capture_supervisor_for_cleanup(supervisor)
-        .stage_and_reconcile_terminal_failure(queued)
-        .map(|_| ())
-}
-
-fn abort_checkpoint_capture<E>(
-    supervisor: &Arc<Mutex<CheckpointCaptureSupervisor>>,
-    token: CheckpointResultAbortToken,
-) -> Result<(), SynchronousCampaignExecutorError<E>> {
-    let retirement = token.native_retirement();
-    let mut supervisor = lock_capture_supervisor_for_cleanup(supervisor);
-    let abort = abort_checkpoint_result(&mut supervisor, token)
-        .map_err(|error| SynchronousCampaignExecutorError::CaptureAbort(Box::new(error)));
-    drop(supervisor);
-
-    let retirement = retire_checkpoint_source(retirement);
-    abort.and(retirement)
-}
-
-fn checkpoint_result_retirement(
-    checkpoint: crate::AttemptCheckpointResult,
-) -> Option<crucible_api::ProductionExactCheckpointRetirement> {
-    match checkpoint.into_state() {
-        crate::exact_checkpoint_store::AttemptCheckpointResultState::Captured(checkpoint) => {
-            Some((*checkpoint).into_closure().native_retirement())
-        }
-        crate::exact_checkpoint_store::AttemptCheckpointResultState::Prepared(checkpoint) => {
-            checkpoint.native_retirement()
-        }
-    }
-}
-
-fn retire_checkpoint_source<E>(
-    retirement: Option<crucible_api::ProductionExactCheckpointRetirement>,
-) -> Result<(), SynchronousCampaignExecutorError<E>> {
-    let Some(retirement) = retirement else {
-        return Ok(());
-    };
-    crucible_api::retire_production_exact_checkpoint_catalog(&retirement)
-        .map(|_| ())
-        .map_err(SynchronousCampaignExecutorError::CaptureNativeRetirement)
 }
 
 fn reconcile_model<M: AttemptExecutionModel>(
@@ -821,86 +410,123 @@ where
     Err(SynchronousCampaignExecutorError::ReconciliationLimit)
 }
 
+impl<M> ExecutorService for SynchronousCampaignExecutor<M>
+where
+    M: AttemptExecutionModel,
+    M::Error: Error + Send + Sync + 'static,
+{
+    type Error = SynchronousCampaignExecutorError<M::Error>;
+    fn submit_attempt(
+        &mut self,
+        request: &SubmitAttemptRequest,
+    ) -> Result<SubmitAttemptResponse, Self::Error> {
+        if let Some(owner) = self.admitted.clone() {
+            return self.submit_admitted(&owner, request);
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(component) = self.component.as_mut() {
+            return component.submit(
+                component::ComponentExecutorLoans {
+                    worker: &mut self.worker,
+                    store: &self.store,
+                    exact_retention: self.exact_retention.as_ref(),
+                    exact_inventory: self.exact_inventory.as_ref(),
+                    cancellation: &self.cancellation,
+                },
+                request,
+            );
+        }
+        Err(SynchronousCampaignExecutorError::AuthorityUnavailable)
+    }
+}
 impl<M> ExecutorStatusService for SynchronousCampaignExecutor<M>
 where
     M: AttemptExecutionModel,
-    M::Error: Error + 'static,
+    M::Error: Error + Send + Sync + 'static,
 {
     fn get_attempt_execution(
         &mut self,
         request: &GetAttemptExecutionRequest,
     ) -> Result<GetAttemptExecutionResponse, Self::Error> {
-        if request.execution_scope() != AttemptExecutionScope::Semantic {
-            let capture = self
-                .checkpoint_capture
-                .as_ref()
-                .ok_or(SynchronousCampaignExecutorError::CaptureUnavailable)?;
-            return lock_capture_supervisor(&capture.supervisor)
-                .map_err(|_| SynchronousCampaignExecutorError::CaptureSupervisorPoisoned)?
-                .get_attempt_execution(request)
-                .map_err(SynchronousCampaignExecutorError::CaptureSupervisor);
+        if let Some(owner) = &self.admitted {
+            return owner
+                .inner
+                .actor
+                .with_supervisor(|actor| Ok(actor.get_attempt_execution(request)))
+                .map_err(|error| SynchronousCampaignExecutorError::Admitted(Box::new(error)))?
+                .map_err(|error| SynchronousCampaignExecutorError::Admitted(Box::new(error)));
         }
-        GetAttemptExecutionResponse::new(request, GetAttemptExecutionDisposition::NotCurrent)
-            .map_err(SynchronousCampaignExecutorError::<M::Error>::Protocol)
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(component) = self.component.as_mut() {
+            return component.get_attempt_execution(request);
+        }
+        Err(SynchronousCampaignExecutorError::AuthorityUnavailable)
     }
 }
-
 impl<M> ExecutorControlService for SynchronousCampaignExecutor<M>
 where
     M: AttemptExecutionModel,
-    M::Error: Error + 'static,
+    M::Error: Error + Send + Sync + 'static,
 {
     fn checkpoint_attempt_execution(
         &mut self,
         request: &CheckpointAttemptExecutionRequest,
     ) -> Result<CheckpointAttemptExecutionResponse, Self::Error> {
-        if request.execution_scope() != AttemptExecutionScope::Semantic {
-            let capture = self
-                .checkpoint_capture
-                .as_ref()
-                .ok_or(SynchronousCampaignExecutorError::CaptureUnavailable)?;
-            return lock_capture_supervisor(&capture.supervisor)
-                .map_err(|_| SynchronousCampaignExecutorError::CaptureSupervisorPoisoned)?
-                .checkpoint_attempt_execution(request)
-                .map_err(SynchronousCampaignExecutorError::CaptureSupervisor);
+        if let Some(owner) = &self.admitted {
+            return owner
+                .inner
+                .actor
+                .with_supervisor(|actor| Ok(actor.checkpoint_attempt_execution(request)))
+                .map_err(|error| SynchronousCampaignExecutorError::Admitted(Box::new(error)))?
+                .map_err(|error| SynchronousCampaignExecutorError::Admitted(Box::new(error)));
         }
-        CheckpointAttemptExecutionResponse::new(
-            request,
-            CheckpointAttemptExecutionDisposition::NotCurrent,
-        )
-        .map_err(SynchronousCampaignExecutorError::<M::Error>::Protocol)
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(component) = self.component.as_mut() {
+            return component.checkpoint_attempt_execution(request);
+        }
+        Err(SynchronousCampaignExecutorError::AuthorityUnavailable)
     }
-
     fn cancel_attempt_execution(
         &mut self,
         request: &CancelAttemptExecutionRequest,
     ) -> Result<CancelAttemptExecutionResponse, Self::Error> {
-        if request.execution_scope() != AttemptExecutionScope::Semantic {
-            let capture = self
-                .checkpoint_capture
-                .as_ref()
-                .ok_or(SynchronousCampaignExecutorError::CaptureUnavailable)?;
-            return lock_capture_supervisor(&capture.supervisor)
-                .map_err(|_| SynchronousCampaignExecutorError::CaptureSupervisorPoisoned)?
-                .cancel_attempt_execution(request)
-                .map_err(SynchronousCampaignExecutorError::CaptureSupervisor);
+        if let Some(owner) = &self.admitted {
+            return owner
+                .inner
+                .actor
+                .with_supervisor(|actor| Ok(actor.cancel_attempt_execution(request)))
+                .map_err(|error| SynchronousCampaignExecutorError::Admitted(Box::new(error)))?
+                .map_err(|error| SynchronousCampaignExecutorError::Admitted(Box::new(error)));
         }
-        CancelAttemptExecutionResponse::new(request, CancelAttemptExecutionDisposition::NotCurrent)
-            .map_err(SynchronousCampaignExecutorError::<M::Error>::Protocol)
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(component) = self.component.as_mut() {
+            return component.cancel_attempt_execution(request);
+        }
+        Err(SynchronousCampaignExecutorError::AuthorityUnavailable)
     }
 }
-
 impl<M> ExecutorResumeService for SynchronousCampaignExecutor<M>
 where
     M: AttemptExecutionModel,
-    M::Error: Error + 'static,
+    M::Error: Error + Send + Sync + 'static,
 {
     fn resume_attempt_execution(
         &mut self,
         request: &ResumeAttemptExecutionRequest,
     ) -> Result<ResumeAttemptExecutionResponse, Self::Error> {
-        ResumeAttemptExecutionResponse::new(request, ResumeAttemptExecutionDisposition::NotCurrent)
-            .map_err(SynchronousCampaignExecutorError::<M::Error>::Protocol)
+        if let Some(owner) = &self.admitted {
+            return owner
+                .inner
+                .actor
+                .with_supervisor(|actor| Ok(actor.resume_attempt_execution(request)))
+                .map_err(|error| SynchronousCampaignExecutorError::Admitted(Box::new(error)))?
+                .map_err(|error| SynchronousCampaignExecutorError::Admitted(Box::new(error)));
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(component) = self.component.as_mut() {
+            return component.resume_attempt_execution(request);
+        }
+        Err(SynchronousCampaignExecutorError::AuthorityUnavailable)
     }
 }
 
@@ -909,7 +535,12 @@ where
 // crucible-lint: allow rust-allow -- the same poison regression uses Rust's explicit panic lint allowance.
 #[allow(clippy::expect_used, clippy::panic)]
 mod lock_tests {
+    use super::component::{
+        CaptureSupervisorPoisoned, lock_capture_supervisor, lock_capture_supervisor_for_cleanup,
+    };
     use super::*;
+    use crate::{ExecutorCapacity, LocalExecutorSupervisor, MemoryAssignmentLedger};
+    use std::sync::Mutex;
 
     use crate::executor_supervisor::AllowAllAttemptAdmission;
     use crucible_campaign::{

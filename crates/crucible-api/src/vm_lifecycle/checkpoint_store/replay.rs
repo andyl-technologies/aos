@@ -32,7 +32,7 @@ impl ProductionExactCheckpointObject {
 /// Read-only portable view of one complete production exact-checkpoint closure.
 ///
 /// The value exposes no directory or mutation authority. Its manifest is the
-/// canonical `crucible.production-exact-closure.v9` body, and its object list
+/// canonical `crucible.production-exact-closure.v10` body, and its object list
 /// is the exact deduplicated set named by that manifest. Large overlay and
 /// VMState artifacts remain represented by their bounded content-addressed
 /// chunks rather than by RAM-sized buffers.
@@ -46,6 +46,121 @@ pub struct ProductionExactCheckpointClosure {
     pub(super) source: ScenarioDefForm,
     pub(super) object_directory: PathBuf,
     pub(super) objects: Vec<ProductionExactCheckpointObject>,
+    pub(super) ram_sources: Vec<ProductionPagedRamSource>,
+    pub(super) ram_catalog_provider: Option<Arc<dyn ProductionRamCatalogProvider>>,
+}
+
+/// One complete authenticated RAM source retained during checkpoint publication.
+///
+/// The source exposes bounded tree transfer and authenticated page lookup. Its
+/// live retention owner remains attached; callers never receive a flat RAM
+/// object inventory or a mutable backing path.
+#[derive(Clone)]
+pub struct ProductionPagedRamSource {
+    pub(super) node: Arc<NodeId>,
+    pub(super) store: crucible_cas::ram::RamStore,
+    pub(super) root: crucible_cas::ram::LeasedRamRoot,
+    pub(super) object_id: Arc<String>,
+}
+
+impl std::fmt::Debug for ProductionPagedRamSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProductionPagedRamSource")
+            .field("node", &self.node)
+            .field("root", &self.root)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ProductionPagedRamSource {
+    /// Admits a complete local image under an externally established root lease.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for the wrong coverage scope, missing or corrupt
+    /// descendants, cancellation, or exhausted verification bounds.
+    pub fn new(
+        node: NodeId,
+        store: crucible_cas::ram::RamStore,
+        root: crucible_cas::ram::LeasedRamRoot,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
+    ) -> Result<Self, crucible_cas::ram::RamStoreError> {
+        if root.record().scope() != crucible_ram::Scope::Exact {
+            return Err(crucible_cas::ram::RamStoreError::Invalid(
+                "exact source coverage scope",
+            ));
+        }
+        store.verify(&root, boundary)?;
+        let object_id = root.object_id().encode();
+        Ok(Self {
+            node: Arc::new(node),
+            store,
+            root,
+            object_id: Arc::new(object_id),
+        })
+    }
+
+    /// Returns the node bound to this complete image.
+    #[must_use]
+    pub fn node(&self) -> &NodeId {
+        &self.node
+    }
+
+    /// Returns the leased authenticated logical image.
+    #[must_use]
+    pub fn root(&self) -> &crucible_cas::ram::LeasedRamRoot {
+        &self.root
+    }
+
+    /// Returns the authenticated store while retaining its catalog owner.
+    #[must_use]
+    pub fn store(&self) -> &crucible_cas::ram::RamStore {
+        &self.store
+    }
+
+    /// Copies required authenticated descendants into a retained destination.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for cancellation, missing or corrupt source bytes,
+    /// exhausted operation bounds, durability failure, or lost retention.
+    pub fn transfer_to(
+        &self,
+        destination: &crucible_cas::ram::RamStore,
+        retention: &dyn crucible_cas::ram::RamRetention,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
+    ) -> Result<crucible_cas::ram::RamClosureStored, crucible_cas::ram::RamStoreError> {
+        self.store
+            .transfer_to(&self.root, destination, retention, boundary)
+    }
+}
+
+impl crucible_qemu::ram_source::QemuRamBacking for ProductionPagedRamSource {
+    fn root_object_id(&self) -> &str {
+        &self.object_id
+    }
+
+    fn root_record(&self) -> &crucible_ram::RootRecord {
+        self.root.record()
+    }
+
+    fn read_page_with_proof(
+        &self,
+        region_id: &str,
+        page_index: u64,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_qemu::ram_source::QemuRamSourceError>,
+    ) -> Result<(Vec<u8>, crucible_ram::PageProof), crucible_qemu::ram_source::QemuRamSourceError>
+    {
+        super::paged::with_ram_boundary(
+            boundary,
+            |ram_boundary| {
+                self.store
+                    .read_page_with_proof(&self.root, region_id, page_index, ram_boundary)
+            },
+            |error| crucible_qemu::ram_source::QemuRamSourceError::Backing(error.to_string()),
+        )
+    }
 }
 
 /// Random-access catalog of modeled snapshots in one authenticated closure.
@@ -195,6 +310,12 @@ impl PreparedProductionReplayOraclePromotion {
 }
 
 impl ProductionExactCheckpointClosure {
+    /// Returns the bounded node catalog of complete leased RAM image roots.
+    #[must_use]
+    pub fn ram_sources(&self) -> &[ProductionPagedRamSource] {
+        &self.ram_sources
+    }
+
     /// Returns the authenticated production closure identity.
     #[must_use]
     pub const fn identity(&self) -> ContentHash {
@@ -213,7 +334,7 @@ impl ProductionExactCheckpointClosure {
         self.configuration
     }
 
-    /// Returns the canonical version-nine production closure manifest bytes.
+    /// Returns the canonical paged production closure manifest bytes.
     #[must_use]
     pub fn manifest(&self) -> &[u8] {
         &self.manifest
@@ -233,7 +354,11 @@ impl ProductionExactCheckpointClosure {
     /// teardown, not for ordinary replay consumers.
     #[must_use]
     pub fn native_retirement(&self) -> ProductionExactCheckpointRetirement {
-        ProductionExactCheckpointRetirement::new(self.run_state_root.clone(), self.scenario)
+        ProductionExactCheckpointRetirement::new(
+            self.run_state_root.clone(),
+            self.scenario,
+            self.ram_catalog_provider.clone(),
+        )
     }
 
     /// Builds a modeled-snapshot catalog under an operational boundary callback.
@@ -349,6 +474,7 @@ impl ProductionExactCheckpointClosure {
             &self.source.scenario_def(),
             &self.source,
             self.identity,
+            self.ram_catalog_provider.as_ref(),
             boundary,
         )?;
         boundary()?;

@@ -293,6 +293,8 @@ enum Commands {
     Campaign(CampaignArgs),
     /// Inspect or maintain a configured content store.
     Store(StoreArgs),
+    /// Inspect and change authenticated host RAM placement and deadlines.
+    Host(HostArgs),
     /// Generate shell completions.
     Completions(CompletionsArgs),
 }
@@ -447,6 +449,10 @@ enum CampaignFindingBundleCommand {
 
 #[derive(Args, Debug, PartialEq, Eq)]
 struct CampaignFindingBundleExportArgs {
+    /// Bound the complete host planning and transfer lifetime in milliseconds.
+    #[arg(long, default_value_t = 3_600_000, value_name = "ms",
+        value_parser = clap::value_parser!(u64).range(1..))]
+    host_transfer_timeout_ms: u64,
     /// Canonical campaign name.
     #[arg(value_name = "NAME")]
     name: String,
@@ -519,6 +525,10 @@ struct CampaignFindingBundleForkWriteArgs {
 
 #[derive(Args, Debug, PartialEq, Eq)]
 struct CampaignFindingBundleBranchArgs {
+    /// Bound the original host lifetime through archive preparation and branch publication.
+    #[arg(long, default_value_t = 3_600_000, value_name = "ms",
+        value_parser = clap::value_parser!(u64).range(1..))]
+    host_transfer_timeout_ms: u64,
     /// Exported finding bundle directory.
     #[arg(value_name = "DIR")]
     input: PathBuf,
@@ -621,6 +631,10 @@ enum CampaignArchiveMode {
 
 #[derive(Args, Debug, PartialEq, Eq)]
 struct CampaignArchiveTransferArgs {
+    /// Bound the complete host planning and transfer lifetime in milliseconds.
+    #[arg(long, default_value_t = 3_600_000, value_name = "ms",
+        value_parser = clap::value_parser!(u64).range(1..))]
+    host_transfer_timeout_ms: u64,
     /// Exact durable source campaign state directory.
     #[arg(long, value_name = "path")]
     source_state: PathBuf,
@@ -670,6 +684,10 @@ struct CampaignArchiveTransferArgs {
 
 #[derive(Args, Debug, PartialEq, Eq)]
 struct CampaignArchiveInspectArgs {
+    /// Bound complete host archive authentication in milliseconds.
+    #[arg(long, default_value_t = 3_600_000, value_name = "ms",
+        value_parser = clap::value_parser!(u64).range(1..))]
+    host_inspection_timeout_ms: u64,
     /// Exact durable campaign state directory.
     #[arg(long, value_name = "path")]
     state: PathBuf,
@@ -2140,6 +2158,24 @@ struct ServeArgs {
     /// Map a client certificate fingerprint to debugger capabilities.
     #[arg(long, value_name = "sha256=capability,...")]
     debug_role: Vec<String>,
+    /// Grant host RAM and supervision authority to an authenticated certificate fingerprint.
+    #[arg(long, value_name = "HEX64")]
+    host_operator_certificate: Vec<String>,
+    /// Override the deployment's aggregate paging I/O slot capacity.
+    #[arg(long, requires = "campaign_packaged_executor", value_parser = clap::value_parser!(u64).range(1..))]
+    host_paging_io_slots: Option<u64>,
+    /// Override the deployment's aggregate retained host task capacity.
+    #[arg(long, requires = "campaign_packaged_executor", value_parser = clap::value_parser!(u64).range(1..))]
+    host_task_slots: Option<u64>,
+    /// Override the deployment's aggregate retained file descriptor capacity.
+    #[arg(long, requires = "campaign_packaged_executor", value_parser = clap::value_parser!(u64).range(1..))]
+    host_file_descriptors: Option<u64>,
+    /// Override the deployment's aggregate retained metadata capacity.
+    #[arg(long, requires = "campaign_packaged_executor", value_parser = clap::value_parser!(u64).range(1..))]
+    host_metadata_bytes: Option<u64>,
+    /// Override the deployment's aggregate retained staging capacity.
+    #[arg(long, requires = "campaign_packaged_executor", value_parser = clap::value_parser!(u64).range(1..))]
+    host_staging_bytes: Option<u64>,
     /// Host the local CampaignService on this managed Unix socket.
     #[arg(long, value_name = "path")]
     campaign_socket: Option<PathBuf>,
@@ -2265,6 +2301,7 @@ enum CliSubcommand {
     Serve,
     Campaign,
     Store,
+    Host,
     Completions,
 }
 
@@ -2284,6 +2321,7 @@ impl CliSubcommand {
             Commands::Serve(_) => Self::Serve,
             Commands::Campaign(_) => Self::Campaign,
             Commands::Store(_) => Self::Store,
+            Commands::Host(_) => Self::Host,
             Commands::Completions(_) => Self::Completions,
         }
     }
@@ -2303,6 +2341,7 @@ impl CliSubcommand {
             Self::Serve => "serve",
             Self::Campaign => "campaign",
             Self::Store => "store",
+            Self::Host => "host",
             Self::Completions => "completions",
         }
     }
@@ -2320,6 +2359,7 @@ enum CliApiCall {
     WatchAttach,
     SendCommand,
     GetReproduction,
+    HostOperational,
 }
 
 impl CliApiCall {
@@ -2334,6 +2374,7 @@ impl CliApiCall {
         Self::WatchAttach,
         Self::SendCommand,
         Self::GetReproduction,
+        Self::HostOperational,
     ];
 
     const fn control_client_method(self) -> &'static str {
@@ -2348,6 +2389,7 @@ impl CliApiCall {
             Self::WatchAttach => "watch_attach",
             Self::SendCommand => "send_command",
             Self::GetReproduction => "get_reproduction",
+            Self::HostOperational => "host_operational",
         }
     }
 }
@@ -2691,6 +2733,18 @@ fn plan_cli_invocation(cli: &Cli) -> CliThinWrapperPlan {
             implements_checkpoint_materialization: false,
             extra_control_capabilities: Vec::new(),
         },
+        Commands::Host(_) => CliThinWrapperPlan {
+            subcommand,
+            session_commands: Vec::new(),
+            api_calls: vec![CliApiCall::HostOperational],
+            delegated_drivers: vec![CliDelegatedDriver::ControlApi],
+            state_references: vec![CliStateReferenceKind::DaemonConnection],
+            thin_wrapper: true,
+            owns_canonical_run_state: false,
+            implements_scheduler: false,
+            implements_checkpoint_materialization: false,
+            extra_control_capabilities: Vec::new(),
+        },
         Commands::Store(_) => CliThinWrapperPlan {
             subcommand,
             session_commands: Vec::new(),
@@ -2752,6 +2806,8 @@ mod cli_control;
 mod cli_dispatch;
 #[path = "cli/exploration.rs"]
 mod cli_exploration;
+#[path = "cli/host.rs"]
+mod cli_host;
 #[path = "cli/planning.rs"]
 mod cli_planning;
 #[path = "cli/replay.rs"]
@@ -2781,6 +2837,7 @@ use cli_campaign::*;
 use cli_control::*;
 use cli_dispatch::*;
 use cli_exploration::*;
+use cli_host::*;
 use cli_planning::*;
 use cli_replay::*;
 use cli_report::*;

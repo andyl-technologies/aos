@@ -539,6 +539,7 @@ mod tests {
     use crate::{Limits, RegionDescriptor};
 
     #[test]
+    // crucible-lint: allow panic-shortcut -- this exhaustion test panics if construction violates its fixed fixture.
     #[allow(clippy::unwrap_used)]
     fn monotonic_counter_exhaustion_preserves_ledger() {
         let topology = Topology::new(

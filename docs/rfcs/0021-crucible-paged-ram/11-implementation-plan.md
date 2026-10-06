@@ -2,8 +2,8 @@
 
 ## 11.1 Delivery model
 
-This is a design-only RFC. Acceptance does not enable swap, change production
-fingerprints, or advertise a new executor capability. Implementation proceeds
+This document defines the implementation and qualification contract. Acceptance
+alone does not enable swap or advertise a new executor capability. Implementation proceeds
 in reviewable work packages with explicit evidence. Staging phases are not a
 backward-compatibility program: old and new incompatible contracts are never
 accepted together by the deployed runtime. The final cutover is coordinated.

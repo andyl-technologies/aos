@@ -123,11 +123,13 @@ restrictions; they MUST NOT be hidden by silently omitting a writer or region.
 | Root acknowledgement | Queued hash work, cancelled request, stale generation and worker failure | Publication and matching acknowledgement retain their specified order. |
 | Fork ownership | Shared immutable tree, private updates, simultaneous sibling writes | Parent and siblings retain their own logical contents and roots. |
 
-The current fingerprint callback captures immutable full material and a worker
-publishes it before acknowledging the request. New tests must preserve that
-ordering while replacing its memory cost. Every pager/hash worker introduced
-into hot-fork needs barrier coverage; declaring the VM paused is insufficient
-if a worker can still install bytes, publish metadata, or own mutable locks.
+The current fingerprint path captures a coherent scoped paged RAM root and
+bounded device material. The worker must publish the resulting fingerprint
+before acknowledging the matching request. Tests must preserve that ordering
+without requiring a full-RAM material allocation. Every pager/hash worker
+introduced into hot-fork needs barrier coverage; declaring the VM paused is
+insufficient if a worker can still install bytes, publish metadata, or own
+mutable locks.
 
 ## 10.4 Paging, runtime policy, and operational failures
 

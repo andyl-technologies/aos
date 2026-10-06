@@ -1,5 +1,5 @@
 //! Tests the scheduler component of `gate:e2e-determinism` for host-level
-//! concurrency (RFC-0010 T-SCHED-25, [SCHED-40], [SCHED-41], §8.12) on the
+//! concurrency and canonical same-time event ordering on the
 //! authoritative scheduler RESOLVE path. This target does not execute QEMU.
 //!
 //! Lookahead is the parallelism budget: nodes whose horizons cannot constrain
@@ -449,7 +449,9 @@ fn assertion_gate_online_report(
             event_log[..prefix_len].to_vec(),
         )
         .expect("online assertion prefix should be checkable");
-        evaluator.observe_prefix(&prefix, &mut oracle);
+        evaluator
+            .observe_prefix(&prefix, &mut oracle)
+            .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
     }
     let terminal_prefix = if event_log.is_empty() {
         ConditionEventLogPrefix::genesis()
@@ -457,7 +459,9 @@ fn assertion_gate_online_report(
         crucible::test_support::condition_prefix_from_scheduler_entries_for_test(event_log.to_vec())
             .expect("terminal assertion prefix should be checkable")
     };
-    evaluator.finalize_prefix(&terminal_prefix, &mut oracle)
+    evaluator
+        .finalize_prefix(&terminal_prefix, &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"))
 }
 
 fn assertion_gate_reports(

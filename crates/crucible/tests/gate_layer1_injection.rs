@@ -1,6 +1,6 @@
 //! Checks `gate:layer1-injection` (Contract B) on the scheduler RESOLVE path.
 //!
-//! RFC-0010 file 24 [HARN-8] / file 15 [IO-2], [IO-9]: the tick at which a
+//! The tick at which a
 //! cross-node injection is observed by the receiving node MUST be a pure function
 //! of `(virtual_time, node_id, sequence)`, independent of how the host interleaves
 //! producers or how finely it slices RUN into quanta. This gate drives a real

@@ -1293,7 +1293,7 @@ fn fault_campaign_violation_evidence(
     let mut oracle = BlackBoxHostOracle;
     let mut evaluator = HostAssertionEvaluator::new(scenario.properties())
         .with_world_white_box_policies(scenario.world());
-    let report = evaluator.finalize_prefix(event_log.condition_prefix(), &mut oracle);
+    let report = evaluator.finalize_prefix(event_log.condition_prefix(), &mut oracle)?;
     let no_split_brain_violated = report.outcomes().iter().any(|outcome| {
         outcome.assertion.name == "no-split-brain"
             && outcome.kind == HostAssertionOutcomeKind::Violated
@@ -1550,7 +1550,7 @@ fn run_example_scenario_material(
     let assertion_report = assertion_evaluator.finalize_prefix(
         scheduler.condition_event_log_prefix(),
         &mut assertion_oracle,
-    );
+    )?;
     if assertion_report.verdict().is_failed() {
         return Err(ExampleCorpusError::AssertionsFailed {
             scenario: scenario_name.to_owned(),
@@ -1654,7 +1654,7 @@ fn observe_assertions_and_append_state_events(
     assertion_oracle: &mut BlackBoxHostOracle,
 ) -> Result<(), ExampleCorpusError> {
     let outcomes = assertion_evaluator
-        .observe_prefix(scheduler.condition_event_log_prefix(), assertion_oracle);
+        .observe_prefix(scheduler.condition_event_log_prefix(), assertion_oracle)?;
     let events = outcomes
         .iter()
         .filter_map(assertion_state_event_from_outcome)
@@ -1664,7 +1664,7 @@ fn observe_assertions_and_append_state_events(
     }
     let append = scheduler.append_observable_events(events)?;
     canonical_event_log.extend_from_slice(&append.segment_bytes);
-    assertion_evaluator.observe_prefix(scheduler.condition_event_log_prefix(), assertion_oracle);
+    assertion_evaluator.observe_prefix(scheduler.condition_event_log_prefix(), assertion_oracle)?;
     Ok(())
 }
 
@@ -1699,7 +1699,7 @@ fn evaluate_example_graph(
     .with_timer_fires(scheduler.trigger_actions().armed_timers.clone())
     .with_scheduler_quiescence(scheduler.quiescence()?)
     .with_world_white_box_policies(world);
-    Ok(pass.evaluate_event_graph(graph, state))
+    Ok(pass.evaluate_event_graph(graph, state)?)
 }
 
 fn scenario_run_time_limit(steps: &[ExampleReplayStep]) -> u64 {

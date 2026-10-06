@@ -89,9 +89,28 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+/// Constructs a finite portable checkpoint-decoding account for component tests.
+///
+/// The account retains at most 128 descriptor credits and 256 MiB of resident
+/// credit through real shared RAII loans. It supplies no filesystem quota,
+/// native placement, or managed guest qualification evidence.
+///
+/// # Errors
+/// Returns a quota error if the independently authored fixture account cannot
+/// be constructed.
+#[cfg(feature = "test-support")]
+pub fn component_ram_root_resources() -> Result<
+    std::sync::Arc<dyn crucible_cas::content_store::StorePhysicalQuotaGuard>,
+    crucible_cas::content_store::StoreError,
+> {
+    exact_checkpoint_store::test_support::fixture_ram_root_resources()
+        .map_err(|_| crucible_cas::content_store::StoreError::Quota)
+}
+
 mod anchored_fs;
 pub mod assignment_ledger;
 pub mod automatic_finding_runner;
+pub mod campaign_archive_import;
 pub mod campaign_attachment;
 pub mod campaign_bootstrap;
 pub mod campaign_debug_control;
@@ -128,6 +147,9 @@ pub mod executor_server;
 pub mod executor_service;
 pub mod executor_supervisor;
 pub mod executor_worker;
+pub mod host_operational_registry;
+pub mod imported_checkpoint;
+pub use host_operational_registry::HostOperationalRegistry;
 pub mod finding_production_replay;
 pub mod finding_replay_capture_store;
 mod guest_selectable;
@@ -144,6 +166,7 @@ mod managed_qemu_hot_fork_source_world_pool;
 mod owned_advisory_lock;
 pub mod packaged_qemu_executor;
 pub mod packaged_qemu_identity;
+mod paging_qualification;
 #[cfg(target_os = "linux")]
 mod paused_checkpoint_promotion;
 pub mod pending_finding;
@@ -188,6 +211,9 @@ pub use automatic_finding_runner::{
     AutomaticFindingDeterminismProbe, AutomaticFindingDeterminismProbeDisposition,
     AutomaticFindingExecutionRunner, AutomaticFindingExecutionRunnerError,
     PrivateFindingReplayRunner,
+};
+pub use campaign_archive_import::{
+    CampaignArchiveImportError, CampaignArchiveImportOwnership, import_campaign_archive_objects,
 };
 pub use campaign_attachment::{
     AttachedCanonicalCampaignRuntime, CanonicalCampaignRuntimeConfig,
@@ -282,7 +308,7 @@ pub use campaign_server::{
     CampaignLoopbackServerShutdown, MAX_CAMPAIGN_LISTENER_WORKERS,
     MAX_CAMPAIGN_PENDING_CONNECTIONS,
 };
-pub use campaign_store_quota::LinuxProjectQuotaBinder;
+pub use campaign_store_quota::{CampaignQuotaServiceConfig, LinuxProjectQuotaBinder};
 pub use campaign_transfer::{
     CampaignArchiveDurabilityReceipt, CampaignArchiveTransferEndpoint,
     CampaignArchiveTransferError, CampaignTransferJournalError, CampaignTransferOperationId,
@@ -290,6 +316,7 @@ pub use campaign_transfer::{
     CampaignTransferRetentionGeneration, CampaignTransferRetentionRoot,
     CampaignTransferRetentionSummary, DirectoryCampaignTransferJournal,
     ExactPinCampaignArchiveCheckpointResolver, transfer_campaign_archive_durably,
+    transfer_campaign_archive_durably_with_boundary,
 };
 pub use control_responsiveness::{
     DAEMON_CONTROL_RESPONSIVE_QUANTUM_BOUND, DaemonControlResponsiveRoute,
@@ -391,9 +418,9 @@ pub use executor_supervisor::{
     CheckpointPromotionRestartWork, CheckpointPromotionStageOutcome, CheckpointPublicationOutcome,
     CheckpointRequestOutcome, CompletionOutcome, CompletionValidationFailure,
     ExecutionCancellation, ExecutionCheckpointRequest, ExecutorAvailability, ExecutorCapacity,
-    ExecutorCapacityError, LocalExecutorError, LocalExecutorSupervisor,
-    PausedCheckpointPromotionRecovery, QueuedAttempt, TerminalFailureOutcome,
-    stage_prepared_attempt_result,
+    ExecutorCapacityError, HostOperationalCapacity, HostOperationalCapacityError,
+    LocalExecutorError, LocalExecutorSupervisor, PausedCheckpointPromotionRecovery, QueuedAttempt,
+    TerminalFailureOutcome, stage_prepared_attempt_result,
 };
 pub(crate) use executor_worker::stage_prepared_attempt_result_journal;
 pub use executor_worker::{
@@ -494,7 +521,8 @@ pub use packaged_qemu_executor::{
     PackagedQemuExecutorConfig, PackagedQemuExecutorConfigError, PackagedQemuExecutorError,
     PackagedQemuExecutorJoinError, PackagedQemuExecutorJoinFailures,
     PackagedQemuExecutorStartError, PackagedQemuHotForkConfig, PackagedQemuHotForkConfigError,
-    PackagedQemuHotForkSourceShutdownError,
+    PackagedQemuHotForkSourceShutdownError, PackagedRamCatalogConfig,
+    PackagedRamCatalogConfigError,
 };
 #[cfg(target_os = "linux")]
 pub(crate) use paused_checkpoint_promotion::{
@@ -514,7 +542,7 @@ pub(crate) use paused_checkpoint_promotion::{
 #[cfg(all(target_os = "linux", test))]
 pub(crate) use paused_checkpoint_promotion::{
     RepositoryPromotionFixture, prepare_repository_promotion_fixture,
-    promote_test_checkpoint_for_resume, resolve_production_paused_checkpoint_promotion_recovery,
+    resolve_production_paused_checkpoint_promotion_recovery,
 };
 pub use pending_finding::{
     AcknowledgedFindingCandidate, FindingCandidateHandoffError, FindingCandidateHandoffResult,
@@ -566,7 +594,6 @@ pub use qemu_campaign_lifecycle::{
     QemuFreshAttemptDriver, QemuFreshAttemptLifecycle, QemuFreshDriveOutcome,
     QemuFreshExecutionRunnerError, QemuFreshGenesisCheckpointCandidate,
     QemuFreshGenesisCheckpointError, QemuFreshStartMaterialization, QemuFreshStartReplayError,
-    build_guarded_interactive_qemu_session,
 };
 pub(crate) use qemu_campaign_lifecycle::{
     QemuAttemptProductionVmLifecycleFactory, QemuFreshAttemptLifecycleFactory,

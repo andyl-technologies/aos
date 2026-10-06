@@ -1,6 +1,8 @@
 //! Assertion outcomes, replay, offline checking, evaluation, and lifecycle state.
 
 use super::*;
+
+mod admitted_pass;
 /// Terminal kind for one host-side assertion outcome.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -93,6 +95,7 @@ pub struct HostAssertionOutcome {
     /// Stable assertion-layer reason.
     pub reason: String,
     evidence: Option<HostAssertionViolationEvidence>,
+    _decode_custody: crate::owned_decode::DecodeCustody,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -326,6 +329,7 @@ pub struct HostAssertionReport {
     violations: Vec<HostAssertionViolation>,
     proximities: Vec<HostAssertionProximity>,
     verdict: AssertionRunVerdict,
+    _decode_custody: crate::owned_decode::DecodeCustody,
 }
 
 impl HostAssertionReport {
@@ -798,11 +802,15 @@ impl OfflineAssertionChecker {
                 }
                 Err(error) => return Err(error),
             };
-            evaluator.observe_prefix(&prefix, oracle);
+            evaluator
+                .observe_prefix(&prefix, oracle)
+                .map_err(|source| OfflineAssertionCheckError::Engine(Box::new(source)))?;
             pending_enabled_marker = false;
         }
 
-        Ok(evaluator.finalize_prefix(&terminal_prefix, oracle))
+        evaluator
+            .finalize_prefix(&terminal_prefix, oracle)
+            .map_err(|source| OfflineAssertionCheckError::Engine(Box::new(source)))
     }
 }
 
@@ -1028,6 +1036,8 @@ impl RecordedAssertionLog {
 /// Error returned by offline assertion checking.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OfflineAssertionCheckError {
+    /// An original resource or predicate evaluation refused the assertion pass.
+    Engine(Box<EngineError>),
     /// A recorded scheduler prefix failed condition-prefix validation.
     ConditionEvaluation(ConditionEvaluationError),
     /// A custom-oracle check lacks the exact event-log offset for a prefix.
@@ -1071,6 +1081,7 @@ pub enum OfflineAssertionCheckError {
 impl fmt::Display for OfflineAssertionCheckError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Engine(source) => fmt::Display::fmt(source, formatter),
             Self::ConditionEvaluation(error) => write!(formatter, "{error}"),
             Self::MissingEventLogOffset { prefix_len } => write!(
                 formatter,
@@ -1112,6 +1123,7 @@ impl fmt::Display for OfflineAssertionCheckError {
 impl Error for OfflineAssertionCheckError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::Engine(source) => Some(source.as_ref()),
             Self::ConditionEvaluation(error) => Some(error),
             Self::MissingEventLogOffset { .. }
             | Self::EventLogOffsetMismatch { .. }
@@ -1135,11 +1147,14 @@ pub struct HostAssertionEvaluator {
     states: Vec<HostAssertionState>,
     guest_marker_states: Vec<GuestMarkerAssertionState>,
     once_latches: Vec<Condition>,
-    white_box_policies: BTreeMap<NodeId, WhiteBoxPolicy>,
-    code_points: BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
-    mem_places: BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
-    terminal_quiescence: Option<SchedulerQuiescence>,
+    white_box_policies: std::sync::Arc<BTreeMap<NodeId, WhiteBoxPolicy>>,
+    code_points: std::sync::Arc<BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>>,
+    mem_places: std::sync::Arc<BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>>,
+    terminal_quiescence: Option<std::sync::Arc<SchedulerQuiescence>>,
     last_position: Option<HostAssertionPrefixPosition>,
+    _definition_custody: crate::owned_decode::DecodeCustody,
+    _mutable_custody: crate::owned_decode::DecodeCustody,
+    evaluation_failure: Option<EngineError>,
 }
 
 // Deadline crossing needs only the prior point; checkpoint binding needs its
@@ -1218,7 +1233,7 @@ impl HostAssertionEvaluator {
                     .iter()
                     .map(Predicate::to_compact_binary)
                     .collect(),
-                terminal_quiescence: self.terminal_quiescence.clone(),
+                terminal_quiescence: self.terminal_quiescence.as_deref().cloned(),
                 last_prefix: self.last_position.map(|position| position.offset),
             },
         }
@@ -1311,7 +1326,11 @@ impl HostAssertionEvaluatorCheckpoint {
         }
         staged.guest_marker_states = self.wire.guest_marker_states.clone();
         staged.once_latches = once_latches;
-        staged.terminal_quiescence = self.wire.terminal_quiescence.clone();
+        staged.terminal_quiescence = self
+            .wire
+            .terminal_quiescence
+            .clone()
+            .map(std::sync::Arc::new);
         staged.last_position = self
             .wire
             .last_prefix
@@ -1380,11 +1399,14 @@ impl HostAssertionEvaluator {
             states,
             guest_marker_states,
             once_latches: Vec::new(),
-            white_box_policies: BTreeMap::new(),
-            code_points: BTreeMap::new(),
-            mem_places: BTreeMap::new(),
+            white_box_policies: std::sync::Arc::new(BTreeMap::new()),
+            code_points: std::sync::Arc::new(BTreeMap::new()),
+            mem_places: std::sync::Arc::new(BTreeMap::new()),
             terminal_quiescence: None,
             last_position: None,
+            _definition_custody: crate::owned_decode::current_custody().unwrap_or_default(),
+            _mutable_custody: Default::default(),
+            evaluation_failure: None,
         }
     }
 
@@ -1394,7 +1416,7 @@ impl HostAssertionEvaluator {
         mut self,
         policies: impl IntoIterator<Item = (NodeId, WhiteBoxPolicy)>,
     ) -> Self {
-        self.white_box_policies = policies.into_iter().collect();
+        self.white_box_policies = std::sync::Arc::new(policies.into_iter().collect());
         self
     }
 
@@ -1427,7 +1449,7 @@ impl HostAssertionEvaluator {
         mut self,
         code_points: impl IntoIterator<Item = ((NodeId, CodePoint), ResolvedCodePoint)>,
     ) -> Self {
-        self.code_points = code_points.into_iter().collect();
+        self.code_points = std::sync::Arc::new(code_points.into_iter().collect());
         self
     }
 
@@ -1437,19 +1459,19 @@ impl HostAssertionEvaluator {
         mut self,
         mem_places: impl IntoIterator<Item = ((NodeId, MemPlace), ResolvedMemPlace)>,
     ) -> Self {
-        self.mem_places = mem_places.into_iter().collect();
+        self.mem_places = std::sync::Arc::new(mem_places.into_iter().collect());
         self
     }
 
     /// Adds terminal scheduler-quiescence evidence for after-quiescence checks.
     #[must_use]
     pub fn with_terminal_scheduler_quiescence(mut self, quiescence: SchedulerQuiescence) -> Self {
-        self.terminal_quiescence = Some(quiescence);
+        self.terminal_quiescence = Some(std::sync::Arc::new(quiescence));
         self
     }
 
     /// Observes one checked event-log prefix and returns newly terminal outcomes.
-    pub fn observe_prefix<O>(
+    fn observe_prefix_inner<O>(
         &mut self,
         prefix: &ConditionEventLogPrefix,
         oracle: &mut O,
@@ -1469,6 +1491,7 @@ impl HostAssertionEvaluator {
                 &self.white_box_policies,
                 &self.code_points,
                 &self.mem_places,
+                &mut self.evaluation_failure,
             ) {
                 outcomes.push(outcome);
             }
@@ -1550,6 +1573,7 @@ impl HostAssertionEvaluator {
                     &self.white_box_policies,
                     &self.code_points,
                     &self.mem_places,
+                    &mut self.evaluation_failure,
                 ) {
                     outcomes.push(outcome);
                 }
@@ -1559,7 +1583,7 @@ impl HostAssertionEvaluator {
     }
 
     /// Finalizes all assertions at the supplied terminal event-log prefix.
-    pub fn finalize_prefix<O>(
+    fn finalize_prefix_inner<O>(
         &mut self,
         prefix: &ConditionEventLogPrefix,
         oracle: &mut O,
@@ -1567,7 +1591,7 @@ impl HostAssertionEvaluator {
     where
         O: HostAssertionOracle + ?Sized,
     {
-        self.observe_prefix(prefix, oracle);
+        self.observe_prefix_inner(prefix, oracle);
         let once_latches = &mut self.once_latches;
         for state in &mut self.states {
             finalize_host_assertion_state(
@@ -1578,7 +1602,8 @@ impl HostAssertionEvaluator {
                 &self.white_box_policies,
                 &self.code_points,
                 &self.mem_places,
-                self.terminal_quiescence.as_ref(),
+                self.terminal_quiescence.as_deref(),
+                &mut self.evaluation_failure,
             );
         }
         for state in &mut self.guest_marker_states {
@@ -1621,13 +1646,14 @@ impl HostAssertionEvaluator {
             violations,
             proximities,
             verdict: AssertionRunVerdict::failed(failures),
+            _decode_custody: crate::owned_decode::current_custody().unwrap_or_default(),
         }
     }
 }
 
 #[derive(Clone, Debug)]
 pub(super) struct HostAssertionState {
-    assertion: AssertionDef,
+    assertion: std::sync::Arc<AssertionDef>,
     lifecycle: PropertyLifecycleState,
     terminal: Option<HostAssertionTerminal>,
     evaluated: bool,
@@ -1688,6 +1714,7 @@ impl GuestMarkerAssertionState {
             message: self.message.clone(),
             reason: terminal.reason.clone(),
             evidence: terminal.evidence.clone(),
+            _decode_custody: crate::owned_decode::current_custody().unwrap_or_default(),
         })
     }
 
@@ -1726,7 +1753,7 @@ impl GuestMarkerAssertionState {
 impl HostAssertionState {
     pub(super) fn new(assertion: &AssertionDef) -> Self {
         Self {
-            assertion: assertion.clone(),
+            assertion: std::sync::Arc::new(assertion.clone()),
             lifecycle: PropertyLifecycleState::Declared,
             terminal: None,
             evaluated: false,
@@ -1754,6 +1781,7 @@ impl HostAssertionState {
             message: self.assertion.message.clone(),
             reason: terminal.reason.clone(),
             evidence: terminal.evidence.clone(),
+            _decode_custody: crate::owned_decode::current_custody().unwrap_or_default(),
         })
     }
 
@@ -1872,6 +1900,7 @@ pub(super) fn observe_host_assertion_state<O>(
     white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
     code_points: &BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
     mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
+    failure: &mut Option<EngineError>,
 ) -> Option<HostAssertionOutcome>
 where
     O: HostAssertionOracle + ?Sized,
@@ -1881,7 +1910,8 @@ where
     }
 
     let at = prefix.point().at();
-    let property = state.assertion.property.clone();
+    let assertion = std::sync::Arc::clone(&state.assertion);
+    let property = &assertion.property;
     match property {
         Property::Always { predicate } => {
             if prefix.event_log_offset().events == 0 {
@@ -1889,15 +1919,18 @@ where
             }
             state.evaluated = true;
             state.lifecycle = PropertyLifecycleState::Passing;
-            if host_condition_is_true(
-                prefix,
-                &predicate,
-                oracle,
-                once_latches,
-                white_box_policies,
-                code_points,
-                mem_places,
-                None,
+            if admitted_pass::condition_result(
+                host_condition_is_true(
+                    prefix,
+                    &predicate,
+                    oracle,
+                    once_latches,
+                    white_box_policies,
+                    code_points,
+                    mem_places,
+                    None,
+                ),
+                failure,
             ) {
                 None
             } else {
@@ -1918,16 +1951,19 @@ where
             state.evaluated = true;
             state.lifecycle = PropertyLifecycleState::Passing;
             let mut leaf_cache = HostConditionEvaluationCache::new();
-            let satisfied = host_condition_is_true_with_cache(
-                prefix,
-                &predicate,
-                oracle,
-                once_latches,
-                &mut leaf_cache,
-                white_box_policies,
-                code_points,
-                mem_places,
-                None,
+            let satisfied = admitted_pass::condition_result(
+                host_condition_is_true_with_cache(
+                    prefix,
+                    &predicate,
+                    oracle,
+                    once_latches,
+                    &mut leaf_cache,
+                    white_box_policies,
+                    code_points,
+                    mem_places,
+                    None,
+                ),
+                failure,
             );
             let distance = host_condition_distance_to_satisfaction(
                 prefix,
@@ -1963,12 +1999,13 @@ where
                 oracle,
                 &trigger,
                 &property,
-                deadline,
+                *deadline,
                 once_latches,
                 &mut leaf_cache,
                 white_box_policies,
                 code_points,
                 mem_places,
+                failure,
             )
         }
         Property::AfterQuiescence { .. } => None,
@@ -1984,7 +2021,8 @@ where
             code_points,
             mem_places,
             &predicate,
-            expectation,
+            *expectation,
+            failure,
         ),
     }
 }
@@ -2003,6 +2041,7 @@ pub(super) fn observe_eventually_assertion<O>(
     white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
     code_points: &BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
     mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
+    failure: &mut Option<EngineError>,
 ) -> Option<HostAssertionOutcome>
 where
     O: HostAssertionOracle + ?Sized,
@@ -2036,16 +2075,19 @@ where
     }
 
     if !state.eventually_triggered
-        && host_condition_is_true_with_cache(
-            prefix,
-            trigger,
-            oracle,
-            once_latches,
-            leaf_cache,
-            white_box_policies,
-            code_points,
-            mem_places,
-            None,
+        && admitted_pass::condition_result(
+            host_condition_is_true_with_cache(
+                prefix,
+                trigger,
+                oracle,
+                once_latches,
+                leaf_cache,
+                white_box_policies,
+                code_points,
+                mem_places,
+                None,
+            ),
+            failure,
         )
     {
         state.eventually_triggered = true;
@@ -2057,16 +2099,19 @@ where
     }
 
     let property_satisfied = !state.pending_eventually.is_empty()
-        && host_condition_is_true_with_cache(
-            prefix,
-            property,
-            oracle,
-            once_latches,
-            leaf_cache,
-            white_box_policies,
-            code_points,
-            mem_places,
-            None,
+        && admitted_pass::condition_result(
+            host_condition_is_true_with_cache(
+                prefix,
+                property,
+                oracle,
+                once_latches,
+                leaf_cache,
+                white_box_policies,
+                code_points,
+                mem_places,
+                None,
+            ),
+            failure,
         );
     if !state.pending_eventually.is_empty() {
         let distance = host_condition_distance_to_satisfaction(
@@ -2124,6 +2169,7 @@ pub(super) fn observe_eventually_deadline_state<O>(
     white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
     code_points: &BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
     mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
+    failure: &mut Option<EngineError>,
 ) -> Option<HostAssertionOutcome>
 where
     O: HostAssertionOracle + ?Sized,
@@ -2132,22 +2178,26 @@ where
         return None;
     }
 
-    let Property::Eventually { property, .. } = state.assertion.property.clone() else {
+    let assertion = std::sync::Arc::clone(&state.assertion);
+    let Property::Eventually { property, .. } = &assertion.property else {
         return None;
     };
     let at = prefix.point().at();
     state.lifecycle = PropertyLifecycleState::Failing;
     let mut leaf_cache = HostConditionEvaluationCache::new();
-    if host_condition_is_true_with_cache(
-        prefix,
-        &property,
-        oracle,
-        once_latches,
-        &mut leaf_cache,
-        white_box_policies,
-        code_points,
-        mem_places,
-        None,
+    if admitted_pass::condition_result(
+        host_condition_is_true_with_cache(
+            prefix,
+            &property,
+            oracle,
+            once_latches,
+            &mut leaf_cache,
+            white_box_policies,
+            code_points,
+            mem_places,
+            None,
+        ),
+        failure,
     ) {
         state.pending_eventually.clear();
         state.eventually_satisfied_at = Some(at);
@@ -2203,6 +2253,7 @@ pub(super) fn observe_reachability_assertion<O>(
     mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
     predicate: &Condition,
     expectation: ReachabilityExpectation,
+    failure: &mut Option<EngineError>,
 ) -> Option<HostAssertionOutcome>
 where
     O: HostAssertionOracle + ?Sized,
@@ -2210,16 +2261,19 @@ where
     state.evaluated = true;
     state.lifecycle = PropertyLifecycleState::Passing;
     let mut leaf_cache = HostConditionEvaluationCache::new();
-    let reached = host_condition_is_true_with_cache(
-        prefix,
-        predicate,
-        oracle,
-        once_latches,
-        &mut leaf_cache,
-        white_box_policies,
-        code_points,
-        mem_places,
-        None,
+    let reached = admitted_pass::condition_result(
+        host_condition_is_true_with_cache(
+            prefix,
+            predicate,
+            oracle,
+            once_latches,
+            &mut leaf_cache,
+            white_box_policies,
+            code_points,
+            mem_places,
+            None,
+        ),
+        failure,
     );
     if matches!(expectation, ReachabilityExpectation::Reachable { .. }) {
         let distance = host_condition_distance_to_satisfaction(
@@ -2270,6 +2324,7 @@ pub(super) fn finalize_host_assertion_state<O>(
     code_points: &BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
     mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
     terminal_quiescence: Option<&SchedulerQuiescence>,
+    failure: &mut Option<EngineError>,
 ) where
     O: HostAssertionOracle + ?Sized,
 {
@@ -2278,7 +2333,8 @@ pub(super) fn finalize_host_assertion_state<O>(
     }
 
     let at = prefix.point().at();
-    let property = state.assertion.property.clone();
+    let assertion = std::sync::Arc::clone(&state.assertion);
+    let property = &assertion.property;
     match property {
         Property::Always { .. } => {
             if state.evaluated {
@@ -2314,15 +2370,18 @@ pub(super) fn finalize_host_assertion_state<O>(
             finalize_eventually_assertion(state, prefix, &trigger, &property, white_box_policies);
         }
         Property::AfterQuiescence { predicate } => {
-            if host_condition_is_true(
-                prefix,
-                &predicate,
-                oracle,
-                once_latches,
-                white_box_policies,
-                code_points,
-                mem_places,
-                terminal_quiescence,
+            if admitted_pass::condition_result(
+                host_condition_is_true(
+                    prefix,
+                    &predicate,
+                    oracle,
+                    once_latches,
+                    white_box_policies,
+                    code_points,
+                    mem_places,
+                    terminal_quiescence,
+                ),
+                failure,
             ) {
                 state.terminal(
                     HostAssertionOutcomeKind::Passed,

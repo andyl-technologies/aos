@@ -114,6 +114,7 @@ impl LinuxQemuAttemptProcessOwner {
     pub(crate) fn start(
         mut group: LinuxQemuCgroup,
         maximum_writable_bytes: u64,
+        maximum_file_descriptors: u64,
         child_user_id: libc::uid_t,
         child_group_id: libc::gid_t,
         exact_checkpoint_root: Option<crucible::ContentHash>,
@@ -132,6 +133,7 @@ impl LinuxQemuAttemptProcessOwner {
         };
         let process_contract = match group.child_process_contract(
             maximum_writable_bytes,
+            maximum_file_descriptors,
             child_user_id,
             child_group_id,
             exact_checkpoint_root,
@@ -154,6 +156,20 @@ impl LinuxQemuAttemptProcessOwner {
             failed_children: VecDeque::new(),
             quarantine: None,
         })
+    }
+
+    pub(crate) fn memory_control(
+        &self,
+    ) -> Result<super::LinuxQemuCgroupMemoryControl, LinuxQemuAttemptProcessOwnerError> {
+        self.process_contract()?;
+        self.group
+            .as_ref()
+            .ok_or(LinuxQemuAttemptProcessOwnerError::MissingAuthority {
+                authority: "configured cgroup",
+            })?
+            .control
+            .memory_control()
+            .map_err(Into::into)
     }
 
     /// Returns the sealed child-process contract while this owner is active.
@@ -502,8 +518,9 @@ mod tests {
     #[test]
     fn start_failure_returns_group_and_started_watcher() -> Result<(), Box<dyn std::error::Error>> {
         let (_root, group) = group_fixture()?;
-        let mut error = LinuxQemuAttemptProcessOwner::start(group, 4096, 65_533, 65_532, None)
-            .expect_err("ordinary filesystem must fail cgroup provenance validation");
+        let mut error =
+            LinuxQemuAttemptProcessOwner::start(group, 4096, 1024, 65_533, 65_532, None)
+                .expect_err("ordinary filesystem must fail cgroup provenance validation");
         assert!(matches!(
             error.source_error(),
             LinuxQemuAttemptProcessOwnerError::Cgroup(LinuxQemuCgroupError::Io { .. })

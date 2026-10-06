@@ -51,6 +51,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::mpsc;
 
+mod host_operational;
 mod resource_limit;
 const HELLO_RPC_PATH: &str = "/crucible.rpc/hello";
 const LIST_SCENARIOS_RPC_PATH: &str = "/crucible.rpc/list-scenarios";
@@ -162,6 +163,23 @@ pub enum ControlClientError {
 
 /// Typed, asynchronous control-plane client shared by in-process and RPC paths.
 pub trait ControlClient {
+    /// Executes an authenticated operational request outside modeled session commands.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the transport cannot establish an operator identity,
+    /// the executor rejects authorization or ownership, or message bounds fail.
+    fn host_operational(
+        &self,
+        _request: crate::host_operational::HostOperationalRequest,
+    ) -> ControlClientFuture<'_, crate::host_operational::HostOperationalResponse> {
+        Box::pin(async move {
+            Err(ControlClientError::UnsupportedLifecycleMethod {
+                method: "HostOperational",
+            })
+        })
+    }
+
     /// Returns the transport used by this client.
     #[must_use]
     fn transport(&self) -> ControlTransportKind;
@@ -519,6 +537,8 @@ pub struct RpcControlClient {
     endpoint: RpcEndpoint,
     http: reqwest::Client,
     wire_model: ControlWireModel,
+    host_operational_negotiation: Arc<tokio::sync::OnceCell<()>>,
+    host_operational_principal: Option<String>,
 }
 
 impl RpcControlClient {
@@ -539,6 +559,8 @@ impl RpcControlClient {
             endpoint,
             http,
             wire_model: ControlWireModel::current(),
+            host_operational_negotiation: Arc::new(tokio::sync::OnceCell::new()),
+            host_operational_principal: None,
         })
     }
 
@@ -568,6 +590,17 @@ impl RpcControlClient {
                 message: format!("invalid daemon client identity: {error}"),
             }
         })?;
+        let leaf = rustls_pemfile::certs(&mut std::io::Cursor::new(&tls.client_identity_pem))
+            .next()
+            .transpose()
+            .map_err(|error| ControlClientError::HttpClientBuild {
+                message: format!("invalid daemon client certificate: {error}"),
+            })?
+            .ok_or_else(|| ControlClientError::HttpClientBuild {
+                message: String::from("daemon client identity has no leaf certificate"),
+            })?;
+        let principal =
+            crate::transport_security::DebugTransportIdentity::from_leaf_certificate(leaf.as_ref());
         let http = reqwest::Client::builder()
             .http2_prior_knowledge()
             .add_root_certificate(server_ca)
@@ -580,6 +613,8 @@ impl RpcControlClient {
             endpoint,
             http,
             wire_model: ControlWireModel::current(),
+            host_operational_negotiation: Arc::new(tokio::sync::OnceCell::new()),
+            host_operational_principal: Some(principal.certificate_sha256().to_owned()),
         })
     }
 
@@ -695,6 +730,13 @@ impl RpcControlClient {
 }
 
 impl ControlClient for RpcControlClient {
+    fn host_operational(
+        &self,
+        request: crate::host_operational::HostOperationalRequest,
+    ) -> ControlClientFuture<'_, crate::host_operational::HostOperationalResponse> {
+        Box::pin(self.send_host_operational(request))
+    }
+
     fn transport(&self) -> ControlTransportKind {
         ControlTransportKind::Http2Rpc
     }

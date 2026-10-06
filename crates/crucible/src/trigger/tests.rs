@@ -147,7 +147,9 @@ fn polled_guest_marker_after_a_later_boundary_reaches_assertion_and_graph() {
 
     let mut assertions =
         HostAssertionEvaluator::new(&properties).with_world_white_box_policies(&world);
-    let outcomes = assertions.observe_prefix(&prefix, &mut BlackBoxHostOracle);
+    let outcomes = assertions
+        .observe_prefix(&prefix, &mut BlackBoxHostOracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
     assert!(outcomes.iter().any(|outcome| {
         outcome.assertion.name == "known-midpoint-failure"
             && outcome.kind == HostAssertionOutcomeKind::Violated
@@ -155,7 +157,9 @@ fn polled_guest_marker_after_a_later_boundary_reaches_assertion_and_graph() {
 
     let mut pass = ConditionEvaluationPass::from_log_prefix(prefix, false_condition_leaf)
         .with_world_white_box_policies(&world);
-    let firings = pass.evaluate_event_graph(&graph, &mut EventGraphState::new());
+    let firings = pass
+        .evaluate_event_graph(&graph, &mut EventGraphState::new())
+        .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"));
     assert_eq!(firings.len(), 1);
     assert_eq!(firings[0].event().name, "marker-received");
 }

@@ -88,6 +88,14 @@ pub struct CampaignLineage {
 }
 
 impl CampaignLineage {
+    /// Clones the canonical value with admission before its owned allocations.
+    ///
+    /// # Errors
+    /// Refuses exhausted original metadata authority or invalid canonical data.
+    pub fn clone_admitted(&self) -> Result<Self, CampaignCodecError> {
+        crate::codec::admitted_clone(self)
+    }
+
     /// Builds a validated campaign compatibility lineage.
     ///
     /// # Errors

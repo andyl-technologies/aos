@@ -71,6 +71,7 @@ let
     "bash-completion"
     "bc"
     "bison"
+    "blake3-c"
     "boost"
     "brotli"
     "bzip2"
@@ -1142,6 +1143,8 @@ let
     "networking/_envoy-config/types.nix" = "linux-only-config-source";
     "networking/_nginx-config/module.nix" = "linux-only-config-source";
     "networking/_openldap-config/module.nix" = "linux-only-config-source";
+    "networking/_samba-cross/aarch64-linux.answers" = "linux-only-source";
+    "networking/_samba-cross/heimdal-build-tools.nix" = "native-build-helper";
     "security/_krb5-kdc-config/module.nix" = "linux-only-config-source";
     "storage/_garage-config/module.nix" = "linux-only-config-source";
     "storage/_garage-tests/lifecycle.nix" = "linux-only-test-source";

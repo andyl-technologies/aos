@@ -323,6 +323,14 @@ where
             self.source_recovery_failed = true;
             return Err(Box::new(self));
         }
+        if !self
+            .source_world
+            .lock()
+            .is_ok_and(|mut source| source.restore_retained_service_supervisor().is_ok())
+        {
+            self.source_recovery_failed = true;
+            return Err(Box::new(self));
+        }
         self.source_lease.take().ok_or_else(|| Box::new(self))
     }
 

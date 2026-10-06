@@ -31,6 +31,7 @@ mod apply;
 mod journal;
 mod manifest;
 mod planner;
+mod reachability;
 mod roots;
 
 #[cfg(target_os = "linux")]

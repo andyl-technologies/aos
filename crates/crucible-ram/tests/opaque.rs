@@ -1,6 +1,7 @@
 //! SPDX-License-Identifier: MIT OR Apache-2.0
 //! Exercises authenticated sparse hydration independently of guest page reads.
 
+// crucible-lint: allow panic-shortcut -- these test-only panic shortcuts identify the exact failed fixture or invariant.
 #![allow(clippy::unwrap_used)]
 
 use crucible_ram::{

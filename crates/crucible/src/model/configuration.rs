@@ -12,6 +12,8 @@ pub struct ScenarioDefForm {
     pub(super) selectables: ScenarioSelectables,
     pub(super) seed: Seed,
     pub(super) app_random_draw_cap: u64,
+    // Immutable validated components retain a fixed identity; reads allocate no material.
+    definition: ScenarioDef,
 }
 
 impl ScenarioDefForm {
@@ -110,24 +112,56 @@ impl ScenarioDefForm {
         seed: Seed,
         app_random_draw_cap: u64,
     ) -> Result<Self, EngineError> {
-        validate_world_serialized_identity(world)?;
-        let properties = resolve_properties_dsl_for_context(world, plan, properties)?;
-        properties.validate_for_world(world)?;
-        plan.validate_for_world_with_properties(world, &properties)?;
-        let measurements = MeasurementDefinitions::from_decoded_definitions(
+        let world = world.clone_admitted()?;
+        let plan = plan.clone_admitted_for_world(&world)?;
+        let properties = properties
+            .clone_admitted_for_world(&world)?
+            .into_resolved_for_context(&world, &plan)?;
+        let measurements = measurements.clone_admitted_for_context(&world, &plan, &properties)?;
+        Self::from_owned_components(
             world,
             plan,
-            &properties,
-            measurements.definitions().to_vec(),
-        )?;
-        Ok(Self {
-            world: world.clone(),
-            plan: plan.clone(),
-            properties: properties.clone(),
+            properties,
             measurements,
-            selectables: ScenarioSelectables::empty(),
+            ScenarioSelectables::empty(),
             seed,
             app_random_draw_cap,
+        )
+    }
+
+    /// Consumes already admitted decoded components without a second deep copy.
+    pub(super) fn from_owned_components(
+        world: World,
+        plan: Plan,
+        properties: Properties,
+        measurements: MeasurementDefinitions,
+        selectables: ScenarioSelectables,
+        seed: Seed,
+        app_random_draw_cap: u64,
+    ) -> Result<Self, EngineError> {
+        validate_world_serialized_identity(&world)?;
+        let properties = properties.into_resolved_for_context(&world, &plan)?;
+        properties.validate_for_world(&world)?;
+        plan.validate_for_world_with_properties(&world, &properties)?;
+        let measurements = measurements.into_validated(&world, &plan, &properties)?;
+        let definition = canonical_scenario_definition(
+            &world,
+            &plan,
+            &properties,
+            &measurements,
+            &selectables,
+            seed,
+            app_random_draw_cap,
+        )?;
+        Ok(Self {
+            world,
+            plan,
+            properties,
+            measurements,
+            selectables,
+            seed,
+            app_random_draw_cap,
+            definition,
         })
     }
 
@@ -176,21 +210,13 @@ impl ScenarioDefForm {
     /// Reconstructs the immutable scenario definition handle.
     #[must_use]
     pub fn scenario_def(&self) -> ScenarioDef {
-        self.world
-            .scenario_def_from_components_with_measurements_selectables_and_app_random_draw_cap(
-                &self.plan,
-                &self.properties,
-                &self.measurements,
-                &self.selectables,
-                self.seed,
-                self.app_random_draw_cap,
-            )
+        self.definition.clone()
     }
 
     /// Returns the content address of the reconstructed scenario definition.
     #[must_use]
     pub fn id(&self) -> ContentHash {
-        self.scenario_def().id()
+        self.definition.id()
     }
 
     /// Rebuilds this scenario around a replacement validated plan.
@@ -200,16 +226,16 @@ impl ScenarioDefForm {
     /// Returns [`EngineError`] when `plan` does not layer over the retained
     /// world and properties.
     pub fn with_plan(&self, plan: Plan) -> Result<Self, EngineError> {
-        let mut rebuilt = Self::from_components_with_measurements_and_app_random_draw_cap(
-            &self.world,
-            &plan,
-            &self.properties,
-            &self.measurements,
-            self.seed,
-            self.app_random_draw_cap,
-        )?;
-        rebuilt.selectables = self.selectables.clone();
-        Ok(rebuilt)
+        let retained = self.try_clone_admitted()?;
+        Self::from_owned_components(
+            retained.world,
+            plan,
+            retained.properties,
+            retained.measurements,
+            retained.selectables,
+            retained.seed,
+            retained.app_random_draw_cap,
+        )
     }
 
     /// Rebuilds this scenario around an exact validated selectable catalog.
@@ -219,11 +245,25 @@ impl ScenarioDefForm {
     /// Returns [`EngineError::ScenarioSerialization`] when the catalog does not
     /// decode canonically for this World or names an absent guest node.
     pub fn with_selectables(&self, selectables: ScenarioSelectables) -> Result<Self, EngineError> {
-        let canonical = selectables.canonical_bytes();
-        let selectables = ScenarioSelectables::from_canonical_bytes(&self.world, &canonical)?;
-        let mut rebuilt = self.clone();
+        let selectables =
+            ScenarioSelectables::from_canonical_bytes(&self.world, selectables.canonical_body())?;
+        let mut rebuilt = self.try_clone_admitted()?;
         rebuilt.selectables = selectables;
+        rebuilt.refresh_definition()?;
         Ok(rebuilt)
+    }
+
+    fn refresh_definition(&mut self) -> Result<(), EngineError> {
+        self.definition = canonical_scenario_definition(
+            &self.world,
+            &self.plan,
+            &self.properties,
+            &self.measurements,
+            &self.selectables,
+            self.seed,
+            self.app_random_draw_cap,
+        )?;
+        Ok(())
     }
 
     /// Serializes this form as deterministic TOML.
@@ -355,6 +395,40 @@ pub struct SelectionDecision {
 }
 
 impl SelectionDecision {
+    /// Copies validated selection bytes and producer evidence under original resource custody.
+    ///
+    /// # Errors
+    /// Refuses exhausted original metadata authority or allocation failure.
+    pub fn try_clone_admitted(&self) -> Result<Self, EngineError> {
+        let canonical_selection = admitted_clone::copy_vec(&self.canonical_selection)?;
+        let preemption_config = match self.preemption_config.as_deref() {
+            Some(config) => {
+                crate::owned_decode::charge_array::<PreemptionBranchConfig>(1)
+                    .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+                let node = NodeId {
+                    name: admitted_clone::copy_string(&config.node.name)?,
+                };
+                Some(Box::new(PreemptionBranchConfig {
+                    node,
+                    deadline: config.deadline,
+                    horizon: config.horizon,
+                    step: config.step,
+                    switch_from_vcpu: config.switch_from_vcpu,
+                    switch_to_vcpu: config.switch_to_vcpu,
+                    target_vcpu: config.target_vcpu,
+                    irq: config.irq,
+                }))
+            }
+            None => None,
+        };
+        Ok(Self {
+            canonical_selection,
+            app_random_model_sample: self.app_random_model_sample,
+            campaign_branch: self.campaign_branch,
+            preemption_config,
+        })
+    }
+
     /// Builds one schedule decision from a constructed campaign selection.
     #[must_use]
     pub fn new(selection: &crucible_campaign::Selection) -> Self {
@@ -453,9 +527,9 @@ impl serde::Serialize for SelectionDecision {
     where
         S: serde::Serializer,
     {
-        SelectionDecisionWire {
-            canonical_selection: self.canonical_selection.clone(),
-            preemption_config: self.preemption_config.as_deref().cloned(),
+        SelectionDecisionRef {
+            canonical_selection: &self.canonical_selection,
+            preemption_config: self.preemption_config.as_deref(),
         }
         .serialize(serializer)
     }
@@ -481,6 +555,12 @@ impl<'de> serde::Deserialize<'de> for SelectionDecision {
         decision.preemption_config = wire.preemption_config.map(Box::new);
         Ok(decision)
     }
+}
+
+#[derive(serde::Serialize)]
+struct SelectionDecisionRef<'a> {
+    canonical_selection: &'a [u8],
+    preemption_config: Option<&'a PreemptionBranchConfig>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -531,6 +611,7 @@ impl Decision {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Schedule {
     pub(super) decisions: Vec<Decision>,
+    pub(super) _decode_custody: crate::owned_decode::DecodeCustody,
 }
 
 impl Schedule {
@@ -539,6 +620,7 @@ impl Schedule {
     pub fn empty() -> Self {
         Self {
             decisions: Vec::new(),
+            _decode_custody: crate::owned_decode::DecodeCustody::default(),
         }
     }
 
@@ -614,6 +696,7 @@ impl Schedule {
 
         Ok(Self {
             decisions: self.decisions[..len].to_vec(),
+            _decode_custody: self._decode_custody.clone(),
         })
     }
 
@@ -633,6 +716,7 @@ impl Schedule {
 
         Ok(Self {
             decisions: self.decisions[len..].to_vec(),
+            _decode_custody: self._decode_custody.clone(),
         })
     }
 
@@ -641,7 +725,10 @@ impl Schedule {
     pub fn appended(&self, decision: Decision) -> Self {
         let mut decisions = self.decisions.clone();
         decisions.push(decision);
-        Self { decisions }
+        Self {
+            decisions,
+            _decode_custody: self._decode_custody.clone(),
+        }
     }
 
     /// Computes the canonical identity of this schedule.

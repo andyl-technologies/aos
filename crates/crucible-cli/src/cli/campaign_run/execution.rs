@@ -31,15 +31,14 @@ pub(super) fn execute_local_qemu_campaign(
     let seed = run_plan
         .request_seed
         .unwrap_or_else(|| scenario.scenario_def().seed());
-    let request = GuardedDefaultCampaignRunRequest::new(
+    let request = crate::cli_verify_serve::configured_guarded_campaign_request(
+        &deployment,
         scenario,
         seed,
-        env!("CARGO_PKG_VERSION"),
         qemu_build_id,
         lifecycle,
-        deployment.host,
         resources,
-    )
+    )?
     .with_discovery_stop(guarded_discovery_stop(run_plan)?);
     let request = apply_guarded_campaign_determinism_policy(request, verify_determinism_findings);
     let request = if run_plan.watch_streams_live_status {

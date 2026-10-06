@@ -2227,6 +2227,8 @@ dependencies = [
  "crucible-shmem",
  "crucible-sim",
  "regex",
+ "regex-automata",
+ "regex-syntax",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -2283,6 +2285,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "crucible-cas",
+ "crucible-ram",
  "ed25519-dalek",
  "num-bigint",
  "num-integer",
@@ -2355,18 +2358,22 @@ dependencies = [
  "crucible-api",
  "crucible-campaign",
  "crucible-cas",
+ "crucible-device",
  "crucible-guest",
  "crucible-linux-resource",
  "crucible-protocol",
  "crucible-qemu",
+ "crucible-ram",
  "crucible-s3-store",
  "crucible-session",
  "crucible-shmem",
  "ed25519-dalek",
  "rand 0.9.4",
+ "rusqlite",
  "rustix 1.1.4",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -2423,6 +2430,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "rustix 1.1.4",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 
@@ -2481,6 +2489,8 @@ name = "crucible-ram"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.18",
 ]
 
@@ -2511,6 +2521,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "crucible-protocol",
+ "crucible-ram",
  "libc",
  "serde",
  "serde_json",

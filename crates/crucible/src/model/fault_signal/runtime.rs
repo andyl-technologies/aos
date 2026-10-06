@@ -553,6 +553,21 @@ pub struct ResolvedEffectTrace {
 }
 
 impl ResolvedEffectTrace {
+    /// Copies the complete trace under the original input resource account.
+    ///
+    /// Temporary encoding and each nested decoded allocation receive separate
+    /// credits. JSON is an internal copy mechanism and does not change the
+    /// trace's canonical CBOR artifact or replay identity.
+    ///
+    /// # Errors
+    /// Refuses original resource exhaustion, allocation failure, or malformed
+    /// trace members before publishing a copied trace.
+    pub fn try_clone_admitted(&self) -> Result<Self, crate::owned_decode::DecodeAdmissionError> {
+        let bytes = crate::owned_decode::to_json_vec(self)?;
+        crate::owned_decode::from_json_slice(&bytes)
+            .map_err(crate::owned_decode::DecodeAdmissionError::new)
+    }
+
     /// Encodes this trace as deterministic CBOR for artifact and RPC transport.
     ///
     /// # Errors

@@ -1,6 +1,6 @@
 //! Checks the Crucible crate artifact-type contract.
 //!
-//! RFC-0010 file 27 fixes the Rust artifact surface before later phases add
+//! The crate ownership inventory fixes the Rust artifact surface before later phases add
 //! implementation detail: only the QEMU plugin builds a `cdylib`, the CLI
 //! builds the public `crucible` binary, `crucible-debug-gateway` builds the
 //! GPL-side gateway process, `crucible-guest` builds its optional in-guest
@@ -63,6 +63,10 @@ const ARTIFACT_SPECS: &[ArtifactSpec] = &[
     },
     ArtifactSpec {
         package: "crucible-protocol",
+        expected: ExpectedArtifact::Library,
+    },
+    ArtifactSpec {
+        package: "crucible-ram",
         expected: ExpectedArtifact::Library,
     },
     ArtifactSpec {

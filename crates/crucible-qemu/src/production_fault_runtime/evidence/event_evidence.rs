@@ -67,7 +67,7 @@ pub(crate) fn validate_node_event_evidence(
                 })
             }
             crucible_shmem::FaultCommandKind::CpuInstructionTransform => {
-                FaultInstructionEvidenceV1::decode(&event.payload).is_ok_and(|evidence| {
+                FaultInstructionEvidenceV2::decode(&event.payload).is_ok_and(|evidence| {
                     evidence.observed_icount == event.header.observed_icount
                         && evidence.before_state_sha256 == event.header.before_hash
                         && evidence.after_state_sha256 == event.header.after_hash
@@ -86,7 +86,7 @@ pub(crate) fn validate_node_event_evidence(
                 validate_interrupt_evidence(event)
             }
             crucible_shmem::FaultCommandKind::MemoryMutation => {
-                MemoryMutationEvidenceV1::decode(&event.payload).is_ok_and(|evidence| {
+                MemoryMutationEvidenceV2::decode(&event.payload).is_ok_and(|evidence| {
                     evidence.observed_icount == event.header.observed_icount
                         && evidence.before_sha256 == event.header.before_hash
                         && evidence.after_sha256 == event.header.after_hash
@@ -99,6 +99,8 @@ pub(crate) fn validate_node_event_evidence(
             crucible_shmem::FaultCommandKind::MemoryEccEvent => validate_memory_ecc_evidence(event),
             crucible_shmem::FaultCommandKind::MemoryService => {
                 validate_memory_service_evidence(event)
+                    && crate::fault_action_sink::materialized_memory_service_latency(action)
+                        .is_ok_and(|configured| read_u64(&event.payload, 440) == Some(configured))
             }
             crucible_shmem::FaultCommandKind::ClockTransform
             | crucible_shmem::FaultCommandKind::ClockSourceState => {

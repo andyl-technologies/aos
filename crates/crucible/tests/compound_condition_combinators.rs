@@ -60,10 +60,26 @@ fn compound_combinators_nest_arbitrarily() {
         ]),
     ]);
 
-    assert!(evaluator(1, &["ready"]).evaluate_assertion_condition(&condition));
-    assert!(evaluator(1, &["warm"]).evaluate_assertion_condition(&condition));
-    assert!(!evaluator(1, &["ready", "blocked"]).evaluate_assertion_condition(&condition));
-    assert!(!evaluator(1, &["warm", "cold"]).evaluate_assertion_condition(&condition));
+    assert!(
+        evaluator(1, &["ready"])
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
+    assert!(
+        evaluator(1, &["warm"])
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
+    assert!(
+        !evaluator(1, &["ready", "blocked"])
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
+    assert!(
+        !evaluator(1, &["warm", "cold"])
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
 }
 
 #[test]

@@ -4,8 +4,8 @@ use super::*;
 
 use crucible_campaign::{StopCondition, StopOutcome};
 use crucible_daemon::qemu_campaign_lifecycle::{
-    GuardedCampaignExploration, GuardedCampaignExplorationStrategy, GuardedDefaultCampaignRun,
-    GuardedDefaultCampaignRunRequest, run_guarded_default_campaign,
+    GuardedCampaignExploration, GuardedCampaignExplorationStrategy, GuardedCampaignOwner,
+    GuardedDefaultCampaignRun, GuardedDefaultCampaignRunRequest, run_guarded_default_campaign,
 };
 
 #[path = "fuzz/corpus.rs"]
@@ -42,10 +42,15 @@ pub(crate) fn run_local_qemu_fuzz_workflow(
             LIVE_FUZZ_QUANTUM_LIMIT,
         )));
     }
+    let owner = crate::cli_verify_serve::open_guarded_campaign_owner(
+        &deployment,
+        &config,
+        plan.config.meta_seed,
+        deployment.resources,
+    )?;
     let execution_context = QemuFuzzExecutionContext {
         config: &config,
-        host: &deployment.host,
-        resources: deployment.resources,
+        owner: &owner,
         verify_determinism_findings,
         plan,
         backend_plan,
@@ -286,8 +291,7 @@ fn qemu_fuzz_campaign_stop_label(stop: &StopOutcome) -> String {
 
 struct QemuFuzzExecutionContext<'a> {
     config: &'a production_api::ProductionVmLifecycleConfig,
-    host: &'a crucible_daemon::LinuxQemuAttemptHostConfig,
-    resources: crucible_campaign::AttemptResourceLimits,
+    owner: &'a GuardedCampaignOwner,
     verify_determinism_findings: bool,
     plan: &'a FuzzDriverPlan,
     backend_plan: &'a BackendSelectionPlan,
@@ -486,10 +490,10 @@ fn execute_qemu_fuzz_iterations(
             form.scenario_def().seed(),
             env!("CARGO_PKG_VERSION"),
             qemu_build_id(context.backend_plan)?,
-            context.config.clone(),
-            context.host.clone(),
-            context.resources,
-        );
+            context.owner.clone(),
+        )
+        .and_then(|request| request.with_guarded_lifecycle(context.config.clone()))
+        .map_err(|error| backend_error(format!("configure QEMU fuzz campaign: {error}")))?;
         let request = match parent {
             Some(candidate) => request.with_initial_replay(
                 candidate.artifact.schedule().clone(),

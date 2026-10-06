@@ -3,7 +3,7 @@
 //! This module joins the durable assignment ledger, repository-backed
 //! admission, fixed semantic worker pool, guarded fresh-QEMU runner, and
 //! managed executor endpoint behind one owner. Each worker routes a durable
-//! version-nine root exclusively through the guarded production-resume path;
+//! authenticated paged root exclusively through the guarded production-resume path;
 //! fresh execution never substitutes for an invalid root. The advertised
 //! public production preparation captures an authenticated native baked
 //! genesis for every scenario in its closed catalog, installs one concrete
@@ -14,7 +14,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 
 use crucible::ScenarioDefForm;
@@ -22,10 +22,9 @@ use crucible_api::ProductionVmLifecycleConfig;
 use crucible_campaign::{
     AttemptId, AttemptResourceLimits, CampaignCodecError, CampaignExecutorStore, CampaignHash,
     CampaignLineageId, CampaignName, CampaignOperationalStatusProvider, CampaignRepository,
-    CampaignRepositoryError, DaemonEpoch, ExecutionRetentionIntent, ExecutorCapabilitySet,
-    ExecutorCompatibilityProfile, ExecutorDescription, ExecutorMaterializationCapability,
-    ExecutorRejection, FindingCandidateBundleId, ObservationId, ScenarioArtifactId,
-    SubmitAttemptRequest,
+    CampaignRepositoryError, DaemonEpoch, ExecutorCapabilitySet, ExecutorCompatibilityProfile,
+    ExecutorDescription, ExecutorMaterializationCapability, ExecutorRejection,
+    FindingCandidateBundleId, ObservationId, ScenarioArtifactId, SubmitAttemptRequest,
 };
 use crucible_cas::content_store::ImmutableBlobBackend;
 use crucible_qemu::{
@@ -59,14 +58,14 @@ use crate::{
     ComposedQemuAttemptResourceGuardFactory, CrucibleArtifactError, CrucibleAttemptExecution,
     CrucibleExecutionModel, DirectoryAssignmentLedger,
     DirectoryHotCheckpointFallbackRetentionStore, ExactCheckpointStore, ExactCheckpointStoreError,
-    ExecutionCancellation, ExecutionCheckpointRequest, ExecutorCapacity, ExecutorLocalService,
-    ExecutorLocalServiceError, ExecutorLocalServiceReport, ExecutorLocalServiceShutdown,
-    ExecutorLoopbackEndpointConfig, ExecutorLoopbackListenerError, ExecutorLoopbackServerConfig,
+    ExecutionCancellation, ExecutorCapacity, ExecutorLocalService, ExecutorLocalServiceError,
+    ExecutorLocalServiceReport, ExecutorLocalServiceShutdown, ExecutorLoopbackEndpointConfig,
+    ExecutorLoopbackListenerError, ExecutorLoopbackServerConfig,
     GuestSelectableBoundaryDiagnosticConfig, HotCheckpointFallback,
     HotCheckpointFallbackRetentionError, HotCheckpointHotnessSignals, HotCheckpointLimits,
     LinuxQemuAttemptHostResourceFactory, LocalCheckpointPromotionWorker,
-    LocalComponentEndpointError, LocalExecutorCapabilityService, LocalExecutorPoolConfigError,
-    LocalExecutorSupervisor, LocalExecutorWorkerPool, MAX_PREPARED_SEMANTIC_RESULT_BYTES,
+    LocalComponentEndpointError, LocalExecutorPoolConfigError, LocalExecutorSupervisor,
+    LocalExecutorWorkerPool, MAX_PREPARED_SEMANTIC_RESULT_BYTES,
     ManagedQemuHotForkAuthenticatedAdmissionError, ManagedQemuHotForkAuthenticatedAdmissionFailure,
     ManagedQemuHotForkSourceWorldAdmissionError, ManagedQemuHotForkSourceWorldPool,
     ManagedQemuHotForkSourceWorldPoolConstructionError, PreparedResultJournalError,
@@ -93,9 +92,25 @@ use crate::{
 
 mod exact_pin_materializer;
 mod hot_fork;
+pub(crate) use hot_fork::retained_service::{
+    RetainedTemplateService, RetainedTemplateServiceFactory,
+};
+mod ram_catalog;
+pub use ram_catalog::{PackagedRamCatalogConfig, PackagedRamCatalogConfigError};
+
+pub(crate) mod guarded;
+mod preparation;
 mod status;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) use tests::run_host_parallel_native;
+#[cfg(test)]
+pub(crate) use tests::{
+    NativeAtomicFailureCase, NativeAtomicWorldCase, NativeEquivalenceCase,
+    run_atomic_failure_native, run_atomic_world_native, run_equivalence_native,
+};
 
 pub use exact_pin_materializer::PackagedExactPinMaterializerError;
 use exact_pin_materializer::{
@@ -124,13 +139,13 @@ use status::{
 
 /// Maximum aggregate canonical bytes in one packaged scenario catalog.
 ///
-/// Startup authenticates and decodes the complete closed catalog before it
-/// acquires the shared Linux host-resource owner. This bound therefore limits
-/// both hostile immutable-store work and retained decoded scenario state.
+/// Startup authenticates the closed catalog under its admitted metadata owner.
+/// This semantic ceiling also limits aggregate hostile immutable-store work;
+/// each decoded allocation remains charged to that original resource account.
 pub const MAX_PACKAGED_SCENARIO_CATALOG_BYTES: usize = 128 * 1024 * 1024;
 
 pub(crate) fn packaged_finding_replay_runner<F>(
-    lifecycle: ProductionVmLifecycleConfig,
+    lifecycle: impl Into<Arc<ProductionVmLifecycleConfig>>,
     lifecycles: F,
 ) -> QemuFreshExecutionRunner<QemuObservedFreshAttemptLifecycleFactory<F>, QemuFreshModeledDriver> {
     let (lifecycles, evidence) =
@@ -289,18 +304,69 @@ pub struct PackagedQemuExecutorConfig {
     maximum_checkpoint_bytes: u64,
     daemon_epoch: DaemonEpoch,
     capacity: ExecutorCapacity,
+    host_operational_capacity: crate::HostOperationalCapacity,
     worker_count: usize,
     host_architecture: String,
     qemu_profile: String,
     store_namespace: CampaignHash,
-    lifecycle: ProductionVmLifecycleConfig,
+    lifecycle: Arc<ProductionVmLifecycleConfig>,
     host: LinuxQemuAttemptHostConfig,
     hot_fork: Option<PackagedQemuHotForkConfig>,
+    retained_template_resources: Option<crucible_api::host_operational::HostResourceVector>,
+    assignment_resources: Option<crucible_api::host_operational::HostResourceVector>,
+    assignment_limits: Option<AttemptResourceLimits>,
+    ram_catalog: Option<PackagedRamCatalogConfig>,
+    operational_registry_resources: Option<crucible_api::host_operational::HostResourceVector>,
+    operational_registry_quota: Option<(u32, u64)>,
+    host_operation_budgets: Option<crucible_api::host_operational::HostOperationBudgets>,
     guest_selectable_boundary_diagnostics: Option<GuestSelectableBoundaryDiagnosticConfig>,
     verify_determinism_findings: bool,
 }
 
 impl PackagedQemuExecutorConfig {
+    /// Projects immutable operational inputs for the guarded campaign adapter.
+    pub(crate) fn guarded_inputs(
+        &self,
+    ) -> Option<(
+        Arc<ProductionVmLifecycleConfig>,
+        LinuxQemuAttemptHostConfig,
+        AttemptResourceLimits,
+    )> {
+        Some((
+            self.lifecycle.clone(),
+            self.host.clone(),
+            self.assignment_limits?,
+        ))
+    }
+
+    /// Copies a mutable launch projection under its original catalog authority.
+    ///
+    /// Existing decoder custody is preserved. Static preparation uses the
+    /// already admitted namespace's metadata allocator, never spare capacity.
+    pub(crate) fn admitted_lifecycle_config(
+        &self,
+    ) -> Result<ProductionVmLifecycleConfig, PackagedQemuExecutorError> {
+        if crucible::owned_decode::current_budget().is_some() {
+            return Ok(self.lifecycle.try_clone_admitted()?);
+        }
+        let provider = self.lifecycle.ram_catalog_provider().ok_or(
+            crucible_cas::content_store::StoreError::Unsupported {
+                capability: "admitted-lifecycle-metadata",
+            },
+        )?;
+        let authority = provider.prepare_directory(self.lifecycle.run_state_root())?;
+        let budget = crucible::owned_decode::DecodeBudget::for_store(authority)?;
+        let _scope = budget.enter();
+        let lifecycle = self.lifecycle.try_clone_admitted()?;
+        budget.check()?;
+        Ok(lifecycle)
+    }
+
+    /// Returns the original charged actor incarnation.
+    pub(crate) fn guarded_epoch(&self) -> DaemonEpoch {
+        self.daemon_epoch
+    }
+
     /// Builds one explicit fresh-QEMU executor deployment contract.
     ///
     /// # Errors
@@ -319,6 +385,7 @@ impl PackagedQemuExecutorConfig {
         maximum_checkpoint_bytes: u64,
         daemon_epoch: DaemonEpoch,
         capacity: ExecutorCapacity,
+        host_operational_capacity: crate::HostOperationalCapacity,
         worker_count: usize,
         host_architecture: impl Into<String>,
         qemu_profile: impl Into<String>,
@@ -343,6 +410,14 @@ impl PackagedQemuExecutorConfig {
         if maximum_checkpoint_bytes == 0 {
             return Err(PackagedQemuExecutorConfigError::ZeroCheckpointBytes);
         }
+        if host_operational_capacity
+            .maximum_metadata_bytes()
+            .checked_add(host_operational_capacity.maximum_staging_bytes())
+            .is_none_or(|bytes| bytes > capacity.maximum_resident_bytes())
+            || host_operational_capacity.maximum_staging_bytes() > capacity.maximum_disk_bytes()
+        {
+            return Err(PackagedQemuExecutorConfigError::InvalidHostResourceCapacity);
+        }
         Ok(Self {
             campaigns,
             endpoint,
@@ -351,13 +426,21 @@ impl PackagedQemuExecutorConfig {
             maximum_checkpoint_bytes,
             daemon_epoch,
             capacity,
+            host_operational_capacity,
             worker_count,
             host_architecture: host_architecture.into(),
             qemu_profile: qemu_profile.into(),
             store_namespace,
-            lifecycle,
+            lifecycle: Arc::new(lifecycle),
             host,
             hot_fork: None,
+            retained_template_resources: None,
+            assignment_resources: None,
+            assignment_limits: None,
+            ram_catalog: None,
+            operational_registry_resources: None,
+            operational_registry_quota: None,
+            host_operation_budgets: None,
             guest_selectable_boundary_diagnostics: None,
             verify_determinism_findings: false,
         })
@@ -368,6 +451,224 @@ impl PackagedQemuExecutorConfig {
     pub fn with_hot_fork_sources(mut self, hot_fork: PackagedQemuHotForkConfig) -> Self {
         self.hot_fork = Some(hot_fork);
         self
+    }
+
+    /// Retains an authored complete native and host resource ceiling for sources.
+    ///
+    /// Actual capture admission also checks every concurrent retained owner;
+    /// this validation cannot reserve global headroom by itself.
+    ///
+    /// # Errors
+    /// Rejects zero dimensions, invalid memory subsets or a ceiling above any
+    /// deployed aggregate capacity.
+    pub fn with_retained_template_resources(
+        mut self,
+        resources: crucible_api::host_operational::HostResourceVector,
+    ) -> Result<Self, PackagedQemuExecutorConfigError> {
+        if !self.host_owner_resources_fit(resources) {
+            return Err(PackagedQemuExecutorConfigError::InvalidRetainedTemplateResources);
+        }
+        self.retained_template_resources = Some(resources);
+        Ok(self)
+    }
+
+    fn host_owner_resources_fit(
+        &self,
+        resources: crucible_api::host_operational::HostResourceVector,
+    ) -> bool {
+        let subsets = resources
+            .metadata_bytes
+            .checked_add(resources.staging_bytes);
+        !([
+            resources.resident_peak_bytes,
+            resources.backing_peak_bytes,
+            resources.metadata_bytes,
+            resources.staging_bytes,
+            resources.paging_io_slots,
+            resources.cpu_slots,
+            resources.task_slots,
+            resources.file_descriptors,
+        ]
+        .contains(&0)
+            || subsets.is_none_or(|bytes| bytes > resources.resident_peak_bytes)
+            || resources.staging_bytes > resources.backing_peak_bytes
+            || resources.cpu_slots > u64::from(self.capacity.maximum_vcpus())
+            || resources.resident_peak_bytes > self.capacity.maximum_resident_bytes()
+            || resources.backing_peak_bytes > self.capacity.maximum_disk_bytes()
+            || resources.paging_io_slots > self.host_operational_capacity.maximum_paging_io_slots()
+            || resources.task_slots > self.host_operational_capacity.maximum_task_slots()
+            || resources.file_descriptors
+                > self.host_operational_capacity.maximum_file_descriptors()
+            || resources.metadata_bytes > self.host_operational_capacity.maximum_metadata_bytes()
+            || resources.staging_bytes > self.host_operational_capacity.maximum_staging_bytes())
+    }
+
+    /// Retains a separately authored per-assignment host and modeled ceiling.
+    ///
+    /// # Errors
+    /// Refuses invalid resource dimensions, modeled request limits above their
+    /// physical assignment bounds, or a bound above its deployed aggregate capacity.
+    pub fn with_assignment_resources(
+        mut self,
+        resources: crucible_api::host_operational::HostResourceVector,
+        limits: AttemptResourceLimits,
+    ) -> Result<Self, PackagedQemuExecutorConfigError> {
+        if !self.host_owner_resources_fit(resources)
+            || u64::from(limits.maximum_vcpus()) > resources.cpu_slots
+            || limits.maximum_resident_bytes() > resources.resident_peak_bytes
+            || limits.maximum_disk_bytes() > resources.backing_peak_bytes
+            || limits.maximum_execution_quanta() > self.capacity.maximum_execution_quanta()
+        {
+            return Err(PackagedQemuExecutorConfigError::InvalidAssignmentResources);
+        }
+        self.assignment_resources = Some(resources);
+        self.assignment_limits = Some(limits);
+        Ok(self)
+    }
+
+    /// Retains the independently contained catalog service deployment contract.
+    ///
+    /// # Errors
+    /// Refuses shared lifecycle configuration or a catalog dimension above
+    /// deployed aggregate capacity. Actual admission reserves the complete
+    /// service before opening its backend.
+    pub fn with_ram_catalog(
+        mut self,
+        catalog: PackagedRamCatalogConfig,
+    ) -> Result<Self, PackagedQemuExecutorConfigError> {
+        if !self.host_owner_resources_fit(catalog.resources()) {
+            return Err(PackagedQemuExecutorConfigError::InvalidRamCatalogResources);
+        }
+        let run_state_root = if self.lifecycle.run_state_root().starts_with(catalog.root()) {
+            self.lifecycle.run_state_root().to_path_buf()
+        } else {
+            catalog.root().join("worlds")
+        };
+        let lifecycle = Arc::try_unwrap(self.lifecycle)
+            .map_err(|_| PackagedQemuExecutorConfigError::SharedLifecycleConfiguration)?;
+        self.lifecycle = Arc::new(
+            lifecycle
+                .with_run_state_root(run_state_root)
+                .with_ram_catalog_provider(catalog.provider()),
+        );
+        self.ram_catalog = Some(catalog);
+        Ok(self)
+    }
+
+    /// Returns the independently authored physical RAM catalog contract.
+    #[must_use]
+    pub fn ram_catalog(&self) -> Option<&PackagedRamCatalogConfig> {
+        self.ram_catalog.as_ref()
+    }
+
+    /// Retains the independent durable operational registry service entitlement.
+    ///
+    /// # Errors
+    /// Refuses zero dimensions, invalid subsets, or resources above deployed
+    /// aggregate capacity. Actual admission precedes opening registry files.
+    pub fn with_operational_registry_resources(
+        mut self,
+        resources: crucible_api::host_operational::HostResourceVector,
+    ) -> Result<Self, PackagedQemuExecutorConfigError> {
+        if !self.host_owner_resources_fit(resources) {
+            return Err(PackagedQemuExecutorConfigError::InvalidOperationalRegistryResources);
+        }
+        self.operational_registry_resources = Some(resources);
+        Ok(self)
+    }
+
+    /// Returns the separately authored complete durable registry service bound.
+    #[must_use]
+    pub const fn operational_registry_resources(
+        &self,
+    ) -> Option<crucible_api::host_operational::HostResourceVector> {
+        self.operational_registry_resources
+    }
+
+    /// Binds the durable registry to a distinct operator-installed project quota.
+    ///
+    /// The hard byte ceiling comes from the already authored registry backing
+    /// entitlement. Startup authenticates the installed quota before opening
+    /// any durable ledger or operational-history file.
+    ///
+    /// # Errors
+    /// Refuses a missing registry entitlement, unsupported project identifier,
+    /// zero inode ceiling, or unsupported exact kernel quota limits.
+    pub fn with_operational_registry_quota(
+        mut self,
+        project_id: u32,
+        maximum_inodes: u64,
+    ) -> Result<Self, PackagedQemuExecutorConfigError> {
+        let resources = self
+            .operational_registry_resources
+            .ok_or(PackagedQemuExecutorConfigError::InvalidOperationalRegistryQuota)?;
+        if !(1..0x8000_0000).contains(&project_id)
+            || crucible_linux_resource::LinuxProjectQuotaLimits::new(
+                resources.backing_peak_bytes,
+                maximum_inodes,
+            )
+            .is_err()
+        {
+            return Err(PackagedQemuExecutorConfigError::InvalidOperationalRegistryQuota);
+        }
+        self.operational_registry_quota = Some((project_id, maximum_inodes));
+        Ok(self)
+    }
+
+    /// Returns the exact persistent registry project and inode entitlement.
+    #[must_use]
+    pub const fn operational_registry_quota(&self) -> Option<(u32, u64)> {
+        self.operational_registry_quota
+    }
+
+    /// Retains the independently authored roster for every host operation class.
+    ///
+    /// All infrastructure classes require finite progress or total supervision;
+    /// the quantum class may use unlimited host waiting. Later owners start this
+    /// same roster once and never derive it from a copied remaining deadline.
+    ///
+    /// # Errors
+    /// Refuses empty polling slices, zero or unrepresentable allowances, and
+    /// unbounded infrastructure classes.
+    pub fn with_host_operation_budgets(
+        mut self,
+        budgets: crucible_api::host_operational::HostOperationBudgets,
+    ) -> Result<Self, PackagedQemuExecutorConfigError> {
+        budgets
+            .validate(false)
+            .map_err(PackagedQemuExecutorConfigError::HostOperationBudgets)?;
+        self.host_operation_budgets = Some(budgets);
+        Ok(self)
+    }
+
+    /// Returns the authored roster, or absence before complete configuration.
+    #[must_use]
+    pub const fn host_operation_budgets(
+        &self,
+    ) -> Option<crucible_api::host_operational::HostOperationBudgets> {
+        self.host_operation_budgets
+    }
+
+    /// Returns the complete authored per-assignment host resource bound.
+    #[must_use]
+    pub const fn assignment_resources(
+        &self,
+    ) -> Option<crucible_api::host_operational::HostResourceVector> {
+        self.assignment_resources
+    }
+
+    /// Returns the separately authored modeled request limits for each assignment.
+    #[must_use]
+    pub const fn assignment_limits(&self) -> Option<AttemptResourceLimits> {
+        self.assignment_limits
+    }
+
+    /// Returns the authored complete resource entitlement for retained sources.
+    #[must_use]
+    pub const fn retained_template_resources(
+        &self,
+    ) -> Option<crucible_api::host_operational::HostResourceVector> {
+        self.retained_template_resources
     }
 
     /// Enables bounded diagnostics shared by every worker in this executor pool.
@@ -446,6 +747,24 @@ impl PackagedQemuExecutorConfig {
 /// Invalid packaged-executor deployment configuration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum PackagedQemuExecutorConfigError {
+    /// The lifecycle configuration is already shared with another owner.
+    #[error("shared packaged lifecycle configuration cannot be modified")]
+    SharedLifecycleConfiguration,
+    /// The authored host operation roster cannot supervise infrastructure.
+    #[error("packaged host operation budgets are invalid: {0}")]
+    HostOperationBudgets(#[source] crucible_linux_resource::host_supervision::HostSupervisionError),
+    /// The catalog service exceeds independently deployed aggregate resources.
+    #[error("RAM catalog resources exceed deployed aggregate capacity")]
+    InvalidRamCatalogResources,
+    /// The durable operational registry service has invalid complete bounds.
+    #[error(
+        "packaged operational registry resources exceed deployed capacity or have invalid subsets"
+    )]
+    InvalidOperationalRegistryResources,
+    /// The persistent registry project quota has invalid or missing geometry.
+    #[error("packaged operational registry quota is missing or invalid")]
+    InvalidOperationalRegistryQuota,
+
     /// No campaign was assigned to the packaged pool.
     #[error("packaged QEMU executor campaign set is empty")]
     NoCampaigns,
@@ -461,10 +780,21 @@ pub enum PackagedQemuExecutorConfigError {
     /// No exact checkpoint can fit the configured immutable store.
     #[error("packaged QEMU executor checkpoint byte ceiling is zero")]
     ZeroCheckpointBytes,
+    /// The complete retained-source entitlement is invalid or exceeds deployment.
+    #[error("packaged QEMU retained-template resources exceed their deployed contract")]
+    InvalidRetainedTemplateResources,
+    /// A separately authored assignment ceiling is invalid or exceeds deployment.
+    #[error("packaged QEMU assignment resources exceed their deployed contract")]
+    InvalidAssignmentResources,
+    /// Aggregate metadata and staging do not fit complete resident/disk peaks.
+    #[error("packaged QEMU aggregate host subsets exceed complete resource peaks")]
+    InvalidHostResourceCapacity,
 }
 
 /// Prepared packaged executor pool bound to one exact campaign repository.
 pub struct PackagedQemuExecutor {
+    guarded_state: guarded::PackagedGuardedState,
+    host_operational_registry: crate::HostOperationalRegistry,
     repository_identity: Arc<CampaignRepository>,
     admitted_scenarios: BTreeSet<ScenarioArtifactId>,
     endpoint: PathBuf,
@@ -477,6 +807,22 @@ pub struct PackagedQemuExecutor {
 }
 
 impl PackagedQemuExecutor {
+    /// Shares the existing admitted actor, repository and native allocator.
+    ///
+    /// # Errors
+    /// Refuses unavailable native ownership or shutdown. The supplied planner
+    /// must be the authenticated component authority of this same repository.
+    pub fn guarded_campaign_owner(
+        &self,
+        planner: crucible_campaign::PlannerAuthorityKey,
+    ) -> Result<guarded::GuardedCampaignOwner, PackagedQemuExecutorError> {
+        guarded::GuardedCampaignOwner::from_packaged(
+            &self.guarded_state,
+            Arc::clone(&self.repository_identity),
+            planner,
+        )
+    }
+
     /// Returns the durable hot-fallback root catalog for campaign GC.
     #[must_use]
     pub fn hot_fork_retention_admin(
@@ -488,6 +834,8 @@ impl PackagedQemuExecutor {
 
 /// Running packaged executor-pool thread coupled to one daemon service lifecycle.
 pub struct AttachedPackagedQemuExecutor {
+    guarded_state: guarded::PackagedGuardedState,
+    host_operational_registry: crate::HostOperationalRegistry,
     repository_identity: Arc<CampaignRepository>,
     admitted_scenarios: BTreeSet<ScenarioArtifactId>,
     endpoint: PathBuf,
@@ -500,6 +848,22 @@ pub struct AttachedPackagedQemuExecutor {
 }
 
 impl AttachedPackagedQemuExecutor {
+    /// Shares the existing admitted actor, repository and native allocator.
+    ///
+    /// # Errors
+    /// Refuses unavailable native ownership or shutdown. The supplied planner
+    /// must be the authenticated component authority of this same repository.
+    pub fn guarded_campaign_owner(
+        &self,
+        planner: crucible_campaign::PlannerAuthorityKey,
+    ) -> Result<guarded::GuardedCampaignOwner, PackagedQemuExecutorError> {
+        guarded::GuardedCampaignOwner::from_packaged(
+            &self.guarded_state,
+            Arc::clone(&self.repository_identity),
+            planner,
+        )
+    }
+
     /// Starts the fixed listener/worker owner on one named daemon thread.
     ///
     /// # Errors
@@ -508,6 +872,8 @@ impl AttachedPackagedQemuExecutor {
     /// cannot create the single service-owner thread.
     pub fn start(service: PackagedQemuExecutor) -> Result<Self, PackagedQemuExecutorStartError> {
         let PackagedQemuExecutor {
+            guarded_state,
+            host_operational_registry,
             repository_identity,
             admitted_scenarios,
             endpoint,
@@ -540,6 +906,8 @@ impl AttachedPackagedQemuExecutor {
             })
             .map_err(|source| PackagedQemuExecutorStartError::Spawn { source })?;
         Ok(Self {
+            guarded_state,
+            host_operational_registry,
             repository_identity,
             admitted_scenarios,
             endpoint,
@@ -550,6 +918,12 @@ impl AttachedPackagedQemuExecutor {
             completion,
             thread: Some(thread),
         })
+    }
+
+    /// Returns live host operational authority independently of guest execution.
+    #[must_use]
+    pub fn host_operational_registry(&self) -> crate::HostOperationalRegistry {
+        self.host_operational_registry.clone()
     }
 
     /// Returns a cloneable completion signal for daemon lifecycle coupling.
@@ -790,20 +1164,18 @@ pub(crate) fn prepare_packaged_qemu_executor(
         });
     }
     let scenarios = preflight_packaged_scenario_catalog(&repository, &basis.scenarios)?;
+    let preparation = preparation::prepare_runtime(
+        &repository,
+        Arc::clone(&checkpoint_backend),
+        &basis,
+        &config,
+    )?;
     let host = SharedQemuAttemptHostResourceFactory::new(
         LinuxQemuAttemptHostResourceFactory::open(config.host.clone())?,
     );
-    let resource_ceiling = packaged_resource_ceiling(&config)?;
-    let capture_context = AttemptExecutionContext::new(
-        resource_ceiling,
-        ExecutionRetentionIntent::Discard,
-        ExecutionCancellation::default(),
-        ExecutionCheckpointRequest::default(),
-        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
-    );
     let mut baked = BTreeMap::new();
     for (scenario_id, scenario) in scenarios {
-        let baked_lifecycle = config.lifecycle.clone().with_run_state_root(
+        let baked_lifecycle = config.admitted_lifecycle_config()?.with_run_state_root(
             config
                 .lifecycle
                 .run_state_root()
@@ -814,23 +1186,29 @@ pub(crate) fn prepare_packaged_qemu_executor(
             baked_lifecycle,
             ComposedQemuAttemptResourceGuardFactory::new(host.clone()),
         );
-        let checkpoint =
-            capture_production_baked_genesis(&mut baked_factory, &scenario, &capture_context)
-                .map_err(|source| PackagedQemuExecutorError::BakedGenesis {
+        let checkpoint = preparation::run_capture(&preparation, &config, &scenario, |context| {
+            capture_production_baked_genesis(&mut baked_factory, &scenario, context).map_err(
+                |source| PackagedQemuExecutorError::BakedGenesis {
                     scenario: scenario_id,
                     source: Box::new(source),
-                })?;
+                },
+            )
+        })?;
         baked.insert(scenario_id, checkpoint);
     }
     let storage = PackagedQemuExecutorStorage::new(repository, checkpoint_backend);
-    compose_packaged_qemu_executor_with_baked_genesis(
+    let guarded_host = host.clone();
+    let mut executor = compose_packaged_qemu_executor_with_baked_genesis(
         storage,
         hot_fork_retention,
         basis,
         config,
         host,
         baked,
-    )
+        preparation,
+    )?;
+    executor.guarded_state.host = Some(guarded_host);
+    Ok(executor)
 }
 
 fn preflight_packaged_scenario_catalog(
@@ -1070,11 +1448,20 @@ where
         usize,
     ) -> Vec<P>,
 {
+    // Mock host factories exercise actor composition without asserting that a
+    // temporary directory carries an operator-installed project quota.
+    let preparation = preparation::prepare_component_runtime(
+        &storage.repository,
+        Arc::clone(&storage.checkpoint_backend),
+        &basis,
+        &config,
+    )?;
     compose_packaged_qemu_executor_with_builders(
         storage,
         basis,
         config,
         shared,
+        Some(preparation),
         build_promotions,
         |_store,
          checkpoints,
@@ -1085,11 +1472,12 @@ where
          lifecycles,
          _finding_replay_brokers,
          lifecycle_config,
-         _resource_ceiling| {
+         _resource_ceiling,
+         _preparation| {
             Ok(PackagedQemuInitialRunnerBuild::fresh(
                 (0..worker_count)
                     .map(|slot| {
-                        let lifecycle = lifecycle_config.clone().with_run_state_root(
+                        let lifecycle = lifecycle_config.try_clone_admitted()?.with_run_state_root(
                             worker_state_root.join(format!("worker-{slot:03}")),
                         );
                         let fresh_lifecycles = PackagedStatusLifecycleFactory {
@@ -1104,15 +1492,15 @@ where
                             QemuObservedFreshAttemptLifecycleFactory::with_evidence(
                                 fresh_lifecycles,
                             );
-                        (
+                        Ok::<_, PackagedQemuExecutorError>((
                             QemuFreshExecutionRunner::new(fresh_lifecycles, QemuFreshModeledDriver)
                                 .with_terminal_exact_retention_source(Arc::clone(
                                     finding_exact_retention,
                                 )),
                             evidence,
-                        )
+                        ))
                     })
-                    .collect(),
+                    .collect::<Result<Vec<_>, _>>()?,
             ))
         },
     )
@@ -1123,6 +1511,7 @@ fn compose_packaged_qemu_executor_with_builders<H, P, B, I, R>(
     basis: PackagedCampaignBasis,
     config: PackagedQemuExecutorConfig,
     shared: SharedQemuAttemptHostResourceFactory<H>,
+    preparation: Option<preparation::PackagedPreparation>,
     build_promotions: B,
     build_initial_runners: I,
 ) -> Result<PackagedQemuExecutor, PackagedQemuExecutorError>
@@ -1152,6 +1541,7 @@ where
         >],
         &ProductionVmLifecycleConfig,
         AttemptResourceLimits,
+        &preparation::PackagedPreparation,
     ) -> Result<PackagedQemuInitialRunnerBuild<R>, PackagedQemuExecutorError>,
     R: crate::QemuAttemptStartVerifier + crate::QemuSelectedOriginVerifier + Send + 'static,
     R::Error: std::error::Error + 'static,
@@ -1160,72 +1550,27 @@ where
         repository,
         checkpoint_backend,
     } = storage;
+    let guarded_config = config.clone();
     let campaigns = config.campaigns.clone();
     let ledger_root = config.ledger_root.clone();
-    let admission = PackagedAttemptAdmission::new(
-        Arc::clone(&repository),
-        basis.profile.clone(),
-        basis.scenarios.clone(),
-    );
-
-    // Acquire process-wide ownership before mutating any native run-state
-    // namespace. A competing daemon must fail without retiring live state.
-    let gc_exclusion = repository.acquire_gc_exclusion_guard()?;
-    let mut ledger = DirectoryAssignmentLedger::open(&config.ledger_root)?;
-    reconcile_packaged_native_catalogs(config.lifecycle.run_state_root())?;
-    let prepared_result_root =
-        prepare_packaged_prepared_result_namespace(config.lifecycle.run_state_root())?;
-    let prepared_result_namespace = PreparedResultJournalNamespace::open(prepared_result_root)?;
-    let prepared_results = PreparedResultJournalConfig::new(
-        prepared_result_namespace,
-        MAX_PREPARED_SEMANTIC_RESULT_BYTES,
-    );
-    reconcile_stable_prepared_result_journals(
-        &ledger,
-        &admission,
-        &prepared_results,
-        &gc_exclusion,
+    let preparation = match preparation {
+        Some(prepared) => prepared,
+        None => preparation::prepare_runtime(&repository, checkpoint_backend, &basis, &config)?,
+    };
+    let checkpoints = Arc::clone(&preparation.checkpoints);
+    let lifecycle_metadata = crucible::owned_decode::DecodeBudget::for_store(
+        checkpoints.metadata_resource_authority()?,
     )?;
-    drop(gc_exclusion);
-
-    for campaign in &config.campaigns {
-        loop {
-            let summary =
-                reconcile_pending_finding_candidates(repository.as_ref(), &mut ledger, campaign)
-                    .map_err(PackagedQemuExecutorError::FindingRestart)?;
-            if summary.remaining() == 0 {
-                break;
-            }
-            if summary.released() == 0 {
-                return Err(PackagedQemuExecutorError::FindingRestartNoProgress {
-                    campaign: campaign.clone(),
-                    remaining: summary.remaining(),
-                });
-            }
-        }
-    }
-    let checkpoints = Arc::new(ExactCheckpointStore::new(
-        checkpoint_backend,
-        config.maximum_checkpoint_bytes,
-    )?);
-    let exact_pin_root = config.exact_pin_materialization_root();
-    let (prepared_exact_pins, checkpoint_observer) = prepare_packaged_exact_pin_materializer(
-        Arc::clone(&repository),
-        Arc::clone(&checkpoints),
-        config.campaigns.clone(),
-        &ledger,
-        &exact_pin_root,
-    )?;
-    let finding_exact_retention = prepared_exact_pins.finding_retention_source();
+    let _lifecycle_scope = lifecycle_metadata.enter();
+    let finding_exact_retention = preparation.prepared_exact_pins.finding_retention_source();
     let resource_ceiling = packaged_resource_ceiling(&config)?;
     let campaign_debug = Arc::new(crate::CampaignDebugQemuCapability::new(
         Arc::clone(&checkpoints),
         config
-            .lifecycle
-            .clone()
+            .admitted_lifecycle_config()?
             .with_run_state_root(config.lifecycle.run_state_root().join("campaign-debug")),
         shared.clone(),
-        resource_ceiling,
+        RetainedTemplateServiceFactory::new(&preparation, &config),
     ));
     let store = CampaignExecutorStore::new(Arc::clone(&repository));
     let worker_state_root = config.lifecycle.run_state_root().join("campaign-workers");
@@ -1259,7 +1604,17 @@ where
         &finding_replay_brokers,
         &config.lifecycle,
         resource_ceiling,
+        &preparation,
     )?;
+    let preparation::PackagedPreparation {
+        actor,
+        host_operational_registry,
+        checkpoints,
+        prepared_exact_pins,
+        checkpoint_observer,
+        prepared_results,
+        ..
+    } = preparation;
     if initial_runner_build.runners.len() != config.worker_count {
         return Err(PackagedQemuExecutorError::InitialRunnerCount {
             expected: config.worker_count,
@@ -1283,19 +1638,34 @@ where
     if hot_fork_enabled {
         materialization.insert(ExecutorMaterializationCapability::HotFork);
     }
+    let aggregate = crucible_api::host_operational::HostResourceVector {
+        resident_peak_bytes: config.capacity.maximum_resident_bytes(),
+        backing_peak_bytes: config.capacity.maximum_disk_bytes(),
+        metadata_bytes: config.host_operational_capacity.maximum_metadata_bytes(),
+        staging_bytes: config.host_operational_capacity.maximum_staging_bytes(),
+        paging_io_slots: config.host_operational_capacity.maximum_paging_io_slots(),
+        cpu_slots: u64::from(config.capacity.maximum_vcpus()),
+        task_slots: config.host_operational_capacity.maximum_task_slots(),
+        file_descriptors: config.host_operational_capacity.maximum_file_descriptors(),
+    };
+    let assignment = config
+        .assignment_resources()
+        .ok_or(crucible_api::host_operational::HostOperationalError::Unavailable)?;
+    let bounds = crucible_campaign::ExecutorResourceBounds::new(
+        crate::executor_capability::portable_resources(aggregate),
+        crate::executor_capability::portable_resources(assignment),
+        resource_ceiling,
+    )?;
     let capabilities = ExecutorCapabilitySet::new(
         basis.profile.clone(),
         config.host_architecture,
         BTreeSet::from([config.qemu_profile]),
         materialization,
         config.capacity.maximum_concurrent_executions(),
-        resource_ceiling,
+        bounds,
         BTreeSet::from([config.store_namespace]),
     )?;
     let description = ExecutorDescription::new(config.daemon_epoch, capabilities)?;
-    let supervisor =
-        LocalExecutorSupervisor::new(ledger, admission, config.daemon_epoch, config.capacity);
-    let executor = LocalExecutorCapabilityService::new(supervisor, description)?;
     let guest_selectable_diagnostics = config
         .guest_selectable_boundary_diagnostics
         .map(GuestSelectableBoundaryDiagnosticRecorder::stderr)
@@ -1306,10 +1676,11 @@ where
         .zip(finding_replay_brokers)
         .enumerate()
         .map(|(slot, ((fresh, evidence), finding_replay_broker))| {
-            let finding_replay_lifecycle = config
+            let finding_replay_config = config
                 .lifecycle
-                .clone()
+                .try_clone_admitted()?
                 .with_run_state_root(finding_replay_state_root.join(format!("worker-{slot:03}")));
+            let finding_replay_lifecycle = Arc::new(finding_replay_config);
             let finding_replay_resources = QemuHotForkWorldAuxiliaryResourceFactory::new(
                 finding_replay_broker,
                 ComposedQemuAttemptResourceGuardFactory::new(shared.clone()),
@@ -1324,7 +1695,7 @@ where
 
             let lifecycle = config
                 .lifecycle
-                .clone()
+                .try_clone_admitted()?
                 .with_run_state_root(worker_state_root.join(format!("worker-{slot:03}")));
             let resume_lifecycles = PackagedStatusLifecycleFactory {
                 inner: QemuAttemptProductionVmLifecycleFactory::new(
@@ -1356,35 +1727,31 @@ where
                 runner = runner.with_determinism_finding_verification();
             }
             let model = CrucibleExecutionModel::new(store.clone(), runner);
-            PackagedStatusAttemptWorker {
+            Ok::<_, PackagedQemuExecutorError>(PackagedStatusAttemptWorker {
                 inner: RepositoryAttemptWorker::new(store.clone(), model)
                     .with_guest_selectable_boundary_diagnostics(
                         guest_selectable_diagnostics.clone(),
                     ),
                 lifecycles: lifecycles.clone(),
-            }
+            })
         })
-        .collect();
-    let pool = if promotion_enabled {
-        LocalExecutorWorkerPool::start_with_checkpoint_promotions_and_observer(
-            executor,
-            store,
-            checkpoints,
-            workers,
-            promotion_workers,
-            checkpoint_observer,
-            Some(prepared_results.clone()),
-        )?
-    } else {
-        LocalExecutorWorkerPool::start_with_checkpoint_observer(
-            executor,
-            store,
-            checkpoints,
-            workers,
-            checkpoint_observer,
-            Some(prepared_results),
-        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    lifecycle_metadata.check()?;
+    let guarded_state = guarded::PackagedGuardedState {
+        actor: actor.campaign_port(),
+        config: guarded_config,
+        checkpoints: Arc::clone(&checkpoints),
+        host: None,
     };
+    let pool = LocalExecutorWorkerPool::start_prepared_with_observer(
+        (actor, description),
+        store,
+        checkpoints,
+        workers,
+        promotion_workers,
+        checkpoint_observer,
+        Some(prepared_results),
+    )?;
     let pool_status = pool.service();
     let pool_shutdown = pool.shutdown_handle();
     let exact_pin_materializer = prepared_exact_pins.start(move || pool_shutdown.shutdown())?;
@@ -1409,6 +1776,8 @@ where
         config.server,
     )?;
     Ok(PackagedQemuExecutor {
+        guarded_state,
+        host_operational_registry,
         repository_identity: repository,
         admitted_scenarios: basis.scenarios,
         endpoint,
@@ -1539,20 +1908,15 @@ fn sync_packaged_native_parent(parent: &Path) -> Result<(), PackagedNativeCatalo
 
 fn packaged_resource_ceiling(
     config: &PackagedQemuExecutorConfig,
-) -> Result<AttemptResourceLimits, CampaignCodecError> {
-    AttemptResourceLimits::new(
-        config.capacity.maximum_vcpus(),
-        config.capacity.maximum_resident_bytes(),
-        config.capacity.maximum_disk_bytes(),
-        config.capacity.maximum_execution_quanta(),
-    )
+) -> Result<AttemptResourceLimits, PackagedQemuExecutorError> {
+    config
+        .assignment_limits()
+        .ok_or_else(|| crucible_api::host_operational::HostOperationalError::Unavailable.into())
 }
 
-#[derive(Clone)]
-struct PackagedAttemptAdmission {
-    repository: Arc<CampaignRepository>,
-    profile: ExecutorCompatibilityProfile,
-    scenarios: BTreeSet<ScenarioArtifactId>,
+#[derive(Clone, Default)]
+pub(crate) struct PackagedAttemptAdmission {
+    authority: Arc<OnceLock<ClosedPackagedAdmission>>,
 }
 
 impl PackagedAttemptAdmission {
@@ -1561,13 +1925,107 @@ impl PackagedAttemptAdmission {
         profile: ExecutorCompatibilityProfile,
         scenarios: BTreeSet<ScenarioArtifactId>,
     ) -> Self {
-        Self {
+        let authority = OnceLock::from(ClosedPackagedAdmission {
             repository,
             profile,
             scenarios,
+        });
+        Self {
+            authority: Arc::new(authority),
         }
     }
 
+    fn bind(
+        &self,
+        repository: Arc<CampaignRepository>,
+        profile: ExecutorCompatibilityProfile,
+        scenarios: BTreeSet<ScenarioArtifactId>,
+    ) -> Result<(), crucible_api::host_operational::HostOperationalError> {
+        if let Some(current) = self.authority.get() {
+            return if Arc::ptr_eq(&current.repository, &repository)
+                && current.profile == profile
+                && current.scenarios == scenarios
+            {
+                Ok(())
+            } else {
+                Err(crucible_api::host_operational::HostOperationalError::Unavailable)
+            };
+        }
+        self.authority
+            .set(ClosedPackagedAdmission {
+                repository,
+                profile,
+                scenarios,
+            })
+            .map_err(|_| crucible_api::host_operational::HostOperationalError::Unavailable)
+    }
+
+    fn get(&self) -> Result<&ClosedPackagedAdmission, ExecutorRejection> {
+        self.authority.get().ok_or(ExecutorRejection::Unauthorized)
+    }
+}
+
+impl AttemptAdmissionValidator for PackagedAttemptAdmission {
+    fn validate(&self, request: &SubmitAttemptRequest) -> Result<(), ExecutorRejection> {
+        self.get()?.validate(request)
+    }
+
+    fn validate_execution_scope(
+        &self,
+        request: &SubmitAttemptRequest,
+    ) -> Result<(), ExecutorRejection> {
+        self.get()?.validate_execution_scope(request)
+    }
+
+    fn selected_savepoint_source_attempt(
+        &self,
+        request: &SubmitAttemptRequest,
+    ) -> Result<Option<AttemptId>, ExecutorRejection> {
+        self.get()?.selected_savepoint_source_attempt(request)
+    }
+
+    fn validate_completion(
+        &self,
+        request: &SubmitAttemptRequest,
+        observation: ObservationId,
+    ) -> Result<(), CompletionValidationFailure> {
+        self.get()
+            .map_err(|_| CompletionValidationFailure::Unauthorized)?
+            .validate_completion(request, observation)
+    }
+
+    fn validate_completion_artifacts(
+        &self,
+        request: &SubmitAttemptRequest,
+        observation: ObservationId,
+        finding: Option<FindingCandidateBundleId>,
+    ) -> Result<(), CompletionValidationFailure> {
+        self.get()
+            .map_err(|_| CompletionValidationFailure::Unauthorized)?
+            .validate_completion_artifacts(request, observation, finding)
+    }
+
+    fn validate_retained_completion(
+        &self,
+        lineage: CampaignLineageId,
+        attempt: AttemptId,
+        observation: ObservationId,
+        finding: Option<FindingCandidateBundleId>,
+    ) -> Result<(), CompletionValidationFailure> {
+        self.get()
+            .map_err(|_| CompletionValidationFailure::Unauthorized)?
+            .validate_retained_completion(lineage, attempt, observation, finding)
+    }
+}
+
+#[derive(Clone)]
+struct ClosedPackagedAdmission {
+    repository: Arc<CampaignRepository>,
+    profile: ExecutorCompatibilityProfile,
+    scenarios: BTreeSet<ScenarioArtifactId>,
+}
+
+impl ClosedPackagedAdmission {
     fn validate_scenario(&self, request: &SubmitAttemptRequest) -> Result<(), ExecutorRejection> {
         self.validate_lineage_scenario(request.lineage())
     }
@@ -1587,7 +2045,7 @@ impl PackagedAttemptAdmission {
     }
 }
 
-impl AttemptAdmissionValidator for PackagedAttemptAdmission {
+impl AttemptAdmissionValidator for ClosedPackagedAdmission {
     fn validate(&self, request: &SubmitAttemptRequest) -> Result<(), ExecutorRejection> {
         self.repository
             .validate_executor_request_with_profile(request, &self.profile)
@@ -1679,6 +2137,39 @@ fn completion_validation_failure(error: CampaignRepositoryError) -> CompletionVa
 /// Failure to acquire or compose one packaged local QEMU executor.
 #[derive(Debug, thiserror::Error)]
 pub enum PackagedQemuExecutorError {
+    /// A required mutable lifecycle copy lacks its original allocation custody.
+    #[error(transparent)]
+    LifecycleConfiguration(#[from] crucible_api::vm_lifecycle::ProductionVmLifecycleConfigCloneError),
+    /// The original catalog refused lifecycle metadata allocation.
+    #[error(transparent)]
+    DecodedMetadata(#[from] crucible::owned_decode::DecodeAdmissionError),
+    /// The original registry namespace lacks its exact physical quota authority.
+    #[error("operational registry physical quota admission failed: {0}")]
+    RegistryQuota(#[from] crucible_linux_resource::LinuxProjectQuotaError),
+    /// Persistent native RAM catalog containment or admission failed.
+    #[error(transparent)]
+    RamCatalog(#[from] crucible_cas::content_store::StoreError),
+    /// Durable host operational authority could not be acquired safely.
+    #[error(transparent)]
+    HostOperational(#[from] crucible_api::host_operational::HostOperationalError),
+    /// The complete retained world cannot satisfy its actual RAM launch contract.
+    #[error("host RAM launch admission failed: {0}")]
+    HostRamAdmission(#[from] crucible_api::vm_lifecycle::HostRamAdmissionError),
+    /// Preparation could not start its separately charged watchdog or namespace.
+    #[error("packaged preparation supervision failed: {0}")]
+    PreparationSupervisor(#[source] std::io::Error),
+    /// Preparation could not prove that its complete physical service was cleaned.
+    #[error("packaged preparation cleanup remains uncertain: {source}")]
+    PreparationCleanup {
+        /// Physical authority that refused a capacity discharge.
+        #[source]
+        source: crucible_api::host_operational::HostOperationalError,
+        /// Original preparation failure retained for containment diagnostics.
+        preparation: Option<Box<PackagedQemuExecutorError>>,
+    },
+    /// Preparation expired before its cleaned native candidate could be accepted.
+    #[error("packaged preparation host allowance expired")]
+    PreparationExpired,
     /// The internal deployment contract named no campaign.
     #[error("packaged QEMU executor has no campaign")]
     NoCampaigns,

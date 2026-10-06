@@ -109,6 +109,50 @@
     compositions = campaignModeAuthorities;
   };
 in rec {
+  ram = let
+    bindings = import ./ram-case-bindings.nix {inherit lib;};
+    inventory = import ./ram-coverage-inventory.nix {
+      inherit lib;
+      inherit (bindings) caseBindings;
+    };
+  in {
+    livePaging = import ./ram-live-paging.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.ram.livePaging";
+    };
+    hotFork = import ./ram-hot-fork.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.ram.hotFork";
+    };
+    memoryFaults = import ./ram-memory-faults.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.ram.memoryFaults";
+    };
+    byteService = import ./ram-byte-service.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.ram.byteService";
+    };
+    transfer = import ./ram-transfer.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.ram.transfer";
+    };
+    components =
+      lib.mapAttrs (
+        name: component:
+          import ./ram-cargo-gate.nix (component
+            // {
+              inherit pkgs lib;
+              attrPath = "checks.crucible.ram.components.${name}";
+            })
+      )
+      bindings.components;
+    coverageInventory = pkgs.writeTextFile {
+      name = "crucible-ram-coverage-inventory";
+      destination = "/inventory.json";
+      text = builtins.toJSON inventory;
+    };
+  };
+
   phase0 = {
     gates = rec {
       blockers = import ./phase0-blockers.nix {
@@ -442,6 +486,7 @@ in rec {
     qemuDeviceCompletionAdvance = import ./phase2-qemu-device-completion-advance.nix {inherit pkgs lib;};
     qemu9pSyncKick = import ./phase2-qemu-9p-sync-kick.nix {inherit pkgs lib;};
     qemuWhiteboxGuestWrite = import ./phase2-qemu-whitebox-guest-write.nix {inherit pkgs lib;};
+    qemuMemoryMutation = import ./phase2-qemu-memory-mutation.nix {inherit pkgs lib;};
     qemuFwCfgServiceDeadline = import ./phase2-qemu-memory-access.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase2.qemuFwCfgServiceDeadline";
@@ -1424,6 +1469,9 @@ in rec {
     };
   };
   phase5 = {
+    cliNativeFindingIntegration = import ./phase5-cli-native-finding-integration.nix {
+      inherit pkgs lib;
+    };
     sessionActor = import ./phase5-session-actor.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.sessionActor";
@@ -1539,9 +1587,10 @@ in rec {
         gate = import ./phase5-campaign-store-composition.nix {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase5.gates.campaignStoreComposition";
-          dependencies = [campaignStoreEquivalence.rawGate];
+          nativeFindingIntegration = phase5.cliNativeFindingIntegration;
+          dependencies = [campaignStoreEquivalence.rawGate phase5.cliNativeFindingIntegration];
         };
-        dependencies = [campaignStoreEquivalence];
+        dependencies = [campaignStoreEquivalence phase5.cliNativeFindingIntegration];
       };
       campaignExactMaintenanceTransfer = import ./phase5-campaign-exact-maintenance-transfer-vm.nix {
         inherit pkgs lib;

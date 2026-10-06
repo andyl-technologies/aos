@@ -9,6 +9,29 @@ pub struct DirectoryRefBackend {
 }
 
 impl DirectoryRefBackend {
+    /// Creates a quota-bound ref facade with admitted operation and fence loans.
+    ///
+    /// # Errors
+    /// Refuses unavailable authority or insufficient original resources.
+    pub fn new_with_physical_quota(
+        root: impl Into<PathBuf>,
+        guard: Arc<dyn StorePhysicalQuotaGuard>,
+    ) -> Result<Arc<dyn MutableRefBackend>, StoreError> {
+        let root = root.into();
+        guard.verify()?;
+        let resources = guard.reserve_resources(
+            0,
+            std::mem::size_of::<QuotaDirectoryRefs>() as u64
+                + 2 * std::mem::size_of::<usize>() as u64
+                + root.capacity() as u64,
+        )?;
+        Ok(Arc::new(QuotaDirectoryRefs {
+            child: Self::new(root),
+            guard,
+            _resources: resources,
+        }))
+    }
+
     /// Creates a ref backend rooted at `root`.
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
@@ -229,6 +252,105 @@ struct DirectoryRefPublicationGuard {
 }
 
 impl RefPublicationGuard for DirectoryRefPublicationGuard {}
+
+/// Keeps ref namespace authority and resources behind the existing directory format.
+struct QuotaDirectoryRefs {
+    child: DirectoryRefBackend,
+    guard: Arc<dyn StorePhysicalQuotaGuard>,
+    _resources: Arc<dyn Send + Sync>,
+}
+
+impl QuotaDirectoryRefs {
+    fn operation_resources(&self) -> Result<Arc<dyn Send + Sync>, StoreError> {
+        self.guard.verify()?;
+        // Inventory/name locks, record/staging files and directory fsync can
+        // overlap. Paths and bounded 256-byte records have geometric headroom.
+        let bytes = (self.child.root.as_os_str().len() as u64)
+            .checked_add(1024)
+            .and_then(|bytes| bytes.checked_mul(32))
+            .and_then(|bytes| bytes.checked_add(4096))
+            .ok_or(StoreError::Quota)?;
+        self.guard.reserve_resources(6, bytes)
+    }
+}
+
+impl MutableRefBackend for QuotaDirectoryRefs {
+    fn capabilities(&self) -> RefBackendCapabilities {
+        self.child.capabilities()
+    }
+
+    fn acquire_publication_guard(&self) -> Result<Box<dyn RefPublicationGuard>, StoreError> {
+        let _construction = self.operation_resources()?;
+        let resources = self
+            .guard
+            .reserve_resources(1, std::mem::size_of::<QuotaRefPublicationGuard>() as u64)?;
+        Ok(Box::new(QuotaRefPublicationGuard {
+            _child: self.child.acquire_publication_guard()?,
+            _guard: self.guard.clone(),
+            _resources: resources,
+        }))
+    }
+
+    fn compare_remove(
+        &self,
+        name: &RefName,
+        expected: ContentId,
+    ) -> Result<RefRemoveOutcome, StoreError> {
+        let _resources = self.operation_resources()?;
+        self.child.compare_remove(name, expected)
+    }
+
+    fn read_ref(&self, name: &RefName) -> Result<Option<ContentId>, StoreError> {
+        let _resources = self.operation_resources()?;
+        self.child.read_ref(name)
+    }
+
+    fn scan_refs(
+        &self,
+        namespace: &RefName,
+        after: Option<&RefName>,
+        limit: usize,
+    ) -> Result<RefScanPage, StoreError> {
+        validate_ref_scan_basis(namespace, after, limit)?;
+        let _resources = self.operation_resources()?;
+        // Only the smallest limit+1 names are retained by the ordered scan;
+        // this covers both B-tree nodes and the resulting bounded vector.
+        let _candidates = self.guard.reserve_resources(
+            0,
+            (limit as u64 + 1)
+                .checked_mul(4096)
+                .ok_or(StoreError::Quota)?,
+        )?;
+        let _lock = self
+            .child
+            .acquire_ref_inventory_lock(FlockOperation::LockShared)?;
+        ref_admin::scan_ref_namespace_with_quota(
+            &self.child,
+            namespace,
+            after,
+            limit,
+            Some(self.guard.as_ref()),
+        )
+    }
+
+    fn compare_exchange(
+        &self,
+        name: &RefName,
+        expected: Option<ContentId>,
+        next: ContentId,
+    ) -> Result<RefCasOutcome, StoreError> {
+        let _resources = self.operation_resources()?;
+        self.child.compare_exchange(name, expected, next)
+    }
+}
+
+struct QuotaRefPublicationGuard {
+    _child: Box<dyn RefPublicationGuard>,
+    _guard: Arc<dyn StorePhysicalQuotaGuard>,
+    _resources: Arc<dyn Send + Sync>,
+}
+
+impl RefPublicationGuard for QuotaRefPublicationGuard {}
 
 pub(in crate::content_store) fn directory_receipt(
     name: &str,

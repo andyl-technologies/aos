@@ -29,6 +29,49 @@ use scan::*;
 use source_sections::*;
 
 #[test]
+fn allow_reason_metadata_preserves_each_suppression_category() {
+    let path = Path::new("synthetic.rs");
+    for (lint, rule) in [
+        ("clippy::disallowed_methods", "clippy-disallowed-method"),
+        ("clippy::unwrap_used", "panic-shortcut"),
+        ("clippy::too_many_arguments", "rust-allow"),
+    ] {
+        let annotated = format!(
+            "// crucible-lint: allow {rule} -- isolated synthetic exception\n\
+             #[allow({lint}, reason = \"specific compiler rationale\")]\nfn allowed() {{}}"
+        );
+        assert!(custom_static_analysis_failures(path, &annotated).is_empty());
+
+        let unannotated =
+            format!("#[allow({lint}, reason = \"rationale is not authorization\")]\nfn bad() {{}}");
+        assert_contains(
+            &custom_static_analysis_failures(path, &unannotated),
+            "unannotated allow",
+        );
+    }
+
+    let wrong_category = r#"
+        // crucible-lint: allow rust-allow -- this does not authorize a panic shortcut
+        #[allow(clippy::unwrap_used, reason = "category still matters")]
+        fn bad() {}
+    "#;
+    assert_contains(
+        &custom_static_analysis_failures(path, wrong_category),
+        "unannotated allow",
+    );
+
+    let additional_lint = r#"
+        // crucible-lint: allow panic-shortcut -- only this suppression is authorized
+        #[allow(clippy::unwrap_used, dead_code, reason = "each lint needs authorization")]
+        fn bad() {}
+    "#;
+    assert_contains(
+        &custom_static_analysis_failures(path, additional_lint),
+        "unannotated allow",
+    );
+}
+
+#[test]
 fn harness_lint_recognizes_split_test_modules() {
     let package = Path::new("crucible-example");
 

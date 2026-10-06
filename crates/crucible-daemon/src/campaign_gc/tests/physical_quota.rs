@@ -16,12 +16,19 @@ use super::*;
 
 struct ToggleQuotaGuard {
     allowed: AtomicBool,
+    resources: crucible_linux_resource::host_services::HostServiceAllocator,
 }
 
 impl ToggleQuotaGuard {
     fn new() -> Self {
         Self {
             allowed: AtomicBool::new(true),
+            resources: crucible_linux_resource::host_services::HostServiceAllocator::new(
+                1,
+                128,
+                256 * 1024 * 1024,
+            )
+            .expect("independently authored finite GC fixture resource account"),
         }
     }
 
@@ -31,6 +38,18 @@ impl ToggleQuotaGuard {
 }
 
 impl StorePhysicalQuotaGuard for ToggleQuotaGuard {
+    fn reserve_resources(
+        &self,
+        descriptors: u64,
+        resident_bytes: u64,
+    ) -> Result<Arc<dyn Send + Sync>, StoreError> {
+        self.verify()?;
+        self.resources
+            .reserve_resources(0, descriptors, resident_bytes)
+            .map(|loan| Arc::new(loan) as Arc<dyn Send + Sync>)
+            .map_err(|_| StoreError::Quota)
+    }
+
     fn verify(&self) -> Result<(), StoreError> {
         if self.allowed.load(Ordering::Acquire) {
             Ok(())

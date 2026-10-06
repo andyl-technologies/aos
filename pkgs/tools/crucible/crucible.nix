@@ -1,4 +1,4 @@
-##! crucible — RFC-0010 Crucible Rust workspace and CLI
+##! crucible — Deterministic simulation workspace and CLI
 {
   lib,
   stdenv,
@@ -26,6 +26,7 @@
   openssh,
   buildPackages,
   controllerOnly ? false,
+  pagingQualificationReceipt ? null,
 }: let
   version = "0.1.0";
   buildRustDev =
@@ -201,7 +202,18 @@
     passthru = {
       cargoArtifacts = controllerArtifacts;
       cargoDeps = cargoDeps;
+      inherit pagingQualificationReceipt;
     };
+
+    # Only a successful kernel flight can supply this build input. Embed its
+    # bounded data without retaining a runtime path to the flight's GPL closure.
+    preBuild = lib.optionalString (pagingQualificationReceipt != null) ''
+      receipt_file=${pagingQualificationReceipt}/qualification.json
+      test -f "$receipt_file"
+      test "$(${coreutils}/bin/wc -c < "$receipt_file")" -le 16384
+      export CRUCIBLE_PAGING_QUALIFICATION_JSON="$(${coreutils}/bin/cat "$receipt_file")"
+      test -n "$CRUCIBLE_PAGING_QUALIFICATION_JSON"
+    '';
 
     cargoFlags = packageFlags;
     cargoTestFlags = "${packageFlags} --features crucible-cli/test-double";
@@ -221,7 +233,7 @@
     LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
 
     # The source root includes root guidance, docs/, pkgs/tools/crucible/, and
-    # tests/crucible/ so harness lints can read RFC-0010 and AOS check wiring,
+    # tests/crucible/ so harness lints can read specifications and AOS check wiring,
     # while Cargo's virtual workspace remains rooted at crates/.
     postBuild = ''
       ${

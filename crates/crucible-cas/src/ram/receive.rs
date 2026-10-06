@@ -9,6 +9,8 @@ use crucible_protocol::ram_transfer::{
     MAX_TRANSFER_OBJECT_BYTES, RamTransferControl, RamTransferMessage, RamTransferNodeCoordinate,
     RamTransferOffer,
 };
+use std::sync::Arc;
+
 use crucible_ram::{Limits, PageDigest, RegionDescriptor, RootRecord};
 
 use crate::content_envelope::ContentEnvelope;
@@ -45,6 +47,7 @@ pub struct RamTransferReceiver<'a> {
     requested: u64,
     received: u64,
     terminal: bool,
+    metadata_resources: Arc<super::metadata::RootMetadataResources>,
 }
 
 impl<'a> RamTransferReceiver<'a> {
@@ -83,6 +86,8 @@ impl<'a> RamTransferReceiver<'a> {
         retention: &'a dyn RamRetention,
         message: RamTransferMessage,
     ) -> Result<Self, RamStoreError> {
+        // Offer metadata overlaps the independently authenticated root catalog.
+        let metadata_resources = store.reserve_root_metadata(2)?;
         message.encode()?;
         let RamTransferControl::Offer(offer) = message.control else {
             return Err(RamStoreError::Invalid("transfer admission requires offer"));
@@ -106,6 +111,7 @@ impl<'a> RamTransferReceiver<'a> {
             requested: 0,
             received: 0,
             terminal: false,
+            metadata_resources,
         })
     }
 
@@ -165,7 +171,10 @@ impl<'a> RamTransferReceiver<'a> {
             self.region(region, *reference, 0, exchange, work)?;
         }
         self.publish(self.root, &envelope, existing, work)?;
-        let lease = self.retention.retain_root(self.root)?;
+        let lease = super::metadata::retain_resources(
+            self.retention.retain_root(self.root)?,
+            Arc::clone(&self.metadata_resources),
+        );
         if lease.root() != self.root {
             return Err(RamStoreError::Invalid("transfer retained root identity"));
         }
@@ -179,8 +188,9 @@ impl<'a> RamTransferReceiver<'a> {
         self.report.object_visits = work.visits;
         Ok(RamTransferStep::ClosureStored(RamClosureStored {
             root: LeasedRamRoot {
-                record,
-                regions,
+                record: Arc::new(record),
+                regions: regions.into(),
+                metadata_custody: Arc::clone(&lease),
                 lease,
             },
             report: self.report,

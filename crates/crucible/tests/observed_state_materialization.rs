@@ -145,7 +145,9 @@ fn borrowed_projection_preserves_event_timer_and_once_histories() {
     )
     .expect("initial boundary should validate");
     let mut initial_pass = ConditionEvaluationPass::from_log_prefix(initial_prefix, NoLeaves);
-    let initial_firings = initial_pass.evaluate_event_graph(&initial, &mut EventGraphState::new());
+    let initial_firings = initial_pass
+        .evaluate_event_graph(&initial, &mut EventGraphState::new())
+        .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"));
     let firing = initial_firings.as_slice()[0].clone();
     let prefix = crucible::test_support::condition_prefix_from_scheduler_entries_for_test(vec![
         payload_entry(0, time(3), SchedulerEventLogPayload::TriggerFired(firing)),
@@ -187,8 +189,18 @@ fn borrowed_projection_preserves_event_timer_and_once_histories() {
     assert_eq!(borrowed.point(), owned.point());
     assert_eq!(borrowed.observed_state(), owned.observed_state());
     for (condition, expected) in conditions {
-        assert_eq!(owned.evaluate_assertion_condition(&condition), expected);
-        assert_eq!(borrowed.evaluate_assertion_condition(&condition), expected);
+        assert_eq!(
+            owned
+                .evaluate_assertion_condition(&condition)
+                .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}")),
+            expected
+        );
+        assert_eq!(
+            borrowed
+                .evaluate_assertion_condition(&condition)
+                .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}")),
+            expected
+        );
     }
     assert_eq!(borrowed.once_latches(), &[Condition::at(time(13))]);
     assert_eq!(borrowed.once_latches(), owned.once_latches());
@@ -201,8 +213,12 @@ fn borrowed_projection_preserves_event_timer_and_once_histories() {
     .expect("completion graph should validate");
     let mut owned_state = EventGraphState::new();
     let mut borrowed_state = EventGraphState::new();
-    let borrowed_firings = borrowed.evaluate_event_graph(&graph, &mut borrowed_state);
-    let owned_firings = owned.evaluate_event_graph(&graph, &mut owned_state);
+    let borrowed_firings = borrowed
+        .evaluate_event_graph(&graph, &mut borrowed_state)
+        .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"));
+    let owned_firings = owned
+        .evaluate_event_graph(&graph, &mut owned_state)
+        .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"));
     assert_eq!(borrowed_firings.len(), 1);
     assert_eq!(borrowed_firings.as_slice()[0].action(), &Action::Pass);
     assert_eq!(borrowed_firings, owned_firings);
@@ -219,7 +235,11 @@ fn borrowed_projection_preserves_event_timer_and_once_histories() {
     .expect("later boundary should validate");
     let mut restored = ConditionEvaluationPass::from_log_prefix_ref(&later, NoLeaves)
         .with_once_latches(borrowed.once_latches().to_vec());
-    assert!(restored.evaluate_assertion_condition(&once));
+    assert!(
+        restored
+            .evaluate_assertion_condition(&once)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
 }
 
 #[test]

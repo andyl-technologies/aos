@@ -11,6 +11,7 @@ use super::ObjectKind;
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
+use std::io::{self, Read};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -18,8 +19,8 @@ use super::admin::PhysicalRepairAuthority;
 
 use super::{
     BackendCapabilities, BlobHandle, BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary,
-    BlobStoreAdmin, ByteRange, ContentId, ImmutableBlobBackend, PlannedDeleteDisposition,
-    PutReceipt, StoreError,
+    BlobSource, BlobStoreAdmin, ByteRange, ContentId, ImmutableBlobBackend,
+    PlannedDeleteDisposition, PutReceipt, StoreError,
 };
 
 const MAX_PHYSICAL_QUOTA_POLICY_ID_BYTES: usize = 512;
@@ -68,6 +69,36 @@ impl StorePhysicalQuotaPolicyId {
 
 /// Bound authority for one exact kernel-enforced physical quota incarnation.
 pub trait StorePhysicalQuotaGuard: Send + Sync {
+    /// Returns the original authored Rust metadata subset available to decoders.
+    ///
+    /// SQLite allocator credits and native guest memory are excluded. A
+    /// returned maximum is an admission ceiling; every retained allocation
+    /// must still obtain its own resource loan before allocation.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::Unsupported`] when the original owner has no
+    /// explicit Rust metadata contract.
+    fn decoded_metadata_limit(&self) -> Result<u64, StoreError> {
+        Err(StoreError::Unsupported {
+            capability: "decoded-metadata-limit",
+        })
+    }
+
+    /// Reserves actual descriptor and resident credits before a retained loan.
+    ///
+    /// The returned owner keeps the original capacity and quota custody alive.
+    /// Resident metadata is a subset of the complete resident peak; it is never
+    /// added a second time to global usage. Callers close borrowed resources
+    /// before dropping this credit. No unmetered success receipt is permitted.
+    ///
+    /// # Errors
+    /// Refuses unavailable or exhausted original admission and supervision.
+    fn reserve_resources(
+        &self,
+        descriptors: u64,
+        resident_bytes: u64,
+    ) -> Result<Arc<dyn Send + Sync>, StoreError>;
+
     /// Reauthenticates the pinned root, hard limits, and current bounded usage.
     ///
     /// The guard must fail closed if the configured filesystem quota no longer
@@ -90,8 +121,11 @@ pub trait StorePhysicalQuotaBinder: Send + Sync {
     /// symlink, require inheritance for `project_id`, require byte and inode
     /// hard limits no greater than the requested ceilings, and retain enough
     /// authority for the returned guard to detect path-incarnation or quota
-    /// drift. The operator must exclude concurrent quota-control mutation for
-    /// the lifetime of the returned guard.
+    /// drift. Existing descendants must be audited under exclusive startup
+    /// namespace authority. The operator must exclude external project-attribute,
+    /// mount, rename/link and quota-control mutation for the guard's lifetime;
+    /// trusted writers may create only project-inheriting descendants. A scan
+    /// alone does not establish this continuing namespace exclusion.
     ///
     /// # Errors
     ///
@@ -161,6 +195,17 @@ pub(super) struct PhysicalQuotaStore {
     child: Arc<dyn ImmutableBlobBackend>,
     child_admin: Arc<dyn BlobStoreAdmin>,
     guard: Arc<dyn StorePhysicalQuotaGuard>,
+    directory_costs: Option<DirectoryResourceCosts>,
+    _child_resources: Option<Arc<dyn Send + Sync>>,
+    _resources: Arc<dyn Send + Sync>,
+}
+
+/// Audited additional allocations of the loose-directory implementation.
+#[derive(Clone, Copy)]
+pub(super) struct DirectoryResourceCosts {
+    pub(super) source_bytes: u64,
+    pub(super) reader_bytes: u64,
+    pub(super) operation_bytes: u64,
 }
 
 impl PhysicalQuotaStore {
@@ -171,12 +216,41 @@ impl PhysicalQuotaStore {
         guard: Arc<dyn StorePhysicalQuotaGuard>,
     ) -> Result<Self, StoreError> {
         guard.verify()?;
+        let name = name.into();
+        let resources = guard.reserve_resources(
+            0,
+            (facade_metadata_bytes() as u64)
+                .checked_add(name.capacity() as u64)
+                .ok_or(StoreError::Quota)?,
+        )?;
         Ok(Self {
-            name: name.into(),
+            name,
             child,
             child_admin,
             guard,
+            directory_costs: None,
+            _child_resources: None,
+            _resources: resources,
         })
+    }
+
+    pub(super) fn with_directory_costs(mut self, costs: DirectoryResourceCosts) -> Self {
+        self.directory_costs = Some(costs);
+        self
+    }
+
+    pub(super) fn with_child_resources(mut self, resources: Arc<dyn Send + Sync>) -> Self {
+        self._child_resources = Some(resources);
+        self
+    }
+
+    fn operation_resources(&self) -> Result<Arc<dyn Send + Sync>, StoreError> {
+        self.guard.reserve_resources(
+            if self.directory_costs.is_some() { 6 } else { 0 },
+            self.directory_costs
+                .map_or(0, |costs| costs.operation_bytes)
+                + std::mem::size_of::<PhysicalQuotaInventoryFence<'_>>() as u64,
+        )
     }
 
     fn rewrite_receipt(&self, mut receipt: PutReceipt) -> PutReceipt {
@@ -192,6 +266,10 @@ impl ImmutableBlobBackend for PhysicalQuotaStore {
         &self.name
     }
 
+    fn metadata_resources(&self) -> Result<Arc<dyn super::StorePhysicalQuotaGuard>, StoreError> {
+        Ok(Arc::clone(&self.guard))
+    }
+
     fn capabilities(&self) -> BackendCapabilities {
         self.child.capabilities()
     }
@@ -203,28 +281,104 @@ impl ImmutableBlobBackend for PhysicalQuotaStore {
 
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
         self.guard.verify()?;
+        let _resources = self.operation_resources()?;
         self.child.contains(id)
     }
 
     fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
         self.guard.verify()?;
-        self.child.read(id, range)
+        let costs = self.directory_costs;
+        let resources = self.guard.reserve_resources(
+            u64::from(costs.is_some()),
+            (deferred_source_metadata_bytes() as u64)
+                .checked_add(costs.map_or(0, |costs| costs.source_bytes))
+                .ok_or(StoreError::Quota)?,
+        )?;
+        let handle = self.child.read(id, range)?;
+        let source = Arc::new(PhysicalQuotaBlobSource {
+            handle: handle.clone(),
+            guard: self.guard.clone(),
+            reader_bytes: costs.map_or(0, |costs| costs.reader_bytes),
+            _resources: resources,
+        });
+        Ok(handle.with_observed_source(source))
     }
 
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
         self.guard.verify()?;
+        let _resources = self.operation_resources()?;
         self.child
             .put_if_absent(id, source)
             .map(|receipt| self.rewrite_receipt(receipt))
     }
 }
 
+// Deferred handles retain the exact quota/service custody after the facade
+// drops. Each open/read revalidates authority before consuming backing bytes.
+struct PhysicalQuotaBlobSource {
+    handle: BlobHandle,
+    guard: Arc<dyn StorePhysicalQuotaGuard>,
+    reader_bytes: u64,
+    _resources: Arc<dyn Send + Sync>,
+}
+
+pub(super) const fn deferred_source_metadata_bytes() -> usize {
+    std::mem::size_of::<PhysicalQuotaBlobSource>() + 2 * std::mem::size_of::<usize>()
+}
+
+impl BlobSource for PhysicalQuotaBlobSource {
+    fn logical_length(&self) -> u64 {
+        self.handle.logical_length()
+    }
+
+    fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
+        self.guard.verify()?;
+        let resources = self.guard.reserve_resources(
+            0,
+            (deferred_reader_metadata_bytes() as u64)
+                .checked_add(self.reader_bytes)
+                .ok_or(StoreError::Quota)?,
+        )?;
+        Ok(Box::new(PhysicalQuotaReader {
+            reader: self.handle.open()?,
+            guard: self.guard.clone(),
+            // The child reader and its pinned source close before credits.
+            _source_resources: self._resources.clone(),
+            _resources: resources,
+        }))
+    }
+}
+
+struct PhysicalQuotaReader {
+    reader: Box<dyn Read + Send>,
+    guard: Arc<dyn StorePhysicalQuotaGuard>,
+    _source_resources: Arc<dyn Send + Sync>,
+    _resources: Arc<dyn Send + Sync>,
+}
+
+pub(super) const fn deferred_reader_metadata_bytes() -> usize {
+    std::mem::size_of::<PhysicalQuotaReader>()
+}
+
+pub(super) const fn facade_metadata_bytes() -> usize {
+    std::mem::size_of::<PhysicalQuotaStore>() + 2 * std::mem::size_of::<usize>()
+}
+
+impl Read for PhysicalQuotaReader {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.guard.verify().map_err(io::Error::other)?;
+        self.reader.read(buffer)
+    }
+}
+
 impl BlobStoreAdmin for PhysicalQuotaStore {
     fn acquire_inventory_fence(&self) -> Result<Box<dyn BlobInventoryFence + '_>, StoreError> {
         self.guard.verify()?;
+        let resources = self.operation_resources()?;
         Ok(Box::new(PhysicalQuotaInventoryFence {
             store: self,
             child: self.child_admin.acquire_inventory_fence()?,
+            _resources: resources,
         }))
     }
 }
@@ -232,6 +386,7 @@ impl BlobStoreAdmin for PhysicalQuotaStore {
 struct PhysicalQuotaInventoryFence<'a> {
     store: &'a PhysicalQuotaStore,
     child: Box<dyn BlobInventoryFence + 'a>,
+    _resources: Arc<dyn Send + Sync>,
 }
 
 impl BlobInventoryFence for PhysicalQuotaInventoryFence<'_> {

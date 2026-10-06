@@ -53,6 +53,7 @@ use admission::{
 #[derive(Debug)]
 pub struct QemuHostPluginSetup {
     control: ControlLifecycleStream<UnixStream>,
+    _service_lease: Option<crucible_linux_resource::host_services::HostServiceLease>,
     shmem_fd: OwnedFd,
     wake_fd: OwnedFd,
     negotiated: NegotiatedHandshake,
@@ -69,6 +70,7 @@ pub struct QemuHostPluginSetup {
     system_manifest: FaultSystemCapabilityManifestV1,
     ready_markers: std::collections::BTreeSet<crucible::model::FaultObjectId>,
     selectable_catalog_plan: SelectableCatalogPlan,
+    _launch_cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
 }
 
 impl QemuHostPluginSetup {
@@ -299,6 +301,19 @@ impl QemuHostPluginSetup {
 }
 
 impl QemuPluginIpcControlChannel for QemuHostPluginSetup {
+    fn send_quit_supervised(
+        &mut self,
+        guard: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.control
+            .host_send_quit_with_writer(|stream, frame| {
+                crate::plugin_control::write_supervised_control_frame(stream, frame, guard)
+            })
+            .map_err(|source| {
+                QemuNodeChannelError::new("send supervised plugin Quit", source.to_string())
+            })
+    }
+
     fn send_quit(&mut self) -> Result<(), QemuNodeChannelError> {
         self.control.host_send_quit().map_err(|source| {
             QemuNodeChannelError::new("send plugin control Quit", source.to_string())
@@ -374,7 +389,11 @@ pub fn complete_qemu_host_plugin_setup_with_plugin_setup_plan(
     let bytes = allocation
         .setup_region_bytes()
         .map_err(|source| QemuHostPluginSetupError::RegionSerialization { source })?;
-    let (control_socket, shmem_fd, wake_fd, region_len, fault_node_hash) = resources.into_parts();
+    // Declare custody before bare descriptors so every error drops it last.
+    let launch_cleanup = resources.launch_cleanup();
+    let service_lease = resources.host_service_lease().cloned();
+    let (control_socket, shmem_fd, wake_fd, region_len, fault_node_hash, _) =
+        resources.into_parts();
     if required_capabilities
         .target_manifest()
         .is_some_and(|required| required.node_hash() != fault_node_hash)
@@ -549,6 +568,7 @@ pub fn complete_qemu_host_plugin_setup_with_plugin_setup_plan(
 
     Ok(QemuHostPluginSetup {
         control,
+        _service_lease: service_lease,
         shmem_fd,
         wake_fd,
         negotiated,
@@ -565,6 +585,7 @@ pub fn complete_qemu_host_plugin_setup_with_plugin_setup_plan(
         system_manifest,
         ready_markers: required_capabilities.ready_markers().clone(),
         selectable_catalog_plan: plugin_setup_plan.selectable_catalog_plan().clone(),
+        _launch_cleanup: launch_cleanup,
     })
 }
 
@@ -861,7 +882,7 @@ pub(crate) mod tests {
 
     #[test]
     fn qemu_host_rejects_an_unsupported_plugin_abi() {
-        assert_eq!(ABI_VERSION, 30);
+        assert_eq!(ABI_VERSION, 31);
         let unsupported_abi = u32::MAX;
         let config = HostHandshakeConfig {
             proto_version: CONTROL_PROTOCOL_VERSION,

@@ -68,7 +68,7 @@ impl TestConcurrentBackend {
 impl SimulationBackend for TestConcurrentBackend {
     fn dispatch_contract(&self) -> crate::BackendDispatchContract {
         if self.control_v3 {
-            crate::BackendDispatchContract::ControlV3
+            crate::BackendDispatchContract::CeilingControl
         } else {
             crate::BackendDispatchContract::PhysicalSource
         }

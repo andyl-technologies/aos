@@ -1886,7 +1886,7 @@ pub struct DebugCliSurfaceContract {
 impl DebugCliSurfaceContract {
     /// Builds the `crucible debug` surface contract.
     #[must_use]
-    pub fn rfc0010() -> Self {
+    pub fn standard() -> Self {
         Self {
             coordinate_flags: vec!["--at", "--at-event", "--at-failure", "--at-checkpoint"],
             control_flags: vec![

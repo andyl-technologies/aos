@@ -1,7 +1,7 @@
 //! Deterministic QEMU launch-profile integration tests.
 //!
 //! These tests lock the public Contract-A launch API to the deterministic
-//! launch surface required by RFC-0010 T-DET-1.
+//! launch surface required for deterministic guest execution.
 
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
@@ -116,11 +116,13 @@ fn launch_command_exposes_and_validates_its_static_resource_baseline() {
 
     assert_eq!(requirements.virtual_cpus(), 4);
     assert_eq!(requirements.guest_memory_bytes(), 768 * mebibyte);
-    assert_eq!(requirements.minimum_writable_bytes(), 1280 * mebibyte);
+    // Compact device state has its own fixed envelope. Guest RAM backing is
+    // admitted independently and must not inflate this writable baseline.
+    assert_eq!(requirements.minimum_writable_bytes(), 512 * mebibyte);
     assert!(requirements.has_root_overlay());
     assert!(
         requirements
-            .validate_ceiling(4, 768 * mebibyte, 1280 * mebibyte)
+            .validate_ceiling(4, 768 * mebibyte, 512 * mebibyte)
             .is_ok()
     );
     assert!(matches!(
@@ -135,7 +137,7 @@ fn launch_command_exposes_and_validates_its_static_resource_baseline() {
         Err(QemuLaunchResourceError::ResidentBytes { .. })
     ));
     assert!(matches!(
-        requirements.validate_ceiling(4, u64::MAX, 1279 * mebibyte),
+        requirements.validate_ceiling(4, u64::MAX, 512 * mebibyte - 1),
         Err(QemuLaunchResourceError::WritableBytes { .. })
     ));
 }

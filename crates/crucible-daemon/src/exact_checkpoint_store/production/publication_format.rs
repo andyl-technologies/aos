@@ -22,6 +22,7 @@ type ProductionRootChildren = (
     Option<ExactCheckpointId>,
     Option<ContentId>,
     ContentId,
+    Vec<ContentId>,
 );
 
 #[cfg(test)]
@@ -121,7 +122,9 @@ pub(super) fn prepare_production_source_with_cancellation(
     }
     validate_production_checkpoint_bytes(
         manifest_source.logical_length(),
-        object_bytes,
+        object_bytes
+            .checked_add(source.ram_logical_bytes()?)
+            .ok_or_else(|| invalid_root("production aggregate logical byte count overflow"))?,
         maximum_checkpoint_bytes,
     )?;
     validate_production_object_inventory_bound(
@@ -221,6 +224,17 @@ pub(super) fn prepare_production_source_with_cancellation(
     }
     for (index, (identity, _)) in indexes.iter().enumerate() {
         children.insert(ContentChild::new(index_role(index)?, *identity)?);
+    }
+    for (ordinal, root) in source.ram_root_ids().into_iter().enumerate() {
+        let ordinal =
+            u32::try_from(ordinal).map_err(|_| invalid_root("RAM root ordinal overflow"))?;
+        if root.kind() != ObjectKind::ExactManifest || root.schema_version() != 1 {
+            return Err(invalid_root("RAM root storage kind or edition"));
+        }
+        children.insert(ContentChild::new(
+            format!("{PRODUCTION_RAM_ROOT_ROLE_PREFIX}{ordinal:08x}"),
+            root,
+        )?);
     }
     let root_envelope = ContentEnvelope::new(
         EXACT_CHECKPOINT_ROOT_SCHEMA,
@@ -433,8 +447,7 @@ pub(super) fn decode_production_root_children(
 ) -> Result<ProductionRootChildren, ExactCheckpointStoreError> {
     let expected = usize::try_from(index_count)
         .map_err(|_| invalid_root("production index count is not representable"))?;
-    if !matches!(envelope.children().len(), count if count == expected.saturating_add(2) || count == expected.saturating_add(4))
-    {
+    if expected > envelope.children().len() {
         return Err(invalid_root("production root child count mismatch"));
     }
     let mut manifest = None;
@@ -442,6 +455,7 @@ pub(super) fn decode_production_root_children(
     let mut promotion_evidence = None;
     let mut choice_closure = None;
     let mut indexes = vec![None; expected];
+    let mut ram_roots = BTreeMap::new();
     for child in envelope.children() {
         if child.role() == PRODUCTION_MANIFEST_ROLE {
             if manifest.replace(child.id()).is_some()
@@ -478,6 +492,19 @@ pub(super) fn decode_production_root_children(
             }
             continue;
         }
+        if let Some(suffix) = child.role().strip_prefix(PRODUCTION_RAM_ROOT_ROLE_PREFIX) {
+            let ordinal =
+                usize::from_str_radix(suffix, 16).map_err(|_| invalid_root("RAM root ordinal"))?;
+            if suffix.len() != 8
+                || format!("{PRODUCTION_RAM_ROOT_ROLE_PREFIX}{ordinal:08x}") != child.role()
+                || child.id().kind() != ObjectKind::ExactManifest
+                || child.id().schema_version() != 1
+                || ram_roots.insert(ordinal, child.id()).is_some()
+            {
+                return Err(invalid_root("RAM root child binding"));
+            }
+            continue;
+        }
         let suffix = child
             .role()
             .strip_prefix(PRODUCTION_INDEX_ROLE_PREFIX)
@@ -502,12 +529,16 @@ pub(super) fn decode_production_root_children(
         .into_iter()
         .collect::<Option<Vec<_>>>()
         .ok_or_else(|| invalid_root("production index child sequence is incomplete"))?;
+    if !ram_roots.keys().copied().eq(0..ram_roots.len()) {
+        return Err(invalid_root("RAM root child sequence is incomplete"));
+    }
     Ok((
         manifest,
         indexes,
         promotion_source,
         promotion_evidence,
         choice_closure.ok_or_else(|| invalid_root("checkpoint choice closure child is missing"))?,
+        ram_roots.into_values().collect(),
     ))
 }
 

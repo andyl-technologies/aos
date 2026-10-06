@@ -60,16 +60,12 @@ fn preparation_is_all_or_nothing_before_live_capture() {
         prepared[1].scheduler_time
     );
     assert_eq!(
-        prepared[1].ram_output,
-        staging.path().join("node-1-ram.crucram")
+        prepared[1].page_capture_output,
+        staging.path().join("node-1-ram.capture")
     );
     assert_eq!(
         prepared[1].device_output,
         staging.path().join("node-1-device.vmstate")
-    );
-    assert_eq!(
-        prepared[1].staged_ram_chunks,
-        staging.path().join("node-1-ram-objects")
     );
     assert_eq!(
         prepared[1].staged_device_chunks,

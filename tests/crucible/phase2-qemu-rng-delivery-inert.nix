@@ -3,11 +3,10 @@
 # accelerator is OFF, so the async RNG-completion delivery icount of the
 # integrated QEMU is identical to the unpatched reference by construction.
 #
-# Why this is a proof and not a measurement: RFC-0010 §4.6 hazard E7a defines
-# the reference's async device-completion delivery icount as host-timing
-# dependent -- the unpatched reference is *not* deterministic by contract, so a
-# runtime icount measurement of it is empirical evidence, never a proof, and
-# would risk a flaky gate. The capability gates every added statement on
+# The reference delivers asynchronous device completion according to host
+# timing. Measuring one delivery icount cannot establish that every run follows
+# the same path, so this gate checks the routing guard in the source. The
+# capability gates every added statement on
 # `icount_enabled() && strcmp(current_accel_name(), "sim") == 0`. With sim off
 # that predicate is false, so the patched binary executes the identical upstream
 # instruction stream for RNG completion delivery; identical instructions deliver

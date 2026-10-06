@@ -2,7 +2,9 @@
 
 use super::*;
 
+mod admitted;
 mod operations;
+pub(crate) use admitted::{bind_admitted_semantic_replay_captures, stage_admitted_prepared_result};
 
 pub use operations::*;
 
@@ -625,6 +627,12 @@ pub struct AttemptResultPublicationError {
 /// Failure while publishing a verified prepared-result closure.
 #[derive(Debug, thiserror::Error)]
 pub enum AttemptResultPublicationFailure {
+    /// The original assignment publication authority could not be borrowed.
+    #[error(transparent)]
+    HostAuthority(#[from] crucible_api::host_operational::HostOperationalError),
+    /// Original-start supervision canceled or expired before publication completed.
+    #[error(transparent)]
+    Supervision(#[from] crucible_linux_resource::host_supervision::HostSupervisionError),
     /// Immutable repository publication failed.
     #[error(transparent)]
     Repository(#[from] CampaignRepositoryError),
@@ -640,6 +648,7 @@ impl AttemptResultPublicationFailure {
         match self {
             Self::Repository(error) => error.executor_rejection(),
             Self::Measurement(_) => ExecutorRejection::Incompatible,
+            Self::HostAuthority(_) | Self::Supervision(_) => ExecutorRejection::UnavailableInput,
         }
     }
 

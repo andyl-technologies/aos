@@ -12,6 +12,7 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
   qemuAtomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
   guest = import ./_nginx-curl-http-200-guest.nix {inherit pkgs;};
+  idleGuest = import ./phase2-qemu-live-plugin-quantum-guest.nix {inherit pkgs;};
   scenario = pkgs.writeTextFile {
     name = "crucible-e2e-determinism-scenario";
     destination = "/scenario.toml";
@@ -66,6 +67,34 @@
       }
     ];
   };
+  pagingKernelSetupScript = import ./_ram-native-kernel-setup.nix {
+    inherit pkgs lib;
+    nativeQemu = pkgs.qemu-crucible;
+    nativePlugin = pkgs.crucible-qemu-plugin;
+    guest = idleGuest;
+    lanes = [
+      "equivalence-depth-1"
+      "equivalence-depth-2"
+      "equivalence-depth-3"
+      "atomic-fork"
+      "atomic-preparation"
+      "atomic-adoption"
+      "atomic-cleanup"
+      "atomic-publication"
+      "atomic-complete"
+      "atomic-file-omission"
+      "atomic-file-alias"
+      "atomic-idle-prefix"
+      "atomic-isolation"
+    ];
+    storageImageBytes = 68719476736;
+    buildGraph = builtins.hashString "sha256" (builtins.concatStringsSep "\n" [
+      pkgs.linux.drvPath
+      pkgs.qemu-crucible.drvPath
+      pkgs.crucible-qemu-plugin.drvPath
+      flight.drvPath
+    ]);
+  };
   cgroupRoot =
     if campaignComposition == null
     then "/sys/fs/cgroup/crucible"
@@ -86,14 +115,13 @@
     set -eu
     cleanup_attempt_mount() {
       ${pkgs.util-linux}/bin/umount /tmp/attempts > /dev/null 2>&1 || true
+      ${pkgs.util-linux}/bin/umount /var/paging-storage > /dev/null 2>&1 || true
     }
     trap cleanup_attempt_mount EXIT HUP INT TERM
 
-    for option in CFS_BANDWIDTH QUOTA QFMT_V2 QUOTACTL; do
-      ${pkgs.grep}/bin/grep -Fxq "CONFIG_$option=y" ${pkgs.linux}/boot/config-*
-    done
+    ${pagingKernelSetupScript}
+
     mkdir -p /sys/fs/cgroup
-    ${lib.optionalString (campaignComposition == null) "${pkgs.util-linux}/bin/mount -t cgroup2 none /sys/fs/cgroup"}
     echo '+cpu +memory +pids' > /sys/fs/cgroup/cgroup.subtree_control
     mkdir ${cgroupRoot}
     echo '+cpu +memory +pids' > ${cgroupRoot}/cgroup.subtree_control
@@ -278,6 +306,7 @@
       } > ${resultPath}
       cat ${resultPath}
       ${pkgs.util-linux}/bin/umount /tmp/attempts
+      ${pkgs.util-linux}/bin/umount /var/paging-storage
       trap - EXIT HUP INT TERM
       exit 0
     ''}
@@ -317,9 +346,10 @@
       require_case_marker "$alias_case" "$marker"
     done
     for marker in \
-      'native_negative_isolation_matrix=private-ring-omitted,qmp-control-aliased,console-diagnostics-aliased,writable-disk-backing-aliased,network-omitted,ninep-aliased,host-continuation-identity-aliased' \
-      'native_negative_isolation_rejected_before=child-readiness,resume,world-publication' \
-      'native_negative_isolation_source_unchanged=true'; do
+      'native_negative_isolation_matrix=private-ring-source-aliased,plugin-control-source-aliased,plugin-wake-source-aliased,console-diagnostic-source-aliased,writable-vmstate-source-aliased,network-reader-ring-scope-aliased,ninep-reader-ring-scope-aliased' \
+      'native_negative_isolation_rejected_before=native-fork,child-readiness,resume,world-publication' \
+      'native_negative_isolation_source_unchanged=true' \
+      'native_negative_isolation_mechanisms=authenticated-pidfd-getfd,native-stage-query,monitor-closefd,host-reader-guard'; do
       require_case_marker "$negative_case" "$marker"
     done
 
@@ -331,7 +361,7 @@
       'final_attempt_descriptors=0' \
       'final_attempt_process_memory_bytes=0' \
       'final_attempt_storage_entries=0' \
-      'final_store_verified_objects=2'; do
+      'final_fixture_verified_objects=2'; do
       require_case_marker "$final_audit_case" "$marker"
     done
 
@@ -346,9 +376,10 @@
       'ambient_outputs_rejected=pidfile,export-socket' \
       'native_running_sibling_mutation_isolated=true' \
       'native_isolation_scopes=network-device,native-9p-device,writable-qcow2-root,serial,pidfile,export-socket,temp-files,native-running-sibling-mutation' \
-      'native_negative_isolation_matrix=private-ring-omitted,qmp-control-aliased,console-diagnostics-aliased,writable-disk-backing-aliased,network-omitted,ninep-aliased,host-continuation-identity-aliased' \
-      'native_negative_isolation_rejected_before=child-readiness,resume,world-publication' \
+      'native_negative_isolation_matrix=private-ring-source-aliased,plugin-control-source-aliased,plugin-wake-source-aliased,console-diagnostic-source-aliased,writable-vmstate-source-aliased,network-reader-ring-scope-aliased,ninep-reader-ring-scope-aliased' \
+      'native_negative_isolation_rejected_before=native-fork,child-readiness,resume,world-publication' \
       'native_negative_isolation_source_unchanged=true' \
+      'native_negative_isolation_mechanisms=authenticated-pidfd-getfd,native-stage-query,monitor-closefd,host-reader-guard' \
       'native_real_resource_omission=child-vmstate-destination' \
       'native_real_resource_omission_nodes=2' \
       'native_real_resource_omission_rejected_before=child-readiness,world-publication' \
@@ -364,6 +395,7 @@
       > ${resultPath}
     cat ${resultPath}
     ${pkgs.util-linux}/bin/umount /tmp/attempts
+    ${pkgs.util-linux}/bin/umount /var/paging-storage
     trap - EXIT HUP INT TERM
   '';
   authoritativeGate = testing.mkVMTest {
@@ -371,11 +403,16 @@
       if prefixOnly
       then "crucible-qemu-idle-prefix-exact"
       else "crucible-qemu-hot-fork-atomic-world";
-    memory = 8192;
+    # The outer VM covers the same complete physical admission profile as the
+    # accepted equivalence driver, including independent catalog and registry.
+    headlessVcpuCount = 14;
+    memory = 36864;
+    extraWritableMiB = 81920;
     rootfsDeps =
       [
         flight
         guest
+        idleGuest
         scenario
         pkgs.crucible
         pkgs.qemu-crucible
@@ -402,16 +439,17 @@ in
       runtimeClosures = [
         flight
         guest
+        idleGuest
         scenario
         pkgs.crucible
         pkgs.qemu-crucible
         pkgs.crucible-qemu-plugin
         pkgs.linux
       ];
-      # Five 30-minute cases plus a bounded 30-minute boot, setup, and
+      # Nine 30-minute cases plus a bounded 30-minute boot, setup, and
       # evidence-retention margin.
-      timeout = 10800;
-      memoryMiB = 8192;
-      varSizeMiB = 16384;
+      timeout = 18000;
+      memoryMiB = 36864;
+      varSizeMiB = 81920;
     }
   else authoritativeGate

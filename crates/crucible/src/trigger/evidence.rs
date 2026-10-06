@@ -444,7 +444,8 @@ pub(super) fn condition_observed_evidence(
                     event,
                     format!(
                         "console output on node={} matched regex={}",
-                        node.name, regex.pattern
+                        node.name,
+                        regex.pattern()
                     ),
                 )
             }),
@@ -676,7 +677,9 @@ pub(super) fn false_observed_condition_summary(condition: &Condition, at: Virtua
         }
         Condition::ConsoleMatch { node, regex } => format!(
             "no console output match node={} regex={} at virtual_time={}",
-            node.name, regex.pattern, at.ticks
+            node.name,
+            regex.pattern(),
+            at.ticks
         ),
         Condition::CoveragePoint { node, .. } => format!(
             "no matching coverage point node={} at virtual_time={}",

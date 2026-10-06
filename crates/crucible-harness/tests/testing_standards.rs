@@ -1,4 +1,4 @@
-//! Checks the RFC-0010 per-layer testing standards.
+//! Checks the per-layer testing standards.
 
 #![forbid(unsafe_code)]
 
@@ -86,7 +86,7 @@ struct CrateTestingOwnership {
     gates: &'static [&'static str],
 }
 
-// Library-exact campaign gates are absent from the RFC-0010 integration-target
+// Library-exact campaign gates are absent from the core integration-target
 // table. Keep them in the same layer, backend, and ownership checks without
 // claiming that the selector is an integration-test target.
 const CAMPAIGN_LIBRARY_EXACT_TESTING_TARGETS: &[GateTargetSpec] = &[

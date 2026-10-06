@@ -1,4 +1,4 @@
-//! Checks the RFC-0010 rustdoc standard for Crucible crates.
+//! Checks the rustdoc standard for Crucible crates.
 //!
 //! Rustdoc's own lints enforce missing public docs and broken intra-doc links.
 //! This harness lint covers the source-shape rules that rustdoc does not model:

@@ -2,9 +2,8 @@
 
 use std::fmt::Write as _;
 use std::path::Path;
-use std::sync::Arc;
 
-use crucible_campaign::{AttemptResourceLimits, ChoiceDomain, ChoiceValue};
+use crucible_campaign::{ChoiceDomain, ChoiceValue};
 use crucible_daemon::finding_production_replay::FindingProductionReplaySelectedSide;
 use rcgen::{
     BasicConstraints, CertificateParams, CertifiedIssuer, ExtendedKeyUsagePurpose, IsCa, KeyPair,
@@ -15,13 +14,10 @@ use serde_json::{Value, json};
 use super::*;
 
 pub(super) struct PreparedFindingBundleMidpoint {
-    pub(super) midpoint: crucible_daemon::ArchivedFindingDebugMidpoint,
-    pub(super) checkpoints: Arc<ExactCheckpointStore>,
-    pub(super) lifecycle: crucible_api::ProductionVmLifecycleConfig,
-    pub(super) host: crucible_daemon::LinuxQemuAttemptHostConfig,
-    pub(super) resources: AttemptResourceLimits,
+    pub(super) imported: crucible_daemon::qemu_campaign_lifecycle::GuardedImportedFindingMidpoint,
     pub(super) report: Value,
     pub(super) private: tempfile::TempDir,
+    pub(super) decoding: crucible_session::engine::owned_decode::DecodeBudget,
 }
 
 /// Opens a private QEMU restore and exposes one read-only local GDB relay.
@@ -40,18 +36,16 @@ pub(crate) fn run_finding_bundle_midpoint(
 
     let prepared = prepare_finding_bundle_midpoint(cli, args)?;
     let PreparedFindingBundleMidpoint {
-        midpoint,
-        checkpoints,
-        lifecycle,
-        host,
-        resources,
+        imported,
         report,
         private,
+        decoding,
     } = prepared;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     runtime.block_on(async move {
+        let _decoding_scope = decoding.enter();
         let transport = private_midpoint_transport(private.path())?;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -69,8 +63,8 @@ pub(crate) fn run_finding_bundle_midpoint(
             RpcMutualTlsConfig::from_pem(transport.ca_pem, transport.client_identity_pem),
         )
         .map_err(control_client_error)?;
-        let session = midpoint
-            .admit_guarded_read_only_session(checkpoints, lifecycle, host, resources)
+        let session = imported
+            .admit_read_only_session()
             .await
             .map_err(|error| backend_error(format!("finding midpoint restore failed: {error}")))?;
         let (shutdown, stopped) = tokio::sync::oneshot::channel();
@@ -130,27 +124,21 @@ pub(super) fn prepare_finding_bundle_midpoint(
     cli: &Cli,
     args: &CampaignFindingBundleMidpointArgs,
 ) -> Result<PreparedFindingBundleMidpoint, CliError> {
-    let bundle = load_authenticated_bundle(&args.input)?;
+    let FindingSourceAuthentication {
+        owner,
+        deployment,
+        qemu,
+        plugin,
+        workspace,
+        decoding,
+        ..
+    } = FindingSourceAuthentication::open(cli, &args.input)?;
+    let _scope = decoding.enter();
+    let bundle = load_authenticated_bundle_in_workspace(&args.input, &workspace, &mut || Ok(()))?;
     let finding =
         bundle.evidence.finding.id().map_err(|error| {
             backend_error(format!("verified finding identity is invalid: {error}"))
         })?;
-    let objects: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
-        "finding-bundle-midpoint",
-        args.input.join("archive/objects"),
-    ));
-    let checkpoints = Arc::new(
-        ExactCheckpointStore::new(objects, args.maximum_checkpoint_bytes).map_err(|error| {
-            backend_error(format!("finding checkpoint store is invalid: {error}"))
-        })?,
-    );
-    let midpoint = crucible_daemon::prepare_archived_finding_debug_midpoint(
-        &bundle.archive,
-        bundle.archive_id,
-        finding,
-        &checkpoints,
-    )
-    .map_err(|error| backend_error(format!("finding midpoint is invalid: {error}")))?;
     let capture = crucible_daemon::load_archived_finding_production_capture(
         &bundle.archive,
         bundle.archive_id,
@@ -158,21 +146,22 @@ pub(super) fn prepare_finding_bundle_midpoint(
         args.role.campaign_role(),
     )
     .map_err(|error| backend_error(format!("archived production replay is invalid: {error}")))?;
-    let (qemu, plugin, _) = exact::resolve_immutable_qemu(cli)?;
     let private = private_bundle_tempdir()?;
-    let guests = crucible_daemon::materialize_finding_replay_guest_assets(
-        capture.deployment(),
-        &qemu,
-        &plugin,
-        private.path(),
-    )
-    .map_err(|error| backend_error(format!("finding guest assets are invalid: {error}")))?;
+    let guests = retain_materialized_guest_assets(
+        crucible_daemon::materialize_finding_replay_guest_assets(
+            capture.deployment(),
+            &qemu,
+            &plugin,
+            &workspace,
+        )
+        .map_err(|error| backend_error(format!("finding guest assets are invalid: {error}")))?,
+    )?;
     let lifecycle_objects = exact::load_lifecycle_objects(&capture)?;
     let mut lifecycle = exact::lifecycle_config(
         &qemu,
         &plugin,
         &guests,
-        &private.path().join("midpoint"),
+        &workspace.join("midpoint"),
         capture.recipe(),
         lifecycle_objects,
     )?;
@@ -203,34 +192,47 @@ pub(super) fn prepare_finding_bundle_midpoint(
         })
         .transpose()?;
     if let Some(trace) = &fault_trace {
-        lifecycle = lifecycle.with_fault_replay(trace.clone());
+        lifecycle = lifecycle.with_fault_replay(trace.try_clone_admitted().map_err(|error| {
+            backend_error(format!(
+                "finding fault trace copy admission failed: {error}"
+            ))
+        })?);
     }
-    let deployment = crate::cli_verify_serve::load_guarded_campaign_deployment(
-        cli.campaign_deployment.as_deref(),
-    )?;
     let recipe = capture.recipe();
     if deployment.resources.maximum_execution_quanta() < recipe.lifecycle_quantum_budget {
         return Err(backend_error(
             "local host deployment cannot admit captured midpoint budget",
         ));
     }
-    let resources = AttemptResourceLimits::new(
-        deployment.resources.maximum_vcpus(),
-        deployment.resources.maximum_resident_bytes(),
-        deployment.resources.maximum_disk_bytes(),
-        recipe.lifecycle_quantum_budget,
-    )
-    .map_err(|error| backend_error(format!("finding midpoint resources are invalid: {error}")))?;
-
-    let report = midpoint_report(&bundle, &midpoint, &capture, selected, fault_trace.as_ref())?;
+    let owner = owner
+        .with_imported_lifecycle(lifecycle)
+        .and_then(|owner| owner.with_imported_guest_assets(Arc::clone(&guests)))
+        .map_err(|error| backend_error(format!("finding midpoint recipe is invalid: {error}")))?;
+    let imported = owner
+        .import_finding_midpoint(
+            &bundle.archive,
+            bundle.archive_id,
+            finding,
+            model.scenario_form(),
+        )
+        .map_err(|error| backend_error(format!("finding receiver import failed: {error}")))?;
+    if imported.midpoint().restore_bytes() > args.maximum_checkpoint_bytes {
+        return Err(backend_error(
+            "finding midpoint exceeds selected checkpoint byte limit",
+        ));
+    }
+    let report = midpoint_report(
+        &bundle,
+        imported.midpoint(),
+        &capture,
+        selected,
+        fault_trace.as_ref(),
+    )?;
     Ok(PreparedFindingBundleMidpoint {
-        midpoint,
-        checkpoints,
-        lifecycle,
-        host: deployment.host,
-        resources,
+        imported,
         report,
         private,
+        decoding,
     })
 }
 

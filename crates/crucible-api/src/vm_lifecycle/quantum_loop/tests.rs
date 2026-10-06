@@ -20,12 +20,13 @@ fn terminal_v9_restore_rejects_a_stale_precommit_snapshot() -> Result<(), Box<dy
         &fixture.configuration().def,
         fixture.source(),
         fixture.closure().identity(),
+        Some(&crate::vm_lifecycle::checkpoint_store::test_support::test_ram_catalog_provider()),
     )?;
     let (node, target) = checkpoint.targets.iter().next().ok_or("no v9 target")?;
     let terminal_nodes = BTreeSet::from([node.clone()]);
     let precommit = target.snapshot.checkpoint().clone();
 
-    validate_terminal_v9_checkpoint(
+    validate_terminal_exact_checkpoint(
         &checkpoint,
         fixture.configuration(),
         &precommit,
@@ -35,7 +36,7 @@ fn terminal_v9_restore_rejects_a_stale_precommit_snapshot() -> Result<(), Box<dy
     let mut stale = precommit;
     stale.id = ContentHash::from_bytes(b"earlier terminal snapshot");
     assert!(
-        validate_terminal_v9_checkpoint(
+        validate_terminal_exact_checkpoint(
             &checkpoint,
             fixture.configuration(),
             &stale,

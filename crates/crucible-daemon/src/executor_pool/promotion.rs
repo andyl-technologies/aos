@@ -234,7 +234,8 @@ fn classify_restore_failure(
 
 fn classify_realization_failure(error: &QemuVmRealizationError) -> PromotionFailureClass {
     match error {
-        QemuVmRealizationError::ExecutorUnavailable { .. } => PromotionFailureClass::Retryable,
+        QemuVmRealizationError::ExecutorUnavailable { .. }
+        | QemuVmRealizationError::ModelCopy { .. } => PromotionFailureClass::Retryable,
         QemuVmRealizationError::Canceled { .. } => PromotionFailureClass::Canceled,
         QemuVmRealizationError::ReapQuarantined { .. }
         | QemuVmRealizationError::Store { .. }
@@ -779,16 +780,7 @@ fn retire_prepared_native_source<L, V>(
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
-    loop {
-        match prepared.retire_native_source() {
-            Ok(()) => return,
-            Err(error) if error.is_retryable() => {
-                increment(&shared.counters.promotion_retries);
-                thread::sleep(WORKER_RETRY_INTERVAL);
-            }
-            Err(_) => retain_forever(shared, prepared),
-        }
-    }
+    retire_promotion_native_source(shared, prepared.into_native_retirement());
 }
 
 fn retire_staged_native_source<L, V>(
@@ -798,14 +790,27 @@ fn retire_staged_native_source<L, V>(
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
+    retire_promotion_native_source(shared, staged.into_native_retirement());
+}
+
+fn retire_promotion_native_source<L, V>(
+    shared: &SharedExecutor<L, V>,
+    retirement: Option<crucible_api::ProductionExactCheckpointRetirement>,
+) where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    let Some(retirement) = retirement else {
+        return;
+    };
     loop {
-        match staged.retire_native_source() {
-            Ok(()) => return,
+        match crucible_api::retire_production_exact_checkpoint_catalog(&retirement) {
+            Ok(_) => return,
             Err(error) if error.is_retryable() => {
                 increment(&shared.counters.promotion_retries);
                 thread::sleep(WORKER_RETRY_INTERVAL);
             }
-            Err(_) => retain_forever(shared, staged),
+            Err(_) => retain_forever(shared, retirement),
         }
     }
 }

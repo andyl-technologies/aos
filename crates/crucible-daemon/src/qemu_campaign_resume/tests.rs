@@ -741,13 +741,24 @@ fn test_checkpoint_store() -> Arc<ExactCheckpointStore> {
         "resume-runner-checkpoints",
         directory.keep(),
     ));
-    Arc::new(ExactCheckpointStore::new(backend, 1024 * 1024).expect("resume checkpoint store"))
+    Arc::new(
+        ExactCheckpointStore::new(
+            backend,
+            1024 * 1024,
+            crucible_cas::ram::RamRetentionAuthority::new(Arc::new(MemoryRefBackend::new())),
+        )
+        .expect("resume checkpoint store")
+        .with_ram_root_resources(
+            crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+                .expect("finite component RAM-root credit"),
+        ),
+    )
 }
 
 fn checkpoint_id(label: &str) -> ExactCheckpointId {
     ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        5,
+        6,
         label.as_bytes(),
     ))
     .expect("exact checkpoint fixture")

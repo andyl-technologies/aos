@@ -4,6 +4,68 @@ use super::*;
 
 /// Host-I/O runtime used by the bounded async driver.
 pub trait QemuHostIoRuntime: Send {
+    /// Reserves host-resident storage before retaining authenticated manifest copies.
+    ///
+    /// The caller keeps the returned lease through every derived object's use.
+    /// This charges the original node service allocator and creates no new
+    /// capacity or guest-visible state.
+    ///
+    /// # Errors
+    /// Refuses absent production ownership, empty requests, or exhausted capacity.
+    #[cfg(target_os = "linux")]
+    fn reserve_fault_manifest_metadata(
+        &self,
+        _bytes: u64,
+    ) -> Result<crate::QemuFaultManifestMetadataLease, QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "reserve fault manifest metadata",
+            "runtime has no admitted node service allocator",
+        ))
+    }
+
+    /// Discharges RAM resources after process, source-worker, and borrower cleanup.
+    ///
+    /// # Errors
+    /// Returns an error while ownership or retained release remains uncertain.
+    fn retire_host_ram_after_cleanup(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Ok(())
+    }
+
+    /// Attaches an independently admitted live operation owner before execution.
+    ///
+    /// # Errors
+    /// Refuses runtimes that cannot retain the operational owner.
+    fn set_host_operation_supervisor(
+        &mut self,
+        _supervisor: crucible_linux_resource::host_supervision::HostOperationSupervisor,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "attach host operation supervisor",
+            "runtime has no live operational ownership",
+        ))
+    }
+
+    /// Returns live operational supervision outside modeled guest state.
+    ///
+    /// Scripted runtimes may omit this handle; production runtime construction
+    /// installs the execution owner's existing original-start supervisor.
+    fn host_operation_supervisor(
+        &self,
+    ) -> Option<&crucible_linux_resource::host_supervision::HostOperationSupervisor> {
+        None
+    }
+
+    /// Returns the existing node-local service allocator for qualification.
+    ///
+    /// The clone shares the actual registration's accounting; it grants no new
+    /// capacity. Runtimes without an admitted native owner return `None`.
+    #[cfg(any(test, feature = "test-support"))]
+    fn host_service_allocator_for_test(
+        &self,
+    ) -> Option<crucible_linux_resource::host_services::HostServiceAllocator> {
+        None
+    }
+
     /// Binds a scripted fixture's complete queue inventory to its World owner.
     ///
     /// This test-only seam creates no operational Source or native capability.
@@ -102,6 +164,23 @@ pub trait QemuHostIoRuntime: Send {
         Err(QemuAsyncDriverRuntimeError::new(
             "clone hot-fork host-I/O continuation",
             "this host-I/O runtime does not implement branch-private continuation cloning",
+        ))
+    }
+
+    /// Exercises the actual branch-private network or 9p reader mapping guard.
+    ///
+    /// # Errors
+    /// Refuses a runtime without the real owner, missing 9p attachment, or any
+    /// result other than the specific unchanged-source alias rejection.
+    #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+    fn probe_hot_fork_reader_alias_for_test(
+        &mut self,
+        _descriptor: std::os::fd::BorrowedFd<'_>,
+        _ninep: bool,
+    ) -> Result<crate::QemuNodeChannelError, crate::QemuNodeChannelError> {
+        Err(crate::QemuNodeChannelError::new(
+            "probe hot-fork reader alias",
+            "runtime has no actual host reader probe",
         ))
     }
 

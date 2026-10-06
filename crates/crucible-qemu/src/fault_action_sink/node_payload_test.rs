@@ -420,6 +420,81 @@ fn memory_service_rejects_latency_beyond_the_sim_tick_limit() {
     assert!(effect.validate().is_err());
 }
 
+fn mapped_memory_service_action(value: SignalValue) -> ResolvedBindingAction {
+    ResolvedBindingAction {
+        kind: BindingActionKind::UpsertPersistent,
+        binding: object_id("mapped-memory-latency"),
+        target: test_target(EffectKind::MemoryService),
+        phase: FaultPhase::Load,
+        effect: Arc::new(
+            EffectRequest::new(
+                crucible::model::EFFECT_SEMANTIC_VERSION,
+                EffectLifetime::Persistent,
+                EffectSpecification::Node(NodeEffectSpecification::MemoryService {
+                    latency_picoseconds: 8,
+                    bandwidth_bytes_per_second: None,
+                    operations_per_second: None,
+                    sharing_scope: crucible::model::MemoryServiceScope::Range,
+                }),
+            )
+            .unwrap_or_else(|error| panic!("concrete native service template: {error}")),
+        ),
+        mapping_output: Arc::new(ResolvedMappingOutput::Parameter {
+            parameter: MappedEffectParameter::DurationNanos,
+            value,
+        }),
+        mapped_digest: ContentHash { bytes: [1; 32] },
+        transition_sequence: 1,
+        opportunity: None,
+        coordinate: FaultCoordinate {
+            virtual_ticks: 1,
+            retired_instructions: Some(1),
+        },
+        cause: BindingActionCause::Signal,
+        expected_precondition: None,
+    }
+}
+
+#[test]
+fn mapped_memory_latency_executes_the_resolved_value_and_retains_its_identity() {
+    for nanoseconds in [1, 4, i64::MAX as u64 / crucible::SIM_TICKS_PER_NS] {
+        let action = mapped_memory_service_action(SignalValue::DurationNanos(nanoseconds));
+        let encoded = encode_node_action(&action, [3; 32])
+            .unwrap_or_else(|error| panic!("checked mapped service payload: {error}"));
+        assert_eq!(encoded.payload.action_hash, action.id().bytes);
+        assert_eq!(
+            encoded.payload.fields[0],
+            NodeFaultFieldV1::u64(1, nanoseconds * crucible::SIM_TICKS_PER_NS)
+        );
+        let bytes = encoded
+            .payload
+            .encode()
+            .unwrap_or_else(|error| panic!("canonical portable service payload: {error}"));
+        assert_eq!(NodeFaultPayloadV1::decode(&bytes), Ok(encoded.payload));
+    }
+}
+
+#[test]
+fn mapped_memory_latency_refuses_invalid_units_and_sim_time_overflow_before_encoding() {
+    for value in [
+        SignalValue::I64(1),
+        SignalValue::DurationNanos(0),
+        SignalValue::DurationNanos(i64::MAX as u64 / crucible::SIM_TICKS_PER_NS + 1),
+        SignalValue::DurationNanos(u64::MAX),
+    ] {
+        let action = mapped_memory_service_action(value);
+        assert!(matches!(
+            encode_node_action(&action, [3; 32]),
+            Err(NodeFaultPayloadError::FieldValue { tag: 1 })
+        ));
+    }
+    let mut removal = mapped_memory_service_action(SignalValue::DurationNanos(u64::MAX));
+    removal.kind = BindingActionKind::RemovePersistent;
+    let encoded = encode_node_action(&removal, [3; 32])
+        .unwrap_or_else(|error| panic!("removal has no latency effect: {error}"));
+    assert!(encoded.payload.fields.is_empty());
+}
+
 #[test]
 fn memory_bit_flip_rejects_authored_length_before_expanding_mask() {
     let limits = FaultResourceLimits::default();

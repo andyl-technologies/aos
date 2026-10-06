@@ -243,6 +243,10 @@ fn patched_qapi_commands_have_schema_owners_or_qapi_only_contracts() {
         ("crucible-checkpoint-commit", "crucible.qemu.checkpoint-qmp"),
         ("crucible-checkpoint-abort", "crucible.qemu.checkpoint-qmp"),
         (
+            "crucible-checkpoint-prepare-topology",
+            "crucible.qemu.checkpoint-qmp",
+        ),
+        (
             "query-crucible-checkpoint-epoch",
             "crucible.qemu.checkpoint-qmp",
         ),
@@ -250,6 +254,11 @@ fn patched_qapi_commands_have_schema_owners_or_qapi_only_contracts() {
             "crucible-checkpoint-restore",
             "crucible.qemu.checkpoint-qmp",
         ),
+        (
+            "crucible-hot-fork-child-ram",
+            "crucible.qemu.hot-fork.child-ram",
+        ),
+        ("query-crucible-paused-cpu", "crucible.qemu.paused-cpu"),
     ];
 
     // These additions have no independent schema-version field. QAPI owns
@@ -286,4 +295,19 @@ fn patched_qapi_commands_have_schema_owners_or_qapi_only_contracts() {
             "missing QMP schema owner {schema}"
         );
     }
+}
+
+#[test]
+fn paused_cpu_schema_has_an_exact_current_owner() {
+    let registry =
+        include_str!("../../../../docs/rfcs/0020-crucible-campaigns/schema-registry.tsv");
+    let current = format!(
+        "crucible.qemu.paused-cpu\t{}\tcrucible-qemu::qmp::paused_cpu\tprocess-protocol-message\tgate:abi-conformance",
+        crucible_qemu::QMP_PAUSED_CPU_SCHEMA_VERSION
+    );
+    let rows = registry
+        .lines()
+        .filter(|line| line.starts_with("crucible.qemu.paused-cpu\t"))
+        .collect::<Vec<_>>();
+    assert_eq!(rows, vec![current.as_str()]);
 }

@@ -23,7 +23,8 @@ crucible-ram = { path = "../crucible-ram" }
 crucible-device = { path = "../crucible-device" }
 crucible-shmem = { path = "../crucible-shmem", optional = true }
 crucible-protocol = { path = "../crucible-protocol" }
-regex = { workspace = true }
+regex-syntax = { workspace = true }
+regex-automata = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -31,6 +32,7 @@ toml = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+regex = { workspace = true }
 crucible-shmem = { path = "../crucible-shmem" }
 crucible-harness = { path = "../crucible-harness" }
 

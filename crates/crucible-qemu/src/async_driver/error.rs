@@ -16,6 +16,7 @@ pub struct QemuAsyncDriverRuntimeError {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum QemuAsyncDriverRuntimeErrorDetail {
+    HostSupervision(crucible_linux_resource::host_supervision::HostSupervisionError),
     #[default]
     Message,
     FaultResultStorage(u32, u32),
@@ -24,6 +25,30 @@ enum QemuAsyncDriverRuntimeErrorDetail {
 }
 
 impl QemuAsyncDriverRuntimeError {
+    /// Retains a typed host operational deadline, cancellation, or ownership failure.
+    #[must_use]
+    pub fn operational_supervision(
+        operation: &'static str,
+        source: crucible_linux_resource::host_supervision::HostSupervisionError,
+    ) -> Self {
+        Self {
+            operation,
+            message: source.to_string(),
+            detail: QemuAsyncDriverRuntimeErrorDetail::HostSupervision(source),
+        }
+    }
+
+    /// Returns the host operational failure independently of guest verdicts.
+    #[must_use]
+    pub const fn operational_supervision_source(
+        &self,
+    ) -> Option<crucible_linux_resource::host_supervision::HostSupervisionError> {
+        match self.detail {
+            QemuAsyncDriverRuntimeErrorDetail::HostSupervision(source) => Some(source),
+            _ => None,
+        }
+    }
+
     /// Creates a runtime adapter error.
     #[must_use]
     pub fn new(operation: &'static str, message: impl Into<String>) -> Self {

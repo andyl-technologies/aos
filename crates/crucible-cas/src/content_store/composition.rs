@@ -32,6 +32,10 @@ impl ImmutableBlobBackend for VerifiedStore {
         &self.name
     }
 
+    fn metadata_resources(&self) -> Result<Arc<dyn super::StorePhysicalQuotaGuard>, StoreError> {
+        self.child.metadata_resources()
+    }
+
     fn capabilities(&self) -> BackendCapabilities {
         self.child.capabilities()
     }
@@ -99,6 +103,10 @@ struct RoutedObjectAdmission {
 impl ImmutableBlobBackend for RoutedStore {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn metadata_resources(&self) -> Result<Arc<dyn StorePhysicalQuotaGuard>, StoreError> {
+        common_metadata_resources(self.routes.values().map(Arc::as_ref))
     }
 
     fn capabilities(&self) -> BackendCapabilities {
@@ -207,6 +215,10 @@ impl DurabilityPolicyStore {
 impl ImmutableBlobBackend for DurabilityPolicyStore {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn metadata_resources(&self) -> Result<Arc<dyn super::StorePhysicalQuotaGuard>, StoreError> {
+        self.child.metadata_resources()
     }
 
     fn capabilities(&self) -> BackendCapabilities {
@@ -332,6 +344,15 @@ impl ImmutableBlobBackend for TieredStore {
         &self.name
     }
 
+    fn metadata_resources(&self) -> Result<Arc<dyn StorePhysicalQuotaGuard>, StoreError> {
+        common_metadata_resources(
+            self.tiers
+                .iter()
+                .filter(|tier| tier.readable)
+                .map(|tier| tier.backend.as_ref()),
+        )
+    }
+
     fn capabilities(&self) -> BackendCapabilities {
         let writable = self.tiers.iter().filter(|tier| tier.writable);
         let mut capabilities = BackendCapabilities {
@@ -450,6 +471,10 @@ impl ReadThroughStore {
 impl ImmutableBlobBackend for ReadThroughStore {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn metadata_resources(&self) -> Result<Arc<dyn StorePhysicalQuotaGuard>, StoreError> {
+        common_metadata_resources([self.cache.as_ref(), self.source.as_ref()])
     }
 
     fn capabilities(&self) -> BackendCapabilities {
@@ -686,6 +711,10 @@ impl ImmutableBlobBackend for MetricsStore {
         &self.name
     }
 
+    fn metadata_resources(&self) -> Result<Arc<dyn super::StorePhysicalQuotaGuard>, StoreError> {
+        self.child.metadata_resources()
+    }
+
     fn capabilities(&self) -> BackendCapabilities {
         self.child.capabilities()
     }
@@ -797,6 +826,10 @@ impl ImmutableBlobBackend for WriteThroughStore {
         &self.name
     }
 
+    fn metadata_resources(&self) -> Result<Arc<dyn StorePhysicalQuotaGuard>, StoreError> {
+        common_metadata_resources(self.children.iter().map(Arc::as_ref))
+    }
+
     fn capabilities(&self) -> BackendCapabilities {
         let mut capabilities = self.children[0].capabilities();
         for child in &self.children[1..] {
@@ -851,4 +884,25 @@ impl ImmutableBlobBackend for WriteThroughStore {
         }
         Ok(PutReceipt { id, placements })
     }
+}
+
+/// Projects a shared original owner only when every possible read path agrees.
+pub(super) fn common_metadata_resources<'a>(
+    children: impl IntoIterator<Item = &'a dyn ImmutableBlobBackend>,
+) -> Result<Arc<dyn StorePhysicalQuotaGuard>, StoreError> {
+    let mut children = children.into_iter();
+    let authority = children
+        .next()
+        .ok_or(StoreError::Unsupported {
+            capability: "decoded-metadata-resources",
+        })?
+        .metadata_resources()?;
+    for child in children {
+        if !Arc::ptr_eq(&authority, &child.metadata_resources()?) {
+            return Err(StoreError::Unsupported {
+                capability: "shared-decoded-metadata-resources",
+            });
+        }
+    }
+    Ok(authority)
 }

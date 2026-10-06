@@ -533,7 +533,7 @@ fn attempt_start_verifier_seals_the_prefix_before_final_drain() {
     let input = non_genesis_fresh_runner_input();
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        5,
+        6,
         b"ordinary-attempt-start-proof",
     ))
     .expect("resume checkpoint");
@@ -582,7 +582,7 @@ fn attempt_start_verifier_rejects_unsupported_override_before_factory() {
     let expected = input.start().configuration().id();
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        5,
+        6,
         b"unsupported-override-start",
     ))
     .expect("resume checkpoint");

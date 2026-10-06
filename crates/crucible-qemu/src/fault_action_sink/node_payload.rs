@@ -2,11 +2,12 @@
 
 use crucible::model::{
     AcceleratorTransition, BindingActionCause, BindingActionKind, ClockMonotonicityPolicy,
-    ClockMutation, ClockOverdueTimerPolicy, ContentHash, CpuServiceDiscipline, EffectSpecification,
-    FaultObjectId, FaultPhase, InstructionMutation, InterruptMutation, MemoryAccessMutation,
-    MemoryAddressSpace, MemoryEccKind, MemoryRegionKind, NodeEffectSpecification, NodeHangScope,
-    NodeLifecycleTransition, NodeStatePolicy, OpportunityPayload, RegisterMutation,
-    ResolvedBindingAction, ResolvedFaultTarget, VcpuState,
+    ClockMutation, ClockOverdueTimerPolicy, ContentHash, CpuServiceDiscipline, EffectKind,
+    EffectSpecification, FaultObjectId, FaultPhase, InstructionMutation, InterruptMutation,
+    MappedEffectParameter, MemoryAccessMutation, MemoryAddressSpace, MemoryEccKind,
+    MemoryRegionKind, NodeEffectSpecification, NodeHangScope, NodeLifecycleTransition,
+    NodeStatePolicy, OpportunityPayload, RegisterMutation, ResolvedBindingAction,
+    ResolvedFaultTarget, ResolvedMappingOutput, SignalValue, VcpuState,
 };
 use crucible_shmem::{
     FaultCommandKind, NODE_FAULT_POLICY_JSON_MAGIC_V1, NodeFaultFieldV1, NodeFaultOperationV1,
@@ -40,12 +41,13 @@ pub(super) fn encode_node_action(
         }
         BindingActionKind::Apply => NodeFaultOperationV1::Apply,
     };
-    let fields = payload_fields(
+    let mut fields = payload_fields(
         operation,
         action.effect.specification(),
         &action.cause,
         &mut target_fields,
     )?;
+    materialize_memory_latency(action, operation, &mut fields)?;
     let payload = NodeFaultPayloadV1 {
         command_kind,
         operation,
@@ -67,6 +69,71 @@ pub(super) fn encode_node_action(
         command_kind,
         payload,
     })
+}
+
+/// Applies an authored nanosecond mapping to the native picosecond contract.
+///
+/// The mapped output is part of the resolved action's authenticated identity.
+/// Encoding the template alone would record a changing latency while executing
+/// a constant native rule. Removal carries no parameters and preserves its
+/// existing wire contract.
+fn materialize_memory_latency(
+    action: &ResolvedBindingAction,
+    operation: NodeFaultOperationV1,
+    fields: &mut [NodeFaultFieldV1],
+) -> Result<(), NodeFaultPayloadError> {
+    if action.effect.kind() != EffectKind::MemoryService
+        || operation == NodeFaultOperationV1::Remove
+    {
+        return Ok(());
+    }
+    let picoseconds = materialized_memory_service_latency(action)?;
+    let field_error = || NodeFaultPayloadError::FieldValue {
+        tag: node_fault_field::P1,
+    };
+    let field = fields
+        .iter_mut()
+        .find(|field| field.tag == node_fault_field::P1)
+        .ok_or_else(field_error)?;
+    *field = NodeFaultFieldV1::u64(node_fault_field::P1, picoseconds);
+    Ok(())
+}
+
+/// Resolves the same configured latency for command encoding and event admission.
+pub(crate) fn materialized_memory_service_latency(
+    action: &ResolvedBindingAction,
+) -> Result<u64, NodeFaultPayloadError> {
+    let field_error = || NodeFaultPayloadError::FieldValue {
+        tag: node_fault_field::P1,
+    };
+    let EffectSpecification::Node(NodeEffectSpecification::MemoryService {
+        latency_picoseconds,
+        bandwidth_bytes_per_second,
+        operations_per_second,
+        ..
+    }) = action.effect.specification()
+    else {
+        return Err(field_error());
+    };
+    let picoseconds = match action.mapping_output.as_ref() {
+        ResolvedMappingOutput::Parameter {
+            parameter: MappedEffectParameter::DurationNanos,
+            value,
+        } => {
+            let SignalValue::DurationNanos(nanoseconds) = value else {
+                return Err(field_error());
+            };
+            nanoseconds
+                .checked_mul(crucible::SIM_TICKS_PER_NS)
+                .filter(|ticks| *ticks <= i64::MAX as u64)
+                .ok_or_else(field_error)?
+        }
+        _ => *latency_picoseconds,
+    };
+    if picoseconds == 0 && bandwidth_bytes_per_second.is_none() && operations_per_second.is_none() {
+        return Err(field_error());
+    }
+    Ok(picoseconds)
 }
 
 /// Identifies state-machine commands represented by one replaceable QEMU rule.

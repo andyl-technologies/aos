@@ -23,10 +23,10 @@ use super::{
     empty_node, logical,
 };
 
-const PAGE_SCHEMA: &str = "crucible.ram.page";
-const TREE_SCHEMA: &str = "crucible.ram.tree";
-const ROOT_SCHEMA: &str = "crucible.ram.root";
-const SCHEMA_VERSION: u32 = 1;
+pub(super) const PAGE_SCHEMA: &str = "crucible.ram.page";
+pub(super) const TREE_SCHEMA: &str = "crucible.ram.tree";
+pub(super) const ROOT_SCHEMA: &str = "crucible.ram.root";
+pub(super) const SCHEMA_VERSION: u32 = 1;
 const MAX_CAPTURE_BATCH_OBJECTS: usize = 64;
 const MAX_CAPTURE_BATCH_BYTES: u64 = 4 * 1024 * 1024;
 
@@ -159,17 +159,27 @@ impl RamStore {
         if id.schema_version() != SCHEMA_VERSION {
             return Err(RamStoreError::Invalid("RAM storage schema"));
         }
+        // Page and binary-tree lookups run under bounded page-in scratch. A
+        // malformed small-object identity must not borrow the root decoder's
+        // larger catalog allocation merely by declaring a large body/table.
+        let (maximum_bytes, maximum_children) = match id.kind() {
+            ObjectKind::ExactManifest => (MAX_RAM_OBJECT_BYTES, Limits::default().max_regions),
+            ObjectKind::RamTree => (4096, 2),
+            ObjectKind::RamExtent => (8192, 0),
+            _ => return Err(RamStoreError::Invalid("RAM object kind")),
+        };
         (work.boundary)()?;
         let source = self.backend.read(id, None)?;
-        if source.logical_length() > MAX_RAM_OBJECT_BYTES {
+        if source.logical_length() > maximum_bytes {
             return Err(RamStoreError::Limit("single canonical object"));
         }
         work.visit(source.logical_length())?;
-        let bytes = source.read_all(MAX_RAM_OBJECT_BYTES)?;
+        let bytes = source.read_all(maximum_bytes)?;
         if !id.authenticates(&bytes) {
             return Err(StoreError::Corrupt { id }.into());
         }
-        let envelope = ContentEnvelope::from_canonical_bytes(&bytes)?;
+        let envelope =
+            ContentEnvelope::from_canonical_bytes_with_child_limit(&bytes, maximum_children)?;
         if envelope.schema_version() != SCHEMA_VERSION {
             return Err(RamStoreError::Invalid("RAM envelope schema"));
         }

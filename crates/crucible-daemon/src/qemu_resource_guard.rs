@@ -67,6 +67,19 @@ pub trait QemuAttemptHostResourceOwner {
     /// Independent cancellation capability registered with the supervisor.
     type CancellationSignal: QemuAttemptCancellationSignal;
 
+    /// Lends monotonic kernel control tied to this physical owner's retirement.
+    ///
+    /// # Errors
+    /// Returns an operational error when live pinned authority cannot be lent.
+    /// Non-native fixture guards return `None`; production admission requires
+    /// the actual controller before granting realized RAM resources.
+    fn native_resource_controller(
+        &mut self,
+    ) -> Result<Option<crucible_qemu::LinuxQemuNativeResourceController>, QemuVmRealizationError>
+    {
+        Ok(None)
+    }
+
     /// Returns the exact resource basis installed by this owner.
     #[must_use]
     fn resource_limits(&self) -> AttemptResourceLimits;
@@ -393,6 +406,13 @@ impl QemuAttemptHostResourceOwner for LinuxQemuAttemptHostResourceOwner {
         self.resources
     }
 
+    fn native_resource_controller(
+        &mut self,
+    ) -> Result<Option<crucible_qemu::LinuxQemuNativeResourceController>, QemuVmRealizationError>
+    {
+        self.host.native_resource_controller().map(Some)
+    }
+
     fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {
         self.host.process_contract()
     }
@@ -437,10 +457,8 @@ impl QemuHotForkChildProcessOwner for LinuxQemuAttemptHostResourceOwner {
 }
 
 mod generation_resource;
-mod retained_workspace;
 
 pub use generation_resource::*;
-pub(crate) use retained_workspace::RetainedLinuxQemuAttemptWorkspace;
 
 /// Factory adding signal-driven cancellation and quantum accounting to a host owner.
 pub struct ComposedQemuAttemptResourceGuardFactory<H> {
@@ -657,6 +675,13 @@ impl<H> QemuAttemptProcessResourceGuard for ComposedQemuAttemptResourceGuard<H>
 where
     H: QemuAttemptHostResourceOwner,
 {
+    fn native_resource_controller(
+        &mut self,
+    ) -> Result<Option<crucible_qemu::LinuxQemuNativeResourceController>, QemuVmRealizationError>
+    {
+        self.host.native_resource_controller()
+    }
+
     fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {
         self.host.child_process_contract()
     }
@@ -713,9 +738,8 @@ fn attempt_operational_error(
     error: QemuVmRealizationError,
 ) -> LifecycleApiError {
     let class = match &error {
-        QemuVmRealizationError::ExecutorUnavailable { .. } => {
-            SchedulerOperationalFailureClass::Retryable
-        }
+        QemuVmRealizationError::ExecutorUnavailable { .. }
+        | QemuVmRealizationError::ModelCopy { .. } => SchedulerOperationalFailureClass::Retryable,
         QemuVmRealizationError::Canceled { .. } => SchedulerOperationalFailureClass::Canceled,
         QemuVmRealizationError::ReapQuarantined { .. }
         | QemuVmRealizationError::Store { .. }

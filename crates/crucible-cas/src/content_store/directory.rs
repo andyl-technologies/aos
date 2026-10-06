@@ -71,6 +71,58 @@ pub struct DirectoryBlobBackend {
 }
 
 impl DirectoryBlobBackend {
+    /// Creates a loose-object facade with retained host-resource and quota custody.
+    ///
+    /// Deferred handles pin descriptor credits, and readers retain separately
+    /// admitted authentication scratch until their final close.
+    ///
+    /// # Errors
+    /// Refuses unavailable quota authority or insufficient original resources.
+    pub fn new_with_physical_quota(
+        name: impl Into<String>,
+        root: impl Into<PathBuf>,
+        guard: Arc<dyn StorePhysicalQuotaGuard>,
+    ) -> Result<Arc<dyn ImmutableBlobBackend>, StoreError> {
+        let name = name.into();
+        let root = root.into();
+        let costs = Self::quota_resource_costs(&root)?;
+        let resources = guard.reserve_resources(
+            0,
+            (std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>()) as u64
+                + root.capacity() as u64
+                + name.capacity() as u64,
+        )?;
+        let child = Arc::new(Self::new(name.clone(), root));
+        let store =
+            super::physical_quota::PhysicalQuotaStore::new(name, child.clone(), child, guard)?
+                .with_directory_costs(costs)
+                .with_child_resources(resources);
+        Ok(Arc::new(store))
+    }
+
+    pub(super) fn quota_resource_costs(
+        root: &Path,
+    ) -> Result<super::physical_quota::DirectoryResourceCosts, StoreError> {
+        let path_bytes = u64::try_from(root.as_os_str().len())
+            .map_err(|_| StoreError::Quota)?
+            .checked_add(256)
+            .ok_or(StoreError::Quota)?;
+        // Eight concurrent path/name buffers, each allowing geometric capacity
+        // growth; two authentication/copy buffers may overlap during a put.
+        let operation_bytes = path_bytes
+            .checked_mul(32)
+            .and_then(|bytes| bytes.checked_add(2 * 64 * 1024))
+            .ok_or(StoreError::Quota)?;
+        Ok(super::physical_quota::DirectoryResourceCosts {
+            source_bytes: (std::mem::size_of::<DirectoryBlobSource>()
+                + std::mem::size_of::<File>()
+                + 4 * std::mem::size_of::<usize>()) as u64
+                + operation_bytes,
+            reader_bytes: std::mem::size_of::<AuthenticatingFileReader>() as u64 + 64 * 1024,
+            operation_bytes,
+        })
+    }
+
     /// Creates a directory backend rooted at `root`.
     #[must_use]
     pub fn new(name: impl Into<String>, root: impl Into<PathBuf>) -> Self {

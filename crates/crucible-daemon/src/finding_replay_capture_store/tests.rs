@@ -180,3 +180,116 @@ fn load_rejects_a_manifest_with_a_missing_chunk() {
         FindingReplayCaptureStoreError::Repository(_)
     ));
 }
+
+#[test]
+fn publication_handoff_keeps_actual_ref_inventory_excluded_until_final_close() {
+    use crucible_cas::content_store::RefStoreAdmin;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let temporary = tempfile::tempdir().expect("actual publication directory");
+    let refs = Arc::new(DirectoryRefBackend::new(temporary.path().join("refs")));
+    let executor = CampaignExecutorStore::new(Arc::new(CampaignRepository::new(
+        Arc::new(DirectoryBlobBackend::new(
+            "publication-handoff",
+            temporary.path().join("objects"),
+        )),
+        refs.clone(),
+    )));
+    let publication = executor
+        .acquire_finding_replay_publication_guard()
+        .expect("actual shared inventory exclusion");
+    let retained = publication.into_gc_exclusion();
+    let (started, observed_start) = mpsc::channel();
+    let (finished, observed_finish) = mpsc::channel();
+    let inventory = std::thread::spawn(move || {
+        started.send(()).expect("notify actual inventory attempt");
+        let _exclusive = refs
+            .acquire_ref_inventory_fence()
+            .expect("actual exclusive ref inventory");
+        finished.send(()).expect("notify acquired inventory");
+    });
+
+    observed_start
+        .recv_timeout(Duration::from_secs(5))
+        .expect("inventory thread starts");
+    assert!(
+        matches!(
+            observed_finish.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ),
+        "converting publication authority must not open an inventory gap"
+    );
+    drop(retained);
+
+    observed_finish
+        .recv_timeout(Duration::from_secs(5))
+        .expect("final close permits real inventory");
+    inventory.join().expect("bounded inventory worker joined");
+}
+
+#[test]
+fn original_publication_cancellation_preserves_partial_objects_without_manifest_success() {
+    use crucible_linux_resource::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+
+    let directory = tempfile::tempdir().expect("capture publication directory");
+    let executor = executor_store(directory.path());
+    let bytes = b"actual immutable partial capture".to_vec();
+    let prepared = FindingReplayCaptureStore::prepare_set([
+        FindingReplayCaptureInput::Complete {
+            content_hash: ContentHash::from_bytes(&bytes),
+            bytes,
+        },
+        incomplete(),
+        incomplete(),
+        incomplete(),
+    ])
+    .expect("bounded capture candidate");
+    let publication = executor
+        .acquire_finding_replay_publication_guard()
+        .expect("actual GC exclusion");
+    let supervisor = HostOperationSupervisor::new(
+        HostOperationBudgets::default(),
+        Some(std::time::Duration::from_secs(30)),
+    )
+    .expect("explicit original component scope");
+    let operation = supervisor
+        .begin(HostOperationClass::CheckpointPublication)
+        .expect("original publication operation");
+    let mut boundaries = 0;
+    let error =
+        FindingReplayCaptureStore::publish_set_with_boundary(&publication, &prepared, &mut || {
+            boundaries += 1;
+            if boundaries == 3 {
+                supervisor
+                    .cancel()
+                    .expect("cancel original scope after first chunk placement");
+            }
+            operation
+                .wait_slice()
+                .map(|_| ())
+                .map_err(FindingReplayCaptureStoreError::from)
+        })
+        .expect_err("post-write cancellation refuses manifest publication success");
+    assert!(matches!(
+        error,
+        FindingReplayCaptureStoreError::Supervision(_)
+    ));
+    for id in prepared.chunks.keys() {
+        publication
+            .read_finding_replay_capture_object(*id)
+            .expect("placed child remains immutable");
+    }
+    for id in prepared.manifests.keys() {
+        assert!(
+            publication.read_finding_replay_capture_object(*id).is_err(),
+            "complete manifest must remain unpublished"
+        );
+    }
+    assert!(
+        operation.wait_slice().is_err(),
+        "retry cannot renew the canceled original cap"
+    );
+}

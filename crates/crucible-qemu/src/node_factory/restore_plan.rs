@@ -26,53 +26,56 @@ pub(crate) struct QemuNodeRestorePlan<'a> {
     pub(super) exact_checkpoint: QemuExactCheckpointRestorePlan<'a>,
 }
 
-/// Borrowed descriptor set for an exact direct-plus-delta restore.
+/// Borrowed immutable root metadata, device state, and cancellation inputs.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct QemuExactCheckpointRestoreDescriptors<'a> {
-    pub(super) ram: &'a [BorrowedFd<'a>],
+    pub(super) root: BorrowedFd<'a>,
     pub(super) device: BorrowedFd<'a>,
     pub(super) cancellation: BorrowedFd<'a>,
 }
 
 impl<'a> QemuExactCheckpointRestoreDescriptors<'a> {
-    /// Binds ordered RAM, final device-state, and cancellation descriptors.
+    /// Binds immutable root metadata, device state, and cancellation descriptors.
     #[must_use]
     pub(crate) const fn new(
-        ram: &'a [BorrowedFd<'a>],
+        root: BorrowedFd<'a>,
         device: BorrowedFd<'a>,
         cancellation: BorrowedFd<'a>,
     ) -> Self {
         Self {
-            ram,
+            root,
             device,
             cancellation,
         }
     }
 
-    pub(crate) fn validate_immutable(self, expected_ram_layers: usize) -> Result<(), io::Error> {
-        validate_immutable_restore_inputs(self.ram, self.device, expected_ram_layers)
+    pub(crate) fn validate_immutable(self) -> Result<(), io::Error> {
+        validate_immutable_restore_inputs(self.root, self.device)
     }
 }
 
 pub(crate) fn validate_immutable_restore_inputs(
-    ram: &[BorrowedFd<'_>],
+    root: BorrowedFd<'_>,
     device: BorrowedFd<'_>,
-    expected_ram_layers: usize,
 ) -> Result<(), io::Error> {
-    if expected_ram_layers != ram.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "RAM layer descriptor count differs from the restore request",
-        ));
-    }
     let required = SealFlags::SEAL | SealFlags::SHRINK | SealFlags::GROW | SealFlags::WRITE;
-    for descriptor in ram.iter().copied().chain(std::iter::once(device)) {
+    for descriptor in [root, device] {
         if !fcntl_get_seals(descriptor)?.contains(required) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                "exact checkpoint restore input is not an immutable sealed file",
+                "exact checkpoint input is not an immutable sealed file",
             ));
         }
+    }
+    let bytes = rustix::fs::fstat(root)?.st_size;
+    if bytes <= 0
+        || u64::try_from(bytes)
+            .is_ok_and(|bytes| bytes > crucible_ram::Limits::default().max_record_bytes as u64)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "RAM root metadata exceeds its bound",
+        ));
     }
     Ok(())
 }
@@ -81,6 +84,7 @@ pub(super) struct QemuExactCheckpointRestorePlan<'a> {
     pub(super) request: &'a crate::QmpCheckpointRestoreRequest,
     pub(super) descriptors: QemuExactCheckpointRestoreDescriptors<'a>,
     pub(super) topology: ContentHash,
+    pub(super) source: &'a crate::QemuPagedRamRestoreSource,
 }
 
 impl<'a> QemuNodeCheckpointAssertion<'a> {
@@ -129,6 +133,7 @@ impl<'a> QemuNodeRestorePlan<'a> {
         request: &'a crate::QmpCheckpointRestoreRequest,
         descriptors: QemuExactCheckpointRestoreDescriptors<'a>,
         topology: ContentHash,
+        source: &'a crate::QemuPagedRamRestoreSource,
     ) -> Self {
         Self {
             checkpoint: snapshot.checkpoint(),
@@ -138,8 +143,13 @@ impl<'a> QemuNodeRestorePlan<'a> {
                 request,
                 descriptors,
                 topology,
+                source,
             },
         }
+    }
+
+    pub(crate) fn ram_source(&self) -> &crate::QemuPagedRamRestoreSource {
+        self.exact_checkpoint.source
     }
 
     pub(crate) const fn exact_checkpoint_cancellation(&self) -> BorrowedFd<'a> {
@@ -147,9 +157,7 @@ impl<'a> QemuNodeRestorePlan<'a> {
     }
 
     pub(crate) fn validate_immutable_descriptors(&self) -> Result<(), io::Error> {
-        self.exact_checkpoint
-            .descriptors
-            .validate_immutable(self.exact_checkpoint.request.layers().len())
+        self.exact_checkpoint.descriptors.validate_immutable()
     }
 }
 
@@ -167,11 +175,13 @@ mod tests {
         let sealed = input.finish()?;
         let unsealed = tempfile::tempfile()?;
         unsealed.set_len(1)?;
-        let ram = [sealed.as_fd()];
-        let descriptors =
-            QemuExactCheckpointRestoreDescriptors::new(&ram, unsealed.as_fd(), sealed.as_fd());
+        let descriptors = QemuExactCheckpointRestoreDescriptors::new(
+            sealed.as_fd(),
+            unsealed.as_fd(),
+            sealed.as_fd(),
+        );
 
-        assert!(descriptors.validate_immutable(1).is_err());
+        assert!(descriptors.validate_immutable().is_err());
         Ok(())
     }
 }

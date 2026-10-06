@@ -1,6 +1,7 @@
 //! SPDX-License-Identifier: MIT OR Apache-2.0
 //! Exercises canonical format, persistent ownership, independent oracles, and epochs.
 
+// crucible-lint: allow panic-shortcut -- these test-only panic shortcuts identify the exact failed fixture or invariant.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use crucible_ram::{

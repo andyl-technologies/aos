@@ -266,3 +266,94 @@ fn plugin_args_validate_slot_against_node_count() {
         })
     );
 }
+
+#[test]
+fn independent_pager_launch_requires_complete_nonaliasing_fresh_authority() {
+    let base = "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=42,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,shmemfd=4,wakefd=5,whitebox=off,coverage=off";
+    let authority = format!(
+        "ram_control_fd=9,ram_control_session={},ram_control_daemon={},ram_control_owner={},ram_control_node={},ram_control_owner_generation=42,ram_control_arena_generation=7,ram_control_template=0",
+        "44".repeat(32),
+        "11".repeat(32),
+        "22".repeat(32),
+        "33".repeat(32)
+    );
+    let parsed = PluginArgs::parse(&format!("{base},{authority}")).unwrap();
+    let control = parsed.ram_control().unwrap();
+    assert_eq!(control.descriptor, 9);
+    assert_eq!(control.target.owner_generation, 42);
+    assert_eq!(control.target.arena_generation, 7);
+    for invalid in [
+        authority.replace("ram_control_fd=9", "ram_control_fd=3"),
+        authority.replace("ram_control_fd=9", "ram_control_fd=4"),
+        authority.replace(
+            "ram_control_owner_generation=42",
+            "ram_control_owner_generation=042",
+        ),
+        authority.replace(
+            "ram_control_arena_generation=7",
+            "ram_control_arena_generation=0",
+        ),
+        authority.replace("ram_control_template=0", "ram_control_template=true"),
+        "ram_control_fd=9".to_owned(),
+    ] {
+        assert!(PluginArgs::parse(&format!("{base},{invalid}")).is_err());
+    }
+}
+
+#[test]
+fn ram_resource_envelope_is_complete_exact_and_independent_of_placement() {
+    let base = "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1,storage_completed_history_gaps=1";
+    let resources = "ram_metadata_budget=8192,ram_resident_peak=32768,ram_backing_peak=65536,ram_metadata_peak=8192,ram_staging_peak=4096,ram_io_slots=1,ram_cpu_slots=1,ram_task_slots=3,ram_fd_slots=7";
+    let args = PluginArgs::parse(&format!("{base},{resources}")).unwrap();
+    let envelope = args.ram_resources().unwrap();
+    assert_eq!(envelope.resident_peak_bytes, 32768);
+    assert_eq!(envelope.backing_peak_bytes, 65536);
+    assert_eq!(envelope.metadata_bytes, args.ram_metadata_budget().unwrap());
+    assert_eq!(envelope.paging_io_slots, 1);
+    for invalid in [
+        resources.replace(",ram_fd_slots=7", ""),
+        resources.replace("ram_io_slots=1", "ram_io_slots=01"),
+        resources.replace("ram_metadata_peak=8192", "ram_metadata_peak=4096"),
+        resources.replace(
+            "ram_resident_peak=32768",
+            "ram_resident_peak=18446744073709551616",
+        ),
+    ] {
+        assert!(PluginArgs::parse(&format!("{base},{invalid}")).is_err());
+    }
+}
+
+#[test]
+fn private_spill_requires_canonical_separate_nonaliasing_quota() {
+    let base = "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=42,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,shmemfd=4,wakefd=5";
+    let authority = format!(
+        "ram_control_fd=9,ram_control_session={},ram_control_daemon={},ram_control_owner={},ram_control_node={},ram_control_owner_generation=42,ram_control_arena_generation=7,ram_control_template=0",
+        "44".repeat(32),
+        "11".repeat(32),
+        "22".repeat(32),
+        "33".repeat(32)
+    );
+    let resources = "ram_resident_peak=1024,ram_backing_peak=2048,ram_metadata_peak=256,ram_staging_peak=128,ram_io_slots=1,ram_cpu_slots=1,ram_task_slots=16,ram_fd_slots=32,ram_metadata_budget=256";
+    let prefix = format!("{base},{authority},{resources}");
+    let parsed =
+        PluginArgs::parse(&format!("{prefix},ram_spill_fd=11,ram_spill_quota=1024")).unwrap();
+    assert_eq!(parsed.ram_spill_descriptor(), Some(11));
+    assert_eq!(parsed.ram_spill_quota(), Some(1024));
+
+    for role in [
+        "ram_spill_fd=9,ram_spill_quota=1024",
+        "ram_spill_fd=10,ram_spill_quota=1024",
+        "ram_spill_fd=4,ram_spill_quota=1024",
+        "ram_spill_fd=011,ram_spill_quota=1024",
+        "ram_spill_fd=11,ram_spill_quota=01024",
+        "ram_spill_fd=11,ram_spill_quota=0",
+        "ram_spill_fd=11,ram_spill_quota=2049",
+        "ram_spill_fd=11",
+        "ram_spill_quota=1024",
+    ] {
+        assert_eq!(
+            PluginArgs::parse(&format!("{prefix},{role}")),
+            Err(PluginArgsParseError::InvalidRamSpillDescriptor)
+        );
+    }
+}

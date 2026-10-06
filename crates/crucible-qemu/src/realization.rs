@@ -2,7 +2,7 @@
 //!
 //! This module owns the single validated `instantiate` path. Lifecycle
 //! owners derive the exact requested configuration before calling it. It selects
-//! between version-nine exact-checkpoint restore, ancestor replay, and baked-genesis load in
+//! between authenticated paged exact-checkpoint restore, ancestor replay, and baked-genesis load in
 //! the required priority order while keeping the true cold boot inside `bake`.
 
 use crucible::{
@@ -24,7 +24,8 @@ pub(crate) use node_executor::{QemuHotForkTemplateIdentity, QemuHotForkTemplateP
 #[cfg(target_os = "linux")]
 pub use node_executor::{
     QemuReplayOracleThinObservation, QemuReplayValidationExactAdmission,
-    QemuReplayValidationExecutor, QemuReplayValidationThinAdmission,
+    QemuReplayValidationExecutor, QemuReplayValidationRegistrationPreparation,
+    QemuReplayValidationThinAdmission,
 };
 
 /// An exact QEMU VM snapshot cached for one configuration.
@@ -329,7 +330,7 @@ impl<'a> QemuBakedGenesisRestoreAdmission<'a> {
         Ok(Self { snapshot })
     }
 
-    /// Returns the checkpoint whose version-nine descriptors may be restored.
+    /// Returns the checkpoint whose authenticated paged descriptors may be restored.
     #[must_use]
     pub(crate) const fn checkpoint(self) -> &'a Checkpoint {
         &self.snapshot.checkpoint
@@ -546,6 +547,13 @@ fn validate_baked_genesis_node_set(
 /// Errors returned by QEMU VM realization coordination.
 #[derive(Debug, Error)]
 pub enum QemuVmRealizationError {
+    /// An original-owner metadata reservation refused a launch-model copy.
+    #[error("QEMU launch-model copy admission failed: {source}")]
+    ModelCopy {
+        /// Original typed allocation or resource refusal.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
     /// A QEMU runtime operation is temporarily unavailable.
     #[error("{operation} executor operation is temporarily unavailable: {message}")]
     ExecutorUnavailable {

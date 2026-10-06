@@ -159,7 +159,9 @@ where
                 event_log[..=index].to_vec(),
             )
             .expect("online intermediate assertion prefix should be checked");
-            evaluator.observe_prefix(&prefix, oracle);
+            evaluator
+                .observe_prefix(&prefix, oracle)
+                .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
         }
     }
     let terminal_prefix = if event_log.is_empty() {
@@ -169,7 +171,9 @@ where
             .expect("online assertion prefix should be checked")
     };
 
-    evaluator.finalize_prefix(&terminal_prefix, oracle)
+    evaluator
+        .finalize_prefix(&terminal_prefix, oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"))
 }
 
 fn outcome<'a>(outcomes: &'a [HostAssertionOutcome], assertion: &str) -> &'a HostAssertionOutcome {

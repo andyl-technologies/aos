@@ -17,6 +17,21 @@ pub trait QemuPluginIpcControlChannel: Send {
     /// Returns [`QemuNodeChannelError`] when the control channel cannot accept
     /// the teardown request.
     fn send_quit(&mut self) -> Result<(), QemuNodeChannelError>;
+
+    /// Sends teardown with the existing bounded cleanup operation.
+    ///
+    /// # Errors
+    /// Refuses transports without bounded live writes. Scripted transports may
+    /// complete their in-memory operation immediately.
+    fn send_quit_supervised(
+        &mut self,
+        _guard: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "send supervised plugin Quit",
+            "transport has no bounded cleanup writer",
+        ))
+    }
 }
 
 /// Shared-memory hot-path channel for per-quantum data.
@@ -517,6 +532,31 @@ impl QemuNodePendingQuantum {
 
 /// QMP machine-control channel for snapshot and quit commands.
 pub(crate) trait QemuQmpMachineControlChannel: Send {
+    fn query_paused_cpu(
+        &mut self,
+        _vcpu: u32,
+        _generation: Option<u64>,
+    ) -> Result<crate::qmp::QmpPausedCpu, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "query paused CPU",
+            "read-only CPU observation unavailable",
+        ))
+    }
+
+    /// Attaches the same live operation owner used by node host I/O.
+    ///
+    /// # Errors
+    /// Refuses channels without independently supervised operational transport.
+    fn set_host_operation_supervisor(
+        &mut self,
+        _supervisor: crucible_linux_resource::host_supervision::HostOperationSupervisor,
+    ) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "attach host operation supervisor",
+            "QMP channel has no live operational ownership",
+        ))
+    }
+
     /// Reports whether QEMU is already stopped for template preparation.
     ///
     /// A paused runstate is only a scheduling fact. The native template
@@ -560,7 +600,22 @@ pub(crate) trait QemuQmpMachineControlChannel: Send {
         _descriptor: BorrowedFd<'_>,
     ) -> Result<(), QemuNodeChannelError>;
 
-    /// Captures one direct or parent-relative exact checkpoint candidate.
+    /// Prepares bounded topology metadata without capturing RAM pages.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the channel cannot authenticate a paused topology.
+    fn prepare_exact_checkpoint_topology(
+        &mut self,
+        _request: &crate::QmpCheckpointCaptureRequest,
+    ) -> Result<crate::QmpCheckpointTopology, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "prepare checkpoint RAM topology",
+            "channel has no topology preparation capability",
+        ))
+    }
+
+    /// Captures one coherent paged exact checkpoint candidate.
     ///
     /// # Errors
     ///
@@ -580,6 +635,7 @@ pub(crate) trait QemuQmpMachineControlChannel: Send {
     fn commit_exact_checkpoint(
         &mut self,
         _identity: crate::QmpCheckpointIdentity,
+        _capture_generation: u64,
     ) -> Result<crate::QmpCheckpointEpochState, QemuNodeChannelError>;
 
     /// Aborts the active exact checkpoint candidate.
@@ -591,6 +647,7 @@ pub(crate) trait QemuQmpMachineControlChannel: Send {
     fn abort_exact_checkpoint(
         &mut self,
         _identity: crate::QmpCheckpointIdentity,
+        _capture_generation: u64,
         _expected_committed: Option<crate::QmpCheckpointIdentity>,
     ) -> Result<crate::QmpCheckpointEpochState, QemuNodeChannelError>;
 
@@ -921,6 +978,42 @@ pub(crate) trait QemuQmpMachineControlChannel: Send {
         &mut self,
     ) -> Result<crate::QmpHotForkPrivateRingState, QemuNodeChannelError>;
 
+    #[cfg(target_os = "linux")]
+    fn install_hot_fork_child_ram(
+        &mut self,
+        _names: &crate::qmp::QmpHotForkChildRamNames,
+        _descriptors: crate::qmp::QmpHotForkChildRamDescriptors<'_>,
+        _template: u64,
+        _contract: u64,
+    ) -> Result<crate::qmp::QmpHotForkChildRamState, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "stage child RAM",
+            "channel has no child RAM custody",
+        ))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn close_hot_fork_child_ram(
+        &mut self,
+        _names: &crate::qmp::QmpHotForkChildRamNames,
+        _generation: u64,
+    ) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "release child RAM",
+            "channel has no child RAM custody",
+        ))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn query_hot_fork_child_ram(
+        &mut self,
+    ) -> Result<crate::qmp::QmpHotForkChildRamState, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "query child RAM",
+            "channel has no child RAM custody",
+        ))
+    }
+
     /// Imports branch-private plugin control and wake endpoints into QEMU.
     ///
     /// # Errors
@@ -938,6 +1031,20 @@ pub(crate) trait QemuQmpMachineControlChannel: Send {
         _identity: crate::QmpHotForkPluginEndpointIdentity,
         _private_ring_generation: u64,
     ) -> Result<crate::QmpHotForkPluginEndpointState, QemuNodeChannelError>;
+
+    /// Attempts an actual source-object alias and authenticates its exact refusal.
+    ///
+    /// # Errors
+    /// Refuses unavailable native transport, unexpected acceptance, changed
+    /// retained state, a different rejection cause, or uncertain import release.
+    #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+    fn probe_native_source_alias_for_test(
+        &mut self,
+        _kind: crate::node::QemuTestNativeAliasKind,
+        _descriptor: BorrowedFd<'_>,
+    ) -> Result<QemuNodeChannelError, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new("probe native source alias", "channel has no real native descriptor probe"))
+    }
 
     /// Closes plugin endpoints retained by the QEMU template and monitor.
     ///

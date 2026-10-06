@@ -44,10 +44,11 @@
 //! `runtime` owns live fail-closed installation and process-lifetime active state;
 //! `vcpu_introspection` owns side-effect-free per-vCPU register and RR cursor
 //! reads for N-vCPU fingerprinting;
+//! `ram_fingerprint` owns coherent incremental RAM roots and prepared mutation
+//! publication; `paged_ram` owns Linux host residency and preserved page bytes;
 //! `coverage` owns optional TCG-exec coverage planning and observational
 //! basic-block map updates; `io_wire_fuzz` owns the pure block and 9p wire fuzz
-//! target used by the ABI-conformance gate. Future modules will add live device
-//! callback behavior and QEMU-facing helpers.
+//! target used by the ABI-conformance gate.
 //!
 //! Unsafe boundary discipline: exported C ABI entry points validate raw QEMU
 //! pointers and delegate to safe Rust shims for time-control, callback
@@ -73,10 +74,17 @@ pub mod idle_loop;
 pub mod inbound;
 pub mod inertness;
 pub mod io_wire_fuzz;
+#[cfg(feature = "native-conformance")]
+mod native_conformance;
 pub mod network_rx;
 pub mod network_tx;
 pub mod ninep_io;
+#[cfg(target_os = "linux")]
+mod paged_ram;
 pub mod preemption;
+mod ram_diagnostics;
+mod ram_error;
+mod ram_fingerprint;
 pub mod registration;
 pub mod round_robin;
 #[cfg(unix)]

@@ -529,8 +529,8 @@ fn topology_only_boundary_progress_does_not_deadlock_liveness() {
 
 #[test]
 fn network_bounded_nodes_climb_to_time_limit_without_freezing() {
-    // Regression for the topology/horizon freeze deadlock (RFC-0010
-    // [SCHED-7]/[SCHED-8]). A node bound by the conservative network-lookahead
+    // Regression for the topology/horizon freeze deadlock. A node bound by the
+    // conservative network-lookahead
     // term derived from a live effective topology is held at a *moving* cap
     // (`vt(n) + lookahead(n)`), not a genuine local quiescence point. A 2-node
     // ring with bidirectional latency-4 links and all-halted (no vCPU) nodes must

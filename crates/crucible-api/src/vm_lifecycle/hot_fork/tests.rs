@@ -331,7 +331,9 @@ fn child_materialization_retains_immutable_scheduler_and_closure_backing() {
         .try_clone_for_branch()
         .unwrap_or_else(|error| panic!("clone child host branch: {error}"));
     let generations = child.node_generations.clone();
-    let restored = child.into_restore_parts(generations, "child-run-state");
+    let restored = child
+        .into_restore_parts(generations, "child-run-state")
+        .unwrap_or_else(|error| panic!("admitted child configuration: {error}"));
 
     assert!(Arc::ptr_eq(
         &captured.scheduler,
@@ -385,7 +387,9 @@ fn hot_fork_preserves_failed_node_fingerprint_authority() {
         .collect::<BTreeMap<_, _>>();
     let generations = continuation.node_generations.clone();
 
-    let restore = continuation.into_restore_parts(generations, "child-run-state");
+    let restore = continuation
+        .into_restore_parts(generations, "child-run-state")
+        .unwrap_or_else(|error| panic!("admitted child configuration: {error}"));
     let observed = restore
         .checkpoint
         .failed_host_io
@@ -889,7 +893,9 @@ fn hot_fork_restore_replaces_only_the_durable_run_root() {
         block_bindings: blocks,
         ninep_bindings: ninep,
         active_host_io,
-    } = continuation.into_restore_parts(generations.clone(), "child-run-state");
+    } = continuation
+        .into_restore_parts(generations.clone(), "child-run-state")
+        .unwrap_or_else(|error| panic!("admitted child configuration: {error}"));
 
     assert_eq!(config.run_state_root(), Path::new("child-run-state"));
     assert_eq!(checkpoint.node_generations, generations);

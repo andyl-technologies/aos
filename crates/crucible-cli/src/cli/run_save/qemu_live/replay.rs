@@ -279,14 +279,21 @@ fn run_interactive_control_artifact_replay(
         deployment.resources,
         Some(contract.final_quanta),
     )?;
-    let quantum_loop = crucible_daemon::build_guarded_interactive_qemu_session(
-        &initial_configuration.def,
-        &captured_scenario,
+    let owner = crate::cli_verify_serve::open_guarded_campaign_owner(
+        &deployment,
         config,
-        deployment.host,
+        initial_configuration.def.seed(),
         resources,
-    )
-    .map_err(|error| backend_error(format!("build guarded interactive replay session: {error}")))?;
+    )?;
+    let quantum_loop = owner
+        .begin_interactive_session(
+            &initial_configuration.def,
+            &captured_scenario,
+            crucible_daemon::ExecutionCancellation::default(),
+        )
+        .map_err(|error| {
+            backend_error(format!("build guarded interactive replay session: {error}"))
+        })?;
     let checkpoint = crucible::Checkpoint::from_recorded_configuration(
         &initial_configuration,
         None,

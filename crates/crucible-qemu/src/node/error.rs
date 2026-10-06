@@ -3,7 +3,8 @@
 use std::fmt;
 use std::time::Duration;
 
-use crucible::BackendError;
+use crucible::{BackendError, BackendOperationalFailureKind};
+use crucible_linux_resource::host_supervision::{HostOperationState, HostSupervisionError};
 use thiserror::Error;
 
 use crate::{
@@ -318,6 +319,17 @@ impl QemuNodeError {
 
 impl From<QemuNodeError> for BackendError {
     fn from(error: QemuNodeError) -> Self {
+        if let QemuNodeError::AsyncDriver {
+            source: QemuAsyncDriverError::Runtime(runtime),
+        } = &error
+            && let Some(source) = runtime.operational_supervision_source()
+        {
+            return Self::OperationalFailure {
+                kind: operational_failure_kind(source),
+                message: format!("{} failed: {source}", runtime.operation),
+            };
+        }
+
         match error {
             QemuNodeError::ResourceLimit {
                 field,
@@ -336,6 +348,30 @@ impl From<QemuNodeError> for BackendError {
                 message: error.to_string(),
             },
         }
+    }
+}
+
+fn operational_failure_kind(source: HostSupervisionError) -> BackendOperationalFailureKind {
+    match source {
+        HostSupervisionError::DeadlineExpired { .. } => BackendOperationalFailureKind::Expired,
+        HostSupervisionError::Terminal {
+            state: HostOperationState::Canceled,
+        } => BackendOperationalFailureKind::Canceled,
+        HostSupervisionError::Terminal {
+            state: HostOperationState::Expired,
+        } => BackendOperationalFailureKind::Expired,
+        HostSupervisionError::Terminal { .. } => BackendOperationalFailureKind::Terminal,
+        HostSupervisionError::InvalidBudget
+        | HostSupervisionError::UnboundedInfrastructure { .. } => {
+            BackendOperationalFailureKind::InvalidPolicy
+        }
+        HostSupervisionError::RevisionConflict { .. } => {
+            BackendOperationalFailureKind::RevisionConflict
+        }
+        HostSupervisionError::CapacityExhausted => BackendOperationalFailureKind::CapacityExhausted,
+        HostSupervisionError::IdentityExhausted => BackendOperationalFailureKind::IdentityExhausted,
+        HostSupervisionError::ProgressRegressed => BackendOperationalFailureKind::ProgressRegressed,
+        HostSupervisionError::Unavailable => BackendOperationalFailureKind::Unavailable,
     }
 }
 

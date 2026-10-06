@@ -38,6 +38,7 @@ pub(super) fn inventory_authoritative_refs(
     roots: &mut RootAccumulator,
 ) -> Result<RefInventorySummary, CampaignGcRootInventoryError> {
     let mut semantic_error = None;
+    let mut archives = Vec::new();
     let summary = fence.visit_refs(&mut |record| {
         if semantic_error.is_some() {
             return Err(StoreError::InvalidComposition {
@@ -67,21 +68,11 @@ pub(super) fn inventory_authoritative_refs(
                     });
                 }
             };
-            let inspection = match repository.inspect_campaign_archive(archive) {
-                Ok(inspection) => inspection,
-                Err(source) => {
-                    semantic_error = Some(CampaignGcRootInventoryError::Campaign(source));
-                    return Err(StoreError::InvalidComposition {
-                        reason: "campaign GC archive inventory failed",
-                    });
-                }
-            };
-            for id in inspection.retained_objects() {
-                if roots.insert_direct(*id).is_err() {
-                    semantic_error = Some(CampaignGcRootInventoryError::Limit);
-                    return Err(StoreError::Quota);
-                }
+            if archives.len() >= MAX_CAMPAIGN_GC_MANIFEST_ENTRIES {
+                semantic_error = Some(CampaignGcRootInventoryError::Limit);
+                return Err(StoreError::Quota);
             }
+            archives.push(archive);
             return Ok(());
         }
         let Some(name) = record.name().as_str().strip_prefix("campaigns/") else {
@@ -142,8 +133,16 @@ pub(super) fn inventory_authoritative_refs(
                     let closure = (|| -> Result<_, ExactPinRetentionError> {
                         // GC must retain checkpoints published under any owner's byte policy.
                         // The loader's format bounds still cap metadata and object count.
-                        let checkpoints =
-                            ExactCheckpointStore::new(repository.blob_backend(), u64::MAX)?;
+                        let backend = repository.blob_backend();
+                        let resources = backend
+                            .metadata_resources()
+                            .map_err(crate::ExactCheckpointStoreError::from)?;
+                        let checkpoints = ExactCheckpointStore::new(
+                            backend,
+                            u64::MAX,
+                            repository.ram_retention_authority(),
+                        )?
+                        .with_ram_root_resources(resources);
                         // The fenced ref inventory already authenticated the current pin.
                         // Re-reading it here would wait on the same ref fence.
                         load_checkpoint_for_configuration(
@@ -151,13 +150,12 @@ pub(super) fn inventory_authoritative_refs(
                             selection.checkpoint(),
                             configuration,
                         )?;
-                        Ok(checkpoints
-                            .authenticated_production_closure_ids(selection.checkpoint())?)
+                        Ok([selection.checkpoint().content_id()])
                     })();
                     match closure {
                         Ok(ids) => {
                             for id in ids {
-                                if roots.insert_direct(id).is_err() {
+                                if roots.insert(id).is_err() {
                                     semantic_error = Some(CampaignGcRootInventoryError::Limit);
                                     break;
                                 }
@@ -192,7 +190,23 @@ pub(super) fn inventory_authoritative_refs(
     if let Some(source) = semantic_error {
         return Err(source);
     }
-    summary.map_err(CampaignGcRootInventoryError::Ref)
+    let summary = summary.map_err(CampaignGcRootInventoryError::Ref)?;
+    for archive in archives {
+        let inspection = repository
+            .inspect_campaign_archive_for_gc(archive, fence)
+            .map_err(CampaignGcRootInventoryError::Campaign)?;
+        for root in inspection.manifest().ram_roots() {
+            roots
+                .insert(*root)
+                .map_err(|()| CampaignGcRootInventoryError::Limit)?;
+        }
+        for id in inspection.retained_objects() {
+            roots
+                .insert_direct(*id)
+                .map_err(|()| CampaignGcRootInventoryError::Limit)?;
+        }
+    }
+    Ok(summary)
 }
 
 #[derive(Default)]

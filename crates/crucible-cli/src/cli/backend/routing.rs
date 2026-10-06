@@ -13,7 +13,7 @@ pub(in super::super) fn execute_backend_routed_command(
 ) -> Result<BackendCommandOutcome, CliError> {
     if !thin_plan.proves_t_cli_2() || !backend_plan.has_consistent_route() {
         return Err(CliError::Backend(
-            "CLI command route violates the RFC-0010 backend split".to_string(),
+            "CLI command route violates the selected backend ownership boundary".to_string(),
         ));
     }
     if thin_plan.subcommand != backend_plan.subcommand {

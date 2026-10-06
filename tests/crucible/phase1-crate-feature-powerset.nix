@@ -166,11 +166,15 @@
     lib.concatMap (
       package: let
         features = builtins.attrNames (manifestFeatures package);
-        sourcePath = cratesDir + "/${package}/src";
-        source =
-          if builtins.pathExists sourcePath
-          then readRustTree sourcePath
-          else "";
+        # Integration-only flight features are consumed by test targets rather
+        # than the production crate. Both trees must still contain a real cfg.
+        sourcePaths = [
+          (cratesDir + "/${package}/src")
+          (cratesDir + "/${package}/tests")
+        ];
+        source = builtins.concatStringsSep "\n" (
+          map readRustTree (builtins.filter builtins.pathExists sourcePaths)
+        );
       in
         lib.concatMap (
           feature:

@@ -3,6 +3,56 @@
 use super::*;
 
 impl ProductionVmLifecycleLoop {
+    /// Reads architectural CPU scalars without memory access or guest execution.
+    ///
+    /// # Errors
+    /// Refuses absent nodes, unsettled boundaries and stale native generations.
+    pub fn paused_cpu(
+        &mut self,
+        node: &NodeId,
+        vcpu: u32,
+        generation: Option<u64>,
+    ) -> Result<crucible_qemu::QmpPausedCpu, SchedulerError> {
+        Ok(self
+            .inner
+            .backend_mut()
+            .paused_cpu(node, vcpu, generation)?)
+    }
+
+    /// Borrows one node's register manifest authenticated during native setup.
+    ///
+    /// The manifest describes the realized CPU rather than an authored guess.
+    /// Callers retaining a copy reserve its complete lifetime before allocation.
+    ///
+    /// # Errors
+    /// Refuses absent, closed, or unauthenticated native node ownership.
+    pub fn register_capability_manifest(
+        &self,
+        node: &NodeId,
+    ) -> Result<&crucible_qemu::QemuRegisterCapabilityManifest, SchedulerError> {
+        Ok(self.inner.backend().register_capability_manifest(node)?)
+    }
+
+    /// Reserves retained manifest metadata within one node's original service owner.
+    ///
+    /// The returned lease must outlive every copied manifest and derived World
+    /// declaration. The node's complete service admission remains charged until
+    /// both native cleanup and these borrowers have completed.
+    ///
+    /// # Errors
+    /// Refuses absent production ownership, empty requests, or exhausted capacity.
+    #[cfg(target_os = "linux")]
+    pub fn reserve_fault_manifest_metadata(
+        &self,
+        node: &NodeId,
+        bytes: u64,
+    ) -> Result<crucible_qemu::QemuFaultManifestMetadataLease, SchedulerError> {
+        Ok(self
+            .inner
+            .backend()
+            .reserve_fault_manifest_metadata(node, bytes)?)
+    }
+
     pub(super) fn production_node_fault_evidence(
         &self,
         node: &NodeId,

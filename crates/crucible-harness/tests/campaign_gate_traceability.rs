@@ -1,4 +1,4 @@
-//! Executable requirement-to-gate traceability for RFC-0020.
+//! Executable requirement-to-gate traceability for distributed campaigns.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for exact failure localization.

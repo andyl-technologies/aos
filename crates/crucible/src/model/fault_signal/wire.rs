@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use super::*;
 
+pub(super) mod borrowed;
 pub(super) mod toml_codec;
 
 pub(crate) use toml_codec::*;
@@ -78,13 +79,6 @@ mod toml_integer_tests {
 }
 
 impl SignalProgramWire {
-    fn from_program(program: &SignalProgram) -> Self {
-        Self {
-            node: program.nodes().to_vec(),
-            exported_output: program.exported_outputs().to_vec(),
-        }
-    }
-
     fn admit(self, limits: SignalResourceLimits) -> Result<SignalProgram, FaultSignalWireError> {
         SignalProgram::new(self.node, self.exported_output, limits)
             .map_err(FaultSignalWireError::Program)
@@ -133,12 +127,12 @@ impl FaultBindingWire {
         )
         .map_err(FaultSignalWireError::Effect)?;
         let registry = BindingMappingRegistry::new(
-            self.transition_declaration
-                .map(StateTransitionTableWire::admit)
-                .transpose()?
-                .into_iter()
-                .collect(),
-            self.service_declaration.into_iter().collect(),
+            one_owned(
+                self.transition_declaration
+                    .map(StateTransitionTableWire::admit)
+                    .transpose()?,
+            )?,
+            one_owned(self.service_declaration)?,
         )
         .map_err(FaultSignalWireError::Binding)?;
         FaultBinding::new_with_registry(
@@ -157,6 +151,16 @@ impl FaultBindingWire {
         )
         .map_err(FaultSignalWireError::Binding)
     }
+}
+
+fn one_owned<T>(value: Option<T>) -> Result<Vec<T>, FaultSignalWireError> {
+    let mut values = Vec::new();
+    if let Some(value) = value {
+        crate::owned_decode::reserve_vec(&mut values, 1)
+            .map_err(FaultSignalWireError::OriginalAdmission)?;
+        values.push(value);
+    }
+    Ok(values)
 }
 
 fn validate_mapping_declarations(
@@ -227,6 +231,8 @@ impl StateTransitionTableWire {
     fn admit(self) -> Result<StateTransitionTableDeclaration, FaultSignalWireError> {
         let mut transitions = BTreeMap::new();
         for entry in self.transition {
+            crate::owned_decode::charge_btree_entry::<SignalValue, FaultObjectId>()
+                .map_err(FaultSignalWireError::OriginalAdmission)?;
             if transitions
                 .insert(entry.request, entry.transition)
                 .is_some()
@@ -249,8 +255,8 @@ impl StateTransitionTableWire {
 
 fn revalidate_selector(selector: TargetSelector) -> Result<TargetSelector, FaultSignalWireError> {
     fn targets(value: ResolvedTargetSet) -> Result<ResolvedTargetSet, FaultSignalWireError> {
-        ResolvedTargetSet::new(value.targets().to_vec(), value.allow_empty())
-            .map_err(FaultSignalWireError::Binding)
+        let (targets, allow_empty) = value.into_parts();
+        ResolvedTargetSet::new(targets, allow_empty).map_err(FaultSignalWireError::Binding)
     }
 
     Ok(match selector {
@@ -275,6 +281,8 @@ fn revalidate_selector(selector: TargetSelector) -> Result<TargetSelector, Fault
 /// Failure to decode and re-admit a persisted fault-signal contract.
 #[derive(Debug)]
 pub(crate) enum FaultSignalWireError {
+    /// Original artifact authority refused an allocation.
+    OriginalAdmission(crate::owned_decode::DecodeAdmissionError),
     /// The persisted contract selected an unsupported semantic version.
     Version {
         /// Exact implemented version.
@@ -326,6 +334,9 @@ pub(crate) enum FaultSignalWireError {
 impl fmt::Display for FaultSignalWireError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::OriginalAdmission(source) => {
+                write!(formatter, "fault signal resource admission: {source}")
+            }
             Self::Version { expected, actual } => write!(
                 formatter,
                 "fault signal wire version mismatch: expected {expected}, found {actual}"
@@ -371,6 +382,7 @@ impl fmt::Display for FaultSignalWireError {
 impl Error for FaultSignalWireError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::OriginalAdmission(source) => Some(source),
             Self::ResourceLimit(error) => Some(error),
             Self::Program(error) => Some(error),
             Self::Effect(error) => Some(error),

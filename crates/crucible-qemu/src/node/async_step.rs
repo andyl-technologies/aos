@@ -7,6 +7,8 @@ pub(super) struct QemuNodeAsyncStepTarget<'a> {
     pub(super) channels: &'a mut QemuNodeChannels,
     pub(super) lifecycle_state: &'a mut QemuNodeLifecycleState,
     pub(super) shutdown_policy: QemuShutdownPolicy,
+    pub(super) supervisor:
+        Option<crucible_linux_resource::host_supervision::HostOperationSupervisor>,
     pub(super) stop_condition: crate::QemuQuantumStopCondition,
 }
 
@@ -17,6 +19,7 @@ impl QemuAsyncCrashEscalationTarget for QemuNodeAsyncStepTarget<'_> {
             self.channels,
             self.lifecycle_state,
             self.shutdown_policy,
+            self.supervisor.clone(),
         )
         .map_err(|error| QemuAsyncDriverTargetError::new("shutdown after crash", error.to_string()))
     }
@@ -62,7 +65,22 @@ pub(super) fn shutdown_node_child(
     channels: &mut QemuNodeChannels,
     lifecycle_state: &mut QemuNodeLifecycleState,
     shutdown_policy: QemuShutdownPolicy,
+    supervisor: Option<crucible_linux_resource::host_supervision::HostOperationSupervisor>,
 ) -> Result<QemuShutdownReport, QemuNodeError> {
+    let guard = supervisor
+        .as_ref()
+        .map(|owner| {
+            owner.begin(crucible_linux_resource::host_supervision::HostOperationClass::Cleanup)
+        })
+        .transpose()
+        .map_err(|source| {
+            QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(
+                crate::QemuAsyncDriverRuntimeError::operational_supervision(
+                    "begin child cleanup",
+                    source,
+                ),
+            ))
+        })?;
     let report = if child.reaped() {
         QemuShutdownReport {
             attempts: Vec::new(),
@@ -75,9 +93,22 @@ pub(super) fn shutdown_node_child(
             child,
             plugin_control: channels.plugin_control.as_mut(),
             qmp_machine_control: channels.qmp_machine_control.as_mut(),
+            supervisor: supervisor.as_ref(),
+            guard: guard.as_ref(),
         };
         shutdown_qemu_child(&mut target, shutdown_policy).map_err(QemuNodeError::from_shutdown)?
     };
+
+    if let Some(guard) = &guard {
+        guard.complete().map_err(|source| {
+            QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(
+                crate::QemuAsyncDriverRuntimeError::operational_supervision(
+                    "finish child cleanup",
+                    source,
+                ),
+            ))
+        })?;
+    }
 
     channels
         .qmp_machine_control

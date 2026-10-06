@@ -1,8 +1,8 @@
-//! Checks the RFC-0010 file/module, layer-boundary, and commit-hygiene rules.
+//! Checks module cohesion, dependency boundaries, and commit hygiene.
 //!
 //! The crate layer DAG is checked by `crate_layer_graph`; this test owns the
-//! adjacent source-shape and review-policy rules from RFC-0010 file 28 section
-//! 5 so drift is caught before those standards become prose-only guidance.
+//! adjacent source-shape and review-policy rules so drift is caught before
+//! those standards become prose-only guidance.
 
 #![forbid(unsafe_code)]
 

@@ -2,6 +2,11 @@
 
 use super::*;
 
+mod component_stream;
+mod predicate_stream;
+mod world_stream;
+use world_stream::WorldMaterial;
+
 pub(super) fn require_current_fault_schema(input: &str) -> Result<(), EngineError> {
     let value = toml::from_str::<toml::Value>(input).map_err(|source| {
         scenario_serialization_error(format!(
@@ -24,7 +29,7 @@ pub(super) fn require_current_fault_schema(input: &str) -> Result<(), EngineErro
 }
 
 pub(super) fn validate_world_serialized_identity(world: &World) -> Result<(), EngineError> {
-    validate_serialized_id("world", world.id(), serialized_world_identity(world))
+    validate_serialized_id("world", world.id(), serialized_world_identity(world)?)
 }
 
 pub(super) fn validate_serialized_id(
@@ -718,27 +723,21 @@ pub(super) fn baked_node_icounts(world: &World) -> BTreeMap<NodeId, Icount> {
 }
 
 pub(super) fn canonical_world_identity(world: &World) -> ContentHash {
-    let nodes = canonical_world_node_defs(&world.topology_nodes);
-    let links = canonical_world_links(&world.links);
-    if nodes.is_empty() && links.is_empty() && world.fault_topology.is_empty() {
+    if world.topology_nodes.is_empty() && world.links.is_empty() && world.fault_topology.is_empty()
+    {
         return world.id;
     }
-    world_content_hash(world, &nodes, &links)
+    world.canonical_id
 }
 
-pub(super) fn serialized_world_identity(world: &World) -> ContentHash {
-    let nodes = canonical_world_node_defs(&world.topology_nodes);
-    world_content_hash(world, &nodes, &canonical_world_links(&world.links))
-}
-
-fn world_content_hash(world: &World, nodes: &[WorldNodeDef], links: &[LinkDef]) -> ContentHash {
-    let base = world_material(nodes, links);
-    ContentHash::from_canonical_material(
+pub(super) fn serialized_world_identity(world: &World) -> Result<ContentHash, EngineError> {
+    canonical::hash_material(
         "crucible.model.world.v6",
-        &format!(
-            "{base}\nfault-topology={}",
-            world.fault_topology_id.to_hex()
-        ),
+        &WorldMaterial {
+            nodes: &world.topology_nodes,
+            links: &world.links,
+            fault_topology: world.fault_topology_id,
+        },
     )
 }
 
@@ -810,15 +809,12 @@ pub(super) fn scenario_world_plan_properties_measurements_selectables_seed_app_r
             content_hash_hex(measurements.content_hash())
         )
     };
-    let selectable_material = if selectables == &ScenarioSelectables::empty() {
+    let selectable_material = if selectables.is_default_catalog() {
         String::new()
     } else {
         format!(
             "\nselectables_ref={}",
-            content_hash_hex(ContentHash::from_canonical_material_bytes(
-                "crucible.model.scenario-selectables.v1",
-                &selectables.canonical_bytes(),
-            ))
+            content_hash_hex(selectables.content_hash())
         )
     };
     format!(
@@ -952,6 +948,71 @@ pub(super) fn world_link_material(link: &LinkDef) -> String {
 
 pub(super) fn plan_material(plan: &Plan) -> String {
     plan_parts_material(&plan.graph, &plan.fault_signals)
+}
+
+/// Hashes fixed empty-plan material without an allocated formatter or fallible account.
+pub(super) fn empty_plan_hash(faults: &FaultSignalPlan) -> ContentHash {
+    const PREFIX: &[u8] = b"plan=event-graph\nevents=0\nfault-signal-plan=";
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut bytes = [0; PREFIX.len() + 64];
+    bytes[..PREFIX.len()].copy_from_slice(PREFIX);
+    for (index, byte) in faults.id().bytes.iter().enumerate() {
+        bytes[PREFIX.len() + index * 2] = HEX[usize::from(byte >> 4)];
+        bytes[PREFIX.len() + index * 2 + 1] = HEX[usize::from(byte & 15)];
+    }
+    ContentHash::from_canonical_material_bytes("crucible.model.plan.v6", &bytes)
+}
+
+/// Hashes the fixed empty property component without allocating identity material.
+pub(super) fn empty_properties_hash() -> ContentHash {
+    ContentHash::from_canonical_material_bytes(PROPERTY_SCHEMA_DOMAIN, b"assertions=0")
+}
+
+pub(super) fn canonical_plan_hash(
+    graph: &EventGraph,
+    faults: &FaultSignalPlan,
+) -> Result<ContentHash, EngineError> {
+    canonical::hash_material(
+        "crucible.model.plan.v6",
+        &component_stream::PlanMaterial { graph, faults },
+    )
+}
+
+pub(super) fn canonical_properties_hash(
+    assertions: &[AssertionDef],
+) -> Result<ContentHash, EngineError> {
+    canonical::hash_material(
+        PROPERTY_SCHEMA_DOMAIN,
+        &component_stream::PropertiesMaterial(assertions),
+    )
+}
+
+pub(super) fn canonical_scenario_definition(
+    world: &World,
+    plan: &Plan,
+    properties: &Properties,
+    measurements: &MeasurementDefinitions,
+    selectables: &ScenarioSelectables,
+    seed: Seed,
+    app_random_draw_cap: u64,
+) -> Result<ScenarioDef, EngineError> {
+    let material = component_stream::ScenarioMaterial {
+        world: serialized_world_identity(world)?,
+        plan: plan.content_hash(),
+        properties: properties.content_hash(),
+        measurements,
+        selectables,
+        seed,
+        cap: app_random_draw_cap,
+    };
+    Ok(ScenarioDef {
+        id: canonical::hash_material(
+            "crucible.model.world-plan-properties-seed-scenario.v2",
+            &material,
+        )?,
+        seed,
+        app_random_draw_cap,
+    })
 }
 
 pub(super) fn plan_parts_material(graph: &EventGraph, fault_signals: &FaultSignalPlan) -> String {
@@ -1122,6 +1183,10 @@ pub(super) fn property_material(property: &Property) -> String {
     }
 }
 
+pub(super) fn canonical_predicate_material(predicate: &Predicate) -> Result<String, EngineError> {
+    canonical::material_string(&predicate_stream::PredicateMaterial(predicate))
+}
+
 pub(super) fn predicate_material(predicate: &Predicate) -> String {
     match predicate {
         Predicate::At { at } => {
@@ -1275,7 +1340,11 @@ pub(super) fn frame_predicate_material(predicate: &FramePredicate) -> String {
 }
 
 pub(super) fn regex_program_material(regex: &RegexProgram) -> String {
-    format!("regex_len={}\nregex={}", regex.pattern.len(), regex.pattern)
+    format!(
+        "regex_len={}\nregex={}",
+        regex.pattern().len(),
+        regex.pattern()
+    )
 }
 
 pub(super) fn code_point_material(point: &CodePoint) -> String {

@@ -2,12 +2,12 @@
 
 use super::control::PendingControlBoundary;
 use super::{QemuLiveHostIoRuntime, control_boundary_request_is_acknowledged};
-use crate::{QemuAsyncDriverRuntimeError, supervision::HostSupervisionDeadline};
+use crate::QemuAsyncDriverRuntimeError;
 use crucible_shmem::{
     BufferedFaultResultPoll, DequeuedFaultResult, FaultTransportError, dequeue_fault_event,
     dequeue_fault_result_with_buffer, fault_event_pending,
 };
-use std::{thread, time::Duration};
+use std::time::Duration;
 
 pub(super) fn admit_fault_preparation_result(
     requested: usize,
@@ -35,12 +35,24 @@ impl QemuLiveHostIoRuntime {
         Ok((transport.ring.read_index(), transport.ring.write_index()))
     }
 
-    pub(super) fn drain_fault_events_for_pump(
+    pub(super) fn drain_fault_events_for_operation(
         &mut self,
         maximum_event_records: usize,
-        deadline: &HostSupervisionDeadline,
+        deadline: &super::OperationPollBudget,
         timeout: Duration,
         operation: &'static str,
+    ) -> Result<usize, QemuAsyncDriverRuntimeError> {
+        self.drain_fault_events_with_budget(maximum_event_records, timeout, operation, || {
+            Ok(deadline.remaining(operation)?.is_some())
+        })
+    }
+
+    fn drain_fault_events_with_budget(
+        &mut self,
+        maximum_event_records: usize,
+        timeout: Duration,
+        operation: &'static str,
+        has_time_remaining: impl Fn() -> Result<bool, QemuAsyncDriverRuntimeError>,
     ) -> Result<usize, QemuAsyncDriverRuntimeError> {
         let mut drained = 0;
         loop {
@@ -72,7 +84,7 @@ impl QemuLiveHostIoRuntime {
             if !pending {
                 return Ok(drained);
             }
-            if !deadline.has_time_remaining() {
+            if !has_time_remaining()? {
                 return Err(QemuAsyncDriverRuntimeError::new(
                     operation,
                     format!(
@@ -143,11 +155,11 @@ impl QemuLiveHostIoRuntime {
         &mut self,
         request: PendingControlBoundary,
         timeout: Duration,
-        deadline: &HostSupervisionDeadline,
+        deadline: &super::OperationPollBudget,
         maximum_event_records: usize,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         let last_ack = loop {
-            self.drain_fault_events_for_pump(
+            self.drain_fault_events_for_operation(
                 maximum_event_records,
                 deadline,
                 timeout,
@@ -160,13 +172,17 @@ impl QemuLiveHostIoRuntime {
                 .map_err(super::map_slot_error)?
                 .snapshot();
             if control_boundary_request_is_acknowledged(request, &snapshot) {
+                deadline.complete("await fault result publication fence")?;
                 return Ok(());
             }
-            if !deadline.has_time_remaining() {
+            if deadline
+                .remaining("await fault result publication fence")?
+                .is_none()
+            {
                 break snapshot.control_boundary_ack;
             }
             self.write_wake_doorbell()?;
-            thread::sleep(self.poll_interval);
+            deadline.wait(self.poll_interval, "await fault result publication fence")?;
         };
         Err(QemuAsyncDriverRuntimeError::new(
             "await fault result publication fence",
@@ -184,16 +200,15 @@ impl QemuLiveHostIoRuntime {
         mut payload_buffer: Vec<u8>,
         maximum_event_records: usize,
     ) -> Result<DequeuedFaultResult, QemuAsyncDriverRuntimeError> {
-        if timeout.is_zero() {
-            return Err(QemuAsyncDriverRuntimeError::new(
-                "await fault result",
-                "fault-result timeout is zero",
-            ));
-        }
-        let deadline = HostSupervisionDeadline::start(timeout);
+        let deadline = super::OperationPollBudget::begin(
+            self.host_operation_supervisor.as_ref(),
+            crucible_linux_resource::host_supervision::HostOperationClass::Preparation,
+            timeout,
+            "await fault result",
+        )?;
         loop {
             let request = self.signal_wake(None)?;
-            self.drain_fault_events_for_pump(
+            self.drain_fault_events_for_operation(
                 maximum_event_records,
                 &deadline,
                 timeout,
@@ -231,10 +246,10 @@ impl QemuLiveHostIoRuntime {
                     return Ok(result);
                 }
             }
-            if !deadline.has_time_remaining() {
+            if deadline.remaining("await fault result")?.is_none() {
                 break;
             }
-            thread::sleep(self.poll_interval);
+            deadline.wait(self.poll_interval, "await fault result")?;
         }
         Err(QemuAsyncDriverRuntimeError::new(
             "await fault result",
@@ -249,17 +264,16 @@ impl QemuLiveHostIoRuntime {
         maximum_payload_bytes: usize,
         maximum_event_records: usize,
     ) -> Result<DequeuedFaultResult, QemuAsyncDriverRuntimeError> {
-        if timeout.is_zero() {
-            return Err(QemuAsyncDriverRuntimeError::new(
-                "await fault preparation result",
-                "fault-result timeout is zero",
-            ));
-        }
-        let deadline = HostSupervisionDeadline::start(timeout);
+        let deadline = super::OperationPollBudget::begin(
+            self.host_operation_supervisor.as_ref(),
+            crucible_linux_resource::host_supervision::HostOperationClass::Preparation,
+            timeout,
+            "await fault preparation result",
+        )?;
         let mut payload_buffer = Vec::new();
         loop {
             let request = self.signal_wake(None)?;
-            self.drain_fault_events_for_pump(
+            self.drain_fault_events_for_operation(
                 maximum_event_records,
                 &deadline,
                 timeout,
@@ -317,10 +331,13 @@ impl QemuLiveHostIoRuntime {
                     return Ok(result);
                 }
             }
-            if !deadline.has_time_remaining() {
+            if deadline
+                .remaining("await fault preparation result")?
+                .is_none()
+            {
                 break;
             }
-            thread::sleep(self.poll_interval);
+            deadline.wait(self.poll_interval, "await fault preparation result")?;
         }
         Err(QemuAsyncDriverRuntimeError::new(
             "await fault preparation result",

@@ -49,4 +49,5 @@ where
     O: ConditionLeafOracle,
 {
     pass.evaluate_event_graph(graph, state)
+        .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
 }

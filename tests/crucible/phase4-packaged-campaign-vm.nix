@@ -19,6 +19,99 @@
 }: let
   singleGuestMaterialization = singleGuest == "materialization";
   envoyProduct = envoyNetwork || envoyKnownFinding;
+  assignmentResidentBytes =
+    if envoyProduct
+    then 7516192768
+    # Two 256 MiB guests include separate TCG and plugin mappings.
+    else if twoNodeHttp
+    then 1610612736
+    else if guestChoice || hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || singleGuestMaterialization
+    then 1073741824
+    else 536870912;
+  assignmentBackingBytes =
+    if envoyProduct
+    then 10737418240
+    else if twoNodeHttp
+    then 8589934592
+    else 2147483648;
+  assignmentCpuSlots =
+    if envoyProduct
+    then 10
+    else 2;
+  assignmentExecutionQuanta =
+    if envoyProduct || twoNodeHttp
+    then 250000
+    # Promotion charges each 10us replay step; preserve the measured allowance.
+    else if guestChoice || singleGuestMaterialization
+    then 75000
+    else 10000;
+  maximumAssignments =
+    if findingForkWrite || hotForkFlight || envoyProduct || singleGuestMaterialization
+    then 2
+    else 1;
+  maximumRetainedWorlds =
+    if findingForkWrite || hotForkFlight || envoyProduct || singleGuestMaterialization || maintenanceTransfer
+    then 2
+    else 1;
+  # Ordinary fixture worlds contain at most two nodes; Envoy contains five.
+  maximumNodesPerWorld =
+    if envoyProduct
+    then 5
+    else 2;
+  assignmentResources = {
+    resident_peak_bytes = assignmentResidentBytes + 1048576;
+    backing_peak_bytes = assignmentBackingBytes;
+    metadata_bytes = 268435456;
+    staging_bytes = 33554432;
+    paging_io_slots = 2;
+    cpu_slots = assignmentCpuSlots;
+    task_slots =
+      if envoyProduct
+      then 1301
+      else 137;
+    file_descriptors =
+      if envoyProduct
+      then 5280
+      else 2112;
+  };
+  catalogResources = {
+    resident_peak_bytes =
+      if envoyProduct
+      then 1073741824
+      else 268435456;
+    backing_peak_bytes = assignmentBackingBytes;
+    metadata_bytes =
+      if envoyProduct
+      then 536870912
+      else 134217728;
+    staging_bytes = 8388608;
+    paging_io_slots = 1;
+    cpu_slots = 1;
+    task_slots = 1;
+    file_descriptors = 128;
+  };
+  registryResources = {
+    resident_peak_bytes = 134217728;
+    backing_peak_bytes = 16777216;
+    metadata_bytes = 67108864;
+    staging_bytes = 8388608;
+    paging_io_slots = 1;
+    cpu_slots = 1;
+    task_slots = 1;
+    file_descriptors = 128;
+  };
+  # Author the full initial footprint: every admitted assignment, every
+  # retained source world, persistent catalog, and operational registry.
+  checkedAdd = left: right: let
+    result = left + right;
+  in
+    assert left >= 0 && right >= 0 && result >= left && result >= right; result;
+  aggregateResources =
+    lib.foldl' (
+      total: resources: lib.mapAttrs (dimension: value: checkedAdd value resources.${dimension}) total
+    )
+    catalogResources ([registryResources] ++ builtins.genList (_: assignmentResources) (maximumAssignments + maximumRetainedWorlds));
+  catalogInstaller = import ./_catalog-quota-installer.nix {inherit pkgs lib;};
   source = import ../../pkgs/tools/crucible/_cargo-source.nix {inherit lib;};
   controllerArtifacts = pkgs.crucible-controller.passthru.cargoArtifacts;
   cargoDeps = pkgs.crucible-controller.passthru.cargoDeps;
@@ -94,16 +187,12 @@
   };
   deployment = builtins.toFile "campaign-executor.toml" ''
     schema = "crucible.campaign-packaged-executor"
-    version = 2
+    version = 3
     cgroup_root = "/sys/fs/cgroup/crucible"
     run_root = "/tmp/attempts/run"
     attempt_namespace = "packaged-flight"
     first_project_id = 30000
-    project_id_count = ${
-      if findingForkWrite || hotForkFlight || envoyProduct || singleGuestMaterialization
-      then "2"
-      else "1"
-    }
+    project_id_count = ${toString ((maximumAssignments + maximumRetainedWorlds) * maximumNodesPerWorld)}
     child_user_id = 65534
     child_group_id = 65534
     maximum_tasks = ${
@@ -111,6 +200,23 @@
       then "256"
       else "64"
     }
+    maximum_file_descriptors = 1024
+    maximum_node_host_service_tasks = 4
+    maximum_node_host_service_file_descriptors = 32
+    maximum_node_host_service_resident_bytes = 8388608
+    watcher_service_resident_bytes = 1048576
+    ram_catalog_root = "/tmp/attempts/ram-catalogs"
+    operational_registry_root = "/tmp/attempts/executor-ledger"
+    operational_registry_project_id = 31000
+    operational_registry_maximum_inodes = 65536
+    ram_catalog_project_id = 40000
+    maximum_ram_catalog_inodes = 262144
+    maximum_ram_catalog_sqlite_heap_bytes = 8388608
+    maximum_paging_io_slots = ${toString aggregateResources.paging_io_slots}
+    maximum_host_task_slots = ${toString aggregateResources.task_slots}
+    maximum_host_file_descriptors = ${toString aggregateResources.file_descriptors}
+    maximum_host_metadata_bytes = ${toString aggregateResources.metadata_bytes}
+    maximum_host_staging_bytes = ${toString aggregateResources.staging_bytes}
     maximum_inodes = ${
       if envoyProduct
       then "65536"
@@ -121,44 +227,11 @@
       then "30000"
       else "15000"
     }
-    maximum_slots = ${
-      if findingForkWrite || hotForkFlight || envoyProduct || singleGuestMaterialization
-      then "2"
-      else "1"
-    }
-    maximum_vcpus = ${
-      if envoyProduct
-      then "10"
-      else "2"
-    }
-    maximum_resident_bytes = ${toString (
-      if envoyProduct
-      then 7516192768
-      # Two 256 MiB guests also retain separate TCG code buffers and plugin
-      # mappings. Their combined resident use exhausted the 1 GiB attempt cap.
-      else if twoNodeHttp
-      then 1610612736
-      else if guestChoice || hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || singleGuestMaterialization
-      then 1073741824
-      else 536870912
-    )}
-    maximum_disk_bytes = ${
-      if envoyProduct
-      then "10737418240"
-      else if twoNodeHttp
-      then "8589934592"
-      else "2147483648"
-    }
-    maximum_execution_quanta = ${
-      if envoyProduct || twoNodeHttp
-      then "250000"
-      # Promotion charges each 10us runnable replay step. Choice sources need
-      # about 58,200 steps; the one-guest comparison exhausted 10,000 quanta
-      # before its observed 553ms capture. Both use the replay allowance.
-      else if guestChoice || singleGuestMaterialization
-      then "75000"
-      else "10000"
-    }
+    maximum_slots = ${toString maximumAssignments}
+    maximum_vcpus = ${toString aggregateResources.cpu_slots}
+    maximum_resident_bytes = ${toString aggregateResources.resident_peak_bytes}
+    maximum_disk_bytes = ${toString aggregateResources.backing_peak_bytes}
+    maximum_execution_quanta = ${toString ((maximumAssignments + maximumRetainedWorlds) * assignmentExecutionQuanta)}
     maximum_checkpoint_bytes = ${
       if envoyProduct
       then "4294967296"
@@ -167,6 +240,124 @@
     worker_count = 1
     host_architecture = "x86_64"
     qemu_profile = "deterministic-tcg-v1"
+
+    [host_operation_budgets.setup]
+    poll_interval_ms = 10
+    total_timeout_ms = 2700000
+
+    [host_operation_budgets.quantum]
+    poll_interval_ms = 10
+    total_timeout_ms = 2700000
+
+    [host_operation_budgets.page_in]
+    poll_interval_ms = 10
+    total_timeout_ms = 2700000
+
+    [host_operation_budgets.writeback]
+    poll_interval_ms = 10
+    total_timeout_ms = 2700000
+
+    [host_operation_budgets.fingerprint_initialization]
+    poll_interval_ms = 10
+    total_timeout_ms = 2700000
+
+    [host_operation_budgets.fingerprint_update]
+    poll_interval_ms = 10
+    total_timeout_ms = 2700000
+
+    [host_operation_budgets.quiescence]
+    poll_interval_ms = 10
+    total_timeout_ms = 2700000
+
+    [host_operation_budgets.checkpoint_capture]
+    poll_interval_ms = 10
+    total_timeout_ms = 2700000
+
+    [host_operation_budgets.checkpoint_publication]
+    poll_interval_ms = 10
+    total_timeout_ms = 2700000
+
+    [host_operation_budgets.restore]
+    poll_interval_ms = 10
+    total_timeout_ms = 2700000
+
+    [host_operation_budgets.fork_rearm]
+    poll_interval_ms = 10
+    total_timeout_ms = 2700000
+
+    [host_operation_budgets.transfer]
+    poll_interval_ms = 10
+    total_timeout_ms = 2700000
+
+    [host_operation_budgets.preparation]
+    poll_interval_ms = 10
+    total_timeout_ms = 2700000
+
+    [host_operation_budgets.cleanup]
+    poll_interval_ms = 10
+    total_timeout_ms = 2700000
+
+    [operational_registry_resources]
+    resident_peak_bytes = ${toString registryResources.resident_peak_bytes}
+    backing_peak_bytes = ${toString registryResources.backing_peak_bytes}
+    metadata_bytes = ${toString registryResources.metadata_bytes}
+    staging_bytes = ${toString registryResources.staging_bytes}
+    paging_io_slots = ${toString registryResources.paging_io_slots}
+    cpu_slots = ${toString registryResources.cpu_slots}
+    task_slots = ${toString registryResources.task_slots}
+    file_descriptors = ${toString registryResources.file_descriptors}
+
+    [ram_catalog_resources]
+    resident_peak_bytes = ${toString catalogResources.resident_peak_bytes}
+    backing_peak_bytes = ${toString assignmentBackingBytes}
+    metadata_bytes = ${toString catalogResources.metadata_bytes}
+    staging_bytes = 8388608
+    paging_io_slots = 1
+    cpu_slots = 1
+    task_slots = 1
+    file_descriptors = 128
+
+    [retained_template_resources]
+    resident_peak_bytes = ${toString (assignmentResidentBytes + 1048576)}
+    backing_peak_bytes = ${toString assignmentBackingBytes}
+    metadata_bytes = 268435456
+    staging_bytes = 33554432
+    paging_io_slots = 2
+    cpu_slots = ${toString assignmentCpuSlots}
+    task_slots = ${
+      if envoyProduct
+      then "1301"
+      else "137"
+    }
+    file_descriptors = ${
+      if envoyProduct
+      then "5280"
+      else "2112"
+    }
+
+    [assignment_limits]
+    vcpus = ${toString assignmentCpuSlots}
+    resident_bytes = ${toString assignmentResidentBytes}
+    disk_bytes = ${toString assignmentBackingBytes}
+    execution_quanta = ${toString assignmentExecutionQuanta}
+
+    [assignment_resources]
+    resident_peak_bytes = ${toString (assignmentResidentBytes + 1048576)}
+    backing_peak_bytes = ${toString assignmentBackingBytes}
+    metadata_bytes = 268435456
+    staging_bytes = 33554432
+    paging_io_slots = 2
+    cpu_slots = ${toString assignmentCpuSlots}
+    task_slots = ${
+      if envoyProduct
+      then "1301"
+      else "137"
+    }
+    file_descriptors = ${
+      if envoyProduct
+      then "5280"
+      else "2112"
+    }
 
     [operations]
     listener_workers = 4
@@ -235,27 +426,26 @@
       else if campaignMidpoint
       then "crucible-campaign-midpoint-debug"
       else "crucible-packaged-campaign";
-    memory =
-      if envoyProduct
-      then 8192
-      else if findingForkWrite || hotForkFlight || storageRecovery || singleGuestMaterialization || twoNodeHttp
-      then 3072
-      else 2048;
+    # Include one GiB for the outer kernel, CLI, and fixture orchestration.
+    memory = let
+      completeFootprintMiB = builtins.div (aggregateResources.resident_peak_bytes + 1048575) 1048576 + 1024;
+      fixtureMinimumMiB =
+        if storageRecovery
+        then 3072
+        else 2048;
+    in
+      if completeFootprintMiB > fixtureMinimumMiB
+      then completeFootprintMiB
+      else fixtureMinimumMiB;
     headlessVcpuCount =
       if envoyProduct || guestChoice || twoNodeHttp
       then 6
       else 1;
-    # Five 512 MiB RAM and 512 MiB disk snapshots need at least 5 GiB for
-    # baked genesis alone. The storage-recovery flight also retains S3 objects
-    # beside staged checkpoints. Leave writable space on the ext4 rootfs.
-    extraWritableMiB =
-      if envoyProduct || storageRecovery
-      then 16384
-      else if twoNodeHttp
-      then 8192
-      else 0;
+    # The quota image itself lives on this writable rootfs. Accommodate every
+    # hard backing entitlement plus separately staged fixture objects.
+    extraWritableMiB = builtins.div (aggregateResources.backing_peak_bytes + 1048575) 1048576 + 2048;
     rootfsDeps =
-      [flight deployment gateway pkgs.qemu-crucible pkgs.crucible-qemu-plugin pkgs.linux pkgs.e2fsprogs pkgs.coreutils pkgs.util-linux pkgs.grep]
+      [flight deployment catalogInstaller gateway pkgs.qemu-crucible pkgs.crucible-qemu-plugin pkgs.linux pkgs.e2fsprogs pkgs.coreutils pkgs.util-linux pkgs.grep]
       ++ (lib.optional envoyProduct envoyNetworkRootImage)
       ++ (lib.optional twoNodeHttp httpRootImage)
       ++ (lib.optionals storageRecovery [storageRecoveryRunner pkgs.garage pkgs.bash pkgs.gawk])
@@ -268,81 +458,96 @@
         else []
       );
     testScript = ''
-      set -eu
-      ${lib.optionalString (envoyProduct || storageRecovery || twoNodeHttp) ''
+        set -eu
+        for kernel_config in ${pkgs.linux}/boot/config-*; do
+          ${pkgs.grep}/bin/grep -qx 'CONFIG_USERFAULTFD=y' "$kernel_config"
+        done
+      # This permission is scoped to the disposable qualification VM. It permits
+      # the unprivileged QEMU child to handle kernel-origin faults; no host sysctl
+      # is changed, and a missing kernel facility fails this test.
+      test -e /proc/sys/vm/unprivileged_userfaultfd
+      echo 1 > /proc/sys/vm/unprivileged_userfaultfd
+      test "$(cat /proc/sys/vm/unprivileged_userfaultfd)" = 1
         # The headless harness mounts /tmp as a RAM-sized tmpfs. Put the
-        # checkpoint and store workspace on the already-sized ext4 rootfs.
+        # spill, catalog, and quota image on the separately sized ext4 rootfs.
         ${pkgs.util-linux}/bin/mount -o remount,rw /
         ${pkgs.util-linux}/bin/mount --bind /var/tmp /tmp
         chmod 1777 /tmp
         printf 'campaign-workspace-capacity='
         ${pkgs.coreutils}/bin/df -Pm /tmp | ${pkgs.coreutils}/bin/tail -n 1
-      ''}
-      setup_log=/tmp/campaign-host-setup.log
-      : > "$setup_log"
+        setup_log=/tmp/campaign-host-setup.log
+        : > "$setup_log"
 
-      cleanup_attempt_mount() {
-        ${pkgs.util-linux}/bin/umount /tmp/attempts > /dev/null 2>&1 || true
-      }
+        cleanup_attempt_mount() {
+          ${pkgs.util-linux}/bin/umount /tmp/attempts > /dev/null 2>&1 || true
+        }
 
-      setup_failure() {
-        status="$1"
-        stage="$2"
-        echo "campaign-host-setup-failed=$stage status=$status"
+        setup_failure() {
+          status="$1"
+          stage="$2"
+          echo "campaign-host-setup-failed=$stage status=$status"
+          ${pkgs.coreutils}/bin/head -n 200 "$setup_log"
+          exit "$status"
+        }
+
+        setup_step() {
+          stage="$1"
+          shift
+          echo "campaign-host-setup-stage=$stage" >> "$setup_log"
+          "$@" >> "$setup_log" 2>&1 || setup_failure "$?" "$stage"
+        }
+
+        trap cleanup_attempt_mount EXIT HUP INT TERM
+        setup_step cgroup-root mkdir -p /sys/fs/cgroup
+        setup_step cgroup-mount ${pkgs.util-linux}/bin/mount -t cgroup2 none /sys/fs/cgroup
+        echo 'campaign-host-setup-stage=cgroup-root-controllers' >> "$setup_log"
+        echo '+cpu +memory +pids' > /sys/fs/cgroup/cgroup.subtree_control 2>> "$setup_log" \
+          || setup_failure "$?" cgroup-root-controllers
+        setup_step cgroup-owner mkdir /sys/fs/cgroup/crucible
+        echo 'campaign-host-setup-stage=cgroup-owner-controllers' >> "$setup_log"
+        echo '+cpu +memory +pids' > /sys/fs/cgroup/crucible/cgroup.subtree_control 2>> "$setup_log" \
+          || setup_failure "$?" cgroup-owner-controllers
+        # Leave one GiB beyond all hard backing entitlements for filesystem
+        # metadata and the small runtime journals outside their projects.
+        setup_step quota-image truncate -s ${toString (checkedAdd aggregateResources.backing_peak_bytes 1073741824)} /tmp/attempts.img
+        setup_step quota-format ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -F -O quota,project -E quotatype=prjquota /tmp/attempts.img
+        setup_step quota-mountpoint mkdir /tmp/attempts
+        setup_step quota-mount ${pkgs.util-linux}/bin/mount -o loop,prjquota /tmp/attempts.img /tmp/attempts
+        setup_step run-directories mkdir -m 700 /tmp/attempts/run /tmp/run-state
+        setup_step catalog-quota ${pkgs.coreutils}/bin/timeout -k 5 60 \
+          ${catalogInstaller}/bin/install-catalog-quota \
+          /tmp/attempts /tmp/attempts/ram-catalogs 40000 \
+          ${toString catalogResources.backing_peak_bytes} 262144
+        ${pkgs.grep}/bin/grep -Fxq catalog_quota_survives_installer_drop=true "$setup_log" \
+          || setup_failure 1 catalog-quota-drop-proof
+        setup_step registry-quota ${pkgs.coreutils}/bin/timeout -k 5 60 \
+          ${catalogInstaller}/bin/install-catalog-quota \
+          /tmp/attempts /tmp/attempts/executor-ledger 31000 \
+          ${toString registryResources.backing_peak_bytes} 65536
+        test "$(${pkgs.grep}/bin/grep -Fxc catalog_quota_survives_installer_drop=true "$setup_log")" -eq 2 \
+          || setup_failure 1 independent-registry-quota-drop-proof
+        setup_step deployment install -m 600 ${deployment} /tmp/executor.toml
+        echo 'campaign-host-setup-complete=true'
         ${pkgs.coreutils}/bin/head -n 200 "$setup_log"
-        exit "$status"
-      }
-
-      setup_step() {
-        stage="$1"
-        shift
-        echo "campaign-host-setup-stage=$stage" >> "$setup_log"
-        "$@" >> "$setup_log" 2>&1 || setup_failure "$?" "$stage"
-      }
-
-      trap cleanup_attempt_mount EXIT HUP INT TERM
-      setup_step cgroup-root mkdir -p /sys/fs/cgroup
-      setup_step cgroup-mount ${pkgs.util-linux}/bin/mount -t cgroup2 none /sys/fs/cgroup
-      echo 'campaign-host-setup-stage=cgroup-root-controllers' >> "$setup_log"
-      echo '+cpu +memory +pids' > /sys/fs/cgroup/cgroup.subtree_control 2>> "$setup_log" \
-        || setup_failure "$?" cgroup-root-controllers
-      setup_step cgroup-owner mkdir /sys/fs/cgroup/crucible
-      echo 'campaign-host-setup-stage=cgroup-owner-controllers' >> "$setup_log"
-      echo '+cpu +memory +pids' > /sys/fs/cgroup/crucible/cgroup.subtree_control 2>> "$setup_log" \
-        || setup_failure "$?" cgroup-owner-controllers
-      setup_step quota-image truncate -s ${
-        if envoyProduct
-        then "16G"
-        else if twoNodeHttp
-        then "8G"
-        else "4G"
-      } /tmp/attempts.img
-      setup_step quota-format ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -F -O quota,project -E quotatype=prjquota /tmp/attempts.img
-      setup_step quota-mountpoint mkdir /tmp/attempts
-      setup_step quota-mount ${pkgs.util-linux}/bin/mount -o loop,prjquota /tmp/attempts.img /tmp/attempts
-      setup_step run-directories mkdir -m 700 /tmp/attempts/run /tmp/run-state
-      setup_step deployment install -m 600 ${deployment} /tmp/executor.toml
-      echo 'campaign-host-setup-complete=true'
-      ${pkgs.coreutils}/bin/head -n 200 "$setup_log"
-      export CRUCIBLE_PROCESS_FLIGHT_BINARY=${flight}/bin/crucible
-      ${lib.optionalString (findingExactBundle || findingSignalBundle || findingForkWrite || envoyKnownFinding) "export CRUCIBLE_EXACT_BUNDLE_BINARY=${pkgs.crucible}/bin/crucible"}
-      export CRUCIBLE_FLIGHT_QEMU=${pkgs.qemu-crucible}/bin/qemu-system-x86_64
-      export CRUCIBLE_FLIGHT_PLUGIN=${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so
-      export CRUCIBLE_FLIGHT_DEPLOYMENT=/tmp/executor.toml
-      export CRUCIBLE_FLIGHT_RUN_ROOT=/tmp/attempts/run
-      export CRUCIBLE_DEBUG_GATEWAY=${gateway}/bin/crucible-debug-gateway
-      for kernel in ${pkgs.linux}/boot/vmlinuz-*; do export CRUCIBLE_KERNEL="$kernel"; done
-      export CRUCIBLE_ROOT_IMAGE=${
+        export CRUCIBLE_PROCESS_FLIGHT_BINARY=${flight}/bin/crucible
+        ${lib.optionalString (findingExactBundle || findingSignalBundle || findingForkWrite || envoyKnownFinding) "export CRUCIBLE_EXACT_BUNDLE_BINARY=${pkgs.crucible}/bin/crucible"}
+        export CRUCIBLE_FLIGHT_QEMU=${pkgs.qemu-crucible}/bin/qemu-system-x86_64
+        export CRUCIBLE_FLIGHT_PLUGIN=${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so
+        export CRUCIBLE_FLIGHT_DEPLOYMENT=/tmp/executor.toml
+        export CRUCIBLE_FLIGHT_RUN_ROOT=/tmp/attempts/run
+        export CRUCIBLE_DEBUG_GATEWAY=${gateway}/bin/crucible-debug-gateway
+        for kernel in ${pkgs.linux}/boot/vmlinuz-*; do export CRUCIBLE_KERNEL="$kernel"; done
+        export CRUCIBLE_ROOT_IMAGE=${
         if envoyProduct
         then "${envoyNetworkRootImage}/root.ext4"
         else if twoNodeHttp
         then "${httpRootImage}/root.ext4"
         else "${flight}/root.raw"
       }
-      ${lib.optionalString (guestChoice || hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || maintenanceTransfer || singleGuest != null) "export CRUCIBLE_INITRD=${choiceInitramfs}/initrd.img"}
-      export CRUCIBLE_RUN_STATE_ROOT=/tmp/run-state
-      export CRUCIBLE_NATIVE_GUEST_ARCHITECTURE=x86_64
-      ${
+        ${lib.optionalString (guestChoice || hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || maintenanceTransfer || singleGuest != null) "export CRUCIBLE_INITRD=${choiceInitramfs}/initrd.img"}
+        export CRUCIBLE_RUN_STATE_ROOT=/tmp/run-state
+        export CRUCIBLE_NATIVE_GUEST_ARCHITECTURE=x86_64
+        ${
         if singleGuest != null
         then ''
           single_selector=packaged::single_guest::${
@@ -927,8 +1132,8 @@
             packaged::public_packaged_executor_observes_zero_and_early_logical_deadlines --nocapture
         ''
       }
-      ${pkgs.util-linux}/bin/umount /tmp/attempts
-      trap - EXIT HUP INT TERM
+        ${pkgs.util-linux}/bin/umount /tmp/attempts
+        trap - EXIT HUP INT TERM
     '';
   };
 in

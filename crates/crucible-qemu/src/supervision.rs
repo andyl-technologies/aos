@@ -51,7 +51,7 @@ pub use device_host_work::{
     QemuDeviceHostWorkDelay, QemuLiveBlockHostWorkPool, QemuLiveBlockHostWorkPoolError,
 };
 pub use exact_restore::{
-    QemuProductionExactRestoreLaunch, QemuProductionExactRestoreProfile,
+    QemuPagedRamRestoreSource, QemuProductionExactRestoreLaunch, QemuProductionExactRestoreProfile,
     QemuProductionExactRestoreRequest,
 };
 pub use host_io_runtime::{

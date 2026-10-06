@@ -1,4 +1,4 @@
-//! Guarded version-nine production-checkpoint resume for campaign attempts.
+//! Guarded authenticated paged production-checkpoint resume for campaign attempts.
 //!
 //! This module keeps durable-root installation, multi-node process launch,
 //! modeled driving, final drain, and result sealing in one linear owner. A
@@ -746,6 +746,7 @@ fn map_resume_checkpoint_capture_failure<F, D>(
 ) -> AttemptWorkerFailure<QemuProductionExactResumeExecutionRunnerError<F, D>> {
     let class = match &error {
         SchedulerError::OperationalBoundary { class, .. } => Some(*class),
+        SchedulerError::Evaluation { .. } => Some(SchedulerOperationalFailureClass::Retryable),
         SchedulerError::Backend(_)
         | SchedulerError::BoundaryViolation { .. }
         | SchedulerError::ResourceLimit { .. }
@@ -767,6 +768,7 @@ fn map_resume_terminal_fingerprint_capture_failure<F, D>(
 ) -> AttemptWorkerFailure<QemuProductionExactResumeExecutionRunnerError<F, D>> {
     let class = match &error {
         SchedulerError::OperationalBoundary { class, .. } => Some(*class),
+        SchedulerError::Evaluation { .. } => Some(SchedulerOperationalFailureClass::Retryable),
         // crucible-lint: allow host-nondeterminism-state -- this arm only classifies an already-produced scheduler failure as terminal and cannot feed an observation back into resumed execution.
         SchedulerError::Backend(_)
         | SchedulerError::BoundaryViolation { .. }

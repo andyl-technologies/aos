@@ -20,6 +20,9 @@ const MAX_STRING_BYTES: u64 = 1024 * 1024;
 /// Error returned while encoding, decoding, or validating campaign bytes.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum CampaignCodecError {
+    /// Original resource ownership refused an artifact allocation.
+    #[error(transparent)]
+    DecodeAdmission(#[from] crucible_cas::owned_decode::DecodeAdmissionError),
     /// Generic child-bearing envelope framing failed validation.
     #[error(transparent)]
     Envelope(#[from] ContentEnvelopeError),
@@ -182,16 +185,11 @@ impl<T: Canonical + Ord> Canonical for BTreeSet<T> {
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        let count = decoder.bounded_count()?;
-        let mut values = BTreeSet::new();
-        for _ in 0..count {
-            if !values.insert(T::decode(decoder)?) {
-                return Err(CampaignCodecError::InvalidValue {
-                    reason: "canonical set contains a duplicate value",
-                });
-            }
-        }
-        Ok(values)
+        decoder.set_bounded_by(
+            MAX_COLLECTION_ITEMS as usize,
+            "collection-item-count",
+            T::decode,
+        )
     }
 }
 
@@ -205,25 +203,40 @@ impl<K: Canonical + Ord, V: Canonical> Canonical for BTreeMap<K, V> {
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        let count = decoder.bounded_count()?;
-        let mut values = BTreeMap::new();
-        for _ in 0..count {
-            let key = K::decode(decoder)?;
-            let value = V::decode(decoder)?;
-            if values.insert(key, value).is_some() {
-                return Err(CampaignCodecError::InvalidValue {
-                    reason: "canonical map contains a duplicate key",
-                });
-            }
-        }
-        Ok(values)
+        decoder.map_bounded_by(
+            MAX_COLLECTION_ITEMS as usize,
+            "collection-item-count",
+            K::decode,
+            V::decode,
+        )
     }
 }
 
 pub(crate) fn encode<T: Canonical>(value: &T) -> Vec<u8> {
-    let mut encoder = Encoder::new();
+    let mut counter = Encoder::counting(usize::MAX);
+    value.encode(&mut counter);
+    let length = counter.counted.unwrap_or(0);
+    let mut encoder = match Encoder::bounded(length) {
+        Ok(encoder) => encoder,
+        Err(CampaignCodecError::DecodeAdmission(error)) => {
+            if let Some(budget) = crucible_cas::owned_decode::current_budget() {
+                budget.record_failure(error);
+            }
+            return Vec::new();
+        }
+        Err(_) => return Vec::new(),
+    };
     value.encode(&mut encoder);
     encoder.finish()
+}
+
+/// Reconstructs an owned canonical value under the original allocation account.
+pub(crate) fn admitted_clone<T: Canonical>(value: &T) -> Result<T, CampaignCodecError> {
+    let bytes = encode(value);
+    if let Some(budget) = crucible_cas::owned_decode::current_budget() {
+        budget.check()?;
+    }
+    decode(&bytes)
 }
 
 pub(crate) fn decode<T: Canonical>(bytes: &[u8]) -> Result<T, CampaignCodecError> {
@@ -241,15 +254,42 @@ pub(crate) fn decode_bounded<T: Canonical>(
     let mut decoder = Decoder::new(bytes);
     let value = T::decode(&mut decoder)?;
     decoder.finish()?;
-    if encode(&value) != bytes {
+    let mut canonical = Encoder::bounded(bytes.len())?;
+    value.encode(&mut canonical);
+    if canonical.exceeded || canonical.finish() != bytes {
         return Err(CampaignCodecError::NonCanonical);
+    }
+    if let Some(budget) = crucible_cas::owned_decode::current_budget() {
+        budget.check()?;
     }
     Ok(value)
 }
 
 pub(crate) fn validate_nfc(value: &str) -> Result<(), CampaignCodecError> {
     // Every ASCII string is already NFC; avoid the Unicode iterator on this path.
-    if value.is_ascii() || value.nfc().eq(value.chars()) {
+    if value.is_ascii() {
+        return Ok(());
+    }
+    // Count canonical decomposition without allocating. The iterator owns
+    // decomposition pairs, recomposition characters and stable-sort scratch;
+    // four complete slots per scalar cover minimum/growth overlap.
+    let mut decomposed = 4_usize;
+    for character in value.chars() {
+        let mut count = 0_usize;
+        unicode_normalization::char::decompose_canonical(character, |_| count += 1);
+        decomposed = decomposed
+            .checked_add(count)
+            .ok_or(CampaignCodecError::LimitExceeded {
+                limit: "unicode-normalization-allocation",
+            })?;
+    }
+    let scratch = decomposed
+        .checked_mul(4 * (std::mem::size_of::<(u8, char)>() + std::mem::size_of::<char>()))
+        .ok_or(CampaignCodecError::LimitExceeded {
+            limit: "unicode-normalization-allocation",
+        })?;
+    crucible_cas::owned_decode::charge_array::<u8>(scratch)?;
+    if value.nfc().eq(value.chars()) {
         Ok(())
     } else {
         Err(CampaignCodecError::NonCanonical)
@@ -261,7 +301,9 @@ pub(crate) fn ensure_encoded_size<T: Canonical>(
     maximum: usize,
     limit: &'static str,
 ) -> Result<(), CampaignCodecError> {
-    if encode(value).len() <= maximum {
+    let mut encoder = Encoder::counting(maximum);
+    value.encode(&mut encoder);
+    if !encoder.exceeded {
         Ok(())
     } else {
         Err(CampaignCodecError::LimitExceeded { limit })
@@ -270,19 +312,56 @@ pub(crate) fn ensure_encoded_size<T: Canonical>(
 
 pub(crate) struct Encoder {
     bytes: Vec<u8>,
+    maximum: Option<usize>,
+    exceeded: bool,
+    counted: Option<usize>,
 }
 
 impl Encoder {
     pub(crate) fn new() -> Self {
-        Self { bytes: Vec::new() }
+        Self {
+            bytes: Vec::new(),
+            maximum: None,
+            exceeded: false,
+            counted: None,
+        }
+    }
+
+    fn bounded(maximum: usize) -> Result<Self, CampaignCodecError> {
+        crucible_cas::owned_decode::charge_array::<u8>(maximum)?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(maximum).map_err(|source| {
+            CampaignCodecError::DecodeAdmission(
+                crucible_cas::owned_decode::DecodeAdmissionError::new(source),
+            )
+        })?;
+        Ok(Self {
+            bytes,
+            maximum: Some(maximum),
+            exceeded: false,
+            counted: None,
+        })
+    }
+
+    fn counting(maximum: usize) -> Self {
+        Self {
+            bytes: Vec::new(),
+            maximum: Some(maximum),
+            exceeded: false,
+            counted: Some(0),
+        }
     }
 
     pub(crate) fn finish(self) -> Vec<u8> {
-        self.bytes
+        if self.exceeded {
+            Vec::new()
+        } else {
+            self.bytes
+        }
     }
 
     pub(crate) fn u8(&mut self, value: u8) {
-        self.bytes.push(value);
+        self.fixed(&[value]);
     }
 
     pub(crate) fn bool(&mut self, value: bool) {
@@ -290,22 +369,74 @@ impl Encoder {
     }
 
     pub(crate) fn u32(&mut self, value: u32) {
-        self.bytes.extend_from_slice(&value.to_be_bytes());
+        self.fixed(&value.to_be_bytes());
     }
 
     pub(crate) fn u64(&mut self, value: u64) {
-        self.bytes.extend_from_slice(&value.to_be_bytes());
+        self.fixed(&value.to_be_bytes());
     }
 
     pub(crate) fn i64(&mut self, value: i64) {
-        self.bytes.extend_from_slice(&value.to_be_bytes());
+        self.fixed(&value.to_be_bytes());
     }
 
     pub(crate) fn u128(&mut self, value: u128) {
-        self.bytes.extend_from_slice(&value.to_be_bytes());
+        self.fixed(&value.to_be_bytes());
     }
 
     pub(crate) fn fixed(&mut self, value: &[u8]) {
+        if let Some(counted) = &mut self.counted {
+            if let Some(total) = counted
+                .checked_add(value.len())
+                .filter(|total| self.maximum.is_none_or(|maximum| *total <= maximum))
+            {
+                *counted = total;
+            } else {
+                self.exceeded = true;
+            }
+            return;
+        }
+        if self.exceeded
+            || self
+                .maximum
+                .is_some_and(|maximum| value.len() > maximum.saturating_sub(self.bytes.len()))
+        {
+            self.exceeded = true;
+            return;
+        }
+        if self.maximum.is_none()
+            && value.len() > self.bytes.capacity().saturating_sub(self.bytes.len())
+        {
+            // Infallible public canonical encoders cannot return an operational
+            // error. The original account records refusal; the owning fallible
+            // decode checks it before publication or guest release.
+            let requested = self.bytes.len().checked_add(value.len());
+            let admitted = requested
+                .and_then(|required| required.checked_mul(2).map(|bytes| (required, bytes)))
+                .is_some_and(|(required, bytes)| {
+                    if crucible_cas::owned_decode::charge_array::<u8>(bytes.max(8)).is_err() {
+                        return false;
+                    }
+                    match self
+                        .bytes
+                        .try_reserve_exact(required.saturating_sub(self.bytes.len()))
+                    {
+                        Ok(()) => true,
+                        Err(source) => {
+                            if let Some(budget) = crucible_cas::owned_decode::current_budget() {
+                                budget.record_failure(
+                                    crucible_cas::owned_decode::DecodeAdmissionError::new(source),
+                                );
+                            }
+                            false
+                        }
+                    }
+                });
+            if !admitted {
+                self.exceeded = true;
+                return;
+            }
+        }
         self.bytes.extend_from_slice(value);
     }
 
@@ -412,6 +543,7 @@ impl<'a> Decoder<'a> {
         let bytes = self.take(length)?;
         let value = str::from_utf8(bytes).map_err(|_| CampaignCodecError::InvalidUtf8)?;
         validate_nfc(value)?;
+        crucible_cas::owned_decode::charge_array::<u8>(length)?;
         Ok(value.to_owned())
     }
 
@@ -439,7 +571,13 @@ impl<'a> Decoder<'a> {
         mut decode_value: impl FnMut(&mut Self) -> Result<T, CampaignCodecError>,
     ) -> Result<Vec<T>, CampaignCodecError> {
         let length = self.bounded_length(MAX_COLLECTION_ITEMS, "collection-item-count")?;
+        crucible_cas::owned_decode::charge_array::<T>(length)?;
         let mut values = Vec::new();
+        values.try_reserve_exact(length).map_err(|source| {
+            CampaignCodecError::DecodeAdmission(
+                crucible_cas::owned_decode::DecodeAdmissionError::new(source),
+            )
+        })?;
         for _ in 0..length {
             values.push(decode_value(self)?);
         }
@@ -453,7 +591,13 @@ impl<'a> Decoder<'a> {
         mut decode_value: impl FnMut(&mut Self) -> Result<T, CampaignCodecError>,
     ) -> Result<Vec<T>, CampaignCodecError> {
         let length = self.bounded_length(maximum as u64, limit)?;
+        crucible_cas::owned_decode::charge_array::<T>(length)?;
         let mut values = Vec::new();
+        values.try_reserve_exact(length).map_err(|source| {
+            CampaignCodecError::DecodeAdmission(
+                crucible_cas::owned_decode::DecodeAdmissionError::new(source),
+            )
+        })?;
         for _ in 0..length {
             values.push(decode_value(self)?);
         }
@@ -482,6 +626,7 @@ impl<'a> Decoder<'a> {
         }
 
         *aggregate_bytes = next_aggregate;
+        crucible_cas::owned_decode::charge_array::<u8>(length)?;
         Ok(self.take(length)?.to_vec())
     }
 
@@ -502,6 +647,7 @@ impl<'a> Decoder<'a> {
         let count = self.bounded_length(maximum as u64, limit)?;
         let mut values = BTreeSet::new();
         for _ in 0..count {
+            crucible_cas::owned_decode::charge_btree_set_entry::<T>()?;
             if !values.insert(decode_value(self)?) {
                 return Err(CampaignCodecError::InvalidValue {
                     reason: "canonical set contains a duplicate value",
@@ -529,6 +675,7 @@ impl<'a> Decoder<'a> {
         let count = self.bounded_length(maximum as u64, limit)?;
         let mut values = BTreeMap::new();
         for _ in 0..count {
+            crucible_cas::owned_decode::charge_btree_entry::<K, V>()?;
             let key = decode_key(self)?;
             let value = decode_value(self)?;
             if values.insert(key, value).is_some() {
@@ -538,10 +685,6 @@ impl<'a> Decoder<'a> {
             }
         }
         Ok(values)
-    }
-
-    pub(crate) fn bounded_count(&mut self) -> Result<usize, CampaignCodecError> {
-        self.bounded_length(MAX_COLLECTION_ITEMS, "collection-item-count")
     }
 
     fn bounded_length(
@@ -578,6 +721,81 @@ impl<'a> Decoder<'a> {
 
 #[cfg(test)]
 mod tests {
+    use crucible_cas::owned_decode::{DecodeAdmissionError, DecodeBudget, DecodeResourceAuthority};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct Authority(Arc<AtomicU64>);
+    struct Receipt {
+        used: Arc<AtomicU64>,
+        bytes: u64,
+    }
+
+    impl Drop for Receipt {
+        fn drop(&mut self) {
+            self.used.fetch_sub(self.bytes, Ordering::SeqCst);
+        }
+    }
+
+    impl DecodeResourceAuthority for Authority {
+        fn reserve(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, DecodeAdmissionError> {
+            self.0
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
+                    used.checked_add(bytes).filter(|used| *used <= 4096)
+                })
+                .map_err(|_| {
+                    DecodeAdmissionError::new(std::io::Error::other(
+                        "finite fixture metadata exhausted",
+                    ))
+                })?;
+            Ok(Arc::new(Receipt {
+                used: self.0.clone(),
+                bytes,
+            }))
+        }
+    }
+
+    #[test]
+    fn typed_sequence_admission_precedes_every_item_decoder() -> Result<(), CampaignCodecError> {
+        let authority = Arc::new(Authority(Arc::new(AtomicU64::new(0))));
+        let budget = DecodeBudget::new(authority.clone(), 4096)?;
+        let _scope = budget.enter();
+        let bytes = 1024_u64.to_be_bytes();
+        let mut visited = 0;
+        let result =
+            Decoder::new(&bytes).sequence_bounded::<u64>(1024, "test-sequence", |decoder| {
+                visited += 1;
+                decoder.u64()
+            });
+        assert!(matches!(
+            result,
+            Err(CampaignCodecError::DecodeAdmission(_))
+        ));
+        assert_eq!(visited, 0);
+        assert!(budget.check().is_err());
+        drop(_scope);
+        drop(budget);
+        assert_eq!(authority.0.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn infallible_canonical_refusal_cannot_become_a_successful_owned_decode()
+    -> Result<(), CampaignCodecError> {
+        let source = vec![0_u64; 1024];
+        let ordinary = encode(&source);
+        let authority = Arc::new(Authority(Arc::new(AtomicU64::new(0))));
+        let budget = DecodeBudget::new(authority, 4096)?;
+        let _scope = budget.enter();
+        assert!(encode(&source).is_empty());
+        assert!(budget.check().is_err());
+        assert!(matches!(
+            decode::<Vec<u64>>(&ordinary),
+            Err(CampaignCodecError::DecodeAdmission(_))
+        ));
+        Ok(())
+    }
+
     use super::*;
 
     #[test]
@@ -645,7 +863,7 @@ mod tests {
     }
 
     #[test]
-    fn declared_sequence_length_does_not_preallocate_without_item_bytes() {
+    fn truncated_bounded_sequence_preserves_component_format_error() {
         let bytes = MAX_COLLECTION_ITEMS.to_be_bytes();
         let mut decoder = Decoder::new(&bytes);
 

@@ -118,6 +118,7 @@ fn guest_marker_observes_enabled_doorbell_marker_at_retirement_icount() {
         evaluator(44, vec![wrong_marker, wrong_time, matching])
             .with_world_white_box_policies(&world)
             .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
     );
 }
 
@@ -138,6 +139,7 @@ fn guest_marker_rejects_wrong_marker_disabled_opt_in_and_wrong_time_in_isolation
         )
         .with_world_white_box_policies(&enabled)
         .evaluate_assertion_condition(&condition)
+        .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
     );
     assert!(
         !evaluator(
@@ -150,6 +152,7 @@ fn guest_marker_rejects_wrong_marker_disabled_opt_in_and_wrong_time_in_isolation
         )
         .with_world_white_box_policies(&disabled)
         .evaluate_assertion_condition(&condition)
+        .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
     );
     assert!(
         !evaluator(
@@ -162,6 +165,7 @@ fn guest_marker_rejects_wrong_marker_disabled_opt_in_and_wrong_time_in_isolation
         )
         .with_world_white_box_policies(&enabled)
         .evaluate_assertion_condition(&condition)
+        .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
     );
     assert!(
         !evaluator(
@@ -173,6 +177,7 @@ fn guest_marker_rejects_wrong_marker_disabled_opt_in_and_wrong_time_in_isolation
             )],
         )
         .evaluate_assertion_condition(&condition)
+        .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
     );
 }
 
@@ -192,6 +197,7 @@ fn guest_marker_names_are_global_but_emitting_node_must_be_opted_in() {
         )
         .with_world_white_box_policies(&world)
         .evaluate_assertion_condition(&condition)
+        .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
     );
     assert!(
         !evaluator(
@@ -204,6 +210,7 @@ fn guest_marker_names_are_global_but_emitting_node_must_be_opted_in() {
         )
         .with_world_white_box_policies(&world)
         .evaluate_assertion_condition(&condition)
+        .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
     );
 }
 
@@ -329,7 +336,11 @@ fn zero_guest_marker_conditions_ignore_guest_marker_events() {
     )
     .with_scheduler_quiescence(SchedulerQuiescence::default());
 
-    assert!(evaluation.evaluate_assertion_condition(&condition));
+    assert!(
+        evaluation
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
 }
 
 #[test]

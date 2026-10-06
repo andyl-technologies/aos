@@ -195,7 +195,7 @@ fn published_observation_reconciliation_makes_the_exact_source_world_reusable() 
             calls: Arc::clone(&fallback_calls),
         },
     );
-    let model = CrucibleExecutionModel::new(store.clone(), router);
+    let model = CrucibleExecutionModel::new(store.clone(), operational::ComponentRunner(router));
     let mut worker = RepositoryAttemptWorker::new(store.clone(), model);
 
     let profile = ExecutorCompatibilityProfile::new(
@@ -238,8 +238,13 @@ fn published_observation_reconciliation_makes_the_exact_source_world_reusable() 
     let checkpoints = ExactCheckpointStore::new(
         Arc::new(TestDurableCheckpointBackend::new()),
         8 * 1024 * 1024,
+        store.ram_retention_authority(),
     )
-    .expect("checkpoint store");
+    .expect("checkpoint store")
+    .with_ram_root_resources(
+        crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+            .expect("finite component RAM-root credit"),
+    );
     let prepared = prepare_attempt_result(&store, &checkpoints, work).expect("prepare result");
     let PreparedAttemptWorkResult::Observation(prepared) = prepared else {
         panic!("driver returned an unexpected checkpoint")
@@ -449,7 +454,7 @@ fn hot_first_router_falls_back_only_after_decline_and_bypasses_hot_fork_for_resu
 
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        5,
+        6,
         b"hot-first-resume",
     ))
     .expect("checkpoint id");

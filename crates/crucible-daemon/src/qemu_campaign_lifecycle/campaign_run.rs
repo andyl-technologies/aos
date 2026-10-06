@@ -11,6 +11,9 @@ use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 
+pub use crate::packaged_qemu_executor::guarded::{
+    GuardedCampaignOwner, GuardedFindingMidpointError, GuardedImportedFindingMidpoint,
+};
 use crucible::{Checkpoint, CheckpointKind, Configuration};
 use crucible::{ScenarioDefForm, Schedule, Seed, VirtualTime};
 use crucible_api::ProductionVmLifecycleConfig;
@@ -24,17 +27,16 @@ use crucible_campaign::{
     CampaignPrincipalAuthorizer, CampaignRepository, CampaignRepositoryError,
     CampaignServiceOperation, CampaignSnapshotId, CampaignState, CampaignSupervisor,
     CampaignSupervisorConfigError, CampaignSupervisorError, CampaignSupervisorStepOutcome,
-    CandidateSource, CreateCampaignRequest, DaemonEpoch, DebuggerAuthorityKey, DiscoveryRequest,
-    ExactCheckpointId, ExecutionRetentionIntent, ExecutorCompatibilityProfile, Observation,
-    ObservationId, ObservationStopProof, PlannerAuthorityKey, PlannerDisposition, PropertyVerdict,
+    CandidateSource, CreateCampaignRequest, DiscoveryRequest, ExactCheckpointId,
+    ExecutionRetentionIntent, ExecutorCompatibilityProfile, Observation, ObservationId,
+    ObservationStopProof, PlannerAuthorityKey, PlannerDisposition, PropertyVerdict,
     RepositoryCampaignService, SavepointCaptureOutcome, SavepointCaptureRequest,
     SavepointContinuationSelection, ScenarioDefId, StopCondition, StopOutcome,
     SubmitCampaignBranchRequest, SubmitCampaignDiscoveryRequest,
 };
-use crucible_cas::content_store::{
-    ContentId, DirectoryBlobBackend, ImmutableBlobBackend, MemoryBlobBackend, MemoryRefBackend,
-    MutableRefBackend, ObjectKind,
-};
+use crucible_cas::content_store::{ContentId, ObjectKind};
+#[cfg(any(test, feature = "test-support"))]
+use crucible_cas::content_store::{DirectoryBlobBackend, ImmutableBlobBackend, MutableRefBackend};
 use thiserror::Error;
 
 use super::{
@@ -44,6 +46,8 @@ use super::{
     QemuObservedFreshAttemptLifecycleFactory, QemuObservedFreshAttemptLifecycleFactoryError,
     validate_fresh_qemu_scenario_resources,
 };
+#[cfg(any(test, feature = "test-support"))]
+use crate::RepositoryAttemptAdmission;
 use crate::automatic_finding_runner::CampaignRunFindingExactRetentionSource;
 use crate::qemu_campaign_driver::QemuFreshSupplementalModeledDriver;
 use crate::qemu_resource_guard::QemuAttemptSelectedHostResourceFactory;
@@ -53,11 +57,18 @@ use crate::{
     CrucibleExecutionModel, CrucibleExecutionModelError, CrucibleExecutionRunner,
     CrucibleMeasurementError, CrucibleMeasurementReplayEvidence, ExactCheckpointStore,
     ExactCheckpointStoreError, ExecutionCancellation, ExecutorCapacityError,
-    LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostResourceFactory,
-    MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES, QemuAttemptHostResourceFactory,
-    QemuFreshModeledDriverError, RepositoryAttemptAdmission, SharedQemuAttemptHostResourceFactory,
-    decode_crucible_configuration_artifact_with_selections,
+    LinuxQemuAttemptHostConfig, MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
+    QemuAttemptHostResourceFactory, QemuFreshModeledDriverError,
+    SharedQemuAttemptHostResourceFactory, decode_crucible_configuration_artifact_with_selections,
 };
+#[cfg(any(test, feature = "test-support"))]
+use crucible_campaign::{DaemonEpoch, DebuggerAuthorityKey};
+#[cfg(any(test, feature = "test-support"))]
+use crucible_cas::content_store::{MemoryBlobBackend, MemoryRefBackend};
+
+mod finding_branch;
+pub use finding_branch::GuardedFindingBranchError;
+pub(crate) use finding_branch::run_admitted_finding_branch;
 
 mod executor;
 use executor::{SynchronousCampaignExecutor, SynchronousCampaignExecutorError};
@@ -104,6 +115,7 @@ mod tests;
 pub mod test_support;
 
 const DEFAULT_RUN_MAX_CHOICES: u64 = 65_536;
+#[cfg(any(test, feature = "test-support"))]
 const DEFAULT_RUN_REPOSITORY_BYTES: u64 = 512 * 1024 * 1024;
 const DEFAULT_RUN_EXECUTOR_SCAN: usize = 1_024;
 const DEFAULT_RUN_PLANNER_SCAN: u32 = 1_024;
@@ -185,8 +197,7 @@ pub struct GuardedDefaultCampaignRunRequest {
     seed: Seed,
     engine_build_id: String,
     qemu_build_id: String,
-    lifecycle: ProductionVmLifecycleConfig,
-    host: LinuxQemuAttemptHostConfig,
+    lifecycle: Arc<ProductionVmLifecycleConfig>,
     resources: AttemptResourceLimits,
     cancellation: ExecutionCancellation,
     initial_schedule: Schedule,
@@ -198,12 +209,74 @@ pub struct GuardedDefaultCampaignRunRequest {
     resume_source: Option<GuardedDefaultCampaignResumeSource>,
     exploration: Option<GuardedCampaignExploration>,
     supplemental_finding_oracle: Option<Arc<dyn GuardedCampaignFindingOracle>>,
+    execution: Option<GuardedCampaignOwner>,
+}
+
+/// Refusal of incomplete or mismatched deployed campaign execution authority.
+#[derive(Debug, Error)]
+pub enum GuardedDefaultCampaignRunConfigurationError {
+    /// Complete physical and semantic assignment bounds were not supplied.
+    #[error("guarded campaign requires complete deployed assignment authority")]
+    MissingAssignmentAuthority,
+    /// The deployment names another campaign or more than one campaign.
+    #[error("guarded campaign deployment names a different campaign")]
+    CampaignMismatch,
+    /// The seeded campaign name could not be represented.
+    #[error("guarded campaign identity is invalid: {0}")]
+    Campaign(#[source] CampaignCodecError),
+    /// A replay attempted to replace the admitted executable or plugin.
+    #[error("guarded replay uses a different native executable or plugin")]
+    NativeIdentityMismatch,
+    /// The original catalog could not lend metadata for an active configuration.
+    #[error("guarded replay metadata resources: {0}")]
+    Metadata(#[source] crucible_cas::content_store::StoreError),
+    /// Original model copying credit is exhausted or unavailable.
+    #[error("guarded replay model admission: {0}")]
+    Decoding(#[source] crucible::owned_decode::DecodeAdmissionError),
+    /// An active configured copy could not retain original metadata custody.
+    #[error("guarded replay lifecycle copy: {0}")]
+    ConfigurationCopy(#[source] crucible_api::vm_lifecycle::ProductionVmLifecycleConfigCloneError),
 }
 
 impl GuardedDefaultCampaignRunRequest {
-    /// Creates one request from explicit modeled identity and guarded host inputs.
-    #[must_use]
+    /// Creates one request from modeled identity and complete deployed authority.
+    ///
+    /// # Errors
+    /// Refuses a missing assignment contract or a deployment naming another
+    /// campaign. Physical ceilings remain separate from modeled resource limits.
     pub fn new(
+        scenario: ScenarioDefForm,
+        seed: Seed,
+        engine_build_id: impl Into<String>,
+        qemu_build_id: impl Into<String>,
+        execution: GuardedCampaignOwner,
+    ) -> Result<Self, GuardedDefaultCampaignRunConfigurationError> {
+        let config = &execution.inner.config;
+        let (lifecycle, host, resources) = config
+            .guarded_inputs()
+            .ok_or(GuardedDefaultCampaignRunConfigurationError::MissingAssignmentAuthority)?;
+        if config.assignment_resources().is_none()
+            || config.operational_registry_resources().is_none()
+            || config.ram_catalog().is_none()
+        {
+            return Err(GuardedDefaultCampaignRunConfigurationError::MissingAssignmentAuthority);
+        }
+        Ok(Self::from_inputs(
+            scenario,
+            seed,
+            engine_build_id,
+            qemu_build_id,
+            lifecycle,
+            host,
+            resources,
+            Some(execution),
+        ))
+    }
+
+    /// Creates pure campaign fixtures without claiming managed execution authority.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn new_component(
         scenario: ScenarioDefForm,
         seed: Seed,
         engine_build_id: impl Into<String>,
@@ -212,13 +285,36 @@ impl GuardedDefaultCampaignRunRequest {
         host: LinuxQemuAttemptHostConfig,
         resources: AttemptResourceLimits,
     ) -> Self {
+        Self::from_inputs(
+            scenario,
+            seed,
+            engine_build_id,
+            qemu_build_id,
+            Arc::new(lifecycle),
+            host,
+            resources,
+            None,
+        )
+    }
+
+    // crucible-lint: allow rust-allow -- one internal initializer preserves the fixture and admitted request's identical modeled input fields.
+    #[allow(clippy::too_many_arguments)]
+    fn from_inputs(
+        scenario: ScenarioDefForm,
+        seed: Seed,
+        engine_build_id: impl Into<String>,
+        qemu_build_id: impl Into<String>,
+        lifecycle: Arc<ProductionVmLifecycleConfig>,
+        _host: LinuxQemuAttemptHostConfig,
+        resources: AttemptResourceLimits,
+        execution: Option<GuardedCampaignOwner>,
+    ) -> Self {
         Self {
             scenario,
             seed,
             engine_build_id: engine_build_id.into(),
             qemu_build_id: qemu_build_id.into(),
             lifecycle,
-            host,
             resources,
             cancellation: ExecutionCancellation::default(),
             initial_schedule: Schedule::empty(),
@@ -230,7 +326,59 @@ impl GuardedDefaultCampaignRunRequest {
             resume_source: None,
             exploration: None,
             supplemental_finding_oracle: None,
+            execution,
         }
+    }
+
+    /// Uses replay inputs while retaining the admitted executable and catalog.
+    ///
+    /// # Errors
+    /// Refuses another executable or plugin, or a fixture without an admitted
+    /// owner. The contained run-state namespace and provider remain owner-fixed.
+    pub fn with_guarded_lifecycle(
+        mut self,
+        lifecycle: impl Into<Arc<ProductionVmLifecycleConfig>>,
+    ) -> Result<Self, GuardedDefaultCampaignRunConfigurationError> {
+        let lifecycle = lifecycle.into();
+        let execution = self
+            .execution
+            .as_ref()
+            .ok_or(GuardedDefaultCampaignRunConfigurationError::MissingAssignmentAuthority)?;
+        let admitted = &execution
+            .inner
+            .config
+            .guarded_inputs()
+            .ok_or(GuardedDefaultCampaignRunConfigurationError::MissingAssignmentAuthority)?
+            .0;
+        if lifecycle.executable() != admitted.executable()
+            || lifecycle.plugin() != admitted.plugin()
+        {
+            return Err(GuardedDefaultCampaignRunConfigurationError::NativeIdentityMismatch);
+        }
+        let provider = admitted
+            .ram_catalog_provider()
+            .cloned()
+            .ok_or(GuardedDefaultCampaignRunConfigurationError::MissingAssignmentAuthority)?;
+        let decoding = crucible::owned_decode::DecodeBudget::for_store(
+            execution
+                .repository_metadata_resources()
+                .map_err(GuardedDefaultCampaignRunConfigurationError::Metadata)?,
+        )
+        .map_err(GuardedDefaultCampaignRunConfigurationError::Decoding)?;
+        let _scope = decoding.enter();
+        decoding
+            .charge_array::<u8>(admitted.run_state_root().as_os_str().len())
+            .map_err(GuardedDefaultCampaignRunConfigurationError::Decoding)?;
+        // The replay changes owner-local paths and provider bindings. The
+        // active copy borrows the original catalog's credit before allocation.
+        self.lifecycle = Arc::new(
+            lifecycle
+                .try_clone_admitted()
+                .map_err(GuardedDefaultCampaignRunConfigurationError::ConfigurationCopy)?
+                .with_run_state_root(admitted.run_state_root())
+                .with_ram_catalog_provider(provider),
+        );
+        Ok(self)
     }
 
     /// Uses one caller-owned cancellation signal for every campaign attempt.
@@ -1074,6 +1222,9 @@ pub enum GuardedDefaultCampaignRunError<E = GuardedDefaultCampaignProductionRunn
 where
     E: Error + 'static,
 {
+    /// The deployed owner refused incompatible or unavailable physical authority.
+    #[error("guarded campaign execution authority failed: {0}")]
+    ManagedExecution(#[source] crucible_api::host_operational::HostOperationalError),
     /// A canonical campaign request or artifact record was invalid.
     #[error("guarded default campaign record is invalid: {0}")]
     Codec(#[source] CampaignCodecError),
@@ -1240,8 +1391,15 @@ pub enum GuardedDefaultCampaignInvariantError {
 pub fn run_guarded_default_campaign(
     request: GuardedDefaultCampaignRunRequest,
 ) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError> {
-    let host = LinuxQemuAttemptHostResourceFactory::open(request.host.clone())
-        .map_err(GuardedDefaultCampaignRunError::Host)?;
+    let host = request
+        .execution
+        .as_ref()
+        .ok_or(GuardedDefaultCampaignRunError::ManagedExecution(
+            crucible_api::host_operational::HostOperationalError::Unavailable,
+        ))?
+        .inner
+        .host
+        .clone();
     run_guarded_default_campaign_with_host(request, host)
 }
 
@@ -1258,41 +1416,87 @@ where
     validate_fresh_qemu_scenario_resources(&request.scenario, request.resources)
         .map_err(GuardedDefaultCampaignRunError::Resource)?;
 
-    let (repository, planner_authority) = default_run_repository(
-        Arc::new(MemoryBlobBackend::new(
-            "guarded-campaign-run-campaign",
-            DEFAULT_RUN_REPOSITORY_BYTES,
-        )),
-        Arc::new(MemoryRefBackend::new()),
-    )?;
-    let repository = Arc::new(repository);
+    let execution =
+        request
+            .execution
+            .as_ref()
+            .ok_or(GuardedDefaultCampaignRunError::ManagedExecution(
+                crucible_api::host_operational::HostOperationalError::Unavailable,
+            ))?;
+    let repository = Arc::clone(&execution.inner.repository);
+    let planner_authority = execution.inner.planner.clone();
     let store = CampaignExecutorStore::new(Arc::clone(&repository));
-    let checkpoints = campaign_run_exact_checkpoint_store(&request)?;
+    let checkpoints = request
+        .capture_reached_stop
+        .clone()
+        .or_else(|| {
+            request
+                .resume_source
+                .as_ref()
+                .map(|source| source.checkpoints.clone())
+        })
+        .unwrap_or_else(|| execution.inner.checkpoints.clone());
     let exact_retention = Arc::new(CampaignRunFindingExactRetentionSource::new(
         store.clone(),
         Arc::clone(&checkpoints),
     ));
 
+    let (runner, execution_evidence) = production_campaign_runner(
+        request.lifecycle.clone(),
+        host,
+        store,
+        Arc::clone(&checkpoints),
+        Arc::clone(&exact_retention),
+        request.supplemental_finding_oracle.clone(),
+        request.verify_determinism_findings,
+    );
+
+    run_guarded_default_campaign_with_repository(
+        request,
+        runner,
+        execution_evidence,
+        repository,
+        planner_authority,
+        exact_retention,
+    )
+}
+
+fn production_campaign_runner<H>(
+    lifecycle: impl Into<Arc<ProductionVmLifecycleConfig>>,
+    host: H,
+    store: CampaignExecutorStore,
+    checkpoints: Arc<ExactCheckpointStore>,
+    exact_retention: Arc<CampaignRunFindingExactRetentionSource>,
+    supplemental_oracle: Option<Arc<dyn GuardedCampaignFindingOracle>>,
+    verify_determinism_findings: bool,
+) -> (
+    impl CrucibleExecutionRunner<Error = GuardedDefaultCampaignProductionRunnerError>,
+    QemuAttemptExecutionEvidence,
+)
+where
+    H: QemuAttemptHostResourceFactory + QemuAttemptSelectedHostResourceFactory,
+    H::Owner: Send + 'static,
+{
+    let lifecycle = lifecycle.into();
     let host = SharedQemuAttemptHostResourceFactory::new(host);
     let production = QemuAttemptProductionVmLifecycleFactory::new(
-        request.lifecycle.clone(),
+        lifecycle.clone(),
         ComposedQemuAttemptResourceGuardFactory::new(host.clone()),
     )
     .with_terminal_checkpoints(Arc::clone(&checkpoints));
     let (lifecycle_factory, execution_evidence) =
         QemuObservedFreshAttemptLifecycleFactory::with_evidence(production);
-    let supplemental_oracle = request.supplemental_finding_oracle.clone();
     let main_driver = QemuFreshSupplementalModeledDriver::new(supplemental_oracle.clone());
     let main = QemuFreshExecutionRunner::new(lifecycle_factory, main_driver);
     let replay_production = QemuAttemptProductionVmLifecycleFactory::new(
-        request.lifecycle.clone(),
+        lifecycle.clone(),
         ComposedQemuAttemptResourceGuardFactory::new(host),
     )
     .with_terminal_checkpoints(Arc::clone(&checkpoints));
     let (replay_lifecycles, replay_evidence) =
         QemuObservedFreshAttemptLifecycleFactory::with_evidence(replay_production);
     let replay_capture = crate::automatic_finding_runner::QemuFindingReplayCaptureProducer::new(
-        request.lifecycle.clone(),
+        lifecycle.clone(),
         replay_evidence,
         crucible_campaign::MAX_FINDING_REPLAY_PUBLICATION_STATIC_BYTES,
     );
@@ -1312,18 +1516,11 @@ where
         replay,
     )
     .with_exact_failure_evidence(execution_evidence.clone());
-    if request.verify_determinism_findings {
+    if verify_determinism_findings {
         runner = runner.with_determinism_finding_verification();
     }
 
-    run_guarded_default_campaign_with_repository(
-        request,
-        runner,
-        execution_evidence,
-        repository,
-        planner_authority,
-        exact_retention,
-    )
+    (runner, execution_evidence)
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -1378,7 +1575,7 @@ where
 {
     let (repository, planner_authority) = default_run_repository(blobs, refs)?;
     let repository = Arc::new(repository);
-    let checkpoints = campaign_run_exact_checkpoint_store(&request)?;
+    let checkpoints = campaign_run_exact_checkpoint_store(&request, &repository)?;
     let exact_retention = Arc::new(CampaignRunFindingExactRetentionSource::new(
         CampaignExecutorStore::new(Arc::clone(&repository)),
         checkpoints,
@@ -1423,6 +1620,14 @@ where
     }
     .map_err(GuardedDefaultCampaignRunError::Artifact)?;
     let lineage = default_run_lineage(&request, scenario_content, genesis_content)?;
+    if let Some(execution) = &request.execution {
+        execution
+            .bind_profile(
+                ExecutorCompatibilityProfile::from_lineage(&lineage),
+                BTreeSet::from([scenario_content]),
+            )
+            .map_err(GuardedDefaultCampaignRunError::ManagedExecution)?;
+    }
     let supplemental_finding_source = request
         .supplemental_finding_oracle
         .as_deref()
@@ -1435,10 +1640,13 @@ where
         request.exploration,
         supplemental_finding_source,
     )?;
-    let campaign = CampaignName::new(format!(
-        "guarded-campaign-run-{:016x}",
-        request.seed.decision_rng_root_seed()
-    ))
+    let campaign = match &request.execution {
+        Some(execution) => execution.campaign(request.seed),
+        None => CampaignName::new(format!(
+            "guarded-campaign-run-{:016x}",
+            request.seed.decision_rng_root_seed()
+        )),
+    }
     .map_err(GuardedDefaultCampaignRunError::Codec)?;
     let principal = CampaignPrincipal::new("local:guarded-campaign-run")
         .map_err(GuardedDefaultCampaignRunError::Codec)?;
@@ -1543,29 +1751,63 @@ where
             .map_err(GuardedDefaultCampaignRunError::Repository)?;
     }
     let model = CrucibleExecutionModel::new(store.clone(), runner);
-    let executor_profile = ExecutorCompatibilityProfile::from_lineage(&lineage);
-    let daemon_epoch =
-        DaemonEpoch::from_bytes([0x59; 16]).map_err(GuardedDefaultCampaignRunError::Codec)?;
-    let executor_service = SynchronousCampaignExecutor::new(
-        store.clone(),
-        exact_retention,
-        model,
-        RepositoryAttemptAdmission::new(Arc::clone(&repository), executor_profile),
-        daemon_epoch,
-        request.resources,
-        request.cancellation.clone(),
-    );
-    let capture_checkpoints = request.capture_reached_stop.as_ref().or_else(|| {
-        request
-            .resume_source
-            .as_ref()
-            .map(|source| &source.checkpoints)
-    });
-    let executor_service = match capture_checkpoints {
-        Some(checkpoints) => executor_service
-            .with_checkpoint_capture(Arc::clone(checkpoints))
-            .map_err(GuardedDefaultCampaignRunError::ExecutorCapacity)?,
-        None => executor_service,
+    let (daemon_epoch, executor_service) = match &request.execution {
+        Some(execution) => (
+            execution.inner.config.guarded_epoch(),
+            SynchronousCampaignExecutor::new_admitted(
+                store.clone(),
+                exact_retention,
+                model,
+                request.cancellation.clone(),
+                execution.clone(),
+            ),
+        ),
+        #[cfg(any(test, feature = "test-support"))]
+        None => {
+            let epoch = DaemonEpoch::from_bytes([0x59; 16])
+                .map_err(GuardedDefaultCampaignRunError::Codec)?;
+            let admission = RepositoryAttemptAdmission::new(
+                Arc::clone(&repository),
+                ExecutorCompatibilityProfile::from_lineage(&lineage),
+            );
+            let service = SynchronousCampaignExecutor::new(
+                store.clone(),
+                exact_retention,
+                model,
+                admission,
+                epoch,
+                request.resources,
+                request.cancellation.clone(),
+            );
+            let checkpoints = request.capture_reached_stop.as_ref().or_else(|| {
+                request
+                    .resume_source
+                    .as_ref()
+                    .map(|source| &source.checkpoints)
+            });
+            let service = match checkpoints {
+                Some(checkpoints) => service
+                    .with_checkpoint_capture(Arc::clone(checkpoints))
+                    .map_err(|error| match error {
+                        executor::ComponentCaptureConfigurationError::Capacity(error) => {
+                            GuardedDefaultCampaignRunError::ExecutorCapacity(error)
+                        }
+                        executor::ComponentCaptureConfigurationError::MissingAuthority => {
+                            GuardedDefaultCampaignRunError::ManagedExecution(
+                                crucible_api::host_operational::HostOperationalError::Unavailable,
+                            )
+                        }
+                    })?,
+                None => service,
+            };
+            (epoch, service)
+        }
+        #[cfg(not(any(test, feature = "test-support")))]
+        None => {
+            return Err(GuardedDefaultCampaignRunError::ManagedExecution(
+                crucible_api::host_operational::HostOperationalError::Unavailable,
+            ));
+        }
     };
     let planner = local_campaign_planner(&repository, planner_authority, request.exploration)?;
     let executor = CampaignExecutorDriver::new(
@@ -1653,6 +1895,7 @@ where
     )
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn default_run_repository<E>(
     blobs: Arc<dyn ImmutableBlobBackend>,
     refs: Arc<dyn MutableRefBackend>,
@@ -1674,8 +1917,10 @@ where
     Ok((repository, planner_authority))
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn campaign_run_exact_checkpoint_store<E>(
     request: &GuardedDefaultCampaignRunRequest,
+    repository: &CampaignRepository,
 ) -> Result<Arc<ExactCheckpointStore>, GuardedDefaultCampaignRunError<E>>
 where
     E: Error + 'static,
@@ -1702,8 +1947,18 @@ where
                         root,
                     )),
                     request.resources.maximum_disk_bytes(),
+                    repository.ram_retention_authority(),
                 )
-                .map(Arc::new)
+                .and_then(|checkpoints| {
+                    let resources =
+                        crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+                            .map_err(|_| {
+                            ExactCheckpointStoreError::Store(
+                                crucible_cas::content_store::StoreError::Quota,
+                            )
+                        })?;
+                    Ok(Arc::new(checkpoints.with_ram_root_resources(resources)))
+                })
                 .map_err(GuardedDefaultCampaignRunError::ExactCheckpoint)
             },
             Ok,

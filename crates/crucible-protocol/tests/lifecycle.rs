@@ -42,7 +42,9 @@ fn bounded_quit_writer_commits_only_after_a_complete_frame() {
     );
 
     let mut complete = ControlLifecycleStream::restored_run_via_shared_memory(Vec::new());
-    complete.host_send_quit().unwrap();
+    complete
+        .host_send_quit()
+        .unwrap_or_else(|error| panic!("write complete Quit frame: {error}"));
     assert_eq!(complete.state(), ControlLifecycleState::QuitSent);
     assert_eq!(
         complete.into_inner(),

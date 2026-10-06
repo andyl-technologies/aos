@@ -18,7 +18,9 @@
 //! typed-attribute payload model; [`vm_lifecycle`] owns production local-VM
 //! loop construction; [`debug_gateway`] owns the Apache-side Unix
 //! control client for the separate GPL debugger gateway process;
-//! [`transport_security`] owns remote mutual-TLS authentication.
+//! [`transport_security`] owns remote mutual-TLS authentication;
+//! [`host_operational`] owns bounded target, policy, resource, and deadline
+//! contracts outside modeled guest state.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -31,6 +33,7 @@ pub mod debug_gateway;
 mod debug_holders;
 pub mod debug_relay;
 pub mod event_log_stream;
+pub mod host_operational;
 pub mod lifecycle;
 pub mod open_set;
 pub mod rpc_abi;
@@ -114,9 +117,10 @@ pub use vm_lifecycle::{
     DecodedProductionExactCheckpoint, PreparedProductionReplayOraclePromotion,
     ProductionBakedSnapshotCatalog, ProductionBakedSnapshotSet, ProductionBlockFaultEvidence,
     ProductionExactCheckpointClosure, ProductionExactCheckpointObject,
-    ProductionExactCheckpointRetirement, ProductionExactCheckpointRetirementError,
-    ProductionExactCheckpointRetirementReport, ProductionFaultEvidenceSnapshot,
-    ProductionNetworkOutageEvidence, ProductionNetworkQueueEvidence, ProductionNodeFaultEvidence,
+    ProductionExactCheckpointReadSources, ProductionExactCheckpointRetirement,
+    ProductionExactCheckpointRetirementError, ProductionExactCheckpointRetirementReport,
+    ProductionFaultEvidenceSnapshot, ProductionNetworkOutageEvidence,
+    ProductionNetworkQueueEvidence, ProductionNodeFaultEvidence, ProductionPagedRamSource,
     ProductionVmExactNodeRestoreAdmission, ProductionVmExactNodeRestoreAdmissions,
     ProductionVmLifecycleConfig, ProductionVmLifecycleLoop, ProductionVmLifecycleResumeState,
     ProductionVmNodeGeneration, ProductionVmNodeLaunch, ProductionVmNodeLaunchRequest,

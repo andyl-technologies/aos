@@ -1045,6 +1045,7 @@ fn scheduler_error_rejection_kind(error: &SchedulerError) -> CommandRejectionKin
             CommandRejectionKind::InvalidArgument
         }
         SchedulerError::BoundaryViolation { .. }
+        | SchedulerError::Evaluation { .. }
         | SchedulerError::OperationalBoundary { .. }
         | SchedulerError::ResourceLimit { .. } => CommandRejectionKind::Internal,
     }
@@ -1054,7 +1055,9 @@ const fn backend_error_rejection_kind(error: &BackendError) -> CommandRejectionK
     match error {
         BackendError::Unsupported { .. } => CommandRejectionKind::Unsupported,
         BackendError::Rejected { .. } => CommandRejectionKind::InvalidArgument,
-        BackendError::ResourceLimit { .. } => CommandRejectionKind::Internal,
+        BackendError::ResourceLimit { .. } | BackendError::OperationalFailure { .. } => {
+            CommandRejectionKind::Internal
+        }
     }
 }
 

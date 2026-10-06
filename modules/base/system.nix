@@ -256,9 +256,11 @@ in {
         }
         {
           name = "kernel-version";
-          description = "Kernel version is 6.18.x";
+          description = "Running kernel matches the configured kernel package";
           script = ''
-            assert "6.18" in vm.succeed("uname -r")
+            expected = ${builtins.toJSON config.system.build.kernel.version}
+            actual = vm.succeed("uname -r").strip()
+            assert actual == expected, (actual, expected)
           '';
         }
       ];

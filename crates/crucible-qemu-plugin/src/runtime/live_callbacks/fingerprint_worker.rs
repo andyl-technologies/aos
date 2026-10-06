@@ -42,12 +42,18 @@ impl LiveFingerprintDigestWorker {
                     };
                     let pending = idle.received();
                     let _operation = pending.enter();
-                    let sample = work.captured.digest();
-                    let result = slot
-                        .get()
-                        .publish(&sample)
+                    let result = work
+                        .captured
+                        .digest()
                         .map_err(|error| FingerprintPublicationFailure {
                             message: error.to_string(),
+                        })
+                        .and_then(|sample| {
+                            slot.get().publish(&sample).map_err(|error| {
+                                FingerprintPublicationFailure {
+                                    message: error.to_string(),
+                                }
+                            })
                         })
                         .and_then(|()| {
                             slot.get()

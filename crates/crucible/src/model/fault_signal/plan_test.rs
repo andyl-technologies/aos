@@ -68,10 +68,12 @@ fn network_effect_policy_references_are_typed_and_world_owned() {
         &program,
     )
     .unwrap_or_else(|error| panic!("policy test binding: {error}"));
-    let plan = Plan::empty().with_fault_signals(
-        FaultSignalPlan::new(vec![program], vec![binding], FaultResourceLimits::default())
-            .unwrap_or_else(|error| panic!("policy test plan: {error}")),
-    );
+    let plan = Plan::empty()
+        .with_fault_signals(
+            FaultSignalPlan::new(vec![program], vec![binding], FaultResourceLimits::default())
+                .unwrap_or_else(|error| panic!("policy test plan: {error}")),
+        )
+        .unwrap_or_else(|error| panic!("admit fault-plan fixture: {error}"));
     let world = test_world();
     assert!(plan.validate_for_world(&world).is_err());
 
@@ -662,7 +664,10 @@ fn outer_plan_identity_commits_to_the_complete_fault_layer() {
     let faults = FaultSignalPlan::new(vec![program], Vec::new(), FaultResourceLimits::default())
         .unwrap_or_else(|error| panic!("fault plan admission failed: {error}"));
     let baseline = Plan::empty();
-    let plan = baseline.clone().with_fault_signals(faults.clone());
+    let plan = baseline
+        .clone()
+        .with_fault_signals(faults.clone())
+        .unwrap_or_else(|error| panic!("admit fault-plan fixture: {error}"));
 
     assert_eq!(plan.fault_signals(), &faults);
     assert_ne!(plan.content_hash(), baseline.content_hash());
@@ -678,7 +683,9 @@ fn plan_toml_round_trips_an_admitted_signal_program() {
     let program = program(true);
     let faults = FaultSignalPlan::new(vec![program], Vec::new(), FaultResourceLimits::default())
         .unwrap_or_else(|error| panic!("fault plan admission failed: {error}"));
-    let plan = Plan::empty().with_fault_signals(faults);
+    let plan = Plan::empty()
+        .with_fault_signals(faults)
+        .unwrap_or_else(|error| panic!("admit fault-plan fixture: {error}"));
     let encoded = plan
         .to_canonical_toml()
         .unwrap_or_else(|error| panic!("encode fault signal plan: {error}"));
@@ -700,7 +707,9 @@ fn plan_toml_round_trips_a_complete_binding_contract() {
     let binding = binding(&program);
     let faults = FaultSignalPlan::new(vec![program], vec![binding], FaultResourceLimits::default())
         .unwrap_or_else(|error| panic!("fault plan admission failed: {error}"));
-    let plan = Plan::empty().with_fault_signals(faults);
+    let plan = Plan::empty()
+        .with_fault_signals(faults)
+        .unwrap_or_else(|error| panic!("admit fault-plan fixture: {error}"));
     let encoded = plan
         .to_canonical_toml()
         .unwrap_or_else(|error| panic!("encode fault signal plan: {error}"));
@@ -718,14 +727,16 @@ fn plan_toml_round_trips_a_complete_binding_contract() {
 fn world_resolves_fault_domains_and_dynamic_paths_without_authored_caches() {
     let base_program = program(true);
     let binding = binding(&base_program);
-    let plan = Plan::empty().with_fault_signals(
-        FaultSignalPlan::new(
-            vec![base_program],
-            vec![binding],
-            FaultResourceLimits::default(),
+    let plan = Plan::empty()
+        .with_fault_signals(
+            FaultSignalPlan::new(
+                vec![base_program],
+                vec![binding],
+                FaultResourceLimits::default(),
+            )
+            .unwrap_or_else(|error| panic!("binding plan: {error}")),
         )
-        .unwrap_or_else(|error| panic!("binding plan: {error}")),
-    );
+        .unwrap_or_else(|error| panic!("admit fault-plan fixture: {error}"));
     let canonical = plan
         .to_canonical_toml()
         .unwrap_or_else(|error| panic!("encode binding plan: {error}"));
@@ -760,14 +771,16 @@ fn world_resolves_fault_domains_and_dynamic_paths_without_authored_caches() {
         let expected_program = program(true);
         let expected_binding =
             binding_with_selector(&expected_program, BindingSampling::AtBoundary, selector);
-        let expected = Plan::empty().with_fault_signals(
-            FaultSignalPlan::new(
-                vec![expected_program],
-                vec![expected_binding],
-                FaultResourceLimits::default(),
+        let expected = Plan::empty()
+            .with_fault_signals(
+                FaultSignalPlan::new(
+                    vec![expected_program],
+                    vec![expected_binding],
+                    FaultResourceLimits::default(),
+                )
+                .unwrap_or_else(|error| panic!("expected selector plan: {error}")),
             )
-            .unwrap_or_else(|error| panic!("expected selector plan: {error}")),
-        );
+            .unwrap_or_else(|error| panic!("admit fault-plan fixture: {error}"));
         let mut value: toml::Value = toml::from_str(&canonical)
             .unwrap_or_else(|error| panic!("parse canonical plan: {error}"));
         value
@@ -835,10 +848,12 @@ fn world_fault_topology_round_trips_through_only_v5_codecs() {
 fn singular_signal_and_unknown_fields_are_rejected() {
     let program = program(true);
     let binding = binding(&program);
-    let plan = Plan::empty().with_fault_signals(
-        FaultSignalPlan::new(vec![program], vec![binding], FaultResourceLimits::default())
-            .unwrap_or_else(|error| panic!("binding plan: {error}")),
-    );
+    let plan = Plan::empty()
+        .with_fault_signals(
+            FaultSignalPlan::new(vec![program], vec![binding], FaultResourceLimits::default())
+                .unwrap_or_else(|error| panic!("binding plan: {error}")),
+        )
+        .unwrap_or_else(|error| panic!("admit fault-plan fixture: {error}"));
     let canonical = plan
         .to_canonical_toml()
         .unwrap_or_else(|error| panic!("encode binding plan: {error}"));
@@ -888,14 +903,16 @@ fn mobile_truth_trajectory_requires_an_exact_exported_position_contract() {
         SignalValue::I64(0),
         SignalValue::I64(0),
     ]);
-    let valid = Plan::empty().with_fault_signals(
-        FaultSignalPlan::new(
-            vec![trajectory_program(shape, value)],
-            Vec::new(),
-            FaultResourceLimits::default(),
+    let valid = Plan::empty()
+        .with_fault_signals(
+            FaultSignalPlan::new(
+                vec![trajectory_program(shape, value)],
+                Vec::new(),
+                FaultResourceLimits::default(),
+            )
+            .unwrap_or_else(|error| panic!("trajectory fault layer: {error}")),
         )
-        .unwrap_or_else(|error| panic!("trajectory fault layer: {error}")),
-    );
+        .unwrap_or_else(|error| panic!("admit fault-plan fixture: {error}"));
     valid
         .validate_for_world(&world)
         .unwrap_or_else(|error| panic!("valid trajectory: {error}"));
@@ -911,14 +928,16 @@ fn mobile_truth_trajectory_requires_an_exact_exported_position_contract() {
         SignalValue::I64(0),
         SignalValue::I64(0),
     ]);
-    let invalid = Plan::empty().with_fault_signals(
-        FaultSignalPlan::new(
-            vec![trajectory_program(wrong_shape, wrong_value)],
-            Vec::new(),
-            FaultResourceLimits::default(),
+    let invalid = Plan::empty()
+        .with_fault_signals(
+            FaultSignalPlan::new(
+                vec![trajectory_program(wrong_shape, wrong_value)],
+                Vec::new(),
+                FaultResourceLimits::default(),
+            )
+            .unwrap_or_else(|error| panic!("invalid trajectory fault layer: {error}")),
         )
-        .unwrap_or_else(|error| panic!("invalid trajectory fault layer: {error}")),
-    );
+        .unwrap_or_else(|error| panic!("admit fault-plan fixture: {error}"));
     assert!(invalid.validate_for_world(&world).is_err());
 }
 
@@ -945,14 +964,16 @@ fn fault_segments_must_cover_the_world_link_topology_exactly() {
 
 #[test]
 fn plan_toml_round_trips_flat_analytic_source_fields() {
-    let plan = Plan::empty().with_fault_signals(
-        FaultSignalPlan::new(
-            vec![periodic_pulse_program()],
-            Vec::new(),
-            FaultResourceLimits::default(),
+    let plan = Plan::empty()
+        .with_fault_signals(
+            FaultSignalPlan::new(
+                vec![periodic_pulse_program()],
+                Vec::new(),
+                FaultResourceLimits::default(),
+            )
+            .unwrap_or_else(|error| panic!("pulse plan: {error}")),
         )
-        .unwrap_or_else(|error| panic!("pulse plan: {error}")),
-    );
+        .unwrap_or_else(|error| panic!("admit fault-plan fixture: {error}"));
     let encoded = plan
         .to_canonical_toml()
         .unwrap_or_else(|error| panic!("encode pulse plan: {error}"));
@@ -967,14 +988,16 @@ fn plan_toml_round_trips_flat_analytic_source_fields() {
 
 #[test]
 fn plan_toml_round_trips_flat_trace_arithmetic_and_boundaries() {
-    let plan = Plan::empty().with_fault_signals(
-        FaultSignalPlan::new(
-            vec![trace_program()],
-            Vec::new(),
-            FaultResourceLimits::default(),
+    let plan = Plan::empty()
+        .with_fault_signals(
+            FaultSignalPlan::new(
+                vec![trace_program()],
+                Vec::new(),
+                FaultResourceLimits::default(),
+            )
+            .unwrap_or_else(|error| panic!("trace plan: {error}")),
         )
-        .unwrap_or_else(|error| panic!("trace plan: {error}")),
-    );
+        .unwrap_or_else(|error| panic!("admit fault-plan fixture: {error}"));
     let encoded = plan
         .to_canonical_toml()
         .unwrap_or_else(|error| panic!("encode trace plan: {error}"));
@@ -996,7 +1019,9 @@ fn plan_binary_round_trips_a_complete_binding_contract() {
     let binding = binding(&program);
     let faults = FaultSignalPlan::new(vec![program], vec![binding], FaultResourceLimits::default())
         .unwrap_or_else(|error| panic!("fault plan admission failed: {error}"));
-    let plan = Plan::empty().with_fault_signals(faults);
+    let plan = Plan::empty()
+        .with_fault_signals(faults)
+        .unwrap_or_else(|error| panic!("admit fault-plan fixture: {error}"));
     let encoded = plan.to_compact_binary();
     let decoded = Plan::from_compact_binary_for_world(&test_world(), &encoded)
         .unwrap_or_else(|error| panic!("decode fault signal plan: {error}"));
@@ -1037,21 +1062,21 @@ fn wire_admission_rejects_versions_missing_programs_and_duplicate_contracts() {
     let plan = FaultSignalPlan::new(vec![program], vec![binding], FaultResourceLimits::default())
         .unwrap_or_else(|error| panic!("fault plan admission failed: {error}"));
 
-    let mut wrong_version = FaultSignalPlanWire::from_plan(&plan);
+    let mut wrong_version = decoded_wire_fixture(&plan);
     wrong_version.semantic_version += 1;
     assert!(matches!(
         wrong_version.admit(),
         Err(FaultSignalWireError::Version { .. })
     ));
 
-    let mut missing_program = FaultSignalPlanWire::from_plan(&plan);
+    let mut missing_program = decoded_wire_fixture(&plan);
     missing_program.fault_binding[0].program = ContentHash::from_bytes(b"missing-program");
     assert!(matches!(
         missing_program.admit(),
         Err(FaultSignalWireError::MissingProgram { .. })
     ));
 
-    let mut duplicate_program = FaultSignalPlanWire::from_plan(&plan);
+    let mut duplicate_program = decoded_wire_fixture(&plan);
     duplicate_program
         .signal_program
         .push(duplicate_program.signal_program[0].clone());
@@ -1062,7 +1087,7 @@ fn wire_admission_rejects_versions_missing_programs_and_duplicate_contracts() {
         ))
     ));
 
-    let mut unexpected_declaration = FaultSignalPlanWire::from_plan(&plan);
+    let mut unexpected_declaration = decoded_wire_fixture(&plan);
     unexpected_declaration.fault_binding[0].service_declaration = Some(ServiceProfileDeclaration {
         id: object_id("unused-service"),
         semantic_version: 1,
@@ -1079,7 +1104,7 @@ fn wire_admission_rejects_versions_missing_programs_and_duplicate_contracts() {
         Err(FaultSignalWireError::UnexpectedMappingDeclaration { .. })
     ));
 
-    let mut missing_declaration = FaultSignalPlanWire::from_plan(&plan);
+    let mut missing_declaration = decoded_wire_fixture(&plan);
     missing_declaration.fault_binding[0].mapping = BindingMapping::StateTransition {
         transition_table: object_id("missing-transition-table"),
     };
@@ -1095,12 +1120,25 @@ fn wire_encoding_is_bounded_and_empty_encoding_is_canonical() {
     let decoded = FaultSignalPlan::from_wire_bytes(empty.wire_bytes())
         .unwrap_or_else(|error| panic!("decode empty plan: {error}"));
     assert_eq!(decoded, empty);
+    assert_eq!(
+        empty.wire_bytes(),
+        serde_json::to_vec(&wire::borrowed::PlanWireRef(&empty))
+            .expect("borrowed canonical empty wire")
+    );
+    let old_material = format!(
+        "{}programs=0\nbindings=0",
+        FaultResourceLimits::default().canonical_material()
+    );
+    assert_eq!(
+        empty.id(),
+        ContentHash::from_canonical_material("crucible.fault-signal-plan.v2", &old_material)
+    );
 
-    let error = match encode_wire_bounded(&vec![0_u8; 32], 8) {
+    let error = match crate::owned_decode::to_json_vec_bounded(&vec![0_u8; 32], 8) {
         Ok(_) => panic!("bounded encoder must reject oversized output"),
         Err(error) => error,
     };
-    assert!(error.is_io());
+    assert!(error.source().is_some());
 }
 
 #[test]
@@ -1137,14 +1175,16 @@ fn reproduction_scenario_envelope_contains_a_maximum_fault_wire_layer() {
 #[test]
 fn toml_round_trips_full_range_u64_values_without_narrowing() {
     let numeric_program = u64_program(u64::MAX);
-    let numeric_plan = Plan::empty().with_fault_signals(
-        FaultSignalPlan::new(
-            vec![numeric_program],
-            Vec::new(),
-            FaultResourceLimits::default(),
+    let numeric_plan = Plan::empty()
+        .with_fault_signals(
+            FaultSignalPlan::new(
+                vec![numeric_program],
+                Vec::new(),
+                FaultResourceLimits::default(),
+            )
+            .unwrap_or_else(|error| panic!("numeric plan: {error}")),
         )
-        .unwrap_or_else(|error| panic!("numeric plan: {error}")),
-    );
+        .unwrap_or_else(|error| panic!("admit fault-plan fixture: {error}"));
     let numeric_toml = numeric_plan
         .to_canonical_toml()
         .unwrap_or_else(|error| panic!("encode u64::MAX signal: {error}"));
@@ -1163,10 +1203,12 @@ fn toml_round_trips_full_range_u64_values_without_narrowing() {
                 .unwrap_or_else(|error| panic!("max cadence: {error}")),
         ),
     );
-    let cadence_plan = Plan::empty().with_fault_signals(
-        FaultSignalPlan::new(vec![program], vec![binding], FaultResourceLimits::default())
-            .unwrap_or_else(|error| panic!("cadence plan: {error}")),
-    );
+    let cadence_plan = Plan::empty()
+        .with_fault_signals(
+            FaultSignalPlan::new(vec![program], vec![binding], FaultResourceLimits::default())
+                .unwrap_or_else(|error| panic!("cadence plan: {error}")),
+        )
+        .unwrap_or_else(|error| panic!("admit fault-plan fixture: {error}"));
     let cadence_toml = cadence_plan
         .to_canonical_toml()
         .unwrap_or_else(|error| panic!("encode max cadence: {error}"));
@@ -1232,10 +1274,12 @@ fn world_toml_round_trips_wide_topology_u64_values_canonically() {
 fn compact_plan_rejects_resolved_targets_absent_from_decode_world() {
     let program = program(true);
     let binding = binding(&program);
-    let plan = Plan::empty().with_fault_signals(
-        FaultSignalPlan::new(vec![program], vec![binding], FaultResourceLimits::default())
-            .unwrap_or_else(|error| panic!("binding plan: {error}")),
-    );
+    let plan = Plan::empty()
+        .with_fault_signals(
+            FaultSignalPlan::new(vec![program], vec![binding], FaultResourceLimits::default())
+                .unwrap_or_else(|error| panic!("binding plan: {error}")),
+        )
+        .unwrap_or_else(|error| panic!("admit fault-plan fixture: {error}"));
     let world_without_targets = test_world()
         .with_fault_topology(WorldFaultTopology::default())
         .unwrap_or_else(|error| panic!("empty fault topology: {error}"));
@@ -1267,4 +1311,79 @@ fn world_rejects_adjacent_forwarders_in_a_network_path() {
         },
     ]);
     assert!(world.with_fault_topology(topology).is_err());
+}
+
+fn decoded_wire_fixture(plan: &FaultSignalPlan) -> FaultSignalPlanWire {
+    serde_json::from_slice(plan.wire_bytes())
+        .unwrap_or_else(|error| panic!("decode actual persisted fixture: {error}"))
+}
+
+#[test]
+fn borrowed_selector_checks_match_authoring_projection() {
+    let world = test_world();
+    let forward = ResolvedFaultTarget::NetworkSegment {
+        segment: test_segment_id(),
+        direction: FaultDirection::AToB,
+    };
+    let reverse = ResolvedFaultTarget::NetworkSegment {
+        segment: test_segment_id(),
+        direction: FaultDirection::BToA,
+    };
+    let set = |targets| ResolvedTargetSet::new(targets, false).expect("admitted fixture targets");
+    let selectors = [
+        TargetSelector::Exact(set(vec![forward.clone()])),
+        TargetSelector::TargetSet(set(vec![forward.clone(), reverse.clone()])),
+        TargetSelector::TargetSet(set(vec![forward.clone()])),
+        TargetSelector::FaultDomain {
+            domain: FaultObjectId::parse("campus-uplink").expect("fixture domain"),
+            resolved: set(vec![forward.clone()]),
+        },
+        TargetSelector::FaultDomain {
+            domain: FaultObjectId::parse("campus-uplink").expect("fixture domain"),
+            resolved: set(vec![reverse]),
+        },
+        TargetSelector::DynamicPath {
+            path: FaultObjectId::parse("active-uplink").expect("fixture path"),
+            initial: set(vec![forward]),
+            membership_semantic_version: 1,
+        },
+        TargetSelector::Exact(set(vec![ResolvedFaultTarget::NetworkInterface {
+            endpoint: FaultObjectId::parse("left").expect("fixture endpoint"),
+            interface: FaultObjectId::parse("right-interface").expect("fixture interface"),
+        }])),
+        TargetSelector::Exact(set(vec![ResolvedFaultTarget::Node {
+            node: FaultObjectId::parse("left").expect("fixture node"),
+        }])),
+        TargetSelector::Exact(set(vec![ResolvedFaultTarget::Node {
+            node: FaultObjectId::parse("absent").expect("fixture node"),
+        }])),
+    ];
+    struct NoProjectionCredit(std::sync::atomic::AtomicBool);
+    impl crate::owned_decode::DecodeResourceAuthority for NoProjectionCredit {
+        fn reserve(
+            &self,
+            _bytes: u64,
+        ) -> Result<std::sync::Arc<dyn Send + Sync>, crate::owned_decode::DecodeAdmissionError>
+        {
+            assert!(
+                !self.0.swap(true, std::sync::atomic::Ordering::SeqCst),
+                "borrowed selector validation requested owned projection storage",
+            );
+            Ok(std::sync::Arc::new(()))
+        }
+    }
+    let budget = crate::owned_decode::DecodeBudget::new(
+        std::sync::Arc::new(NoProjectionCredit(std::sync::atomic::AtomicBool::new(false))),
+        256,
+    )
+    .expect("original account with only its initial control credit");
+    for selector in selectors {
+        let expected = authoring::selector_projection_matches_world(&selector, &world);
+        let _scope = budget.enter();
+        assert_eq!(
+            authoring::validate_selector_for_world(&selector, &world).is_ok(),
+            expected,
+            "{selector:?}",
+        );
+    }
 }

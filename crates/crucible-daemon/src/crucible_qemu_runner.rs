@@ -608,7 +608,7 @@ mod tests {
         crucible_campaign::ExactCheckpointId::try_from(
             crucible_cas::content_store::ContentId::for_bytes(
                 crucible_cas::content_store::ObjectKind::ExactManifest,
-                5,
+                6,
                 material,
             ),
         )

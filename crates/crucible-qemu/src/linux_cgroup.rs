@@ -33,6 +33,9 @@ use crate::spawn::{QemuChildCredentials, QemuChildProcessContract};
 use crate::{QemuNodeChild, QemuProcessIdentity, linux_process_identity};
 
 mod attempt_owner;
+mod memory_control;
+/// Opaque pinned memory authority confined to the physical owner boundary.
+pub(crate) type LinuxQemuCgroupMemoryControl = memory_control::LinuxQemuCgroupMemoryControl;
 mod quarantine;
 
 pub(crate) use attempt_owner::{
@@ -938,6 +941,7 @@ impl LinuxQemuCgroup {
     pub(crate) fn child_process_contract(
         &self,
         maximum_writable_bytes: u64,
+        maximum_file_descriptors: u64,
         child_user_id: libc::uid_t,
         child_group_id: libc::gid_t,
         exact_checkpoint_root: Option<crucible::ContentHash>,
@@ -981,7 +985,10 @@ impl LinuxQemuCgroup {
             cgroup_procs,
             cancellation_event,
             self.limits,
-            maximum_writable_bytes,
+            crate::spawn::QemuChildFileLimits {
+                writable_bytes: maximum_writable_bytes,
+                descriptors: maximum_file_descriptors,
+            },
             credentials,
             exact_checkpoint_root,
         )
@@ -2005,7 +2012,7 @@ mod tests {
         };
 
         assert!(matches!(
-            group.child_process_contract(4096, 65_533, 65_532, None),
+            group.child_process_contract(4096, 1024, 65_533, 65_532, None),
             Err(LinuxQemuCgroupError::WatcherNotRunning { .. })
         ));
         let watcher = group.start_watcher()?;
@@ -2058,7 +2065,7 @@ mod tests {
         };
 
         assert!(matches!(
-            group.child_process_contract(4096, 65_533, 65_532, None),
+            group.child_process_contract(4096, 1024, 65_533, 65_532, None),
             Err(LinuxQemuCgroupError::WatcherNotRunning { .. })
         ));
         Ok(())

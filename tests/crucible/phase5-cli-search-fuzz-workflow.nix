@@ -6,6 +6,7 @@
   openTaskIds ? [],
   dependencies ? [],
 }: let
+  catalogInstaller = import ./_catalog-quota-installer.nix {inherit pkgs lib;};
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
   networkInitramfs = import ./phase2-qemu-live-network-io-guest.nix {inherit pkgs;};
@@ -1206,26 +1207,145 @@ in
 
     deployment = builtins.toFile "search-fuzz-packaged-executor.toml" ''
       schema = "crucible.campaign-packaged-executor"
-      version = 2
+      version = 3
       cgroup_root = "/sys/fs/cgroup/crucible"
       run_root = "/tmp/attempts/run"
       attempt_namespace = "cli-search-fuzz"
       first_project_id = 33000
-      project_id_count = 1
+      project_id_count = 2
       child_user_id = 65534
       child_group_id = 65534
       maximum_tasks = 64
+      maximum_file_descriptors = 1024
+      maximum_node_host_service_tasks = 4
+      maximum_node_host_service_file_descriptors = 32
+      maximum_node_host_service_resident_bytes = 8388608
+      watcher_service_resident_bytes = 1048576
+      ram_catalog_root = "/tmp/attempts/ram-catalogs"
+      operational_registry_root = "/tmp/attempts/executor-ledger"
+      operational_registry_project_id = 31000
+      operational_registry_maximum_inodes = 65536
+      ram_catalog_project_id = 40000
+      maximum_ram_catalog_inodes = 262144
+      maximum_ram_catalog_sqlite_heap_bytes = 8388608
+      maximum_paging_io_slots = 16
+      maximum_host_task_slots = 1024
+      maximum_host_file_descriptors = 16384
+      maximum_host_metadata_bytes = 536870912
+      maximum_host_staging_bytes = 67108864
       maximum_inodes = 4096
       finish_timeout_ms = 15000
       maximum_slots = 1
-      maximum_vcpus = 2
-      maximum_resident_bytes = 2147483648
-      maximum_disk_bytes = 2147483648
-      maximum_execution_quanta = 10000
+      maximum_vcpus = 6
+      maximum_resident_bytes = 6442450944
+      maximum_disk_bytes = 6459228160
+      maximum_execution_quanta = 20000
       maximum_checkpoint_bytes = 1073741824
       worker_count = 1
       host_architecture = "${pkgs.stdenv.hostPlatform.parsed.cpu.name}"
       qemu_profile = "deterministic-tcg-v1"
+
+      [host_operation_budgets.setup]
+      poll_interval_ms = 10
+      total_timeout_ms = 2700000
+
+      [host_operation_budgets.quantum]
+      poll_interval_ms = 10
+      total_timeout_ms = 2700000
+
+      [host_operation_budgets.page_in]
+      poll_interval_ms = 10
+      total_timeout_ms = 2700000
+
+      [host_operation_budgets.writeback]
+      poll_interval_ms = 10
+      total_timeout_ms = 2700000
+
+      [host_operation_budgets.fingerprint_initialization]
+      poll_interval_ms = 10
+      total_timeout_ms = 2700000
+
+      [host_operation_budgets.fingerprint_update]
+      poll_interval_ms = 10
+      total_timeout_ms = 2700000
+
+      [host_operation_budgets.quiescence]
+      poll_interval_ms = 10
+      total_timeout_ms = 2700000
+
+      [host_operation_budgets.checkpoint_capture]
+      poll_interval_ms = 10
+      total_timeout_ms = 2700000
+
+      [host_operation_budgets.checkpoint_publication]
+      poll_interval_ms = 10
+      total_timeout_ms = 2700000
+
+      [host_operation_budgets.restore]
+      poll_interval_ms = 10
+      total_timeout_ms = 2700000
+
+      [host_operation_budgets.fork_rearm]
+      poll_interval_ms = 10
+      total_timeout_ms = 2700000
+
+      [host_operation_budgets.transfer]
+      poll_interval_ms = 10
+      total_timeout_ms = 2700000
+
+      [host_operation_budgets.preparation]
+      poll_interval_ms = 10
+      total_timeout_ms = 2700000
+
+      [host_operation_budgets.cleanup]
+      poll_interval_ms = 10
+      total_timeout_ms = 2700000
+
+      [operational_registry_resources]
+      resident_peak_bytes = 134217728
+      backing_peak_bytes = 16777216
+      metadata_bytes = 67108864
+      staging_bytes = 8388608
+      paging_io_slots = 1
+      cpu_slots = 1
+      task_slots = 1
+      file_descriptors = 128
+
+      [ram_catalog_resources]
+      resident_peak_bytes = 134217728
+      backing_peak_bytes = 2147483648
+      metadata_bytes = 67108864
+      staging_bytes = 8388608
+      paging_io_slots = 1
+      cpu_slots = 1
+      task_slots = 1
+      file_descriptors = 128
+
+      [retained_template_resources]
+      resident_peak_bytes = 2148532224
+      backing_peak_bytes = 2147483648
+      metadata_bytes = 134217728
+      staging_bytes = 16777216
+      paging_io_slots = 1
+      cpu_slots = 2
+      task_slots = 69
+      file_descriptors = 1056
+
+      [assignment_limits]
+      vcpus = 2
+      resident_bytes = 2147483648
+      disk_bytes = 2147483648
+      execution_quanta = 10000
+
+      [assignment_resources]
+      resident_peak_bytes = 2148532224
+      backing_peak_bytes = 2147483648
+      metadata_bytes = 134217728
+      staging_bytes = 16777216
+      paging_io_slots = 1
+      cpu_slots = 2
+      task_slots = 69
+      file_descriptors = 1056
 
       [operations]
       listener_workers = 4
@@ -1245,8 +1365,11 @@ in
     testing = import ../../lib/testing {inherit pkgs lib;};
     vmTest = testing.mkVMTest {
       name = "crucible-phase5-cli-search-fuzz-live-qemu";
-      memory = 4096;
+      memory = 8192;
+      extraWritableMiB = 8192;
       rootfsDeps = [
+        catalogInstaller
+        pkgs.linux
         deployment
         liveFixtures
         fuzzGuest
@@ -1259,127 +1382,153 @@ in
         pkgs.util-linux
       ];
       testScript = ''
-        set -eu
-
-        cleanup_attempt_mount() {
-          status="$?"
-          if [ "$status" -ne 0 ]; then
-            for log in \
-              /tmp/production-search.jsonl \
-              /tmp/production-search.stderr \
-              /tmp/production-fuzz.jsonl; do
-              if [ -f "$log" ]; then
-                echo "==> Tail of $log"
-                ${pkgs.coreutils}/bin/tail -c 16384 "$log"
-              fi
+            set -eu
+            for kernel_config in ${pkgs.linux}/boot/config-*; do
+              ${pkgs.grep}/bin/grep -qx 'CONFIG_USERFAULTFD=y' "$kernel_config"
             done
-          fi
-          ${pkgs.util-linux}/bin/umount /tmp/attempts > /dev/null 2>&1 || true
-        }
+        # This permission is scoped to the disposable qualification VM. It permits
+        # the unprivileged QEMU child to handle kernel-origin faults; no host sysctl
+        # is changed, and a missing kernel facility fails this test.
+        test -e /proc/sys/vm/unprivileged_userfaultfd
+        echo 1 > /proc/sys/vm/unprivileged_userfaultfd
+        test "$(cat /proc/sys/vm/unprivileged_userfaultfd)" = 1
 
-        trap cleanup_attempt_mount EXIT HUP INT TERM
-        mkdir -p /sys/fs/cgroup
-        ${pkgs.util-linux}/bin/mount -t cgroup2 none /sys/fs/cgroup
-        echo '+cpu +memory +pids' > /sys/fs/cgroup/cgroup.subtree_control
-        mkdir /sys/fs/cgroup/crucible
-        echo '+cpu +memory +pids' > /sys/fs/cgroup/crucible/cgroup.subtree_control
+            # Paging backing belongs on the fixture disk, not /tmp's tmpfs.
+            ${pkgs.util-linux}/bin/mount -o remount,rw /
+            ${pkgs.util-linux}/bin/mount --bind /var/tmp /tmp
+            chmod 1777 /tmp
 
-        truncate -s 4G /tmp/attempts.img
-        ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -F -O quota,project \
-          -E quotatype=prjquota /tmp/attempts.img
-        mkdir /tmp/attempts
-        ${pkgs.util-linux}/bin/mount -o loop,prjquota \
-          /tmp/attempts.img /tmp/attempts
-        mkdir -m 700 /tmp/attempts/run /tmp/run-state
-        install -m 600 ${deployment} /tmp/executor.toml
+            cleanup_attempt_mount() {
+              status="$?"
+              if [ "$status" -ne 0 ]; then
+                for log in \
+                  /tmp/production-search.jsonl \
+                  /tmp/production-search.stderr \
+                  /tmp/production-fuzz.jsonl; do
+                  if [ -f "$log" ]; then
+                    echo "==> Tail of $log"
+                    ${pkgs.coreutils}/bin/tail -c 16384 "$log"
+                  fi
+                done
+              fi
+              ${pkgs.util-linux}/bin/umount /tmp/attempts > /dev/null 2>&1 || true
+            }
 
-        export CRUCIBLE_CAMPAIGN_DEPLOYMENT=/tmp/executor.toml
+            trap cleanup_attempt_mount EXIT HUP INT TERM
+            mkdir -p /sys/fs/cgroup
+            ${pkgs.util-linux}/bin/mount -t cgroup2 none /sys/fs/cgroup
+            echo '+cpu +memory +pids' > /sys/fs/cgroup/cgroup.subtree_control
+            mkdir /sys/fs/cgroup/crucible
+            echo '+cpu +memory +pids' > /sys/fs/cgroup/crucible/cgroup.subtree_control
 
-        mkdir -p \
-          "/tmp/crucible-cli-search-artifacts" \
-          "/tmp/crucible-cli-search-store" \
-          "/tmp/crucible-cli-fuzz-artifacts" \
-          "/tmp/crucible-cli-fuzz-store" \
-          "/tmp/crucible-cli-fuzz-corpus"
-        CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
-          CRUCIBLE_RUN_STATE_ROOT="/tmp/crucible-cli-search-state" \
-          "${pkgs.crucible}/bin/crucible" \
-          --backend qemu \
-          --seed 42 \
-          --format jsonl \
-          --artifact-dir "/tmp/crucible-cli-search-artifacts" \
-          --store "/tmp/crucible-cli-search-store" \
-          search \
-          ${searchFixture} \
-          --max-states 2 \
-          --on-violation collect \
-          > "/tmp/production-search.jsonl" \
-          2> "/tmp/production-search.stderr"
-        CRUCIBLE_KERNEL="${fuzzGuest}/fuzz-guest.elf" \
-          CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
-          CRUCIBLE_RUN_STATE_ROOT="/tmp/crucible-cli-fuzz-state" \
-          "${pkgs.crucible}/bin/crucible" \
-          --backend qemu \
-          --seed 42 \
-          --format jsonl \
-          --artifact-dir "/tmp/crucible-cli-fuzz-artifacts" \
-          --store "/tmp/crucible-cli-fuzz-store" \
-          fuzz \
-          ${fuzzFixture} \
-          --runs 1 \
-          --corpus "/tmp/crucible-cli-fuzz-corpus" \
-          > "/tmp/production-fuzz.jsonl"
+            truncate -s 7G /tmp/attempts.img
+            ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -F -O quota,project \
+              -E quotatype=prjquota /tmp/attempts.img
+            mkdir /tmp/attempts
+            ${pkgs.util-linux}/bin/mount -o loop,prjquota \
+              /tmp/attempts.img /tmp/attempts
+            mkdir -m 700 /tmp/attempts/run /tmp/run-state
+            ${pkgs.coreutils}/bin/timeout -k 5 60 \
+              ${catalogInstaller}/bin/install-catalog-quota \
+              /tmp/attempts /tmp/attempts/ram-catalogs 40000 2147483648 262144 \
+              > /tmp/catalog-quota-install.log
+            cat /tmp/catalog-quota-install.log
+            ${pkgs.grep}/bin/grep -Fxq catalog_quota_survives_installer_drop=true /tmp/catalog-quota-install.log
+            ${pkgs.coreutils}/bin/timeout -k 5 60 \
+              ${catalogInstaller}/bin/install-catalog-quota \
+              /tmp/attempts /tmp/attempts/executor-ledger 31000 16777216 65536 \
+              > /tmp/registry-quota-install.log
+            cat /tmp/registry-quota-install.log
+            ${pkgs.grep}/bin/grep -Fxq catalog_quota_survives_installer_drop=true /tmp/registry-quota-install.log
+            install -m 600 ${deployment} /tmp/executor.toml
 
-        test -n "$(
-          sed -n \
-            '/"kind":"search_campaign_execution".*observations=2 branch_requests=[1-9][0-9]*.*backend=live"/p' \
-            "/tmp/production-search.jsonl"
-        )"
-        test -n "$(
-          sed -n \
-            '/"kind":"search_campaign_branch".*maximum_attempts=[1-9][0-9]* backend=live"/p' \
-            "/tmp/production-search.jsonl"
-        )"
-        test -n "$(
-          sed -n \
-            '/"kind":"live_backend_execution".*"operation=search-campaign/p' \
-            "/tmp/production-search.jsonl"
-        )"
-        test -n "$(
-          sed -n \
-            '/"kind":"final_outcome".*"subcommand=search status=passed exit_code=0/p' \
-            "/tmp/production-search.jsonl"
-        )"
-        test -n "$(
-          sed -n \
-            '/"kind":"fuzz_coverage_feedback".*blocks=[1-9][0-9]*/p' \
-            "/tmp/production-fuzz.jsonl"
-        )"
-        test -n "$(
-          sed -n \
-            '/"kind":"fuzz_campaign_execution".*branch_requests=[1-9][0-9]* override_observations=[1-9][0-9]*/p' \
-            "/tmp/production-fuzz.jsonl"
-        )"
-        test -n "$(
-          sed -n \
-            '/retained_entries=[1-9][0-9]*.*replay_oracle_validations=[1-9][0-9]*.*generated_mutants=[1-9][0-9]*.*store_puts=[1-9][0-9]*/p' \
-            "/tmp/production-fuzz.jsonl"
-        )"
-        test -n "$(
-          sed -n \
-            '/"kind":"live_backend_execution".*"operation=fuzz-live-campaign/p' \
-            "/tmp/production-fuzz.jsonl"
-        )"
-        test -n "$(
-          sed -n \
-            '/"kind":"final_outcome".*"subcommand=fuzz status=passed exit_code=0/p' \
-            "/tmp/production-fuzz.jsonl"
-        )"
+            export CRUCIBLE_CAMPAIGN_DEPLOYMENT=/tmp/executor.toml
 
-        cat /tmp/production-search.jsonl
-        cat /tmp/production-fuzz.jsonl
-        ${pkgs.util-linux}/bin/umount /tmp/attempts
-        trap - EXIT HUP INT TERM
+            mkdir -p \
+              "/tmp/crucible-cli-search-artifacts" \
+              "/tmp/crucible-cli-search-store" \
+              "/tmp/crucible-cli-fuzz-artifacts" \
+              "/tmp/crucible-cli-fuzz-store" \
+              "/tmp/crucible-cli-fuzz-corpus"
+            CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
+              CRUCIBLE_RUN_STATE_ROOT="/tmp/crucible-cli-search-state" \
+              "${pkgs.crucible}/bin/crucible" \
+              --backend qemu \
+              --seed 42 \
+              --format jsonl \
+              --artifact-dir "/tmp/crucible-cli-search-artifacts" \
+              --store "/tmp/crucible-cli-search-store" \
+              search \
+              ${searchFixture} \
+              --max-states 2 \
+              --on-violation collect \
+              > "/tmp/production-search.jsonl" \
+              2> "/tmp/production-search.stderr"
+            CRUCIBLE_KERNEL="${fuzzGuest}/fuzz-guest.elf" \
+              CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
+              CRUCIBLE_RUN_STATE_ROOT="/tmp/crucible-cli-fuzz-state" \
+              "${pkgs.crucible}/bin/crucible" \
+              --backend qemu \
+              --seed 42 \
+              --format jsonl \
+              --artifact-dir "/tmp/crucible-cli-fuzz-artifacts" \
+              --store "/tmp/crucible-cli-fuzz-store" \
+              fuzz \
+              ${fuzzFixture} \
+              --runs 1 \
+              --corpus "/tmp/crucible-cli-fuzz-corpus" \
+              > "/tmp/production-fuzz.jsonl"
+
+            test -n "$(
+              sed -n \
+                '/"kind":"search_campaign_execution".*observations=2 branch_requests=[1-9][0-9]*.*backend=live"/p' \
+                "/tmp/production-search.jsonl"
+            )"
+            test -n "$(
+              sed -n \
+                '/"kind":"search_campaign_branch".*maximum_attempts=[1-9][0-9]* backend=live"/p' \
+                "/tmp/production-search.jsonl"
+            )"
+            test -n "$(
+              sed -n \
+                '/"kind":"live_backend_execution".*"operation=search-campaign/p' \
+                "/tmp/production-search.jsonl"
+            )"
+            test -n "$(
+              sed -n \
+                '/"kind":"final_outcome".*"subcommand=search status=passed exit_code=0/p' \
+                "/tmp/production-search.jsonl"
+            )"
+            test -n "$(
+              sed -n \
+                '/"kind":"fuzz_coverage_feedback".*blocks=[1-9][0-9]*/p' \
+                "/tmp/production-fuzz.jsonl"
+            )"
+            test -n "$(
+              sed -n \
+                '/"kind":"fuzz_campaign_execution".*branch_requests=[1-9][0-9]* override_observations=[1-9][0-9]*/p' \
+                "/tmp/production-fuzz.jsonl"
+            )"
+            test -n "$(
+              sed -n \
+                '/retained_entries=[1-9][0-9]*.*replay_oracle_validations=[1-9][0-9]*.*generated_mutants=[1-9][0-9]*.*store_puts=[1-9][0-9]*/p' \
+                "/tmp/production-fuzz.jsonl"
+            )"
+            test -n "$(
+              sed -n \
+                '/"kind":"live_backend_execution".*"operation=fuzz-live-campaign/p' \
+                "/tmp/production-fuzz.jsonl"
+            )"
+            test -n "$(
+              sed -n \
+                '/"kind":"final_outcome".*"subcommand=fuzz status=passed exit_code=0/p' \
+                "/tmp/production-fuzz.jsonl"
+            )"
+
+            cat /tmp/production-search.jsonl
+            cat /tmp/production-fuzz.jsonl
+            ${pkgs.util-linux}/bin/umount /tmp/attempts
+            trap - EXIT HUP INT TERM
       '';
     };
   in

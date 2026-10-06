@@ -738,6 +738,14 @@ pub enum ChoiceValue {
 }
 
 impl ChoiceValue {
+    /// Copies canonical group fields after original metadata admission.
+    ///
+    /// # Errors
+    /// Refuses exhausted original allocation authority or invalid canonical data.
+    pub fn clone_admitted(&self) -> Result<Self, CampaignCodecError> {
+        crate::codec::admitted_clone(self)
+    }
+
     /// Returns strict canonical value bytes for guest delivery and replay.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {

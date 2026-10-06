@@ -1,0 +1,498 @@
+//! Services authenticated page faults and cold-safe coherent observations.
+//!
+//! The actor never enters QEMU replay, BQL, RCU, device, or root observer locks.
+//! Its registered native lifetime remains visible through failed certificates.
+
+use super::*;
+
+pub(super) struct FaultService {
+    pub(super) registration: Arc<Registration>,
+    pub(super) counters: Arc<PagingCounters>,
+    pub(super) source: Option<Arc<RestorePageSource>>,
+    pub(super) spill: Arc<Mutex<super::super::PreservedPages>>,
+    pub(super) arenas: Vec<Arena>,
+    pub(super) states: Mutex<Vec<PageState>>,
+    pub(super) worker: Mutex<Option<JoinHandle<Result<(), RamError>>>>,
+    pub(super) stop: AtomicBool,
+    pub(super) activated: AtomicBool,
+    pub(super) destructive: AtomicBool,
+    pub(super) failed: AtomicBool,
+    pub(super) retained_token: AtomicU64,
+    pub(super) operations: Arc<dyn SourceOperationFactory>,
+    pub(super) worker_generation: u64,
+    pub(super) native: NativeOperations,
+    pub(super) _reservation: MetadataReservation,
+    pub(super) _arena_reservation: MetadataReservation,
+}
+
+impl FaultService {
+    pub(super) fn start(self: &Arc<Self>) -> Result<(), RamError> {
+        let operation = self
+            .operations
+            .begin(SourceOperationClass::ControlSetup)
+            .map_err(RamError::from)?;
+        let mut worker = self
+            .worker
+            .lock()
+            .map_err(|_| "paging worker owner is poisoned")?;
+        if worker.is_some() {
+            return Err(RamError::Invariant("paging worker is already running"));
+        }
+        let service = self.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+        *worker = Some(
+            std::thread::Builder::new()
+                .name("guest-page-service".to_owned())
+                .stack_size(PAGER_STACK_BYTES)
+                .spawn(move || {
+                    // SAFETY: gettid has no pointer operands and identifies this actual
+                    // actor; native registry checks caller identity rather than names.
+                    let tid = unsafe { libc::syscall(libc::SYS_gettid) };
+                    let status =
+                        (service.native.worker)(1, service.worker_generation, tid as u64, 1);
+                    if status != 0 {
+                        let _ = ready_tx.send(status);
+                        service.failed.store(true, Ordering::Release);
+                        return Err(RamError::Native {
+                            operation: "paging worker registration refused",
+                            status,
+                        });
+                    }
+                    if ready_tx.send(0).is_err() {
+                        service.failed.store(true, Ordering::Release);
+                        let release =
+                            (service.native.worker)(1, service.worker_generation, tid as u64, 0);
+                        return Err(RamError::Native {
+                            operation: "paging worker admission abandoned",
+                            status: release,
+                        });
+                    }
+                    let result =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| service.run()))
+                            .unwrap_or(Err(RamError::Invariant("paging fault actor panicked")));
+                    if result.is_err() {
+                        service.failed.store(true, Ordering::Release);
+                    }
+                    let mut release =
+                        (service.native.worker)(1, service.worker_generation, tid as u64, 0);
+                    while release == -libc::EBUSY {
+                        // Existing membership stays alive while a certificate retains
+                        // it. Failure never disappears from the held physical inventory.
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        release =
+                            (service.native.worker)(1, service.worker_generation, tid as u64, 0);
+                    }
+                    if release != 0 {
+                        service.failed.store(true, Ordering::Release);
+                        return Err(RamError::Native {
+                            operation: "paging worker membership release failed",
+                            status: release,
+                        });
+                    }
+                    result
+                })
+                .map_err(RamError::from)?,
+        );
+        drop(worker);
+        loop {
+            let slice = operation.wait_slice().map_err(RamError::from)?;
+            match ready_rx.recv_timeout(slice) {
+                Ok(0) => break,
+                Ok(status) => {
+                    return Err(RamError::Native {
+                        operation: "paging worker registration",
+                        status,
+                    });
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(_) => {
+                    return Err(RamError::Invariant(
+                        "paging worker startup channel disconnected",
+                    ));
+                }
+            }
+        }
+        operation.complete().map_err(RamError::from)?;
+        Ok(())
+    }
+
+    pub(super) fn stop_for_fork(&self) -> Result<(), RamError> {
+        let operation = self.operations.begin(SourceOperationClass::Cleanup)?;
+        self.stop.store(true, Ordering::Release);
+        loop {
+            let finished = self
+                .worker
+                .try_lock()
+                .map_err(|_| RamError::Invariant("paging worker owner unavailable"))?
+                .as_ref()
+                .is_none_or(JoinHandle::is_finished);
+            if finished {
+                break;
+            }
+            let slice = operation.wait_slice()?;
+            std::thread::sleep(slice.min(std::time::Duration::from_millis(10)));
+        }
+        let worker = self
+            .worker
+            .try_lock()
+            .map_err(|_| RamError::Invariant("paging worker owner unavailable"))?
+            .take();
+        if let Some(worker) = worker {
+            worker
+                .join()
+                .map_err(|_| RamError::Invariant("paging worker panicked during fork hold"))??;
+        }
+        operation.complete()?;
+        if self.failed.load(Ordering::Acquire) {
+            return Err(RamError::Invariant("paging worker failed during fork hold"));
+        }
+        Ok(())
+    }
+
+    pub(super) fn resume_after_fork(self: &Arc<Self>) -> Result<(), RamError> {
+        if self.failed.load(Ordering::Acquire) {
+            return Err(RamError::Invariant("failed paging authority cannot resume"));
+        }
+        if self
+            .worker
+            .try_lock()
+            .map_err(|_| RamError::Invariant("paging worker owner unavailable"))?
+            .is_some()
+        {
+            return Err(RamError::Invariant(
+                "paging worker has no completed fork disposition",
+            ));
+        }
+        self.stop.store(false, Ordering::Release);
+        self.start()
+    }
+
+    pub(super) fn stop_before_activation(&self) -> Result<(), RamError> {
+        if self.activated.load(Ordering::Acquire) {
+            return Err(RamError::Invariant(
+                "active paging worker requires a cold-source lifecycle handoff",
+            ));
+        }
+        self.stop.store(true, Ordering::Release);
+        let worker = self
+            .worker
+            .lock()
+            .map_err(|_| "paging worker owner is poisoned")?
+            .take();
+        if let Some(worker) = worker {
+            worker
+                .join()
+                .map_err(|_| "paging worker panicked before activation")??;
+        }
+        Ok(())
+    }
+
+    fn run(&self) -> Result<(), RamError> {
+        let mut scratch = [0; PAGE_BYTES];
+        while !self.stop.load(Ordering::Acquire) {
+            self.registration.wait(10).map_err(RamError::from)?;
+            if !self.activated.load(Ordering::Acquire) {
+                continue;
+            }
+            while let Some(fault) = self.registration.read_fault().map_err(RamError::from)? {
+                self.resolve(fault, &mut scratch)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn read_cold(
+        &self,
+        arena: &Arena,
+        page_index: u64,
+        coordinate: usize,
+        observation: bool,
+        scratch: &mut [u8; PAGE_BYTES],
+    ) -> Result<u32, RamError> {
+        let record = self
+            .states
+            .try_lock()
+            .map_err(|_| "cold page ownership unavailable")?
+            .get(coordinate)
+            .ok_or("cold page coordinate absent")?
+            .preserved
+            .clone();
+        if let Some(record) = record {
+            let class = if observation {
+                SourceOperationClass::FingerprintUpdate
+            } else {
+                SourceOperationClass::PageIn
+            };
+            let operation = self.operations.begin(class)?;
+            self.spill
+                .try_lock()
+                .map_err(|_| "spill ownership unavailable")?
+                .read(&record, scratch)?;
+            operation.complete()?;
+            count_completed(&self.counters.preserved_reads)?;
+            return Ok(record.valid_length());
+        }
+        let source = self
+            .source
+            .as_ref()
+            .ok_or("cold page has no authenticated preservation")?;
+        let (valid, _) = if observation {
+            source.fetch_for_observation(arena.native.region_index, page_index, scratch)?
+        } else {
+            source.fetch(arena.native.region_index, page_index, scratch)?
+        };
+        Ok(valid)
+    }
+
+    fn resolve(&self, fault: FaultEvent, scratch: &mut [u8; PAGE_BYTES]) -> Result<(), RamError> {
+        let operation = self
+            .operations
+            .begin(SourceOperationClass::PageIn)
+            .map_err(RamError::from)?;
+        let address = fault.address & !(PAGE_BYTES as u64 - 1);
+        let arena = self
+            .arenas
+            .iter()
+            .find(|arena| {
+                address >= arena.native.host_address
+                    && address < arena.native.host_address + arena.native.mapping_length
+            })
+            .ok_or("fault address is outside retained arenas")?;
+        let page_index = (address - arena.native.host_address) / PAGE_BYTES as u64;
+        let coordinate = arena
+            .page_start
+            .checked_add(usize::try_from(page_index).map_err(|_| "fault page index overflow")?)
+            .ok_or("fault coordinate overflow")?;
+        if fault.thread_id == 0 || (fault.write_protected && !fault.write) {
+            return Err(RamError::Invariant(
+                "fault accessor identity or flags are invalid",
+            ));
+        }
+        if fault.write_protected {
+            let mut states = self
+                .states
+                .lock()
+                .map_err(|_| "paging state ownership uncertain")?;
+            let state = states
+                .get_mut(coordinate)
+                .ok_or("fault coordinate absent")?;
+            if !state.resident {
+                return Err(RamError::Invariant(
+                    "write fault does not match retained page state",
+                ));
+            }
+            // Multiple blocked accessors can queue the same WP event. Only the
+            // first transition advances its version; later events merely wake.
+            if !state.writable {
+                state.version = state
+                    .version
+                    .checked_add(1)
+                    .ok_or("page write version exhausted")?;
+                let status = (self.native.mark_write)(
+                    arena.native.topology_generation,
+                    arena.native.region_index,
+                    page_index,
+                );
+                if status != 0 {
+                    return Err(RamError::Native {
+                        operation: "logical write ownership refused",
+                        status,
+                    });
+                }
+                self.registration
+                    .protect(address, PAGE_BYTES as u64, false)
+                    .map_err(RamError::from)?;
+                state.writable = true;
+                count_completed(&self.counters.write_transitions)?;
+            }
+        } else {
+            let resident = self
+                .states
+                .lock()
+                .map_err(|_| "paging state ownership uncertain")?
+                .get(coordinate)
+                .ok_or("fault coordinate absent")?
+                .resident;
+            if resident {
+                // A prior service of another queued accessor already installed
+                // this page; no removal is admitted while this service is active.
+                self.registration.wake(address).map_err(RamError::from)?;
+                return operation.complete().map_err(RamError::from);
+            }
+            let valid = self.read_cold(arena, page_index, coordinate, false, scratch)?;
+            if valid as usize != PAGE_BYTES {
+                return Err(RamError::Invariant(
+                    "source page length differs from admitted host mapping",
+                ));
+            }
+            operation.wait_slice().map_err(RamError::from)?;
+            self.registration
+                .populate(address, scratch)
+                .map_err(RamError::from)?;
+            self.states
+                .lock()
+                .map_err(|_| "paging state ownership uncertain")?
+                .get_mut(coordinate)
+                .ok_or("fault coordinate absent")?
+                .resident = true;
+            count_completed(&self.counters.missing_installs)?;
+            if fault.write {
+                count_completed(&self.counters.successful_missing_write_installs)?;
+            } else {
+                count_completed(&self.counters.successful_missing_read_installs)?;
+            }
+        }
+        operation.wait_slice().map_err(RamError::from)?;
+        self.registration.wake(address).map_err(RamError::from)?;
+        operation.complete().map_err(RamError::from)
+    }
+}
+
+pub(super) extern "C" fn operational_rearm(generation: u64) -> c_int {
+    let result = rearm_resident_pages(generation);
+    match result {
+        Ok(()) => 0,
+        Err(_) => -libc::EIO,
+    }
+}
+
+fn rearm_resident_pages(generation: u64) -> Result<(), RamError> {
+    let owner = OPERATIONAL_OWNER
+        .get()
+        .ok_or(RamError::Invariant("operational RAM owner absent"))?
+        .try_lock()
+        .map_err(|_| RamError::Invariant("operational RAM owner unavailable"))?
+        .clone()
+        .ok_or(RamError::Invariant("operational RAM owner absent"))?;
+    let service = owner
+        .active
+        .lock()
+        .map_err(|_| "paging authority owner poisoned")?
+        .clone();
+    let Some(service) = service else {
+        return Ok(());
+    };
+    if !service.destructive.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    if !service.activated.load(Ordering::Acquire) || service.failed.load(Ordering::Acquire) {
+        return Err(RamError::Invariant(
+            "write tracking authority is not active",
+        ));
+    }
+    let preparation = owner
+        .write_preparation
+        .lock()
+        .map_err(|_| "prepared write rearm ownership unavailable")?;
+    let mut states = service
+        .states
+        .lock()
+        .map_err(|_| "paging state ownership uncertain")?;
+    for arena in &service.arenas {
+        if arena.placement != ArenaPlacement::Pageable {
+            continue;
+        }
+        if arena.native.topology_generation != generation {
+            return Err(RamError::Invariant("write rearm topology changed"));
+        }
+        let pages = usize::try_from(arena.native.mapping_length / PAGE_BYTES as u64)
+            .map_err(|_| "arena page count overflow")?;
+        for page in 0..pages {
+            if preparation.as_ref().is_some_and(|preparation| {
+                preparation.contains(arena.native.region_index, page as u64)
+            }) {
+                continue;
+            }
+            let state = states
+                .get_mut(arena.page_start + page)
+                .ok_or("write rearm page absent")?;
+            if state.resident && state.writable {
+                service
+                    .registration
+                    .protect(
+                        arena.native.host_address + page as u64 * PAGE_BYTES as u64,
+                        PAGE_BYTES as u64,
+                        true,
+                    )
+                    .map_err(RamError::from)?;
+                state.writable = false;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) extern "C" fn operational_read(address: u64, output: *mut u8, valid: u32) -> c_int {
+    if output.is_null() || valid == 0 || valid as usize > PAGE_BYTES {
+        return -libc::EINVAL;
+    }
+    let result = read_operational_page(address, valid as usize);
+    match result {
+        Ok(bytes) => {
+            // SAFETY: native capture lends a writable valid-byte output buffer
+            // for this call; the page scratch is fully authenticated beforehand.
+            unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), output, valid as usize) };
+            0
+        }
+        Err(_) => -libc::EIO,
+    }
+}
+
+fn read_operational_page(address: u64, valid: usize) -> Result<[u8; PAGE_BYTES], RamError> {
+    let owner = OPERATIONAL_OWNER
+        .get()
+        .ok_or(RamError::Invariant("operational RAM owner absent"))?
+        .try_lock()
+        .map_err(|_| RamError::Invariant("operational RAM owner unavailable"))?
+        .clone()
+        .ok_or(RamError::Invariant("operational RAM owner absent"))?;
+    let service = owner
+        .active
+        .lock()
+        .map_err(|_| "paging authority owner poisoned")?
+        .clone();
+    let mut bytes = [0; PAGE_BYTES];
+    if let Some(service) = service {
+        if service.failed.load(Ordering::Acquire) {
+            return Err(RamError::Invariant("paging authority failed"));
+        }
+        if service.destructive.load(Ordering::Acquire) {
+            if !service.activated.load(Ordering::Acquire) {
+                return Err(RamError::Invariant(
+                    "cold source publication remains incomplete",
+                ));
+            }
+            let arena = service
+                .arenas
+                .iter()
+                .find(|arena| {
+                    address >= arena.native.host_address
+                        && address < arena.native.host_address + arena.native.mapping_length
+                })
+                .ok_or("operational page is outside retained arena")?;
+            let page_index = (address - arena.native.host_address) / PAGE_BYTES as u64;
+            let coordinate = arena.page_start
+                + usize::try_from(page_index).map_err(|_| "page index overflow")?;
+            let resident = service
+                .states
+                .lock()
+                .map_err(|_| "paging state ownership uncertain")?
+                .get(coordinate)
+                .ok_or("operational page coordinate absent")?
+                .resident;
+            if !resident {
+                let length = service.read_cold(arena, page_index, coordinate, true, &mut bytes)?;
+                if length as usize != valid {
+                    return Err(RamError::Invariant(
+                        "operational source page length differs",
+                    ));
+                }
+                return Ok(bytes);
+            }
+        }
+    }
+    // SAFETY: native capture retains a coherent writer/physical-access fence and
+    // lends this valid RAM range. Cold pages returned above never dereference it.
+    unsafe { std::ptr::copy_nonoverlapping(address as *const u8, bytes.as_mut_ptr(), valid) };
+    Ok(bytes)
+}

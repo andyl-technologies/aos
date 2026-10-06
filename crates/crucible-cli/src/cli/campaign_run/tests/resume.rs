@@ -430,7 +430,8 @@ fn transient_checkpoint_cleanup_preserves_the_execution_error() {
         &checkpoint_root,
     ));
     let checkpoints = Arc::new(
-        ExactCheckpointStore::new(backend, 1024 * 1024).or_panic("exact checkpoint store"),
+        open_transient_checkpoint_store(backend, 1024 * 1024, &checkpoint_root)
+            .or_panic("exact checkpoint store"),
     );
     let expected = "injected campaign resume failure";
     let result: Result<(), CliError> = Err(backend_error(expected));

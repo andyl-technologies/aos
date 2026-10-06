@@ -1,9 +1,8 @@
 //! Production exact-closure streaming acceptance gate.
 //!
-//! This direct-capture section exercises the native production codec through
-//! CAS preparation, loose and composed durable publication, and authenticated
-//! lazy loading. Parent-relative v9 capture is composed into this gate
-//! separately once its production host pipeline is available.
+//! This gate exercises the paged production codec through CAS preparation,
+//! loose and composed durable publication, and authenticated lazy loading.
+//! Real guest page installation and cold execution require separate VM evidence.
 
 // crucible-lint: allow panic-shortcut -- gate assertions identify the violated invariant.
 #![allow(clippy::expect_used)]
@@ -33,6 +32,9 @@ const FAIL_AFTER_BYTES: u64 = 96 * 1024;
 
 #[test]
 fn direct_production_closure_streams_across_durable_placements_and_failures() {
+    let ram_retention = crucible_cas::ram::RamRetentionAuthority::new(Arc::new(
+        crucible_cas::content_store::MemoryRefBackend::new(),
+    ));
     let roots = GateRoots::new();
     let fixture = build_streaming_production_checkpoint_codec_fixture(roots.native_source.path())
         .expect("build authenticated multi-chunk production fixture");
@@ -49,8 +51,12 @@ fn direct_production_closure_streams_across_durable_placements_and_failures() {
         DIRECT_FRAGMENT_BYTES,
         None,
     ));
-    let direct_store = ExactCheckpointStore::new(direct_observer.clone(), MAX_CHECKPOINT_BYTES)
-        .expect("admit observed direct store");
+    let direct_store = ExactCheckpointStore::new(
+        direct_observer.clone(),
+        MAX_CHECKPOINT_BYTES,
+        ram_retention.clone(),
+    )
+    .expect("admit observed direct store");
     let direct_prepared = direct_store
         .prepare_production_closure(fixture.closure().clone())
         .expect("prepare direct production closure");
@@ -91,8 +97,12 @@ fn direct_production_closure_streams_across_durable_placements_and_failures() {
         GRAPH_FRAGMENT_BYTES,
         None,
     ));
-    let graph_store = ExactCheckpointStore::new(graph_observer.clone(), MAX_CHECKPOINT_BYTES)
-        .expect("admit observed graph store");
+    let graph_store = ExactCheckpointStore::new(
+        graph_observer.clone(),
+        MAX_CHECKPOINT_BYTES,
+        ram_retention.clone(),
+    )
+    .expect("admit observed graph store");
     let graph_prepared = graph_store
         .prepare_production_closure(fixture.closure().clone())
         .expect("prepare graph production closure");
@@ -145,9 +155,12 @@ fn direct_production_closure_streams_across_durable_placements_and_failures() {
         CAS_COPY_BUFFER_BYTES,
         Some(Arc::clone(&read_synchronization)),
     ));
-    let archive_store =
-        ExactCheckpointStore::new(synchronized_archive.clone(), MAX_CHECKPOINT_BYTES)
-            .expect("admit synchronized archive");
+    let archive_store = ExactCheckpointStore::new(
+        synchronized_archive.clone(),
+        MAX_CHECKPOINT_BYTES,
+        ram_retention,
+    )
+    .expect("admit synchronized archive");
     let archived = archive_store
         .load_production_closure(direct_publication.root())
         .expect("load production closure from latency archive");
@@ -316,6 +329,10 @@ impl ImmutableBlobBackend for ObservedBackend {
 
     fn capabilities(&self) -> BackendCapabilities {
         self.inner.capabilities()
+    }
+
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        self.inner.admit_object_graph(objects)
     }
 
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
@@ -511,6 +528,8 @@ fn build_mirrored_graph(root: &Path) -> (StoreGraph, StoreGraphAdmin) {
         ObjectKind::DeviceState,
         ObjectKind::ExactManifest,
         ObjectKind::Observation,
+        ObjectKind::RamExtent,
+        ObjectKind::RamTree,
     ]);
     let config = StoreGraphConfig {
         root: durability.clone(),

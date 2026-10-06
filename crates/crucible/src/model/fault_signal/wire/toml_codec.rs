@@ -102,24 +102,6 @@ pub(crate) struct StateTransitionWireEntry {
 }
 
 impl FaultSignalPlanWire {
-    /// Captures authored contracts without derived identities.
-    pub(crate) fn from_plan(plan: &FaultSignalPlan) -> Self {
-        Self {
-            semantic_version: FAULT_SIGNAL_PLAN_WIRE_VERSION,
-            resource_limits: plan.resource_limits(),
-            signal_program: plan
-                .programs()
-                .iter()
-                .map(SignalProgramWire::from_program)
-                .collect(),
-            fault_binding: plan
-                .bindings()
-                .iter()
-                .map(FaultBindingWire::from_binding)
-                .collect(),
-        }
-    }
-
     /// Re-enters every admission constructor and derives canonical identities.
     ///
     /// # Errors
@@ -138,28 +120,39 @@ impl FaultSignalPlanWire {
             .resource_limits
             .signal_limits()
             .map_err(FaultSignalWireError::ResourceLimit)?;
-        let programs = self
-            .signal_program
-            .into_iter()
-            .map(|program| program.admit(signal_limits))
-            .collect::<Result<Vec<_>, _>>()?;
-        let by_id = programs
-            .iter()
-            .map(|program| (program.id(), program))
-            .collect::<BTreeMap<_, _>>();
-        let bindings = self
-            .fault_binding
-            .into_iter()
-            .map(|binding| {
-                let program = by_id.get(&binding.program).copied().ok_or_else(|| {
-                    FaultSignalWireError::MissingProgram {
-                        binding: binding.id.clone(),
-                        program: binding.program,
-                    }
+        crate::owned_decode::charge_array::<SignalProgram>(self.signal_program.len())
+            .map_err(FaultSignalWireError::OriginalAdmission)?;
+        let mut programs = Vec::new();
+        programs
+            .try_reserve_exact(self.signal_program.len())
+            .map_err(|source| {
+                FaultSignalWireError::OriginalAdmission(
+                    crate::owned_decode::DecodeAdmissionError::new(source),
+                )
+            })?;
+        for program in self.signal_program {
+            programs.push(program.admit(signal_limits)?);
+        }
+        crate::owned_decode::charge_array::<FaultBinding>(self.fault_binding.len())
+            .map_err(FaultSignalWireError::OriginalAdmission)?;
+        let mut bindings = Vec::new();
+        bindings
+            .try_reserve_exact(self.fault_binding.len())
+            .map_err(|source| {
+                FaultSignalWireError::OriginalAdmission(
+                    crate::owned_decode::DecodeAdmissionError::new(source),
+                )
+            })?;
+        for binding in self.fault_binding {
+            let program = programs
+                .iter()
+                .find(|program| program.id() == binding.program)
+                .ok_or_else(|| FaultSignalWireError::MissingProgram {
+                    binding: binding.id.clone(),
+                    program: binding.program,
                 })?;
-                binding.admit(program)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+            bindings.push(binding.admit(program)?);
+        }
         FaultSignalPlan::new(programs, bindings, self.resource_limits)
             .map_err(FaultSignalWireError::Plan)
     }
@@ -170,8 +163,11 @@ const TOML_U64_PREFIX: &str = "u64:";
 pub(in crate::model::fault_signal) fn to_toml_value<T: Serialize>(
     value: &T,
 ) -> Result<toml::Value, FaultSignalTomlWireError> {
-    json_to_toml(serde_json::to_value(value).map_err(FaultSignalTomlWireError::Json)?)?
-        .ok_or(FaultSignalTomlWireError::TopLevelNull)
+    let bytes = crate::owned_decode::to_json_vec(value)
+        .map_err(FaultSignalTomlWireError::OriginalAdmission)?;
+    let owned =
+        crate::owned_decode::from_json_slice(&bytes).map_err(FaultSignalTomlWireError::Json)?;
+    json_to_toml(owned)?.ok_or(FaultSignalTomlWireError::TopLevelNull)
 }
 
 fn json_to_toml(value: serde_json::Value) -> Result<Option<toml::Value>, FaultSignalTomlWireError> {
@@ -183,21 +179,42 @@ fn json_to_toml(value: serde_json::Value) -> Result<Option<toml::Value>, FaultSi
             if let Some(value) = value.as_i64() {
                 Some(toml::Value::Integer(value))
             } else if let Some(value) = value.as_u64() {
-                Some(toml::Value::String(format!("{TOML_U64_PREFIX}{value}")))
+                const MAXIMUM_U64_TEXT_BYTES: usize = TOML_U64_PREFIX.len() + 20;
+                crate::owned_decode::charge_array::<u8>(MAXIMUM_U64_TEXT_BYTES)
+                    .map_err(FaultSignalTomlWireError::OriginalAdmission)?;
+                let mut text = String::new();
+                text.try_reserve_exact(MAXIMUM_U64_TEXT_BYTES)
+                    .map_err(|source| {
+                        FaultSignalTomlWireError::OriginalAdmission(
+                            crate::owned_decode::DecodeAdmissionError::new(source),
+                        )
+                    })?;
+                fmt::Write::write_fmt(&mut text, format_args!("{TOML_U64_PREFIX}{value}"))
+                    .map_err(|source| {
+                        FaultSignalTomlWireError::OriginalAdmission(
+                            crate::owned_decode::DecodeAdmissionError::new(source),
+                        )
+                    })?;
+                Some(toml::Value::String(text))
             } else {
                 return Err(FaultSignalTomlWireError::NonIntegerNumber);
             }
         }
-        serde_json::Value::Array(values) => Some(toml::Value::Array(
-            values
-                .into_iter()
-                .map(|value| json_to_toml(value)?.ok_or(FaultSignalTomlWireError::ArrayNull))
-                .collect::<Result<Vec<_>, _>>()?,
-        )),
+        serde_json::Value::Array(values) => {
+            let mut output = Vec::new();
+            crate::owned_decode::reserve_vec(&mut output, values.len())
+                .map_err(FaultSignalTomlWireError::OriginalAdmission)?;
+            for value in values {
+                output.push(json_to_toml(value)?.ok_or(FaultSignalTomlWireError::ArrayNull)?);
+            }
+            Some(toml::Value::Array(output))
+        }
         serde_json::Value::Object(values) => {
             let mut table = toml::map::Map::new();
             for (key, value) in values {
                 if let Some(value) = json_to_toml(value)? {
+                    crate::owned_decode::charge_btree_entry::<String, toml::Value>()
+                        .map_err(FaultSignalTomlWireError::OriginalAdmission)?;
                     table.insert(key, value);
                 }
             }
@@ -209,7 +226,9 @@ fn json_to_toml(value: serde_json::Value) -> Result<Option<toml::Value>, FaultSi
 pub(in crate::model::fault_signal) fn from_toml_value<T: for<'de> Deserialize<'de>>(
     value: toml::Value,
 ) -> Result<T, FaultSignalTomlWireError> {
-    serde_json::from_value(toml_to_json(value)?).map_err(FaultSignalTomlWireError::Json)
+    let bytes = crate::owned_decode::to_json_vec(&toml_to_json(value)?)
+        .map_err(FaultSignalTomlWireError::OriginalAdmission)?;
+    crate::owned_decode::from_json_slice(&bytes).map_err(FaultSignalTomlWireError::Json)
 }
 
 pub(super) fn toml_to_json(
@@ -221,7 +240,10 @@ pub(super) fn toml_to_json(
                 let value = encoded
                     .parse::<u64>()
                     .map_err(|_| FaultSignalTomlWireError::InvalidU64String(value.clone()))?;
-                if encoded != value.to_string() {
+                if encoded.is_empty()
+                    || !encoded.bytes().all(|byte| byte.is_ascii_digit())
+                    || (encoded.len() > 1 && encoded.starts_with('0'))
+                {
                     return Err(FaultSignalTomlWireError::InvalidU64String(format!(
                         "{TOML_U64_PREFIX}{encoded}"
                     )));
@@ -236,18 +258,24 @@ pub(super) fn toml_to_json(
         }
         toml::Value::Integer(value) => serde_json::Value::Number(value.into()),
         toml::Value::Boolean(value) => serde_json::Value::Bool(value),
-        toml::Value::Array(values) => serde_json::Value::Array(
-            values
-                .into_iter()
-                .map(toml_to_json)
-                .collect::<Result<Vec<_>, _>>()?,
-        ),
-        toml::Value::Table(values) => serde_json::Value::Object(
-            values
-                .into_iter()
-                .map(|(key, value)| Ok((key, toml_to_json(value)?)))
-                .collect::<Result<serde_json::Map<_, _>, FaultSignalTomlWireError>>()?,
-        ),
+        toml::Value::Array(values) => {
+            let mut output = Vec::new();
+            crate::owned_decode::reserve_vec(&mut output, values.len())
+                .map_err(FaultSignalTomlWireError::OriginalAdmission)?;
+            for value in values {
+                output.push(toml_to_json(value)?);
+            }
+            serde_json::Value::Array(output)
+        }
+        toml::Value::Table(values) => {
+            let mut output = serde_json::Map::new();
+            for (key, value) in values {
+                crate::owned_decode::charge_btree_entry::<String, serde_json::Value>()
+                    .map_err(FaultSignalTomlWireError::OriginalAdmission)?;
+                output.insert(key, toml_to_json(value)?);
+            }
+            serde_json::Value::Object(output)
+        }
         toml::Value::Float(_) => return Err(FaultSignalTomlWireError::Float),
         toml::Value::Datetime(_) => return Err(FaultSignalTomlWireError::Datetime),
     })
@@ -256,6 +284,8 @@ pub(super) fn toml_to_json(
 /// Failure to translate the typed wire contract through TOML's signed integers.
 #[derive(Debug)]
 pub(crate) enum FaultSignalTomlWireError {
+    /// Original artifact authority refused projection ownership.
+    OriginalAdmission(crate::owned_decode::DecodeAdmissionError),
     /// Typed JSON conversion failed.
     Json(serde_json::Error),
     /// A noninteger JSON number entered the integer-only contract.
@@ -277,6 +307,7 @@ pub(crate) enum FaultSignalTomlWireError {
 impl fmt::Display for FaultSignalTomlWireError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::OriginalAdmission(source) => source.fmt(formatter),
             Self::Json(error) => write!(formatter, "fault signal TOML conversion: {error}"),
             Self::NonIntegerNumber => formatter.write_str("fault signal TOML contains a float"),
             Self::TopLevelNull => formatter.write_str("fault signal TOML row is null"),
@@ -297,6 +328,7 @@ impl fmt::Display for FaultSignalTomlWireError {
 impl Error for FaultSignalTomlWireError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::OriginalAdmission(source) => Some(source),
             Self::Json(error) => Some(error),
             _ => None,
         }

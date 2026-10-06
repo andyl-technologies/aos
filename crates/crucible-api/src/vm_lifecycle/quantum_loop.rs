@@ -1,15 +1,10 @@
 //! `QuantumLoop` delegation for the production VM lifecycle.
 
-use super::checkpoint_store::{
-    PersistExactCheckpointError, hash_exact_checkpoint_open_file_sha256_with_boundary,
-    prepare_exact_checkpoint_set_with_boundary,
-    stage_open_checkpoint_artifact_chunks_with_boundary,
-    stage_sparse_checkpoint_artifact_chunks_with_boundary,
-};
 use super::*;
 
 mod attempt_boundary;
 mod checkpoint_capture;
+mod checkpoint_snapshot;
 mod debug_policy;
 mod diagnostics;
 mod host_concurrent;
@@ -21,8 +16,8 @@ pub(super) use checkpoint_capture::ExactCheckpointPublicationState;
 use checkpoint_capture::{
     ExactCaptureDisposition, ExactCheckpointTransactionError, PendingExactCapture,
     PendingExactCheckpointCandidate, PreparedExactCheckpointTarget,
-    combine_exact_checkpoint_transaction, exact_ram_capture_kind_for_parent,
-    prepare_exact_checkpoint_targets, retained_exact_ram_parent_for_committed,
+    combine_exact_checkpoint_transaction, prepare_exact_checkpoint_targets,
+    retained_exact_ram_parent_for_committed,
 };
 use crucible::BackendRngEvidence;
 use debug_policy::private_gateway_listener_request;
@@ -55,7 +50,7 @@ use lifecycle::{
     release_restored_generation_after_scheduler_publication, select_preowned_terminal_generation,
 };
 
-fn validate_terminal_v9_checkpoint(
+fn validate_terminal_exact_checkpoint(
     checkpoint: &ProductionVmExactCheckpointSet,
     configuration: &Configuration,
     precommit: &Checkpoint,
@@ -67,7 +62,7 @@ fn validate_terminal_v9_checkpoint(
     {
         return Err(SchedulerError::BoundaryViolation {
             message: String::from(
-                "terminal v9 checkpoint differs from the precommit scheduler boundary",
+                "terminal paged checkpoint differs from the precommit scheduler boundary",
             ),
         });
     }
@@ -77,7 +72,10 @@ fn validate_terminal_v9_checkpoint(
                 .targets
                 .get(node)
                 .ok_or_else(|| SchedulerError::BoundaryViolation {
-                    message: format!("terminal v9 checkpoint has no target for `{}`", node.name),
+                    message: format!(
+                        "terminal paged checkpoint has no target for `{}`",
+                        node.name
+                    ),
                 })?;
         let expected_counter = precommit
             .node_icounts
@@ -89,7 +87,7 @@ fn validate_terminal_v9_checkpoint(
         {
             return Err(SchedulerError::BoundaryViolation {
                 message: format!(
-                    "terminal v9 target for `{}` differs from the precommit boundary",
+                    "terminal paged target for `{}` differs from the precommit boundary",
                     node.name
                 ),
             });
@@ -1300,19 +1298,23 @@ impl ProductionVmLifecycleLoop {
                 &terminal_restart_nodes,
                 &mut || Ok(()),
             )?;
-            let closure =
-                open_exact_checkpoint_closure(&self.config.run_state_root, &self.source, identity)
-                    .map_err(|error| SchedulerError::BoundaryViolation {
-                        message: format!("open terminal v9 checkpoint: {error}"),
-                    })?;
+            let closure = open_exact_checkpoint_closure(
+                &self.config.run_state_root,
+                &self.source,
+                identity,
+                self.config.ram_catalog_provider(),
+            )
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("open terminal paged checkpoint: {error}"),
+            })?;
             let decoded = self
                 .node_launcher
                 .prepare_terminal_exact_checkpoint(closure)
                 .map_err(|error| SchedulerError::BoundaryViolation {
-                    message: format!("authenticate terminal v9 checkpoint: {error}"),
+                    message: format!("authenticate terminal paged checkpoint: {error}"),
                 })?;
             let checkpoint = decoded.into_checkpoint();
-            validate_terminal_v9_checkpoint(
+            validate_terminal_exact_checkpoint(
                 &checkpoint,
                 &configuration,
                 &lifecycle_precommit.checkpoint,
@@ -1396,7 +1398,7 @@ impl ProductionVmLifecycleLoop {
                     .and_then(|checkpoint| checkpoint.targets.get(&decision.node))
                     .ok_or_else(|| SchedulerError::BoundaryViolation {
                         message: format!(
-                            "terminal v9 checkpoint has no target for `{}`",
+                            "terminal paged checkpoint has no target for `{}`",
                             decision.node.name
                         ),
                     })?;
@@ -1478,7 +1480,7 @@ impl ProductionVmLifecycleLoop {
             admissions
                 .try_reserve_exact(prepared.len())
                 .map_err(|error| SchedulerError::BoundaryViolation {
-                    message: format!("reserve terminal v9 restore admissions: {error}"),
+                    message: format!("reserve terminal paged restore admissions: {error}"),
                 })?;
             for (index, item) in prepared.iter().enumerate() {
                 if item.service_state == ProductionNodeServiceState::PermanentlyFailed {
@@ -1489,13 +1491,13 @@ impl ProductionVmLifecycleLoop {
                     .as_mut()
                     .ok_or_else(|| SchedulerError::BoundaryViolation {
                         message: String::from(
-                            "terminal v9 checkpoint lost repository restore authority",
+                            "terminal paged checkpoint lost repository restore authority",
                         ),
                     })?
                     .take_node_admission(&item.decision.node, item.snapshot.clone(), true)
                     .map_err(|error| SchedulerError::BoundaryViolation {
                         message: format!(
-                            "admit terminal v9 restore for `{}`: {error}",
+                            "admit terminal paged restore for `{}`: {error}",
                             item.decision.node.name
                         ),
                     })?;
@@ -1524,7 +1526,7 @@ impl ProductionVmLifecycleLoop {
                 )
                 .map_err(|error| SchedulerError::BoundaryViolation {
                     message: format!(
-                        "stage terminal v9 replacement for `{}`: {error}",
+                        "stage terminal paged replacement for `{}`: {error}",
                         item.decision.node.name
                     ),
                 });
@@ -1536,7 +1538,7 @@ impl ProductionVmLifecycleLoop {
                             Ok(()) => error,
                             Err(cleanup) => SchedulerError::BoundaryViolation {
                                 message: format!(
-                                    "terminal v9 replacement failed ({error}); staged process cleanup failed ({cleanup})"
+                                    "terminal paged replacement failed ({error}); staged process cleanup failed ({cleanup})"
                                 ),
                             },
                         });
@@ -1964,608 +1966,6 @@ impl ProductionVmLifecycleLoop {
         self.commit_node_boot_requests(std::slice::from_ref(node))
     }
 
-    fn capture_reserved_exact_checkpoint_set(
-        &mut self,
-        configuration: &Configuration,
-        terminal_nodes: &BTreeSet<NodeId>,
-        boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
-    ) -> Result<ContentHash, ExactCheckpointTransactionError> {
-        self.require_published_host_continuation()?;
-        boundary()?;
-        if !self.continuation_branches.is_empty() {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from(
-                    "exact checkpoint cannot retain unapplied cold-replay branch generations",
-                ),
-            }
-            .into());
-        }
-        let checkpoint_virtual_time = self.inner.loop_impl().frontier();
-        let network_committed_frontier = self.inner.committed_frontier();
-        let fault_checkpoint = {
-            let (scheduler, backend, interceptor, pending_outputs) =
-                self.inner.network_transaction_parts_mut();
-            interceptor
-                .checkpoint(
-                    scheduler,
-                    network_committed_frontier,
-                    pending_outputs,
-                    backend,
-                )
-                .map_err(|error| SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "capture signal, network, and device continuation at exact checkpoint boundary: {error}"
-                    ),
-                })?
-        };
-        boundary()?;
-        let mut node_icounts = BTreeMap::new();
-        let mut boundaries = Vec::new();
-        for vm in self.source.world().vm_nodes() {
-            boundary()?;
-            if self.node_service_states.get(&vm.id)
-                == Some(&ProductionNodeServiceState::PermanentlyFailed)
-            {
-                node_icounts.insert(vm.id.clone(), self.checkpoint_node_icount(&vm.id)?);
-                continue;
-            }
-            let physical = self
-                .inner
-                .backend()
-                .node_now(&vm.id)
-                .map_err(SchedulerError::from)?;
-            node_icounts.insert(
-                vm.id.clone(),
-                crucible::Icount {
-                    retired: physical.ticks,
-                },
-            );
-            let service_state = self
-                .node_service_states
-                .get(&vm.id)
-                .copied()
-                .ok_or_else(|| SchedulerError::BoundaryViolation {
-                    message: format!("exact checkpoint has no service state for `{}`", vm.id.name),
-                })?;
-            boundaries.push((vm.id.clone(), physical.ticks, service_state));
-        }
-
-        // Own every scheduler/controller input before the first QMP save can
-        // pause a running node. Immutable object and manifest preparation is
-        // fallible but remains rollback-safe under the capture owners below.
-        let event_log_objects = Arc::new(
-            self.inner
-                .loop_impl()
-                .event_log_dependency_objects()
-                .map_err(|error| SchedulerError::BoundaryViolation {
-                    message: format!("capture exact event-log closure: {error}"),
-                })?
-                .into_iter()
-                .collect(),
-        );
-        let scheduler = self.inner.loop_impl().checkpoint().map_err(|error| {
-            SchedulerError::BoundaryViolation {
-                message: format!("capture exact scheduler continuation: {error}"),
-            }
-        })?;
-        let signal_artifact_objects = self.signal_artifact_objects.clone();
-        let trigger_state = self.trigger_state.clone();
-        let assertion_state = self.assertion_evaluator.checkpoint();
-        let terminal_verdict = self.terminal_verdict.clone();
-        let terminal_cause = self.checkpoint_terminal_cause.clone();
-        let branch = self.branch.clone();
-        let recorded_controls = self.recorded_controls.clone();
-        let node_generations = self.node_generations.clone();
-        let node_service_states = self.node_service_states.clone();
-        let resource_limits = self.source.plan().fault_signals().resource_limits();
-        let fault_manifest_identity =
-            exact_checkpoint_fault_object_identity(&fault_checkpoint, resource_limits).map_err(
-                |error| SchedulerError::BoundaryViolation {
-                    message: error.to_string(),
-                },
-            )?;
-
-        boundary()?;
-        let checkpoint_parent = self._run_directory.path().join("exact-checkpoints");
-        fs::create_dir_all(&checkpoint_parent).map_err(|error| {
-            SchedulerError::BoundaryViolation {
-                message: format!(
-                    "create exact checkpoint parent directory {}: {error}",
-                    checkpoint_parent.display()
-                ),
-            }
-        })?;
-        let staging = tempfile::Builder::new()
-            .prefix(".exact-checkpoint-")
-            .tempdir_in(&checkpoint_parent)
-            .map_err(|error| SchedulerError::BoundaryViolation {
-                message: format!(
-                    "create exact checkpoint staging directory in {}: {error}",
-                    checkpoint_parent.display()
-                ),
-            })?;
-
-        let prepared_targets = prepare_exact_checkpoint_targets(
-            configuration,
-            checkpoint_virtual_time,
-            &node_icounts,
-            boundaries,
-            &self.node_indexes,
-            &self.node_run_directories,
-            staging.path(),
-        )?;
-        boundary()?;
-        let mut captured = Vec::new();
-        captured
-            .try_reserve_exact(prepared_targets.len())
-            .map_err(|error| SchedulerError::BoundaryViolation {
-                message: format!("reserve exact checkpoint capture owners: {error}"),
-            })?;
-        let mut artifact_bytes = 0_u64;
-        let capture_result = (|| -> Result<(), SchedulerError> {
-            for prepared in prepared_targets {
-                boundary()?;
-                let PreparedExactCheckpointTarget {
-                    node,
-                    counter,
-                    scheduler_time,
-                    service_state,
-                    checkpoint,
-                    source_overlay,
-                    staged_overlay_chunks,
-                    ram_output,
-                    device_output,
-                    staged_ram_chunks,
-                    staged_device_chunks,
-                } = prepared;
-                let immutable_root_image = self
-                    .launch_configs
-                    .get(&node)
-                    .and_then(QemuLiveNodeStepGateConfig::root_image)
-                    .ok_or_else(|| SchedulerError::BoundaryViolation {
-                        message: format!(
-                            "exact checkpoint has no immutable root image for `{}`",
-                            node.name
-                        ),
-                    })?;
-                let epoch = self
-                    .inner
-                    .backend_mut()
-                    .query_exact_checkpoint_epoch(&node)?;
-                if epoch.candidate().is_some() {
-                    return Err(SchedulerError::BoundaryViolation {
-                        message: format!(
-                            "exact checkpoint capture for `{}` found an unresolved QEMU candidate",
-                            node.name
-                        ),
-                    });
-                }
-                let committed = epoch.committed();
-                let (parent_closure, parent_checkpoint) = retained_exact_ram_parent_for_committed(
-                    &self.exact_ram_parents,
-                    self.repository_exact_ram_rebase.as_ref(),
-                    &node,
-                    committed,
-                )?;
-                let capture_kind = exact_ram_capture_kind_for_parent(parent_checkpoint.as_ref());
-                let capture_boundary = || crucible_qemu::QemuExactCheckpointCaptureBoundary {
-                    configuration,
-                    immutable_root_image,
-                    node: &node,
-                    counter,
-                    scheduler_time,
-                    checkpoint: &checkpoint,
-                    fault: &fault_checkpoint,
-                    scheduler: &scheduler,
-                };
-                let capture_outputs = || crucible_qemu::QemuExactCheckpointCaptureOutputs {
-                    maximum_ram_bytes: resource_limits.fat_checkpoint_bytes,
-                    maximum_device_bytes: resource_limits.fat_checkpoint_bytes,
-                    ram: &ram_output,
-                    device: &device_output,
-                };
-                let admission = match (committed, capture_kind) {
-                    (Some(parent), ProductionExactRamKind::Delta) => {
-                        QemuExactCheckpointCaptureAdmission::admit_delta(
-                            capture_boundary(),
-                            parent,
-                            capture_outputs(),
-                        )
-                    }
-                    _ => QemuExactCheckpointCaptureAdmission::admit_direct(
-                        capture_boundary(),
-                        capture_outputs(),
-                    ),
-                }
-                .map_err(|error| SchedulerError::BoundaryViolation {
-                    message: format!("admit exact checkpoint capture outputs: {error}"),
-                })?;
-                let terminal_capture = terminal_nodes.contains(&node);
-                let mut exact_capture = match service_state {
-                    ProductionNodeServiceState::Running if terminal_capture => self
-                        .inner
-                        .backend_mut()
-                        .capture_exact_checkpoint_terminal_guarded(&node, checkpoint, admission)?,
-                    ProductionNodeServiceState::Running => self
-                        .inner
-                        .backend_mut()
-                        .capture_exact_checkpoint_for_publication_guarded(
-                            &node, checkpoint, admission,
-                        )?,
-                    ProductionNodeServiceState::PoweredOff => self
-                        .inner
-                        .backend_mut()
-                        .capture_exact_checkpoint_paused_guarded(&node, checkpoint, admission)?,
-                    ProductionNodeServiceState::PermanentlyFailed => {
-                        return Err(SchedulerError::BoundaryViolation {
-                            message: format!(
-                                "permanently failed node `{}` unexpectedly reached snapshot capture",
-                                node.name
-                            ),
-                        });
-                    }
-                };
-                let overlay_file = self
-                    .node_leases
-                    .get(&node)
-                    .ok_or_else(|| SchedulerError::BoundaryViolation {
-                        message: format!(
-                            "exact checkpoint has no generation lease for `{}`",
-                            node.name
-                        ),
-                    })?
-                    .open_checkpoint_root_overlay()
-                    .map_err(|error| SchedulerError::BoundaryViolation {
-                        message: format!(
-                            "open pinned exact-checkpoint overlay for `{}`: {error}",
-                            node.name
-                        ),
-                    })?;
-                captured.push(PendingExactCapture {
-                    node,
-                    counter,
-                    scheduler_time,
-                    snapshot: exact_capture.snapshot().clone(),
-                    overlay_artifact: None,
-                    exact_ram: None,
-                    exact_checkpoint: Some(PendingExactCheckpointCandidate {
-                        identity: exact_capture.identity(),
-                        parent: committed,
-                    }),
-                    snapshot_cleanup_pending: false,
-                    resume_pending: service_state == ProductionNodeServiceState::Running
-                        && !terminal_capture,
-                });
-                let capture =
-                    captured
-                        .last_mut()
-                        .ok_or_else(|| SchedulerError::BoundaryViolation {
-                            message: String::from(
-                                "exact checkpoint capture owner disappeared after insertion",
-                            ),
-                        })?;
-                let overlay_artifact = stage_sparse_checkpoint_artifact_chunks_with_boundary(
-                    &overlay_file,
-                    &source_overlay,
-                    &staged_overlay_chunks,
-                    "root overlay",
-                    artifact_bytes,
-                    resource_limits,
-                    boundary,
-                )?;
-                artifact_bytes = artifact_bytes
-                    .checked_add(overlay_artifact.length)
-                    .ok_or_else(|| SchedulerError::BoundaryViolation {
-                        message: String::from("exact-checkpoint artifact byte accounting overflow"),
-                    })?;
-                capture.overlay_artifact = Some(overlay_artifact);
-
-                let expected_ram_bytes = exact_capture.ram_bytes();
-                let expected_device_bytes = exact_capture.device_bytes();
-                let (ram_file, device_file) = exact_capture.output_files_mut();
-                let ram_length = ram_file
-                    .metadata()
-                    .map_err(|error| SchedulerError::BoundaryViolation {
-                        message: format!(
-                            "inspect exact RAM output {}: {error}",
-                            ram_output.display()
-                        ),
-                    })?
-                    .len();
-                let device_length = device_file
-                    .metadata()
-                    .map_err(|error| SchedulerError::BoundaryViolation {
-                        message: format!(
-                            "inspect exact device-state output {}: {error}",
-                            device_output.display()
-                        ),
-                    })?
-                    .len();
-                if ram_length != expected_ram_bytes || device_length != expected_device_bytes {
-                    return Err(SchedulerError::BoundaryViolation {
-                        message: String::from(
-                            "exact checkpoint output lengths differ from QEMU's capture report",
-                        ),
-                    });
-                }
-                let qemu_output_bytes = ram_length.checked_add(device_length).ok_or_else(|| {
-                    SchedulerError::BoundaryViolation {
-                        message: String::from("exact QEMU output byte accounting overflow"),
-                    }
-                })?;
-                resource_limits
-                    .reserve("fat_checkpoint_bytes", artifact_bytes, qemu_output_bytes)
-                    .map_err(|error| SchedulerError::BoundaryViolation {
-                        message: format!("admit exact QEMU outputs: {error}"),
-                    })?;
-
-                let ram_content_sha256 = hash_exact_checkpoint_open_file_sha256_with_boundary(
-                    ram_file,
-                    &ram_output,
-                    boundary,
-                )?;
-                let ram_artifact = stage_open_checkpoint_artifact_chunks_with_boundary(
-                    ram_file,
-                    &ram_output,
-                    &staged_ram_chunks,
-                    "exact RAM",
-                    artifact_bytes,
-                    resource_limits,
-                    boundary,
-                )?;
-                artifact_bytes =
-                    artifact_bytes
-                        .checked_add(ram_artifact.length)
-                        .ok_or_else(|| SchedulerError::BoundaryViolation {
-                            message: String::from(
-                                "exact-checkpoint artifact byte accounting overflow",
-                            ),
-                        })?;
-                let device_content_sha256 = hash_exact_checkpoint_open_file_sha256_with_boundary(
-                    device_file,
-                    &device_output,
-                    boundary,
-                )?;
-                let device_artifact = stage_open_checkpoint_artifact_chunks_with_boundary(
-                    device_file,
-                    &device_output,
-                    &staged_device_chunks,
-                    "exact device VMState",
-                    artifact_bytes,
-                    resource_limits,
-                    boundary,
-                )?;
-                artifact_bytes = artifact_bytes
-                    .checked_add(device_artifact.length)
-                    .ok_or_else(|| SchedulerError::BoundaryViolation {
-                        message: String::from("exact-checkpoint artifact byte accounting overflow"),
-                    })?;
-                if device_artifact.length != expected_device_bytes {
-                    return Err(SchedulerError::BoundaryViolation {
-                        message: String::from(
-                            "exact device-state artifact length differs from QEMU's capture report",
-                        ),
-                    });
-                }
-                let layer = ProductionExactRamLayer::from_capture(
-                    &exact_capture,
-                    ram_content_sha256,
-                    ram_artifact,
-                )?;
-                let exact_ram = ProductionExactRamCheckpoint::from_captured_layer(
-                    parent_closure,
-                    parent_checkpoint,
-                    capture_kind,
-                    device_content_sha256,
-                    device_artifact.clone(),
-                    layer,
-                )?;
-                capture.exact_ram = Some(exact_ram);
-                boundary()?;
-            }
-            Ok(())
-        })();
-        if let Err(error) = capture_result {
-            let cleanup =
-                self.release_exact_captures(&mut captured, ExactCaptureDisposition::Unpublished);
-            return combine_exact_checkpoint_transaction(
-                Err(ExactCheckpointTransactionError::Unpublished(error)),
-                cleanup,
-                captured,
-            );
-        }
-
-        let preparation = (|| -> Result<_, ExactCheckpointTransactionError> {
-            let mut targets = BTreeMap::new();
-            for capture in &captured {
-                boundary()?;
-                let overlay_artifact = capture.overlay_artifact.clone().ok_or_else(|| {
-                    SchedulerError::BoundaryViolation {
-                        message: format!(
-                            "exact checkpoint root overlay for `{}` is not staged",
-                            capture.node.name
-                        ),
-                    }
-                })?;
-                let exact_ram =
-                    capture
-                        .exact_ram
-                        .clone()
-                        .ok_or_else(|| SchedulerError::BoundaryViolation {
-                            message: format!(
-                                "exact checkpoint RAM closure for `{}` is not staged",
-                                capture.node.name
-                            ),
-                        })?;
-                let immutable_backing = self
-                    .immutable_root_images
-                    .get(&capture.node)
-                    .copied()
-                    .ok_or_else(|| SchedulerError::BoundaryViolation {
-                        message: format!(
-                            "exact checkpoint has no immutable root-image identity for `{}`",
-                            capture.node.name
-                        ),
-                    })?;
-                let manifest_basis = ExactCheckpointTargetManifestBasis {
-                    configuration: configuration.id(),
-                    immutable_backing,
-                    node: &capture.node,
-                    counter: capture.counter,
-                    scheduler_time: capture.scheduler_time,
-                    snapshot: exact_checkpoint_snapshot_object_identity(
-                        &capture.snapshot,
-                        resource_limits,
-                    )
-                    .map_err(|error| SchedulerError::BoundaryViolation {
-                        message: error.to_string(),
-                    })?,
-                    fault_identity: fault_manifest_identity,
-                    overlay: overlay_artifact.identity,
-                    device_state: exact_ram.device_artifact.identity,
-                };
-                let manifest_identity =
-                    exact_ram_checkpoint_target_manifest_identity(manifest_basis, &exact_ram);
-                targets.insert(
-                    capture.node.clone(),
-                    ProductionVmExactCheckpointTarget {
-                        configuration: Arc::new(configuration.clone()),
-                        immutable_backing,
-                        counter: capture.counter,
-                        scheduler_time: capture.scheduler_time,
-                        snapshot: capture.snapshot.clone(),
-                        materialization: ProductionVmExactCheckpointMaterialization::Native {
-                            overlay_artifact,
-                            exact_ram: Box::new(exact_ram),
-                            manifest_identity,
-                        },
-                    },
-                );
-            }
-
-            validate_failed_host_io_topology(
-                &self.source,
-                &node_service_states,
-                &self.failed_host_io,
-            )
-            .map_err(|error| SchedulerError::BoundaryViolation {
-                message: format!("validate failed-node host I/O: {error}"),
-            })?;
-            let mut checkpoint_set = ProductionVmExactCheckpointSet {
-                identity: ContentHash::default(),
-                configuration: configuration.clone(),
-                scheduler: Arc::new(scheduler),
-                event_log_objects,
-                signal_artifact_objects,
-                trigger_state,
-                assertion_state,
-                terminal_verdict,
-                terminal_cause,
-                initial_lifecycle_observations_pending: self.initial_lifecycle_observations_pending,
-                branch,
-                recorded_controls,
-                selectable_catalog_plans: self.inner.backend_mut().selectable_catalog_plans(),
-                fault_checkpoint: Some(fault_checkpoint),
-                targets,
-                failed_host_io: self.failed_host_io.clone(),
-                node_generations,
-                node_service_states,
-                repository_restore: None,
-            };
-            let prepared = prepare_exact_checkpoint_set_with_boundary(
-                &self.config.run_state_root,
-                self.scenario.id(),
-                resource_limits,
-                &mut checkpoint_set,
-                boundary,
-            )
-            .map_err(|error| match error {
-                PersistExactCheckpointError::Unpublished(source) => {
-                    ExactCheckpointTransactionError::Unpublished(source)
-                }
-                PersistExactCheckpointError::Indeterminate { identity, source } => {
-                    ExactCheckpointTransactionError::Indeterminate {
-                        identity: Some(identity),
-                        captures: Vec::new(),
-                        source,
-                    }
-                }
-            })?;
-            let mut retained_targets = BTreeMap::new();
-            for (node, target) in &checkpoint_set.targets {
-                let exact_ram = target.native_exact_ram().ok_or_else(|| {
-                    ExactCheckpointTransactionError::Unpublished(
-                        SchedulerError::BoundaryViolation {
-                            message: String::from(
-                                "captured checkpoint target lost native RAM state",
-                            ),
-                        },
-                    )
-                })?;
-                retained_targets.insert(node.clone(), exact_ram.clone());
-            }
-            let parent = ProductionExactRamPublishedParent {
-                closure: prepared.identity(),
-                targets: retained_targets,
-            };
-            Ok((prepared, parent))
-        })();
-        let (prepared, retained_parent) = match preparation {
-            Ok(prepared) => prepared,
-            Err(error @ ExactCheckpointTransactionError::Unpublished(_)) => {
-                let cleanup = self
-                    .release_exact_captures(&mut captured, ExactCaptureDisposition::Unpublished);
-                return combine_exact_checkpoint_transaction(Err(error), cleanup, captured);
-            }
-            Err(ExactCheckpointTransactionError::Indeterminate {
-                identity, source, ..
-            }) => {
-                return Err(ExactCheckpointTransactionError::Indeterminate {
-                    identity,
-                    captures: captured,
-                    source,
-                });
-            }
-        };
-        let identity = prepared.identity();
-        self.exact_ram_parents
-            .insert(configuration.id(), retained_parent);
-        match prepared.publish() {
-            Ok(()) => {
-                if let Err(source) =
-                    self.release_exact_captures(&mut captured, ExactCaptureDisposition::Published)
-                {
-                    return Err(ExactCheckpointTransactionError::Indeterminate {
-                        identity: Some(identity),
-                        captures: captured,
-                        source,
-                    });
-                }
-                self.exact_ram_parents
-                    .retain(|candidate, _| *candidate == configuration.id());
-                self.repository_exact_ram_rebase = None;
-                Ok(identity)
-            }
-            Err(PersistExactCheckpointError::Unpublished(source)) => {
-                self.exact_ram_parents.remove(&configuration.id());
-                let cleanup = self
-                    .release_exact_captures(&mut captured, ExactCaptureDisposition::Unpublished);
-                combine_exact_checkpoint_transaction(
-                    Err(ExactCheckpointTransactionError::Unpublished(source)),
-                    cleanup,
-                    captured,
-                )
-            }
-            Err(PersistExactCheckpointError::Indeterminate { identity, source }) => {
-                Err(ExactCheckpointTransactionError::Indeterminate {
-                    identity: Some(identity),
-                    captures: captured,
-                    source,
-                })
-            }
-        }
-    }
-
     /// Evaluates the signal program exactly once in the ordered sequence of
     /// scheduler visits to the current virtual-time coordinate.
     pub(super) fn evaluate_signal_fault_boundary(
@@ -2801,7 +2201,7 @@ impl ProductionVmLifecycleLoop {
         mut lifecycle_precommit: Option<&mut PreparedLifecyclePrecommit>,
     ) -> Result<(), SchedulerError> {
         let has_lifecycle = !decisions.is_empty();
-        let needs_terminal_v9_capture = decisions.iter().any(|decision| {
+        let needs_terminal_exact_capture = decisions.iter().any(|decision| {
             matches!(
                 decision.effective_transition,
                 crucible::model::NodeLifecycleTransition::Crash
@@ -2811,7 +2211,7 @@ impl ProductionVmLifecycleLoop {
         // A mixed Boot/terminal batch must capture the pre-Boot scheduler
         // state recorded in its precommit checkpoint. Other batches retain
         // the existing Boot-before-prepare order.
-        if !needs_terminal_v9_capture
+        if !needs_terminal_exact_capture
             && let Err(error) = self.commit_node_boot_requests(boot_requests)
         {
             return Err(self.quarantine_terminal_lifecycle_transaction(
@@ -2832,7 +2232,7 @@ impl ProductionVmLifecycleLoop {
                 ));
             }
         };
-        if needs_terminal_v9_capture
+        if needs_terminal_exact_capture
             && let Err(error) = self.commit_node_boot_requests(boot_requests)
         {
             return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(

@@ -96,7 +96,7 @@ pub enum CrucibleArtifactError {
     Campaign(#[from] CampaignCodecError),
     /// A promoted signal-fault selection did not match its standardized records.
     #[error(transparent)]
-    SignalFaultSelection(#[from] crucible::SignalFaultSelectableError),
+    SignalFaultSelection(Box<crucible::SignalFaultSelectableError>),
     /// A scenario-owned network fault selection failed exact producer replay.
     #[error(transparent)]
     NetworkFaultSelection(Box<crucible::NetworkFaultSelectableError>),
@@ -108,8 +108,32 @@ pub enum CrucibleArtifactError {
     UnboundSignalFaultOverride,
 }
 
+impl From<crucible::SignalFaultSelectableError> for CrucibleArtifactError {
+    fn from(error: crucible::SignalFaultSelectableError) -> Self {
+        Self::SignalFaultSelection(Box::new(error))
+    }
+}
+
 impl From<crucible::NetworkFaultSelectableError> for CrucibleArtifactError {
     fn from(error: crucible::NetworkFaultSelectableError) -> Self {
         Self::NetworkFaultSelection(Box::new(error))
+    }
+}
+
+impl CrucibleArtifactError {
+    pub(crate) fn is_decode_admission_refusal(&self) -> bool {
+        let mut error: &dyn std::error::Error = self;
+        // The closed host wrappers are shallow. This bound also protects
+        // classification from an external authority's cyclic source chain.
+        for _ in 0..16 {
+            if error.is::<crucible::owned_decode::DecodeAdmissionError>() {
+                return true;
+            }
+            let Some(source) = error.source() else {
+                return false;
+            };
+            error = source;
+        }
+        false
     }
 }

@@ -740,7 +740,7 @@ where
     Ok(())
 }
 
-/// The §15.8 busy-poll spike conclusion, recorded as a documented constant.
+/// The busy-poll characterization result, recorded as a documented constant.
 ///
 /// The device timing contract requires characterizing guest busy-polling
 /// during blocking I/O and recording whether a mitigation is

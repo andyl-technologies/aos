@@ -35,11 +35,16 @@ pub(crate) fn run_finding_bundle_fork_write(
         .enable_all()
         .build()?;
     runtime.block_on(async {
+        let _decoding_scope = prepared.decoding.enter();
         let _private_guard = prepared.private;
         let transport = midpoint::private_midpoint_transport(_private_guard.path())?;
-        let checkpoint_id = prepared.midpoint.checkpoint();
-        let checkpoint_identity = prepared.midpoint.loaded_checkpoint().production_identity();
-        let verify_checkpoints = Arc::clone(&prepared.checkpoints);
+        let checkpoint_id = prepared.imported.midpoint().checkpoint();
+        let checkpoint_identity = prepared
+            .imported
+            .midpoint()
+            .loaded_checkpoint()
+            .production_identity();
+        let verify_checkpoints = prepared.imported.checkpoints();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .map_err(CliError::Io)?;
@@ -60,13 +65,8 @@ pub(crate) fn run_finding_bundle_fork_write(
         )
         .map_err(control_client_error)?;
         let sessions = prepared
-            .midpoint
-            .admit_guarded_debug_session_pair(
-                prepared.checkpoints,
-                prepared.lifecycle,
-                prepared.host,
-                prepared.resources,
-            )
+            .imported
+            .admit_debug_session_pair()
             .await
             .map_err(|error| {
                 backend_error(format!("finding midpoint pair restore failed: {error}"))

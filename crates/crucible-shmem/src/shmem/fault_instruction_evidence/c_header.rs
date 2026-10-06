@@ -10,11 +10,11 @@ pub(crate) fn emit_fault_instruction_evidence_c_header(out: &mut String) {
     }
 
     out.push_str("\n/* Byte-encoded canonical instruction-fault evidence ABI. */\n");
-    out.push_str("#define CRUCIBLE_FAULT_INSTRUCTION_EVIDENCE_MAGIC_V1 \"CRUCIEV1\"\n");
-    define!("CRUCIBLE_FAULT_INSTRUCTION_EVIDENCE_VERSION_V1", 1);
+    out.push_str("#define CRUCIBLE_FAULT_INSTRUCTION_EVIDENCE_MAGIC_V2 \"CRUCIEV2\"\n");
+    define!("CRUCIBLE_FAULT_INSTRUCTION_EVIDENCE_VERSION_V2", 2);
     define!(
-        "CRUCIBLE_FAULT_INSTRUCTION_EVIDENCE_HEADER_V1_BYTES",
-        FAULT_INSTRUCTION_EVIDENCE_HEADER_V1_BYTES
+        "CRUCIBLE_FAULT_INSTRUCTION_EVIDENCE_HEADER_V2_BYTES",
+        FAULT_INSTRUCTION_EVIDENCE_HEADER_V2_BYTES
     );
     for (name, value) in [
         ("MAGIC", 0),
@@ -39,8 +39,8 @@ pub(crate) fn emit_fault_instruction_evidence_c_header(out: &mut String) {
         ("DECODE_RESERVED", 184),
         ("MANIFEST_SHA256", 192),
         ("CODE_PAGE_SHA256", 224),
-        ("BEFORE_RAM_SHA256", 288),
-        ("AFTER_RAM_SHA256", 320),
+        ("BEFORE_RAM_BLAKE3", 288),
+        ("AFTER_RAM_BLAKE3", 320),
         ("BEFORE_DEVICE_SHA256", 352),
         ("AFTER_DEVICE_SHA256", 384),
         ("BEFORE_CPU_SHA256", 416),
@@ -55,7 +55,9 @@ pub(crate) fn emit_fault_instruction_evidence_c_header(out: &mut String) {
         ("INPUT_STATE_SHA256", 536),
         ("MATCHED_INPUT_STATE_SHA256", 568),
         ("OUTCOME", 600),
-        ("RESERVED", 604),
+        ("RAM_LOGICAL_EDITION", 604),
+        ("RAM_ROOT_SCOPE", 606),
+        ("RAM_HASH_ALGORITHM", 607),
         ("VALUES", 608),
     ] {
         let _ = writeln!(
@@ -73,6 +75,9 @@ pub(crate) fn emit_fault_instruction_evidence_c_header(out: &mut String) {
     define!("CRUCIBLE_FAULT_INSTRUCTION_OUTCOME_APPLIED", 1);
     define!("CRUCIBLE_FAULT_INSTRUCTION_OUTCOME_SUPPRESSED", 2);
     define!("CRUCIBLE_FAULT_INSTRUCTION_OUTCOME_ERROR", 4);
+    define!("CRUCIBLE_FAULT_INSTRUCTION_RAM_LOGICAL_EDITION", 1);
+    define!("CRUCIBLE_FAULT_INSTRUCTION_RAM_EXECUTION_SCOPE", 0);
+    define!("CRUCIBLE_FAULT_INSTRUCTION_RAM_BLAKE3_256", 1);
 
     out.push_str("\n/* Canonical x86 port-I/O transcript nested in replay evidence. */\n");
     out.push_str("#define CRUCIBLE_FAULT_INSTRUCTION_PORT_IO_MAGIC_V1 \"CRUCIOP1\"\n");

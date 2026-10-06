@@ -631,7 +631,9 @@ fn replay_event_graph_artifact(artifact: &EventGraphReplayArtifact) -> EventGrap
             }
         }
 
-        let firings = scheduler.evaluate_event_graph(&graph, &mut graph_state, NoGuestLeaves);
+        let firings = scheduler
+            .evaluate_event_graph(&graph, &mut graph_state, NoGuestLeaves)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"));
         if !firings.is_empty() {
             let append = scheduler
                 .apply_trigger_firings(&firings)

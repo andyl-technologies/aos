@@ -1,6 +1,14 @@
 //! Bounded per-quantum and lifecycle wait drivers.
 
 use super::*;
+use crucible_linux_resource::host_supervision::{HostOperationClass, HostSupervisionError};
+
+fn supervision_error(source: HostSupervisionError) -> QemuAsyncDriverError {
+    QemuAsyncDriverError::Runtime(QemuAsyncDriverRuntimeError::operational_supervision(
+        "host operation supervision",
+        source,
+    ))
+}
 
 /// Runs one scheduler quantum through a bounded host-I/O bridge.
 ///
@@ -57,6 +65,12 @@ where
 {
     policy.validate()?;
 
+    let host_operation = runtime
+        .host_operation_supervisor()
+        .map(|supervisor| supervisor.begin(HostOperationClass::Quantum))
+        .transpose()
+        .map_err(supervision_error)?;
+
     let mut async_operations = Vec::new();
     runtime
         .yield_to_control_plane()
@@ -72,7 +86,7 @@ where
         .map_err(QemuAsyncDriverError::Runtime)?;
     // Renewal is a liveness poll, not an attempt deadline. A short slice
     // observes child exit and an authored watchdog cancellation promptly.
-    let wait_timeout = if policy.unbounded_advance_completion {
+    let initial_wait_timeout = if policy.unbounded_advance_completion {
         policy
             .timeout_for(QemuAsyncWait::AdvanceCompletion)
             .min(Duration::from_secs(1))
@@ -81,6 +95,18 @@ where
     };
     let mut first_wait = true;
     let completion = loop {
+        let wait_timeout = match &host_operation {
+            Some(operation) => match operation.wait_slice() {
+                Ok(slice) => slice,
+                Err(source) => {
+                    target
+                        .shutdown_after_crash()
+                        .map_err(QemuAsyncDriverError::Target)?;
+                    return Err(supervision_error(source));
+                }
+            },
+            None => initial_wait_timeout,
+        };
         let is_initial_wait = first_wait;
         if is_initial_wait {
             first_wait = false;
@@ -91,13 +117,19 @@ where
             runtime.repoll_child(QemuAsyncWait::AdvanceCompletion, wait_timeout)
         }
         .map_err(QemuAsyncDriverError::Runtime)?;
-        async_operations.push(QemuAsyncDriverOperation::AwaitChild {
+        let observed_wait = QemuAsyncDriverOperation::AwaitChild {
             wait: QemuAsyncWait::AdvanceCompletion,
             timeout: wait_timeout,
             outcome: wait_outcome,
-        });
+        };
+        // Poll traffic is operational evidence, not an unbounded history buffer.
+        if async_operations.len() < 64 {
+            async_operations.push(observed_wait);
+        } else if let Some(last) = async_operations.last_mut() {
+            *last = observed_wait;
+        }
         if wait_outcome == QemuAsyncWaitOutcome::TimedOut {
-            if !policy.unbounded_advance_completion {
+            if host_operation.is_none() && !policy.unbounded_advance_completion {
                 break None;
             }
             if let Some(exit_status) = target
@@ -136,8 +168,10 @@ where
     };
     let Some(completion) = completion else {
         async_operations.push(QemuAsyncDriverOperation::ShutdownAfterCrash);
-        let status = crash_detector
-            .bounded_await_timeout(QemuAsyncWait::AdvanceCompletion.operation(), wait_timeout);
+        let status = crash_detector.bounded_await_timeout(
+            QemuAsyncWait::AdvanceCompletion.operation(),
+            initial_wait_timeout,
+        );
         let shutdown = target
             .shutdown_after_crash()
             .map_err(QemuAsyncDriverError::Target)?;
@@ -153,6 +187,9 @@ where
             async_operations,
         });
     };
+    if let Some(operation) = host_operation {
+        operation.complete().map_err(supervision_error)?;
+    }
     assert_async_driver_quantum_hot_path_is_shmem_only(&completion.operations)?;
 
     runtime
@@ -198,9 +235,39 @@ where
         return Err(QemuAsyncDriverError::LifecycleAdvanceWait);
     }
     let timeout = policy.timeout_for(wait);
-    let outcome = runtime
-        .await_child(wait, timeout)
+    let class = match wait {
+        QemuAsyncWait::Handshake => HostOperationClass::Setup,
+        QemuAsyncWait::QmpCommand => HostOperationClass::Preparation,
+        QemuAsyncWait::ProcessEvent => HostOperationClass::Cleanup,
+        QemuAsyncWait::AdvanceCompletion => HostOperationClass::Quantum,
+    };
+    let operation = runtime
+        .host_operation_supervisor()
+        .map(|supervisor| supervisor.begin(class))
+        .transpose()
+        .map_err(supervision_error)?;
+    let mut first = true;
+    let outcome = loop {
+        let slice = match &operation {
+            Some(operation) => operation.wait_slice().map_err(supervision_error)?,
+            None => timeout,
+        };
+        let outcome = if first {
+            first = false;
+            runtime.await_child(wait, slice)
+        } else {
+            runtime.repoll_child(wait, slice)
+        }
         .map_err(QemuAsyncDriverError::Runtime)?;
+        if outcome == QemuAsyncWaitOutcome::Completed || operation.is_none() {
+            break outcome;
+        }
+    };
+    if outcome == QemuAsyncWaitOutcome::Completed
+        && let Some(operation) = operation
+    {
+        operation.complete().map_err(supervision_error)?;
+    }
     let mut async_operations = vec![QemuAsyncDriverOperation::AwaitChild {
         wait,
         timeout,

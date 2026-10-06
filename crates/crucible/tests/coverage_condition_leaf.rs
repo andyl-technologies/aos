@@ -96,6 +96,7 @@ fn coverage_point_observes_current_basic_block_execution_event() {
     assert!(
         evaluator(7, vec![wrong_node, wrong_block, matching_block])
             .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
     );
     assert!(
         !evaluator(
@@ -108,6 +109,7 @@ fn coverage_point_observes_current_basic_block_execution_event() {
             )],
         )
         .evaluate_assertion_condition(&condition)
+        .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
     );
 }
 
@@ -118,7 +120,9 @@ fn coverage_point_does_not_rematch_after_prior_block_execution() {
     let repeat_block = ObservableEvent::coverage_block(icount(7), node("server"), 0x4000, 0x20);
 
     assert!(
-        !evaluator(7, vec![first_block, repeat_block]).evaluate_assertion_condition(&condition)
+        !evaluator(7, vec![first_block, repeat_block])
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
     );
 }
 
@@ -135,8 +139,13 @@ fn coverage_point_resolves_symbols_host_side_without_guest_marker_support() {
     assert!(
         evaluator_with_resolution(10, vec![block.clone()], vec![resolution])
             .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
     );
-    assert!(!evaluator(10, vec![block]).evaluate_assertion_condition(&condition));
+    assert!(
+        !evaluator(10, vec![block])
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
 }
 
 #[test]
@@ -151,6 +160,7 @@ fn coverage_point_raw_guest_address_ignores_symbol_resolution_table() {
     assert!(
         !evaluator_with_resolution(7, vec![block], vec![bogus_resolution])
             .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
     );
 }
 

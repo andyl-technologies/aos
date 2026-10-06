@@ -95,12 +95,17 @@ pub use s3_ref::{
     StoreS3RefCapability, StoreS3StrongCasClient, StoreS3VersionedObject,
     StoreS3VersionedObjectMetadata,
 };
-pub use sqlite::SqliteBlobBackend;
+pub use sqlite::{
+    SqliteBlobBackend, SqliteCatalogOperation, SqliteCatalogOperationKind, SqliteCatalogSupervisor,
+    minimum_sqlite_catalog_resident_bytes, minimum_sqlite_catalog_staging_bytes,
+};
 pub use write_back::{
     WriteBackRetentionAdmin, WriteBackRetentionFence, WriteBackRetentionGeneration,
     WriteBackRetentionRoot, WriteBackRetentionSummary,
 };
 
+#[cfg(test)]
+pub(crate) mod test_resources;
 #[cfg(test)]
 mod tests;
 
@@ -257,15 +262,32 @@ impl ContentId {
         Self::for_bytes(self.kind, self.schema_version, bytes) == self
     }
 
+    /// Returns the exact byte length of the stable textual identity.
+    #[must_use]
+    pub fn encoded_len(self) -> usize {
+        self.kind.as_str().len()
+            + 2
+            + self.schema_version.checked_ilog10().unwrap_or(0) as usize
+            + 1
+            + 64
+    }
+
     /// Renders the stable `kind.schema.digest` representation.
     #[must_use]
     pub fn encode(self) -> String {
-        format!(
-            "{}.{}.{}",
-            self.kind.as_str(),
-            self.schema_version,
-            encode_hex(&self.digest)
-        )
+        use std::fmt::Write as _;
+        let length = self.encoded_len();
+        if crate::owned_decode::charge_array::<u8>(length).is_err() {
+            return String::new();
+        }
+        let mut encoded = String::with_capacity(length);
+        let _ = write!(encoded, "{}.{}.", self.kind.as_str(), self.schema_version);
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        for byte in self.digest {
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+        encoded
     }
 
     /// Parses the stable `kind.schema.digest` representation.
@@ -877,6 +899,13 @@ pub enum StoreError {
         /// Requested byte count.
         length: u64,
     },
+    /// An owned storage operation lost its original supervision authority.
+    #[error("store operational supervision refused: {source}")]
+    Supervision {
+        /// Original typed host cancellation, deadline or admission failure.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
     /// A composition graph had no route or usable child.
     #[error("store composition is invalid: {reason}")]
     InvalidComposition {
@@ -1072,6 +1101,23 @@ pub trait ImmutableBlobBackend: Send + Sync {
 
     /// Returns capabilities available through this component.
     fn capabilities(&self) -> BackendCapabilities;
+
+    /// Returns the original admitted owner of decoded caller metadata.
+    ///
+    /// The authority is retained through every decoded object and deferred
+    /// reader. Projection creates no new capacity, quota binding, or deadline.
+    /// Compositions with different possible resource owners must refuse rather
+    /// than choose an arbitrary leaf. Unadmitted backends refuse by default.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Unsupported`] when no unambiguous admitted owner
+    /// exists for this logical backend.
+    fn metadata_resources(&self) -> Result<Arc<dyn StorePhysicalQuotaGuard>, StoreError> {
+        Err(StoreError::Unsupported {
+            capability: "decoded-metadata-resources",
+        })
+    }
 
     /// Checks conservative additional object headroom before graph publication.
     ///
@@ -1321,6 +1367,11 @@ pub(crate) fn read_handle_all(source: &BlobHandle, max_bytes: u64) -> Result<Vec
         return Err(StoreError::Quota);
     }
     let capacity = usize::try_from(logical_length).map_err(|_| StoreError::Quota)?;
+    crate::owned_decode::charge_array::<u8>(capacity).map_err(|source| {
+        StoreError::Supervision {
+            source: Box::new(source),
+        }
+    })?;
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(capacity)

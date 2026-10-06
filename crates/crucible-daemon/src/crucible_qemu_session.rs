@@ -116,12 +116,25 @@ pub trait QemuAttemptResourceGuard: QemuAttemptOperationalBoundary {
     fn quarantine(&mut self);
 }
 
-/// Resource guard that can lend one sealed child-process launch contract.
+/// Resource guard that lends launch and monotonic kernel-control capabilities.
 ///
-/// The returned capability is read-only and cannot release cgroup, quota,
-/// cancellation, quantum, watcher, or quarantine ownership. It remains valid
-/// only while the attempt guard is live.
+/// The launch contract is read-only. Native resource control can only tighten
+/// the same pinned physical reservation; neither capability releases cgroup,
+/// quota, watcher or quarantine ownership. Retirement closes their authority.
 pub trait QemuAttemptProcessResourceGuard: QemuAttemptResourceGuard {
+    /// Lends monotonic kernel control tied to this physical owner's retirement.
+    ///
+    /// # Errors
+    /// Returns an operational error when live pinned authority cannot be lent.
+    /// Non-native fixture guards return `None`; production admission requires
+    /// the actual controller before granting realized RAM resources.
+    fn native_resource_controller(
+        &mut self,
+    ) -> Result<Option<crucible_qemu::LinuxQemuNativeResourceController>, QemuVmRealizationError>
+    {
+        Ok(None)
+    }
+
     /// Returns the exact child-process containment contract for this attempt.
     ///
     /// # Errors

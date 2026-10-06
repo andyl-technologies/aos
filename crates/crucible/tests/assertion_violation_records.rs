@@ -110,8 +110,12 @@ fn violation_records_are_derived_from_retained_log_and_reproduction_artifact() {
     let mut oracle = BlackBoxHostOracle;
     let mut evaluator =
         HostAssertionEvaluator::new(&properties).with_world_white_box_policies(&world);
-    evaluator.observe_prefix(&prefix(event_log[..1].to_vec()), &mut oracle);
-    let online = evaluator.finalize_prefix(&prefix(event_log.clone()), &mut oracle);
+    evaluator
+        .observe_prefix(&prefix(event_log[..1].to_vec()), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    let online = evaluator
+        .finalize_prefix(&prefix(event_log.clone()), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     let offline = OfflineAssertionChecker::new()
         .with_world_white_box_policies(&world)

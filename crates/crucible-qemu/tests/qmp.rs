@@ -155,6 +155,38 @@ fn query_status_is_typed_and_bounded() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn paused_cpu_query_binds_cpu_and_optional_stop_generation() -> Result<(), Box<dyn Error>> {
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"schema-version":1,"scope":1,"generation":17,"vcpu-index":3,"pc":1048592,"absolute-icount":123456}}"#,
+        r#"{"return":{"schema-version":1,"scope":1,"generation":18,"vcpu-index":3,"pc":1048608,"absolute-icount":123457}}"#,
+    ]);
+    let audit = stream.audit_handle();
+    let mut client = QmpClient::connect(stream)?;
+
+    let current = client.query_paused_cpu(3, Some(17))?;
+    assert_eq!(current.generation, 17);
+    assert_eq!(current.vcpu_index, 3);
+    assert_eq!(current.pc, 1048592);
+    assert_eq!(current.absolute_icount, 123456);
+    assert_eq!(client.query_paused_cpu(3, None)?.generation, 18);
+
+    drop(client);
+    let audit = audit_snapshot(&audit);
+    let commands = written_json_lines(&audit)?;
+    assert_eq!(
+        json_line(&commands, 1),
+        &serde_json::json!({"execute":"query-crucible-paused-cpu","arguments":{"vcpu-index":3,"expected-generation":17}})
+    );
+    assert_eq!(
+        json_line(&commands, 2),
+        &serde_json::json!({"execute":"query-crucible-paused-cpu","arguments":{"vcpu-index":3}})
+    );
+    Ok(())
+}
+
+#[test]
 fn hot_fork_plugin_resource_inventory_is_exact_and_oob() -> Result<(), Box<dyn Error>> {
     let stream = scripted_qmp([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,

@@ -2,6 +2,46 @@
 
 use super::*;
 
+/// Authenticated campaign metadata with a separate bounded RAM frontier.
+///
+/// Generic objects include complete RAM root records. RAM descendants are not
+/// flattened into this set; destructive inventory must authenticate and mark
+/// every descendant through the CAS RAM inventory walker before deletion.
+pub struct CampaignStorageClosure {
+    pub(in crate::repository) objects: BTreeSet<ContentId>,
+    pub(in crate::repository) exact_leaves: BTreeSet<ContentId>,
+    pub(in crate::repository) ram_roots: Vec<ContentId>,
+    pub(in crate::repository) ram_bindings: Vec<(crate::ExactCheckpointId, ContentId)>,
+}
+
+impl CampaignStorageClosure {
+    /// Returns fully authenticated generic objects, including RAM roots.
+    #[must_use]
+    pub fn objects(&self) -> &BTreeSet<ContentId> {
+        &self.objects
+    }
+
+    /// Returns complete RAM roots in canonical storage identity order.
+    #[must_use]
+    pub fn ram_roots(&self) -> &[ContentId] {
+        &self.ram_roots
+    }
+}
+
+/// Optional inventories produced by one authenticated generic traversal.
+#[derive(Default)]
+pub(in crate::repository) struct ClosureCollection<'a> {
+    pub(in crate::repository) objects: Option<&'a mut BTreeSet<ContentId>>,
+    pub(in crate::repository) exact_leaves: Option<&'a mut BTreeSet<ContentId>>,
+    pub(in crate::repository) ram: Option<&'a mut ArchiveRamInventory>,
+}
+
+pub(in crate::repository) struct ArchiveRamInventory {
+    roots: BTreeSet<ContentId>,
+    bindings: BTreeSet<(crate::ExactCheckpointId, ContentId)>,
+    verify_contents: bool,
+}
+
 impl CampaignRepository {
     pub(super) fn incremental_closure_anchors(
         &self,
@@ -145,6 +185,102 @@ impl CampaignRepository {
         )
     }
 
+    /// Authenticates generic storage closure under destructive inventory ownership.
+    ///
+    /// RAM roots are returned separately after bounded metadata authentication.
+    /// The caller must visit and mark their complete graphs under `inventory`
+    /// before authorizing any deletion. No lazy reader or retention lease is
+    /// created, and this method never reacquires a shared publication fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unavailable, corrupt, invalid, or excessive generic
+    /// objects or RAM root metadata.
+    pub fn authenticated_storage_closure(
+        &self,
+        roots: impl IntoIterator<Item = ContentId>,
+        _inventory: &dyn crucible_cas::content_store::RefInventoryFence,
+    ) -> Result<CampaignStorageClosure, CampaignRepositoryError> {
+        self.authenticated_archive_closure(roots, false, &mut || Ok(()))
+    }
+
+    pub(in crate::repository) fn authenticated_archive_closure(
+        &self,
+        roots: impl IntoIterator<Item = ContentId>,
+        verify_contents: bool,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
+    ) -> Result<CampaignStorageClosure, CampaignRepositoryError> {
+        let mut objects = BTreeSet::new();
+        let mut exact_leaves = BTreeSet::new();
+        let mut ram = ArchiveRamInventory {
+            roots: BTreeSet::new(),
+            bindings: BTreeSet::new(),
+            verify_contents,
+        };
+        self.verify_campaign_closures_anchored_cached_collect(
+            roots,
+            &BTreeSet::new(),
+            &mut ChoiceValidationCache::default(),
+            ClosureCollection {
+                objects: Some(&mut objects),
+                exact_leaves: Some(&mut exact_leaves),
+                ram: Some(&mut ram),
+            },
+            boundary,
+        )?;
+        if ram
+            .bindings
+            .iter()
+            .any(|(_, root)| !ram.roots.contains(root))
+        {
+            return Err(integrity("campaign-exact-ram-root-is-untyped"));
+        }
+        Ok(CampaignStorageClosure {
+            objects,
+            exact_leaves,
+            ram_roots: ram.roots.into_iter().collect(),
+            ram_bindings: ram.bindings.into_iter().collect(),
+        })
+    }
+
+    pub(in crate::repository) fn authenticate_ram_root(
+        &self,
+        id: ContentId,
+        verify_contents: bool,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
+    ) -> Result<(), CampaignRepositoryError> {
+        use crucible_cas::ram::{RamRetention, RamStore, RamStoreLimits};
+        let map_error = CampaignRepositoryError::Ram;
+        let store = RamStore::new(
+            Arc::clone(&self.blobs),
+            crucible_cas::content_store::DurabilityRequirement::new(1, false)?,
+            RamStoreLimits::default(),
+        )
+        .map_err(map_error)?;
+        if verify_contents {
+            let retention = self
+                .ram_retention_authority()
+                .acquire()
+                .map_err(map_error)?;
+            let lease = retention.retain_root(id).map_err(map_error)?;
+            let root = store
+                .open_with_metadata_resources(lease, boundary)
+                .map_err(map_error)?;
+            if root.record().scope() != crucible_ram::Scope::Exact {
+                return Err(integrity("campaign-ram-root-wrong-scope"));
+            }
+            store.verify(&root, boundary).map_err(map_error)?;
+        } else {
+            let metadata = store
+                .inspect_root_with_metadata_resources(id, boundary)
+                .map_err(map_error)?;
+            if metadata.record().scope() != crucible_ram::Scope::Exact {
+                return Err(integrity("campaign-ram-root-wrong-scope"));
+            }
+        }
+        Ok(())
+    }
+
     /// Authenticates and returns every unique object in the supplied closures.
     ///
     /// The returned set includes Merkle nodes, Merkle leaf values, generic
@@ -167,28 +303,13 @@ impl CampaignRepository {
             roots,
             &BTreeSet::new(),
             &mut ChoiceValidationCache::default(),
-            Some(&mut objects),
-            None,
+            ClosureCollection {
+                objects: Some(&mut objects),
+                ..ClosureCollection::default()
+            },
+            &mut || Ok(()),
         )?;
         Ok(objects)
-    }
-
-    // Only archive checkpoint selections may opt into raw production leaves.
-    // The source resolver and destination exact store authenticate their semantics.
-    pub(in crate::repository) fn authenticated_closure_with_exact_leaves(
-        &self,
-        roots: impl IntoIterator<Item = ContentId>,
-    ) -> Result<(BTreeSet<ContentId>, BTreeSet<ContentId>), CampaignRepositoryError> {
-        let mut objects = BTreeSet::new();
-        let mut exact_leaves = BTreeSet::new();
-        self.verify_campaign_closures_anchored_cached_collect(
-            roots,
-            &BTreeSet::new(),
-            &mut ChoiceValidationCache::default(),
-            Some(&mut objects),
-            Some(&mut exact_leaves),
-        )?;
-        Ok((objects, exact_leaves))
     }
 
     pub(in crate::repository) fn verify_campaign_closures_anchored_cached(
@@ -201,8 +322,8 @@ impl CampaignRepository {
             roots,
             anchors,
             choice_cache,
-            None,
-            None,
+            ClosureCollection::default(),
+            &mut || Ok(()),
         )
     }
 
@@ -211,21 +332,22 @@ impl CampaignRepository {
         roots: impl IntoIterator<Item = ContentId>,
         anchors: &BTreeSet<ContentId>,
         choice_cache: &mut ChoiceValidationCache,
-        mut collected: Option<&mut BTreeSet<ContentId>>,
-        mut collected_exact_leaves: Option<&mut BTreeSet<ContentId>>,
+        mut collection: ClosureCollection<'_>,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
     ) -> Result<usize, CampaignRepositoryError> {
         let mut stack = roots.into_iter().map(|id| (id, false)).collect::<Vec<_>>();
         let mut visited = BTreeSet::new();
         let mut verified_merkle_positions = BTreeSet::new();
 
         while let Some((id, exact_leaf)) = stack.pop() {
+            boundary().map_err(CampaignRepositoryError::Ram)?;
             if anchors.contains(&id) {
                 continue;
             }
             if !visited.insert((id, exact_leaf)) {
                 continue;
             }
-            if let Some(objects) = collected.as_deref_mut() {
+            if let Some(objects) = collection.objects.as_deref_mut() {
                 objects.insert(id);
             }
             if visited
@@ -247,7 +369,7 @@ impl CampaignRepository {
                     self.merkle
                         .verify_closure_objects_cached(id, &mut verified_merkle_positions)?
                 };
-                if let Some(objects) = collected.as_deref_mut() {
+                if let Some(objects) = collection.objects.as_deref_mut() {
                     objects.extend(
                         verified_merkle_positions
                             .iter()
@@ -276,7 +398,7 @@ impl CampaignRepository {
                 {
                     return Err(integrity("campaign-exact-leaf-identity-mismatch"));
                 }
-                if let Some(leaves) = collected_exact_leaves.as_deref_mut() {
+                if let Some(leaves) = collection.exact_leaves.as_deref_mut() {
                     leaves.insert(id);
                 }
                 continue;
@@ -293,10 +415,57 @@ impl CampaignRepository {
                 if envelope.content_id(id.kind()) != id {
                     return Err(integrity("campaign-closure-envelope-id-mismatch"));
                 }
-                let exact_root = collected_exact_leaves.is_some()
-                    && id.kind() == ObjectKind::ExactManifest
+                if envelope.schema_name() == "crucible.executor.exact-checkpoint-root"
+                    && (id.kind() != ObjectKind::ExactManifest || envelope.schema_version() != 6)
+                {
+                    return Err(integrity("campaign-exact-root-unsupported-edition"));
+                }
+                if envelope.schema_name() == "crucible.ram.root"
+                    && (id.kind() != ObjectKind::ExactManifest || envelope.schema_version() != 1)
+                {
+                    return Err(integrity("campaign-ram-root-unsupported-edition"));
+                }
+                let exact_root = id.kind() == ObjectKind::ExactManifest
                     && envelope.schema_name() == "crucible.executor.exact-checkpoint-root"
-                    && envelope.schema_version() == 5;
+                    && envelope.schema_version() == 6;
+                let ram_root = id.kind() == ObjectKind::ExactManifest
+                    && envelope.schema_name() == "crucible.ram.root"
+                    && envelope.schema_version() == 1;
+                if ram_root {
+                    let verify = collection
+                        .ram
+                        .as_ref()
+                        .is_none_or(|ram| ram.verify_contents);
+                    self.authenticate_ram_root(id, verify, boundary)?;
+                    if let Some(ram) = collection.ram.as_deref_mut() {
+                        ram.roots.insert(id);
+                    }
+                    if collection.ram.is_some() || collection.objects.is_none() {
+                        continue;
+                    }
+                }
+                if exact_root {
+                    let owner = crate::ExactCheckpointId::from_content_id(id)?;
+                    let mut ordinal = 0_u32;
+                    for child in envelope
+                        .children()
+                        .iter()
+                        .filter(|child| child.role().starts_with("ram-root-"))
+                    {
+                        if child.role() != format!("ram-root-{ordinal:08x}")
+                            || child.id().kind() != ObjectKind::ExactManifest
+                            || child.id().schema_version() != 1
+                        {
+                            return Err(integrity("campaign-exact-ram-root-role-mismatch"));
+                        }
+                        if let Some(ram) = collection.ram.as_deref_mut() {
+                            ram.bindings.insert((owner, child.id()));
+                        }
+                        ordinal = ordinal
+                            .checked_add(1)
+                            .ok_or_else(|| integrity("campaign-exact-ram-root-limit"))?;
+                    }
+                }
                 stack.extend(envelope.children().iter().map(|child| {
                     let exact_leaf = exact_root
                         && matches!(

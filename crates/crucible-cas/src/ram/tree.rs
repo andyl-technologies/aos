@@ -117,8 +117,9 @@ impl RamStore {
             return Err(RamStoreError::Invalid("retention root receipt"));
         }
         Ok(LeasedRamRoot {
-            record,
-            regions,
+            record: Arc::new(record),
+            regions: regions.into(),
+            metadata_custody: Arc::clone(&lease),
             lease,
         })
     }
@@ -142,8 +143,9 @@ impl RamStore {
         self.admit_topology(record.topology())?;
         self.validate_root_catalogs(&record, &regions)?;
         Ok(LeasedRamRoot {
-            record,
-            regions,
+            record: Arc::new(record),
+            regions: regions.into(),
+            metadata_custody: Arc::clone(&lease),
             lease,
         })
     }
@@ -269,7 +271,7 @@ impl RamStore {
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
     ) -> Result<LeasedRamRoot, RamStoreError> {
         self.admit_ram_publication(root.record.topology(), root.record.scope())?;
-        let mut regions = root.regions.clone();
+        let mut regions = root.regions.to_vec();
         let mut roots = root.record.region_roots().to_vec();
         let mut previous: Option<(String, u64)> = None;
         let mut work = Work::new(self.limits, boundary);
@@ -310,8 +312,9 @@ impl RamStore {
             return Err(RamStoreError::Invalid("retention root receipt"));
         }
         Ok(LeasedRamRoot {
-            record,
-            regions,
+            record: Arc::new(record),
+            regions: regions.into(),
+            metadata_custody: Arc::clone(&lease),
             lease,
         })
     }
@@ -341,7 +344,7 @@ impl RamStore {
             .regions()
             .iter()
             .filter(|region| root.record.scope().includes(region.class()))
-            .zip(&root.regions)
+            .zip(root.regions.iter())
         {
             self.verify_region(region, *reference, 0, &mut report, &mut work)?;
         }

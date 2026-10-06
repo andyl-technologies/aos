@@ -1153,8 +1153,13 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
             checkpoint_directory.path(),
         )),
         1024 * 1024,
+        repository.ram_retention_authority(),
     )
-    .expect("checkpoint store");
+    .expect("checkpoint store")
+    .with_ram_root_resources(
+        crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+            .expect("finite component RAM-root credit"),
+    );
     let semantic = PreparedSemanticAttemptResult::new(
         observation_candidate,
         current_measurement_evidence,

@@ -595,6 +595,7 @@ fn spawn_unpinned_test_process_with_resources(
         cgroup_procs: contract.cgroup_procs.as_raw_fd(),
         cancellation_event: contract.cancellation_event.as_raw_fd(),
         maximum_file_bytes: contract.maximum_writable_bytes,
+        maximum_file_descriptors: contract.maximum_file_descriptors,
         credentials: contract.credentials,
     });
 
@@ -760,6 +761,62 @@ fn guarded_pre_exec_places_child_before_exec() -> Result<(), Box<dyn Error>> {
     )?;
     assert!(child.wait()?.success());
 
+    let mut placement = [0_u8; 2];
+    std::fs::File::from(cgroup_read).read_exact(&mut placement)?;
+    assert_eq!(&placement, CGROUP_ATTACH_SELF);
+    Ok(())
+}
+
+#[test]
+fn guarded_pre_exec_enforces_explicit_descriptor_ceiling() -> Result<(), Box<dyn Error>> {
+    if env::var_os(PROBE_ENV).is_some() {
+        let mut limit = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+        let result = unsafe {
+            // SAFETY: getrlimit writes the complete initialized record on success.
+            libc::getrlimit(libc::RLIMIT_NOFILE, limit.as_mut_ptr())
+        };
+        if result != 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        let limit = unsafe {
+            // SAFETY: The successful syscall initialized both limit fields.
+            limit.assume_init()
+        };
+        assert_eq!(limit.rlim_cur, 32);
+        assert_eq!(limit.rlim_max, 32);
+        let mut opened = Vec::new();
+        let refusal = loop {
+            match std::fs::File::open("/dev/null") {
+                Ok(file) => opened.push(file),
+                Err(error) => break error,
+            }
+        };
+        assert!(!opened.is_empty());
+        drop(opened);
+        assert_eq!(refusal.raw_os_error(), Some(libc::EMFILE));
+        return Ok(());
+    }
+    let (cgroup_read, cgroup_write) = pipe_pair()?;
+    let cancellation = event_fd_for_test()?;
+    let mut contract =
+        QemuChildProcessContract::for_test(cgroup_write, cancellation, current_file_size_limit()?);
+    contract.maximum_file_descriptors = Some(32);
+    let (_host, child_resources) = create_spawn_resources(4096)?;
+    let executable = env::current_exe()?.to_string_lossy().into_owned();
+    let args = vec![
+        String::from("--exact"),
+        String::from("spawn::tests::guarded_pre_exec_enforces_explicit_descriptor_ceiling"),
+    ];
+
+    let mut child = spawn_unpinned_test_process_with_resources(
+        &executable,
+        &args,
+        child_resources,
+        &[(PROBE_ENV, "1")],
+        "spawn guarded descriptor-limit probe",
+        Some(&contract),
+    )?;
+    assert!(child.wait()?.success());
     let mut placement = [0_u8; 2];
     std::fs::File::from(cgroup_read).read_exact(&mut placement)?;
     assert_eq!(&placement, CGROUP_ATTACH_SELF);
@@ -1007,7 +1064,10 @@ fn process_contract_rejects_forged_regular_descriptors() -> Result<(), Box<dyn E
         temporary.into(),
         duplicate,
         crate::linux_cgroup::LinuxQemuCgroupLimits::new(1, 4096, 1)?,
-        4096,
+        super::QemuChildFileLimits {
+            writable_bytes: 4096,
+            descriptors: 1024,
+        },
         credentials,
         None,
     ) {
@@ -1602,6 +1662,8 @@ fn guarded_spawn_rejects_another_attempt_with_identical_limits() -> Result<(), B
             &prepared,
             4096,
             &second_contract,
+            None,
+            None,
         ),
         Err(QemuSpawnError::PreparedLaunchAdmissionChanged)
     ));
@@ -1661,6 +1723,8 @@ fn guarded_spawn_rejects_changed_admission_before_revalidation() -> Result<(), B
             &prepared,
             4096,
             &changed_contract,
+            None,
+            None,
         ),
         Err(QemuSpawnError::PreparedLaunchAdmissionChanged)
     ));

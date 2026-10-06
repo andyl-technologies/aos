@@ -7,6 +7,7 @@
   "crucible-assert"
   "crucible-shmem"
   "crucible-protocol"
+  "crucible-ram"
   "crucible-device"
   "crucible-debug-gateway"
   "crucible-qemu"

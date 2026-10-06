@@ -1,4 +1,4 @@
-//! Checks QEMU control-plane inertness for RFC-0010 PROTO-24.
+//! Checks QEMU control-plane inertness outside simulation mode.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

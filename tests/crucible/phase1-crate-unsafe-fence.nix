@@ -342,6 +342,12 @@
       safeWrapperContract = [];
     }
     {
+      package = "crucible-ram";
+      root = "src/lib.rs";
+      unsafeBoundary = false;
+      safeWrapperContract = [];
+    }
+    {
       package = "crucible-qemu";
       root = "src/lib.rs";
       unsafeBoundary = true;

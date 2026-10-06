@@ -1,6 +1,6 @@
 //! Pure reconstruction of repository-authenticated lifecycle state.
 //!
-//! The lower exact-checkpoint verifier owns the v9 manifest and object
+//! The lower exact-checkpoint verifier owns the paged manifest and object
 //! relation. This module decodes each authenticated semantic object once into
 //! the API-owned lifecycle types without installing a native closure or
 //! exposing artifact identities and readers.
@@ -209,6 +209,14 @@ struct AuthenticatedTarget {
     snapshot: ExactSnapshotHandle,
 }
 
+/// Owns retained non-RAM object readers and authenticated RAM roots for decoding.
+pub struct ProductionExactCheckpointReadSources {
+    /// Opens an immutable non-RAM object by its authenticated manifest identity.
+    pub open: Arc<dyn Fn(ContentHash) -> io::Result<Box<dyn Read + Send>> + Send + Sync>,
+    /// Retains the exact leased paged RAM source for every live manifest node.
+    pub ram_sources: Vec<ProductionPagedRamSource>,
+}
+
 /// Decodes one repository-authenticated closure without filesystem staging.
 ///
 /// The closure proof is consumed. Every semantic object is opened, bounded,
@@ -227,8 +235,42 @@ pub fn decode_authenticated_production_exact_checkpoint(
     source: &ScenarioDefForm,
     byte_limit: u64,
     mut boundary: impl FnMut() -> io::Result<()>,
-    open: Arc<dyn Fn(ContentHash) -> io::Result<Box<dyn Read + Send>> + Send + Sync>,
+    sources: ProductionExactCheckpointReadSources,
 ) -> Result<DecodedProductionExactCheckpoint, LifecycleApiError> {
+    let ProductionExactCheckpointReadSources { open, ram_sources } = sources;
+    let mut retained_ram = BTreeMap::new();
+    for source in ram_sources {
+        if retained_ram.insert(source.node().clone(), source).is_some() {
+            return Err(loop_factory_error("duplicate retained RAM source node"));
+        }
+    }
+    let mut ram_nodes = 0_usize;
+    closure
+        .visit_paged_ram_roots(|node, binding| {
+            boundary().map_err(|_| {
+                crucible::exact_checkpoint::ExactCheckpointRelationError::InvalidStructure
+            })?;
+            let source = retained_ram
+                .get(&NodeId {
+                    name: node.to_owned(),
+                })
+                .ok_or(
+                    crucible::exact_checkpoint::ExactCheckpointRelationError::InvalidStructure,
+                )?;
+            binding.authenticate_source(source.root())?;
+            ram_nodes = ram_nodes.checked_add(1).ok_or(
+                crucible::exact_checkpoint::ExactCheckpointRelationError::InvalidStructure,
+            )?;
+            Ok(())
+        })
+        .map_err(|error| {
+            loop_factory_error(format!("authenticate retained exact RAM sources: {error}"))
+        })?;
+    if ram_nodes != retained_ram.len() {
+        return Err(loop_factory_error(
+            "retained RAM source inventory differs from exact targets",
+        ));
+    }
     let mut objects = SemanticObjects::default();
     let semantic_open = Arc::clone(&open);
     let targets = closure
@@ -255,6 +297,7 @@ pub fn decode_authenticated_production_exact_checkpoint(
         configuration: Arc::new(checkpoint.configuration.clone()),
         scheduler: Arc::clone(&checkpoint.scheduler),
         open,
+        ram_sources: retained_ram,
     });
     Ok(DecodedProductionExactCheckpoint {
         checkpoint,

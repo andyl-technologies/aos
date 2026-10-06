@@ -2166,7 +2166,7 @@ pub static qemu_plugin_version: c_int = QEMU_PLUGIN_API_VERSION;
 /// `info` must point to a live QEMU 11.1.1 `qemu_info_t` for the duration of
 /// this call. When `argc` is positive, `argv` must point to at least `argc`
 /// live pointers to NUL-terminated C strings for the same duration.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "native-conformance"), unsafe(no_mangle))]
 pub unsafe extern "C" fn qemu_plugin_install(
     id: QemuPluginId,
     info: *const QemuPluginInfo,
@@ -2190,6 +2190,49 @@ pub unsafe extern "C" fn qemu_plugin_install(
         let _ = (id, info, argc, argv);
         QEMU_PLUGIN_INSTALL_ERROR
     }
+}
+
+/// Validates the native execution profile and borrows its sole observer argument.
+///
+/// # Errors
+/// Rejects unsupported execution models or architectures, invalid argument
+/// counts, null entries, and arguments that are not valid UTF-8.
+///
+/// # Safety
+/// `info` must point to an aligned, initialized `QemuPluginInfo` whose target
+/// name is a live NUL-terminated string. For a nonnegative `argc`, `argv` must
+/// contain that many initialized entries, each pointing to a live NUL-terminated
+/// string. QEMU must retain these loans until this synchronous call returns;
+/// structural validation cannot establish the validity of foreign pointers.
+#[cfg(feature = "native-conformance")]
+pub(crate) unsafe fn conformance_install_argument(
+    info: *const QemuPluginInfo,
+    argc: c_int,
+    argv: *mut *mut c_char,
+) -> Result<String, crate::ram_error::RamError> {
+    validate_install_boundary(info, argc, argv)?;
+    // SAFETY: the exported conformance entrypoint retains QEMU's complete info
+    // and argument loans until this synchronous validation returns.
+    let info = unsafe { &*info };
+    observed_execution_model(info, resolve_qemu_single_threaded_rr_symbol)?;
+    target_architecture_from_qemu_info(info)?;
+    if argc != 1 {
+        return Err(crate::ram_error::RamError::Invariant(
+            "conformance observer requires one explicit RAM metadata allowance",
+        ));
+    }
+    // SAFETY: boundary validation admitted the one-entry argv vector.
+    let argument = unsafe { *argv };
+    if argument.is_null() {
+        return Err(crate::ram_error::RamError::Invariant(
+            "conformance observer argument is null",
+        ));
+    }
+    // SAFETY: QEMU lends this NUL-terminated argument for the install callback.
+    unsafe { CStr::from_ptr(argument) }
+        .to_str()
+        .map(str::to_owned)
+        .map_err(crate::ram_error::RamError::from)
 }
 
 #[cfg(unix)]

@@ -2,6 +2,8 @@
 
 use super::*;
 
+mod owned_normalization;
+
 /// A declarative event and signal-driven fault plan layered over a [`World`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Plan {
@@ -21,7 +23,12 @@ impl Plan {
     /// Builds an empty plan.
     #[must_use]
     pub fn empty() -> Self {
-        Self::from_canonical_event_graph(EventGraph::from_unchecked_events_for_model(Vec::new()))
+        let fault_signals = FaultSignalPlan::empty();
+        Self {
+            id: empty_plan_hash(&fault_signals),
+            graph: EventGraph::from_unchecked_events_for_model(Vec::new()),
+            fault_signals,
+        }
     }
 
     /// Returns the plan's non-fault event graph.
@@ -37,8 +44,12 @@ impl Plan {
     }
 
     /// Replaces the signal-driven fault layer and recomputes plan identity.
-    #[must_use]
-    pub fn with_fault_signals(self, fault_signals: FaultSignalPlan) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ArtifactDecodeAdmission`] when the original
+    /// artifact owner cannot admit canonical hashing scratch.
+    pub fn with_fault_signals(self, fault_signals: FaultSignalPlan) -> Result<Self, EngineError> {
         Self::from_canonical_parts(self.graph, fault_signals)
     }
 
@@ -53,7 +64,7 @@ impl Plan {
         world: &World,
         fault_signals: FaultSignalPlan,
     ) -> Result<Self, EngineError> {
-        let plan = Self::from_canonical_parts(self.graph, fault_signals);
+        let plan = Self::from_canonical_parts(self.graph, fault_signals)?;
         plan.validate_for_world(world)?;
         Ok(plan)
     }
@@ -83,11 +94,13 @@ impl Plan {
         assertions: impl IntoIterator<Item = AssertionId>,
         graph: EventGraph,
     ) -> Result<Self, EngineError> {
-        let assertions = assertions.into_iter().collect::<Vec<_>>();
-        let graph = resolve_event_graph_dsl_for_world(world, &graph);
-        let graph =
-            validate_event_graph_plan(world, assertions, graph).map_err(event_graph_plan_error)?;
-        Ok(Self::from_canonical_event_graph(graph))
+        let mut events = graph.into_events();
+        owned_normalization::resolve_events(world, &mut events)?;
+        let graph = EventGraph::from_unchecked_events_for_model(events);
+        graph
+            .validate_for_world_with_assertions(world, assertions)
+            .map_err(event_graph_plan_error)?;
+        Self::from_canonical_event_graph(graph)
     }
 
     /// Computes the canonical identity of this plan.
@@ -203,13 +216,20 @@ impl Plan {
         world: &World,
         properties: &Properties,
     ) -> Result<(), EngineError> {
-        self.validate_for_world_with_assertions(
-            world,
-            properties
-                .assertions()
-                .iter()
-                .map(|assertion| assertion.id.clone()),
-        )
+        crate::owned_decode::charge_array::<AssertionId>(properties.assertions().len())
+            .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+        let mut assertions = Vec::new();
+        assertions
+            .try_reserve_exact(properties.assertions().len())
+            .map_err(|source| {
+                scenario_serialization_error(format!("reserve property assertion names: {source}"))
+            })?;
+        for assertion in properties.assertions() {
+            crate::owned_decode::charge_array::<u8>(assertion.id.name.len())
+                .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+            assertions.push(assertion.id.clone());
+        }
+        self.validate_for_world_with_assertions(world, assertions)
     }
 
     fn validate_for_world_with_assertions(
@@ -219,27 +239,25 @@ impl Plan {
     ) -> Result<(), EngineError> {
         self.fault_signals
             .validate_for_world(world)
-            .map_err(|error| {
-                scenario_serialization_error(format!(
-                    "fault signal plan validation failed: {error}"
-                ))
-            })?;
-        validate_event_graph_plan(world, assertions, self.graph.clone())
-            .map(|_| ())
+            .map_err(|error| artifact_decode_error("fault signal plan validation failed", error))?;
+        self.graph
+            .validate_for_world_with_assertions(world, assertions)
             .map_err(event_graph_plan_error)
     }
 
-    fn from_canonical_event_graph(graph: EventGraph) -> Self {
+    fn from_canonical_event_graph(graph: EventGraph) -> Result<Self, EngineError> {
         Self::from_canonical_parts(graph, FaultSignalPlan::empty())
     }
 
-    fn from_canonical_parts(graph: EventGraph, fault_signals: FaultSignalPlan) -> Self {
-        let material = plan_parts_material(&graph, &fault_signals);
-        Self {
-            id: ContentHash::from_canonical_material("crucible.model.plan.v6", &material),
+    fn from_canonical_parts(
+        graph: EventGraph,
+        fault_signals: FaultSignalPlan,
+    ) -> Result<Self, EngineError> {
+        Ok(Self {
+            id: canonical_plan_hash(&graph, &fault_signals)?,
             graph,
             fault_signals,
-        }
+        })
     }
 }
 
@@ -330,6 +348,39 @@ impl LinkId {
             endpoint_b.name
         ))
     }
+
+    /// Compares an existing identity without constructing candidate strings.
+    pub(super) fn matches_endpoints(&self, left: &NodeId, right: &NodeId) -> bool {
+        let (endpoint_a, endpoint_b) = if left <= right {
+            (left, right)
+        } else {
+            (right, left)
+        };
+        let mut remaining = self.name.as_str();
+        struct Matcher<'a, 'b>(&'a mut &'b str);
+
+        impl std::fmt::Write for Matcher<'_, '_> {
+            fn write_str(&mut self, value: &str) -> std::fmt::Result {
+                let Some(rest) = self.0.strip_prefix(value) else {
+                    return Err(std::fmt::Error);
+                };
+                *self.0 = rest;
+                Ok(())
+            }
+        }
+
+        let result = std::fmt::write(
+            &mut Matcher(&mut remaining),
+            format_args!(
+                "link_endpoint_a_len={}\nlink_endpoint_a={}\nlink_endpoint_b_len={}\nlink_endpoint_b={}",
+                endpoint_a.name.len(),
+                endpoint_a.name,
+                endpoint_b.name.len(),
+                endpoint_b.name
+            ),
+        );
+        result.is_ok() && remaining.is_empty()
+    }
 }
 
 /// Host-side byte predicate for a delivered network frame.
@@ -372,10 +423,24 @@ impl FramePredicate {
 }
 
 /// Bounded host-side regex program for console output.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug)]
 pub struct RegexProgram {
-    /// Regex pattern evaluated by the host over captured output bytes.
-    pub pattern: String,
+    pattern: String,
+    compiled: std::sync::OnceLock<std::sync::Arc<crate::predicate_regex::CompiledPredicate>>,
+}
+
+impl PartialEq for RegexProgram {
+    fn eq(&self, other: &Self) -> bool {
+        self.pattern == other.pattern
+    }
+}
+
+impl Eq for RegexProgram {}
+
+impl std::hash::Hash for RegexProgram {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.pattern.hash(state);
+    }
 }
 
 impl RegexProgram {
@@ -384,7 +449,41 @@ impl RegexProgram {
     pub fn from_pattern(pattern: impl Into<String>) -> Self {
         Self {
             pattern: pattern.into(),
+            compiled: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Returns the immutable byte-matching pattern.
+    #[must_use]
+    pub fn pattern(&self) -> &str {
+        &self.pattern
+    }
+
+    pub(crate) fn compiled(
+        &self,
+    ) -> Result<
+        std::sync::Arc<crate::predicate_regex::CompiledPredicate>,
+        crate::predicate_regex::PredicateRegexError,
+    > {
+        if let Some(program) = self.compiled.get() {
+            if let Some(budget) = crate::owned_decode::current_budget()
+                && !program.has_admission()
+            {
+                let source = crate::owned_decode::DecodeAdmissionError::new(std::io::Error::other(
+                    "unadmitted component regex cache cannot enter an admitted model",
+                ));
+                budget.record_failure(source.clone());
+                return Err(crate::predicate_regex::PredicateRegexError::Admission(
+                    source,
+                ));
+            }
+            return Ok(std::sync::Arc::clone(program));
+        }
+        let program = crate::predicate_regex::CompiledPredicate::compile(&self.pattern)?;
+        // Concurrent first users may compile independently under their own
+        // original loans. The winning immutable program retains its custody.
+        let _ = self.compiled.set(std::sync::Arc::clone(&program));
+        Ok(program)
     }
 }
 
@@ -1105,8 +1204,10 @@ impl Properties {
     /// Builds an empty properties bundle.
     #[must_use]
     pub fn empty() -> Self {
-        let assertions = Vec::new();
-        Self::from_canonical_assertions(assertions)
+        Self {
+            id: empty_properties_hash(),
+            assertions: Vec::new(),
+        }
     }
 
     /// Builds a properties bundle after validating every predicate against `world`.
@@ -1126,12 +1227,11 @@ impl Properties {
     /// edge-shaped trigger-only predicate.
     pub fn from_assertions_for_world(
         world: &World,
-        assertions: Vec<AssertionDef>,
+        mut assertions: Vec<AssertionDef>,
     ) -> Result<Self, EngineError> {
         validate_properties_for_world(world, &assertions)?;
-        Ok(Self::from_canonical_assertions(canonical_assertions(
-            &assertions,
-        )))
+        owned_normalization::canonicalize_assertions(&mut assertions)?;
+        Self::from_canonical_assertions(assertions)
     }
 
     /// Builds a properties bundle after resolving DSL predicates against `world`
@@ -1151,8 +1251,17 @@ impl Properties {
         plan: &Plan,
         assertions: Vec<AssertionDef>,
     ) -> Result<Self, EngineError> {
-        let assertions = resolve_assertions_dsl_for_context(world, plan, &assertions);
+        let assertions = owned_normalization::resolve_assertions(world, plan, assertions)?;
         Self::from_assertions_for_world(world, assertions)
+    }
+
+    /// Resolves decoded assertions without cloning their already admitted image.
+    pub(super) fn into_resolved_for_context(
+        self,
+        world: &World,
+        plan: &Plan,
+    ) -> Result<Self, EngineError> {
+        Self::from_assertions_for_world_and_plan(world, plan, self.assertions)
     }
 
     /// Returns property assertions in their canonical order.
@@ -1258,13 +1367,10 @@ impl Properties {
         validate_properties_for_world(world, &self.assertions)
     }
 
-    fn from_canonical_assertions(assertions: Vec<AssertionDef>) -> Self {
-        Self {
-            id: ContentHash::from_canonical_material(
-                PROPERTY_SCHEMA_DOMAIN,
-                &properties_material(&assertions),
-            ),
+    fn from_canonical_assertions(assertions: Vec<AssertionDef>) -> Result<Self, EngineError> {
+        Ok(Self {
+            id: canonical_properties_hash(&assertions)?,
             assertions,
-        }
+        })
     }
 }

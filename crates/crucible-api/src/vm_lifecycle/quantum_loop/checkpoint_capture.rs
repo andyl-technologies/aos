@@ -109,19 +109,6 @@ pub(super) fn retained_exact_ram_parent_for_committed(
     Ok((Some(parent.closure), Some(checkpoint)))
 }
 
-/// Selects direct capture for genesis or when the retained chain is full.
-pub(super) fn exact_ram_capture_kind_for_parent(
-    parent: Option<&ProductionExactRamCheckpoint>,
-) -> ProductionExactRamKind {
-    if parent.is_none()
-        || parent.is_some_and(ProductionExactRamCheckpoint::requires_direct_compaction)
-    {
-        ProductionExactRamKind::Direct
-    } else {
-        ProductionExactRamKind::Delta
-    }
-}
-
 /// Lifecycle-owned state of one exact-checkpoint publication attempt.
 #[derive(Debug)]
 pub(in crate::vm_lifecycle) enum ExactCheckpointPublicationState {
@@ -166,9 +153,9 @@ pub(in crate::vm_lifecycle) struct PendingExactCapture {
     pub(super) snapshot: ExactSnapshotHandle,
     /// Pre-owned staged overlay metadata once its copy authenticates.
     pub(super) overlay_artifact: Option<ProductionCheckpointArtifact>,
-    /// Direct-plus-delta RAM closure built from QEMU's capture report.
+    /// Complete leased RAM image built from QEMU's frozen capture.
     pub(super) exact_ram: Option<ProductionExactRamCheckpoint>,
-    /// QEMU-owned direct or delta candidate awaiting publication disposition.
+    /// QEMU-owned paged candidate awaiting publication disposition.
     pub(super) exact_checkpoint: Option<PendingExactCheckpointCandidate>,
     /// Whether the live QMP snapshot still requires deletion.
     pub(super) snapshot_cleanup_pending: bool,
@@ -181,8 +168,12 @@ pub(in crate::vm_lifecycle) struct PendingExactCapture {
 pub(super) struct PendingExactCheckpointCandidate {
     /// Candidate identity that must be committed or aborted exactly once.
     pub(super) identity: crucible_qemu::QmpCheckpointIdentity,
+    /// Exact native capture generation whose dirty obligations may advance.
+    pub(super) capture_generation: u64,
     /// Previously committed identity that an abort must preserve.
     pub(super) parent: Option<crucible_qemu::QmpCheckpointIdentity>,
+    /// Native generation of the previously committed complete image.
+    pub(super) parent_capture_generation: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -207,12 +198,10 @@ pub(super) struct PreparedExactCheckpointTarget {
     pub(super) source_overlay: PathBuf,
     /// Transaction-staging directory for authenticated overlay chunks.
     pub(super) staged_overlay_chunks: PathBuf,
-    /// Pre-owned descriptor-backed RAM output path.
-    pub(super) ram_output: PathBuf,
+    /// Pre-owned immutable page-capture spool path.
+    pub(super) page_capture_output: PathBuf,
     /// Pre-owned descriptor-backed device-state output path.
     pub(super) device_output: PathBuf,
-    /// Transaction-staging directory for authenticated RAM chunks.
-    pub(super) staged_ram_chunks: PathBuf,
     /// Transaction-staging directory for authenticated device-state chunks.
     pub(super) staged_device_chunks: PathBuf,
 }
@@ -291,9 +280,8 @@ pub(super) fn prepare_exact_checkpoint_targets(
             checkpoint,
             source_overlay: source_directory.join(DEFAULT_ROOT_OVERLAY_FILE_NAME),
             staged_overlay_chunks: staging.join(format!("node-{index}-overlay-objects")),
-            ram_output: staging.join(format!("node-{index}-ram.crucram")),
+            page_capture_output: staging.join(format!("node-{index}-ram.capture")),
             device_output: staging.join(format!("node-{index}-device.vmstate")),
-            staged_ram_chunks: staging.join(format!("node-{index}-ram-objects")),
             staged_device_chunks: staging.join(format!("node-{index}-device-objects")),
         });
     }
@@ -476,6 +464,7 @@ impl ProductionVmLifecycleLoop {
                     &self.scenario,
                     &self.source,
                     identity,
+                    self.config.ram_catalog_provider(),
                 ) {
                     Ok(Some(observed)) if observed == configuration_id => {
                         ExactCaptureDisposition::Published
@@ -575,6 +564,7 @@ impl ProductionVmLifecycleLoop {
                 &self.scenario,
                 &self.source,
                 identity,
+                self.config.ram_catalog_provider(),
             ) {
                 Ok(Some(observed_configuration)) if observed_configuration == configuration_id => {
                     if let Err(error) =
@@ -682,16 +672,24 @@ impl ProductionVmLifecycleLoop {
             .query_exact_checkpoint_epoch(node)?;
         let already_resolved = match disposition {
             ExactCaptureDisposition::Published => {
-                state.committed() == Some(candidate.identity) && state.candidate().is_none()
+                state.committed() == Some(candidate.identity)
+                    && state.committed_capture_generation() == Some(candidate.capture_generation)
+                    && state.candidate().is_none()
             }
             ExactCaptureDisposition::Unpublished => {
-                state.committed() == candidate.parent && state.candidate().is_none()
+                state.committed() == candidate.parent
+                    && state.committed_capture_generation() == candidate.parent_capture_generation
+                    && state.candidate().is_none()
             }
         };
         if already_resolved {
             return Ok(());
         }
-        if state.committed() != candidate.parent || state.candidate() != Some(candidate.identity) {
+        if state.committed() != candidate.parent
+            || state.candidate() != Some(candidate.identity)
+            || state.candidate_capture_generation() != Some(candidate.capture_generation)
+            || state.committed_capture_generation() != candidate.parent_capture_generation
+        {
             return Err(SchedulerError::BoundaryViolation {
                 message: format!(
                     "exact checkpoint QEMU epoch for `{}` differs before {:?} disposition",
@@ -704,18 +702,27 @@ impl ProductionVmLifecycleLoop {
             ExactCaptureDisposition::Published => self
                 .inner
                 .backend_mut()
-                .commit_exact_checkpoint(node, candidate.identity)?,
-            ExactCaptureDisposition::Unpublished => self
-                .inner
-                .backend_mut()
-                .abort_exact_checkpoint(node, candidate.identity, candidate.parent)?,
+                .commit_exact_checkpoint(node, candidate.identity, candidate.capture_generation)?,
+            ExactCaptureDisposition::Unpublished => {
+                self.inner.backend_mut().abort_exact_checkpoint(
+                    node,
+                    candidate.identity,
+                    candidate.capture_generation,
+                    candidate.parent,
+                )?
+            }
         };
         let valid = match disposition {
             ExactCaptureDisposition::Published => {
-                resolved.committed() == Some(candidate.identity) && resolved.candidate().is_none()
+                resolved.committed() == Some(candidate.identity)
+                    && resolved.committed_capture_generation() == Some(candidate.capture_generation)
+                    && resolved.candidate().is_none()
             }
             ExactCaptureDisposition::Unpublished => {
-                resolved.committed() == candidate.parent && resolved.candidate().is_none()
+                resolved.committed() == candidate.parent
+                    && resolved.committed_capture_generation()
+                        == candidate.parent_capture_generation
+                    && resolved.candidate().is_none()
             }
         };
         if !valid {
@@ -742,6 +749,7 @@ impl ProductionVmLifecycleLoop {
             &self.scenario,
             &self.source,
             closure,
+            self.config.ram_catalog_provider(),
         )
         .map_err(|error| SchedulerError::BoundaryViolation {
             message: format!(
@@ -894,10 +902,6 @@ mod tests {
                 .unwrap_or_else(|error| panic!("select authenticated repository parent: {error}"));
         assert_eq!(closure, None);
         assert!(parent.is_none());
-        assert_eq!(
-            exact_ram_capture_kind_for_parent(parent.as_ref()),
-            ProductionExactRamKind::Direct
-        );
 
         let mismatched = [
             QmpCheckpointIdentity::new(
@@ -951,31 +955,6 @@ mod tests {
             .unwrap_or_else(|error| panic!("select genesis capture: {error}"));
         assert_eq!(genesis.0, None);
         assert!(genesis.1.is_none());
-    }
-
-    fn retained_test_artifact(
-        lease: &Arc<RetainedChunkStoreLease>,
-        label: &str,
-    ) -> ProductionCheckpointArtifact {
-        ProductionCheckpointArtifact {
-            source: ProductionCheckpointArtifactSource::RetainedChunkStore(Arc::clone(lease)),
-            identity: ContentHash::from_bytes(label.as_bytes()),
-            length: 1,
-            chunks: Vec::new(),
-            sparse: false,
-            extents: Vec::new(),
-        }
-    }
-
-    fn staged_test_artifact(label: &str) -> ProductionCheckpointArtifact {
-        ProductionCheckpointArtifact {
-            source: ProductionCheckpointArtifactSource::ChunkStore(PathBuf::from(label)),
-            identity: ContentHash::from_bytes(label.as_bytes()),
-            length: 1,
-            chunks: Vec::new(),
-            sparse: false,
-            extents: Vec::new(),
-        }
     }
 
     #[test]
@@ -1212,149 +1191,106 @@ mod tests {
     }
 
     #[test]
-    fn ninth_capture_rebases_and_reconciled_publication_retires_ancestors() {
-        let node = NodeId {
-            name: String::from("vm-a"),
-        };
-        let topology = ContentHash::from_bytes(b"RAMBlock topology");
-        let old_closure = ContentHash::from_bytes(b"eight-layer closure");
-        let old_lease = Arc::new(RetainedChunkStoreLease {
-            directory: PathBuf::from("old-retained-objects"),
-            objects: BTreeMap::new(),
-        });
-        let old_lease_observer = Arc::downgrade(&old_lease);
-        let mut old_layers = Vec::new();
-        let mut prior_identity = None;
-        for index in 0..crucible::exact_checkpoint::MAX_EXACT_CHECKPOINT_RAM_LAYERS {
-            let identity = checkpoint_identity(&format!("layer-{index}"));
-            old_layers.push(ProductionExactRamLayer {
-                kind: if index == 0 {
-                    ProductionExactRamKind::Direct
-                } else {
-                    ProductionExactRamKind::Delta
-                },
-                identity,
-                parent: prior_identity,
-                topology,
-                ram_regions: 1,
-                ram_records: 1,
-                content_sha256: ContentHash::from_bytes(format!("layer-{index} sha256").as_bytes()),
-                artifact: retained_test_artifact(&old_lease, &format!("layer-{index} artifact")),
-            });
-            prior_identity = Some(identity);
+    fn changed_path_checkpoint_retains_both_complete_images_without_layers() {
+        const CHILD_MARKER: &str = "CRUCIBLE_RAM_CATALOG_FENCE_CHILD";
+        const TEST_NAME: &str = "vm_lifecycle::quantum_loop::checkpoint_capture::tests::changed_path_checkpoint_retains_both_complete_images_without_layers";
+        if std::env::var_os(CHILD_MARKER).is_none() {
+            // Unrelated parallel process spawns can temporarily inherit a shared
+            // flock descriptor before exec closes it. Isolate the exact last-
+            // owner assertion so every live kernel borrower belongs to this test.
+            let status = std::process::Command::new(
+                std::env::current_exe().expect("locate catalog fence test executable"),
+            )
+            .arg("--exact")
+            .arg(TEST_NAME)
+            .arg("--nocapture")
+            .env(CHILD_MARKER, "1")
+            .status()
+            .expect("launch isolated catalog fence fixture");
+            assert!(status.success(), "isolated catalog fence assertions failed");
+            return;
         }
-        let old_identity = prior_identity.unwrap_or_else(|| panic!("test chain must be nonempty"));
-        let old_checkpoint = ProductionExactRamCheckpoint::new(
-            Some(old_closure),
-            ContentHash::from_bytes(b"old device sha256"),
-            retained_test_artifact(&old_lease, "old device artifact"),
-            old_layers,
+
+        let directory = tempfile::tempdir().expect("checkpoint root");
+        let scenario = ContentHash::from_bytes(b"paged checkpoint source");
+        let catalog = checkpoint_store::paged::PagedRamCatalog::open(
+            directory.path(),
+            scenario,
+            FaultResourceLimits::compiled_maximum(),
+            Some(&crate::vm_lifecycle::checkpoint_store::test_support::test_ram_catalog_provider()),
         )
-        .unwrap_or_else(|error| panic!("build eight-layer parent: {error}"));
-        drop(old_lease);
-
-        let old_configuration = old_identity.checkpoint;
-        let mut parents = BTreeMap::from([(
-            old_configuration,
-            ProductionExactRamPublishedParent {
-                closure: old_closure,
-                targets: BTreeMap::from([(node.clone(), old_checkpoint)]),
-            },
-        )]);
-        let (parent_closure, parent_checkpoint) = retained_exact_ram_parent_for_committed(
-            &parents,
-            None,
-            &node,
-            Some(old_identity.into()),
+        .expect("RAM catalog");
+        let topology = crucible_ram::Topology::new(
+            vec![
+                crucible_ram::RegionDescriptor::new(
+                    "main",
+                    crucible_ram::RegionClass::MutableMain,
+                    8192,
+                )
+                .expect("region"),
+            ],
+            crucible_ram::Limits::default(),
         )
-        .unwrap_or_else(|error| panic!("select eight-layer parent: {error}"));
-        let parent_checkpoint =
-            parent_checkpoint.unwrap_or_else(|| panic!("committed parent must be retained"));
-
-        assert_eq!(parent_closure, Some(old_closure));
-        assert!(parent_checkpoint.requires_direct_compaction());
-        assert_eq!(
-            exact_ram_capture_kind_for_parent(Some(&parent_checkpoint)),
-            ProductionExactRamKind::Direct
-        );
-
-        let new_identity = checkpoint_identity("ninth-capture");
-        let compacted = ProductionExactRamCheckpoint::from_captured_layer(
-            parent_closure,
-            Some(parent_checkpoint),
-            ProductionExactRamKind::Direct,
-            ContentHash::from_bytes(b"new device sha256"),
-            staged_test_artifact("new device artifact"),
-            ProductionExactRamLayer {
-                kind: ProductionExactRamKind::Direct,
-                identity: new_identity,
-                parent: None,
+        .expect("topology");
+        let first = catalog
+            .capture(
                 topology,
-                ram_regions: 1,
-                ram_records: 8,
-                content_sha256: ContentHash::from_bytes(b"new direct sha256"),
-                artifact: staged_test_artifact("new direct artifact"),
-            },
-        )
-        .unwrap_or_else(|error| panic!("assemble ninth direct capture: {error}"));
+                &mut |_, index, output| {
+                    output.fill(index as u8);
+                    Ok(())
+                },
+                &mut || Ok(()),
+            )
+            .expect("initial image");
+        let mut changes = [crucible_cas::ram::RamPageChange {
+            region_id: String::from("main"),
+            page_index: 1,
+            bytes: vec![9; 4096],
+        }]
+        .into_iter();
+        let second = catalog
+            .store()
+            .update_with_reader(
+                &first,
+                &mut || Ok(changes.next()),
+                catalog.retention().expect("admit successor root").as_ref(),
+                &mut || Ok(()),
+            )
+            .expect("persistent successor");
 
-        assert_eq!(compacted.parent_closure, None);
-        assert_eq!(compacted.identity, new_identity);
-        assert_eq!(compacted.layers.len(), 1);
-        assert_eq!(compacted.layers[0].kind, ProductionExactRamKind::Direct);
-        assert_eq!(compacted.layers[0].parent, None);
-        assert!(!compacted.requires_direct_compaction());
-        compacted
-            .validate()
-            .unwrap_or_else(|error| panic!("compacted RAM chain must validate: {error}"));
-
-        // The old CAS lease remains rollback authority until the replacement
-        // becomes the only published parent.
-        assert!(old_lease_observer.upgrade().is_some());
-        let new_configuration = new_identity.checkpoint;
-        let new_closure = ContentHash::from_bytes(b"ninth-capture closure");
-        parents.insert(
-            new_configuration,
-            ProductionExactRamPublishedParent {
-                closure: new_closure,
-                targets: BTreeMap::from([(node.clone(), compacted)]),
-            },
-        );
-        let mut publications = BTreeMap::from([(
-            new_configuration,
-            ExactCheckpointPublicationState::PublicationIndeterminate(new_closure),
-        )]);
-        let published = finish_reconciled_exact_ram_publication(
-            &mut publications,
-            &mut parents,
-            new_configuration,
-            new_closure,
-        )
-        .unwrap_or_else(|error| panic!("finish compacted publication: {error}"));
-
-        assert_eq!(published, new_closure);
-        assert!(matches!(
-            publications.get(&new_configuration),
-            Some(ExactCheckpointPublicationState::Published(observed))
-                if *observed == new_closure
-        ));
-        assert!(old_lease_observer.upgrade().is_none());
-
-        let (_, restored) = retained_exact_ram_parent_for_committed(
-            &parents,
-            None,
-            &node,
-            Some(new_identity.into()),
-        )
-        .unwrap_or_else(|error| panic!("select compacted restore parent: {error}"));
-        let restored = restored.unwrap_or_else(|| panic!("compacted parent must be retained"));
-        assert_eq!(restored.identity, new_identity);
-        assert_eq!(restored.layers.len(), 1);
-        assert_eq!(restored.layers[0].kind, ProductionExactRamKind::Direct);
+        assert_ne!(first.logical_digest(), second.logical_digest());
         assert_eq!(
-            exact_ram_capture_kind_for_parent(Some(&restored)),
-            ProductionExactRamKind::Delta
+            catalog
+                .store()
+                .read_page(&first, "main", 1, &mut || Ok(()))
+                .expect("parent page"),
+            vec![1; 4096]
         );
+        assert_eq!(
+            catalog
+                .store()
+                .read_page(&second, "main", 1, &mut || Ok(()))
+                .expect("successor page"),
+            vec![9; 4096]
+        );
+        assert_eq!(
+            catalog
+                .store()
+                .verify(&second, &mut || Ok(()))
+                .expect("complete successor")
+                .pages,
+            2
+        );
+        let scenario_directory = directory.path().join(scenario.to_hex());
+        assert!(checkpoint_store::paged::retirement_fence(&scenario_directory).is_err());
+        let fork_reader = second.clone();
+        drop(first);
+        drop(second);
+        drop(catalog);
+        assert!(checkpoint_store::paged::retirement_fence(&scenario_directory).is_err());
+        drop(fork_reader);
+        checkpoint_store::paged::retirement_fence(&scenario_directory)
+            .expect("last actual catalog reader releases deletion exclusion");
     }
 
     #[cfg(feature = "test-support")]
@@ -1369,8 +1305,12 @@ mod tests {
         let previous = fixture.closure().identity();
         let mut lifecycle =
             crate::vm_lifecycle::runtime::tests::production_loop_without_backends(fixture.source());
-        lifecycle.config =
-            ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", root.path());
+        lifecycle.config = Arc::new(
+            ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", root.path())
+                .with_ram_catalog_provider(
+                    checkpoint_store::test_support::test_ram_catalog_provider(),
+                ),
+        );
         lifecycle.checkpoint_targets.insert(
             configuration,
             ExactCheckpointPublicationState::Published(previous),
@@ -1412,12 +1352,12 @@ mod tests {
 
     #[cfg(feature = "test-support")]
     #[test]
-    fn indeterminate_v9_retry_rehydrates_the_parent_used_by_the_next_delta() {
+    fn indeterminate_v10_retry_rehydrates_the_complete_paged_parent() {
         let root = tempfile::tempdir()
             .unwrap_or_else(|error| panic!("create reconciliation fixture store: {error}"));
         let fixture =
             checkpoint_store::build_exact_ram_production_checkpoint_codec_fixture(root.path())
-                .unwrap_or_else(|error| panic!("build v9 reconciliation fixture: {error}"));
+                .unwrap_or_else(|error| panic!("build v10 reconciliation fixture: {error}"));
         let configuration = fixture.configuration().id();
         let identity = fixture.closure().identity();
         let node = NodeId {
@@ -1425,8 +1365,12 @@ mod tests {
         };
         let mut lifecycle =
             crate::vm_lifecycle::runtime::tests::production_loop_without_backends(fixture.source());
-        lifecycle.config =
-            ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", root.path());
+        lifecycle.config = Arc::new(
+            ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", root.path())
+                .with_ram_catalog_provider(
+                    checkpoint_store::test_support::test_ram_catalog_provider(),
+                ),
+        );
         lifecycle.checkpoint_targets = BTreeMap::from([(
             configuration,
             ExactCheckpointPublicationState::PublicationIndeterminate(identity),
@@ -1435,7 +1379,7 @@ mod tests {
 
         let committed_closure = lifecycle
             .capture_exact_checkpoint_set(fixture.configuration())
-            .unwrap_or_else(|error| panic!("retry indeterminate v9 publication: {error}"));
+            .unwrap_or_else(|error| panic!("retry indeterminate v10 publication: {error}"));
         assert_eq!(committed_closure, identity);
         assert!(matches!(
             lifecycle.checkpoint_targets.get(&configuration),
@@ -1447,7 +1391,7 @@ mod tests {
             .get(&configuration)
             .and_then(|parent| parent.targets.get(&node))
             .map(|checkpoint| QmpCheckpointIdentity::from(checkpoint.identity))
-            .unwrap_or_else(|| panic!("retry should hydrate the v9 exact RAM parent"));
+            .unwrap_or_else(|| panic!("retry should hydrate the v10 exact RAM parent"));
         assert_eq!(committed.checkpoint(), configuration);
 
         let (parent_closure, parent) = retained_exact_ram_parent_for_committed(
@@ -1456,11 +1400,20 @@ mod tests {
             &node,
             Some(committed),
         )
-        .unwrap_or_else(|error| panic!("select next delta parent: {error}"));
+        .unwrap_or_else(|error| panic!("select next persistent RAM predecessor: {error}"));
         assert_eq!(parent_closure, Some(identity));
-        let parent = parent.unwrap_or_else(|| panic!("next capture should have a delta parent"));
-        assert_eq!(parent.layers.len(), 2);
-        assert!(!parent.requires_direct_compaction());
+        let parent =
+            parent.unwrap_or_else(|| panic!("next capture should retain a complete predecessor"));
+        assert_eq!(parent.ram.record().scope(), crucible_ram::Scope::Exact);
+        assert_eq!(
+            parent
+                .catalog
+                .store()
+                .verify(&parent.ram, &mut || Ok(()))
+                .expect("complete retained RAM")
+                .pages,
+            4
+        );
     }
 }
 #[cfg(test)]

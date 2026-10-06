@@ -192,16 +192,16 @@ fn exact_ram_restore_rejects_a_foreign_host_checkpoint_before_qmp_stop()
         host_io,
         continuation,
     )?;
-    let ram_layer = crate::QmpCheckpointRestoreLayer::new(
-        crate::QmpDescriptorName::new("restore-ram")?,
-        ContentHash::from_bytes(b"RAM content"),
-        4096,
-    )?;
-    let restore_request = crate::QmpCheckpointRestoreRequest::new(
-        vec![ram_layer],
-        crate::QmpDescriptorName::new("restore-device")?,
+    let source = crate::qmp::ram_restore::fixture_source()?;
+    let restore_request = crate::QmpCheckpointRestoreRequest::new_paged(
+        source.root_record(),
+        source.binding(),
+        crate::qmp::ram_restore::QmpCheckpointRestoreDescriptorNames {
+            root: crate::QmpDescriptorName::new("restore-root")?,
+            device: crate::QmpDescriptorName::new("restore-device")?,
+            cancellation: crate::QmpDescriptorName::new("restore-cancel")?,
+        },
         ContentHash::from_bytes(b"device content"),
-        crate::QmpDescriptorName::new("restore-cancel")?,
         crate::QmpCheckpointIdentity::new(
             ContentHash::from_bytes(b"foreign checkpoint"),
             ContentHash::from_bytes(b"target"),
@@ -212,9 +212,8 @@ fn exact_ram_restore_rejects_a_foreign_host_checkpoint_before_qmp_stop()
     let mut descriptor_input = crate::QemuExactCheckpointInputMaterialization::new(1)?;
     descriptor_input.write_all(b"x")?;
     let descriptor = descriptor_input.finish()?;
-    let ram_descriptors = [descriptor.as_fd()];
     let descriptors = QemuExactCheckpointRestoreDescriptors::new(
-        &ram_descriptors,
+        descriptor.as_fd(),
         descriptor.as_fd(),
         descriptor.as_fd(),
     );
@@ -222,7 +221,8 @@ fn exact_ram_restore_rejects_a_foreign_host_checkpoint_before_qmp_stop()
         &snapshot,
         &restore_request,
         descriptors,
-        ContentHash::from_bytes(b"RAM topology"),
+        restore_request.topology(),
+        &source,
     );
 
     let result = build_qemu_node_from_restored_checkpoint(

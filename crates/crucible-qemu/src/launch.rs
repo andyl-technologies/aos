@@ -60,8 +60,8 @@ pub use modes::{
     DiskImageMode, GuestBackingStateMode, GuestCoreContentMode, InputPolicy, MachineResetMode,
 };
 pub use plugin_config::{
-    QemuLaunchAppRandomConfig, QemuLaunchInheritedFds, QemuLaunchPluginConfig,
-    QemuLaunchPluginSwitch,
+    QEMU_PLUGIN_RAM_CONTROL_FD, QemuLaunchAppRandomConfig, QemuLaunchInheritedFds,
+    QemuLaunchPluginConfig, QemuLaunchPluginSwitch, QemuRamControlLaunch,
 };
 pub use validation::{
     LaunchProfileError, QemuPreSpawnLaunchValidation, QemuPreSpawnLaunchValidationError,
@@ -384,12 +384,13 @@ pub struct QemuLaunchCommand {
     executable: String,
     args: Vec<String>,
     control_callback_witness: bool,
-    vmstate_size_mib: u64,
     vm_hash_material: String,
     gdbstub: Option<QemuGdbstubChannelConfig>,
     qmp: Option<QemuQmpChannelConfig>,
     plugin_coverage: QemuLaunchPluginSwitch,
     plugin_fault_node_hash: [u8; 32],
+    ram_control: Option<QemuRamControlLaunch>,
+    ram_backing_quota_bytes: Option<u64>,
     fault_capability_requirement: crate::QemuFaultCapabilityRequirement,
     resource_requirements: QemuLaunchResourceRequirements,
     plugin_setup_plan: crucible_protocol::plugin_setup_plan::PluginSetupPlan,
@@ -409,8 +410,9 @@ pub struct QemuLaunchResourceRequirements {
 impl QemuLaunchResourceRequirements {
     /// Builds the fixed host-resource baseline for one VM shape.
     ///
-    /// The base writable minimum reserves the guest memory plus the fixed
-    /// VMState container headroom. Command construction adds any enabled fixed
+    /// The base writable minimum reserves the compact VMState/device envelope.
+    /// Guest RAM preservation is separately admitted by the RAM backing owner.
+    /// Command construction adds any enabled fixed
     /// diagnostic trace ceiling before process admission.
     #[must_use]
     pub const fn from_vm_shape(memory_mib: u32, smp_vcpus: u16, root_overlay: bool) -> Self {
@@ -418,7 +420,7 @@ impl QemuLaunchResourceRequirements {
         Self {
             virtual_cpus: smp_vcpus as u32,
             guest_memory_bytes: memory_mib as u64 * mebibyte,
-            minimum_writable_bytes: (memory_mib as u64 + 512) * mebibyte,
+            minimum_writable_bytes: 512 * mebibyte,
             root_overlay,
         }
     }
@@ -552,6 +554,18 @@ impl QemuLaunchCommand {
     #[must_use]
     pub const fn plugin_fault_node_hash(&self) -> [u8; 32] {
         self.plugin_fault_node_hash
+    }
+
+    /// Returns the descriptor-bound independent pager controller setup.
+    #[must_use]
+    pub const fn ram_control(&self) -> Option<QemuRamControlLaunch> {
+        self.ram_control
+    }
+
+    /// Returns the admitted byte ceiling of the private RAM preservation file.
+    #[must_use]
+    pub const fn ram_backing_quota_bytes(&self) -> Option<u64> {
+        self.ram_backing_quota_bytes
     }
 
     /// Returns the exact fault manifest bound to this launch identity.
@@ -791,6 +805,39 @@ impl QemuLaunchCommandBuilder {
     /// AOS store path, or the resulting argv fails the pre-spawn determinism
     /// validator.
     pub fn build(self) -> Result<QemuLaunchCommand, QemuLaunchCommandError> {
+        if self.plugin.ram_metadata_budget() == Some(0) {
+            return Err(QemuLaunchCommandError::InvalidLaunchText {
+                field: "RAM metadata allowance",
+            });
+        }
+        if self.plugin.ram_resources().is_some_and(|resources| {
+            Some(resources.metadata_bytes) != self.plugin.ram_metadata_budget()
+        }) {
+            return Err(QemuLaunchCommandError::InvalidLaunchText {
+                field: "RAM resource metadata projection",
+            });
+        }
+        if let Some(control) = self.plugin.ram_control() {
+            let binding = crucible_protocol::ram_control::RamControlFrame {
+                session: control.session,
+                sequence: 1,
+                target: control.target,
+                message: crucible_protocol::ram_control::RamControlMessage::Request(
+                    crucible_protocol::ram_control::RamControlRequest::Hello,
+                ),
+            };
+            crucible_protocol::ram_control::encode_ram_control(&binding).map_err(|_| {
+                QemuLaunchCommandError::InvalidLaunchText {
+                    field: "pager control authority",
+                }
+            })?;
+            if control.target.owner_generation != self.plugin.process_generation() {
+                return Err(QemuLaunchCommandError::InvalidLaunchText {
+                    field: "pager owner generation",
+                });
+            }
+        }
+
         validate_store_path("qemu_executable", &self.executable)?;
         self.vm.validate()?;
         self.plugin.validate()?;
@@ -861,7 +908,6 @@ impl QemuLaunchCommandBuilder {
         if let Some(qmp) = &self.qmp {
             qmp.validate()?;
         }
-        let vmstate_size_mib = u64::from(self.profile.memory_mib) + 512;
         let mut resource_requirements = QemuLaunchResourceRequirements::from_vm_shape(
             self.profile.memory_mib,
             self.profile.smp_vcpus,
@@ -977,12 +1023,13 @@ impl QemuLaunchCommandBuilder {
             executable: self.executable,
             args,
             control_callback_witness,
-            vmstate_size_mib,
             vm_hash_material,
             gdbstub: self.gdbstub,
             qmp: self.qmp,
             plugin_coverage: self.plugin.coverage(),
             plugin_fault_node_hash: self.plugin.fault_node_hash(),
+            ram_control: self.plugin.ram_control(),
+            ram_backing_quota_bytes: self.plugin.ram_spill_quota(),
             fault_capability_requirement,
             resource_requirements,
             plugin_setup_plan,

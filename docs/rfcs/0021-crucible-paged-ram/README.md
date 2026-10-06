@@ -1,6 +1,6 @@
 # RFC-0021: Crucible host-paged RAM and persistent memory identity
 
-- **Status:** Proposed (design only; no implementation implied)
+- **Status:** Proposed (implementation and deployment qualification in progress)
 - **Date:** 2026-10-05
 - **Source baseline:** `9d8ab78dff67348bbb38e2eda609eca67e413561`
 - **Related designs:** RFC-0010, RFC-0014, RFC-0020
@@ -8,7 +8,7 @@
 ## Abstract
 
 Crucible executes unmodified guest machines using a deterministic QEMU TCG
-profile. Today each machine reserves its configured guest RAM, and several
+profile. At the source baseline each machine reserves its configured guest RAM, and several
 observation paths scan complete RAM contents. That combination limits parallel
 campaign density even when guest working sets are small. This RFC separates
 logical guest memory from host residency, makes memory identity incremental,

@@ -18,7 +18,6 @@ use crucible_campaign::{
     StopCondition, StopOutcome,
 };
 use crucible_daemon::ExactCheckpointStore;
-use crucible_daemon::campaign_store_composition::{DirectoryBlobBackend, ImmutableBlobBackend};
 use crucible_daemon::qemu_campaign_lifecycle::{
     GuardedCampaignReplayClosure, GuardedDefaultCampaignObservationSource,
     GuardedDefaultCampaignRun, GuardedDefaultCampaignRunRequest, GuardedDefaultCampaignSavepoint,
@@ -103,28 +102,19 @@ fn run_local_qemu_campaign_continuation_workflow(
     };
     let lifecycle = production_qemu_lifecycle_config(backend)?;
     let final_stop = guarded_resume_stop(resume_plan, evidence)?;
-    let checkpoint_directory = tempfile::Builder::new()
-        .prefix("crucible-campaign-resume-")
-        .tempdir()
-        .map_err(|error| campaign_run_error("create transient exact checkpoint store", error))?;
-    let checkpoint_root = checkpoint_directory.path().to_path_buf();
-    let checkpoint_backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
-        "guarded-campaign-resume-checkpoints",
-        &checkpoint_root,
-    ));
-    let checkpoints = Arc::new(
-        ExactCheckpointStore::new(checkpoint_backend, resources.maximum_disk_bytes())
-            .map_err(|error| campaign_run_error("open exact checkpoint store", error))?,
-    );
-    let request = GuardedDefaultCampaignRunRequest::new(
+    let owner = crate::cli_verify_serve::open_guarded_campaign_owner(
+        &deployment,
+        lifecycle,
+        evidence.scenario.seed(),
+        resources,
+    )?;
+    let checkpoints = owner.checkpoints();
+    let request = crate::cli_verify_serve::guarded_campaign_request(
+        owner,
         evidence.scenario_form.clone(),
         evidence.scenario.seed(),
-        env!("CARGO_PKG_VERSION"),
         qemu_build_id,
-        lifecycle,
-        deployment.host,
-        resources,
-    );
+    )?;
     let request = apply_guarded_campaign_determinism_policy(request, verify_determinism_findings);
     let request =
         attach_guarded_resume_source(request, evidence, final_stop, Arc::clone(&checkpoints));
@@ -133,15 +123,9 @@ fn run_local_qemu_campaign_continuation_workflow(
     } else {
         request
     };
-    let result = run_guarded_default_campaign(request)
-        .map_err(|error| campaign_run_error("resume through shared campaign owner", error))
-        .and_then(|campaign| campaign_resume_workflow_report(resume_plan, evidence, &campaign));
-    complete_transient_checkpoint_workflow(
-        checkpoints,
-        checkpoint_directory,
-        &checkpoint_root,
-        result,
-    )
+    let campaign = run_guarded_default_campaign(request)
+        .map_err(|error| campaign_run_error("resume through shared campaign owner", error))?;
+    campaign_resume_workflow_report(resume_plan, evidence, &campaign)
 }
 
 fn attach_guarded_resume_source(
@@ -236,15 +220,13 @@ pub(super) fn run_local_qemu_campaign_replay(
     let seed = run_plan
         .request_seed
         .unwrap_or_else(|| scenario.scenario_def().seed());
-    let request = GuardedDefaultCampaignRunRequest::new(
+    let request = crate::cli_verify_serve::configured_guarded_campaign_request(
+        &deployment,
         scenario,
         seed,
-        env!("CARGO_PKG_VERSION"),
         qemu_build_id,
-        lifecycle,
-        deployment.host,
         resources,
-    )
+    )?
     .with_discovery_stop(guarded_discovery_stop(run_plan)?)
     .with_initial_replay(schedule, Some(replay_closure));
     let request = apply_guarded_campaign_determinism_policy(request, verify_determinism_findings);
@@ -310,77 +292,33 @@ pub(super) fn run_local_qemu_campaign_save_workflow(
         }
     };
     let stop = guarded_campaign_save_stop(save_plan)?;
-    // The physical closure authenticates this one replay. The exported
-    // versioned handle and logical DAG closure remain the durable savepoint.
-    let checkpoint_directory = tempfile::Builder::new()
-        .prefix("crucible-campaign-save-")
-        .tempdir()
-        .map_err(|error| campaign_run_error("create transient exact checkpoint store", error))?;
-    let checkpoint_root = checkpoint_directory.path().to_path_buf();
-    let checkpoint_backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
-        "guarded-campaign-savepoints",
-        &checkpoint_root,
-    ));
-    let checkpoints = Arc::new(
-        ExactCheckpointStore::new(checkpoint_backend, resources.maximum_disk_bytes())
-            .map_err(|error| campaign_run_error("open exact checkpoint store", error))?,
-    );
     let lifecycle = production_qemu_lifecycle_config(backend)?;
     let scenario = run_plan.scenario.scenario_form().clone();
     let seed = run_plan
         .request_seed
         .unwrap_or_else(|| scenario.scenario_def().seed());
-    let request = GuardedDefaultCampaignRunRequest::new(
-        scenario,
-        seed,
-        env!("CARGO_PKG_VERSION"),
-        qemu_build_id,
+    let owner = crate::cli_verify_serve::open_guarded_campaign_owner(
+        &deployment,
         lifecycle,
-        deployment.host,
+        seed,
         resources,
-    )
-    .with_discovery_stop(stop.clone())
-    .with_reached_stop_savepoint_capture(Arc::clone(&checkpoints));
+    )?;
+    let checkpoints = owner.checkpoints();
+    let request =
+        crate::cli_verify_serve::guarded_campaign_request(owner, scenario, seed, qemu_build_id)?
+            .with_discovery_stop(stop.clone())
+            .with_reached_stop_savepoint_capture(checkpoints);
     let request = apply_guarded_campaign_determinism_policy(request, verify_determinism_findings);
     let report = run_guarded_default_campaign(request)
         .map_err(|error| {
             campaign_run_error("capture savepoint through shared campaign owner", error)
         })
-        .and_then(|campaign| campaign_save_workflow_report(save_plan, &campaign, &stop));
-    let report = complete_transient_checkpoint_workflow(
-        checkpoints,
-        checkpoint_directory,
-        &checkpoint_root,
-        report,
-    )?;
+        .and_then(|campaign| campaign_save_workflow_report(save_plan, &campaign, &stop))?;
 
     let mut outcome =
         finish_save_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, save_plan, report)?;
     append_qemu_control_plane_execution_proof(&mut outcome, backend, "save-campaign-default-path");
     Ok(outcome)
-}
-
-fn complete_transient_checkpoint_workflow<T>(
-    checkpoints: Arc<ExactCheckpointStore>,
-    checkpoint_directory: tempfile::TempDir,
-    checkpoint_root: &Path,
-    result: Result<T, CliError>,
-) -> Result<T, CliError> {
-    drop(checkpoints);
-    let cleanup = checkpoint_directory.close().map_err(|error| {
-        campaign_run_error(
-            &format!(
-                "remove transient exact checkpoint store {}",
-                checkpoint_root.display()
-            ),
-            error,
-        )
-    });
-    match (result, cleanup) {
-        (Ok(value), Ok(())) => Ok(value),
-        (Err(error), _) => Err(error),
-        (Ok(_), Err(error)) => Err(error),
-    }
 }
 
 fn campaign_save_workflow_report(
@@ -892,7 +830,15 @@ pub(super) fn run_local_qemu_interactive_workflow(
     let deployment = load_campaign_run_deployment(&deployment_path)?;
     let resources = guarded_run_resources(deployment.resources, run_plan.max_quanta)?;
     let lifecycle = production_qemu_lifecycle_config(backend)?;
-    let host = deployment.host;
+    let seed = run_plan
+        .request_seed
+        .unwrap_or_else(|| run_plan.scenario.scenario_form().scenario_def().seed());
+    let owner = crate::cli_verify_serve::open_guarded_campaign_owner(
+        &deployment,
+        lifecycle,
+        seed,
+        resources,
+    )?;
     let control_plane = LifecycleControlPlane::new_with_fallible_source_factory(
         "crucible-cli-interactive-qemu",
         Vec::new(),
@@ -902,16 +848,15 @@ pub(super) fn run_local_qemu_interactive_workflow(
                     "guarded interactive QEMU sessions require an inline scenario form",
                 ),
             })?;
-            crucible_daemon::build_guarded_interactive_qemu_session(
-                scenario,
-                source,
-                lifecycle.clone(),
-                host.clone(),
-                resources,
-            )
-            .map_err(|error| crucible_api::LifecycleApiError::LoopFactory {
-                message: error.to_string(),
-            })
+            owner
+                .begin_interactive_session(
+                    scenario,
+                    source,
+                    crucible_daemon::ExecutionCancellation::default(),
+                )
+                .map_err(|error| crucible_api::LifecycleApiError::LoopFactory {
+                    message: error.to_string(),
+                })
         },
     )
     .with_terminal_session_retention(true);

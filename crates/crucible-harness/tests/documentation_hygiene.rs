@@ -1,6 +1,6 @@
-//! Checks RFC-0010 documentation-pass and doc-lint hygiene.
+//! Checks documentation-pass boundaries and rustdoc hygiene.
 //!
-//! This is the executable policy anchor for RFC-0010 file 28 section 5:
+//! This is the executable policy anchor for documentation-only changes:
 //! documentation-only work remains comments-only, while the RFC consistency
 //! lint remains wired to the gate catalog and checklist-digest rules.
 

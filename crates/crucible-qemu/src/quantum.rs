@@ -2,10 +2,10 @@
 //!
 //! The QEMU node step is a shared-memory-only
 //! cycle: observe the plugin-published node report, publish the scheduler's
-//! ceiling, wake the parked plugin through the node-slot futex word, observe a
-//! a plugin report at the authorized boundary in the same shared-memory slot,
-//! and move frame records through SPSC rings. This module encodes that host-side data flow over
-//! caller-supplied shared-memory ABI objects; it does not allocate private
+//! ceiling, wake the parked plugin through the node-slot futex word, observe
+//! its report at the authorized boundary in the same slot, and move frame
+//! records through SPSC rings. This module encodes that host-side data flow
+//! over caller-supplied shared-memory ABI objects; it does not allocate private
 //! shadow slots or use QMP/plugin IPC for per-quantum progress.
 
 use std::collections::VecDeque;

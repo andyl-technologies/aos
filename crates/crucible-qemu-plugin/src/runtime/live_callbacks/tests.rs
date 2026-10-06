@@ -113,7 +113,7 @@ extern "C" fn test_fingerprint_read_rr_cursor(
 }
 
 extern "C" fn test_fingerprint_capture(
-    out: *mut crate::fingerprint_sampler::QemuFingerprintMaterialFds,
+    out: *mut crate::fingerprint_sampler::QemuFingerprintCaptureV2,
 ) -> std::os::raw::c_int {
     if out.is_null() {
         return 1;
@@ -121,9 +121,8 @@ extern "C" fn test_fingerprint_capture(
 
     let seed = TEST_FINGERPRINT_CAPTURE_SEED.get() as u8;
     TEST_FINGERPRINT_CAPTURE_COUNT.set(TEST_FINGERPRINT_CAPTURE_COUNT.get() + 1);
-    let ram = test_sealed_fingerprint_memfd(seed);
     let device = test_sealed_fingerprint_memfd(seed.wrapping_add(1));
-    let (Ok(ram), Ok(device)) = (ram, device) else {
+    let Ok(device) = device else {
         return 1;
     };
     let mut schema = [0_u8; crucible_shmem::FINGERPRINT_DIGEST_BYTES];
@@ -132,9 +131,12 @@ extern "C" fn test_fingerprint_capture(
     }
     // SAFETY: `out` names the live aggregate output checked above.
     unsafe {
-        out.write(crate::fingerprint_sampler::QemuFingerprintMaterialFds {
-            ram_fd: ram.into_raw_fd(),
-            ram_material_length: 1,
+        out.write(crate::fingerprint_sampler::QemuFingerprintCaptureV2 {
+            schema: 2,
+            logical_edition: 1,
+            ram_scope: 0,
+            reserved: 0,
+            ram_digest: [seed; 32],
             ram_bytes: 1,
             device_fd: device.into_raw_fd(),
             device_material_length: 1,

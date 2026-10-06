@@ -198,8 +198,12 @@ fn online_report(
     )
     .expect("terminal online prefix should be checked");
 
-    evaluator.observe_prefix(&first_boundary, &mut oracle);
-    evaluator.finalize_prefix(&terminal, &mut oracle)
+    evaluator
+        .observe_prefix(&first_boundary, &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    evaluator
+        .finalize_prefix(&terminal, &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"))
 }
 
 fn outcome<'a>(outcomes: &'a [HostAssertionOutcome], assertion: &str) -> &'a HostAssertionOutcome {
@@ -448,8 +452,12 @@ fn offline_assertion_checker_defers_incomplete_atomic_observation_segment() {
     let mut online_evaluator =
         HostAssertionEvaluator::new(&properties).with_world_white_box_policies(&world);
     let mut oracle = BlackBoxHostOracle;
-    online_evaluator.observe_prefix(&first, &mut oracle);
-    let online = online_evaluator.finalize_prefix(&terminal, &mut oracle);
+    online_evaluator
+        .observe_prefix(&first, &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    let online = online_evaluator
+        .finalize_prefix(&terminal, &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     assert_eq!(offline, online);
     assert!(matches!(
@@ -747,9 +755,15 @@ fn offline_assertion_checker_evaluates_valid_observation_after_deferred_prefix()
     let mut online_evaluator =
         HostAssertionEvaluator::new(&properties).with_world_white_box_policies(&world);
     let mut online_oracle = linted_host_oracle(oracle);
-    online_evaluator.observe_prefix(&first, &mut online_oracle);
-    online_evaluator.observe_prefix(&observations, &mut online_oracle);
-    let online = online_evaluator.finalize_prefix(&terminal, &mut online_oracle);
+    online_evaluator
+        .observe_prefix(&first, &mut online_oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    online_evaluator
+        .observe_prefix(&observations, &mut online_oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    let online = online_evaluator
+        .finalize_prefix(&terminal, &mut online_oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     assert_eq!(offline, online);
     assert!(matches!(
@@ -823,8 +837,12 @@ fn offline_atomic_batch_matches_online_and_preserves_earlier_always_failure() {
             ConditionLeaf::GuestMarker { .. } => false,
         },
     );
-    online_evaluator.observe_prefix(&first, &mut online_oracle);
-    let online = online_evaluator.finalize_prefix(&terminal, &mut online_oracle);
+    online_evaluator
+        .observe_prefix(&first, &mut online_oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    let online = online_evaluator
+        .finalize_prefix(&terminal, &mut online_oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     assert_eq!(offline, online);
     assert!(matches!(

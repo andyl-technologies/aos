@@ -592,7 +592,7 @@ mod tests {
         ]
         .into_iter()
         .map(|(label, events)| {
-            let id = ContentId::for_bytes(ObjectKind::ExactManifest, 5, label);
+            let id = ContentId::for_bytes(ObjectKind::ExactManifest, 6, label);
             ExactCheckpointId::try_from(id)
                 .map(|checkpoint| FindingExactRetentionCandidate::new(checkpoint, events))
         })

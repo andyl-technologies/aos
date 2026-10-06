@@ -11,7 +11,7 @@
 //! Module map: [`contract_a`] owns the isolated single-VM Contract A driver; the
 //! crate root owns [`StableHasher`], [`StableDigest`], [`DecisionRng`],
 //! [`DecisionStream`], and the content-addressing primitives;
-//! future modules will split ordered selection and virtual-time arithmetic.
+//! `contract_a` exposes the bounded single-VM execution driver and counter checks.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]

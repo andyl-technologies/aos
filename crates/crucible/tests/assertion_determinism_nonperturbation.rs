@@ -142,9 +142,12 @@ fn merged_host_and_guest_outcomes_are_bit_identical_online_offline_and_repeated(
     let mut online_evaluator = HostAssertionEvaluator::new(&properties)
         .with_world_white_box_policies(&world)
         .with_guest_assertion_catalog(vec![guest_marker()]);
-    online_evaluator.observe_prefix(&prefix(event_log[..1].to_vec()), &mut online_oracle);
-    let online_report =
-        online_evaluator.finalize_prefix(&prefix(event_log.clone()), &mut online_oracle);
+    online_evaluator
+        .observe_prefix(&prefix(event_log[..1].to_vec()), &mut online_oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    let online_report = online_evaluator
+        .finalize_prefix(&prefix(event_log.clone()), &mut online_oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     let checker = OfflineAssertionChecker::new()
         .with_world_white_box_policies(&world)
@@ -205,7 +208,9 @@ fn assertion_evaluation_is_side_effect_free_for_backend_fingerprints() {
 
     let mut evaluator = HostAssertionEvaluator::new(&properties);
     let mut oracle = linted_host_oracle(DeterministicOracle);
-    let report = evaluator.finalize_prefix(&prefix(event_log()), &mut oracle);
+    let report = evaluator
+        .finalize_prefix(&prefix(event_log()), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     let after = backend
         .fingerprint()

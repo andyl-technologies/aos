@@ -157,7 +157,9 @@ crucible-qemu	src/production_fault_runtime/evidence	retry	1
 crucible-qemu	src/production_fault_runtime/lifecycle_tests	retry	1
 crucible-qemu	src/production_fault_runtime/test_support	retry	1
 crucible-qemu	src/qmp	thread::sleep	1
-crucible-qemu	src/qmp/checkpoint_delta_flight_tests	thread::sleep	1
+# A partial-frame stimulus crosses the page-source poll interval once; the
+# decoder must preserve its cursor rather than restart after timeout.
+crucible-qemu	src/qmp/checkpoint_paged_source_tests	thread::sleep	1
 crucible-qemu	src/qmp/hot_fork/template/preparation	thread::sleep	1
 crucible-qemu	src/quantum/inbound_delivery	retry	1
 crucible-qemu	src/quantum/support	retry	1
@@ -169,8 +171,6 @@ crucible-qemu	src/spawn_test	std::thread::sleep	1
 crucible-qemu	src/spawn_test	thread::sleep	1
 crucible-qemu	src/supervision/device_host_work	thread::sleep	1
 crucible-qemu	src/supervision/host_io_runtime	thread::sleep	1
-crucible-qemu	src/supervision/host_io_runtime/fault_result	thread::sleep	1
-crucible-qemu	src/supervision/node_step_gate/support	thread::sleep	1
 crucible-qemu	tests/crash_detection	retry	1
 crucible-qemu-plugin	src/inbound	retry	1
 crucible-qemu-plugin	src/inbound/tests	retry	1
@@ -206,3 +206,41 @@ crucible-qemu-plugin	src/block_io_tests	retry	1
 crucible-qemu-plugin	src/ninep_io	retry	1
 crucible-qemu-plugin	src/block_io_tests/inbound_head	retry	1
 crucible-qemu-plugin	src/idle_loop/tests/inbound_cases	retry	1
+
+# Operational request replay and resumed CAS transfer use the original request
+# authority. These identifiers do not repeat a failed test assertion.
+# Pager transport tests deliberately trickle frames across polling intervals to
+# exercise retained cursors and original-start deadline expiry. Production waits
+# preserve live supervision and cleanup ownership; the native membership wait
+# retains a failed worker while an existing physical certificate still names it.
+crucible-cas	src/ram/tests	retry	1
+crucible-cli	src/cli/host	retry	1
+crucible-qemu	src/qmp	retry	1
+crucible-qemu	src/ram_control/admission	thread::sleep	1
+crucible-qemu	src/ram_control/admission	std::thread::sleep	1
+crucible-qemu	src/ram_control/tests	retry	1
+crucible-qemu	src/ram_control/tests	thread::sleep	1
+crucible-qemu	src/ram_source	thread::sleep	1
+crucible-qemu	src/supervision/host_io_runtime/operational_wait	thread::sleep	1
+crucible-qemu-plugin	src/paged_ram/controller/admission	thread::sleep	1
+crucible-qemu-plugin	src/paged_ram/controller/fork	thread::sleep	1
+crucible-qemu-plugin	src/paged_ram/controller/admission	std::thread::sleep	1
+crucible-qemu-plugin	src/paged_ram/controller/fork	std::thread::sleep	1
+# Control-worker readiness waits retain the original live operation token;
+# the controller test deliberately crosses its original-start deadline before
+# amending a budget. Neither path repeats failed tests or hides a timeout.
+crucible-qemu-plugin	src/paged_ram/control	thread::sleep	1
+crucible-qemu-plugin	src/paged_ram/control	std::thread::sleep	1
+crucible-qemu-plugin	src/paged_ram/controller/tests	thread::sleep	1
+crucible-qemu-plugin	src/paged_ram/controller/tests	std::thread::sleep	1
+crucible-qemu-plugin	src/paged_ram/engine/service	thread::sleep	1
+crucible-qemu-plugin	src/paged_ram/engine/service	std::thread::sleep	1
+crucible-qemu-plugin	src/paged_ram/source	thread::sleep	1
+crucible-qemu-plugin	src/paged_ram/source	std::thread::sleep	1
+# Native placement repeats only transient pre-token EAGAIN/EBUSY dispatch under
+# the original quiescence operation. Once a proof token exists, every failure
+# stops the owner. Rate-limited writeback sleeps are bounded slices of that same
+# operation; they do not rerun tests or extend an operation's original clock.
+crucible-qemu-plugin	src/paged_ram/engine/placement	retry	1
+crucible-qemu-plugin	src/paged_ram/engine/placement	thread::sleep	1
+crucible-qemu-plugin	src/paged_ram/engine/placement	std::thread::sleep	1

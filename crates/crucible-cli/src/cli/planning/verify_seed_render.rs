@@ -462,7 +462,7 @@ pub(crate) fn execute_determinism_ergonomics_plan(
 ) -> Result<(), CliError> {
     if !plan.proves_t_cli_4() {
         return Err(CliError::Backend(
-            "CLI determinism ergonomics violate the RFC-0010 seed/artifact/trace contract"
+            "CLI determinism output violates seed, artifact, and trace identity"
                 .to_string(),
         ));
     }
@@ -526,6 +526,7 @@ pub(crate) fn seed_resolution_mode(command: &Commands) -> SeedResolutionMode {
         | Commands::Serve(_)
         | Commands::Campaign(_)
         | Commands::Store(_)
+        | Commands::Host(_)
         | Commands::Completions(_) => SeedResolutionMode::NotApplicable,
     }
 }

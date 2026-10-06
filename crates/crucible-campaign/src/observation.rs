@@ -1075,6 +1075,14 @@ pub enum StopOutcome {
 }
 
 impl StopOutcome {
+    /// Clones the canonical value with admission before its owned allocations.
+    ///
+    /// # Errors
+    /// Refuses exhausted original metadata authority or invalid canonical data.
+    pub fn clone_admitted(&self) -> Result<Self, CampaignCodecError> {
+        crate::codec::admitted_clone(self)
+    }
+
     fn validate(&self) -> Result<(), CampaignCodecError> {
         match self {
             Self::Reached(StopCondition::Observation(_)) => Err(CampaignCodecError::InvalidValue {

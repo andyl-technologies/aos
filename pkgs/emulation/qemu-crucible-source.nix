@@ -5,6 +5,7 @@
   fetchCargoVendor,
   lib,
   qemu-crucible,
+  blake3-c,
 }: let
   qemu = qemu-crucible.passthru;
   atomicPatch = qemu.atomicPatch;
@@ -114,6 +115,7 @@ in
             "$source_root/licenses" "$source_root/plugin" "$out/nix-support"
 
           cp "$src" "$source_root/upstream/qemu-${version}.tar.xz"
+          cp ${blake3-c.src} "$source_root/upstream/blake3-${blake3-c.version}.crate"
           cp -R ${aosBuildSource} "$source_root/build/aos"
           cp ${./qemu-patches/_atomic-patch.nix} "$source_root/patches/_atomic-patch.nix"
           cp ${atomicPatch.bundle} "$source_root/patches/crucible-qemu-${version}.bundle"
@@ -137,6 +139,10 @@ in
           qemu_version=${version}
           qemu_source_file=upstream/qemu-${version}.tar.xz
           qemu_source_hash=${atomicPatch.qemuSourceHash}
+          blake3_c_source_file=upstream/blake3-${blake3-c.version}.crate
+          blake3_c_version=${blake3-c.version}
+          blake3_c_source_hash=${blake3-c.src.outputHash}
+          blake3_c_license_option=CC0-1.0
           aos_build_source_root=build/aos
           aos_build_entrypoint=build/aos/default.nix
           qemu_build_expression=build/aos/pkgs/emulation/qemu.nix

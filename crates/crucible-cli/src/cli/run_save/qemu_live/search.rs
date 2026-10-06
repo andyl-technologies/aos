@@ -11,8 +11,7 @@ use crucible_daemon::qemu_campaign_lifecycle::{
     GuardedCampaignExplorationStrategy, GuardedCampaignFindingOracle,
     GuardedCampaignFindingOracleError, GuardedCampaignFindingOracleEvaluation,
     GuardedCampaignFindingOracleSource, GuardedCampaignTimeoutEvidence,
-    GuardedDefaultCampaignObservation, GuardedDefaultCampaignRun, GuardedDefaultCampaignRunRequest,
-    run_guarded_default_campaign,
+    GuardedDefaultCampaignObservation, GuardedDefaultCampaignRun, run_guarded_default_campaign,
 };
 
 enum QemuSearchSupplementalOracleSource {
@@ -347,15 +346,14 @@ fn run_local_qemu_search_scenario(
         exploration.with_execution_quanta_timeout(LIVE_EXPLORATION_QUANTUM_LIMIT)
     })
     .map_err(|error| campaign_search_error("build bounded exploration contract", error))?;
-    let mut request = GuardedDefaultCampaignRunRequest::new(
+    let mut request = crate::cli_verify_serve::configured_guarded_campaign_request(
+        &deployment,
         scenario.clone(),
         scenario.scenario_def().seed(),
-        env!("CARGO_PKG_VERSION"),
         qemu_build_id,
         lifecycle,
-        deployment.host,
         deployment.resources,
-    )
+    )?
     .with_exploration(exploration)
     .with_watch_frames();
     request = apply_guarded_campaign_determinism_policy(request, verify_determinism_findings);

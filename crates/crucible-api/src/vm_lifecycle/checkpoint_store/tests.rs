@@ -6,8 +6,8 @@
 use super::{ExactSnapshotHandle as Snapshot, *};
 
 #[cfg(feature = "test-support")]
-#[path = "tests/v9_artifact_refusal.rs"]
-mod v9_artifact_refusal;
+#[path = "tests/paged_artifact_refusal.rs"]
+mod paged_artifact_refusal;
 
 fn wire_string(value: &str) -> decode::FallibleString {
     decode::FallibleString::new(String::from(value))
@@ -45,6 +45,11 @@ fn manifest() -> ClosureManifest {
 }
 
 fn target(node: &str) -> TargetManifest {
+    use crucible_cas::content_store::{ContentId, ObjectKind};
+    use crucible_ram::{
+        Limits, RegionClass, RegionDescriptor, RegionTreeDigest, RootRecord, Scope, Topology,
+    };
+
     let chunk = ContentHash::from_bytes(b"artifact");
     let overlay_extents = vec![ArtifactExtent {
         start_chunk: 0,
@@ -65,6 +70,24 @@ fn target(node: &str) -> TargetManifest {
         sparse: false,
         extents: Vec::new(),
     };
+    let topology = Topology::new(
+        vec![
+            RegionDescriptor::new("machine.ram", RegionClass::MutableMain, 8)
+                .expect("admit valid paged RAM fixture"),
+        ],
+        Limits::default(),
+    )
+    .expect("admit valid paged RAM fixture");
+    let record = RootRecord::new(
+        topology,
+        Scope::Exact,
+        vec![RegionTreeDigest::from_bytes(
+            ContentHash::from_bytes(node.as_bytes()).bytes,
+        )],
+    )
+    .expect("admit valid paged RAM fixture");
+    let root_bytes = record.encode();
+    let root_object = ContentId::for_bytes(ObjectKind::ExactManifest, 1, &root_bytes);
     TargetManifest {
         node: wire_string(node),
         immutable_backing: ContentHash::from_bytes(b"immutable backing"),
@@ -73,23 +96,20 @@ fn target(node: &str) -> TargetManifest {
         snapshot: ContentHash::from_bytes(node.as_bytes()),
         overlay,
         exact_ram: ExactRamManifest {
-            parent_closure: None,
             device_content_sha256: ContentHash::from_bytes(b"device sha256"),
-            device: device.clone(),
-            layers: vec![ExactRamLayerManifest {
-                kind: ProductionExactRamKind::Direct,
+            device,
+            paged: PagedRamManifest {
+                root_object: wire_string(&root_object.encode()),
+                logical_root: ContentHash {
+                    bytes: *record.digest().as_bytes(),
+                },
+                root_record: root_bytes,
                 identity: ProductionExactCheckpointIdentity {
                     checkpoint: ContentHash::from_bytes(b"checkpoint"),
                     target: ContentHash::from_bytes(node.as_bytes()),
                     frontier: ContentHash::from_bytes(b"frontier"),
                 },
-                parent: None,
-                topology: ContentHash::from_bytes(b"topology"),
-                ram_regions: 1,
-                ram_records: 1,
-                content_sha256: ContentHash::from_bytes(b"ram sha256"),
-                artifact: device,
-            }],
+            },
         },
         manifest_identity: ContentHash::default(),
     }
@@ -283,10 +303,8 @@ fn build_one_node_raw_checkpoint(
 
     let overlay = run_state_root.join("raw-overlay.qcow2");
     let device_state = run_state_root.join("device-state.bin");
-    let ram = run_state_root.join("exact-ram.bin");
     fs::write(&overlay, b"overlay fixture").expect("write overlay fixture");
     fs::write(&device_state, b"device-state fixture").expect("write device-state fixture");
-    fs::write(&ram, b"exact RAM fixture").expect("write exact RAM fixture");
     let overlay_artifact = stage_sparse_checkpoint_artifact_chunks_with_boundary(
         &File::open(&overlay).expect("open overlay fixture"),
         &overlay,
@@ -307,14 +325,6 @@ fn build_one_node_raw_checkpoint(
         sparse: false,
         extents: Vec::new(),
     };
-    let ram_artifact = ProductionCheckpointArtifact {
-        source: ProductionCheckpointArtifactSource::File(ram.clone()),
-        identity: hash_file(&ram).expect("hash exact RAM fixture"),
-        length: fs::metadata(&ram).expect("inspect exact RAM fixture").len(),
-        chunks: Vec::new(),
-        sparse: false,
-        extents: Vec::new(),
-    };
     let qmp_identity = exact_ram_checkpoint_qmp_identity(ExactRamCheckpointQmpIdentityBasis {
         configuration: &configuration,
         immutable_backing: ContentHash::from_bytes(b"immutable backing"),
@@ -326,22 +336,42 @@ fn build_one_node_raw_checkpoint(
         scheduler: &scheduler_checkpoint,
     })
     .expect("derive exact RAM QMP identity");
-    let exact_ram = ProductionExactRamCheckpoint::new(
-        None,
+    let catalog = paged::PagedRamCatalog::open(
+        run_state_root,
+        scenario.id(),
+        source.plan().fault_signals().resource_limits(),
+        Some(&crate::vm_lifecycle::checkpoint_store::test_support::test_ram_catalog_provider()),
+    )
+    .expect("open fixture RAM catalog");
+    let topology = crucible_ram::Topology::new(
+        vec![
+            crucible_ram::RegionDescriptor::new(
+                "machine.ram",
+                crucible_ram::RegionClass::MutableMain,
+                4096 + 19,
+            )
+            .expect("admit valid paged RAM fixture"),
+        ],
+        crucible_ram::Limits::default(),
+    )
+    .expect("admit valid paged RAM fixture");
+    let ram = catalog
+        .capture(
+            topology,
+            &mut |_, index, bytes| {
+                bytes.fill((index + 1) as u8);
+                Ok(())
+            },
+            &mut || Ok(()),
+        )
+        .expect("capture fixture RAM pages");
+    let exact_ram = ProductionExactRamCheckpoint::from_paged_capture(
+        qmp_identity.into(),
         hash_exact_checkpoint_file_sha256_with_boundary(&device_state, &mut || Ok(()))
             .expect("hash device-state fixture with SHA-256"),
         device_artifact,
-        vec![ProductionExactRamLayer {
-            kind: ProductionExactRamKind::Direct,
-            identity: qmp_identity.into(),
-            parent: None,
-            topology: ContentHash::from_bytes(b"fixture topology"),
-            ram_regions: 1,
-            ram_records: 1,
-            content_sha256: hash_exact_checkpoint_file_sha256_with_boundary(&ram, &mut || Ok(()))
-                .expect("hash exact RAM fixture with SHA-256"),
-            artifact: ram_artifact,
-        }],
+        catalog,
+        ram,
     )
     .expect("build exact RAM fixture");
     let manifest_identity = exact_ram_checkpoint_target_manifest_identity(
@@ -480,8 +510,15 @@ fn materialized_baked_snapshots_survive_native_catalog_retirement() {
         .expect("authenticate baked snapshot catalog")
         .materialize_with_boundary(&mut || Ok(()))
         .expect("materialize authenticated baked snapshots");
+    let retirement = closure.native_retirement();
+    let configuration = fixture.configuration().id();
+    let source = fixture.source().clone();
+    let identity = closure.identity();
+    assert!(retire_production_exact_checkpoint_catalog(&retirement).is_err());
+    drop(closure);
+    drop(fixture);
 
-    retire_production_exact_checkpoint_catalog(&closure.native_retirement())
+    retire_production_exact_checkpoint_catalog(&retirement)
         .expect("retire the native baked catalog");
     assert_eq!(snapshots.nodes().collect::<Vec<_>>(), vec![&node]);
     assert_eq!(
@@ -490,12 +527,16 @@ fn materialized_baked_snapshots_survive_native_catalog_retirement() {
             .expect("retained baked snapshot")
             .checkpoint()
             .configuration,
-        fixture.configuration().id()
+        configuration
     );
     assert!(
-        closure
-            .baked_snapshot_catalog_with_boundary(&mut || Ok(()))
-            .is_err()
+        open_exact_checkpoint_closure(
+            root.path(),
+            &source,
+            identity,
+            Some(&crate::vm_lifecycle::checkpoint_store::test_support::test_ram_catalog_provider())
+        )
+        .is_err()
     );
 }
 
@@ -535,17 +576,27 @@ fn run_cold_genesis_catalog_checkpoint_test() {
         .publish()
         .expect("publish cold-genesis selectable checkpoint");
 
-    let restored =
-        load_exact_checkpoint_set(store.path(), &source.scenario_def(), &source, identity)
-            .expect("load cold-genesis selectable checkpoint");
+    let restored = load_exact_checkpoint_set(
+        store.path(),
+        &source.scenario_def(),
+        &source,
+        identity,
+        Some(&crate::vm_lifecycle::checkpoint_store::test_support::test_ram_catalog_provider()),
+    )
+    .expect("load cold-genesis selectable checkpoint");
     assert_eq!(
         restored.selectable_catalog_plans.get(&node),
         Some(&expected_plan)
     );
-    open_exact_checkpoint_closure(store.path(), &source, identity)
-        .expect("open cold-genesis selectable checkpoint closure")
-        .validate_complete()
-        .expect("authenticate complete cold-genesis selectable checkpoint closure");
+    open_exact_checkpoint_closure(
+        store.path(),
+        &source,
+        identity,
+        Some(&crate::vm_lifecycle::checkpoint_store::test_support::test_ram_catalog_provider()),
+    )
+    .expect("open cold-genesis selectable checkpoint closure")
+    .validate_complete()
+    .expect("authenticate complete cold-genesis selectable checkpoint closure");
 
     let partial_store = tempfile::tempdir().expect("create partial-registration checkpoint store");
     let partial = SelectablePlanContinuation::new(
@@ -612,10 +663,27 @@ fn native_checkpoint_retirement_is_crash_safe_and_idempotent() {
     let root = tempfile::tempdir().expect("create native retirement store");
     let (source, identity, _, _) = publish_one_node_raw_checkpoint(root.path());
     let scenario = source.scenario_def().id();
-    let closure = open_exact_checkpoint_closure(root.path(), &source, identity)
-        .expect("open native closure before retirement");
+    let closure = open_exact_checkpoint_closure(
+        root.path(),
+        &source,
+        identity,
+        Some(&crate::vm_lifecycle::checkpoint_store::test_support::test_ram_catalog_provider()),
+    )
+    .expect("open native closure before retirement");
     let retirement = closure.native_retirement();
     let scenario_directory = root.path().join(scenario.to_hex());
+    let root_lease = closure
+        .ram_sources()
+        .first()
+        .expect("RAM source")
+        .root()
+        .clone();
+
+    assert!(retire_production_exact_checkpoint_catalog(&retirement).is_err());
+    drop(closure);
+    assert!(retire_production_exact_checkpoint_catalog(&retirement).is_err());
+    assert!(scenario_directory.exists());
+    drop(root_lease);
 
     let first = retire_production_exact_checkpoint_catalog(&retirement)
         .expect("retire native checkpoint catalog");
@@ -634,9 +702,15 @@ fn native_checkpoint_retirement_recovers_renamed_generation() {
     let root = tempfile::tempdir().expect("create interrupted native retirement store");
     let (source, identity, _, _) = publish_one_node_raw_checkpoint(root.path());
     let scenario = source.scenario_def().id();
-    let closure = open_exact_checkpoint_closure(root.path(), &source, identity)
-        .expect("open native closure before interrupted retirement");
+    let closure = open_exact_checkpoint_closure(
+        root.path(),
+        &source,
+        identity,
+        Some(&crate::vm_lifecycle::checkpoint_store::test_support::test_ram_catalog_provider()),
+    )
+    .expect("open native closure before interrupted retirement");
     let retirement = closure.native_retirement();
+    drop(closure);
     let scenario_name = scenario.to_hex();
     let active = root.path().join(&scenario_name);
     let retired = root
@@ -672,7 +746,106 @@ fn closure_manifest_round_trip_is_canonical() {
 }
 
 #[test]
-fn failed_node_fingerprint_fields_bind_the_v9_closure_identity() {
+fn predecessor_closure_is_refused_before_payload_decoding() {
+    let current = encode_manifest(&manifest()).expect("encode current closure");
+    decode::decode_manifest_with_limits(&current, FaultResourceLimits::default())
+        .expect("admit current closure");
+
+    let mut predecessor = b"crucible.production-exact-closure.v9\0".to_vec();
+    predecessor.extend_from_slice(&current[MANIFEST_MAGIC.len()..]);
+    let error = decode::decode_manifest_with_limits(&predecessor, FaultResourceLimits::default())
+        .err()
+        .expect("predecessor cannot enter the current decoder");
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported closure manifest version")
+    );
+
+    predecessor.truncate(b"crucible.production-exact-closure.v9\0".len());
+    predecessor.extend_from_slice(&[0xff, 0xff]);
+    let error = decode::decode_manifest_with_limits(&predecessor, FaultResourceLimits::default())
+        .err()
+        .expect("version refusal precedes malformed CBOR");
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported closure manifest version")
+    );
+}
+
+#[test]
+fn exact_ram_manifest_rejects_wrong_scope_digest_and_root_codec() {
+    use crucible_ram::{Limits, RootRecord, Scope};
+
+    let directory = tempfile::tempdir().expect("create credited RAM catalog fixture");
+    let fixture =
+        test_support::build_exact_ram_production_checkpoint_codec_fixture(directory.path())
+            .expect("publish authenticated exact RAM closure");
+    let limits = fixture.source().plan().fault_signals().resource_limits();
+    let manifest = decode::decode_manifest_with_limits(fixture.closure().manifest(), limits)
+        .expect("decode published closure metadata");
+    let original = manifest.targets[0].exact_ram.clone();
+    let provider = test_support::test_ram_catalog_provider();
+    let load = |manifest| {
+        production_exact_ram_from_manifest(
+            manifest,
+            PathBuf::new(),
+            directory.path(),
+            fixture.source().scenario_def().id(),
+            limits,
+            Some(&provider),
+            &mut || Ok(()),
+        )
+    };
+    load(original.clone()).expect("authenticate root through credited production decoder");
+
+    let mut wrong_digest = original.clone();
+    wrong_digest.paged.logical_root.bytes[0] ^= 1;
+    let error = load(wrong_digest)
+        .err()
+        .expect("refuse wrong logical digest");
+    assert!(
+        error
+            .to_string()
+            .contains("exact RAM root scope or logical digest mismatch")
+    );
+
+    let record = RootRecord::decode(&original.paged.root_record, Limits::default())
+        .expect("admit valid paged RAM fixture");
+    let lifecycle = RootRecord::new(
+        record.topology().clone(),
+        Scope::Lifecycle,
+        record.region_roots().to_vec(),
+    )
+    .expect("admit valid paged RAM fixture");
+    let mut wrong_scope = original.clone();
+    wrong_scope.paged.root_record = lifecycle.encode();
+    wrong_scope.paged.logical_root.bytes = *lifecycle.digest().as_bytes();
+    let error = load(wrong_scope).err().expect("refuse lifecycle scope");
+    assert!(
+        error
+            .to_string()
+            .contains("exact RAM root scope or logical digest mismatch")
+    );
+
+    let mut truncated = original.clone();
+    truncated.paged.root_record.pop();
+    let error = load(truncated)
+        .err()
+        .expect("refuse truncated canonical root");
+    assert!(error.to_string().contains("decode RAM root record"));
+
+    let mut trailing = original;
+    trailing.paged.root_record.push(0);
+    let error = load(trailing)
+        .err()
+        .expect("refuse trailing canonical root bytes");
+    assert!(error.to_string().contains("decode RAM root record"));
+}
+
+#[test]
+fn failed_node_fingerprint_fields_bind_the_closure_identity() {
     let mut original = manifest();
     original.failed_host_io.push(failed_host_io("vm-a"));
     let identity = closure_identity(&original).expect("derive failed-node closure identity");
@@ -753,7 +926,7 @@ fn checkpoint_set_rejects_wrong_failed_node_fingerprint_owner() {
 }
 
 #[test]
-fn failed_node_authority_round_trips_through_the_v9_closure() {
+fn failed_node_authority_round_trips_through_the_closure() {
     let root = tempfile::tempdir().expect("create failed-node checkpoint store");
     let (source, mut checkpoint, node, _) = build_one_node_raw_checkpoint(root.path(), None);
     checkpoint.targets.remove(&node);
@@ -801,9 +974,14 @@ fn failed_node_authority_round_trips_through_the_v9_closure() {
     .expect("prepare failed-node checkpoint");
     let identity = prepared.identity();
     prepared.publish().expect("publish failed-node checkpoint");
-    let restored =
-        load_exact_checkpoint_set(root.path(), &source.scenario_def(), &source, identity)
-            .expect("load failed-node checkpoint");
+    let restored = load_exact_checkpoint_set(
+        root.path(),
+        &source.scenario_def(),
+        &source,
+        identity,
+        Some(&crate::vm_lifecycle::checkpoint_store::test_support::test_ram_catalog_provider()),
+    )
+    .expect("load failed-node checkpoint");
 
     assert_eq!(restored.failed_host_io.get(&node), Some(&expected));
     assert!(restored.targets.is_empty());
@@ -865,9 +1043,17 @@ fn shared_snapshot_content_does_not_authorize_a_foreign_node_target() {
         .spawn(|| {
             let store = tempfile::tempdir().expect("create checkpoint store");
             let (source, identity, node, _) = publish_one_node_raw_checkpoint(store.path());
-            let restored =
-                load_exact_checkpoint_set(store.path(), &source.scenario_def(), &source, identity)
-                    .expect("load authentic checkpoint");
+            let restored = load_exact_checkpoint_set(
+                store.path(),
+                &source.scenario_def(),
+                &source,
+                identity,
+                Some(
+                    &crate::vm_lifecycle::checkpoint_store::test_support::test_ram_catalog_provider(
+                    ),
+                ),
+            )
+            .expect("load authentic checkpoint");
             let target = restored.targets.get(&node).expect("find target");
             let fault_checkpoint = restored
                 .fault_checkpoint
@@ -970,8 +1156,13 @@ fn portable_closure_inventory_streams_only_authenticated_manifest_objects() {
     )
     .expect("write portable manifest");
 
-    let closure = open_exact_checkpoint_closure(root.path(), &source, manifest.identity)
-        .expect("open portable checkpoint closure");
+    let closure = open_exact_checkpoint_closure(
+        root.path(),
+        &source,
+        manifest.identity,
+        Some(&crate::vm_lifecycle::checkpoint_store::test_support::test_ram_catalog_provider()),
+    )
+    .expect("open portable checkpoint closure");
     assert_eq!(closure.identity(), manifest.identity);
     assert_eq!(closure.scenario(), scenario);
     assert_eq!(closure.configuration(), manifest.configuration);
@@ -1019,8 +1210,13 @@ fn portable_object_read_observes_cancellation_between_bounded_chunks() {
     )
     .expect("write cancellable manifest");
 
-    let closure = open_exact_checkpoint_closure(root.path(), &source, manifest.identity)
-        .expect("open cancellable portable closure");
+    let closure = open_exact_checkpoint_closure(
+        root.path(),
+        &source,
+        manifest.identity,
+        Some(&crate::vm_lifecycle::checkpoint_store::test_support::test_ram_catalog_provider()),
+    )
+    .expect("open cancellable portable closure");
     let mut boundary_count = 0_u8;
     let error = replay::read_portable_object(
         &closure,
@@ -1269,7 +1465,8 @@ fn paused_artifact_staging_writes_only_deduplicated_chunks() {
     bytes.extend_from_slice(b"tail");
     fs::write(&source, &bytes).expect("write active overlay fixture");
 
-    let artifact = stage_checkpoint_artifact_chunks_with_boundary(
+    let artifact = stage_open_checkpoint_artifact_chunks_with_boundary(
+        &mut File::open(&source).expect("open paused overlay fixture"),
         &source,
         &object_directory,
         "root overlay",
@@ -1532,7 +1729,8 @@ fn paused_artifact_staging_rejects_length_before_writing_chunks() {
     let object_directory = root.path().join("staged-objects");
     fs::write(&source, b"over-limit").expect("write over-limit artifact fixture");
 
-    let error = stage_checkpoint_artifact_chunks_with_boundary(
+    let error = stage_open_checkpoint_artifact_chunks_with_boundary(
+        &mut File::open(&source).expect("open over-limit artifact fixture"),
         &source,
         &object_directory,
         "VMState",
@@ -1697,26 +1895,158 @@ fn lifecycle_wire_reopens_passed_trigger_with_matching_checkpoint_cause() {
 
 #[cfg(feature = "test-support")]
 #[test]
-fn v9_exact_ram_fixture_retains_the_complete_layer_chain() {
+fn paged_exact_fixture_retains_independent_complete_images() {
     let source_root = tempfile::tempdir().expect("create exact RAM source store");
     let fixture = build_exact_ram_production_checkpoint_codec_fixture(source_root.path())
         .expect("build exact RAM closure fixture");
-    assert_ne!(fixture.parent_closure(), fixture.closure().identity());
-    let parent = load_exact_ram_checkpoint_parent(
-        source_root.path(),
-        fixture.source(),
-        &NodeId {
-            name: String::from("vm-a"),
-        },
-        fixture.parent_closure(),
-        fixture.layer_identities()[0],
-    )
-    .expect("load authoritative exact RAM parent");
-    assert_eq!(parent.layers.len(), 1);
+    let ram_source = fixture
+        .closure()
+        .ram_sources()
+        .first()
+        .expect("complete RAM source");
+    assert_ne!(
+        fixture.previous_ram().logical_digest(),
+        ram_source.root().logical_digest()
+    );
+    assert_eq!(
+        ram_source
+            .store()
+            .read_page(fixture.previous_ram(), "machine.ram", 1, &mut || Ok(()))
+            .expect("admit valid paged RAM fixture"),
+        vec![2; 4096]
+    );
+    assert_eq!(
+        ram_source
+            .store()
+            .read_page(ram_source.root(), "machine.ram", 1, &mut || Ok(()))
+            .expect("admit valid paged RAM fixture"),
+        vec![0x7f; 4096]
+    );
+    assert_eq!(
+        ram_source
+            .store()
+            .read_page(ram_source.root(), "machine.ram", 2, &mut || Ok(()))
+            .expect("admit valid paged RAM fixture"),
+        vec![3; 19]
+    );
+    assert_eq!(
+        ram_source
+            .store()
+            .read_page(ram_source.root(), "machine.rom", 0, &mut || Ok(()))
+            .expect("admit valid paged RAM fixture"),
+        vec![0xa5; 37]
+    );
     fixture
         .closure()
         .validate_complete()
         .expect("validate exact RAM closure");
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn paged_catalog_rejects_substituted_authenticated_root() {
+    let source_root = tempfile::tempdir().expect("create paged root substitution store");
+    let fixture = build_exact_ram_production_checkpoint_codec_fixture(source_root.path())
+        .expect("build complete paged fixture");
+    let source = fixture
+        .closure()
+        .ram_sources()
+        .first()
+        .expect("admit valid paged RAM fixture");
+    let catalog = paged::PagedRamCatalog::open(
+        source_root.path(),
+        fixture.source().scenario_def().id(),
+        fixture.source().plan().fault_signals().resource_limits(),
+        Some(&crate::vm_lifecycle::checkpoint_store::test_support::test_ram_catalog_provider()),
+    )
+    .expect("admit valid paged RAM fixture");
+
+    catalog
+        .open_root(
+            source.root().object_id(),
+            source.root().record(),
+            &mut || Ok(()),
+        )
+        .expect("matching authenticated catalog and logical root are admitted");
+    assert!(
+        catalog
+            .open_root(
+                source.root().object_id(),
+                fixture.previous_ram().record(),
+                &mut || Ok(())
+            )
+            .is_err()
+    );
+    assert!(
+        catalog
+            .open_root(
+                fixture.previous_ram().object_id(),
+                source.root().record(),
+                &mut || Ok(())
+            )
+            .is_err()
+    );
+
+    assert_eq!(
+        source
+            .store()
+            .read_page(source.root(), "machine.ram", 1, &mut || Ok(()))
+            .expect("admit valid paged RAM fixture"),
+        vec![0x7f; 4096]
+    );
+}
+
+#[test]
+fn paged_catalog_cancellation_refuses_capture_and_preserves_existing_root() {
+    use crucible_cas::ram::RamStoreError;
+    use crucible_ram::{Limits, RegionClass, RegionDescriptor, Topology};
+
+    let store_root = tempfile::tempdir().expect("create cancellable paged catalog");
+    let catalog = paged::PagedRamCatalog::open(
+        store_root.path(),
+        ContentHash::from_bytes(b"cancellable RAM catalog"),
+        FaultResourceLimits::default(),
+        Some(&crate::vm_lifecycle::checkpoint_store::test_support::test_ram_catalog_provider()),
+    )
+    .expect("admit valid paged RAM fixture");
+    let topology = Topology::new(
+        vec![
+            RegionDescriptor::new("ram", RegionClass::MutableMain, 8192)
+                .expect("admit valid paged RAM fixture"),
+        ],
+        Limits::default(),
+    )
+    .expect("admit valid paged RAM fixture");
+    let root = catalog
+        .capture(
+            topology.clone(),
+            &mut |_, index, bytes| {
+                bytes.fill(index as u8 + 1);
+                Ok(())
+            },
+            &mut || Ok(()),
+        )
+        .expect("admit valid paged RAM fixture");
+
+    let mut page_reads = 0;
+    let canceled = catalog.capture(
+        topology,
+        &mut |_, _, bytes| {
+            page_reads += 1;
+            bytes.fill(0x7f);
+            Ok(())
+        },
+        &mut || Err(RamStoreError::Canceled),
+    );
+    assert!(matches!(canceled, Err(RamStoreError::Canceled)));
+    assert_eq!(page_reads, 0);
+    assert_eq!(
+        catalog
+            .store()
+            .read_page(&root, "ram", 1, &mut || Ok(()))
+            .expect("admit valid paged RAM fixture"),
+        vec![2; 4096]
+    );
 }
 
 #[cfg(feature = "test-support")]
@@ -1730,6 +2060,7 @@ fn rewrite_exact_ram_fixture_manifest(
         &fixture.source().scenario_def(),
         fixture.source(),
         fixture.closure().identity(),
+        Some(&crate::vm_lifecycle::checkpoint_store::test_support::test_ram_catalog_provider()),
     )
     .expect("load exact RAM fixture before mutation");
     let mut manifest = decode::decode_manifest_with_limits(
@@ -1745,8 +2076,16 @@ fn rewrite_exact_ram_fixture_manifest(
     let fault_identity = manifest.fault_checkpoint;
     let exact_ram = &mut target.exact_ram;
     mutate(exact_ram);
-    let checkpoint = production_exact_ram_from_manifest(exact_ram.clone(), PathBuf::new())
-        .expect("rebuild mutated exact RAM metadata");
+    let checkpoint = production_exact_ram_from_manifest(
+        exact_ram.clone(),
+        PathBuf::new(),
+        run_state_root,
+        fixture.source().scenario_def().id(),
+        fixture.source().plan().fault_signals().resource_limits(),
+        Some(&test_support::test_ram_catalog_provider()),
+        &mut || Ok(()),
+    )
+    .expect("rebuild mutated exact RAM metadata");
     target.manifest_identity = exact_ram_checkpoint_target_manifest_identity(
         ExactCheckpointTargetManifestBasis {
             configuration,
@@ -1776,17 +2115,12 @@ fn rewrite_exact_ram_fixture_manifest(
 
 #[cfg(feature = "test-support")]
 #[test]
-fn v9_exact_ram_loader_derives_the_qmp_identity_from_authenticated_state() {
+fn paged_exact_loader_derives_the_qmp_identity_from_authenticated_state() {
     let store = tempfile::tempdir().expect("create exact RAM store");
     let fixture = build_exact_ram_production_checkpoint_codec_fixture(store.path())
         .expect("build exact RAM closure fixture");
     let identity = rewrite_exact_ram_fixture_manifest(store.path(), &fixture, |exact_ram| {
-        exact_ram
-            .layers
-            .last_mut()
-            .expect("find final RAM layer")
-            .identity
-            .frontier = ContentHash::from_bytes(b"forged exact RAM frontier");
+        exact_ram.paged.identity.frontier = ContentHash::from_bytes(b"forged exact RAM frontier");
     });
 
     let error = load_exact_checkpoint_set(
@@ -1794,6 +2128,7 @@ fn v9_exact_ram_loader_derives_the_qmp_identity_from_authenticated_state() {
         &fixture.source().scenario_def(),
         fixture.source(),
         identity,
+        Some(&crate::vm_lifecycle::checkpoint_store::test_support::test_ram_catalog_provider()),
     )
     .expect_err("self-consistent manifest hashes cannot forge a QMP frontier");
     assert!(error.to_string().contains("QMP identity authentication"));
@@ -1801,26 +2136,21 @@ fn v9_exact_ram_loader_derives_the_qmp_identity_from_authenticated_state() {
 
 #[cfg(feature = "test-support")]
 #[test]
-fn v9_exact_ram_loader_authenticates_declared_sha256_digests() {
-    for role in ["device", "RAM layer"] {
-        let store = tempfile::tempdir().expect("create exact RAM store");
-        let fixture = build_exact_ram_production_checkpoint_codec_fixture(store.path())
-            .expect("build exact RAM closure fixture");
-        let identity = rewrite_exact_ram_fixture_manifest(store.path(), &fixture, |exact_ram| {
-            if role == "device" {
-                exact_ram.device_content_sha256 = ContentHash::from_bytes(b"forged device SHA-256");
-            } else {
-                exact_ram.layers[0].content_sha256 = ContentHash::from_bytes(b"forged RAM SHA-256");
-            }
-        });
+fn paged_exact_loader_authenticates_declared_device_digest() {
+    let store = tempfile::tempdir().expect("create exact RAM store");
+    let fixture = build_exact_ram_production_checkpoint_codec_fixture(store.path())
+        .expect("build exact RAM closure fixture");
+    let identity = rewrite_exact_ram_fixture_manifest(store.path(), &fixture, |exact_ram| {
+        exact_ram.device_content_sha256 = ContentHash::from_bytes(b"forged device SHA-256");
+    });
 
-        let error = load_exact_checkpoint_set(
-            store.path(),
-            &fixture.source().scenario_def(),
-            fixture.source(),
-            identity,
-        )
-        .expect_err("self-consistent manifest hashes cannot forge artifact SHA-256");
-        assert!(error.to_string().contains("failed SHA-256 authentication"));
-    }
+    let error = load_exact_checkpoint_set(
+        store.path(),
+        &fixture.source().scenario_def(),
+        fixture.source(),
+        identity,
+        Some(&crate::vm_lifecycle::checkpoint_store::test_support::test_ram_catalog_provider()),
+    )
+    .expect_err("self-consistent manifest hashes cannot forge artifact SHA-256");
+    assert!(error.to_string().contains("failed SHA-256 authentication"));
 }

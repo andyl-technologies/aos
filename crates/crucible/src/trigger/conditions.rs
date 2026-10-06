@@ -923,8 +923,19 @@ pub trait ConditionEvaluator: condition_evaluator_sealed::Sealed {
     /// Returns whether a `Once` predicate has already latched true.
     fn once_condition_is_latched(&self, condition: &Condition) -> bool;
 
-    /// Records that a `Once` predicate has latched true.
-    fn latch_once_condition(&mut self, condition: &Condition);
+    /// Returns whether evaluation commits latches rather than borrowing a read-only view.
+    fn records_once_latches(&self) -> bool {
+        true
+    }
+
+    /// Admits destination storage before committing a pass's moved Once latches.
+    ///
+    /// # Errors
+    /// Refuses the original allocation allowance before latch state changes.
+    fn prepare_once_latches(&mut self, additional: usize) -> Result<(), EngineError>;
+
+    /// Records a pre-admitted moved predicate that has latched true.
+    fn latch_once_condition(&mut self, condition: Condition);
 
     /// Resolves an authored code point using host-side symbol metadata.
     fn resolve_code_point(&self, _node: &NodeId, point: &CodePoint) -> Option<ResolvedCodePoint> {

@@ -217,7 +217,12 @@ impl ManagedQemuHotForkSourceWorld {
         self.source.take()
     }
 
-    fn restore(&mut self, source: ProductionVmHotForkSourceWorld) {
+    fn restore(&mut self, mut source: ProductionVmHotForkSourceWorld) {
+        if source.restore_retained_service_supervisor().is_err() {
+            self.invalidated = true;
+            let _retained_for_process_lifetime = Box::leak(Box::new(source));
+            return;
+        }
         match source.into_reusable() {
             Ok(source) => self.source = Some(source),
             Err(failure) => {
@@ -513,11 +518,20 @@ impl QemuHotForkSourceWorldLease {
 
     pub(crate) fn reauthenticates_source(&self) -> bool {
         self.source.lock().is_ok_and(|mut source| {
-            self.identity.matches(&source) && source.fork_continuation().is_ok()
+            self.identity.matches(&source)
+                && source.restore_retained_service_supervisor().is_ok()
+                && source.fork_continuation().is_ok()
         })
     }
 
     pub(crate) fn into_exclusive_source(self) -> Result<ProductionVmHotForkSourceWorld, Box<Self>> {
+        if !self
+            .source
+            .lock()
+            .is_ok_and(|mut source| source.restore_retained_service_supervisor().is_ok())
+        {
+            return Err(Box::new(self));
+        }
         if self.managed_lease.is_some() {
             return Err(Box::new(self));
         }

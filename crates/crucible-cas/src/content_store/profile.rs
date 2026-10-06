@@ -258,6 +258,10 @@ impl ImmutableBlobBackend for ProfileValidatedStore {
         &self.name
     }
 
+    fn metadata_resources(&self) -> Result<Arc<dyn super::StorePhysicalQuotaGuard>, StoreError> {
+        self.child.metadata_resources()
+    }
+
     fn capabilities(&self) -> BackendCapabilities {
         let mut capabilities = self.child.capabilities();
         // Profile derivation consumes the complete canonical source before a

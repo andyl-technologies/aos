@@ -6,7 +6,7 @@
 //! IDs can be reused. Invoke only against a dedicated empty quota filesystem:
 //!
 //! ```text
-//! project-quota-flight /tmp/quota-root
+//! project-quota-flight /tmp/quota-root /path/to/aos-e2fsprogs/bin/chattr
 //! ```
 
 #![forbid(unsafe_code)]
@@ -23,8 +23,8 @@ use std::path::Path;
 use std::process::{Command, ExitCode};
 
 use crucible_linux_resource::{
-    LinuxProjectQuotaError, LinuxProjectQuotaLimits, LinuxProjectQuotaReservation,
-    validate_project_quota_root,
+    LinuxProjectQuotaBinding, LinuxProjectQuotaError, LinuxProjectQuotaLimits,
+    LinuxProjectQuotaReservation, validate_project_quota_root,
 };
 
 fn main() -> ExitCode {
@@ -45,14 +45,14 @@ fn main() -> ExitCode {
 fn run() -> Result<(), Box<dyn Error>> {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
     match arguments.as_slice() {
-        [root] => parent(Path::new(root)),
         [mode, directory] if mode == "--write-bytes" => exhaust_bytes(Path::new(directory)),
         [mode, directory] if mode == "--write-inodes" => exhaust_inodes(Path::new(directory)),
-        _ => Err("expected one dedicated ext4 quota root".into()),
+        [root, chattr] => parent(Path::new(root), Path::new(chattr)),
+        _ => Err("expected a dedicated ext4 quota root and the AOS chattr executable".into()),
     }
 }
 
-fn parent(root: &Path) -> Result<(), Box<dyn Error>> {
+fn parent(root: &Path, chattr: &Path) -> Result<(), Box<dyn Error>> {
     let filesystem: OwnedFd = File::open(root)?.into();
     validate_project_quota_root(&filesystem, root)?;
     for (mode, name, project, inodes) in [
@@ -121,7 +121,98 @@ fn parent(root: &Path) -> Result<(), Box<dyn Error>> {
     }
     println!("nonempty_release_retains_authority=true");
     println!("cleared_project_ids_reusable=true");
+    audit_persistent_namespace(root, &filesystem, chattr)?;
     println!("PASS");
+    Ok(())
+}
+
+fn audit_persistent_namespace(
+    root: &Path,
+    filesystem: &OwnedFd,
+    chattr: &Path,
+) -> Result<(), Box<dyn Error>> {
+    use crucible_linux_resource::host_supervision::{
+        HostOperationBudgets, HostOperationSupervisor,
+    };
+
+    let path = root.join("persistent");
+    fs::create_dir(&path)?;
+    let limits = LinuxProjectQuotaLimits::new(1024 * 1024, 256)?;
+    let reservation = LinuxProjectQuotaReservation::install(
+        filesystem.try_clone()?,
+        File::open(&path)?.into(),
+        &path,
+        10003,
+        limits,
+    )?;
+    fs::create_dir(path.join("existing"))?;
+    fs::write(
+        path.join("existing/page"),
+        b"preexisting authenticated bytes",
+    )?;
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+    let bind = || {
+        LinuxProjectQuotaBinding::bind_existing_supervised(
+            &path,
+            10003,
+            1024 * 1024,
+            256,
+            supervisor.clone(),
+        )
+    };
+
+    let binding = bind()?;
+    if bind().is_ok() {
+        return Err("second persistent namespace owner acquired the same lease".into());
+    }
+    binding.prepare_descendant_directory(&path.join("new/catalog"))?;
+    fs::write(path.join("new/catalog/page"), b"inherited bytes")?;
+    binding.verify()?;
+    drop(binding);
+
+    // The operator deliberately changes attributes while no namespace lease
+    // is held. Root-only checks would miss each preexisting descendant defect.
+    change_attributes(chattr, &["-p", "0"], &path.join("existing/page"))?;
+    if bind().is_ok() {
+        return Err("foreign-project preexisting file escaped quota audit".into());
+    }
+    change_attributes(chattr, &["-p", "10003"], &path.join("existing/page"))?;
+    change_attributes(chattr, &["-P"], &path.join("existing"))?;
+    if bind().is_ok() {
+        return Err("noninheriting preexisting directory escaped quota audit".into());
+    }
+    change_attributes(chattr, &["+P"], &path.join("existing"))?;
+
+    fs::hard_link(path.join("existing/page"), path.join("alias"))?;
+    if bind().is_ok() {
+        return Err("hard-linked existing quota inode was admitted".into());
+    }
+    fs::remove_file(path.join("alias"))?;
+    std::os::unix::fs::symlink(root, path.join("escape"))?;
+    if bind().is_ok() {
+        return Err("symlink descendant escaped persistent quota audit".into());
+    }
+    fs::remove_file(path.join("escape"))?;
+    bind()?.verify()?;
+
+    for name in ["existing", "new"] {
+        fs::remove_dir_all(path.join(name))?;
+    }
+    fs::remove_file(path.join(".crucible-physical-quota.lock"))?;
+    reservation.release()?;
+    println!("persistent_descendant_audit_and_lease_enforced=true");
+    Ok(())
+}
+
+fn change_attributes(tool: &Path, arguments: &[&str], path: &Path) -> Result<(), Box<dyn Error>> {
+    if !Command::new(tool)
+        .args(arguments)
+        .arg(path)
+        .status()?
+        .success()
+    {
+        return Err("operator fixture could not change project attributes".into());
+    }
     Ok(())
 }
 

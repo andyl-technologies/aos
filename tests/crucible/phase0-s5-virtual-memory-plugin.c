@@ -94,38 +94,6 @@ fnv1a_bytes(uint64_t hash, const unsigned char *bytes, size_t len)
   return hash;
 }
 
-static int
-sha256_fd(int fd, uint64_t length, unsigned char digest[32])
-{
-  unsigned char buffer[64 * 1024];
-  GChecksum *checksum = g_checksum_new(G_CHECKSUM_SHA256);
-  uint64_t remaining = length;
-
-  if (fd < 0 || length == 0 || checksum == NULL) {
-    if (checksum != NULL) {
-      g_checksum_free(checksum);
-    }
-    return -1;
-  }
-  while (remaining != 0) {
-    const size_t requested = remaining < sizeof(buffer)
-                                 ? (size_t)remaining
-                                 : sizeof(buffer);
-    const ssize_t received = read(fd, buffer, requested);
-
-    if (received <= 0) {
-      g_checksum_free(checksum);
-      return -1;
-    }
-    g_checksum_update(checksum, buffer, (gssize)received);
-    remaining -= (uint64_t)received;
-  }
-  gsize digest_length = 32;
-  g_checksum_get_digest(checksum, digest, &digest_length);
-  g_checksum_free(checksum);
-  return digest_length == 32 ? 0 : -1;
-}
-
 static const char *
 kind_name(uint64_t kind)
 {
@@ -412,20 +380,29 @@ record_final_sample(bool pause_sample)
   const uint64_t register_hash =
       compute_register_hash(&register_sample_failures, register_counts);
   unsigned char ram_digest[32] = {0};
-  struct qemu_plugin_crucible_fingerprint_material material = {
-      .ram_fd = -1,
+  struct qemu_plugin_crucible_fingerprint_v2 material = {
       .device_fd = -1,
   };
   const int capture_status =
-      qemu_plugin_crucible_capture_fingerprint_material(&material);
-  const int digest_status = capture_status == 0
-      ? sha256_fd(material.ram_fd, material.ram_material_length, ram_digest)
-      : capture_status;
-  if (material.ram_fd >= 0) {
-    close(material.ram_fd);
+      qemu_plugin_crucible_capture_fingerprint_v2(&material);
+  const unsigned char empty_digest[32] = {0};
+  int digest_status = capture_status;
+  if (capture_status == 0) {
+    if (material.schema != 2 || material.logical_edition != 1 ||
+        material.ram_scope != 0 || material.reserved != 0 ||
+        material.device_fd < 0 ||
+        memcmp(material.ram_digest, empty_digest, 32) == 0) {
+      digest_status = -1;
+    } else {
+      memcpy(ram_digest, material.ram_digest, sizeof(ram_digest));
+    }
   }
-  if (material.device_fd >= 0 && material.device_fd != material.ram_fd) {
+  if (material.device_fd >= 0) {
     close(material.device_fd);
+  }
+  char ram_root_hex[65];
+  for (size_t index = 0; index < sizeof(ram_digest); index++) {
+    snprintf(ram_root_hex + 2 * index, 3, "%02x", ram_digest[index]);
   }
   const uint64_t capture_failures =
       digest_status != 0 || material.ram_bytes == 0 || material.device_bytes == 0;
@@ -467,7 +444,9 @@ record_final_sample(bool pause_sample)
       ",\"capture_status\":%d"
       ",\"digest_status\":%d"
       ",\"ram_bytes\":%" PRIu64
-      ",\"ram_material_length\":%" PRIu64
+      ",\"ram_logical_edition\":%u"
+      ",\"ram_scope\":%u"
+      ",\"ram_root\":\"%s\""
       ",\"device_bytes\":%" PRIu64
       ",\"device_material_length\":%" PRIu64
       ",\"state_hash\":\"%016" PRIx64 "\""
@@ -494,7 +473,9 @@ record_final_sample(bool pause_sample)
       capture_status,
       digest_status,
       material.ram_bytes,
-      material.ram_material_length,
+      material.logical_edition,
+      material.ram_scope,
+      ram_root_hex,
       material.device_bytes,
       material.device_material_length,
       state_hash,

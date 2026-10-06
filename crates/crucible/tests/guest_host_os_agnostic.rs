@@ -185,6 +185,7 @@ fn non_linux_opaque_image_uses_black_box_observation_without_guest_contract() {
     assert!(
         support::evaluation_with_observables(30, black_box_events(), NoGuestSoftwareLeaves,)
             .evaluate_assertion_condition(&predicate)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
     );
 
     let graph = EventGraph::new_for_world(

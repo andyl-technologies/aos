@@ -37,10 +37,14 @@ tokio = { workspace = true }
 toml = { workspace = true }
 
 [dev-dependencies]
+crucible-device = { path = "../crucible-device" }
+crucible-ram = { workspace = true }
+rusqlite = { workspace = true }
 crucible = { path = "../crucible", features = ["test-double"] }
 crucible-api = { path = "../crucible-api", features = ["test-support"] }
 crucible-guest = { path = "../crucible-guest" }
 crucible-qemu = { path = "../crucible-qemu", features = ["test-support"] }
+sha2 = { workspace = true }
 
 [[test]]
 name = "gate_campaign_component_contract"

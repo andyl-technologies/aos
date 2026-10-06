@@ -2,15 +2,15 @@
 
 use super::*;
 
-fn skip_evidence() -> FaultInstructionEvidenceV1 {
+fn skip_evidence() -> FaultInstructionEvidenceV2 {
     let instruction_bytes = vec![0x90];
     let before_cpu_sha256 = [1; 32];
     let after_cpu_sha256 = [2; 32];
-    let before_ram_sha256 = [5; 32];
-    let after_ram_sha256 = [6; 32];
+    let before_ram_blake3 = [5; 32];
+    let after_ram_blake3 = [6; 32];
     let before_device_sha256 = [7; 32];
     let after_device_sha256 = [8; 32];
-    FaultInstructionEvidenceV1 {
+    FaultInstructionEvidenceV2 {
         architecture: FaultCapabilityScope::X86_64,
         mutation_kind: FaultInstructionMutationKindV1::Skip,
         outcome: FaultInstructionEvidenceOutcomeV1::Applied,
@@ -26,14 +26,14 @@ fn skip_evidence() -> FaultInstructionEvidenceV1 {
         instruction_sha256: Sha256::digest(&instruction_bytes).into(),
         before_state_sha256: instruction_system_digest(
             before_cpu_sha256,
-            before_ram_sha256,
+            before_ram_blake3,
             before_device_sha256,
             4096,
             128,
         ),
         after_state_sha256: instruction_system_digest(
             after_cpu_sha256,
-            after_ram_sha256,
+            after_ram_blake3,
             after_device_sha256,
             4096,
             128,
@@ -44,15 +44,15 @@ fn skip_evidence() -> FaultInstructionEvidenceV1 {
         input_state_sha256: None,
         matched_input_state_sha256: instruction_system_digest(
             before_cpu_sha256,
-            before_ram_sha256,
+            before_ram_blake3,
             before_device_sha256,
             4096,
             128,
         ),
         code_page_bases: vec![0x2000],
         code_page_sha256: vec![[4; 32]],
-        before_ram_sha256,
-        after_ram_sha256,
+        before_ram_blake3,
+        after_ram_blake3,
         before_device_sha256,
         after_device_sha256,
         before_ram_bytes: 4096,
@@ -65,16 +65,24 @@ fn skip_evidence() -> FaultInstructionEvidenceV1 {
 }
 
 #[test]
-fn instruction_round_trip_rejects_reserved_bytes() {
+fn instruction_round_trip_rejects_unknown_ram_identity_and_predecessors() {
     let evidence = skip_evidence();
     let bytes = evidence.encode().expect("valid instruction evidence");
     assert_eq!(
-        FaultInstructionEvidenceV1::decode(&bytes).expect("canonical instruction evidence"),
+        FaultInstructionEvidenceV2::decode(&bytes).expect("canonical instruction evidence"),
         evidence
     );
-    let mut malformed = bytes;
-    malformed[607] = 1;
-    assert!(FaultInstructionEvidenceV1::decode(&malformed).is_err());
+    for (offset, value) in [(604, 2), (606, 1), (607, 0)] {
+        let mut malformed = bytes.clone();
+        malformed[offset] = value;
+        assert!(FaultInstructionEvidenceV2::decode(&malformed).is_err());
+    }
+
+    let mut predecessor = bytes;
+    predecessor[..8].copy_from_slice(b"CRUCIEV1");
+    predecessor[8..10].copy_from_slice(&1_u16.to_le_bytes());
+    predecessor[604..608].fill(0);
+    assert!(FaultInstructionEvidenceV2::decode(&predecessor).is_err());
 }
 
 #[test]
@@ -82,7 +90,7 @@ fn suppressed_instruction_binds_mismatched_input_digest() {
     let mut evidence = skip_evidence();
     evidence.outcome = FaultInstructionEvidenceOutcomeV1::Suppressed;
     evidence.after_cpu_sha256 = evidence.before_cpu_sha256;
-    evidence.after_ram_sha256 = evidence.before_ram_sha256;
+    evidence.after_ram_blake3 = evidence.before_ram_blake3;
     evidence.after_device_sha256 = evidence.before_device_sha256;
     evidence.after_ram_bytes = evidence.before_ram_bytes;
     evidence.after_device_bytes = evidence.before_device_bytes;
@@ -90,7 +98,7 @@ fn suppressed_instruction_binds_mismatched_input_digest() {
     evidence.input_state_sha256 = Some([9; 32]);
     let bytes = evidence.encode().expect("valid suppressed evidence");
     assert_eq!(
-        FaultInstructionEvidenceV1::decode(&bytes).expect("canonical suppressed evidence"),
+        FaultInstructionEvidenceV2::decode(&bytes).expect("canonical suppressed evidence"),
         evidence
     );
 }

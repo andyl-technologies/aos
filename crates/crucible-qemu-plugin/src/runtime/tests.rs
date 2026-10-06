@@ -142,7 +142,7 @@ fn run_control_worker_rejects_unsolicited_run_frame_with_fail_loud_shutdown() {
     CONTROL_WORKER_SHUTDOWN_CALLS.store(0, Ordering::SeqCst);
     CONTROL_WORKER_DONE_BEFORE_SHUTDOWN.store(false, Ordering::SeqCst);
     host.write_all(&control_encode_host_msg(&HostMsg::HelloAck {
-        proto_version: 3,
+        proto_version: crucible_protocol::CONTROL_PROTOCOL_VERSION,
         abi_version: 25,
         slot_index: 0,
         node_count: 1,
@@ -414,7 +414,7 @@ fn running_plugin_control_pair() -> (UnixStream, ControlLifecycleStream<UnixStre
     let mut plugin = ControlLifecycleStream::connected_unix_stream(plugin_socket)
         .unwrap_or_else(|error| panic!("plugin lifecycle should connect: {error}"));
     host.write_all(&control_encode_host_msg(&HostMsg::HelloAck {
-        proto_version: 3,
+        proto_version: crucible_protocol::CONTROL_PROTOCOL_VERSION,
         abi_version: 25,
         slot_index: 0,
         node_count: 1,
@@ -422,7 +422,7 @@ fn running_plugin_control_pair() -> (UnixStream, ControlLifecycleStream<UnixStre
     .unwrap_or_else(|error| panic!("HelloAck should write: {error}"));
     plugin
         .plugin_start_handshake(PluginHandshakeConfig {
-            proto_version: 3,
+            proto_version: crucible_protocol::CONTROL_PROTOCOL_VERSION,
             abi_version: 25,
         })
         .unwrap_or_else(|error| panic!("plugin handshake should complete: {error}"));
@@ -1352,7 +1352,10 @@ fn live_vcpu_time_slice_registers_idle_resume_and_normal_loop_completion() {
                 fault_commands: crate::fault_command::QemuFaultCommandApis::test_stub(),
                 request_shutdown: test_request_shutdown,
             },
-        ),
+        )
+        // This fixture observes I/O callback registration without native RAM.
+        // The RAM capture tests supply their own complete native page stream.
+        .with_test_ram_observer_installer(|| Ok(())),
     };
     let mut reservation =
         reserve_runtime().unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
@@ -1649,12 +1652,16 @@ fn production_registrar_installs_default_block_ninep_and_network_families() {
     capabilities.register_block = Some(capture_block_registration);
     capabilities.register_block_wait = Some(capture_block_wait_registration);
     capabilities.register_ninep = Some(capture_ninep_registration);
-    let callback_registrar = FailClosedOwnedCallbackRegistrar::production(
+    let mut callback_registrar = FailClosedOwnedCallbackRegistrar::production(
         54,
         execution_model,
         crate::QemuPluginTargetArchitecture::X86_64,
         &capabilities,
     );
+    // This I/O registration fixture has no native guest RAM image.
+    callback_registrar.live_vcpu_time = callback_registrar
+        .live_vcpu_time
+        .with_test_ram_observer_installer(|| Ok(()));
     let mut reservation =
         reserve_runtime().unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
 

@@ -148,7 +148,8 @@ crucible.device.block-snapshot|crates/crucible-device/src/block/device/snapshot.
 crucible.device.io-core-snapshot|crates/crucible-device/src/subnode/snapshot.rs|magic|IO_CORE_SNAPSHOT_MAGIC
 crucible.device.link-snapshot|crates/crucible-device/src/netlink/link/snapshot.rs|magic|LINK_SNAPSHOT_MAGIC
 crucible.device.ninep-snapshot|crates/crucible-device/src/ninep/device/snapshot.rs|magic|NINEP_SNAPSHOT_MAGIC
-crucible.qemu.checkpoint-qmp|crates/crucible-qemu/src/qmp/ram_delta.rs|number|QMP_CHECKPOINT_SCHEMA_VERSION
+crucible.qemu.checkpoint-qmp|crates/crucible-qemu/src/qmp/checkpoint.rs|number|QMP_CHECKPOINT_SCHEMA_VERSION
+crucible.qemu.paused-cpu|crates/crucible-qemu/src/qmp/paused_cpu.rs|number|QMP_PAUSED_CPU_SCHEMA_VERSION
 crucible.qemu.host-io-checkpoint|crates/crucible-qemu/src/checkpoint/host_io_codec.rs|magic|crucible.qemu-host-io-checkpoint.v6
 crucible.qemu.production-fault-runtime|crates/crucible-qemu/src/production_fault_runtime/checkpoint_codec.rs|magic|crucible.production-fault-runtime.v7
 crucible.qemu.node-continuation|crates/crucible-qemu/src/checkpoint.rs|magic|crucible.qemu-node-continuation.v7
@@ -167,6 +168,7 @@ crucible.qemu.hot-fork.child-process|crates/crucible-qemu/src/qmp/hot_fork/child
 crucible.qemu.hot-fork.child-process-contract|crates/crucible-qemu/src/qmp/hot_fork/child_process_contract.rs|number|QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_SCHEMA_VERSION
 crucible.qemu.hot-fork.child-files|crates/crucible-qemu/src/qmp/hot_fork/child_files.rs|number|QMP_HOT_FORK_CHILD_FILES_SCHEMA_VERSION
 crucible.qemu.hot-fork.child-qmp|crates/crucible-qemu/src/qmp/hot_fork/child_qmp.rs|number|QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION
+crucible.qemu.hot-fork.child-ram|crates/crucible-qemu/src/qmp/hot_fork_ram.rs|number|QMP_HOT_FORK_CHILD_RAM_SCHEMA_VERSION
 crucible.qemu.hot-fork.child-console|crates/crucible-qemu/src/qmp/hot_fork/child_console.rs|number|QMP_HOT_FORK_CHILD_CONSOLE_SCHEMA_VERSION
 crucible.qemu.hot-fork.child-diagnostics|crates/crucible-qemu/src/qmp/hot_fork/diagnostics.rs|number|QMP_HOT_FORK_CHILD_DIAGNOSTICS_SCHEMA_VERSION
 "#;
@@ -284,13 +286,16 @@ fn source_anchor_version(source: &str, kind: &str, marker: &str) -> u32 {
 
 #[test]
 fn source_version_changes_fail_registry_lint() {
-    let source = "pub const RPC_PROTOCOL_MAJOR: u16 = 9;";
     let registry = registry_versions(super::SCHEMA_REGISTRY);
+    let next_version = registry["crucible.api.rpc"]
+        .checked_add(1)
+        .expect("registry version admits a future drift fixture");
+    let source = format!("pub const RPC_PROTOCOL_MAJOR: u16 = {next_version};");
     assert!(
         source_registry_drift(
             &registry,
             "crucible.api.rpc",
-            source,
+            &source,
             "number",
             "RPC_PROTOCOL_MAJOR"
         )

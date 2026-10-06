@@ -388,6 +388,80 @@ fn context(
     )
 }
 
+struct GuardOnlyRamPartition(AttemptResourceLimits);
+
+impl crucible_api::vm_lifecycle::ProductionHostRamRegistrationFactory for GuardOnlyRamPartition {
+    fn configure_world(
+        &self,
+        _shapes: &[crucible_api::vm_lifecycle::ProductionHostRamLaunchShape],
+    ) -> Result<(), crucible_api::vm_lifecycle::HostRamAdmissionError> {
+        Ok(())
+    }
+
+    fn bind_node_registrar(
+        &self,
+        _node: &str,
+        _registrar: Arc<dyn crucible_qemu::ram_control::RamControlRegistrar>,
+    ) -> Result<(), crucible_api::vm_lifecycle::HostRamAdmissionError> {
+        Err(crucible_api::vm_lifecycle::HostRamAdmissionError::contract(
+            "guard-only fixture has no native RAM registration authority",
+        ))
+    }
+
+    fn native_world_limits(
+        &self,
+    ) -> Result<
+        crucible_api::vm_lifecycle::ProductionHostRamNativeWorldLimits,
+        crucible_api::vm_lifecycle::HostRamAdmissionError,
+    > {
+        Ok(
+            crucible_api::vm_lifecycle::ProductionHostRamNativeWorldLimits {
+                cpu_slots: self.0.maximum_vcpus(),
+                resident_bytes: self.0.maximum_resident_bytes(),
+                writable_bytes: self.0.maximum_disk_bytes(),
+                outside_resident_bytes: 0,
+                outside_backing_bytes: 0,
+            },
+        )
+    }
+
+    fn reserve_native_controller_resources(
+        &self,
+    ) -> Result<
+        Option<crucible_linux_resource::host_services::HostServiceLease>,
+        crucible_api::vm_lifecycle::HostRamAdmissionError,
+    > {
+        Ok(None)
+    }
+
+    fn bind_native_resource_controller(
+        &self,
+        _controller: Option<crucible_qemu::LinuxQemuNativeResourceController>,
+    ) -> Result<(), crucible_api::vm_lifecycle::HostRamAdmissionError> {
+        Ok(())
+    }
+
+    fn prepare(
+        &self,
+        _node: &str,
+        _process_generation: u64,
+        _declared_ram_bytes: u64,
+        _vcpus: u32,
+    ) -> Result<
+        crucible_qemu::ram_control::RamControlRegistration,
+        crucible_api::vm_lifecycle::HostRamAdmissionError,
+    > {
+        Err(crucible_api::vm_lifecycle::HostRamAdmissionError::contract(
+            "guard-only fixture cannot authorize a native launch",
+        ))
+    }
+}
+
+fn guard_only_config(limits: AttemptResourceLimits) -> ProductionVmLifecycleConfig {
+    ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state")
+        .with_host_ram_registration_factory(Arc::new(GuardOnlyRamPartition(limits)))
+}
+
 fn lifecycle_source_def() -> ScenarioDefForm {
     crucible::crash_restart_scenario()
         .expect("lifecycle scenario fixture")
@@ -418,11 +492,17 @@ fn exact_guard_is_transferred_to_lifecycle_launcher_hooks() {
     let mut factory = factory(limits, false, Arc::clone(&counters));
 
     factory
-        .with_attempt_launcher(&context, &lifecycle_source_def(), 1, |mut launcher| {
-            launcher.begin_execution_quantum()?;
-            launcher.check_operational_boundary()?;
-            launcher.finish()
-        })
+        .with_attempt_launcher(
+            &context,
+            &lifecycle_source_def(),
+            1,
+            &guard_only_config(context.resources()),
+            |mut launcher| {
+                launcher.begin_execution_quantum()?;
+                launcher.check_operational_boundary()?;
+                launcher.finish()
+            },
+        )
         .expect("exact guard should back lifecycle launcher hooks");
 
     assert_eq!(counters.begins.load(Ordering::SeqCst), 1);
@@ -438,7 +518,7 @@ fn exact_resume_is_rejected_before_resource_installation() {
     let counters = Arc::new(GuardCounters::default());
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        5,
+        6,
         b"fresh-lifecycle-resume-rejection",
     ))
     .expect("exact checkpoint fixture");
@@ -471,13 +551,13 @@ fn promoted_root_without_matching_durable_selection_is_rejected_at_resume_admiss
     let initial = Configuration::genesis(source.scenario_def());
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        5,
+        6,
         b"unadmitted-promoted-checkpoint",
     ))
     .expect("checkpoint identity");
     let other = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        5,
+        6,
         b"another-admitted-checkpoint",
     ))
     .expect("other checkpoint identity");
@@ -510,7 +590,8 @@ fn promoted_portable_resume_preflight_uses_no_native_recovery_catalog() {
     let fixture =
         crucible_api::build_authenticated_production_checkpoint_codec_fixture(&native_root)
             .expect("authenticated production checkpoint");
-    let source = fixture.source();
+    let source = fixture.source().clone();
+    let expected_configuration = fixture.configuration().clone();
     let scenario = source.scenario_def();
     let initial = Configuration::genesis(scenario.clone());
     let checkpoints = ExactCheckpointStore::new(
@@ -519,23 +600,31 @@ fn promoted_portable_resume_preflight_uses_no_native_recovery_catalog() {
             directory.path().join("objects"),
         )),
         64 * 1024 * 1024,
+        crucible_cas::ram::RamRetentionAuthority::new(Arc::new(
+            crucible_cas::content_store::MemoryRefBackend::new(),
+        )),
     )
-    .expect("portable checkpoint store");
-    let raw = checkpoints
+    .expect("portable checkpoint store")
+    .with_ram_root_resources(
+        crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+            .expect("finite component RAM-root credit"),
+    );
+    let mut raw = checkpoints
         .prepare_production_closure(fixture.closure().clone())
         .expect("prepare raw checkpoint");
     let raw_root = raw.root();
     checkpoints
         .publish_production_closure(&raw)
         .expect("publish raw checkpoint");
-    raw.retire_native_source()
+    drop(fixture);
+    raw.retire_native_source(&checkpoints)
         .expect("retire native source catalog");
 
     let cancellation = ExecutionCancellation::default();
     let mut installed = install_attempt_production_exact_checkpoint(
         &checkpoints,
         raw_root,
-        source,
+        &source,
         &initial,
         None,
         &cancellation,
@@ -554,7 +643,7 @@ fn promoted_portable_resume_preflight_uses_no_native_recovery_catalog() {
     let evidence = admissions
         .prepare_replay_oracle_promotion_with_boundary(raw_root, matches, &mut || Ok(()))
         .expect("replay oracle promotion evidence");
-    let promoted = prepare_attempt_production_replay_oracle_promotion(
+    let mut promoted = prepare_attempt_production_replay_oracle_promotion(
         &checkpoints,
         raw_root,
         &installed,
@@ -567,8 +656,8 @@ fn promoted_portable_resume_preflight_uses_no_native_recovery_catalog() {
         .publish_production_closure(promoted.replacement())
         .expect("publish promoted checkpoint");
     promoted
-        .replacement()
-        .retire_native_source()
+        .replacement_mut()
+        .retire_native_source(&checkpoints)
         .expect("retire promoted native source catalog");
 
     let recovery_root = directory.path().join("fresh-recovery-run-state");
@@ -600,12 +689,12 @@ fn promoted_portable_resume_preflight_uses_no_native_recovery_catalog() {
         .authenticate_resume_boundary(
             &checkpoints,
             promoted_root,
-            QemuExactResumeBasis::new(&scenario, source, &initial, None),
+            QemuExactResumeBasis::new(&scenario, &source, &initial, None),
             &context,
         )
         .expect("preflight portable promoted checkpoint in a fresh run directory");
 
-    assert_eq!(selected.configuration(), fixture.configuration());
+    assert_eq!(selected.configuration(), &expected_configuration);
     assert_eq!(counters.begins.load(Ordering::SeqCst), 0);
     assert_eq!(
         std::fs::read_dir(&recovery_root)
@@ -658,7 +747,13 @@ fn mismatched_guard_contract_is_released_before_rejection() {
     let mut factory = factory(installed, false, Arc::clone(&counters));
 
     let error = factory
-        .with_attempt_launcher(&context, &lifecycle_source_def(), 1, |_launcher| Ok(()))
+        .with_attempt_launcher(
+            &context,
+            &lifecycle_source_def(),
+            1,
+            &guard_only_config(context.resources()),
+            |_launcher| Ok(()),
+        )
         .expect_err("mismatched limits must fail closed");
 
     assert!(matches!(
@@ -677,7 +772,13 @@ fn mismatched_cancellation_incarnation_is_released_before_rejection() {
     let mut factory = factory(limits, true, Arc::clone(&counters));
 
     let error = factory
-        .with_attempt_launcher(&context, &lifecycle_source_def(), 1, |_launcher| Ok(()))
+        .with_attempt_launcher(
+            &context,
+            &lifecycle_source_def(),
+            1,
+            &guard_only_config(context.resources()),
+            |_launcher| Ok(()),
+        )
         .expect_err("mismatched cancellation must fail closed");
 
     assert!(matches!(
@@ -696,11 +797,17 @@ fn lifecycle_construction_failure_quarantines_installed_guard() {
     let mut factory = factory(limits, false, Arc::clone(&counters));
 
     let error = factory
-        .with_attempt_launcher(&context, &lifecycle_source_def(), 1, |_launcher| {
-            Err::<(), _>(LifecycleApiError::LoopFactory {
-                message: String::from("injected lifecycle construction failure"),
-            })
-        })
+        .with_attempt_launcher(
+            &context,
+            &lifecycle_source_def(),
+            1,
+            &guard_only_config(context.resources()),
+            |_launcher| {
+                Err::<(), _>(LifecycleApiError::LoopFactory {
+                    message: String::from("injected lifecycle construction failure"),
+                })
+            },
+        )
         .expect_err("construction failure must remain observable");
 
     assert!(matches!(
@@ -1975,9 +2082,11 @@ fn private_fresh_replay_rejects_a_candidate_shorter_than_its_descendant_controls
 
     assert!(matches!(
         replay,
-        Err(crucible_campaign::CampaignCodecError::InvalidValue {
-            reason: "finding replay candidate ends before a controlled source boundary"
-        })
+        Err(crate::CrucibleArtifactError::Campaign(
+            crucible_campaign::CampaignCodecError::InvalidValue {
+                reason: "finding replay candidate ends before a controlled source boundary"
+            }
+        ))
     ));
 }
 
@@ -2910,428 +3019,8 @@ fn automatic_wrapper_retains_supplemental_violation_when_offline_source_also_fai
     assert_eq!(actual.violation, expected);
 }
 
-#[test]
-fn finding_candidate_replay_evaluates_the_declared_stop_after_materialization() {
-    let input = modeled_fresh_runner_input_for_stop(StopCondition::ExecutionQuanta(4));
-    let candidate = finding_candidate_artifact(&input);
-    let context = fresh_runner_context();
-    let mut runner = QemuFreshExecutionRunner::new(
-        BoundaryCaptureLifecycleFactory {
-            captured: Arc::new(Mutex::new(Vec::new())),
-            final_events: Vec::new(),
-            replay_decisions: VecDeque::new(),
-            terminal_failure: false,
-            terminal_marker: None,
-        },
-        QemuFreshModeledDriver::new(),
-    );
-
-    let outcome = runner
-        .replay_finding_candidate_boundary(&input, &candidate, None, &context)
-        .expect("candidate boundary replay");
-    let QemuFindingCandidateReplayOutcome::Observed(evidence) = outcome else {
-        panic!("genesis candidate must be observable")
-    };
-
-    let (replay, measurements, final_events, _) = (*evidence).into_parts();
-    assert_eq!(replay.configuration(), &candidate);
-    assert_eq!(measurements.len(), 1);
-    assert!(final_events.is_empty());
-    assert_eq!(context.consumed_execution_quanta(), 4);
-}
-
-#[test]
-fn finding_candidate_replay_continues_after_reaching_a_nonempty_schedule() {
-    let input = modeled_non_genesis_fresh_runner_input_for_stop(StopCondition::ExecutionQuanta(2));
-    let candidate = finding_candidate_artifact(&input);
-    let context = fresh_runner_context();
-    let mut runner = QemuFreshExecutionRunner::new(
-        BoundaryCaptureLifecycleFactory {
-            captured: Arc::new(Mutex::new(Vec::new())),
-            final_events: Vec::new(),
-            replay_decisions: VecDeque::from([Decision::RngDraw(RngDecision {
-                stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-                value: 7,
-            })]),
-            terminal_failure: false,
-            terminal_marker: None,
-        },
-        QemuFreshModeledDriver::new(),
-    );
-
-    let outcome = runner
-        .replay_finding_candidate_boundary(&input, &candidate, None, &context)
-        .expect("nonempty candidate replay");
-    let QemuFindingCandidateReplayOutcome::Observed(evidence) = outcome else {
-        panic!("matching nonempty candidate must be observable")
-    };
-
-    let (replay, _, _, _) = (*evidence).into_parts();
-    assert_eq!(replay.configuration(), &candidate);
-    assert_eq!(
-        context.consumed_execution_quanta(),
-        2,
-        "candidate evaluation must reach the declared stop after reconstructing the schedule"
-    );
-}
-
-#[test]
-fn finding_candidate_replay_retains_authenticated_execution_quanta_timeout() {
-    let input = modeled_non_genesis_fresh_runner_input_for_stop(StopCondition::Observation(
-        ObservationCondition::SchedulerQuiescentOrExecutionQuanta {
-            execution_quanta: 1,
-        },
-    ));
-    let candidate = finding_candidate_artifact(&input);
-    let mut runner = QemuFreshExecutionRunner::new(
-        BoundaryCaptureLifecycleFactory {
-            captured: Arc::new(Mutex::new(Vec::new())),
-            final_events: Vec::new(),
-            replay_decisions: VecDeque::from([Decision::RngDraw(RngDecision {
-                stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-                value: 7,
-            })]),
-            terminal_failure: false,
-            terminal_marker: None,
-        },
-        QemuFreshModeledDriver::new(),
-    );
-
-    let outcome = runner
-        .replay_finding_candidate_boundary(&input, &candidate, None, &fresh_runner_context())
-        .expect("execution-bound candidate replay");
-    let QemuFindingCandidateReplayOutcome::Observed(evidence) = outcome else {
-        panic!("execution-bound candidate must be observable")
-    };
-    let (_, _, _, triage) = evidence.into_parts();
-    let (failures, causal_entries, _, _, _) = triage.into_parts();
-    let mut timeouts = failures.iter().filter_map(|failure| match failure {
-        crucible::FailureClusterReportFailure::Timeout(timeout) => Some(timeout),
-        crucible::FailureClusterReportFailure::Property(_)
-        | crucible::FailureClusterReportFailure::Divergence(_) => None,
-    });
-    let timeout = timeouts
-        .next()
-        .expect("execution-bound replay must retain its timeout source");
-    assert!(
-        timeouts.next().is_none(),
-        "execution-bound replay must retain one timeout source"
-    );
-
-    assert_eq!(
-        timeout.budget_kind,
-        crucible::FailureTimeoutBudgetKind::ExecutionQuanta
-    );
-    assert_eq!(timeout.configured_limit, Some(1));
-    // One quantum reconstructs the candidate, then the declared one-quantum
-    // attempt budget expires at the next absolute quantum.
-    assert_eq!(timeout.observed_quanta, 2);
-    assert!(causal_entries.iter().any(|entry| {
-        entry.event_payload().kind() == "execution_budget_exhausted"
-            && entry.event_payload().string("budget_kind") == Some("execution-quanta")
-    }));
-}
-
-#[test]
-fn property_failure_precedes_a_coincident_execution_quanta_timeout() {
-    let assertion = AssertionId::from_name("coincident-timeout-safety");
-    let base = modeled_assertion_candidate_input(assertion.clone(), 2);
-    let decision = Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-        value: 7,
-    });
-    let configuration = accepted_step(base.start().configuration(), decision.clone());
-    let input = finding_candidate_input_with_configuration_and_stop(
-        &base,
-        configuration,
-        StopCondition::ExecutionQuanta(1),
-    );
-    let candidate = finding_candidate_artifact(&input);
-    let final_event = SchedulerEventLogEntry::assertion_state_observation(
-        1,
-        VirtualTime { ticks: 1 },
-        assertion,
-        AssertionPhase::Violated,
-    );
-    let mut runner = QemuFreshExecutionRunner::new(
-        BoundaryCaptureLifecycleFactory {
-            captured: Arc::new(Mutex::new(Vec::new())),
-            final_events: vec![final_event],
-            replay_decisions: VecDeque::from([decision]),
-            terminal_failure: false,
-            terminal_marker: None,
-        },
-        QemuFreshModeledDriver::new(),
-    );
-
-    let outcome = runner
-        .replay_finding_candidate_boundary(&input, &candidate, None, &fresh_runner_context())
-        .expect("coincident property and timeout candidate replay");
-    let QemuFindingCandidateReplayOutcome::Observed(evidence) = outcome else {
-        panic!("coincident property and timeout candidate must be observable")
-    };
-    let (_, _, _, triage) = evidence.into_parts();
-    let (failures, _, _, _, _) = triage.into_parts();
-
-    assert!(
-        matches!(
-            failures.as_slice(),
-            [
-                crucible::FailureClusterReportFailure::Property(_),
-                crucible::FailureClusterReportFailure::Timeout(_)
-            ]
-        ),
-        "unexpected coincident failure order: {failures:?}"
-    );
-}
-
-#[test]
-fn composed_candidate_replay_retains_app_random_choice_and_measurement_leaf() {
-    let assertion = AssertionId::from_name("app-random-candidate-safety");
-    let base = modeled_assertion_candidate_input(assertion.clone(), 2);
-    let selectable = AppRandomSelectable::new(
-        &base.scenario().scenario_def(),
-        NodeId {
-            name: String::from("node-a"),
-        },
-        RngStreamId::for_node("finding-replay-app-random"),
-        11,
-        16,
-    )
-    .expect("app-random selectable");
-    let selection = selectable
-        .sampled_selection(0x1234_5678_9abc_def0)
-        .expect("app-random sampled selection");
-    let discovery = selectable.into_discovery().expect("app-random discovery");
-    let configuration = Configuration {
-        def: base.scenario().scenario_def(),
-        schedule: Schedule::empty()
-            .appended(Decision::Selection(SelectionDecision::new(&selection))),
-    };
-    let input = finding_candidate_input_with_configuration(&base, configuration);
-
-    assert_composed_candidate_replay_retains_choice_and_measurement(
-        input, discovery, selection, &assertion,
-    );
-}
-
-#[test]
-fn composed_candidate_replay_retains_signal_fault_choice_and_measurement_leaf() {
-    let assertion = AssertionId::from_name("signal-fault-candidate-safety");
-    let base = modeled_assertion_candidate_input(assertion.clone(), 2);
-    let parent = Configuration::genesis(base.scenario().scenario_def());
-    let choice = BindingSearchChoice {
-        id: SearchChoiceId::from_content_hash(crucible::ContentHash::from_bytes(
-            b"finding-replay-signal-choice",
-        )),
-        candidates_digest: crucible::ContentHash::from_bytes(b"finding-replay-signal-candidates"),
-        candidate_count: 2,
-        candidate_semantics: crucible::model::BindingSearchCandidateSemantics::Outcome,
-        selected_index: None,
-        overridden: false,
-    };
-    let frontier =
-        SignalFaultSelectable::runtime_frontier(&parent, VirtualTime { ticks: 17 }, &choice)
-            .expect("typed signal-fault frontier");
-    let selectable =
-        SignalFaultSelectable::from_frontier(&frontier).expect("signal-fault selectable");
-    let selection = selectable
-        .branch_selection(&parent, 0)
-        .expect("signal-fault selection");
-    let discovery = selectable.discovery().expect("signal-fault discovery");
-    let configuration = selectable
-        .resolve_branch(&selection)
-        .expect("signal-fault branch")
-        .selected()
-        .clone();
-    let input = finding_candidate_input_with_configuration(&base, configuration);
-
-    assert_composed_candidate_replay_retains_choice_and_measurement(
-        input, discovery, selection, &assertion,
-    );
-}
-
-#[test]
-fn finding_candidate_replay_reports_preserving_and_nonpreserving_verdicts() {
-    let assertion = AssertionId::from_name("candidate-safety");
-
-    for (predicate_at, expected) in [(1, PropertyVerdict::Passed), (2, PropertyVerdict::Failed)] {
-        let input = modeled_assertion_candidate_input(assertion.clone(), predicate_at);
-        let candidate = finding_candidate_artifact(&input);
-        let final_event = SchedulerEventLogEntry::assertion_state_observation(
-            1,
-            VirtualTime { ticks: 1 },
-            assertion.clone(),
-            AssertionPhase::Satisfied,
-        );
-        let mut runner = QemuFreshExecutionRunner::new(
-            BoundaryCaptureLifecycleFactory {
-                captured: Arc::new(Mutex::new(Vec::new())),
-                final_events: vec![final_event],
-                replay_decisions: VecDeque::new(),
-                terminal_failure: false,
-                terminal_marker: None,
-            },
-            QemuFreshModeledDriver::new(),
-        );
-
-        let outcome = runner
-            .replay_finding_candidate_boundary(&input, &candidate, None, &fresh_runner_context())
-            .expect("candidate assertion replay");
-        let QemuFindingCandidateReplayOutcome::Observed(evidence) = outcome else {
-            panic!("materializable candidate must produce semantic evidence")
-        };
-        let (replay, _, final_events, _) = (*evidence).into_parts();
-        let actual = replay
-            .properties()
-            .properties()
-            .get(assertion.name.as_str())
-            .expect("candidate assertion verdict")
-            .verdict();
-
-        assert_eq!(actual, expected);
-        assert_eq!(final_events.len(), 1);
-    }
-}
-
-#[test]
-fn finding_candidate_replay_reports_prefix_divergence_after_cleanup() {
-    let order = Arc::new(Mutex::new(Vec::new()));
-    let input = non_genesis_fresh_runner_input_with_decision(Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-        value: 8,
-    }));
-    let candidate = finding_candidate_artifact(&input);
-    let mut runner = QemuFreshExecutionRunner::new(
-        FakeFreshLifecycleFactory {
-            order: Arc::clone(&order),
-            cleanup_error: false,
-            terminal_after_replay: false,
-            checkpoint_ready: true,
-        },
-        QemuFreshModeledDriver::new(),
-    );
-
-    let outcome = runner
-        .replay_finding_candidate_boundary(&input, &candidate, None, &fresh_runner_context())
-        .expect("incompatible replay is a modeled outcome");
-
-    assert_eq!(
-        outcome,
-        QemuFindingCandidateReplayOutcome::DeterministicallyIncompatible(
-            QemuFindingCandidateIncompatibility::PrefixDiverged,
-        )
-    );
-    assert_eq!(
-        order.lock().expect("fresh lifecycle order").as_slice(),
-        ["begin", "replay", "shutdown"]
-    );
-}
-
-#[test]
-fn finding_candidate_replay_reports_terminal_prefix_after_cleanup() {
-    let order = Arc::new(Mutex::new(Vec::new()));
-    let decision = Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-        value: 7,
-    });
-    let input = non_genesis_fresh_runner_input_with_decisions(vec![decision.clone(), decision]);
-    let candidate = finding_candidate_artifact(&input);
-    let mut runner = QemuFreshExecutionRunner::new(
-        FakeFreshLifecycleFactory {
-            order: Arc::clone(&order),
-            cleanup_error: false,
-            terminal_after_replay: true,
-            checkpoint_ready: true,
-        },
-        QemuFreshModeledDriver::new(),
-    );
-
-    let outcome = runner
-        .replay_finding_candidate_boundary(&input, &candidate, None, &fresh_runner_context())
-        .expect("terminal prefix is a modeled incompatibility");
-
-    assert_eq!(
-        outcome,
-        QemuFindingCandidateReplayOutcome::DeterministicallyIncompatible(
-            QemuFindingCandidateIncompatibility::PrefixTerminated,
-        )
-    );
-    assert_eq!(
-        order.lock().expect("fresh lifecycle order").as_slice(),
-        ["begin", "replay", "shutdown"]
-    );
-}
-
-#[test]
-fn finding_candidate_replay_preserves_cleanup_failure_over_incompatibility() {
-    let order = Arc::new(Mutex::new(Vec::new()));
-    let input = non_genesis_fresh_runner_input_with_decision(Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-        value: 8,
-    }));
-    let candidate = finding_candidate_artifact(&input);
-    let mut runner = QemuFreshExecutionRunner::new(
-        FakeFreshLifecycleFactory {
-            order: Arc::clone(&order),
-            cleanup_error: true,
-            terminal_after_replay: false,
-            checkpoint_ready: true,
-        },
-        QemuFreshModeledDriver::new(),
-    );
-
-    let error = runner
-        .replay_finding_candidate_boundary(&input, &candidate, None, &fresh_runner_context())
-        .expect_err("cleanup failure overrides deterministic incompatibility");
-
-    assert!(matches!(
-        *error,
-        AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::CleanupAfterRunner { .. })
-    ));
-    assert_eq!(
-        order.lock().expect("fresh lifecycle order").as_slice(),
-        ["begin", "replay", "shutdown"]
-    );
-}
-
-#[test]
-fn finding_candidate_replay_shares_cancellation_and_still_cleans_up() {
-    let order = Arc::new(Mutex::new(Vec::new()));
-    let input = non_genesis_fresh_runner_input();
-    let candidate = finding_candidate_artifact(&input);
-    let cancellation = ExecutionCancellation::default();
-    cancellation.cancel_for_test();
-    let mut runner = QemuFreshExecutionRunner::new(
-        FakeFreshLifecycleFactory {
-            order: Arc::clone(&order),
-            cleanup_error: false,
-            terminal_after_replay: false,
-            checkpoint_ready: true,
-        },
-        QemuFreshModeledDriver::new(),
-    );
-
-    let error = runner
-        .replay_finding_candidate_boundary(
-            &input,
-            &candidate,
-            None,
-            &context(resources(4), cancellation),
-        )
-        .expect_err("canceled candidate replay remains operational failure");
-
-    assert!(matches!(
-        *error,
-        AttemptWorkerFailure::Canceled(QemuFreshExecutionRunnerError::StartReplay(
-            QemuFreshStartReplayError::Canceled
-        ))
-    ));
-    assert_eq!(
-        order.lock().expect("fresh lifecycle order").as_slice(),
-        ["begin", "shutdown"]
-    );
-}
+#[path = "tests/finding_replay.rs"]
+mod finding_replay;
 
 struct PreparedSemanticResultRunner {
     result: Option<PreparedSemanticAttemptResult>,
@@ -3650,7 +3339,7 @@ fn selected_after_genesis_input_with_optional_continuation_source_stop(
     );
     let source_checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        5,
+        6,
         b"absent-selected-source-checkpoint",
     ))
     .expect("selected source checkpoint");
@@ -3759,7 +3448,7 @@ fn selected_after_two_controlled_generations() -> (
     );
     let source_checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        5,
+        6,
         b"two-control-selected-source-checkpoint",
     ))
     .expect("selected source checkpoint");

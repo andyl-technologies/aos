@@ -43,6 +43,8 @@ mod scenario;
 mod schedule;
 #[path = "campaign/snapshot.rs"]
 mod snapshot;
+#[path = "campaign/transfer_supervision.rs"]
+mod transfer_supervision;
 #[path = "campaign/validation.rs"]
 mod validation;
 

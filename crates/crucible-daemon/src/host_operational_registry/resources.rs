@@ -1,0 +1,381 @@
+//! Authored registry service capacity and final physical cleanup custody.
+//!
+//! Registry bookkeeping has fixed owner and protocol bounds. Its whole service
+//! entitlement is reserved before filesystem access, independently of guest
+//! allocations. The retained permit outlives the writer and all indexed state.
+
+use crucible_linux_resource::host_services::{HostServiceAllocator, HostServiceLease};
+
+use super::*;
+
+const CONTROL_REQUESTS: usize = 16;
+const JOURNAL_BUFFER_BYTES: usize = 8192;
+// Receipt matching is serialized. Its retained evidence is bounded per owner;
+// hashing, typed JSON parsing and kernel notes share one transient allowance.
+const QUALIFICATION_RECEIPT_BYTES: usize = 4096;
+const QUALIFICATION_SCRATCH_BYTES: usize = 256 * 1024;
+const QUALIFICATION_DESCRIPTOR_PEAK: u64 = 2;
+// Two root/temporary directory authorities (two descriptors each), the bound
+// writer lock (four), three concurrent anchored files (three each), two parent
+// lookups, and two nested pathname verification authorities (three each).
+const HISTORY_DESCRIPTOR_PEAK: u64 = 2 * 2 + 4 + 3 * 3 + 2 + 2 * 3;
+
+struct Retirement {
+    owner: [u8; 32],
+    authority: Mutex<Option<Box<dyn RegistryRetirementAuthority>>>,
+}
+
+impl Drop for Retirement {
+    fn drop(&mut self) {
+        let authority = match self.authority.get_mut() {
+            Ok(authority) => authority.take(),
+            Err(poisoned) => {
+                if let Some(retained) = poisoned.into_inner().take() {
+                    std::mem::forget(retained);
+                }
+                return;
+            }
+        };
+        if let Some(mut retained) = authority
+            && retained.retire_after_cleanup(self.owner).is_err()
+        {
+            // Keep the original charged actor when final disposition is
+            // uncertain. Dropping a wrapper is never cleanup evidence.
+            std::mem::forget(retained);
+        }
+    }
+}
+
+pub(super) struct RegistryResources {
+    pub(super) entitlement: HostResourceVector,
+    _lease: HostServiceLease,
+    // Last-field destruction releases the original actor only after its actual
+    // descriptor and resident permits have been returned by the field above.
+    retirement: Retirement,
+}
+
+impl HostOperationalRegistry {
+    /// Validates the complete fixed-roster service before any namespace I/O.
+    ///
+    /// # Errors
+    /// Refuses missing ownership, insufficient metadata, scratch or descriptors,
+    /// and resident subset overflow. This performs no filesystem access.
+    pub(crate) fn validate_service_resources(
+        owner: [u8; 32],
+        resources: HostResourceVector,
+    ) -> Result<(), HostOperationalError> {
+        if owner == [0; 32]
+            || !registry_resource_floor()?.fits(resources)
+            || resources
+                .metadata_bytes
+                .checked_add(resources.staging_bytes)
+                .is_none_or(|resident| resident > resources.resident_peak_bytes)
+        {
+            return Err(HostOperationalError::Unavailable);
+        }
+        Ok(())
+    }
+
+    /// Returns the audited registry allocation floor without opening its namespace.
+    pub(crate) fn minimum_service_resources() -> Result<HostResourceVector, HostOperationalError> {
+        registry_resource_floor()
+    }
+
+    /// Returns the genuine baseline service identity and immutable entitlement.
+    pub(crate) fn admitted_registry_service(&self) -> Option<([u8; 32], HostResourceVector)> {
+        self.shared
+            .resources
+            .as_ref()
+            .map(|resources| (resources.retirement.owner, resources.entitlement))
+    }
+
+    /// Opens a registry beneath an already retained complete service charge.
+    ///
+    /// The caller must reserve `resources` on its existing executor actor before
+    /// calling this method. The backing entitlement includes all durable
+    /// history; attachment must not charge that history a second time.
+    ///
+    /// # Errors
+    /// Refuses an empty owner, an incomplete fixed-roster allocation, a corrupt
+    /// history, a competing writer, or uncertain physical descriptor ownership.
+    #[cfg(test)]
+    pub(crate) fn open_admitted(
+        path: &Path,
+        owner: [u8; 32],
+        resources: HostResourceVector,
+    ) -> Result<Self, HostOperationalError> {
+        let allocator = HostServiceAllocator::new(
+            resources.task_slots,
+            resources.file_descriptors,
+            resources.resident_peak_bytes,
+        )
+        .map_err(unavailable)?;
+        Self::open_admitted_with_services(path, owner, resources, allocator)
+    }
+
+    /// Opens history using the original startup service allocator.
+    ///
+    /// # Errors
+    /// Refuses a different allocator ceiling, exhausted physical permits, or unsafe history.
+    pub(crate) fn open_admitted_with_services(
+        path: &Path,
+        owner: [u8; 32],
+        resources: HostResourceVector,
+        allocator: HostServiceAllocator,
+    ) -> Result<Self, HostOperationalError> {
+        Self::validate_service_resources(owner, resources)?;
+        if allocator.maximum_tasks() != resources.task_slots
+            || allocator.maximum_file_descriptors() != resources.file_descriptors
+            || allocator.maximum_resident_bytes() != resources.resident_peak_bytes
+        {
+            return Err(HostOperationalError::Unavailable);
+        }
+        let floor = registry_resource_floor()?;
+        let lease = allocator
+            .reserve_resources(0, floor.file_descriptors, floor.resident_peak_bytes)
+            .map_err(unavailable)?;
+        let history = history::History::open(path, resources.backing_peak_bytes)?;
+        Ok(Self::from_history_and_resources(
+            Some(history),
+            Some(RegistryResources {
+                entitlement: resources,
+                _lease: lease,
+                retirement: Retirement {
+                    owner,
+                    authority: Mutex::new(None),
+                },
+            }),
+        ))
+    }
+
+    /// Transfers the original terminal actor into final registry custody.
+    ///
+    /// # Errors
+    /// Refuses an unadmitted registry, replacement authority, or uncertain
+    /// synchronization. The caller retains the original actor on refusal.
+    pub(crate) fn retain_retirement_authority(
+        &self,
+        authority: Box<dyn RegistryRetirementAuthority>,
+    ) -> Result<(), Box<dyn RegistryRetirementAuthority>> {
+        let Some(resources) = &self.shared.resources else {
+            return Err(authority);
+        };
+        let Ok(mut slot) = resources.retirement.authority.lock() else {
+            return Err(authority);
+        };
+        if slot.is_some() {
+            return Err(authority);
+        }
+        *slot = Some(authority);
+        Ok(())
+    }
+}
+
+/// Calculates fixed-roster metadata and bounded protocol scratch requirements.
+///
+/// The two public-frame envelopes per owner cover bounded map nodes, retained
+/// targets, controller/catalog index entries and dynamic observation storage.
+/// Native controller descriptors and catalog payloads retain their independent
+/// node or catalog service charges and are not charged twice here.
+fn registry_resource_floor() -> Result<HostResourceVector, HostOperationalError> {
+    let record = std::mem::size_of::<Owner>()
+        .checked_add(std::mem::size_of::<CapOwner>())
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<HostRamTarget>()))
+        .and_then(|bytes| bytes.checked_add(2 * HOST_OPERATIONAL_MAX_BYTES))
+        .and_then(|bytes| bytes.checked_add(QUALIFICATION_RECEIPT_BYTES))
+        .ok_or(HostOperationalError::Unavailable)?;
+    let metadata = record
+        .checked_mul(MAX_OWNERS)
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Shared>()))
+        .and_then(|bytes| {
+            bytes.checked_add(
+                MAX_PRINCIPALS
+                    * (std::mem::size_of::<PrincipalRate>()
+                        + 64
+                        + 4 * std::mem::size_of::<usize>()),
+            )
+        })
+        .ok_or(HostOperationalError::Unavailable)?;
+    let scratch = CONTROL_REQUESTS
+        .checked_mul(std::mem::size_of::<HostRamStatus>() + 3 * HOST_OPERATIONAL_MAX_BYTES)
+        .and_then(|bytes| bytes.checked_add(3 * JOURNAL_BUFFER_BYTES))
+        .and_then(|bytes| bytes.checked_add(QUALIFICATION_SCRATCH_BYTES))
+        .ok_or(HostOperationalError::Unavailable)?;
+    let metadata = u64::try_from(metadata).map_err(unavailable)?;
+    let staging = u64::try_from(scratch).map_err(unavailable)?;
+    Ok(HostResourceVector {
+        resident_peak_bytes: metadata
+            .checked_add(staging)
+            .ok_or(HostOperationalError::Unavailable)?,
+        backing_peak_bytes: history::FIXED_HISTORY_CHARGE,
+        metadata_bytes: metadata,
+        staging_bytes: staging,
+        paging_io_slots: 1,
+        cpu_slots: 1,
+        task_slots: 1,
+        file_descriptors: HISTORY_DESCRIPTOR_PEAK + QUALIFICATION_DESCRIPTOR_PEAK,
+    })
+}
+
+#[cfg(test)]
+// crucible-lint: allow panic-shortcut -- resource and actual descriptor fixtures panic at failed ownership assumptions.
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::*;
+
+    struct CleanupWitness {
+        lock: std::path::PathBuf,
+        retired: Arc<AtomicBool>,
+    }
+
+    impl RegistryRetirementAuthority for CleanupWitness {
+        fn retire_after_cleanup(&mut self, owner: [u8; 32]) -> Result<(), HostOperationalError> {
+            assert_eq!(owner, [7; 32]);
+            let file = std::fs::File::open(&self.lock).map_err(unavailable)?;
+            let _lock = crate::owned_advisory_lock::OwnedAdvisoryLock::try_exclusive(file)
+                .map_err(unavailable)?;
+            self.retired.store(true, Ordering::Release);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn insufficient_registry_metadata_refuses_before_filesystem_creation() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("unopened");
+        let mut resources = registry_resource_floor().unwrap();
+        resources.metadata_bytes -= 1;
+
+        assert!(HostOperationalRegistry::open_admitted(&path, [7; 32], resources).is_err());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn final_registry_clone_closes_writer_before_terminal_actor_cleanup() {
+        let directory = tempfile::tempdir().unwrap();
+        let resources = registry_resource_floor().unwrap();
+        let registry =
+            HostOperationalRegistry::open_admitted(directory.path(), [7; 32], resources).unwrap();
+        let retired = Arc::new(AtomicBool::new(false));
+        let authority = CleanupWitness {
+            lock: directory.path().join("writer.lock"),
+            retired: Arc::clone(&retired),
+        };
+        assert!(
+            registry
+                .retain_retirement_authority(Box::new(authority))
+                .is_ok()
+        );
+        let final_borrower = registry.clone();
+
+        drop(registry);
+        assert!(!retired.load(Ordering::Acquire));
+        assert!(history::History::open(directory.path(), resources.backing_peak_bytes).is_err());
+
+        drop(final_borrower);
+        assert!(retired.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn authored_registry_fixture_covers_the_computed_fixed_roster_floor() {
+        let authored = HostResourceVector {
+            resident_peak_bytes: 128 * 1024 * 1024,
+            backing_peak_bytes: 16 * 1024 * 1024,
+            metadata_bytes: 64 * 1024 * 1024,
+            staging_bytes: 8 * 1024 * 1024,
+            paging_io_slots: 1,
+            cpu_slots: 1,
+            task_slots: 1,
+            file_descriptors: 128,
+        };
+        assert!(registry_resource_floor().unwrap().fits(authored));
+    }
+
+    #[test]
+    fn qualification_matching_requires_admission_and_preserves_expiry() {
+        let invoked = AtomicBool::new(false);
+        let mut live = || Ok(());
+        let detached = HostOperationalRegistry::default();
+        assert!(
+            detached
+                .with_paging_qualification_match(&mut live, |_| {
+                    invoked.store(true, Ordering::Release);
+                    Ok(())
+                })
+                .is_err()
+        );
+        assert!(!invoked.load(Ordering::Acquire));
+
+        let directory = tempfile::tempdir().unwrap();
+        let registry = HostOperationalRegistry::open_admitted(
+            directory.path(),
+            [7; 32],
+            registry_resource_floor().unwrap(),
+        )
+        .unwrap();
+        registry
+            .with_paging_qualification_match(&mut live, |boundary| {
+                boundary()?;
+                invoked.store(true, Ordering::Release);
+                Ok(())
+            })
+            .unwrap();
+        assert!(invoked.load(Ordering::Acquire));
+
+        invoked.store(false, Ordering::Release);
+        let mut expired = || {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "original setup deadline expired",
+            ))
+        };
+        assert!(
+            registry
+                .with_paging_qualification_match(&mut expired, |_| {
+                    invoked.store(true, Ordering::Release);
+                    Ok(())
+                })
+                .is_err()
+        );
+        assert!(!invoked.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn contended_qualification_matching_expires_the_original_setup_operation() {
+        use crucible_linux_resource::host_supervision::{HostOperationBudgets, HostOperationClass};
+
+        let directory = tempfile::tempdir().unwrap();
+        let registry = HostOperationalRegistry::open_admitted(
+            directory.path(),
+            [7; 32],
+            registry_resource_floor().unwrap(),
+        )
+        .unwrap();
+        let _matching = registry.shared.qualification_match.lock().unwrap();
+        let mut budgets = HostOperationBudgets::default();
+        budgets.classes[HostOperationClass::Setup as usize].total_timeout =
+            Some(Duration::from_millis(1));
+        let supervisor =
+            HostOperationSupervisor::new(budgets, Some(Duration::from_secs(1))).unwrap();
+        let setup = supervisor.begin_control(HostOperationClass::Setup).unwrap();
+        let mut boundary = || {
+            setup
+                .wait_slice()
+                .map(|_| ())
+                .map_err(std::io::Error::other)
+        };
+        let invoked = AtomicBool::new(false);
+
+        assert!(
+            registry
+                .with_paging_qualification_match(&mut boundary, |_| {
+                    invoked.store(true, Ordering::Release);
+                    Ok(())
+                })
+                .is_err()
+        );
+        assert!(!invoked.load(Ordering::Acquire));
+    }
+}

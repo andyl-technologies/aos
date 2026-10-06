@@ -2002,7 +2002,7 @@ fn resources() -> AttemptResourceLimits {
 fn exact_checkpoint(label: &str) -> ExactCheckpointId {
     ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        5,
+        6,
         label.as_bytes(),
     ))
     .expect("exact checkpoint")

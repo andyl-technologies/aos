@@ -20,10 +20,19 @@ use std::mem::MaybeUninit;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 
-use rustix::fs::open;
 use rustix::fs::{FileType, Mode, OFlags, RawDir, fstat, fstatfs, fsync, openat};
 use rustix::ioctl::{Getter, Setter, ioctl, opcode};
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
+
+use crate::host_supervision::{
+    HostOperationClass, HostOperationGuard, HostOperationSupervisor, HostSupervisionError,
+};
+
+mod control;
+mod descendants;
+pub use control::LinuxProjectQuotaController;
+use control::QuotaControlState;
 
 const EXT4_QUOTA_BLOCK_BYTES: u64 = 1 << 10;
 const PROJECT_QUOTA_TYPE: u32 = 2;
@@ -94,8 +103,9 @@ impl LinuxProjectQuotaLimits {
 #[derive(Debug)]
 #[must_use = "release the project quota after process reap or retain it in quarantine"]
 pub struct LinuxProjectQuotaReservation {
-    filesystem: Option<OwnedFd>,
-    directory: Option<OwnedFd>,
+    filesystem: Option<Arc<OwnedFd>>,
+    directory: Option<Arc<OwnedFd>>,
+    control: Option<Arc<Mutex<QuotaControlState>>>,
     path: PathBuf,
     project_id: u32,
     limits: LinuxProjectQuotaLimits,
@@ -159,8 +169,9 @@ impl LinuxProjectQuotaReservation {
         }
 
         let mut reservation = Self {
-            filesystem: Some(filesystem),
-            directory: Some(directory),
+            filesystem: Some(Arc::new(filesystem)),
+            directory: Some(Arc::new(directory)),
+            control: None,
             path,
             project_id,
             limits,
@@ -182,7 +193,7 @@ impl LinuxProjectQuotaReservation {
         self.project_id
     }
 
-    /// Returns the exact admitted and kernel-rounded limits.
+    /// Returns the initial admitted and kernel-rounded limits.
     #[must_use]
     pub const fn limits(&self) -> LinuxProjectQuotaLimits {
         self.limits
@@ -199,7 +210,7 @@ impl LinuxProjectQuotaReservation {
     /// the pinned directory authority.
     pub fn directory(&self) -> Result<&OwnedFd, LinuxProjectQuotaError> {
         self.directory
-            .as_ref()
+            .as_deref()
             .ok_or_else(|| LinuxProjectQuotaError::MissingAuthority {
                 path: self.path.clone(),
             })
@@ -220,7 +231,7 @@ impl LinuxProjectQuotaReservation {
             self.filesystem()?,
             &self.path,
             self.project_id,
-            self.limits,
+            self.current_control_limits()?,
         )
     }
 
@@ -266,6 +277,7 @@ impl LinuxProjectQuotaReservation {
     }
 
     fn release_in_place(&mut self) -> Result<(), LinuxProjectQuotaError> {
+        self.retire_controller();
         if self.released {
             return Ok(());
         }
@@ -299,7 +311,7 @@ impl LinuxProjectQuotaReservation {
 
     fn filesystem(&self) -> Result<&OwnedFd, LinuxProjectQuotaError> {
         self.filesystem
-            .as_ref()
+            .as_deref()
             .ok_or_else(|| LinuxProjectQuotaError::MissingAuthority {
                 path: self.path.clone(),
             })
@@ -327,7 +339,12 @@ pub fn validate_project_quota_root(
     Ok(())
 }
 
-/// Pinned authority for one operator-installed ext4 project quota.
+/// Pinned authority and cooperative namespace lease for one persistent quota.
+///
+/// The operator must exclude uncooperative renames, mounts, hard links, project
+/// attribute changes, and quota mutations for this authority's lifetime. The
+/// retained exclusive flock excludes cooperating daemon instances; it does
+/// not protect against a privileged or malicious same-user administrator.
 #[derive(Debug)]
 pub struct LinuxProjectQuotaBinding {
     directory: OwnedFd,
@@ -336,36 +353,105 @@ pub struct LinuxProjectQuotaBinding {
     inode: u64,
     project_id: u32,
     limits: LinuxProjectQuotaLimits,
+    namespace: descendants::NamespaceLease,
+    supervisor: HostOperationSupervisor,
 }
 
 impl LinuxProjectQuotaBinding {
-    /// Pins and verifies one already configured project-quota directory.
+    /// Audits and exclusively leases an already configured quota namespace.
+    ///
+    /// The caller must reserve its persistent storage service before calling this method,
+    /// including two retained descriptors and the audit's bounded temporary
+    /// resources (34 descriptors and 68 KiB scan scratch at maximum depth). Every
+    /// existing descendant must carry the same project ID; directories must
+    /// inherit it. Only directories and singly linked regular files qualify.
+    /// The namespace depth is limited to 16 and its entries to the inode limit.
     ///
     /// # Errors
     ///
     /// Returns [`LinuxProjectQuotaError`] when the project identifier or
     /// limits are unsupported, the directory cannot be pinned, or its exact
     /// filesystem, assignment, limits, or current usage fail verification.
-    pub fn bind_existing(
+    pub fn bind_existing_supervised(
         root: &Path,
         project_id: u32,
         maximum_physical_bytes: u64,
         maximum_inodes: u64,
+        supervisor: HostOperationSupervisor,
+    ) -> Result<Self, LinuxProjectQuotaError> {
+        let operation = supervisor.begin_work(HostOperationClass::Preparation, maximum_inodes)?;
+        let binding = Self::bind_existing_internal(
+            root,
+            project_id,
+            maximum_physical_bytes,
+            maximum_inodes,
+            supervisor,
+            &operation,
+            false,
+        )?;
+        operation.complete()?;
+        Ok(binding)
+    }
+
+    /// Audits a persistent namespace under the caller's original preparation scope.
+    ///
+    /// The caller reserves the complete audit peak before invoking this method
+    /// and retains its resource account on uncertain failure. The supplied guard
+    /// must admit at least `maximum_inodes` work units. It is neither completed
+    /// nor restarted here. After acquiring the namespace lease, failed audits
+    /// retain the actual lease and directory pin to exclude cooperating reuse.
+    ///
+    /// # Errors
+    /// Refuses expired original supervision, invalid limits, unsupported ext4
+    /// authority, mismatched project assignment, and unsafe existing descendants.
+    pub fn bind_existing_under(
+        root: &Path,
+        project_id: u32,
+        maximum_physical_bytes: u64,
+        maximum_inodes: u64,
+        supervisor: HostOperationSupervisor,
+        operation: &HostOperationGuard,
+    ) -> Result<Self, LinuxProjectQuotaError> {
+        Self::bind_existing_internal(
+            root,
+            project_id,
+            maximum_physical_bytes,
+            maximum_inodes,
+            supervisor,
+            operation,
+            true,
+        )
+    }
+
+    fn bind_existing_internal(
+        root: &Path,
+        project_id: u32,
+        maximum_physical_bytes: u64,
+        maximum_inodes: u64,
+        supervisor: HostOperationSupervisor,
+        operation: &HostOperationGuard,
+        retain_uncertain_namespace: bool,
     ) -> Result<Self, LinuxProjectQuotaError> {
         if !project_id_is_supported(project_id) {
             return Err(LinuxProjectQuotaError::InvalidProjectId);
         }
         let limits = LinuxProjectQuotaLimits::new(maximum_physical_bytes, maximum_inodes)?;
-        let directory = open(
-            root,
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-            Mode::empty(),
-        )
-        .map_err(|source| LinuxProjectQuotaError::Io {
-            operation: "open-physical-quota-root",
-            path: root.to_owned(),
-            source: source.into(),
-        })?;
+        if !root.is_absolute()
+            || root
+                .components()
+                .any(|part| matches!(part, std::path::Component::ParentDir))
+        {
+            return Err(LinuxProjectQuotaError::UnsafeNamespace {
+                path: root.to_owned(),
+            });
+        }
+        operation.wait_slice()?;
+        let directory =
+            descendants::open_root(root).map_err(|source| LinuxProjectQuotaError::Io {
+                operation: "open-physical-quota-root",
+                path: root.to_owned(),
+                source: source.into(),
+            })?;
         validate_ext4_filesystem(&directory, &directory, root)?;
         project_quota_info(&directory, root)?;
         verify_assigned_project(&directory, root, project_id)?;
@@ -376,6 +462,24 @@ impl LinuxProjectQuotaBinding {
             path: root.to_owned(),
             source: source.into(),
         })?;
+        let namespace = descendants::NamespaceLease::acquire(&directory, root, project_id)?;
+        let checked = (|| {
+            descendants::audit(&directory, root, project_id, maximum_inodes, operation)?;
+            operation.wait_slice()?;
+            verify_assigned_project(&directory, root, project_id)?;
+            verify_project_quota(&directory, root, project_id, limits)?;
+            verify_project_usage_within_limit(&directory, root, project_id, limits)?;
+            Ok::<_, LinuxProjectQuotaError>(())
+        })();
+        if let Err(error) = checked {
+            if retain_uncertain_namespace {
+                // The caller keeps the original resource account. Preserve the
+                // actual lease too, so another owner cannot reopen uncertain
+                // durable bytes while their first charge remains retained.
+                std::mem::forget((directory, namespace));
+            }
+            return Err(error);
+        }
         Ok(Self {
             directory,
             path: root.to_owned(),
@@ -383,6 +487,8 @@ impl LinuxProjectQuotaBinding {
             inode: identity.st_ino,
             project_id,
             limits,
+            namespace,
+            supervisor,
         })
     }
 
@@ -393,16 +499,60 @@ impl LinuxProjectQuotaBinding {
     /// Returns [`LinuxProjectQuotaError`] when the named directory no longer
     /// matches the pin or its assignment, limits, or usage changed.
     pub fn verify(&self) -> Result<(), LinuxProjectQuotaError> {
-        let current = open(
+        let operation = self.supervisor.begin(HostOperationClass::Writeback)?;
+        self.verify_authority()?;
+        operation.complete()?;
+        Ok(())
+    }
+
+    /// Creates and authenticates a bounded directory chain beneath the pin.
+    ///
+    /// Path components are resolved relative to authenticated descriptors;
+    /// symlinks, mount crossings, parent components, and depths beyond 16 are
+    /// refused. Newly created directories inherit the operator's project.
+    ///
+    /// # Errors
+    /// Returns an error for expired original supervision, namespace or quota
+    /// changes, escaped paths, unsafe entries, and failed filesystem operations.
+    pub fn prepare_descendant_directory(&self, path: &Path) -> Result<(), LinuxProjectQuotaError> {
+        let operation = self.supervisor.begin(HostOperationClass::Preparation)?;
+        self.verify_authority()?;
+        descendants::prepare_directory(
+            &self.directory,
             &self.path,
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-            Mode::empty(),
-        )
-        .map_err(|source| LinuxProjectQuotaError::Io {
-            operation: "reopen-physical-quota-root",
-            path: self.path.clone(),
-            source: source.into(),
-        })?;
+            path,
+            self.project_id,
+            &operation,
+        )?;
+        self.verify_authority()?;
+        operation.complete()?;
+        Ok(())
+    }
+
+    /// Returns the maximum simultaneously open descriptors during admission.
+    ///
+    /// This includes the two retained root and namespace-lease descriptors.
+    #[must_use]
+    pub const fn maximum_audit_file_descriptors() -> u64 {
+        36
+    }
+
+    /// Returns the maximum bounded getdents scan scratch during admission.
+    ///
+    /// The service must separately admit its thread stack, filesystem/runtime
+    /// overhead, and persistent catalog buffers.
+    #[must_use]
+    pub const fn maximum_audit_scratch_bytes() -> u64 {
+        17 * 4096
+    }
+
+    fn verify_authority(&self) -> Result<(), LinuxProjectQuotaError> {
+        let current =
+            descendants::open_root(&self.path).map_err(|source| LinuxProjectQuotaError::Io {
+                operation: "reopen-physical-quota-root",
+                path: self.path.clone(),
+                source: source.into(),
+            })?;
         let current_identity = fstat(&current).map_err(|source| LinuxProjectQuotaError::Io {
             operation: "reauthenticate-physical-quota-root",
             path: self.path.clone(),
@@ -413,6 +563,9 @@ impl LinuxProjectQuotaBinding {
                 path: self.path.clone(),
             });
         }
+
+        self.namespace
+            .verify(&self.directory, &self.path, self.project_id)?;
 
         validate_ext4_filesystem(&self.directory, &self.directory, &self.path)?;
         verify_assigned_project(&self.directory, &self.path, self.project_id)?;
@@ -438,6 +591,7 @@ fn verify_assigned_project(
 
 impl Drop for LinuxProjectQuotaReservation {
     fn drop(&mut self) {
+        self.retire_controller();
         if self.released {
             return;
         }
@@ -526,9 +680,24 @@ impl LinuxProjectQuotaReleaseError {
 /// Stable project-quota validation or kernel-operation failure.
 #[derive(Debug, Error)]
 pub enum LinuxProjectQuotaError {
+    /// The original resource owner's operational supervision refused work.
+    #[error("project-quota operation supervision failed: {0}")]
+    Supervision(#[from] HostSupervisionError),
+    /// A namespace entry escapes the bounded inherited quota inventory.
+    #[error("project-quota namespace is unsafe or exceeds its traversal bounds: {path}")]
+    UnsafeNamespace {
+        /// Diagnostic path inside the pinned namespace.
+        path: PathBuf,
+    },
     /// Aggregate bytes or inode bounds cannot be enforced safely.
     #[error("project-quota limits are outside the supported range")]
     InvalidLimits,
+    /// A live controller cannot increase its retained ceiling.
+    #[error("project-quota tightening cannot increase the current limit")]
+    LimitIncrease,
+    /// Controller authority was retired or failed an uncertain kernel update.
+    #[error("project-quota tightening authority is retired")]
+    RetiredController,
     /// Project ID is zero or cannot fit the signed `quotactl_fd` argument.
     #[error("project-quota identifier must fit the positive signed 32-bit range")]
     InvalidProjectId,
@@ -1098,5 +1267,37 @@ mod tests {
 
         actual.fsx_projid = 43;
         assert!(!project_attributes_match(actual, expected));
+    }
+
+    #[test]
+    fn persistent_binding_uses_the_original_guard_before_namespace_access() {
+        let supervisor = HostOperationSupervisor::new(
+            crate::host_supervision::HostOperationBudgets::default(),
+            None,
+        )
+        .unwrap_or_else(|error| panic!("finite component roster: {error}"));
+        let operation = supervisor
+            .begin_work(HostOperationClass::Preparation, 16)
+            .unwrap_or_else(|error| panic!("original preparation scope: {error}"));
+        let directory = tempfile::tempdir()
+            .unwrap_or_else(|error| panic!("owned component namespace: {error}"));
+        let absent = directory.path().join("must-remain-unopened");
+        supervisor
+            .cancel()
+            .unwrap_or_else(|error| panic!("cancel original scope: {error}"));
+
+        let error = LinuxProjectQuotaBinding::bind_existing_under(
+            &absent,
+            701,
+            16 << 20,
+            16,
+            supervisor,
+            &operation,
+        )
+        .err()
+        .unwrap_or_else(|| panic!("canceled original scope must refuse"));
+
+        assert!(matches!(error, LinuxProjectQuotaError::Supervision(_)));
+        assert!(!absent.exists());
     }
 }

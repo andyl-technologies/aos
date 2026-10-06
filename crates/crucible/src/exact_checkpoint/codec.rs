@@ -1,4 +1,4 @@
-//! Canonical v9 checkpoint envelope, manifest, and shape verification.
+//! Canonical v10 checkpoint envelope, manifest, and shape verification.
 
 use super::*;
 
@@ -61,12 +61,21 @@ pub(super) fn authenticate_repository_manifest(
             .all(|(closure, repository)| {
                 (closure.identity, closure.length) == (repository.identity, repository.length)
             });
+    let ram_roots = closure
+        .targets
+        .iter()
+        .map(|target| {
+            ContentId::parse(&target.exact_ram.paged.root_object)
+                .map_err(|_| ExactCheckpointRelationError::RepositoryRootMismatch)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     if repository.production_identity != production_identity
         || repository.scenario != closure.scenario
         || repository.configuration != closure.configuration
         || repository.manifest_id != manifest_id
         || repository.manifest_bytes != u64::try_from(manifest_bytes.len()).unwrap_or(u64::MAX)
         || !inventory_matches
+        || ram_roots != repository.ram_roots
     {
         return Err(ExactCheckpointRelationError::RepositoryRootMismatch);
     }
@@ -88,6 +97,7 @@ pub(super) struct RepositoryRootBody {
 pub(super) struct RepositoryRootChildren {
     pub(super) manifest: ContentId,
     pub(super) indexes: Vec<ContentId>,
+    pub(super) ram_roots: Vec<ContentId>,
 }
 
 pub(super) fn decode_root_body(
@@ -122,8 +132,7 @@ pub(super) fn decode_root_children(
 ) -> Result<RepositoryRootChildren, ExactCheckpointRelationError> {
     let count = usize::try_from(index_count)
         .map_err(|_| ExactCheckpointRelationError::RepositoryRootMismatch)?;
-    if !matches!(envelope.children().len(), length if length == count.saturating_add(2) || length == count.saturating_add(4))
-    {
+    if count > envelope.children().len() {
         return Err(ExactCheckpointRelationError::RepositoryRootMismatch);
     }
     let mut manifest = None;
@@ -131,6 +140,7 @@ pub(super) fn decode_root_children(
     let mut promotion_evidence = None;
     let mut choice_closure = None;
     let mut indexes = vec![None; count];
+    let mut ram_roots = BTreeMap::new();
     for child in envelope.children() {
         match child.role() {
             MANIFEST_ROLE => {
@@ -165,6 +175,19 @@ pub(super) fn decode_root_children(
                 }
             }
             role => {
+                if let Some(suffix) = role.strip_prefix(RAM_ROOT_ROLE_PREFIX) {
+                    let ordinal = usize::from_str_radix(suffix, 16)
+                        .map_err(|_| ExactCheckpointRelationError::RepositoryRootMismatch)?;
+                    if suffix.len() != 8
+                        || format!("{RAM_ROOT_ROLE_PREFIX}{ordinal:08x}") != role
+                        || child.id().kind() != ObjectKind::ExactManifest
+                        || child.id().schema_version() != 1
+                        || ram_roots.insert(ordinal, child.id()).is_some()
+                    {
+                        return Err(ExactCheckpointRelationError::RepositoryRootMismatch);
+                    }
+                    continue;
+                }
                 let suffix = role
                     .strip_prefix(INDEX_ROLE_PREFIX)
                     .ok_or(ExactCheckpointRelationError::RepositoryRootMismatch)?;
@@ -188,12 +211,16 @@ pub(super) fn decode_root_children(
     if promotion_source.is_some() != promotion_evidence.is_some() || choice_closure.is_none() {
         return Err(ExactCheckpointRelationError::RepositoryRootMismatch);
     }
+    if !ram_roots.keys().copied().eq(0..ram_roots.len()) {
+        return Err(ExactCheckpointRelationError::RepositoryRootMismatch);
+    }
     Ok(RepositoryRootChildren {
         manifest: manifest.ok_or(ExactCheckpointRelationError::RepositoryRootMismatch)?,
         indexes: indexes
             .into_iter()
             .collect::<Option<Vec<_>>>()
             .ok_or(ExactCheckpointRelationError::RepositoryRootMismatch)?,
+        ram_roots: ram_roots.into_values().collect(),
     })
 }
 
@@ -423,43 +450,16 @@ pub(super) fn exact_checkpoint_target_manifest_identity(
             target.exact_ram.device.identity.to_hex(),
         ),
     );
-    let mut material = format!(
-        "target={}\nparent_closure={}\ndevice_sha256={}",
+    let material = format!(
+        "target={}\ndevice_sha256={}\nram_root_object={}\nram_logical_root={}\nram_checkpoint={}\nram_target={}\nram_frontier={}",
         base.to_hex(),
-        target
-            .exact_ram
-            .parent_closure
-            .map_or_else(String::new, ContentHash::to_hex),
         target.exact_ram.device_content_sha256.to_hex(),
+        target.exact_ram.paged.root_object,
+        target.exact_ram.paged.logical_root.to_hex(),
+        target.exact_ram.paged.identity.checkpoint.to_hex(),
+        target.exact_ram.paged.identity.target.to_hex(),
+        target.exact_ram.paged.identity.frontier.to_hex(),
     );
-    for (index, layer) in target.exact_ram.layers.iter().enumerate() {
-        let parent = layer.parent.map_or_else(String::new, |identity| {
-            format!(
-                "{}/{}/{}",
-                identity.checkpoint.to_hex(),
-                identity.target.to_hex(),
-                identity.frontier.to_hex(),
-            )
-        });
-        let _ = write!(
-            material,
-            "\nlayer.{index}.kind={}\nlayer.{index}.checkpoint={}\nlayer.{index}.target={}\nlayer.{index}.frontier={}\nlayer.{index}.parent={}\nlayer.{index}.topology={}\nlayer.{index}.regions={}\nlayer.{index}.records={}\nlayer.{index}.sha256={}\nlayer.{index}.artifact={}\nlayer.{index}.length={}",
-            match layer.kind {
-                ExactCheckpointRamKind::Direct => "direct",
-                ExactCheckpointRamKind::Delta => "delta",
-            },
-            layer.identity.checkpoint.to_hex(),
-            layer.identity.target.to_hex(),
-            layer.identity.frontier.to_hex(),
-            parent,
-            layer.topology.to_hex(),
-            layer.ram_regions,
-            layer.ram_records,
-            layer.content_sha256.to_hex(),
-            layer.artifact.identity.to_hex(),
-            layer.artifact.length,
-        );
-    }
     ContentHash::from_canonical_material(RAM_TARGET_DOMAIN, &material)
 }
 
@@ -524,9 +524,6 @@ pub(super) fn validate_closure_structure(
         validate_artifact_object_lengths(&target.overlay, &closure.objects)?;
         validate_exact_ram(&target.exact_ram)?;
         validate_artifact_object_lengths(&target.exact_ram.device, &closure.objects)?;
-        for layer in &target.exact_ram.layers {
-            validate_artifact_object_lengths(&layer.artifact, &closure.objects)?;
-        }
     }
     Ok(())
 }
@@ -554,9 +551,6 @@ pub(super) fn manifest_object_identities(
         identities.insert(target.snapshot);
         identities.extend(artifact_object_identities(&target.overlay));
         identities.extend(artifact_object_identities(&target.exact_ram.device));
-        for layer in &target.exact_ram.layers {
-            identities.extend(artifact_object_identities(&layer.artifact));
-        }
     }
     identities
 }
@@ -643,34 +637,11 @@ fn logical_artifact_chunk_length(
 fn validate_exact_ram(
     checkpoint: &ExactCheckpointRamRecord,
 ) -> Result<(), ExactCheckpointRelationError> {
-    let Some(first) = checkpoint.layers.first() else {
-        return Err(ExactCheckpointRelationError::InvalidStructure);
-    };
-    if checkpoint.layers.len() > MAX_EXACT_CHECKPOINT_RAM_LAYERS
-        || first.kind != ExactCheckpointRamKind::Direct
-        || first.parent.is_some()
-        || (checkpoint.layers.len() > 1) != checkpoint.parent_closure.is_some()
-    {
-        return Err(ExactCheckpointRelationError::InvalidStructure);
-    }
     if checkpoint.device.length == 0 {
         return Err(ExactCheckpointRelationError::InvalidStructure);
     }
     validate_dense_artifact(&checkpoint.device)?;
-    for (index, layer) in checkpoint.layers.iter().enumerate() {
-        validate_dense_artifact(&layer.artifact)?;
-        if layer.ram_regions == 0 || layer.artifact.length == 0 || layer.topology != first.topology
-        {
-            return Err(ExactCheckpointRelationError::InvalidStructure);
-        }
-        if index > 0 {
-            let parent = &checkpoint.layers[index - 1];
-            if layer.kind != ExactCheckpointRamKind::Delta || layer.parent != Some(parent.identity)
-            {
-                return Err(ExactCheckpointRelationError::InvalidStructure);
-            }
-        }
-    }
+    decode_paged_ram(&checkpoint.paged)?;
     Ok(())
 }
 

@@ -31,11 +31,11 @@ impl ComponentExecutorService {
             capacity,
         );
         let description = executor_description(lineage, profile, daemon_epoch, capacity);
-        let service = LocalExecutorCapabilityService::new(supervisor, description)
+        let service = capability_service(supervisor, description, 1024 * 1024)
             .expect("executor capability service");
         Self {
             inner: Arc::new(Mutex::new(service)),
-            store: CampaignExecutorStore::new(repository),
+            store: CampaignExecutorStore::new(Arc::clone(&repository)),
             checkpoints: Arc::new(
                 ExactCheckpointStore::new(
                     Arc::new(DirectoryBlobBackend::new(
@@ -43,6 +43,7 @@ impl ComponentExecutorService {
                         paths.root.join("exact-checkpoints"),
                     )),
                     64 * 1024 * 1024,
+                    repository.ram_retention_authority(),
                 )
                 .expect("component contract checkpoint store"),
             ),
@@ -522,7 +523,7 @@ pub(super) fn direct_submit_pair(
     );
     let description = executor_description(lineage, profile, request.daemon_epoch(), capacity);
     let service =
-        LocalExecutorCapabilityService::new(supervisor, description).expect("direct executor");
+        capability_service(supervisor, description, 1024 * 1024).expect("direct executor");
     let mut client = ExecutorClient::new(service);
     let submitted = client.submit_attempt(request).expect("direct submit");
     let replayed = client
@@ -543,7 +544,30 @@ pub(super) fn executor_description(
         BTreeSet::from([String::from("deterministic-tcg-v1")]),
         BTreeSet::from([ExecutorMaterializationCapability::ThinReplay]),
         capacity.maximum_concurrent_executions(),
-        executor_resource_ceiling(),
+        crucible_campaign::ExecutorResourceBounds::new(
+            crucible_campaign::ExecutorHostResources {
+                resident_peak_bytes: 4194304,
+                backing_peak_bytes: 8192,
+                metadata_bytes: 256,
+                staging_bytes: 256,
+                paging_io_slots: 2,
+                cpu_slots: 4,
+                task_slots: 130,
+                file_descriptors: 256,
+            },
+            crucible_campaign::ExecutorHostResources {
+                resident_peak_bytes: 2097152,
+                backing_peak_bytes: 4096,
+                metadata_bytes: 128,
+                staging_bytes: 128,
+                paging_io_slots: 1,
+                cpu_slots: 2,
+                task_slots: 65,
+                file_descriptors: 128,
+            },
+            executor_resource_ceiling(),
+        )
+        .expect("authored complete fixture resource bounds"),
         BTreeSet::from([hash("store-namespace")]),
     )
     .expect("executor capabilities");
@@ -778,7 +802,7 @@ pub(super) fn executor_resource_ceiling() -> AttemptResourceLimits {
 }
 
 pub(super) fn executor_capacity() -> ExecutorCapacity {
-    ExecutorCapacity::new(2, 2, 2048, 4096, 64).expect("executor capacity")
+    ExecutorCapacity::new(2, 4, 4 * 1024 * 1024, 8192, 64).expect("executor capacity")
 }
 
 pub(super) fn accepted_execution(response: &SubmitAttemptResponse) -> ExecutionId {
@@ -891,4 +915,54 @@ pub(super) fn decode_hex_16(value: &str) -> Result<[u8; 16], ()> {
         *byte = u8::from_str_radix(&value[offset..offset + 2], 16).map_err(|_| ())?;
     }
     Ok(output)
+}
+
+/// Configures the real fixture actor before binding its advertised capabilities.
+///
+/// # Errors
+/// Reports inconsistent authored capacity, an already admitted owner, or an
+/// advertisement that differs from the actor's actual enforced resource bounds.
+fn capability_service<L, V>(
+    supervisor: crucible_daemon::LocalExecutorSupervisor<L, V>,
+    description: ExecutorDescription,
+    watcher_service_resident_bytes: u64,
+) -> Result<
+    crucible_daemon::LocalExecutorCapabilityService<L, V>,
+    crucible_campaign::CampaignCodecError,
+> {
+    let aggregate = description.capabilities().aggregate_resources();
+    let assignment = description.capabilities().assignment_resources();
+    let operational = crucible_daemon::HostOperationalCapacity::new(
+        aggregate.paging_io_slots,
+        aggregate.task_slots,
+        aggregate.file_descriptors,
+        aggregate.metadata_bytes,
+        aggregate.staging_bytes,
+    )
+    .map_err(|_| invalid_fixture_bounds())?;
+    let supervisor = supervisor
+        .with_host_operational_capacity(operational)
+        .map_err(|_| invalid_fixture_bounds())?
+        .with_host_assignment_resources(
+            crucible_api::host_operational::HostResourceVector {
+                resident_peak_bytes: assignment.resident_peak_bytes,
+                backing_peak_bytes: assignment.backing_peak_bytes,
+                metadata_bytes: assignment.metadata_bytes,
+                staging_bytes: assignment.staging_bytes,
+                paging_io_slots: assignment.paging_io_slots,
+                cpu_slots: assignment.cpu_slots,
+                task_slots: assignment.task_slots,
+                file_descriptors: assignment.file_descriptors,
+            },
+            description.capabilities().assignment_limits(),
+            watcher_service_resident_bytes,
+        )
+        .map_err(|_| invalid_fixture_bounds())?;
+    crucible_daemon::LocalExecutorCapabilityService::new(supervisor, description)
+}
+
+fn invalid_fixture_bounds() -> crucible_campaign::CampaignCodecError {
+    crucible_campaign::CampaignCodecError::InvalidValue {
+        reason: "component fixture physical bounds do not fit its actual actor",
+    }
 }

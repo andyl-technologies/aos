@@ -735,6 +735,28 @@ impl CampaignLocalStoreGcAuthority<'_> {
 }
 
 impl PreparedCampaignLocalService {
+    /// Shares the attached executor's genuine campaign authority for local replay.
+    ///
+    /// # Errors
+    /// Refuses a different repository, a missing authenticated planner key, or
+    /// unavailable native actor ownership. No second executor is opened.
+    pub fn guarded_campaign_owner(
+        &self,
+        executor: &crate::AttachedPackagedQemuExecutor,
+    ) -> Result<
+        crate::qemu_campaign_lifecycle::GuardedCampaignOwner,
+        crate::PackagedQemuExecutorError,
+    > {
+        if !executor.uses_repository(&self.repository) {
+            return Err(crucible_api::host_operational::HostOperationalError::Unavailable.into());
+        }
+        let planner = self
+            .planner_authority
+            .clone()
+            .ok_or(crucible_api::host_operational::HostOperationalError::Unavailable)?;
+        executor.guarded_campaign_owner(planner)
+    }
+
     /// Resolves this process's effective Unix identity through the deployment policy.
     ///
     /// The returned principal is the one a local socket connection from this
@@ -785,6 +807,42 @@ impl PreparedCampaignLocalService {
         ))
     }
 
+    /// Creates exact checkpoint storage under this owner's authoritative GC refs.
+    ///
+    /// The backend is the deployment-configured object namespace used by this
+    /// repository. Retention comes from the already locked repository owner;
+    /// callers cannot replace it with an unrelated ephemeral ref directory.
+    /// Checkpoint-free archives can use a backend without metadata admission;
+    /// selecting a checkpoint then refuses before reading its metadata.
+    ///
+    /// # Errors
+    /// Rejects an invalid ceiling, denied or expired original metadata authority,
+    /// or a backend lacking streaming and conditional-creation capabilities.
+    pub fn exact_checkpoint_store(
+        &self,
+        maximum_checkpoint_bytes: u64,
+    ) -> Result<crate::ExactCheckpointStore, crate::ExactCheckpointStoreError> {
+        let backend = self.repository.blob_backend();
+        let resources = match backend.metadata_resources() {
+            Ok(resources) => Some(resources),
+            Err(StoreError::Unsupported {
+                capability: "decoded-metadata-resources",
+            }) => None,
+            Err(error) => return Err(error.into()),
+        };
+        let store = crate::ExactCheckpointStore::new(
+            backend,
+            maximum_checkpoint_bytes,
+            self.repository.ram_retention_authority(),
+        )?;
+        // Checkpoint-free archives can plan without this capability. Selecting
+        // any checkpoint still refuses before its metadata or RAM is decoded.
+        Ok(match resources {
+            Some(resources) => store.with_ram_root_resources(resources),
+            None => store,
+        })
+    }
+
     /// Builds one authenticated archive plan under this repository owner.
     ///
     /// # Errors
@@ -802,22 +860,31 @@ impl PreparedCampaignLocalService {
             .plan_campaign_archive(snapshot, policy, retained_roots, checkpoint_resolver)
     }
 
-    /// Builds an archive plan using this owner's exact-pin materialization catalog.
+    /// Plans an archive while retaining one actual transfer supervision boundary.
+    ///
+    /// The source's exact-pin fence remains live through semantic selection and
+    /// full RAM availability verification. Callback failure never creates an
+    /// archive or a guest fault outcome.
     ///
     /// # Errors
     ///
-    /// Returns [`crate::CampaignArchiveTransferError`] when the source campaign
-    /// name, exact-pin catalog, checkpoint closure, or selected archive closure
-    /// cannot be authenticated.
-    pub fn plan_campaign_archive_with_exact_pins(
+    /// Returns an error for invalid source state, storage unavailability, stale
+    /// exact-pin selections, or a rejected operational boundary.
+    pub fn plan_campaign_archive_with_exact_pins_with_boundary(
         &self,
         campaign: CampaignName,
         snapshot: crucible_campaign::CampaignSnapshotId,
         policy: crucible_campaign::CampaignArchivePolicy,
         retained_roots: impl IntoIterator<Item = crucible_cas::content_store::ContentId>,
-        checkpoints: &crate::ExactCheckpointStore,
-        exact_pins: &mut dyn crate::ExactPinRetentionAdmin,
+        checkpoint_retention: (
+            &crate::ExactCheckpointStore,
+            &mut dyn crate::ExactPinRetentionAdmin,
+        ),
+        boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
     ) -> Result<crucible_campaign::CampaignArchivePlan, crate::CampaignArchiveTransferError> {
+        boundary().map_err(crucible_campaign::CampaignRepositoryError::Ram)?;
+        let (checkpoints, exact_pins) = checkpoint_retention;
+
         let mut resolver = crate::ExactPinCampaignArchiveCheckpointResolver::new(
             self.repository.as_ref(),
             checkpoints,
@@ -825,7 +892,13 @@ impl PreparedCampaignLocalService {
             exact_pins,
         )?;
         self.repository
-            .plan_campaign_archive(snapshot, policy, retained_roots, Some(&mut resolver))
+            .plan_campaign_archive_with_boundary(
+                snapshot,
+                policy,
+                retained_roots,
+                Some(&mut resolver),
+                boundary,
+            )
             .map_err(Into::into)
     }
 
@@ -833,23 +906,48 @@ impl PreparedCampaignLocalService {
     ///
     /// This narrow export holds source GC exclusion across metadata staging and
     /// the entire copy. A standalone bundle writer owns the destination and
-    /// publishes its directory only after this call and destination inspection
-    /// succeed, so it needs no long-lived transfer journal in the source.
+    /// publishes its directory only after this call succeeds. The destination
+    /// receives an authenticated archive-only ref before publication, so its
+    /// RAM descendants remain owned after the temporary transfer leases end.
+    /// A private destination needs no long-lived source transfer journal.
     ///
     /// # Errors
     ///
-    /// Returns [`CampaignRepositoryError`] if the source plan changes, source
-    /// GC exclusion cannot be acquired, or destination placement fails.
-    pub fn export_campaign_archive_to_repository(
+    /// Returns [`CampaignRepositoryError`] if the source plan changes, either
+    /// GC exclusion cannot be acquired, the operation boundary is rejected,
+    /// or destination placement, authentication, or archive publication fails.
+    pub fn export_campaign_archive_to_repository_with_boundary(
         &self,
         plan: &crucible_campaign::CampaignArchivePlan,
         destination: &CampaignRepository,
         durability: crucible_cas::content_store::DurabilityRequirement,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
     ) -> Result<crucible_campaign::CampaignArchiveTransferReport, CampaignRepositoryError> {
+        boundary().map_err(CampaignRepositoryError::Ram)?;
         let _source_gc = self.repository.acquire_gc_exclusion_guard()?;
-        self.repository.stage_campaign_archive_metadata(plan)?;
+        let _destination_gc = destination.acquire_gc_exclusion_guard()?;
         self.repository
-            .transfer_campaign_archive_objects(destination, plan, durability)
+            .stage_campaign_archive_metadata_with_boundary(plan, boundary)?;
+        let mut operation = blake3::Hasher::new();
+        operation.update(b"crucible.campaign.private-archive-export.v1\0");
+        operation.update(plan.manifest_id().content_id().encode().as_bytes());
+        let report = self
+            .repository
+            .transfer_campaign_archive_objects_for_operation(
+                destination,
+                plan,
+                durability,
+                *operation.finalize().as_bytes(),
+                "private-finding-bundle",
+                boundary,
+            )?;
+        destination.publish_campaign_archive_with_boundary(
+            "exported-finding-bundle",
+            None,
+            plan,
+            boundary,
+        )?;
+        Ok(report)
     }
 
     /// Authenticates one named archive and its complete direct inventory.
@@ -858,11 +956,13 @@ impl PreparedCampaignLocalService {
     ///
     /// Returns [`CampaignRepositoryError`] when the archive ref is absent or
     /// its manifest, inventory pages, or selected objects fail authentication.
-    pub fn inspect_campaign_archive_ref(
+    pub fn inspect_campaign_archive_ref_with_boundary(
         &self,
         archive_name: &str,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
     ) -> Result<crucible_campaign::CampaignArchiveInspection, CampaignRepositoryError> {
-        self.repository.inspect_campaign_archive_ref(archive_name)
+        self.repository
+            .inspect_campaign_archive_ref_with_boundary(archive_name, boundary)
     }
 
     /// Borrows this deployment's GC-registered archive-transfer endpoint.

@@ -24,11 +24,7 @@ impl World {
         nodes: Vec<WorldNode>,
         links: Vec<LinkDef>,
     ) -> Result<Self, EngineError> {
-        Self::from_recorded_node_defs_and_links(
-            id,
-            nodes.into_iter().map(WorldNodeDef::Vm).collect(),
-            links,
-        )
+        Self::from_recorded_node_defs_and_links(id, owned_vm_node_defs(nodes)?, links)
     }
 
     /// Builds a world from a recorded identity and heterogeneous logical topology.
@@ -38,23 +34,28 @@ impl World {
     /// Returns the same validation errors as [`World::from_node_defs_and_links`].
     pub fn from_recorded_node_defs_and_links(
         id: ContentHash,
-        topology_nodes: Vec<WorldNodeDef>,
-        links: Vec<LinkDef>,
+        mut topology_nodes: Vec<WorldNodeDef>,
+        mut links: Vec<LinkDef>,
     ) -> Result<Self, EngineError> {
-        let topology_nodes = canonical_world_node_defs(&topology_nodes);
-        let nodes = world_vm_node_projection(&topology_nodes);
-        let links = canonical_world_links(&links);
-        validate_world_nodes(&nodes)?;
+        topology_nodes.sort_unstable_by(|left, right| left.id().cmp(right.id()));
+        sort_owned_world_links(&mut links);
+        validate_world_nodes(topology_nodes.iter().filter_map(|node| match node {
+            WorldNodeDef::Vm(node) => Some(node),
+            WorldNodeDef::Io(_) => None,
+        }))?;
         validate_world_node_defs(&topology_nodes)?;
         validate_world_links_for_node_defs(&topology_nodes, &links)?;
-        Ok(Self {
+        let mut world = Self {
             id,
+            canonical_id: ContentHash::default(),
             topology_nodes,
             links,
             fault_topology: WorldFaultTopology::default(),
             fault_topology_id: ContentHash::default(),
             fault_topology_wire: Vec::new(),
-        })
+        };
+        world.canonical_id = serialized_world_identity(&world)?;
+        Ok(world)
     }
 
     /// Returns the world content address carried by this handle.
@@ -125,7 +126,14 @@ impl World {
         self.fault_topology = topology;
         self.fault_topology_id = topology_id;
         self.fault_topology_wire = topology_wire;
-        self.id = canonical_world_identity(&self);
+        self.canonical_id = serialized_world_identity(&self)
+            .map_err(|source| WorldFaultTopologyError::Canonical(Box::new(source)))?;
+        if !self.topology_nodes.is_empty()
+            || !self.links.is_empty()
+            || !self.fault_topology.is_empty()
+        {
+            self.id = self.canonical_id;
+        }
         Ok(self)
     }
 
@@ -210,7 +218,7 @@ impl World {
         nodes: Vec<WorldNode>,
         links: Vec<LinkDef>,
     ) -> Result<Self, EngineError> {
-        Self::from_node_defs_and_links(nodes.into_iter().map(WorldNodeDef::Vm).collect(), links)
+        Self::from_node_defs_and_links(owned_vm_node_defs(nodes)?, links)
     }
 
     /// Builds a canonical world from heterogeneous VM/I/O nodes and logical links.
@@ -226,29 +234,30 @@ impl World {
     /// [`EngineError::WorldIoNodeUnknownOwner`] when an I/O node names an
     /// undeclared/non-VM owner, or an I/O-core configuration error.
     pub fn from_node_defs_and_links(
-        topology_nodes: Vec<WorldNodeDef>,
-        links: Vec<LinkDef>,
+        mut topology_nodes: Vec<WorldNodeDef>,
+        mut links: Vec<LinkDef>,
     ) -> Result<Self, EngineError> {
-        let topology_nodes = canonical_world_node_defs(&topology_nodes);
-        let nodes = world_vm_node_projection(&topology_nodes);
-        let links = canonical_world_links(&links);
-        validate_world_nodes(&nodes)?;
+        topology_nodes.sort_unstable_by(|left, right| left.id().cmp(right.id()));
+        sort_owned_world_links(&mut links);
+        validate_world_nodes(topology_nodes.iter().filter_map(|node| match node {
+            WorldNodeDef::Vm(node) => Some(node),
+            WorldNodeDef::Io(_) => None,
+        }))?;
         validate_world_node_defs(&topology_nodes)?;
         validate_world_links_for_node_defs(&topology_nodes, &links)?;
         let fault_topology_id = ContentHash::default();
-        let material = format!(
-            "{}\nfault-topology={}",
-            world_material(&topology_nodes, &links),
-            fault_topology_id.to_hex()
-        );
-        Ok(Self {
-            id: ContentHash::from_canonical_material("crucible.model.world.v6", &material),
+        let mut world = Self {
+            id: ContentHash::default(),
+            canonical_id: ContentHash::default(),
             topology_nodes,
             links,
             fault_topology: WorldFaultTopology::default(),
             fault_topology_id,
             fault_topology_wire: Vec::new(),
-        })
+        };
+        world.canonical_id = serialized_world_identity(&world)?;
+        world.id = world.canonical_id;
+        Ok(world)
     }
 
     /// Validates the world's ready-point policy configuration.
@@ -305,7 +314,7 @@ impl World {
     /// transport configuration violates the latency floor, or an I/O-node owner
     /// or static-core configuration is invalid.
     pub fn validate_topology(&self) -> Result<(), EngineError> {
-        validate_world_nodes(&world_vm_node_projection(&self.topology_nodes))?;
+        validate_world_nodes(self.vm_nodes().iter())?;
         validate_world_node_defs(&self.topology_nodes)?;
         validate_world_links_for_node_defs(&self.topology_nodes, &self.links)
     }
@@ -477,33 +486,32 @@ impl World {
             app_random_draw_cap: DEFAULT_APP_RANDOM_DRAW_CAP,
         }
     }
+}
 
-    pub(super) fn scenario_def_from_components_with_measurements_selectables_and_app_random_draw_cap(
-        &self,
-        plan: &Plan,
-        properties: &Properties,
-        measurements: &MeasurementDefinitions,
-        selectables: &ScenarioSelectables,
-        seed: Seed,
-        app_random_draw_cap: u64,
-    ) -> ScenarioDef {
-        let material =
-            scenario_world_plan_properties_measurements_selectables_seed_app_random_cap_material(
-                self,
-                plan,
-                properties,
-                measurements,
-                selectables,
-                seed,
-                app_random_draw_cap,
-            );
-        ScenarioDef {
-            id: ContentHash::from_canonical_material(
-                "crucible.model.world-plan-properties-seed-scenario.v2",
-                &material,
-            ),
-            seed,
-            app_random_draw_cap,
-        }
-    }
+/// Moves VM definitions into their heterogeneous owner after admitting exact storage.
+fn owned_vm_node_defs(nodes: Vec<WorldNode>) -> Result<Vec<WorldNodeDef>, EngineError> {
+    crate::owned_decode::charge_array::<WorldNodeDef>(nodes.len())
+        .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+    let mut definitions = Vec::new();
+    definitions
+        .try_reserve_exact(nodes.len())
+        .map_err(|source| EngineError::ArtifactDecodeAdmission {
+            source: crate::owned_decode::DecodeAdmissionError::new(source),
+        })?;
+    definitions.extend(nodes.into_iter().map(WorldNodeDef::Vm));
+    Ok(definitions)
+}
+
+fn sort_owned_world_links(links: &mut [LinkDef]) {
+    links.sort_unstable_by(|left, right| {
+        let (left_a, left_b) = left.endpoints();
+        let (right_a, right_b) = right.endpoints();
+        left_a
+            .cmp(right_a)
+            .then_with(|| left_b.cmp(right_b))
+            .then_with(|| left.latency().cmp(&right.latency()))
+            .then_with(|| left.jitter().cmp(&right.jitter()))
+            .then_with(|| left.loss().cmp(&right.loss()))
+            .then_with(|| left.bandwidth_bps().cmp(&right.bandwidth_bps()))
+    });
 }

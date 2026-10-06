@@ -462,144 +462,6 @@ fn credit(bytes: u32) -> Result<(), RamTransferCodecError> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crucible_ram::{MetadataBudget, RegionClass, RegionDescriptor, RegionTree, Topology};
-
-    fn id(kind: &str, version: u32) -> String {
-        format!("{kind}.{version}.{}", "ab".repeat(32))
-    }
-
-    fn offer(scope: Scope) -> RamTransferOffer {
-        let region = RegionDescriptor::new("main", RegionClass::MutableMain, 4097).unwrap();
-        let topology = Topology::new(vec![region], Limits::default()).unwrap();
-        let tree = RegionTree::zeroed(4097, &MetadataBudget::new(64 * 1024)).unwrap();
-        let record = RootRecord::new(topology, scope, vec![tree.digest()]).unwrap();
-        RamTransferOffer {
-            whole_world_root: id("exact-manifest", 6),
-            ram_root: id("exact-manifest", 1),
-            root_record: record.encode(),
-            destination: "destination".into(),
-            durable_placements: 1,
-            limits: RamTransferLimits {
-                objects: 1_000,
-                bytes: 1_000_000,
-                chunk_bytes: 64,
-            },
-        }
-    }
-
-    #[test]
-    fn archive_controls_round_trip_without_accepting_trailing_or_truncated_frames() {
-        let controls = vec![
-            RamTransferControl::Offer(offer(Scope::Exact)),
-            RamTransferControl::WantNode {
-                coordinate: RamTransferNodeCoordinate::Root,
-                object: id("exact-manifest", 1),
-            },
-            RamTransferControl::WantNode {
-                coordinate: RamTransferNodeCoordinate::Catalog {
-                    region_id: "main".into(),
-                    first_page: 0,
-                    height: 1,
-                },
-                object: id("ram-tree", 1),
-            },
-            RamTransferControl::WantObject {
-                region_id: "main".into(),
-                page_index: 1,
-                object: id("ram-extent", 1),
-            },
-            RamTransferControl::ObjectChunk {
-                object: id("ram-tree", 1),
-                length: 3,
-                offset: 0,
-                bytes: vec![1, 2, 3],
-                last: true,
-            },
-            RamTransferControl::Credit {
-                object: id("ram-tree", 1),
-                offset: 3,
-                bytes: 64,
-            },
-            RamTransferControl::ClosureStored {
-                ram_root: id("exact-manifest", 1),
-            },
-            RamTransferControl::Cancel,
-            RamTransferControl::Canceled,
-            RamTransferControl::Fail { code: 7 },
-        ];
-        for control in controls {
-            let message = RamTransferMessage {
-                operation: [7; 32],
-                control,
-            };
-            let bytes = message.encode().unwrap();
-            assert_eq!(RamTransferMessage::decode(&bytes).unwrap(), message);
-            for length in 0..bytes.len() {
-                assert!(RamTransferMessage::decode(&bytes[..length]).is_err());
-            }
-            let mut trailing = bytes.clone();
-            trailing.push(0);
-            assert!(RamTransferMessage::decode(&trailing).is_err());
-        }
-    }
-
-    #[test]
-    fn transfer_edition_rejects_weak_scope_noncanonical_ids_and_unbounded_chunks() {
-        let controls = [
-            RamTransferControl::Offer(offer(Scope::Execution)),
-            RamTransferControl::Credit {
-                object: id("ram-tree", 1),
-                offset: 0,
-                bytes: 0,
-            },
-            RamTransferControl::WantNode {
-                coordinate: RamTransferNodeCoordinate::Catalog {
-                    region_id: "main".into(),
-                    first_page: 1,
-                    height: 1,
-                },
-                object: id("ram-tree", 1),
-            },
-            RamTransferControl::WantObject {
-                region_id: "main".into(),
-                page_index: 0,
-                object: id("ram-extent", 1).to_uppercase(),
-            },
-            RamTransferControl::ObjectChunk {
-                object: id("ram-extent", 1),
-                length: 2,
-                offset: 0,
-                bytes: vec![1],
-                last: true,
-            },
-            RamTransferControl::ObjectChunk {
-                object: id("ram-tree", 1),
-                length: MAX_TRANSFER_OBJECT_BYTES + 1,
-                offset: 0,
-                bytes: vec![1],
-                last: false,
-            },
-        ];
-        for control in controls {
-            assert!(
-                RamTransferMessage {
-                    operation: [1; 32],
-                    control
-                }
-                .encode()
-                .is_err()
-            );
-        }
-        assert!(
-            RamTransferMessage::decode(&(MAX_TRANSFER_FRAME_BYTES as u32 + 1).to_be_bytes())
-                .is_err()
-        );
-    }
-}
-
 fn text(value: &str, maximum: usize) -> Result<(), RamTransferCodecError> {
     if value.is_empty() || value.len() > maximum || value.chars().any(char::is_control) {
         return Err(RamTransferCodecError::Invalid);
@@ -678,5 +540,153 @@ impl<'a> Decoder<'a> {
     }
     fn string(&mut self, maximum: usize) -> Result<String, RamTransferCodecError> {
         String::from_utf8(self.blob(maximum)?).map_err(|_| RamTransferCodecError::Invalid)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crucible_ram::{MetadataBudget, RegionClass, RegionDescriptor, RegionTree, Topology};
+
+    fn id(kind: &str, version: u32) -> String {
+        format!("{kind}.{version}.{}", "ab".repeat(32))
+    }
+
+    fn offer(scope: Scope) -> RamTransferOffer {
+        let region = RegionDescriptor::new("main", RegionClass::MutableMain, 4097)
+            .unwrap_or_else(|error| panic!("fixture RAM region: {error}"));
+        let topology = Topology::new(vec![region], Limits::default())
+            .unwrap_or_else(|error| panic!("fixture RAM topology: {error}"));
+        let tree = RegionTree::zeroed(4097, &MetadataBudget::new(64 * 1024))
+            .unwrap_or_else(|error| panic!("fixture RAM tree: {error}"));
+        let record = RootRecord::new(topology, scope, vec![tree.digest()])
+            .unwrap_or_else(|error| panic!("fixture RAM root: {error}"));
+        RamTransferOffer {
+            whole_world_root: id("exact-manifest", 6),
+            ram_root: id("exact-manifest", 1),
+            root_record: record.encode(),
+            destination: "destination".into(),
+            durable_placements: 1,
+            limits: RamTransferLimits {
+                objects: 1_000,
+                bytes: 1_000_000,
+                chunk_bytes: 64,
+            },
+        }
+    }
+
+    #[test]
+    fn archive_controls_round_trip_without_accepting_trailing_or_truncated_frames() {
+        let controls = vec![
+            RamTransferControl::Offer(offer(Scope::Exact)),
+            RamTransferControl::WantNode {
+                coordinate: RamTransferNodeCoordinate::Root,
+                object: id("exact-manifest", 1),
+            },
+            RamTransferControl::WantNode {
+                coordinate: RamTransferNodeCoordinate::Catalog {
+                    region_id: "main".into(),
+                    first_page: 0,
+                    height: 1,
+                },
+                object: id("ram-tree", 1),
+            },
+            RamTransferControl::WantObject {
+                region_id: "main".into(),
+                page_index: 1,
+                object: id("ram-extent", 1),
+            },
+            RamTransferControl::ObjectChunk {
+                object: id("ram-tree", 1),
+                length: 3,
+                offset: 0,
+                bytes: vec![1, 2, 3],
+                last: true,
+            },
+            RamTransferControl::Credit {
+                object: id("ram-tree", 1),
+                offset: 3,
+                bytes: 64,
+            },
+            RamTransferControl::ClosureStored {
+                ram_root: id("exact-manifest", 1),
+            },
+            RamTransferControl::Cancel,
+            RamTransferControl::Canceled,
+            RamTransferControl::Fail { code: 7 },
+        ];
+        for control in controls {
+            let message = RamTransferMessage {
+                operation: [7; 32],
+                control,
+            };
+            let bytes = message
+                .encode()
+                .unwrap_or_else(|error| panic!("encode transfer fixture: {error}"));
+            assert_eq!(
+                RamTransferMessage::decode(&bytes)
+                    .unwrap_or_else(|error| panic!("decode transfer fixture: {error}")),
+                message
+            );
+            for length in 0..bytes.len() {
+                assert!(RamTransferMessage::decode(&bytes[..length]).is_err());
+            }
+            let mut trailing = bytes.clone();
+            trailing.push(0);
+            assert!(RamTransferMessage::decode(&trailing).is_err());
+        }
+    }
+
+    #[test]
+    fn transfer_edition_rejects_weak_scope_noncanonical_ids_and_unbounded_chunks() {
+        let controls = [
+            RamTransferControl::Offer(offer(Scope::Execution)),
+            RamTransferControl::Credit {
+                object: id("ram-tree", 1),
+                offset: 0,
+                bytes: 0,
+            },
+            RamTransferControl::WantNode {
+                coordinate: RamTransferNodeCoordinate::Catalog {
+                    region_id: "main".into(),
+                    first_page: 1,
+                    height: 1,
+                },
+                object: id("ram-tree", 1),
+            },
+            RamTransferControl::WantObject {
+                region_id: "main".into(),
+                page_index: 0,
+                object: id("ram-extent", 1).to_uppercase(),
+            },
+            RamTransferControl::ObjectChunk {
+                object: id("ram-extent", 1),
+                length: 2,
+                offset: 0,
+                bytes: vec![1],
+                last: true,
+            },
+            RamTransferControl::ObjectChunk {
+                object: id("ram-tree", 1),
+                length: MAX_TRANSFER_OBJECT_BYTES + 1,
+                offset: 0,
+                bytes: vec![1],
+                last: false,
+            },
+        ];
+        for control in controls {
+            assert!(
+                RamTransferMessage {
+                    operation: [1; 32],
+                    control
+                }
+                .encode()
+                .is_err()
+            );
+        }
+        assert!(
+            RamTransferMessage::decode(&(MAX_TRANSFER_FRAME_BYTES as u32 + 1).to_be_bytes())
+                .is_err()
+        );
     }
 }

@@ -90,12 +90,18 @@ fn encode_inventory(
     {
         return Err(RamControlError::InvalidFrame);
     }
+    report.owner_resources.validate()?;
     out.push(if region.is_some() { 2 } else { 1 });
     for value in [
         report.topology_generation,
         report.logical_bytes,
         report.native_metadata_bytes,
         report.native_scratch_bytes,
+        report.owner_resources.existing_tasks,
+        report.owner_resources.existing_file_descriptors,
+        report.owner_resources.registered_service_tasks,
+        report.owner_resources.prospective_tasks,
+        report.owner_resources.prospective_file_descriptors,
     ] {
         out.extend_from_slice(&value.to_be_bytes());
     }
@@ -136,6 +142,13 @@ fn decode_inventory(
         logical_bytes: input.u64()?,
         native_metadata_bytes: input.u64()?,
         native_scratch_bytes: input.u64()?,
+        owner_resources: RamControlOwnerInventory {
+            existing_tasks: input.u64()?,
+            existing_file_descriptors: input.u64()?,
+            registered_service_tasks: input.u64()?,
+            prospective_tasks: input.u64()?,
+            prospective_file_descriptors: input.u64()?,
+        },
         region_count: input.u32()?,
         granted: input.boolean()?,
     };
@@ -295,6 +308,7 @@ pub fn encode_ram_control(frame: &RamControlFrame) -> Result<Vec<u8>, RamControl
         RamControlMessage::Request(RamControlRequest::Cancel { .. }) => 3,
         RamControlMessage::Request(RamControlRequest::InventoryRegion { .. }) => 4,
         RamControlMessage::Request(RamControlRequest::GrantInventory { .. }) => 5,
+        RamControlMessage::Request(RamControlRequest::SyncOuterCap { .. }) => 6,
         RamControlMessage::Reply { .. } => 128,
     };
     let mut out = Vec::with_capacity(1024);
@@ -313,12 +327,16 @@ pub fn encode_ram_control(frame: &RamControlFrame) -> Result<Vec<u8>, RamControl
             expected_revision,
             policy_revision,
             reservation_revision,
+            resources,
             policy,
         }) => {
             if expected_revision.checked_add(1) != Some(policy_revision) {
                 return Err(RamControlError::InvalidFrame);
             }
             for value in [expected_revision, policy_revision, reservation_revision] {
+                out.extend_from_slice(&value.to_be_bytes());
+            }
+            for value in resources.components() {
                 out.extend_from_slice(&value.to_be_bytes());
             }
             encode_policy(&mut out, policy)?;
@@ -344,14 +362,22 @@ pub fn encode_ram_control(frame: &RamControlFrame) -> Result<Vec<u8>, RamControl
         RamControlMessage::Request(RamControlRequest::GrantInventory {
             topology_generation,
             resources,
+            spill_quota_bytes,
         }) => {
-            if topology_generation == 0 {
+            if topology_generation == 0
+                || spill_quota_bytes == 0
+                || spill_quota_bytes > resources.backing_peak_bytes
+            {
                 return Err(RamControlError::InvalidFrame);
             }
             out.extend_from_slice(&topology_generation.to_be_bytes());
             for value in resources.components() {
                 out.extend_from_slice(&value.to_be_bytes());
             }
+            out.extend_from_slice(&spill_quota_bytes.to_be_bytes());
+        }
+        RamControlMessage::Request(RamControlRequest::SyncOuterCap { cap }) => {
+            out.extend_from_slice(&encode_ram_control_outer(cap)?);
         }
         RamControlMessage::Reply {
             request_digest,
@@ -396,6 +422,31 @@ pub fn encode_ram_control(frame: &RamControlFrame) -> Result<Vec<u8>, RamControl
             }
             out.push(state.convergence as u8);
             encode_inventory(&mut out, state.inventory, state.inventory_region)?;
+            out.push(u8::from(state.activity.is_some()));
+            if let Some(activity) = state.activity {
+                for count in [
+                    activity.successful_missing_installs,
+                    activity.successful_missing_read_installs,
+                    activity.successful_missing_write_installs,
+                    activity.write_protect_transitions,
+                    activity.preservation_reads,
+                    activity.preservation_writes,
+                    activity.physical_discards,
+                    activity.prefetched_pages,
+                ] {
+                    out.extend_from_slice(&count.to_be_bytes());
+                }
+            }
+            out.push(u8::from(state.kernel_probe.is_some()));
+            if let Some(probe) = state.kernel_probe {
+                if probe.features == 0 {
+                    return Err(RamControlError::InvalidFrame);
+                }
+                out.push(probe.mode as u8);
+                out.extend_from_slice(&probe.effective_uid.to_be_bytes());
+                out.extend_from_slice(&probe.effective_gid.to_be_bytes());
+                out.extend_from_slice(&probe.features.to_be_bytes());
+            }
         }
         _ => {}
     }
@@ -432,12 +483,22 @@ pub fn decode_ram_control(bytes: &[u8]) -> Result<RamControlFrame, RamControlErr
     };
     let message = match tag {
         0 => RamControlMessage::Request(RamControlRequest::Hello),
-        1 => RamControlMessage::Request(RamControlRequest::Apply {
-            expected_revision: input.u64()?,
-            policy_revision: input.u64()?,
-            reservation_revision: input.u64()?,
-            policy: decode_policy(&mut input)?,
-        }),
+        1 => {
+            let expected_revision = input.u64()?;
+            let policy_revision = input.u64()?;
+            let reservation_revision = input.u64()?;
+            let mut values = [0; 8];
+            for value in &mut values {
+                *value = input.u64()?;
+            }
+            RamControlMessage::Request(RamControlRequest::Apply {
+                expected_revision,
+                policy_revision,
+                reservation_revision,
+                resources: RamControlResources::from_components(values),
+                policy: decode_policy(&mut input)?,
+            })
+        }
         2 => RamControlMessage::Request(RamControlRequest::Status),
         3 => RamControlMessage::Request(RamControlRequest::Cancel {
             operation_generation: input.u64()?,
@@ -455,8 +516,12 @@ pub fn decode_ram_control(bytes: &[u8]) -> Result<RamControlFrame, RamControlErr
             RamControlMessage::Request(RamControlRequest::GrantInventory {
                 topology_generation,
                 resources: RamControlResources::from_components(values),
+                spill_quota_bytes: input.u64()?,
             })
         }
+        6 => RamControlMessage::Request(RamControlRequest::SyncOuterCap {
+            cap: decode_ram_control_outer(&input.take::<RAM_CONTROL_OUTER_BYTES>()?)?,
+        }),
         128 => {
             let request_digest = input.take()?;
             let disposition = match input.byte()? {
@@ -472,6 +537,8 @@ pub fn decode_ram_control(bytes: &[u8]) -> Result<RamControlFrame, RamControlErr
             let limitation_reasons = input.u32()?;
             let measurements_available = input.boolean()?;
             let mut state = RamControlReply {
+                kernel_probe: None,
+                activity: None,
                 inventory: None,
                 inventory_region: None,
                 logical_ram_bytes: input.u64()?,
@@ -502,6 +569,33 @@ pub fn decode_ram_control(bytes: &[u8]) -> Result<RamControlFrame, RamControlErr
                 _ => return Err(RamControlError::InvalidFrame),
             };
             (state.inventory, state.inventory_region) = decode_inventory(&mut input)?;
+            state.activity = match input.byte()? {
+                0 => None,
+                1 => Some(RamControlActivity {
+                    successful_missing_installs: input.u64()?,
+                    successful_missing_read_installs: input.u64()?,
+                    successful_missing_write_installs: input.u64()?,
+                    write_protect_transitions: input.u64()?,
+                    preservation_reads: input.u64()?,
+                    preservation_writes: input.u64()?,
+                    physical_discards: input.u64()?,
+                    prefetched_pages: input.u64()?,
+                }),
+                _ => return Err(RamControlError::InvalidFrame),
+            };
+            state.kernel_probe = match input.byte()? {
+                0 => None,
+                1 => Some(RamControlKernelProbe {
+                    mode: match input.byte()? {
+                        1 => RamControlKernelProbeMode::FullKernel,
+                        _ => return Err(RamControlError::InvalidFrame),
+                    },
+                    effective_uid: input.u32()?,
+                    effective_gid: input.u32()?,
+                    features: input.u64()?,
+                }),
+                _ => return Err(RamControlError::InvalidFrame),
+            };
             RamControlMessage::Reply {
                 request_digest,
                 state,

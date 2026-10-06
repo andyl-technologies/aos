@@ -641,6 +641,13 @@ impl ImmutableBlobBackend for WriteBackStore {
         &self.name
     }
 
+    fn metadata_resources(&self) -> Result<Arc<dyn super::StorePhysicalQuotaGuard>, StoreError> {
+        super::composition::common_metadata_resources([
+            self.staging.as_ref(),
+            self.destination.as_ref(),
+        ])
+    }
+
     fn capabilities(&self) -> BackendCapabilities {
         let mut capabilities = self.staging.capabilities();
         let destination = self.destination.capabilities();

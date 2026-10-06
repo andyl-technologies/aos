@@ -5,12 +5,26 @@ use crate::SimInstant;
 pub(super) struct HostConditionEvaluation<'prefix, 'state, O: ?Sized> {
     observed: ObservedState<'prefix>,
     oracle: &'state mut O,
-    once_latches: &'state mut Vec<Condition>,
+    once_latches: OnceLatches<'state>,
     leaf_cache: &'state mut HostConditionEvaluationCache,
     white_box_policies: &'state BTreeMap<NodeId, WhiteBoxPolicy>,
     code_points: &'state BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
     mem_places: &'state BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
     scheduler_quiescence: Option<&'state SchedulerQuiescence>,
+}
+
+enum OnceLatches<'state> {
+    Mutable(&'state mut Vec<Condition>),
+    Borrowed(&'state [Condition]),
+}
+
+impl OnceLatches<'_> {
+    fn values(&self) -> &[Condition] {
+        match self {
+            Self::Mutable(values) => values,
+            Self::Borrowed(values) => values,
+        }
+    }
 }
 
 pub(super) type HostConditionEvaluationCache = BTreeMap<HostConditionLeafKey, bool>;
@@ -22,16 +36,66 @@ pub(super) enum HostConditionLeafKey {
 }
 
 impl HostConditionLeafKey {
-    fn from_leaf(leaf: ConditionLeaf<'_>) -> Self {
-        match leaf {
-            ConditionLeaf::Named { name, nodes } => Self::Named {
-                name: name.to_owned(),
-                nodes: nodes.to_vec(),
-            },
-            ConditionLeaf::GuestMarker { marker } => Self::GuestMarker {
-                marker: marker.clone(),
-            },
+    fn matches_leaf(&self, leaf: &ConditionLeaf<'_>) -> bool {
+        match (self, leaf) {
+            (
+                Self::Named { name, nodes },
+                ConditionLeaf::Named {
+                    name: candidate,
+                    nodes: candidate_nodes,
+                },
+            ) => name == candidate && nodes == candidate_nodes,
+            (Self::GuestMarker { marker }, ConditionLeaf::GuestMarker { marker: candidate }) => {
+                marker == *candidate
+            }
+            _ => false,
         }
+    }
+
+    fn from_leaf(
+        leaf: &ConditionLeaf<'_>,
+    ) -> Result<Self, crate::owned_decode::DecodeAdmissionError> {
+        Ok(match leaf {
+            ConditionLeaf::Named { name, nodes } => {
+                crate::owned_decode::charge_array::<NodeId>(nodes.len())?;
+                let mut copied_nodes = Vec::new();
+                copied_nodes
+                    .try_reserve_exact(nodes.len())
+                    .map_err(crate::owned_decode::DecodeAdmissionError::new)?;
+                for node in *nodes {
+                    copied_nodes.push(NodeId {
+                        name: admitted_evaluation_string(&node.name)?,
+                    });
+                }
+                Self::Named {
+                    name: admitted_evaluation_string(name)?,
+                    nodes: copied_nodes,
+                }
+            }
+            ConditionLeaf::GuestMarker { marker } => Self::GuestMarker {
+                marker: MarkerId {
+                    name: admitted_evaluation_string(&marker.name)?,
+                },
+            },
+        })
+    }
+}
+
+fn admitted_evaluation_string(
+    source: &str,
+) -> Result<String, crate::owned_decode::DecodeAdmissionError> {
+    crate::owned_decode::charge_array::<u8>(source.len())?;
+    let mut value = String::new();
+    value
+        .try_reserve_exact(source.len())
+        .map_err(crate::owned_decode::DecodeAdmissionError::new)?;
+    value.push_str(source);
+    Ok(value)
+}
+
+fn record_evaluation_refusal(source: crate::owned_decode::DecodeAdmissionError) {
+    if let Some(budget) = crate::owned_decode::current_budget() {
+        budget.record_failure(source);
     }
 }
 
@@ -53,10 +117,22 @@ where
     }
 
     fn leaf_is_true(&mut self, leaf: ConditionLeaf<'_>) -> bool {
-        let key = HostConditionLeafKey::from_leaf(leaf);
-        if let Some(value) = self.leaf_cache.get(&key).copied() {
-            return value;
+        if let Some((_, value)) = self
+            .leaf_cache
+            .iter()
+            .find(|(key, _)| key.matches_leaf(&leaf))
+        {
+            return *value;
         }
+        let admission = crate::owned_decode::charge_btree_entry::<HostConditionLeafKey, bool>()
+            .and_then(|()| HostConditionLeafKey::from_leaf(&leaf));
+        let key = match admission {
+            Ok(key) => key,
+            Err(source) => {
+                record_evaluation_refusal(source);
+                return false;
+            }
+        };
         let value = HostAssertionOracle::leaf_is_true(self.oracle, self.observed, leaf);
         self.leaf_cache.insert(key, value);
         value
@@ -75,12 +151,29 @@ where
     }
 
     fn once_condition_is_latched(&self, condition: &Condition) -> bool {
-        self.once_latches.iter().any(|latched| latched == condition)
+        self.once_latches
+            .values()
+            .iter()
+            .any(|latched| latched == condition)
     }
 
-    fn latch_once_condition(&mut self, condition: &Condition) {
-        if !self.once_condition_is_latched(condition) {
-            self.once_latches.push(condition.clone());
+    fn prepare_once_latches(&mut self, additional: usize) -> Result<(), EngineError> {
+        if let OnceLatches::Mutable(values) = &mut self.once_latches {
+            crate::owned_decode::reserve_vec(values, additional)
+                .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+        }
+        Ok(())
+    }
+
+    fn records_once_latches(&self) -> bool {
+        matches!(self.once_latches, OnceLatches::Mutable(_))
+    }
+
+    fn latch_once_condition(&mut self, condition: Condition) {
+        if !self.once_condition_is_latched(&condition)
+            && let OnceLatches::Mutable(values) = &mut self.once_latches
+        {
+            values.push(condition);
         }
     }
 
@@ -120,7 +213,7 @@ pub(super) fn host_condition_is_true<O>(
     code_points: &BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
     mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
     scheduler_quiescence: Option<&SchedulerQuiescence>,
-) -> bool
+) -> Result<bool, EngineError>
 where
     O: HostAssertionOracle + ?Sized,
 {
@@ -150,21 +243,21 @@ pub(super) fn host_condition_is_true_with_cache<O>(
     code_points: &BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
     mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
     scheduler_quiescence: Option<&SchedulerQuiescence>,
-) -> bool
+) -> Result<bool, EngineError>
 where
     O: HostAssertionOracle + ?Sized,
 {
     let mut evaluator = HostConditionEvaluation {
         observed: prefix.observed_state(),
         oracle,
-        once_latches,
+        once_latches: OnceLatches::Mutable(once_latches),
         leaf_cache,
         white_box_policies,
         code_points,
         mem_places,
         scheduler_quiescence,
     };
-    evaluate_condition(&mut evaluator, condition)
+    try_evaluate_condition(&mut evaluator, condition)
 }
 
 pub(super) const ASSERTION_PROXIMITY_UNIT: u128 = 1;
@@ -212,11 +305,10 @@ pub(super) fn host_condition_distance_to_satisfaction<O>(
 where
     O: HostAssertionOracle + ?Sized,
 {
-    let mut local_once_latches = once_latches.to_vec();
     let mut evaluator = HostConditionEvaluation {
         observed: prefix.observed_state(),
         oracle,
-        once_latches: &mut local_once_latches,
+        once_latches: OnceLatches::Borrowed(once_latches),
         leaf_cache,
         white_box_policies,
         code_points,
@@ -577,6 +669,113 @@ pub(crate) fn evaluate_condition<E>(evaluator: &mut E, condition: &Condition) ->
 where
     E: ConditionEvaluator + ?Sized,
 {
+    match try_evaluate_condition(evaluator, condition) {
+        Ok(matched) => matched,
+        Err(error) => {
+            if let Some(budget) = crate::owned_decode::current_budget() {
+                let source = match error {
+                    EngineError::ArtifactDecodeAdmission { source } => source,
+                    source => crate::owned_decode::DecodeAdmissionError::new(source),
+                };
+                budget.record_failure(source);
+            }
+            false
+        }
+    }
+}
+
+pub(super) fn try_evaluate_condition<E>(
+    evaluator: &mut E,
+    condition: &Condition,
+) -> Result<bool, EngineError>
+where
+    E: ConditionEvaluator + ?Sized,
+{
+    check_evaluation_admission()?;
+    let count = count_once_conditions(condition)?;
+    let budget = crate::owned_decode::current_budget();
+    let scratch = budget
+        .as_ref()
+        .map(|budget| budget.reserve_scratch_array::<&Condition>(count))
+        .transpose()
+        .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+    let mut pending = Vec::new();
+    pending
+        .try_reserve_exact(count)
+        .map_err(|source| EngineError::ArtifactDecodeAdmission {
+            source: crate::owned_decode::DecodeAdmissionError::new(source),
+        })?;
+    let matched = evaluate_condition_inner(evaluator, condition, &mut pending);
+    check_evaluation_admission()?;
+    if !evaluator.records_once_latches() {
+        return Ok(matched);
+    }
+
+    // Every compound predicate finishes before any Once state changes.
+    // Construct all owned copies and admit destination capacity first, so a
+    // later refused regex or copy leaves the original latches unchanged.
+    let mut prepared = Vec::new();
+    let prepared_scratch = budget
+        .as_ref()
+        .map(|budget| budget.reserve_scratch_array::<Condition>(pending.len()))
+        .transpose()
+        .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+    prepared
+        .try_reserve_exact(pending.len())
+        .map_err(|source| EngineError::ArtifactDecodeAdmission {
+            source: crate::owned_decode::DecodeAdmissionError::new(source),
+        })?;
+    for predicate in pending {
+        prepared.push(predicate.try_clone_admitted()?);
+    }
+    evaluator.prepare_once_latches(prepared.len())?;
+    check_evaluation_admission()?;
+    for predicate in prepared {
+        evaluator.latch_once_condition(predicate);
+    }
+    drop(prepared_scratch);
+    drop(scratch);
+    Ok(matched)
+}
+
+fn count_once_conditions(condition: &Condition) -> Result<usize, EngineError> {
+    let count = match condition {
+        Condition::AllOf { predicates } | Condition::AnyOf { predicates } => {
+            let mut count = 0_usize;
+            for predicate in predicates {
+                count = count
+                    .checked_add(count_once_conditions(predicate)?)
+                    .ok_or_else(|| EngineError::ArtifactDecodeAdmission {
+                        source: crate::owned_decode::DecodeAdmissionError::new(
+                            std::io::Error::other(
+                                "predicate latch count exceeds the addressable resource bound",
+                            ),
+                        ),
+                    })?;
+            }
+            count
+        }
+        Condition::Once { predicate } => count_once_conditions(predicate)?
+            .checked_add(1)
+            .ok_or_else(|| EngineError::ArtifactDecodeAdmission {
+                source: crate::owned_decode::DecodeAdmissionError::new(std::io::Error::other(
+                    "predicate latch count exceeds the addressable resource bound",
+                )),
+            })?,
+        Condition::Not { predicate } => count_once_conditions(predicate)?,
+        _ => 0,
+    };
+    Ok(count)
+}
+
+fn evaluate_condition_inner<'condition, E>(
+    evaluator: &mut E,
+    condition: &'condition Condition,
+    pending: &mut Vec<&'condition Condition>,
+) -> bool
+where
+    E: ConditionEvaluator + ?Sized,
+{
     match condition {
         Condition::At { at } => evaluator.evaluation_point().at() == *at,
         Condition::After { duration, of } => evaluator
@@ -630,28 +829,32 @@ where
         Condition::AllOf { predicates } => {
             let mut all_true = true;
             for condition in predicates {
-                all_true &= evaluate_condition(evaluator, condition);
+                all_true &= evaluate_condition_inner(evaluator, condition, pending);
             }
             all_true
         }
         Condition::AnyOf { predicates } => {
             let mut any_true = false;
             for condition in predicates {
-                any_true |= evaluate_condition(evaluator, condition);
+                any_true |= evaluate_condition_inner(evaluator, condition, pending);
             }
             any_true
         }
         Condition::Once { predicate } => {
-            if evaluator.once_condition_is_latched(predicate) {
+            if evaluator.once_condition_is_latched(predicate)
+                || pending.iter().any(|latched| *latched == predicate.as_ref())
+            {
                 true
-            } else if evaluate_condition(evaluator, predicate) {
-                evaluator.latch_once_condition(predicate);
+            } else if evaluate_condition_inner(evaluator, predicate, pending)
+                && check_evaluation_admission().is_ok()
+            {
+                pending.push(predicate);
                 true
             } else {
                 false
             }
         }
-        Condition::Not { predicate } => !evaluate_condition(evaluator, predicate),
+        Condition::Not { predicate } => !evaluate_condition_inner(evaluator, predicate, pending),
     }
 }
 
@@ -697,10 +900,59 @@ pub(super) fn console_stream_matches(
     expected_node: &NodeId,
     regex: &RegexProgram,
 ) -> bool {
-    let Ok(program) = regex::bytes::Regex::new(&regex.pattern) else {
-        return false;
-    };
+    match try_console_stream_matches(at, events, expected_node, regex) {
+        Ok(matched) => matched,
+        Err(crate::predicate_regex::PredicateRegexError::Admission(source)) => {
+            // A cache may belong to another retained original scope. Keep
+            // its precise refusal in this evaluator's scope as well, so the
+            // fallible firing/assertion boundary refuses before effects.
+            if let Some(budget) = crate::owned_decode::current_budget() {
+                budget.record_failure(source);
+            }
+            false
+        }
+        // Invalid component predicates retain their historic false result.
+        // Admitted scenario validation compiles every pattern before release.
+        Err(_) => false,
+    }
+}
+
+fn try_console_stream_matches(
+    at: VirtualTime,
+    events: &[ObservableEvent],
+    expected_node: &NodeId,
+    regex: &RegexProgram,
+) -> Result<bool, crate::predicate_regex::PredicateRegexError> {
+    let mut length = 0_usize;
+    let mut has_current = false;
+    for event in events {
+        let ObservableEventPayload::ConsoleOutput { node, bytes } = event.payload() else {
+            continue;
+        };
+        if node != expected_node || event.at() > at {
+            continue;
+        }
+        has_current |= event.at() == at;
+        length = length.checked_add(bytes.len()).ok_or_else(|| {
+            crate::owned_decode::DecodeAdmissionError::new(std::io::Error::other(
+                "console predicate stream length exceeds the addressable resource bound",
+            ))
+        })?;
+    }
+    if !has_current {
+        return Ok(false);
+    }
+
+    let program = regex.compiled()?;
+    let budget = crate::owned_decode::current_budget();
+    let scratch = budget
+        .as_ref()
+        .map(|budget| budget.reserve_scratch_array::<u8>(length))
+        .transpose()?;
     let mut stream = Vec::new();
+    stream
+        .try_reserve_exact(length)
+        .map_err(crate::owned_decode::DecodeAdmissionError::new)?;
     let mut current_start = None;
     for event in events {
         let ObservableEventPayload::ConsoleOutput { node, bytes } = event.payload() else {
@@ -716,12 +968,19 @@ pub(super) fn console_stream_matches(
             stream.extend_from_slice(bytes);
         }
     }
-    let Some(current_start) = current_start else {
-        return false;
-    };
-    program
-        .find_iter(&stream)
-        .any(|matched| matched.end() > current_start)
+    let matched = program.any_match_ending_after(&stream, current_start.unwrap_or(length));
+    drop(stream);
+    drop(scratch);
+    matched
+}
+
+pub(super) fn check_evaluation_admission() -> Result<(), EngineError> {
+    if let Some(budget) = crate::owned_decode::current_budget() {
+        budget
+            .check()
+            .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+    }
+    Ok(())
 }
 
 pub(super) fn coverage_point_matches<E>(
@@ -1172,19 +1431,29 @@ impl<O> ConditionEvaluationPass<O> {
     }
 
     /// Evaluates an assertion predicate in this deterministic pass.
-    pub fn evaluate_assertion_condition(&mut self, condition: &Condition) -> bool
+    ///
+    /// # Errors
+    /// Returns the original allocation refusal before an assertion verdict
+    /// can be accepted by the caller.
+    pub fn evaluate_assertion_condition(
+        &mut self,
+        condition: &Condition,
+    ) -> Result<bool, EngineError>
     where
         O: ConditionLeafOracle,
     {
-        self.evaluation.evaluate_condition(condition)
+        try_evaluate_condition(&mut self.evaluation, condition)
     }
 
     /// Evaluates trigger conditions in this deterministic pass.
+    ///
+    /// # Errors
+    /// Returns the original allocation refusal before firing actions.
     pub fn evaluate_event_graph(
         &mut self,
         graph: &EventGraph,
         state: &mut EventGraphState,
-    ) -> EventFirings
+    ) -> Result<EventFirings, EngineError>
     where
         O: ConditionLeafOracle,
     {
@@ -1197,12 +1466,15 @@ impl<O> ConditionEvaluationPass<O> {
     /// than the shared scheduler frontier. Time-conditioned events retain their
     /// one-shot, edge, and latch state until the frontier reaches that prefix.
     /// Pure observational triggers keep their ordinary causal evaluation points.
+    ///
+    /// # Errors
+    /// Returns the original allocation refusal before firing actions.
     pub fn evaluate_event_graph_at_frontier(
         &mut self,
         graph: &EventGraph,
         state: &mut EventGraphState,
         frontier: VirtualTime,
-    ) -> EventFirings
+    ) -> Result<EventFirings, EngineError>
     where
         O: ConditionLeafOracle,
     {
@@ -1237,7 +1509,20 @@ where
     }
 
     fn timer_fires(&self) -> BTreeMap<TimerId, VirtualTime> {
-        self.timer_fires.clone()
+        let mut timers = BTreeMap::new();
+        for (timer, at) in &self.timer_fires {
+            let admission = crate::owned_decode::charge_btree_entry::<TimerId, VirtualTime>()
+                .and_then(|()| admitted_evaluation_string(&timer.name));
+            let name = match admission {
+                Ok(name) => name,
+                Err(source) => {
+                    record_evaluation_refusal(source);
+                    return BTreeMap::new();
+                }
+            };
+            timers.insert(TimerId { name }, *at);
+        }
+        timers
     }
 
     fn observable_events(&self) -> &[ObservableEvent] {
@@ -1256,9 +1541,14 @@ where
         self.once_latches.iter().any(|latched| latched == condition)
     }
 
-    fn latch_once_condition(&mut self, condition: &Condition) {
-        if !self.once_condition_is_latched(condition) {
-            self.once_latches.push(condition.clone());
+    fn prepare_once_latches(&mut self, additional: usize) -> Result<(), EngineError> {
+        crate::owned_decode::reserve_vec(&mut self.once_latches, additional)
+            .map_err(|source| EngineError::ArtifactDecodeAdmission { source })
+    }
+
+    fn latch_once_condition(&mut self, condition: Condition) {
+        if !self.once_condition_is_latched(&condition) {
+            self.once_latches.push(condition);
         }
     }
 

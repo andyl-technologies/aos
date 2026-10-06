@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU16, Ordering};
 
 const BLACK_BOX_EXECUTION_FINGERPRINT_DOMAIN: &str =
-    "crucible.qemu.black-box-execution-fingerprint.v1";
+    "crucible.qemu.black-box-execution-fingerprint.v2";
 
 pub(crate) fn black_box_execution_fingerprint(
     node: &crucible::NodeId,

@@ -16,6 +16,8 @@ pub(super) const NONDETERMINISTIC_BOUNDARY_PACKAGES: &[&str] = &[
     "crucible-debug-gateway",
     "crucible-qemu",
     "crucible-s3-store",
+    "crucible-linux-resource",
+    "crucible-qemu-plugin",
 ];
 pub(super) const BINARY_BOUNDARY_PACKAGE: &str = "crucible-cli";
 pub(super) const BINARY_ENTRY_PACKAGES: &[&str] = &["crucible-debug-gateway", "crucible-guest"];

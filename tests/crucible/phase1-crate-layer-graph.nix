@@ -27,6 +27,11 @@
       inVm = false;
     }
     {
+      package = "crucible-ram";
+      layer = 1;
+      inVm = false;
+    }
+    {
       package = "crucible-device";
       layer = 1;
       inVm = false;
@@ -233,6 +238,10 @@
         to = "crucible";
       }
       {
+        from = "crucible-ram";
+        to = "crucible-qemu";
+      }
+      {
         from = "crucible-qemu-plugin";
         to = "crucible-sim";
       }
@@ -254,6 +263,7 @@
   in
     if
       hasFinding "upward dependency"
+      && hasFinding "upward dependency `crucible-ram`"
       && hasFinding "in-VM L2 crate"
       && hasFinding "test-only"
       && hasFinding "dependency cycle"

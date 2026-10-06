@@ -17,8 +17,9 @@
 //! [`gate_targets`] indexes Cargo gate targets, [`perf`] owns the
 //! cost-model perf-bench gate substrate, [`phase_plan`] records the ordered gate
 //! occurrences, [`replay_oracle`] compares replay hashes, [`reproduction`] owns
-//! the versioned reproduction artifact format, [`segment_replay`] coordinates
-//! checkpoint-parallel replay, and [`spec_index`] owns the crate-to-RFC map.
+//! the versioned reproduction artifact format, [`ram_gates`] distinguishes RAM
+//! aggregate qualification from component evidence, [`segment_replay`] coordinates
+//! checkpoint-parallel replay, and [`spec_index`] owns the crate-to-specification map.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -33,6 +34,7 @@ pub mod fingerprint;
 pub mod gate_targets;
 pub mod perf;
 pub mod phase_plan;
+pub mod ram_gates;
 pub mod replay_oracle;
 pub mod reproduction;
 pub mod segment_replay;
@@ -304,5 +306,8 @@ pub fn canonical_gates() -> &'static [GateSpec] {
 /// Finds a canonical gate by its normative name.
 #[must_use]
 pub fn find_gate(name: &str) -> Option<&'static GateSpec> {
-    CANONICAL_GATES.iter().find(|gate| gate.name == name)
+    CANONICAL_GATES
+        .iter()
+        .find(|gate| gate.name == name)
+        .or_else(|| ram_gates::find_ram_gate(name).map(|spec| &spec.gate))
 }

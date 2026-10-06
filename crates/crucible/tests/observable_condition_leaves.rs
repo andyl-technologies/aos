@@ -111,6 +111,7 @@ fn network_match_observes_delivered_frame_payload_at_the_evaluation_point() {
     assert!(
         evaluator(20, vec![wrong_time, wrong_link, matching])
             .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
     );
     let future = ObservableEvent::network_delivered(
         time(20),
@@ -143,7 +144,11 @@ fn network_match_can_observe_any_link() {
         b"raft-append-entries".to_vec(),
     );
 
-    assert!(evaluator(3, vec![event]).evaluate_assertion_condition(&condition));
+    assert!(
+        evaluator(3, vec![event])
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
 }
 
 #[test]
@@ -163,7 +168,11 @@ fn console_match_uses_host_side_regex_over_captured_console_bytes() {
         b"ready to accept connections\n".to_vec(),
     );
 
-    assert!(evaluator(9, vec![wrong_node, event]).evaluate_assertion_condition(&condition));
+    assert!(
+        evaluator(9, vec![wrong_node, event])
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
 }
 
 #[test]
@@ -175,11 +184,21 @@ fn console_match_spans_chunks_and_fires_when_match_completes_at_point() {
     let first = ObservableEvent::console_output(time(8), node("server"), b"ready to ".to_vec());
     let second = ObservableEvent::console_output(time(9), node("server"), b"accept\n".to_vec());
 
-    assert!(!evaluator(8, vec![first.clone()]).evaluate_assertion_condition(&condition));
     assert!(
-        evaluator(9, vec![first.clone(), second.clone()]).evaluate_assertion_condition(&condition)
+        !evaluator(8, vec![first.clone()])
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
     );
-    assert!(!evaluator(10, vec![first, second]).evaluate_assertion_condition(&condition));
+    assert!(
+        evaluator(9, vec![first.clone(), second.clone()])
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
+    assert!(
+        !evaluator(10, vec![first, second])
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
 }
 
 #[test]
@@ -229,7 +248,11 @@ fn io_pattern_observes_deterministic_io_completion_kind() {
         b"ok".to_vec(),
     );
 
-    assert!(evaluator(11, vec![wrong_kind, event]).evaluate_assertion_condition(&condition));
+    assert!(
+        evaluator(11, vec![wrong_kind, event])
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
 }
 
 #[test]
@@ -242,7 +265,11 @@ fn io_pattern_any_matches_any_completion_kind_for_the_node() {
         b"sector=12".to_vec(),
     );
 
-    assert!(evaluator(12, vec![event]).evaluate_assertion_condition(&condition));
+    assert!(
+        evaluator(12, vec![event])
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
 }
 
 #[test]
@@ -251,7 +278,11 @@ fn node_state_observes_lifecycle_transition() {
     let event = ObservableEvent::node_state(time(14), node("worker"), NodeLifecycle::Exited);
     let earlier = ObservableEvent::node_state(time(13), node("worker"), NodeLifecycle::Exited);
 
-    assert!(evaluator(14, vec![earlier, event]).evaluate_assertion_condition(&condition));
+    assert!(
+        evaluator(14, vec![earlier, event])
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
 }
 
 #[test]

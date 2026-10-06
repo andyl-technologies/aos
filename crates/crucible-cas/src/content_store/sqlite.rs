@@ -1,8 +1,9 @@
 //! Durable SQLite leaf for immutable, authenticated campaign objects.
 //!
 //! ```text
-//! <root>/objects.sqlite3       SQLite database in WAL mode
-//! <root>/objects.sqlite3-wal   SQLite's durable transaction log when present
+//! <root>/objects.sqlite3       WAL database, or private DELETE-journal catalog
+//! <root>/objects.sqlite3-wal   Generic leaf transaction log when present
+//! <root>/objects.sqlite3-journal Private catalog's quota-contained rollback log
 //! <root>/inventory.lock        Interprocess put and inventory fence
 //! ```
 //!
@@ -26,6 +27,12 @@ use super::admin::{
 };
 use super::*;
 
+mod catalog;
+pub use catalog::{
+    SqliteCatalogOperation, SqliteCatalogOperationKind, SqliteCatalogSupervisor,
+    minimum_sqlite_catalog_staging_bytes,
+};
+
 const DATABASE_FILE: &str = "objects.sqlite3";
 const LOCK_FILE: &str = "inventory.lock";
 const METADATA_DOMAIN: &[u8] = b"crucible.content-store.sqlite-metadata.v1";
@@ -34,17 +41,91 @@ const MAX_BATCH_OBJECTS: usize = 64;
 const MAX_BATCH_BYTES: u64 = 4 * 1024 * 1024;
 const READ_STATEMENT_CACHE_CAPACITY: usize = 2;
 
+// The allocator limit is global. PRAGMA deliberately cannot raise an existing
+// hard limit, so concurrent catalogs cannot grant each other extra memory.
+fn configure_bounded_sqlite_memory(
+    connection: &Connection,
+    maximum_heap_bytes: u64,
+) -> Result<(), StoreError> {
+    let limit = i64::try_from(maximum_heap_bytes)
+        .ok()
+        .filter(|limit| *limit > 0)
+        .ok_or(StoreError::InvalidComposition {
+            reason: "quota-bound SQLite requires a positive representable heap limit",
+        })?;
+    let actual: i64 = connection
+        .query_row(&format!("PRAGMA hard_heap_limit={limit}"), [], |row| {
+            row.get(0)
+        })
+        .map_err(|source| database_error("bound-sqlite-allocator", source))?;
+    if actual <= 0 || actual > limit {
+        return Err(StoreError::InvalidComposition {
+            reason: "SQLite hard heap limit is unavailable or exceeds the entitlement",
+        });
+    }
+    Ok(())
+}
+
+// Every SQLite leaf contains temporary work in memory, including graph leaves
+// wrapped by a physical disk quota. Connection caches never mmap blob files.
+fn configure_sqlite_temporary_storage(connection: &Connection) -> Result<(), StoreError> {
+    connection
+        .execute_batch("PRAGMA temp_store=MEMORY; PRAGMA mmap_size=0;")
+        .map_err(|source| database_error("bound-sqlite-temporary-storage", source))?;
+    let temp_store: i64 = connection
+        .query_row("PRAGMA temp_store", [], |row| row.get(0))
+        .map_err(|source| database_error("verify-sqlite-temporary-storage", source))?;
+    let mmap_size: i64 = connection
+        .query_row("PRAGMA mmap_size", [], |row| row.get(0))
+        .map_err(|source| database_error("verify-sqlite-mapping-limit", source))?;
+    if temp_store != 2 || mmap_size != 0 {
+        return Err(StoreError::InvalidComposition {
+            reason: "SQLite temporary work or database mappings escape the allocator entitlement",
+        });
+    }
+    Ok(())
+}
+
 /// SQLite-backed durable immutable object leaf.
 ///
 /// The constructor initializes one database and an interprocess inventory
 /// lock. Clones share the same connection while separate processes coordinate
-/// their writes and administrative scans through the lock file.
+/// their writes and administrative scans through the lock file. Temporary
+/// SQLite work uses memory rather than files outside the store root; database
+/// page mappings are disabled. WAL-index mappings remain separately charged
+/// file-backed resident memory. Physical disk quotas contain database sidecars;
+/// ordinary stores must separately admit their process memory.
 #[derive(Clone)]
 pub struct SqliteBlobBackend {
     name: String,
     root: PathBuf,
     connection: Arc<Mutex<Connection>>,
     read_connection: Arc<Mutex<Connection>>,
+    catalog_supervisor: Option<Arc<dyn SqliteCatalogSupervisor>>,
+    resident_lease: Option<Arc<dyn Send + Sync>>,
+}
+
+/// Bounds cached private SQLite backend and quota-facade Rust allocations.
+///
+/// This excludes SQLite's separately capped allocator, provider cache keys and
+/// authority receipts, and independently reserved deferred source/reader loans.
+/// Private catalogs disable the Rust prepared-statement cache. An owner reserves
+/// its own containers separately before opening the backend.
+///
+/// # Errors
+/// Refuses oversized backend names or overflow in actual retained path storage.
+pub fn minimum_sqlite_catalog_resident_bytes(name: &str, root: &Path) -> Result<u64, StoreError> {
+    if name.len() > catalog::MAX_BACKEND_NAME_BYTES {
+        return Err(StoreError::Quota);
+    }
+    let fixed = std::mem::size_of::<SqliteBlobBackend>()
+        + 2 * std::mem::size_of::<usize>()
+        + 2 * (std::mem::size_of::<Mutex<Connection>>() + 2 * std::mem::size_of::<usize>())
+        + super::physical_quota::facade_metadata_bytes()
+        + 2 * catalog::MAX_BACKEND_NAME_BYTES;
+    (fixed as u64)
+        .checked_add(root.as_os_str().len() as u64)
+        .ok_or(StoreError::Quota)
 }
 
 impl SqliteBlobBackend {
@@ -55,10 +136,92 @@ impl SqliteBlobBackend {
     /// Returns an I/O, SQLite, or metadata error if the database cannot be
     /// initialized or its persisted inventory identity is malformed.
     pub fn open(name: impl Into<String>, root: impl Into<PathBuf>) -> Result<Self, StoreError> {
+        Self::open_inner(name.into(), root.into(), None, None)
+    }
+
+    /// Opens a physically quota-bound catalog with a hard SQLite heap ceiling.
+    ///
+    /// The guard must be bound before this call and cover `root` and every
+    /// database sidecar. All backend operations retain and revalidate it.
+    /// SQLite temporary work stays in its capped allocator rather than an
+    /// uncharged temporary directory. The heap ceiling applies process-wide
+    /// and only decreases; it is not a per-connection cache target. Private
+    /// catalogs use verified DELETE journals to avoid WAL-index mappings and
+    /// refuse WAL/SHM predecessors before SQLite opens them. Sources are bounded
+    /// by 4 MiB and authenticated before a write transaction; staging waits retain
+    /// their original supervised scope.
+    ///
+    /// # Errors
+    /// Refuses unavailable quota authority, zero or unrepresentable heap limits,
+    /// unavailable SQLite hard-heap enforcement, or database initialization errors.
+    pub fn open_with_physical_quota(
+        name: impl Into<String>,
+        root: impl Into<PathBuf>,
+        guard: Arc<dyn StorePhysicalQuotaGuard>,
+        maximum_sqlite_heap_bytes: u64,
+        supervisor: Arc<dyn SqliteCatalogSupervisor>,
+    ) -> Result<Arc<dyn ImmutableBlobBackend>, StoreError> {
+        guard.verify()?;
+        let name = name.into();
+        if name.len() > catalog::MAX_BACKEND_NAME_BYTES
+            || name.capacity() > catalog::MAX_BACKEND_NAME_BYTES
+        {
+            return Err(StoreError::Quota);
+        }
+        let operation = supervisor.begin(SqliteCatalogOperationKind::Write)?;
+        let _staging = catalog::write_gate(operation.as_ref())?;
         let root = root.into();
+        let required = minimum_sqlite_catalog_resident_bytes(&name, &root)?
+            .checked_add((root.capacity() - root.as_os_str().len()) as u64)
+            .ok_or(StoreError::Quota)?;
+        let resident_lease = supervisor.reserve_resident_bytes(required)?;
+        let mut backend = Self::open_inner(
+            name.clone(),
+            root,
+            Some(maximum_sqlite_heap_bytes),
+            Some(supervisor),
+        )?;
+        backend.resident_lease = Some(resident_lease);
+        let backend = Arc::new(backend);
+        let store =
+            super::physical_quota::PhysicalQuotaStore::new(name, backend.clone(), backend, guard)?;
+        operation.complete()?;
+        Ok(Arc::new(store))
+    }
+
+    fn open_inner(
+        name: String,
+        root: PathBuf,
+        maximum_sqlite_heap_bytes: Option<u64>,
+        catalog_supervisor: Option<Arc<dyn SqliteCatalogSupervisor>>,
+    ) -> Result<Self, StoreError> {
         super::directory::create_dir_all_durable(&root)?;
 
         let database_path = root.join(DATABASE_FILE);
+        if catalog_supervisor.is_some() {
+            // WAL predecessors need an offline checkpoint. Opening them here
+            // could map an unbounded wal-index before resource admission.
+            for sidecar in [
+                format!("{DATABASE_FILE}-wal"),
+                format!("{DATABASE_FILE}-shm"),
+            ] {
+                match fs::symlink_metadata(root.join(sidecar)) {
+                    Ok(_) => {
+                        return Err(StoreError::InvalidComposition {
+                            reason: "private SQLite catalogs require offline WAL retirement",
+                        });
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(source) => {
+                        return Err(StoreError::Io {
+                            operation: "inspect-private-sqlite-journal-predecessor",
+                            path: root.clone(),
+                            source,
+                        });
+                    }
+                }
+            }
+        }
         for name in [
             DATABASE_FILE.to_owned(),
             format!("{DATABASE_FILE}-wal"),
@@ -68,11 +231,18 @@ impl SqliteBlobBackend {
         ] {
             reject_nonregular_existing(&root.join(name))?;
         }
+        if catalog_supervisor.is_some() {
+            reject_wal_database_header(&database_path)?;
+        }
         let connection = Connection::open_with_flags(
             &database_path,
             OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )
         .map_err(|source| database_error("open-sqlite-blob-database", source))?;
+        if let Some(limit) = maximum_sqlite_heap_bytes {
+            configure_bounded_sqlite_memory(&connection, limit)?;
+        }
+        configure_sqlite_temporary_storage(&connection)?;
         connection
             .execute_batch("PRAGMA auto_vacuum=FULL;")
             .map_err(|source| database_error("configure-sqlite-auto-vacuum", source))?;
@@ -85,10 +255,24 @@ impl SqliteBlobBackend {
             });
         }
 
+        let journal = if catalog_supervisor.is_some() {
+            "DELETE"
+        } else {
+            "WAL"
+        };
+        let actual_journal: String = connection
+            .query_row(&format!("PRAGMA journal_mode={journal}"), [], |row| {
+                row.get(0)
+            })
+            .map_err(|source| database_error("configure-sqlite-journal-mode", source))?;
+        if !actual_journal.eq_ignore_ascii_case(journal) {
+            return Err(StoreError::InvalidComposition {
+                reason: "SQLite journal mode does not match catalog resource ownership",
+            });
+        }
         connection
             .execute_batch(
-                "PRAGMA journal_mode=WAL;
-                 PRAGMA synchronous=FULL;
+                "PRAGMA synchronous=FULL;
                  PRAGMA foreign_keys=ON;
                  CREATE TABLE IF NOT EXISTS objects (
                      id TEXT PRIMARY KEY NOT NULL,
@@ -103,6 +287,14 @@ impl SqliteBlobBackend {
             )
             .map_err(|source| database_error("initialize-sqlite-blob-schema", source))?;
 
+        let synchronous: i64 = connection
+            .query_row("PRAGMA synchronous", [], |row| row.get(0))
+            .map_err(|source| database_error("verify-sqlite-durability-mode", source))?;
+        if synchronous != 2 {
+            return Err(StoreError::InvalidComposition {
+                reason: "SQLite requires FULL synchronization",
+            });
+        }
         let instance = random_instance()?;
         let checksum = metadata_checksum(instance, 1);
         connection
@@ -134,15 +326,25 @@ impl SqliteBlobBackend {
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )
         .map_err(|source| database_error("open-sqlite-blob-reader", source))?;
+        if let Some(limit) = maximum_sqlite_heap_bytes {
+            configure_bounded_sqlite_memory(&read_connection, limit)?;
+        }
+        configure_sqlite_temporary_storage(&read_connection)?;
         // Retain only the two read query plans. Every execution still reads
         // current rows and authenticates their bytes; no object data is cached.
-        read_connection.set_prepared_statement_cache_capacity(READ_STATEMENT_CACHE_CAPACITY);
+        read_connection.set_prepared_statement_cache_capacity(if catalog_supervisor.is_some() {
+            0
+        } else {
+            READ_STATEMENT_CACHE_CAPACITY
+        });
 
         Ok(Self {
-            name: name.into(),
+            name,
             root,
             connection: Arc::new(Mutex::new(connection)),
             read_connection: Arc::new(Mutex::new(read_connection)),
+            catalog_supervisor,
+            resident_lease: None,
         })
     }
 
@@ -174,6 +376,12 @@ impl SqliteBlobBackend {
         id: ContentId,
         range: Option<ByteRange>,
     ) -> Result<BlobHandle, StoreError> {
+        let operation = self
+            .catalog_supervisor
+            .as_ref()
+            .map(|supervisor| supervisor.begin(SqliteCatalogOperationKind::Read))
+            .transpose()?;
+        let _staging = operation.as_deref().map(catalog::read_gate).transpose()?;
         let connection = self
             .read_connection
             .lock()
@@ -195,17 +403,36 @@ impl SqliteBlobBackend {
         });
         validate_range(logical_length, range)?;
 
+        let source_lease = self
+            .catalog_supervisor
+            .as_ref()
+            .map(|supervisor| {
+                supervisor.reserve_resident_bytes(
+                    (std::mem::size_of::<SqliteBlobSource>()
+                        + 2 * std::mem::size_of::<usize>()
+                        + super::physical_quota::deferred_source_metadata_bytes())
+                        as u64,
+                )
+            })
+            .transpose()?;
         let source: Arc<dyn BlobSource> = Arc::new(SqliteBlobSource {
             connection: self.read_connection.clone(),
             id,
             logical_length,
             range,
+            catalog_supervisor: self.catalog_supervisor.clone(),
+            resident_lease: self.resident_lease.clone(),
+            _source_lease: source_lease,
         });
-        if range.offset == 0 && range.length == logical_length {
-            Ok(BlobHandle::authenticated(id, source))
+        let handle = if range.offset == 0 && range.length == logical_length {
+            BlobHandle::authenticated(id, source)
         } else {
-            Ok(BlobHandle::integrity_checked(id, source))
+            BlobHandle::integrity_checked(id, source)
+        };
+        if let Some(operation) = operation {
+            operation.complete()?;
         }
+        Ok(handle)
     }
 }
 
@@ -249,6 +476,50 @@ fn reject_nonregular_existing(path: &Path) -> Result<(), StoreError> {
     }
 }
 
+// A clean WAL database can retain its journal selection after its sidecars
+// disappear. Reject that persisted selection before SQLite can map a new index.
+fn reject_wal_database_header(path: &Path) -> Result<(), StoreError> {
+    let mut file = match OpenOptions::new()
+        .read(true)
+        .custom_flags(OFlags::NOFOLLOW.bits() as i32)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => {
+            return Err(StoreError::Io {
+                operation: "open-private-sqlite-header",
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
+    let length = file
+        .metadata()
+        .map_err(|source| StoreError::Io {
+            operation: "inspect-private-sqlite-header",
+            path: path.to_path_buf(),
+            source,
+        })?
+        .len();
+    if length == 0 {
+        return Ok(());
+    }
+    let mut header = [0_u8; 20];
+    file.read_exact(&mut header)
+        .map_err(|source| StoreError::Io {
+            operation: "read-private-sqlite-header",
+            path: path.to_path_buf(),
+            source,
+        })?;
+    if &header[..16] != b"SQLite format 3\0" || header[18] != 1 || header[19] != 1 {
+        return Err(StoreError::InvalidComposition {
+            reason: "private SQLite catalogs require an authenticated rollback-journal predecessor",
+        });
+    }
+    Ok(())
+}
+
 impl ImmutableBlobBackend for SqliteBlobBackend {
     fn name(&self) -> &str {
         &self.name
@@ -288,6 +559,12 @@ impl ImmutableBlobBackend for SqliteBlobBackend {
     }
 
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
+        let operation = self
+            .catalog_supervisor
+            .as_ref()
+            .map(|supervisor| supervisor.begin(SqliteCatalogOperationKind::Write))
+            .transpose()?;
+        let _staging = operation.as_deref().map(catalog::write_gate).transpose()?;
         let _inventory_lock = self.acquire_inventory_lock()?;
         let logical_length = source.logical_length();
         let blob_length = i32::try_from(logical_length).map_err(|_| StoreError::Quota)?;
@@ -307,11 +584,25 @@ impl ImmutableBlobBackend for SqliteBlobBackend {
                 if !self.contains(id)? {
                     return Err(StoreError::NotFound { id });
                 }
+                if let Some(operation) = operation {
+                    operation.complete()?;
+                }
                 return Ok(sqlite_receipt(&self.name, id, logical_length));
             }
         }
 
         let mut connection = self.lock_connection()?;
+        let staged = if operation.is_some() {
+            let bytes = source.read_all(MAX_BATCH_BYTES)?;
+            validate_bytes(id, &bytes)?;
+            operation
+                .as_deref()
+                .map(|operation| operation.check())
+                .transpose()?;
+            Some(bytes)
+        } else {
+            None
+        };
         let transaction = connection
             .transaction()
             .map_err(|source| database_error("begin-sqlite-blob-put", source))?;
@@ -326,12 +617,23 @@ impl ImmutableBlobBackend for SqliteBlobBackend {
             let mut blob = transaction
                 .blob_open(DatabaseName::Main, "objects", "body", row_id, false)
                 .map_err(|source| database_error("open-sqlite-blob-staging", source))?;
-            copy_source(id, source, &mut blob)?;
+            if let Some(bytes) = &staged {
+                std::io::Write::write_all(&mut blob, bytes).map_err(|source| StoreError::Io {
+                    operation: "write-private-sqlite-staging",
+                    path: self.root.clone(),
+                    source,
+                })?;
+            } else {
+                copy_source(id, source, &mut blob)?;
+            }
         }
         advance_metadata(&transaction)?;
         transaction
             .commit()
             .map_err(|source| database_error("commit-sqlite-blob-put", source))?;
+        if let Some(operation) = operation {
+            operation.complete()?;
+        }
         Ok(sqlite_receipt(&self.name, id, logical_length))
     }
 
@@ -339,6 +641,12 @@ impl ImmutableBlobBackend for SqliteBlobBackend {
         &self,
         objects: &[(ContentId, BlobHandle)],
     ) -> Result<Vec<PutReceipt>, StoreError> {
+        let operation = self
+            .catalog_supervisor
+            .as_ref()
+            .map(|supervisor| supervisor.begin(SqliteCatalogOperationKind::Write))
+            .transpose()?;
+        let _staging = operation.as_deref().map(catalog::write_gate).transpose()?;
         if objects.len() > MAX_BATCH_OBJECTS {
             return Err(StoreError::Quota);
         }
@@ -351,6 +659,10 @@ impl ImmutableBlobBackend for SqliteBlobBackend {
             .try_reserve_exact(objects.len())
             .map_err(|_| StoreError::Quota)?;
         for (id, source) in objects {
+            operation
+                .as_deref()
+                .map(|operation| operation.check())
+                .transpose()?;
             let length = source.logical_length();
             total_bytes = total_bytes.checked_add(length).ok_or(StoreError::Quota)?;
             if total_bytes > MAX_BATCH_BYTES {
@@ -399,6 +711,9 @@ impl ImmutableBlobBackend for SqliteBlobBackend {
             .commit()
             .map_err(|source| database_error("commit-sqlite-blob-batch", source))?;
 
+        if let Some(operation) = operation {
+            operation.complete()?;
+        }
         Ok(staged
             .into_iter()
             .map(|(id, bytes)| sqlite_receipt(&self.name, id, bytes.len() as u64))
@@ -408,6 +723,12 @@ impl ImmutableBlobBackend for SqliteBlobBackend {
 
 impl BlobStoreAdmin for SqliteBlobBackend {
     fn acquire_inventory_fence(&self) -> Result<Box<dyn BlobInventoryFence + '_>, StoreError> {
+        let operation = self
+            .catalog_supervisor
+            .as_ref()
+            .map(|supervisor| supervisor.begin(SqliteCatalogOperationKind::Write))
+            .transpose()?;
+        let staging = operation.as_deref().map(catalog::write_gate).transpose()?;
         let lock = self.acquire_inventory_lock()?;
         let connection = self.lock_connection()?;
         let (instance, generation) = load_metadata(&connection)?;
@@ -417,12 +738,16 @@ impl BlobStoreAdmin for SqliteBlobBackend {
             _lock: lock,
             instance,
             generation,
+            operation,
+            _staging: staging,
         }))
     }
 }
 
 struct SqliteInventoryFence<'a> {
     backend: &'a SqliteBlobBackend,
+    operation: Option<Box<dyn SqliteCatalogOperation>>,
+    _staging: Option<MutexGuard<'static, ()>>,
     connection: MutexGuard<'a, Connection>,
     _lock: File,
     instance: [u8; 32],
@@ -449,6 +774,10 @@ impl BlobInventoryFence for SqliteInventoryFence<'_> {
             .next()
             .map_err(|source| database_error("visit-sqlite-blob-inventory", source))?
         {
+            self.operation
+                .as_deref()
+                .map(|operation| operation.check())
+                .transpose()?;
             let id_text: String = row
                 .get(0)
                 .map_err(|source| database_error("decode-sqlite-blob-id", source))?;
@@ -465,6 +794,10 @@ impl BlobInventoryFence for SqliteInventoryFence<'_> {
     }
 
     fn delete_candidate(&mut self, id: ContentId) -> Result<PlannedDeleteDisposition, StoreError> {
+        self.operation
+            .as_deref()
+            .map(|operation| operation.check())
+            .transpose()?;
         let transaction = self
             .connection
             .transaction()
@@ -474,7 +807,9 @@ impl BlobInventoryFence for SqliteInventoryFence<'_> {
             .map_err(|source| database_error("delete-sqlite-blob-candidate", source))?;
         if removed == 0 {
             drop(transaction);
-            checkpoint_reclaimed_pages(&self.connection)?;
+            if self.backend.catalog_supervisor.is_none() {
+                checkpoint_reclaimed_pages(&self.connection)?;
+            }
             return Ok(PlannedDeleteDisposition::AlreadyAbsent);
         }
         advance_metadata(&transaction)?;
@@ -482,7 +817,9 @@ impl BlobInventoryFence for SqliteInventoryFence<'_> {
             .commit()
             .map_err(|source| database_error("commit-sqlite-blob-delete", source))?;
         self.generation = self.generation.checked_add(1).ok_or(StoreError::Quota)?;
-        checkpoint_reclaimed_pages(&self.connection)?;
+        if self.backend.catalog_supervisor.is_none() {
+            checkpoint_reclaimed_pages(&self.connection)?;
+        }
         Ok(PlannedDeleteDisposition::Deleted)
     }
 
@@ -492,7 +829,18 @@ impl BlobInventoryFence for SqliteInventoryFence<'_> {
         id: ContentId,
         source: &BlobHandle,
     ) -> Result<PutReceipt, StoreError> {
-        source.verified_as(id)?;
+        self.operation
+            .as_deref()
+            .map(|operation| operation.check())
+            .transpose()?;
+        let staged = if self.operation.is_some() {
+            let bytes = source.read_all(MAX_BATCH_BYTES)?;
+            validate_bytes(id, &bytes)?;
+            Some(bytes)
+        } else {
+            source.verified_as(id)?;
+            None
+        };
         let logical_length = source.logical_length();
         let blob_length = i32::try_from(logical_length).map_err(|_| StoreError::Quota)?;
         let transaction = self
@@ -522,7 +870,15 @@ impl BlobInventoryFence for SqliteInventoryFence<'_> {
             let mut blob = transaction
                 .blob_open(DatabaseName::Main, "objects", "body", row_id, false)
                 .map_err(|source| database_error("open-sqlite-blob-repair", source))?;
-            copy_source(id, source, &mut blob)?;
+            if let Some(bytes) = &staged {
+                std::io::Write::write_all(&mut blob, bytes).map_err(|source| StoreError::Io {
+                    operation: "write-private-sqlite-repair",
+                    path: self.backend.root.clone(),
+                    source,
+                })?;
+            } else {
+                copy_source(id, source, &mut blob)?;
+            }
         }
         advance_metadata(&transaction)?;
         transaction
@@ -538,6 +894,9 @@ struct SqliteBlobSource {
     id: ContentId,
     logical_length: u64,
     range: ByteRange,
+    catalog_supervisor: Option<Arc<dyn SqliteCatalogSupervisor>>,
+    resident_lease: Option<Arc<dyn Send + Sync>>,
+    _source_lease: Option<Arc<dyn Send + Sync>>,
 }
 
 impl BlobSource for SqliteBlobSource {
@@ -546,6 +905,17 @@ impl BlobSource for SqliteBlobSource {
     }
 
     fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
+        let reader_lease = self
+            .catalog_supervisor
+            .as_ref()
+            .map(|supervisor| {
+                supervisor.reserve_resident_bytes(
+                    (std::mem::size_of::<AuthenticatingSqliteReader>()
+                        + super::physical_quota::deferred_reader_metadata_bytes())
+                        as u64,
+                )
+            })
+            .transpose()?;
         Ok(Box::new(AuthenticatingSqliteReader {
             connection: self.connection.clone(),
             id: self.id,
@@ -559,6 +929,9 @@ impl BlobSource for SqliteBlobSource {
                 self.logical_length,
             ),
             finalized: false,
+            catalog_supervisor: self.catalog_supervisor.clone(),
+            _catalog_lease: self.resident_lease.clone(),
+            _reader_lease: reader_lease,
         }))
     }
 }
@@ -572,6 +945,9 @@ struct AuthenticatingSqliteReader {
     output_offset: u64,
     hasher: blake3::Hasher,
     finalized: bool,
+    catalog_supervisor: Option<Arc<dyn SqliteCatalogSupervisor>>,
+    _catalog_lease: Option<Arc<dyn Send + Sync>>,
+    _reader_lease: Option<Arc<dyn Send + Sync>>,
 }
 
 impl AuthenticatingSqliteReader {
@@ -600,8 +976,15 @@ impl AuthenticatingSqliteReader {
         Ok(bytes)
     }
 
-    fn scan_until(&mut self, target: u64) -> io::Result<()> {
+    fn scan_until(
+        &mut self,
+        target: u64,
+        operation: Option<&dyn SqliteCatalogOperation>,
+    ) -> io::Result<()> {
         while self.scan_offset < target {
+            if let Some(operation) = operation {
+                operation.check().map_err(io::Error::other)?;
+            }
             let length = usize::try_from((target - self.scan_offset).min(MAX_CHUNK_BYTES as u64))
                 .map_err(|_| invalid_object_data())?;
             let bytes = self.read_chunk(self.scan_offset, length)?;
@@ -614,10 +997,37 @@ impl AuthenticatingSqliteReader {
 
 impl Read for AuthenticatingSqliteReader {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        let operation = self
+            .catalog_supervisor
+            .as_ref()
+            .map(|supervisor| supervisor.begin(SqliteCatalogOperationKind::Read))
+            .transpose()
+            .map_err(io::Error::other)?;
+        let _staging = operation
+            .as_deref()
+            .map(catalog::read_gate)
+            .transpose()
+            .map_err(io::Error::other)?;
+        let result = self.read_authenticated(output, operation.as_deref());
+        if result.is_ok()
+            && let Some(operation) = operation
+        {
+            operation.complete().map_err(io::Error::other)?;
+        }
+        result
+    }
+}
+
+impl AuthenticatingSqliteReader {
+    fn read_authenticated(
+        &mut self,
+        output: &mut [u8],
+        operation: Option<&dyn SqliteCatalogOperation>,
+    ) -> io::Result<usize> {
         if output.is_empty() || self.finalized {
             return Ok(0);
         }
-        self.scan_until(self.range.offset)?;
+        self.scan_until(self.range.offset, operation)?;
         if self.output_offset < self.range.length {
             let length = usize::try_from(
                 (self.range.length - self.output_offset)
@@ -633,7 +1043,7 @@ impl Read for AuthenticatingSqliteReader {
             return Ok(length);
         }
 
-        self.scan_until(self.logical_length)?;
+        self.scan_until(self.logical_length, operation)?;
         if *self.hasher.finalize().as_bytes() != self.id.digest() {
             return Err(invalid_object_data());
         }
@@ -786,6 +1196,267 @@ mod tests {
     use std::sync::{Arc, Barrier};
 
     use super::*;
+
+    struct TestCatalogSupervisor;
+    struct TestCatalogOperation;
+
+    impl SqliteCatalogSupervisor for TestCatalogSupervisor {
+        fn reserve_resident_bytes(&self, _bytes: u64) -> Result<Arc<dyn Send + Sync>, StoreError> {
+            Ok(Arc::new(()))
+        }
+
+        fn begin(
+            &self,
+            _kind: SqliteCatalogOperationKind,
+        ) -> Result<Box<dyn SqliteCatalogOperation>, StoreError> {
+            Ok(Box::new(TestCatalogOperation))
+        }
+    }
+
+    impl SqliteCatalogOperation for TestCatalogOperation {
+        fn check(&self) -> Result<(), StoreError> {
+            Ok(())
+        }
+        fn complete(self: Box<Self>) -> Result<(), StoreError> {
+            Ok(())
+        }
+    }
+
+    struct TestQuotaGuard {
+        refused: std::sync::atomic::AtomicBool,
+        resources: crate::content_store::test_resources::FixtureResourceBudget,
+    }
+
+    impl Default for TestQuotaGuard {
+        fn default() -> Self {
+            Self {
+                refused: std::sync::atomic::AtomicBool::new(false),
+                resources: crate::content_store::test_resources::FixtureResourceBudget::new(
+                    128,
+                    256 * 1024 * 1024,
+                ),
+            }
+        }
+    }
+
+    impl StorePhysicalQuotaGuard for TestQuotaGuard {
+        fn reserve_resources(
+            &self,
+            descriptors: u64,
+            resident_bytes: u64,
+        ) -> Result<Arc<dyn Send + Sync>, StoreError> {
+            self.verify()?;
+            self.resources.reserve(descriptors, resident_bytes)
+        }
+
+        fn verify(&self) -> Result<(), StoreError> {
+            if self.refused.load(std::sync::atomic::Ordering::SeqCst) {
+                Err(StoreError::Quota)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn physical_quota_covers_initialization_and_deferred_handles() {
+        if std::env::var_os("CRUCIBLE_SQLITE_QUOTA_CHILD").is_none() {
+            let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
+                .args(["--exact", "content_store::sqlite::tests::physical_quota_covers_initialization_and_deferred_handles", "--nocapture"])
+                .env("CRUCIBLE_SQLITE_QUOTA_CHILD", "1")
+                .status()
+                .expect("isolated quota test");
+            assert!(status.success());
+            return;
+        }
+        let root = tempfile::tempdir().expect("quota test root");
+        let unopened = root.path().join("refused");
+        let guard = Arc::new(TestQuotaGuard::default());
+        guard
+            .refused
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(matches!(
+            SqliteBlobBackend::open_with_physical_quota(
+                "refused",
+                &unopened,
+                guard.clone(),
+                128 << 20,
+                Arc::new(TestCatalogSupervisor),
+            ),
+            Err(StoreError::Quota)
+        ));
+        assert!(!unopened.exists());
+
+        guard
+            .refused
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let backend = SqliteBlobBackend::open_with_physical_quota(
+            "guarded",
+            root.path(),
+            guard.clone(),
+            128 << 20,
+            Arc::new(TestCatalogSupervisor),
+        )
+        .expect("quota-bound catalog");
+        assert!(!root.path().join("objects.sqlite3-wal").exists());
+        assert!(!root.path().join("objects.sqlite3-shm").exists());
+        let bytes = b"retained authenticated bytes";
+        let id = ContentId::for_bytes(ObjectKind::CampaignFact, 1, bytes);
+        backend
+            .put_if_absent(id, &BlobHandle::from_bytes(bytes))
+            .expect("put");
+        let handle = backend.read(id, None).expect("retained handle");
+        let mut reader = handle.open().expect("retained reader");
+        drop(backend);
+        guard
+            .refused
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        assert!(matches!(handle.open(), Err(StoreError::Quota)));
+        assert!(reader.read(&mut [0; 8]).is_err());
+    }
+
+    #[test]
+    fn private_catalog_refuses_clean_wal_header_before_sqlite_opens() {
+        let root = tempfile::tempdir().expect("clean WAL predecessor root");
+        let generic = SqliteBlobBackend::open("generic", root.path()).expect("generic WAL leaf");
+        drop(generic);
+        let database = root.path().join(DATABASE_FILE);
+        let before = fs::read(&database).expect("persisted WAL database");
+        assert_eq!(&before[18..20], &[2, 2]);
+        assert!(!root.path().join("objects.sqlite3-wal").exists());
+        assert!(!root.path().join("objects.sqlite3-shm").exists());
+
+        let result = SqliteBlobBackend::open_with_physical_quota(
+            "private",
+            root.path(),
+            Arc::new(TestQuotaGuard::default()),
+            i64::MAX as u64,
+            Arc::new(TestCatalogSupervisor),
+        );
+
+        assert!(matches!(result, Err(StoreError::InvalidComposition { .. })));
+        assert_eq!(
+            fs::read(&database).expect("unchanged WAL predecessor"),
+            before
+        );
+        assert!(!root.path().join("objects.sqlite3-wal").exists());
+        assert!(!root.path().join("objects.sqlite3-shm").exists());
+    }
+
+    #[test]
+    fn private_delete_catalog_rekeys_large_sources_before_transaction() {
+        if std::env::var_os("CRUCIBLE_SQLITE_DELETE_CHILD").is_none() {
+            let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
+                .args(["--exact", "content_store::sqlite::tests::private_delete_catalog_rekeys_large_sources_before_transaction", "--nocapture"])
+                .env("CRUCIBLE_SQLITE_DELETE_CHILD", "1").status().expect("isolated DELETE test");
+            assert!(status.success());
+            return;
+        }
+        let root = tempfile::tempdir().expect("private catalog root");
+        let backend = SqliteBlobBackend::open_inner(
+            "private".into(),
+            root.path().into(),
+            Some(128 << 20),
+            Some(Arc::new(TestCatalogSupervisor)),
+        )
+        .expect("private DELETE catalog");
+        backend
+            .lock_connection()
+            .expect("writer")
+            .pragma_update(None, "cache_size", -64)
+            .expect("force cache spill");
+        let bytes = vec![0x5b; 3 << 20];
+        let original = ContentId::for_bytes(ObjectKind::CampaignFact, 1, &bytes);
+        let republished = ContentId::for_bytes(ObjectKind::CampaignFact, 2, &bytes);
+        let repaired = ContentId::for_bytes(ObjectKind::CampaignFact, 3, &bytes);
+        backend
+            .put_if_absent(original, &BlobHandle::from_bytes(bytes.clone()))
+            .expect("seed object");
+        let source = backend.read(original, None).expect("same-backend source");
+        backend
+            .put_if_absent(republished, &source)
+            .expect("rekey above cache threshold");
+        let mut fence = backend.acquire_inventory_fence().expect("repair fence");
+        fence
+            .repair_put_if_absent(&PhysicalRepairAuthority::new(), repaired, &source)
+            .expect("repair above cache threshold");
+        drop(fence);
+        for id in [original, republished, repaired] {
+            assert_eq!(
+                backend
+                    .read(id, None)
+                    .expect("handle")
+                    .read_all(4 << 20)
+                    .expect("authenticate"),
+                bytes
+            );
+        }
+        let mode: String = backend
+            .lock_connection()
+            .expect("writer")
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .expect("journal mode");
+        assert_eq!(mode, "delete");
+        assert!(!root.path().join("objects.sqlite3-wal").exists());
+        assert!(!root.path().join("objects.sqlite3-shm").exists());
+        let legacy = root.path().join("legacy");
+        std::fs::create_dir(&legacy).expect("legacy directory");
+        std::fs::write(legacy.join("objects.sqlite3-wal"), b"predecessor").expect("legacy WAL");
+        assert!(matches!(
+            SqliteBlobBackend::open_inner(
+                "refused".into(),
+                legacy.clone(),
+                Some(128 << 20),
+                Some(Arc::new(TestCatalogSupervisor))
+            ),
+            Err(StoreError::InvalidComposition { .. })
+        ));
+        assert!(!legacy.join("objects.sqlite3").exists());
+    }
+
+    #[test]
+    fn bounded_sqlite_allocator_exhaustion_isolated_subprocess() {
+        let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "content_store::sqlite::tests::bounded_sqlite_allocator_child",
+                "--nocapture",
+            ])
+            .env("CRUCIBLE_SQLITE_HEAP_CHILD", "1")
+            .status()
+            .expect("isolated allocator test");
+        assert!(status.success());
+    }
+
+    #[test]
+    fn bounded_sqlite_allocator_child() {
+        if std::env::var_os("CRUCIBLE_SQLITE_HEAP_CHILD").is_none() {
+            return;
+        }
+        let root = tempfile::tempdir().expect("isolated SQLite root");
+        let backend = SqliteBlobBackend::open_inner(
+            "bounded-memory".into(),
+            root.path().into(),
+            Some(8 << 20),
+            Some(Arc::new(TestCatalogSupervisor)),
+        )
+        .expect("bounded catalog");
+        let connection = backend.lock_connection().expect("writer");
+        let error = connection
+            .query_row("SELECT length(randomblob(32 * 1024 * 1024))", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect_err("real SQLite allocation must fail at the hard heap limit");
+        assert_eq!(
+            error.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::OutOfMemory)
+        );
+        let limit: i64 = connection
+            .query_row("PRAGMA hard_heap_limit", [], |row| row.get(0))
+            .expect("heap limit");
+        assert!(limit > 0 && limit <= 8 << 20);
+    }
 
     fn sqlite_file_census(root: &Path) -> (u64, u64) {
         let mut allocated_blocks = 0;

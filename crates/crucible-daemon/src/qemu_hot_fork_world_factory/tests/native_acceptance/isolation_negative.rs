@@ -1,6 +1,9 @@
-//! Native production-factory rejection matrix for corrupted child isolation.
+//! Component isolation regressions and the genuine native matrix entry point.
+//!
+//! The scripted matrix checks malformed report rollback separately. The ignored
+//! native selector delegates to accepted ownership and real source-object probes.
 
-// crucible-lint: allow panic-shortcut -- native gate assertions use panic shortcuts.
+// crucible-lint: allow panic-shortcut -- fixture assertions abort on incomplete ownership evidence.
 #![allow(clippy::expect_used)]
 
 use super::*;
@@ -16,8 +19,7 @@ const ISOLATION_FAULTS: [QemuTestHotForkIsolationFault; 7] = [
 ];
 
 #[test]
-#[ignore = "run by the native hot-fork isolation gate"]
-fn production_factory_rejects_the_complete_isolation_negative_matrix_before_readiness() {
+fn scripted_factory_rejects_the_complete_isolation_negative_matrix_before_readiness() {
     for (index, fault) in ISOLATION_FAULTS.into_iter().enumerate() {
         let source =
             scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::IsolationRejected(fault))
@@ -29,8 +31,7 @@ fn production_factory_rejects_the_complete_isolation_negative_matrix_before_read
         let (_nodes, source_world) =
             prepared_test_source_world(vec![source]).expect("prepared production source world");
         let input = execution_input();
-        let context =
-            native_execution_context(&input, 0x90 + u8::try_from(index).expect("matrix index"));
+        let context = execution_context(&input, 0x90 + u8::try_from(index).expect("matrix index"));
         let observations = ScriptedWorldObservations::new();
         let run_state = tempfile::tempdir().expect("isolation run state");
         let mut factory = super::super::reconciliation::factory(
@@ -106,8 +107,16 @@ fn production_factory_rejects_the_complete_isolation_negative_matrix_before_read
     }
 
     println!(
-        "native_negative_isolation_matrix=private-ring-omitted,qmp-control-aliased,console-diagnostics-aliased,writable-disk-backing-aliased,network-omitted,ninep-aliased,host-continuation-identity-aliased"
+        "component_negative_isolation_matrix=private-ring-omitted,qmp-control-aliased,console-diagnostics-aliased,writable-disk-backing-aliased,network-omitted,ninep-aliased,host-continuation-identity-aliased"
     );
-    println!("native_negative_isolation_rejected_before=child-readiness,resume,world-publication");
-    println!("native_negative_isolation_source_unchanged=true");
+    println!(
+        "component_negative_isolation_rejected_before=child-readiness,resume,world-publication"
+    );
+    println!("component_negative_isolation_source_unchanged=true");
+}
+
+#[test]
+#[ignore = "requires accepted native source ownership, pidfd_getfd and real stage/reader guards"]
+fn production_factory_rejects_the_complete_isolation_negative_matrix_before_readiness() {
+    run_atomic_world_case(crate::packaged_qemu_executor::NativeAtomicWorldCase::Isolation);
 }

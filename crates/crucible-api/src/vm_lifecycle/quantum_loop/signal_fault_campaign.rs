@@ -170,11 +170,18 @@ impl ProductionVmLifecycleLoop {
             .iter()
             .filter(|frontier| frontier.configuration == *configuration && frontier.at == at)
         {
-            let discovery = crucible::SignalFaultSelectable::from_frontier(frontier)
-                .and_then(|selectable| selectable.discovery())
-                .map_err(|error| SchedulerError::BoundaryViolation {
-                    message: format!("normalize live signal-fault campaign discovery: {error}"),
+            let selectable =
+                crucible::SignalFaultSelectable::from_frontier(frontier).map_err(|error| {
+                    SchedulerError::BoundaryViolation {
+                        message: format!("normalize live signal-fault campaign discovery: {error}"),
+                    }
                 })?;
+            let discovery =
+                selectable
+                    .discovery()
+                    .map_err(|error| SchedulerError::BoundaryViolation {
+                        message: format!("normalize live signal-fault campaign discovery: {error}"),
+                    })?;
             for (id, bytes) in [
                 (
                     discovery.opportunity().declaration().content_id(),

@@ -512,7 +512,7 @@ fn lifecycle_without_backends(
         },
         scenario,
         source: source.clone(),
-        config,
+        config: Arc::new(config),
         checkpoint_targets: BTreeMap::new(),
         exact_ram_parents: BTreeMap::new(),
         repository_exact_ram_rebase: None,
@@ -528,6 +528,7 @@ fn lifecycle_without_backends(
         _run_directory: run_directory,
         retained_hot_fork_disk_owners: Vec::new(),
         retained_resource_owners: Vec::new(),
+        input_decode_custody: crucible::owned_decode::current_custody(),
         hot_fork_backing_files: BTreeMap::new(),
     };
     lifecycle

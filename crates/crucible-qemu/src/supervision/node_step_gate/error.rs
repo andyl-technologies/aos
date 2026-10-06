@@ -7,6 +7,9 @@ use thiserror::Error;
 /// Error returned by the live [`QemuNode`] bounded-step gate.
 #[derive(Debug, Error)]
 pub enum QemuLiveNodeStepGateError {
+    /// A live operational budget or original-start outer cap refused progress.
+    #[error(transparent)]
+    HostSupervision(#[from] crucible_linux_resource::host_supervision::HostSupervisionError),
     /// A caller requested a runtime trace outside the finite admission range.
     #[error("runtime trace budget {requested} must be within 1..={maximum} bytes")]
     InvalidRuntimeTraceBudget {

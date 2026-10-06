@@ -239,7 +239,7 @@ in
     ];
 
     meta = {
-      description = "RFC-0010 phase 5 API state update stream gate for ${taskList}";
+      description = "Crucible API state update stream gate for ${taskList}";
       passthru = {
         inherit attrPath taskIds dependencies;
         failureText = failureText;

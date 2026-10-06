@@ -50,6 +50,27 @@ pub(super) fn repository_service_failure(
             CampaignServiceFailure::ResourceExhausted
         }
         CampaignRepositoryError::Store(error) => store_service_failure(error),
+        CampaignRepositoryError::Ram(error) => {
+            use crucible_cas::ram::RamStoreError;
+            match error {
+                RamStoreError::Store(error) => store_service_failure(error),
+                RamStoreError::Limit(_) => CampaignServiceFailure::ResourceExhausted,
+                RamStoreError::Canceled => CampaignServiceFailure::Unavailable,
+                RamStoreError::Transfer(crucible_cas::ram::RamTransferCodecError::Io(_)) => {
+                    CampaignServiceFailure::Unavailable
+                }
+                RamStoreError::Transfer(crucible_cas::ram::RamTransferCodecError::Limit(_)) => {
+                    CampaignServiceFailure::ResourceExhausted
+                }
+                RamStoreError::Transfer(crucible_cas::ram::RamTransferCodecError::Invalid) => {
+                    CampaignServiceFailure::ProtocolViolation
+                }
+                RamStoreError::Invalid(_)
+                | RamStoreError::Logical(_)
+                | RamStoreError::Envelope(_)
+                | RamStoreError::Retention(_) => CampaignServiceFailure::IntegrityFailure,
+            }
+        }
         CampaignRepositoryError::Codec(_) => CampaignServiceFailure::IntegrityFailure,
         CampaignRepositoryError::Merkle(crate::CampaignStoreError::Store(error)) => {
             store_service_failure(error)
@@ -79,6 +100,7 @@ pub(super) fn store_service_failure(error: &StoreError) -> CampaignServiceFailur
         StoreError::NotFound { .. }
         | StoreError::Unavailable
         | StoreError::Io { .. }
+        | StoreError::Supervision { .. }
         | StoreError::StreamIo { .. } => CampaignServiceFailure::Unavailable,
         StoreError::Corrupt { .. }
         | StoreError::InvalidId

@@ -103,7 +103,7 @@ pub(in super::super) const fn is_recoverable_scheduler_rejection(error: &Schedul
         SchedulerError::BoundaryViolation { .. }
         | SchedulerError::TimeConversion(_)
         | SchedulerError::TopologyActivationInPast { .. } => true,
-        SchedulerError::ResourceLimit { .. } => false,
+        SchedulerError::ResourceLimit { .. } | SchedulerError::Evaluation { .. } => false,
         SchedulerError::Backend(error) => is_recoverable_backend_rejection(error),
         SchedulerError::OperationalBoundary { .. } => false,
     }
@@ -112,6 +112,6 @@ pub(in super::super) const fn is_recoverable_scheduler_rejection(error: &Schedul
 pub(in super::super) const fn is_recoverable_backend_rejection(error: &BackendError) -> bool {
     match error {
         BackendError::Unsupported { .. } | BackendError::Rejected { .. } => true,
-        BackendError::ResourceLimit { .. } => false,
+        BackendError::ResourceLimit { .. } | BackendError::OperationalFailure { .. } => false,
     }
 }

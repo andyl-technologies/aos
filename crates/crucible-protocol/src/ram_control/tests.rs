@@ -25,6 +25,8 @@ fn frame(sequence: u64, request: RamControlRequest) -> RamControlFrame {
 
 fn state() -> RamControlReply {
     RamControlReply {
+        kernel_probe: None,
+        activity: None,
         disposition: RamControlDisposition::Accepted,
         logical_ram_bytes: 8192,
         inventory: None,
@@ -65,7 +67,7 @@ fn policy() -> RamControlPolicy {
 #[test]
 fn ram_control_golden_hello_and_all_closed_messages_roundtrip() {
     let hello = frame(1, RamControlRequest::Hello);
-    let mut golden = vec![0, 0, 0, 1, 0];
+    let mut golden = vec![0, 0, 0, 3, 0];
     golden.extend_from_slice(&[4; 32]);
     golden.extend_from_slice(&1_u64.to_be_bytes());
     golden.extend_from_slice(&[1; 32]);
@@ -76,7 +78,10 @@ fn ram_control_golden_hello_and_all_closed_messages_roundtrip() {
     golden.push(0);
 
     assert_eq!(golden.len(), 158);
-    assert_eq!(encode_ram_control(&hello).unwrap(), golden);
+    assert_eq!(
+        encode_ram_control(&hello).unwrap_or_else(|_| panic!("valid test fixture must succeed")),
+        golden
+    );
     for request in [
         RamControlRequest::Hello,
         RamControlRequest::Status,
@@ -87,21 +92,32 @@ fn ram_control_golden_hello_and_all_closed_messages_roundtrip() {
             expected_revision: 1,
             policy_revision: 2,
             reservation_revision: 3,
+            resources: RamControlResources::default(),
             policy: policy(),
         },
     ] {
         let expected = frame(1, request);
-        let encoded = encode_ram_control(&expected).unwrap();
-        assert_eq!(decode_ram_control(&encoded).unwrap(), expected);
+        let encoded = encode_ram_control(&expected)
+            .unwrap_or_else(|_| panic!("valid test fixture must succeed"));
+        assert_eq!(
+            decode_ram_control(&encoded)
+                .unwrap_or_else(|_| panic!("valid test fixture must succeed")),
+            expected
+        );
         let reply = RamControlFrame {
             message: RamControlMessage::Reply {
-                request_digest: ram_control_request_digest(&expected).unwrap(),
+                request_digest: ram_control_request_digest(&expected)
+                    .unwrap_or_else(|_| panic!("valid test fixture must succeed")),
                 state: state(),
             },
             ..expected
         };
         assert_eq!(
-            decode_ram_control(&encode_ram_control(&reply).unwrap()).unwrap(),
+            decode_ram_control(
+                &encode_ram_control(&reply)
+                    .unwrap_or_else(|_| panic!("valid test fixture must succeed"))
+            )
+            .unwrap_or_else(|_| panic!("valid test fixture must succeed")),
             reply
         );
     }
@@ -109,7 +125,8 @@ fn ram_control_golden_hello_and_all_closed_messages_roundtrip() {
 
 #[test]
 fn ram_control_rejects_truncation_trailing_unknown_and_overflow_before_dispatch() {
-    let canonical = encode_ram_control(&frame(1, RamControlRequest::Hello)).unwrap();
+    let canonical = encode_ram_control(&frame(1, RamControlRequest::Hello))
+        .unwrap_or_else(|_| panic!("valid test fixture must succeed"));
     for size in 0..canonical.len() {
         assert!(
             decode_ram_control(&canonical[..size]).is_err(),
@@ -138,7 +155,7 @@ fn ram_control_rejects_truncation_trailing_unknown_and_overflow_before_dispatch(
     assert!(read_ram_control(&mut partial_header).is_err());
     assert!(
         read_ram_control(&mut Cursor::new(Vec::<u8>::new()))
-            .unwrap()
+            .unwrap_or_else(|_| panic!("valid test fixture must succeed"))
             .is_none()
     );
 }
@@ -165,6 +182,7 @@ fn ram_control_rejects_invalid_scalars_and_noncanonical_optional_durations() {
                     expected_revision: 1,
                     policy_revision: 2,
                     reservation_revision: 3,
+                    resources: RamControlResources::default(),
                     policy
                 }
             ))
@@ -180,6 +198,7 @@ fn ram_control_rejects_invalid_scalars_and_noncanonical_optional_durations() {
                 expected_revision: 1,
                 policy_revision: 2,
                 reservation_revision: 3,
+                resources: RamControlResources::default(),
                 policy
             }
         ))
@@ -192,6 +211,7 @@ fn ram_control_rejects_invalid_scalars_and_noncanonical_optional_durations() {
                 expected_revision: u64::MAX,
                 policy_revision: 0,
                 reservation_revision: 3,
+                resources: RamControlResources::default(),
                 policy
             }
         ))
@@ -221,13 +241,22 @@ fn ram_control_independent_socket_services_status_while_guest_is_stalled() {
     let (release, release_rx) = mpsc::sync_channel(0);
     let guest_lock = Arc::clone(&guest_replay_lock);
     let guest = thread::spawn(move || {
-        let _guard = guest_lock.lock().unwrap();
-        held.send(()).unwrap();
-        release_rx.recv().unwrap();
+        let _guard = guest_lock
+            .lock()
+            .unwrap_or_else(|_| panic!("valid test fixture must succeed"));
+        held.send(())
+            .unwrap_or_else(|_| panic!("valid test fixture must succeed"));
+        release_rx
+            .recv()
+            .unwrap_or_else(|_| panic!("valid test fixture must succeed"));
     });
-    held_rx.recv().unwrap();
-    let (mut host, mut pager) = UnixStream::pair().unwrap();
-    host.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+    held_rx
+        .recv()
+        .unwrap_or_else(|_| panic!("valid test fixture must succeed"));
+    let (mut host, mut pager) =
+        UnixStream::pair().unwrap_or_else(|_| panic!("valid test fixture must succeed"));
+    host.set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap_or_else(|_| panic!("valid test fixture must succeed"));
     let worker =
         thread::spawn(move || serve_ram_control(&mut pager, [4; 32], target(), |_| state()));
 
@@ -242,21 +271,33 @@ fn ram_control_independent_socket_services_status_while_guest_is_stalled() {
         ),
     ] {
         let request = frame(sequence, request);
-        write_ram_control(&mut host, &request).unwrap();
-        let reply = read_ram_control(&mut host).unwrap().unwrap();
+        write_ram_control(&mut host, &request)
+            .unwrap_or_else(|_| panic!("valid test fixture must succeed"));
+        let reply = read_ram_control(&mut host)
+            .unwrap_or_else(|_| panic!("valid test fixture must succeed"))
+            .unwrap_or_else(|| panic!("test peer must send a frame"));
         assert_eq!(reply.sequence, sequence);
         assert_eq!(
             reply.message,
             RamControlMessage::Reply {
-                request_digest: ram_control_request_digest(&request).unwrap(),
+                request_digest: ram_control_request_digest(&request)
+                    .unwrap_or_else(|_| panic!("valid test fixture must succeed")),
                 state: state()
             }
         );
     }
-    host.shutdown(std::net::Shutdown::Both).unwrap();
-    worker.join().unwrap().unwrap();
-    release.send(()).unwrap();
-    guest.join().unwrap();
+    host.shutdown(std::net::Shutdown::Both)
+        .unwrap_or_else(|_| panic!("valid test fixture must succeed"));
+    worker
+        .join()
+        .unwrap_or_else(|_| panic!("valid test fixture must succeed"))
+        .unwrap_or_else(|_| panic!("valid test fixture must succeed"));
+    release
+        .send(())
+        .unwrap_or_else(|_| panic!("valid test fixture must succeed"));
+    guest
+        .join()
+        .unwrap_or_else(|_| panic!("valid test fixture must succeed"));
 }
 
 #[cfg(unix)]
@@ -268,7 +309,8 @@ fn ram_control_stale_session_target_and_replayed_sequence_never_mutate() {
     use std::thread;
 
     for alteration in 0..4 {
-        let (mut host, mut pager) = UnixStream::pair().unwrap();
+        let (mut host, mut pager) =
+            UnixStream::pair().unwrap_or_else(|_| panic!("valid test fixture must succeed"));
         let mutations = Arc::new(AtomicUsize::new(0));
         let worker_mutations = Arc::clone(&mutations);
         let worker = thread::spawn(move || {
@@ -280,14 +322,18 @@ fn ram_control_stale_session_target_and_replayed_sequence_never_mutate() {
             })
         });
         let hello = frame(1, RamControlRequest::Hello);
-        write_ram_control(&mut host, &hello).unwrap();
-        read_ram_control(&mut host).unwrap().unwrap();
+        write_ram_control(&mut host, &hello)
+            .unwrap_or_else(|_| panic!("valid test fixture must succeed"));
+        read_ram_control(&mut host)
+            .unwrap_or_else(|_| panic!("valid test fixture must succeed"))
+            .unwrap_or_else(|| panic!("test peer must send a frame"));
         let mut request = frame(
             2,
             RamControlRequest::Apply {
                 expected_revision: 1,
                 policy_revision: 2,
                 reservation_revision: 3,
+                resources: RamControlResources::default(),
                 policy: policy(),
             },
         );
@@ -297,9 +343,12 @@ fn ram_control_stale_session_target_and_replayed_sequence_never_mutate() {
             2 => request.target.arena_generation += 1,
             _ => request.sequence = 1,
         }
-        write_ram_control(&mut host, &request).unwrap();
+        write_ram_control(&mut host, &request)
+            .unwrap_or_else(|_| panic!("valid test fixture must succeed"));
         assert!(matches!(
-            worker.join().unwrap(),
+            worker
+                .join()
+                .unwrap_or_else(|_| panic!("valid test fixture must succeed")),
             Err(RamControlError::AuthorityMismatch)
         ));
         assert_eq!(mutations.load(Ordering::SeqCst), 0);
@@ -319,7 +368,8 @@ fn control_cutover_accepts_current_golden_and_refuses_predecessor_handshake() {
         slot_index: 7,
         node_count: 32,
     };
-    let current = control_decode_plugin_msg(GOLDEN_CONTROL_VECTORS[0].frame).unwrap();
+    let current = control_decode_plugin_msg(GOLDEN_CONTROL_VECTORS[0].frame)
+        .unwrap_or_else(|_| panic!("valid test fixture must succeed"));
     assert!(host_negotiate_handshake(current, config).is_ok());
     let predecessor = PluginMsg::Hello {
         proto_version: 3,
@@ -345,14 +395,19 @@ fn ram_control_unavailable_counters_cannot_masquerade_as_zero_measurements() {
     };
     let response = |state| RamControlFrame {
         message: RamControlMessage::Reply {
-            request_digest: ram_control_request_digest(&request).unwrap(),
+            request_digest: ram_control_request_digest(&request)
+                .unwrap_or_else(|_| panic!("valid test fixture must succeed")),
             state,
         },
         ..request
     };
     let valid = response(unavailable);
     assert_eq!(
-        decode_ram_control(&encode_ram_control(&valid).unwrap()).unwrap(),
+        decode_ram_control(
+            &encode_ram_control(&valid)
+                .unwrap_or_else(|_| panic!("valid test fixture must succeed"))
+        )
+        .unwrap_or_else(|_| panic!("valid test fixture must succeed")),
         valid
     );
     assert!(
@@ -376,7 +431,8 @@ fn actual_inventory_records_bind_geometry_generation_and_canonical_identity() {
     let request = frame(1, RamControlRequest::Status);
     let response = |state| RamControlFrame {
         message: RamControlMessage::Reply {
-            request_digest: ram_control_request_digest(&request).unwrap(),
+            request_digest: ram_control_request_digest(&request)
+                .unwrap_or_else(|_| panic!("valid test fixture must succeed")),
             state,
         },
         ..request
@@ -387,15 +443,27 @@ fn actual_inventory_records_bind_geometry_generation_and_canonical_identity() {
         region_count: 2,
         native_metadata_bytes: 4096,
         native_scratch_bytes: 16384,
+        owner_resources: RamControlOwnerInventory {
+            existing_tasks: 5,
+            existing_file_descriptors: 14,
+            registered_service_tasks: 1,
+            prospective_tasks: 1,
+            prospective_file_descriptors: 4,
+        },
         granted: false,
     };
-    let region = RamControlInventoryRegion::new(1, 4096, 2, "device/vram").unwrap();
+    let region = RamControlInventoryRegion::new(1, 4096, 2, "device/vram")
+        .unwrap_or_else(|_| panic!("valid test fixture must succeed"));
     let mut observation = state();
     observation.inventory = Some(report);
     observation.inventory_region = Some(region);
     let original = response(observation);
-    let bytes = encode_ram_control(&original).unwrap();
-    assert_eq!(decode_ram_control(&bytes).unwrap(), original);
+    let bytes =
+        encode_ram_control(&original).unwrap_or_else(|_| panic!("valid test fixture must succeed"));
+    assert_eq!(
+        decode_ram_control(&bytes).unwrap_or_else(|_| panic!("valid test fixture must succeed")),
+        original
+    );
     for length in 0..bytes.len() {
         assert!(decode_ram_control(&bytes[..length]).is_err());
     }
@@ -430,9 +498,14 @@ fn actual_inventory_records_bind_geometry_generation_and_canonical_identity() {
 #[test]
 fn initial_roster_and_exact_grants_have_one_bounded_encoding() {
     let budgets = policy().budgets;
-    let bytes = encode_ram_control_budgets(&budgets).unwrap();
+    let bytes = encode_ram_control_budgets(&budgets)
+        .unwrap_or_else(|_| panic!("valid test fixture must succeed"));
     assert!(bytes.len() <= RAM_CONTROL_BUDGET_ROSTER_MAX_BYTES);
-    assert_eq!(decode_ram_control_budgets(&bytes).unwrap(), budgets);
+    assert_eq!(
+        decode_ram_control_budgets(&bytes)
+            .unwrap_or_else(|_| panic!("valid test fixture must succeed")),
+        budgets
+    );
     for length in 0..bytes.len() {
         assert!(decode_ram_control_budgets(&bytes[..length]).is_err());
     }
@@ -447,6 +520,7 @@ fn initial_roster_and_exact_grants_have_one_bounded_encoding() {
         2,
         RamControlRequest::GrantInventory {
             topology_generation: 9,
+            spill_quota_bytes: 1 << 30,
             resources: RamControlResources {
                 resident_peak_bytes: 1 << 30,
                 backing_peak_bytes: 4 << 30,
@@ -459,8 +533,12 @@ fn initial_roster_and_exact_grants_have_one_bounded_encoding() {
             },
         },
     );
-    let bytes = encode_ram_control(&grant).unwrap();
-    assert_eq!(decode_ram_control(&bytes).unwrap(), grant);
+    let bytes =
+        encode_ram_control(&grant).unwrap_or_else(|_| panic!("valid test fixture must succeed"));
+    assert_eq!(
+        decode_ram_control(&bytes).unwrap_or_else(|_| panic!("valid test fixture must succeed")),
+        grant
+    );
     let request = frame(
         3,
         RamControlRequest::InventoryRegion {
@@ -469,7 +547,11 @@ fn initial_roster_and_exact_grants_have_one_bounded_encoding() {
         },
     );
     assert_eq!(
-        decode_ram_control(&encode_ram_control(&request).unwrap()).unwrap(),
+        decode_ram_control(
+            &encode_ram_control(&request)
+                .unwrap_or_else(|_| panic!("valid test fixture must succeed"))
+        )
+        .unwrap_or_else(|_| panic!("valid test fixture must succeed")),
         request
     );
     for request in [
@@ -483,9 +565,113 @@ fn initial_roster_and_exact_grants_have_one_bounded_encoding() {
         },
         RamControlRequest::GrantInventory {
             topology_generation: 0,
+            spill_quota_bytes: 0,
             resources: RamControlResources::default(),
         },
     ] {
         assert!(encode_ram_control(&frame(2, request)).is_err());
     }
+}
+
+#[test]
+fn operational_activity_is_independent_of_rss_and_rejects_incomplete_or_unknown_tail() {
+    let request = frame(1, RamControlRequest::Status);
+    let activity = RamControlActivity {
+        successful_missing_installs: 1,
+        successful_missing_read_installs: 2,
+        successful_missing_write_installs: 3,
+        write_protect_transitions: 4,
+        preservation_reads: 5,
+        preservation_writes: 6,
+        physical_discards: 7,
+        prefetched_pages: u64::MAX,
+    };
+    let response = RamControlFrame {
+        message: RamControlMessage::Reply {
+            request_digest: ram_control_request_digest(&request)
+                .unwrap_or_else(|_| panic!("valid activity request must encode")),
+            state: RamControlReply {
+                activity: Some(activity),
+                measurements_available: false,
+                private_resident_bytes: 0,
+                shared_resident_bytes_observed: 0,
+                preserved_backing_bytes: 0,
+                private_dirty_bytes: 0,
+                writeback_pending_bytes: 0,
+                ..state()
+            },
+        },
+        ..request
+    };
+    let encoded = encode_ram_control(&response)
+        .unwrap_or_else(|_| panic!("valid operational activity must encode"));
+    assert_eq!(
+        decode_ram_control(&encoded)
+            .unwrap_or_else(|_| panic!("valid operational activity must decode")),
+        response
+    );
+
+    let tail = encoded.len() - 66;
+    assert_eq!(encoded[tail], 1);
+    for (index, value) in [1_u64, 2, 3, 4, 5, 6, 7, u64::MAX].into_iter().enumerate() {
+        let start = tail + 1 + index * 8;
+        assert_eq!(&encoded[start..start + 8], &value.to_be_bytes());
+    }
+    for length in tail..encoded.len() {
+        assert!(decode_ram_control(&encoded[..length]).is_err());
+    }
+    let mut unknown = encoded;
+    unknown[tail] = 2;
+    assert!(decode_ram_control(&unknown).is_err());
+}
+
+#[test]
+fn native_probe_has_one_bounded_encoding_and_refuses_user_only_or_empty_features() {
+    let request = frame(1, RamControlRequest::Status);
+    let probe = RamControlKernelProbe {
+        effective_uid: 65534,
+        effective_gid: 65533,
+        features: u64::MAX,
+        mode: RamControlKernelProbeMode::FullKernel,
+    };
+    let reply = RamControlFrame {
+        message: RamControlMessage::Reply {
+            request_digest: ram_control_request_digest(&request)
+                .unwrap_or_else(|error| panic!("encode probe request: {error}")),
+            state: RamControlReply {
+                kernel_probe: Some(probe),
+                ..state()
+            },
+        },
+        ..request
+    };
+    let encoded = encode_ram_control(&reply)
+        .unwrap_or_else(|error| panic!("encode authenticated probe facts: {error}"));
+    assert_eq!(
+        decode_ram_control(&encoded)
+            .unwrap_or_else(|error| panic!("decode authenticated probe facts: {error}")),
+        reply
+    );
+    let tail = encoded.len() - 18;
+    assert_eq!(&encoded[tail..tail + 2], &[1, 1]);
+    assert_eq!(
+        &encoded[tail + 2..tail + 6],
+        &probe.effective_uid.to_be_bytes()
+    );
+    assert_eq!(
+        &encoded[tail + 6..tail + 10],
+        &probe.effective_gid.to_be_bytes()
+    );
+    assert_eq!(&encoded[tail + 10..], &probe.features.to_be_bytes());
+    for length in tail..encoded.len() {
+        assert!(decode_ram_control(&encoded[..length]).is_err());
+    }
+    for (offset, invalid) in [(tail, 2), (tail + 1, 0), (tail + 1, 2)] {
+        let mut unsupported = encoded.clone();
+        unsupported[offset] = invalid;
+        assert!(decode_ram_control(&unsupported).is_err());
+    }
+    let mut empty = encoded;
+    empty[tail + 10..].fill(0);
+    assert!(decode_ram_control(&empty).is_err());
 }

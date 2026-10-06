@@ -45,6 +45,7 @@ fn growing_authenticated_history_preserves_empty_continuation() -> TestResult {
             assert!(
                 evaluator
                     .observe_prefix(log.condition_prefix(), &mut oracle)
+                    .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"))
                     .is_empty()
             );
         }
@@ -56,8 +57,12 @@ fn growing_authenticated_history_preserves_empty_continuation() -> TestResult {
         assert_eq!(restored.checkpoint().canonical_bytes()?, encoded);
         append_boundaries(&mut log, 1)?;
         assert_eq!(
-            restored.finalize_prefix(log.condition_prefix(), &mut oracle),
-            evaluator.finalize_prefix(log.condition_prefix(), &mut oracle)
+            restored
+                .finalize_prefix(log.condition_prefix(), &mut oracle)
+                .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}")),
+            evaluator
+                .finalize_prefix(log.condition_prefix(), &mut oracle)
+                .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"))
         );
         println!(
             "live_assertion_continuation initial_entries={initial_entries} observations=64 checkpoint_hash={}",
@@ -97,7 +102,9 @@ fn restored_deadline_crossing_preserves_equal_and_earlier_points() -> TestResult
             ConditionLeaf::GuestMarker { .. } => false,
         },
     );
-    evaluator.observe_prefix(&first, &mut oracle);
+    evaluator
+        .observe_prefix(&first, &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
     let encoded = evaluator.checkpoint().canonical_bytes()?;
     let checkpoint = HostAssertionEvaluatorCheckpoint::from_canonical_bytes(&encoded)?;
     let mut restored = HostAssertionEvaluator::new(&properties);
@@ -109,8 +116,12 @@ fn restored_deadline_crossing_preserves_equal_and_earlier_points() -> TestResult
             Vec::new(),
         )?;
         assert_eq!(
-            restored.observe_prefix(&prefix, &mut oracle),
-            evaluator.observe_prefix(&prefix, &mut oracle)
+            restored
+                .observe_prefix(&prefix, &mut oracle)
+                .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}")),
+            evaluator
+                .observe_prefix(&prefix, &mut oracle)
+                .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"))
         );
         assert_eq!(
             restored.checkpoint().canonical_bytes()?,
@@ -119,9 +130,16 @@ fn restored_deadline_crossing_preserves_equal_and_earlier_points() -> TestResult
     }
     let terminal =
         crucible::test_support::condition_prefix_from_observable_events_for_test(10, Vec::new())?;
-    let report = evaluator.finalize_prefix(&terminal, &mut oracle);
+    let report = evaluator
+        .finalize_prefix(&terminal, &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
-    assert_eq!(report, restored.finalize_prefix(&terminal, &mut oracle));
+    assert_eq!(
+        report,
+        restored
+            .finalize_prefix(&terminal, &mut oracle)
+            .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"))
+    );
     assert_eq!(report.verdict(), &AssertionRunVerdict::Passed);
     assert_eq!(report.outcomes().len(), 1);
     assert_eq!(
@@ -143,11 +161,15 @@ fn mismatched_prefix_restore_preserves_original_continuation() -> TestResult {
     append_boundaries(&mut log, 128)?;
     let mut evaluator = HostAssertionEvaluator::new(&properties);
     let mut oracle = crucible::BlackBoxHostOracle;
-    evaluator.observe_prefix(log.condition_prefix(), &mut oracle);
+    evaluator
+        .observe_prefix(log.condition_prefix(), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
     let checkpoint = evaluator.checkpoint();
     append_boundaries(&mut log, 1)?;
     let mut target = HostAssertionEvaluator::new(&properties);
-    target.observe_prefix(log.condition_prefix(), &mut oracle);
+    target
+        .observe_prefix(log.condition_prefix(), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
     let before = target.checkpoint().canonical_bytes()?;
 
     assert_eq!(

@@ -4,6 +4,8 @@
 //! possession by complete reads. A stored closure is archive readiness only;
 //! this module grants no machine ownership or live migration authority.
 
+use std::sync::Arc;
+
 use crucible_protocol::ram_transfer::{
     MAX_TRANSFER_CHUNK_BYTES, RamTransferLimits, RamTransferMessage, RamTransferOffer,
 };
@@ -169,7 +171,7 @@ impl RamStore {
             .regions()
             .iter()
             .filter(|region| source.record.scope().includes(region.class()))
-            .zip(&source.regions)
+            .zip(source.regions.iter())
         {
             self.transfer_region(
                 region,
@@ -196,6 +198,7 @@ impl RamStore {
         let root = LeasedRamRoot {
             record: source.record.clone(),
             regions: source.regions.clone(),
+            metadata_custody: Arc::clone(&source.metadata_custody),
             lease,
         };
         report.object_visits = work.visits;
@@ -235,8 +238,8 @@ impl RamStore {
             .regions()
             .iter()
             .filter(|region| before.record.scope().includes(region.class()))
-            .zip(&before.regions)
-            .zip(&after.regions)
+            .zip(before.regions.iter())
+            .zip(after.regions.iter())
         {
             self.diff_region(
                 region.id(),

@@ -5,64 +5,83 @@
   cratesDir = ../../crates;
   rfcDir = ../../docs/rfcs/0010-crucible;
   campaignRfcDir = ../../docs/rfcs/0020-crucible-campaigns;
+  pagedRfcDir = ../../docs/rfcs/0021-crucible-paged-ram;
 
   specs = [
     {
       package = "crucible-cas";
+      descriptiveContract = "Content-addressed objects, durable references, authenticated closures, and bounded storage operations";
       root = "src/lib.rs";
       specFiles = ["35"];
       section6 = true;
     }
     {
       package = "crucible-sim";
+      descriptiveContract = "Deterministic randomness, counters, and virtual-time primitives";
       root = "src/lib.rs";
       specFiles = ["04" "08" "09"];
       section6 = true;
     }
     {
       package = "crucible-assert";
+      descriptiveContract = "Deterministic assertion vocabulary and canonical subject identities";
       root = "src/lib.rs";
       specFiles = ["18"];
       section6 = true;
     }
     {
       package = "crucible-shmem";
+      descriptiveContract = "Versioned shared-memory layouts, checked offsets, and process ownership";
       root = "src/lib.rs";
       specFiles = ["13"];
       section6 = true;
     }
     {
       package = "crucible-protocol";
+      descriptiveContract = "Versioned control messages, bounded codecs, and descriptor exchange";
       root = "src/lib.rs";
       specFiles = ["14" "16"];
       section6 = true;
     }
     {
+      package = "crucible-ram";
+      descriptiveContract = "Paged RAM logical identity, persistent Merkle trees, and independent write epochs";
+      root = "src/lib.rs";
+      specFiles = [];
+      pagedSpecFiles = ["02" "03"];
+      section6 = false;
+    }
+    {
       package = "crucible-device";
+      descriptiveContract = "Deterministic device queues and modeled I/O lifecycles";
       root = "src/lib.rs";
       specFiles = ["15"];
       section6 = true;
     }
     {
       package = "crucible-qemu";
+      descriptiveContract = "Host-side QEMU process control, deterministic execution, and exact-state ownership";
       root = "src/lib.rs";
       specFiles = ["10" "11"];
       section6 = true;
     }
     {
       package = "crucible-qemu-plugin";
+      descriptiveContract = "GPL-side guest observation, deterministic execution fences, and host paging";
       root = "src/lib.rs";
       specFiles = ["11" "12"];
       section6 = true;
     }
     {
       package = "crucible-debug-gateway";
+      descriptiveContract = "Authenticated interactive debugging across the process boundary";
       root = "src/lib.rs";
       specFiles = ["36"];
       section6 = true;
     }
     {
       package = "crucible-guest";
+      descriptiveContract = "Optional guest markers, typed selectable requests, and introspection helpers";
       root = "src/lib.rs";
       specFiles = ["16"];
       campaignSpecFiles = ["02"];
@@ -70,24 +89,28 @@
     }
     {
       package = "crucible";
+      descriptiveContract = "Pure execution model, scheduling, faults, assertions, and replay identity";
       root = "src/lib.rs";
       specFiles = ["05" "06" "07" "08" "17" "18" "19"];
       section6 = true;
     }
     {
       package = "crucible-session";
+      descriptiveContract = "Session control and lifecycle coordination at quantum boundaries";
       root = "src/lib.rs";
       specFiles = ["20"];
       section6 = true;
     }
     {
       package = "crucible-api";
+      descriptiveContract = "Host lifecycle composition, exact checkpoints, and temporal graph APIs";
       root = "src/lib.rs";
       specFiles = ["21"];
       section6 = true;
     }
     {
       package = "crucible-daemon";
+      descriptiveContract = "Campaign execution services, worker ownership, and host resource supervision";
       root = "src/lib.rs";
       specFiles = ["20" "21"];
       campaignSpecFiles = ["04a"];
@@ -95,18 +118,21 @@
     }
     {
       package = "crucible-cli";
+      descriptiveContract = "Operator commands for execution, campaigns, debugging, and storage maintenance";
       root = "src/main.rs";
       specFiles = ["23"];
       section6 = true;
     }
     {
       package = "crucible-harness";
+      descriptiveContract = "Executable conformance gates, independent replay checks, and ownership inventories";
       root = "src/lib.rs";
       specFiles = ["24" "27"];
       section6 = false;
     }
     {
       package = "crucible-campaign";
+      descriptiveContract = "Campaign identity, typed graph storage, planning, and distributed executor contracts";
       root = "src/lib.rs";
       specFiles = [];
       campaignSpecFiles = ["01" "02" "04a" "06" "09"];
@@ -114,6 +140,7 @@
     }
     {
       package = "crucible-linux-resource";
+      descriptiveContract = "Linux physical containment, host admission, and operational supervision";
       root = "src/lib.rs";
       specFiles = [];
       campaignSpecFiles = ["04a" "06"];
@@ -121,6 +148,7 @@
     }
     {
       package = "crucible-s3-store";
+      descriptiveContract = "Authenticated remote object storage and durable reference coordination";
       root = "src/lib.rs";
       specFiles = [];
       campaignSpecFiles = ["06"];
@@ -162,32 +190,24 @@
       else [];
 
   campaignSpecFilesOf = spec: spec.campaignSpecFiles or [];
-  # RFC-0010 references always say `files`; an RFC-0020 reference says `file`
-  # for one chapter and `files` for several, as the crates are written.
-  campaignClause = files: "RFC-0020 ${
-    if builtins.length files == 1
-    then "file"
-    else "files"
-  } ${builtins.concatStringsSep ", " files}";
-  expectedDocLine = spec: let
-    clauses =
-      lib.optional (spec.specFiles != []) "RFC-0010 files ${builtins.concatStringsSep ", " spec.specFiles}"
-      ++ lib.optional (campaignSpecFilesOf spec != []) (campaignClause (campaignSpecFilesOf spec));
-  in "//! Spec index: ${builtins.concatStringsSep "; " clauses}.";
+  expectedDocLine = spec: "//! Implementation contract: ${spec.descriptiveContract}.";
 
   crateDocFailures = spec: content: displayPath: let
     docLines = docPrefixLines (linesOf content);
     expected = expectedDocLine spec;
-    indexLines = builtins.filter (line: lib.hasPrefix "//! Spec index:" line) docLines;
+    indexLines = builtins.filter (line: lib.hasPrefix "//! Implementation contract:" line) docLines;
+    obsoleteLines = builtins.filter (line: lib.hasPrefix "//! Spec index:" line) docLines;
   in
-    if indexLines == [expected]
+    if obsoleteLines != []
+    then ["${displayPath}: obsolete numeric ownership header"]
+    else if indexLines == [expected]
     then []
     else if indexLines == []
     then [
-      "${displayPath}: missing exact spec index line `${expected}`"
+      "${displayPath}: missing exact implementation contract line `${expected}`"
     ]
     else [
-      "${displayPath}: found Spec index lines [${builtins.concatStringsSep " | " indexLines}], expected exactly `${expected}`"
+      "${displayPath}: found Implementation contract lines [${builtins.concatStringsSep " | " indexLines}], expected exactly `${expected}`"
     ];
 
   rfcFileNames = builtins.attrNames (builtins.readDir rfcDir);
@@ -200,6 +220,12 @@
     builtins.any (name:
       lib.hasPrefix "${file}-" name && lib.hasSuffix ".md" name)
     campaignRfcFileNames;
+
+  pagedRfcFileNames = builtins.attrNames (builtins.readDir pagedRfcDir);
+  pagedRfcFileExists = file:
+    builtins.any (name:
+      lib.hasPrefix "${file}-" name && lib.hasSuffix ".md" name)
+    pagedRfcFileNames;
 
   realDocFailures =
     lib.concatMap (
@@ -227,6 +253,12 @@
               "${spec.package}: spec index references missing RFC-0020 file `${file}`"
             ]
         ) (campaignSpecFilesOf spec)
+        ++ lib.concatMap (
+          file:
+            lib.optionals (!(pagedRfcFileExists file)) [
+              "${spec.package}: spec index references missing paged RAM file `${file}`"
+            ]
+        ) (spec.pagedSpecFiles or [])
     )
     specs;
 
@@ -304,6 +336,7 @@
   regressionFailures = let
     spec = {
       package = "crucible-sim";
+      descriptiveContract = "Deterministic randomness, counters, and virtual-time primitives";
       root = "src/lib.rs";
       specFiles = ["04" "08" "09"];
       section6 = true;
@@ -315,18 +348,27 @@
     wrongDocFindings = crateDocFailures spec ''
       //! synthetic crate doc
       //!
-      //! Spec index: RFC-0010 files 04, 09.
+      //! Implementation contract: Deterministic randomness only.
+      #![forbid(unsafe_code)]
+    '' "synthetic";
+    obsoleteDocFindings = crateDocFailures spec ''
+      //! synthetic crate doc
+      //! Spec index: RFC-0010 files 04, 08, 09.
+      //! Implementation contract: Deterministic randomness, counters, and virtual-time primitives.
       #![forbid(unsafe_code)]
     '' "synthetic";
     staleRowFindings = section6RowFailures spec "| `crucible-sim` | [`04`](04-determinism-contract.md), [`09`](09-virtual-time-icount.md) | `gate:layer0-determinism` |";
     hasFinding = needle: findings:
       builtins.any (finding: hasInfix needle finding) findings;
   in
-    lib.optionals (!(hasFinding "missing exact spec index" missingDocFindings)) [
+    lib.optionals (!(hasFinding "missing exact implementation contract" missingDocFindings)) [
       "spec-index regression failed to reject a missing crate-root doc line"
     ]
-    ++ lib.optionals (!(hasFinding "found Spec index lines" wrongDocFindings)) [
+    ++ lib.optionals (!(hasFinding "found Implementation contract lines" wrongDocFindings)) [
       "spec-index regression failed to reject a wrong crate-root doc line"
+    ]
+    ++ lib.optionals (!(hasFinding "obsolete numeric ownership header" obsoleteDocFindings)) [
+      "spec-index regression failed to reject an obsolete numeric ownership header"
     ]
     ++ lib.optionals (!(hasFinding "missing RFC file marker" staleRowFindings)) [
       "spec-index regression failed to reject a stale section 6 table row"

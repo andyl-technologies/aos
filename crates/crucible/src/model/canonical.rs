@@ -8,6 +8,9 @@ use super::{
 };
 use std::collections::BTreeMap;
 
+mod material_stream;
+pub(super) use material_stream::{hash_material, material_string};
+
 pub(super) fn content_hash_from_canonical_material(domain: &str, material: &str) -> ContentHash {
     content_hash_from_canonical_material_bytes(domain, material.as_bytes())
 }
@@ -86,8 +89,9 @@ pub(super) fn materialized_state_hash(
 }
 
 fn write_schedule(hasher: &mut MaterialHasher, schedule: &Schedule) {
-    hasher.write_u64(schedule.decisions().len() as u64);
-    for decision in schedule.decisions() {
+    let decisions = schedule.decisions();
+    hasher.write_u64(decisions.len() as u64);
+    for decision in decisions {
         write_decision(hasher, decision);
     }
 }

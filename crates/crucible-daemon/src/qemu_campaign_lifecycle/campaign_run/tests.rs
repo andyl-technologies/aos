@@ -1269,7 +1269,7 @@ where
         Arc::new(crucible_cas::content_store::MemoryRefBackend::new()),
     )?;
     let repository = Arc::new(repository);
-    let checkpoints = campaign_run_exact_checkpoint_store(&request)?;
+    let checkpoints = campaign_run_exact_checkpoint_store(&request, &repository)?;
     let exact_retention = Arc::new(CampaignRunFindingExactRetentionSource::new(
         CampaignExecutorStore::new(Arc::clone(&repository)),
         checkpoints,
@@ -2268,6 +2268,11 @@ fn request() -> (GuardedDefaultCampaignRunRequest, NodeId) {
         65_533,
         65_533,
         16,
+        TEST_HOST_FILE_DESCRIPTORS,
+        TEST_HOST_SERVICE_TASKS,
+        TEST_HOST_SERVICE_FILE_DESCRIPTORS,
+        TEST_HOST_SERVICE_RESIDENT_BYTES,
+        TEST_WATCHER_SERVICE_RESIDENT_BYTES,
         1_024,
         Duration::from_secs(1),
     )
@@ -2278,7 +2283,7 @@ fn request() -> (GuardedDefaultCampaignRunRequest, NodeId) {
         ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state");
 
     (
-        GuardedDefaultCampaignRunRequest::new(
+        GuardedDefaultCampaignRunRequest::new_component(
             scenario,
             seed,
             "guarded-engine-test",
@@ -2316,6 +2321,11 @@ fn checkpoint_request() -> (GuardedDefaultCampaignRunRequest, NodeId) {
         65_532,
         65_532,
         16,
+        TEST_HOST_FILE_DESCRIPTORS,
+        TEST_HOST_SERVICE_TASKS,
+        TEST_HOST_SERVICE_FILE_DESCRIPTORS,
+        TEST_HOST_SERVICE_RESIDENT_BYTES,
+        TEST_WATCHER_SERVICE_RESIDENT_BYTES,
         1_024,
         Duration::from_secs(1),
     )
@@ -2326,7 +2336,7 @@ fn checkpoint_request() -> (GuardedDefaultCampaignRunRequest, NodeId) {
         ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state");
 
     (
-        GuardedDefaultCampaignRunRequest::new(
+        GuardedDefaultCampaignRunRequest::new_component(
             scenario,
             seed,
             "guarded-checkpoint-engine-test",
@@ -2345,7 +2355,20 @@ fn exact_checkpoint_store(directory: &tempfile::TempDir) -> Arc<ExactCheckpointS
         directory.path(),
     ));
     Arc::new(
-        ExactCheckpointStore::new(backend, 1024 * 1024).expect("durable exact checkpoint store"),
+        ExactCheckpointStore::new(
+            backend,
+            1024 * 1024,
+            crucible_cas::ram::RamRetentionAuthority::new(Arc::new(
+                crucible_cas::content_store::DirectoryRefBackend::new(
+                    directory.path().join("ram-retention-refs"),
+                ),
+            )),
+        )
+        .expect("durable exact checkpoint store")
+        .with_ram_root_resources(
+            crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+                .expect("finite component RAM-root credit"),
+        ),
     )
 }
 
@@ -2452,6 +2475,11 @@ fn selectable_request_with_domain_and_assertion(
         65_531,
         65_531,
         16,
+        TEST_HOST_FILE_DESCRIPTORS,
+        TEST_HOST_SERVICE_TASKS,
+        TEST_HOST_SERVICE_FILE_DESCRIPTORS,
+        TEST_HOST_SERVICE_RESIDENT_BYTES,
+        TEST_WATCHER_SERVICE_RESIDENT_BYTES,
         1_024,
         Duration::from_secs(1),
     )
@@ -2462,7 +2490,7 @@ fn selectable_request_with_domain_and_assertion(
         ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state");
 
     (
-        GuardedDefaultCampaignRunRequest::new(
+        GuardedDefaultCampaignRunRequest::new_component(
             scenario,
             seed,
             "guarded-selectable-engine-test",
@@ -2543,3 +2571,19 @@ fn try_selectable_campaign_with_store(
     let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
     run_guarded_default_campaign_with_store(request, runner, evidence, blobs, refs)
 }
+
+// Fixture policy reserves an explicit finite descriptor ceiling independently of vCPU count.
+#[cfg(test)]
+const TEST_HOST_FILE_DESCRIPTORS: u64 = 1_024;
+
+// Host-side pager workers and sockets have independent finite fixture entitlements.
+#[cfg(test)]
+const TEST_HOST_SERVICE_TASKS: u64 = 4;
+#[cfg(test)]
+const TEST_HOST_SERVICE_FILE_DESCRIPTORS: u64 = 32;
+
+// Operational services retain their own authored memory budgets outside QEMU.
+#[cfg(test)]
+const TEST_HOST_SERVICE_RESIDENT_BYTES: u64 = 8 * 1024 * 1024;
+#[cfg(test)]
+const TEST_WATCHER_SERVICE_RESIDENT_BYTES: u64 = 1024 * 1024;

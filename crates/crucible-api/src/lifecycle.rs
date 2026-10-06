@@ -43,6 +43,7 @@ use crate::{
     StreamingApiError, negotiate_rpc_protocol,
 };
 
+mod decode_scope;
 #[path = "lifecycle/hex.rs"]
 mod hex;
 use hex::{hex_string, optional_hex_string};
@@ -430,6 +431,9 @@ pub enum LifecycleApiError {
     /// A production resource reservation exceeded its authored or compiled bound.
     #[error(transparent)]
     ResourceLimit(#[from] LifecycleResourceLimit),
+    /// Original input authority refused an owning lifecycle input copy.
+    #[error(transparent)]
+    ConfigurationCopy(crucible::owned_decode::DecodeAdmissionError),
     /// The delegated execution backend could not be constructed.
     #[error("session execution backend construction failed: {message}")]
     LoopFactory {
@@ -507,6 +511,7 @@ pub use observation_resume::{
 /// In-process lifecycle control plane for unary API methods.
 pub struct LifecycleControlPlane<L, F> {
     server_name: String,
+    host_operational_control: Option<crate::host_operational::SharedHostOperationalControl>,
     scenarios: BTreeMap<String, ScenarioCatalogEntry>,
     sessions: BTreeMap<SessionId, SessionRuntime>,
     next_session_id: u64,
@@ -531,6 +536,35 @@ where
     L: QuantumLoop + Send + 'static,
     F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>,
 {
+    /// Installs the executor's live operational RAM and supervision authority.
+    ///
+    /// This authority bypasses modeled session commands. Targets must retain
+    /// exact daemon, execution, process, and arena ownership generations.
+    #[must_use]
+    pub fn with_host_operational_control(
+        mut self,
+        control: crate::host_operational::SharedHostOperationalControl,
+    ) -> Self {
+        self.host_operational_control = Some(control);
+        self
+    }
+
+    /// Installs live host control after a packaged executor has been attached.
+    pub fn set_host_operational_control(
+        &mut self,
+        control: crate::host_operational::SharedHostOperationalControl,
+    ) {
+        self.host_operational_control = Some(control);
+    }
+
+    /// Clones the independent executor authority without holding the actor lock.
+    #[must_use]
+    pub fn host_operational_control(
+        &self,
+    ) -> Option<crate::host_operational::SharedHostOperationalControl> {
+        self.host_operational_control.clone()
+    }
+
     /// Installs the authority that authenticates campaign choice evidence on resume.
     ///
     /// The validator receives the scenario, exact recorded configuration, and
@@ -955,7 +989,12 @@ where
         let mut graph = graph_with_baked_genesis(&scenario)?;
         if !configuration.is_genesis() {
             graph
-                .cache_snapshot(&configuration, checkpoint.clone())
+                .cache_snapshot(
+                    &configuration,
+                    checkpoint
+                        .try_clone_admitted()
+                        .map_err(resume_checkpoint_error)?,
+                )
                 .map_err(resume_checkpoint_error)?;
         }
         let resumed_loop = build_loop().map_err(|error| LifecycleApiError::LoopFactory {
@@ -977,7 +1016,8 @@ where
             &Configuration::genesis(scenario.clone()),
             &source,
         )?);
-        let actor_task = tokio::spawn(async move { actor.run().await });
+        let actor_task =
+            decode_scope::spawn(actor.run(), crucible::owned_decode::current_budget())?;
         let session = self.next_session_ref(seed);
         let runtime = SessionRuntime {
             session,
@@ -1840,17 +1880,53 @@ where
     where
         E: fmt::Display,
     {
-        self.control_plane
-            .lock()
-            .await
-            .admit_authenticated_read_only_session(
-                source,
-                configuration,
-                checkpoint,
-                seed,
-                retention,
-                build_loop,
-            )
+        self.admit_authenticated_read_only_session_with_decode_budget(
+            source,
+            configuration,
+            checkpoint,
+            seed,
+            retention,
+            (crucible::owned_decode::current_budget(), build_loop),
+        )
+        .await
+    }
+
+    /// Reinstalls original decoded input custody after asynchronous lock handoff.
+    ///
+    /// The grouped builder carries its original resource account independently
+    /// of the caller thread. Native actor polls reinstall the same account.
+    ///
+    /// # Errors
+    /// Refuses inconsistent modeled identities, exhausted original resources,
+    /// session capacity, or failed native runtime construction.
+    pub async fn admit_authenticated_read_only_session_with_decode_budget<E>(
+        &self,
+        source: ScenarioDefForm,
+        configuration: Configuration,
+        checkpoint: Checkpoint,
+        seed: Seed,
+        retention: SessionLifetimeRetention,
+        builder: (
+            Option<crucible::owned_decode::DecodeBudget>,
+            impl FnOnce() -> Result<L, E>,
+        ),
+    ) -> Result<ResumeSessionResponse, LifecycleApiError>
+    where
+        E: fmt::Display,
+    {
+        let (decoding, build_loop) = builder;
+        let mut control_plane = self.control_plane.lock().await;
+        let _decode_scope = decoding
+            .as_ref()
+            .map(crucible::owned_decode::DecodeBudget::enter);
+        control_plane.admit_authenticated_read_only_session(
+            source,
+            configuration,
+            checkpoint,
+            seed,
+            retention,
+            build_loop,
+        )
     }
 }
 

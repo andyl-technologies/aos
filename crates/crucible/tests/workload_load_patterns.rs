@@ -1,4 +1,4 @@
-//! Checks RFC-0010 T-WL-4 and T-WL-5 load-pattern mappings.
+//! Checks deterministic workload load-pattern mappings.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

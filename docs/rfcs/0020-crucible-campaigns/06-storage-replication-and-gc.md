@@ -657,7 +657,20 @@ outside graph identity. A
 `profile-validated` node can resolve the built-in canonical campaign profile;
 other policy IDs fail closed. Each listed physical-quota policy resolves the
 safe Linux ext4 binder, which independently authenticates the node's project
-assignment and hard limits. The separate ref directory constructs the durable
+assignment and hard limits. A deployment with physical-quota policies MUST
+also author `physical_quota_service.lifetime_ms` and the complete eight fields
+in `[physical_quota_service.resources]`: `resident_peak_bytes`,
+`backing_peak_bytes`, `metadata_bytes`, `staging_bytes`, `paging_io_slots`,
+`cpu_slots`, `task_slots`, and `file_descriptors`. This service admission is
+separate from the existing project quota's persistent backing grant. It
+reserves the existing caller's task and working memory before namespace I/O;
+each bound root retains 36 descriptor slots, and the serialized audit requires
+at least 68 KiB of staging scratch. The authored resident allowance must also
+cover caller stack and runtime overhead. Binder clones and later verification
+retain the same finite original lifetime. CPU slots express nominal admitted
+capacity; this adapter does not enforce a whole-host CPU bandwidth ceiling.
+An unused service contract or a missing contract for quota policies fails
+closed. The separate ref directory constructs the durable
 conditional directory backend and never enters the immutable graph. Graph
 construction returns physical and multipart-cleanup administration separately;
 the daemon retains that value plus a second ref-inventory view for the complete

@@ -291,6 +291,19 @@ pub(crate) struct LinuxQemuAttemptStorageOwner {
 }
 
 impl LinuxQemuAttemptStorageOwner {
+    pub(crate) fn quota_controller(
+        &mut self,
+    ) -> Result<crucible_linux_resource::LinuxProjectQuotaController, LinuxQemuAttemptStorageError>
+    {
+        self.quota
+            .as_mut()
+            .ok_or_else(|| LinuxQemuAttemptStorageError::MissingAuthority {
+                path: self.path.clone(),
+            })?
+            .controller()
+            .map_err(LinuxQemuAttemptStorageError::ProjectQuota)
+    }
+
     /// Returns the diagnostic path of the exact pinned run directory.
     #[must_use]
     pub(crate) fn path(&self) -> &Path {

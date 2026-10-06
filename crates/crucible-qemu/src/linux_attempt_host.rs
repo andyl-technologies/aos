@@ -11,6 +11,10 @@
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+mod native_resources;
+use native_resources::NativeResourceState;
+pub use native_resources::{LinuxQemuNativeResourceController, LinuxQemuNativeResourceError};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::thread;
 use std::time::Duration;
@@ -41,6 +45,10 @@ const HOST_QUARANTINE_PARKED: u8 = 2;
 pub struct LinuxQemuAttemptHostConfig {
     process: LinuxQemuAttemptProcessConfig,
     storage: LinuxQemuAttemptStorageConfig,
+    maximum_node_host_service_tasks: u64,
+    maximum_node_host_service_file_descriptors: u64,
+    maximum_node_host_service_resident_bytes: u64,
+    watcher_service_resident_bytes: u64,
 }
 
 impl LinuxQemuAttemptHostConfig {
@@ -65,9 +73,26 @@ impl LinuxQemuAttemptHostConfig {
         child_user_id: u32,
         child_group_id: u32,
         maximum_tasks: u32,
+        maximum_file_descriptors: u64,
+        maximum_node_host_service_tasks: u64,
+        maximum_node_host_service_file_descriptors: u64,
+        maximum_node_host_service_resident_bytes: u64,
+        watcher_service_resident_bytes: u64,
         maximum_inodes: u64,
         finish_timeout: Duration,
     ) -> Result<Self, QemuVmRealizationError> {
+        if maximum_node_host_service_tasks == 0
+            || maximum_node_host_service_file_descriptors == 0
+            || maximum_node_host_service_resident_bytes == 0
+            || watcher_service_resident_bytes == 0
+        {
+            return Err(QemuVmRealizationError::Executor {
+                operation: "configure Linux node host-service resources",
+                message: String::from(
+                    "node host-service task and descriptor ceilings must be nonzero",
+                ),
+            });
+        }
         let attempt_namespace = attempt_namespace.into();
         let process = LinuxQemuAttemptProcessConfig::new(
             cgroup_root,
@@ -75,6 +100,7 @@ impl LinuxQemuAttemptHostConfig {
             child_user_id,
             child_group_id,
             maximum_tasks,
+            maximum_file_descriptors,
             finish_timeout,
         )?;
         let storage = LinuxQemuAttemptStorageConfig::new(
@@ -87,7 +113,14 @@ impl LinuxQemuAttemptHostConfig {
             maximum_inodes,
         )
         .map_err(|error| map_storage_error("configure QEMU attempt storage", &error))?;
-        Ok(Self { process, storage })
+        Ok(Self {
+            process,
+            storage,
+            maximum_node_host_service_tasks,
+            maximum_node_host_service_file_descriptors,
+            maximum_node_host_service_resident_bytes,
+            watcher_service_resident_bytes,
+        })
     }
 
     /// Returns the delegated cgroup-v2 root.
@@ -124,6 +157,36 @@ impl LinuxQemuAttemptHostConfig {
     #[must_use]
     pub const fn maximum_tasks(&self) -> u32 {
         self.process.maximum_tasks()
+    }
+
+    /// Returns the hard per-process file-descriptor ceiling.
+    #[must_use]
+    pub const fn maximum_file_descriptors(&self) -> u64 {
+        self.process.maximum_file_descriptors()
+    }
+
+    /// Returns the explicitly retained per-node host-service task entitlement.
+    #[must_use]
+    pub const fn maximum_node_host_service_tasks(&self) -> u64 {
+        self.maximum_node_host_service_tasks
+    }
+
+    /// Returns the explicitly retained per-node host-service descriptor entitlement.
+    #[must_use]
+    pub const fn maximum_node_host_service_file_descriptors(&self) -> u64 {
+        self.maximum_node_host_service_file_descriptors
+    }
+
+    /// Returns the explicitly retained per-node host-service resident allowance.
+    #[must_use]
+    pub const fn maximum_node_host_service_resident_bytes(&self) -> u64 {
+        self.maximum_node_host_service_resident_bytes
+    }
+
+    /// Returns the explicit resident allowance for each operational watcher.
+    #[must_use]
+    pub const fn watcher_service_resident_bytes(&self) -> u64 {
+        self.watcher_service_resident_bytes
     }
 
     /// Returns the hard attempt artifact-entry and inode ceiling.
@@ -257,6 +320,7 @@ impl LinuxQemuAttemptHostFactory {
             maximum_resident_bytes,
             maximum_writable_bytes,
             quarantine: None,
+            native_resources: None,
             terminal: false,
         })
     }
@@ -278,6 +342,7 @@ pub struct LinuxQemuAttemptHostOwner {
     maximum_resident_bytes: u64,
     maximum_writable_bytes: u64,
     quarantine: Option<LinuxQemuAttemptHostQuarantine>,
+    native_resources: Option<Arc<NativeResourceState>>,
     terminal: bool,
 }
 
@@ -326,7 +391,63 @@ where
     Ok(())
 }
 
+fn finish_native_owned_resources(
+    process: &mut Option<LinuxQemuAttemptProcessOwner>,
+    storage: &mut Option<LinuxQemuAttemptStorageOwner>,
+    native_resources: &mut Option<Arc<NativeResourceState>>,
+) -> Result<(), QemuVmRealizationError> {
+    if let Some(process) = process.as_mut() {
+        process.finish()?;
+    }
+    *process = None;
+    if let Some(state) = native_resources.as_ref() {
+        NativeResourceState::drain(state);
+    }
+    *native_resources = None;
+    finish_owned_resources(process, storage)
+}
+
 impl LinuxQemuAttemptHostOwner {
+    /// Lends weak concrete resource control for this exact live attempt.
+    ///
+    /// # Errors
+    /// Refuses retired or uncertain physical authority and failed descriptor
+    /// pinning. The returned handle cannot outlive cleanup or raise a ceiling.
+    pub fn native_resource_controller(
+        &mut self,
+    ) -> Result<LinuxQemuNativeResourceController, QemuVmRealizationError> {
+        self.check_operational_boundary()?;
+        if self.native_resources.is_none() {
+            let memory = self
+                .process
+                .as_ref()
+                .ok_or_else(|| missing_authority("pin native memory controller"))?
+                .memory_control()?;
+            let quota = self
+                .storage
+                .as_mut()
+                .ok_or_else(|| missing_authority("pin native quota controller"))?
+                .quota_controller()
+                .map_err(|error| map_storage_error("pin native quota controller", &error))?;
+            self.native_resources = Some(NativeResourceState::new(
+                memory,
+                quota,
+                self.maximum_resident_bytes,
+                self.maximum_writable_bytes,
+            ));
+        }
+        self.native_resources
+            .as_ref()
+            .map(NativeResourceState::controller)
+            .ok_or_else(|| missing_authority("lend native resource controller"))
+    }
+
+    fn retire_native_resources(&mut self) {
+        if let Some(state) = &self.native_resources {
+            NativeResourceState::close(state);
+        }
+    }
+
     /// Returns the exact CPU, memory, and aggregate writable-byte ceiling.
     #[must_use]
     pub const fn resource_ceiling(&self) -> (u32, u64, u64) {
@@ -435,7 +556,13 @@ impl LinuxQemuAttemptHostOwner {
     ///
     /// Returns an executor error after cancellation, cleanup, or quarantine.
     pub fn check_operational_boundary(&self) -> Result<(), QemuVmRealizationError> {
-        if self.terminal || self.storage.is_none() {
+        if self.terminal
+            || self.storage.is_none()
+            || self
+                .native_resources
+                .as_ref()
+                .is_some_and(|state| !NativeResourceState::available(state))
+        {
             return Err(missing_authority("check QEMU attempt host resources"));
         }
         self.process_contract().map(|_| ())
@@ -473,7 +600,12 @@ impl LinuxQemuAttemptHostOwner {
                 }),
             };
         }
-        finish_owned_resources(&mut self.process, &mut self.storage)?;
+        self.retire_native_resources();
+        finish_native_owned_resources(
+            &mut self.process,
+            &mut self.storage,
+            &mut self.native_resources,
+        )?;
         self.terminal = true;
         Ok(())
     }
@@ -483,9 +615,11 @@ impl LinuxQemuAttemptHostOwner {
         if self.terminal {
             return;
         }
+        self.retire_native_resources();
         let state = LinuxQemuAttemptHostQuarantineState {
             process: self.process.take(),
             storage: self.storage.take(),
+            native_resources: self.native_resources.take(),
         };
         match start_quarantine_worker(state) {
             Ok(quarantine) => self.quarantine = Some(quarantine),
@@ -555,6 +689,7 @@ impl LinuxQemuAttemptHostQuarantine {
 struct LinuxQemuAttemptHostQuarantineState {
     process: Option<LinuxQemuAttemptProcessOwner>,
     storage: Option<LinuxQemuAttemptStorageOwner>,
+    native_resources: Option<Arc<NativeResourceState>>,
 }
 
 trait HostQuarantineWork: Send + 'static {
@@ -567,7 +702,11 @@ impl HostQuarantineWork for LinuxQemuAttemptHostQuarantineState {
     type Error = QemuVmRealizationError;
 
     fn reap_and_release(&mut self) -> Result<(), Self::Error> {
-        finish_owned_resources(&mut self.process, &mut self.storage)
+        finish_native_owned_resources(
+            &mut self.process,
+            &mut self.storage,
+            &mut self.native_resources,
+        )
     }
 }
 
@@ -575,7 +714,11 @@ fn transfer_setup_cleanup(
     process: Option<LinuxQemuAttemptProcessOwner>,
     storage: Option<LinuxQemuAttemptStorageOwner>,
 ) -> Result<(), QemuVmRealizationError> {
-    let state = LinuxQemuAttemptHostQuarantineState { process, storage };
+    let state = LinuxQemuAttemptHostQuarantineState {
+        process,
+        storage,
+        native_resources: None,
+    };
     match start_quarantine_worker(state) {
         Ok(quarantine) => {
             drop(quarantine);
@@ -688,6 +831,22 @@ fn map_storage_error(
     }
 }
 
+// Fixture policy reserves an explicit finite descriptor ceiling independently of vCPU count.
+#[cfg(test)]
+const TEST_HOST_FILE_DESCRIPTORS: u64 = 1_024;
+
+// Host-side pager workers and sockets have independent finite fixture entitlements.
+#[cfg(test)]
+const TEST_HOST_SERVICE_TASKS: u64 = 4;
+#[cfg(test)]
+const TEST_HOST_SERVICE_FILE_DESCRIPTORS: u64 = 32;
+
+// Operational services retain their own authored memory budgets outside QEMU.
+#[cfg(test)]
+const TEST_HOST_SERVICE_RESIDENT_BYTES: u64 = 8 * 1024 * 1024;
+#[cfg(test)]
+const TEST_WATCHER_SERVICE_RESIDENT_BYTES: u64 = 1024 * 1024;
+
 #[cfg(test)]
 mod tests {
     // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts.
@@ -719,6 +878,11 @@ mod tests {
             child_id,
             child_id,
             64,
+            TEST_HOST_FILE_DESCRIPTORS,
+            TEST_HOST_SERVICE_TASKS,
+            TEST_HOST_SERVICE_FILE_DESCRIPTORS,
+            TEST_HOST_SERVICE_RESIDENT_BYTES,
+            TEST_WATCHER_SERVICE_RESIDENT_BYTES,
             4096,
             Duration::from_secs(1),
         )
@@ -741,6 +905,11 @@ mod tests {
                 geteuid().as_raw(),
                 child_id,
                 1,
+                TEST_HOST_FILE_DESCRIPTORS,
+                TEST_HOST_SERVICE_TASKS,
+                TEST_HOST_SERVICE_FILE_DESCRIPTORS,
+                TEST_HOST_SERVICE_RESIDENT_BYTES,
+                TEST_WATCHER_SERVICE_RESIDENT_BYTES,
                 1,
                 Duration::from_secs(1),
             )

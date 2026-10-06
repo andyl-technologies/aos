@@ -132,11 +132,19 @@ impl FaultSignalAuthoringRows {
 
 mod binding_codec;
 mod effect_codec;
+mod selector_validation;
 mod signal_codec;
 mod target_resolution;
 mod world_validation;
 
-pub(super) use binding_codec::validate_selector_for_world;
+pub(super) use selector_validation::validate_selector_for_world;
+
+#[cfg(test)]
+pub(super) fn selector_projection_matches_world(selector: &TargetSelector, world: &World) -> bool {
+    binding_codec::selector_to_toml(selector)
+        .and_then(|encoded| binding_codec::selector_from_toml(encoded, world))
+        .is_ok_and(|resolved| &resolved == selector)
+}
 use binding_codec::{binding_from_toml, binding_to_toml};
 use effect_codec::*;
 use signal_codec::*;

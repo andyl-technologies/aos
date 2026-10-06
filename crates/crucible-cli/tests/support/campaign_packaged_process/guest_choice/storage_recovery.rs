@@ -34,7 +34,7 @@ fn public_exact_paused_guest_recovers_from_s3_outage_and_expired_credentials()
     let authority = write_component_authority(&fixture)?;
     let immutable_inputs = guest_choice_immutable_inputs(&authority)?;
     let mut service = start_packaged_service(&fixture, &authority)?;
-    let checkpoints = checkpoint_inspection_store()?;
+    let checkpoints = checkpoint_inspection_store(&fixture)?;
     grant_and_start_guest_choice_campaign(&fixture)?;
 
     let genesis = json_string(&compiled, "genesis_artifact")?;
@@ -215,7 +215,9 @@ fn require_no_guest(stage: &str) -> Result<(), Box<dyn Error>> {
     require_empty_guest_choice_run_root(stage)
 }
 
-fn checkpoint_inspection_store() -> Result<ExactCheckpointStore, Box<dyn Error>> {
+fn checkpoint_inspection_store(
+    fixture: &FlightFixture,
+) -> Result<ExactCheckpointStore, Box<dyn Error>> {
     // This adapter only reads canonical closure bytes for the oracle. Actual
     // startup/restore uses the CLI's strict credential-file and graph loader;
     // the inspector is never used during either fault or to start a guest.
@@ -253,8 +255,16 @@ fn checkpoint_inspection_store() -> Result<ExactCheckpointStore, Box<dyn Error>>
         ),
         client,
     )?;
+    let backend: Arc<dyn ImmutableBlobBackend> = Arc::new(backend);
+    let repository = crucible_campaign::CampaignRepository::new(
+        backend.clone(),
+        Arc::new(crucible_cas::content_store::DirectoryRefBackend::new(
+            fixture._temporary.path().join("refs"),
+        )),
+    );
     Ok(ExactCheckpointStore::new(
-        Arc::new(backend),
+        backend,
         1024 * 1024 * 1024,
+        repository.ram_retention_authority(),
     )?)
 }

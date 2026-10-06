@@ -17,9 +17,10 @@ use super::{
     QmpCheckpointIdentity, QmpCheckpointRestore, QmpCheckpointRestoreRequest, QmpClient,
     QmpCommandComplete, QmpDescriptorName, QmpError, QmpHotForkAsyncWorkerBarrierState,
     QmpHotForkBlockBarrierState, QmpHotForkBlockSnapshotBinding, QmpHotForkChildProcessState,
-    QmpHotForkChildRuntimeState, QmpHotForkPluginBarrierState, QmpHotForkPluginResourceInventory,
-    QmpHotForkRcuBarrierState, QmpHotForkRequest, QmpHotForkState, QmpHotForkTemplateState,
-    QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
+    QmpHotForkChildRamNames, QmpHotForkChildRamState, QmpHotForkChildRuntimeState,
+    QmpHotForkPluginBarrierState, QmpHotForkPluginResourceInventory, QmpHotForkRcuBarrierState,
+    QmpHotForkRequest, QmpHotForkState, QmpHotForkTemplateState, QmpIoTimeoutPolicy,
+    QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
 };
 #[cfg(target_os = "linux")]
 use crate::QemuHotForkCommandError;
@@ -43,6 +44,14 @@ impl<S> QemuQmpVmStateControlChannel<S>
 where
     S: QmpTimeoutStream,
 {
+    /// Attaches the independently owned target execution's live class budgets.
+    pub fn set_host_operation_supervisor(
+        &mut self,
+        supervisor: crucible_linux_resource::host_supervision::HostOperationSupervisor,
+    ) {
+        self.client.set_host_operation_supervisor(supervisor);
+    }
+
     /// Builds a VMState control channel over an already-negotiated QMP client.
     #[must_use]
     pub const fn new(client: QmpClient<S>) -> Self {
@@ -51,6 +60,16 @@ where
             debug_guest_activation_stream: None,
             guarded_launch_fdsets_pending: false,
         }
+    }
+
+    pub(crate) fn query_paused_cpu(
+        &mut self,
+        vcpu: u32,
+        generation: Option<u64>,
+    ) -> Result<super::QmpPausedCpu, QemuNodeChannelError> {
+        self.client
+            .query_paused_cpu(vcpu, generation)
+            .map_err(QemuNodeChannelError::from)
     }
 
     pub(crate) fn query_fingerprint_projection_manifest(
@@ -123,6 +142,15 @@ where
             .map_err(QemuNodeChannelError::from)
     }
 
+    pub(crate) fn prepare_exact_checkpoint_topology(
+        &mut self,
+        request: &QmpCheckpointCaptureRequest,
+    ) -> Result<super::QmpCheckpointTopology, QemuNodeChannelError> {
+        self.client
+            .prepare_checkpoint_topology(request)
+            .map_err(QemuNodeChannelError::from)
+    }
+
     /// Restores one authenticated direct-plus-delta exact checkpoint chain.
     ///
     /// # Errors
@@ -147,9 +175,10 @@ where
     pub(crate) fn commit_exact_checkpoint(
         &mut self,
         identity: QmpCheckpointIdentity,
+        capture_generation: u64,
     ) -> Result<QmpCheckpointEpochState, QemuNodeChannelError> {
         self.client
-            .commit_checkpoint(identity)
+            .commit_checkpoint(identity, capture_generation)
             .map_err(QemuNodeChannelError::from)
     }
 
@@ -162,11 +191,12 @@ where
     pub(crate) fn abort_exact_checkpoint(
         &mut self,
         identity: QmpCheckpointIdentity,
+        capture_generation: u64,
         expected_committed: Option<QmpCheckpointIdentity>,
     ) -> Result<QmpCheckpointEpochState, QemuNodeChannelError> {
         let state = self
             .client
-            .abort_checkpoint(identity)
+            .abort_checkpoint(identity, capture_generation)
             .map_err(QemuNodeChannelError::from)?;
         if state.committed() != expected_committed {
             return Err(QemuNodeChannelError::new(
@@ -269,6 +299,34 @@ where
         self.client
             .cont_acknowledged()
             .map(|_complete| ())
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    pub(crate) fn stage_hot_fork_child_ram(
+        &mut self,
+        names: &QmpHotForkChildRamNames,
+        template: u64,
+        contract: u64,
+    ) -> Result<QmpHotForkChildRamState, QemuNodeChannelError> {
+        self.client
+            .stage_hot_fork_child_ram(names, template, contract)
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    pub(crate) fn query_hot_fork_child_ram(
+        &mut self,
+    ) -> Result<QmpHotForkChildRamState, QemuNodeChannelError> {
+        self.client
+            .query_hot_fork_child_ram()
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    pub(crate) fn release_hot_fork_child_ram(
+        &mut self,
+        generation: u64,
+    ) -> Result<QmpHotForkChildRamState, QemuNodeChannelError> {
+        self.client
+            .release_hot_fork_child_ram(generation)
             .map_err(QemuNodeChannelError::from)
     }
 
@@ -593,6 +651,15 @@ where
                 private_ring_generation,
             )
             .map_err(QemuNodeChannelError::from)
+    }
+
+    #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+    pub(crate) fn probe_native_source_alias_for_test(
+        &mut self,
+        kind: crate::node::QemuTestNativeAliasKind,
+        descriptor: BorrowedFd<'_>,
+    ) -> Result<QemuNodeChannelError, QemuNodeChannelError> {
+        self.client.probe_native_source_alias(kind, descriptor).map_err(QemuNodeChannelError::from)
     }
 
     /// Releases QEMU-owned and monitor-owned plugin endpoint descriptors.

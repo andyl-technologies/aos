@@ -1000,6 +1000,7 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
     );
     let run_directory = ProductionRunDirectory::temporary()
         .unwrap_or_else(|error| panic!("test run directory should build: {error}"));
+    let config = admitted_clone::copy_component_configuration(&config);
 
     let mut lifecycle = ProductionVmLifecycleLoop {
         runtime_progress: runtime::progress::RuntimeProgress::default(),
@@ -1057,7 +1058,7 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
         },
         scenario,
         source: source.clone(),
-        config,
+        config: config.clone(),
         checkpoint_targets: BTreeMap::new(),
         exact_ram_parents: BTreeMap::new(),
         repository_exact_ram_rebase: None,
@@ -1073,6 +1074,7 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
         _run_directory: run_directory,
         retained_hot_fork_disk_owners: Vec::new(),
         retained_resource_owners: Vec::new(),
+        input_decode_custody: config.decode_custody.clone(),
         hot_fork_backing_files: BTreeMap::new(),
     };
     lifecycle

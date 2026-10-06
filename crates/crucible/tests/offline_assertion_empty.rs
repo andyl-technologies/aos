@@ -66,7 +66,8 @@ fn empty_checker_authenticates_2004_entries_and_matches_terminal_report() -> Tes
         crucible::test_support::condition_prefix_from_scheduler_entries_for_test(entries)?;
     let expected = HostAssertionEvaluator::new(&properties)
         .with_world_white_box_policies(&world)
-        .finalize_prefix(&terminal, &mut BlackBoxHostOracle);
+        .finalize_prefix(&terminal, &mut BlackBoxHostOracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
     assert_eq!(report, expected);
     assert!(report.outcomes().is_empty());
     println!("empty_checker_measurement entries=2004 canonical_material_bytes={canonical_bytes}");
@@ -775,8 +776,12 @@ fn sparse_marker_reports_match_at_flight_scale_without_implicit_observations() -
         )?;
         let mut original_evaluator =
             HostAssertionEvaluator::new(&properties).with_world_white_box_policies(&world);
-        original_evaluator.observe_prefix(&marker_prefix, &mut BlackBoxHostOracle);
-        let expected = original_evaluator.finalize_prefix(&terminal, &mut BlackBoxHostOracle);
+        original_evaluator
+            .observe_prefix(&marker_prefix, &mut BlackBoxHostOracle)
+            .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+        let expected = original_evaluator
+            .finalize_prefix(&terminal, &mut BlackBoxHostOracle)
+            .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
         let report = checker.check_run(&properties, &entries)?;
 

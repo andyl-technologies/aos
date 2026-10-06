@@ -23,7 +23,7 @@ use crucible_shmem::{
     MEMORY_MUTATION_BATCH_EVIDENCE_RECORD_BODY_OFFSET,
     MEMORY_MUTATION_BATCH_EVIDENCE_RECORD_LENGTH_OFFSET, MEMORY_MUTATION_NO_VCPU,
     MemoryMutationAddressSpace, MemoryMutationAtomicity, MemoryMutationBatchActionV1,
-    MemoryMutationBatchEvidenceV1, MemoryMutationBatchV1, MemoryMutationEvidenceV1,
+    MemoryMutationBatchEvidenceV1, MemoryMutationBatchV1, MemoryMutationEvidenceV2,
     MemoryMutationPayloadV1, MemoryMutationTransformKind, NODE_FAULT_EVIDENCE_V1_BYTES,
     NodeFaultEvidenceV1, NodeFaultPayloadV1,
 };
@@ -38,7 +38,7 @@ mod evidence;
 mod memory_payload;
 #[path = "fault_action_sink/node_payload.rs"]
 mod node_payload;
-pub(crate) use node_payload::rule_backed_state_machine;
+pub(crate) use node_payload::{materialized_memory_service_latency, rule_backed_state_machine};
 #[path = "fault_action_sink/result_validation.rs"]
 mod result_validation;
 #[path = "fault_action_sink/transaction.rs"]

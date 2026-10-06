@@ -501,15 +501,15 @@ pub(in crate::fault_command) fn validate_ghes_memory_record(
 
 pub(in crate::fault_command) fn instruction_system_digest(
     cpu_sha256: [u8; 32],
-    ram_sha256: [u8; 32],
+    ram_blake3: [u8; 32],
     device_sha256: [u8; 32],
     ram_bytes: u64,
     device_bytes: u64,
 ) -> [u8; 32] {
     let mut digest = sha2::Sha256::new();
-    digest.update(b"crucible.instruction-state.v1\0");
+    digest.update(b"crucible.instruction-state.v2\0");
     digest.update(cpu_sha256);
-    digest.update(ram_sha256);
+    digest.update(ram_blake3);
     digest.update(device_sha256);
     digest.update(ram_bytes.to_le_bytes());
     digest.update(device_bytes.to_le_bytes());

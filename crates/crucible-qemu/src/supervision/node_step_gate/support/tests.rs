@@ -92,7 +92,7 @@ fn callback_witness_constructs_only_exact_admitted_child_environment_and_trace()
     );
     assert_eq!(
         command.resource_requirements().minimum_writable_bytes(),
-        (u64::from(config.memory_mib) + 512 + 4) * 1024 * 1024
+        (512 + 4) * 1024 * 1024
     );
     assert_eq!(command.vm_launch_hash_material(), vm.launch_hash_material());
     assert_eq!(
@@ -315,9 +315,11 @@ fn runtime_trace_capacity_is_present_in_pre_directory_admission() {
         .unwrap_or_else(|error| panic!("runtime-trace probe command should validate: {error}"));
     let mebibyte = 1024_u64 * 1024;
 
+    // RAM pages belong to the independent retained catalog and spill owner.
+    // Native VMState reserves only device state and this explicit trace budget.
     assert_eq!(
         config.resource_requirements().minimum_writable_bytes(),
-        (128 + 512 + 32) * mebibyte
+        (512 + 32) * mebibyte
     );
     assert_eq!(
         config.resource_requirements(),

@@ -384,7 +384,9 @@ impl CampaignRepository {
         }
 
         let snapshot = self.head(campaign.as_str())?.snapshot_id();
-        let closure = self.authenticated_closure_ids([snapshot.content_id()])?;
+        let closure = self
+            .authenticated_archive_closure([snapshot.content_id()], true, &mut || Ok(()))?
+            .objects;
         if !closure.contains(&finding.content_id()) || !closure.contains(&bundle.content_id()) {
             return Err(integrity(
                 "finding-candidate-incorporation-not-retained-by-snapshot",

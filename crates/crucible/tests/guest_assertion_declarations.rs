@@ -27,8 +27,9 @@ fn declared_guest_assertion_uses_marker_truth_without_duplicate_host_outcome() {
     let mut oracle = BlackBoxHostOracle;
 
     let marker = guest_marker(42, &assertion_id.name);
-    let outcomes =
-        evaluator.observe_prefix(&observable_prefix(50, vec![marker.clone()]), &mut oracle);
+    let outcomes = evaluator
+        .observe_prefix(&observable_prefix(50, vec![marker.clone()]), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].assertion, assertion_id);
@@ -41,9 +42,12 @@ fn declared_guest_assertion_uses_marker_truth_without_duplicate_host_outcome() {
     assert!(
         evaluator
             .observe_prefix(&observable_prefix(51, vec![marker.clone()]), &mut oracle)
+            .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"))
             .is_empty()
     );
-    let report = evaluator.finalize_prefix(&observable_prefix(52, vec![marker]), &mut oracle);
+    let report = evaluator
+        .finalize_prefix(&observable_prefix(52, vec![marker]), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
     assert_eq!(report.outcomes().len(), 1);
     assert_eq!(
         report.outcomes()[0].kind,
@@ -65,10 +69,12 @@ fn declared_guest_assertion_rejects_marker_message_drift() {
         HostAssertionEvaluator::new(&properties).with_world_white_box_policies(&world);
     let mut oracle = BlackBoxHostOracle;
 
-    let outcomes = evaluator.observe_prefix(
-        &observable_prefix(42, vec![guest_marker(42, "curl-receives-http-200")]),
-        &mut oracle,
-    );
+    let outcomes = evaluator
+        .observe_prefix(
+            &observable_prefix(42, vec![guest_marker(42, "curl-receives-http-200")]),
+            &mut oracle,
+        )
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].kind, HostAssertionOutcomeKind::Violated);
@@ -95,17 +101,24 @@ fn declared_guest_assertion_helpers_cover_every_guest_flavor() {
         HostAssertionEvaluator::new(&properties).with_world_white_box_policies(&world);
     let mut oracle = BlackBoxHostOracle;
 
-    let outcomes = evaluator.observe_prefix(
-        &observable_prefix(
-            50,
-            vec![
-                guest_marker_with_kind(42, "invariant", GuestAssertionKind::Always, true),
-                guest_marker_with_kind(43, "reachable", GuestAssertionKind::Reachable, true),
-                guest_marker_with_kind(44, "unreachable", GuestAssertionKind::Unreachable, true),
-            ],
-        ),
-        &mut oracle,
-    );
+    let outcomes = evaluator
+        .observe_prefix(
+            &observable_prefix(
+                50,
+                vec![
+                    guest_marker_with_kind(42, "invariant", GuestAssertionKind::Always, true),
+                    guest_marker_with_kind(43, "reachable", GuestAssertionKind::Reachable, true),
+                    guest_marker_with_kind(
+                        44,
+                        "unreachable",
+                        GuestAssertionKind::Unreachable,
+                        true,
+                    ),
+                ],
+            ),
+            &mut oracle,
+        )
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
     assert!(outcomes.iter().any(|outcome| {
         outcome.assertion.name == "reachable" && outcome.kind == HostAssertionOutcomeKind::Satisfied
     }));
@@ -114,7 +127,9 @@ fn declared_guest_assertion_helpers_cover_every_guest_flavor() {
             && outcome.kind == HostAssertionOutcomeKind::Violated
     }));
 
-    let report = evaluator.finalize_prefix(&observable_prefix(51, Vec::new()), &mut oracle);
+    let report = evaluator
+        .finalize_prefix(&observable_prefix(51, Vec::new()), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
     assert!(report.outcomes().iter().any(|outcome| {
         outcome.assertion.name == "invariant" && outcome.kind == HostAssertionOutcomeKind::Passed
     }));

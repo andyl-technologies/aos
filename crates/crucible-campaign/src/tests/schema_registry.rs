@@ -173,7 +173,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         let message = rows
             .get(schema)
             .unwrap_or_else(|| panic!("missing executor capability schema {schema}"));
-        assert_eq!(message[1], "1");
+        assert_eq!(message[1], "2");
         assert_eq!(message[2], "crucible-campaign::executor_capability");
         assert_eq!(message[3], "component-message");
         owned_campaign_schemas.insert(schema);
@@ -327,13 +327,13 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         ),
         (
             "crucible.production-exact-closure",
-            "9",
+            "10",
             "crucible-api::vm_lifecycle",
             "device-state",
         ),
         (
             "crucible.executor.production-checkpoint-object",
-            "5",
+            "6",
             "crucible-daemon::exact_checkpoint_store",
             "device-state",
         ),
@@ -351,7 +351,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         ),
         (
             "crucible.executor.exact-checkpoint-root",
-            "5",
+            "6",
             "crucible-daemon::exact_checkpoint_store",
             "exact-manifest",
         ),
@@ -452,7 +452,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         ),
         (
             "crucible.campaign-packaged-executor",
-            "2",
+            "3",
             "crucible-cli::verify_serve::packaged_executor",
             "deployment-config",
         ),

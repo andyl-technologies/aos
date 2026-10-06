@@ -1,7 +1,7 @@
 //! Checks `gate:adversarial-determinism` (the Phase-3 exit gate) on the REAL
 //! scheduler RESOLVE path.
 //!
-//! RFC-0010 file 24 [HARN-11] / §7: a fixed scenario run `N` times under
+//! A fixed scenario run `N` times under
 //! deliberately hostile host conditions MUST yield byte-identical canonical event
 //! logs and final fingerprints (INV-1, INV-4, INV-9 — the determinism that
 //! *survives* hostile conditions). This gate drives a **2-VM scenario with a disk

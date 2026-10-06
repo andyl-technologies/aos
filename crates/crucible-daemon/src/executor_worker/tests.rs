@@ -1,9 +1,21 @@
 //! Conformance tests for bounded worker-to-supervisor reconciliation.
 
 // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
-#![allow(clippy::expect_used)]
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use std::sync::atomic::AtomicBool;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+fn authored_assignment_operation_budgets()
+-> crucible_linux_resource::host_supervision::HostOperationBudgets {
+    use crucible_linux_resource::host_supervision::{
+        HOST_OPERATION_CLASS_COUNT, HostOperationBudget, HostOperationBudgets,
+    };
+    HostOperationBudgets {
+        classes: [HostOperationBudget::finite(std::time::Duration::from_secs(300));
+            HOST_OPERATION_CLASS_COUNT],
+    }
+}
 
 use crucible_campaign::{
     AssignmentId, AttemptId, AttemptResourceLimits, AttemptStartMode, CampaignHash,
@@ -24,8 +36,12 @@ use crate::{
 #[test]
 fn assignment_host_watchdog_interrupts_the_same_execution_incarnation() {
     let cancellation = ExecutionCancellation::default();
-    let mut watchdog = AssignmentHostWatchdogGuard::start(10, cancellation.clone())
-        .expect("start assignment watchdog");
+    let mut watchdog = AssignmentHostWatchdogGuard::start(
+        Some(10),
+        cancellation.clone(),
+        crucible_linux_resource::host_supervision::HostOperationBudgets::default(),
+    )
+    .expect("start assignment watchdog");
     let context = AttemptExecutionContext::new(
         AttemptResourceLimits::new(1, 1024, 2048, 2).expect("resources"),
         ExecutionRetentionIntent::RetainOnFailure,
@@ -55,8 +71,12 @@ fn assignment_host_watchdog_interrupts_the_same_execution_incarnation() {
 #[test]
 fn completed_assignment_disarms_host_watchdog_before_deadline() {
     let cancellation = ExecutionCancellation::default();
-    let mut watchdog = AssignmentHostWatchdogGuard::start(500, cancellation.clone())
-        .expect("start assignment watchdog");
+    let mut watchdog = AssignmentHostWatchdogGuard::start(
+        Some(500),
+        cancellation.clone(),
+        crucible_linux_resource::host_supervision::HostOperationBudgets::default(),
+    )
+    .expect("start assignment watchdog");
 
     assert!(!watchdog.stop());
     assert!(!cancellation.is_canceled());
@@ -66,27 +86,113 @@ fn completed_assignment_disarms_host_watchdog_before_deadline() {
 #[test]
 fn maximum_encoded_host_watchdog_does_not_overflow_monotonic_time() {
     let cancellation = ExecutionCancellation::default();
-    let mut watchdog = AssignmentHostWatchdogGuard::start(u64::MAX, cancellation.clone())
-        .expect("start maximum encoded watchdog");
+    let mut watchdog = AssignmentHostWatchdogGuard::start(
+        Some(u64::MAX),
+        cancellation.clone(),
+        crucible_linux_resource::host_supervision::HostOperationBudgets::default(),
+    )
+    .expect("start maximum encoded watchdog");
 
-    assert!(watchdog.state.remaining() > Duration::from_secs(3600));
+    assert!(
+        watchdog
+            .state
+            .supervisor()
+            .outer_cap_status()
+            .unwrap()
+            .remaining
+            .is_some_and(|remaining| remaining > Duration::from_secs(3600))
+    );
     assert!(!watchdog.stop());
     assert!(!cancellation.is_canceled());
 }
 
 #[test]
-fn explicit_assignment_watchdog_supersedes_default_qemu_operation_timeout() {
+fn lifecycle_retains_live_watchdog_owner_and_independent_operation_roster() {
     let cancellation = ExecutionCancellation::default();
-    let mut watchdog = AssignmentHostWatchdogGuard::start(600_000, cancellation.clone())
-        .expect("start assignment watchdog");
-    let context = AttemptExecutionContext::new(
-        AttemptResourceLimits::new(1, 1024, 2048, 2).expect("resources"),
+    let mut watchdog = AssignmentHostWatchdogGuard::start(
+        Some(600_000),
+        cancellation.clone(),
+        crucible_linux_resource::host_supervision::HostOperationBudgets::default(),
+    )
+    .expect("start assignment watchdog");
+    let epoch = DaemonEpoch::from_bytes([1; 16]).expect("daemon epoch");
+    let assignment = request(epoch, 1);
+    let registry = crate::HostOperationalRegistry::default();
+    registry
+        .configure_bootstrap_limits(
+            crucible_api::vm_lifecycle::HostRamBootstrapLimits::new(8, 32, 4, 32, 8 * 1024 * 1024)
+                .expect("explicit startup ownership"),
+        )
+        .expect("install startup ownership");
+    let ceiling = crucible_linux_resource::ram_policy::HostResourceVector {
+        resident_peak_bytes: 2 * 1024 * 1024,
+        backing_peak_bytes: 2048,
+        metadata_bytes: 32,
+        staging_bytes: 32,
+        paging_io_slots: 1,
+        cpu_slots: 1,
+        task_slots: 12,
+        file_descriptors: 64,
+    };
+    let mut supervisor = LocalExecutorSupervisor::new(
+        MemoryAssignmentLedger::default(),
+        AllowAllAttemptAdmission,
+        epoch,
+        ExecutorCapacity::new(1, 2, 4 * 1024 * 1024, 8192, 64).expect("physical capacity"),
+    )
+    .with_host_operational_capacity(
+        crate::HostOperationalCapacity::new(1, 12, 64, 256, 256).expect("operational capacity"),
+    )
+    .expect("capacity owner")
+    .with_host_operation_budgets(authored_assignment_operation_budgets())
+    .expect("authored finite operation roster")
+    .with_host_assignment_resources(
+        ceiling,
+        AttemptResourceLimits::new(1, 1024, 2048, 32).expect("authored assignment limits"),
+        1024 * 1024,
+    )
+    .expect("authored assignment ceiling")
+    .with_host_operational_registry(registry.clone())
+    .expect("registry owner");
+    let response = supervisor
+        .submit_attempt(&assignment)
+        .expect("genuine assignment");
+    let SubmitAttemptDisposition::Accepted { execution } = response.disposition() else {
+        panic!("assignment was not admitted");
+    };
+    let _actor = crate::executor_pool::PreparedExecutorActor::new(supervisor)
+        .expect("retained actual capacity actor");
+    let daemon = crate::host_operational_registry::operational_identity(epoch.as_bytes());
+    let owner = crucible_api::host_operational::HostOuterCapOwner::Execution(
+        crate::host_operational_registry::operational_identity(execution.as_bytes()),
+    );
+    registry
+        .register_cap(
+            crucible_api::host_operational::HostOuterCapTarget {
+                daemon_epoch: daemon,
+                owner,
+                owner_generation: 1,
+                cap_id: watchdog.state.supervisor().cap_id(),
+            },
+            crucible_api::host_operational::HostOuterCapClass::Assignment,
+            watchdog.state.supervisor().clone(),
+        )
+        .expect("existing original-start assignment cap");
+    let mut context = AttemptExecutionContext::new(
+        assignment.resources(),
         ExecutionRetentionIntent::RetainOnFailure,
         cancellation,
         ExecutionCheckpointRequest::default(),
         crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     )
     .with_host_watchdog(watchdog.state.clone());
+    context.runtime_basis = Some(AttemptExecutionRuntimeBasis::new(
+        AttemptExecutionKey::for_request(&assignment),
+        execution,
+    ));
+    context.host_operational_registry = Some(registry);
+    context.host_outer_cap_owner = Some(owner);
+    context.host_daemon_epoch = daemon;
     let default = crucible_api::ProductionVmLifecycleConfig::new(
         "qemu",
         "plugin",
@@ -100,14 +206,26 @@ fn explicit_assignment_watchdog_supersedes_default_qemu_operation_timeout() {
         crate::qemu_campaign_lifecycle::config_for_assignment_host_watchdog(default, &context)
             .expect("policy-keyed lifecycle timeout");
 
-    assert!(configured.completion_timeout() > Duration::from_secs(240));
-    assert!(configured.completion_timeout() <= Duration::from_secs(600));
-    assert!(!configured.unbounded_advance_completion());
+    assert_eq!(
+        configured.host_operation_supervisor(),
+        Some(watchdog.state.supervisor())
+    );
+    let supervisor = configured.host_operation_supervisor().unwrap();
+    assert_eq!(
+        supervisor.outer_cap_status().unwrap().allowance,
+        Some(Duration::from_secs(600))
+    );
+    assert_eq!(
+        supervisor.budgets().unwrap().1.classes
+            [crucible_linux_resource::host_supervision::HostOperationClass::Setup as usize]
+            .total_timeout,
+        Some(Duration::from_secs(30))
+    );
     assert!(!watchdog.stop());
 }
 
 #[test]
-fn campaign_without_host_watchdog_retains_transport_bounds_only() {
+fn detached_context_cannot_install_a_production_operational_controller() {
     let context = AttemptExecutionContext::new(
         AttemptResourceLimits::new(1, 1024, 2048, 2).expect("resources"),
         ExecutionRetentionIntent::RetainOnFailure,
@@ -115,6 +233,8 @@ fn campaign_without_host_watchdog_retains_transport_bounds_only() {
         ExecutionCheckpointRequest::default(),
         crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     );
+    assert_eq!(context.host_ram_owner_id(), None);
+    assert_eq!(context.host_outer_cap_owner(), None);
     let default = crucible_api::ProductionVmLifecycleConfig::new(
         "qemu",
         "plugin",
@@ -123,13 +243,10 @@ fn campaign_without_host_watchdog_retains_transport_bounds_only() {
         "run-state",
     );
 
-    assert!(!default.unbounded_advance_completion());
-    let configured =
-        crate::qemu_campaign_lifecycle::config_for_assignment_host_watchdog(default, &context)
-            .expect("campaign lifecycle without host watchdog");
-
-    assert_eq!(configured.completion_timeout(), Duration::from_secs(240));
-    assert!(configured.unbounded_advance_completion());
+    assert!(matches!(
+        crate::qemu_campaign_lifecycle::config_for_assignment_host_watchdog(default, &context),
+        Err(crate::QemuAttemptProductionVmLifecycleError::HostWatchdogExpired),
+    ));
 }
 
 #[derive(Debug)]
@@ -185,8 +302,12 @@ fn host_watchdog_kills_live_child_and_reconciles_infrastructure_failure() {
         .cancellation()
         .register_hook(hook)
         .expect("register process cancellation");
-    let mut watchdog = AssignmentHostWatchdogGuard::start(25, queued.cancellation().clone())
-        .expect("start assignment watchdog");
+    let mut watchdog = AssignmentHostWatchdogGuard::start(
+        Some(25),
+        queued.cancellation().clone(),
+        crucible_linux_resource::host_supervision::HostOperationBudgets::default(),
+    )
+    .expect("start assignment watchdog");
 
     std::thread::sleep(Duration::from_millis(60));
 
@@ -271,32 +392,6 @@ fn execution_quantum_budget_is_shared_and_refuses_the_exact_exhausted_boundary()
         context.charge_execution_quantum(),
         Err(ExecutionQuantumBudgetError)
     );
-    assert_eq!(
-        context.process_resources(),
-        Err(ExecutionQuantumBudgetError)
-    );
-}
-
-#[test]
-fn execution_quantum_budget_refuses_saturated_accounting_without_wrapping() {
-    let resources = AttemptResourceLimits::new(1, 1024, 2048, u64::MAX).expect("resources");
-    let context = AttemptExecutionContext::new(
-        resources,
-        ExecutionRetentionIntent::RetainOnFailure,
-        ExecutionCancellation::default(),
-        ExecutionCheckpointRequest::default(),
-        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
-    );
-    context
-        .execution_quanta
-        .consumed
-        .store(u64::MAX, Ordering::Release);
-
-    assert_eq!(
-        context.charge_execution_quantum(),
-        Err(ExecutionQuantumBudgetError)
-    );
-    assert_eq!(context.consumed_execution_quanta(), u64::MAX);
     assert_eq!(
         context.process_resources(),
         Err(ExecutionQuantumBudgetError)
@@ -583,4 +678,162 @@ fn typed_content_id(tag: &str, kind: &str, schema_version: u32, byte: u8) -> Str
         "{tag}@{kind}.{schema_version}.{}",
         format!("{byte:02x}").repeat(32)
     )
+}
+
+#[test]
+fn preparation_context_keeps_real_service_identity_and_original_cap_across_clones() {
+    use crucible_api::host_operational::HostOuterCapOwner;
+    use crucible_linux_resource::host_supervision::{
+        HostOperationBudgets, HostOperationSupervisor,
+    };
+    use crucible_linux_resource::ram_policy::HostResourceVector;
+
+    let registry = crate::HostOperationalRegistry::default();
+    registry
+        .configure_bootstrap_limits(
+            crucible_api::vm_lifecycle::HostRamBootstrapLimits::new(8, 32, 4, 32, 8 * 1024 * 1024)
+                .expect("bootstrap ceiling"),
+        )
+        .expect("install bootstrap");
+    let epoch = DaemonEpoch::from_bytes([0x71; 16]).expect("daemon");
+    let actor = crate::executor_pool::PreparedExecutorActor::new(
+        LocalExecutorSupervisor::new(
+            MemoryAssignmentLedger::default(),
+            AllowAllAttemptAdmission,
+            epoch,
+            ExecutorCapacity::new(1, 2, 4 * 1024 * 1024, 8 * 1024 * 1024, 64).expect("capacity"),
+        )
+        .with_host_operational_capacity(
+            crate::HostOperationalCapacity::new(1, 16, 128, 256, 256)
+                .expect("operational capacity"),
+        )
+        .expect("install capacity")
+        .with_host_operational_registry(registry.clone())
+        .expect("registry"),
+    )
+    .expect("actual prepared actor");
+    let owner = [0x72; 32];
+    actor
+        .with_supervisor(|supervisor| {
+            supervisor.reserve_host_ram_service(
+                owner,
+                HostResourceVector {
+                    resident_peak_bytes: 2 * 1024 * 1024,
+                    backing_peak_bytes: 4 * 1024 * 1024,
+                    metadata_bytes: 32,
+                    staging_bytes: 32,
+                    paging_io_slots: 1,
+                    cpu_slots: 1,
+                    task_slots: 13,
+                    file_descriptors: 64,
+                },
+            )
+        })
+        .expect("real global service reservation");
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)
+        .expect("preparation supervisor");
+    let cancellation = ExecutionCancellation::default();
+    let mut guard =
+        AssignmentHostWatchdogGuard::start_preparation(supervisor.clone(), cancellation.clone())
+            .expect("preparation watchdog");
+    assert!(
+        AttemptExecutionContext::for_preparation_service(
+            AttemptResourceLimits::new(1, 2 * 1024 * 1024, 4 * 1024 * 1024, 64).expect("resources"),
+            registry.clone(),
+            crate::host_operational_registry::operational_identity(epoch.as_bytes()),
+            [0x73; 32],
+            guard.state.clone(),
+            cancellation.clone(),
+        )
+        .is_err()
+    );
+    let context = AttemptExecutionContext::for_preparation_service(
+        AttemptResourceLimits::new(1, 2 * 1024 * 1024, 4 * 1024 * 1024, 64).expect("resources"),
+        registry,
+        crate::host_operational_registry::operational_identity(epoch.as_bytes()),
+        owner,
+        guard.state.clone(),
+        cancellation,
+    )
+    .expect("genuine service context");
+    let replay = context.for_origin_replay();
+
+    assert!(context.runtime_basis().is_none());
+    assert_eq!(
+        context.host_outer_cap_owner(),
+        Some(HostOuterCapOwner::Service(owner))
+    );
+    assert_eq!(replay.host_ram_owner_id(), Some(owner));
+    assert_eq!(
+        context.host_operation_supervisor(),
+        replay.host_operation_supervisor()
+    );
+    assert_eq!(
+        context
+            .host_operation_supervisor()
+            .map(|value| value.cap_id()),
+        Some(supervisor.cap_id())
+    );
+
+    assert!(!guard.stop());
+    actor
+        .with_supervisor(|supervisor| supervisor.release_host_ram_service_after_cleanup(owner))
+        .expect("joined watchdog and empty node ledger permit discharge");
+}
+
+#[test]
+fn preparation_phase_expiry_cancels_its_original_service_without_an_outer_cap() {
+    use crucible_linux_resource::host_supervision::{
+        HostOperationBudget, HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+
+    let mut budgets = HostOperationBudgets::default();
+    budgets.classes[HostOperationClass::Preparation as usize] =
+        HostOperationBudget::finite(Duration::from_millis(5));
+    let supervisor = HostOperationSupervisor::new(budgets, None).expect("finite preparation class");
+    let cancellation = ExecutionCancellation::default();
+    let mut guard =
+        AssignmentHostWatchdogGuard::start_preparation(supervisor.clone(), cancellation.clone())
+            .expect("preparation watcher");
+    ProcessDeadline::after(Duration::from_millis(50))
+        .expect("operational pause")
+        .pause(Duration::from_millis(50));
+
+    assert!(guard.stop());
+    assert!(cancellation.is_canceled());
+    assert_eq!(guard.state.supervisor().cap_id(), supervisor.cap_id());
+}
+
+#[test]
+fn retained_service_preparation_budget_applies_to_active_work_and_preserves_idle_time() {
+    use crucible_linux_resource::host_supervision::{
+        HostOperationBudget, HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+
+    let mut budgets = HostOperationBudgets::default();
+    budgets.classes[HostOperationClass::Preparation as usize] =
+        HostOperationBudget::finite(Duration::from_millis(5));
+    let supervisor = HostOperationSupervisor::new(budgets, None).expect("service budgets");
+    let cancellation = ExecutionCancellation::default();
+    let mut watcher =
+        AssignmentHostWatchdogGuard::start_service(supervisor.clone(), cancellation.clone())
+            .expect("retained service watcher");
+
+    ProcessDeadline::after(Duration::from_millis(30))
+        .expect("idle observation")
+        .pause(Duration::from_millis(30));
+    assert!(!cancellation.is_canceled());
+    assert!(!watcher.state.expired());
+
+    let operation = supervisor
+        .begin(HostOperationClass::Preparation)
+        .expect("actual service work");
+    let wait = ProcessDeadline::after(Duration::from_secs(1)).expect("watcher scheduling bound");
+    while !cancellation.is_canceled() && !wait.expired() {
+        wait.pause(Duration::from_millis(1));
+    }
+    assert!(cancellation.is_canceled());
+    assert!(operation.wait_slice().is_err());
+    assert!(watcher.stop());
+    assert_eq!(watcher.state.supervisor().cap_id(), supervisor.cap_id());
 }

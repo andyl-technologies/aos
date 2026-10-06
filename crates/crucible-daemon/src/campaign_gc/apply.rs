@@ -1,5 +1,7 @@
 //! Exact-generation destructive apply for one journaled single-host GC plan.
 
+use super::reachability::Reachability;
+
 use std::error::Error as StdError;
 use std::io;
 
@@ -355,7 +357,7 @@ where
     A: FnOnce(
         &DirectoryCampaignGcJournal,
         &[P],
-        &std::collections::BTreeSet<ContentId>,
+        &Reachability,
     ) -> Result<(), CampaignGcApplyError<L::Error>>,
     D: FnOnce(&DirectoryCampaignGcJournal, &[P]) -> Result<(), CampaignGcApplyError<L::Error>>,
 {
@@ -495,15 +497,21 @@ where
     // classifies direct and transitive roots. Recompute reachability from that
     // classification so promoting an archive object to an operational root
     // cannot leave its newly required descendants eligible for deletion.
-    let mut current_reachable = repository
-        .authenticated_closure_ids(roots.ordinary.iter().copied())
-        .map_err(CampaignGcApplyError::Campaign)?;
-    current_reachable.extend(roots.direct.iter().copied());
-    if let Some(candidate) = journal.candidates().iter().find(|candidate| {
-        matches!(candidate.reason(), CampaignGcCandidateReason::Unreachable)
-            && current_reachable.contains(&candidate.id())
-    }) {
-        return Err(CampaignGcApplyError::CandidateBecameReachable { id: candidate.id() });
+    let current_reachable = Reachability::authenticate(
+        repository,
+        roots.ordinary.iter().copied(),
+        roots.direct.iter().copied(),
+        ref_fence.as_ref(),
+    )
+    .map_err(CampaignGcApplyError::Reachability)?;
+    for candidate in journal.candidates().iter() {
+        if matches!(candidate.reason(), CampaignGcCandidateReason::Unreachable)
+            && current_reachable
+                .contains(&candidate.id())
+                .map_err(CampaignGcApplyError::Reachability)?
+        {
+            return Err(CampaignGcApplyError::CandidateBecameReachable { id: candidate.id() });
+        }
     }
     for (target, planned) in physical.iter().zip(journal.plan().physical()) {
         let mut fence = target.admin().acquire_inventory_fence().map_err(|source| {
@@ -539,7 +547,7 @@ fn apply_report(
 fn authenticate_policy_sources<E>(
     journal: &DirectoryCampaignGcJournal,
     physical: &[CampaignGcPhysicalStore<'_>],
-    current_reachable: &std::collections::BTreeSet<ContentId>,
+    current_reachable: &Reachability,
 ) -> Result<(), CampaignGcApplyError<E>>
 where
     E: StdError + 'static,
@@ -555,7 +563,9 @@ where
         let kind = candidate.id().kind();
         let cache_role = physical[cache_index].graph().retention(kind);
         let source_role = physical[source_index].graph().retention(kind);
-        if !current_reachable.contains(&candidate.id())
+        if !current_reachable
+            .contains(&candidate.id())
+            .map_err(CampaignGcApplyError::Reachability)?
             || candidate.backend() == required_backend
             || cache_role != Some(StoreGraphPhysicalRetention::Cache)
             || source_role != Some(StoreGraphPhysicalRetention::Required)
@@ -977,6 +987,9 @@ where
         /// Stable physical backend identifier.
         backend: String,
     },
+    /// Authenticated disk-backed reachability could not be revalidated.
+    #[error("campaign GC reachability marking failed")]
+    Reachability(#[source] StoreError),
     /// The authoritative ref namespace could not be fenced or enumerated.
     #[error("campaign GC ref revalidation failed")]
     Ref(#[source] StoreError),

@@ -27,6 +27,9 @@ impl RamStore {
         _authority: &dyn RefInventoryFence,
         visitor: &mut dyn FnMut(ContentId) -> Result<(), RamStoreError>,
     ) -> Result<(), RamStoreError> {
+        // Borrow the existing exclusive fence; resource admission obtains no
+        // publication fence and covers the root throughout this bounded walk.
+        let _metadata = self.reserve_root_metadata(1)?;
         let mut boundary = || Ok(());
         let mut work = Work::new(self.limits, &mut boundary);
         let (record, regions) = self.read_root(root, &mut work)?;

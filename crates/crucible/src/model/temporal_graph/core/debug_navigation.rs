@@ -505,7 +505,7 @@ impl TemporalGraph {
                 leaf_oracle: &mut leaf_oracle,
             };
             let mut pass = ConditionEvaluationPass::from_log_prefix(prefix, oracle);
-            if pass.evaluate_assertion_condition(&request.condition) {
+            if pass.evaluate_assertion_condition(&request.condition)? {
                 let target = request
                     .event_coordinates
                     .get(&entry.sequence())

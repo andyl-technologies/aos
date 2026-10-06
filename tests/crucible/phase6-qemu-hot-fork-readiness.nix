@@ -178,7 +178,8 @@ in
           truncate -s 64M "$TMPDIR/vmstate.raw"
           patched_socket="$TMPDIR/patched.qmp"
           ${qemuPackage}/bin/qemu-system-x86_64 \
-            -machine none -nodefaults -no-user-config -display none -monitor none -serial none \
+            -machine pc -m 64M -S -nodefaults -no-user-config -display none -monitor none -serial none \
+            -plugin "${qemuPackage}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
             -drive "if=none,id=crucible-vmstate,file=$TMPDIR/vmstate.raw,format=raw" \
             -accel sim,thread=single \
             -icount shift=0,sleep=off,align=off,rr_switch_quantum=256 \

@@ -6,9 +6,8 @@
 //! used across the guest observation boundary. It deliberately does not evaluate
 //! assertions against an event log; evaluation belongs to the L3 engine.
 //!
-//! Module map: the crate root currently reserves the assertion data-contract
-//! boundary; later modules will split property definitions from evaluation
-//! adapters without owning scheduler behavior.
+//! Module map: the crate root owns [`AssertionKind`], [`AssertionSpec`], and
+//! [`AssertionSpecError`]. These data contracts contain no scheduler behavior.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]

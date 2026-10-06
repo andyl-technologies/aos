@@ -195,7 +195,12 @@ impl QemuLiveHostIoRuntime {
         // correct guest outcome depend on host contention. Give the handshake
         // its own bounded policy interval. Neither interval enters canonical
         // state or changes the exact guest coordinate.
-        let deadline = HostSupervisionDeadline::start(timeout);
+        let deadline = OperationPollBudget::begin(
+            self.host_operation_supervisor.as_ref(),
+            HostOperationClass::Quiescence,
+            timeout,
+            "acknowledge completed-quantum clamp",
+        )?;
         self.wait_observation.begin_clamp(timeout);
         let mut last_observed_state;
         let mut boundary_acknowledged = false;
@@ -209,7 +214,7 @@ impl QemuLiveHostIoRuntime {
         };
         let mut device_progress_observed = false;
         loop {
-            drained_fault_events += self.drain_fault_events_for_pump(
+            drained_fault_events += self.drain_fault_events_for_operation(
                 self.fault_event_staging_limit,
                 &deadline,
                 timeout,
@@ -258,10 +263,11 @@ impl QemuLiveHostIoRuntime {
                 device_progress,
                 &observed,
             ) {
+                deadline.complete("acknowledge completed-quantum clamp")?;
                 self.performance.finish(self.vm_slot, "acknowledged");
                 return Ok(());
             }
-            let Some(remaining) = deadline.remaining() else {
+            let Some(remaining) = deadline.remaining("acknowledge completed-quantum clamp")? else {
                 break;
             };
             self.observe_pending_wait(
@@ -276,7 +282,8 @@ impl QemuLiveHostIoRuntime {
                 }),
                 remaining,
             );
-            self.wait_for_poll_interval(remaining);
+            self.performance.pending_sleep();
+            deadline.wait(self.poll_interval, "acknowledge completed-quantum clamp")?;
         }
 
         let fault_command_indices = match self.region.fault_command_transport_mut(self.vm_slot) {

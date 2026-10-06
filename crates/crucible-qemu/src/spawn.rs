@@ -31,6 +31,7 @@ use crate::{
 mod control_delivery_trace;
 mod image_launch;
 mod materialization;
+mod ram_spill;
 mod run_directory;
 
 pub(crate) use control_delivery_trace::valid_control_delivery_row;
@@ -39,9 +40,7 @@ pub(crate) use run_directory::valid_rr_control_boundary_row;
 use image_launch::{GuardedLaunchImagePins, GuardedSetupProbeCommand, guarded_launch_args};
 pub(crate) use materialization::QemuProductionExactRestoreSource;
 pub(crate) use materialization::SealedAtomicExactRestoreInputs;
-pub(crate) use materialization::{
-    QemuExactDeviceStateBinding, QemuGuardedExactRamInput, require_exact_restore_not_canceled,
-};
+pub(crate) use materialization::{QemuExactDeviceStateBinding, require_exact_restore_not_canceled};
 pub use run_directory::QemuPreparedRunDirectory;
 use run_directory::{PinnedFileIdentity, open_prepared_root_overlay};
 
@@ -49,7 +48,9 @@ const QEMU_VMSTATE_LAUNCH_FD: RawFd = QEMU_PLUGIN_WAKE_FD + 1;
 const QEMU_ROOT_OVERLAY_READ_LAUNCH_FD: RawFd = QEMU_VMSTATE_LAUNCH_FD + 1;
 const QEMU_ROOT_OVERLAY_WRITE_LAUNCH_FD: RawFd = QEMU_ROOT_OVERLAY_READ_LAUNCH_FD + 1;
 // Every inherited source is relocated above all fixed exec targets before dup2.
-const CHILD_SOURCE_FD_MIN: RawFd = QEMU_ROOT_OVERLAY_WRITE_LAUNCH_FD + 1;
+pub(crate) const QEMU_RAM_SOURCE_LAUNCH_FD: RawFd = 10;
+pub(crate) const QEMU_RAM_SPILL_LAUNCH_FD: RawFd = 11;
+const CHILD_SOURCE_FD_MIN: RawFd = QEMU_RAM_SPILL_LAUNCH_FD + 1;
 const CGROUP_ATTACH_SELF: &[u8] = b"0\n";
 const MAX_SUPERVISOR_GROUPS: usize = 65_536;
 const VMSTATE_FILE_NAME_C: &[u8] = b"crucible-vmstate.qcow2\0";
@@ -80,9 +81,16 @@ pub struct QemuChildProcessContract {
     maximum_vcpus: u32,
     maximum_resident_bytes: u64,
     maximum_writable_bytes: u64,
+    maximum_file_descriptors: Option<u64>,
     credentials: Option<QemuChildCredentials>,
     attempt_binding: Arc<AttemptResourceBinding>,
     exact_checkpoint_root: Option<crucible::ContentHash>,
+}
+
+/// Independently bounded writable storage and descriptor limits of one child.
+pub(crate) struct QemuChildFileLimits {
+    pub(crate) writable_bytes: u64,
+    pub(crate) descriptors: u64,
 }
 
 #[derive(Debug)]
@@ -214,6 +222,16 @@ fn current_supplementary_groups() -> Result<Vec<libc::gid_t>, QemuSpawnError> {
 }
 
 impl QemuChildProcessContract {
+    /// Returns the validated effective credentials installed by guarded spawn.
+    ///
+    /// The identifiers come from this retained process contract, rather than
+    /// from an operator-supplied capability receipt. `None` identifies a contract
+    /// without native child credentials and cannot authenticate a kernel probe.
+    pub fn effective_credentials(&self) -> Option<(u32, u32)> {
+        self.credentials
+            .map(|credentials| (credentials.user_id, credentials.group_id))
+    }
+
     /// Duplicates the sticky cancellation event for one bounded QMP operation.
     ///
     /// The returned descriptor observes the same eventfd counter as the child
@@ -277,6 +295,7 @@ impl QemuChildProcessContract {
             maximum_vcpus: self.maximum_vcpus,
             maximum_resident_bytes: self.maximum_resident_bytes,
             maximum_writable_bytes: self.maximum_writable_bytes,
+            maximum_file_descriptors: self.maximum_file_descriptors,
             credentials: self.credentials,
             attempt_binding: Arc::clone(&self.attempt_binding),
             exact_checkpoint_root: self.exact_checkpoint_root,
@@ -321,10 +340,16 @@ impl QemuChildProcessContract {
         cgroup_procs: OwnedFd,
         cancellation_event: OwnedFd,
         cgroup_limits: crate::linux_cgroup::LinuxQemuCgroupLimits,
-        maximum_writable_bytes: u64,
+        files: QemuChildFileLimits,
         credentials: QemuChildCredentials,
         exact_checkpoint_root: Option<crucible::ContentHash>,
     ) -> Result<Self, QemuSpawnError> {
+        if files.descriptors < 16 {
+            return Err(invalid_input(
+                "seal QEMU descriptor limit",
+                "descriptor limit cannot accommodate fixed launch descriptors",
+            ));
+        }
         validate_cgroup_directory_fd(&cgroup_directory)?;
         validate_cgroup_procs_fd(&cgroup_procs)?;
         validate_cancellation_eventfd(cancellation_event.as_raw_fd())?;
@@ -334,7 +359,8 @@ impl QemuChildProcessContract {
             cancellation_event,
             maximum_vcpus: cgroup_limits.maximum_vcpus(),
             maximum_resident_bytes: cgroup_limits.maximum_resident_bytes(),
-            maximum_writable_bytes,
+            maximum_writable_bytes: files.writable_bytes,
+            maximum_file_descriptors: Some(files.descriptors),
             credentials: Some(credentials),
             attempt_binding: Arc::new(AttemptResourceBinding),
             exact_checkpoint_root,
@@ -427,6 +453,7 @@ impl QemuChildProcessContract {
             maximum_vcpus,
             maximum_resident_bytes,
             maximum_writable_bytes,
+            maximum_file_descriptors: None,
             credentials: None,
             attempt_binding: Arc::new(AttemptResourceBinding),
             exact_checkpoint_root,
@@ -456,6 +483,7 @@ impl QemuChildProcessContract {
             maximum_vcpus,
             maximum_resident_bytes,
             maximum_writable_bytes,
+            maximum_file_descriptors: None,
             credentials: None,
             attempt_binding: Arc::new(AttemptResourceBinding),
             exact_checkpoint_root: None,
@@ -508,13 +536,46 @@ impl QemuChildProcessContract {
 #[derive(Debug)]
 pub struct QemuSpawnHostResources {
     control_socket: OwnedFd,
+    ram_control_socket: Option<OwnedFd>,
+    ram_source_socket: Option<OwnedFd>,
+    ram_control: Option<crate::QemuRamControlLaunch>,
     shmem_fd: OwnedFd,
     wake_fd: OwnedFd,
     region_len: u64,
     fault_node_hash: [u8; 32],
+    service_lease: Option<crucible_linux_resource::host_services::HostServiceLease>,
+    launch_cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
 }
 
 impl QemuSpawnHostResources {
+    pub(crate) fn retain_launch_cleanup(&mut self, cleanup: crate::launch_cleanup::LaunchCleanup) {
+        self.launch_cleanup = Some(cleanup);
+    }
+    /// Returns shared retained authority for this launch's descriptor peak.
+    #[must_use]
+    pub fn host_service_lease(
+        &self,
+    ) -> Option<&crucible_linux_resource::host_services::HostServiceLease> {
+        self.service_lease.as_ref()
+    }
+
+    /// Takes the independent pager-control endpoint and its authenticated setup.
+    ///
+    /// Callers retain this separately from QMP and the execution control stream.
+    pub fn take_ram_control_socket(&mut self) -> Option<(UnixStream, crate::QemuRamControlLaunch)> {
+        let setup = self.ram_control?;
+        self.ram_control_socket
+            .take()
+            .map(|fd| (UnixStream::from(fd), setup))
+    }
+
+    /// Takes the independent lazy authenticated RAM-source endpoint.
+    ///
+    /// The source owner supplies its fresh binding before restore or fork readiness.
+    pub fn take_ram_source_socket(&mut self) -> Option<UnixStream> {
+        self.ram_source_socket.take().map(UnixStream::from)
+    }
+
     /// Returns the host end of the plugin IPC control socket.
     #[must_use]
     pub fn control_socket_fd(&self) -> RawFd {
@@ -544,10 +605,15 @@ impl QemuSpawnHostResources {
     pub fn into_setup_resources(self) -> QemuSpawnSetupResources {
         QemuSpawnSetupResources {
             control_socket: UnixStream::from(self.control_socket),
+            ram_control_socket: self.ram_control_socket,
+            ram_source_socket: self.ram_source_socket,
+            ram_control: self.ram_control,
+            service_lease: self.service_lease,
             shmem_fd: self.shmem_fd,
             wake_fd: self.wake_fd,
             region_len: self.region_len,
             fault_node_hash: self.fault_node_hash,
+            launch_cleanup: self.launch_cleanup,
         }
     }
 }
@@ -556,13 +622,46 @@ impl QemuSpawnHostResources {
 #[derive(Debug)]
 pub struct QemuSpawnSetupResources {
     control_socket: UnixStream,
+    ram_control_socket: Option<OwnedFd>,
+    ram_source_socket: Option<OwnedFd>,
+    ram_control: Option<crate::QemuRamControlLaunch>,
     shmem_fd: OwnedFd,
     wake_fd: OwnedFd,
     region_len: u64,
     fault_node_hash: [u8; 32],
+    service_lease: Option<crucible_linux_resource::host_services::HostServiceLease>,
+    launch_cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
 }
 
 impl QemuSpawnSetupResources {
+    pub(crate) fn launch_cleanup(&self) -> Option<crate::launch_cleanup::LaunchCleanup> {
+        self.launch_cleanup.clone()
+    }
+    /// Returns shared retained authority for this launch's descriptor peak.
+    #[must_use]
+    pub fn host_service_lease(
+        &self,
+    ) -> Option<&crucible_linux_resource::host_services::HostServiceLease> {
+        self.service_lease.as_ref()
+    }
+
+    /// Takes the independent pager-control endpoint and its authenticated setup.
+    ///
+    /// Callers retain this separately from QMP and the execution control stream.
+    pub fn take_ram_control_socket(&mut self) -> Option<(UnixStream, crate::QemuRamControlLaunch)> {
+        let setup = self.ram_control?;
+        self.ram_control_socket
+            .take()
+            .map(|fd| (UnixStream::from(fd), setup))
+    }
+
+    /// Takes the independent lazy authenticated RAM-source endpoint.
+    ///
+    /// The source owner supplies its fresh binding before restore or fork readiness.
+    pub fn take_ram_source_socket(&mut self) -> Option<UnixStream> {
+        self.ram_source_socket.take().map(UnixStream::from)
+    }
+
     /// Returns the host end of the plugin IPC control socket.
     #[must_use]
     pub fn control_socket_fd(&self) -> RawFd {
@@ -595,13 +694,23 @@ impl QemuSpawnSetupResources {
 
     /// Consumes the setup resources into their owned parts.
     #[must_use]
-    pub fn into_parts(self) -> (UnixStream, OwnedFd, OwnedFd, u64, [u8; 32]) {
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        UnixStream,
+        OwnedFd,
+        OwnedFd,
+        u64,
+        [u8; 32],
+        Option<crate::launch_cleanup::LaunchCleanup>,
+    ) {
         (
             self.control_socket,
             self.shmem_fd,
             self.wake_fd,
             self.region_len,
             self.fault_node_hash,
+            self.launch_cleanup,
         )
     }
 }
@@ -622,14 +731,14 @@ pub struct QemuSpawnedChild {
 #[error("{source}")]
 pub struct QemuGuardedImagePreparationError {
     pub(super) source: QemuSpawnError,
-    pub(super) child: Option<QemuNodeChild>,
+    pub(super) child: Option<Box<QemuNodeChild>>,
 }
 
 impl QemuGuardedImagePreparationError {
     /// Takes the unique wait authority for an unreaped image-tool helper.
     #[must_use]
     pub fn take_unreaped_child(&mut self) -> Option<QemuNodeChild> {
-        self.child.take()
+        self.child.take().map(|child| *child)
     }
 }
 
@@ -644,6 +753,13 @@ impl QemuSpawnedChild {
 /// Errors returned while preparing or spawning a QEMU child.
 #[derive(Debug, Error)]
 pub enum QemuSpawnError {
+    /// Explicit per-node host service descriptor admission failed before allocation.
+    #[error(transparent)]
+    HostServices {
+        /// Original independently configured service capacity refusal.
+        #[from]
+        source: crucible_linux_resource::host_services::HostServiceError,
+    },
     /// The shared-memory region length was zero.
     #[error("shared-memory region length must be non-zero")]
     RegionLengthZero,
@@ -918,6 +1034,18 @@ pub enum QemuSpawnError {
         /// Exact launch-resource mismatch.
         source: crate::QemuLaunchResourceError,
     },
+    /// The spill filesystem would retain externalized RAM in host memory.
+    #[error("RAM spill storage uses an unsupported memory filesystem: {filesystem_type:#x}")]
+    RamSpillMemoryFilesystem {
+        /// Linux filesystem type reported by the pinned descriptor.
+        filesystem_type: i64,
+    },
+    /// The private spill file lacks a valid admitted backing quota.
+    #[error("RAM spill backing quota is invalid: {bytes}")]
+    InvalidRamSpillQuota {
+        /// Requested private backing bytes.
+        bytes: u64,
+    },
 }
 /// Spawns QEMU from an already-provisioned run directory under `contract`.
 ///
@@ -940,17 +1068,45 @@ pub(crate) fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
     run_directory: &QemuPreparedRunDirectory,
     region_len: u64,
     contract: &QemuChildProcessContract,
+    host_services: Option<&crucible_linux_resource::host_services::HostServiceAllocator>,
+    launch_cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
 ) -> Result<QemuSpawnedChild, QemuSpawnError> {
     run_directory.validate_launch_basis(command, contract)?;
     run_directory.revalidate()?;
+    let spill_quota = if command.ram_control().is_some() {
+        let bytes = command.ram_backing_quota_bytes().unwrap_or(0);
+        if bytes < 4096 || bytes > contract.maximum_writable_bytes {
+            return Err(QemuSpawnError::InvalidRamSpillQuota { bytes });
+        }
+        Some(bytes)
+    } else {
+        None
+    };
+    // Three socket pairs, three temporary duplicated child endpoints, two
+    // shared-memory descriptors, two wake descriptors, and three image pins.
+    let service_lease = host_services
+        .map(|services| services.reserve_resources(0, 16, 0))
+        .transpose()
+        .map_err(|source| QemuSpawnError::HostServices { source })?;
     let image_pins = GuardedLaunchImagePins::new(run_directory)?;
     let launch_args = guarded_launch_args(
         command.args(),
         image_pins.overlay.is_some(),
         run_directory.path(),
     )?;
-    let (mut resources, child_resources) = create_spawn_resources(region_len)?;
+    let (mut resources, mut child_resources) = create_spawn_resources(region_len)?;
+    resources.service_lease = service_lease;
     resources.fault_node_hash = command.plugin_fault_node_hash();
+    resources.ram_control = command.ram_control();
+    if let Some(cleanup) = &launch_cleanup {
+        resources.retain_launch_cleanup(cleanup.clone());
+    }
+    if let Some(bytes) = spill_quota {
+        child_resources.ram_spill = Some(ram_spill::create_private_spill(
+            &run_directory.directory,
+            bytes,
+        )?);
+    }
     let child = spawn_process_with_resources(
         command.executable(),
         &launch_args,
@@ -960,10 +1116,11 @@ pub(crate) fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
         command.diagnostic_envs(),
         Some(contract),
     )?;
-    Ok(QemuSpawnedChild {
-        child: QemuNodeChild::new(child),
-        resources,
-    })
+    let mut child = QemuNodeChild::new(child);
+    if let Some(cleanup) = launch_cleanup {
+        child.retain_launch_cleanup(cleanup);
+    }
+    Ok(QemuSpawnedChild { child, resources })
 }
 
 pub(crate) fn validate_guarded_launch_resources(
@@ -988,6 +1145,9 @@ pub(crate) fn validate_guarded_launch_requirements(
 #[derive(Debug)]
 struct QemuSpawnChildResources {
     control_socket: OwnedFd,
+    ram_control_socket: OwnedFd,
+    ram_source_socket: OwnedFd,
+    ram_spill: Option<OwnedFd>,
     shmem_fd: OwnedFd,
     wake_fd: OwnedFd,
 }
@@ -1000,6 +1160,12 @@ fn create_spawn_resources(
     }
 
     let (host_control, child_control) = socket_pair()?;
+    let (host_ram_control, child_ram_control) = socket_pair()?;
+    let (host_ram_source, child_ram_source) = socket_pair()?;
+    let child_ram_control =
+        duplicate_cloexec_fd(child_ram_control.as_raw_fd(), "duplicate pager control fd")?;
+    let child_ram_source =
+        duplicate_cloexec_fd(child_ram_source.as_raw_fd(), "duplicate RAM source fd")?;
     let child_control =
         duplicate_cloexec_fd(child_control.as_raw_fd(), "duplicate plugin control fd")?;
     let host_shmem = memfd_region(region_len)?;
@@ -1010,6 +1176,11 @@ fn create_spawn_resources(
     Ok((
         QemuSpawnHostResources {
             control_socket: host_control,
+            ram_control_socket: Some(host_ram_control),
+            ram_source_socket: Some(host_ram_source),
+            ram_control: None,
+            launch_cleanup: None,
+            service_lease: None,
             shmem_fd: host_shmem,
             wake_fd: host_wake,
             region_len,
@@ -1017,6 +1188,9 @@ fn create_spawn_resources(
         },
         QemuSpawnChildResources {
             control_socket: child_control,
+            ram_control_socket: child_ram_control,
+            ram_source_socket: child_ram_source,
+            ram_spill: None,
             shmem_fd: child_shmem,
             wake_fd: child_wake,
         },
@@ -1051,6 +1225,9 @@ fn spawn_process_with_resources(
     process_contract: Option<&QemuChildProcessContract>,
 ) -> Result<Child, QemuSpawnError> {
     let control_fd = child_resources.control_socket.as_raw_fd();
+    let ram_control_fd = child_resources.ram_control_socket.as_raw_fd();
+    let ram_source_fd = child_resources.ram_source_socket.as_raw_fd();
+    let ram_spill_fd = child_resources.ram_spill.as_ref().map(AsRawFd::as_raw_fd);
     let shmem_fd = child_resources.shmem_fd.as_raw_fd();
     let wake_fd = child_resources.wake_fd.as_raw_fd();
     let expected_parent_pid = unsafe {
@@ -1061,6 +1238,7 @@ fn spawn_process_with_resources(
         cgroup_procs: contract.cgroup_procs.as_raw_fd(),
         cancellation_event: contract.cancellation_event.as_raw_fd(),
         maximum_file_bytes: contract.maximum_writable_bytes,
+        maximum_file_descriptors: contract.maximum_file_descriptors,
         credentials: contract.credentials,
     });
     let pinned_run_directory = PreparedRunDirectoryRaw {
@@ -1090,6 +1268,14 @@ fn spawn_process_with_resources(
                 install_child_credentials(credentials)?;
             }
             install_child_process_contract(control_fd, shmem_fd, wake_fd, expected_parent_pid)?;
+            dup_to_fixed_child_fd(ram_control_fd, crate::QEMU_PLUGIN_RAM_CONTROL_FD)?;
+            dup_to_fixed_child_fd(ram_source_fd, QEMU_RAM_SOURCE_LAUNCH_FD)?;
+            if let Some(spill) = ram_spill_fd {
+                dup_to_fixed_child_fd(spill, QEMU_RAM_SPILL_LAUNCH_FD)?;
+                close_child_source_fd(spill)?;
+            }
+            close_child_source_fd(ram_control_fd)?;
+            close_child_source_fd(ram_source_fd)?;
             install_guarded_launch_image_pins(vmstate_fd, overlay_fds)
         });
     }
@@ -1396,6 +1582,7 @@ fn install_guarded_helper_authority_with_probe_pin(
         cgroup_procs: process_contract.cgroup_procs.as_raw_fd(),
         cancellation_event: process_contract.cancellation_event.as_raw_fd(),
         maximum_file_bytes: process_contract.maximum_writable_bytes,
+        maximum_file_descriptors: process_contract.maximum_file_descriptors,
         credentials: process_contract.credentials,
     };
     let directory = PreparedRunDirectoryRaw {
@@ -1598,7 +1785,7 @@ fn cleanup_failed_image_tool(
         },
         Err(_) => QemuGuardedImagePreparationError {
             source,
-            child: Some(child),
+            child: Some(Box::new(child)),
         },
     }
 }
@@ -1608,6 +1795,7 @@ struct ChildProcessContractRaw {
     cgroup_procs: RawFd,
     cancellation_event: RawFd,
     maximum_file_bytes: u64,
+    maximum_file_descriptors: Option<u64>,
     credentials: Option<QemuChildCredentials>,
 }
 
@@ -1736,6 +1924,20 @@ fn install_attempt_process_contract(contract: ChildProcessContractRaw) -> io::Re
     if limited != 0 {
         return Err(io::Error::last_os_error());
     }
+    if let Some(maximum) = contract.maximum_file_descriptors {
+        let descriptor_limit = libc::rlimit {
+            rlim_cur: maximum,
+            rlim_max: maximum,
+        };
+        let result = unsafe {
+            // SAFETY: The initialized limit is copied by this async-signal-safe syscall.
+            libc::setrlimit(libc::RLIMIT_NOFILE, &descriptor_limit)
+        };
+        if result != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+
     let no_new_privileges = unsafe {
         // SAFETY: PR_SET_NO_NEW_PRIVS takes scalar arguments and permanently
         // prevents this child from regaining privilege across exec.

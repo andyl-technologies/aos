@@ -55,6 +55,33 @@ impl RamControlResources {
     }
 }
 
+/// Closed actual process ownership plus explicitly reserved future pager roles.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RamControlOwnerInventory {
+    /// Actual existing QEMU threads authenticated against the closed native registry.
+    pub existing_tasks: u64,
+    /// Actual existing QEMU descriptors from its checked pre-CPU inventory.
+    pub existing_file_descriptors: u64,
+    /// Existing independent service threads included in existing_tasks.
+    pub registered_service_tasks: u64,
+    /// Additional tasks explicitly required by the selected real paging backend.
+    pub prospective_tasks: u64,
+    /// Additional descriptor peak explicitly required by the real paging backend.
+    pub prospective_file_descriptors: u64,
+}
+
+impl RamControlOwnerInventory {
+    pub(super) fn validate(self) -> Result<(), RamControlError> {
+        if self.existing_tasks == 0 || self.existing_tasks > 65536
+            || self.existing_file_descriptors == 0 || self.existing_file_descriptors > 65536
+            || self.registered_service_tasks > self.existing_tasks
+            || self.prospective_tasks > 65536 || self.prospective_file_descriptors > 65536 {
+            return Err(RamControlError::InvalidFrame);
+        }
+        Ok(())
+    }
+}
+
 /// Actual immutable inventory selected before CPU admission and metadata sealing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RamControlInventoryReport {
@@ -68,6 +95,8 @@ pub struct RamControlInventoryReport {
     pub native_metadata_bytes: u64,
     /// Actual native observation/population scratch requirement.
     pub native_scratch_bytes: u64,
+    /// Authenticated actual owner inventory and explicit future backend roles.
+    pub owner_resources: RamControlOwnerInventory,
     /// Whether the authenticated initial grant was accepted by the native owner.
     pub granted: bool,
 }

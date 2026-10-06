@@ -1115,6 +1115,7 @@ pub(super) fn subcommand_uses_backend_selection(command: &Commands) -> bool {
             | Commands::Fuzz(_)
             | Commands::Debug(_)
             | Commands::Serve(_)
+            | Commands::Host(_)
     )
 }
 
@@ -1125,12 +1126,12 @@ pub(super) fn execute_backend_selection_plan(
 ) -> Result<(), CliError> {
     if !plan.has_consistent_route() {
         return Err(CliError::Backend(
-            "CLI backend selection violates the RFC-0010 local/remote split".to_string(),
+            "CLI backend selection violates local/remote process ownership".to_string(),
         ));
     }
     if !plan.proves_t_cli_5() {
         return Err(CliError::Backend(
-            "CLI QEMU discovery violates the RFC-0010 hermetic discovery contract".to_string(),
+            "CLI QEMU discovery violates hermetic artifact discovery".to_string(),
         ));
     }
 

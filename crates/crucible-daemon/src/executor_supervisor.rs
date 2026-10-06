@@ -46,6 +46,15 @@ pub(crate) struct SelectedExactCheckpointRoot {
 }
 
 impl SelectedExactCheckpointRoot {
+    /// Issues a launch claim from a completely authenticated receiver import.
+    pub(crate) fn after_authenticated_import(
+        imported: &crate::imported_checkpoint::AuthenticatedImportedCheckpoint<'_>,
+    ) -> Self {
+        Self {
+            checkpoint: imported.checkpoint(),
+        }
+    }
+
     fn after_durable_admission(origin: AttemptExecutionOrigin) -> Option<Self> {
         origin.checkpoint().map(Self::after_durable_checkpoint)
     }
@@ -78,11 +87,18 @@ impl SelectedExactCheckpointRoot {
 }
 
 mod admission;
+mod bootstrap_resources;
 mod checkpoint;
 mod checkpoint_promotion;
 mod execution;
 mod execution_control;
+mod operational_capacity;
 mod publication;
+mod ram_policy;
+mod service_resources;
+pub(crate) use bootstrap_resources::{ExecutorBootstrapConfiguration, ExecutorBootstrapResources};
+use operational_capacity::HostOperationalUse;
+pub use operational_capacity::{HostOperationalCapacity, HostOperationalCapacityError};
 pub use publication::stage_prepared_attempt_result;
 
 pub(crate) use execution_control::{
@@ -417,9 +433,24 @@ impl ExecutorAvailability {
     }
 }
 
+/// Named finite policy for explicit component execution and product fixtures.
+#[cfg(any(test, feature = "test-support"))]
+fn component_operation_budgets() -> crucible_linux_resource::host_supervision::HostOperationBudgets
+{
+    crucible_linux_resource::host_supervision::HostOperationBudgets {
+        classes: [crucible_linux_resource::host_supervision::HostOperationBudget::finite(
+            std::time::Duration::from_secs(300),
+        ); crucible_linux_resource::host_supervision::HOST_OPERATION_CLASS_COUNT],
+    }
+}
+
 /// One accepted assignment ready for the local execution worker.
 #[derive(Debug)]
 pub struct QueuedAttempt {
+    publication_supervision: crate::supervision::PublicationSupervision,
+    host_operational_registry: crate::HostOperationalRegistry,
+    host_daemon_epoch: [u8; 32],
+    host_operation_budgets: Option<crucible_linux_resource::host_supervision::HostOperationBudgets>,
     execution: ExecutionId,
     request: SubmitAttemptRequest,
     origin: AttemptExecutionOrigin,
@@ -430,9 +461,62 @@ pub struct QueuedAttempt {
 }
 
 impl QueuedAttempt {
+    pub(crate) fn bind_caller_supervision(
+        &self,
+        caller: &crucible_linux_resource::host_supervision::HostOperationSupervisor,
+    ) -> std::io::Result<()> {
+        self.publication_supervision.bind_caller(caller)
+    }
+
+    pub(crate) fn start_host_watchdog(
+        &self,
+        milliseconds: Option<u64>,
+        cancellation: ExecutionCancellation,
+        budgets: crucible_linux_resource::host_supervision::HostOperationBudgets,
+    ) -> std::io::Result<(crate::supervision::AssignmentHostWatchdog, bool)> {
+        self.publication_supervision
+            .start(milliseconds, cancellation, budgets)
+    }
+
+    pub(crate) fn begin_publication(&self) -> std::io::Result<()> {
+        self.publication_supervision.begin_publication()
+    }
+
+    /// Borrows the original assignment publication scope across bounded writes.
+    pub(crate) fn publication_guard(
+        &self,
+    ) -> Result<
+        Arc<crucible_linux_resource::host_supervision::HostOperationGuard>,
+        crucible_api::host_operational::HostOperationalError,
+    > {
+        self.publication_supervision.guard()
+    }
+
+    pub(crate) fn host_operation_budgets(
+        &self,
+    ) -> Option<crucible_linux_resource::host_supervision::HostOperationBudgets> {
+        self.host_operation_budgets
+    }
+
+    /// Creates the finite original publication scope for a component product fixture.
+    #[cfg(test)]
+    pub(crate) fn begin_test_publication(&self) {
+        let budgets = component_operation_budgets();
+        self.start_host_watchdog(Some(300_000), self.cancellation.clone(), budgets)
+            .unwrap_or_else(|error| panic!("component original publication owner: {error}"));
+        self.begin_publication()
+            .unwrap_or_else(|error| panic!("component publication phase: {error}"));
+    }
+
     #[cfg(test)]
     pub(crate) fn from_test_parts(execution: ExecutionId, request: SubmitAttemptRequest) -> Self {
-        Self {
+        let queued = Self {
+            publication_supervision: crate::supervision::PublicationSupervision::default(),
+            host_operation_budgets: Some(component_operation_budgets()),
+            host_operational_registry: crate::HostOperationalRegistry::default(),
+            host_daemon_epoch: crate::host_operational_registry::operational_identity(
+                execution.as_bytes(),
+            ),
             execution,
             request,
             origin: AttemptExecutionOrigin::Initial,
@@ -440,13 +524,23 @@ impl QueuedAttempt {
             checkpoint_request: ExecutionCheckpointRequest::default(),
             checkpoint_handoff: None,
             selected_checkpoint: Mutex::new(None),
-        }
+        };
+        queued.begin_test_publication();
+        queued
     }
 
     /// Returns the local execution incarnation allocated by the supervisor.
     #[must_use]
     pub const fn execution(&self) -> ExecutionId {
         self.execution
+    }
+
+    pub(crate) fn host_operational_registry(&self) -> crate::HostOperationalRegistry {
+        self.host_operational_registry.clone()
+    }
+
+    pub(crate) const fn host_daemon_epoch(&self) -> [u8; 32] {
+        self.host_daemon_epoch
     }
 
     /// Returns the exact immutable assignment request.
@@ -493,6 +587,10 @@ impl QueuedAttempt {
 
     pub(crate) fn reconciliation_copy(&self) -> Self {
         Self {
+            host_operational_registry: self.host_operational_registry.clone(),
+            publication_supervision: self.publication_supervision.clone(),
+            host_daemon_epoch: self.host_daemon_epoch,
+            host_operation_budgets: self.host_operation_budgets,
             execution: self.execution,
             request: self.request.clone(),
             origin: self.origin,
@@ -675,6 +773,7 @@ pub enum LocalExecutorError<E> {
 
 #[derive(Debug)]
 struct ActiveExecution {
+    publication_supervision: crate::supervision::PublicationSupervision,
     request: SubmitAttemptRequest,
     origin: AttemptExecutionOrigin,
     cancellation: ExecutionCancellation,
@@ -754,6 +853,35 @@ impl ValidatedSubmitAdmission {
 
 /// Sole-writer bounded local executor over one operational ledger.
 pub struct LocalExecutorSupervisor<L, V> {
+    // Closing registry and ledger descriptors does not delete durable bytes.
+    // A bootstrapped namespace keeps its original full Service account until
+    // an authenticated operator cleanup or restart handoff proves disposition.
+    host_startup_namespace_owner: Option<[u8; 32]>,
+    host_watcher_resident_bytes: Option<u64>,
+    host_assignment_resources: Option<(
+        crucible_linux_resource::ram_policy::HostResourceVector,
+        AttemptResourceLimits,
+        UsedCapacity,
+    )>,
+    host_operational_capacity: Option<HostOperationalCapacity>,
+    host_operational_used: HostOperationalUse,
+    host_operational_registry: crate::HostOperationalRegistry,
+    host_ram_resources: BTreeMap<
+        ExecutionId,
+        (
+            crucible_linux_resource::ram_policy::HostResourceVector,
+            crucible_linux_resource::ram_policy::HostResourceLedger,
+        ),
+    >,
+    host_retained_resources:
+        BTreeMap<ExecutionId, crucible_linux_resource::ram_policy::HostResourceVector>,
+    host_unpublished_quarantine: BTreeMap<
+        crucible_linux_resource::ram_policy::HostRamTarget,
+        crucible_linux_resource::ram_policy::HostResourceVector,
+    >,
+    host_service_partitions:
+        BTreeMap<[u8; 32], crucible_linux_resource::ram_policy::HostResourceVector>,
+    host_service_resources: service_resources::HostServiceReservations,
     ledger: L,
     validator: Arc<V>,
     daemon_epoch: DaemonEpoch,
@@ -764,6 +892,12 @@ pub struct LocalExecutorSupervisor<L, V> {
     pending_completions: BTreeMap<ExecutionId, PendingCompletion>,
     pending_cancellations: BTreeMap<ExecutionId, AttemptExecutionKey>,
     used: UsedCapacity,
+    host_operation_budgets: Option<crucible_linux_resource::host_supervision::HostOperationBudgets>,
+    // Last: the concrete ledger descriptors close before their allocator credit returns.
+    _host_startup_ledger_lease: Option<crucible_linux_resource::host_services::HostServiceLease>,
+    // The project pin and namespace lock remain retained with the original
+    // account until authenticated namespace disposition, including after shutdown.
+    _host_startup_ledger_quota: Option<bootstrap_resources::BootstrapLedgerQuota>,
 }
 
 impl<L, V> LocalExecutorSupervisor<L, V> {
@@ -780,6 +914,17 @@ impl<L, V> LocalExecutorSupervisor<L, V> {
         capacity: ExecutorCapacity,
     ) -> Self {
         Self {
+            host_startup_namespace_owner: None,
+            host_watcher_resident_bytes: None,
+            host_assignment_resources: None,
+            host_operational_capacity: None,
+            host_operational_used: HostOperationalUse::default(),
+            host_operational_registry: crate::HostOperationalRegistry::default(),
+            host_ram_resources: BTreeMap::new(),
+            host_retained_resources: BTreeMap::new(),
+            host_service_resources: BTreeMap::new(),
+            host_service_partitions: BTreeMap::new(),
+            host_unpublished_quarantine: BTreeMap::new(),
             ledger,
             validator: Arc::new(validator),
             daemon_epoch,
@@ -790,7 +935,64 @@ impl<L, V> LocalExecutorSupervisor<L, V> {
             pending_completions: BTreeMap::new(),
             pending_cancellations: BTreeMap::new(),
             used: UsedCapacity::default(),
+            host_operation_budgets: None,
+            _host_startup_ledger_lease: None,
+            _host_startup_ledger_quota: None,
         }
+    }
+
+    /// Attaches an operational registry whose full service peak is already charged.
+    ///
+    /// # Errors
+    /// Refuses an unadmitted registry or a service identity/vector that differs
+    /// from this actor's existing reservation. History backing is part of that
+    /// same service entitlement and is not charged again here.
+    pub fn with_host_operational_registry(
+        mut self,
+        registry: crate::HostOperationalRegistry,
+    ) -> Result<Self, crucible_api::host_operational::HostOperationalError> {
+        self.attach_host_operational_registry(registry)?;
+        Ok(self)
+    }
+
+    /// Binds already charged registry authority without consuming the original actor.
+    ///
+    /// # Errors
+    /// Refuses another Service identity or vector and unadmitted production
+    /// registries. Refusal preserves the opened ledger and all original charges.
+    pub(crate) fn attach_host_operational_registry(
+        &mut self,
+        registry: crate::HostOperationalRegistry,
+    ) -> Result<(), crucible_api::host_operational::HostOperationalError> {
+        if let Some((owner, resources)) = registry.admitted_registry_service() {
+            if self
+                .host_service_resources
+                .get(&owner)
+                .map(|(ceiling, _)| *ceiling)
+                != Some(resources)
+            {
+                return Err(crucible_api::host_operational::HostOperationalError::Unavailable);
+            }
+        } else if !cfg!(test) {
+            return Err(crucible_api::host_operational::HostOperationalError::Unavailable);
+        }
+        self.host_operational_registry = registry;
+        Ok(())
+    }
+
+    /// Removes the registry reference before terminal original-actor escrow.
+    ///
+    /// This breaks an ownership cycle when physical registry/catalog holders
+    /// retain the same charged actor after ordinary executor ownership ends.
+    /// The returned registry remains charged until actual final cleanup.
+    pub(crate) fn detach_registry_for_terminal_cleanup(
+        &mut self,
+    ) -> crate::HostOperationalRegistry {
+        std::mem::take(&mut self.host_operational_registry)
+    }
+
+    pub(crate) fn host_operational_registry(&self) -> crate::HostOperationalRegistry {
+        self.host_operational_registry.clone()
     }
 
     /// Returns this process's daemon incarnation.
@@ -858,6 +1060,15 @@ impl<L, V> LocalExecutorSupervisor<L, V> {
         &self.ledger
     }
 
+    /// Lends the ledger to the exclusive startup owner before worker handoff.
+    ///
+    /// The prepared actor must move this same supervisor into its closed
+    /// startup loan before calling this method. Reconciliation cannot replace
+    /// the supervisor, clear its resource accounting, or run alongside workers.
+    pub(crate) fn startup_ledger_mut(&mut self) -> &mut L {
+        &mut self.ledger
+    }
+
     /// Returns the owned ledger after supervisor shutdown.
     #[must_use]
     pub fn into_ledger(self) -> L {
@@ -869,6 +1080,32 @@ impl<L, V> LocalExecutorSupervisor<L, V> {
         Arc::clone(&self.validator)
     }
 
+    /// Installs the exact authored operation roster for accepted assignments.
+    ///
+    /// # Errors
+    /// Refuses invalid policy or replacement after execution admission.
+    #[cfg(test)]
+    pub(crate) fn with_host_operation_budgets(
+        mut self,
+        budgets: crucible_linux_resource::host_supervision::HostOperationBudgets,
+    ) -> Result<Self, crucible_api::host_operational::HostOperationalError> {
+        budgets
+            .validate(false)
+            .map_err(|_| crucible_api::host_operational::HostOperationalError::Unavailable)?;
+        if !self.active.is_empty() {
+            return Err(crucible_api::host_operational::HostOperationalError::Unavailable);
+        }
+        self.host_operation_budgets = Some(budgets);
+        Ok(self)
+    }
+
+    /// Supplies a named finite roster for explicitly component-only execution.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn with_component_operation_budgets(mut self) -> Self {
+        self.host_operation_budgets = Some(component_operation_budgets());
+        self
+    }
+
     /// Takes the next accepted execution exactly once from the pending queue.
     #[must_use]
     pub fn next_queued(&mut self) -> Option<QueuedAttempt> {
@@ -876,6 +1113,12 @@ impl<L, V> LocalExecutorSupervisor<L, V> {
             if let Some(active) = self.active.get_mut(&execution) {
                 active.worker_in_flight = true;
                 return Some(QueuedAttempt {
+                    publication_supervision: active.publication_supervision.clone(),
+                    host_operation_budgets: self.host_operation_budgets,
+                    host_operational_registry: self.host_operational_registry.clone(),
+                    host_daemon_epoch: crate::host_operational_registry::operational_identity(
+                        self.daemon_epoch.as_bytes(),
+                    ),
                     execution,
                     request: active.request.clone(),
                     origin: active.origin,
@@ -884,6 +1127,28 @@ impl<L, V> LocalExecutorSupervisor<L, V> {
                     checkpoint_handoff: None,
                     selected_checkpoint: Mutex::new(active.selected_checkpoint.take()),
                 });
+            }
+        }
+        None
+    }
+
+    /// Claims a request only when the existing canonical queue selects it.
+    ///
+    /// Stale entries are retired identically to ordinary dispatch. A different
+    /// live head stays untouched; callers cannot rotate the queue or steal it.
+    pub(crate) fn next_queued_for(
+        &mut self,
+        request_digest: crucible_campaign::CampaignHash,
+    ) -> Option<QueuedAttempt> {
+        while let Some(execution) = self.queued.front().copied() {
+            match self.active.get(&execution) {
+                None => {
+                    self.queued.pop_front();
+                }
+                Some(active) if active.request.request_digest() == request_digest => {
+                    return self.next_queued();
+                }
+                Some(_) => return None,
             }
         }
         None

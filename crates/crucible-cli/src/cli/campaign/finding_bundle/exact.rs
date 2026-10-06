@@ -5,8 +5,7 @@ use std::time::Duration;
 
 use crucible::DagStore;
 use crucible_campaign::{
-    AttemptResourceLimits, CampaignArchiveManifestId, CampaignRepository, FindingId, StopCondition,
-    StopOutcome,
+    CampaignArchiveManifestId, CampaignRepository, FindingId, StopCondition, StopOutcome,
 };
 use crucible_daemon::finding_production_replay::{
     FindingProductionReplayExecutionSide, FindingProductionReplayRootImageFormat,
@@ -35,12 +34,22 @@ pub(super) struct ExactFindingReplayReport {
 /// Returns an error if the archive, runtime, guest assets, replay closure, or
 /// fresh scheduler evidence differs from the retained capture.
 pub(super) fn replay_exact_finding(
-    cli: &Cli,
+    source: FindingSourceAuthentication,
     repository: &CampaignRepository,
     archive: CampaignArchiveManifestId,
     finding: FindingId,
     role: CampaignFindingBundleRole,
 ) -> Result<ExactFindingReplayReport, CliError> {
+    let FindingSourceAuthentication {
+        owner,
+        deployment,
+        qemu,
+        plugin,
+        build_id,
+        workspace,
+        decoding,
+    } = source;
+    let _scope = decoding.enter();
     let capture = crucible_daemon::load_archived_finding_production_capture(
         repository,
         archive,
@@ -48,15 +57,15 @@ pub(super) fn replay_exact_finding(
         role.campaign_role(),
     )
     .map_err(|error| backend_error(format!("archived production replay is invalid: {error}")))?;
-    let (qemu, plugin, build_id) = resolve_immutable_qemu(cli)?;
-    let private = private_bundle_tempdir()?;
-    let guests = crucible_daemon::materialize_finding_replay_guest_assets(
-        capture.deployment(),
-        &qemu,
-        &plugin,
-        private.path(),
-    )
-    .map_err(|error| backend_error(format!("finding guest assets are invalid: {error}")))?;
+    let guests = retain_materialized_guest_assets(
+        crucible_daemon::materialize_finding_replay_guest_assets(
+            capture.deployment(),
+            &qemu,
+            &plugin,
+            &workspace,
+        )
+        .map_err(|error| backend_error(format!("finding guest assets are invalid: {error}")))?,
+    )?;
     let model = crucible::ReproductionArtifact::from_compact_binary(capture.model_reproduction())
         .map_err(|error| {
         backend_error(format!("finding model reproduction is invalid: {error}"))
@@ -69,30 +78,33 @@ pub(super) fn replay_exact_finding(
     closure
         .validate_for_schedule(model.scenario_form(), model.schedule())
         .map_err(|error| backend_error(format!("finding replay choices are invalid: {error}")))?;
-    let deployment = crate::cli_verify_serve::load_guarded_campaign_deployment(
-        cli.campaign_deployment.as_deref(),
-    )?;
     let recipe = capture.recipe();
     if deployment.resources.maximum_execution_quanta() < recipe.lifecycle_quantum_budget {
         return Err(backend_error(
             "local host deployment cannot admit captured replay budget",
         ));
     }
-    let resources = AttemptResourceLimits::new(
-        deployment.resources.maximum_vcpus(),
-        deployment.resources.maximum_resident_bytes(),
-        deployment.resources.maximum_disk_bytes(),
-        recipe.lifecycle_quantum_budget,
-    )
-    .map_err(|error| backend_error(format!("finding replay resources are invalid: {error}")))?;
     let lifecycle_objects = load_lifecycle_objects(&capture)?;
+
+    let base_lifecycle = lifecycle_config(
+        &qemu,
+        &plugin,
+        &guests,
+        &workspace.join("replay-owner"),
+        recipe,
+        Arc::clone(&lifecycle_objects),
+    )?;
+    let owner = owner
+        .with_imported_lifecycle(base_lifecycle)
+        .and_then(|owner| owner.with_imported_guest_assets(Arc::clone(&guests)))
+        .map_err(|error| backend_error(format!("finding replay recipe is invalid: {error}")))?;
 
     for (index, side) in capture.sides().iter().enumerate() {
         let mut lifecycle = lifecycle_config(
             &qemu,
             &plugin,
             &guests,
-            &private.path().join(format!("run-side-{index}")),
+            &workspace.join(format!("run-side-{index}")),
             recipe,
             Arc::clone(&lifecycle_objects),
         )?;
@@ -114,15 +126,25 @@ pub(super) fn replay_exact_finding(
             ));
         }
         let request = GuardedDefaultCampaignRunRequest::new(
-            model.scenario_form().clone(),
+            model
+                .scenario_form()
+                .try_clone_admitted()
+                .map_err(|error| {
+                    backend_error(format!("finding scenario copy admission failed: {error}"))
+                })?,
             model.seed(),
             env!("CARGO_PKG_VERSION"),
             build_id.clone(),
-            lifecycle,
-            deployment.host.clone(),
-            resources,
+            owner.clone(),
         )
-        .with_initial_replay(model.schedule().clone(), Some(closure.clone()))
+        .and_then(|request| request.with_guarded_lifecycle(lifecycle))
+        .map_err(|error| backend_error(format!("finding replay owner is invalid: {error}")))?
+        .with_initial_replay(
+            model.schedule().try_clone_admitted().map_err(|error| {
+                backend_error(format!("finding schedule copy admission failed: {error}"))
+            })?,
+            Some(closure.clone()),
+        )
         .with_discovery_stop(StopCondition::VirtualTimeOrExecutionQuanta {
             virtual_time_picoseconds: side.frontier().ticks,
             execution_quanta: side.completed_quanta(),

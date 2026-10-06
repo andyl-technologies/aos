@@ -1,6 +1,6 @@
 //! Checks the Crucible crate-root safe/unsafe fence.
 //!
-//! The crate table in RFC-0010 file 27 is the source of truth for which runtime
+//! The crate ownership table is the source of truth for which runtime
 //! crates forbid `unsafe` entirely and which crates are explicit unsafe
 //! boundaries. This test is the first `gate:harness-lint` shape check: adding a
 //! new `crucible-*` package or changing a crate root fence must update this
@@ -31,6 +31,12 @@ struct FenceSpec {
 const FENCE_SPECS: &[FenceSpec] = &[
     FenceSpec {
         package: "crucible-cas",
+        root: "src/lib.rs",
+        unsafe_boundary: false,
+        safe_wrapper_contract: &[],
+    },
+    FenceSpec {
+        package: "crucible-ram",
         root: "src/lib.rs",
         unsafe_boundary: false,
         safe_wrapper_contract: &[],

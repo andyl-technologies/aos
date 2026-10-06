@@ -630,6 +630,7 @@ fn map_terminal_evidence_snapshot_failure<E>(
 ) -> AttemptWorkerFailure<QemuTerminalEvidenceExecutionRunnerError<E>> {
     let class = match &error {
         SchedulerError::OperationalBoundary { class, .. } => Some(*class),
+        SchedulerError::Evaluation { .. } => Some(SchedulerOperationalFailureClass::Retryable),
         SchedulerError::Backend(_)
         | SchedulerError::BoundaryViolation { .. }
         | SchedulerError::ResourceLimit { .. }

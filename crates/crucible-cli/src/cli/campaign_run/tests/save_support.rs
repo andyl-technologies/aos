@@ -70,7 +70,7 @@ pub(super) fn capture_campaign_save(
         exact_root.clone(),
     ));
     let checkpoints = Arc::new(
-        ExactCheckpointStore::new(exact_backend, resources.maximum_disk_bytes())
+        open_transient_checkpoint_store(exact_backend, resources.maximum_disk_bytes(), &exact_root)
             .or_panic("exact checkpoint store"),
     );
     let scenario = save_plan.run_plan.scenario.scenario_form().clone();
@@ -87,11 +87,16 @@ pub(super) fn capture_campaign_save(
         65_529,
         65_529,
         16,
+        TEST_HOST_FILE_DESCRIPTORS,
+        TEST_HOST_SERVICE_TASKS,
+        TEST_HOST_SERVICE_FILE_DESCRIPTORS,
+        TEST_HOST_SERVICE_RESIDENT_BYTES,
+        TEST_WATCHER_SERVICE_RESIDENT_BYTES,
         1_024,
         Duration::from_secs(1),
     )
     .or_panic("fixture host configuration");
-    let request = GuardedDefaultCampaignRunRequest::new(
+    let request = GuardedDefaultCampaignRunRequest::new_component(
         scenario,
         seed,
         "campaign-save-reader-test-engine",
@@ -160,11 +165,16 @@ pub(super) fn assert_fixed_typed_choice_replay_closure(stop: &StopCondition) {
         65_527,
         65_527,
         16,
+        TEST_HOST_FILE_DESCRIPTORS,
+        TEST_HOST_SERVICE_TASKS,
+        TEST_HOST_SERVICE_FILE_DESCRIPTORS,
+        TEST_HOST_SERVICE_RESIDENT_BYTES,
+        TEST_WATCHER_SERVICE_RESIDENT_BYTES,
         1_024,
         Duration::from_secs(1),
     )
     .or_panic("typed replay closure host configuration");
-    let request = GuardedDefaultCampaignRunRequest::new(
+    let request = GuardedDefaultCampaignRunRequest::new_component(
         scenario.clone(),
         scenario.seed(),
         "campaign-typed-replay-test-engine",
@@ -422,3 +432,14 @@ pub(super) fn resume_plan_and_evidence_from_cli(
         resume_handle_evidence(&plan).or_panic("unchanged resume reader accepts campaign save");
     (plan, evidence)
 }
+
+// Fixture policy reserves an explicit finite descriptor ceiling independently of vCPU count.
+const TEST_HOST_FILE_DESCRIPTORS: u64 = 1_024;
+
+// Host-side pager workers and sockets have independent finite fixture entitlements.
+const TEST_HOST_SERVICE_TASKS: u64 = 4;
+const TEST_HOST_SERVICE_FILE_DESCRIPTORS: u64 = 32;
+
+// Operational services retain their own authored memory budgets outside QEMU.
+const TEST_HOST_SERVICE_RESIDENT_BYTES: u64 = 8 * 1024 * 1024;
+const TEST_WATCHER_SERVICE_RESIDENT_BYTES: u64 = 1024 * 1024;

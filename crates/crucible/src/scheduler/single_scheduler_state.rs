@@ -1,7 +1,7 @@
 //! Scheduler construction, World/device attachment, materialization, faults, and lifecycle.
 
 use super::*;
-use crate::IoEventKind;
+use crate::{EngineError, IoEventKind};
 
 impl SingleScheduler {
     /// Builds a scheduler from a finite generated liveness scenario.
@@ -1090,12 +1090,15 @@ impl SingleScheduler {
     /// Armed trigger timers are made visible to `Timer` leaves from the
     /// scheduler-owned [`TriggerActionState`], so a timer fires exactly at the
     /// virtual time produced by the `ArmTimer` action that armed it.
+    ///
+    /// # Errors
+    /// Returns the original predicate allocation refusal before firing actions.
     pub fn evaluate_event_graph<O>(
         &self,
         graph: &EventGraph,
         state: &mut EventGraphState,
         oracle: O,
-    ) -> EventFirings
+    ) -> Result<EventFirings, EngineError>
     where
         O: ConditionLeafOracle,
     {

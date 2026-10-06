@@ -3,7 +3,7 @@
 //! This module composes the post-spawn pieces into the scheduler-facing
 //! [`QemuNode`] wrapper after Linux descriptor setup and QMP negotiation have
 //! already completed. It wraps QMP in an exact-capture control adapter;
-//! runtime restore is accepted only from version-nine descriptors before assembly.
+//! runtime restore requires authenticated lazy RAM and sealed non-RAM inputs.
 
 #[cfg(unix)]
 use std::os::fd::BorrowedFd;
@@ -51,6 +51,31 @@ impl<S> QemuQmpMachineControlChannel for QemuQmpExactSnapshotControlChannel<S>
 where
     S: QmpTimeoutStream,
 {
+    fn set_host_operation_supervisor(
+        &mut self,
+        supervisor: crucible_linux_resource::host_supervision::HostOperationSupervisor,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.vmstate.set_host_operation_supervisor(supervisor);
+        Ok(())
+    }
+
+    #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+    fn probe_native_source_alias_for_test(
+        &mut self,
+        kind: crate::node::QemuTestNativeAliasKind,
+        descriptor: BorrowedFd<'_>,
+    ) -> Result<QemuNodeChannelError, QemuNodeChannelError> {
+        self.vmstate.probe_native_source_alias_for_test(kind, descriptor)
+    }
+
+    fn query_paused_cpu(
+        &mut self,
+        vcpu: u32,
+        generation: Option<u64>,
+    ) -> Result<crate::qmp::QmpPausedCpu, QemuNodeChannelError> {
+        self.vmstate.query_paused_cpu(vcpu, generation)
+    }
+
     fn is_paused_for_hot_fork_template(&mut self) -> Result<bool, QemuNodeChannelError> {
         self.vmstate.is_paused_for_hot_fork_template()
     }
@@ -80,20 +105,30 @@ where
         self.vmstate.capture_exact_checkpoint(request)
     }
 
+    fn prepare_exact_checkpoint_topology(
+        &mut self,
+        request: &crate::QmpCheckpointCaptureRequest,
+    ) -> Result<crate::QmpCheckpointTopology, QemuNodeChannelError> {
+        self.vmstate.prepare_exact_checkpoint_topology(request)
+    }
+
     fn commit_exact_checkpoint(
         &mut self,
         identity: crate::QmpCheckpointIdentity,
+        capture_generation: u64,
     ) -> Result<crate::QmpCheckpointEpochState, QemuNodeChannelError> {
-        self.vmstate.commit_exact_checkpoint(identity)
+        self.vmstate
+            .commit_exact_checkpoint(identity, capture_generation)
     }
 
     fn abort_exact_checkpoint(
         &mut self,
         identity: crate::QmpCheckpointIdentity,
+        capture_generation: u64,
         expected_committed: Option<crate::QmpCheckpointIdentity>,
     ) -> Result<crate::QmpCheckpointEpochState, QemuNodeChannelError> {
         self.vmstate
-            .abort_exact_checkpoint(identity, expected_committed)
+            .abort_exact_checkpoint(identity, capture_generation, expected_committed)
     }
 
     fn query_exact_checkpoint_epoch(
@@ -311,6 +346,34 @@ where
         &mut self,
     ) -> Result<crate::QmpHotForkPrivateRingState, QemuNodeChannelError> {
         self.vmstate.query_hot_fork_private_rings()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn install_hot_fork_child_ram(
+        &mut self,
+        names: &crate::qmp::QmpHotForkChildRamNames,
+        descriptors: crate::qmp::QmpHotForkChildRamDescriptors<'_>,
+        template: u64,
+        contract: u64,
+    ) -> Result<crate::qmp::QmpHotForkChildRamState, QemuNodeChannelError> {
+        self.vmstate
+            .install_hot_fork_child_ram(names, descriptors, template, contract)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn close_hot_fork_child_ram(
+        &mut self,
+        names: &crate::qmp::QmpHotForkChildRamNames,
+        generation: u64,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.vmstate.close_hot_fork_child_ram(names, generation)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn query_hot_fork_child_ram(
+        &mut self,
+    ) -> Result<crate::qmp::QmpHotForkChildRamState, QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_child_ram()
     }
 
     #[cfg(target_os = "linux")]
@@ -687,10 +750,10 @@ where
     ))
 }
 
-/// Restores a version-nine QEMU checkpoint, then builds a scheduler-facing node.
+/// Restores an authenticated lazy RAM checkpoint into a scheduler-facing node.
 ///
 /// This is the checkpoint realization factory path: callers must provide exact
-/// version-nine descriptors and matching admission proof before the QMP
+/// immutable metadata and non-RAM descriptors with matching admission before the QMP
 /// channel is reduced to exact-snapshot capture and shutdown control. Baked
 /// genesis and replay probes remain distinct host-side admissions, but both
 /// enter QEMU through the same authenticated descriptor restore. Generic backend
@@ -717,7 +780,7 @@ where
     build_qemu_node_from_restored_checkpoint_inner(child, setup, qmp, restore, runtime, true)
 }
 
-/// Restores a version-nine QEMU checkpoint into a node that remains paused.
+/// Restores an authenticated lazy RAM checkpoint into a node that remains paused.
 ///
 /// This is the power-off realization path. It performs the complete restore
 /// handshake, including a stopped-state control wake that acknowledges
@@ -784,6 +847,9 @@ where
         crash_detector,
         mut host_io_runtime,
     } = runtime;
+    if let Some(supervisor) = host_io_runtime.host_operation_supervisor() {
+        qmp.set_host_operation_supervisor(supervisor.clone());
+    }
     let QemuNodeRestorePlan {
         checkpoint,
         host_io_checkpoint,
@@ -890,23 +956,11 @@ where
             .arm_vmstate_restore_ceiling(restore_ceiling)
             .map_err(|source| QemuNodeFactoryError::VmStateRestoreCeiling { source })?;
         {
-            if exact_checkpoint.request.layers().len() != exact_checkpoint.descriptors.ram.len() {
-                return Err(QemuNodeFactoryError::VmStateRestore {
-                    source: QemuNodeChannelError::new(
-                        "restore exact QEMU checkpoint",
-                        "RAM layer descriptor count differs from the restore request",
-                    ),
-                });
-            }
-            for (layer, descriptor) in exact_checkpoint
-                .request
-                .layers()
-                .iter()
-                .zip(exact_checkpoint.descriptors.ram.iter().copied())
-            {
-                qmp.install_exact_checkpoint_descriptor(layer.descriptor(), descriptor)
-                    .map_err(|source| QemuNodeFactoryError::VmStateRestore { source })?;
-            }
+            qmp.install_exact_checkpoint_descriptor(
+                exact_checkpoint.request.root_descriptor(),
+                exact_checkpoint.descriptors.root,
+            )
+            .map_err(|source| QemuNodeFactoryError::VmStateRestore { source })?;
             qmp.install_exact_checkpoint_descriptor(
                 exact_checkpoint.request.device_descriptor(),
                 exact_checkpoint.descriptors.device,

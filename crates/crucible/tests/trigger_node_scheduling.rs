@@ -76,6 +76,7 @@ fn evaluate_genesis(graph: &EventGraph, scheduler: &SingleScheduler) -> crucible
         NoLeaves,
     );
     pass.evaluate_event_graph(graph, &mut state)
+        .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
 }
 
 #[test]

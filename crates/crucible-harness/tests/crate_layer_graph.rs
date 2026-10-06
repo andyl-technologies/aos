@@ -1,6 +1,6 @@
 //! Checks the Crucible runtime crate dependency graph.
 //!
-//! The L0-L4 crate map in RFC-0010 file 27 is a phase-ordering contract: a
+//! The L0-L4 crate map is a dependency-ordering contract: a
 //! runtime crate may depend only on crates in its own layer or lower layers,
 //! except for the host-side QEMU adapter edge into the engine crate. The two
 //! in-VM L2 crates may depend directly only on L1 crates.
@@ -37,6 +37,11 @@ const RUNTIME_SPECS: &[LayerSpec] = &[
     },
     LayerSpec {
         package: "crucible-protocol",
+        layer: 1,
+        in_vm: false,
+    },
+    LayerSpec {
+        package: "crucible-ram",
         layer: 1,
         in_vm: false,
     },
@@ -194,6 +199,10 @@ fn layer_graph_rules_reject_upward_edges_in_vm_l0_edges_and_cycles() {
         BTreeSet::from(["crucible".to_string()]),
     );
     graph.insert(
+        "crucible-ram".to_string(),
+        BTreeSet::from(["crucible-qemu".to_string()]),
+    );
+    graph.insert(
         "crucible-qemu-plugin".to_string(),
         BTreeSet::from(["crucible-sim".to_string()]),
     );
@@ -219,6 +228,12 @@ fn layer_graph_rules_reject_upward_edges_in_vm_l0_edges_and_cycles() {
             .iter()
             .any(|failure| failure.contains("upward dependency `crucible-sim`")),
         "upward dependency should be rejected: {failures:?}"
+    );
+    assert!(
+        failures
+            .iter()
+            .any(|failure| failure.contains("upward dependency `crucible-ram`")),
+        "portable RAM may not acquire a QEMU implementation dependency: {failures:?}"
     );
     assert!(
         failures

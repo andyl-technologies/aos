@@ -37,7 +37,7 @@ The untagged-writer review found these independently versioned contracts:
 | Native failure-triage replay evidence | `crucible::model::failure::replay_evidence` checks its version-3 binary magic; the daemon independently checks payload schema 3 inside the campaign triage record before decoding. | `crucible.execution.failure-triage-replay-evidence` |
 | QEMU fuzz corpus index and descriptor | `crucible-cli::cli::run_save::qemu_live::fuzz::corpus` separately reads and writes `live-fuzz-corpus.json` and immutable descriptor objects, each with `CORPUS_SCHEMA = 1`. | `crucible.cli.live-fuzz-corpus-index`, `crucible.cli.live-fuzz-corpus-descriptor` |
 | Guest campaign runtime configuration | `modules/services/crucible-campaign.nix` emits `/etc/crucible/campaign-runtime.env` with `aos.crucible.campaign-runtime.v1`; the phase 1 and phase 9 license gates consume this file and its configuration identity. | `aos.crucible.campaign-runtime` |
-| Control-plane RPC | `crucible-api::rpc_abi` encodes the `crucible.rpc/<message-name>` wire vocabulary at `RPC_PROTOCOL_MAJOR = 8`; the client wire model uses that encoder. | `crucible.api.rpc` |
+| Control-plane RPC | `crucible-api::rpc_abi` encodes the `crucible.rpc/<message-name>` wire vocabulary at `RPC_PROTOCOL_MAJOR = 9`; the client wire model uses that encoder. | `crucible.api.rpc` |
 | Crucible-owned QEMU migration sections | The QEMU patch declares 29 production `VMStateDescription` sections or subsections with distinct `.name` and `.version_id` values. The integrated device-continuation change adds `serial/crucible-timing`, `virtio-blk/crucible-backend-wce`, and `virtio/crucible-start-on-kick`, each at version 1. The CMOS `mc146818rtc/crucible-clock` subsection is version 5 to preserve its exact picosecond phase. QEMU's migration loader matches these versions inside the opaque VMState artifact. | `crucible.qemu.vmstate.*` rows |
 | Hot-fork template resource stage | The patched QEMU template reporter emits `CrucibleHotForkTemplateResourceStageState.schema-version = 13`; `crucible-qemu::qmp::hot_fork::template::parse` independently checks that nested version while decoding the version-29 template response. | `crucible.qemu.hot-fork.template-resource-stage` |
 | Guest debug transcript | `crucible-cli::cli::triage_debug::debug_terminal` writes a standalone `CRGT` version-1 recording when `--record-transcript` is selected. Its record bodies use the separately registered guest-introspection frame codec. | `crucible.cli.guest-transcript` |
@@ -170,7 +170,7 @@ such as `crucible-network-probe-v1` are test fixture payloads, not standalone
 decoded records. The hand-coded guest doorbell frame in
 `phase5-cli-fuzz-guest.nix` uses the registered white-box doorbell protocol.
 `_nginx-curl-http-200-guest.nix` adds service configuration and init scripts,
-not a Crucible schema. `crucible.qemu.trace-fingerprint.v7` is emitted by the
+not a Crucible schema. `crucible.qemu.trace-fingerprint.v8` is emitted by the
 GPL trace plugin for phase 0/2 test evidence; the Nix gates consume its JSONL
 output, but it is not a production guest input or persisted campaign format.
 

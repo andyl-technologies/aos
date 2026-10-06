@@ -499,7 +499,30 @@ fn executor_capability_service(
         BTreeSet::from([String::from("deterministic-tcg")]),
         BTreeSet::from([ExecutorMaterializationCapability::ThinReplay]),
         2,
-        resources,
+        crucible_campaign::ExecutorResourceBounds::new(
+            crucible_campaign::ExecutorHostResources {
+                resident_peak_bytes: 4194304,
+                backing_peak_bytes: 2097152,
+                metadata_bytes: 256,
+                staging_bytes: 256,
+                paging_io_slots: 2,
+                cpu_slots: 8,
+                task_slots: 130,
+                file_descriptors: 256,
+            },
+            crucible_campaign::ExecutorHostResources {
+                resident_peak_bytes: 2097152,
+                backing_peak_bytes: 1048576,
+                metadata_bytes: 128,
+                staging_bytes: 128,
+                paging_io_slots: 1,
+                cpu_slots: 4,
+                task_slots: 65,
+                file_descriptors: 128,
+            },
+            resources,
+        )
+        .expect("authored complete fixture resource bounds"),
         BTreeSet::from([CampaignHash::derive("test", store_label)]),
     )
     .expect("executor capabilities");
@@ -509,9 +532,15 @@ fn executor_capability_service(
         MemoryAssignmentLedger::default(),
         AllowAllAttemptAdmission,
         epoch,
-        ExecutorCapacity::new(2, 4, 1024 * 1024, 1024 * 1024, 10_000).expect("executor capacity"),
+        ExecutorCapacity::new(2, 8, 4 * 1024 * 1024, 2 * 1024 * 1024, 10_000)
+            .expect("executor capacity"),
     );
-    LocalExecutorCapabilityService::new(supervisor, description).expect("capability service")
+    crate::executor_capability::test_support::capability_service(
+        supervisor,
+        description,
+        1024 * 1024,
+    )
+    .expect("capability service")
 }
 
 fn executor_pair(lineage: &CampaignLineage) -> (UnixStream, thread::JoinHandle<()>) {
@@ -755,6 +784,11 @@ fn packaged_executor_pool_serves_and_joins_two_campaign_runtimes() {
         metadata.uid().checked_add(1).expect("child user ID"),
         metadata.gid().checked_add(1).expect("child group ID"),
         32,
+        TEST_HOST_FILE_DESCRIPTORS,
+        TEST_HOST_SERVICE_TASKS,
+        TEST_HOST_SERVICE_FILE_DESCRIPTORS,
+        TEST_HOST_SERVICE_RESIDENT_BYTES,
+        TEST_WATCHER_SERVICE_RESIDENT_BYTES,
         1024,
         Duration::from_secs(1),
     )
@@ -769,8 +803,9 @@ fn packaged_executor_pool_serves_and_joins_two_campaign_runtimes() {
         directory.path().join("executor-ledger"),
         1024 * 1024,
         DaemonEpoch::from_bytes([0x61; 16]).expect("daemon epoch"),
-        ExecutorCapacity::new(2, 2, 512 * 1024 * 1024, 1024 * 1024 * 1024, 50_000)
+        ExecutorCapacity::new(2, 10, 2560 * 1024 * 1024, 5 * 1024 * 1024 * 1024, 250_000)
             .expect("executor capacity"),
+        fixture_host_operational_capacity(),
         2,
         "x86_64",
         "deterministic-tcg-v1",
@@ -778,7 +813,54 @@ fn packaged_executor_pool_serves_and_joins_two_campaign_runtimes() {
         ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state"),
         host,
     )
-    .expect("packaged executor configuration");
+    .expect("packaged executor configuration")
+    .with_host_operation_budgets(crucible_api::host_operational::HostOperationBudgets {
+        classes: [crucible_api::host_operational::HostOperationBudget::finite(Duration::from_secs(
+            300,
+        )); crucible_api::host_operational::HostOperationClass::ALL.len()],
+    })
+    .expect("explicit finite bootstrap fixture roster for every host operation")
+    .with_ram_catalog(fixture_ram_catalog_config(&directory))
+    .expect("authored retained RAM catalog policy")
+    .with_operational_registry_resources(crucible_api::host_operational::HostResourceVector {
+        resident_peak_bytes: 128 * 1024 * 1024,
+        backing_peak_bytes: 16 * 1024 * 1024,
+        metadata_bytes: 64 * 1024 * 1024,
+        staging_bytes: 8 * 1024 * 1024,
+        paging_io_slots: 1,
+        cpu_slots: 1,
+        task_slots: 1,
+        file_descriptors: 128,
+    })
+    .expect("explicit independently charged operator registry service")
+    .with_operational_registry_quota(31000, 65536)
+    .expect("explicit distinct component registry project and inode entitlement")
+    .with_assignment_resources(
+        crucible_api::host_operational::HostResourceVector {
+            resident_peak_bytes: 513 * 1024 * 1024,
+            backing_peak_bytes: 1024 * 1024 * 1024,
+            metadata_bytes: 128 * 1024 * 1024,
+            staging_bytes: 16 * 1024 * 1024,
+            paging_io_slots: 1,
+            cpu_slots: 2,
+            task_slots: 37,
+            file_descriptors: 1056,
+        },
+        AttemptResourceLimits::new(2, 512 * 1024 * 1024, 1024 * 1024 * 1024, 50_000)
+            .expect("original assignment request limits"),
+    )
+    .expect("authored assignment resource ceiling")
+    .with_retained_template_resources(crucible_api::host_operational::HostResourceVector {
+        resident_peak_bytes: 513 * 1024 * 1024,
+        backing_peak_bytes: 1024 * 1024 * 1024,
+        metadata_bytes: 128 * 1024 * 1024,
+        staging_bytes: 16 * 1024 * 1024,
+        paging_io_slots: 1,
+        cpu_slots: 2,
+        task_slots: 37,
+        file_descriptors: 1056,
+    })
+    .expect("independent full-world replay Service ceiling");
     let packaged = crate::packaged_qemu_executor::compose_packaged_qemu_executor_for_scenarios(
         crate::packaged_qemu_executor::PackagedQemuExecutorStorage::new(
             Arc::clone(&prepared.repository),
@@ -2052,3 +2134,57 @@ fn managed_store_maintenance_round_robins_and_resumes_exact_s3_cursors() {
 }
 
 mod deployment_contracts;
+
+// These are explicit operational test entitlements, independent of guest vCPUs
+// and per-cgroup task limits; production deployments must supply their own.
+fn fixture_host_operational_capacity() -> crate::HostOperationalCapacity {
+    const PAGING_IO_SLOTS: u64 = 16;
+    const HOST_TASK_SLOTS: u64 = 1024;
+    const HOST_FILE_DESCRIPTORS: u64 = 16_384;
+    const HOST_METADATA_BYTES: u64 = 768 * 1024 * 1024;
+    const HOST_STAGING_BYTES: u64 = 128 * 1024 * 1024;
+    crate::HostOperationalCapacity::new(
+        PAGING_IO_SLOTS,
+        HOST_TASK_SLOTS,
+        HOST_FILE_DESCRIPTORS,
+        HOST_METADATA_BYTES,
+        HOST_STAGING_BYTES,
+    )
+    .expect("explicit finite operational fixture capacity")
+}
+
+// Fixture policy reserves an explicit finite descriptor ceiling independently of vCPU count.
+#[cfg(test)]
+const TEST_HOST_FILE_DESCRIPTORS: u64 = 1_024;
+
+// Host-side pager workers and sockets have independent finite fixture entitlements.
+#[cfg(test)]
+const TEST_HOST_SERVICE_TASKS: u64 = 4;
+#[cfg(test)]
+const TEST_HOST_SERVICE_FILE_DESCRIPTORS: u64 = 32;
+
+// Operational services retain their own authored memory budgets outside QEMU.
+#[cfg(test)]
+const TEST_HOST_SERVICE_RESIDENT_BYTES: u64 = 8 * 1024 * 1024;
+#[cfg(test)]
+const TEST_WATCHER_SERVICE_RESIDENT_BYTES: u64 = 1024 * 1024;
+
+fn fixture_ram_catalog_config(directory: &tempfile::TempDir) -> crate::PackagedRamCatalogConfig {
+    crate::PackagedRamCatalogConfig::new(
+        directory.path().join("ram-catalogs"),
+        40000,
+        262144,
+        crucible_api::host_operational::HostResourceVector {
+            resident_peak_bytes: 128 * 1024 * 1024,
+            backing_peak_bytes: 512 * 1024 * 1024,
+            metadata_bytes: 64 * 1024 * 1024,
+            staging_bytes: 8 * 1024 * 1024,
+            paging_io_slots: 1,
+            cpu_slots: 1,
+            task_slots: 1,
+            file_descriptors: 128,
+        },
+        8 * 1024 * 1024,
+    )
+    .expect("explicit component catalog service and independent physical quota")
+}

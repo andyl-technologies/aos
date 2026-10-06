@@ -8,6 +8,9 @@ publish = false
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+native-conformance = []
+
 [lints]
 workspace = true
 

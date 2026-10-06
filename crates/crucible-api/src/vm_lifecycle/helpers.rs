@@ -1,7 +1,6 @@
 //! Private construction and event-log helpers for production VM lifecycles.
 
 use super::*;
-use std::fmt::Write as _;
 use std::io::Read;
 
 pub(super) struct ExactCheckpointTargetManifestBasis<'a> {
@@ -65,9 +64,6 @@ pub(super) fn validate_exact_checkpoint_target(
         .validate()
         .map_err(|error| loop_factory_error(error.to_string()))?;
     validate_exact_checkpoint_artifact(&exact_ram.device_artifact, "device state")?;
-    for layer in &exact_ram.layers {
-        validate_exact_checkpoint_artifact(&layer.artifact, "RAM checkpoint layer")?;
-    }
     let observed = exact_ram_checkpoint_target_manifest_identity(basis, exact_ram);
     if observed != manifest_identity {
         return Err(loop_factory_error(format!(
@@ -83,47 +79,20 @@ pub(super) fn exact_ram_checkpoint_target_manifest_identity(
     checkpoint: &ProductionExactRamCheckpoint,
 ) -> ContentHash {
     let target = exact_checkpoint_target_manifest_identity(basis);
-    let mut material = format!(
-        "target={}\nparent_closure={}\ndevice_sha256={}",
+    let material = format!(
+        "target={}\ndevice_sha256={}\nram_root_object={}\nram_logical_root={}\nram_checkpoint={}\nram_target={}\nram_frontier={}",
         target.to_hex(),
-        checkpoint
-            .parent_closure
-            .map_or_else(String::new, ContentHash::to_hex),
         checkpoint.device_content_sha256.to_hex(),
+        checkpoint.ram.object_id().encode(),
+        ContentHash {
+            bytes: *checkpoint.ram.logical_digest().as_bytes()
+        }
+        .to_hex(),
+        checkpoint.identity.checkpoint.to_hex(),
+        checkpoint.identity.target.to_hex(),
+        checkpoint.identity.frontier.to_hex(),
     );
-    for (index, layer) in checkpoint.layers.iter().enumerate() {
-        let parent = layer
-            .parent
-            .map_or_else(String::new, exact_checkpoint_identity_material);
-        let _ = write!(
-            material,
-            "\nlayer.{index}.kind={}\nlayer.{index}.checkpoint={}\nlayer.{index}.target={}\nlayer.{index}.frontier={}\nlayer.{index}.parent={}\nlayer.{index}.topology={}\nlayer.{index}.regions={}\nlayer.{index}.records={}\nlayer.{index}.sha256={}\nlayer.{index}.artifact={}\nlayer.{index}.length={}",
-            match layer.kind {
-                ProductionExactRamKind::Direct => "direct",
-                ProductionExactRamKind::Delta => "delta",
-            },
-            layer.identity.checkpoint.to_hex(),
-            layer.identity.target.to_hex(),
-            layer.identity.frontier.to_hex(),
-            parent,
-            layer.topology.to_hex(),
-            layer.ram_regions,
-            layer.ram_records,
-            layer.content_sha256.to_hex(),
-            layer.artifact.identity.to_hex(),
-            layer.artifact.length,
-        );
-    }
-    ContentHash::from_canonical_material("crucible.production-vm-exact-checkpoint.v2", &material)
-}
-
-fn exact_checkpoint_identity_material(identity: ProductionExactCheckpointIdentity) -> String {
-    format!(
-        "{}/{}/{}",
-        identity.checkpoint.to_hex(),
-        identity.target.to_hex(),
-        identity.frontier.to_hex(),
-    )
+    ContentHash::from_canonical_material("crucible.production-vm-exact-checkpoint.v3", &material)
 }
 
 pub(super) fn exact_checkpoint_target_manifest_identity(
@@ -141,7 +110,7 @@ pub(super) fn exact_checkpoint_target_manifest_identity(
         device_state,
     } = basis;
     ContentHash::from_canonical_material(
-        "crucible.production-vm-exact-checkpoint.v3",
+        "crucible.production-vm-exact-checkpoint.v4",
         &format!(
             "configuration={}\nimmutable_backing={}\nnode={}\ncounter={}\nscheduler_time={}\nsnapshot={}\nfault={}\noverlay={}\ndevice_state={}",
             configuration.to_hex(),

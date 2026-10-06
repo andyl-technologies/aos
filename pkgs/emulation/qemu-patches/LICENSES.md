@@ -19,6 +19,12 @@ The atomic integration patch creates these QEMU source files:
 | `include/system/crucible-sim-ipi.h` | GPL-2.0-or-later | QEMU default |
 | `accel/tcg/tcg-accel-ops-preemption.c` | GPL-2.0-or-later | QEMU default |
 | `include/system/crucible-sim-preemption.h` | GPL-2.0-or-later | QEMU default |
+| `include/qemu/crucible-paged-ram.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-paged-ram.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/system/crucible-ram-quiescence.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-ram-quiescence.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/system/crucible-ram-fork.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-ram-fork.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `include/qemu/crucible-fault.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `include/qemu/crucible-process.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `include/qemu/crucible-hot-fork-child.h` | GPL-2.0-or-later | Explicit SPDX identifier |
@@ -56,6 +62,7 @@ The atomic integration patch creates these QEMU source files:
 | `tests/unit/test-crucible-child-file-refusal.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-aio-fork-custody.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-procfd-flags.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-ram-arena.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-net-output-stop.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-net-stop-chain.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-stop-context.py` | GPL-2.0-or-later | Explicit SPDX identifier |
@@ -136,6 +143,8 @@ The atomic integration patch creates these QEMU source files:
 | `tests/unit/test-crucible-serial-kbd-timer-wide-clock.c` | MIT | Explicit SPDX identifier; literal UART and keyboard timer fixtures preserve their MIT scope |
 | `tests/unit/test-crucible-acpi-pm-wide-clock.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-ich9-aux-wide-clock.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/tcg/plugins/crucible-resident-ram.h` | GPL-2.0-or-later | Explicit SPDX identifier; bounded resident logical-RAM component fixture authority |
+| `tests/tcg/plugins/crucible-resident-ram-observer.c` | GPL-2.0-or-later | Explicit SPDX identifier; resident logical-RAM startup fixture without paging qualification |
 
 The separately built Rust `crucible-qemu-plugin` and C
 `crucible-qemu-trace-plugin` carry explicit GPL-2.0-only notices. The generated

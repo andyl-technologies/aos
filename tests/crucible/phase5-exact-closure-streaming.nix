@@ -114,9 +114,11 @@ in
             merkle::tests::incomplete_and_inconsistent_nodes_fail_closed
 
           grep -Fxq PASS ${checkpointDeltaFlight}/result
-          grep -Fxq 'direct_delta_reconstruction_equal=true' \
+          grep -Fxq 'managed_lazy_restore_published_ram_root_identity=true' \
             ${checkpointDeltaFlight}/result
-          grep -Fxq 'checkpoint_restore_equal=true' \
+          grep -Fxq 'managed_lazy_restore_first_quantum_identity=true' \
+            ${checkpointDeltaFlight}/result
+          grep -Fxq 'managed_lazy_restore_cleanup_before_discharge=true' \
             ${checkpointDeltaFlight}/result
 
           mkdir -p "$out"
@@ -125,7 +127,7 @@ in
           check=${attrPath}
           gate=gate:exact-closure-streaming
           tasks=${builtins.concatStringsSep "," taskIds}
-          live_direct_delta_equivalence=true
+          live_paged_restore_first_quantum_identity=true
           authenticated_file_stream=true
           chunked_sparse_zero_extents_recreated=true
           authenticated_manifest_inventory=true

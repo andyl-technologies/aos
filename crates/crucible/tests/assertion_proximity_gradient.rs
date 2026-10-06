@@ -100,7 +100,9 @@ fn online_report(
                 log[..=index].to_vec(),
             )
             .expect("online proximity prefix should validate");
-            evaluator.observe_prefix(&prefix, &mut oracle);
+            evaluator
+                .observe_prefix(&prefix, &mut oracle)
+                .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
         }
     }
     let terminal = if log.is_empty() {
@@ -109,7 +111,9 @@ fn online_report(
         crucible::test_support::condition_prefix_from_scheduler_entries_for_test(log.to_vec())
             .expect("terminal proximity prefix should validate")
     };
-    evaluator.finalize_prefix(&terminal, &mut oracle)
+    evaluator
+        .finalize_prefix(&terminal, &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"))
 }
 
 fn proximity<'a>(

@@ -5,6 +5,14 @@ use super::*;
 /// Typed errors returned by the minimal QMP client.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum QmpError {
+    /// Shared host supervision expired, canceled, or lost operational authority.
+    #[error("{operation} host supervision failed: {message}")]
+    OperationalSupervision {
+        /// The host control operation whose guard failed.
+        operation: &'static str,
+        /// The exact operational failure, excluded from guest outcomes.
+        message: String,
+    },
     /// A descriptor name is outside the typed Crucible QMP grammar.
     #[error("invalid QMP descriptor name of {length} bytes")]
     InvalidDescriptorName {
@@ -186,7 +194,7 @@ pub enum QmpError {
 }
 
 impl QmpError {
-    pub(super) fn from_io(operation: &'static str, error: io::Error) -> Self {
+    pub(crate) fn from_io(operation: &'static str, error: io::Error) -> Self {
         Self::Io {
             operation,
             kind: error.kind(),

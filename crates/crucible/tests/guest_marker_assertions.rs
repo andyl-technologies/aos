@@ -189,56 +189,60 @@ fn guest_marker_assertions_fold_into_unified_report() {
     let mut oracle = BlackBoxHostOracle;
     let ack = ObservableEvent::network_delivered(time(8), None, b"ack".to_vec());
 
-    evaluator.observe_prefix(
-        &observable_prefix(
-            8,
-            vec![
-                ack.clone(),
-                guest_marker(
-                    8,
-                    "guest",
-                    "guest-always",
-                    GuestAssertionKind::Always,
-                    true,
-                    true,
-                ),
-                guest_marker(
-                    8,
-                    "guest",
-                    "guest-sometimes",
-                    GuestAssertionKind::Sometimes,
-                    true,
-                    true,
-                ),
-                guest_marker(
-                    8,
-                    "guest",
-                    "guest-reachable-warn",
-                    GuestAssertionKind::Reachable,
-                    false,
-                    false,
-                ),
-                guest_marker(
-                    8,
-                    "guest",
-                    "guest-reachable-fail",
-                    GuestAssertionKind::Reachable,
-                    false,
-                    true,
-                ),
-                guest_marker(
-                    8,
-                    "guest",
-                    "guest-unreachable",
-                    GuestAssertionKind::Unreachable,
-                    true,
-                    true,
-                ),
-            ],
-        ),
-        &mut oracle,
-    );
-    let report = evaluator.finalize_prefix(&observable_prefix(12, vec![ack]), &mut oracle);
+    evaluator
+        .observe_prefix(
+            &observable_prefix(
+                8,
+                vec![
+                    ack.clone(),
+                    guest_marker(
+                        8,
+                        "guest",
+                        "guest-always",
+                        GuestAssertionKind::Always,
+                        true,
+                        true,
+                    ),
+                    guest_marker(
+                        8,
+                        "guest",
+                        "guest-sometimes",
+                        GuestAssertionKind::Sometimes,
+                        true,
+                        true,
+                    ),
+                    guest_marker(
+                        8,
+                        "guest",
+                        "guest-reachable-warn",
+                        GuestAssertionKind::Reachable,
+                        false,
+                        false,
+                    ),
+                    guest_marker(
+                        8,
+                        "guest",
+                        "guest-reachable-fail",
+                        GuestAssertionKind::Reachable,
+                        false,
+                        true,
+                    ),
+                    guest_marker(
+                        8,
+                        "guest",
+                        "guest-unreachable",
+                        GuestAssertionKind::Unreachable,
+                        true,
+                        true,
+                    ),
+                ],
+            ),
+            &mut oracle,
+        )
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    let report = evaluator
+        .finalize_prefix(&observable_prefix(12, vec![ack]), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     assert!(report.verdict().is_failed());
     assert_outcome(
@@ -317,7 +321,9 @@ fn catalog_declared_guest_markers_finalize_without_emitted_events() {
         ]);
     let mut oracle = BlackBoxHostOracle;
 
-    let report = evaluator.finalize_prefix(&observable_prefix(99, Vec::new()), &mut oracle);
+    let report = evaluator
+        .finalize_prefix(&observable_prefix(99, Vec::new()), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     assert!(report.verdict().is_failed());
     assert_outcome(
@@ -399,28 +405,38 @@ fn guest_marker_predicates_work_in_all_five_property_quantifiers() {
         HostAssertionEvaluator::new(&properties).with_world_white_box_policies(&world);
     let mut oracle = BlackBoxHostOracle;
 
-    evaluator.observe_prefix(&observable_prefix(1, Vec::new()), &mut oracle);
-    evaluator.observe_prefix(&observable_prefix(10, vec![trigger.clone()]), &mut oracle);
-    evaluator.observe_prefix(
-        &observable_prefix(12, vec![trigger.clone(), sometimes.clone(), done.clone()]),
-        &mut oracle,
-    );
-    evaluator.observe_prefix(
-        &observable_prefix(
-            15,
-            vec![
-                trigger.clone(),
-                sometimes.clone(),
-                done.clone(),
-                coverage.clone(),
-            ],
-        ),
-        &mut oracle,
-    );
-    let report = evaluator.finalize_prefix(
-        &observable_prefix(20, vec![trigger, sometimes, done, coverage, quiesced]),
-        &mut oracle,
-    );
+    evaluator
+        .observe_prefix(&observable_prefix(1, Vec::new()), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    evaluator
+        .observe_prefix(&observable_prefix(10, vec![trigger.clone()]), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    evaluator
+        .observe_prefix(
+            &observable_prefix(12, vec![trigger.clone(), sometimes.clone(), done.clone()]),
+            &mut oracle,
+        )
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    evaluator
+        .observe_prefix(
+            &observable_prefix(
+                15,
+                vec![
+                    trigger.clone(),
+                    sometimes.clone(),
+                    done.clone(),
+                    coverage.clone(),
+                ],
+            ),
+            &mut oracle,
+        )
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    let report = evaluator
+        .finalize_prefix(
+            &observable_prefix(20, vec![trigger, sometimes, done, coverage, quiesced]),
+            &mut oracle,
+        )
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     assert_eq!(report.verdict(), &AssertionRunVerdict::Passed);
     assert_outcome(
@@ -477,7 +493,9 @@ fn assertion_markers_do_not_fire_guest_marker_triggers() {
         .with_world_white_box_policies(&world);
     let mut state = EventGraphState::new();
 
-    let firings = pass.evaluate_event_graph(&graph, &mut state);
+    let firings = pass
+        .evaluate_event_graph(&graph, &mut state)
+        .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"));
 
     assert!(firings.is_empty());
 }
@@ -516,9 +534,15 @@ fn terminal_marker_reasons_use_current_payload_details() {
         ),
     );
 
-    evaluator.observe_prefix(&observable_prefix(5, vec![first.clone()]), &mut oracle);
-    evaluator.observe_prefix(&observable_prefix(6, vec![first, second]), &mut oracle);
-    let report = evaluator.finalize_prefix(&observable_prefix(7, Vec::new()), &mut oracle);
+    evaluator
+        .observe_prefix(&observable_prefix(5, vec![first.clone()]), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    evaluator
+        .observe_prefix(&observable_prefix(6, vec![first, second]), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    let report = evaluator
+        .finalize_prefix(&observable_prefix(7, Vec::new()), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
     let outcome = outcome(report.outcomes(), "always-current-details");
 
     assert_eq!(outcome.kind, HostAssertionOutcomeKind::Violated);
@@ -561,9 +585,15 @@ fn terminal_marker_outcome_ignores_later_payload_updates() {
         ),
     );
 
-    evaluator.observe_prefix(&observable_prefix(5, vec![terminal]), &mut oracle);
-    evaluator.observe_prefix(&observable_prefix(6, vec![later]), &mut oracle);
-    let report = evaluator.finalize_prefix(&observable_prefix(7, Vec::new()), &mut oracle);
+    evaluator
+        .observe_prefix(&observable_prefix(5, vec![terminal]), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    evaluator
+        .observe_prefix(&observable_prefix(6, vec![later]), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    let report = evaluator
+        .finalize_prefix(&observable_prefix(7, Vec::new()), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
     let outcome = outcome(report.outcomes(), "immutable-terminal");
 
     assert_eq!(outcome.kind, HostAssertionOutcomeKind::Violated);
@@ -604,8 +634,12 @@ fn guest_marker_catalog_kind_mismatch_is_reported() {
         ),
     );
 
-    evaluator.observe_prefix(&observable_prefix(9, vec![emitted]), &mut oracle);
-    let report = evaluator.finalize_prefix(&observable_prefix(10, Vec::new()), &mut oracle);
+    evaluator
+        .observe_prefix(&observable_prefix(9, vec![emitted]), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    let report = evaluator
+        .finalize_prefix(&observable_prefix(10, Vec::new()), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
     let outcome = outcome(report.outcomes(), "catalog-kind");
 
     assert!(report.verdict().is_failed());
@@ -639,24 +673,28 @@ fn guest_marker_assertions_ignore_disabled_white_box_nodes() {
     let mut oracle = BlackBoxHostOracle;
     let ack = ObservableEvent::network_delivered(time(8), None, b"ack".to_vec());
 
-    evaluator.observe_prefix(
-        &observable_prefix(
-            8,
-            vec![
-                ack.clone(),
-                guest_marker(
-                    8,
-                    "blackbox",
-                    "disabled-node-marker",
-                    GuestAssertionKind::Unreachable,
-                    true,
-                    true,
-                ),
-            ],
-        ),
-        &mut oracle,
-    );
-    let report = evaluator.finalize_prefix(&observable_prefix(12, vec![ack]), &mut oracle);
+    evaluator
+        .observe_prefix(
+            &observable_prefix(
+                8,
+                vec![
+                    ack.clone(),
+                    guest_marker(
+                        8,
+                        "blackbox",
+                        "disabled-node-marker",
+                        GuestAssertionKind::Unreachable,
+                        true,
+                        true,
+                    ),
+                ],
+            ),
+            &mut oracle,
+        )
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    let report = evaluator
+        .finalize_prefix(&observable_prefix(12, vec![ack]), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     assert_eq!(report.verdict(), &AssertionRunVerdict::Passed);
     assert_outcome(

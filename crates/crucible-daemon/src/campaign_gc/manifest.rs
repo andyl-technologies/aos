@@ -33,7 +33,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::io::{self, Read, Write};
 
-use crucible_campaign::{CampaignHash, MAX_CAMPAIGN_CLOSURE_OBJECTS};
+use crucible_campaign::CampaignHash;
 use crucible_cas::content_store::ContentId;
 use thiserror::Error;
 
@@ -50,9 +50,9 @@ const MAX_CONTENT_ID_BYTES: usize = 128;
 
 /// Maximum number of roots or physical placements in one local manifest.
 ///
-/// This matches the repository's complete-closure work bound. Implementations
-/// reject before retaining an additional entry once this bound is reached.
-pub const MAX_CAMPAIGN_GC_MANIFEST_ENTRIES: usize = MAX_CAMPAIGN_CLOSURE_OBJECTS;
+/// RAM graph traversal has a separate, larger work bound. Physical deletion
+/// proceeds in batches so retained planning memory does not scale with RAM.
+pub const MAX_CAMPAIGN_GC_MANIFEST_ENTRIES: usize = 65_536;
 
 /// Exact sorted set of logical roots used for reachability planning.
 #[derive(Clone, Debug, PartialEq, Eq)]

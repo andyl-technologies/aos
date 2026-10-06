@@ -11,17 +11,33 @@ const RETIRED_CATALOG_PREFIX: &str = ".retired-checkpoint-catalog-";
 /// attempt-owned run-state root: a semantic worker never shares that root with
 /// another concurrent execution, so every native object becomes redundant
 /// after the corresponding campaign-CAS root is durable.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ProductionExactCheckpointRetirement {
     run_state_root: PathBuf,
     scenario: ContentHash,
+    ram_catalog_provider: Option<Arc<dyn ProductionRamCatalogProvider>>,
+}
+
+impl std::fmt::Debug for ProductionExactCheckpointRetirement {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProductionExactCheckpointRetirement")
+            .field("run_state_root", &self.run_state_root)
+            .field("scenario", &self.scenario)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ProductionExactCheckpointRetirement {
-    pub(super) fn new(run_state_root: PathBuf, scenario: ContentHash) -> Self {
+    pub(super) fn new(
+        run_state_root: PathBuf,
+        scenario: ContentHash,
+        ram_catalog_provider: Option<Arc<dyn ProductionRamCatalogProvider>>,
+    ) -> Self {
         Self {
             run_state_root,
             scenario,
+            ram_catalog_provider,
         }
     }
 }
@@ -50,6 +66,9 @@ impl ProductionExactCheckpointRetirementReport {
 /// Failure to retire one attempt-local native checkpoint catalog.
 #[derive(Debug, thiserror::Error)]
 pub enum ProductionExactCheckpointRetirementError {
+    /// Cached readers or retained service authority refused catalog retirement.
+    #[error("retire native RAM catalog authority: {0}")]
+    Authority(#[source] crucible_cas::content_store::StoreError),
     /// The catalog namespace violates the exclusive-owner state machine.
     #[error("native checkpoint catalog has both active and retired generations")]
     ConflictingGeneration,
@@ -76,7 +95,7 @@ impl ProductionExactCheckpointRetirementError {
     /// Returns whether exact retry under the same exclusive owner may succeed.
     #[must_use]
     pub const fn is_retryable(&self) -> bool {
-        matches!(self, Self::Io { .. })
+        matches!(self, Self::Io { .. } | Self::Authority(_))
     }
 }
 
@@ -146,11 +165,46 @@ where
         return Err(ProductionExactCheckpointRetirementError::ConflictingGeneration);
     }
 
+    // Close admission and release the provider's cached SQL/fence descriptors
+    // before taking the exclusive counterpart. The receipt keeps quota and
+    // service custody through every uncertain deletion phase.
+    let catalog_directory = active.join("checkpoint-ram-objects");
+    let catalog_retirement = authority
+        .ram_catalog_provider
+        .as_ref()
+        .map(|provider| provider.begin_catalog_retirement(&catalog_directory))
+        .transpose()
+        .map_err(ProductionExactCheckpointRetirementError::Authority)?;
+    if catalog_retirement.is_none()
+        && (catalog_directory.exists() || retired.join("checkpoint-ram-objects").exists())
+    {
+        return Err(ProductionExactCheckpointRetirementError::Authority(
+            crucible_cas::content_store::StoreError::Unauthorized,
+        ));
+    }
+
+    // RAM readers carry a real deletion fence, not merely an authenticated
+    // digest. Hold the exclusive counterpart through rename and removal.
+    let fenced_directory = if active_present { &active } else { &retired };
+    let ram_fence = super::paged::retirement_fence(fenced_directory).map_err(|source| {
+        ProductionExactCheckpointRetirementError::Io {
+            operation: "acquire RAM retention fence for",
+            path: fenced_directory.clone(),
+            source,
+        }
+    })?;
+
     if retired_present {
         remove_retired_catalog(filesystem, &retired, parent)?;
     }
     if !active_present {
         sync_catalog_parent(filesystem, parent)?;
+        drop(ram_fence);
+        if let Some(receipt) = &catalog_retirement {
+            receipt
+                .finish_deleted()
+                .map_err(ProductionExactCheckpointRetirementError::Authority)?;
+        }
         return Ok(ProductionExactCheckpointRetirementReport {
             scenario: authority.scenario,
             retired: false,
@@ -166,6 +220,12 @@ where
     })?;
     sync_catalog_parent(filesystem, parent)?;
     remove_retired_catalog(filesystem, &retired, parent)?;
+    drop(ram_fence);
+    if let Some(receipt) = &catalog_retirement {
+        receipt
+            .finish_deleted()
+            .map_err(ProductionExactCheckpointRetirementError::Authority)?;
+    }
 
     Ok(ProductionExactCheckpointRetirementReport {
         scenario: authority.scenario,
@@ -288,7 +348,7 @@ mod tests {
         fs::create_dir(&active).expect("active native catalog");
         fs::write(active.join("catalog"), b"native").expect("native catalog sentinel");
         let authority =
-            ProductionExactCheckpointRetirement::new(root.path().to_path_buf(), scenario);
+            ProductionExactCheckpointRetirement::new(root.path().to_path_buf(), scenario, None);
         (root, authority, active, retired)
     }
 

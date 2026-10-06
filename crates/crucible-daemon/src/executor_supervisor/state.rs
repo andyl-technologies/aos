@@ -101,22 +101,33 @@ where
     }
 
     pub(super) fn has_capacity(&self, resources: AttemptResourceLimits) -> bool {
+        let resources = self.charged_assignment_resources(resources);
+        if let Some((vector, _, _)) = self.host_assignment_resources {
+            let fits = self.host_operational_capacity.is_some_and(|capacity| {
+                self.host_operational_used
+                    .add(vector)
+                    .is_ok_and(|used| used.fits(capacity))
+            });
+            if !fits {
+                return false;
+            }
+        }
         u32::try_from(self.active.len()).is_ok_and(|active| {
             active < self.capacity.maximum_concurrent_executions
                 && self
                     .used
                     .vcpus
-                    .checked_add(resources.maximum_vcpus())
+                    .checked_add(resources.vcpus)
                     .is_some_and(|total| total <= self.capacity.maximum_vcpus)
                 && self
                     .used
                     .resident_bytes
-                    .checked_add(resources.maximum_resident_bytes())
+                    .checked_add(resources.resident_bytes)
                     .is_some_and(|total| total <= self.capacity.maximum_resident_bytes)
                 && self
                     .used
                     .disk_bytes
-                    .checked_add(resources.maximum_disk_bytes())
+                    .checked_add(resources.disk_bytes)
                     .is_some_and(|total| total <= self.capacity.maximum_disk_bytes)
         })
     }
@@ -128,26 +139,24 @@ where
         origin: AttemptExecutionOrigin,
         selected_checkpoint: Option<SelectedExactCheckpointRoot>,
     ) -> Result<(), LocalExecutorError<L::Error>> {
-        let resources = request.resources();
+        let resources = self.charged_assignment_resources(request.resources());
         let used = UsedCapacity {
-            vcpus: self
-                .used
-                .vcpus
-                .checked_add(resources.maximum_vcpus())
-                .ok_or(LocalExecutorError::LedgerInvariant {
+            vcpus: self.used.vcpus.checked_add(resources.vcpus).ok_or(
+                LocalExecutorError::LedgerInvariant {
                     reason: "reserved vcpu accounting overflow",
-                })?,
+                },
+            )?,
             resident_bytes: self
                 .used
                 .resident_bytes
-                .checked_add(resources.maximum_resident_bytes())
+                .checked_add(resources.resident_bytes)
                 .ok_or(LocalExecutorError::LedgerInvariant {
                     reason: "reserved memory accounting overflow",
                 })?,
             disk_bytes: self
                 .used
                 .disk_bytes
-                .checked_add(resources.maximum_disk_bytes())
+                .checked_add(resources.disk_bytes)
                 .ok_or(LocalExecutorError::LedgerInvariant {
                     reason: "reserved disk accounting overflow",
                 })?,
@@ -157,9 +166,27 @@ where
                 reason: "execution identity was already active",
             });
         }
+        let operational = if let Some((vector, _, _)) = self.host_assignment_resources {
+            let nodes = self.assignment_node_ceiling().map_err(|_| {
+                LocalExecutorError::LedgerInvariant {
+                    reason: "assignment lost its separately retained watcher entitlement",
+                }
+            })?;
+            Some((
+                nodes,
+                self.host_operational_used.add(vector).map_err(|_| {
+                    LocalExecutorError::LedgerInvariant {
+                        reason: "complete operational reservation overflow",
+                    }
+                })?,
+            ))
+        } else {
+            None
+        };
         self.active.insert(
             execution,
             ActiveExecution {
+                publication_supervision: crate::supervision::PublicationSupervision::default(),
                 request: request.clone(),
                 origin,
                 cancellation: ExecutionCancellation::default(),
@@ -169,6 +196,16 @@ where
             },
         );
         self.queued.push_back(execution);
+        if let Some((nodes, operational)) = operational {
+            self.host_ram_resources.insert(
+                execution,
+                (
+                    nodes,
+                    crucible_linux_resource::ram_policy::HostResourceLedger::new(nodes),
+                ),
+            );
+            self.host_operational_used = operational;
+        }
         self.used = used;
         Ok(())
     }
@@ -198,37 +235,98 @@ where
         let Some(active) = self.active.get(&execution) else {
             return Ok(());
         };
-        let resources = active.request.resources();
+        active.publication_supervision.finish().map_err(|_| {
+            LocalExecutorError::LedgerInvariant {
+                reason: "publication watcher join ownership unavailable",
+            }
+        })?;
+        let resources = self.charged_assignment_resources(active.request.resources());
+        let retained = self
+            .host_ram_resources
+            .get(&execution)
+            .map(|(_, ledger)| ledger.reserved())
+            .unwrap_or_default();
+        let retaining =
+            retained != crucible_linux_resource::ram_policy::HostResourceVector::default();
+        if retaining && self.host_retained_resources.len() >= 4096 {
+            return Err(LocalExecutorError::LedgerInvariant {
+                reason: "retained physical owner capacity is exhausted",
+            });
+        }
+        let retained_cpus =
+            u32::try_from(retained.cpu_slots).map_err(|_| LocalExecutorError::LedgerInvariant {
+                reason: "retained physical CPU allocation cannot be represented",
+            })?;
+        let operational_used = match self.host_ram_resources.get(&execution) {
+            Some((ceiling, _)) => self
+                .host_operational_used
+                // The global assignment charge includes its watcher, while
+                // this node ceiling excludes the watcher's suballocation.
+                // Physical node borrowers retain only their exact ledger peak
+                // after the joined watcher and execution are reconciled.
+                .subtract(
+                    self.host_assignment_resources
+                        .map_or(*ceiling, |(full, _, _)| full),
+                )
+                .and_then(|used| used.add(retained))
+                .map_err(|_| LocalExecutorError::LedgerInvariant {
+                    reason: "retained operational resource accounting underflow",
+                })?,
+            None => self.host_operational_used,
+        };
         let used = UsedCapacity {
             vcpus: self
                 .used
                 .vcpus
-                .checked_sub(resources.maximum_vcpus())
+                .checked_sub(resources.vcpus)
+                .and_then(|used| used.checked_add(retained_cpus))
                 .ok_or(LocalExecutorError::LedgerInvariant {
                     reason: "reserved vcpu accounting underflow",
                 })?,
             resident_bytes: self
                 .used
                 .resident_bytes
-                .checked_sub(resources.maximum_resident_bytes())
+                .checked_sub(resources.resident_bytes)
+                .and_then(|used| used.checked_add(retained.resident_peak_bytes))
                 .ok_or(LocalExecutorError::LedgerInvariant {
                     reason: "reserved memory accounting underflow",
                 })?,
             disk_bytes: self
                 .used
                 .disk_bytes
-                .checked_sub(resources.maximum_disk_bytes())
+                .checked_sub(resources.disk_bytes)
+                .and_then(|used| used.checked_add(retained.backing_peak_bytes))
                 .ok_or(LocalExecutorError::LedgerInvariant {
                     reason: "reserved disk accounting underflow",
                 })?,
         };
+        if !retaining {
+            self.host_operational_registry
+            .retire_execution(
+                crate::host_operational_registry::operational_identity(
+                    self.daemon_epoch.as_bytes(),
+                ),
+                crate::host_operational_registry::operational_identity(execution.as_bytes()),
+            )
+            .map_err(|_| LocalExecutorError::LedgerInvariant {
+                reason: "host operational ownership could not be retired before resource release",
+            })?;
+        }
         if self.active.remove(&execution).is_none() {
             return Err(LocalExecutorError::LedgerInvariant {
                 reason: "active execution disappeared during release",
             });
         }
         self.queued.retain(|queued| *queued != execution);
+        if retaining {
+            // Physical borrowers and reusable templates keep the original
+            // resource charge after modeled execution ownership finishes.
+            self.host_retained_resources.insert(execution, retained);
+        } else {
+            self.host_ram_resources.remove(&execution);
+        }
         self.used = used;
+        self.host_operational_used = operational_used;
         Ok(())
     }
 

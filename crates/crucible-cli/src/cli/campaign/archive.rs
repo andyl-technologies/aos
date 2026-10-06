@@ -10,23 +10,22 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::Arc;
 
 use crucible_campaign::{
     ArchiveObjectEntry, CampaignArchiveInspection, CampaignArchivePlan, CampaignArchivePolicy,
     CampaignName, CampaignSnapshotId,
 };
 use crucible_daemon::campaign_store_composition::{
-    ContentId, DurabilityRequirement, ImmutableBlobBackend, ObjectKind, RefName, SensitivityClass,
+    ContentId, DurabilityRequirement, ObjectKind, RefName, SensitivityClass,
 };
 use crucible_daemon::{
     CampaignLocalServiceConfig, CampaignLocalServiceMode, CampaignLoopbackEndpointConfig,
     CampaignLoopbackServerConfig, DirectoryExactPinMaterializationStore,
-    EXACT_PIN_MATERIALIZATION_DIRECTORY, ExactCheckpointStore, transfer_campaign_archive_durably,
+    EXACT_PIN_MATERIALIZATION_DIRECTORY, transfer_campaign_archive_durably_with_boundary,
 };
 use serde::Serialize;
 
-use super::super::cli_campaign_store::{load_campaign_repository_store, load_campaign_store_graph};
+use super::super::cli_campaign_store::load_campaign_repository_store;
 use super::*;
 
 const CAMPAIGN_ARCHIVE_PLAN_SCHEMA: &str = "crucible.cli.campaign-archive-plan.v1";
@@ -159,23 +158,14 @@ fn run_archive_transfer(
     args: &CampaignArchiveTransferArgs,
     format: OutputFormat,
 ) -> Result<String, CliError> {
+    let supervision = super::transfer_supervision::StandaloneArchiveOperation::start(
+        crucible_api::host_operational::HostOperationClass::Transfer,
+        args.host_transfer_timeout_ms,
+    )?;
+    let mut boundary = || supervision.boundary();
+
     let basis = prepare_archive_transfer_basis(args)?;
     validate_distinct_owner_roots(&args.source_state, &args.destination_state)?;
-
-    let source_graph = load_campaign_store_graph(&args.source_store)?;
-    let source_checkpoint_backend: Arc<dyn ImmutableBlobBackend> = source_graph;
-    let source_checkpoints =
-        ExactCheckpointStore::new(source_checkpoint_backend, args.maximum_checkpoint_bytes)
-            .map_err(|error| {
-                archive_error(format!("source checkpoint store is invalid: {error}"))
-            })?;
-    let destination_graph = load_campaign_store_graph(&args.destination_store)?;
-    let destination_checkpoint_backend: Arc<dyn ImmutableBlobBackend> = destination_graph;
-    let destination_checkpoints = ExactCheckpointStore::new(
-        destination_checkpoint_backend,
-        args.maximum_checkpoint_bytes,
-    )
-    .map_err(|error| archive_error(format!("destination checkpoint store is invalid: {error}")))?;
 
     let mut source = prepare_owner(
         &args.source_state,
@@ -191,16 +181,26 @@ fn run_archive_transfer(
         UNUSED_DESTINATION_ENDPOINT,
         CampaignLocalServiceMode::ReadWrite,
     )?;
+
+    let source_checkpoints = source
+        .exact_checkpoint_store(args.maximum_checkpoint_bytes)
+        .map_err(|error| archive_error(format!("source checkpoint store is invalid: {error}")))?;
+    let destination_checkpoints = destination
+        .exact_checkpoint_store(args.maximum_checkpoint_bytes)
+        .map_err(|error| {
+            archive_error(format!("destination checkpoint store is invalid: {error}"))
+        })?;
+
     let mut source_exact_pins = open_exact_pins(&args.source_state)?;
     let mut destination_exact_pins = open_exact_pins(&args.destination_state)?;
     let plan = source
-        .plan_campaign_archive_with_exact_pins(
+        .plan_campaign_archive_with_exact_pins_with_boundary(
             basis.source_campaign.clone(),
             basis.snapshot,
             basis.policy,
             basis.retained_roots,
-            &source_checkpoints,
-            &mut source_exact_pins,
+            (&source_checkpoints, &mut source_exact_pins),
+            &mut boundary,
         )
         .map_err(|error| archive_error(format!("archive planning failed: {error}")))?;
     let plan_report = plan_report(
@@ -221,7 +221,7 @@ fn run_archive_transfer(
             &destination_checkpoints,
             &mut destination_exact_pins,
         );
-    let transfer = transfer_campaign_archive_durably(
+    let transfer = transfer_campaign_archive_durably_with_boundary(
         &mut source_endpoint,
         &mut destination_endpoint,
         &plan,
@@ -231,8 +231,10 @@ fn run_archive_transfer(
             .as_ref()
             .map(CampaignName::as_str),
         basis.durability,
+        &mut boundary,
     )
     .map_err(|error| archive_error(format!("archive transfer failed: {error}")))?;
+    supervision.complete()?;
     let transfer_report = transfer.transfer();
     let completion = CampaignArchiveTransferCompletionReport {
         schema: CAMPAIGN_ARCHIVE_TRANSFER_SCHEMA,
@@ -258,6 +260,11 @@ fn run_archive_inspection(
     args: &CampaignArchiveInspectArgs,
     format: OutputFormat,
 ) -> Result<String, CliError> {
+    let supervision = super::transfer_supervision::StandaloneArchiveOperation::start(
+        crucible_api::host_operational::HostOperationClass::Preparation,
+        args.host_inspection_timeout_ms,
+    )?;
+    let mut boundary = || supervision.boundary();
     validate_archive_name(&args.archive)?;
     let prepared = prepare_owner(
         &args.state,
@@ -267,8 +274,9 @@ fn run_archive_inspection(
         CampaignLocalServiceMode::ReadOnly,
     )?;
     let inspection = prepared
-        .inspect_campaign_archive_ref(&args.archive)
+        .inspect_campaign_archive_ref_with_boundary(&args.archive, &mut boundary)
         .map_err(|error| archive_error(format!("archive inspection failed: {error}")))?;
+    supervision.complete()?;
     render_inspection_report(&inspection_report(&inspection)?, format)
 }
 
@@ -786,6 +794,7 @@ mod tests {
         let snapshot_content =
             ContentId::for_bytes(ObjectKind::CampaignSnapshot, 3, b"archive-cli-snapshot");
         CampaignArchiveTransferArgs {
+            host_transfer_timeout_ms: 3_600_000,
             source_state: "/tmp/source-state".into(),
             source_policy: "/tmp/source-policy".into(),
             source_store: "/tmp/source-store".into(),
