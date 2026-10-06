@@ -713,7 +713,6 @@ in
             --mount "${util-linux}/bin/mount" \\
             --umount "${util-linux}/bin/umount" \\
             --blkid "${util-linux}/sbin/blkid" \\
-            --objcopy "${pe-tools}/bin/objcopy" \\
             --veritysetup "${cryptsetup}/sbin/veritysetup" \\
             --nix-store "${nix}/bin/nix-store" \\
             "\$@"

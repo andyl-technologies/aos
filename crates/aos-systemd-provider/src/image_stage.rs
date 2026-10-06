@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, ensure};
-use aos_boot_identity::{BootSlot, parse_normal};
+use aos_boot_identity::{BootSlot, NormalBootIdentity, parse_normal, pe::read_uki_text};
 use aos_release::artifact::BundlePath;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -50,7 +50,6 @@ struct Tools {
     mount: PathBuf,
     umount: PathBuf,
     blkid: PathBuf,
-    objcopy: PathBuf,
     veritysetup: PathBuf,
     nix_store: PathBuf,
 }
@@ -64,14 +63,13 @@ struct Tools {
 pub(crate) fn run_from_process() -> Result<()> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
     ensure!(
-        arguments.len() == 12,
-        "image stage requires six exact retained tools"
+        arguments.len() == 10,
+        "image stage requires five exact retained tools"
     );
     let names = [
         "--mount",
         "--umount",
         "--blkid",
-        "--objcopy",
         "--veritysetup",
         "--nix-store",
     ];
@@ -89,9 +87,8 @@ pub(crate) fn run_from_process() -> Result<()> {
         mount: paths[0].clone(),
         umount: paths[1].clone(),
         blkid: paths[2].clone(),
-        objcopy: paths[3].clone(),
-        veritysetup: paths[4].clone(),
-        nix_store: paths[5].clone(),
+        veritysetup: paths[3].clone(),
+        nix_store: paths[4].clone(),
     };
     let mut bytes = Vec::new();
     io::stdin().take(1024 * 1024 + 1).read_to_end(&mut bytes)?;
@@ -283,16 +280,7 @@ fn stage(request: &Request, tools: &Tools) -> Result<Value> {
         integer(fact, "size_bytes")?,
         string(fact, "sha256")?,
     )?;
-    let cmdline = scratch.path().join("uki.cmdline");
-    successful(
-        Command::new(&tools.objcopy)
-            .arg("--dump-section")
-            .arg(format!(".cmdline={}", cmdline.display()))
-            .arg(&uki_path),
-    )?;
-    let identity = parse_normal(
-        std::str::from_utf8(&read_bounded(&cmdline, 64 * 1024)?)?.trim_end_matches('\0'),
-    )?;
+    let identity = read_candidate_boot_identity(&uki_path)?;
     ensure!(
         identity.slot != active.slot && identity.root_hash == string(root, "root_hash")?,
         "target UKI does not bind the opposite slot and authenticated root"
@@ -719,18 +707,35 @@ fn artifact_path(root: &Path, fact: &Value) -> Result<PathBuf> {
     Ok(path)
 }
 
+fn read_candidate_boot_identity(path: &Path) -> Result<NormalBootIdentity> {
+    // Preflight and staging share this artifact. Reading its identity must not
+    // rewrite the PE image or discard its signature, as objcopy can do.
+    let cmdline = read_uki_text(path, "cmdline")
+        .with_context(|| format!("reading candidate UKI identity from {}", path.display()))?;
+    Ok(parse_normal(&cmdline)?)
+}
+
 fn verify_path(path: &Path, size: u64, digest: &str) -> Result<()> {
     let mut file = OpenOptions::new()
         .read(true)
         .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
         .open(path)?;
+    let metadata = file.metadata()?;
     ensure!(
-        file.metadata()?.is_file() && file.metadata()?.len() == size,
-        "staged artifact length differs"
+        metadata.is_file(),
+        "staged artifact is not a regular file: {}",
+        path.display()
+    );
+    ensure!(
+        metadata.len() == size,
+        "staged artifact length differs: {}: expected {size} bytes, found {}",
+        path.display(),
+        metadata.len()
     );
     ensure!(
         digest_reader(&mut file)? == digest_hex(digest)?,
-        "staged artifact digest differs"
+        "staged artifact digest differs: {}",
+        path.display()
     );
     Ok(())
 }
@@ -799,6 +804,61 @@ fn successful(command: &mut Command) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_candidate_identity_reads_preserve_the_complete_pe_artifact() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("candidate.efi");
+        let root_hash = "0123456789abcdef".repeat(4);
+        let cmdline = format!(
+            "root=/dev/mapper/root ro systemd.verity=yes \
+             systemd.verity_root_data=/dev/disk/by-partlabel/root-b \
+             systemd.verity_root_hash=/dev/disk/by-partlabel/root-b-hash \
+             roothash={root_hash} rd.luks=0"
+        );
+
+        // Preserve the PE optional header, padding and opaque certificate tail,
+        // not just the section bytes needed to parse the boot identity.
+        let mut original = vec![0_u8; 1024];
+        original[..2].copy_from_slice(b"MZ");
+        original[60..64].copy_from_slice(&128_u32.to_le_bytes());
+        original[128..132].copy_from_slice(b"PE\0\0");
+        original[132..134].copy_from_slice(&0x8664_u16.to_le_bytes());
+        original[134..136].copy_from_slice(&1_u16.to_le_bytes());
+        original[148..150].copy_from_slice(&240_u16.to_le_bytes());
+        original[152..154].copy_from_slice(&0x20b_u16.to_le_bytes());
+        original[260..264].copy_from_slice(&16_u32.to_le_bytes());
+        original[296..300].copy_from_slice(&1024_u32.to_le_bytes());
+        original[300..304].copy_from_slice(&4104_u32.to_le_bytes());
+        original[392..400].copy_from_slice(b".cmdline");
+        original[400..404].copy_from_slice(&(cmdline.len() as u32 + 1).to_le_bytes());
+        original[408..412].copy_from_slice(&512_u32.to_le_bytes());
+        original[412..416].copy_from_slice(&512_u32.to_le_bytes());
+        original[512..512 + cmdline.len()].copy_from_slice(cmdline.as_bytes());
+        original.extend_from_slice(&4104_u32.to_le_bytes());
+        original.extend_from_slice(&0x0200_u16.to_le_bytes());
+        original.extend_from_slice(&2_u16.to_le_bytes());
+        original.extend((0..4096).map(|index| (index % 251) as u8));
+        fs::write(&path, &original).unwrap();
+        let digest = format!("sha256:{}", hex::encode(Sha256::digest(&original)));
+
+        // Preflight and stage both inspect the same authenticated artifact.
+        for _ in 0..2 {
+            verify_path(&path, original.len() as u64, &digest).unwrap();
+            let identity = read_candidate_boot_identity(&path).unwrap();
+            assert_eq!(identity.slot, BootSlot::B);
+            assert_eq!(identity.root_hash, root_hash);
+            verify_path(&path, original.len() as u64, &digest).unwrap();
+            assert_eq!(fs::read(&path).unwrap(), original);
+        }
+
+        // The provider still rejects a syntactically valid PE with a bad
+        // native boot identity; shared reader tests cover PE/text bounds.
+        original[512] = b'X';
+        fs::write(&path, &original).unwrap();
+        assert!(read_candidate_boot_identity(&path).is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
+    }
 
     #[test]
     fn candidate_metadata_uses_the_immutable_store_before_overlay_mounting() {
@@ -946,7 +1006,12 @@ mod tests {
             &format!("sha256:{}", hex::encode(Sha256::digest(b"defg"))),
         )
         .unwrap();
-        assert!(verify_path(&output, 3, &hex::encode(Sha256::digest(b"defg"))).is_err());
+        let error = verify_path(&output, 3, &hex::encode(Sha256::digest(b"defg")))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(&output.display().to_string()));
+        assert!(error.contains("expected 3 bytes"));
+        assert!(error.contains("found 4"));
         assert!(extract_range(&input, &temp.path().join("outside"), 11, 4, 1).is_err());
         assert!(extract_range(&input, &temp.path().join("oversize"), 0, 4, 0).is_err());
     }
