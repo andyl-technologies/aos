@@ -173,6 +173,8 @@
       ++ extraFixtureModules;
   };
   candidateTop = candidate.config.system.build.toplevel;
+  # Transfer the source closure without realizing its compiler outputs.
+  candidateSourceDrv = builtins.unsafeDiscardOutputDependency candidateTop.drvPath;
   candidateImage = candidate.config.system.build.image.raw;
   candidateImageDisk = candidate.config.system.build.imageArtifacts.raw.disk;
   candidateImageInfo = candidate.config.system.build.imageArtifacts.raw.info;
@@ -181,7 +183,7 @@
   rolloutFixtureRoots = lib.unique (
     [candidateTop candidateImage candidateImageDisk candidateImageInfo candidateUki candidatePackageRuntime]
     # APR's complete cache includes the published source derivation closure.
-    ++ [candidateTop.drvPath]
+    ++ [candidateSourceDrv]
     ++ rolloutPolicy.extraClosures
     ++ [bootFaultHook]
     ++ [pkgs.aos.apr pkgs.sbsigntools pkgs.binutils pkgs.efitools pkgs.gawk pkgs.git pkgs.secure-boot-test-keys]
@@ -319,7 +321,7 @@ in {
       UTIL_LINUX = "${pkgs.util-linux}/bin"
       GIT_BIN = "${pkgs.git}/bin"
       CANDIDATE_TOP = "${candidateTop}"
-      CANDIDATE_SOURCE_DRV = "${candidateTop.drvPath}"
+      CANDIDATE_SOURCE_DRV = "${candidateSourceDrv}"
       CANDIDATE_IMAGE = "${candidateImage}"
       CANDIDATE_IMAGE_DISK = "${candidateImageDisk}"
       CANDIDATE_IMAGE_INFO = "${candidateImageInfo}"
