@@ -617,7 +617,38 @@ def output_reference(evidence, name, maximum):
     return {"file": name, "sha256": hashlib.sha256(body).hexdigest(), "bytes": len(body)}
 
 
-def retain_window(evidence, cutoff, started, finished, baseline, loaded, memory, counters, captures):
+def clock_sample():
+    """Bracket one controller wall-clock observation with its monotonic clock."""
+    before = time.monotonic_ns()
+    observed = time.time_ns()
+    after = time.monotonic_ns()
+    return {"monotonicBeforeNs": str(before), "observedUnixNs": str(observed),
+            "monotonicAfterNs": str(after)}
+
+
+def validate_clock_bridge(bridge, cutoff, started, finished):
+    """Validate local clock observations without asserting remote UTC accuracy."""
+    exact_fields(bridge, {"bootId", "loadedStart", "loadedFinish"})
+    if bridge["bootId"] != cutoff["controllerBootId"]:
+        raise ValueError("Loaded clock bridge belongs to another boot")
+    observed = []
+    for label, boundary in (("loadedStart", started), ("loadedFinish", finished)):
+        sample = bridge[label]
+        exact_fields(sample, {"monotonicBeforeNs", "observedUnixNs", "monotonicAfterNs"})
+        for value in sample.values():
+            if (not isinstance(value, str) or not re.fullmatch(r"0|[1-9][0-9]{0,18}", value)
+                    or int(value) > 2**63 - 1):
+                raise ValueError("Loaded clock bridge is noncanonical")
+        before, after = int(sample["monotonicBeforeNs"]), int(sample["monotonicAfterNs"])
+        if not before <= boundary <= after:
+            raise ValueError("Loaded clock bridge misses its monotonic boundary")
+        observed.append(int(sample["observedUnixNs"]))
+    if observed[1] < observed[0]:
+        raise ValueError("Loaded clock bridge observes wall-clock rollback")
+
+
+def retain_window(evidence, cutoff, started, finished, baseline, loaded, memory, counters, captures,
+                  clock_bridge=None):
     """Retain the first loaded interval and references needed by explicit resume."""
     logs = {label + "-" + stream: output_reference(evidence, label + "-" + stream, maximum)
             for label in ("a", "b") for stream, maximum in
@@ -628,6 +659,9 @@ def retain_window(evidence, cutoff, started, finished, baseline, loaded, memory,
               "finishedMonotonicNs": str(finished), "elapsedNs": str(finished - started),
               "baseline": baseline, "loaded": loaded, "clientMemory": memory,
               "clientCounters": counters, "logs": logs, "captures": refs}
+    if clock_bridge is not None:
+        validate_clock_bridge(clock_bridge, cutoff, started, finished)
+        window.update(version=2, clockBridge=clock_bridge)
     body = json.dumps(window, sort_keys=True, separators=(",", ":"), allow_nan=False).encode() + b"\n"
     if len(body) > 16 * 1024 * 1024:
         raise ValueError("Retained loaded window exceeded its bound")
@@ -648,9 +682,14 @@ def retained_window(reference, cutoff):
         if ref["file"] != "workload-window.json" or output_reference(previous, ref["file"], 16 * 1024 * 1024) != ref:
             raise ValueError("Original loaded window changed")
         window = closed_json(private_bytes(previous.path / ref["file"], 16 * 1024 * 1024))
-        exact_fields(window, {"version", "cutoff", "startedMonotonicNs", "finishedMonotonicNs", "elapsedNs",
-                             "baseline", "loaded", "clientMemory", "clientCounters", "logs", "captures"})
-        if window["version"] != 1 or window["cutoff"] != cutoff:
+        fields = {"version", "cutoff", "startedMonotonicNs", "finishedMonotonicNs", "elapsedNs",
+                  "baseline", "loaded", "clientMemory", "clientCounters", "logs", "captures"}
+        if type(window.get("version")) is not int or window["version"] not in (1, 2):
+            raise ValueError("Original loaded window version differs")
+        if window["version"] == 2:
+            fields.add("clockBridge")
+        exact_fields(window, fields)
+        if window["cutoff"] != cutoff:
             raise ValueError("Original loaded window cutoff changed")
         times = [window[name] for name in ("startedMonotonicNs", "finishedMonotonicNs", "elapsedNs")]
         if any(not isinstance(value, str) or not re.fullmatch(r"0|[1-9][0-9]{0,18}", value)
@@ -659,6 +698,8 @@ def retained_window(reference, cutoff):
         start, finish, elapsed = map(int, times)
         if finish - start != elapsed or elapsed < 0 or finish > time.monotonic_ns():
             raise ValueError("Original loaded interval changed")
+        if window["version"] == 2:
+            validate_clock_bridge(window["clockBridge"], cutoff, start, finish)
         exact_fields(window["logs"], {label + "-" + stream for label in ("a", "b") for stream in ("stdout", "stderr")})
         exact_fields(window["captures"], {"workerRuntime", "nativeBoundary"})
         for name, ref in window["logs"].items():
@@ -935,7 +976,8 @@ def run(selected, binding_hash, evidence, lib, resume=None):
                 for index in range(100)]
     captures = {}
     children, loaded, completed, client_counters = {}, [], {}, {}
-    started = time.monotonic_ns()
+    start_clock = clock_sample()
+    started = int(start_clock["monotonicAfterNs"])
     interrupted = None
     memory = []
     try:
@@ -989,8 +1031,12 @@ def run(selected, binding_hash, evidence, lib, resume=None):
         # Cleanup visits every owned child and capture even if one fails.
         stops, texts = cleanup(children, captures, evidence)
 
-    finished = time.monotonic_ns()
-    current_window = retain_window(evidence, cutoff, started, finished, baseline, loaded, memory, client_counters, texts)
+    finish_clock = clock_sample()
+    finished = int(finish_clock["monotonicBeforeNs"])
+    bridge = {"bootId": cutoff["controllerBootId"], "loadedStart": start_clock,
+              "loadedFinish": finish_clock}
+    current_window = retain_window(evidence, cutoff, started, finished, baseline, loaded, memory,
+                                   client_counters, texts, clock_bridge=bridge)
     if interrupted is not None:
         if not stops["a"]["killedOwnedProcess"] or stops["a"]["exitCode"] != -signal.SIGKILL:
             raise ValueError("Sparse rendezvous missed actual owned process interruption")

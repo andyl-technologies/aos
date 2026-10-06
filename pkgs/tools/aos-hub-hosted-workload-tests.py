@@ -323,6 +323,8 @@ class HostedTests(unittest.TestCase):
                        [sample()] * 100, [sample()] * 3, [], {},
                        {"workerRuntime": "source-bound-private-capture\n", "nativeBoundary": None})
             window = hosted.retained_window(reference, cutoff)
+            self.assertEqual(window["version"], 1)
+            self.assertNotIn("clockBridge", window)
             self.assertEqual(window["elapsedNs"], "123")
             self.assertEqual(len(window["loaded"]), 3)
             self.assertIsNone(window["captures"]["nativeBoundary"])
@@ -332,6 +334,51 @@ class HostedTests(unittest.TestCase):
                 hosted.retained_window(reference, cutoff)
         finally:
             evidence.close()
+
+    def test_bracketed_clock_window_retains_actual_local_observations(self):
+        evidence = hosted.Evidence(self.root / "clock-window")
+        try:
+            for label in ("a", "b"):
+                for stream in ("stdout", "stderr"):
+                    evidence.save(label + "-" + stream, b"")
+            cutoff = hosted.original_cutoff(60)
+            start_clock = hosted.clock_sample()
+            finish_clock = hosted.clock_sample()
+            started = int(start_clock["monotonicAfterNs"])
+            finished = int(finish_clock["monotonicBeforeNs"])
+            bridge = {"bootId": cutoff["controllerBootId"], "loadedStart": start_clock,
+                      "loadedFinish": finish_clock}
+
+            reference = hosted.retain_window(evidence, cutoff, started, finished,
+                        [sample()] * 100, [sample()] * 3, [], {},
+                        {"workerRuntime": None, "nativeBoundary": None}, clock_bridge=bridge)
+            window = hosted.retained_window(reference, cutoff)
+
+            self.assertEqual(window["version"], 2)
+            self.assertEqual(window["clockBridge"], bridge)
+            self.assertEqual(window["startedMonotonicNs"], str(started))
+            self.assertEqual(window["finishedMonotonicNs"], str(finished))
+            self.assertNotIn("remoteClockUncertainty", window["clockBridge"])
+        finally:
+            evidence.close()
+
+    def test_clock_bridge_refuses_wrong_boot_displaced_boundaries_and_rollback(self):
+        cutoff = hosted.original_cutoff(60)
+        bridge = {"bootId": cutoff["controllerBootId"],
+                  "loadedStart": {"monotonicBeforeNs": "100", "observedUnixNs": "1000",
+                                  "monotonicAfterNs": "110"},
+                  "loadedFinish": {"monotonicBeforeNs": "200", "observedUnixNs": "1100",
+                                   "monotonicAfterNs": "220"}}
+        hosted.validate_clock_bridge(bridge, cutoff, 110, 200)
+        for field, value, message in (
+                ("bootId", "00000000-0000-0000-0000-000000000000", "another boot"),
+                ("loadedStart", {**bridge["loadedStart"], "monotonicBeforeNs": "111"}, "boundary"),
+                ("loadedFinish", {**bridge["loadedFinish"], "monotonicAfterNs": "199"}, "boundary"),
+                ("loadedFinish", {**bridge["loadedFinish"], "observedUnixNs": "999"}, "rollback"),
+                ("loadedStart", {**bridge["loadedStart"], "observedUnixNs": "01000"}, "noncanonical"),
+                ("loadedStart", {**bridge["loadedStart"], "observedUnixNs": True}, "noncanonical")):
+            with self.subTest(field=field, value=value), self.assertRaisesRegex(ValueError, message):
+                hosted.validate_clock_bridge({**bridge, field: value}, cutoff, 110, 200)
 
     def test_explicit_resume_uses_original_interval_and_owned_window_references(self):
         counters = "Direct upload client: " + " ".join(
@@ -370,6 +417,11 @@ class HostedTests(unittest.TestCase):
             self.assertEqual(outcome["state"], "workload_complete")
             measured = json.loads((current.path / "measurements.json").read_text())
             window = json.loads((current.path / "workload-window.json").read_text())
+            self.assertEqual(window["version"], 2)
+            self.assertEqual(window["clockBridge"]["bootId"], cutoff["controllerBootId"])
+            self.assertEqual(hosted.retained_window(reference, cutoff)["version"], 1)
+            hosted.validate_clock_bridge(window["clockBridge"], cutoff,
+                int(window["startedMonotonicNs"]), int(window["finishedMonotonicNs"]))
             self.assertEqual(measured["originalCutoff"], cutoff)
             self.assertEqual(measured["firstWindowElapsedNs"], "123000000")
             self.assertEqual(measured["loadedWindowReferences"][0], reference)
