@@ -57,6 +57,185 @@ def start_direct_restart_original(worker, tools, origin, control_key_file,
             "runId": run_id, "driver": tools["qualificationDriver"]}))
 
 
+def observe_direct_restart_readiness(worker, tools, driver):
+    """Observe exact child custody, reading only bounded stderr after an owned exit."""
+    pin = {name: driver[name] for name in ("runId", "root", "pid", "ownerUid", "startTicks")}
+    if (not re.fullmatch(r"[0-9a-f]{64}", pin["runId"])
+            or Path(pin["root"]).name != "restart-" + pin["runId"]
+            or not Path(pin["root"]).is_absolute()
+            or type(pin["pid"]) is not int or pin["pid"] <= 0
+            or type(pin["ownerUid"]) is not int or pin["ownerUid"] < 0
+            or not re.fullmatch(r"[1-9][0-9]{0,19}", pin["startTicks"])):
+        raise ValueError("restart readiness requires the recorded child identity")
+    unknown = {"version": 1, "runId": pin["runId"], "pid": pin["pid"],
+        "ownerUid": pin["ownerUid"], "startTicks": pin["startTicks"],
+        "category": "readiness_unknown", "ready": False, "custody": False,
+        "processState": None, "exitCode": None, "statBytes": None,
+        "statBoundBytes": 4096, "statEof": None, "outputs": {},
+        "originalBoundBytes": 524288,
+        "stderrReadBytes": 0, "stderrBoundBytes": 65536, "stderrEof": None,
+        "stderrCategory": "not_read"}
+    try:
+        body = direct_guest_python(worker, tools["python"], """
+            import os, stat
+
+            result = dict(selected['unknown'])
+            pin = selected['pin']
+            descriptors = []
+
+            def private_directory(path, parent=None):
+                descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=parent)
+                descriptors.append(descriptor)
+                facts = os.fstat(descriptor)
+                if facts.st_uid != pin['ownerUid'] or stat.S_IMODE(facts.st_mode) != 0o700:
+                    raise ValueError('output custody unknown')
+                return descriptor
+
+            def output_metadata(parent, name):
+                try:
+                    facts = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                except FileNotFoundError:
+                    return {'present': False, 'custody': None, 'byteSize': None}
+                if (not stat.S_ISREG(facts.st_mode) or facts.st_uid != pin['ownerUid']
+                        or stat.S_IMODE(facts.st_mode) != 0o600 or facts.st_nlink != 1):
+                    raise ValueError('output custody unknown')
+                return {'present': True, 'custody': True, 'byteSize': str(facts.st_size)}
+
+            def process_identity():
+                directory = '/proc/' + str(pin['pid'])
+                try:
+                    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                except FileNotFoundError:
+                    return None
+                try:
+                    owner = os.fstat(descriptor).st_uid
+                    if owner != pin['ownerUid'] or owner != os.getuid():
+                        result['category'] = 'driver_owner_changed'
+                        raise ValueError('process custody differs')
+                    status = os.open('stat', os.O_RDONLY | os.O_NOFOLLOW, dir_fd=descriptor)
+                    with os.fdopen(status, 'rb') as source:
+                        raw = source.read(4097)
+                    result['statBytes'] = len(raw)
+                    result['statEof'] = len(raw) <= 4096
+                    fields = raw.rpartition(b') ')[2].split()
+                    if (len(raw) > 4096 or len(fields) < 50
+                            or raw.split(b' ', 1)[0] != str(pin['pid']).encode()):
+                        raise ValueError('bounded process status unavailable')
+                    if fields[19].decode('ascii') != pin['startTicks']:
+                        result['category'] = 'driver_reused'
+                        raise ValueError('process lifetime differs')
+                    state = fields[0].decode('ascii')
+                    if state not in ('R', 'S', 'D', 'Z', 'T', 't', 'X', 'x', 'K', 'W', 'P', 'I'):
+                        raise ValueError('process state unknown')
+                    return state, int(fields[49])
+                except FileNotFoundError:
+                    return None
+                finally:
+                    os.close(descriptor)
+
+            def terminal_stderr(root):
+                # Classify only known public driver errors, never return raw
+                # bytes. An EOF here describes the private file, not a provider.
+                try:
+                    before = os.stat('stderr.log', dir_fd=root, follow_symlinks=False)
+                    descriptor = os.open('stderr.log', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                        dir_fd=root)
+                    with os.fdopen(descriptor, 'rb') as source:
+                        opened = os.fstat(source.fileno())
+                        if (not stat.S_ISREG(opened.st_mode) or opened.st_uid != pin['ownerUid']
+                                or stat.S_IMODE(opened.st_mode) != 0o600 or opened.st_nlink != 1
+                                or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)):
+                            raise ValueError('stderr custody changed')
+                        raw = source.read(65537)
+                        after = os.fstat(source.fileno())
+                    result['stderrReadBytes'] = len(raw)
+                    result['stderrEof'] = len(raw) <= 65536
+                    if (opened.st_size, opened.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                        result['stderrCategory'] = 'stderr_changed'
+                    elif len(raw) > 65536:
+                        result['stderrCategory'] = 'stderr_bound_exceeded'
+                    else:
+                        categories = (
+                            ('private_input_refused', b'Private inputs must be owner-only regular files within bounds.'),
+                            ('control_key_refused', b'Malformed control key.'),
+                            ('runtime_identity_refused', b'Actual inspected identity does not match origin.'),
+                            ('source_refused', b'Payload must be an owned nonempty regular file.'),
+                            ('source_changed', b'Payload changed during source inspection.'),
+                            ('control_acknowledgement_unknown', b'Operation lacks an exact acknowledgement; evidence retained without replay.'),
+                        )
+                        matched = {category for category, message in categories if message in raw}
+                        result['stderrCategory'] = (next(iter(matched)) if len(matched) == 1 else
+                            'unclassified' if not matched else 'multiple_known_errors')
+                except (OSError, ValueError):
+                    result['stderrCategory'] = 'stderr_custody_unknown'
+
+            try:
+                if pin['ownerUid'] != os.getuid():
+                    result['category'] = 'driver_owner_changed'
+                    raise ValueError('recorded owner differs')
+                process_identity()
+                result['category'] = 'output_custody_unknown'
+                root = private_directory(pin['root'])
+                for name in ('stdout.log', 'stderr.log'):
+                    result['outputs'][name] = output_metadata(root, name)
+                    if not result['outputs'][name]['present']:
+                        raise ValueError('recorded output missing')
+                try:
+                    evidence = private_directory('evidence', root)
+                except FileNotFoundError:
+                    original = {'present': False, 'custody': None, 'byteSize': None}
+                else:
+                    original = output_metadata(evidence, 'original.json')
+                if (original['present'] and not
+                        0 < int(original['byteSize']) <= result['originalBoundBytes']):
+                    raise ValueError('original metadata outside bounds')
+                result['outputs']['original.json'] = original
+
+                # Recheck the exact lifetime after file metadata observation. A
+                # completed child may still have a valid original to inspect.
+                result['category'] = 'readiness_unknown'
+                identity = process_identity()
+                state, wait_status = identity if identity is not None else (None, None)
+                result['custody'] = identity is not None
+                result['processState'] = state
+                if state == 'Z' and (os.WIFEXITED(wait_status) or os.WIFSIGNALED(wait_status)):
+                    result['exitCode'] = os.waitstatus_to_exitcode(wait_status)
+                result['ready'] = original['present']
+                result['category'] = ('original_ready' if result['ready'] else
+                    'driver_missing' if identity is None else
+                    'driver_exited_before_original' if state in ('Z', 'X', 'x') else
+                    'waiting_for_original')
+                if (state == 'Z' or identity is None) and not result['ready']:
+                    terminal_stderr(root)
+            except FileNotFoundError:
+                if result['category'] != 'output_custody_unknown':
+                    result['category'] = 'driver_missing'
+            except (OSError, ValueError, UnicodeError):
+                pass
+            finally:
+                for descriptor in reversed(descriptors):
+                    os.close(descriptor)
+            print(json.dumps(result, separators=(',', ':')))
+        """, {"pin": pin, "unknown": unknown}, timeout=10)
+        if len(body.encode()) > 4096:
+            return unknown
+        return json.loads(body)
+    except Exception:
+        # A failed guest observation is not an observed child exit. Never relay
+        # raw channel errors or private child output into the controller log.
+        return unknown
+
+
+def direct_restart_readiness(worker, tools, driver):
+    """Retain safe failure facts before stopping the original readiness wait."""
+    observation = observe_direct_restart_readiness(worker, tools, driver)
+    if observation["category"] not in ("waiting_for_original", "original_ready"):
+        retain_direct_flow("queue-restart-readiness-failure.json", observation)
+        raise AssertionError("queue restart child readiness observation refused")
+    return observation["ready"]
+
+
 def direct_restart_records(observation, run_id, source, identity):
     """Select only actual authenticated Inspect records for the exact original."""
     records = []
@@ -224,10 +403,7 @@ def run_direct_queue_restart(worker, tools, process, identity, control_key_file,
     # Until then a status request would describe an absent run rather than a
     # delivery; inspect only after that actual capture exists.
     while time.monotonic() < deadline:
-        ready = json.loads(direct_guest_python(worker, tools["python"], """
-            from pathlib import Path
-            print(json.dumps({'ready': (Path(selected['root']) / 'evidence/original.json').is_file()}))
-        """, driver))["ready"]
+        ready = direct_restart_readiness(worker, tools, driver)
         if not ready:
             time.sleep(1)
             continue

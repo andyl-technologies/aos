@@ -5,6 +5,7 @@ delivery. Authenticated-record inputs below are synthetic refusal cases only.
 """
 
 import copy
+from contextlib import contextmanager
 import hashlib
 import importlib.util
 import json
@@ -134,6 +135,191 @@ class RestartFences(unittest.TestCase):
                             os.kill(child_pid, signal.SIGTERM)
                     except FileNotFoundError:
                         pass
+
+
+class RestartReadiness(unittest.TestCase):
+    @contextmanager
+    def driver(self):
+        """Hold a real child until its stdin selects an actual terminal status."""
+        python = str(Path(sys.executable).resolve())
+        with tempfile.TemporaryDirectory() as directory:
+            run_id = "f" * 64
+            root = Path(directory) / ("restart-" + run_id)
+            root.mkdir(mode=0o700)
+            outputs = []
+            for name in ("stdout.log", "stderr.log"):
+                descriptor = os.open(root / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                outputs.append(os.fdopen(descriptor, "wb"))
+            program = (
+                "import sys;from pathlib import Path;"
+                "Path('/proc/self/comm').write_text('ready) (child');"
+                "status=int(sys.stdin.readline());"
+                "sys.stderr.write('Private inputs must be owner-only regular files within bounds. '"
+                "'private-output-sentinel\\n');sys.stderr.flush();raise SystemExit(status)"
+            )
+            try:
+                process = subprocess.Popen([python, "-c", program], stdin=subprocess.PIPE,
+                    stdout=outputs[0], stderr=outputs[1])
+            finally:
+                for output in outputs:
+                    output.close()
+            start = (Path("/proc") / str(process.pid) / "stat").read_bytes().rpartition(b") ")[2].split()[19]
+            driver = {"runId": run_id, "root": str(root), "pid": process.pid,
+                "ownerUid": os.getuid(), "startTicks": start.decode()}
+            previous = getattr(restart, "direct_guest_python", None)
+            previous_retainer = getattr(restart, "retain_direct_flow", None)
+            restart.direct_guest_python = controlled_guest
+            try:
+                yield driver, process, {"python": python}
+            finally:
+                restart.direct_guest_python = previous
+                restart.retain_direct_flow = previous_retainer
+                if process.poll() is None:
+                    process.terminate()
+                process.wait(timeout=5)
+                if process.stdin is not None and not process.stdin.closed:
+                    process.stdin.close()
+
+    def exit_without_reaping(self, process, status):
+        process.stdin.write(str(status).encode() + b"\n")
+        process.stdin.flush()
+        process.stdin.close()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            fields = (Path("/proc") / str(process.pid) / "stat").read_bytes().rpartition(b") ")[2].split()
+            if fields[0] == b"Z":
+                return
+            time.sleep(0.01)
+        self.fail("controlled child did not reach an actual zombie state")
+
+    def original(self, driver):
+        evidence = Path(driver["root"]) / "evidence"
+        evidence.mkdir(mode=0o700)
+        descriptor = os.open(evidence / "original.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(b'{"controlled":true}\n')
+        return evidence / "original.json"
+
+    def test_live_child_without_original_continues_without_reading_logs(self):
+        with self.driver() as (driver, process, tools):
+            observation = restart.observe_direct_restart_readiness(None, tools, driver)
+            self.assertEqual(observation["category"], "waiting_for_original")
+            self.assertTrue(observation["custody"])
+            self.assertFalse(observation["ready"])
+            self.assertIsNone(observation["exitCode"])
+            self.assertEqual(observation["stderrReadBytes"], 0)
+            self.assertIsNone(observation["stderrEof"])
+            self.assertFalse(restart.direct_restart_readiness(None, tools, driver))
+            self.assertIsNone(process.poll())
+
+    def test_owned_exit_retains_safe_failure_before_raising(self):
+        with self.driver() as (driver, process, tools):
+            self.exit_without_reaping(process, 9)
+            retained = []
+            restart.retain_direct_flow = lambda name, value: retained.append((name, value))
+            with self.assertRaises(AssertionError):
+                restart.direct_restart_readiness(None, tools, driver)
+            name, observation = retained[0]
+            self.assertEqual(name, "queue-restart-readiness-failure.json")
+            self.assertEqual(observation["category"], "driver_exited_before_original")
+            self.assertEqual(observation["processState"], "Z")
+            self.assertEqual(observation["exitCode"], 9)
+            self.assertEqual(observation["stderrCategory"], "private_input_refused")
+            self.assertTrue(observation["stderrEof"])
+            self.assertGreater(observation["stderrReadBytes"], 0)
+            self.assertNotIn("private-output-sentinel", json.dumps(observation))
+            stderr = Path(driver["root"]) / "stderr.log"
+            with stderr.open("ab") as output:
+                output.write(b"x" * 65537)
+            overflow = restart.observe_direct_restart_readiness(None, tools, driver)
+            self.assertEqual(overflow["stderrReadBytes"], 65537)
+            self.assertFalse(overflow["stderrEof"])
+            self.assertEqual(overflow["stderrCategory"], "stderr_bound_exceeded")
+            self.assertEqual(process.wait(timeout=5), observation["exitCode"])
+
+    def test_reaped_exit_has_unknown_status_and_unknown_observation_refuses(self):
+        with self.driver() as (driver, process, tools):
+            self.exit_without_reaping(process, 7)
+            self.assertEqual(process.wait(timeout=5), 7)
+            observation = restart.observe_direct_restart_readiness(None, tools, driver)
+            self.assertEqual(observation["category"], "driver_missing")
+            self.assertIsNone(observation["exitCode"])
+            self.assertFalse(observation["custody"])
+            self.assertEqual(observation["stderrCategory"], "private_input_refused")
+            restart.direct_guest_python = lambda *args, **kwargs: (_ for _ in ()).throw(
+                RuntimeError("private-channel-sentinel"))
+            retained = []
+            restart.retain_direct_flow = lambda name, value: retained.append(value)
+            with self.assertRaises(AssertionError):
+                restart.direct_restart_readiness(None, tools, driver)
+            self.assertEqual(retained[0]["category"], "readiness_unknown")
+            self.assertIsNone(retained[0]["exitCode"])
+            self.assertNotIn("private-channel-sentinel", json.dumps(retained))
+
+    def test_reused_pid_refuses_even_with_original_and_does_not_touch_outputs(self):
+        with self.driver() as (driver, process, tools):
+            original = self.original(driver)
+            stale = dict(driver, startTicks=str(int(driver["startTicks"]) + 1))
+            before = original.read_bytes()
+            observation = restart.observe_direct_restart_readiness(None, tools, stale)
+            self.assertEqual(observation["category"], "driver_reused")
+            self.assertFalse(observation["ready"])
+            self.assertEqual(observation["outputs"], {})
+            self.assertEqual(observation["stderrReadBytes"], 0)
+            self.assertEqual(original.read_bytes(), before)
+            foreign = dict(driver, ownerUid=os.getuid() + 1)
+            observation = restart.observe_direct_restart_readiness(None, tools, foreign)
+            self.assertEqual(observation["category"], "driver_owner_changed")
+            self.assertEqual(observation["outputs"], {})
+            self.assertIsNone(process.poll())
+
+    def test_original_ready_survives_normal_child_completion(self):
+        with self.driver() as (driver, process, tools):
+            self.original(driver)
+            self.assertTrue(restart.direct_restart_readiness(None, tools, driver))
+            self.exit_without_reaping(process, 0)
+            self.assertEqual(process.wait(timeout=5), 0)
+            observation = restart.observe_direct_restart_readiness(None, tools, driver)
+            self.assertEqual(observation["category"], "original_ready")
+            self.assertTrue(observation["ready"])
+            self.assertFalse(observation["custody"])
+            self.assertIsNone(observation["exitCode"])
+            self.assertEqual(observation["stderrReadBytes"], 0)
+
+    def test_unowned_and_oversized_outputs_are_not_read_or_overwritten(self):
+        with self.driver() as (driver, process, tools):
+            original = self.original(driver)
+            self.exit_without_reaping(process, 4)
+            stderr = Path(driver["root"]) / "stderr.log"
+            stderr.chmod(0o644)
+            observation = restart.observe_direct_restart_readiness(None, tools, driver)
+            self.assertEqual(observation["category"], "output_custody_unknown")
+            self.assertEqual(observation["stderrReadBytes"], 0)
+            self.assertEqual(stderr.stat().st_mode & 0o777, 0o644)
+            stderr.chmod(0o600)
+
+            original.unlink()
+            original.symlink_to(stderr)
+            observation = restart.observe_direct_restart_readiness(None, tools, driver)
+            self.assertFalse(observation["ready"])
+            self.assertEqual(observation["category"], "output_custody_unknown")
+            self.assertTrue(original.is_symlink())
+            original.unlink()
+            os.link(stderr, original)
+            observation = restart.observe_direct_restart_readiness(None, tools, driver)
+            self.assertEqual(observation["category"], "output_custody_unknown")
+            self.assertEqual(stderr.stat().st_nlink, 2)
+            original.unlink()
+
+            descriptor = os.open(original, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "wb") as output:
+                output.truncate(524289)
+            observation = restart.observe_direct_restart_readiness(None, tools, driver)
+            self.assertEqual(observation["category"], "output_custody_unknown")
+            self.assertFalse(observation["ready"])
+            self.assertEqual(original.stat().st_size, 524289)
+            self.assertEqual(observation["stderrReadBytes"], 0)
+            self.assertEqual(process.wait(timeout=5), 4)
 
 
 if __name__ == "__main__":
