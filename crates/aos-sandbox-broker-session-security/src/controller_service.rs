@@ -1676,6 +1676,8 @@ enum ControllerResidentCauseV1 {
     StorageCold,
     // The first native cause stays with the SAME Storage pending-session slot.
     OutputRegistration,
+    // Whole issuer/native/source causes remain beside the SAME Storage Session.
+    CaptureCandidate,
     Closed(&'static str),
 }
 
@@ -1697,6 +1699,7 @@ impl ControllerResidentCauseV1 {
             Self::GitCoverage => "resident original Git cohort enrollment failure",
             Self::StorageCold => "resident original Storage cold admission failure",
             Self::OutputRegistration => "resident original output registration failure",
+            Self::CaptureCandidate => "resident original capture candidate failure",
             Self::Closed(label) => label,
         }
     }
@@ -3087,6 +3090,14 @@ fn ensure_controller_broker_sessions(
     node_id: [u8; 16],
     sessions: &mut ControllerBrokerSessions,
 ) -> Result<(), CycleFailure> {
+    if sessions.storage.as_ref().is_some_and(|storage| storage.has_pending_capture_candidate()
+        || (storage.has_capture_candidate() && sessions.storage_root.requires_reconnect()))
+    {
+        if let Some(worker) = sessions.storage_terminal.as_ref().and_then(std::sync::Weak::upgrade) {
+            worker.close(ControllerResidentCauseV1::CaptureCandidate);
+        }
+        return Err(CycleFailure::Fatal("original capture candidate Session remains occupied".to_owned()));
+    }
     if sessions.storage.as_ref().is_some_and(|storage| storage.has_pending_nix_generation()) {
         #[cfg(feature = "online-nix")]
         if let Some(worker) = sessions.storage_terminal.as_ref().and_then(std::sync::Weak::upgrade) {

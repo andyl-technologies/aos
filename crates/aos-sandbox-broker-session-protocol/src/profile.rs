@@ -357,6 +357,37 @@ pub fn nix_generation_storage_server_hello_v1() -> Result<BrokerServerHello, Bro
     Ok(hello)
 }
 
+/// Builds the selected existing-output inspection client profile.
+///
+/// The ordinary required-method roster remains literal, including on a genuine
+/// Required launch without output custody. The authenticated selected server
+/// may advertise method 41; the caller checks that actual transcript before
+/// coordinates or signing. This supports, but does not require, capture query.
+///
+/// # Errors
+/// Returns the ordinary builder's role or response-ceiling error.
+pub fn execution_capture_storage_client_hello_v1() -> Result<BrokerClientHello, BrokerSessionNegotiationError> {
+    production_broker_client_hello_v1(
+        BrokerSessionProtocolV1::Storage,
+        Audience::AUDIENCE_NODE_CONTROLLER,
+        AUTHENTICATED_RESPONSE_MAXIMUM_BYTES as u32,
+    )
+}
+
+/// Builds the matching selected existing-output inspection server profile.
+///
+/// # Errors
+/// Returns the ordinary builder's role or response-ceiling error.
+pub fn execution_capture_storage_server_hello_v1() -> Result<BrokerServerHello, BrokerSessionNegotiationError> {
+    let mut hello = production_broker_server_hello_v1(
+        BrokerSessionProtocolV1::Storage,
+        Audience::AUDIENCE_NODE_CONTROLLER,
+        AUTHENTICATED_RESPONSE_MAXIMUM_BYTES as u32,
+    )?;
+    hello.methods.push(BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE.into());
+    Ok(hello)
+}
+
 fn git_coverage_client_hello(
     protocol: BrokerSessionProtocolV1,
 ) -> Result<BrokerClientHello, BrokerSessionNegotiationError> {
@@ -1335,6 +1366,40 @@ const fn is_mount_source_acquisition_method(method: BrokerMethod) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_client_support_does_not_require_output_custody() {
+        let selected = execution_capture_storage_client_hello_v1().unwrap();
+        let ordinary = production_broker_client_hello_v1(
+            BrokerSessionProtocolV1::Storage,
+            Audience::AUDIENCE_NODE_CONTROLLER,
+            AUTHENTICATED_RESPONSE_MAXIMUM_BYTES as u32,
+        ).unwrap();
+
+        assert_eq!(selected, ordinary);
+        assert!(!selected.required_methods.contains(
+            &BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE.into(),
+        ));
+    }
+
+    #[test]
+    fn capture_server_adds_only_informational_query_to_ordinary_profile() {
+        let selected = execution_capture_storage_server_hello_v1().unwrap();
+        let mut expected = production_broker_server_hello_v1(
+            BrokerSessionProtocolV1::Storage,
+            Audience::AUDIENCE_NODE_CONTROLLER,
+            AUTHENTICATED_RESPONSE_MAXIMUM_BYTES as u32,
+        ).unwrap();
+        expected.methods.push(BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE.into());
+
+        assert_eq!(selected, expected);
+        assert!(!nix_generation_storage_server_hello_v1().unwrap().methods.contains(
+            &BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE.into(),
+        ));
+        assert!(!nix_generation_storage_client_hello_v1().unwrap().required_methods.contains(
+            &BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE.into(),
+        ));
+    }
 
     const RESPONSE_MAXIMUM: u32 = 65_536;
 

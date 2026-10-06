@@ -120,6 +120,31 @@ impl<'owner> ProtectedPendingBrokerRequestCutV1<'owner> {
         Self::capture_pending(journal, request, transcript, peer)
     }
 
+    /// Borrows only the original Controller-client method-41 pending writer.
+    pub(super) fn capture_execution_capture_candidate(
+        journal: &'owner mut ProtectedBrokerSessionJournalV1,
+        request: &'owner AuthenticatedBrokerMethodRequestV1,
+        transcript: &'owner VerifiedBrokerSessionTranscriptV1,
+        peer: &'owner ConnectionPeerIdentity,
+    ) -> Result<Self, BrokerSessionSecurityError> {
+        use super::{fixed_endpoint, ProtectedBrokerSessionFixedEndpointV1};
+        use aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1;
+        use aos_proto::aos::sandbox::local::v1::{Audience, BrokerMethod};
+
+        let fixed = fixed_endpoint(ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient);
+        if journal.directory != std::path::Path::new(fixed.journal_root)
+            || journal.endpoint.role() != BrokerSessionDurableEndpointV1::Client
+            || transcript.protocol() != BrokerSessionProtocolV1::Storage
+            || transcript.audience() != Audience::AUDIENCE_NODE_CONTROLLER
+            || request.method() != BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE
+            || request.direction() != AuthenticatedBrokerRequestDirectionV1::ClientSend
+            || !transcript.negotiated_methods().contains(&request.method())
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        Self::capture_pending(journal, request, transcript, peer)
+    }
+
     /// Borrows only Storage's original client request to its fixed Host endpoint.
     pub(super) fn capture_storage_output_host_readback(
         journal: &'owner mut ProtectedBrokerSessionJournalV1,

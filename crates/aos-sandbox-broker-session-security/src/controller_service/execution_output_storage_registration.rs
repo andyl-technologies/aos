@@ -213,15 +213,31 @@ where
     T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
 {
     let mut sessions = sessions.lock().map_err(|_| closed())?;
-    let returned = advance_on_original_session(
-        &mut sessions, operation, controller, assignment, environment,
-        parent, preissue, signer, clock,
-    );
+    let candidate_retained = sessions.storage.as_ref().is_some_and(|storage| storage.has_capture_candidate());
+    let registered = if candidate_retained {
+        Ok(())
+    } else {
+        advance_on_original_session(
+            &mut sessions, operation, controller, assignment, environment,
+            parent, preissue, signer, clock,
+        )
+    };
+    let returned = match registered {
+        Ok(()) => advance_original_capture_candidate(
+            &mut sessions, operation, controller, assignment, environment,
+            parent, preissue, signer, clock,
+        ),
+        Err(error) => Err(error),
+    };
     if returned.is_err() {
         if let Some(worker) = sessions.storage_terminal.as_ref().and_then(std::sync::Weak::upgrade) {
             // Close before the shared session lock releases. The marker does
             // not replace the typed first cause borrowed from its resident slot.
-            worker.close(super::ControllerResidentCauseV1::OutputRegistration);
+            worker.close(if sessions.storage.as_ref().is_some_and(|storage| storage.has_capture_candidate()) {
+                super::ControllerResidentCauseV1::CaptureCandidate
+            } else {
+                super::ControllerResidentCauseV1::OutputRegistration
+            });
         }
         if let Some(storage) = sessions.storage.as_ref() {
             if let Some(cause) = storage.output_registration_failure() {
@@ -230,9 +246,44 @@ where
             if let Some(debt) = storage.output_registration_postcheck_debt() {
                 eprintln!("aos-sandboxd: original output registration postcheck debt: {debt}");
             }
+            if let Some(cause) = storage.capture_candidate_failure() {
+                eprintln!("aos-sandboxd: original capture candidate failed: {cause}");
+            }
+            if let Some(debt) = storage.capture_candidate_postcheck_debt() {
+                eprintln!("aos-sandboxd: original capture candidate postcheck debt: {debt}");
+            }
         }
     }
     returned
+}
+
+#[allow(clippy::too_many_arguments)]
+fn advance_original_capture_candidate<T>(
+    sessions: &mut super::ControllerBrokerSessions, operation: OperationId,
+    controller: &mut Journal, assignment: &CurrentAssignmentTarget,
+    environment: &mut EnvironmentProtectedJournalOwnerV1<'_, '_>,
+    parent: &ExecutionParentResourceSourceV1, preissue: &ControllerExecutionPreissueV1,
+    signer: &ControllerBrokerPlanSignerV1, clock: &mut T,
+) -> Result<(), EffectFailure>
+where T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    let storage = sessions.storage.as_mut().ok_or_else(closed)?;
+    // Literal ordinary/Nix profiles do not enter this selected continuation.
+    // A genuinely selected Session still passes the fixed-root/method checks
+    // in its closed coordinates and pending/terminal loans before any signing.
+    if !storage.capture_candidate_profile_selected() { return Ok(()); }
+    let (registration, candidate, session) = storage.capture_candidate_loan()?;
+    if !registration.coordinated_terminal { return Err(closed()); }
+    if candidate.is_none() {
+        *candidate = Some(crate::controller_capture_candidate_exchange::ControllerStorageCaptureCandidateExchangeV1::begin(
+            registration.operation, registration.execution,
+        ));
+    }
+    let original = candidate.as_mut().ok_or_else(closed)?;
+    original.advance(session, operation, controller, assignment, environment, parent, preissue, signer, clock)?;
+    // The observation stays in its original slot. It is informational only;
+    // neither this return nor the signed candidate changes Create/Host gates.
+    original.observation().ok_or_else(closed).map(|_| ())
 }
 
 #[allow(clippy::too_many_arguments)]
