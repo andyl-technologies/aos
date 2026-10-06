@@ -1339,7 +1339,16 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         let original_controller = crate::journal::ProtectedJournalNamesV1::from_bytes(&metadata[176..224])?;
         let original_source = crate::journal::ProtectedJournalNamesV1::from_bytes(&metadata[224..272])?;
         let root_final = self.root_phase(identity, 3)?;
-        if controller_before.0 != ledger.original_next().checked_add(31).ok_or(CreateQ04ErrorV1::Bounds)?
+        // Count the same eight native recipes, including each original
+        // begin/commit pair. The compound resource hold has six extra members;
+        // legacy recipes retain their original total of thirty-one frames.
+        let controller_frames = transitions.iter().try_fold(0_u64, |total, transition| {
+            let members = u64::try_from(transition.transaction().records().len())
+                .map_err(|_| CreateQ04ErrorV1::Bounds)?;
+            let frames = members.checked_add(2).ok_or(CreateQ04ErrorV1::Bounds)?;
+            total.checked_add(frames).ok_or(CreateQ04ErrorV1::Bounds)
+        })?;
+        if controller_before.0 != ledger.original_next().checked_add(controller_frames).ok_or(CreateQ04ErrorV1::Bounds)?
             || ledger.original_next() != u64::from_be_bytes(super::fixed(metadata, 464))
             || controller_before.1 != original_controller
             || root_final.phase() != 7
