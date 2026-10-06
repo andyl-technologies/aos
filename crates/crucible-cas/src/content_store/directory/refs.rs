@@ -141,9 +141,47 @@ impl MutableRefBackend for DirectoryRefBackend {
         Ok(Box::new(DirectoryRefPublicationGuard { _lock: lock }))
     }
 
+    fn compare_remove(
+        &self,
+        name: &RefName,
+        expected: ContentId,
+    ) -> Result<RefRemoveOutcome, StoreError> {
+        let _inventory_lock = self.acquire_ref_inventory_lock(FlockOperation::LockExclusive)?;
+        let mut inventory_state = self.load_or_create_ref_inventory_state()?;
+        let _lock = if is_reader_claim(name) {
+            None
+        } else {
+            Some(self.acquire_lock(name, FlockOperation::LockExclusive)?)
+        };
+        match self.read_unlocked(name)? {
+            None => Ok(RefRemoveOutcome::AlreadyAbsent),
+            Some(current) if current != expected => {
+                Ok(RefRemoveOutcome::Conflict { expected, current })
+            }
+            Some(_) => {
+                self.advance_ref_inventory_state(&mut inventory_state)?;
+                let path = self.ref_path(name);
+                fs::remove_file(&path).map_err(|source| StoreError::Io {
+                    operation: "retire-ref",
+                    path: path.clone(),
+                    source,
+                })?;
+                let directory = path.parent().ok_or(StoreError::InvalidComposition {
+                    reason: "ref retirement has no directory",
+                })?;
+                sync_directory(directory)?;
+                Ok(RefRemoveOutcome::Removed)
+            }
+        }
+    }
+
     fn read_ref(&self, name: &RefName) -> Result<Option<ContentId>, StoreError> {
         let _inventory_lock = self.acquire_ref_inventory_lock(FlockOperation::LockShared)?;
-        let _lock = self.acquire_lock(name, FlockOperation::LockShared)?;
+        let _lock = if is_reader_claim(name) {
+            None
+        } else {
+            Some(self.acquire_lock(name, FlockOperation::LockShared)?)
+        };
         self.read_unlocked(name)
     }
 
@@ -165,7 +203,11 @@ impl MutableRefBackend for DirectoryRefBackend {
     ) -> Result<RefCasOutcome, StoreError> {
         let _inventory_lock = self.acquire_ref_inventory_lock(FlockOperation::LockExclusive)?;
         let mut inventory_state = self.load_or_create_ref_inventory_state()?;
-        let _lock = self.acquire_lock(name, FlockOperation::LockExclusive)?;
+        let _lock = if is_reader_claim(name) {
+            None
+        } else {
+            Some(self.acquire_lock(name, FlockOperation::LockExclusive)?)
+        };
         let current = self.read_unlocked(name)?;
         if current != expected {
             return Ok(RefCasOutcome::Conflict { expected, current });
@@ -174,6 +216,12 @@ impl MutableRefBackend for DirectoryRefBackend {
         self.publish_ref(name, next)?;
         Ok(RefCasOutcome::Advanced { next })
     }
+}
+
+// Reader claims already serialize through the namespace inventory lock. Their
+// unique names never need persistent per-name lock files after retirement.
+fn is_reader_claim(name: &RefName) -> bool {
+    name.as_str().starts_with("ram-readers/")
 }
 
 struct DirectoryRefPublicationGuard {

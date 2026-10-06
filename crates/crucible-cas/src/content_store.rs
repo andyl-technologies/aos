@@ -1178,6 +1178,22 @@ impl PhysicalRepairAuthority {
     }
 }
 
+/// Outcome of conditionally retiring one exact authoritative reference.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefRemoveOutcome {
+    /// The expected binding was removed under the backend's durability contract.
+    Removed,
+    /// The reference was already absent, making retirement idempotent.
+    AlreadyAbsent,
+    /// Another exact binding remains and was not modified.
+    Conflict {
+        /// Binding the retiring owner expected.
+        expected: ContentId,
+        /// Actual current binding preserved by the backend.
+        current: ContentId,
+    },
+}
+
 /// Authoritative mutable-reference backend.
 pub trait MutableRefBackend: Send + Sync {
     /// Returns capabilities enforced for every successful ref operation.
@@ -1194,6 +1210,27 @@ pub trait MutableRefBackend: Send + Sync {
     ///
     /// Returns a backend error when the publication lifecycle cannot be fenced.
     fn acquire_publication_guard(&self) -> Result<Box<dyn RefPublicationGuard>, StoreError>;
+
+    /// Conditionally retires only the caller's exact authoritative binding.
+    ///
+    /// Removal advances the same namespace inventory generation as publication
+    /// and is ordered against inventory under the same lifecycle authority.
+    /// Absence is idempotent; a different current target remains unchanged. This
+    /// operation grants no immutable-object deletion or inventory capability.
+    ///
+    /// # Errors
+    ///
+    /// Returns a backend error without claiming successful retirement, or
+    /// [`StoreError::Unsupported`] when conditional removal is unavailable.
+    fn compare_remove(
+        &self,
+        _name: &RefName,
+        _expected: ContentId,
+    ) -> Result<RefRemoveOutcome, StoreError> {
+        Err(StoreError::Unsupported {
+            capability: "conditional-ref-retirement",
+        })
+    }
 
     /// Reads one named ref.
     ///

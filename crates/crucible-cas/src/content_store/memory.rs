@@ -313,6 +313,27 @@ impl MutableRefBackend for MemoryRefBackend {
         Ok(Box::new(MemoryRefPublicationGuard { _guard: guard }))
     }
 
+    fn compare_remove(
+        &self,
+        name: &RefName,
+        expected: ContentId,
+    ) -> Result<RefRemoveOutcome, StoreError> {
+        let mut state = self.state.lock().map_err(|_| StoreError::Poisoned {
+            operation: "memory-remove-ref",
+        })?;
+        match state.refs.get(name).copied() {
+            None => Ok(RefRemoveOutcome::AlreadyAbsent),
+            Some(current) if current != expected => {
+                Ok(RefRemoveOutcome::Conflict { expected, current })
+            }
+            Some(_) => {
+                state.generation = state.generation.checked_add(1).ok_or(StoreError::Quota)?;
+                state.refs.remove(name);
+                Ok(RefRemoveOutcome::Removed)
+            }
+        }
+    }
+
     fn read_ref(&self, name: &RefName) -> Result<Option<ContentId>, StoreError> {
         let state = self.state.lock().map_err(|_| StoreError::Poisoned {
             operation: "memory-read-ref",

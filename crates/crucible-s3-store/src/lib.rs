@@ -496,6 +496,23 @@ impl StoreS3StrongCasClient for AwsSdkS3StrongCasClient {
             })
     }
 
+    fn delete_small_if_version(
+        &self,
+        bucket: &str,
+        key: &str,
+        expected: &StoreS3ObjectVersion,
+    ) -> Result<StoreS3ConditionalDeleteOutcome, StoreError> {
+        let (bucket, key) = request_location(bucket, key)?;
+        let retained = retained_lengths(&[bucket.len(), key.len(), expected.as_str().len()])?;
+        self.client
+            .call(retained, |response| Command::DeleteIfVersion {
+                bucket,
+                key,
+                expected: expected.as_str().to_string(),
+                response,
+            })
+    }
+
     fn begin_small_object_scan(
         &self,
         bucket: &str,
