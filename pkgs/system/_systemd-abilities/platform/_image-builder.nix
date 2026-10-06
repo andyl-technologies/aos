@@ -222,6 +222,7 @@
             --arg measure ${lib.escapeShellArg "${buildPackages.systemd}/lib/systemd/systemd-measure"} \
             --arg objcopy ${lib.escapeShellArg "${buildPackages.binutils}/bin/objcopy"} \
             --arg mkfsErofs ${lib.escapeShellArg "${buildPackages.erofs-utils}/bin/mkfs.erofs"} \
+            --arg hardlinkTree ${lib.escapeShellArg "${buildPackages.image-hardlink-tree}/bin/aos-image-hardlink-tree"} \
             --arg gccLib ${lib.escapeShellArg "${buildPackages.gcc-libs}/lib"} \
             --arg fsckErofs ${lib.escapeShellArg "${buildPackages.erofs-utils}/bin/fsck.erofs"} \
             --arg veritysetup ${lib.escapeShellArg "${buildPackages.cryptsetup}/sbin/veritysetup"} \
@@ -295,6 +296,7 @@
                 systemd_measure:{executable:$measure,environment:{}},
                 objcopy:{executable:$objcopy,environment:{}},
                 mkfs_erofs:{executable:$mkfsErofs,environment:{LD_LIBRARY_PATH:$gccLib}},
+                hardlink_tree:{executable:$hardlinkTree,environment:{}},
                 fsck_erofs:{executable:$fsckErofs,environment:{}},
                 veritysetup:{executable:$veritysetup,environment:{}},
                 qemu_img:{executable:$qemuImg,environment:{}},
