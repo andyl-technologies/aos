@@ -247,6 +247,8 @@ in {
   integration.disclosure-denied-diagnostic = import ./disclosure-denied-diagnostic.nix {inherit sourceGate;};
   integration.native-recorded-disclosure = import ./native-recorded-disclosure.nix {inherit sourceGate;};
   integration.native-historical-index-completion = import ./native-historical-index-completion.nix {inherit sourceGate;};
+  integration.native-index-publication = import ./native-index-publication.nix {inherit sourceGate;};
+  integration.native-profile-quality = import ./native-profile-quality.nix {inherit sourceGate;};
   integration.property-registry = import ./property-registry.nix {inherit sourceGate;};
   integration.container-reference-models = import ./container-models.nix {inherit sourceGate;};
   integration.refs-reference-models = import ./refs-models.nix {inherit sourceGate;};

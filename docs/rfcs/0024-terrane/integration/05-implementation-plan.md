@@ -1854,6 +1854,36 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   remain intact. Required index completion, tracked Recorded disclosure,
   independent cold reuse and source carry remain incomplete. This candidate is
   isolated and unpublished; it does not qualify the full trunk gate set.
+  The historical-index candidate now passes its eight exact native relationship
+  cases and the related source, loading and completion checks. Application
+  compilation and both mandatory formatters pass on that recorded source.
+  Strict native Clippy reports 41 assertion-style errors in its owned tests;
+  the reviewed corrections still need final qualification. A driver labeled
+  its extra no-default-feature checks as default: their errors are preserved,
+  while the actual default feature profile remains unrun. No current-index
+  publication, lookup coverage or incremental-maintenance claim follows.
+  A source audit identifies the next shared prerequisite: independently select
+  authoring semantics before signing, then retain the successful admission's
+  exact view/root interpretation through candidate recording and post-staging
+  history. Existing historical views retain their own installed selections.
+  Initial requirement installation and preserved gaps must remain successful
+  incomplete outcomes under PROP-22/25; they cannot excuse dropping an actual
+  valid maintained binding under DRV-27/29. Constructor-only profile changes
+  cannot replace an existing protected Guard installation.
+  `checks.terrane.integration.native-index-publication` declares eight exact
+  native groups for those prerequisites under DRV-25/27/30 and PROP-30.
+  Missing, ignored or unexecuted witnesses must fail explicitly. Declaration
+  does not qualify implementation, current coverage or DRV-29's cost bound.
+  The declaration's requested Nix check compiles, then exits 1 naming all eight
+  missing witnesses. Registry completeness and both mandatory formatters pass.
+  `checks.terrane.integration.native-profile-quality` separately checks strict
+  all-target Clippy and private rustdoc in actual default, std/send and native
+  Tokio/SDK configurations. Its hermetic target permits independent review
+  while a worktree's shared incremental target runs tests. No runtime case or
+  feature-matrix completion follows from lint and documentation checks.
+  Its initial trunk run exits 1 in actual-default Clippy with 37 library and
+  22 test diagnostics on unfinished integration. Later profiles and rustdoc
+  do not execute; no suppression or profile success is inferred.
   T-DRV-2, ALG-32, task merges and T1 remain open.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
@@ -2952,8 +2982,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   with one pass and nine failures.
   After correcting retained directory descriptors, genuine full-D ownership,
   actual unlink and synchronization, closed progress acknowledgment and
-  idempotent Done pass in the exact positive case in 110.32 seconds. Remaining
-  recovery and fault cases are unqualified. The original full native suite
+  idempotent Done pass in the exact positive case in 110.32 seconds. A later
+  owning Nix run passes full-D deletion, fresh-placement recovery, recovery at
+  each durable prefix under a higher lease epoch, and resynchronization of
+  owned absence with idempotent Done. Its fifth fault-matrix case fails the
+  final selected-record comparison after genuine bucket reopening refreshes
+  the capabilities probe timestamp. The original failure remains preserved;
+  a bounded reopen-boundary oracle correction still needs review and execution.
+  The remaining five cases do not execute. The original full native suite
   stays red, and no task, milestone or checkbox advances.
   The reviewed pure journal, marking, proof-context, checkpoint, retention and
   grace-window bodies now replace their trunk declarations. All 27 adopted
