@@ -1380,16 +1380,36 @@ pub(crate) fn wait_for_initial_discovery(
     let deadline = Instant::now() + Duration::from_secs(900);
     let discovery = wait_for_process_observation(deadline, || {
         for (key, state) in attempt_states(fixture)? {
-            if !matches!(state, AttemptRuntimeState::Completed { .. })
-                || state.origin() != AttemptExecutionOrigin::Initial
+            if state.origin() != AttemptExecutionOrigin::Initial
+                || !matches!(
+                    state,
+                    AttemptRuntimeState::Completed { .. }
+                        | AttemptRuntimeState::TerminalFailure { .. }
+                )
             {
                 continue;
             }
 
-            let explanation = wait_for_attempt_observation(fixture, key)?;
+            // A terminal execution cannot be resubmitted, and the unique initial
+            // admission is already spent. Its failure has no modeled observation.
+            let failed = matches!(state, AttemptRuntimeState::TerminalFailure { .. });
+            let explanation = if failed {
+                wait_for_attempt_explanation(fixture, key)?
+            } else {
+                wait_for_attempt_observation(fixture, key)?
+            };
             if explanation["attempt"]["start"] == "discover"
                 && explanation["attempt"]["configuration"] == genesis_artifact
             {
+                if failed {
+                    let diagnostics =
+                        campaign_execution_diagnostics(fixture, service, &BTreeSet::new());
+                    return Err(format!(
+                        "initial guest-choice discovery from genesis artifact {genesis_artifact} failed terminally; attempt={} ledger={state:?}; explanation={explanation}; {diagnostics}",
+                        key.attempt()
+                    )
+                    .into());
+                }
                 return Ok(Some((key, explanation)));
             }
         }
