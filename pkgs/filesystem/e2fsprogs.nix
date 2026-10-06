@@ -58,6 +58,23 @@ in
           tar xf $src
           cd e2fsprogs-${version}
 
+          # Source generators and installation helpers execute in the build
+          # sandbox, where host-global shell interpreters are unavailable.
+          for script in \
+            config/parse-types.sh config/config.guess config/config.sub \
+            config/install-sh config/mkinstalldirs config/ltmain.sh \
+            lib/et/compile_et.sh.in lib/ss/mk_cmds.sh.in \
+            util/get-ver util/install-symlink.in; do
+            sed -i "1s|^#!.*|#!$CONFIG_SHELL|" "$script"
+          done
+          test "$(grep -F -c ' /bin/sh $ac_aux_dir/parse-types.sh' configure)" -eq 2
+          sed -i \
+            's| /bin/sh $ac_aux_dir/parse-types.sh| "$CONFIG_SHELL" $ac_aux_dir/parse-types.sh|g' \
+            configure
+          test "$(grep -F -c 'INSTALL_SYMLINK = /bin/sh ' MCONFIG.in)" -eq 1
+          sed -i 's|INSTALL_SYMLINK = /bin/sh |INSTALL_SYMLINK = $(SHELL) |' \
+            MCONFIG.in
+
           # This generator runs on the scheduler during cross builds.
           sed -i \
             's|/bin/echo|${buildPackages.coreutils}/bin/echo|g' \
@@ -104,7 +121,7 @@ in
             else ""
           }
           export LDFLAGS="-Wl,-rpath,$out/lib ''${LDFLAGS:-}"
-          ./configure \
+          "$CONFIG_SHELL" ./configure \
             $configureFlags \
             --prefix=$out \
             ${
@@ -123,14 +140,14 @@ in
       {
         name = "build";
         script = ''
-          make -j$NIX_BUILD_CORES
+          make SHELL="$CONFIG_SHELL" -j$NIX_BUILD_CORES
         '';
       }
       {
         name = "install";
         script = ''
-          make install
-          make install-libs
+          make SHELL="$CONFIG_SHELL" install
+          make SHELL="$CONFIG_SHELL" install-libs
 
           # Upstream installs host-global shell paths that do not exist on AOS.
           for script in \
