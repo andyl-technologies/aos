@@ -1677,7 +1677,7 @@ impl RootSourceGenesisAuthorityV1 {
         require_current_deployment(&self.journal)?;
         self.journal
             .commit_global_capacity_reservation_v1(prepared, &transaction)?;
-        if self.intent(project)? != Some(intent.clone()) {
+        if self.intent(project)?.as_ref() != Some(&intent) {
             return Err(SourceGenesisErrorV1::Stale);
         }
         self.recheck()?;
@@ -1758,7 +1758,7 @@ impl RootSourceGenesisAuthorityV1 {
             let preflight = authority.preflight_reserved_terminal_v1(&reservation, &transaction)?;
             authority.commit_reserved_terminal_v1(&preflight, reservation, &transaction)?;
         }
-        if self.floor(project)? != Some(floor.clone()) || self.intent(project)?.is_some() {
+        if self.floor(project)?.as_ref() != Some(&floor) || self.intent(project)?.is_some() {
             return Err(SourceGenesisErrorV1::Stale);
         }
         self.recheck()?;
