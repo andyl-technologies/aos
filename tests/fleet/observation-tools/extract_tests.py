@@ -26,10 +26,15 @@ class ExtractionTests(unittest.TestCase):
 
     def test_unsupported_browser_shape_and_escapes_refuse(self):
         source = (Path(sys.argv[1]) / 'crates/aos-hub-core/src/web/console/handlers.rs').read_text()
+        _, expression = extractor.browser_expression(source)
+        extra_argument = source.replace(expression.decode(), expression.decode() + ', extra', 1)
+
         for altered in [source.replace('let html = format!(', 'let html = another!('),
                         source.replace('<!doctype html>', r'\u{41}'),
                         source.replace('{csrf}', '{unsupported}'),
-                        source.replace('    );\n    (', '        , extra\n    );\n    (', 1)]:
+                        extra_argument]:
+            self.assertNotEqual(altered, source)
+
             with self.assertRaises(ValueError):
                 extractor.browser_expression(altered)
 
