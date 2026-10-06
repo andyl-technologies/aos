@@ -836,7 +836,7 @@ fn require_source_transition_with_recipe(
     let rows = current_rows_with_recipe(state, recipe)?;
     match phase.map(FirstSourceSuccessorNativePhaseV2::canonical) {
         Some(FirstSourceSuccessorNativePhaseV2::SourceAppend) => {
-            let [tree, lineage, receipt_record, pending_record, capacity] = transaction.records() else {
+            let [_, _, receipt_record, pending_record, capacity] = transaction.records() else {
                 return Err(JournalError::ProtectedBoundary);
             };
             if rows.pending.is_some()
@@ -871,15 +871,15 @@ fn require_source_transition_with_recipe(
             {
                 return Err(JournalError::ProtectedBoundary);
             }
-            let pair = [tree.clone(), lineage.clone()];
+            let pair = &transaction.records()[..2];
             match recipe {
                 SourceSuccessorFamilyRecipeV3::SingleProjectV2 => {
-                    crate::hierarchy::validate_source_first_successor_members_v2(state, &receipt, Some(&pair))?;
+                    crate::hierarchy::validate_source_first_successor_members_v2(state, &receipt, Some(pair))?;
                 }
                 SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected } => {
                     if selected != Some(project) { return Err(JournalError::ProtectedBoundary); }
                     crate::hierarchy::validate_source_project_continuation_members_v3(
-                        state, &rows.receipts, Some((&receipt, &pair)),
+                        state, &rows.receipts, Some((&receipt, pair)),
                     )?;
                 }
             }
