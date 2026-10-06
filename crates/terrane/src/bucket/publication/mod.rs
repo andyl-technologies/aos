@@ -411,16 +411,48 @@ impl<
         observed: &SelectedObservation<'_>,
         name: &str,
     ) -> Result<Option<Vec<u8>>, StoreFailure> {
-        self.check_observation(observed).await?;
+        Ok(self
+            .selected_lineage_record(observed, name)
+            .await?
+            .and_then(receipts::RecordRead::into_bytes))
+    }
+
+    /// Retains exact protected lineage bytes and their physical read receipt.
+    ///
+    /// The selected source row fixes the registered key and raw digest. This
+    /// observation grants no source-preservation or collection authority.
+    ///
+    /// # Errors
+    /// Rejects mismatched holders, missing or malformed selected lineage,
+    /// conflicting source names and unavailable protected physical reads.
+    pub(crate) async fn selected_lineage_record(
+        &self,
+        observed: &SelectedObservation<'_>,
+        name: &str,
+    ) -> Result<Option<receipts::RecordRead>, StoreFailure> {
+        let control = self.check_observation(observed).await?;
         let Some(row) = observed.state().sources.iter().find(|row| row.name == name) else {
             return Ok(None);
         };
-        let bytes = self
-            .selected_evidence(observed, "lineage", row.digest)
+        let suffix: String = row
+            .digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let read = control
+            .read_observed(self.fs(), &format!("publication/lineage/{suffix}"))
             .await?;
-        terrane_core::gc::publication::evidence::CheckedLineage::decode(&bytes)
+        let bytes = read.bytes().ok_or_else(corrupt)?;
+        if digest(bytes) != row.digest {
+            return Err(corrupt());
+        }
+        let lineage = terrane_core::gc::publication::evidence::CheckedLineage::decode(bytes)
             .map_err(|_| corrupt())?;
-        Ok(Some(bytes))
+        if lineage.source_name != row.name {
+            return Err(corrupt());
+        }
+        self.check_observation(observed).await?;
+        Ok(Some(read))
     }
 
     async fn check_observation(

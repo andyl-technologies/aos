@@ -538,6 +538,16 @@ control receipt can retain its same acquired native exclusions and exact origina
 observations for renewal without reacquiring the already-held control lock;
 cloning neither refreshes authority nor creates a new physical receipt.
 
+The existing private cold-fork source candidate retains its original commit
+`78eb15c7f6` and current prerequisite composition for review and adaptation.
+`checks.terrane.integration.native-cold-fork-source` requires its six exact
+non-ignored native cases; registration alone does not qualify them. The shared
+selected-lineage reader retains actual protected metadata/body and checks the
+selected digest and source name before and after observation. Its receipt is
+read data, not publication authority. End-to-end fork publication with no
+TreeNode reads/decodes and source-preserving collection remain ALG-32
+prerequisites; the broad `algebra-fork` gate stays pending.
+
 The reviewed concrete ext4 VM harness is now adopted as a shared prerequisite.
 It uses the checked release package in the existing source-built headless VM
 framework, verifies the actual ext4 filesystem, and checks separate-process
