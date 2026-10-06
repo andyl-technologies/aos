@@ -32,6 +32,9 @@
 //! The 776-byte V1 policy and claim purposes 1 through 6 remain strict. The
 //! 1128-byte Host policy uses claim family `AOSRSC03` only for purposes 7 and 8;
 //! its claim layout is otherwise the same 531-byte canonical record.
+//! The 1304-byte `AOSRSB03` adds the full Controller FirstGlobal prefix vector
+//! after the Host vectors. Its 531-byte `AOSRSC04` claims accept only purpose 9;
+//! neither a historical prefix claim nor these image bytes construct a loan.
 
 use aos_sandbox_core::{ResourceAccount, ResourceCeilings, ResourceDimension, ResourceLimit, ResourceVector};
 use sha2::{Digest as _, Sha256};
@@ -46,9 +49,28 @@ const HEAD_MAGIC: &[u8; 8] = b"AOSRSH01";
 const CLAIM_MAGIC: &[u8; 8] = b"AOSRSC02";
 pub(super) const IMAGE_POLICY_BYTES: usize = 776;
 pub(super) const HOST_IMAGE_POLICY_BYTES: usize = 1128;
+pub(super) const FIRST_GLOBAL_IMAGE_POLICY_BYTES: usize = 1304;
 const IMAGE_POLICY_MAGIC: &[u8; 8] = b"AOSRSB01";
 
 pub(super) fn decode_image_policy(bytes: &[u8]) -> Result<ImageBootstrapPolicy, ResourceReservationErrorV1> {
+    if bytes.get(..8) == Some(b"AOSRSB03".as_slice()) {
+        require_record(bytes, FIRST_GLOBAL_IMAGE_POLICY_BYTES, b"AOSRSB03")?;
+        let policy = ImageBootstrapPolicy {
+            node: fixed(&bytes[8..24])?,
+            epoch: fixed(&bytes[24..40])?,
+            capacity: decode_vector(&bytes[40..216])?,
+            baseline: decode_vector(&bytes[216..392])?,
+            controller: decode_vector(&bytes[392..568])?,
+            components: decode_vector(&bytes[568..744])?,
+            host: Some(super::HostComponentPolicy {
+                service: decode_vector(&bytes[744..920])?,
+                control: decode_vector(&bytes[920..1096])?,
+            }),
+            first_global_prefix: Some(decode_vector(&bytes[1096..1272])?),
+        };
+        policy.validate()?;
+        return Ok(policy);
+    }
     if bytes.get(..8) == Some(b"AOSRSB02".as_slice()) {
         require_record(bytes, HOST_IMAGE_POLICY_BYTES, b"AOSRSB02")?;
         let policy = ImageBootstrapPolicy {
@@ -62,6 +84,7 @@ pub(super) fn decode_image_policy(bytes: &[u8]) -> Result<ImageBootstrapPolicy, 
                 service: decode_vector(&bytes[744..920])?,
                 control: decode_vector(&bytes[920..1096])?,
             }),
+            first_global_prefix: None,
         };
         policy.validate()?;
         return Ok(policy);
@@ -75,6 +98,7 @@ pub(super) fn decode_image_policy(bytes: &[u8]) -> Result<ImageBootstrapPolicy, 
         controller: decode_vector(&bytes[392..568])?,
         components: decode_vector(&bytes[568..744])?,
         host: None,
+        first_global_prefix: None,
     };
     policy.validate()?;
     Ok(policy)
@@ -155,6 +179,9 @@ pub(super) fn encode_claim(claim: Claim) -> Result<[u8; CLAIM_BYTES], ResourceRe
     validate_claim(claim)?;
     let mut bytes = [0; CLAIM_BYTES];
     bytes[..8].copy_from_slice(CLAIM_MAGIC);
+    if claim.purpose == ClaimPurpose::ControllerFirstGlobalPrefix {
+        bytes[..8].copy_from_slice(b"AOSRSC04");
+    }
     if matches!(claim.purpose,
         ClaimPurpose::HostComponentBootstrap | ClaimPurpose::HostControlInterval)
     {
@@ -174,6 +201,7 @@ pub(super) fn encode_claim(claim: Claim) -> Result<[u8; CLAIM_BYTES], ResourceRe
         ClaimPurpose::Q04Preparation => 6,
         ClaimPurpose::HostComponentBootstrap => 7,
         ClaimPurpose::HostControlInterval => 8,
+        ClaimPurpose::ControllerFirstGlobalPrefix => 9,
     };
     bytes[185..201].copy_from_slice(&claim.operation);
     bytes[201..217].copy_from_slice(&claim.project);
@@ -203,7 +231,10 @@ pub(super) fn encode_claim(claim: Claim) -> Result<[u8; CLAIM_BYTES], ResourceRe
 
 pub(super) fn decode_claim(bytes: &[u8]) -> Result<Claim, ResourceReservationErrorV1> {
     let host = bytes.get(..8) == Some(b"AOSRSC03".as_slice());
-    if host {
+    let first_global = bytes.get(..8) == Some(b"AOSRSC04".as_slice());
+    if first_global {
+        require_record(bytes, CLAIM_BYTES, b"AOSRSC04")?;
+    } else if host {
         require_record(bytes, CLAIM_BYTES, b"AOSRSC03")?;
     } else {
         require_record(bytes, CLAIM_BYTES, CLAIM_MAGIC)?;
@@ -215,14 +246,15 @@ pub(super) fn decode_claim(bytes: &[u8]) -> Result<Claim, ResourceReservationErr
         child: fixed(&bytes[136..152])?,
         owner: fixed(&bytes[152..184])?,
         purpose: match bytes[184] {
-            1 if !host => ClaimPurpose::ControllerBootstrap,
-            2 if !host => ClaimPurpose::ComponentEnvelope,
-            3 if !host => ClaimPurpose::InclusiveGrant,
-            4 if !host => ClaimPurpose::Snapshot,
-            5 if !host => ClaimPurpose::ProjectPreparation,
-            6 if !host => ClaimPurpose::Q04Preparation,
+            1 if !host && !first_global => ClaimPurpose::ControllerBootstrap,
+            2 if !host && !first_global => ClaimPurpose::ComponentEnvelope,
+            3 if !host && !first_global => ClaimPurpose::InclusiveGrant,
+            4 if !host && !first_global => ClaimPurpose::Snapshot,
+            5 if !host && !first_global => ClaimPurpose::ProjectPreparation,
+            6 if !host && !first_global => ClaimPurpose::Q04Preparation,
             7 if host => ClaimPurpose::HostComponentBootstrap,
             8 if host => ClaimPurpose::HostControlInterval,
+            9 if first_global => ClaimPurpose::ControllerFirstGlobalPrefix,
             _ => return Err(ResourceReservationErrorV1::CorruptLedger),
         },
         operation: fixed(&bytes[185..201])?,
@@ -328,6 +360,12 @@ fn validate_claim(claim: Claim) -> Result<(), ResourceReservationErrorV1> {
         return Err(ResourceReservationErrorV1::CorruptLedger);
     }
     match (claim.purpose, claim.cut) {
+        (ClaimPurpose::ControllerFirstGlobalPrefix, ClaimCut::BootLifetime)
+            if matches!(claim.state, ClaimState::Reserved | ClaimState::Committed)
+            && claim.owner == claim.enrollment.manifest
+            && claim.child == [0; 16] && claim.operation == [0; 16]
+            && claim.project == [0; 16] && claim.sandbox == [0; 16]
+            && claim.tree_revision == [0; 32] && claim.genesis_instance == [0; 32] => {}
         (ClaimPurpose::HostComponentBootstrap | ClaimPurpose::HostControlInterval,
             ClaimCut::BootLifetime)
             if claim.state == ClaimState::Reserved

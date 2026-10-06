@@ -3347,6 +3347,73 @@ impl Journal {
             .map(|((namespace, key), value)| (*namespace, key.as_slice(), value.as_slice()))
     }
 
+    // This closed borrowed extent prices already-owned storage and the actual
+    // native file, rather than materializing a second logical replay. It is
+    // DATA until the entered prefix joins the same original bank and writer.
+    pub(crate) fn first_global_allocation_shape_v1(
+        &self,
+    ) -> Result<crate::controller_resource_reservation::service_interval::JournalShape, JournalError> {
+        self.ensure_healthy()?;
+        let mut retained_bytes = 0_usize;
+        for ((_, key), value) in &self.state {
+            retained_bytes = retained_bytes.checked_add(key.capacity())
+                .and_then(|bytes| bytes.checked_add(value.capacity()))
+                .ok_or(JournalError::JournalTooLarge)?;
+        }
+        for key in self.idempotency.keys() {
+            retained_bytes = retained_bytes.checked_add(key.capacity())
+                .ok_or(JournalError::JournalTooLarge)?;
+        }
+        let cells = self.state.len().checked_add(self.idempotency.len())
+            .and_then(|count| count.checked_add(self.transaction_ids.len()))
+            .and_then(|count| count.checked_add(self.committed_namespaces.len()))
+            .ok_or(JournalError::JournalTooLarge)?;
+        Ok(crate::controller_resource_reservation::service_interval::JournalShape {
+            retained_bytes,
+            cells,
+            native_bytes: self.file.metadata()?.len(),
+            maximum_transaction_bytes: self.limits.maximum_transaction_bytes,
+            maximum_record_bytes: self.limits.maximum_record_bytes,
+        })
+    }
+
+    // Uses the same framing layouts before the prefix's two record Vecs exist.
+    pub(crate) fn first_global_prefix_append_bytes_v1() -> Result<u64, JournalError> {
+        let begin = EncodedFrameLayout::new(std::mem::size_of::<u32>())?;
+        let head = EncodedFrameLayout::new(EncodedRecordLayout::new(17, Some(945))?.payload_bytes)?;
+        let claim = EncodedFrameLayout::new(EncodedRecordLayout::new(17, Some(531))?.payload_bytes)?;
+        let commit = EncodedFrameLayout::new(COMMIT_PAYLOAD_BYTES)?;
+        [begin.frame_bytes, head.frame_bytes, claim.frame_bytes, commit.frame_bytes]
+            .into_iter().try_fold(0_u64, |bytes, frame| {
+                bytes.checked_add(frame as u64).ok_or(JournalError::JournalTooLarge)
+            })
+    }
+
+    // Closed Global recipes: acceptance, Tree/lineage/receipt/pending, floor
+    // ACK, Source ACK, Complete, inclusive Project grant, and prefix first use.
+    // Fixed genesis values fit the largest existing strict phase payload;
+    // native bank heads are separately included in that upper bound. This
+    // prices framing through the same engine, not the 1-GiB Source TX ceiling.
+    pub(crate) fn first_global_native_append_bound_v1(
+        largest_phase_payload: usize,
+    ) -> Result<u64, JournalError> {
+        let key = controller_source_genesis::ACCEPTANCE_PREFIX.len()
+            .checked_add(std::mem::size_of::<aos_sandbox_core::ProjectId>())
+            .ok_or(JournalError::JournalTooLarge)?;
+        let value = largest_phase_payload.max(945);
+        let record = EncodedFrameLayout::new(EncodedRecordLayout::new(key, Some(value))?.payload_bytes)?;
+        let begin = EncodedFrameLayout::new(std::mem::size_of::<u32>())?;
+        let commit = EncodedFrameLayout::new(COMMIT_PAYLOAD_BYTES)?;
+        [1_usize, 4, 1, 2, 1, 3, 2].into_iter().try_fold(0_u64, |bytes, members| {
+            let transaction = record.frame_bytes.checked_mul(members)
+                .and_then(|bytes| bytes.checked_add(begin.frame_bytes))
+                .and_then(|bytes| bytes.checked_add(commit.frame_bytes))
+                .ok_or(JournalError::JournalTooLarge)?;
+            bytes.checked_add(u64::try_from(transaction).map_err(|_| JournalError::JournalTooLarge)?)
+                .ok_or(JournalError::JournalTooLarge)
+        })
+    }
+
     /// Reports whether replay produced no materialized record in any namespace.
     ///
     /// This diagnostic view remains available after an ambiguous I/O failure

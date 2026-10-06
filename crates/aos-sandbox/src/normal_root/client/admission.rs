@@ -559,6 +559,7 @@ macro_rules! finish {
             tpm_image: ($capture).tpm_image,
             nix_delivery: $nix,
             resource_delivery: ($capture).resource_delivery,
+            first_global_observers: std::sync::Mutex::new(None),
         };
         retained.recheck()?;
         Ok(Some(retained))
@@ -719,6 +720,7 @@ impl AdmissionStorage {
                     cgroup,
                     tpm_image: self.capture.tpm_image,
                     resource_delivery: self.capture.resource_delivery,
+                    first_global_observers: std::sync::Mutex::new(None),
                     nix_delivery,
                 });
                 Ok(())

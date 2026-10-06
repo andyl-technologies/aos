@@ -55,7 +55,7 @@ const NIX_BARRIER_PROPERTIES: &[&str] = &[
     "KillMode",
     "TimeoutStopUSec",
 ];
-const PEER_PROPERTIES: &[&str] = &[
+pub(super) const PEER_PROPERTIES: &[&str] = &[
     "ControlGroup",
     "OpenFile",
     "ExtraFileDescriptorNames",
@@ -210,6 +210,16 @@ pub(super) fn observe_peer(
     profile: &super::profile::NormalRootProfileV1,
 ) -> Result<ServiceObservationV1, NormalRootStartupErrorV1> {
     let (values, unit) = read_properties(UNIT, pid, PEER_PROPERTIES)?;
+    decode_peer_properties(profile_path, pid, profile, &values, &unit)
+}
+
+pub(super) fn decode_peer_properties(
+    profile_path: &std::path::Path,
+    pid: u32,
+    profile: &super::profile::NormalRootProfileV1,
+    values: &[OwnedValue],
+    unit: &[OwnedValue],
+) -> Result<ServiceObservationV1, NormalRootStartupErrorV1> {
     let common = values
         .get(..SERVICE_PROPERTIES.len())
         .ok_or(NormalRootStartupErrorV1::Service)?;
@@ -220,7 +230,7 @@ pub(super) fn observe_peer(
     let profile_path = profile_path
         .to_str()
         .ok_or(NormalRootStartupErrorV1::Profile)?;
-    immutable_observation(decode(common, &unit, profile_path)?)
+    immutable_observation(decode(common, unit, profile_path)?)
 }
 
 pub(super) fn require_peer_launch(
@@ -320,6 +330,192 @@ fn read_properties_with_recipe(
         .map_err(|_| NormalRootStartupErrorV1::Service)?
         .join()
         .map_err(|_| NormalRootStartupErrorV1::Service)?
+}
+
+// Each selected observation has one fixed-stack worker and one distinct
+// no-Subscribe transport. The archive is paid before any entry is constructed;
+// native errors and cancellation remain owned even when only a coarse status
+// can be returned to the existing profile decoder.
+pub(super) const FIRST_GLOBAL_OBSERVER_STACK_BYTES: usize = 512 * 1024;
+
+pub(crate) fn first_global_observer_demand_v1(
+) -> Result<aos_sandbox_core::ResourceVector, NormalRootStartupErrorV1> {
+    use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+    use aos_systemd::ControllerPropertyObserverAttemptV1 as Observer;
+
+    // Each encoded byte can nominate a decoded value cell. This intentionally
+    // overprices malformed replies as well as the expected fixed property
+    // lists; the selected receiver enforces these extents before resizing.
+    let incoming = Observer::MESSAGE_BYTES.checked_mul(Observer::INCOMING_MESSAGES)
+        .ok_or(NormalRootStartupErrorV1::Service)?;
+    let outgoing = Observer::MESSAGE_BYTES.checked_mul(Observer::OUTGOING_MESSAGES)
+        .ok_or(NormalRootStartupErrorV1::Service)?;
+    let cells = incoming.checked_add(outgoing)
+        .ok_or(NormalRootStartupErrorV1::Service)?;
+    // A wire byte is a conservative possible value/container cell. Include
+    // both dictionary operands and container links, and the simultaneous
+    // original/decoder-facing copies. This is structural provision, not an
+    // assertion about the allocator's physical layout or exact peak.
+    let value_cell = std::mem::size_of::<(OwnedValue, OwnedValue, [usize; 3])>();
+    let decoded = incoming.checked_mul(value_cell)
+        .ok_or(NormalRootStartupErrorV1::Service)?;
+    let memory = Observer::RAW_PREFIX_BYTES.checked_add(incoming)
+        .and_then(|bytes| bytes.checked_add(outgoing))
+        .and_then(|bytes| bytes.checked_add(decoded.checked_mul(2)?))
+        .and_then(|bytes| bytes.checked_add(Observer::AUTH_BYTES.checked_mul(4)?))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<FirstGlobalPropertyEntry>()))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<FirstGlobalPropertyOriginal>()))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<tokio::runtime::Runtime>()))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<SystemdClient>()))
+        .and_then(|bytes| bytes.checked_add(Observer::inline_bytes()))
+        // Runtime/connection queues, fixed task frames, parser scratch and
+        // owning native errors have separate provision from raw frame bytes.
+        // The immutable selected service limits remain the physical backstop;
+        // this row does not claim sizeof(Runtime) measures its heap.
+        .and_then(|bytes| bytes.checked_add(cells.checked_mul(value_cell)?))
+        .and_then(|bytes| bytes.checked_add(FIRST_GLOBAL_OBSERVER_STACK_BYTES))
+        .ok_or(NormalRootStartupErrorV1::Service)?;
+    let memory = u64::try_from(memory).map_err(|_| NormalRootStartupErrorV1::Service)?;
+    let cells = u64::try_from(cells).map_err(|_| NormalRootStartupErrorV1::Service)?;
+    let traffic = u64::try_from(incoming.checked_add(outgoing)
+        .ok_or(NormalRootStartupErrorV1::Service)?)
+        .map_err(|_| NormalRootStartupErrorV1::Service)?;
+    Ok(ResourceVector::ZERO
+        .with(D::MemoryBytes, memory)
+        // Sequential joined workers contribute one peak task in fixed_demand,
+        // not one permanently live task for every archived observation.
+        .with(D::OpenFiles, 3)
+        .with(D::MetadataEntries, cells)
+        .with(D::NetworkBytes, traffic)
+        .with(D::PublicationStagingBytes, memory)
+        .with(D::LogBytes, u64::try_from(Observer::MESSAGE_BYTES)
+            .map_err(|_| NormalRootStartupErrorV1::Service)?)
+        .with(D::OutputBytes, memory))
+}
+
+struct FirstGlobalPropertyOriginal {
+    attempt: aos_systemd::ControllerPropertyObserverAttemptV1,
+    runtime: Option<Result<tokio::runtime::Runtime, std::io::Error>>,
+    action: Option<Result<(), NormalRootStartupErrorV1>>,
+}
+
+struct FirstGlobalPropertyEntry {
+    original: std::sync::Arc<std::sync::Mutex<FirstGlobalPropertyOriginal>>,
+    spawn: Option<Result<std::thread::JoinHandle<()>, std::io::Error>>,
+    joined: Option<std::thread::Result<()>>,
+}
+
+pub(super) struct FirstGlobalPropertyArchive {
+    entries: Vec<FirstGlobalPropertyEntry>,
+    maximum: usize,
+    preparation: Option<Result<(), std::collections::TryReserveError>>,
+    lifetime: crate::controller_resource_reservation::service_interval::ObserverLifetime,
+}
+
+impl FirstGlobalPropertyArchive {
+    pub(super) fn new(
+        maximum: usize,
+        lifetime: crate::controller_resource_reservation::service_interval::ObserverLifetime,
+    ) -> Self {
+        Self {
+            entries: Vec::new(),
+            maximum,
+            preparation: None,
+            lifetime,
+        }
+    }
+
+    // Called under the genuine image-owned prefix after its complete demand
+    // has passed. A partial allocation remains parked in the original archive.
+    pub(super) fn prepare(&mut self) -> Result<(), NormalRootStartupErrorV1> {
+        if self.preparation.is_some() || self.maximum == 0 {
+            return Err(NormalRootStartupErrorV1::Service);
+        }
+        self.preparation = Some(self.entries.try_reserve_exact(self.maximum));
+        if !matches!(self.preparation, Some(Ok(()))) || self.entries.capacity() > self.maximum {
+            return Err(NormalRootStartupErrorV1::Service);
+        }
+        Ok(())
+    }
+
+    pub(super) fn read(
+        &mut self,
+        unit_name: &'static str,
+        pid: u32,
+        properties: &'static [&'static str],
+    ) -> Result<(Vec<OwnedValue>, Vec<OwnedValue>), NormalRootStartupErrorV1> {
+        if !self.lifetime.is_open()
+            || !matches!(self.preparation, Some(Ok(())))
+            || self.entries.len() >= self.maximum
+            || self.entries.len() >= self.entries.capacity()
+            || properties.len() > PEER_PROPERTIES.len()
+        {
+            return Err(NormalRootStartupErrorV1::Service);
+        }
+
+        let original = std::sync::Arc::new(std::sync::Mutex::new(FirstGlobalPropertyOriginal {
+            attempt: aos_systemd::ControllerPropertyObserverAttemptV1::empty(),
+            runtime: None,
+            action: None,
+        }));
+        self.entries.push(FirstGlobalPropertyEntry {
+            original,
+            spawn: None,
+            joined: None,
+        });
+        let entry = self.entries.last_mut().ok_or(NormalRootStartupErrorV1::Service)?;
+        let worker_original = std::sync::Arc::clone(&entry.original);
+        entry.spawn = Some(std::thread::Builder::new()
+            .name("first-global-pid1-readback".to_owned())
+            .stack_size(FIRST_GLOBAL_OBSERVER_STACK_BYTES)
+            .spawn(move || {
+                let Ok(mut original) = worker_original.lock() else {
+                    return;
+                };
+                original.runtime = Some(tokio::runtime::Builder::new_current_thread()
+                    .enable_all().build());
+                let FirstGlobalPropertyOriginal {
+                    attempt,
+                    runtime,
+                    action,
+                } = &mut *original;
+
+                let mut cancellation = attempt.cancellation_fence();
+                *action = Some(match runtime.as_ref() {
+                    Some(Ok(runtime)) => runtime.block_on(async {
+                        let outcome = tokio::time::timeout(Duration::from_secs(5), async {
+                            attempt.connect().await.map_err(|_| NormalRootStartupErrorV1::Service)?;
+                            attempt.observe_pid1_service_startup_properties(
+                                unit_name, pid, properties, UNIT_PROPERTIES,
+                            ).await.map_err(|_| NormalRootStartupErrorV1::Service)
+                        }).await.map_err(|_| NormalRootStartupErrorV1::Service);
+                        outcome.and_then(std::convert::identity)
+                    }),
+                    _ => Err(NormalRootStartupErrorV1::Service),
+                });
+                if matches!(action.as_ref(), Some(Ok(()))) {
+                    cancellation.complete();
+                }
+            }));
+
+        match entry.spawn.take() {
+            Some(Ok(worker)) => entry.joined = Some(worker.join()),
+            Some(Err(error)) => entry.spawn = Some(Err(error)),
+            None => {}
+        }
+
+        let original = entry.original.lock().map_err(|_| NormalRootStartupErrorV1::Service)?;
+        if !matches!(entry.joined, Some(Ok(()))) || !matches!(original.action, Some(Ok(()))) {
+            return Err(NormalRootStartupErrorV1::Service);
+        }
+        let (service, unit) = original.attempt.property_result()
+            .and_then(|result| result.as_ref().ok())
+            .ok_or(NormalRootStartupErrorV1::Service)?;
+        let clone_values = |values: &[OwnedValue]| values.iter()
+            .map(|value| value.try_clone().map_err(|_| NormalRootStartupErrorV1::Service))
+            .collect::<Result<Vec<_>, _>>();
+        Ok((clone_values(service)?, clone_values(unit)?))
+    }
 }
 
 pub(super) fn immutable_observation(

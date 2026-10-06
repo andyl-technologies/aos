@@ -15,8 +15,10 @@ mod component;
 mod preparation;
 mod q04;
 mod settlement;
+pub(crate) mod service_interval;
 
 pub(crate) use grant::ProjectResourceGrantAttemptV1;
+pub use service_interval::ControllerFirstGlobalPrefixAttemptV1;
 pub use preparation::ProjectPreparationReservationAttemptV1;
 pub(crate) use preparation::OriginalPreparationData;
 pub(crate) use q04::Q04ResourceTransferV1;
@@ -131,6 +133,7 @@ struct ImageBootstrapPolicy {
     controller: ResourceVector,
     components: ResourceVector,
     host: Option<HostComponentPolicy>,
+    first_global_prefix: Option<ResourceVector>,
 }
 
 // Both image-owned vectors are subdivisions of Components, not Node issuers.
@@ -175,6 +178,25 @@ impl ImageBootstrapPolicy {
                     if envelope.get(dimension) == 0 {
                         return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
                     }
+                }
+            }
+        }
+        if let Some(prefix) = self.first_global_prefix {
+            // The prefix is a subdivision of the already-paid Controller,
+            // never another immediate Node grant.
+            if self.host.is_none() {
+                return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
+            }
+            self.controller.checked_sub(prefix)?;
+            for dimension in [
+                aos_sandbox_core::ResourceDimension::CpuMicrosPerPeriod,
+                aos_sandbox_core::ResourceDimension::MemoryBytes,
+                aos_sandbox_core::ResourceDimension::Pids,
+                aos_sandbox_core::ResourceDimension::OpenFiles,
+                aos_sandbox_core::ResourceDimension::ConcurrentOperations,
+            ] {
+                if prefix.get(dimension) == 0 {
+                    return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
                 }
             }
         }
@@ -223,6 +245,7 @@ enum ClaimPurpose {
     Q04Preparation,
     HostComponentBootstrap,
     HostControlInterval,
+    ControllerFirstGlobalPrefix,
 }
 
 /// Compares the original fixed Host policy and PID1 delivery as borrowed DATA.
@@ -340,10 +363,26 @@ impl Transition<'_> {
         // The sole initializer is this closed kernel recipe. It cannot call
         // back into this cell; exclusive journal custody excludes another writer.
         let resident = crossing.result.get_or_init(|| {
-            crate::policy_compiler::observe_root_first_source_successor_clock_v2(
-                Some(crossing.original),
-            ).and_then(|sample| {
-                if sample.boottime_nanoseconds() >= crossing.deadline {
+            let first_global = matches!(self.original,
+                TransitionOriginal::Account(original)
+                    if original.claim.purpose == ClaimPurpose::ControllerFirstGlobalPrefix);
+            let observed = if first_global {
+                // This closed boot-lifetime subdivision has no inherited
+                // operation's 65-second recipe. Its boot-lifetime first use
+                // retains the original pair without inventing a Root deadline.
+                crate::policy_compiler::observe_root_first_source_successor_clock_v2(None)
+                    .and_then(|sample| {
+                        crossing.original.validate_later_sample(sample)
+                            .map_err(|_| crate::hierarchy::genesis_profile::SourceGenesisErrorV1::Stale)?;
+                        Ok(sample)
+                    })
+            } else {
+                crate::policy_compiler::observe_root_first_source_successor_clock_v2(
+                    Some(crossing.original),
+                )
+            };
+            observed.and_then(|sample| {
+                if !first_global && sample.boottime_nanoseconds() >= crossing.deadline {
                     Err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::Stale)
                 } else {
                     Ok(sample)
@@ -419,6 +458,9 @@ impl AccountTransition {
         if previous_claim.enrollment != before.enrollment || previous_claim.account != before.id
             || previous_claim.child != [0; 16] || previous_claim.state != ClaimState::Reserved
         {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        if previous_claim.purpose == ClaimPurpose::ControllerFirstGlobalPrefix && !committed {
             return Err(ResourceReservationErrorV1::Conflict);
         }
         let generation = before.generation.checked_add(1)
@@ -595,6 +637,12 @@ impl AccountTransition {
         }
         let head_bytes = codec::encode_head(self.after)?;
         let claim_bytes = codec::encode_claim(self.claim)?;
+        if self.claim.purpose == ClaimPurpose::ControllerFirstGlobalPrefix
+            && crate::journal::encoded_transaction_append_bytes(transaction)?
+                != crate::Journal::first_global_prefix_append_bytes_v1()?
+        {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
         let records = transaction.records();
         if !matches_record(&records[0], replay::HEAD_PREFIX, self.after.id, &head_bytes)
             || !matches_record(&records[1], replay::CLAIM_PREFIX, self.claim.id, &claim_bytes)
@@ -703,6 +751,13 @@ impl ReturnedAppend {
                     &Transition {
                         original: TransitionOriginal::Account(original),
                         crossing: match (original.original_clock, original.claim.cut) {
+                            (Some(clock), ClaimCut::BootLifetime)
+                                if original.claim.purpose == ClaimPurpose::ControllerFirstGlobalPrefix =>
+                                Some(NativeCrossing {
+                                        original: clock,
+                                        deadline: clock.boottime_nanoseconds(),
+                                        result: &self.native_clock,
+                                    }),
                             (Some(clock), ClaimCut::Operation { deadline_boottime_nanoseconds, .. }) => Some(NativeCrossing {
                                 original: clock,
                                 deadline: deadline_boottime_nanoseconds,

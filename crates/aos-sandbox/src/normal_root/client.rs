@@ -628,9 +628,128 @@ pub struct ProductionControllerNormalRootProfileV1 {
     tpm_image: bool,
     nix_delivery: Option<RetainedImmutableFileV1>,
     resource_delivery: bool,
+    first_global_observers: std::sync::Mutex<Option<(
+        crate::controller_resource_reservation::service_interval::ObserverLifetime,
+        service::FirstGlobalPropertyArchive,
+    )>>,
 }
 
 impl ProductionControllerNormalRootProfileV1 {
+    pub(crate) fn first_global_observer_demand(
+    ) -> Result<aos_sandbox_core::ResourceVector, NormalRootStartupErrorV1> {
+        let observers = service::first_global_observer_demand_v1()?;
+        // Include the thread-safe custody and its retained original identity;
+        // the unchanged row recipe still pays every archived transport/result.
+        let custody = std::mem::size_of::<std::sync::Mutex<Option<(
+            crate::controller_resource_reservation::service_interval::ObserverLifetime,
+            service::FirstGlobalPropertyArchive,
+        )>>>();
+        let custody = u64::try_from(custody).map_err(|_| NormalRootStartupErrorV1::Service)?;
+        observers.checked_add(aos_sandbox_core::ResourceVector::ZERO
+            .with(aos_sandbox_core::ResourceDimension::MemoryBytes, custody))
+            .map_err(|_| NormalRootStartupErrorV1::Service)
+    }
+
+    // Only the entered bank prefix can attach this original-funded recipe.
+    // The profile owns every transport/result; no global or ambient switch
+    // can turn ordinary observers into admission authority.
+    pub(crate) fn attach_first_global_observers(
+        &self,
+        admission: &crate::controller_resource_reservation::service_interval::ObserverAdmission<'_>,
+    ) -> Result<(), NormalRootStartupErrorV1> {
+        let mut slot = self.first_global_observers.try_lock()
+            .map_err(|_| NormalRootStartupErrorV1::Service)?;
+        if slot.is_some() || !admission.belongs_to(self) {
+            return Err(NormalRootStartupErrorV1::Service);
+        }
+        let lifetime = admission.lifetime();
+        *slot = Some((
+            lifetime.clone(),
+            service::FirstGlobalPropertyArchive::new(admission.capacity(), lifetime),
+        ));
+        slot.as_mut().ok_or(NormalRootStartupErrorV1::Service)?.1.prepare()
+    }
+
+    /// Closes a skipped FirstGlobal interval without releasing its charge.
+    ///
+    /// # Errors
+    /// Refuses absent, contended or poisoned original archive custody. This
+    /// denial-only operation cannot create, replace or rearm an admission.
+    pub fn close_first_global_prefix_v1(&self) -> Result<(), NormalRootStartupErrorV1> {
+        let original = self.first_global_observers.try_lock()
+            .map_err(|_| NormalRootStartupErrorV1::Service)?;
+        let (lifetime, _) = original.as_ref().ok_or(NormalRootStartupErrorV1::Service)?;
+        lifetime.close();
+        Ok(())
+    }
+
+    pub(crate) fn require_first_global_original(
+        &self,
+        lifetime: &crate::controller_resource_reservation::service_interval::ObserverLifetime,
+    ) -> Result<(), NormalRootStartupErrorV1> {
+        let original = self.first_global_observers.try_lock()
+            .map_err(|_| NormalRootStartupErrorV1::Service)?;
+        let (actual, _) = original.as_ref().ok_or(NormalRootStartupErrorV1::Service)?;
+        if !actual.is_open() || !actual.same_original(lifetime) {
+            return Err(NormalRootStartupErrorV1::Service);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn observe_first_global_cpu(
+        &self,
+        original: &mut aos_sandbox_linux::cgroup::FirstGlobalCpuReadbackV1,
+    ) -> Result<(), NormalRootStartupErrorV1> {
+        self.cgroup.verify_exact_membership(&self.process)
+            .map_err(|_| NormalRootStartupErrorV1::Service)?;
+        original.capture(&self.cgroup).map_err(|_| NormalRootStartupErrorV1::Service)
+    }
+
+    pub(crate) fn recheck_first_global_cpu(
+        &self,
+        original: &mut aos_sandbox_linux::cgroup::FirstGlobalCpuReadbackV1,
+    ) -> Result<(), NormalRootStartupErrorV1> {
+        self.cgroup.verify_exact_membership(&self.process)
+            .map_err(|_| NormalRootStartupErrorV1::Service)?;
+        original.recheck(&self.cgroup).map_err(|_| NormalRootStartupErrorV1::Service)
+    }
+
+    // A failed selected admission must not fall back to the unbounded legacy
+    // observer merely to diagnose that failure. The unavailable borrower is
+    // negative; independent writer names and raw clocks remain observable.
+    pub(crate) fn recheck_first_global_profile(
+        &self,
+    ) -> Result<(), NormalRootStartupErrorV1> {
+        {
+            let original = self.first_global_observers.try_lock()
+                .map_err(|_| NormalRootStartupErrorV1::Service)?;
+            if original.is_none() {
+                return Err(NormalRootStartupErrorV1::Service);
+            }
+        }
+        // Release the private lock before recheck enters the same archive.
+        self.recheck()
+    }
+
+    fn read_original_properties(
+        &self,
+        unit_name: &'static str,
+        pid: u32,
+        properties: &'static [&'static str],
+    ) -> Result<(Vec<OwnedValue>, Vec<OwnedValue>), NormalRootStartupErrorV1> {
+        let mut selected = self.first_global_observers.try_lock()
+            .map_err(|_| NormalRootStartupErrorV1::Service)?;
+        match selected.as_mut() {
+            Some((_, original)) => original.read(unit_name, pid, properties),
+            None => {
+                // Ordinary observations do not hold selected custody across
+                // the unchanged legacy connection/property engine.
+                drop(selected);
+                service::read_properties(unit_name, pid, properties)
+            }
+        }
+    }
+
     pub(crate) fn require_resource_delivery(&self) -> Result<[u8; 16], NormalRootStartupErrorV1> {
         self.require_resource_producer().map(|(invocation, _producer)| invocation)
     }
@@ -642,7 +761,7 @@ impl ProductionControllerNormalRootProfileV1 {
             return Err(NormalRootStartupErrorV1::Activation);
         }
         self.recheck()?;
-        let (properties, unit) = service::read_properties(
+        let (properties, unit) = self.read_original_properties(
             UNIT, std::process::id(), service::RESOURCE_SERVICE_PROPERTIES,
         )?;
         let (producer, common) = properties.split_last()
@@ -704,12 +823,13 @@ impl ProductionControllerNormalRootProfileV1 {
         {
             return Err(NormalRootStartupErrorV1::Service);
         }
-        let observed = observe_delivery(
-            self.profile_file.path(),
-            self.tpm_image,
-            self.nix_delivery.as_ref().map(|file| file.path()),
-            self.resource_delivery,
+        let (properties, unit) = self.read_original_properties(
+            UNIT, std::process::id(), service::SERVICE_PROPERTIES,
         )?;
+        let observed = service::immutable_observation(decode_delivery_with_resource_bank(
+            &properties, &unit, self.profile_file.path(), self.tpm_image,
+            self.nix_delivery.as_ref().map(|file| file.path()), self.resource_delivery,
+        )?)?;
         service::require_same(&self.observed, &observed)?;
         self.fragment
             .revalidate()
@@ -730,7 +850,7 @@ impl ProductionControllerNormalRootProfileV1 {
             "system.slice/aos-sandbox-policy-authorityd.service",
         ))?;
         let pid = stream.peer().credentials().pid();
-        let observed = service::observe_peer(self.profile_file.path(), pid.get(), &self.profile)?;
+        let observed = self.observe_original_peer_properties(pid.get())?;
         let fragment = RetainedImmutableFileV1::observe_fragment(observed.fragment.clone())
             .map_err(|_| NormalRootStartupErrorV1::Service)?;
         require_unit(&fragment, &self.profile_file, &self.profile)?;
@@ -743,6 +863,16 @@ impl ProductionControllerNormalRootProfileV1 {
         };
         retained.recheck_stream(stream)?;
         Ok(retained)
+    }
+
+    fn observe_original_peer_properties(
+        &self,
+        pid: u32,
+    ) -> Result<service::ServiceObservationV1, NormalRootStartupErrorV1> {
+        let (values, unit) = self.read_original_properties(
+            super::profile::UNIT, pid, service::PEER_PROPERTIES,
+        )?;
+        service::decode_peer_properties(self.profile_file.path(), pid, &self.profile, &values, &unit)
     }
 }
 
@@ -775,11 +905,7 @@ impl OriginalNormalRootPeerV1<'_> {
             return Err(NormalRootStartupErrorV1::Service);
         }
         self.require_process(stream.peer().pidfd())?;
-        let observed = service::observe_peer(
-            self.profile.profile_file.path(),
-            self.pid.get(),
-            &self.profile.profile,
-        )?;
+        let observed = self.profile.observe_original_peer_properties(self.pid.get())?;
         service::require_same(&self.observed, &observed)?;
         require_unit(
             &self.fragment,

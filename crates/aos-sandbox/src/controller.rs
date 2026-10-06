@@ -3100,6 +3100,19 @@ where
         input.selects_resource_global_v2()
     }
 
+    /// Prepares the once-only image-owned prefix before startup selectors.
+    ///
+    /// # Errors
+    /// Rejects unavailable original executor custody or unsupported source
+    /// shape; native and observation causes remain with the entered executor.
+    #[cfg(target_os = "linux")]
+    pub fn prepare_first_global_prefix_v1(
+        &mut self,
+        profile: &crate::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<(), crate::controller_resource_reservation::ResourceReservationErrorV1> {
+        self.reconciler.prepare_first_global_prefix_v1(profile)
+    }
+
     /// Completes resource-bearing Global genesis through the retained original owners.
     ///
     /// # Errors

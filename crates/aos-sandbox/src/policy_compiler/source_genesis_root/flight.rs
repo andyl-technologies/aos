@@ -369,6 +369,8 @@ pub(in crate::policy_compiler) struct OriginalRootGenesisFlightV1<'profile> {
     source_uid: u32,
     first_successor_wait_owners: RefCell<Vec<Result<(), SourceGenesisErrorV1>>>,
     first_successor_wait_clocks: RefCell<Vec<Result<RawPairedClockSample, SourceGenesisErrorV1>>>,
+    first_global_wait_capacity: Cell<Option<usize>>,
+    first_global_wait_preparation: RefCell<[Option<Result<(), std::collections::TryReserveError>>; 2]>,
 }
 
 // Prearmed by the resource-Global parent before connection can fail. The whole
@@ -451,6 +453,8 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
             source_uid,
             first_successor_wait_owners: RefCell::new(Vec::new()),
             first_successor_wait_clocks: RefCell::new(Vec::new()),
+            first_global_wait_capacity: Cell::new(None),
+            first_global_wait_preparation: RefCell::new([None, None]),
         };
         origin.establish_hello(client_nonce)?;
         Ok(origin)
@@ -515,6 +519,8 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
             source_uid,
             first_successor_wait_owners: RefCell::new(Vec::new()),
             first_successor_wait_clocks: RefCell::new(Vec::new()),
+            first_global_wait_capacity: Cell::new(None),
+            first_global_wait_preparation: RefCell::new([None, None]),
         });
 
         Ok(client_nonce)
@@ -600,6 +606,7 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
         hello: &mut Vec<u8>,
         received: &mut Option<Result<UnixStreamSubjectChunk, aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1>>,
         controller_uid: u32,
+        prefix: Option<&crate::controller_resource_reservation::service_interval::FirstGlobalPrefixLoan<'_>>,
     ) -> Result<(), SourceGenesisErrorV1> {
         if parked.is_some() || adopted.is_some() || raw.is_some() {
             return Err(SourceGenesisErrorV1::Conflict);
@@ -607,6 +614,9 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
         let (started, clock) = opening_clock.capture()?;
         let client_nonce = Self::park_connection_at_original(profile, raw, adopted, parked, started, clock)?;
         let origin = parked.as_mut().ok_or(SourceGenesisErrorV1::Stale)?;
+        if let Some(prefix) = prefix {
+            origin.attach_first_global_wait_capacity(prefix.wait_capacity())?;
+        }
         let mut request = [0; 32];
         request[..8].copy_from_slice(super::wire::ROOT_SOURCE_RESOURCE_GENESIS_QUERY_MAGIC_V2);
         request[8..24].copy_from_slice(&client_nonce);
@@ -865,10 +875,46 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
         {
             let mut owners = self.first_successor_wait_owners.try_borrow_mut().map_err(|_| SourceGenesisErrorV1::Stale)?;
             let mut clocks = self.first_successor_wait_clocks.try_borrow_mut().map_err(|_| SourceGenesisErrorV1::Stale)?;
-            owners.try_reserve(2).map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
-            clocks.try_reserve(2).map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
+            if let Some(capacity) = self.first_global_wait_capacity.get() {
+                let owner_end = owners.len().checked_add(2).ok_or(SourceGenesisErrorV1::NonCanonical)?;
+                let clock_end = clocks.len().checked_add(2).ok_or(SourceGenesisErrorV1::NonCanonical)?;
+                if owner_end > capacity || clock_end > capacity
+                    || owner_end > owners.capacity() || clock_end > clocks.capacity()
+                {
+                    return Err(SourceGenesisErrorV1::AdmissionClosed);
+                }
+            } else {
+                owners.try_reserve(2).map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
+                clocks.try_reserve(2).map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
+            }
         }
         self.first_successor_wait_bookend()
+    }
+
+    // The genuine entered prefix funds both existing archives before their
+    // first crossing. No timing-derived retry count or replacement poll loop
+    // exists; exhaustion refuses before native poll and never renews the cut.
+    fn attach_first_global_wait_capacity(&self, polls: usize) -> Result<(), SourceGenesisErrorV1> {
+        let capacity = polls.checked_mul(2).filter(|capacity| *capacity != 0)
+            .ok_or(SourceGenesisErrorV1::AdmissionClosed)?;
+        let mut prepared = self.first_global_wait_preparation.try_borrow_mut()
+            .map_err(|_| SourceGenesisErrorV1::Stale)?;
+        let mut owners = self.first_successor_wait_owners.try_borrow_mut()
+            .map_err(|_| SourceGenesisErrorV1::Stale)?;
+        let mut clocks = self.first_successor_wait_clocks.try_borrow_mut()
+            .map_err(|_| SourceGenesisErrorV1::Stale)?;
+        if prepared.iter().any(Option::is_some) || !owners.is_empty() || !clocks.is_empty() {
+            return Err(SourceGenesisErrorV1::Conflict);
+        }
+        self.first_global_wait_capacity.set(Some(capacity));
+        prepared[0] = Some(owners.try_reserve_exact(capacity));
+        prepared[1] = Some(clocks.try_reserve_exact(capacity));
+        if prepared.iter().any(|result| !matches!(result, Some(Ok(()))))
+            || owners.capacity() > capacity || clocks.capacity() > capacity
+        {
+            return Err(SourceGenesisErrorV1::NonCanonical);
+        }
+        Ok(())
     }
 
     // Called only by the closed selected mode. The final sample follows slow

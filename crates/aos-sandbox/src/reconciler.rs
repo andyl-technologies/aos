@@ -987,6 +987,19 @@ pub trait SingleNodeEffectExecutor {
         Err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::AdmissionClosed.into())
     }
 
+    /// Prepares only the original image-owned FirstGlobal prefix.
+    ///
+    /// # Errors
+    /// The default executor has no genuine bank/Source owner and stays closed.
+    #[cfg(target_os = "linux")]
+    fn prepare_first_global_prefix_v1(
+        &mut self,
+        _journal: &mut Journal,
+        _profile: &crate::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<(), crate::controller_resource_reservation::ResourceReservationErrorV1> {
+        Err(crate::controller_resource_reservation::ResourceReservationErrorV1::EnrollmentUnavailable)
+    }
+
     /// Coordinates the resource-bearing Global purpose under resident originals.
     ///
     /// # Errors
@@ -1584,6 +1597,15 @@ where
     ) -> Result<ObjectDigest, crate::policy_compiler::FailedConfiguredGlobalGenesisInvocationV2<'writers, 'profile>> {
         self.ledger_validated = false;
         self.executor.coordinate_configured_global_genesis_v2(&mut self.journal, input, profile)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn prepare_first_global_prefix_v1(
+        &mut self,
+        profile: &crate::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<(), crate::controller_resource_reservation::ResourceReservationErrorV1> {
+        self.ledger_validated = false;
+        self.executor.prepare_first_global_prefix_v1(&mut self.journal, profile)
     }
 
     #[cfg(target_os = "linux")]

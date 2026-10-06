@@ -275,6 +275,116 @@ impl CgroupLimitReadbackV1 {
     }
 }
 
+/// Retains the single finite `cpu.max` observation for FirstGlobal admission.
+///
+/// This read-only original is separate from the ordinary seven-control reader.
+/// It neither changes cgroup limits nor grants access to the underlying anchor.
+#[derive(Debug, Default)]
+pub struct FirstGlobalCpuReadbackV1 {
+    slot: LimitControlSlotV1,
+    attempted: bool,
+    failure: Option<Error>,
+    quota: Option<(u64, u64)>,
+}
+
+impl FirstGlobalCpuReadbackV1 {
+    /// Captures the same original finite CPU quota and exact period once.
+    ///
+    /// # Errors
+    /// Retains stale-anchor, open/read/name and malformed or unbounded-quota
+    /// errors. Reentry cannot replace any original descriptor or cause.
+    pub fn capture(&mut self, anchor: &RetainedCgroupAnchor) -> Result<()> {
+        if self.attempted {
+            return Err(Error::invalid("FirstGlobal cpu.max", "already attempted"));
+        }
+        self.attempted = true;
+        match self.capture_once(anchor) {
+            Ok(quota) => {
+                self.quota = Some(quota);
+                Ok(())
+            }
+            Err(error) => {
+                self.failure = Some(error);
+                Err(Error::invalid("FirstGlobal cpu.max", "original failure retained"))
+            }
+        }
+    }
+
+    fn capture_once(&mut self, anchor: &RetainedCgroupAnchor) -> Result<(u64, u64)> {
+        anchor.validate_current()?;
+        let path = Path::new("cpu.max");
+        anchor.root.open_regular_retaining(path, &mut self.slot.opening)?;
+        read_limit_record(
+            self.slot.opening.file()?.as_fd(), &mut self.slot.bytes, &mut self.slot.length,
+        )?;
+        let body = self.slot.bytes[..self.slot.length].strip_suffix(b"\n")
+            .ok_or_else(|| Error::invalid("FirstGlobal cpu.max", "missing final newline"))?;
+        let mut fields = body.split(|byte| *byte == b' ');
+        let quota = fields.next()
+            .ok_or_else(|| Error::invalid("FirstGlobal cpu.max", "missing quota"))?;
+        let period = fields.next()
+            .filter(|_| fields.next().is_none())
+            .ok_or_else(|| Error::invalid("FirstGlobal cpu.max", "missing or extra period field"))?;
+        let quota = parse_limit_decimal(quota)
+            .filter(|value| *value > 0)
+            .ok_or_else(|| Error::invalid("FirstGlobal cpu.max", "quota is not finite and positive"))?;
+        let period = parse_limit_decimal(period)
+            .filter(|value| *value > 0)
+            .ok_or_else(|| Error::invalid("FirstGlobal cpu.max", "period is not finite and positive"))?;
+        anchor.root.open_regular_retaining(path, &mut self.slot.bookend)?;
+        if self.slot.opening.file()?.identity() != self.slot.bookend.file()?.identity() {
+            return Err(Error::invalid("FirstGlobal cpu.max", "named identity changed"));
+        }
+        anchor.validate_current()?;
+        Ok((quota, period))
+    }
+
+    /// Borrows the complete finite quota and period after successful capture.
+    #[must_use]
+    pub fn quota_and_period(&self) -> Option<(u64, u64)> {
+        self.failure.is_none().then_some(self.quota).flatten()
+    }
+
+    /// Borrows the first authentic native or validation failure.
+    #[must_use]
+    pub fn failure(&self) -> Option<&Error> {
+        self.failure.as_ref()
+    }
+
+    /// Rechecks the original OFD and fresh named identity without replacing it.
+    ///
+    /// # Errors
+    /// Retains changed records, stale anchors and native read/open errors.
+    pub fn recheck(&mut self, anchor: &RetainedCgroupAnchor) -> Result<()> {
+        if self.quota.is_none() || self.failure.is_some() || self.slot.final_length != 0 {
+            return Err(Error::invalid("FirstGlobal cpu.max", "not ready for final bookend"));
+        }
+        let result = (|| {
+            anchor.validate_current()?;
+            read_limit_record(
+                self.slot.opening.file()?.as_fd(),
+                &mut self.slot.final_bytes,
+                &mut self.slot.final_length,
+            )?;
+            if self.slot.bytes[..self.slot.length] != self.slot.final_bytes[..self.slot.final_length] {
+                return Err(Error::invalid("FirstGlobal cpu.max", "same-OFD quota changed"));
+            }
+            anchor.root.open_regular_retaining(Path::new("cpu.max"), &mut self.slot.final_name)?;
+            if self.slot.opening.file()?.identity() != self.slot.final_name.file()?.identity() {
+                return Err(Error::invalid("FirstGlobal cpu.max", "final named identity changed"));
+            }
+            anchor.validate_current()
+        })();
+        match result {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.failure = Some(error);
+                Err(Error::invalid("FirstGlobal cpu.max", "original bookend failure retained"))
+            }
+        }
+    }
+}
+
 fn read_limit_record(
     fd: BorrowedFd<'_>,
     bytes: &mut [u8; LIMIT_CONTROL_BYTES + 1],

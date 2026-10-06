@@ -68,6 +68,9 @@ pub struct OriginalConfiguredGlobalGenesisInvocationV2<'writers, 'profile> {
         crate::controller_resource_reservation::ControllerResourceBankOpeningV1,
     >>>,
     resource_grant: crate::controller_resource_reservation::ProjectResourceGrantAttemptV1,
+    prefix: Option<crate::controller_resource_reservation::service_interval::FirstGlobalPrefixLoan<'writers>>,
+    prefix_admission: Option<Result<(), crate::ResourceReservationErrorV1>>,
+    prefix_duplicate: Option<crate::ResourceReservationErrorV1>,
 
     action: Option<Result<ObjectDigest, ControllerSourceGenesisInputErrorV1>>,
     signer_admission: Option<Result<(), std::io::Error>>,
@@ -92,6 +95,8 @@ enum ConfiguredGlobalGenesisSiteV2 {
     Acknowledge,
     Complete,
     ResourceGrant,
+    Prefix,
+    PrefixDuplicate,
     OwnerPost(usize),
     ProfilePost,
     ClockPost(usize),
@@ -106,6 +111,46 @@ pub struct FailedConfiguredGlobalGenesisInvocationV2<'writers, 'profile> {
 }
 
 impl<'writers, 'profile> OriginalConfiguredGlobalGenesisInvocationV2<'writers, 'profile> {
+    // These are DATA extents of the entered fixed family, not an admission
+    // constructor. The bank joins them before this owner or its buffers exist.
+    pub(crate) fn first_global_allocation_shape(
+    ) -> Result<crate::controller_resource_reservation::service_interval::GlobalShape, SourceGenesisErrorV1> {
+        let phases = [
+            Phase::Prepare,
+            Phase::Prepared,
+            Phase::Anchor,
+            Phase::Anchored,
+            Phase::Complete,
+            Phase::Completed,
+            Phase::Finish,
+            Phase::Finish,
+        ];
+        let header = super::wire::ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1;
+        let mut wire_bytes = 32_usize.checked_add(56)
+            .ok_or(SourceGenesisErrorV1::NonCanonical)?;
+        let mut largest_payload = 0;
+        for phase in phases {
+            let payload = phase.payload_bytes_for_resource(true);
+            largest_payload = largest_payload.max(payload);
+            wire_bytes = wire_bytes.checked_add(header)
+                .and_then(|bytes| bytes.checked_add(payload))
+                .ok_or(SourceGenesisErrorV1::NonCanonical)?;
+        }
+        // Three canonical signed packets and the independent native receive
+        // originals coexist with their header/payload decode buffers.
+        let packet_bytes = Phase::Prepare.payload_bytes_for_resource(true)
+            .checked_mul(3).ok_or(SourceGenesisErrorV1::NonCanonical)?;
+        let retained_bytes = std::mem::size_of::<Self>()
+            .checked_add(wire_bytes.checked_mul(3).ok_or(SourceGenesisErrorV1::NonCanonical)?)
+            .and_then(|bytes| bytes.checked_add(packet_bytes.checked_mul(2)?))
+            .ok_or(SourceGenesisErrorV1::NonCanonical)?;
+        Ok(crate::controller_resource_reservation::service_interval::GlobalShape {
+            retained_bytes,
+            wire_bytes,
+            largest_payload,
+        })
+    }
+
     /// Parks the genuine executor Source field and Controller writer without effects.
     pub fn park(
         journal: &'writers mut Journal,
@@ -164,6 +209,9 @@ impl<'writers, 'profile> OriginalConfiguredGlobalGenesisInvocationV2<'writers, '
             complete: crate::hierarchy::controller_genesis::ControllerProjectGenesisMutationV3::new(),
             resource_bank: None,
             resource_grant: crate::controller_resource_reservation::ProjectResourceGrantAttemptV1::new(),
+            prefix: None,
+            prefix_admission: None,
+            prefix_duplicate: None,
             action: None,
             signer_admission: None,
             owner_posts: Vec::new(),
@@ -172,6 +220,61 @@ impl<'writers, 'profile> OriginalConfiguredGlobalGenesisInvocationV2<'writers, '
             first_failure: None,
             armed: true,
         }
+    }
+
+    /// Attaches the same once-only entered prefix before signer or input work.
+    ///
+    /// Failure remains with this original invocation and cannot manufacture a
+    /// replacement borrower or renew its later Root opening deadline.
+    ///
+    /// # Errors
+    /// Refuses absent, different, spent or closed original receiving owners.
+    /// The whole failure and available posts remain parked before this coarse
+    /// status; the caller must refuse before loading the temporary signing key.
+    pub fn attach_first_global_prefix(
+        &mut self,
+        original: &'writers crate::ControllerFirstGlobalPrefixAttemptV1,
+    ) -> Result<(), crate::ResourceReservationErrorV1> {
+        if self.prefix_admission.is_some() {
+            if self.prefix_duplicate.is_none() {
+                self.prefix_duplicate = Some(crate::ResourceReservationErrorV1::Conflict);
+                if self.first_failure.is_none() {
+                    self.first_failure = Some(ConfiguredGlobalGenesisSiteV2::PrefixDuplicate);
+                }
+                if self.action.is_none() {
+                    self.action = Some(Err(SourceGenesisErrorV1::AdmissionClosed.into()));
+                    self.posts();
+                }
+            }
+            return Err(crate::ResourceReservationErrorV1::Conflict);
+        }
+        let borrowed = match (
+            self.resource_bank.as_ref(),
+            self.journal.as_deref(),
+            self.source.as_deref_mut(),
+        ) {
+            (Some(bank), Some(controller), Some(source)) =>
+                original.borrow_for(bank, controller, source, self.profile),
+            _ => Err(crate::ResourceReservationErrorV1::EnrollmentUnavailable),
+        };
+        self.prefix_admission = Some(match borrowed {
+            Ok(loan) => {
+                self.prefix = Some(loan);
+                Ok(())
+            }
+            Err(error) => Err(error),
+        });
+        if self.prefix_admission.as_ref().is_some_and(Result::is_err) {
+            if self.first_failure.is_none() {
+                self.first_failure = Some(ConfiguredGlobalGenesisSiteV2::Prefix);
+            }
+            if self.action.is_none() {
+                self.action = Some(Err(SourceGenesisErrorV1::AdmissionClosed.into()));
+                self.posts();
+            }
+            return Err(crate::ResourceReservationErrorV1::Conflict);
+        }
+        Ok(())
     }
 
     /// Runs once with the existing temporary Controller signer callback loan.
@@ -233,7 +336,18 @@ impl<'writers, 'profile> OriginalConfiguredGlobalGenesisInvocationV2<'writers, '
             self.first_failure = Some(ConfiguredGlobalGenesisSiteV2::OwnerPost(index));
         }
 
-        self.profile_post = Some(self.profile.recheck());
+        self.profile_post = Some(if self.prefix_admission.is_some() {
+            match self.prefix.as_ref() {
+                Some(_) => self.profile.recheck_first_global_profile(),
+                // A rejected receiving conjunction has no spending borrower
+                // for the target profile. It must not enter a legacy observer
+                // or spend a different original's still-open rows to diagnose
+                // that refusal. Other owner/input posts and raw LAST still run.
+                None => Err(crate::normal_root::NormalRootStartupErrorV1::Service),
+            }
+        } else {
+            self.profile.recheck()
+        });
         if self.first_failure.is_none() && self.profile_post.as_ref().is_some_and(Result::is_err) {
             self.first_failure = Some(ConfiguredGlobalGenesisSiteV2::ProfilePost);
         }
@@ -282,6 +396,11 @@ impl<'writers, 'profile> OriginalConfiguredGlobalGenesisInvocationV2<'writers, '
         generation: u64,
         signer: &SigningKey,
     ) -> Result<ObjectDigest, ControllerSourceGenesisInputErrorV1> {
+        if self.prefix_duplicate.is_some()
+            || self.prefix_admission.as_ref().is_some_and(Result::is_err)
+        {
+            return Err(SourceGenesisErrorV1::AdmissionClosed.into());
+        }
         self.input.recheck()?;
         let journal = self.journal.as_deref().ok_or(SourceGenesisErrorV1::Stale)?;
         let uid = journal
@@ -316,6 +435,7 @@ impl<'writers, 'profile> OriginalConfiguredGlobalGenesisInvocationV2<'writers, '
             &mut self.hello,
             &mut self.hello_received,
             uid,
+            self.prefix.as_ref(),
         ));
         if self.connection.as_ref().is_some_and(Result::is_err) {
             self.first_failure = Some(ConfiguredGlobalGenesisSiteV2::Connection);
@@ -689,6 +809,10 @@ impl FailedConfiguredGlobalGenesisInvocationV2<'_, '_> {
                 original.complete.error(),
             ConfiguredGlobalGenesisSiteV2::ResourceGrant =>
                 original.resource_grant.error(),
+            ConfiguredGlobalGenesisSiteV2::Prefix =>
+                original.prefix_admission.as_ref()?.as_ref().err().map(|error| error as _),
+            ConfiguredGlobalGenesisSiteV2::PrefixDuplicate =>
+                original.prefix_duplicate.as_ref().map(|error| error as _),
             ConfiguredGlobalGenesisSiteV2::OwnerPost(index) =>
                 original.owner_posts
                     .get(index)?
