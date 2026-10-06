@@ -300,6 +300,21 @@ GC-30's independently rooted producer and manifest/dictionary attribution
 cases for further scoped qualification. The common walker and fresh current-root
 producer remain open, with no task merge, checkbox, milestone exit or freeze.
 
+The private current-root composition `ca06bcd22373` uses independently verified
+collection-root carriers for selected checkpoint replay and fresh traversal.
+It retains the separately protected Guard record and complete current refs,
+including opaque Notes and absent-name history. All four focused native cases
+pass out of 487 declared tests; 483 are outside their filter. They exercise
+changed refs while preserving completed cycle marks, opaque Notes and retained
+history, incomplete checkpoints and stale whole leases, and conservative
+retention-cutoff dominance. All frozen source images remain unchanged during
+that run. The preceding attempt passes three cases and fails the fourth at its
+final test mutation, which incorrectly supplies a bare Note name; the corrected
+test uses the canonical ref-record key and reaches stale-observation refusal.
+Both original results remain preserved. Retirement, backend grace, restore and
+physical deletion remain unqualified; the full current T1 floor remains red.
+No task checkbox, formal task merge, milestone exit or freeze advances.
+
 The preceding completed full qualification records candidate
 `15540ef204ec`, which combines reviewed source discovery, immutable lookup,
 repeatable I/P/G maintenance, separate verifier/preparation work, common Memo
