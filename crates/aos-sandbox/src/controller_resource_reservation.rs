@@ -130,6 +130,14 @@ struct ImageBootstrapPolicy {
     baseline: ResourceVector,
     controller: ResourceVector,
     components: ResourceVector,
+    host: Option<HostComponentPolicy>,
+}
+
+// Both image-owned vectors are subdivisions of Components, not Node issuers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct HostComponentPolicy {
+    service: ResourceVector,
+    control: ResourceVector,
 }
 
 impl ImageBootstrapPolicy {
@@ -151,6 +159,22 @@ impl ImageBootstrapPolicy {
             ] {
                 if envelope.get(dimension) == 0 {
                     return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
+                }
+            }
+        }
+        if let Some(host) = self.host {
+            let amount = host.service.checked_add(host.control)?;
+            self.components.checked_sub(amount)?;
+            for envelope in [host.service, host.control] {
+                for dimension in [
+                    aos_sandbox_core::ResourceDimension::MemoryBytes,
+                    aos_sandbox_core::ResourceDimension::Pids,
+                    aos_sandbox_core::ResourceDimension::OpenFiles,
+                    aos_sandbox_core::ResourceDimension::ConcurrentOperations,
+                ] {
+                    if envelope.get(dimension) == 0 {
+                        return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
+                    }
                 }
             }
         }
@@ -197,6 +221,44 @@ enum ClaimPurpose {
     Snapshot,
     ProjectPreparation,
     Q04Preparation,
+    HostComponentBootstrap,
+    HostControlInterval,
+}
+
+/// Compares the original fixed Host policy and PID1 delivery as borrowed DATA.
+///
+/// The expectations come from the independently measured Host image profile.
+/// Success creates neither native enrollment nor an operation reservation.
+///
+/// # Errors
+/// Retains the actual file, kernel, codec or complete-profile binding refusal.
+#[doc(hidden)]
+pub fn require_original_host_component_pair_v2(
+    policy: &std::fs::File,
+    enrollment: &std::fs::File,
+    expected_node: &[u8; 16],
+    expected_epoch: &[u8; 16],
+    expected_policy_sha256: &[u8; 32],
+    expected_recipient_invocation: &[u8; 16],
+    expected_producer_invocation: &[u8; 16],
+    expected_host_service: &ResourceVector,
+    expected_host_control: &ResourceVector,
+) -> Result<(), ResourceReservationErrorV1> {
+    let original = bootstrap::observe_original_pair(policy, enrollment)?;
+    let expected_host = HostComponentPolicy {
+        service: *expected_host_service,
+        control: *expected_host_control,
+    };
+    if original.identity.node != *expected_node
+        || original.identity.epoch != *expected_epoch
+        || original.identity.manifest != *expected_policy_sha256
+        || original.identity.invocation != *expected_producer_invocation
+        || original.recipient_invocation != *expected_recipient_invocation
+        || original.policy.host != Some(expected_host)
+    {
+        return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

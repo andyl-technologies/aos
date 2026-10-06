@@ -6,7 +6,6 @@
 //! installed coordinator may use this recipe; it cannot escape as readiness.
 
 use std::fs::File;
-use std::io::{Read as _, Seek as _};
 use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -21,12 +20,12 @@ use aos_sandbox_linux::protected_file::{ExactReadFailure, read_exact_positioned_
 use aos_sandbox_linux::seqpacket::{
     RecordSubjectListener, RecordSubjectListenerAdmissionAttemptV1,
 };
-use aos_systemd::{OwnedValue, SystemdClient, Value};
+use aos_systemd::{OwnedValue, SystemdClient};
 use rustix::fs::{AtFlags, FileType, Mode, OFlags};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use super::VerifiedPhase0ClaimV1;
+use super::{VerifiedPhase0ClaimV1, read_bounded_original, require_store_path};
 use crate::broker::canary_job::OriginalHostCanaryJobV1;
 use crate::{HostError, Result};
 
@@ -79,7 +78,7 @@ struct HostCanaryStartupProfileV1 {
 }
 
 #[derive(Debug, thiserror::Error)]
-enum StartupFailure {
+pub(super) enum StartupFailure {
     #[error(transparent)]
     Native(#[from] rustix::io::Errno),
     #[error(transparent)]
@@ -794,20 +793,6 @@ impl HostCanaryStartupV1 {
     }
 }
 
-fn read_bounded_original(file: &mut File, output: &mut Vec<u8>, maximum: usize)
-    -> std::result::Result<(), StartupFailure>
-{
-    let bound = maximum.checked_add(1).ok_or(StartupFailure::Original)?;
-    output.clear();
-    output.try_reserve_exact(bound).map_err(|_| StartupFailure::Allocation)?;
-    file.rewind()?;
-    file.take(bound as u64).read_to_end(output)?;
-    if output.len() > maximum {
-        return Err(StartupFailure::Original);
-    }
-    Ok(())
-}
-
 impl Default for HostCanaryStartupV1 {
     fn default() -> Self {
         Self::new()
@@ -822,27 +807,13 @@ impl Drop for HostCanaryStartupV1 {
     }
 }
 
-fn require_store_path(path: &Path) -> std::result::Result<(), StartupFailure> {
-    let value = path.to_str().ok_or(StartupFailure::Original)?;
-    if !value.starts_with("/nix/store/") || value.contains("//") || value.contains('\0')
-        || path.components().any(|part| matches!(part, std::path::Component::ParentDir | std::path::Component::CurDir))
-    {
-        return Err(StartupFailure::Original);
-    }
-    Ok(())
-}
-
 fn require_resource_profile(profile: &HostCanaryStartupProfileV1)
     -> std::result::Result<(), StartupFailure>
 {
-    if profile.cpu_period_usec != 100_000
-        || profile.parent_resources.iter().any(|value| *value > i64::MAX as u64)
-        || profile.host_service_limits.iter().zip(&profile.parent_resources)
-            .any(|(limit, parent)| *limit == 0 || limit > parent)
-        || profile.host_service_limits[0] % 1000 != 0
-        || profile.host_service_limits[0].checked_mul(10).is_none()
-        || profile.host_service_limits[1] % 4096 != 0
-        || profile.guardian_service_limits.iter().zip(&profile.parent_resources)
+    super::require_host_service_profile_v1(
+        &profile.parent_resources, &profile.host_service_limits, profile.cpu_period_usec,
+    )?;
+    if profile.guardian_service_limits.iter().zip(&profile.parent_resources)
             .any(|(limit, parent)| *limit == 0 || limit > parent)
         || profile.guardian_service_limits[0] % 1000 != 0
         || profile.guardian_service_limits[0].checked_mul(10).is_none()
@@ -858,108 +829,20 @@ fn require_selected_properties(
     profile_path: &Path,
     profile: &HostCanaryStartupProfileV1,
 ) -> std::result::Result<(), StartupFailure> {
-    let (service, unit) = observed;
-    let [cgroup, open_files, extras, store_max, stored, context, bounding, ambient,
-        nnp, start, pre, post, cpu, period, memory, tasks, nofile, nofile_soft] = service.as_slice() else {
-        return Err(StartupFailure::Original);
-    };
-    let [fragment, drop_ins, transient, invocation] = unit.as_slice() else {
-        return Err(StartupFailure::Original);
-    };
-    let string = |value: &OwnedValue, expected: &str| <&str>::try_from(value).ok() == Some(expected);
-    let empty = |value: &OwnedValue| matches!(&**value, Value::Array(values) if values.is_empty());
-    if !string(cgroup, "/system.slice/aos-sandbox-hostd.service")
-        || !matches!(&**context, Value::Structure(value)
-            if matches!(value.fields(), [Value::Bool(false), Value::Str(context)]
-                if context.as_str() == HOST_CONTEXT))
-        || u64::try_from(bounding).ok() != Some(0) || u64::try_from(ambient).ok() != Some(0)
-        || u32::try_from(store_max).ok() != Some(0) || u32::try_from(stored).ok() != Some(0)
-        || bool::try_from(nnp).ok() != Some(true) || !empty(extras)
-        || !matches!(<&str>::try_from(fragment), Ok(path) if !path.is_empty() && path.len() <= 4096)
-        || !empty(drop_ins) || bool::try_from(transient).ok() != Some(false)
-        || !matches!(&**invocation, Value::Array(values)
-            if values.len() == 16
-                && values.inner().iter().all(|value| matches!(value, Value::U8(_)))
-                && values.inner().iter().any(|value| matches!(value, Value::U8(byte) if *byte != 0)))
-    {
-        return Err(StartupFailure::Original);
-    }
-    let limits = profile.host_service_limits;
-    let per_second = limits[0].checked_mul(10).ok_or(StartupFailure::Original)?;
-    if u64::try_from(cpu).ok() != Some(per_second)
-        || u64::try_from(period).ok() != Some(profile.cpu_period_usec)
-        || u64::try_from(memory).ok() != Some(limits[1])
-        || u64::try_from(tasks).ok() != Some(limits[2])
-        || u64::try_from(nofile).ok() != Some(limits[3])
-        || u64::try_from(nofile_soft).ok() != Some(limits[3])
-    {
-        return Err(StartupFailure::Original);
-    }
-    // Exact command/OpenFile layouts are supplied by PID1, not env claims.
-    let Value::Array(files) = &**open_files else {
-        return Err(StartupFailure::Original);
-    };
-    let expected_open = [
-        (profile.pid1_path.as_str(), PID1_ROLE),
-        (profile_path.to_str().ok_or(StartupFailure::Original)?, PROFILE_ROLE),
-    ];
-    let mut found = [false; 2];
-    if files.len() != 2 {
-        return Err(StartupFailure::Original);
-    }
-    for entry in files.inner() {
-        let Value::Structure(entry) = entry else {
-            return Err(StartupFailure::Original);
-        };
-        let [Value::Str(path), Value::Str(role), Value::U64(1)] = entry.fields() else {
-            return Err(StartupFailure::Original);
-        };
-        let index = expected_open.iter().position(|pair| *pair == (path.as_str(), role.as_str()))
-            .ok_or(StartupFailure::Original)?;
-        if found[index] {
-            return Err(StartupFailure::Original);
-        }
-        found[index] = true;
-    }
-    if found != [true; 2] || profile.argv.first().map(String::as_str) != Some(profile.host_path.as_str()) {
-        return Err(StartupFailure::Original);
-    }
-    require_commands(start, std::slice::from_ref(&profile.argv), Some(std::process::id()))?;
-    require_commands(pre, &profile.exec_start_pre, None)?;
-    require_commands(post, &profile.exec_start_post, None)?;
-    Ok(())
-}
-
-fn require_commands(
-    observed: &OwnedValue,
-    expected: &[Vec<String>],
-    main_pid: Option<u32>,
-) -> std::result::Result<(), StartupFailure> {
-    let Value::Array(commands) = &**observed else {
-        return Err(StartupFailure::Original);
-    };
-    if commands.len() != expected.len() {
-        return Err(StartupFailure::Original);
-    }
-    for (command, expected) in commands.inner().iter().zip(expected) {
-        let Value::Structure(command) = command else {
-            return Err(StartupFailure::Original);
-        };
-        let [Value::Str(path), Value::Array(argv), Value::Bool(false),
-            Value::U64(_), Value::U64(_), Value::U64(_), Value::U64(_),
-            Value::U32(pid), Value::I32(_), Value::I32(_)] = command.fields() else {
-            return Err(StartupFailure::Original);
-        };
-        if expected.first().map(String::as_str) != Some(path.as_str())
-            || main_pid.is_some_and(|original| original != *pid)
-            || argv.len() != expected.len()
-            || argv.inner().iter().zip(expected).any(|(actual, expected)|
-                !matches!(actual, Value::Str(actual) if actual.as_str() == expected))
-        {
-            return Err(StartupFailure::Original);
-        }
-    }
-    Ok(())
+    super::require_host_startup_properties_v1(
+        observed,
+        profile_path,
+        super::HostStartupProfileViewV1 {
+            pid1_path: &profile.pid1_path,
+            host_path: &profile.host_path,
+            argv: &profile.argv,
+            exec_start_pre: &profile.exec_start_pre,
+            exec_start_post: &profile.exec_start_post,
+            cpu_period_usec: profile.cpu_period_usec,
+            host_service_limits: profile.host_service_limits,
+        },
+        super::HostStartupPropertyPurposeV1::Canary,
+    )
 }
 
 pub(crate) struct CanaryNspawnConfigV1 {

@@ -7,7 +7,10 @@
 }: let
   cfg = config.aos.sandbox.hostBroker;
   controller = config.aos.sandbox.controller;
-  canonicalReadback = pkgs.aosSelinuxKernelPolicyReadbackForKernel config.system.build.kernel;
+  canonicalReadback =
+    if cfg.componentControl
+    then config.aos.security.selinux._canonicalReadback
+    else pkgs.aosSelinuxKernelPolicyReadbackForKernel config.system.build.kernel;
   canonicalReadbackPath = "${canonicalReadback}/policy.33";
 
   # One image-owned profile drives both PID 1's unit and Host's exact readback.
@@ -105,6 +108,19 @@
     canonicalReadbackPath
     "--host-canary-v1"
   ];
+  componentArgv = [
+    hostImage
+    (toString controller.uid)
+    (toString controller.gid)
+    "${pkgs.systemd}/bin/systemd-nspawn"
+    "${cfg.guardianPackage}/bin/aos-sandbox-guardian"
+    canonicalReadbackPath
+    "--host-component-control-v2"
+  ];
+  hostPolicy = config.aos.sandbox.resourceBank.policy;
+  hostServiceLimits = lib.map (dimension: hostPolicy.hostService.${dimension}) [
+    "cpu-micros-per-period" "memory-bytes" "pids" "open-files"
+  ];
   canaryOpenFiles = [
     "${pid1Image}:aos-host-pid1-image:read-only"
     "${canaryProfile}/profile.json:aos-host-startup-profile:read-only"
@@ -127,17 +143,31 @@
     (builtins.map (job: job.placeholder) renderedHost.jobScripts)
     (builtins.map (job: job.path) renderedHost.jobScripts)
     renderedHost.text;
-  canaryProfile = pkgs.runCommand "aos-host-canary-startup-profile" {
+  canaryProfile = pkgs.runCommand (
+    if cfg.componentControl then "aos-host-component-control-startup-profile"
+    else "aos-host-canary-startup-profile"
+  ) ({
     nativeBuildInputs = [pkgs.python3 pkgs.coreutils];
     unitContract = materializedHost;
     passAsFile = ["unitContract"];
-    argvContract = builtins.toJSON canaryArgv;
+    argvContract = builtins.toJSON (if cfg.componentControl then componentArgv else canaryArgv);
     preContract = builtins.toJSON (selectedHost.serviceConfig.ExecStartPre or []);
     postContract = builtins.toJSON (selectedHost.serviceConfig.ExecStartPost or []);
-    parentResourcesContract = builtins.toJSON cfg.nodeParentResources;
-    hostServiceLimitsContract = builtins.toJSON cfg.canaryHostServiceLimits;
+    parentResourcesContract = builtins.toJSON (
+      if cfg.componentControl
+      then lib.map (dimension: hostPolicy.components.${dimension})
+        config.aos.sandbox.resourceBank._dimensionOrder
+      else cfg.nodeParentResources
+    );
+    hostServiceLimitsContract = builtins.toJSON (
+      if cfg.componentControl then hostServiceLimits else cfg.canaryHostServiceLimits
+    );
     guardianServiceLimitsContract = builtins.toJSON cfg.canaryGuardianServiceLimits;
-  } ''
+  } // lib.optionalAttrs cfg.componentControl {
+    resourcePolicyContract = builtins.toJSON hostPolicy;
+    resourcePolicyPath = "${config.aos.sandbox.resourceBank._imagePolicy}/bootstrap.bin";
+    dimensionContract = builtins.toJSON config.aos.sandbox.resourceBank._dimensionOrder;
+  }) ''
     set -eu
     mkdir -p "$out"
     ${pkgs.python3}/bin/python3 -B - "$out/profile.json" \
@@ -187,6 +217,23 @@
         "host_service_limits": json.loads(os.environ["hostServiceLimitsContract"]),
         "guardian_service_limits": json.loads(os.environ["guardianServiceLimitsContract"]),
     }
+    ${lib.optionalString cfg.componentControl ''
+      resource_policy = json.loads(os.environ["resourcePolicyContract"])
+      dimensions = json.loads(os.environ["dimensionContract"])
+      service = [resource_policy["hostService"][dimension] for dimension in dimensions]
+      control = [resource_policy["hostControl"][dimension] for dimension in dimensions]
+      profile["version"] = 3
+      profile["parent_resources"] = [resource_policy["components"][dimension] for dimension in dimensions]
+      del profile["guardian_service_limits"]
+      profile.update({
+          "kind": "host-component-control-v1",
+          "node": list(bytes.fromhex(resource_policy["node"])),
+          "resource_epoch": list(bytes.fromhex(resource_policy["epoch"])),
+          "resource_policy_sha256": digest(Path(os.environ["resourcePolicyPath"])),
+          "host_service": service,
+          "host_control": control,
+      })
+    ''}
     encoded = json.dumps(profile, separators=(",", ":")).encode()
     if len(encoded) > 1048576:
         raise ValueError("Host canary profile exceeds its fixed admission bound")
@@ -214,6 +261,8 @@ in {
 
     canary = lib.mkEnableOption
       "the independently approved private startup canary, not public runtime activation";
+    componentControl = lib.mkEnableOption
+      "the original image-owned Host service/control subdivision, not live effects";
 
     nodeParentResources = lib.mkOption {
       type = lib.types.listOf (lib.types.addCheck lib.types.int
@@ -326,6 +375,28 @@ in {
             && cfg.credentials.opensshAttachTrust != null
             && cfg.credentials.opensshAttachGrantPublicKey != null);
           message = "Host canary requires independent original job/key, phase-0 and Guest attach inputs";
+        }
+        {
+          assertion = !cfg.componentControl || (
+            !cfg.canary
+            && hostPolicy != null
+            && hostPolicy.hostService != null && hostPolicy.hostControl != null
+            && config.aos.security.selinux.enable
+            && config.aos.security.selinux.mode == "enforcing"
+            && config.aos.security.selinux.bootMode == "immutable-stage0"
+          );
+          message = "Host component control requires independently provisioned V2 bank policy and immutable enforcing PID1 custody.";
+        }
+        {
+          assertion = !cfg.componentControl || (
+            lib.all (value: value > 0 && value <= 9223372036854775807) hostServiceLimits
+            && builtins.div (builtins.elemAt hostServiceLimits 0) 1000 * 1000
+              == builtins.elemAt hostServiceLimits 0
+            && builtins.elemAt hostServiceLimits 0 <= 922337203685477580
+            && builtins.div (builtins.elemAt hostServiceLimits 1) 4096 * 4096
+              == builtins.elemAt hostServiceLimits 1
+          );
+          message = "Host component service requires exact finite aligned image-owned enforcement limits.";
         }
         {
           assertion = !cfg.canary || (builtins.length cfg.nodeParentResources == 22
@@ -444,7 +515,8 @@ in {
           ["${pkgs.coreutils}/bin/test -f ${pkgs.systemd}/share/aos/backend-policy-artifact-v2"]
           ++ brokerSessionConfiguration.installCommands;
         ExecStart = "${cfg.package}/bin/aos-sandbox-hostd ${toString controller.uid} ${toString controller.gid} ${pkgs.systemd}/bin/systemd-nspawn ${cfg.guardianPackage}/bin/aos-sandbox-guardian ${canonicalReadbackPath}"
-          + lib.optionalString cfg.canary " --host-canary-v1";
+          + lib.optionalString cfg.canary " --host-canary-v1"
+          + lib.optionalString cfg.componentControl " --host-component-control-v2";
         # This public digest is pinned to the deployed immutable guest package,
         # independent of Storage's assignment-bound physical root proof.
         LoadCredential =
@@ -488,16 +560,17 @@ in {
         SystemCallArchitectures = hostSyscallProfile.architectures;
         SystemCallFilter = hostSyscallProfile.filter;
         SystemCallErrorNumber = hostSyscallProfile.errorNumber;
-      } // lib.optionalAttrs cfg.canary {
+      } // lib.optionalAttrs (cfg.canary || cfg.componentControl) {
         OpenFile = canaryOpenFiles;
         SELinuxContext = "system_u:system_r:aos_sandbox_host_t";
         ExtraFileDescriptorNames = [];
         FileDescriptorStoreMax = 0;
-        CPUQuota = "${toString (builtins.div (builtins.elemAt cfg.canaryHostServiceLimits 0) 1000)}%";
+        CPUQuota = "${toString (builtins.div (builtins.elemAt (if cfg.componentControl then hostServiceLimits else cfg.canaryHostServiceLimits) 0) 1000)}%";
         CPUQuotaPeriodSec = "100ms";
-        MemoryMax = builtins.elemAt cfg.canaryHostServiceLimits 1;
-        TasksMax = builtins.elemAt cfg.canaryHostServiceLimits 2;
-        LimitNOFILE = "${toString (builtins.elemAt cfg.canaryHostServiceLimits 3)}:${toString (builtins.elemAt cfg.canaryHostServiceLimits 3)}";
+        MemoryMax = builtins.elemAt (if cfg.componentControl then hostServiceLimits else cfg.canaryHostServiceLimits) 1;
+        TasksMax = builtins.elemAt (if cfg.componentControl then hostServiceLimits else cfg.canaryHostServiceLimits) 2;
+        LimitNOFILE = let limits = if cfg.componentControl then hostServiceLimits else cfg.canaryHostServiceLimits;
+          in "${toString (builtins.elemAt limits 3)}:${toString (builtins.elemAt limits 3)}";
       };
     };
 

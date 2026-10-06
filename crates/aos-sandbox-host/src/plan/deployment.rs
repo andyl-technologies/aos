@@ -6,14 +6,14 @@
 //! Successful partial verification never constructs `NspawnConfig`.
 
 use std::fs::File;
-use std::io::Read as _;
+use std::io::{Read as _, Seek as _};
 use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_linux::pidfd::{NamespaceKind, PidFd};
-use aos_systemd::{OwnedValue, SandboxUnitSpec, SystemdClient};
+use aos_systemd::{OwnedValue, SandboxUnitSpec, SystemdClient, Value};
 use ed25519_dalek::VerifyingKey;
 use rustix::fs::{Mode, OFlags, open};
 #[cfg(target_arch = "x86_64")]
@@ -31,12 +31,201 @@ use crate::phase0_probe::{
 use crate::{HostError, Result};
 
 pub(crate) mod canary;
+pub(crate) mod control;
+
+use canary::StartupFailure;
 
 const PROBE_DIRECTORY: &str = "/var/lib/aos/sandbox-host-phase0";
 const PROBE_RECORD: &str = "probe-v2";
 const PROBE_PUBLIC_KEY: &str = "phase0-probe-public-key-v1";
 const PROBE_TARGET_SERVICE: &str = "aos-sandbox-host-phase0-target.service";
 const HOST_SERVICE: &str = "aos-sandbox-hostd.service";
+const HOST_CONTEXT: &str = "system_u:system_r:aos_sandbox_host_t";
+const PID1_ROLE: &str = "aos-host-pid1-image";
+const PROFILE_ROLE: &str = "aos-host-startup-profile";
+
+// Both concrete original owners retain their own File and read prefix. This
+// helper preserves the existing rewind/bounded-read/error ordering only.
+fn read_bounded_original(file: &mut File, output: &mut Vec<u8>, maximum: usize)
+    -> std::result::Result<(), StartupFailure>
+{
+    let bound = maximum.checked_add(1).ok_or(StartupFailure::Original)?;
+    output.clear();
+    output.try_reserve_exact(bound).map_err(|_| StartupFailure::Allocation)?;
+    file.rewind()?;
+    file.take(bound as u64).read_to_end(output)?;
+    if output.len() > maximum {
+        return Err(StartupFailure::Original);
+    }
+    Ok(())
+}
+
+// These borrowed expectations describe the same measured original profile;
+// neither the view nor its fixed purpose can construct startup authority.
+struct HostStartupProfileViewV1<'profile> {
+    pid1_path: &'profile String,
+    host_path: &'profile String,
+    argv: &'profile Vec<String>,
+    exec_start_pre: &'profile Vec<Vec<String>>,
+    exec_start_post: &'profile Vec<Vec<String>>,
+    cpu_period_usec: u64,
+    host_service_limits: [u64; 4],
+}
+
+#[derive(Clone, Copy)]
+enum HostStartupPropertyPurposeV1 {
+    Canary,
+    ComponentControl,
+}
+
+fn exact_host_component_extras(value: &OwnedValue) -> bool {
+    let Value::Array(names) = &**value else { return false };
+    let expected = ["aos-resource-image-policy-v1", "aos-resource-pid1-enrollment-v1"];
+    names.len() == 2 && names.inner().iter().zip(expected).all(|(value, expected)| {
+        matches!(value, Value::Str(actual) if actual.as_str() == expected)
+    })
+}
+
+fn require_host_service_profile_v1(
+    parent_resources: &[u64; 22],
+    host_service_limits: &[u64; 4],
+    cpu_period_usec: u64,
+) -> std::result::Result<(), StartupFailure> {
+    if cpu_period_usec != 100_000
+        || parent_resources.iter().any(|value| *value > i64::MAX as u64)
+        || host_service_limits.iter().zip(parent_resources)
+            .any(|(limit, parent)| *limit == 0 || limit > parent)
+        || host_service_limits[0] % 1000 != 0
+        || host_service_limits[0].checked_mul(10).is_none()
+        || host_service_limits[1] % 4096 != 0
+    {
+        return Err(StartupFailure::Original);
+    }
+    Ok(())
+}
+
+fn require_store_path(path: &Path) -> std::result::Result<(), StartupFailure> {
+    let value = path.to_str().ok_or(StartupFailure::Original)?;
+    if !value.starts_with("/nix/store/") || value.contains("//") || value.contains('\0')
+        || path.components().any(|part| matches!(part, std::path::Component::ParentDir | std::path::Component::CurDir))
+    {
+        return Err(StartupFailure::Original);
+    }
+    Ok(())
+}
+
+fn require_host_startup_properties_v1(
+    observed: &(Vec<OwnedValue>, Vec<OwnedValue>),
+    profile_path: &Path,
+    profile: HostStartupProfileViewV1<'_>,
+    purpose: HostStartupPropertyPurposeV1,
+) -> std::result::Result<(), StartupFailure> {
+    let (service, unit) = observed;
+    let [cgroup, open_files, extras, store_max, stored, context, bounding, ambient,
+        nnp, start, pre, post, cpu, period, memory, tasks, nofile, nofile_soft] = service.as_slice() else {
+        return Err(StartupFailure::Original);
+    };
+    let [fragment, drop_ins, transient, invocation] = unit.as_slice() else {
+        return Err(StartupFailure::Original);
+    };
+    let string = |value: &OwnedValue, expected: &str| <&str>::try_from(value).ok() == Some(expected);
+    let empty = |value: &OwnedValue| matches!(&**value, Value::Array(values) if values.is_empty());
+    if !string(cgroup, "/system.slice/aos-sandbox-hostd.service")
+        || !matches!(&**context, Value::Structure(value)
+            if matches!(value.fields(), [Value::Bool(false), Value::Str(context)]
+                if context.as_str() == HOST_CONTEXT))
+        || u64::try_from(bounding).ok() != Some(0) || u64::try_from(ambient).ok() != Some(0)
+        || u32::try_from(store_max).ok() != Some(0) || u32::try_from(stored).ok() != Some(0)
+        || bool::try_from(nnp).ok() != Some(true) || !match purpose {
+            HostStartupPropertyPurposeV1::Canary => empty(extras),
+            HostStartupPropertyPurposeV1::ComponentControl => exact_host_component_extras(extras),
+        }
+        || !matches!(<&str>::try_from(fragment), Ok(path) if !path.is_empty() && path.len() <= 4096)
+        || !empty(drop_ins) || bool::try_from(transient).ok() != Some(false)
+        || !matches!(&**invocation, Value::Array(values)
+            if values.len() == 16
+                && values.inner().iter().all(|value| matches!(value, Value::U8(_)))
+                && values.inner().iter().any(|value| matches!(value, Value::U8(byte) if *byte != 0)))
+    {
+        return Err(StartupFailure::Original);
+    }
+    let limits = profile.host_service_limits;
+    let per_second = limits[0].checked_mul(10).ok_or(StartupFailure::Original)?;
+    if u64::try_from(cpu).ok() != Some(per_second)
+        || u64::try_from(period).ok() != Some(profile.cpu_period_usec)
+        || u64::try_from(memory).ok() != Some(limits[1])
+        || u64::try_from(tasks).ok() != Some(limits[2])
+        || u64::try_from(nofile).ok() != Some(limits[3])
+        || u64::try_from(nofile_soft).ok() != Some(limits[3])
+    {
+        return Err(StartupFailure::Original);
+    }
+    // Exact command/OpenFile layouts are supplied by PID1, not env claims.
+    let Value::Array(files) = &**open_files else {
+        return Err(StartupFailure::Original);
+    };
+    let expected_open = [
+        (profile.pid1_path.as_str(), PID1_ROLE),
+        (profile_path.to_str().ok_or(StartupFailure::Original)?, PROFILE_ROLE),
+    ];
+    let mut found = [false; 2];
+    if files.len() != 2 {
+        return Err(StartupFailure::Original);
+    }
+    for entry in files.inner() {
+        let Value::Structure(entry) = entry else {
+            return Err(StartupFailure::Original);
+        };
+        let [Value::Str(path), Value::Str(role), Value::U64(1)] = entry.fields() else {
+            return Err(StartupFailure::Original);
+        };
+        let index = expected_open.iter().position(|pair| *pair == (path.as_str(), role.as_str()))
+            .ok_or(StartupFailure::Original)?;
+        if found[index] {
+            return Err(StartupFailure::Original);
+        }
+        found[index] = true;
+    }
+    if found != [true; 2] || profile.argv.first().map(String::as_str) != Some(profile.host_path.as_str()) {
+        return Err(StartupFailure::Original);
+    }
+    require_commands(start, std::slice::from_ref(profile.argv), Some(std::process::id()))?;
+    require_commands(pre, &profile.exec_start_pre, None)?;
+    require_commands(post, &profile.exec_start_post, None)?;
+    Ok(())
+}
+
+fn require_commands(
+    observed: &OwnedValue,
+    expected: &[Vec<String>],
+    main_pid: Option<u32>,
+) -> std::result::Result<(), StartupFailure> {
+    let Value::Array(commands) = &**observed else {
+        return Err(StartupFailure::Original);
+    };
+    if commands.len() != expected.len() {
+        return Err(StartupFailure::Original);
+    }
+    for (command, expected) in commands.inner().iter().zip(expected) {
+        let Value::Structure(command) = command else {
+            return Err(StartupFailure::Original);
+        };
+        let [Value::Str(path), Value::Array(argv), Value::Bool(false),
+            Value::U64(_), Value::U64(_), Value::U64(_), Value::U64(_),
+            Value::U32(pid), Value::I32(_), Value::I32(_)] = command.fields() else {
+            return Err(StartupFailure::Original);
+        };
+        if expected.first().map(String::as_str) != Some(path.as_str())
+            || main_pid.is_some_and(|original| original != *pid)
+            || argv.len() != expected.len()
+            || argv.inner().iter().zip(expected).any(|(actual, expected)|
+                !matches!(actual, Value::Str(actual) if actual.as_str() == expected))
+        {
+            return Err(StartupFailure::Original);
+        }
+    }
+    Ok(())
+}
 const HOST_FILTER_PROPERTIES: &[&str] = &[
     "SystemCallFilter",
     "SystemCallArchitectures",
@@ -47,6 +236,7 @@ const HOST_FILTER_PROPERTIES: &[&str] = &[
 enum DeploymentOriginV1<'startup> {
     Ordinary,
     Canary(&'startup canary::HostCanaryStartupV1),
+    ComponentControl(&'startup control::HostComponentControlStartupV2),
 }
 
 impl DeploymentOriginV1<'_> {
@@ -54,6 +244,7 @@ impl DeploymentOriginV1<'_> {
         match self {
             Self::Ordinary => evidence.verify_packaged_runtime(),
             Self::Canary(original) => evidence.verify_canary_packaged_runtime(original),
+            Self::ComponentControl(original) => evidence.verify_control_packaged_runtime(original),
         }
     }
 
@@ -63,6 +254,7 @@ impl DeploymentOriginV1<'_> {
         match self {
             Self::Ordinary => packaged.revalidate(evidence),
             Self::Canary(original) => packaged.revalidate_canary(evidence, original),
+            Self::ComponentControl(original) => packaged.revalidate_control(evidence, original),
         }
     }
 
@@ -72,6 +264,7 @@ impl DeploymentOriginV1<'_> {
         match self {
             Self::Ordinary => packaged.verify_live_pid1_service(evidence, systemd).await,
             Self::Canary(original) => packaged.verify_canary_pid1_service(evidence, systemd, original).await,
+            Self::ComponentControl(original) => packaged.verify_control_pid1_service(evidence, systemd, original).await,
         }
     }
 }
@@ -274,6 +467,27 @@ pub(crate) async fn verify_original_canary_phase0_claim_v1(
         credential_directory, state_root, nspawn_executable, selinux_policy,
         DeploymentOriginV1::Canary(original),
     ).await?.ok_or_else(|| HostError::State("original Host canary phase-0 claim is absent".to_owned()))
+}
+
+/// Checks optional phase-0 evidence against the same retained Control PID1 original.
+///
+/// This shares the existing package and deployment engine. Absence preserves
+/// observation-only Host service and never constructs backend readiness.
+///
+/// # Errors
+/// Rejects a changed original, malformed optional evidence, or failed existing
+/// package, supervisor, kernel or signed-target readback.
+pub async fn verify_original_host_control_phase0_claim_v2(
+    original: &control::HostComponentControlStartupV2,
+    credential_directory: &Path,
+    state_root: &Path,
+    nspawn_executable: &str,
+    selinux_policy: &str,
+) -> Result<Option<VerifiedPhase0ClaimV1>> {
+    verify_phase0_claim_origin(
+        credential_directory, state_root, nspawn_executable, selinux_policy,
+        DeploymentOriginV1::ComponentControl(original),
+    ).await
 }
 
 async fn verify_phase0_claim_origin(

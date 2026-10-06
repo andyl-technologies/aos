@@ -132,8 +132,10 @@ pub(super) fn validate(state: &State) -> Result<Option<EnrollmentIdentity>, Reso
                     ClaimPurpose::ComponentEnvelope => child.kind == AccountKind::Components,
                     ClaimPurpose::InclusiveGrant => matches!(child.kind,
                         AccountKind::Project | AccountKind::Sandbox | AccountKind::Operation),
+                    ClaimPurpose::HostComponentBootstrap =>
+                        parent.kind == AccountKind::Components && child.kind == AccountKind::Operation,
                     ClaimPurpose::Snapshot | ClaimPurpose::ProjectPreparation
-                        | ClaimPurpose::Q04Preparation => false,
+                        | ClaimPurpose::Q04Preparation | ClaimPurpose::HostControlInterval => false,
                 };
                 if !purpose_matches {
                     return Err(ResourceReservationErrorV1::CorruptLedger);
@@ -166,9 +168,56 @@ pub(super) fn validate(state: &State) -> Result<Option<EnrollmentIdentity>, Reso
             {
                 return Err(ResourceReservationErrorV1::CorruptLedger);
             }
+            if matches!(claim.purpose,
+                ClaimPurpose::HostComponentBootstrap | ClaimPurpose::HostControlInterval)
+            {
+                require_host_component(state, claim)?;
+            }
         }
     }
     Ok(enrollment)
+}
+
+// The Host record is a single Components subdivision with a reserved control
+// interval. Neither claim can be interpreted as a Global or Sandbox grant.
+fn require_host_component(
+    state: &State,
+    claim: super::Claim,
+) -> Result<(), ResourceReservationErrorV1> {
+    let identity = claim.enrollment;
+    let host_id = super::bootstrap::account_id(identity, b"host-component-v2");
+    let components_id = super::bootstrap::account_id(identity, b"components");
+    let component_claim_id = super::bootstrap::account_id(identity, &host_id);
+    let control_claim_id = super::bootstrap::account_id(identity, b"host-control-v2");
+    let host = find_head(state, host_id)?;
+    let components = find_head(state, components_id)?;
+    let component = codec::decode_claim(
+        record_bytes(state, CLAIM_PREFIX, component_claim_id)
+            .ok_or(ResourceReservationErrorV1::CorruptLedger)?,
+    )?;
+    let control = codec::decode_claim(
+        record_bytes(state, CLAIM_PREFIX, control_claim_id)
+            .ok_or(ResourceReservationErrorV1::CorruptLedger)?,
+    )?;
+    if host.kind != AccountKind::Operation || host.parent != components_id
+        || host.generation != 1 || host.enrollment != identity
+        || host.project != [0; 16] || host.sandbox != [0; 16]
+        || host.tree_revision != [0; 32]
+        || host.account.committed() != host.baseline
+        || components.kind != AccountKind::Components
+        || components.enrollment != identity
+        || component.purpose != ClaimPurpose::HostComponentBootstrap
+        || component.id != component_claim_id || component.account != components_id
+        || component.child != host_id || component.amount != finite_ceilings(host)?
+        || control.purpose != ClaimPurpose::HostControlInterval
+        || control.id != control_claim_id || control.account != host_id
+        || control.child != [0; 16] || control.amount != host.account.reserved()
+        || component.enrollment != identity || control.enrollment != identity
+        || (claim != component && claim != control)
+    {
+        return Err(ResourceReservationErrorV1::CorruptLedger);
+    }
+    Ok(())
 }
 
 fn validate_head(state: &State, head: AccountHead, maximum_depth: usize) -> Result<(), ResourceReservationErrorV1> {

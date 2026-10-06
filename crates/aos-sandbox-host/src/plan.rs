@@ -56,8 +56,10 @@ pub use deployment::{
     VerifiedPhase0ClaimV1, verify_optional_backend_deployment_v1, verify_optional_phase0_claim_v1,
 };
 pub use deployment::canary::HostCanaryStartupV1;
+pub use deployment::control::{HostComponentControlHandoffErrorV2, HostComponentControlStartupV2};
 pub(crate) use deployment::canary::CanaryNspawnConfigV1;
 pub(crate) use deployment::verify_original_canary_phase0_claim_v1;
+pub use deployment::verify_original_host_control_phase0_claim_v2;
 pub use readiness::{
     BackendReadiness, BackendReadinessBlocker, ProtectedBackendReadinessEvidence,
     VerifiedCompiledSupervisorProfileV1, VerifiedLiveSupervisorPolicyV1, VerifiedPackagedRuntimeV1,

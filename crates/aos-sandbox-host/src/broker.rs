@@ -921,6 +921,7 @@ pub struct HostBroker<C, S, W> {
     store: S,
     worker: W,
     authority: HostAuthorityCustodyV1,
+    component_control: Option<Arc<Mutex<crate::plan::HostComponentControlStartupV2>>>,
     nspawn: Option<NspawnConfig>,
     guardian: Option<GuardianConfig>,
     protected_agent_launch: bool,
@@ -933,6 +934,179 @@ pub struct HostBroker<C, S, W> {
     fuse_workers: BTreeMap<[u8; 16], fuse_worker::RetainedOriginalHostFuseWorkerV1>,
     #[cfg(test)]
     fail_runtime_retention: bool,
+}
+
+/// Retains one selected original Host opening and its returned state causes.
+///
+/// Empty construction grants nothing. Only the concrete selected opening can
+/// populate the slots, and a failed attempt keeps its catalog, state store,
+/// worker and authority resident. Successful transfer preserves the same
+/// Control owner in the broker; it issues no effect or component loan.
+#[must_use]
+pub struct HostComponentControlBrokerOpeningV2 {
+    catalog: Option<crate::catalog::FileHostCatalog>,
+    store: Option<crate::state::FileHostStateStore>,
+    worker: Option<crate::worker::SystemdOneShotWorker>,
+    authority: Option<HostAuthorityV1>,
+    startup: Option<Arc<Mutex<crate::plan::HostComponentControlStartupV2>>>,
+    gate: Option<Result<()>>,
+    loaded: Option<Result<HostState>>,
+    authentication: Option<Result<()>>,
+    post: Option<Result<()>>,
+    attempted: bool,
+    transferred: bool,
+    first: Option<ControlOpeningCauseV2>,
+    refusal: HostError,
+}
+
+#[derive(Clone, Copy)]
+enum ControlOpeningCauseV2 {
+    Gate,
+    Load,
+    Authentication,
+    Post,
+}
+
+impl HostComponentControlBrokerOpeningV2 {
+    /// Creates empty fixed slots without opening files or admitting authority.
+    pub fn new() -> Self {
+        Self {
+            catalog: None, store: None, worker: None, authority: None, startup: None,
+            gate: None, loaded: None, authentication: None, post: None,
+            attempted: false, transferred: false, first: None,
+            refusal: HostError::Fence("original Host component opening is unavailable"),
+        }
+    }
+
+    /// Borrows the original opening cause; Control post causes remain in Control.
+    #[must_use]
+    pub fn failure(&self) -> &HostError {
+        let error = match self.first {
+            Some(ControlOpeningCauseV2::Gate) => self.gate.as_ref().and_then(|result| result.as_ref().err()),
+            Some(ControlOpeningCauseV2::Load) => self.loaded.as_ref().and_then(|result| result.as_ref().err()),
+            Some(ControlOpeningCauseV2::Authentication) => self.authentication.as_ref().and_then(|result| result.as_ref().err()),
+            Some(ControlOpeningCauseV2::Post) => self.post.as_ref().and_then(|result| result.as_ref().err()),
+            None => None,
+        };
+        error.unwrap_or(&self.refusal)
+    }
+
+    /// Transfers the admitted concrete broker once into a vacant destination.
+    ///
+    /// # Errors
+    /// Refuses incomplete, failed, spent or occupied custody. All checks occur
+    /// before any original is removed; successful construction and parking
+    /// after that point perform no observation or fallible operation.
+    pub fn transfer_opened_into(&mut self, destination: &mut Option<HostBroker<
+        crate::catalog::FileHostCatalog, crate::state::FileHostStateStore,
+        crate::worker::SystemdOneShotWorker,
+    >>) -> Result<()> {
+        if destination.is_some() || !self.attempted || self.transferred || self.first.is_some()
+            || self.catalog.is_none() || self.store.is_none() || self.worker.is_none()
+            || self.authority.is_none() || self.startup.is_none()
+            || !self.loaded.as_ref().is_some_and(|result| result.is_ok())
+            || !self.authentication.as_ref().is_some_and(|result| result.is_ok())
+            || !self.post.as_ref().is_some_and(|result| result.is_ok())
+        {
+            return Err(HostError::Fence("original Host component opening cannot transfer"));
+        }
+        self.transferred = true;
+        let originals = (self.catalog.take(), self.store.take(), self.worker.take(),
+            self.authority.take(), self.startup.take(), self.loaded.take());
+        if let (Some(catalog), Some(store), Some(worker), Some(authority), Some(startup), Some(Ok(state))) = originals {
+            let mut broker = HostBroker::from_admitted_state(
+                catalog, store, worker, None, HostAuthorityCustodyV1::Inline(authority), state,
+            );
+            broker.component_control = Some(startup);
+            *destination = Some(broker);
+        } else {
+            // Every slot was checked under this exclusive borrow. An invariant
+            // failure must terminate before the moved originals can unwind.
+            std::process::abort();
+        }
+        Ok(())
+    }
+}
+
+impl Default for HostComponentControlBrokerOpeningV2 {
+    fn default() -> Self { Self::new() }
+}
+
+impl Drop for HostComponentControlBrokerOpeningV2 {
+    fn drop(&mut self) {
+        if self.attempted && !self.transferred { std::process::abort(); }
+    }
+}
+
+impl HostBroker<crate::catalog::FileHostCatalog, crate::state::FileHostStateStore,
+    crate::worker::SystemdOneShotWorker>
+{
+    /// Opens a selected Host through its prearmed original-custody destination.
+    ///
+    /// The borrowed input slots remain with the caller on preflight rejection.
+    /// This route shares ordinary state loading, authentication and infallible
+    /// broker construction; it neither installs readiness nor lends payment.
+    ///
+    /// # Errors
+    /// Borrows a resident gate, load, authentication or postcheck cause. Actual
+    /// load/authentication Results are parked before independent Control posts.
+    /// A poisoned mutex is never cleared, and its same held owner still runs
+    /// available postchecks before the guard is released.
+    pub async fn open_original_component_control_into<'opening>(
+        opening: &'opening mut HostComponentControlBrokerOpeningV2,
+        catalog: &mut Option<crate::catalog::FileHostCatalog>,
+        store: &mut Option<crate::state::FileHostStateStore>,
+        worker: &mut Option<crate::worker::SystemdOneShotWorker>,
+        authority: &mut Option<HostAuthorityV1>,
+        startup: &Arc<Mutex<crate::plan::HostComponentControlStartupV2>>,
+        systemd: &aos_systemd::SystemdClient,
+    ) -> std::result::Result<(), &'opening HostError> {
+        if opening.attempted || catalog.is_none() || store.is_none()
+            || worker.is_none() || authority.is_none()
+        { return Err(opening.failure()); }
+        opening.attempted = true;
+        opening.catalog = catalog.take();
+        opening.store = store.take();
+        opening.worker = worker.take();
+        opening.authority = authority.take();
+        opening.startup = Some(Arc::clone(startup));
+
+        let mut lock = startup.lock();
+        opening.gate = Some(match &mut lock {
+            Ok(original) => original.require_admitted_original(),
+            Err(_) => Err(HostError::Fence("original Host component mutex is poisoned")),
+        });
+        if opening.gate.as_ref().is_some_and(|result| result.is_err()) {
+            opening.first = Some(ControlOpeningCauseV2::Gate);
+        } else {
+            opening.loaded = Some(match opening.store.as_ref() {
+                Some(store) => store.load(),
+                None => Err(HostError::Fence("original Host store is absent")),
+            });
+            if opening.loaded.as_ref().is_some_and(|result| result.is_err()) {
+                opening.first = Some(ControlOpeningCauseV2::Load);
+            } else {
+                opening.authentication = Some(match (&opening.loaded, &opening.authority) {
+                    (Some(Ok(state)), Some(authority)) => state.validate_authenticated(authority),
+                    _ => Err(HostError::Fence("original Host state or authority is absent")),
+                });
+                if opening.authentication.as_ref().is_some_and(|result| result.is_err()) {
+                    opening.first = Some(ControlOpeningCauseV2::Authentication);
+                }
+            }
+        }
+        let original = match &mut lock {
+            Ok(original) => &mut **original,
+            Err(poison) => &mut **poison.get_mut(),
+        };
+        opening.post = Some(original.recheck_original(systemd).await
+            .map_err(|_| HostError::Fence("original Host component opening postcheck failed")));
+        if opening.post.as_ref().is_some_and(|result| result.is_err()) {
+            opening.first.get_or_insert(ControlOpeningCauseV2::Post);
+        }
+        drop(lock);
+        if opening.first.is_some() { Err(opening.failure()) } else { Ok(()) }
+    }
 }
 
 // Ordinary authority remains inline in its original field position. Only the
@@ -1366,6 +1540,7 @@ where
             store,
             worker,
             authority,
+            component_control: None,
             nspawn,
             guardian: None,
             protected_agent_launch: false,

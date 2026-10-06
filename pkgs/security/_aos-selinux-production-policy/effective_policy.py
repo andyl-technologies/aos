@@ -15,6 +15,7 @@ import owner_policy
 import rule_query
 import view_policy
 
+HOST_COMPONENT_CONTROL = False
 
 DOMAINS = (
     "aos_sandbox_host_t",
@@ -906,7 +907,9 @@ def negative_access() -> tuple[Access, ...]:
     for record in PROTECTED_RECORDS:
         checks.extend(accesses(HANDOFF_DOMAIN, record, "file", RECORD_MUTATIONS))
     for domain in DOMAINS:
-        if domain not in (INSPECTOR_DOMAIN, fuse_worker_policy.WORKER_DOMAIN):
+        if domain not in (INSPECTOR_DOMAIN, fuse_worker_policy.WORKER_DOMAIN) and not (
+            HOST_COMPONENT_CONTROL and domain == "aos_sandbox_host_t"
+        ):
             checks.append(Access(domain, "init_t", "fd", "use"))
         checks.append(Access(domain, HANDOFF_DOMAIN, "fd", "use"))
 
@@ -1150,6 +1153,22 @@ POSITIVE_ACCESS = (
 )
 TRANSITIONS = (*TRANSITIONS, *OWNER_TRANSITIONS)
 NEGATIVE_ACCESS = (*negative_access(), *OWNER_NEGATIVE)
+
+if HOST_COMPONENT_CONTROL:
+    POSITIVE_ACCESS = (
+        *POSITIVE_ACCESS,
+        Access("aos_sandbox_host_t", "init_t", "fd", "use"),
+        *accesses("aos_sandbox_host_t", "init_tmpfs_t", "file", ("getattr", "read")),
+    )
+    NEGATIVE_ACCESS = (
+        *NEGATIVE_ACCESS,
+        *accesses(
+            "aos_sandbox_host_t", "init_tmpfs_t", "file",
+            ("open", "map", "ioctl", "write", "append", "create", "setattr",
+             "unlink", "rename", "relabelfrom", "relabelto", "execute",
+             "execute_no_trans", "entrypoint"),
+        ),
+    )
 
 # New fixed native cells follow all existing positive/transition checks so
 # their presence does not reorder ordinary owner diagnostics.

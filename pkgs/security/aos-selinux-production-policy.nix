@@ -26,6 +26,7 @@
   onlineNix ? false,
   runtimeDeploymentPublisher ? false,
   resourceBankEnrollment ? false,
+  hostComponentControl ? false,
   aos-nix-runtime-tpm-helpers ? null,
   aos-nix-online-store-reader ? null,
 }: let
@@ -74,12 +75,26 @@
     else if resourceBankEnrollment
     then source
     else builtins.elemAt parts 0 + "\n" + builtins.elemAt ending 2;
+  closedHostComponentSource = source: let
+    parts = builtins.split "\n# AOS_HOST_COMPONENT_CONTROL_BEGIN\n" source;
+    ending =
+      if builtins.length parts == 3
+      then builtins.split "# AOS_HOST_COMPONENT_CONTROL_END\n" (builtins.elemAt parts 2)
+      else [];
+  in
+    if builtins.length parts != 3 || builtins.length ending != 3
+      || builtins.length (builtins.split "# AOS_HOST_COMPONENT_CONTROL_BEGIN\n" source) != 3
+      || builtins.length (builtins.split "# AOS_HOST_COMPONENT_CONTROL_END\n" source) != 3
+    then throw "Host component policy requires exactly one closed block"
+    else if hostComponentControl
+    then source
+    else builtins.elemAt parts 0 + "\n" + builtins.elemAt ending 2;
   # The suffix has one fixed beginning and ending, and no trailing source.
   # The false branch restores the exact original newline, not a blank block.
   closedSelectedSource = path: let
     source = closedRuntimeSource (
       if path == policySupport + "/owner_confinement.te"
-      then closedResourceBankSource (closedOnlineSource (builtins.readFile path))
+      then closedHostComponentSource (closedResourceBankSource (closedOnlineSource (builtins.readFile path)))
       else builtins.readFile path
     );
     parts = builtins.split "\n# AOS_SELECTED_MOUNT_SOURCE_BEGIN\n" source;
@@ -138,10 +153,19 @@
       mountSourceOwnerData
     else mountSourceOwnerData
   );
+  selectedEffectiveData = builtins.toFile "aos-selected-effective-policy.py" (
+    if hostComponentControl
+    then replaceSelectedInitializer
+      "HOST_COMPONENT_CONTROL = False"
+      "HOST_COMPONENT_CONTROL = False"
+      "HOST_COMPONENT_CONTROL = True"
+      (builtins.readFile (policySupport + "/effective_policy.py"))
+    else builtins.readFile (policySupport + "/effective_policy.py")
+  );
   # Selected checks import the rendered immutable DATA beside the same checker.
   # No policy observation or runtime option chooses its expected permissions.
   checkerScript =
-    if sourceProviderMount || onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment
+    if sourceProviderMount || onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment || hostComponentControl
     then "selected-policy-checker/effective_policy.py"
     else "${policySupport}/effective_policy.py";
   # toFile cannot carry an output reference, and the policy must not build
@@ -318,12 +342,16 @@ in
           attribute_negative_module=aos_sandbox_attribute_negative
           export PYTHONPATH=${setools}/lib/python3/site-packages
 
-          ${if sourceProviderMount || onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment then ''
+          ${if sourceProviderMount || onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment || hostComponentControl then ''
             mkdir selected-policy-checker
             cp -R ${policySupport}/. selected-policy-checker/
             chmod u+w selected-policy-checker
             chmod u+w selected-policy-checker/owner_policy.py
             install -m 0444 ${selectedOwnerData} selected-policy-checker/owner_policy.py
+            ${if hostComponentControl then ''
+              chmod u+w selected-policy-checker/effective_policy.py
+              install -m 0444 ${selectedEffectiveData} selected-policy-checker/effective_policy.py
+            '' else ""}
           '' else ""}
 
           AOS_SELINUX_PRODUCTION_RECIPE=${./aos-selinux-production-policy.nix} \
@@ -606,7 +634,7 @@ in
             deficient-binary-diagnostic \
             "$evidence_root/"
           install -m 0644 ${fileContexts} "$evidence_root/aos_sandbox.fc"
-          ${if onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment then ''
+          ${if onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment || hostComponentControl then ''
             # Adjacent modules and rendered expectation DATA are the same
             # inputs used above; the relative passthru has no output cycle.
             mkdir -p "$out/share/aos/selected-policy-checker"
@@ -635,7 +663,7 @@ in
         refpolicy-production.src
         linux.src
       ];
-    } // (if onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment then {
+    } // (if onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment || hostComponentControl then {
       effectivePolicyCheckerRelative = "share/aos/selected-policy-checker/effective_policy.py";
     } else {});
 

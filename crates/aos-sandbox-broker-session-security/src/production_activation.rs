@@ -39,6 +39,9 @@ pub enum ProductionBrokerSessionActivationErrorV1 {
     /// systemd did not supply the exact fixed descriptor table.
     #[error("broker-session systemd activation is invalid: {0}")]
     Activation(&'static str),
+    /// The fixed selected Host destination could not be reserved before handoff.
+    #[error("original Host Control listener destination cannot be reserved: {0}")]
+    HostControlDestination(#[source] std::collections::TryReserveError),
     /// Descriptor adoption or listener validation failed.
     #[error("broker-session listener is invalid: {0}")]
     Listener(#[from] SeqpacketError),
@@ -258,6 +261,41 @@ impl ProductionBrokerSessionActivationV1 {
             listeners.push(FixedListenerV1 { endpoint, listener });
         }
         Ok(Self { storage_cold: None, selected_storage_startup: None, listeners, launch_image: None })
+    }
+
+    /// Adopts the admitted original Control owner's same fixed three endpoints.
+    ///
+    /// # Errors
+    /// Refuses a failed or spent original, an allocation failure before handoff,
+    /// or an incomplete named destination. The original retains rich admission
+    /// causes; no descriptor is returned or relabeled as Canary provenance.
+    pub fn adopt_original_host_control(
+        startup: &mut aos_sandbox_host::plan::HostComponentControlStartupV2,
+    ) -> Result<Self, ProductionBrokerSessionActivationErrorV1> {
+        let mut destination = [None, None, None];
+        let mut listeners = Vec::new();
+        listeners.try_reserve_exact(3)
+            .map_err(ProductionBrokerSessionActivationErrorV1::HostControlDestination)?;
+        startup.transfer_original_listeners_into(&mut destination)
+            .map_err(|_| ProductionBrokerSessionActivationErrorV1::Activation(
+                "original Host Control listener handoff is unavailable",
+            ))?;
+
+        // Vacant slots, all three originals and Vec capacity were checked
+        // before transfer. Only infallible fixed endpoint parking follows.
+        match destination {
+            [Some(controller), Some(root_mount), Some(storage)] => {
+                for (endpoint, listener) in [
+                    (ProtectedBrokerSessionFixedEndpointV1::HostBroker, controller),
+                    (ProtectedBrokerSessionFixedEndpointV1::RootMountHostBroker, root_mount),
+                    (ProtectedBrokerSessionFixedEndpointV1::StorageHostBroker, storage),
+                ] {
+                    listeners.push(FixedListenerV1 { endpoint, listener });
+                }
+                Ok(Self { storage_cold: None, selected_storage_startup: None, listeners, launch_image: None })
+            }
+            _ => std::process::abort(),
+        }
     }
 
     /// Adopts the complete fixed Host listener set for VM qualification.

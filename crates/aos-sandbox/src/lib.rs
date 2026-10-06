@@ -181,6 +181,12 @@ pub use controller_resource_reservation::{
 };
 
 #[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub use controller_resource_reservation::{
+    ResourceReservationErrorV1, require_original_host_component_pair_v2,
+};
+
+#[cfg(target_os = "linux")]
 pub use runtime_deployment::{
     HeldRuntimeDeploymentAppendComparisonV1, HeldRuntimeDeploymentMainComparisonV1,
     HeldRuntimeDeploymentPairComparisonV1, RuntimeDeploymentNativeTransactionDataV1,

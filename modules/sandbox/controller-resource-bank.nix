@@ -74,12 +74,26 @@
         type = vectorType;
         description = "Prepaid aggregate manager, journald, audit and fixed component all-trigger envelope.";
       };
+      hostService = lib.mkOption {
+        type = lib.types.nullOr vectorType;
+        default = null;
+        description = "Full immutable Host service vector inside Components; paired with hostControl.";
+      };
+      hostControl = lib.mkOption {
+        type = lib.types.nullOr vectorType;
+        default = null;
+        description = "Full reserved Host control interval vector inside Components, paid once.";
+      };
     };
   };
 
   policy = pkgs.runCommand "aos-controller-resource-bootstrap-policy-v1" {
     nativeBuildInputs = [pkgs.python3 pkgs.coreutils];
-    policyJson = builtins.toJSON cfg.policy;
+    policyJson = builtins.toJSON (
+      if cfg.policy.hostService == null && cfg.policy.hostControl == null
+      then builtins.removeAttrs cfg.policy ["hostService" "hostControl"]
+      else cfg.policy
+    );
     dimensionJson = builtins.toJSON dimensions;
     controllerMinimumJson = builtins.toJSON controllerMinimum;
     componentMinimumJson = builtins.toJSON componentMinimum;
@@ -100,7 +114,10 @@
     component_minimum = json.loads(os.environ["componentMinimumJson"])
     if len(dimensions) != 22 or len(set(dimensions)) != 22:
         raise ValueError("resource dimension registry is inconsistent")
-    if set(policy) != {"node", "epoch", "capacity", "baseline", "controller", "components"}:
+    legacy_fields = {"node", "epoch", "capacity", "baseline", "controller", "components"}
+    host_fields = legacy_fields | {"hostService", "hostControl"}
+    host_selected = set(policy) == host_fields
+    if set(policy) not in (legacy_fields, host_fields):
         raise ValueError("resource policy must contain its complete fixed schema")
 
     def identity(name):
@@ -142,11 +159,26 @@
         if components[dimensions.index(name)] < minimum:
             raise ValueError("the prepaid component envelope is below fixed Storage enforcement bounds")
 
-    body = b"AOSRSB01" + identity("node") + identity("epoch")
+    host_vectors = ()
+    if host_selected:
+        host_service, host_control = map(vector, ("hostService", "hostControl"))
+        for index in range(22):
+            if host_service[index] + host_control[index] > components[index]:
+                raise ValueError("the Host subdivision exceeds the once-paid Components envelope")
+        for envelope in (host_service, host_control):
+            if any(envelope[dimensions.index(name)] == 0 for name in (
+                "memory-bytes", "pids", "open-files", "concurrent-operations"
+            )):
+                raise ValueError("the Host service/control interval is incomplete")
+        host_vectors = (host_service, host_control)
+
+    body = (b"AOSRSB02" if host_selected else b"AOSRSB01") + identity("node") + identity("epoch")
     for values in (capacity, baseline, controller, components):
         body += struct.pack(">22Q", *values)
+    for values in host_vectors:
+        body += struct.pack(">22Q", *values)
     encoded = body + hashlib.sha256(body).digest()
-    if len(encoded) != 776:
+    if len(encoded) != (1128 if host_selected else 776):
         raise ValueError("native bootstrap policy width changed")
     Path(sys.argv[1]).write_bytes(encoded)
     PY
@@ -154,6 +186,13 @@
   '';
 in {
   options.aos.sandbox.resourceBank = {
+    _dimensionOrder = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = dimensions;
+      internal = true;
+      readOnly = true;
+      description = "Canonical full-vector DATA order shared with the fixed Host image profile.";
+    };
     policy = lib.mkOption {
       type = lib.types.nullOr policyType;
       default = null;
@@ -179,6 +218,14 @@ in {
       {
         assertion = config.aos.sandbox.controllerService.enable;
         message = "Shared resource enrollment requires the existing fixed Controller service.";
+      }
+      {
+        assertion = (cfg.policy.hostService == null && cfg.policy.hostControl == null)
+          || (cfg.policy.hostService != null && cfg.policy.hostControl != null
+            && config.aos.sandbox.hostBroker.enable
+            && config.aos.sandbox.hostBroker.componentControl
+            && !config.aos.sandbox.hostBroker.canary);
+        message = "V2 resource policy requires the selected Host control service, not ordinary or Canary activation.";
       }
     ];
     aos.sandbox.resourceBank._imagePolicy = policy;

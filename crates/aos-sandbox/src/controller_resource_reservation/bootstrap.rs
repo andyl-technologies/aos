@@ -56,7 +56,8 @@ pub(super) fn observe_original_pair(
     let delivery_metadata = enrollment_file.metadata()?;
     let seals = fcntl_get_seals(enrollment_file)?;
     if !policy_metadata.is_file()
-        || policy_metadata.len() != codec::IMAGE_POLICY_BYTES as u64
+        || ![codec::IMAGE_POLICY_BYTES as u64, codec::HOST_IMAGE_POLICY_BYTES as u64]
+            .contains(&policy_metadata.len())
         || policy_metadata.uid() != 0 || policy_metadata.gid() != 0
         || policy_metadata.mode() & 0o222 != 0
         || fstatfs(policy_file)?.f_type as u64 != 0xe0f5_e1e2
@@ -69,14 +70,28 @@ pub(super) fn observe_original_pair(
         return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
     }
 
-    let mut policy_bytes = [0; codec::IMAGE_POLICY_BYTES];
-    let mut delivery_bytes = [0; 152];
-    policy_file.read_exact_at(&mut policy_bytes, 0)?;
-    enrollment_file.read_exact_at(&mut delivery_bytes, 0)?;
-    let policy = codec::decode_image_policy(&policy_bytes)?;
-    let (identity, recipient_invocation) = codec::decode_pid1_delivery(&delivery_bytes)?;
+    let (policy, identity, recipient_invocation, manifest) =
+        if policy_metadata.len() == codec::IMAGE_POLICY_BYTES as u64 {
+            let mut policy_bytes = [0; codec::IMAGE_POLICY_BYTES];
+            let mut delivery_bytes = [0; 152];
+            policy_file.read_exact_at(&mut policy_bytes, 0)?;
+            enrollment_file.read_exact_at(&mut delivery_bytes, 0)?;
+            let policy = codec::decode_image_policy(&policy_bytes)?;
+            let (identity, recipient_invocation) = codec::decode_pid1_delivery(&delivery_bytes)?;
+            (policy, identity, recipient_invocation,
+                <[u8; 32]>::from(Sha256::digest(policy_bytes)))
+        } else {
+            let mut policy_bytes = [0; codec::HOST_IMAGE_POLICY_BYTES];
+            let mut delivery_bytes = [0; 152];
+            policy_file.read_exact_at(&mut policy_bytes, 0)?;
+            enrollment_file.read_exact_at(&mut delivery_bytes, 0)?;
+            let policy = codec::decode_image_policy(&policy_bytes)?;
+            let (identity, recipient_invocation) = codec::decode_pid1_delivery(&delivery_bytes)?;
+            (policy, identity, recipient_invocation,
+                <[u8; 32]>::from(Sha256::digest(policy_bytes)))
+        };
     if identity.node != policy.node || identity.epoch != policy.epoch
-        || identity.manifest != <[u8; 32]>::from(Sha256::digest(policy_bytes))
+        || identity.manifest != manifest
         || identity.boot != KernelBootId::current()?.into_bytes()
     {
         return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
@@ -88,6 +103,7 @@ pub(super) struct EnrollmentTransition {
     transaction_id: [u8; 16],
     heads: [AccountHead; 3],
     claims: [Claim; 2],
+    host: Option<(AccountHead, [Claim; 2])>,
 }
 
 impl EnrollmentTransition {
@@ -108,7 +124,7 @@ impl EnrollmentTransition {
         let child_account = |amount| ResourceAccount::from_usage(
             ResourceCeilings::bounded(amount), ResourceVector::ZERO, ResourceVector::ZERO,
         );
-        let heads = [
+        let mut heads = [
             head(node, [0; 16], AccountKind::Node, root_account, policy.baseline),
             head(controller, node, AccountKind::Controller, child_account(policy.controller)?, ResourceVector::ZERO),
             head(components, node, AccountKind::Components, child_account(policy.components)?, ResourceVector::ZERO),
@@ -120,6 +136,32 @@ impl EnrollmentTransition {
             genesis_instance: [0; 32],
             amount, state: ClaimState::Reserved,
         };
+        let host = if let Some(host_policy) = policy.host {
+            let host_id = account_id(identity, b"host-component-v2");
+            let amount = host_policy.service.checked_add(host_policy.control)?;
+            heads[2].account = heads[2].account.reserve(amount)?;
+            let host_account = ResourceAccount::from_usage(
+                ResourceCeilings::bounded(amount),
+                host_policy.service,
+                ResourceVector::ZERO,
+            )?.reserve(host_policy.control)?;
+            let host_head = head(
+                host_id, components, AccountKind::Operation,
+                host_account, host_policy.service,
+            );
+            let host_claim = Claim {
+                account: components,
+                ..claim(host_id, amount, ClaimPurpose::HostComponentBootstrap)
+            };
+            let control_claim = Claim {
+                id: account_id(identity, b"host-control-v2"),
+                account: host_id,
+                ..claim([0; 16], host_policy.control, ClaimPurpose::HostControlInterval)
+            };
+            Some((host_head, [host_claim, control_claim]))
+        } else {
+            None
+        };
         Ok(Self {
             transaction_id: aos_sandbox_core::OperationId::new().into_bytes(),
             heads,
@@ -127,12 +169,20 @@ impl EnrollmentTransition {
                 claim(controller, policy.controller, ClaimPurpose::ControllerBootstrap),
                 claim(components, policy.components, ClaimPurpose::ComponentEnvelope),
             ],
+            host,
         })
     }
 
     fn transaction(&self) -> Result<JournalTransaction, ResourceReservationErrorV1> {
-        let mut records = Vec::with_capacity(5);
+        let mut records = Vec::with_capacity(if self.host.is_some() { 8 } else { 5 });
         for head in self.heads {
+            records.push(JournalRecord::put(
+                RecordNamespace::ControllerResourceReservation,
+                replay::key(replay::HEAD_PREFIX, head.id).to_vec(),
+                codec::encode_head(head)?.to_vec(),
+            ));
+        }
+        if let Some((head, _)) = self.host {
             records.push(JournalRecord::put(
                 RecordNamespace::ControllerResourceReservation,
                 replay::key(replay::HEAD_PREFIX, head.id).to_vec(),
@@ -145,6 +195,15 @@ impl EnrollmentTransition {
                 replay::key(replay::CLAIM_PREFIX, claim.id).to_vec(),
                 codec::encode_claim(claim)?.to_vec(),
             ));
+        }
+        if let Some((_, claims)) = self.host {
+            for claim in claims {
+                records.push(JournalRecord::put(
+                    RecordNamespace::ControllerResourceReservation,
+                    replay::key(replay::CLAIM_PREFIX, claim.id).to_vec(),
+                    codec::encode_claim(claim)?.to_vec(),
+                ));
+            }
         }
         Ok(JournalTransaction::new(self.transaction_id, records)?)
     }
@@ -163,7 +222,8 @@ impl EnrollmentTransition {
         transaction: &JournalTransaction,
     ) -> Result<(), ResourceReservationErrorV1> {
         if replay::validate(state)?.is_some()
-            || transaction.id() != &self.transaction_id || transaction.records().len() != 5
+            || transaction.id() != &self.transaction_id
+            || transaction.records().len() != if self.host.is_some() { 8 } else { 5 }
         {
             return Err(ResourceReservationErrorV1::Conflict);
         }
@@ -172,7 +232,21 @@ impl EnrollmentTransition {
                 return Err(ResourceReservationErrorV1::Conflict);
             }
         }
-        for (record, claim) in transaction.records()[3..].iter().zip(self.claims) {
+        let claim_offset = if self.host.is_some() { 4 } else { 3 };
+        if let Some((head, claims)) = self.host {
+            if !matches_record(
+                &transaction.records()[3], replay::HEAD_PREFIX, head.id,
+                &codec::encode_head(head)?,
+            ) {
+                return Err(ResourceReservationErrorV1::Conflict);
+            }
+            for (record, claim) in transaction.records()[6..].iter().zip(claims) {
+                if !matches_record(record, replay::CLAIM_PREFIX, claim.id, &codec::encode_claim(claim)?) {
+                    return Err(ResourceReservationErrorV1::Conflict);
+                }
+            }
+        }
+        for (record, claim) in transaction.records()[claim_offset..claim_offset + 2].iter().zip(self.claims) {
             if !matches_record(record, replay::CLAIM_PREFIX, claim.id, &codec::encode_claim(claim)?) {
                 return Err(ResourceReservationErrorV1::Conflict);
             }
@@ -199,11 +273,23 @@ impl EnrollmentTransition {
                 return Err(ResourceReservationErrorV1::Conflict);
             }
         }
+        if let Some((head, claims)) = self.host {
+            if replay::find_head(state, head.id)? != head {
+                return Err(ResourceReservationErrorV1::Conflict);
+            }
+            for expected in claims {
+                let actual = replay::record_bytes(state, replay::CLAIM_PREFIX, expected.id)
+                    .ok_or(ResourceReservationErrorV1::Conflict)?;
+                if codec::decode_claim(actual)? != expected {
+                    return Err(ResourceReservationErrorV1::Conflict);
+                }
+            }
+        }
         Ok(())
     }
 }
 
-fn account_id(identity: EnrollmentIdentity, role: &[u8]) -> [u8; 16] {
+pub(super) fn account_id(identity: EnrollmentIdentity, role: &[u8]) -> [u8; 16] {
     let mut hash = Sha256::new();
     hash.update(b"AOS-resource-account-v1\0");
     hash.update(identity.node);

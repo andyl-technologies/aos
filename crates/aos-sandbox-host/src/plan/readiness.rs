@@ -45,6 +45,7 @@ const READINESS_BINDING_DOMAIN: &[u8] = b"aos.sandbox.host-readiness-binding.v1\
 enum Pid1PackageOriginV1<'owner> {
     ExecutedManager,
     OriginalHostLaunch(&'owner super::deployment::canary::HostCanaryStartupV1),
+    OriginalHostControl(&'owner super::deployment::control::HostComponentControlStartupV2),
 }
 
 /// Measures the fixed packaged nspawn executable against its policy artifact.
@@ -195,6 +196,17 @@ impl VerifiedPackagedRuntimeV1 {
         ).await
     }
 
+    pub(super) async fn verify_control_pid1_service(
+        &self,
+        evidence: &ProtectedBackendReadinessEvidence,
+        systemd: &SystemdClient,
+        original: &super::deployment::control::HostComponentControlStartupV2,
+    ) -> Result<()> {
+        self.verify_live_pid1_service_origin(
+            evidence, systemd, Pid1PackageOriginV1::OriginalHostControl(original),
+        ).await
+    }
+
     async fn verify_live_pid1_service_origin(
         &self,
         evidence: &ProtectedBackendReadinessEvidence,
@@ -238,6 +250,14 @@ impl VerifiedPackagedRuntimeV1 {
         original: &super::deployment::canary::HostCanaryStartupV1,
     ) -> Result<()> {
         self.revalidate_origin(evidence, Pid1PackageOriginV1::OriginalHostLaunch(original))
+    }
+
+    pub(super) fn revalidate_control(
+        &self,
+        evidence: &ProtectedBackendReadinessEvidence,
+        original: &super::deployment::control::HostComponentControlStartupV2,
+    ) -> Result<()> {
+        self.revalidate_origin(evidence, Pid1PackageOriginV1::OriginalHostControl(original))
     }
 
     fn revalidate_origin(
@@ -612,6 +632,13 @@ impl ProtectedBackendReadinessEvidence {
         self.verify_packaged_runtime_origin(Pid1PackageOriginV1::OriginalHostLaunch(original))
     }
 
+    pub(super) fn verify_control_packaged_runtime(
+        &self,
+        original: &super::deployment::control::HostComponentControlStartupV2,
+    ) -> Result<VerifiedPackagedRuntimeV1> {
+        self.verify_packaged_runtime_origin(Pid1PackageOriginV1::OriginalHostControl(original))
+    }
+
     fn verify_packaged_runtime_origin(
         &self,
         origin: Pid1PackageOriginV1<'_>,
@@ -654,12 +681,14 @@ impl ProtectedBackendReadinessEvidence {
                 Mode::empty(),
             ).map_err(|error| HostError::State(error.to_string()))?),
             Pid1PackageOriginV1::OriginalHostLaunch(_) => None,
+            Pid1PackageOriginV1::OriginalHostControl(_) => None,
         };
         let pid1 = match origin {
             Pid1PackageOriginV1::ExecutedManager => current.as_ref()
                 .ok_or_else(|| HostError::State("PID 1 descriptor is absent".to_owned()))?
                 .as_fd(),
             Pid1PackageOriginV1::OriginalHostLaunch(original) => original.pid1_original()?,
+            Pid1PackageOriginV1::OriginalHostControl(original) => original.pid1_original()?,
         };
         let pid1_stat = fstat(pid1).map_err(|error| HostError::State(error.to_string()))?;
         if FileType::from_raw_mode(pid1_stat.st_mode) != FileType::RegularFile
