@@ -1331,6 +1331,16 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   (DRV-13/14/18 withdrawn);
   `checks.terrane.gates.derivation-memo`,
   `checks.terrane.gates.index-tree-maintenance`.
+  The focused `checks.terrane.integration.native-historical-index-completion`
+  check is registered before implementation. Its eight exact cases require
+  actual signed historical and Original qualification, whole owner-local I/P/G
+  verification, independent per-view attribute inputs and read-only staged or
+  stored metadata loading. Existing canonical relationship verification is
+  reused. Old attribute-1 interpretation and incomplete missing/conflict
+  relationships remain explicit; global configuration cannot substitute for
+  a view's actual profile. This historical prerequisite does not qualify
+  selected required-index publication or incremental maintenance. Missing
+  selectors fail explicitly; implementation and qualification remain pending.
   D-100/AD-11's actual `registry-complete` derivation and both mandatory
   formatting commands pass. The registry still exposes all 292 stable gates;
   its index row now names DRV-24 explicitly. The index implementation checks
