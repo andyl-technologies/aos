@@ -93,9 +93,12 @@ Native durable journal backing must be an independently retained resource whose
 identity and history remain outside Hub SQL snapshot/reset authority, preserving
 the same exclusivity, cutoff, unknown-effect and receipt invariants. Durable
 Object classes and object IDs implement the Workers adapter rather than a
-mandatory Native dependency. A Native journal adapter is not yet implemented or
-qualified; managed external execution through that adapter stays disabled until
-its actual backing and full protocol pass the same lifetime and all-writer gates.
+mandatory Native dependency. The Native adapter uses a dedicated per-authority
+SQLite journal outside Hub SQL and `HUB_ROOT`, opened by a separate authority
+process. Serving requires an existing, explicitly initialized installation;
+issuance is disabled unless configured explicitly. Managed external execution
+requires the actual backing and full protocol to pass the same lifetime and
+all-writer gates; implementation alone does not qualify a deployment.
 
 Preserve permanent alias reservations, authority IDs, namespace/executor links,
 full publication and control receipts, latest generation/digest and recorded
