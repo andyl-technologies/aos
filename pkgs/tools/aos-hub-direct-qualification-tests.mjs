@@ -61,7 +61,7 @@ const server = createServer({ cert: await readFile(cert), key: await readFile(pr
       request.socket.destroy(); return;
     }
     if (scenario === "cancel" && action.kind === "clock") { child.kill("SIGTERM"); await new Promise(done => setTimeout(done, 30)); }
-    let result = {};
+    let result = {}, responseStatus = 200;
     switch (action.kind) {
       case "start":
         original = { version: 1, runId: control.runId, sourceDigest: control.sourceDigest, scriptVersion: control.scriptVersion,
@@ -100,6 +100,12 @@ const server = createServer({ cert: await readFile(cert), key: await readFile(pr
       }
       case "close": assert.equal(uploaded, payload.length); assert.equal(action.deferEnqueue, true); break;
       case "enqueue": {
+        if (scenario.startsWith("requeue-refused")) {
+          responseStatus = 409;
+          result = { state: "refused_or_unknown", failurePhase: "fallback_begin" };
+          if (scenario === "requeue-refused-recovery") result.recoveryFailurePhase = "read_lease";
+          break;
+        }
         const started = Date.now() - 20, finished = Date.now();
         receipt = { attempt: { nonce: "dd".repeat(32), startedAtMillis: String(started),
           providerBefore: { isolateId: "driver-isolate", dispatches: 10, metadataAdmissionsDuringBulk: 0 } },
@@ -129,7 +135,7 @@ const server = createServer({ cert: await readFile(cert), key: await readFile(pr
     const reply = Buffer.from(JSON.stringify(sorted({ version: 1, requestSha256: digest(bytes), nonce: control.nonce,
       sourceDigest: control.sourceDigest, scriptVersion: scenario === "wrong-runtime" ? "different-script" : control.scriptVersion,
       observedAtMillis: String(Date.now()), result })));
-    response.writeHead(200, { "content-type": "application/json",
+    response.writeHead(responseStatus, { "content-type": "application/json",
       "x-aos-direct-qualification-signature": mac("aos.direct-upload.qualification-reply.v1\0", reply) });
     response.end(reply);
   } catch (error) { response.writeHead(500); response.end(); }
@@ -145,7 +151,9 @@ async function run(name, mode, phase = "run") {
   child = spawn(process.execPath, [driver, "--origin", origin, "--control-key-file", keyFile,
     "--identity-file", identityFile, "--manifest-file", manifestFile, "--output-dir", output,
     "--wait-seconds", "0", ...(phase === "clock" ? ["--phase", "clock", "--run-id", "ef".repeat(32),
-      "--clock-uncertainty-seconds", "1"] : [])], { env: { ...process.env, NODE_EXTRA_CA_CERTS: cert }, stdio: ["ignore", "pipe", "pipe"] });
+      "--clock-uncertainty-seconds", "1"] : phase === "requeue"
+      ? ["--phase", "requeue", "--run-id", original.runId] : [])],
+    { env: { ...process.env, NODE_EXTRA_CA_CERTS: cert }, stdio: ["ignore", "pipe", "pipe"] });
   let logs = ""; child.stdout.on("data", bytes => { logs += bytes; }); child.stderr.on("data", bytes => { logs += bytes; });
   const exit = await new Promise((done, reject) => { child.once("error", reject); child.once("exit", done); });
   await writeFile(join(root, `${name}.log`), logs, { mode: 0o600 });
@@ -222,6 +230,30 @@ print('PASS actual driver evidence accepted; old underscore filename refused by 
   for (const name of await readdir(positive.output)) {
     const content = await readFile(join(positive.output, name), "utf8");
     assert.equal(content.includes(secret), false); assert.equal(content.includes("/part/"), false);
+  }
+  for (const mode of ["requeue-refused", "requeue-refused-recovery"]) {
+    const selectedOriginal = structuredClone(original);
+    const refused = await run(mode, mode, "requeue");
+    assert.notEqual(refused.exit, 0);
+    assert.deepEqual(calls, ["status", "enqueue"]);
+    assert.equal(uploaded, 0);
+    const capture = JSON.parse(await readFile(join(refused.output, "00002-enqueue-capture.json")));
+    assert.deepEqual(capture.result, mode === "requeue-refused-recovery"
+      ? { state: "refused_or_unknown", failurePhase: "fallback_begin", recoveryFailurePhase: "read_lease" }
+      : { state: "refused_or_unknown", failurePhase: "fallback_begin" });
+    const authentication = JSON.parse(await readFile(join(refused.output, "00002-enqueue-authentication.json")));
+    assert.equal(authentication.status, 409);
+    assert.equal(authentication.responseSha256,
+      digest(await readFile(join(refused.output, "00002-enqueue-capture.json"))));
+    assert.deepEqual(JSON.parse(await readFile(join(refused.output, "original.json"))), selectedOriginal);
+    const unknown = JSON.parse(await readFile(join(refused.output, "00002-enqueue-unknown.json")));
+    assert.equal(unknown.state, "unknown");
+    assert.equal(unknown.cause, "dispatch_or_reply_unknown");
+    const incomplete = JSON.parse(await readFile(join(refused.output, "incomplete-run-outcome.json")));
+    assert.equal(incomplete.unknownEffects, "retained_without_replay");
+    assert.equal((await readdir(refused.output)).includes("runtime-raw.json"), false);
+    assert.equal(refused.logs.includes(secret), false);
+    assert.equal(refused.logs.includes("read_lease"), false);
   }
   const replay = await run("terminal-replay", "replay"); assert.equal(replay.exit, 0);
   const replayRuntime = JSON.parse(await readFile(join(replay.output, "runtime-raw.json")));

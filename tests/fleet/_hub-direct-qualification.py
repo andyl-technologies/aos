@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import stat
 import textwrap
 
 
@@ -161,6 +162,84 @@ def retain_direct_qualification_files(worker, python, guest_directory, run_id, r
             "files": retained}
 
 
+def retain_direct_qualification_output(worker, python, guest_directory, host_directory, receipt):
+    """Retain only this invocation's bounded output without printing child errors.
+
+    Each file has its own explicit outcome: a failed or oversized stderr copy
+    cannot erase retained stdout or turn an unsuccessful invocation into success.
+    """
+    expected_directory = (
+        "/var/lib/hybrid-worker/operator/prequalification-" + receipt["runId"] + "-")
+    if (not re.fullmatch(r"[0-9a-f]{64}", receipt["runId"])
+            or not guest_directory.startswith(expected_directory)
+            or not re.fullmatch(r"[a-z][a-z0-9-]{0,47}",
+                                guest_directory[len(expected_directory):])
+            or receipt["guestDirectory"] != guest_directory):
+        raise ValueError("qualification output directory differs from the current invocation")
+
+    destination = Path(host_directory)
+    custody = destination.lstat()
+    if (not stat.S_ISDIR(custody.st_mode) or custody.st_uid != os.geteuid()
+            or custody.st_mode & 0o077):
+        raise ValueError("qualification output destination custody refused")
+
+    observations = []
+    for name, digest_field in (("stdout.log", "stdoutSha256"), ("stderr.log", "stderrSha256")):
+        record = {"name": name, "state": "refused_or_unknown"}
+        try:
+            encoded = direct_guest_python(worker, python, """
+                import base64, hashlib, os, stat
+                from pathlib import Path
+
+                root = Path(selected['root'])
+                custody = root.lstat()
+                if not stat.S_ISDIR(custody.st_mode) or custody.st_uid != os.geteuid() \\
+                        or custody.st_mode & 0o077:
+                    raise ValueError('invocation output directory custody refused')
+                descriptor = os.open(root / selected['name'],
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                with os.fdopen(descriptor, 'rb') as source:
+                    before = os.fstat(source.fileno())
+                    if not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid() \\
+                            or before.st_mode & 0o077 or before.st_nlink != 1 \\
+                            or before.st_size > 65536:
+                        raise ValueError('invocation output custody or bound refused')
+                    body = source.read(65537)
+                    after = os.fstat(source.fileno())
+                if len(body) != before.st_size or any(
+                        getattr(before, field) != getattr(after, field)
+                        for field in ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns')):
+                    raise ValueError('invocation output changed during retention')
+                print(json.dumps({'body': base64.b64encode(body).decode(),
+                    'sha256': hashlib.sha256(body).hexdigest(), 'byteSize': len(body)}))
+            """, {"root": guest_directory, "name": name}, timeout=60)
+            if len(encoded) > 90000:
+                raise ValueError("qualification output transport exceeds bound")
+            captured = json.loads(encoded)
+            if set(captured) != {"body", "sha256", "byteSize"}:
+                raise ValueError("qualification output transport differs")
+            body = base64.b64decode(captured["body"], validate=True)
+            digest = hashlib.sha256(body).hexdigest()
+            if (len(body) > 65536 or type(captured["byteSize"]) is not int
+                    or captured["byteSize"] != len(body) or captured["sha256"] != digest
+                    or receipt[digest_field] != digest):
+                raise ValueError("qualification output differs from the current invocation")
+
+            descriptor = os.open(destination / name,
+                                 os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(descriptor, "wb") as output:
+                output.write(body)
+                output.flush()
+                os.fsync(output.fileno())
+            record = {"name": name, "state": "retained", "byteSize": len(body), "sha256": digest}
+        except Exception:
+            # Transfer and custody failures stay value-free. The caller still
+            # raises its original invocation failure after this record is saved.
+            pass
+        observations.append(record)
+    return {"maximumFileBytes": 65536, "files": observations}
+
+
 def observe_direct_prequalification_phase(worker, tools, origin, control_key_file,
                                          identity_file, run_id, phase, label,
                                          wait_seconds=0):
@@ -211,7 +290,10 @@ def observe_direct_prequalification_phase(worker, tools, origin, control_key_fil
             "runId": run_id, "phase": phase, "waitSeconds": wait_seconds},
         timeout=wait_seconds + 360))
     retained = retain_direct_qualification_files(worker, tools["python"], root + "/evidence", run_id, label)
-    report = {"version": 1, "process": receipt, "retained": retained}
+    invocation_output = retain_direct_qualification_output(
+        worker, tools["python"], root, retained["directory"], receipt)
+    report = {"version": 1, "process": receipt, "retained": retained,
+              "invocationOutput": invocation_output}
     path = Path(retained["directory"]) / "fleet-invocation.json"
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "w") as output:
