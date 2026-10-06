@@ -43,6 +43,9 @@ let
     requests = [{inherit rollout;}];
     retiredRequests = [rollout];
   };
+  unrepresentable = evaluate {
+    requests = [{rollout = rollout // {retention-expires-at-millis = 9223372036854775807;};}];
+  };
   nodes = builtins.attrValues retired.config.aos.activation.graph.nodes;
   retirement = builtins.head (builtins.filter (node: node.input.retirement or false) nodes);
   digest = builtins.hashString "sha256" (builtins.toJSON rollout);
@@ -56,4 +59,10 @@ in
   assert retirement.input.retirement;
   assert retirement.lifetime == "persistent";
   assert builtins.hasAttr effect retired.config.aos.activation.graph.nodes;
-    builtins.deepSeq retired.config.aos.activation.graph {explicitRetirementPreservesHistoricalLease = true;}
+  assert lib.types.json.check retired.config.aos.activation.graph;
+  assert !(lib.types.json.check unrepresentable.config.aos.activation.graph);
+    builtins.deepSeq retired.config.aos.activation.graph {
+      explicitRetirementPreservesHistoricalLease = true;
+      rolloutGraphUsesCanonicalIntegers = true;
+      unrepresentableRolloutInputRejected = true;
+    }

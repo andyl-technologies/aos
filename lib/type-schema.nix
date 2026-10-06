@@ -3,6 +3,30 @@
   lib,
   allowOpaque ? false,
 }: let
+  projectInteger = type: schema: let
+    minimum = schema.min or null;
+    maximum = schema.max or null;
+    representable = bound: bound == null || lib.types.json.check bound;
+    empty =
+      (!representable minimum && minimum > 0)
+      || (!representable maximum && maximum < 0);
+  in
+    if empty
+    then throw "Option type '${type.description}' has no integers representable in canonical JSON."
+    else
+      schema
+      // {
+        # Canonical integers already exclude these redundant native Nix bounds.
+        min =
+          if representable minimum
+          then minimum
+          else null;
+        max =
+          if representable maximum
+          then maximum
+          else null;
+      };
+
   optionTree = options:
     builtins.mapAttrs (_: option:
       if option ? type
@@ -62,6 +86,8 @@
         } =
           project type._nestedType;
       }
+    else if schema.kind == "integer"
+    then projectInteger type schema
     else if schema.kind == "string" && (schema.pattern or null) != null
     then {
       kind = "refined";

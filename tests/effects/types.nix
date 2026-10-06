@@ -192,5 +192,37 @@ in {
   assert rejects map [{long = "x";}];
   assert rejects map [{"a b" = "x";}]; true;
   portableIntegerBounds = assert (project (lib.types.ints.between 1 3)).min == 1;
+  assert (project (lib.types.ints.between 1 3)).max == 3;
   assert rejects (lib.types.ints.between 1 3) [0]; true;
+  nativeIntegerTypesKeepTheirRange = assert evaluate lib.types.ints.unsigned [9223372036854775807] == 9223372036854775807;
+  assert evaluate lib.types.ints.positive [9223372036854775807] == 9223372036854775807; true;
+  portableUnsignedBounds = assert project lib.types.ints.unsigned
+  == {
+    kind = "integer";
+    min = 0;
+    max = null;
+  };
+  assert (project lib.types.ints.positive).min == 1;
+  assert (project lib.types.ints.positive).max == null;
+  assert lib.types.json.check (project lib.types.ints.unsigned);
+  assert lib.types.json.check (project lib.types.ints.positive); true;
+  canonicalIntegerBoundsPreserved = assert project (lib.types.ints.between (-9007199254740991) 9007199254740991)
+  == {
+    kind = "integer";
+    min = -9007199254740991;
+    max = 9007199254740991;
+  }; true;
+  redundantIntegerBoundsOmitted = assert project (lib.types.ints.between (-9223372036854775807) 9223372036854775807)
+  == {
+    kind = "integer";
+    min = null;
+    max = null;
+  };
+  assert (project (lib.types.ints.between (-9223372036854775807) 17)).max == 17;
+  assert (project (lib.types.ints.between (-17) 9223372036854775807)).min == -17; true;
+  unrepresentableIntegerIntervalsRejected = let
+    refuses = type: !(builtins.tryEval (builtins.deepSeq (project type) true)).success;
+  in
+    assert refuses (lib.types.ints.between 9007199254740992 9223372036854775807);
+    assert refuses (lib.types.ints.between (-9223372036854775807) (-9007199254740992)); true;
 }
