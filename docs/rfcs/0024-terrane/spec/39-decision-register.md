@@ -2228,6 +2228,47 @@ is added rather than editing history.
     retained current/pair controls, durability, recovery and cancellation
     witnesses remain required; this clarification completes no task or gate.
 
+- **[D-110] Retain the exact interpretation of every consumed view.**
+  - **Status:** Decided (2026-10-06)
+  - **Decision:** Add optional key 7 to `LineageUsedInputs`, containing an
+    ordinary canonical record for every actually consumed signed view. Each
+    record binds its view identity, original signed namespace root before
+    fold filtering, explicit Legacy or Recorded mode, and existing complete
+    `ConfiguredRegistryInputs` for that view's actual selected interpretation.
+    Records sort uniquely by view digest and cover exactly the used view set.
+    Actual selected property revision, behavioral and later-name sets, and
+    attribute/tree and other registered semantic inputs are independently
+    captured during complete verification and rechecked for reuse. Unrelated
+    association-table entries are neither used inputs nor dependencies.
+  - **Rationale:** Original registration, bootstrap and association records
+    bind original authority and signed bytes, but do not retain each view's
+    Legacy/Recorded selection. Existing view-policy triples and global registry
+    inputs can therefore encode identical bytes for distinct independently
+    selected interpretations. Operation-specific recipe context under D-107
+    does not cover every consumed view. Persisting the missing ordinary input
+    permits exact comparison without treating decoded data as authority.
+  - **Alternatives considered:** Infer Legacy from absence or current property
+    spellings (rejected: loses the prior selection); use a complete association
+    table hash (rejected: makes unrelated additions source dependencies); use a
+    semantic revision, check bit or optional recipe as certification (rejected:
+    supplies neither exhaustive context nor genuine verification).
+  - **Compatibility:** Existing keys, view-policy triples, absent-key bytes,
+    identities, media types, profiles, golden vectors, requirement IDs, gates
+    and draft version remain unchanged. This additive correction precedes T1's
+    format freeze. Old absent-key records remain valid data, but absence never
+    means Legacy or permits zero-Tree cold reuse or no-walk source carry.
+    Supported normal full admission may independently requalify such a source
+    and publish fresh context-bearing lineage; incomplete original/history or
+    required-index evidence still refuses. Neither presence of key 7 nor an
+    attribute revision grants authority, completeness or index grandfathering.
+  - **Affects:** ALG-32/38, PROP-30/31, PROV-4, PROV-7 to PROV-10,
+    PROV-16, D-79, GC-5/6/22/24/29/30, DRV-12, DRV-25 to DRV-27 and
+    DRV-29/30. ALG-32's zero-Tree
+    requirement through final publication and source-preserving collection
+    remains mandatory. Genuine producer, current-selection, authorization,
+    physical retention and durability qualification remain required; this
+    correction completes no task or gate.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

@@ -245,12 +245,14 @@ Digest-only role cache MUST NOT grant auxiliary role or PROV-31 affected-root
 authority. Older recorded semantic revisions keep later names inert even if
 new code recognizes their spelling; their schemas and identities are unchanged.
 
-Nested consumed-root/view records have no separate property revision. Their
-unfenced intrinsic checks retain the original revision-1 behavioral vocabulary
-and preserve other canonical names as data. Complete used-input and lineage
-records MUST apply their enclosing explicit behavioral/later-name fence before
-granting any newer property semantics. Nested decoding MUST NOT impose the
-latest compiled vocabulary ahead of that enclosing fence (PROP-30).
+Nested consumed-root/view policy triples retain their existing encoding.
+Their unfenced intrinsic checks retain the original revision-1 behavioral
+vocabulary and preserve other canonical names as data. For old used-input
+records without key 7, the enclosing registry supplies their explicit
+behavioral/later-name fence. With key 7 present, each view's own recorded
+registry supplies that fence for all its occurrences and ancestor layers.
+Nested decoding MUST NOT impose the latest compiled vocabulary ahead of the
+applicable explicit fence (PROP-30).
 
 Issuer rows are sorted uniquely by issuer/key ID. Disclosure rows are
 sorted uniquely by repository/domain/key/not-before. Validity ends are
@@ -267,6 +269,45 @@ authenticated root-policy occurrences and ancestor layers. Root occurrence
 paths remain distinct even when their digests coincide. Each view's
 independently resolved default domain is retained. Canonical property maps
 and overrides remain existing property encodings, not caller assertions.
+
+Under D-110, used-input key 7 optionally retains an ordinary list of
+`consumed-view-interpretation` records. When present, the list MUST cover
+exactly the view identities in used-input key 6, sorted uniquely by unsigned
+view digest, with no missing, duplicate or additional view. Each record binds
+that view's original signed Commit namespace root before fold filtering,
+explicit Legacy (0) or Recorded (1) mode, and the existing complete
+`ConfiguredRegistryInputs` for its actual interpretation. The root MUST match
+the independently verified signed Commit and its exact `/` occurrence.
+Every occurrence and ancestor layer of a view MUST use the same selection;
+conflicting uses cannot be flattened to a global default.
+
+The completed genuine producer MUST capture the actual independently selected
+mode, property revision, exact registered behavioral names and trusted later
+preserve-only names, together with the actual attribute, selector, physical
+tree, chunk and identity semantics used for that view. Recorded inputs come
+from its independently justified association, including an explicitly selected
+current revision. Legacy explicitly records its actual registered inputs.
+Neither raw names nor the global support profile can supply an omitted view
+selection. Only actually consumed associations are retained; an unrelated
+table addition MUST NOT enlarge the used set or change its context bytes.
+
+Reuse MUST independently select the current inputs for each used view and
+compare the complete recorded context, separately from original trust, current
+authorization, controls and completed-producer checks. Changed or missing used
+mode, root, revision, name set or semantic profile refuses reuse until genuine
+requalification. A new candidate view needs its own independently selected
+context; rewriting a source record's view identity supplies no such evidence.
+Decoded context is ordinary historical data, never permission or certification.
+An optional recipe or attribute revision cannot stand for exhaustive context,
+maintained index relationships or complete gap coverage.
+
+Absent key 7 remains valid legacy data with its exact old encoding. It MUST
+NOT be interpreted as implicit Legacy or qualify zero-Tree cold reuse or
+no-walk source carry. A present empty list covers only an empty used view set.
+Supported normal full admission may independently requalify old data and
+publish fresh complete context-bearing lineage through the existing checked
+producer and durable publication. It cannot edit old lineage, reconstruct
+missing original/history from assertions or grandfather required-index proof.
 
 Required control pins distinguish registration, bootstrap, association,
 import, import-binding and import-trust. Each binds its actual checked
@@ -367,8 +408,11 @@ by recomputation, checks current source Fork and destination Commit authority,
 and compares the final selected stamp and loss generation. It performs zero
 TreeNode reads or writes, including after unrelated admission/ref changes,
 unrelated retained-key additions with checked carry-forward, and qualified
-source-preserving GC. Initial legacy lineage needs complete validation once;
-normal unrelated mutations do not justify repeatedly rescanning the source.
+source-preserving GC. A source lacking D-110 context first needs supported
+normal full admission and fresh complete lineage; that requalification is
+separate from the cold fork. Normal unrelated mutations do not justify
+repeatedly rescanning an eligible source. ALG-32's zero-Tree requirement is
+unchanged, including preparation and final publication.
 
 ## Portable payload and protected control
 

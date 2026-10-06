@@ -725,6 +725,12 @@ consumed-root-policy = [digest32, bstr .size (1..4097),
 ; Root/full absolute occurrence path/ancestor-first properties and graft overrides.
 consumed-view-policy = [digest32, tstr, [* consumed-root-policy]]
 ; Signed view identity/independently checked default domain/exact root occurrences.
+consumed-view-interpretation = [digest32, digest32, 0 / 1,
+                                configured-registry-inputs]
+; Signed view/original signed namespace root before fold filtering/mode/actual
+; per-view registry inputs. Mode 0 is explicit Legacy; mode 1 is Recorded.
+; Records sort uniquely by unsigned view digest and cover exactly the views
+; in lineage-used-inputs key 6. Roots and selections require independent checks.
 lineage-used-inputs = {
   0 => 1,
   1 => [* issuer-row],
@@ -733,7 +739,10 @@ lineage-used-inputs = {
   4 => configured-registry-inputs,
   5 => trusted-guard-config,
   6 => [* consumed-view-policy],
+  ? 7 => [* consumed-view-interpretation],
 }
+; Absent key 7 preserves legacy data validity and bytes, never implicit Legacy
+; or zero-Tree reuse eligibility. Context records are ordinary data, not authority.
 CheckedLineage = {
   0 => 1,
   1 => tstr,                            ; exact source full ref name

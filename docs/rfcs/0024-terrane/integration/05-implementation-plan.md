@@ -1810,6 +1810,19 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `index-tree-maintenance` and `algebra-fork` gates remain open; pending gates
   are outside this aggregate inventory. Implementations remain unpublished;
   no formal task merge, checkbox, milestone exit or freeze advances.
+  The isolated common Memo implementation now passes its 23-case owning
+  `derivation-memo` Nix check. Separate exact runtime selections pass 12 core
+  cases and 11 terrane cases in each default, std/send and tokio/SDK profile;
+  strict Clippy, private rustdoc and both mandatory formatters also pass.
+  The original reporting failure remains preserved: Nextest suppressed individual
+  PASS lines, while its exact inventories, completed summaries and owning
+  per-case logs establish these scoped results. No unrelated tests or whole-task
+  completion are inferred. D-110 separately records the missing per-view used
+  interpretation needed for eligible cold reuse and source carry. Its optional
+  ordinary-data context preserves old encodings; absent context requires normal
+  full admission and fresh lineage before no-walk reuse. The context codec,
+  genuine producer and current-selection reuse checks remain unqualified.
+  T-DRV-2, ALG-32, task merges and T1 remain open.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
   codec, value-plus-object opaque keys and D-104's contextual primary/gap/route
