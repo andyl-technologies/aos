@@ -426,6 +426,10 @@ impl<S: Store, C: Clock> Guard<S, C> {
 
     /// Retains actual successful requests and this injected clock for final dispatch.
     ///
+    /// Each exact request is freshly authenticated against this Guard's configured
+    /// issuer rows before retention. Later boundaries reauthorize its opaque
+    /// verified token at current time and recheck the original deadline.
+    ///
     /// This time check grants no standalone current ACL or physical authority.
     /// The selected producer must retain and validate the actual backend and
     /// protected controls independently through acknowledgment.
@@ -444,16 +448,14 @@ impl<S: Store, C: Clock> Guard<S, C> {
             .clock
             .retain_native_clock()
             .map_err(time::retention_failure)?;
-        let checks = time::RetainedRequests::new(
+        time::RetainedRequests::new(
             clock,
             self.keys.clone(),
             self.config.home.clone(),
             requests.to_vec(),
             started,
             maximum,
-        );
-        checks.recheck()?;
-        Ok(checks)
+        )
     }
 
     /// Issues a domain capability bound to a freshly authorized canonical root occurrence.

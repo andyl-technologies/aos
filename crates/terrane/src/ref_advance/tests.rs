@@ -348,7 +348,7 @@ async fn fork_creates_fresh_commit_with_source_parent_and_copied_receipts() {
         .unwrap();
 }
 
-pub(super) fn request(parents: Vec<[u8; 32]>) -> CommitRequest {
+pub(crate) fn request(parents: Vec<[u8; 32]>) -> CommitRequest {
     request_acl(parents, 31)
 }
 

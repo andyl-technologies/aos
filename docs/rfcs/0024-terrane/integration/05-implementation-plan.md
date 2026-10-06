@@ -589,9 +589,33 @@ retirement/copy fixtures; three multiwriter cases exceed the unchanged
 30-second publication bound. The full package and aggregate checks still fail.
 Bucket CAS now passes, while bucket atomic-write lacks its actual creation
 witness on the trunk; that producer and case remain in the private composition.
-Both mandatory formatters pass. Reusing authenticated immutable token data is
-under review as an optimization; fresh time, issuer, caveat and physical checks
-remain required, and no expiry cause or deadline fix is established.
+Both mandatory formatters pass. The retained-request factory now freshly
+authenticates each exact token once and retains its opaque verified data.
+Every later boundary reselects current issuer rows and reevaluates time,
+caveats, locality, epoch and the unchanged original deadline. Independent
+current ACL, Guard, source, Original and physical checks remain required.
+All seven native request cases and all seven exact owning Nix cases pass;
+the six native and owning acknowledgment regressions also pass. Actual Nix
+inputs match all 4,522 frozen source files and all six changed code/gate files.
+Default/Send builds, strict private rustdoc, registry, ref-advance ordering
+and both mandatory formatters pass. Original compilation and incorrect
+Denied-source assertions remain recorded; denials still expose no diagnostic
+cause. Strict native Clippy retains the existing 34 library and 12 test errors.
+The initial misspelled ref-ordering check refused an absent attribute; the
+correct registered gate passes without changing its selector inventory.
+
+The subsequent full package runs 884 cases: 876 pass, eight fail and none
+are skipped. Its exact failed-selector inventory contains the same six
+legacy retirement/copy fixtures and two explicit multiwriter expiries.
+The isolated native three-case sample likewise has two expiry failures;
+its rebase case passes. These are separate scopes, and neither establishes
+an expiry cause or deadline fix. The aggregate remains red; four unfinished
+specification gates stay pending. No task checkbox or milestone freeze advances.
+The private first-ownership producer and actual native test targets now compile.
+Its original missing/feature-specific fixture imports are corrected directly;
+runtime qualification is still red, with two 120-second ownership timeouts
+and an early-wait observer timeout recorded so far. Full-D ownership,
+recovery, unlink and cancellation remain unqualified.
 
 The existing private cold-fork source candidate retains its original commit
 `78eb15c7f6` and current prerequisite composition for review and adaptation.
