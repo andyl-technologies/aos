@@ -3228,6 +3228,11 @@ in rec {
       campaignMetadataMillion = import ./phase9-campaign-metadata-million.nix {
         inherit pkgs lib;
       };
+      campaignAdmissionDiagnostic = import ./phase9-campaign-metadata-million.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase9.gates.campaignAdmissionDiagnostic";
+        diagnosticRequests = 16;
+      };
       campaignPerformance = import ./phase9-campaign-performance.nix {
         inherit pkgs;
         nativeScaling = phase7.gates.hotForkScaling.rawGate;

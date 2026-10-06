@@ -6,10 +6,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crucible_campaign::{
-    AttemptQueue, AuthorizedPlannerService, BranchBudget, BranchRequest, BranchRequestCause,
-    CampaignCommandId, CampaignControlAction, CampaignPlannerDriver, CampaignPlannerStepOutcome,
-    CampaignRepository, CampaignSeed, CandidateSource, CanonicalFrontierPlanner, ControlRequest,
-    DaemonEpoch, PlannerClient, PlannerDisposition, PlanningBudget, WorkerSlotId,
+    AuthorizedPlannerService, BranchBudget, BranchRequest, BranchRequestCause, CampaignCommandId,
+    CampaignControlAction, CampaignPlannerDriver, CampaignPlannerStepOutcome, CampaignRepository,
+    CampaignSeed, CandidateSource, CanonicalFrontierPlanner, ControlRequest, PlannerClient,
+    PlannerDisposition, PlanningBudget,
 };
 use crucible_cas::content_store::{
     DirectoryRefBackend, ObjectKind, StoreGraph, StoreGraphConfig, StoreNodeId, StoreNodeSpec,
@@ -19,6 +19,10 @@ use crate::guest_selectable::resolve_guest_selectable;
 use crate::planner_process::{CanonicalPlannerProcessConfig, CanonicalPlannerProcessSupervisor};
 
 use super::*;
+
+// Share the bounded actual page walk with the durable admission diagnostic.
+#[path = "../../../../../tests/support/campaign_queue_scan.rs"]
+mod campaign_queue_scan;
 
 const CAMPAIGN: &str = "native-performance-short-branch";
 
@@ -257,6 +261,7 @@ pub(super) fn measure_campaign_planner_queue_at_boundary(
     println!("corpus_{index}_campaign_request_setup_ns={setup_elapsed}");
     let started = operational_monotonic_nanoseconds();
     let CampaignPlannerStepOutcome::Advanced {
+        result,
         disposition: PlannerDisposition::Issue {
             issued_proposals, ..
         },
@@ -274,17 +279,12 @@ pub(super) fn measure_campaign_planner_queue_at_boundary(
         proposal.value(),
         &ChoiceValue::Integer(IntegerValue::Unsigned(7))
     );
-    let page = repository
-        .project_claimable_attempts(CAMPAIGN, None, 1)
-        .expect("project exact short branch");
-    assert_eq!(page.attempts().len(), 1);
-    let mut queue = AttemptQueue::new(DaemonEpoch::from_bytes([0x93; 16]).expect("queue epoch"), 1)
-        .expect("one worker slot");
-    let reservation = queue
-        .reserve_from_page(&page, WorkerSlotId::new(0))
-        .expect("reserve short branch")
-        .expect("short branch is claimable");
-    queue.release(reservation).expect("release short branch");
+    // Accounting pages may be empty before the one admitted attempt. Keep
+    // the complete page walk and real one-slot reservation in the numerator.
+    let queue_measurement =
+        campaign_queue_scan::scan_queue(&repository, CAMPAIGN, result.new_snapshot, 1, 10_000)
+            .expect("walk bounded exact short-branch queue");
+    assert_eq!(queue_measurement.attempts, 1);
     let elapsed = operational_monotonic_nanoseconds()
         .checked_sub(started)
         .expect("campaign planner/queue monotonic clock regressed");
