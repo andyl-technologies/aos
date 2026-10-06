@@ -1,4 +1,4 @@
-//! Real exact-restored guest progress after S3 outage and credential recovery.
+//! Real exact-restored guest progress after S3 recovery and stopped-owner GC.
 
 use super::super::super::live_s3_product::{GaragePauseGuard, write_credentials, write_store};
 use super::*;
@@ -34,7 +34,7 @@ fn public_exact_paused_guest_recovers_from_s3_outage_and_expired_credentials()
     let authority = write_component_authority(&fixture)?;
     let immutable_inputs = guest_choice_immutable_inputs(&authority)?;
     let mut service = start_packaged_service(&fixture, &authority)?;
-    let checkpoints = checkpoint_inspection_store()?;
+    let (checkpoints, checkpoint_backend) = checkpoint_inspection_store()?;
     grant_and_start_guest_choice_campaign(&fixture)?;
 
     let genesis = json_string(&compiled, "genesis_artifact")?;
@@ -101,6 +101,7 @@ fn public_exact_paused_guest_recovers_from_s3_outage_and_expired_credentials()
             json_string(&campaign_status_named(&fixture, name)?, "snapshot")?,
         ));
     }
+    require_live_owner_gc_refusal(&fixture)?;
     service.stop()?;
     require_no_guest("storage-recovery-paused")?;
     let placements = json_u64(&fixture.verify_store()?, "placements")?;
@@ -132,6 +133,34 @@ fn public_exact_paused_guest_recovers_from_s3_outage_and_expired_credentials()
         &immutable_inputs,
         &authority,
     )?;
+
+    // Model one authenticated crash-debris object in the original S3 leaf.
+    // Its actual reclamation makes this a deletion control, not an empty plan.
+    let orphan_bytes = b"packaged exact-paused storage recovery orphan";
+    let orphan = ContentId::for_bytes(ObjectKind::Trace, 1, orphan_bytes);
+    checkpoint_backend.put_if_absent(orphan, &BlobHandle::from_bytes(orphan_bytes.to_vec()))?;
+    let planned_gc = run_json(&mut fixture.gc_command("plan"), "plan exact-paused S3 GC")?;
+    assert_eq!(planned_gc["phase"], "planned");
+    {
+        let journal = DirectoryCampaignGcJournal::open(&fixture.journal)?;
+        assert!(
+            journal
+                .candidates()
+                .iter()
+                .any(|candidate| candidate.id() == orphan),
+            "GC omitted the authenticated unreachable S3 object"
+        );
+    }
+    let applied_gc = run_json(&mut fixture.gc_command("apply"), "apply exact-paused S3 GC")?;
+    assert_eq!(applied_gc["plan"], planned_gc["plan"]);
+    assert_eq!(applied_gc["apply_status"], "applied");
+    assert!(!checkpoint_backend.contains(orphan)?);
+    assert!(
+        checkpoints
+            .load_attempt_checkpoint(checkpoint)?
+            .promotion_source()
+            .is_some()
+    );
 
     let mut restored = start_packaged_service(&fixture, &authority)?;
     assert_eq!(campaign_status(&fixture)?["snapshot"], paused_snapshot);
@@ -181,7 +210,46 @@ fn public_exact_paused_guest_recovers_from_s3_outage_and_expired_credentials()
     println!("storage_recovery_scheduler_observed_guest_progress=true");
     println!("storage_recovery_selected_outcome_preserved=true");
     println!("storage_recovery_derived_refs_preserved=2");
+    println!("storage_recovery_live_owner_gc_refused=true");
+    println!("storage_recovery_stopped_owner_gc_reclaimed_orphan=true");
+    println!("storage_recovery_gc_exact_checkpoint_preserved=true");
     println!("storage_recovery_final_guest_cleanup=true");
+    Ok(())
+}
+
+fn require_live_owner_gc_refusal(fixture: &FlightFixture) -> Result<(), Box<dyn Error>> {
+    assert!(!fixture.journal.exists());
+    let rejected = output_with_timeout(fixture.gc_command("plan"), Duration::from_secs(20))?;
+    assert!(
+        !rejected.status.success(),
+        "GC admitted an already owned live campaign"
+    );
+    let diagnostic = String::from_utf8_lossy(&rejected.stderr);
+    assert!(
+        diagnostic.contains("campaign owner acquisition failed"),
+        "live-owner GC refusal lacked its original ownership diagnostic: {diagnostic}"
+    );
+    assert!(
+        !fixture.journal.exists(),
+        "refused GC created a publication journal"
+    );
+    Ok(())
+}
+
+#[test]
+fn public_gc_requires_stopped_owner_before_journal_publication() -> Result<(), Box<dyn Error>> {
+    let fixture = FlightFixture::new()?;
+    let mut service = fixture.start_service(None)?;
+
+    require_live_owner_gc_refusal(&fixture)?;
+    service.stop()?;
+
+    let planned = run_json(
+        &mut fixture.gc_command("plan"),
+        "plan after releasing owner",
+    )?;
+    assert_eq!(planned["phase"], "planned");
+    assert!(fixture.journal.is_dir());
     Ok(())
 }
 
@@ -215,10 +283,11 @@ fn require_no_guest(stage: &str) -> Result<(), Box<dyn Error>> {
     require_empty_guest_choice_run_root(stage)
 }
 
-fn checkpoint_inspection_store() -> Result<ExactCheckpointStore, Box<dyn Error>> {
-    // This adapter only reads canonical closure bytes for the oracle. Actual
-    // startup/restore uses the CLI's strict credential-file and graph loader;
-    // the inspector is never used during either fault or to start a guest.
+fn checkpoint_inspection_store()
+-> Result<(ExactCheckpointStore, Arc<S3BlobBackend>), Box<dyn Error>> {
+    // This adapter inspects checkpoint closure bytes and seeds one orphan while
+    // the owner is stopped. Startup/restore uses the CLI's strict credential-file
+    // and graph loader; this adapter never substitutes for either fault check.
     let endpoint = StoreS3EndpointId::new("live-product")?;
     let sdk = aws_sdk_s3::config::Builder::new()
         .behavior_version_latest()
@@ -238,7 +307,7 @@ fn checkpoint_inspection_store() -> Result<ExactCheckpointStore, Box<dyn Error>>
         aws_sdk_s3::Client::from_conf(sdk),
         AwsSdkS3ClientConfig::new(8, 2, 128 * 1024 * 1024, Duration::from_secs(1))?,
     )?);
-    let backend = S3BlobBackend::new(
+    let backend = Arc::new(S3BlobBackend::new(
         S3BlobBackendConfig::new(
             "storage-recovery-inspection",
             endpoint,
@@ -252,9 +321,7 @@ fn checkpoint_inspection_store() -> Result<ExactCheckpointStore, Box<dyn Error>>
             5 * 1024 * 1024,
         ),
         client,
-    )?;
-    Ok(ExactCheckpointStore::new(
-        Arc::new(backend),
-        1024 * 1024 * 1024,
-    )?)
+    )?);
+    let checkpoints = ExactCheckpointStore::new(backend.clone(), 1024 * 1024 * 1024)?;
+    Ok((checkpoints, backend))
 }

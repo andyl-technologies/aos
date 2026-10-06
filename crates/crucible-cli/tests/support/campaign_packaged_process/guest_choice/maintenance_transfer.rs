@@ -149,22 +149,19 @@ fn public_active_pause_restart_and_executable_transfer_rejects_incompatible_prov
     assert_eq!(imported["state"], "paused");
     resume_campaign(&destination, &"87".repeat(32))?;
     assert_eq!(campaign_status(&destination)?["state"], "running");
-    let recipient_running =
-        wait_for_process_observation(Instant::now() + Duration::from_secs(120), || {
-            Ok(matches!(
-                attempt_states(&destination)?.get(&active),
-                Some(AttemptRuntimeState::Running { .. })
-            )
-            .then_some(()))
-        })?;
-    if recipient_running.is_none() {
-        return Err(format!(
-            "recipient did not execute imported semantic attempt {}; ledger={:?}",
-            active.attempt(),
-            attempt_states(&destination)?
-        )
-        .into());
-    }
+    let (recipient_origin, recipient_execution) =
+        wait_for_resumed_attempt(&destination, active, advanced)?;
+    assert_eq!(recipient_origin, advanced);
+    attest_fingerprint_enabled_qemu_descendants(&recipient, "recipient-exact-resume")?;
+    wait_for_resumed_guest_progress(&recipient, active, recipient_execution)?;
+    let recipient_checkpoint = capture_checkpoint_after_progress(
+        &destination,
+        &recipient,
+        active,
+        &mut 0x88_u64,
+        Some(advanced),
+    )?;
+    assert_ne!(recipient_checkpoint, advanced);
     recipient.stop()?;
     assert_no_nested_qemu_processes("recipient-after-resume")?;
     require_empty_guest_choice_run_root("recipient-after-resume")?;
@@ -208,6 +205,9 @@ fn public_active_pause_restart_and_executable_transfer_rejects_incompatible_prov
     println!("recipient_exact_pin_import_authenticated=true");
     println!("recipient_campaign_resume=true");
     println!("recipient_imported_attempt_running=true");
+    println!("recipient_imported_exact_origin_preserved=true");
+    println!("recipient_scheduler_observed_guest_progress=true");
+    println!("recipient_new_authenticated_checkpoint=true");
     println!("recipient_nested_qemu_stopped=true");
     println!("incompatible_provenance_rejected_before_guest=true");
     println!("source_checkpoint_preserved=true");

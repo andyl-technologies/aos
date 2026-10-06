@@ -39,6 +39,9 @@ in
             recipient_exact_pin_import_authenticated=true \
             recipient_campaign_resume=true \
             recipient_imported_attempt_running=true \
+            recipient_imported_exact_origin_preserved=true \
+            recipient_scheduler_observed_guest_progress=true \
+            recipient_new_authenticated_checkpoint=true \
             recipient_nested_qemu_stopped=true \
             incompatible_provenance_rejected_before_guest=true \
             source_checkpoint_preserved=true
@@ -63,6 +66,9 @@ in
           recipient_exact_pin_import_authenticated=true
           recipient_campaign_resume=true
           recipient_imported_attempt_running=true
+          recipient_imported_exact_origin_preserved=true
+          recipient_scheduler_observed_guest_progress=true
+          recipient_new_authenticated_checkpoint=true
           recipient_nested_qemu_stopped=true
           incompatible_provenance_rejected_before_guest=true
           source_checkpoint_preserved=true
