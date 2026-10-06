@@ -3073,12 +3073,12 @@ in
                    r"&crucible_global_virtual_timer_owner, owner\);\s*\}", 1),
                   ("sim precise unresolved deadline budget", icount,
                    r"if \(limit <= 0\) \{\s*"
-                   r"if \(strcmp\(current_accel_name\(\), \"sim\"\) == 0 &&\s*"
+                   r"if \(current_accel_is_sim\(\) &&\s*"
                    r"icount_enabled\(\) == ICOUNT_PRECISE\) \{\s*return 0;\s*\}"
                    r"\s*return \(int64_t\)remaining;\s*\}", 1),
                   ("generic RR unresolved deadline fallback", icount,
                    r"if \(rr_switch_quantum != 0 && limit <= 0 &&\s*"
-                   r"\(strcmp\(current_accel_name\(\), \"sim\"\) != 0 \|\|\s*"
+                   r"\(!current_accel_is_sim\(\) \|\|\s*"
                    r"icount_enabled\(\) != ICOUNT_PRECISE\)\) \{\s*"
                    r"cpu->icount_budget = cpu_budget;", 1),
                   ("sole global virtual timer owner registration", rr,
