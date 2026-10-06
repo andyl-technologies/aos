@@ -635,7 +635,7 @@ impl OriginalOutputClientFlightV1 {
         if self.closed || self.prepared.is_some() { self.closed = true; return false; }
         let Some(Ok(coordinates)) = self.coordinates.as_ref() else { self.closed = true; return false; };
         let coordinates = *coordinates;
-        if !matches!(envelope.method.as_known(), Some(BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT)) {
+        if !matches!(envelope.method.as_known(), Some(BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT | BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE)) {
             self.closed = true;
             return false;
         }
@@ -751,6 +751,9 @@ impl OriginalOutputClientFlightV1 {
         if !post && !witness_current { return false; }
         let Some(request) = self.request() else { return false; };
         let result = match request.method() {
+            BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE => session.owner.hold_capture_candidate_client_request(
+                request, &session.transcript, session.socket.peer(),
+            ),
             BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT => session.owner.hold_output_registration_request(
                 request, &session.transcript, session.socket.peer(),
             ),

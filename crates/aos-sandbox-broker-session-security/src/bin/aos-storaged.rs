@@ -565,7 +565,14 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
                             _ => exit_with_git_coverage_failure(&"returned settlement handshake is absent"),
                         });
                     } else {
-                        match acceptance.0.accept_authenticated(deadline) {
+                        let accepted = if output_custody.is_some()
+                            && acceptance.0.has_original_output_capture_launch()
+                        {
+                            acceptance.0.accept_authenticated_output_capture_storage_v1(deadline)
+                        } else {
+                            acceptance.0.accept_authenticated(deadline)
+                        };
+                        match accepted {
                             Ok(session) if output_custody.is_some() => {
                                 original_output_cycle = Some(session.begin_original_storage_output_cycle());
                             }
@@ -907,7 +914,14 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
                         let accept_deadline = production_deadline_after(ACCEPT_TIMEOUT)
                             .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
                         let acceptance = StorageColdAcceptUnwindV1(&mut activation);
-                        match acceptance.0.accept_authenticated(accept_deadline) {
+                        let accepted = if output_custody.is_some()
+                            && acceptance.0.has_original_output_capture_launch()
+                        {
+                            acceptance.0.accept_authenticated_output_capture_storage_v1(accept_deadline)
+                        } else {
+                            acceptance.0.accept_authenticated(accept_deadline)
+                        };
+                        match accepted {
                             Ok(session) if output_custody.is_some() => {
                                 original_output_cycle = Some(session.begin_original_storage_output_cycle());
                             }

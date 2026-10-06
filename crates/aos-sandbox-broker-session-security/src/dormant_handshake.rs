@@ -6848,6 +6848,54 @@ impl DormantAuthenticatedBrokerSessionV1 {
         })());
     }
 
+    /// Reports only the method list of the actual completed transcript.
+    pub(crate) fn has_selected_capture_candidate_profile(&self) -> bool {
+        self.0.transcript.negotiated_methods().contains(
+            &BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE,
+        )
+    }
+
+    /// Parks method-41 coordinates once from the same actual fixed Session.
+    pub(crate) fn park_capture_candidate_client_coordinates(
+        &mut self,
+        assignment: &aos_sandbox::runtime_scope::CurrentAssignmentTarget,
+        flight: &mut crate::handshake::output_registration_continuation::OriginalOutputClientFlightV1,
+    ) {
+        if flight.coordinates.is_some() { return; }
+        flight.coordinates = Some((|| {
+            self.0.owner.require_original_capture_candidate_client(
+                &self.0.transcript, self.0.socket.peer(),
+            )?;
+            self.0.require_negotiated_client_method(
+                BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE,
+            )?;
+            let (request_id, deadline, maximum_response_bytes, protocol_version, audience) =
+                self.0.client_request_coordinates()?;
+            Ok(DormantBrokerRequestCoordinatesV1 {
+                request_id,
+                deadline_boottime_nanoseconds: deadline.min(assignment.deadline_boottime_nanoseconds()),
+                maximum_response_bytes,
+                protocol_version,
+                audience,
+            })
+        })());
+    }
+
+    pub(crate) fn recheck_original_capture_candidate_client(
+        &mut self,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.0.owner.require_original_capture_candidate_client(
+            &self.0.transcript, self.0.socket.peer(),
+        )
+    }
+
+    pub(crate) fn compare_original_capture_candidate_outcome(
+        &mut self,
+        currentness: &crate::ProtectedBrokerOutcomeCurrentnessOwnerV1,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.0.owner.compare_original_capture_candidate_outcome(currentness, self.0.socket.peer())
+    }
+
     pub(crate) fn park_output_client_request(
         &mut self,
         flight: &mut crate::handshake::output_registration_continuation::OriginalOutputClientFlightV1,
@@ -6991,6 +7039,7 @@ enum ClientWitnessRetentionV1 {
 enum StorageHelloPurposeV1 {
     Ordinary,
     NixGeneration,
+    OutputCapture,
 }
 
 impl ProtectedBrokerSessionFixedCustodyV1 {
@@ -7045,7 +7094,7 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         self.require_output_client_endpoint()?;
         self.connect_retained_storage_session_inner(
             deadline, slot, node, ClientWitnessRetentionV1::Output, None,
-            StorageHelloPurposeV1::Ordinary,
+            StorageHelloPurposeV1::OutputCapture,
         )
     }
 
@@ -7149,6 +7198,17 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
     ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
         self.complete_retained_storage_handshake_with_purpose_v1(
             socket, deadline, slot, None, StorageHelloPurposeV1::NixGeneration,
+        )
+    }
+
+    pub(crate) fn complete_retained_output_capture_storage_handshake(
+        self,
+        socket: SeqpacketSocket,
+        deadline: handshake::OriginalBrokerColdDeadlineV1,
+        slot: &mut Option<handshake::RetainedStorageColdOpenV1>,
+    ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
+        self.complete_retained_storage_handshake_with_purpose_v1(
+            socket, deadline, slot, None, StorageHelloPurposeV1::OutputCapture,
         )
     }
 
@@ -7405,6 +7465,14 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         let maximum_response_bytes = u32::try_from(AUTHENTICATED_RESPONSE_MAXIMUM_BYTES)
             .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
         let hello = match coverage {
+            None if matches!(purpose, StorageHelloPurposeV1::OutputCapture) => {
+                if protocol != aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1::Storage
+                    || audience != Audience::AUDIENCE_NODE_CONTROLLER
+                {
+                    return Err(DormantBrokerSessionHandshakeErrorV1::EndpointRole);
+                }
+                aos_sandbox_broker_session_protocol::profile::execution_capture_storage_client_hello_v1()
+            }
             None if matches!(purpose, StorageHelloPurposeV1::NixGeneration) => {
                 if protocol != aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1::Storage
                     || audience != Audience::AUDIENCE_NODE_CONTROLLER
@@ -7471,6 +7539,14 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         let maximum_response_bytes = u32::try_from(AUTHENTICATED_RESPONSE_MAXIMUM_BYTES)
             .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
         let hello = match coverage {
+            None if matches!(purpose, StorageHelloPurposeV1::OutputCapture) => {
+                if protocol != aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1::Storage
+                    || audience != Audience::AUDIENCE_NODE_CONTROLLER
+                {
+                    return Err(DormantBrokerSessionHandshakeErrorV1::EndpointRole);
+                }
+                aos_sandbox_broker_session_protocol::profile::execution_capture_storage_server_hello_v1()
+            }
             None if matches!(purpose, StorageHelloPurposeV1::NixGeneration) => {
                 if protocol != aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1::Storage
                     || audience != Audience::AUDIENCE_NODE_CONTROLLER

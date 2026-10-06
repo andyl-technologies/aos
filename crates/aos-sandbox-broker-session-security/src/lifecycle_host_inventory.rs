@@ -227,6 +227,7 @@ macro_rules! domain_inventory_owner {
                     pending: None,
                     authority_effects: ControllerAuthorityEffectExchangeV1::default(),
                     output_registration: None,
+                    capture_candidate: None,
                     #[cfg(feature = "online-nix")]
                     nix_generation: None,
                     git_coverage: None,
@@ -508,6 +509,8 @@ pub enum DormantLifecycleInventoryQueryProgressV1 {
 }
 
 struct DormantLifecycleInventorySessionV1 {
+    // The selected original's fence must run before the actual Session drops.
+    capture_candidate: Option<crate::controller_capture_candidate_exchange::ControllerStorageCaptureCandidateExchangeV1>,
     session: DormantAuthenticatedBrokerSessionV1,
     pending: Option<DormantLifecycleInventoryQueryRecoveryV1>,
     authority_effects: ControllerAuthorityEffectExchangeV1,
@@ -915,6 +918,7 @@ impl DormantLifecycleInventorySessionV1 {
     // beside the original session prevents another exchange from replacing a
     // failed output attempt after a durable local terminal or postcheck debt.
     fn has_pending_output_registration(&self) -> bool {
+        if self.capture_candidate.is_some() { return true; }
         #[cfg(feature = "online-nix")]
         if self.nix_generation.is_some() { return true; }
         self.output_registration.as_ref().is_some_and(|attempt| attempt.has_pending())
@@ -1093,6 +1097,11 @@ impl DormantLifecycleInventorySessionV1 {
         &mut self,
         recovery: DormantLifecycleInventoryQueryRecoveryV1,
     ) -> Result<DormantLifecycleInventoryQueryProgressV1, LifecyclePhase6ErrorV1> {
+        // The existing API consumes recovery on refusal. It must not enter a
+        // Session recovery frontier while original output custody is resident.
+        if self.has_pending_output_registration() {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
         let method = recovery.method;
         match recovery.stage {
             DormantLifecycleInventoryQueryStageV1::Initialization { recovery, request } => {
@@ -1588,6 +1597,7 @@ impl DormantHostRuntimeInventoryOwnerV1 {
             pending: None,
             authority_effects: ControllerAuthorityEffectExchangeV1::default(),
             output_registration: None,
+            capture_candidate: None,
             #[cfg(feature = "online-nix")]
             nix_generation: None,
             git_coverage: None,
@@ -1842,6 +1852,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         group_request_id: [u8; 16],
         group_request_digest: [u8; 32],
     ) -> Result<DormantAtomicStorageInventoryColdRecoveryV1, EffectFailure> {
+        self.require_no_capture_candidate()?;
         let original = self
             .0
             .session
@@ -1865,6 +1876,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         group_request_id: [u8; 16],
         group_request_digest: [u8; 32],
     ) -> Result<DormantAtomicStorageInventoryColdRecoveryV1, EffectFailure> {
+        self.require_no_capture_candidate()?;
         let fresh = self
             .0
             .session
@@ -2094,6 +2106,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         if self.0.pending.is_some() || self.0.authority_effects.has_pending()
             || self.0.git_coverage.is_some()
             || self.has_pending_nix_generation()
+            || self.0.capture_candidate.is_some()
         {
             return Err(EffectFailure::Retryable(
                 "Storage session retains another exact exchange".to_owned(),
@@ -2102,12 +2115,65 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         Ok((&mut self.0.output_registration, &mut self.0.session))
     }
 
+    /// Lends only completed registration custody, its original candidate slot
+    /// and the same authenticated Storage Session. No owner can be extracted.
+    ///
+    /// # Errors
+    /// Refuses unfinished registration, another exchange or absent custody.
+    pub(crate) fn capture_candidate_loan(
+        &mut self,
+    ) -> Result<(
+        &crate::controller_service::execution_output_storage_registration::OriginalControllerOutputRegistrationV1,
+        &mut Option<crate::controller_capture_candidate_exchange::ControllerStorageCaptureCandidateExchangeV1>,
+        &mut DormantAuthenticatedBrokerSessionV1,
+    ), EffectFailure> {
+        if self.0.pending.is_some() || self.0.authority_effects.has_pending()
+            || self.0.git_coverage.is_some() || self.has_pending_nix_generation()
+        {
+            return Err(output_registration_pending());
+        }
+        let registration = self.0.output_registration.as_ref().ok_or_else(output_registration_pending)?;
+        if registration.has_pending() { return Err(output_registration_pending()); }
+        Ok((registration, &mut self.0.capture_candidate, &mut self.0.session))
+    }
+
+    pub(crate) fn capture_candidate_profile_selected(&self) -> bool {
+        self.0.session.has_selected_capture_candidate_profile()
+    }
+
+    pub(crate) fn has_capture_candidate(&self) -> bool {
+        self.0.capture_candidate.is_some()
+    }
+
+    pub(crate) fn has_pending_capture_candidate(&self) -> bool {
+        self.0.capture_candidate.as_ref().is_some_and(|attempt| attempt.has_pending())
+    }
+
+    pub(crate) fn capture_candidate_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.capture_candidate.as_ref()?.failure(&self.0.session)
+    }
+
+    pub(crate) fn capture_candidate_postcheck_debt(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.capture_candidate.as_ref()?.postcheck_debt(&self.0.session)
+    }
+
+    fn require_no_capture_candidate(&self) -> Result<(), EffectFailure> {
+        if self.0.capture_candidate.is_some() {
+            return Err(EffectFailure::Permanent("Storage retains its original capture query".to_owned()));
+        }
+        Ok(())
+    }
+
     pub(crate) fn output_registration_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.0.output_registration.as_ref()?.failure(&self.0.session)
     }
 
     pub(crate) fn has_pending_output_registration(&self) -> bool {
-        self.0.has_pending_output_registration()
+        // The shared inner gate also blocks unrelated work after a completed
+        // candidate. The reconnect coordinator distinguishes that retained
+        // success from an unfinished/failed registration or candidate.
+        self.has_pending_nix_generation()
+            || self.0.output_registration.as_ref().is_some_and(|attempt| attempt.has_pending())
     }
 
     pub(crate) fn has_pending_nix_generation(&self) -> bool {
@@ -2127,6 +2193,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
     ), EffectFailure> {
         if self.0.pending.is_some() || self.0.authority_effects.has_pending()
             || self.0.output_registration.is_some() || self.0.git_coverage.is_some()
+            || self.0.capture_candidate.is_some()
         {
             return Err(EffectFailure::Permanent("Storage original Session is occupied".to_owned()));
         }
@@ -2169,6 +2236,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
             || self.0.output_registration.is_some()
             || self.0.git_coverage.is_some()
             || self.has_pending_nix_generation()
+            || self.0.capture_candidate.is_some()
         {
             return Err(BrokerSessionSecurityError::Currentness);
         }
@@ -2186,6 +2254,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
     pub(crate) fn historical_checkpoint_digest(
         &self,
     ) -> Result<aos_sandbox_core::ObjectDigest, EffectFailure> {
+        self.require_no_capture_candidate()?;
         self.0
             .session
             .historical_checkpoint_digest()
@@ -2204,6 +2273,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         session_binding: aos_sandbox_core::ObjectDigest,
         checkpoint: aos_sandbox_core::ObjectDigest,
     ) -> Result<ProtectedVerifiedAtomicStorageHistoryV1, EffectFailure> {
+        self.require_no_capture_candidate()?;
         self.0
             .session
             .prior_verified_atomic_storage_history(
@@ -2235,6 +2305,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         session_binding: aos_sandbox_core::ObjectDigest,
         checkpoint: aos_sandbox_core::ObjectDigest,
     ) -> Result<(), EffectFailure> {
+        self.require_no_capture_candidate()?;
         self.0
             .session
             .archive_verified_atomic_storage_history(
@@ -2254,6 +2325,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         &mut self,
         request_id: [u8; 16],
     ) -> Result<(), EffectFailure> {
+        self.require_no_capture_candidate()?;
         self.0
             .session
             .retire_atomic_storage_archive(request_id)
@@ -2315,6 +2387,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         operation: &CurrentLifecycleOperationV1<'_>,
         plan: &LifecycleAtomicDatasetSnapshotPlanV1,
     ) -> Result<DormantAtomicStorageInventoryCompletionV1, EffectFailure> {
+        self.require_no_capture_candidate()?;
         let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } = group.result() else {
             return Err(EffectFailure::Permanent(
                 "historical Storage group was not successful".to_owned(),
@@ -2405,6 +2478,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         operation: &CurrentLifecycleOperationV1<'_>,
         plan: &LifecycleAtomicDatasetSnapshotPlanV1,
     ) -> Result<DormantAtomicStorageInventoryCompletionV1, EffectFailure> {
+        self.require_no_capture_candidate()?;
         let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } = group.result() else {
             return Err(EffectFailure::Permanent(
                 "historical Storage group was not successful".to_owned(),
@@ -2461,6 +2535,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         predecessor_packet: aos_sandbox_core::ObjectDigest,
         session_binding: aos_sandbox_core::ObjectDigest,
     ) -> Result<ProtectedPriorAtomicStorageHistoryV1, EffectFailure> {
+        self.require_no_capture_candidate()?;
         if self.0.pending.is_some() || self.0.authority_effects.has_pending() {
             return Err(EffectFailure::Retryable(
                 "Storage session has retained recovery work".to_owned(),
@@ -2766,6 +2841,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
             pending: None,
             authority_effects: ControllerAuthorityEffectExchangeV1::default(),
             output_registration: None,
+            capture_candidate: None,
             #[cfg(feature = "online-nix")]
             nix_generation: None,
             git_coverage: None,

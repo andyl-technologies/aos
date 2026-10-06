@@ -77,6 +77,7 @@ struct FixedListenerV1 {
 enum ActivationAcceptPurposeV1 {
     Ordinary,
     NixGeneration,
+    OutputCapture,
 }
 
 /// Owns the complete fixed listener set for one production broker service.
@@ -112,6 +113,17 @@ impl ProductionBrokerSessionActivationV1 {
         self.storage_cold
             .as_ref()
             .is_some_and(crate::handshake::RetainedStorageColdOpenV1::is_failed)
+    }
+
+    /// Reports the actual fixed launch prerequisite for output inspection.
+    ///
+    /// This checks retained provenance only; it is not capture or Create readiness.
+    #[must_use]
+    pub fn has_original_output_capture_launch(&self) -> bool {
+        matches!(self.listeners.as_slice(), [fixed]
+            if fixed.endpoint == ProtectedBrokerSessionFixedEndpointV1::StorageBroker)
+            && self.launch_image.as_ref().is_some_and(|image|
+                image.require_endpoint(ProtectedBrokerSessionFixedEndpointV1::StorageBroker).is_ok())
     }
 
     pub(crate) fn retain_launch_image(
@@ -531,6 +543,23 @@ impl ProductionBrokerSessionActivationV1 {
         )
     }
 
+    /// Accepts the selected capture profile on the same original Storage listener.
+    ///
+    /// The daemon selects this only alongside its actual output custody. Neither
+    /// this method nor the HELLO roster grants physical backing or execution.
+    ///
+    /// # Errors
+    /// Rejects absent original launch custody, another listener or coverage
+    /// purpose, and every unchanged cold-handshake or deadline failure.
+    pub fn accept_authenticated_output_capture_storage_v1(
+        &mut self,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<DormantAuthenticatedBrokerSessionV1, ProductionBrokerSessionActivationErrorV1> {
+        self.accept_authenticated_with_purpose_v1(
+            deadline_boottime_nanoseconds, None, ActivationAcceptPurposeV1::OutputCapture,
+        )
+    }
+
     /// Accepts the opt-in Mount profile only after its actual owner comparison.
     ///
     /// # Errors
@@ -584,6 +613,13 @@ impl ProductionBrokerSessionActivationV1 {
         coverage: Option<aos_sandbox_core::format::git_upload_enrollment::GitCoverageBrokerRoleV1>,
         purpose: ActivationAcceptPurposeV1,
     ) -> Result<DormantAuthenticatedBrokerSessionV1, ProductionBrokerSessionActivationErrorV1> {
+        if matches!(purpose, ActivationAcceptPurposeV1::OutputCapture)
+            && (coverage.is_some() || !self.has_original_output_capture_launch())
+        {
+            return Err(ProductionBrokerSessionActivationErrorV1::Activation(
+                "selected capture inspection requires the original fixed Storage launch",
+            ));
+        }
         if matches!(purpose, ActivationAcceptPurposeV1::NixGeneration)
             && (coverage.is_some() || self.launch_image.is_none()
                 || self.listeners.len() != 1
@@ -624,6 +660,11 @@ impl ProductionBrokerSessionActivationV1 {
                     );
                     if matches!(purpose, ActivationAcceptPurposeV1::NixGeneration) {
                         return custody.complete_retained_nix_generation_storage_handshake(
+                            socket, deadline, &mut self.storage_cold,
+                        ).map_err(Into::into);
+                    }
+                    if matches!(purpose, ActivationAcceptPurposeV1::OutputCapture) {
+                        return custody.complete_retained_output_capture_storage_handshake(
                             socket, deadline, &mut self.storage_cold,
                         ).map_err(Into::into);
                     }
