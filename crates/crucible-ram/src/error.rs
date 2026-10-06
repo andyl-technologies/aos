@@ -25,9 +25,15 @@ pub enum RamError {
     /// A supplied digest or proof does not match the expected commitment.
     #[error("logical RAM commitment mismatch")]
     DigestMismatch,
+    /// An opaque path requires authenticated source evidence before observation or update.
+    #[error("logical RAM path requires an authenticated source proof")]
+    MissingProof,
     /// A checked arithmetic operation overflowed.
     #[error("logical RAM arithmetic overflow")]
     Overflow,
+    /// Supplied tree metadata belongs to a different admitted accounting domain.
+    #[error("logical RAM metadata accounting domain mismatch")]
+    MetadataDomain,
     /// An admitted resource ceiling would be exceeded.
     #[error("logical RAM resource limit exceeded")]
     ResourceLimit,

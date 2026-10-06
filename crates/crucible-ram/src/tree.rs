@@ -5,11 +5,13 @@
 //! logical address space. A batch rebuilds each changed ancestor once; unchanged
 //! content and snapshots retain their prior nodes. Node lifetime charges follow
 //! the final shared reference, including references retained by older snapshots.
+//! Authenticated source commitments remain opaque until a verified path arrives;
+//! hydration preserves every previously changed descendant.
 
 use crate::budget::Reservation;
 use crate::{
-    Geometry, MetadataBudget, NodeDigest, PageDigest, PageProof, RamError, RegionTreeDigest,
-    empty_leaf_digest, inner_digest, leaf_digest, region_tree_digest,
+    Geometry, MetadataBudget, NodeDigest, PageDigest, PageProof, RamError, RamRootDigest,
+    RegionTreeDigest, RootRecord, empty_leaf_digest, inner_digest, leaf_digest, region_tree_digest,
 };
 use std::sync::Arc;
 
@@ -20,6 +22,7 @@ struct Node {
     digest: NodeDigest,
     kind: NodeKind,
     _charge: Reservation,
+    has_opaque: bool,
 }
 
 #[derive(Debug)]
@@ -27,15 +30,27 @@ enum NodeKind {
     Page(PageDigest),
     Empty,
     Inner(Arc<Node>, Arc<Node>),
+    Opaque,
 }
 
 impl Node {
+    fn opaque(digest: NodeDigest, budget: &MetadataBudget) -> Result<Arc<Self>, RamError> {
+        let charge = budget.reserve((std::mem::size_of::<Self>() + ARC_OVERHEAD) as u64)?;
+        Ok(Arc::new(Self {
+            digest,
+            kind: NodeKind::Opaque,
+            _charge: charge,
+            has_opaque: true,
+        }))
+    }
+
     fn page(page: PageDigest, budget: &MetadataBudget) -> Result<Arc<Self>, RamError> {
         let charge = budget.reserve((std::mem::size_of::<Self>() + ARC_OVERHEAD) as u64)?;
         Ok(Arc::new(Self {
             digest: leaf_digest(page),
             kind: NodeKind::Page(page),
             _charge: charge,
+            has_opaque: false,
         }))
     }
 
@@ -45,6 +60,7 @@ impl Node {
             digest: empty_leaf_digest(),
             kind: NodeKind::Empty,
             _charge: charge,
+            has_opaque: false,
         }))
     }
 
@@ -56,12 +72,13 @@ impl Node {
     ) -> Result<Arc<Self>, RamError> {
         let digest = inner_digest(height, left.digest, right.digest)?;
         // Identical content at the same height can reuse a complete subtree.
-        if left.digest == right.digest {
+        if left.digest == right.digest && !left.has_opaque && !right.has_opaque {
             right = left.clone();
         }
         let charge = budget.reserve((std::mem::size_of::<Self>() + ARC_OVERHEAD) as u64)?;
         Ok(Arc::new(Self {
             digest,
+            has_opaque: left.has_opaque || right.has_opaque,
             kind: NodeKind::Inner(left, right),
             _charge: charge,
         }))
@@ -72,7 +89,8 @@ impl Node {
 #[derive(Clone, Debug)]
 pub struct RegionTree {
     geometry: Geometry,
-    root: Arc<Node>,
+    root: Option<Arc<Node>>,
+    origin_digest: RegionTreeDigest,
     budget: MetadataBudget,
 }
 
@@ -91,7 +109,8 @@ impl RegionTree {
         let root = build_zero(0, geometry.height(), geometry, &mut uniform)?;
         Ok(Self {
             geometry,
-            root,
+            origin_digest: region_tree_digest(geometry, root.digest),
+            root: Some(root),
             budget: budget.clone(),
         })
     }
@@ -118,8 +137,82 @@ impl RegionTree {
         let root = build_digests(0, geometry.height(), pages, &mut uniform)?;
         Ok(Self {
             geometry,
-            root,
+            origin_digest: region_tree_digest(geometry, root.digest),
+            root: Some(root),
             budget: budget.clone(),
+        })
+    }
+
+    /// Declares an authenticated region commitment without traversing its pages.
+    ///
+    /// The caller retains the matching immutable source separately. Unhydrated
+    /// paths cannot supply page digests, proofs, or accept updates. Their scoped
+    /// identity remains available without a page walk.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid logical geometry.
+    pub fn from_region_digest(
+        logical_length: u64,
+        digest: RegionTreeDigest,
+        budget: &MetadataBudget,
+    ) -> Result<Self, RamError> {
+        Ok(Self {
+            geometry: Geometry::new(logical_length)?,
+            root: None,
+            origin_digest: digest,
+            budget: budget.clone(),
+        })
+    }
+
+    /// Hydrates one authenticated immutable source path while preserving changes.
+    ///
+    /// Source evidence always names the original region commitment, including
+    /// after updates. Existing changed descendants remain authoritative; only
+    /// unknown original subtrees are expanded. This operation never reads RAM.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for foreign source roots, invalid proofs or geometry,
+    /// inconsistent opaque identities, or bounded metadata exhaustion. Failure
+    /// leaves the original tree unchanged and releases new reservations.
+    pub fn hydrated(
+        &self,
+        proof: &PageProof,
+        source: &RootRecord,
+        expected_source: RamRootDigest,
+    ) -> Result<Self, RamError> {
+        proof.verify_identity(source, expected_source)?;
+        let region = source
+            .topology()
+            .region(proof.region_id())
+            .ok_or(RamError::OutOfRange)?;
+        if region.geometry() != self.geometry
+            || source.region_root(proof.region_id()) != Some(self.origin_digest)
+        {
+            return Err(RamError::DigestMismatch);
+        }
+        let mut path = [empty_leaf_digest(); 53];
+        path[0] = leaf_digest(proof.page_digest());
+        for (level, sibling) in proof.siblings().iter().enumerate() {
+            path[level + 1] = if (proof.page_index() >> level) & 1 == 0 {
+                inner_digest(level as u32 + 1, path[level], *sibling)?
+            } else {
+                inner_digest(level as u32 + 1, *sibling, path[level])?
+            };
+        }
+        let root = hydrate_path(
+            self.root.as_ref(),
+            self.geometry.height(),
+            proof,
+            &path,
+            &self.budget,
+        )?;
+        Ok(Self {
+            geometry: self.geometry,
+            root: Some(root),
+            origin_digest: self.origin_digest,
+            budget: self.budget.clone(),
         })
     }
 
@@ -130,12 +223,14 @@ impl RegionTree {
 
     /// Returns the canonical region commitment.
     pub fn digest(&self) -> RegionTreeDigest {
-        region_tree_digest(self.geometry, self.root.digest)
+        self.root.as_ref().map_or(self.origin_digest, |root| {
+            region_tree_digest(self.geometry, root.digest)
+        })
     }
 
-    /// Returns the reduced node commitment before its region wrapper.
-    pub fn node_digest(&self) -> NodeDigest {
-        self.root.digest
+    /// Returns the reduced node commitment once a source path has been hydrated.
+    pub fn node_digest(&self) -> Option<NodeDigest> {
+        self.root.as_ref().map(|root| root.digest)
     }
 
     /// Returns the admitted metadata domain used by this tree.
@@ -143,9 +238,15 @@ impl RegionTree {
         &self.budget
     }
 
-    /// Reports whether both views share the exact same immutable root allocation.
+    /// Reports whether both views share root structure or an opaque source identity.
     pub fn shares_root_with(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.root, &other.root)
+        match (&self.root, &other.root) {
+            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+            (None, None) => {
+                self.geometry == other.geometry && self.origin_digest == other.origin_digest
+            }
+            _ => false,
+        }
     }
 
     /// Retrieves a real page's content digest without reading guest RAM.
@@ -154,9 +255,10 @@ impl RegionTree {
     ///
     /// Returns [`RamError::OutOfRange`] for absent/padding positions or an
     /// invariant error if the tree does not contain a page at that coordinate.
+    /// Returns [`RamError::MissingProof`] if the requested path remains opaque.
     pub fn page_digest(&self, page_index: u64) -> Result<PageDigest, RamError> {
         self.geometry.valid_length(page_index)?;
-        let mut node = &self.root;
+        let mut node = self.root.as_ref().ok_or(RamError::MissingProof)?;
         let mut height = self.geometry.height();
         while height != 0 {
             match &node.kind {
@@ -168,11 +270,13 @@ impl RegionTree {
                         right
                     };
                 }
+                NodeKind::Opaque => return Err(RamError::MissingProof),
                 _ => return Err(RamError::InvalidEncoding),
             }
         }
         match node.kind {
             NodeKind::Page(page) => Ok(page),
+            NodeKind::Opaque => Err(RamError::MissingProof),
             _ => Err(RamError::InvalidEncoding),
         }
     }
@@ -186,7 +290,8 @@ impl RegionTree {
     /// # Errors
     ///
     /// Returns [`RamError`] for invalid/duplicate indices, allocation failure,
-    /// or metadata exhaustion. New nodes and temporary reservations are released
+    /// metadata exhaustion, or [`RamError::MissingProof`] for opaque targets.
+    /// New nodes and temporary reservations are released
     /// on failure; no partial tree is published.
     pub fn updated(&self, updates: &[(u64, PageDigest)]) -> Result<Self, RamError> {
         if updates.is_empty() {
@@ -214,10 +319,12 @@ impl RegionTree {
             }
             previous = Some(*index);
         }
-        let root = rebuild(&self.root, 0, self.geometry.height(), &sorted, &self.budget)?;
+        let existing = self.root.as_ref().ok_or(RamError::MissingProof)?;
+        let root = rebuild(existing, 0, self.geometry.height(), &sorted, &self.budget)?;
         Ok(Self {
             geometry: self.geometry,
-            root,
+            root: Some(root),
+            origin_digest: self.origin_digest,
             budget: self.budget.clone(),
         })
     }
@@ -226,14 +333,15 @@ impl RegionTree {
     ///
     /// # Errors
     ///
-    /// Returns [`RamError`] for an invalid region identifier or page coordinate.
+    /// Returns [`RamError`] for an invalid region identifier or page coordinate,
+    /// allocation failure, or [`RamError::MissingProof`] for an opaque target.
     pub fn proof(&self, region_id: &str, page_index: u64) -> Result<PageProof, RamError> {
         let valid_length = self.geometry.valid_length(page_index)?;
         let mut siblings = Vec::new();
         siblings
             .try_reserve_exact(self.geometry.height() as usize)
             .map_err(|_| RamError::Allocation)?;
-        let mut node = &self.root;
+        let mut node = self.root.as_ref().ok_or(RamError::MissingProof)?;
         let mut height = self.geometry.height();
         while height != 0 {
             match &node.kind {
@@ -247,6 +355,7 @@ impl RegionTree {
                         node = right;
                     }
                 }
+                NodeKind::Opaque => return Err(RamError::MissingProof),
                 _ => return Err(RamError::InvalidEncoding),
             }
         }
@@ -360,6 +469,7 @@ fn rebuild(
         return match node.kind {
             NodeKind::Page(page) if page == updates[0].1 => Ok(node.clone()),
             NodeKind::Page(_) => Node::page(updates[0].1, budget),
+            NodeKind::Opaque => Err(RamError::MissingProof),
             _ => Err(RamError::OutOfRange),
         };
     }
@@ -374,6 +484,67 @@ fn rebuild(
             }
             Node::inner(height, new_left, new_right, budget)
         }
+        NodeKind::Opaque => Err(RamError::MissingProof),
         _ => Err(RamError::InvalidEncoding),
     }
+}
+
+fn hydrate_path(
+    existing: Option<&Arc<Node>>,
+    height: u32,
+    proof: &PageProof,
+    path: &[NodeDigest; 53],
+    budget: &MetadataBudget,
+) -> Result<Arc<Node>, RamError> {
+    if let Some(node) = existing {
+        match &node.kind {
+            NodeKind::Opaque if node.digest != path[height as usize] => {
+                return Err(RamError::DigestMismatch);
+            }
+            NodeKind::Opaque => {}
+            NodeKind::Page(_) if height == 0 => return Ok(node.clone()),
+            NodeKind::Inner(left, right) if height != 0 => {
+                let level = height - 1;
+                let (new_left, new_right) = if (proof.page_index() >> level) & 1 == 0 {
+                    (
+                        hydrate_path(Some(left), level, proof, path, budget)?,
+                        right.clone(),
+                    )
+                } else {
+                    (
+                        left.clone(),
+                        hydrate_path(Some(right), level, proof, path, budget)?,
+                    )
+                };
+                if Arc::ptr_eq(left, &new_left) && Arc::ptr_eq(right, &new_right) {
+                    return Ok(node.clone());
+                }
+                return Node::inner(height, new_left, new_right, budget);
+            }
+            _ => return Err(RamError::InvalidEncoding),
+        }
+    }
+    if height == 0 {
+        return Node::page(proof.page_digest(), budget);
+    }
+    let level = height - 1;
+    let child = hydrate_path(None, level, proof, path, budget)?;
+    let sibling = Node::opaque(proof.siblings()[level as usize], budget)?;
+    if (proof.page_index() >> level) & 1 == 0 {
+        Node::inner(height, child, sibling, budget)
+    } else {
+        Node::inner(height, sibling, child, budget)
+    }
+}
+
+/// Bounds the charged node allocation size of one fully distinct region tree.
+pub(crate) fn maximum_node_metadata(geometry: Geometry) -> Result<u64, RamError> {
+    let nodes = geometry
+        .padded_leaf_count()
+        .checked_mul(2)
+        .and_then(|count| count.checked_sub(1))
+        .ok_or(RamError::Overflow)?;
+    nodes
+        .checked_mul((std::mem::size_of::<Node>() + ARC_OVERHEAD) as u64)
+        .ok_or(RamError::Overflow)
 }

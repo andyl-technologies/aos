@@ -3,7 +3,8 @@
 
 use crate::budget::Reservation;
 use crate::{
-    MetadataBudget, PageDigest, RamError, RamRootDigest, RegionTree, RootRecord, Scope, Topology,
+    MetadataBudget, PageDigest, PageProof, RamError, RamRootDigest, RegionTree, RootRecord, Scope,
+    Topology,
 };
 use std::sync::Arc;
 
@@ -26,12 +27,59 @@ pub struct RamSnapshot {
 }
 
 impl RamSnapshot {
+    /// Bounds core metadata for a declared number of fully distinct live images.
+    ///
+    /// Every region is conservatively expanded to its complete padded binary
+    /// tree, ignoring uniform-content and persistent sharing. The result covers
+    /// node charges, each snapshot's canonical region catalog and retained
+    /// topology allocation. It is a capacity requirement for unrestricted
+    /// contents, not the observed cost of a sparse or shared image.
+    ///
+    /// Callers separately admit cached root records, encoding/proof/update
+    /// scratch, native dirty state, allocator overhead, and process resources.
+    /// The accounting domain's control allocation is external to its own budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RamError::InvalidLength`] for zero live images, or
+    /// [`RamError::Overflow`] if the capacity cannot be represented.
+    pub fn maximum_metadata_bytes(
+        topology: &Topology,
+        maximum_live_snapshots: u32,
+    ) -> Result<u64, RamError> {
+        if maximum_live_snapshots == 0 {
+            return Err(RamError::InvalidLength);
+        }
+        let catalog = topology
+            .regions()
+            .len()
+            .checked_mul(std::mem::size_of::<RegionTree>())
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    std::mem::size_of::<SnapshotInner>() + 2 * std::mem::size_of::<usize>(),
+                )
+            })
+            .ok_or(RamError::Overflow)?;
+        let mut bytes = (catalog as u64)
+            .checked_add(topology.metadata_bytes()?)
+            .ok_or(RamError::Overflow)?;
+        for region in topology.regions() {
+            bytes = bytes
+                .checked_add(crate::tree::maximum_node_metadata(region.geometry())?)
+                .ok_or(RamError::Overflow)?;
+        }
+        bytes
+            .checked_mul(u64::from(maximum_live_snapshots))
+            .ok_or(RamError::Overflow)
+    }
+
     /// Validates one immutable tree per region in canonical inventory order.
     ///
     /// # Errors
     ///
     /// Returns [`RamError`] for missing/extra regions, geometry mismatches, or
-    /// insufficient metadata budget for the snapshot's region-root catalog.
+    /// mismatched tree accounting domains, or insufficient metadata budget for
+    /// the snapshot's region-root catalog.
     pub fn new(
         topology: Topology,
         trees: Vec<RegionTree>,
@@ -47,6 +95,12 @@ impl RamSnapshot {
         {
             return Err(RamError::InvalidLength);
         }
+        if trees
+            .iter()
+            .any(|tree| !tree.metadata_budget().shares_account_with(budget))
+        {
+            return Err(RamError::MetadataDomain);
+        }
         let bytes = trees
             .capacity()
             .checked_mul(std::mem::size_of::<RegionTree>())
@@ -56,7 +110,10 @@ impl RamSnapshot {
                 )
             })
             .ok_or(RamError::Overflow)?;
-        let charge = budget.reserve(bytes as u64)?;
+        let retained_bytes = (bytes as u64)
+            .checked_add(topology.metadata_bytes()?)
+            .ok_or(RamError::Overflow)?;
+        let charge = budget.reserve(retained_bytes)?;
         Ok(Self {
             inner: Arc::new(SnapshotInner {
                 topology,
@@ -65,6 +122,74 @@ impl RamSnapshot {
                 _charge: charge,
             }),
         })
+    }
+
+    /// Seeds a complete immutable snapshot from authenticated region commitments.
+    ///
+    /// Exact and lifecycle records include every region. Construction costs only
+    /// the bounded region catalog; page paths remain opaque until authenticated
+    /// source proofs arrive. Storage leases and coherent execution authority stay
+    /// with the caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for execution-only records, missing region commitments,
+    /// allocation failure, invalid geometry, or metadata exhaustion.
+    pub fn from_root_record(
+        record: &RootRecord,
+        budget: &MetadataBudget,
+    ) -> Result<Self, RamError> {
+        if !matches!(record.scope(), Scope::Exact | Scope::Lifecycle) {
+            return Err(RamError::InvalidEncoding);
+        }
+        let mut trees = Vec::new();
+        trees
+            .try_reserve_exact(record.topology().regions().len())
+            .map_err(|_| RamError::Allocation)?;
+        for region in record.topology().regions() {
+            let digest = record
+                .region_root(region.id())
+                .ok_or(RamError::InvalidLength)?;
+            trees.push(RegionTree::from_region_digest(
+                region.logical_length(),
+                digest,
+                budget,
+            )?);
+        }
+        Self::new(record.topology().clone(), trees, budget)
+    }
+
+    /// Authenticates and hydrates one original source path without reading RAM.
+    ///
+    /// Existing changed paths and retained snapshots stay intact. Only the
+    /// selected opaque path is expanded, allowing subsequent digest updates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for differing topology, foreign or invalid proofs,
+    /// missing region owners, allocation failure, or metadata exhaustion.
+    pub fn hydrated(
+        &self,
+        proof: &PageProof,
+        source: &RootRecord,
+        expected_source: RamRootDigest,
+    ) -> Result<Self, RamError> {
+        if self.topology() != source.topology() {
+            return Err(RamError::DigestMismatch);
+        }
+        let index = self
+            .inner
+            .topology
+            .regions()
+            .binary_search_by(|region| region.id().as_bytes().cmp(proof.region_id().as_bytes()))
+            .map_err(|_| RamError::OutOfRange)?;
+        let tree = self.inner.trees[index].hydrated(proof, source, expected_source)?;
+        self.replace_region(index, tree)
+    }
+
+    /// Returns the shared accounting domain retaining every tree and catalog.
+    pub fn metadata_budget(&self) -> &MetadataBudget {
+        &self.inner.budget
     }
 
     /// Returns the complete logical inventory.
@@ -133,6 +258,10 @@ impl RamSnapshot {
             .binary_search_by(|region| region.id().as_bytes().cmp(region_id.as_bytes()))
             .map_err(|_| RamError::OutOfRange)?;
         let tree = self.inner.trees[index].updated(updates)?;
+        self.replace_region(index, tree)
+    }
+
+    fn replace_region(&self, index: usize, tree: RegionTree) -> Result<Self, RamError> {
         if tree.shares_root_with(&self.inner.trees[index]) {
             return Ok(self.clone());
         }

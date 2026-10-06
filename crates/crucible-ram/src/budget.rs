@@ -35,6 +35,14 @@ impl MetadataBudget {
         }
     }
 
+    /// Reports whether both handles charge the same retained accounting domain.
+    ///
+    /// Equal numeric ceilings do not establish shared ownership. Cloned handles
+    /// retain account identity for their full allocation lifetime.
+    pub fn shares_account_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
     /// Returns the immutable admitted byte ceiling.
     pub fn limit_bytes(&self) -> u64 {
         self.inner.limit

@@ -338,6 +338,31 @@ impl PageProof {
         record: &RootRecord,
         expected_root: RamRootDigest,
     ) -> Result<PageDigest, RamError> {
+        self.verify_identity(record, expected_root)?;
+        if bytes.len() != self.valid_length as usize {
+            return Err(RamError::InvalidLength);
+        }
+        if PageDigest::hash(bytes)? != self.page_digest {
+            return Err(RamError::DigestMismatch);
+        }
+        Ok(self.page_digest)
+    }
+
+    /// Authenticates a content identity and its position without reading page bytes.
+    ///
+    /// This proves only the committed page digest. It does not prove backing
+    /// availability or the authenticity of any bytes later returned by a source.
+    /// The returned node digest permits sparse hydration of an immutable tree.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for mismatched roots, omitted owners, wrong geometry or
+    /// path depth, noncanonical padding, or a false region commitment.
+    pub fn verify_identity(
+        &self,
+        record: &RootRecord,
+        expected_root: RamRootDigest,
+    ) -> Result<NodeDigest, RamError> {
         if record.digest() != expected_root {
             return Err(RamError::DigestMismatch);
         }
@@ -350,19 +375,15 @@ impl PageProof {
             .ok_or(RamError::OutOfRange)?;
         let geometry = region.geometry();
         if geometry.valid_length(self.page_index)? != self.valid_length
-            || bytes.len() != self.valid_length as usize
             || self.siblings.len() != geometry.height() as usize
         {
             return Err(RamError::InvalidLength);
-        }
-        if PageDigest::hash(bytes)? != self.page_digest {
-            return Err(RamError::DigestMismatch);
         }
         let reduced = self.verify_path(geometry)?;
         if region_tree_digest(geometry, reduced) != expected_region {
             return Err(RamError::DigestMismatch);
         }
-        Ok(self.page_digest)
+        Ok(reduced)
     }
 
     fn verify_path(&self, geometry: Geometry) -> Result<NodeDigest, RamError> {

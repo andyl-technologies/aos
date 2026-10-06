@@ -255,6 +255,30 @@ pub struct Topology {
 }
 
 impl Topology {
+    /// Bounds the retained inventory allocation sizes, including identifier capacity.
+    ///
+    /// The bound includes the shared region slice and its reference counters.
+    /// Allocator bookkeeping and process memory accounting remain external.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RamError::Overflow`] if the retained sizes cannot be composed.
+    pub fn metadata_bytes(&self) -> Result<u64, RamError> {
+        let descriptors = self
+            .regions
+            .len()
+            .checked_mul(std::mem::size_of::<RegionDescriptor>())
+            .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<usize>()))
+            .ok_or(RamError::Overflow)?;
+        self.regions
+            .iter()
+            .try_fold(descriptors as u64, |bytes, region| {
+                bytes
+                    .checked_add(region.id.capacity() as u64)
+                    .ok_or(RamError::Overflow)
+            })
+    }
+
     /// Constructs a canonical inventory within the supplied admission limits.
     ///
     /// Empty topology is allowed for mathematical vectors. Execution admission
