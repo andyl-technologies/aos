@@ -29,8 +29,8 @@
   bash,
   observationTools ? null,
 }:
-assert observationTools == null || observationTools.selectedNativeArtifact == toString aos-hub;
-assert observationTools == null || observationTools.selectedWorkerArtifact == toString aos-hub-worker-dist;
+assert observationTools == null || observationTools.passthru.selectedNativeArtifact == toString aos-hub;
+assert observationTools == null || observationTools.passthru.selectedWorkerArtifact == toString aos-hub-worker-dist;
   mkDerivation {
     pname = "aos-hub-cloudflare";
     version = "0.1.0";
