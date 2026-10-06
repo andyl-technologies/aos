@@ -79,6 +79,11 @@ def secure_boot() -> None:
         for name in ("db", "KEK", "PK"):
             runtime.succeed(f"PATH={UTIL_LINUX}:$PATH {EFI_UPDATEVAR} -f {shlex.quote(SECURE_BOOT_KEYS + '/' + name + '.auth')} {name}")
         runtime.reboot(timeout=600)
+        # The initrd fallback agent answers before persistent host state is mounted.
+        runtime.wait_until_succeeds(
+            f"{SYSTEMCTL} is-active --quiet aos-image-boot-commit.service",
+            timeout=600,
+        )
     if variable("SecureBoot") != 1:
         raise RuntimeError("physical fixture did not enable Secure Boot")
 
