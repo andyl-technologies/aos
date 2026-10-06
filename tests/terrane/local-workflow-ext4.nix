@@ -1,20 +1,21 @@
-# Registration does not qualify the local repository milestone. The concrete
-# VM workflow must replace this failing check before it can report success.
+# Exercises T1 deployment through the packaged local CLI and registered SDK
+# checkout on actual guest ext4. This workflow is not the TEST-6 backend suite.
 {
   pkgs,
   lib,
-}:
-pkgs.mkDerivation {
-  pname = "terrane-local-workflow-ext4-pending";
-  version = "0";
-  src = null;
-  phases = [
-    {
-      name = "pending";
-      script = ''
-        printf '%s\n' ${lib.escapeShellArg "Terrane T1 local ext4 workflow: pending implementation and qualification"} >&2
-        exit 1
-      '';
-    }
-  ];
-}
+}: let
+  testing = import ../../lib/testing {inherit pkgs lib;};
+  workflow =
+    lib.replaceStrings ["@TERRANE@"] ["${pkgs.terrane}/bin/terrane"]
+    (builtins.readFile ./local-workflow-ext4/workflow.sh);
+in
+  testing.mkVMTest {
+    name = "terrane-local-workflow-ext4";
+    memory = 1024;
+    rootfsDeps = [
+      pkgs.terrane
+      pkgs.coreutils
+      pkgs.util-linux
+    ];
+    testScript = workflow;
+  }

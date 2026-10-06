@@ -403,8 +403,15 @@ placements, quarantine, other exclusions, burns, owners and selected source
 lineage remain unchanged when one active binding is cleared with its eligible
 rows. The native implementation acquires a genuine maintenance lease and
 derives fresh current roots using a retained candidate-only metadata view;
-implementation and its ten owning witnesses remain under qualification.
-Physical deletion and the complete T1 floor remain open.
+The immutable candidate `a1b291ecc955` executes all ten native restore witnesses
+with no failures in 387.038 seconds (Nextest run
+`b7a6dc8f-b039-4e46-8b75-1a0b68f83409`; 503 cases outside the selection).
+All 730 frozen source images remain unchanged. Genuine independent destination
+activation and paired import qualify copied source history without creator
+journals; the current-control, candidate-Meta physical-loss and actual restored
+live-row/public-availability witnesses pass. Collector regressions, strict
+profiles and final source-bound harness qualification remain in progress.
+Physical deletion and the complete T1 floor remain open; this is no task merge.
 
 The frozen composition `ff14aef673f4` passes actual Nix
 `gc-grace-window` and `bucket-file-layout`, executing all four and eleven exact
@@ -452,12 +459,20 @@ therefore prevent aggregate success.
 The current floor additionally requires `checks.terrane.integration.local-sdk-checkout`:
 five exact public-API witnesses for pinned ref/fixed-commit checkout, scoped
 entries, registry/mode/endpoint/policy refusals, fresh authority checks and
-completed-directory lifecycle. Its new consuming test target remains under
-implementation; registration supplies no runtime qualification. This local
+completed-directory lifecycle. Its consuming test target remains on a private
+candidate; registration supplies no runtime qualification. This local
 prerequisite does not claim the broader named `sdk-checkout` gate's future
 remote parity, job or extended algebra obligations, which remain ordered by
 T2/T3 and the branch worklines. The CLI frontend and genuine ext4 workflow also
 remain unqualified local deployment obligations.
+
+The public-only five-file SDK candidate passes all five native cases after
+dropping the original repository and credentials before reopen (Nextest run
+`96126827-9028-4166-a987-8e120a39d6e3`; 26.022 seconds, none skipped).
+Its preliminary actual Nix harness executes all five cases and the application
+target check compiles successfully. Final comment quality, strict checks and
+adoption of the non-ignored execution verifier remain under qualification.
+These scoped results do not qualify the broad named SDK or complete task.
 
 The current floor also requires `checks.terrane.integration.local-cli-workflow`,
 with three exact separate-process witnesses for local porcelain, private
@@ -466,6 +481,16 @@ restore harnesses check both named discovery and passing, non-ignored execution
 through the common native gate verifier. This prevents an ignored or empty
 selection from qualifying a prerequisite. The CLI target remains on its private
 candidate; its registration does not supply runtime or ext4 qualification.
+
+The reviewed concrete ext4 VM harness is now adopted as a shared prerequisite.
+It uses the checked release package in the existing source-built headless VM
+framework, verifies the actual ext4 filesystem, and checks separate-process
+init, directory commits, fork, merge, registered and historical checkouts,
+reopen and unchanged persisted credentials. The old failing placeholder is
+replaced; package checks remain enabled. Previous qualification stopped at
+failing package tests before the VM booted. No successful VM artifact exists;
+the current combined implementation still requires genuine package and ext4
+qualification before T1 can exit.
 
 The preceding completed full qualification records candidate
 `15540ef204ec`, which combines reviewed source discovery, immutable lookup,
