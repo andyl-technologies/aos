@@ -16,6 +16,8 @@ use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
 
 /// Selects the existing normal Root endpoint's bounded genesis flight.
 pub const ROOT_SOURCE_GENESIS_QUERY_MAGIC_V1: &[u8; 8] = b"AOSSGQ01";
+/// Selects only strict full-resource Global genesis on the existing Root endpoint.
+pub const ROOT_SOURCE_RESOURCE_GENESIS_QUERY_MAGIC_V2: &[u8; 8] = b"AOSSGQ02";
 /// Identifies the actual normal Root flight's initial configuration response.
 pub const ROOT_SOURCE_GENESIS_HELLO_MAGIC_V1: &[u8; 8] = b"AOSSGH01";
 /// Bounds the canonical per-phase header, including the original flight nonce.
@@ -467,6 +469,22 @@ pub fn decode_root_source_genesis_frame_v2(
         return Err(SourceGenesisErrorV1::NonCanonical);
     }
     Ok(&frame[ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1..])
+}
+
+/// Bounds a resource-Global phase through the shared strict header validator.
+///
+/// # Errors
+/// Rejects wrong phase, nonce or version, including a shortened resource record.
+pub fn root_source_resource_genesis_payload_bytes_v2(
+    header: &[u8],
+    kind: RootSourceGenesisFrameKindV1,
+    nonce: [u8; 16],
+) -> Result<usize, SourceGenesisErrorV1> {
+    let bytes = strict_genesis_payload_bytes_from_header(header, kind, nonce)?;
+    if bytes != kind.payload_bytes_for_resource(true) {
+        return Err(SourceGenesisErrorV1::NonCanonical);
+    }
+    Ok(bytes)
 }
 
 pub(in crate::policy_compiler) fn strict_genesis_payload_bytes_from_header(

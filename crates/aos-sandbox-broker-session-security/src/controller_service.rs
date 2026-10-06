@@ -1043,6 +1043,7 @@ fn run_retained_controller(
             profile,
             publisher_registration,
             publisher_policy_bootstrap,
+            resource_bank,
             ..
         } = &mut *originals;
         let controller = required!(controller.as_mut());
@@ -1053,6 +1054,15 @@ fn run_retained_controller(
                 "exclusive Git cohort cannot create or reconstruct Source genesis",
             ));
         }
+        // Only the selected image-bank startup consults this additional family
+        // selector. Budgetless ordinary startup retains its old observation order.
+        let resource_global_result = if resource_bank.is_some() {
+            genesis.map(|input| controller.configured_resource_global_selection_v2(input)).transpose()
+        } else { Ok(None) };
+        let resource_global = match &resource_global_result {
+            Ok(selected) => selected == &Some(true),
+            Err(_) => worker.terminate(ControllerResidentCauseV1::Closed("original resource Global family selection failed")),
+        };
         let configured_selection_result = genesis
             .map(|input| controller.configured_project_startup_selection_v3(input))
             .transpose();
@@ -1150,10 +1160,30 @@ fn run_retained_controller(
             .unwrap_or(false)
         };
         if replay_genesis && !selected_genesis {
-            checked!(
-                complete_configured_source_genesis(controller, genesis, profile)
-                    .map_err(ControllerRuntimeError::from)
-            );
+            if resource_global {
+                let Some(input) = genesis else {
+                    worker.terminate(ControllerResidentCauseV1::Closed(
+                        "resource Global original pair is absent",
+                    ));
+                };
+                let Some(profile) = profile else {
+                    worker.terminate(ControllerResidentCauseV1::Closed(
+                        "resource Global original Root profile is absent",
+                    ));
+                };
+                let returned = controller.coordinate_configured_global_genesis_v2(input, profile);
+                if let Err(failed) = &returned {
+                    let _first_cause = failed.first_cause();
+                    worker.terminate(ControllerResidentCauseV1::Closed(
+                        "retained resource Global genesis failed",
+                    ));
+                }
+            } else {
+                checked!(
+                    complete_configured_source_genesis(controller, genesis, profile)
+                        .map_err(ControllerRuntimeError::from)
+                );
+            }
         }
             (replay_genesis, selected_genesis)
         };
@@ -1190,10 +1220,30 @@ fn run_retained_controller(
             }
         }
         if !replay_genesis {
-            checked!(
-                complete_configured_source_genesis(controller, genesis, profile)
-                    .map_err(ControllerRuntimeError::from)
-            );
+            if resource_global {
+                let Some(input) = genesis else {
+                    worker.terminate(ControllerResidentCauseV1::Closed(
+                        "resource Global original pair is absent",
+                    ));
+                };
+                let Some(profile) = profile else {
+                    worker.terminate(ControllerResidentCauseV1::Closed(
+                        "resource Global original Root profile is absent",
+                    ));
+                };
+                let returned = controller.coordinate_configured_global_genesis_v2(input, profile);
+                if let Err(failed) = &returned {
+                    let _first_cause = failed.first_cause();
+                    worker.terminate(ControllerResidentCauseV1::Closed(
+                        "retained resource Global genesis failed",
+                    ));
+                }
+            } else {
+                checked!(
+                    complete_configured_source_genesis(controller, genesis, profile)
+                        .map_err(ControllerRuntimeError::from)
+                );
+            }
         }
         if let Some(bootstrap) = publisher_policy_bootstrap.as_mut().filter(|_| !configuration.git_coverage) {
             if cache_usage::selected_bookend(controller, bootstrap).is_err() {
@@ -6199,6 +6249,33 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             original.run_with_signer(generation, signer);
             Ok(())
         }) { original.fail_signer_admission(error); }
+        original.into_outcome()
+    }
+
+    fn coordinate_configured_global_genesis_v2<'writers, 'profile>(
+        &'writers mut self,
+        journal: &'writers mut Journal,
+        input: &'writers ProvisionedControllerSourceGenesisInputV1,
+        profile: &'profile aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<
+        ObjectDigest,
+        aos_sandbox::policy_compiler::FailedConfiguredGlobalGenesisInvocationV2<'writers, 'profile>,
+    > {
+        let mut original = aos_sandbox::policy_compiler::OriginalConfiguredGlobalGenesisInvocationV2::park_with_resource_bank(
+            journal,
+            &mut self.source_domains,
+            input,
+            profile,
+            self.resource_bank.clone(),
+        );
+
+        if let Err(error) = with_process_controller_hold_signer_v1(|generation, signer| {
+            original.run_with_signer(generation, signer);
+            Ok(())
+        }) {
+            original.fail_signer_admission(error);
+        }
+
         original.into_outcome()
     }
 

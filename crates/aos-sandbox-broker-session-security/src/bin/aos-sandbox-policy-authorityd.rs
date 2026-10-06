@@ -180,6 +180,7 @@ use aos_sandbox_broker_session_security::policy_signer_credential::{
 };
 use aos_sandbox_broker_session_security::source_genesis_flight::{
     RootFirstSourceSuccessorAttemptV2, RootFirstSourceSuccessorRouteV2, RootProjectGenesisAttemptV3,
+    RootGlobalGenesisAttemptV2,
     RootProjectSuccessorAttemptV3,
     serve_root_source_genesis_flight_v1, serve_root_source_genesis_recovery_v1,
 };
@@ -218,6 +219,7 @@ enum HeadRequestMode {
     Query,
     Lease,
     SourceGenesis,
+    SourceResourceGlobalGenesis,
     SourceFirstSuccessor,
     SourceProjectGenesis,
     SourceProjectSuccessor,
@@ -884,6 +886,18 @@ fn serve_project_admission_recovery_request(
         }
         return Ok(());
     }
+    if matches!(mode, HeadRequestMode::SourceResourceGlobalGenesis) {
+        let mut attempt = RootGlobalGenesisAttemptV2::new(
+            stream, startup, request, RootFirstSourceSuccessorRouteV2::Historical,
+            controller_uid, controller_gid, controller_uid, source_signer_uid,
+        );
+        let returned = attempt.serve_once();
+        if returned.is_err() {
+            let _first_cause = attempt.first_cause();
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     if matches!(mode, HeadRequestMode::SourceProjectGenesis) {
         let mut attempt = RootProjectGenesisAttemptV3::new(
             stream, startup, request, RootFirstSourceSuccessorRouteV2::Historical,
@@ -972,6 +986,7 @@ fn project_recovery_mode_allowed(mode: HeadRequestMode) -> bool {
     matches!(
         mode,
         HeadRequestMode::SourceGenesis
+            | HeadRequestMode::SourceResourceGlobalGenesis
             | HeadRequestMode::SourceFirstSuccessor
             | HeadRequestMode::SourceProjectGenesis
             | HeadRequestMode::SourceProjectSuccessor
@@ -1276,6 +1291,12 @@ fn read_head_request(
     let mode = match request.get(..8) {
         Some(magic) if magic == POLICY_HEAD_QUERY_MAGIC_V2 => HeadRequestMode::Query,
         Some(magic) if magic == POLICY_HEAD_LEASE_QUERY_MAGIC_V3 => HeadRequestMode::Lease,
+        Some(magic) if magic == aos_sandbox::policy_compiler::ROOT_SOURCE_RESOURCE_GENESIS_QUERY_MAGIC_V2 => {
+            if request[8..24] == [0; 16] || request[24..] != [0; 8] {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid resource Global query").into());
+            }
+            HeadRequestMode::SourceResourceGlobalGenesis
+        }
         Some(magic) if magic == ROOT_SOURCE_GENESIS_QUERY_MAGIC_V1 => {
             HeadRequestMode::SourceGenesis
         }
@@ -1398,6 +1419,7 @@ fn read_head_request(
     if matches!(
         mode,
         HeadRequestMode::SourceGenesis
+            | HeadRequestMode::SourceResourceGlobalGenesis
             | HeadRequestMode::ClosedBindingReplay
             | HeadRequestMode::ClosedBindingStage
             | HeadRequestMode::ClosedBindingPreview
@@ -1576,6 +1598,18 @@ fn serve_current_head(
     })?;
     if matches!(mode, HeadRequestMode::SourceFirstSuccessor) {
         let mut attempt = RootFirstSourceSuccessorAttemptV2::new(
+            stream, startup, request, RootFirstSourceSuccessorRouteV2::Current,
+            controller_uid, controller_gid, controller_uid, source_signer_uid,
+        );
+        let returned = attempt.serve_once();
+        if returned.is_err() {
+            let _first_cause = attempt.first_cause();
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if matches!(mode, HeadRequestMode::SourceResourceGlobalGenesis) {
+        let mut attempt = RootGlobalGenesisAttemptV2::new(
             stream, startup, request, RootFirstSourceSuccessorRouteV2::Current,
             controller_uid, controller_gid, controller_uid, source_signer_uid,
         );
@@ -4141,6 +4175,10 @@ fn select_project_source<'a>(
             )
         }),
         HeadRequestMode::SourceGenesis
+        | HeadRequestMode::SourceResourceGlobalGenesis
+        | HeadRequestMode::SourceFirstSuccessor
+        | HeadRequestMode::SourceProjectGenesis
+        | HeadRequestMode::SourceProjectSuccessor
         | HeadRequestMode::CreateQ04
         | HeadRequestMode::ConsumerReadPreRoot
         | HeadRequestMode::GitEvidenceView

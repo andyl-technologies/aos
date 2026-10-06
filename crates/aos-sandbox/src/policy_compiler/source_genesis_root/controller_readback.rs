@@ -172,6 +172,80 @@ pub(super) fn capture_project_genesis_readback_v3(
     match first { Some(site) => Err(site), None => Ok(()) }
 }
 
+// The resource Global invocation retains the same strict packet recipe. It
+// cannot reinterpret a vacant Project under an existing Source instance as
+// global absence, and the legacy fixed-width public wrappers remain unchanged.
+#[cfg(target_os = "linux")]
+#[allow(clippy::too_many_arguments)]
+pub(super) fn capture_global_genesis_readback_v2(
+    controller: &HeldControllerSourceGenesisV1<'_>,
+    source: &HeldSourceTreeGenesisObservationV1<'_>,
+    generation: u64,
+    key: &SigningKey,
+    original: &super::flight::OriginalRootGenesisFlightV1<'_>,
+    complete: bool,
+    resident: &mut Option<Result<ControllerGenesisReadbackPacketV2, SourceGenesisErrorV1>>,
+    posts: &mut Vec<Result<(), SourceGenesisErrorV1>>,
+) -> Result<(), ProjectGenesisSignatureFailureV3> {
+    if resident.is_some() {
+        return Err(ProjectGenesisSignatureFailureV3::Refused);
+    }
+
+    let mut observed_kind = None;
+    *resident = Some((|| {
+        if controller.acceptance().resource_envelope().is_none()
+            || source.state() == SourceTreeGenesisStateV1::VacantProject
+            || source.source_uid() != original.first_successor_source_uid()?
+        {
+            return Err(SourceGenesisErrorV1::AdmissionClosed);
+        }
+        let kind = if complete {
+            controller.recheck_completed_source_ack(source)?;
+            3
+        } else {
+            prepare_current_readback_kind(controller, source, original.nonce(), generation)?
+        };
+        if kind == 2 {
+            return Err(SourceGenesisErrorV1::Conflict);
+        }
+        observed_kind = Some(kind);
+        let packet = prepare_readback_v2(
+            controller, source, original.nonce(), generation, kind,
+        )?;
+        let bytes = packet.as_ref();
+        let preimage = [RESOURCE_DOMAIN_V2, &bytes[..bytes.len() - 64]].concat();
+
+        recheck_readback(controller, source, kind)?;
+        original.first_successor_clock()?;
+        Ok(finish_readback(packet, preimage, key))
+    })());
+
+    let mut first = resident.as_ref().is_some_and(Result::is_err)
+        .then_some(ProjectGenesisSignatureFailureV3::Signature);
+    let mut retain_post = |result| {
+        let index = posts.len();
+        posts.push(result);
+        if first.is_none() && posts[index].is_err() {
+            first = Some(ProjectGenesisSignatureFailureV3::Post(index));
+        }
+    };
+    // Even a preparation or crypto-path refusal cannot suppress independent
+    // original-owner observations. A genuine completion check stays distinct.
+    retain_post(controller.recheck());
+    retain_post(source.recheck());
+    if observed_kind == Some(3) {
+        retain_post(controller.recheck_completed_source_ack(source));
+    } else if observed_kind.is_some_and(|kind| kind != 1) {
+        retain_post(controller.recheck_current_admission());
+    }
+    retain_post(original.first_successor_clock().map(|_| ()));
+    retain_post(original.observe_first_successor_clock().map(|_| ()));
+    match first {
+        Some(site) => Err(site),
+        None => Ok(()),
+    }
+}
+
 /// Signs the exact actual Controller and Source cuts for one live Root nonce.
 ///
 /// The existing process credential signer supplies the key. This function

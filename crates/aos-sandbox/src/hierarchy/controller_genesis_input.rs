@@ -135,6 +135,16 @@ impl ProvisionedControllerSourceGenesisInputV1 {
         Ok(())
     }
 
+    // Width selects only a transport family. Both original pair bookends use
+    // the existing signature/issuer validator; this is not current admission.
+    pub(crate) fn selects_resource_global_v2(&self) -> Result<bool, ControllerSourceGenesisInputErrorV1> {
+        self.recheck()?;
+        let selected = self.authorization_packet()?.len()
+            == crate::publisher_policy::PROJECT_AUTHORIZATION_SOURCE_BYTES_V3;
+        self.recheck()?;
+        Ok(selected)
+    }
+
     // This DATA-only route selector permits exact historical recovery before
     // unrelated bootstrap policy installation (whose credential may expire).
     // The actual coordinator still verifies original Root and both real owners.

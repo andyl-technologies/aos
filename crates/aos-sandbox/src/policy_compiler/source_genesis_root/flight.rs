@@ -87,6 +87,53 @@ impl ProjectGenesisFlightIoV3 {
     }
 }
 
+// Both closed genesis purposes share the original I/O custody and post order.
+// Only their existing wire codecs differ. Global replaces the outgoing Vec;
+// Project retains the existing mutable-buffer encoder and its reserve order.
+#[derive(Clone, Copy)]
+enum GenesisFrameFamily {
+    GlobalResource,
+    Project,
+}
+
+impl GenesisFrameFamily {
+    fn encode(
+        self,
+        outgoing: &mut Vec<u8>,
+        phase: Phase,
+        nonce: [u8; 16],
+        payload: &[u8],
+    ) -> Result<(), SourceGenesisErrorV1> {
+        match self {
+            Self::GlobalResource => {
+                *outgoing = super::wire::encode_root_source_genesis_frame_v2(
+                    phase, nonce, payload,
+                )?;
+                Ok(())
+            }
+            Self::Project => super::wire::encode_root_source_project_genesis_frame_v3(
+                outgoing, phase, nonce, payload,
+            ),
+        }
+    }
+
+    fn payload_bytes(
+        self,
+        header: &[u8],
+        phase: Phase,
+        nonce: [u8; 16],
+    ) -> Result<usize, SourceGenesisErrorV1> {
+        match self {
+            Self::GlobalResource => super::wire::root_source_resource_genesis_payload_bytes_v2(
+                header, phase, nonce,
+            ),
+            Self::Project => super::wire::root_source_project_genesis_payload_bytes_v3(
+                header, phase, nonce,
+            ),
+        }
+    }
+}
+
 /// Borrows one actual Root prepare flight; decoding an intent cannot create it.
 pub struct HeldRootSourceGenesisIntentV1<'flight> {
     origin: &'flight OriginalRootGenesisFlightV1<'flight>,
@@ -96,6 +143,14 @@ pub struct HeldRootSourceGenesisIntentV1<'flight> {
 }
 
 impl HeldRootSourceGenesisIntentV1<'_> {
+    pub(crate) fn native_crossing_clock_v2(&self) -> Result<(), SourceGenesisErrorV1> {
+        self.recheck_current_admission()
+    }
+
+    pub(crate) fn independent_clock_v2(&self) -> Result<(), SourceGenesisErrorV1> {
+        self.origin.observe_first_successor_clock().map(|_| ())
+    }
+
     /// Borrows the exact Root-owned prepare record from this original flight.
     #[must_use]
     pub const fn record(&self) -> &RootSourceGenesisIntentRecordV1 {
@@ -230,6 +285,14 @@ impl CompletedRootSourceProjectGenesisFloorV3<'_, '_> {
 }
 
 impl RootSourceGenesisFloorProofV1<'_> {
+    pub(crate) fn native_crossing_clock_v2(&self) -> Result<(), SourceGenesisErrorV1> {
+        self.origin.first_successor_clock().map(|_| ())
+    }
+
+    pub(crate) fn independent_clock_v2(&self) -> Result<(), SourceGenesisErrorV1> {
+        self.origin.observe_first_successor_clock().map(|_| ())
+    }
+
     /// Borrows the exact Root-owned floor, whose raw bytes remain data only.
     #[must_use]
     pub const fn floor(&self) -> &SourceHierarchyFloorRecordV1 {
@@ -258,20 +321,20 @@ impl RootSourceGenesisFloorProofV1<'_> {
 // Only receipt of Completed on the original held stream constructs this loan.
 // Its floor remains borrowed; a decoded floor or earlier Anchored reply cannot
 // select the current-ancestry consumer.
-pub(in crate::policy_compiler) struct CompletedRootSourceGenesisFloorV1<'completed, 'flight> {
+pub(crate) struct CompletedRootSourceGenesisFloorV1<'completed, 'flight> {
     proof: &'completed RootSourceGenesisFloorProofV1<'flight>,
 }
 
 impl CompletedRootSourceGenesisFloorV1<'_, '_> {
-    pub(in crate::policy_compiler) fn floor(&self) -> &SourceHierarchyFloorRecordV1 {
+    pub(crate) fn floor(&self) -> &SourceHierarchyFloorRecordV1 {
         self.proof.floor()
     }
 
-    pub(in crate::policy_compiler) fn source_uid(&self) -> u32 {
+    pub(crate) fn source_uid(&self) -> u32 {
         self.proof.source_uid()
     }
 
-    pub(in crate::policy_compiler) fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
+    pub(crate) fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
         self.proof.recheck()
     }
 
@@ -279,6 +342,18 @@ impl CompletedRootSourceGenesisFloorV1<'_, '_> {
         &self,
     ) -> Result<RawPairedClockSample, SourceGenesisErrorV1> {
         self.proof.origin.signing_boundary_clock()
+    }
+
+    // Payment uses this flight's initial cut, not a completion-time sample.
+    pub(crate) fn resource_admission_cut(&self) -> Result<(RawPairedClockSample, u64), SourceGenesisErrorV1> {
+        let original = self.proof.origin.clock;
+        let deadline = original.boottime_nanoseconds().checked_add(60_000_000_000)
+            .ok_or(SourceGenesisErrorV1::Stale)?;
+        Ok((original, deadline))
+    }
+
+    pub(crate) fn independent_resource_clock(&self) -> Result<(), SourceGenesisErrorV1> {
+        self.proof.origin.observe_first_successor_clock().map(|_| ())
     }
 }
 
@@ -294,6 +369,49 @@ pub(in crate::policy_compiler) struct OriginalRootGenesisFlightV1<'profile> {
     source_uid: u32,
     first_successor_wait_owners: RefCell<Vec<Result<(), SourceGenesisErrorV1>>>,
     first_successor_wait_clocks: RefCell<Vec<Result<RawPairedClockSample, SourceGenesisErrorV1>>>,
+}
+
+// Prearmed by the resource-Global parent before connection can fail. The whole
+// first native Result stays here even when no flight can be assembled.
+pub(super) struct OriginalRootGenesisOpeningClockV2 {
+    started: Option<Instant>,
+    initial: Option<Result<RawPairedClockSample, SourceGenesisErrorV1>>,
+}
+
+impl OriginalRootGenesisOpeningClockV2 {
+    pub(super) fn new() -> Self {
+        Self { started: None,
+        initial: None }
+    }
+
+    fn capture(&mut self) -> Result<(Instant, RawPairedClockSample), SourceGenesisErrorV1> {
+        if self.started.is_some() || self.initial.is_some() {
+            return Err(SourceGenesisErrorV1::Conflict);
+        }
+        self.started = Some(Instant::now());
+        self.initial = Some(kernel_pair());
+        self.initial_values()
+    }
+
+    fn initial_values(&self) -> Result<(Instant, RawPairedClockSample), SourceGenesisErrorV1> {
+        let started = self.started.ok_or(SourceGenesisErrorV1::Stale)?;
+        let clock = self.initial.as_ref().and_then(|result| result.as_ref().ok())
+            .copied().ok_or(SourceGenesisErrorV1::Stale)?;
+        Ok((started, clock))
+    }
+
+    pub(super) fn initial_error(&self) -> Option<&SourceGenesisErrorV1> {
+        self.initial.as_ref()?.as_ref().err()
+    }
+
+    // Checks parked paired DATA and the same monotonic deadline without a new
+    // paired sample or admission cut. Missing original custody stays negative.
+    pub(super) fn check_later(&self, current: RawPairedClockSample) -> Result<(), SourceGenesisErrorV1> {
+        let (started, original) = self.initial_values()?;
+        original.validate_later_sample(current).map_err(|_| SourceGenesisErrorV1::Stale)?;
+        require_original_root_age(original, current)?;
+        transport::require_remaining(started + MAXIMUM_FLIGHT).map(|_| ())
+    }
 }
 
 pub(super) enum OriginalRootGenesisReplyV1<'flight> {
@@ -365,6 +483,19 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
         }
         let started = Instant::now();
         let clock = kernel_pair()?;
+        Self::park_connection_at_original(profile, raw, adopted, parked, started, clock)
+    }
+
+    // Sole connection/adoption engine. Only the ordinary sampler above or the
+    // prearmed Global sampler supplies these original values.
+    fn park_connection_at_original(
+        profile: &'profile ProductionControllerNormalRootProfileV1,
+        raw: &mut Option<OwnedFd>,
+        adopted: &mut Option<RetainedUnixStream>,
+        parked: &mut Option<Self>,
+        started: Instant,
+        clock: RawPairedClockSample,
+    ) -> Result<[u8; 16], SourceGenesisErrorV1> {
         profile.recheck().map_err(|_| SourceGenesisErrorV1::Stale)?;
         *adopted = Some(transport::connect_parked(raw, started + MAXIMUM_FLIGHT)?);
         let stream = adopted.as_mut().ok_or(SourceGenesisErrorV1::Stale)?;
@@ -458,6 +589,168 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
         origin.recheck()
     }
 
+    // The selected resource Global route keeps the ordinary Global query and
+    // hello purpose, but parks every available original before later failure.
+    pub(super) fn connect_global_genesis_parked_v2(
+        profile: &'profile ProductionControllerNormalRootProfileV1,
+        opening_clock: &mut OriginalRootGenesisOpeningClockV2,
+        raw: &mut Option<OwnedFd>,
+        adopted: &mut Option<RetainedUnixStream>,
+        parked: &mut Option<Self>,
+        hello: &mut Vec<u8>,
+        received: &mut Option<Result<UnixStreamSubjectChunk, aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1>>,
+        controller_uid: u32,
+    ) -> Result<(), SourceGenesisErrorV1> {
+        if parked.is_some() || adopted.is_some() || raw.is_some() {
+            return Err(SourceGenesisErrorV1::Conflict);
+        }
+        let (started, clock) = opening_clock.capture()?;
+        let client_nonce = Self::park_connection_at_original(profile, raw, adopted, parked, started, clock)?;
+        let origin = parked.as_mut().ok_or(SourceGenesisErrorV1::Stale)?;
+        let mut request = [0; 32];
+        request[..8].copy_from_slice(super::wire::ROOT_SOURCE_RESOURCE_GENESIS_QUERY_MAGIC_V2);
+        request[8..24].copy_from_slice(&client_nonce);
+        origin.write_first_successor(&request)?;
+        origin.receive_first_successor_exact(56, hello, received)?;
+        origin.accept_hello(hello, client_nonce)?;
+        if u32::from_be_bytes(take(hello, 52)?) != controller_uid {
+            return Err(SourceGenesisErrorV1::Conflict);
+        }
+        origin.first_successor_clock().map(|_| ())
+    }
+
+    pub(super) fn send_global_genesis_phase_v2(
+        &self,
+        phase: Phase,
+        payload: &[u8],
+        io: &mut ProjectGenesisFlightIoV3,
+    ) -> Result<(), ()> {
+        self.send_genesis_phase(GenesisFrameFamily::GlobalResource, phase, payload, io)
+    }
+
+    pub(super) fn receive_global_genesis_phase_v2(
+        &self,
+        allowed: &[Phase],
+        io: &mut ProjectGenesisFlightIoV3,
+    ) -> Result<Phase, ()> {
+        self.receive_genesis_phase(GenesisFrameFamily::GlobalResource, allowed, io)
+    }
+
+    fn send_genesis_phase(
+        &self,
+        family: GenesisFrameFamily,
+        phase: Phase,
+        payload: &[u8],
+        io: &mut ProjectGenesisFlightIoV3,
+    ) -> Result<(), ()> {
+        if io.action.is_some() {
+            return Err(());
+        }
+
+        io.action = Some((|| {
+            family.encode(&mut io.outgoing, phase, self.nonce, payload)?;
+            self.write_first_successor(&io.outgoing)?;
+            Ok(phase)
+        })());
+
+        io.posts(self);
+        if io.error().is_some() {
+            Err(())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn receive_genesis_phase(
+        &self,
+        family: GenesisFrameFamily,
+        allowed: &[Phase],
+        io: &mut ProjectGenesisFlightIoV3,
+    ) -> Result<Phase, ()> {
+        if io.action.is_some() {
+            return Err(());
+        }
+
+        io.action = Some((|| {
+            let position = if allowed == [Phase::Finish] {
+                FirstSuccessorReceivePositionV2::Finished
+            } else {
+                FirstSuccessorReceivePositionV2::Open
+            };
+            self.receive_first_successor_at_position(
+                32, &mut io.header, &mut io.received, position,
+            )?;
+
+            let phase = allowed.iter().copied().find(|phase| {
+                family.payload_bytes(&io.header, *phase, self.nonce).is_ok()
+            }).ok_or(SourceGenesisErrorV1::NonCanonical)?;
+            let payload_bytes = family.payload_bytes(&io.header, phase, self.nonce)?;
+            self.receive_first_successor_at_position(
+                payload_bytes, &mut io.payload, &mut io.received, position,
+            )?;
+            Ok(phase)
+        })());
+
+        io.posts(self);
+        if io.error().is_some() {
+            Err(())
+        } else {
+            io.action.as_ref().and_then(|result| result.as_ref().ok()).copied().ok_or(())
+        }
+    }
+
+    pub(super) fn global_genesis_reply_from_received_v2<'flight>(
+        &'flight self,
+        controller: &HeldControllerSourceGenesisV1<'_>,
+        phase: Phase,
+        payload: &[u8],
+    ) -> Result<OriginalRootGenesisReplyV1<'flight>, SourceGenesisErrorV1> {
+        if phase == Phase::Anchored {
+            return self.floor_from_original_payload(controller, payload)
+                .map(OriginalRootGenesisReplyV1::Anchored);
+        }
+        if phase != Phase::Prepared
+            || payload.len() != phase.payload_bytes_for_resource(true)
+        {
+            return Err(SourceGenesisErrorV1::NonCanonical);
+        }
+        let expires = i64::from_be_bytes(take(payload, 0)?);
+        let record = RootSourceGenesisIntentRecordV1::from_record_bytes(&payload[8..])?;
+        if record.accepted_input() != controller.acceptance()
+            || record.source_uid() != self.source_uid
+        {
+            return Err(SourceGenesisErrorV1::Conflict);
+        }
+        let deadline = self.clock.boottime_nanoseconds().checked_add(60_000_000_000)
+            .ok_or(SourceGenesisErrorV1::Stale)?;
+        self.first_successor_clock()?;
+        Ok(OriginalRootGenesisReplyV1::Prepared(HeldRootSourceGenesisIntentV1 {
+            origin: self, record, deadline, expires,
+        }))
+    }
+
+    pub(super) fn global_genesis_floor_from_received_v2<'flight>(
+        &'flight self,
+        controller: &HeldControllerSourceGenesisV1<'_>,
+        payload: &[u8],
+    ) -> Result<RootSourceGenesisFloorProofV1<'flight>, SourceGenesisErrorV1> {
+        self.floor_from_original_payload(controller, payload)
+    }
+
+    pub(super) fn completed_global_genesis_from_received_v2<'completed, 'flight>(
+        &self,
+        proof: &'completed RootSourceGenesisFloorProofV1<'flight>,
+        payload: &[u8],
+    ) -> Result<CompletedRootSourceGenesisFloorV1<'completed, 'flight>, SourceGenesisErrorV1> {
+        if !std::ptr::eq(self, proof.origin) {
+            return Err(SourceGenesisErrorV1::Stale);
+        }
+        proof.recheck()?;
+        require_completed_digest(payload, proof.floor().digest().as_bytes())?;
+        proof.recheck()?;
+        Ok(CompletedRootSourceGenesisFloorV1 { proof })
+    }
+
     pub(super) fn connect_project_genesis_parked_v3(
         profile: &'profile ProductionControllerNormalRootProfileV1,
         raw: &mut Option<OwnedFd>, adopted: &mut Option<RetainedUnixStream>,
@@ -485,34 +778,13 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
     pub(super) fn send_project_genesis_phase_v3(
         &self, phase: Phase, payload: &[u8], io: &mut ProjectGenesisFlightIoV3,
     ) -> Result<(), ()> {
-        if io.action.is_some() { return Err(()); }
-        io.action = Some((|| {
-            super::wire::encode_root_source_project_genesis_frame_v3(&mut io.outgoing, phase, self.nonce, payload)?;
-            self.write_first_successor(&io.outgoing)?;
-            Ok(phase)
-        })());
-        io.posts(self);
-        if io.error().is_some() { Err(()) } else { Ok(()) }
+        self.send_genesis_phase(GenesisFrameFamily::Project, phase, payload, io)
     }
 
     pub(super) fn receive_project_genesis_phase_v3(
         &self, allowed: &[Phase], io: &mut ProjectGenesisFlightIoV3,
     ) -> Result<Phase, ()> {
-        if io.action.is_some() { return Err(()); }
-        io.action = Some((|| {
-            let position = if allowed == [Phase::Finish] { FirstSuccessorReceivePositionV2::Finished } else { FirstSuccessorReceivePositionV2::Open };
-            self.receive_first_successor_at_position(32, &mut io.header, &mut io.received, position)?;
-            let phase = allowed.iter().copied().find(|phase|
-                super::wire::root_source_project_genesis_payload_bytes_v3(&io.header, *phase, self.nonce).is_ok())
-                .ok_or(SourceGenesisErrorV1::NonCanonical)?;
-            let payload_bytes = super::wire::root_source_project_genesis_payload_bytes_v3(&io.header, phase, self.nonce)?;
-            self.receive_first_successor_at_position(payload_bytes, &mut io.payload, &mut io.received, position)?;
-            Ok(phase)
-        })());
-        io.posts(self);
-        if io.error().is_some() { Err(()) } else {
-            io.action.as_ref().and_then(|result| result.as_ref().ok()).copied().ok_or(())
-        }
+        self.receive_genesis_phase(GenesisFrameFamily::Project, allowed, io)
     }
 
     pub(super) fn project_genesis_reply_from_received_v3<'flight>(

@@ -160,6 +160,16 @@ pub(crate) use source_genesis_root::{
     unavailable_first_source_successor_v2,
 };
 mod source_hold_pin;
+#[cfg(target_os = "linux")]
+pub(crate) use public_create_source::{
+    consume_completed_gen1_ancestry_v1,
+    consume_completed_project_genesis_ancestry_v3,
+};
+#[cfg(target_os = "linux")]
+pub(crate) use source_genesis_root::{
+    CompletedRootSourceGenesisFloorV1,
+    GlobalRootGenesisNativeCutV2,
+};
 mod source_hold_readback;
 mod source_hold_readback_v2;
 #[cfg(target_os = "linux")]
@@ -191,6 +201,8 @@ pub use source_genesis_root::{
     SOURCE_GENESIS_DEPLOYMENT_INSTANCE_BYTES_V1, SOURCE_HIERARCHY_FLOOR_BYTES_V1,
     SOURCE_HIERARCHY_FLOOR_BYTES_V2,
     SourceHierarchyFloorRecordV1, coordinate_provisioned_source_genesis_v1,
+    ROOT_SOURCE_RESOURCE_GENESIS_QUERY_MAGIC_V2, root_source_resource_genesis_payload_bytes_v2,
+    OriginalConfiguredGlobalGenesisInvocationV2, FailedConfiguredGlobalGenesisInvocationV2,
     decode_root_source_genesis_frame_v1, encode_root_source_genesis_frame_v1,
     decode_root_source_genesis_frame_v2, encode_root_source_genesis_frame_v2,
     fixed_root_source_genesis_recovery_available_v1,
@@ -200,6 +212,7 @@ pub use source_genesis_root::{
 #[cfg(target_os = "linux")]
 pub(crate) use source_genesis_root::{
     unavailable_project_genesis_v3,
+    unavailable_global_genesis_v2,
     require_root_source_genesis_capacity_owner_v1, require_root_source_genesis_mutation_v1,
     validate_root_source_genesis_capacity_admission_v1,
     validate_root_source_genesis_capacity_settlement_v1,

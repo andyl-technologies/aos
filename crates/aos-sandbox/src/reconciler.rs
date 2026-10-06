@@ -987,6 +987,20 @@ pub trait SingleNodeEffectExecutor {
         Err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::AdmissionClosed.into())
     }
 
+    /// Coordinates the resource-bearing Global purpose under resident originals.
+    ///
+    /// # Errors
+    /// Returns the resident failed writer loan when the genuine Source owner is unavailable.
+    #[cfg(target_os = "linux")]
+    fn coordinate_configured_global_genesis_v2<'writers, 'profile>(
+        &'writers mut self,
+        journal: &'writers mut Journal,
+        input: &'writers crate::hierarchy::controller_genesis_input::ProvisionedControllerSourceGenesisInputV1,
+        profile: &'profile crate::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<ObjectDigest, crate::policy_compiler::FailedConfiguredGlobalGenesisInvocationV2<'writers, 'profile>> {
+        Err(crate::policy_compiler::unavailable_global_genesis_v2(journal, input, profile))
+    }
+
     /// Coordinates genuine configured mixed genesis under resident originals.
     ///
     /// # Errors
@@ -1560,6 +1574,16 @@ where
     ) -> Result<ObjectDigest, crate::policy_compiler::FailedConfiguredProjectGenesisInvocationV3<'writers, 'profile>> {
         self.ledger_validated = false;
         self.executor.coordinate_configured_project_genesis_v3(&mut self.journal, input, profile)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn coordinate_configured_global_genesis_v2<'writers, 'profile>(
+        &'writers mut self,
+        input: &'writers crate::hierarchy::controller_genesis_input::ProvisionedControllerSourceGenesisInputV1,
+        profile: &'profile crate::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<ObjectDigest, crate::policy_compiler::FailedConfiguredGlobalGenesisInvocationV2<'writers, 'profile>> {
+        self.ledger_validated = false;
+        self.executor.coordinate_configured_global_genesis_v2(&mut self.journal, input, profile)
     }
 
     #[cfg(target_os = "linux")]
