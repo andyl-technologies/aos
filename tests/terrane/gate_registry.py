@@ -92,13 +92,48 @@ def check_registry(spec: Path, registry: Path, check_names: Path) -> None:
     print(f"PASS: {len(rows)} unique specification gates map to AOS checks")
 
 
+def check_current_floor(plan: Path, current_names: Path) -> None:
+    """Rejects an aggregate that omits any T0 or T1 task or exit gate."""
+    text = plan.read_text()
+    headings = (
+        "### T0 — Foundations",
+        "### T1 — Local repository",
+        "### T2 — Host tier",
+    )
+    if any(text.count(heading) != 1 for heading in headings):
+        raise ValueError("PKG-7: current trunk plan has missing or repeated milestones")
+
+    positions = [text.index(heading) for heading in headings]
+    if not positions[0] < positions[1] < positions[2]:
+        raise ValueError("PKG-7: current trunk plan milestones are out of order")
+
+    trunk = text[positions[0]:positions[2]]
+    required = set(re.findall(r"checks\.terrane\.gates\.([a-z0-9-]+)", trunk))
+    actual = json.loads(current_names.read_text())
+
+    if not required:
+        raise ValueError("PKG-7: current trunk plan names no gates")
+
+    missing = sorted(required - set(actual))
+    if missing:
+        raise ValueError(f"PKG-7: current trunk aggregate omits plan gates: {missing}")
+
+    if len(actual) != len(set(actual)):
+        raise ValueError("PKG-7: current trunk aggregate repeats a gate")
+
+    print(f"PASS: all {len(required)} T0/T1 plan gates belong to the current floor")
+
+
 def main() -> None:
     """Runs the registry check with a diagnostic and nonzero failure status."""
-    if len(sys.argv) != 4:
-        raise SystemExit("usage: gate_registry.py SPEC REGISTRY CHECK_NAMES")
+    if len(sys.argv) != 6:
+        raise SystemExit(
+            "usage: gate_registry.py SPEC REGISTRY CHECK_NAMES PLAN CURRENT_GATE_NAMES"
+        )
 
     try:
-        check_registry(*(Path(argument) for argument in sys.argv[1:]))
+        check_registry(*(Path(argument) for argument in sys.argv[1:4]))
+        check_current_floor(*(Path(argument) for argument in sys.argv[4:]))
     except (OSError, ValueError) as error:
         raise SystemExit(str(error)) from error
 

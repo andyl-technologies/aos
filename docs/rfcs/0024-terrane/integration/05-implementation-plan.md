@@ -437,6 +437,18 @@ hermetic qualification; subsequent local checks must remove that inherited
 wrapper. Original failed attempts remain recorded. Actual Nix gates qualify
 their own declared AOS tool closures independently.
 
+The current floor also includes the four still-pending T1 gate obligations
+`algebra-fork`, `derivation-memo`, `gc-two-phase-delete` and
+`index-tree-maintenance`. The exhaustive task and exit inventory contains 65
+distinct specification gates; all other names have implementations in the
+reviewed composition. AD-11 places Memo and index maintenance in this milestone.
+An implemented-only aggregate omitted these obligations and could not establish
+T1 completion. These named failures and the separately registered ext4 workflow
+now participate in the aggregate; later milestone gates remain outside it.
+The registry check independently requires every T0/T1 plan gate citation to
+belong to this floor. Missing implementations and the unqualified ext4 workflow
+therefore prevent aggregate success.
+
 The preceding completed full qualification records candidate
 `15540ef204ec`, which combines reviewed source discovery, immutable lookup,
 repeatable I/P/G maintenance, separate verifier/preparation work, common Memo

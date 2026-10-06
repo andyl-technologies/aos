@@ -4,6 +4,7 @@
 }: let
   registry = builtins.fromJSON (builtins.readFile ./gate_registry.json);
   checkNames = builtins.toFile "terrane-check-names.json" (builtins.toJSON (builtins.attrNames registeredGates));
+  currentGateNames = builtins.toFile "terrane-current-gate-names.json" (builtins.toJSON currentTrunkGateNames);
 
   # Registration is distinct from conformance: a deferred gate is a failing
   # derivation, so requesting it cannot report an unimplemented MUST green.
@@ -122,7 +123,9 @@
             mkdir -p "$out"
             python3 ${./gate_registry.py} \
               ${../../docs/rfcs/0024-terrane/spec} \
-              ${./gate_registry.json} ${checkNames} > "$out/result"
+              ${./gate_registry.json} ${checkNames} \
+              ${../../docs/rfcs/0024-terrane/integration/05-implementation-plan.md} \
+              ${currentGateNames} > "$out/result"
           '';
         }
       ];
@@ -160,19 +163,33 @@
     })
     registry);
 
-  # The aggregate is the current trunk floor. Named checks remain available
-  # through its attributes, including deferred checks that fail on request.
+  localWorkflow = import ./local-workflow-ext4.nix {inherit pkgs lib;};
+
+  # These T1 obligations remain in the current floor even before their task
+  # files are adopted. AD-11 makes Memo and index maintenance trunk work.
+  # Later milestone checks remain named failures outside this aggregate.
+  currentTrunkGateNames = lib.unique (
+    builtins.attrNames implementedGates
+    ++ [
+      "algebra-fork"
+      "derivation-memo"
+      "gc-two-phase-delete"
+      "index-tree-maintenance"
+    ]
+  );
+
+  # Registration cannot make an unimplemented current obligation green.
   aggregate = pkgs.mkDerivation {
     pname = "terrane-current-gates";
     version = "0.1.0";
     src = null;
-    buildDeps = builtins.attrValues implementedGates;
+    buildDeps = map (name: registeredGates.${name}) currentTrunkGateNames ++ [localWorkflow];
     phases = [
       {
         name = "check";
         script = ''
           mkdir -p "$out"
-          printf 'PASS: %s current Terrane gates\n' ${toString (builtins.length (builtins.attrNames implementedGates))} \
+          printf 'PASS: %s current Terrane gates and the local ext4 workflow\n' ${toString (builtins.length currentTrunkGateNames)} \
             > "$out/result"
         '';
       }
@@ -183,7 +200,7 @@ in {
   package = pkgs.terrane;
   gates = aggregate // registeredGates;
   activeGates = implementedGates;
-  integration.local-workflow-ext4 = import ./local-workflow-ext4.nix {inherit pkgs lib;};
+  integration.local-workflow-ext4 = localWorkflow;
   integration.publication-format-vectors = import ./publication-vectors.nix {inherit sourceGate;};
   integration.pack-format-vectors = import ./pack-vectors.nix {inherit sourceGate;};
   integration.collection-reference-generator = import ./collection-reference.nix {inherit pkgs;};
