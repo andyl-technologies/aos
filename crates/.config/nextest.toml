@@ -17,6 +17,20 @@ filter = 'package(terrane) & (test(=gc::runner::tests::local_ownership::ownershi
 threads-required = "num-test-threads"
 slow-timeout = { period = "60s", terminate-after = 3 }
 
+# These native restore matrices complete six handoff fixtures or reopen and
+# reconcile two cycles. Their isolated Nix runs take 141 and 166 seconds.
+# Reserve the slots and allow a third minute without changing operation clocks.
+[[profile.default.overrides]]
+filter = 'package(terrane) & (test(=gc::runner::tests::restore::gc_restore_native_each_handoff_rechecks_current_controls_and_pair) | test(=gc::runner::tests::restore::gc_restore_native_reopen_and_fresh_cycle_make_old_trash_stale))'
+threads-required = "num-test-threads"
+slow-timeout = { period = "60s", terminate-after = 3 }
+
+# These restore cases pass alone within the ordinary two-minute bound. Keep
+# their native setup and reconciliation work free of concurrent test load.
+[[profile.default.overrides]]
+filter = 'package(terrane) & (test(=gc::runner::tests::restore::gc_restore_native_metadata_only_pair_handles_imported_unknown) | test(=gc::runner::tests::restore::gc_restore_native_preserves_fresh_live_quarantine_and_selected_values))'
+threads-required = "num-test-threads"
+
 # This integration test launches a matrix of nested offline Cargo checks. Its
 # bounded work is materially slower than an ordinary unit test when the full
 # workspace suite is running concurrently.

@@ -2932,8 +2932,23 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 - [ ] **T-GC-1** Mark-and-sweep collector: roots, mark, grace, two-phase
   sweep, singleton lease, resumability, retention values `gc`, `lease`,
   `ttl`, `forever`, and ordinary reflog duration/count selection. D-78
-  registers physical creation journals and recoverable deletion intent;
-  the reviewed pure journal, marking, proof-context, checkpoint, retention and
+  registers physical creation journals and recoverable deletion intent.
+  The isolated pre-ownership restore implementation now passes all ten exact
+  cases in its owning Nix check on unchanged source. All 4,837 included files
+  match the actual derivation. The handoff and reopened-cycle matrices take
+  141.25 and 165.56 seconds; their exact Nextest selectors receive exclusive
+  slots and a 180-second limit. The metadata-only and fresh-placement cases
+  keep their 120-second limit and receive exclusive slots. Production C/G/D/H
+  and lease deadlines remain unchanged. A focused native-retirement-faults
+  integration check separately requires the six-fixture trash fault matrix;
+  its selector is explicitly missing on the current trunk. The isolated local
+  deletion matrix initially runs ten cases with one pass and nine failures.
+  After correcting retained directory descriptors, genuine full-D ownership,
+  actual unlink and synchronization, closed progress acknowledgment and
+  idempotent Done pass in the exact positive case in 110.32 seconds. Remaining
+  recovery and fault cases are unqualified. The original full native suite
+  stays red, and no task, milestone or checkbox advances.
+  The reviewed pure journal, marking, proof-context, checkpoint, retention and
   grace-window bodies now replace their trunk declarations. All 27 adopted
   paths, including 16 independent hexadecimal witnesses, match the qualified
   collector graph byte-for-byte; their source formatting passes. The base
