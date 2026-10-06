@@ -397,6 +397,9 @@ in {
                     ${pkgs.bash}/bin/bash -euo pipefail -c \
                       '${pkgs.zstd}/bin/zstd -q -d -c -- "$1" | ${pkgs.nix}/bin/nix-store --restore "$2"' \
                       aos-fixture-nar "$source_path" "$stage/object"
+                    # NAR restoration preserves executable bits but grants owner
+                    # write access. Normalize only this tree, never link targets.
+                    ${pkgs.coreutils}/bin/chmod -R -P --no-dereference a-w -- "$stage/object"
                     ${pkgs.coreutils}/bin/mv --no-copy --no-target-directory --update=none-fail \
                       "$stage/object" "$store_path"
                     ${pkgs.coreutils}/bin/rmdir -- "$stage"
