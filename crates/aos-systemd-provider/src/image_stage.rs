@@ -424,40 +424,59 @@ fn validate_candidate_root(
             .arg(root)
             .arg(&mounted),
     )?;
-    let validation = (|| {
-        let toplevel = Path::new(string(&request.candidate, "toplevel")?);
-        ensure!(
-            fs::read_link(mounted.join("usr/lib/aos/toplevel"))? == toplevel,
-            "candidate root embeds another toplevel"
-        );
-        let metadata = mounted.join(toplevel.strip_prefix("/")?).join("meta");
-        for (file, field) in [
-            ("package-name", "package_name"),
-            ("version", "version"),
-            ("state-version", "state_version"),
-            ("native-executor-ref", "native_executor_ref"),
-            ("boot-artifact-contract", "boot_artifact_contract"),
-            ("evaluation-descriptor", "evaluation_descriptor"),
-        ] {
-            let bytes = read_bounded(&metadata.join(file), 64 * 1024)?;
-            ensure!(
-                std::str::from_utf8(&bytes)?.trim() == string(&request.candidate, field)?,
-                "candidate root metadata differs at {file}"
-            );
-        }
-        let library: Value = serde_json::from_slice(&read_bounded(
-            &metadata.join("module-library.json"),
-            64 * 1024,
-        )?)?;
-        ensure!(
-            request.candidate.get("module_library") == Some(&library),
-            "candidate root module library differs"
-        );
-        Ok(())
-    })();
+    let validation = validate_candidate_metadata(&mounted, &request.candidate);
     let unmount = successful(Command::new(&tools.umount).arg(&mounted));
     validation?;
     unmount
+}
+
+fn validate_candidate_metadata(mounted: &Path, candidate: &Value) -> Result<()> {
+    let toplevel_value = string(candidate, "toplevel")?;
+    let toplevel = Path::new(toplevel_value);
+    ensure!(
+        copy_up::store_root(toplevel_value)? == toplevel,
+        "candidate toplevel is not an exact store root"
+    );
+    ensure!(
+        fs::read_link(mounted.join("usr/lib/aos/toplevel"))
+            .context("reading candidate root toplevel link")?
+            == toplevel,
+        "candidate root embeds another toplevel"
+    );
+
+    // /nix is an empty overlay mountpoint in the unbooted image. Inspect its
+    // immutable lower directly instead of resolving paths through the host.
+    let metadata = mounted
+        .join("usr/lib/aos")
+        .join(toplevel.strip_prefix("/")?)
+        .join("meta");
+    for (file, field) in [
+        ("package-name", "package_name"),
+        ("version", "version"),
+        ("state-version", "state_version"),
+        ("native-executor-ref", "native_executor_ref"),
+        ("boot-artifact-contract", "boot_artifact_contract"),
+        ("evaluation-descriptor", "evaluation_descriptor"),
+    ] {
+        let path = metadata.join(file);
+        let bytes = read_bounded(&path, 64 * 1024)
+            .with_context(|| format!("reading candidate root metadata {}", path.display()))?;
+        ensure!(
+            std::str::from_utf8(&bytes)?.trim() == string(candidate, field)?,
+            "candidate root metadata differs at {file}"
+        );
+    }
+
+    let library_path = metadata.join("module-library.json");
+    let library: Value =
+        serde_json::from_slice(&read_bounded(&library_path, 64 * 1024).with_context(|| {
+            format!("reading candidate root metadata {}", library_path.display())
+        })?)?;
+    ensure!(
+        candidate.get("module_library") == Some(&library),
+        "candidate root module library differs"
+    );
+    Ok(())
 }
 
 fn discover_devices(blkid: &Path) -> Result<BTreeMap<String, PathBuf>> {
@@ -780,6 +799,85 @@ fn successful(command: &mut Command) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn candidate_metadata_uses_the_immutable_store_before_overlay_mounting() {
+        let image = tempfile::tempdir().unwrap();
+        let toplevel = "/nix/store/00000000000000000000000000000000-aos-system-toplevel";
+        let candidate = json!({
+            "toplevel": toplevel,
+            "package_name": "aos",
+            "version": "2.0.0",
+            "state_version": "1",
+            "native_executor_ref": "/nix/store/00000000000000000000000000000000-runtime",
+            "boot_artifact_contract": "/nix/store/00000000000000000000000000000000-boot",
+            "evaluation_descriptor": "/nix/store/00000000000000000000000000000000-descriptor",
+            "module_library": {"store_path": "/nix/store/00000000000000000000000000000000-modules"}
+        });
+        let metadata = image
+            .path()
+            .join("usr/lib/aos")
+            .join(toplevel.trim_start_matches('/'))
+            .join("meta");
+        fs::create_dir_all(&metadata).unwrap();
+        fs::create_dir(image.path().join("nix")).unwrap();
+        std::os::unix::fs::symlink(toplevel, image.path().join("usr/lib/aos/toplevel")).unwrap();
+
+        let fields = [
+            ("package-name", "package_name"),
+            ("version", "version"),
+            ("state-version", "state_version"),
+            ("native-executor-ref", "native_executor_ref"),
+            ("boot-artifact-contract", "boot_artifact_contract"),
+            ("evaluation-descriptor", "evaluation_descriptor"),
+        ];
+        for (file, field) in fields {
+            fs::write(
+                metadata.join(file),
+                format!("{}\n", candidate[field].as_str().unwrap()),
+            )
+            .unwrap();
+        }
+        fs::write(
+            metadata.join("module-library.json"),
+            serde_json::to_vec(&candidate["module_library"]).unwrap(),
+        )
+        .unwrap();
+
+        assert!(!image.path().join("nix/store").exists());
+        validate_candidate_metadata(image.path(), &candidate).unwrap();
+
+        // A mounted runtime view must not substitute for the candidate's lower.
+        let runtime_metadata = image
+            .path()
+            .join(toplevel.trim_start_matches('/'))
+            .join("meta");
+        fs::create_dir_all(&runtime_metadata).unwrap();
+        fs::write(runtime_metadata.join("version"), "another-image\n").unwrap();
+        validate_candidate_metadata(image.path(), &candidate).unwrap();
+
+        for (_, field) in fields {
+            let mut changed = candidate.clone();
+            changed[field] = json!("another-image");
+            let error = validate_candidate_metadata(image.path(), &changed).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("candidate root metadata differs")
+            );
+        }
+        let mut changed = candidate.clone();
+        changed["module_library"] = json!({"store_path": "another-library"});
+        assert!(validate_candidate_metadata(image.path(), &changed).is_err());
+
+        fs::remove_file(metadata.join("version")).unwrap();
+        let error = validate_candidate_metadata(image.path(), &candidate).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("reading candidate root metadata")
+        );
+    }
 
     #[test]
     fn canonical_artifact_paths_select_exact_payloads_and_reject_escapes() {

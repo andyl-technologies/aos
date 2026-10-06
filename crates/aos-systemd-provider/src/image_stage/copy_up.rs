@@ -53,7 +53,7 @@ pub(super) fn persist(nix_store: &Path, request: &Request) -> Result<()> {
     Ok(())
 }
 
-fn store_root(value: &str) -> Result<PathBuf> {
+pub(super) fn store_root(value: &str) -> Result<PathBuf> {
     let path = Path::new(value);
     ensure!(
         path.components()
