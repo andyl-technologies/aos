@@ -2,6 +2,8 @@
 
 #[path = "../boot_platform.rs"]
 mod boot_platform;
+#[path = "../image_profile.rs"]
+mod image_profile;
 
 fn main() {
     if let Err(error) = boot_platform::run_from_process() {

@@ -81,6 +81,7 @@ from pathlib import Path
 import sys
 request = json.loads(sys.argv[1])
 root = Path('/boot')
+profile = Path('/var/lib/profiles/image')
 def firmware(name):
     matches = list(Path('/sys/firmware/efi/efivars').glob(name + '-*'))
     if not matches:
@@ -100,7 +101,13 @@ if len(records) > 1:
     raise RuntimeError('ambiguous candidate slot ownership')
 if records:
     evidence = records[0]['boot_provider_state']['evidence']
-    source = root / evidence.get('uki-source-path', evidence['installed-entry'])
+    relative = evidence.get('uki-source-path', evidence['installed-entry'])
+    if re.fullmatch(r'candidates/[1-9][0-9]*/candidate\.efi', relative):
+        source = profile / relative
+    elif re.fullmatch(r'EFI/Linux/[^/\x00]+\.efi', relative):
+        source = root / relative
+    else:
+        raise RuntimeError('physical candidate source escaped its owned namespace')
     if source.is_symlink():
         raise RuntimeError('physical candidate payload is a foreign symlink')
     if not source.is_file():
@@ -279,17 +286,18 @@ raise RuntimeError('selected admitted handler was never suspended')
 
 
 def inject_owned_conflict(expected, node, after_result=False):
-    """Alters only case-bound mutable EFI bytes, leaving the signed index intact."""
+    """Alters only case-bound mutable image bytes, leaving the signed index intact."""
     pair = node["input"]["rollout"]
     owned_top = ORACLE_TOP or IMAGE_CANDIDATE_TOP
     request = {"pair": pair, "owned": owned_top, "after_result": after_result}
     program = r'''
-import json, os, stat, sys
+import json, os, re, stat, sys
 from pathlib import Path
 request = json.loads(sys.argv[1])
 root = Path('/boot')
+profile = Path('/var/lib/profiles/image')
 paths = []
-for manifest in (root / 'EFI/.aos-rollout-retention').glob('*/manifest.json'):
+for manifest in (profile / 'rollout-retention').glob('*/manifest.json'):
     if manifest.is_symlink() or not manifest.is_file():
         raise RuntimeError('retained manifest is not regular')
     contents = manifest.read_bytes()
@@ -307,9 +315,12 @@ if not paths:
         raise RuntimeError('owned image record is ambiguous')
     evidence = rows[0]['boot_provider_state']['evidence']
     relative = evidence.get('uki-source-path', evidence['installed-entry'])
-    path = root / relative
-    if not path.is_relative_to(root / 'EFI') or '..' in path.parts:
-        raise RuntimeError('owned conflict escaped EFI namespace')
+    if re.fullmatch(r'candidates/[1-9][0-9]*/candidate\.efi', relative):
+        path = profile / relative
+    elif re.fullmatch(r'EFI/Linux/[^/\x00]+\.efi', relative):
+        path = root / relative
+    else:
+        raise RuntimeError('owned conflict escaped its image namespace')
     paths.append(path)
 path = paths[0]
 if path.exists() and (path.is_symlink() or not stat.S_ISREG(path.stat().st_mode)):

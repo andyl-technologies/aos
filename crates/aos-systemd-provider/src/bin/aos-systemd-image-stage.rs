@@ -2,6 +2,8 @@
 
 #[path = "../executable.rs"]
 mod executable;
+#[path = "../image_profile.rs"]
+mod image_profile;
 #[path = "../image_stage.rs"]
 mod image_stage;
 

@@ -1,5 +1,7 @@
 //! Prints signed boot measurements using exact retained verifier tools.
 
+#[path = "../image_profile.rs"]
+mod image_profile;
 #[path = "../measurement_index.rs"]
 mod measurement_index;
 

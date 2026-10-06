@@ -647,7 +647,9 @@ def rollout_snapshot(
             "/var/lib/profiles/image/state.json",
             "/var/lib/profiles/image/ability-rollouts",
             "/boot/loader/entries",
-            "/boot/EFI/.aos-rollout-retention",
+            "/var/lib/profiles/image/rollout-retention",
+            "/var/lib/profiles/image/candidates",
+            "/boot/EFI/Linux",
         ]),
         "kernel-command-line": runtime.succeed(f"{COREUTILS}/cat /proc/cmdline").strip(),
     }
