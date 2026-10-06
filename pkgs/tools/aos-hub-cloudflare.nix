@@ -50,6 +50,31 @@ mkDerivation {
         cp ${./aos-hub-direct-qualification.mjs} \
           "$out/share/aos-hub/direct-qualification.mjs"
         cp ${./aos-hub-hosted-workload.py} "$out/share/aos-hub/hosted-workload.py"
+        mkdir -p "$out/share/aos-hub/hosted-capture"
+        cp ${./aos-hub-hosted-capture/capture.mjs} \
+          ${./aos-hub-hosted-capture/sink.mjs} \
+          ${./aos-hub-hosted-capture/baseline-proxy.mjs} \
+          ${./aos-hub-hosted-capture/origin-capture.mjs} \
+          ${./aos-hub-hosted-capture/storage-shim.mjs} \
+          ${./aos-hub-hosted-capture/render.py} \
+          "$out/share/aos-hub/hosted-capture/"
+        # Measure the selected source-built dependency; the renderer also checks
+        # its canonical immutable executable and exact hash before validation.
+        ${python3}/bin/python3 -B -E - "$out/share/aos-hub/hosted-capture/node-tool.json" <<'PYTHON'
+        import hashlib
+        import json
+        import pathlib
+        import sys
+
+        node = pathlib.Path("${nodejs}/bin/node").resolve(strict=True)
+        digest = hashlib.sha256()
+        with node.open("rb") as executable:
+            for chunk in iter(lambda: executable.read(1024 * 1024), b""):
+                digest.update(chunk)
+        with open(sys.argv[1], "x") as output:
+            json.dump({"file": str(node), "sha256": digest.hexdigest()}, output)
+            output.write("\n")
+        PYTHON
         mkdir -p "$out/share/aos-hub/hosted-measurements"
         cp ${../../tests/fleet/_hub-direct-publisher.py} \
           ${../../tests/fleet/_hub-direct-sparse-publisher.py} \
@@ -93,6 +118,16 @@ mkDerivation {
           --library-dir "$out/share/aos-hub/hosted-measurements"
         EOF
         chmod +x "$out/bin/aos-hub-hosted-workload"
+        cat > "$out/bin/aos-hub-hosted-capture-render" <<EOF
+        #!${bash}/bin/bash
+        if [ "\$#" -ne 1 ]; then
+          printf '%s\n' 'usage: aos-hub-hosted-capture-render SELECTION.json' >&2
+          exit 2
+        fi
+        exec ${python3}/bin/python3 -B -E "$out/share/aos-hub/hosted-capture/render.py" \
+          --selection "\$1" --node-tool-file "$out/share/aos-hub/hosted-capture/node-tool.json"
+        EOF
+        chmod +x "$out/bin/aos-hub-hosted-capture-render"
       '';
     }
   ];
@@ -102,6 +137,12 @@ mkDerivation {
     ./aos-hub-direct-sdk-conformance.mjs
     ./aos-hub-direct-qualification.mjs
     ./aos-hub-hosted-workload.py
+    ./aos-hub-hosted-capture/capture.mjs
+    ./aos-hub-hosted-capture/sink.mjs
+    ./aos-hub-hosted-capture/baseline-proxy.mjs
+    ./aos-hub-hosted-capture/origin-capture.mjs
+    ./aos-hub-hosted-capture/storage-shim.mjs
+    ./aos-hub-hosted-capture/render.py
     ../../tests/fleet/_hub-direct-publisher.py
     ../../tests/fleet/_hub-direct-sparse-publisher.py
     ../../tests/fleet/_hub-perf.py

@@ -130,7 +130,7 @@ marker for those results. This candidate does not broaden credential capture.
 
 ## Shared namespace script ownership
 
-render(stage, policy, namespace_id, bucket_name, ledger_owner_script) requires
+render(stage, policy, namespace_id, bucket_name, ledger_owner_script, node_tool=...) requires
 one explicitly supplied owner script. capture-bindings.json records
 sharedNamespaceOwner {scriptName,className,namespaceId,entryModule} with class
 PrivateCaptureLedger in origin-entry.mjs. The origin entry actually exports that
@@ -176,3 +176,33 @@ change requires a new measured digest and selected policy; old private fixture
 results or deployment identities cannot be relabeled. Whole hosted coverage
 stays incomplete, and unavailable independent Native bulk accounting remains
 null, never zero.
+
+
+## Installed staging command
+
+The ordinary `aos-hub-cloudflare` package installs the five runtime modules and
+renderer, and exposes `aos-hub-hosted-capture-render SELECTION.json`. It measures
+its actual source-built Node dependency and pins that executable in an immutable
+package reference. Python and Bash also come from the package closure. The
+command has no host-tool fallback or deployment action.
+
+The selection is a duplicate-free, finite JSON object with exactly seven fields:
+`version` (integer1), `stageDirectory`, `capturePolicy`, `originConfiguration`,
+`namespaceId`, `bucketName`, and `ledgerOwnerScript`. The input is an owned0600
+regular file with one link, bounded to64KiB. The absent absolute stage destination
+must have a canonical owned0700 parent. Existing destinations are never replaced.
+
+Capture policy retains its exact runtime schema and measured five-asset digest.
+Origin configuration retains the twelve fields documented above. The actual
+installed validators run before output creation. Selected proxy origins must
+match, and the capture window must fit within the origin configuration window;
+neither validity horizon is extended. The renderer writes `configuration.mjs`,
+additive bindings, entries and a staging receipt under0700/0600 custody. The
+application's independently staged `application/shim.mjs` is still required.
+
+The receipt measures installed renderer/runtime assets/Node and labels supplied
+runtime commitments `supplied_unverified`. It does not independently prove the
+selected deployment, receiver window, IAM or namespace ownership. The command
+creates no provider resources, reads no credentials, obtains no invocation token,
+and neither uploads nor deploys. Independent provider checks remain prerequisites.
+Whole hosted coverage remains incomplete; missing Native bulk accounting is null.
