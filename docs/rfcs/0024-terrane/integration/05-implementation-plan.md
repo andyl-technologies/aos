@@ -3077,11 +3077,23 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   singleton-nineteen Nix checks, plus the 41 selected native runtime cases
   except the subsequently corrected missing-diagnostic assertion. Default and
   Send compilation, strict private rustdoc and both formatters pass. Strict
-  SDK Clippy remains red on unfinished integration paths. The private retained
-  Original-history correction passes full-D waiting, ownership fault boundaries
-  and genuine renewal-I/O refusal; two stopped-Session error assertions and one
-  unchanged 120-second current-authority timeout remain open. These prerequisites
-  grant no unlink/recovery authority and do not complete this task or T1.
+  SDK Clippy remains red on unfinished integration paths. The isolated retained
+  Original-history composition now passes all six actual local first-ownership
+  cases in `checks.terrane.integration.native-local-first-ownership`, including
+  full-D waiting, exact partial fault prefixes, genuine renewal-I/O refusal and
+  current checks at every ownership effect. Its scoped stopped-Session correction
+  separately passes all three original refusal assertions and eleven held/output
+  regressions. Restored temporary timing traces show 55–67 seconds of fixture
+  preparation before the required real 60-second D wait; the ordinary 120-second
+  Nextest limit could therefore expire before the assertions. The trunk test
+  configuration reserves test slots and permits a bounded 180 seconds only for
+  the two parallel ownership matrices. Production timing, waits and assertions
+  remain unchanged. Separate uninstrumented Nextest runs pass the original
+  current-authority case in 133 seconds and the five-fault case in 110 seconds;
+  both formatting commands pass. These results qualify the isolated prerequisite
+  source, not the full trunk collector gate. Actual unlink/recovery and the
+  excluded-but-still-Live fresh-admission branch remain unqualified, and this
+  task and T1 remain open.
   Narrowed
   to trunk scope: compaction is T-GC-2 on
   B-jobs. — satisfies GC-1, GC-3 to GC-7, GC-9 to GC-17, GC-22 to GC-24,
