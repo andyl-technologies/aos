@@ -25,7 +25,11 @@ pub const MAX_PUBLISHED_PACK_INDEX_BYTES: u64 = 4 * 1024 * 1024;
 pub const MAX_PUBLISHED_PACK_BYTES: u64 = 8 * 1024 * 1024;
 
 const MAX_PACK_OBJECT_BYTES: usize = 4 * 1024 * 1024;
-const MAX_DECODED_PACK_BYTES: usize = 12 * 1024 * 1024;
+// Registry metadata is text and compresses about 2x in a pack, so the decoded
+// bound must exceed the encoded bound: an 8 MiB first-release pack with 2,144
+// package entries decodes to about 14 MiB. 32 MiB matches the decoded staging
+// revision bound the Hub already holds in memory.
+const MAX_DECODED_PACK_BYTES: usize = 32 * 1024 * 1024;
 const MAX_PUBLISHED_PACK_OBJECTS: usize = 65_536;
 const MAX_DELTA_DEPTH: usize = 128;
 const HEADER_BYTES: usize = 8;
