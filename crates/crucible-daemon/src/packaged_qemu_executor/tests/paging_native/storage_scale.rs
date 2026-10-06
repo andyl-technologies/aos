@@ -22,6 +22,22 @@ const TREE_COUNT: u64 = PAGE_COUNT * 2 - 1;
 const GRAPH_OBJECTS: u64 = PAGE_COUNT + TREE_COUNT + 1;
 const MIB: u64 = 1024 * 1024;
 
+// Authentication retains one full Service and checks a separate future
+// assignment peak. Registry and catalog each reserve another CPU before it.
+const INSTALLATION_CPUS: u32 = 2 + 2 + 1 + 1;
+
+const STORAGE_SERVICE_RESOURCES: HostResourceVector = HostResourceVector {
+    resident_peak_bytes: 513 * MIB,
+    backing_peak_bytes: 1024 * MIB,
+    metadata_bytes: 128 * MIB,
+    staging_bytes: 16 * MIB,
+    paging_io_slots: 1,
+    cpu_slots: 2,
+    // Native process ceiling, four node services and its original watcher.
+    task_slots: 64 + 4 + 1,
+    file_descriptors: 1056,
+};
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Inventory {
     pages: u64,
@@ -51,7 +67,7 @@ fn production_ram_storage_scales_past_packed_index_limit() {
             },
             maximum_inodes: 4_194_304,
             installation_capacity: Some(
-                ExecutorCapacity::new(8, 4, 4096 * MIB, 32 * 1024 * MIB, 1_000_000)
+                ExecutorCapacity::new(8, INSTALLATION_CPUS, 4096 * MIB, 32 * 1024 * MIB, 1_000_000)
                     .expect("explicit full storage qualification host capacity"),
             ),
             installation_operational_capacity: Some(
@@ -67,14 +83,7 @@ fn production_ram_storage_scales_past_packed_index_limit() {
             ));
             super::super::hot_fork_native::native_repository(&source, root, storage)
         },
-        |config| {
-            config
-                .with_host_operation_budgets(crucible_api::host_operational::HostOperationBudgets {
-                    classes: [HostOperationBudget::finite(Duration::from_secs(14_400));
-                        crucible_linux_resource::host_supervision::HOST_OPERATION_CLASS_COUNT],
-                })
-                .expect("finite complete storage roster before catalog and actor admission")
-        },
+        storage_profile,
         |prepared, config, repository| {
             let (blobs, refs, references) = admins
                 .borrow_mut()
@@ -316,6 +325,41 @@ fn production_ram_storage_scales_past_packed_index_limit() {
             println!("ram_storage_scale_complete_vector_restored=true");
             println!("RAM_STORAGE_SCALE_PASS");
         },
+    );
+}
+
+fn storage_profile(config: PackagedQemuExecutorConfig) -> PackagedQemuExecutorConfig {
+    config
+        .with_retained_template_resources(STORAGE_SERVICE_RESOURCES)
+        .expect("independently authored full Service matches the native launch floor")
+        .with_host_operation_budgets(crucible_api::host_operational::HostOperationBudgets {
+            classes: [HostOperationBudget::finite(Duration::from_secs(14_400));
+                crucible_linux_resource::host_supervision::HOST_OPERATION_CLASS_COUNT],
+        })
+        .expect("finite complete storage roster before catalog and actor admission")
+}
+
+#[test]
+fn storage_profile_authors_native_service_and_separate_assignment_headroom() {
+    let directory = tempfile::TempDir::new().expect("component profile directory");
+    let profile = storage_profile(config(&directory, 1));
+    let service = profile
+        .retained_template_resources()
+        .expect("explicit retained Service");
+    let assignment = profile.assignment_resources().expect("explicit assignment");
+
+    assert_eq!(service, STORAGE_SERVICE_RESOURCES);
+    assert_eq!(service.task_slots, 69);
+    assert_eq!(
+        u64::from(INSTALLATION_CPUS),
+        service.cpu_slots + assignment.cpu_slots + 1 + 1
+    );
+    assert_eq!(
+        profile.host_operation_budgets(),
+        Some(crucible_api::host_operational::HostOperationBudgets {
+            classes: [HostOperationBudget::finite(Duration::from_secs(14_400));
+                crucible_linux_resource::host_supervision::HOST_OPERATION_CLASS_COUNT],
+        })
     );
 }
 

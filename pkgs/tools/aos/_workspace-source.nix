@@ -19,6 +19,7 @@ in
           || base == "result"
           || lib.hasPrefix "result-" base
           || base == "target"
+          || base == "run-state"
           || lib.hasPrefix "target-" base
         );
     in

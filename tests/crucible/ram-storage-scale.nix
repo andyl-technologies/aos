@@ -11,7 +11,9 @@ import ./ram-native-flight.nix {
   testName = "packaged_qemu_executor::tests::paging_native::storage_scale::production_ram_storage_scales_past_packed_index_limit";
   successMarker = "RAM_STORAGE_SCALE_PASS";
   lanes = ["storage-scale"];
-  outerCpuSlots = 4;
+  # Service two CPUs plus separate future assignment two, registry one,
+  # and catalog one all fit the independently authored installation ceiling.
+  outerCpuSlots = 6;
   outerMemoryMiB = 8192;
   # The outer writable filesystem contains the complete 32 GiB ext4 image.
   writableMiB = 36864;
