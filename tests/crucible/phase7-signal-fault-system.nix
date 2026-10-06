@@ -124,6 +124,10 @@
   expectedConfigurationIdentity =
     campaignComposition.system.config.aos.services.crucibleCampaign._runtimeIdentity;
   expectedToplevel = campaignComposition.system.config.system.build.toplevel;
+  authenticationSource = builtins.path {
+    path = ./_phase9-campaign-gate-matrix-authenticate.sh;
+    name = "crucible-campaign-gate-matrix-authenticate.sh";
+  };
   receiptOf = gate: let
     receipt = gate.passthru.campaignModeReceipt;
   in
@@ -135,7 +139,7 @@
     assert toString receipt.toplevel == toString expectedToplevel; receipt;
   authenticationScript = ''
     set -eu
-    . ${./_phase9-campaign-gate-matrix-authenticate.sh}
+    . ${authenticationSource}
 
     ${lib.concatMapStringsSep "\n" (gate: let
       receipt = receiptOf gate;
@@ -161,7 +165,7 @@ in
       authoritativeAttr = attrPath;
       executionFamily = "qemu-runtime";
       name = "signal-fault-system";
-      runtimeClosures = gateInputs ++ [./_phase9-campaign-gate-matrix-authenticate.sh];
+      runtimeClosures = gateInputs ++ [authenticationSource];
       runtimeScript = authenticationScript + aggregateScript;
     }
   else authoritativeGate
