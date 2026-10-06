@@ -685,7 +685,7 @@ def index_parity(selected):
             "readerAuthority": "independent_current_reader_process_and_source_review_required"}
 
 
-def inbound_inventory(selection, manifest):
+def inbound_inventory(selection, manifest, codec_report=None):
     """Invoke the selected reader without changing the original body manifest."""
     if selection.get('nativeInventory') is None:
         return None
@@ -695,7 +695,7 @@ def inbound_inventory(selection, manifest):
     exec(compile(raw, str(path), 'exec'), namespace)
     return namespace['assess'](
         selection['nativeInventory'], SOURCE, READERS,
-        PACKAGE_READER['installed_bytes'], manifest)
+        PACKAGE_READER['installed_bytes'], manifest, codec_report)
 
 
 def assess(selection):
@@ -826,7 +826,8 @@ def assess(selection):
             provider[kind] = client_summary(rows) if kind == "client" else sdk_summary(rows, runtime["workerSourceDigest"])
     if selection["wireMetrics"] is not None:
         read(selection["wireMetrics"])
-    selected_inventory = inbound_inventory(selection, manifest)
+    selected_inventory = inbound_inventory(
+        selection, manifest, report if codec_error is None else None)
     if selected_inventory is not None:
         body['nativeInboundInventory'] = selected_inventory
         body['missing'].extend(body['nativeInboundInventory']['missing'])

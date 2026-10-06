@@ -322,6 +322,78 @@ class AssessmentTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             adapter.index_parity(selected)
 
+    def test_inventory_successful_observer_report_is_handed_off_without_authority(self):
+        selected = self.selection()
+        selected["nativeInventory"] = {"fixture": "selected_inventory"}
+        manifest = {"fixture": "original_manifest"}
+        report = {"captures": [], "fixture": "successful_observer_return"}
+        inventory = {"missing": ["independent_current_sql_authority"],
+                     "objectPayloadBytes": None}
+
+        with mock.patch.object(adapter, "observe", return_value=(manifest, report, None)), \
+                mock.patch.object(adapter, "inbound_inventory", return_value=inventory) as handoff:
+            result = adapter.assess(selected)
+
+        handoff.assert_called_once_with(selected, manifest, report)
+        self.assertIs(handoff.call_args.args[2], report)
+        body = result["applicationBodyAssessment"]
+        self.assertIs(body["nativeInboundInventory"], inventory)
+        self.assertIsNone(body["nativeBulkBytes"])
+        self.assertIsNone(body["nativeCapturedObjectPayloadBytes"])
+        self.assertIsNone(body["ingressAuthentication"])
+        self.assertIn("independent_current_sql_authority", body["missing"])
+        self.assertEqual(result["hostedAcceptance"], "incomplete")
+
+    def test_inventory_failed_observer_never_forwards_a_retained_report(self):
+        selected = self.selection()
+        selected["nativeInventory"] = {"fixture": "selected_inventory"}
+        manifest = {"fixture": "original_manifest"}
+        report = {"captures": [{"fixture": "untrusted_failed_observer_output"}]}
+        error = "selected_observer_failed"
+
+        with mock.patch.object(adapter, "observe", return_value=(manifest, report, error)), \
+                mock.patch.object(adapter, "inbound_inventory", return_value={"missing": []}) as handoff:
+            result = adapter.assess(selected)
+
+        handoff.assert_called_once_with(selected, manifest, None)
+        self.assertIn(error, result["applicationBodyAssessment"]["missing"])
+        self.assertIsNone(result["applicationBodyAssessment"]["nativeBulkBytes"])
+        self.assertEqual(result["hostedAcceptance"], "incomplete")
+
+        selected["codecReport"] = report
+        with mock.patch.object(adapter, "observe") as observer:
+            with self.assertRaises(ValueError):
+                adapter.assess(selected)
+        observer.assert_not_called()
+
+    def test_inventory_selected_reader_receives_report_and_defaults_to_unknown(self):
+        selected = {"nativeInventory": {"fixture": "selected_inventory"}}
+        manifest = {"fixture": "original_manifest"}
+        report = {"captures": [], "fixture": "actual_observer_return"}
+        reader_source = b"""def assess(selected, source, readers, read_source, manifest, codec_report=None):
+    return {"selected": selected, "manifest": manifest, "report": codec_report,
+            "objectPayloadBytes": None, "sqlAuthority": None}
+"""
+        installed_path = Path(adapter.__file__).resolve(strict=True).parent / "native_inventory.py"
+
+        with mock.patch.dict(adapter.PACKAGE_READER,
+                             {"installed_bytes": mock.Mock(return_value=reader_source)}):
+            retained = adapter.inbound_inventory(selected, manifest, report)
+            adapter.PACKAGE_READER["installed_bytes"].assert_called_once_with(
+                installed_path, adapter.MAX_JSON)
+            unknown = adapter.inbound_inventory(selected, manifest)
+
+        self.assertIs(retained["selected"], selected["nativeInventory"])
+        self.assertIs(retained["manifest"], manifest)
+        self.assertIs(retained["report"], report)
+        self.assertIsNone(retained["objectPayloadBytes"])
+        self.assertIsNone(retained["sqlAuthority"])
+        self.assertIsNone(unknown["report"])
+
+        with mock.patch.dict(adapter.PACKAGE_READER, {"installed_bytes": mock.Mock()}):
+            self.assertIsNone(adapter.inbound_inventory({}, manifest, report))
+            adapter.PACKAGE_READER["installed_bytes"].assert_not_called()
+
 
 class DirectControlAssessmentTests(unittest.TestCase):
     """Use actual selected codec output; sender/image fixtures grant no authority."""
