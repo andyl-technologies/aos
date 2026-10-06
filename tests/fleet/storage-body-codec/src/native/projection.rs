@@ -4,6 +4,26 @@
 //! actor. Their unresolved dimensions are explicit; no object-payload zero is
 //! emitted merely because the selected values match.
 
+//! A selected immutable page uses the closed body-reference format below. The
+//! references identify privately retained files; matching them does not prove
+//! the SQL reader's custody or the request's authentication.
+//!
+//! ```json
+//! {
+//!   "kind": "publication_append",
+//!   "originalRequest": {
+//!     "file": "original.json",
+//!     "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+//!     "byteSize": "256"
+//!   },
+//!   "immutableChunkReceipt": {
+//!     "file": "chunk.json",
+//!     "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+//!     "byteSize": "128"
+//!   }
+//! }
+//! ```
+
 use super::{public_rpc::exact, Capture};
 use crate::files::{self, BodyFile};
 use anyhow::{ensure, Result};
