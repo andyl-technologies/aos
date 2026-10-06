@@ -72,6 +72,7 @@ in
         script = ''
           tar xf $src
           cd util-linux-${version}
+          sed -i "1s|^#!/bin/sh|#!$CONFIG_SHELL|" configure
           # Fix shebangs: /bin/bash doesn't exist in Nix sandbox
           for f in tools/all_syscalls tools/all_errnos tools/config-gen tools/git-tp-sync tools/*.sh; do
             if [ -f "$f" ]; then
@@ -89,7 +90,7 @@ in
       {
         name = "configure";
         script = ''
-          ./configure \
+          "$CONFIG_SHELL" ./configure \
             --prefix=$out \
             --disable-static \
             --enable-shared \
@@ -125,13 +126,13 @@ in
       {
         name = "build";
         script = ''
-          make -j$NIX_BUILD_CORES
+          make SHELL="$CONFIG_SHELL" -j$NIX_BUILD_CORES
         '';
       }
       {
         name = "install";
         script = ''
-          make install
+          make SHELL="$CONFIG_SHELL" install
 
           mkdir -p "$python/lib"
           for bindings in "$out"/lib/python*; do

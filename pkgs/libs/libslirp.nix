@@ -51,6 +51,7 @@ in
         script = ''
           tar xf $src
           cd libslirp-v${version}
+          sed -i "1s|^#!/bin/sh|#!$CONFIG_SHELL|" build-aux/git-version-gen
           # libslirp derives its version from git via build-aux/git-version-gen.
           # When building from a tarball, drop the version into .tarball-version
           # so meson reads it instead of failing the git probe.

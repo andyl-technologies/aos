@@ -31,6 +31,7 @@ in
     ];
 
     postPatch = ''
+      sed -i "1s|^#!/bin/sh|#!$CONFIG_SHELL|" util/install_helper.sh
       sed -i         -e "s|/bin/mount|${util-linux}/bin/mount|g"         -e "s|/bin/umount|${util-linux}/bin/umount|g"         lib/mount_util.c
       sed -i "s|/bin/sh|$CONFIG_SHELL|g" util/mount.fuse.c
     '';

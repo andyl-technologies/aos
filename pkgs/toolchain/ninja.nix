@@ -3,6 +3,9 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  bash,
+  lib,
+  stdenv,
 }: let
   version = "1.13.2";
 in
@@ -18,7 +21,7 @@ in
     };
 
     buildDeps = [gnumake];
-    runtimeDeps = [];
+    runtimeDeps = [bash];
     propagatedDeps = [];
 
     phases = [
@@ -32,8 +35,10 @@ in
       {
         name = "configure";
         script = ''
-          # No configure step — ninja is bootstrapped directly from C++ sources
-          true
+          # Ninja's POSIX runner invokes this shell for every build command.
+          # Pin it to the packaged interpreter available in the sandbox.
+          sed -i 's|"/bin/sh"|"${bash}/bin/bash"|g' src/subprocess-posix.cc
+          grep -F '"${bash}/bin/bash"' src/subprocess-posix.cc
         '';
       }
       {
@@ -57,6 +62,18 @@ in
             esac
           done
           $CXX ''${CXXFLAGS:-} -Isrc -o ninja $srcs -lpthread
+        '';
+      }
+      {
+        name = "check";
+        script = lib.optionalString (!stdenv.isCross) ''
+          cat > "$TMPDIR/ninja-shell-check.ninja" <<'EOF'
+          rule shell_check
+            command = printf '%s' hermetic-shell > $out
+          build ninja-shell-result: shell_check
+          EOF
+          ./ninja -f "$TMPDIR/ninja-shell-check.ninja"
+          test "$(cat ninja-shell-result)" = hermetic-shell
         '';
       }
       {
