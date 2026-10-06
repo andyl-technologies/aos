@@ -71,7 +71,20 @@ Host virtual addresses and operational topology generations are excluded.
 
 ## 2.2 Encoding primitives
 
-`H(x)` is SHA-256 of the exact byte string `x`, producing 32 raw bytes.
+`H(x)` is BLAKE3 in its default unkeyed hash mode over the exact byte string
+`x`, producing exactly 32 raw bytes. This RFC calls that fixed construction
+`blake3-256-unkeyed`; it follows
+[the BLAKE3 specification, version 1.0.0](https://c2sp.org/BLAKE3@v1.0.0).
+
+Implementations MUST use the default unkeyed mode and exactly the first 32
+output bytes. Keyed hashing, derive-key mode, a different output length, and
+runtime negotiation of another primitive MUST NOT be used for this edition.
+The explicit tags below provide application domain separation. Portable, SIMD,
+incremental, and parallel implementations MUST produce identical bytes for
+the same input. BLAKE3's internal chunk tree is part of the primitive; it does
+not replace the region/page tree or permit substituting internal chaining
+values for `H(x)` output.
+
 `||` means byte concatenation. `U8`, `U32`, and `U64` encode unsigned integers
 in exactly 1, 4, and 8 bytes, respectively, most significant byte first.
 `S(s) = U32(length(s)) || s`, where `s` is the exact UTF-8 byte string.
@@ -185,7 +198,7 @@ an ordinary machine profile requiring mutable guest RAM.
   storage object IDs, and representation metadata MUST NOT enter logical RAM
   hash preimages. They MUST remain separately validated operational state.
 
-Equality of roots is a content commitment under SHA-256's usual assumptions,
+Equality of roots is a content commitment under BLAKE3's usual assumptions,
 not evidence of storage availability, execution authorization, or equality
 of CPU/device state. The root MUST be bound into the enclosing versioned
 machine fingerprint, checkpoint, or lifecycle seal. It is never a standalone
@@ -216,11 +229,17 @@ physical representations can share logical identity without sharing CAS
 identity. An implementation must validate structural fields against the
 logical preimage, not trust them because their representation hash is valid.
 
-- **[RAM-11]** Logical SHA-256 digests MUST NOT be substituted for existing
+- **[RAM-11]** Logical BLAKE3-256 digests MUST NOT be substituted for existing
   CAS `ContentId` values. Each preserved or transferred representation MUST
   be authenticated by its storage contract and its decoded logical page/tree
   relationship. A compressed, packed, encrypted, or re-encoded page MUST retain
   the same logical digest when its decoded valid bytes are unchanged.
+
+Both logical RAM digests and existing CAS identities now use BLAKE3. Their
+preimages, domains, types, and responsibilities still differ. A shared primitive
+does not make a page digest the identity of its serialized object, and a
+representation hash does not establish the page's placement in a RAM root.
+
 - **[RAM-12]** Internal persistent trees MAY share immutable nodes across
   versions and positions. Publication MUST bind an immutable coherent view.
   Dirty candidates that revert to identical contents MAY retain the previous

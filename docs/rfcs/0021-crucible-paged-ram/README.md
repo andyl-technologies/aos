@@ -16,8 +16,8 @@ and defines ownership of memory across execution, retained hot sources,
 children, exact checkpoints, and transfer.
 
 The proposal uses stable virtual mappings, content-authenticated logical pages,
-ordered persistent Merkle trees, complete boundary write tracking, and an
-explicit host pager. A kernel-managed swap backend supplies a simpler measured
+ordered persistent BLAKE3-256 Merkle trees, complete boundary write tracking,
+and an explicit host pager. A kernel-managed swap backend supplies a simpler measured
 baseline; a custom backend supplies precise per-machine policy. Residency and
 reclamation policy can change during execution without changing modeled guest
 time or deterministic state identity. Infrastructure timeouts become separately

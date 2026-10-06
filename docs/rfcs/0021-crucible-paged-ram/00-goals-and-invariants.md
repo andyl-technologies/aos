@@ -88,7 +88,7 @@ guest execution are separately qualified extensions, not correctness shortcuts.
 | Logical page | A fixed 4,096-byte unit; the final page of a region may have fewer valid bytes |
 | Region | Stable, uniquely owned logical byte sequence identified by a portable region ID |
 | Page coordinate | `(region_id, logical_page_index)` in one validated topology |
-| `PageDigest` | SHA-256 commitment to valid length and page bytes, excluding coordinate |
+| `PageDigest` | BLAKE3-256 commitment to valid length and page bytes, excluding coordinate |
 | `RegionTreeDigest` | Commitment to a region's ordered pages and exact length |
 | `RamRootDigest` | Commitment to named scope, complete topology, and selected ordered region trees |
 | `ContentId` / `PageObjectId` | Existing storage identity of an encoded object, distinct from logical RAM identity |

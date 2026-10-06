@@ -9,7 +9,7 @@ distinguishes existing behavior from the changes required here.
 
 The logical identities are defined exclusively by
 [the logical RAM format](02-logical-ram-and-merkle-format.md). A `PageDigest` is
-the SHA-256 digest of the domain-separated logical length and canonical page
+the BLAKE3-256 digest of the domain-separated logical length and canonical page
 bytes. Logical pages use 4096-byte geometry independent of host page size.
 `RegionTreeDigest` commits to ordered binary-tree placement. `RamRootDigest`
 commits to the declared coverage scope and logical region catalog. This chapter

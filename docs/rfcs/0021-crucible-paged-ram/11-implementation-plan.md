@@ -96,6 +96,14 @@ results, malformed and overflowing encodings, wrong scope/topology, partial
 pages, reordered pages, padding proofs, and representation-independent roots.
 Retained nodes must remain valid through concurrent root users and teardown.
 
+Build the GPL-side C hash implementation hermetically from pinned reviewed
+upstream source, recording its applicable GPL-compatible license choice and
+corresponding-source obligations. The Apache-side Rust implementation remains
+in its separate process. Validate the official primitive vectors, the selected
+unkeyed 32-byte mode, and agreement across enabled portable/SIMD paths before
+enabling the logical codec. A shared algorithm MUST NOT introduce a cross-process
+QEMU library dependency or conflate logical digests with CAS object identities.
+
 ## 11.4 Package C: resource model and granular supervision
 
 Refactor admission around uniquely owned source pages, private child changes,
@@ -151,7 +159,8 @@ separately specified where full-state identity does not answer the predicate.
 
 Define page objects, portable structural records, complete root manifests,
 packing, bounded index traversal, admission limits, and retained closure
-ownership. Separate logical SHA-256 from existing representation identities.
+ownership. Separate logical BLAKE3-256 digests from existing representation
+identities, even where both use the same hash primitive.
 Replace flat assumptions that cannot handle worst-case distinct 4 KiB pages.
 Make tree/page verification and retrieval bounded without eagerly loading a
 complete machine's page catalog into host memory.

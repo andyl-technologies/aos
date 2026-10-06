@@ -40,8 +40,8 @@ guest trace identical to a successful run.
 ## 10.2 Canonical vectors and independent Merkle oracle
 
 Chapter [02](02-logical-ram-and-merkle-format.md) is the sole authority for byte
-encoding, SHA-256 domain separation, fixed 4,096-byte logical pages, ordered
-binary region trees, padding and scoped RAM inventory. `PageDigest` authenticates
+encoding, unkeyed BLAKE3-256 domain separation, fixed 4,096-byte logical pages,
+ordered binary region trees, padding and scoped RAM inventory. `PageDigest` authenticates
 content length and bytes. Logical position is committed by the ordered tree and
 region inventory, not included in the content leaf; identical real zero pages
 therefore remain shareable. `ContentId` authenticates a storage representation
@@ -55,6 +55,15 @@ independently. The two identities must not be conflated in vectors or tests.
   of wrong ordering, wrong length, wrong scope, ambiguous topology and malformed
   bounds. Chapter 02's reference-vector procedure MUST agree with both compiled
   peers.
+
+The format gate MUST also cover the official BLAKE3 primitive vectors and the
+default unkeyed 32-byte mode, incremental input splitting, and every enabled
+portable/SIMD implementation path. Negative controls MUST demonstrate that
+keyed/derive-key mode, altered output length, and internal BLAKE3 chaining
+values cannot substitute for canonical logical digests. A SIMD choice or
+worker count MUST NOT change identity. Primitive tests do not replace the
+logical topology, position, scope, and padding tests above.
+
 - **[TEST-4]** `gate:ram-merkle-oracle` MUST compare cached roots against a
   complete independent recomputation from all logical bytes at coherent
   boundaries. The reference MUST NOT consume the cached leaves, incremental
@@ -289,6 +298,14 @@ accounting; they cannot be advertised as free because guest bytes are cold.
   union of ancestor paths; dense changes may approach a complete recomputation.
   The implementation MUST bound queues and batching in both cases. Change-and-
   revert can reuse immutable content but still incurs tracking and hashing work.
+
+Hash measurements MUST include 4 KiB page preimages, final partial pages,
+small leaf/branch/root preimages, and sparse/dense batches of changed pages.
+Reports MUST compare the selected BLAKE3 implementation with a declared
+SHA-256 benchmark, enabling hardware acceleration where available and recording
+the actual paths used. This is offline performance evidence, not a retained
+production SHA-256 RAM path. Large-buffer hash throughput alone MUST NOT justify
+claims about page or small-node performance.
 
 For `D` changed pages the obvious path-update upper bound is proportional to
 `D * (1 + log2(P))`, capped by the whole tree's nodes, with byte hashing

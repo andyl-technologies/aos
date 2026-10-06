@@ -58,7 +58,7 @@ compatibility converter or old-digest fallback. The
 ## 06.2 The source seal binds bytes, not residency
 
 A retained source has an immutable logical RAM view. Its seal identifies the
-ordered RAM topology, canonical 4096-byte logical pages, SHA-256 `PageDigest`
+ordered RAM topology, canonical 4096-byte logical pages, BLAKE3-256 `PageDigest`
 values, binary ordered `RegionTreeDigest` values, and the scoped
 `RamRootDigest` defined by chapter 02. Page placement, host addresses, physical
 page size, compression, and backing locations are outside that root.

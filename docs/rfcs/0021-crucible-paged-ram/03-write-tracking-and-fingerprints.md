@@ -69,7 +69,7 @@ a correct cached tree. Restore needs an explicit content-state transition.
 
 ## 03.2 Content identities and operational state
 
-`PageDigest` is the SHA-256 content digest binding a logical page's valid
+`PageDigest` is the BLAKE3-256 content digest binding a logical page's valid
 length and bytes. Repeated content can share a `PageDigest` across positions.
 `RegionTreeDigest` commits ordered page content in the canonical binary tree.
 `RamRootDigest` commits the selected scope, topology, and ordered region roots.

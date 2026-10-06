@@ -27,7 +27,7 @@ modeled state.
 
 The logical format defined in
 [logical RAM and the Merkle format](02-logical-ram-and-merkle-format.md) uses
-SHA-256 `PageDigest`, `RegionTreeDigest`, and `RamRootDigest` identities. They
+BLAKE3-256 `PageDigest`, `RegionTreeDigest`, and `RamRootDigest` identities. They
 describe page bytes, positioned region trees, and the complete logical RAM
 roster, respectively. `PolicyRevision`, `ReservationRevision`, daemon epochs,
 process generations, and backing-file generations are operational identities;

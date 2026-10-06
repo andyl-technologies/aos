@@ -25,9 +25,15 @@ Repository policies apply independently of this proposal's status.
 - [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119.html) and
   [RFC 8174](https://www.rfc-editor.org/rfc/rfc8174.html): requirement language
   and the uppercase convention used in this repository proposal.
-- [RFC 6234](https://www.rfc-editor.org/rfc/rfc6234.html): SHA-256 and related
-  secure hash algorithm definitions. Chapter 02 specifies the distinct Crucible
-  preimage construction; it does not invent a new compression function.
+- [BLAKE3 specification, version 1.0.0](https://c2sp.org/BLAKE3@v1.0.0):
+  normative hash construction, default unkeyed mode, and output semantics.
+  Chapter 02 fixes the 32-byte output and distinct Crucible preimages.
+- [Official BLAKE3 implementations](https://github.com/BLAKE3-team/BLAKE3),
+  including [C](https://github.com/BLAKE3-team/BLAKE3/tree/master/c) and
+  [Rust reference code](https://github.com/BLAKE3-team/BLAKE3/blob/master/reference_impl/reference_impl.rs):
+  independent implementation and vector-verification references. Release builds
+  MUST pin reviewed source versions. GPL-side inclusion MUST select and record
+  an applicable GPL-compatible upstream license.
 - [Linux userfaultfd documentation](https://docs.kernel.org/admin-guide/mm/userfaultfd.html):
   feature negotiation, missing-page and write-protection mechanisms, mapping
   modes, and security restrictions. Deployment tests must target the actual

@@ -25,7 +25,7 @@ Process termination can occur between preserving bytes, publishing metadata,
 and releasing a lease. These conditions are part of the threat model even when
 the operator does not expect malicious infrastructure.
 
-The SHA-256 constructions in
+The unkeyed BLAKE3-256 constructions in
 [02-logical-ram-and-merkle-format.md](02-logical-ram-and-merkle-format.md)
 provide content integrity under the usual collision and second-preimage
 assumptions. They do not provide encryption, access control, execution
@@ -236,7 +236,7 @@ numbers. The release MUST allocate and record one consistent new version set.
 
 | Surface | Current source contract | Cutover obligation |
 |---|---|---|
-| Logical RAM digests | Flat writable-RAM SHA-256 domain `crucible.qemu.guest-ram.v1` | Adopt chapter 02's scoped Merkle schema and bind its version and coverage. |
+| Logical RAM digests | Flat writable-RAM SHA-256 domain `crucible.qemu.guest-ram.v1` | Adopt chapter 02's unkeyed BLAKE3-256 scoped Merkle schema and bind its version and coverage. |
 | Production fingerprint | `crucible.qemu.black-box-execution-fingerprint.v1` | Change domain and define the RAM scope; never relabel an old digest. |
 | Harness fingerprint | Definition v2; full-memory algorithm v1 | Replace definition and algorithm identity together. |
 | Trace plugin | Trace-fingerprint v7 | Version fields and aggregate semantics containing the new RAM root. |

@@ -7,7 +7,7 @@
 | Keep guest machines unmodified | RAM placement remains a host implementation detail; no ballooning, guest swap interface, or guest agent dependency |
 | Keep virtual timing identical | Host latency changes completion time and operational supervision, never modeled access latency or event order |
 | Fix logical pages at 4 KiB | Digests and checkpoint coordinates stay portable across host/target page geometry |
-| Use SHA-256 logical page and Merkle digests | Supplies one precise content contract shared by fingerprints, source seals, checkpoints, and transfer |
+| Use unkeyed BLAKE3 with 32-byte output for logical pages and Merkle digests | Reuses the existing CAS hash primitive and its C/Rust ecosystem; preserves explicit logical domains and representation-independent identities |
 | Keep storage identities distinct | Existing CAS representation authentication, packing, and future encodings are not conflated with decoded RAM identity |
 | Use ordered binary trees with defined padding | Position is committed while equal-content pages/subtrees can share across positions |
 | Use named scopes and complete topology inventory | Removes current inconsistent implicit coverage while avoiding an accidental omission of mutable device RAM |
@@ -58,6 +58,21 @@ are declared accurately. It is not a silent fallback for a requested precise
 budget or strict residency mode.
 
 ## 12.3 Why Merkle state is foundational rather than incidental
+
+The hash primitive is fixed to unkeyed BLAKE3 with a 32-byte output. Existing
+QEMU observers use SHA-256, making SHA-256 a conservative integration option,
+but guest determinism and Merkle geometry require no particular SHA family.
+The immediate cutover removes a compatibility reason to retain that primitive.
+Crucible's CAS already uses BLAKE3, and the official C and Rust implementations
+provide a common source and validation foundation for the new logical format.
+
+Performance is a qualification question rather than an assumed speedup.
+Measurements must cover 4 KiB page preimages, small branch-node preimages,
+partial pages, and batches of dirty pages against a declared accelerated
+SHA-256 benchmark. The latter is an offline comparison, not a second production
+RAM algorithm. BLAKE3's internal hashing tree does not supply the persistent,
+address-positioned RAM tree defined in chapter 02. Logical and storage identities
+remain distinct even though their primitives now agree.
 
 Incremental digests avoid paging unchanged RAM in merely to observe it.
 They also supply immutable fork baselines, checkpoint roots, and transfer
