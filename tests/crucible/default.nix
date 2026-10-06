@@ -465,6 +465,8 @@ in rec {
     tcgProductionPerformanceDriver = import ./tcg-production-performance-driver.nix {inherit pkgs lib;};
     tcgLinuxSerialGuest = import ./tcg-linux-serial-guest.nix {inherit pkgs;};
     tcgLinuxSerialPerformanceDriver = import ./tcg-linux-serial-performance-driver.nix {inherit pkgs lib;};
+    tcgFiniteRom = import ./tcg-finite-rom.nix {inherit pkgs;};
+    tcgFiniteRomPerformanceDriver = import ./tcg-finite-rom-performance-driver.nix {inherit pkgs lib;};
     qemuLaunchValidation = import ./phase2-qemu-launch-validation.nix {inherit pkgs lib;};
     qemuNodeFactory = import ./phase2-qemu-node-factory.nix {inherit pkgs lib;};
     qemuNodeWrapper = import ./phase2-qemu-node-wrapper.nix {inherit pkgs lib;};
