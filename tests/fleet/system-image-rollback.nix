@@ -180,6 +180,8 @@
 
   rolloutFixtureRoots = lib.unique (
     [candidateTop candidateImage candidateImageDisk candidateImageInfo candidateUki candidatePackageRuntime]
+    # APR's complete cache includes the published source derivation closure.
+    ++ [candidateTop.drvPath]
     ++ rolloutPolicy.extraClosures
     ++ [bootFaultHook]
     ++ [pkgs.aos.apr pkgs.sbsigntools pkgs.binutils pkgs.efitools pkgs.gawk pkgs.git pkgs.secure-boot-test-keys]
