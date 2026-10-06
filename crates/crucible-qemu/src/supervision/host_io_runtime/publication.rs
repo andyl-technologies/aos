@@ -43,6 +43,7 @@ impl QemuLiveHostIoRuntime {
         self.wait_observation.begin(timeout);
         self.device_wake_publish_generation = None;
         self.checkpoint_idle_coordinate = None;
+        self.advance_initial_state_observed = false;
         self.initial_advance_wake_pending = true;
         self.advance_completion_prepared = true;
         Ok(())

@@ -91,6 +91,7 @@ where
         super::acquisition::Acquisition::Published(pending) => pending,
         super::acquisition::Acquisition::Crashed(report) => return Ok(*report),
     };
+    runtime.retain_advance_initial_state(target.advance_initial_state(&pending));
     after_start(target, &mut pending).map_err(QemuAsyncDriverError::Channel)?;
     runtime
         .arm_advance_completion_fence(target.advance_completion_fence(&pending))

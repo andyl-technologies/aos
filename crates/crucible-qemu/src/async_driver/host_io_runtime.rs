@@ -169,6 +169,14 @@ pub trait QemuHostIoRuntime: Send {
         Ok(())
     }
 
+    /// Retains the original node state before the post-publication start hook.
+    ///
+    /// This observation is independent of the optional generation fence. Live
+    /// runtimes distinguish an observed state without a checkpoint marker from
+    /// a provider that supplied no initial state; a later pause cannot replace
+    /// the original observation. Providers without live state may ignore it.
+    fn retain_advance_initial_state(&mut self, _state: Option<crate::QemuNodeIdleState>) {}
+
     /// Arms the publication fence for the next advance-completion wait.
     ///
     /// Live runtimes retain the supplied pre-wake generation until the plugin

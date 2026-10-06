@@ -98,6 +98,51 @@ impl MappedPublication {
 }
 
 #[test]
+fn mapped_start_retains_observed_state_without_requiring_a_generation_fence()
+-> Result<(), Box<dyn std::error::Error>> {
+    assert_eq!(crate::QemuNodePendingQuantum::new(()).initial_state(), None);
+    for initial_checkpoint in [false, true] {
+        let mut mapped = MappedPublication::new()?;
+        let slot = mapped.producer.node_slot(0)?;
+        slot.arm_external_state_restore_ceiling(1000)?;
+        slot.publish_reached_icount(100)?;
+        if initial_checkpoint {
+            slot.publish_pause_quiesced(100, 2)?;
+        }
+        let pending = mapped.channel.start_quantum(
+            ExecutionHorizon {
+                icount: Icount { retired: 1000 },
+            },
+            crate::QemuQuantumStopCondition::Ceiling,
+        )?;
+        slot.publish_reached_icount(200)?;
+        slot.publish_pause_quiesced(200, 4)?;
+
+        let original = pending.initial_state().ok_or("mapped observation absent")?;
+        assert_eq!(original.current_icount, Icount { retired: 100 });
+        assert_eq!(
+            original.next_deadline,
+            initial_checkpoint.then_some(Icount { retired: 100 })
+        );
+        assert_eq!(pending.completion_fence(), None);
+        let budget = Duration::from_secs(1);
+        mapped.runtime.prepare_advance_completion(budget)?;
+        mapped.runtime.retain_advance_initial_state(Some(original));
+        mapped.runtime.arm_advance_completion_fence(None)?;
+        assert!(mapped.runtime.advance_initial_state_observed);
+        assert_eq!(
+            mapped.runtime.checkpoint_idle_coordinate,
+            initial_checkpoint.then_some(100)
+        );
+
+        mapped.runtime.prepare_advance_completion(budget)?;
+        assert!(!mapped.runtime.advance_initial_state_observed);
+        assert_eq!(mapped.runtime.checkpoint_idle_coordinate, None);
+    }
+    Ok(())
+}
+
+#[test]
 fn both_publication_sequences_refuse_getters_and_start_without_effects()
 -> Result<(), Box<dyn std::error::Error>> {
     for scheduler_busy in [false, true] {

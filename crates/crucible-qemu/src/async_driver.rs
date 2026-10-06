@@ -135,6 +135,19 @@ pub trait QemuAsyncNodeStepTarget: QemuAsyncCrashEscalationTarget {
         horizon: ExecutionHorizon,
     ) -> Result<Self::PendingQuantum, QemuNodeChannelError>;
 
+    /// Returns the original pre-publication node state carried by a quantum.
+    ///
+    /// Providers without a live start observation retain `None`. A live
+    /// observation with no deadline remains `Some` and must not be replaced by
+    /// a later guest pause observed after the start hook.
+    #[must_use]
+    fn advance_initial_state(
+        &self,
+        _pending: &Self::PendingQuantum,
+    ) -> Option<crate::QemuNodeIdleState> {
+        None
+    }
+
     /// Returns the plugin-publication fence carried by a pending quantum.
     #[must_use]
     fn advance_completion_fence(

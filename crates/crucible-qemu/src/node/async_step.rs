@@ -42,6 +42,10 @@ impl QemuAsyncNodeStepTarget for QemuNodeAsyncStepTarget<'_> {
             .start_quantum(horizon, self.stop_condition)
     }
 
+    fn advance_initial_state(&self, pending: &Self::PendingQuantum) -> Option<QemuNodeIdleState> {
+        pending.initial_state()
+    }
+
     fn advance_completion_fence(
         &self,
         pending: &Self::PendingQuantum,

@@ -770,14 +770,16 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
             assert_qemu_quantum_hot_path_is_shmem_only(&start_operations)
                 .map_err(QemuNodeChannelError::from)?;
             let completion_fence = pending.completion_fence;
+            let initial_state = pending.initial_state;
             let mapped = QemuMappedPendingQuantum {
                 pending,
                 start_operations,
             };
-            Ok(match completion_fence {
+            let token = match completion_fence {
                 Some(fence) => QemuNodePendingQuantum::new_with_completion_fence(mapped, fence),
                 None => QemuNodePendingQuantum::new(mapped),
-            })
+            };
+            Ok(token.with_initial_state(initial_state))
         })
     }
 

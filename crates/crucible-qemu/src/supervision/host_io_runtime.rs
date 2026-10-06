@@ -92,6 +92,8 @@ pub struct QemuLiveHostIoRuntime {
     device_wake_publish_generation: Option<u32>,
     /// Zero-length idle coordinate left by an exact checkpoint pause.
     checkpoint_idle_coordinate: Option<u64>,
+    /// A live start observation cannot be replaced by the first later poll.
+    advance_initial_state_observed: bool,
     /// Outbound producer frontier covered by the preceding completed quantum.
     completed_outbound_write_index: u64,
     /// Immutable original clamp publication for this runtime's current advance.
@@ -263,6 +265,7 @@ impl QemuLiveHostIoRuntime {
             advance_stop_condition: crate::QemuQuantumStopCondition::Ceiling,
             device_wake_publish_generation: None,
             checkpoint_idle_coordinate: None,
+            advance_initial_state_observed: false,
             completed_outbound_write_index,
             completed_boundary: None,
             block: None,
@@ -426,7 +429,11 @@ impl QemuLiveHostIoRuntime {
                 continue;
             };
             if self.initial_advance_wake_pending {
-                self.checkpoint_idle_coordinate = checkpoint_idle_coordinate(&snapshot);
+                if !self.advance_initial_state_observed {
+                    // Standalone providers without a pending start observation
+                    // retain their existing coherent first-poll classification.
+                    self.checkpoint_idle_coordinate = checkpoint_idle_coordinate(&snapshot);
+                }
                 self.wait_observation
                     .retain_initial_advance(&snapshot, self.checkpoint_idle_coordinate);
                 if self.checkpoint_idle_coordinate.is_some() {
@@ -774,6 +781,16 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         self.fault_event_canonical_current_offset = canonical_current_offset;
         self.fault_event_configured_limit = configured_event_records;
         Ok(())
+    }
+
+    fn retain_advance_initial_state(&mut self, state: Option<crate::QemuNodeIdleState>) {
+        self.advance_initial_state_observed = state.is_some();
+        self.checkpoint_idle_coordinate = state.and_then(|state| {
+            state
+                .next_deadline
+                .filter(|deadline| deadline.retired <= state.current_icount.retired)
+                .map(|_| state.current_icount.retired)
+        });
     }
 
     fn arm_advance_completion_fence(
