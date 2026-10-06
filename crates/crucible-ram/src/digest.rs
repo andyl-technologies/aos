@@ -70,7 +70,10 @@ impl PageDigest {
         if bytes.is_empty() || bytes.len() > LOGICAL_PAGE_SIZE as usize {
             return Err(RamError::InvalidLength);
         }
-        let mut hasher = tagged("page");
+        // Initialize the caller's hasher in place instead of returning its
+        // large state through the tag factory's result slot.
+        let mut hasher = blake3::Hasher::new();
+        initialize_tag(&mut hasher, "page");
         hasher.update(&(bytes.len() as u32).to_be_bytes());
         hasher.update(bytes);
         Ok(Self(*hasher.finalize().as_bytes()))
@@ -79,10 +82,14 @@ impl PageDigest {
 
 pub(crate) fn tagged(name: &str) -> blake3::Hasher {
     let mut hasher = blake3::Hasher::new();
+    initialize_tag(&mut hasher, name);
+    hasher
+}
+
+fn initialize_tag(hasher: &mut blake3::Hasher, name: &str) {
     hasher.update(b"crucible.ram.");
     hasher.update(name.as_bytes());
     hasher.update(b".v1\0");
-    hasher
 }
 
 /// Wraps a page content commitment in the canonical leaf domain.
@@ -126,3 +133,6 @@ pub fn region_tree_digest(geometry: Geometry, root: NodeDigest) -> RegionTreeDig
     hasher.update(root.as_bytes());
     RegionTreeDigest(*hasher.finalize().as_bytes())
 }
+
+#[cfg(test)]
+mod tests;
