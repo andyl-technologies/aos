@@ -22,7 +22,7 @@ use std::io::{self, Write};
 use std::sync::Mutex;
 
 use super::control_callback_stage::ControlStageIdentity;
-pub(super) mod capture;
+pub(in crate::runtime) mod capture;
 use capture::destination;
 
 const MAX_ROWS: usize = 256;

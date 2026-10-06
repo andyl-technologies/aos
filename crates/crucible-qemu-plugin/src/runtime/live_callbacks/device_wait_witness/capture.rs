@@ -11,7 +11,7 @@ use std::io;
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
 
-pub(in crate::runtime::live_callbacks) fn destination(source: &impl AsFd) -> io::Result<File> {
+pub(in crate::runtime) fn destination(source: &impl AsFd) -> io::Result<File> {
     let pinned = File::from(source.as_fd().try_clone_to_owned()?);
     let original = pinned.metadata()?;
     if original.is_file() {

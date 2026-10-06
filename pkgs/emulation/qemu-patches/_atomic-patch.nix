@@ -6,26 +6,26 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "51633afcd990b54c290f4d251263d6dfecc7730718df38637150d52a958d0814";
+  sha256 = "62e1e29557220688c93fa63751dc53310fdd1c0062a4599a2fc66e2d0399d2dc";
   subject = "Integrate deterministic execution and private fork I/O custody";
-  body = "Retain versioned process control, deterministic virtual coordinates,\nprivate child resources, and canonical guest-state projection. Drain\nthe original registered reader and native callback before admitting\ntemplate barriers. Preserve stopped-owner generation, exact time,\nconnection lifetime, and descriptor failure refusal.\n\nEnd an admitted current-CPU stop at the TCG chain while retaining the\nasynchronous runstate transition. Reconstruct each child's private\nLinux epoll backend under the original authenticated fork barrier,\npreserving active and standby modes and the parent's kernel object.\nValidate retained handler membership and inherited descriptor identity\nbefore starting child workers.\n\nObserve stop admission, publication, rearm refusal, and original wake\nreader outcomes only under the existing delivery trace opt-in. Keep\nunowned architecture and unlocked runstate fields unavailable, retain\nlate generations, and preserve native operation and error semantics.\nCarry production-body regressions and explicit causal negatives.\nDeclare extracted public entry points with their original types so\nconfigured prototype diagnostics remain enforced in the fork fixture.\n\nTransfer an outstanding running-owner control request at genuine stopped\npublication to the existing paused owner. Preserve the original request\ncounters, stop-clearing rearm, flush and callback ownership checks.\nExercise reader-before-publication and reader-after-publication ordering,\nno-request behavior, and nested next-generation exactly-once completion.\n\nPreserve plugin fatal shutdown as a failed process exit through the normal\nrunstate path, while retaining clean quit and the original vCPU kick.";
-  commit = "4f3db5e70c9d0a166d4f966e8838872c2e279304";
-  tree = "c3808f77cbff0dd7adb1a7c58ea73e0c10577806";
+  body = "Retain versioned process control, deterministic virtual coordinates,\nprivate child resources, and canonical guest-state projection. Drain\nthe original registered reader and native callback before admitting\ntemplate barriers. Preserve stopped-owner generation, exact time,\nconnection lifetime, and descriptor failure refusal.\n\nEnd an admitted current-CPU stop at the TCG chain while retaining the\nasynchronous runstate transition. Reconstruct each child's private\nLinux epoll backend under the original authenticated fork barrier,\npreserving active and standby modes and the parent's kernel object.\nValidate retained handler membership and inherited descriptor identity\nbefore starting child workers.\n\nObserve stop admission, publication, rearm refusal, and original wake\nreader outcomes only under the existing delivery trace opt-in. Keep\nunowned architecture and unlocked runstate fields unavailable, retain\nlate generations, and preserve native operation and error semantics.\nCarry production-body regressions and explicit causal negatives.\nDeclare extracted public entry points with their original types so\nconfigured prototype diagnostics remain enforced in the fork fixture.\n\nTransfer an outstanding running-owner control request at genuine stopped\npublication to the existing paused owner. Preserve the original request\ncounters, stop-clearing rearm, flush and callback ownership checks.\nExercise reader-before-publication and reader-after-publication ordering,\nno-request behavior, and nested next-generation exactly-once completion.\n\nPreserve plugin fatal shutdown as a failed process exit through the normal\nrunstate path, while retaining clean quit and the original vCPU kick.\n\nExpose optional pending-selectable resume observations at the original\nstop, preparation, consumption and callback seams. Keep independently\nsampled native state advisory, retain original errno and default paths,\nand leave process protocols, admission, clocks and deadlines unchanged.";
+  commit = "fd035241eba9fe8fe4b58c50b86492a731ffdd96";
+  tree = "220239913253429edb638d1c0d69677d95168652";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
   capability = "one atomic, reconstructible QEMU 11.1.1 integration artifact provides the versioned Crucible plugin protocol, deterministic execution, exact checkpoint capture and restore, retained hot fork with asynchronous-worker quiescence, device fingerprints, and their build and test plumbing";
 
-  branchRef = "dplecki/native-plugin-failed-exit";
+  branchRef = "dplecki/native-selectable-resume-witness";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "ce5591b4e7493cb1607fe2eddf18c0ea50e79b1a65e3699b1cb084128638e95e";
+  bundleSha256 = "ee906ff122184d00e48d395b1bd3474a20c144910c81cb1ddab163e563f9788f";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
-  deterministicPatchDate = "2026-10-06T00:36:41+00:00";
+  deterministicPatchDate = "2026-10-06T02:47:55+00:00";
 
   additionalCapabilities = [
     {

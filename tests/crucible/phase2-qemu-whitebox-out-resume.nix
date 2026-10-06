@@ -136,17 +136,22 @@ assert !runtimeDiagnostics || profile == "linux"; let
   vmTest = testing.mkVMTest {
     inherit name;
     memory = 3072;
-    rootfsDeps = [
-      flight
-      guest
-      pkgs.qemu-crucible
-      pkgs.crucible-qemu-plugin
-      pkgs.linux
-      pkgs.e2fsprogs
-      pkgs.coreutils
-      pkgs.util-linux
-      pkgs.grep
-    ];
+    rootfsDeps =
+      [
+        flight
+        guest
+        pkgs.qemu-crucible
+        pkgs.crucible-qemu-plugin
+        pkgs.linux
+        pkgs.e2fsprogs
+        pkgs.coreutils
+        pkgs.util-linux
+        pkgs.grep
+      ]
+      ++ lib.optionals runtimeDiagnostics [
+        pkgs.python3
+        "${./selectable-resume-witness.py}"
+      ];
     testScript = ''
       set -eu
       export TMPDIR=/tmp
@@ -174,6 +179,9 @@ assert !runtimeDiagnostics || profile == "linux"; let
           status=$?
           ${lib.optionalString (profile == "linux") ''echo "CRUCIBLE_OUT_RESUME_FAILED_MODE=$mode" >&2 || true''}
           cat "/tmp/$mode.result" >&2
+          ${lib.optionalString runtimeDiagnostics ''
+        ${pkgs.python3}/bin/python3 ${./selectable-resume-witness.py} "/tmp/$mode.log" >&2 || true
+      ''}
           tail -c ${toString stderrTailBytes} "/tmp/$mode.log" >&2
           exit "$status"
         fi

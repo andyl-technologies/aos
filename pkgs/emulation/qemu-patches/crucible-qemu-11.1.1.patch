@@ -1,6 +1,6 @@
-From 4f3db5e70c9d0a166d4f966e8838872c2e279304 Mon Sep 17 00:00:00 2001
+From fd035241eba9fe8fe4b58c50b86492a731ffdd96 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Tue, 6 Oct 2026 00:36:41 +0000
+Date: Tue, 6 Oct 2026 02:47:55 +0000
 Subject: [PATCH] Integrate deterministic execution and private fork I/O
  custody
 
@@ -33,6 +33,11 @@ no-request behavior, and nested next-generation exactly-once completion.
 
 Preserve plugin fatal shutdown as a failed process exit through the normal
 runstate path, while retaining clean quit and the original vCPU kick.
+
+Expose optional pending-selectable resume observations at the original
+stop, preparation, consumption and callback seams. Keep independently
+sampled native state advisory, retain original errno and default paths,
+and leave process protocols, admission, clocks and deadlines unchanged.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -58524,7 +58529,7 @@ index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..36c355bf303715c91112dcceb32fb779
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..3ccf8615b0e87c58b038b7b9e4ea9872d9164145 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..4ba0c2175581a7d4eb33708838b02fc3b10419d4 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,326 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -60352,6 +60357,26 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..3ccf8615b0e87c58b038b7b9e4ea9872
  /**
   * qemu_plugin_scoreboard_new() - alloc a new scoreboard
   *
+@@ -1363,6 +3160,19 @@ void qemu_plugin_u64_set(qemu_plugin_u64 entry, unsigned int vcpu_index,
+ QEMU_PLUGIN_API
+ uint64_t qemu_plugin_u64_sum(qemu_plugin_u64 entry);
+ 
++/* Optional GPL-local diagnostics. Scalar data never grants native ownership.
++ * Phase numbers 1..7 are the prepare-start entry/return, stopped, resume-pending,
++ * resume-consumed and original vCPU-resume callback entry/return seams.
++ * UINT32_MAX means the original owner could not supply a CPU/runstate view.
++ * Flags: bit0 stop, bit1 stopped, bit2 halted, bit3 running. */
++typedef void (*qemu_plugin_crucible_selectable_resume_observer)(
++    uint32_t phase, uint64_t generation, uint32_t stop_state,
++    uint32_t runstate, uint32_t cpu, uint32_t flags, int32_t result);
++
++QEMU_PLUGIN_API
++void qemu_plugin_crucible_set_selectable_resume_observer(
++    qemu_plugin_crucible_selectable_resume_observer observer);
++
+ #ifdef __cplusplus
+ } /* extern "C" */
+ #endif
 diff --git a/include/qemu/aio.h b/include/qemu/aio.h
 index e65e90093a73aa3f917361ee6b543a6c0fed94fa..f289348cd06a6b88ca219d312403386776d22974 100644
 --- a/include/qemu/aio.h
@@ -62113,7 +62138,7 @@ index 8c1241a2c11c289bc3c69fff66ab67d06e9f257c..0c821e747558eabaeb83af16c23b3c0f
  
  #endif
 diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
-index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..7b65b1d13903e1103be776a058e4bdb8bd685002 100644
+index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..af0b59ae300443c93eda4a01039695b0ec47196b 100644
 --- a/include/qemu/plugin.h
 +++ b/include/qemu/plugin.h
 @@ -9,11 +9,13 @@
@@ -62142,7 +62167,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..7b65b1d13903e1103be776a058e4bdb8
  /*
   * Construct a qemu_plugin_meminfo_t.
   */
-@@ -183,6 +190,97 @@ void qemu_plugin_flush_cb(void);
+@@ -183,6 +190,100 @@ void qemu_plugin_flush_cb(void);
  
  void qemu_plugin_atexit_cb(void);
  
@@ -62205,6 +62230,9 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..7b65b1d13903e1103be776a058e4bdb8
 +void qemu_plugin_crucible_vmstop_request_stopped(int flush_status);
 +int qemu_plugin_crucible_vmstop_flush_status(void);
 +void qemu_plugin_crucible_vmstop_request_complete(void);
++/* Process-private, scalar-only advisory observer; no scheduling authority. */
++void qemu_plugin_crucible_observe_selectable_resume(unsigned int phase,
++                                                   int result);
 +bool qemu_plugin_crucible_vmstop_resume_consume(void);
 +int qemu_plugin_crucible_lifecycle_complete_terminal_exit(
 +    const char *action_sha256, const char *evidence_sha256,
@@ -62240,7 +62268,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..7b65b1d13903e1103be776a058e4bdb8
  void qemu_plugin_add_dyn_cb_arr(GArray *arr);
  
  static inline void qemu_plugin_disable_mem_helpers(CPUState *cpu)
-@@ -237,6 +335,11 @@ static inline enum qemu_plugin_cb_flags qemu_plugin_get_cb_flags(void)
+@@ -237,6 +338,11 @@ static inline enum qemu_plugin_cb_flags qemu_plugin_get_cb_flags(void)
  static inline void qemu_plugin_add_opts(void)
  { }
  
@@ -62252,7 +62280,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..7b65b1d13903e1103be776a058e4bdb8
  static inline void qemu_plugin_opt_parse(const char *optstr,
                                           QemuPluginList *head)
  {
-@@ -306,6 +409,186 @@ static inline void qemu_plugin_flush_cb(void)
+@@ -306,6 +412,192 @@ static inline void qemu_plugin_flush_cb(void)
  static inline void qemu_plugin_atexit_cb(void)
  { }
  
@@ -62396,7 +62424,13 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..7b65b1d13903e1103be776a058e4bdb8
 +}
 +
 +static inline void qemu_plugin_crucible_vmstop_request_complete(void)
-+{ }
++{
++}
++
++static inline void qemu_plugin_crucible_observe_selectable_resume(
++    unsigned int phase, int result)
++{
++}
 +
 +static inline bool qemu_plugin_crucible_vmstop_resume_consume(void)
 +{
@@ -75177,7 +75211,7 @@ index 9e9941fe73e77a7b3bcc3ca1ab7ad4bec58f0151..66e2d8cd64d01e2304aa51675bfe4959
  
  static int net_slirp_init(NetClientState *peer, const char *model,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index fbf905cd63e4cc109748b379f4209f6ad6547c2c..a23e1ec661b9cd7cba80a380320b905ec9bc5112 100644
+index fbf905cd63e4cc109748b379f4209f6ad6547c2c..a0829fe1aeb92474aa1111ad5a6a126b60820816 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -11,12 +11,40 @@
@@ -76142,7 +76176,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..a23e1ec661b9cd7cba80a380320b905e
          return &has_control;
      }
      return NULL;
-@@ -123,9 +1054,1912 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
+@@ -123,9 +1054,1964 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
  void qemu_plugin_update_ns(const void *handle, int64_t new_time)
  {
      if (handle == &has_control) {
@@ -76872,6 +76906,17 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..a23e1ec661b9cd7cba80a380320b905e
 +static __thread bool qemu_plugin_crucible_idle_wait_issued;
 +static __thread QemuPluginCrucibleIdleCallbackDisposition
 +    qemu_plugin_crucible_idle_callback_disposition;
++static qemu_plugin_crucible_selectable_resume_observer
++    qemu_plugin_crucible_selectable_resume_observer_cb;
++
++/* Diagnostic only: the fixture's loaded GPL plugin remains resident until exit.
++ * No pointer enters IPC, and this observer changes no execution registration. */
++void qemu_plugin_crucible_set_selectable_resume_observer(
++    qemu_plugin_crucible_selectable_resume_observer observer)
++{
++    qatomic_set(&qemu_plugin_crucible_selectable_resume_observer_cb, observer);
++}
++
 +static int qemu_plugin_crucible_vmstop_state;
 +static int qemu_plugin_crucible_vmstop_flush_result;
 +/* Every successful native admission owns a distinct process-local stop. */
@@ -76885,6 +76930,42 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..a23e1ec661b9cd7cba80a380320b905e
 +    QEMU_PLUGIN_CRUCIBLE_VMSTOP_STOPPED,
 +    QEMU_PLUGIN_CRUCIBLE_VMSTOP_RESUME_PENDING,
 +};
++
++/* Copies only lifecycle state under its original owner; never a clock or PC. */
++void qemu_plugin_crucible_observe_selectable_resume(unsigned int phase,
++                                                   int result)
++{
++    qemu_plugin_crucible_selectable_resume_observer observer = qatomic_read(
++        &qemu_plugin_crucible_selectable_resume_observer_cb);
++    CPUState *cpu = NULL;
++    unsigned int runstate = UINT32_MAX;
++    unsigned int flags = UINT32_MAX;
++    int saved_errno;
++
++    if (!observer) {
++        return;
++    }
++    saved_errno = errno;
++    if (bql_locked()) {
++        runstate = runstate_get();
++        cpu = qemu_plugin_crucible_resume_callback_cpu;
++        if (!cpu && first_cpu && first_cpu->stopped &&
++            !qatomic_read(&first_cpu->running)) {
++            cpu = first_cpu;
++        }
++    }
++    if (cpu) {
++        flags = (unsigned int)cpu->stop |
++                ((unsigned int)cpu->stopped << 1) |
++                ((unsigned int)cpu->halted << 2) |
++                ((unsigned int)qatomic_read(&cpu->running) << 3);
++    }
++    observer(phase,
++             qatomic_read(&qemu_plugin_crucible_vmstop_generation_value),
++             qatomic_read(&qemu_plugin_crucible_vmstop_state), runstate,
++             cpu ? cpu->cpu_index : UINT32_MAX, flags, result);
++    errno = saved_errno;
++}
 +
 +/* Never samples a clock or another executing CPU's architecture state. */
 +static void qemu_plugin_trace_stop_context(CrucibleStopContextPhase phase)
@@ -77161,6 +77242,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..a23e1ec661b9cd7cba80a380320b905e
 +        qatomic_cmpxchg(&qemu_plugin_crucible_vmstop_state,
 +                        QEMU_PLUGIN_CRUCIBLE_VMSTOP_ADMITTED,
 +                        QEMU_PLUGIN_CRUCIBLE_VMSTOP_STOPPED);
++        qemu_plugin_crucible_observe_selectable_resume(3, flush_status);
 +        qemu_plugin_trace_stop_context(CRUCIBLE_STOP_PUBLISHED);
 +        if (qemu_plugin_crucible_rr_control_boundary_pending()) {
 +            /* A reader during admission still names the running RR owner. */
@@ -77188,6 +77270,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..a23e1ec661b9cd7cba80a380320b905e
 +                       QEMU_PLUGIN_CRUCIBLE_VMSTOP_RESUME_PENDING) ==
 +        QEMU_PLUGIN_CRUCIBLE_VMSTOP_STOPPED) {
 +        qatomic_set(&qemu_plugin_crucible_vmstop_flush_result, 0);
++        qemu_plugin_crucible_observe_selectable_resume(4, 0);
 +    }
 +}
 +
@@ -77199,6 +77282,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..a23e1ec661b9cd7cba80a380320b905e
 +        QEMU_PLUGIN_CRUCIBLE_VMSTOP_RESUME_PENDING;
 +
 +    if (consumed) {
++        qemu_plugin_crucible_observe_selectable_resume(5, 0);
 +        qemu_plugin_crucible_vmstop_cold_admitted = false;
 +        qemu_plugin_crucible_vmstop_cold_generation = 0;
 +        qemu_plugin_rearm_deferred_control_boundary();
@@ -77824,10 +77908,12 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..a23e1ec661b9cd7cba80a380320b905e
 +        g_assert(qemu_plugin_crucible_resume_callback_depth == 0);
 +        qemu_plugin_crucible_resume_callback_cpu = cpu;
 +        qemu_plugin_crucible_resume_callback_depth++;
++        qemu_plugin_crucible_observe_selectable_resume(6, 0);
 +        qemu_plugin_crucible_exact_boundary_enter();
 +        cb(cpu->cpu_index, qemu_plugin_icount_raw(),
 +           qemu_plugin_vcpu_idle_resume_userdata);
 +        qemu_plugin_crucible_exact_boundary_leave();
++        qemu_plugin_crucible_observe_selectable_resume(7, 0);
 +        qemu_plugin_crucible_resume_callback_depth--;
 +        qemu_plugin_crucible_resume_callback_cpu = NULL;
 +    }
@@ -120670,7 +120756,7 @@ index 9919b46230f1caf8be1a1b6ef00acd94678437ce..5688cd190ad09880d4faa1af38d86d39
           * cpu_exit() is not enough to kick a halted CPU out of
           * qemu_tcg_wait_io_event.  async_run_on_cpu, instead,
 diff --git a/system/cpus.c b/system/cpus.c
-index 97e5a5edee23b70d8bd170c2b984568f4e804672..5b2752bcf8f2bf39dfe0bd675ce6bb260fabb9c5 100644
+index 97e5a5edee23b70d8bd170c2b984568f4e804672..72897eb332e6eb15d505232926b29ec68ef1e358 100644
 --- a/system/cpus.c
 +++ b/system/cpus.c
 @@ -25,11 +25,13 @@
@@ -120999,26 +121085,42 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..5b2752bcf8f2bf39dfe0bd675ce6bb26
      if (qemu_in_vcpu_thread()) {
          qemu_system_vmstop_request_prepare();
          qemu_system_vmstop_request(state);
-@@ -768,6 +1020,14 @@ int vm_prepare_start(bool step_pending)
+@@ -768,8 +1020,21 @@ int vm_prepare_start(bool step_pending)
      RunState state = vm_was_suspended ? RUN_STATE_SUSPENDED : RUN_STATE_RUNNING;
      RunState requested;
  
++    qemu_plugin_crucible_observe_selectable_resume(1, 0);
++
 +    if (qemu_crucible_cold_stop_transaction_active()) {
 +        qemu_crucible_cold_stop_competing_stop();
++        qemu_plugin_crucible_observe_selectable_resume(2, -1);
 +        return -1;
 +    }
 +    if (qemu_plugin_crucible_vmstop_admission_pending()) {
++        qemu_plugin_crucible_observe_selectable_resume(2, -1);
 +        return -1;
 +    }
 +
      qemu_vmstop_requested(&requested);
      if (runstate_is_running() && requested == RUN_STATE__MAX) {
++        qemu_plugin_crucible_observe_selectable_resume(2, -1);
          return -1;
-@@ -797,9 +1057,11 @@ int vm_prepare_start(bool step_pending)
+     }
+ 
+@@ -781,6 +1046,7 @@ int vm_prepare_start(bool step_pending)
+     if (runstate_is_running()) {
+         qapi_event_send_stop();
+         qapi_event_send_resume();
++        qemu_plugin_crucible_observe_selectable_resume(2, -1);
+         return -1;
+     }
+ 
+@@ -797,9 +1063,12 @@ int vm_prepare_start(bool step_pending)
      runstate_set(state);
      vm_state_notify(1, state);
      vm_was_suspended = false;
 +    qemu_plugin_crucible_vmstop_request_complete();
++    qemu_plugin_crucible_observe_selectable_resume(2, ret);
      return ret;
  }
  
@@ -121026,7 +121128,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..5b2752bcf8f2bf39dfe0bd675ce6bb26
  void vm_start(void)
  {
      if (!vm_prepare_start(false)) {
-@@ -820,6 +1082,10 @@ void vm_resume(RunState state)
+@@ -820,6 +1089,10 @@ void vm_resume(RunState state)
     current state is forgotten forever */
  int vm_stop_force_state(RunState state)
  {
@@ -121037,7 +121139,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..5b2752bcf8f2bf39dfe0bd675ce6bb26
      if (runstate_is_live(runstate_get())) {
          return vm_stop(state);
      } else {
-@@ -928,4 +1194,3 @@ void qmp_inject_nmi(Error **errp)
+@@ -928,4 +1201,3 @@ void qmp_inject_nmi(Error **errp)
  {
      nmi_monitor_handle(monitor_get_cpu_index(monitor_cur()), errp);
  }

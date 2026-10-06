@@ -36,6 +36,7 @@ mod guest_introspection;
 mod location;
 mod marker;
 mod selectable;
+pub(super) mod selectable_resume_witness;
 #[cfg(test)]
 mod test_restore;
 mod translation;
@@ -112,6 +113,29 @@ pub(super) fn rebind_selectable_pending_boundary(
     })
 }
 
+/// Copies reply indices only for the already-armed advisory resume witness.
+pub(super) fn observe_selectable_resume(
+    phase: selectable_resume_witness::Phase,
+    vcpu_index: u32,
+    raw_icount: Option<u64>,
+    logical_icount: Option<u64>,
+) {
+    if !selectable_resume_witness::is_armed() {
+        selectable_resume_witness::finish_unrecorded_rust_return(phase);
+        return;
+    }
+    let indices = NonNull::new(LIVE_WHITEBOX_STATE.load(Ordering::Acquire)).and_then(|state| {
+        // SAFETY: the original deterministic RR resume callback serializes this
+        // immutable view with the process-lifetime white-box/catalog owner.
+        let state = unsafe { state.as_ref() };
+        state
+            .selectable
+            .as_ref()
+            .map(|selectable| selectable.reply_indices())
+    });
+    selectable_resume_witness::observe(phase, vcpu_index, raw_icount, logical_icount, indices);
+}
+
 /// Delivers one queued host reply at the exact vCPU resume boundary.
 pub(super) fn deliver_selectable_reply_on_vcpu_resume(
     vcpu_index: u32,
@@ -137,6 +161,20 @@ pub(super) fn deliver_selectable_reply_on_vcpu_resume(
             .marker_sink
             .output
             .record_selectable_completed(current_icount, vcpu_index, &reply)?;
+        selectable_resume_witness::reply_completed();
+        if selectable_resume_witness::is_armed() {
+            let indices = state
+                .selectable
+                .as_ref()
+                .map(|selectable| selectable.reply_indices());
+            selectable_resume_witness::observe(
+                selectable_resume_witness::Phase::ReplyCompleted,
+                vcpu_index,
+                None,
+                Some(current_icount),
+                indices,
+            );
+        }
     }
     Ok(())
 }

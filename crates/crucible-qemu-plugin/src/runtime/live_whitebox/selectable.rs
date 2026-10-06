@@ -142,6 +142,13 @@ impl LiveSelectableReplyShmemConsumer {
         }
     }
 
+    fn indices(&self) -> (u64, u64) {
+        // SAFETY: the original constructor pins this header for callback lifetime;
+        // these advisory acquire loads do not consume or modify the SPSC ring.
+        let header = unsafe { &*self.header };
+        (header.read_index(), header.write_index())
+    }
+
     fn peek(&mut self) -> Result<Option<WhiteboxMarkerEntry>, LiveWhiteboxError> {
         let (header, entries) = self.ring_parts();
         header.peek_whitebox_marker(entries).map_err(callback_error)
@@ -166,6 +173,7 @@ impl LiveSelectableState {
         reply_input: LiveSelectableReplyShmemConsumer,
     ) -> Result<Self, SelectableCatalogError> {
         let (catalog, restore_catalog) = SelectableCatalog::launch_pair_from_plan(plan)?;
+        super::selectable_resume_witness::initialize();
         Ok(Self {
             capability,
             catalog,
@@ -177,6 +185,10 @@ impl LiveSelectableState {
                 == crucible_protocol::selectable_catalog_plan::SelectablePlanPhase::Registering,
             registration_failure: None,
         })
+    }
+
+    pub(super) fn reply_indices(&self) -> (u64, u64) {
+        self.reply_input.indices()
     }
 
     /// Delivers one exact reply before the resumed vCPU may execute.
@@ -238,6 +250,15 @@ impl LiveSelectableState {
             return Err(callback_error(
                 "selectable reply changed between peek and consume",
             ));
+        }
+        if super::selectable_resume_witness::is_armed() {
+            super::selectable_resume_witness::observe(
+                super::selectable_resume_witness::Phase::ReplyDequeued,
+                vcpu_index,
+                None,
+                Some(current_icount),
+                Some(self.reply_indices()),
+            );
         }
         let reply = SelectionReply::decode(entry.payload()).map_err(callback_error)?;
         if reply.sequence() != pending.request().sequence() {
@@ -439,6 +460,12 @@ impl SelectableReplyService for LiveSelectableState {
         self.catalog
             .begin_request(request, coordinate, reply_range)
             .map_err(service_error)?;
+        super::selectable_resume_witness::arm(
+            request.sequence(),
+            coordinate.vcpu_index(),
+            coordinate.raw_icount(),
+            coordinate.tick_ps(),
+        );
         match self.vmstop_handoff.defer(self.force_vcpu_tb_exit) {
             Ok(true) => {}
             Ok(false) => {

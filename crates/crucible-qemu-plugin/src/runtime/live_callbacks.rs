@@ -49,7 +49,7 @@ use super::{
     callback_quiescence::{LiveCallbackInFlight, LiveCallbackQuiescence},
     live_whitebox::{
         LiveWhiteboxApis, crucible_qemu_plugin_live_whitebox_vcpu_init_cb,
-        deliver_selectable_reply_on_vcpu_resume, rebind_selectable_pending_boundary,
+        rebind_selectable_pending_boundary,
     },
     worker_quiescence::LiveWorkerQuiescence,
 };
@@ -59,7 +59,7 @@ mod control_callback_stage;
 mod control_callback_witness;
 pub(super) use control_callback_witness::ControlCallbackWitness;
 mod device_wait;
-mod device_wait_witness;
+pub(super) mod device_wait_witness;
 mod devices;
 mod error;
 mod fingerprint_worker;
@@ -68,6 +68,7 @@ mod logical_restore;
 mod network_inbound;
 mod network_output_stop;
 mod preemption;
+mod resume;
 pub(crate) mod time_ownership_witness;
 pub use devices::LiveDeviceCallbackError;
 use devices::LiveDeviceCallbackState;
@@ -1705,62 +1706,6 @@ impl LiveVcpuTimeCallbackState {
                 }
             };
         }
-    }
-
-    fn on_vcpu_resume(
-        &self,
-        vcpu_index: u32,
-        raw_icount: u64,
-    ) -> Result<(), LiveVcpuTimeCallbackError> {
-        self.require_initialized_vcpu(vcpu_index)?;
-        if self.publish_pause_for_boundary(raw_icount, true, false, None, "vcpu-resume")? {
-            return Ok(());
-        }
-        if self.preserve_network_output_stop(raw_icount, "vcpu-resume")? {
-            return Ok(());
-        }
-        let control_boundary_requested =
-            PluginShmemOrdering::control_boundary_is_requested(self.slot.get());
-        if self.idle_advance_is_pending() {
-            if control_boundary_requested {
-                return Ok(());
-            }
-            return Err(LiveVcpuTimeCallbackError::ResumeWhileIdleAdvancePending);
-        }
-        let current_icount = self.logical_icount_for_raw(raw_icount)?;
-        deliver_selectable_reply_on_vcpu_resume(vcpu_index, current_icount).map_err(|source| {
-            LiveVcpuTimeCallbackError::WhiteboxCallback {
-                message: source.to_string(),
-            }
-        })?;
-        if control_boundary_requested {
-            // The exact resume callback remains the sole authority for a
-            // host-selected guest-memory write. Settle that reply before the
-            // control boundary, but retain halt tracking and the published
-            // future idle deadline until the control callback acknowledges it.
-            return Ok(());
-        }
-        let was_halted = {
-            let mut halted_vcpus = self.try_halted_vcpus()?;
-            let was_halted = halted_vcpus
-                .is_halted(vcpu_index)
-                .map_err(|source| LiveVcpuTimeCallbackError::VcpuHaltTracking { source })?;
-            halted_vcpus
-                .mark_running(vcpu_index)
-                .map_err(|source| LiveVcpuTimeCallbackError::VcpuHaltTracking { source })?;
-            was_halted
-        };
-        if !was_halted {
-            return Ok(());
-        }
-        self.all_halted_idle_handled.store(false, Ordering::Release);
-        // A resume from the all-halted idle path precedes RR-owner selection,
-        // so cross-vCPU capture is no safer here than in the matching idle
-        // callback. Publish progress now and let the host's BQL-held terminal
-        // boundary own the fingerprint.
-        self.publish_current_icount_for_boundary(raw_icount, true, "vcpu-resume")?;
-        PluginShmemOrdering::mark_running_after_wake(self.slot.get());
-        Ok(())
     }
 
     #[cfg(test)]
