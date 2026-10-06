@@ -217,6 +217,8 @@ def retire(request: dict[str, Any]) -> None:
 def run() -> None:
     """Checks transitions after the fixture enrolls firmware and stages its inputs."""
     runtime.wait_until_succeeds(f"{SYSTEMCTL} is-active --quiet aos-image-boot-commit.service", timeout=600)
+    # Fault inputs must be created after enrollment seals the persistent volume.
+    runtime.succeed(f"{COREUTILS}/mkdir -p /var/lib/aos-test")
     original = generation(image_state(), image_state()["running"])
     assert_identity(original)
     publish_candidate()
