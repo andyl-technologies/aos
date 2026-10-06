@@ -2003,6 +2003,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   discovery explicitly. Registry completeness and both formatters pass on the
   registration-only source. This supplies no indexed-answer, persisted Memo,
   root-associated GC or full trunk qualification.
+  A separate conditional Memo-retention check requires one exact native witness
+  for independently live output Nodes, orphan claims, recipe-key nonedges and
+  live Chunk nonedges in full and witness traversal. Its parent composition draft
+  preserves current selected observations and introduces no recipe or content
+  roots. Registration and a formatted draft do not qualify DRV-19; compilation,
+  native execution and integration remain pending.
   T-DRV-2, ALG-32, task merges and T1 remain open.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
