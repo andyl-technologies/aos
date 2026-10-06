@@ -31,6 +31,10 @@
     then "database"
     else "native";
   fixture = import ./_native-hub-production.nix {inherit lib mkSystem pkgs;};
+  garage =
+    if externalDirect
+    then import ./_hub-garage-refusal-drain.nix {inherit pkgs;}
+    else pkgs.garage;
   workerDist =
     if externalDirect
     then pkgs.aos-hub-direct-guard-e2e.passthru.workerDist
@@ -140,6 +144,7 @@
     [s3_api]
     api_bind_addr = "127.0.0.1:3900"
     s3_region = "garage"
+    ${lib.optionalString externalDirect "fixture_no_such_upload_drain = true"}
   '';
   s3ProxyConfig = writeFixture "hub-hybrid-fleet-s3-nginx.conf" ''
     # The disposable S3 VM does not provision nginx's default account or state dirs.
@@ -585,7 +590,7 @@
         pkgs.workerd-source
         pkgs.python3
         pkgs.socat
-        pkgs.garage
+        garage
         pkgs.nginx
         pkgs.nix
         pkgs.openssh
@@ -836,7 +841,7 @@ in {
         then "database"
         else "native"
       }
-      GARAGE = "${pkgs.garage}/bin/garage -c /var/lib/hybrid-s3/garage.toml"
+      GARAGE = "${garage}/bin/garage -c /var/lib/hybrid-s3/garage.toml"
       FLEET_CUTOFF_MONOTONIC = time.monotonic() + ${toString (if externalDirect then 14400 else 2400)}
 
       for machine in (client, native, worker, s3${lib.optionalString separateDatabase ", database"}):
@@ -876,7 +881,7 @@ in {
             > /var/lib/hybrid-s3/rpc-secret
           chmod 0600 /var/lib/hybrid-s3/rpc-secret
           cp ${garageConfig}/value /var/lib/hybrid-s3/garage.toml
-          ${pkgs.garage}/bin/garage -c /var/lib/hybrid-s3/garage.toml server \
+          ${garage}/bin/garage -c /var/lib/hybrid-s3/garage.toml server \
             > /var/lib/hybrid-s3/garage.log 2>&1 < /dev/null &
           echo $! > /var/lib/hybrid-s3/garage.pid
           cp ${s3ProxyConfig}/value /var/lib/hybrid-s3/nginx.conf
