@@ -381,7 +381,18 @@ pub(in crate::packaged_qemu_executor::tests) fn with_native_repository_storage<T
         .host_operational_registry
         .grant_principal(OPERATOR)
         .expect("authenticated operator roster");
+    // This synchronous driver borrows the catalog already admitted above.
+    // Each owning model copy retains its child credit through its last user.
+    let decoding = crucible::owned_decode::DecodeBudget::for_store(
+        prepared
+            .checkpoints
+            .metadata_resource_authority()
+            .expect("same admitted checkpoint namespace authority"),
+    )
+    .expect("original catalog metadata account");
+    let _metadata_scope = decoding.enter();
     let result = run(&prepared, &config, repository);
+    decoding.check().expect("native driver metadata admission");
     registry_quota
         .verify_usage()
         .expect("persistent ledger and history remain within their shared kernel quota");

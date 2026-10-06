@@ -104,10 +104,12 @@ pub fn open() -> Result<NativeInputResources, Box<dyn Error>> {
         policy.maximum_inodes,
     )?;
     let decoding = DecodeBudget::for_store(Arc::clone(&authority))?;
-    Ok(NativeInputResources {
+    let resources = NativeInputResources {
         authority,
         decoding,
-    })
+    };
+    resources.authority.verify()?;
+    Ok(resources)
 }
 
 #[derive(Deserialize)]

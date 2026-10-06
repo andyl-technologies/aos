@@ -93,6 +93,7 @@
   gateway = pkgs.crucible.passthru.debugGateway;
   nativeQemu = pkgs.qemu-crucible;
   nativePlugin = pkgs.crucible-qemu-plugin;
+  rootImage = import ./_ram-native-root-image.nix {inherit pkgs;};
   selectors = [
     "finding_exact_vm::packaged_finding_bundle_fork_write_is_noncanonical"
     "finding_exact_vm::packaged_finding_bundle_replays_without_source_owner"
@@ -241,13 +242,14 @@
     pkgs.linux.drvPath
     nativeQemu.drvPath
     nativePlugin.drvPath
+    rootImage.drvPath
     flight.drvPath
     guest.drvPath
     quotaInstaller.drvPath
     gateway.drvPath
   ]);
   setup = import ./_ram-native-kernel-setup.nix {
-    inherit pkgs lib nativeQemu nativePlugin guest lanes buildGraph;
+    inherit pkgs lib nativeQemu nativePlugin guest rootImage lanes buildGraph;
     # Eight independent durable catalog quotas survive their test processes.
     # Catalogs and portable source-store quotas each retain 16 GiB. The active
     # world peak and registry quotas fit independently within this filesystem.
@@ -256,7 +258,7 @@
   rootfs = (import ../../lib/testing/firecracker.nix {inherit pkgs lib;}).mkFirecrackerRootfs {
     pname = "crucible-cli-native-finding-integration";
     extraWritableMiB = 51200;
-    rootfsDeps = [flight deployment sourcePolicy guest quotaInstaller gateway nativeQemu nativePlugin pkgs.crucible pkgs.linux pkgs.coreutils pkgs.grep pkgs.sed pkgs.e2fsprogs pkgs.util-linux];
+    rootfsDeps = [flight deployment sourcePolicy guest rootImage quotaInstaller gateway nativeQemu nativePlugin pkgs.crucible pkgs.linux pkgs.coreutils pkgs.grep pkgs.sed pkgs.e2fsprogs pkgs.util-linux];
     testScript = ''
       set -eu
       ${setup}

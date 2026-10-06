@@ -55,14 +55,16 @@
     '';
   };
   guest = productionFlight.passthru.idleGuest;
+  rootImage = import ./_ram-native-root-image.nix {inherit pkgs;};
   buildGraph = builtins.hashString "sha256" (builtins.concatStringsSep "\n" [
     pkgs.linux.drvPath
     nativeQemu.drvPath
     nativePlugin.drvPath
     flight.drvPath
+    rootImage.drvPath
   ]);
   kernelSetupScript = import ./_ram-native-kernel-setup.nix {
-    inherit pkgs lib nativeQemu nativePlugin guest lanes buildGraph;
+    inherit pkgs lib nativeQemu nativePlugin guest rootImage lanes buildGraph;
     inherit storageImageBytes;
   };
   invocation =
@@ -76,6 +78,7 @@
       [
         flight
         guest
+        rootImage
         pkgs.linux
         nativeQemu
         nativePlugin

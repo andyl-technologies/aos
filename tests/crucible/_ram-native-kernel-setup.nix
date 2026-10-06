@@ -5,6 +5,7 @@
   nativeQemu,
   nativePlugin,
   guest,
+  rootImage ? import ./_ram-native-root-image.nix {inherit pkgs;},
   lanes,
   buildGraph,
   storageImageBytes ? 8589934592,
@@ -39,9 +40,6 @@
     echo '+cpu +memory +pids' > "/sys/fs/cgroup/paging/$lane/cgroup.subtree_control"
     mkdir -m 700 "/var/paging-storage/$lane"
   done
-  ${pkgs.coreutils}/bin/truncate -s 8M /var/paging-root.ext4
-  ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -F /var/paging-root.ext4
-  chmod 644 /var/paging-root.ext4
 
   mkdir -m 700 /var/paging-history
   export CRUCIBLE_PAGING_HISTORY=/var/paging-history
@@ -52,7 +50,7 @@
     export CRUCIBLE_PAGING_KERNEL="$kernel"
   done
   export CRUCIBLE_PAGING_INITRD=${guest}/initrd.img
-  export CRUCIBLE_PAGING_ROOT=/var/paging-root.ext4
+  export CRUCIBLE_PAGING_ROOT=${rootImage}/root.ext4
   export CRUCIBLE_PAGING_CGROUP=/sys/fs/cgroup/paging
   export CRUCIBLE_PAGING_STORAGE=/var/paging-storage
 ''

@@ -8,6 +8,7 @@
   inherit (shared.passthru) flight deployment sourcePolicy;
   nativeQemu = pkgs.qemu-crucible;
   nativePlugin = pkgs.crucible-qemu-plugin;
+  rootImage = import ./_ram-native-root-image.nix {inherit pkgs;};
   guest = import ./phase4-packaged-campaign-choice-guest.nix {inherit pkgs;};
   quotaInstaller = import ./_catalog-quota-installer.nix {inherit pkgs lib;};
   selectors = [
@@ -45,6 +46,7 @@
     pkgs.linux.drvPath
     nativeQemu.drvPath
     nativePlugin.drvPath
+    rootImage.drvPath
     flight.drvPath
     guest.drvPath
     quotaInstaller.drvPath
@@ -52,7 +54,7 @@
     (toString sourcePolicy)
   ]);
   setup = import ./_ram-native-kernel-setup.nix {
-    inherit pkgs lib nativeQemu nativePlugin guest lanes buildGraph;
+    inherit pkgs lib nativeQemu nativePlugin guest rootImage lanes buildGraph;
     # Eleven independent source/catalog namespaces and the active complete world
     # peak fit together; persistent quotas survive each process's final close.
     storageImageBytes = 51539607552;
@@ -104,7 +106,7 @@
   rootfs = (import ../../lib/testing/firecracker.nix {inherit pkgs lib;}).mkFirecrackerRootfs {
     pname = "crucible-cli-native-offline-integration";
     extraWritableMiB = 51200;
-    rootfsDeps = [flight deployment sourcePolicy guest quotaInstaller nativeQemu nativePlugin pkgs.crucible pkgs.linux pkgs.coreutils pkgs.grep pkgs.sed pkgs.e2fsprogs pkgs.util-linux];
+    rootfsDeps = [flight deployment sourcePolicy guest rootImage quotaInstaller nativeQemu nativePlugin pkgs.crucible pkgs.linux pkgs.coreutils pkgs.grep pkgs.sed pkgs.e2fsprogs pkgs.util-linux];
     testScript = ''
       set -eu
       ${setup}

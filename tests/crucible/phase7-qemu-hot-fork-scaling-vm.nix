@@ -73,8 +73,9 @@
       }
     ];
   };
+  rootImage = import ./_ram-native-root-image.nix {inherit pkgs;};
   pagingKernelSetupScript = import ./_ram-native-kernel-setup.nix {
-    inherit pkgs lib;
+    inherit pkgs lib rootImage;
     nativeQemu = pkgs.qemu-crucible;
     nativePlugin = pkgs.crucible-qemu-plugin;
     guest = idleGuest;
@@ -98,6 +99,7 @@
       pkgs.qemu-crucible.drvPath
       pkgs.crucible-qemu-plugin.drvPath
       flight.drvPath
+      rootImage.drvPath
     ]);
   };
 in
@@ -112,6 +114,7 @@ in
     hostCpuPin = true;
     hostCpuPinIndex = 0;
     rootfsDeps = [
+      rootImage
       flight
       guest
       idleGuest

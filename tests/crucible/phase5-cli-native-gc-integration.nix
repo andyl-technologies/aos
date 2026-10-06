@@ -9,6 +9,7 @@
   artifactContract = artifacts.passthru.cargoArtifactContract;
   nativeQemu = pkgs.qemu-crucible;
   nativePlugin = pkgs.crucible-qemu-plugin;
+  rootImage = import ./_ram-native-root-image.nix {inherit pkgs;};
   finding = import ./phase5-cli-native-finding-integration.nix {inherit pkgs lib;};
   deployment = finding.passthru.deployment;
   sourceOperationClasses = [
@@ -127,6 +128,7 @@
     pkgs.linux.drvPath
     nativeQemu.drvPath
     nativePlugin.drvPath
+    rootImage.drvPath
     flight.drvPath
     guest.drvPath
     quotaInstaller.drvPath
@@ -135,7 +137,7 @@
     (toString sourcePolicy)
   ]);
   setup = import ./_ram-native-kernel-setup.nix {
-    inherit pkgs lib nativeQemu nativePlugin guest lanes buildGraph;
+    inherit pkgs lib nativeQemu nativePlugin guest rootImage lanes buildGraph;
     # Each execution retains independent source and catalog namespaces. The
     # complete image fits the authored writable root, including their quotas.
     storageImageBytes = 137438953472;
@@ -189,7 +191,7 @@
   rootfs = (import ../../lib/testing/firecracker.nix {inherit pkgs lib;}).mkFirecrackerRootfs {
     pname = "crucible-cli-native-gc-integration";
     extraWritableMiB = 135168;
-    rootfsDeps = [flight deployment sourcePolicy guest quotaInstaller gateway nativeQemu nativePlugin pkgs.crucible pkgs.linux pkgs.coreutils pkgs.grep pkgs.sed pkgs.e2fsprogs pkgs.util-linux];
+    rootfsDeps = [flight deployment sourcePolicy guest rootImage quotaInstaller gateway nativeQemu nativePlugin pkgs.crucible pkgs.linux pkgs.coreutils pkgs.grep pkgs.sed pkgs.e2fsprogs pkgs.util-linux];
     testScript = ''
       set -eu
       ${setup}

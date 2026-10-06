@@ -71,6 +71,85 @@ fn preparation_scenario() -> ScenarioDefForm {
 }
 
 #[test]
+fn cold_capture_installs_original_metadata_on_an_unscoped_thread() {
+    let directory = tempfile::TempDir::new().expect("directory");
+    let config = config(&directory, 1);
+    let repository = repository_with_campaigns(&[("packaged", b"shared", "qemu-test")]);
+    let basis = authenticate_packaged_campaigns(&repository, &config.campaigns, false)
+        .expect("campaign admission");
+    let prepared = prepare_runtime(
+        &repository,
+        Arc::new(DirectoryBlobBackend::new(
+            "capture-metadata-checkpoints",
+            directory.path().join("checkpoints"),
+        )),
+        &basis,
+        &config,
+    )
+    .expect("actual preparation actor");
+    let scenario = preparation_scenario();
+    let before = prepared
+        .actor
+        .with_supervisor(|actor| {
+            actor
+                .host_resource_availability()
+                .ok_or(crucible_api::host_operational::HostOperationalError::Unavailable)
+        })
+        .expect("original complete capacity");
+
+    let (retained, prepared) = thread::scope(|threads| {
+        let config = &config;
+        threads
+            .spawn(move || {
+                assert!(crucible::owned_decode::current_budget().is_none());
+                let retained = run_capture(&prepared, config, &scenario, |context| {
+                    assert!(matches!(
+                        context.host_outer_cap_owner(),
+                        Some(crucible_api::host_operational::HostOuterCapOwner::Service(
+                            _
+                        ))
+                    ));
+                    assert!(crucible::owned_decode::current_budget().is_some());
+                    Ok(config.lifecycle.try_clone_admitted()?)
+                })
+                .expect("capture copies under the original admitted namespace");
+                assert!(crucible::owned_decode::current_budget().is_none());
+                (retained, prepared)
+            })
+            .join()
+            .expect("capture thread")
+    });
+
+    assert_eq!(
+        prepared
+            .actor
+            .with_supervisor(|actor| {
+                actor
+                    .host_resource_availability()
+                    .ok_or(crucible_api::host_operational::HostOperationalError::Unavailable)
+            })
+            .expect("original complete capacity after Service cleanup"),
+        before
+    );
+    // The active copy owns its original child receipt after capture returns.
+    // Reentering it on another unscoped thread requires no new allowance.
+    thread::spawn(move || {
+        assert!(crucible::owned_decode::current_budget().is_none());
+        let scope = retained
+            .enter_input_custody()
+            .expect("returned model retains its original metadata owner");
+        let copy = retained
+            .try_clone_admitted()
+            .expect("retained child credit");
+        drop(copy);
+        drop(scope);
+        assert!(crucible::owned_decode::current_budget().is_none());
+    })
+    .join()
+    .expect("retained model thread");
+}
+
+#[test]
 fn cold_preparation_uses_real_service_and_releases_only_after_capture_and_join() {
     let directory = tempfile::TempDir::new().expect("directory");
     let config = config(&directory, 1);

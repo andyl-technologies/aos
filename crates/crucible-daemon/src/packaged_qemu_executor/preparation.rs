@@ -385,6 +385,16 @@ pub(super) fn run_capture<T>(
         ProductionHostRamLaunchShape, partition_host_ram_launch_resources,
     };
 
+    // Cold capture has no queued execution input to install decoder custody.
+    // Its host input/configuration copies belong to the original CatalogService
+    // metadata account, as in ordinary campaign and interactive admission.
+    // Active copies retain their child receipts after this lexical scope;
+    // native node and watcher resources remain in the separate Service below.
+    let decoding = crucible::owned_decode::DecodeBudget::for_store(
+        preparation.checkpoints.metadata_resource_authority()?,
+    )?;
+    let _metadata_scope = decoding.enter();
+
     let ceiling = config
         .assignment_resources()
         .ok_or(HostOperationalError::Unavailable)?;
@@ -483,7 +493,11 @@ pub(super) fn run_capture<T>(
     );
     let result = context
         .map_err(PackagedQemuExecutorError::from)
-        .and_then(|context| capture(&context));
+        .and_then(|context| {
+            let result = capture(&context)?;
+            decoding.check()?;
+            Ok(result)
+        });
     let nodes_cleaned = preparation
         .actor
         .with_supervisor(|actor| actor.host_ram_service_nodes_cleaned(owner));
