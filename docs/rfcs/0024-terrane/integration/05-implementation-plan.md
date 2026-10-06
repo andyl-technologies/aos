@@ -369,6 +369,23 @@ pair-age boundary, independently newer index, enforced commit bound and actual
 exclusion-before-Trash acknowledgment. Its Nix execution remains pending.
 Restore, physical deletion, task merges and the complete T1 floor remain open.
 
+The same frozen native composition subsequently passes all 35 selected cases in
+372.381 seconds; 468 declared tests remain outside the filter. Strict private
+rustdoc and the actual root, mark and singleton Nix gates pass all five,
+fourteen and nineteen exact cases. All 572 inspected source images match each
+actual derivation. Separate builds and complete runtimes pass the default
+profile's 156 cases and no-default profile's 78 cases without skips. The
+`std,send` library builds, but its test compilation fails because the synchronous
+Rc fixture is selected by absence of Tokio alone. The original default strict
+Clippy check also remains red on 63 library and 17 test diagnostics. No complete
+feature-matrix or T1 claim follows from the native successes.
+The focused `checks.terrane.integration.native-preownership-restore` check
+requires ten exact actual restore witnesses and fails on missing cases. It is
+a supplemental producer/executor check; `gc-two-phase-delete` remains pending
+until actual deletion-window, ownership, physical recovery and cancellation
+behavior also qualifies. Restore implementation and test-profile correction
+continue in separate isolated worktrees.
+
 The preceding completed full qualification records candidate
 `15540ef204ec`, which combines reviewed source discovery, immutable lookup,
 repeatable I/P/G maintenance, separate verifier/preparation work, common Memo
