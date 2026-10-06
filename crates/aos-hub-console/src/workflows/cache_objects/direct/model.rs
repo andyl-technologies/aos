@@ -603,6 +603,11 @@ impl InitialUploadPolicy {
         digest == self.bearer_digest && origin == self.origin && now < self.valid_until
     }
 
+    /// Returns the authenticated direct actor before a publication owner exists.
+    pub(crate) fn actor(&self) -> Option<(&str, &str)> {
+        self.actor.as_ref().map(|(deployment, principal)| (deployment.as_str(), principal.as_str()))
+    }
+
     /// Reports an explicit legacy or successful older-server policy observation.
     pub(crate) fn is_legacy(&self) -> bool {
         self.actor.is_none()
@@ -650,6 +655,30 @@ impl InitialUploadPolicy {
             .validate_at_for(target, now)
             .and_then(|()| capabilities.validate_actor_for(deployment, principal))
             .map_err(|_| "Direct upload discovery changed the original actor or owner".into())
+    }
+}
+
+/// Checks a measured file against its original server-admitted declaration.
+///
+/// # Errors
+/// Refuses changed bytes or length before a provider session can be admitted.
+pub(crate) fn validate_declared_source(declared: Option<&(String, u64)>, sha256: &str, size: u64) -> Result<(), String> {
+    if declared.is_some_and(|(digest, length)| digest != sha256 || *length != size) {
+        return Err("The selected file differs from the admitted publication source".into());
+    }
+    Ok(())
+}
+
+/// Resolves the authenticated control owner of one exact browser upload target.
+///
+/// # Errors
+/// Refuses targets without a browser-upload owner.
+pub(crate) fn capability_target(target: &DirectUploadTarget) -> Result<DirectCapabilitiesTarget, String> {
+    target.validate().map_err(|_| "The original upload target is invalid".to_string())?;
+    match target {
+        DirectUploadTarget::CacheObject { cache_id, .. } => Ok(DirectCapabilitiesTarget::Cache { cache_id: cache_id.clone() }),
+        DirectUploadTarget::PublicationObject { publication_id, .. } => Ok(DirectCapabilitiesTarget::Publication { publication_id: publication_id.clone() }),
+        _ => Err("This target does not support browser file uploads".into()),
     }
 }
 

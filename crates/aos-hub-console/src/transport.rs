@@ -61,7 +61,7 @@ impl ApiClient {
     /// # Errors
     /// Rejects unknown/unready policy, identity/discovery mismatch or transport
     /// refusal. Only one actual WhoAmI401 permits legitimate session refresh.
-    pub(crate) async fn discover_cache_upload(
+    pub(crate) async fn discover_upload(
         &self,
         target: &aos_proto_types::direct_upload::DirectCapabilitiesTarget,
     ) -> Result<Option<aos_proto_types::direct_upload::DirectUploadCapabilities>, TransportError>
@@ -117,6 +117,89 @@ impl ApiClient {
             )
             .map_err(|_| TransportError::SessionExpired)?;
         Ok(Some(capabilities))
+    }
+
+    /// Resolves the authenticated upload actor before a publication ID exists.
+    ///
+    /// # Errors
+    /// Refuses unknown policy or failed authentication without selecting legacy.
+    pub(crate) async fn publication_actor(&self) -> Result<Option<(String, String)>, TransportError> {
+        let mut bearer = self.session_guard().access_token.clone();
+        let mut policy = self.upload_policy_for(&bearer).await?;
+        if policy.is_none() {
+            let session = exchange_browser_session(&self.csrf, &current_browser_route()).await?;
+            bearer = session.access_token.clone();
+            *self.session_guard() = session;
+            policy = self.upload_policy_for(&bearer).await?;
+        }
+        let policy = policy.ok_or(TransportError::SessionExpired)?;
+        Ok(policy.actor().map(|(deployment, principal)| (deployment.into(), principal.into())))
+    }
+
+    /// Sends bounded metadata admission under the original authenticated actor.
+    ///
+    /// Publication capabilities cannot exist before Seal. Each request instead
+    /// re-proves WhoAmI policy with the exact bearer dispatched to Native.
+    ///
+    /// # Errors
+    /// Refuses another actor/mode/path, unknown replies or excessive metadata.
+    pub(crate) async fn call_publication<Q: Serialize, R: DeserializeOwned>(
+        &self,
+        path: &str,
+        request: &Q,
+        actor: &(String, String),
+    ) -> Result<R, TransportError> {
+        use aos_proto_types::*;
+        use aos_proto_types::direct_upload::encode_direct_control;
+        let large_reply = matches!(path,
+            PUBLISH_SERVICE_SEAL_REGISTRY_PUBLICATION_MANIFEST_PATH
+            | PUBLISH_SERVICE_GET_REGISTRY_PUBLICATION_PATH
+        );
+        if !matches!(path,
+            REGISTRY_SERVICE_GET_REGISTRY_PATH
+            | PUBLISH_SERVICE_LIST_REGISTRY_PUBLICATIONS_PATH
+            | PUBLISH_SERVICE_BEGIN_REGISTRY_PUBLICATION_MANIFEST_PATH
+            | PUBLISH_SERVICE_APPEND_REGISTRY_PUBLICATION_MANIFEST_PATH
+            | PUBLISH_SERVICE_SEAL_REGISTRY_PUBLICATION_MANIFEST_PATH
+            | PUBLISH_SERVICE_GET_REGISTRY_PUBLICATION_PATH
+        ) {
+            return Err(TransportError::InvalidPath);
+        }
+        let body = encode_direct_control(request).map_err(|_| {
+            TransportError::DirectUpload("The publication control exceeds its byte limit")
+        })?;
+        let limit = if large_reply { 64 * 1024 * 1024 } else {
+            aos_proto_types::direct_upload::MAX_DIRECT_CONTROL_BYTES
+        };
+        for attempt in 0..2 {
+            let bearer = self.session_guard().access_token.clone();
+            if let Some(policy) = self.upload_policy_for(&bearer).await? {
+                if policy.actor() != Some((actor.0.as_str(), actor.1.as_str())) {
+                    return Err(TransportError::DirectUpload("The publication actor or policy changed"));
+                }
+                let send = policy.dispatch_with(
+                    &bearer, &browser_origin()?,
+                    direct_browser_now().map_err(|_| TransportError::SessionExpired)?,
+                    false, |proven| send_bounded_connect(path, proven, &body, limit),
+                ).map_err(|_| TransportError::SessionExpired)?;
+                let (status, reply) = send.await?;
+                if status == 200 {
+                    return serde_json::from_slice(&reply).map_err(|_| {
+                        TransportError::DirectUpload("The publication reply is invalid")
+                    });
+                }
+                if status != 401 {
+                    return Err(TransportError::DirectUpload("Publication admission was refused; original progress was preserved"));
+                }
+                *self.upload_policy.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+            }
+            if attempt == 1 {
+                return Err(TransportError::SessionExpired);
+            }
+            let session = exchange_browser_session(&self.csrf, &current_browser_route()).await?;
+            *self.session_guard() = session;
+        }
+        Err(TransportError::SessionExpired)
     }
 
     /// Marks only this clone's old upload path for exact-bearer policy checks.
@@ -447,7 +530,9 @@ impl ApiClient {
                 "The provider grant changed its origin or byte length",
             ));
         }
+        let abort = ProviderFetchAbort::new()?;
         let init = web_sys::RequestInit::new();
+        init.set_signal(Some(&abort.0.signal()));
         init.set_method("PUT");
         init.set_body(body.as_ref());
         init.set_credentials(web_sys::RequestCredentials::Omit);
@@ -670,13 +755,20 @@ impl ApiClient {
         file: &web_sys::File,
     ) -> Result<(), TransportError> {
         validate_publication_upload_url(upload_url)?;
-        let bearer = self.session_guard().access_token.clone();
-        let mut status = send_publication_upload(upload_url, &bearer, file).await?;
-        if status == 401 {
-            let refreshed = exchange_browser_session(&self.csrf, &current_browser_route()).await?;
-            let bearer = refreshed.access_token.clone();
-            *self.session_guard() = refreshed;
-            status = send_publication_upload(upload_url, &bearer, file).await?;
+        let client = self.for_legacy_upload();
+        let (bearer, policy, refreshed) = client.legacy_upload_snapshot(true).await?;
+        let send = client.dispatch_legacy_with(policy.as_ref(), &bearer, |proven| {
+            send_publication_upload(upload_url, proven, file)
+        })?;
+        let mut status = send.await?;
+        if status == 401 && !refreshed {
+            let session = exchange_browser_session(&self.csrf, &current_browser_route()).await?;
+            *client.session_guard() = session;
+            let (bearer, policy, _) = client.legacy_upload_snapshot(false).await?;
+            let send = client.dispatch_legacy_with(policy.as_ref(), &bearer, |proven| {
+                send_publication_upload(upload_url, proven, file)
+            })?;
+            status = send.await?;
         }
         if status == 401 {
             redirect_to_login()?;
@@ -832,6 +924,15 @@ async fn send_direct_connect(
     bearer: &str,
     body: &[u8],
 ) -> Result<(u16, Vec<u8>), TransportError> {
+    send_bounded_connect(path, bearer, body, aos_proto_types::direct_upload::MAX_DIRECT_CONTROL_BYTES).await
+}
+
+async fn send_bounded_connect(
+    path: &str,
+    bearer: &str,
+    body: &[u8],
+    maximum_response_bytes: usize,
+) -> Result<(u16, Vec<u8>), TransportError> {
     use wasm_bindgen::JsCast as _;
     use wasm_bindgen_futures::JsFuture;
     let init = web_sys::RequestInit::new();
@@ -912,7 +1013,7 @@ async fn send_direct_connect(
         if output
             .len()
             .checked_add(chunk.length() as usize)
-            .is_none_or(|size| size > aos_proto_types::direct_upload::MAX_DIRECT_CONTROL_BYTES)
+            .is_none_or(|size| size > maximum_response_bytes)
         {
             let _ = reader.reader.cancel();
             return Err(TransportError::DirectUpload(
@@ -923,6 +1024,24 @@ async fn send_direct_connect(
     }
     reader.complete = true;
     Ok((status, output))
+}
+
+// Cancel the browser-owned Fetch before its enclosing transfer releases the
+// aggregate permit. This requests local cancellation, not remote settlement.
+struct ProviderFetchAbort(web_sys::AbortController);
+
+impl ProviderFetchAbort {
+    fn new() -> Result<Self, TransportError> {
+        web_sys::AbortController::new().map(Self).map_err(|_| {
+            TransportError::DirectUpload("The browser could not retain upload cancellation")
+        })
+    }
+}
+
+impl Drop for ProviderFetchAbort {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 struct DirectResponseReader {

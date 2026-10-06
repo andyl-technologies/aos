@@ -6,7 +6,7 @@ use serde::Serialize;
 use web_sys::File;
 
 use crate::direct_upload_model::{
-    operation_id, validate_object_size, GrantLifetime, PartCheckpoint, PartDispatchContext,
+    capability_target, operation_id, validate_declared_source, validate_object_size, GrantLifetime, PartCheckpoint, PartDispatchContext,
     PartReceipt, ResumeHead, SourcePart, BROWSER_PART_BYTES,
 };
 use crate::transport::ApiClient;
@@ -31,11 +31,31 @@ pub(crate) async fn upload(
     };
     let target = DirectUploadTarget::CacheObject {
         cache_id: cache_id.clone(),
-        path,
+        path: path.clone(),
     };
-    target
-        .validate()
-        .map_err(|_| "The cache object path is invalid".to_string())?;
+    let phase = if path.ends_with(".narinfo") {
+        DirectDependencyPhase::LeafMetadata
+    } else {
+        DirectDependencyPhase::Content
+    };
+    upload_target(client, capabilities, target, phase, file, None).await
+}
+
+/// Transfers one exact admitted logical object using the shared sparse engine.
+///
+/// # Errors
+/// Refuses changed owner/source/profile, unavailable private custody or unknown effects.
+pub(crate) async fn upload_target(
+    client: ApiClient,
+    capabilities: DirectUploadCapabilities,
+    target: DirectUploadTarget,
+    dependency_phase: DirectDependencyPhase,
+    file: File,
+    declared: Option<(String, u64)>,
+) -> Result<String, String> {
+    if capability_target(&target)? != capabilities.target {
+        return Err("The Hub changed the selected upload owner".into());
+    }
     let client = client.with_direct_upload_capabilities(capabilities.clone());
     let scope = operation_id(
         "scope",
@@ -47,6 +67,7 @@ pub(crate) async fn upload(
     validate_object_size(&capabilities, size)?;
     let checkpoint = Checkpoint::open().await?;
     let (sha256, parts) = source::inspect(&file).await?;
+    validate_declared_source(declared.as_ref(), &sha256, size)?;
     let fresh = discovery(&client, capabilities.target.clone()).await?;
     fresh
         .validate_actor_for(&capabilities.deployment_id, &capabilities.principal_id)
@@ -70,6 +91,7 @@ pub(crate) async fn upload(
                 || head.intent.target != target
                 || head.intent.expected_sha256 != sha256
                 || head.intent.byte_size.get() != size
+                || head.intent.dependency_phase != dependency_phase
                 || head.intent.part_size.get() != BROWSER_PART_BYTES
                 || !valid_direct_digest(&head.run_nonce)
             {
@@ -79,12 +101,6 @@ pub(crate) async fn upload(
         }
         None => {
             let run_nonce = random_nonce()?;
-            let dependency_phase = if matches!(&target, DirectUploadTarget::CacheObject { path, .. } if path.ends_with(".narinfo"))
-            {
-                DirectDependencyPhase::LeafMetadata
-            } else {
-                DirectDependencyPhase::Content
-            };
             let intent = DirectUploadIntent {
                 version: 1,
                 client_operation_id: operation_id("object", &run_nonce, &target)?,
@@ -558,6 +574,10 @@ async fn transfer_wave(
     stream::iter(
         work.into_iter()
             .map(|(key, mut record, grant, profile, retained)| async move {
+                let _permit = crate::direct_upload_pool::acquire().await;
+                capabilities.validate_at_for(&capabilities.target, browser_now()?)
+                    .and_then(|()| capabilities.validate_actor_for(&head.deployment_id, &head.principal_id))
+                    .map_err(|_| PAUSED.to_string())?;
                 let body = source::verified_part(file, &record.original).await?;
                 let first = client
                     .put_direct_part(&grant, &profile, &body, &retained)
@@ -663,12 +683,7 @@ async fn control<T: Serialize>(
     request: &T,
     operation: &str,
 ) -> Result<DirectUploadResponse, String> {
-    let DirectUploadTarget::CacheObject { cache_id, .. } = &head.intent.target else {
-        return Err("The original cache owner is invalid".into());
-    };
-    let target = DirectCapabilitiesTarget::Cache {
-        cache_id: cache_id.clone(),
-    };
+    let target = capability_target(&head.intent.target)?;
     let reply: DirectUploadResponse = client
         .call_direct_for_actor(
             path,

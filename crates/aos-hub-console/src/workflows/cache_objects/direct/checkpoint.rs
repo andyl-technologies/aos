@@ -111,7 +111,7 @@ impl Drop for WriteGuard {
 }
 
 /// Owns the private browser resume database connection.
-pub(super) struct Checkpoint {
+pub(crate) struct Checkpoint {
     database: IdbDatabase,
 }
 
@@ -126,7 +126,7 @@ impl Checkpoint {
     ///
     /// # Errors
     /// Returns an error for blocked/unavailable storage or an incompatible store.
-    pub(super) async fn open() -> Result<Self, String> {
+    pub(crate) async fn open() -> Result<Self, String> {
         let factory = web_sys::window()
             .ok_or_else(|| FAILURE.to_string())?
             .indexed_db()
@@ -176,7 +176,7 @@ impl Checkpoint {
     ///
     /// # Errors
     /// Returns an error for failed reads or malformed retained records.
-    pub(super) async fn get<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>, String> {
+    pub(crate) async fn get<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>, String> {
         let transaction = self
             .database
             .transaction_with_str(STORE)
@@ -196,7 +196,7 @@ impl Checkpoint {
     ///
     /// # Errors
     /// Returns an error for unavailable storage, changed identity or failed commit.
-    pub(super) async fn put<T: CheckpointRecord + 'static>(
+    pub(crate) async fn put<T: CheckpointRecord + 'static>(
         &self,
         key: &str,
         value: &T,

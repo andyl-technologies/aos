@@ -21,6 +21,14 @@ mod staging;
 #[path = "workflows/cache_objects/direct/model.rs"]
 mod direct_upload_model;
 
+#[cfg(any(target_arch = "wasm32", test))]
+#[path = "workflows/registry_publication/direct_model.rs"]
+mod publication_upload_model;
+
+#[cfg(any(target_arch = "wasm32", test))]
+#[path = "workflows/cache_objects/direct/pool.rs"]
+mod direct_upload_pool;
+
 #[cfg(target_arch = "wasm32")]
 pub mod app;
 #[cfg(target_arch = "wasm32")]

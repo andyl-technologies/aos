@@ -85,7 +85,7 @@ async fn upload_cache_file(
     let target = aos_proto_types::direct_upload::DirectCapabilitiesTarget::Cache {
         cache_id: cache_id.clone(),
     };
-    let capabilities = client.discover_cache_upload(&target).await.map_err(|_| {
+    let capabilities = client.discover_upload(&target).await.map_err(|_| {
         "Authenticated upload discovery failed; no file bytes were sent".to_string()
     })?;
     if let Some(capabilities) = capabilities {
