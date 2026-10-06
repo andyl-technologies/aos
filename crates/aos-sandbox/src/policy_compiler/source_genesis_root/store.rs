@@ -124,7 +124,7 @@ pub struct RootFirstSourceSuccessorOpeningV2 {
     native: Option<Result<(Journal, crate::journal::RecoveryReport), crate::journal::JournalError>>,
     pins: Option<Result<RootGenesisRolePinsV1, SourceGenesisErrorV1>>,
     named: Option<Result<ProtectedJournalNamesV1, crate::journal::JournalError>>,
-    nonce: Option<Result<[u8; 16], SourceGenesisErrorV1>>,
+    nonce: Option<std::io::Result<[u8; 16]>>,
     checks: Vec<Result<(), SourceGenesisErrorV1>>,
 }
 
