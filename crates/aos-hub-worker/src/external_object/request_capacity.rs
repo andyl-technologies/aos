@@ -30,6 +30,7 @@ struct Scope<'a> {
     expires_at: i64,
     uncertainty: i64,
     fresh: &'a dyn Fn() -> Result<()>,
+    read_window: Option<super::read_ownership::ReadWindow>,
     controller: worker::web_sys::AbortController,
     _registration: super::copy::lifetime::Registration,
 }
@@ -117,6 +118,7 @@ impl<'a> Scope<'a> {
             expires_at,
             uncertainty,
             fresh,
+            read_window: None,
             controller,
             _registration: registration,
         })
@@ -124,6 +126,13 @@ impl<'a> Scope<'a> {
 
     fn check(&self) -> Result<()> {
         self.lifetime.check()?;
+        if let Some(window) = self.read_window {
+            return window.check(
+                aos_hub_core::clock::now_unix_secs(),
+                self.signal.aborted(),
+                self.fresh,
+            );
+        }
         ensure!(!self.signal.aborted(), "configured request canceled");
         (self.fresh)()?;
         self.remaining()?;
@@ -131,6 +140,9 @@ impl<'a> Scope<'a> {
     }
 
     fn remaining(&self) -> Result<u64> {
+        if let Some(window) = self.read_window {
+            return window.remaining(aos_hub_core::clock::now_unix_secs());
+        }
         ensure!(
             (0..=29).contains(&self.uncertainty),
             "configured request clock unqualified"

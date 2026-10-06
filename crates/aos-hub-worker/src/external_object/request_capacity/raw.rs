@@ -75,3 +75,77 @@ where
         })
         .await
 }
+
+/// Owns one admitted immutable read independently of its dispatch HMAC window.
+///
+/// The lease-derived window conservatively bounds body resources. Every actual
+/// Fetch still repeats dispatch admission; EOF does not gain mutation authority.
+///
+/// # Errors
+/// Refuses invalid policy/window, dispatch admission, current read ownership,
+/// cancellation, incompatible capacity or the existing response/reader errors.
+pub(crate) async fn with_immutable_response<T, F>(
+    env: &Env,
+    request: Request,
+    signal: Option<worker::web_sys::AbortSignal>,
+    class: Class,
+    held: Option<&Permit>,
+    dispatch_fresh: &dyn Fn() -> Result<()>,
+    body_current: &dyn Fn() -> Result<()>,
+    read_window: &dyn Fn() -> Result<super::super::read_ownership::ReadWindow>,
+    before_dispatch: &dyn Fn(),
+    handler: impl FnOnce(Response) -> F,
+) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+{
+    let Some(policy) = policy::installed(env)? else {
+        // Preserve the ordinary legacy dispatch/body behavior without selecting
+        // a configured resource window or adding response consumption.
+        dispatch_fresh()?;
+        before_dispatch();
+        provider_capacity::record_dispatch();
+        return handler(Fetch::Request(request).send().await?).await;
+    };
+    dispatch_fresh()?;
+    let window = read_window()?;
+    let mut scope = Scope::new(
+        window.expires_at,
+        window.uncertainty,
+        signal,
+        dispatch_fresh,
+    )?;
+    scope.read_window = Some(window);
+    if let Some(permit) = held {
+        policy::request::validate_held(&policy, permit, dispatch_fresh)?;
+    } else {
+        let permit = scope
+            .run(policy::request::acquire(&policy, class, dispatch_fresh))
+            .await?;
+        scope.lifetime.retain_capacity(permit)?;
+    }
+
+    // Capacity waiting remains dispatch admission. Only the already admitted
+    // response body uses current immutable ownership, never the short HMAC TTL.
+    scope.fresh = body_current;
+    scope
+        .run(async {
+            scope.check()?;
+            dispatch_fresh()?;
+            before_dispatch();
+            provider_capacity::record_dispatch();
+            let response = Fetch::Request(request)
+                .send_with_signal(&worker::AbortSignal::from(scope.controller.signal()))
+                .await?;
+            let _unhanded = match response.body() {
+                ResponseBody::Stream(stream) => Some(
+                    crate::external_object::oci::byte_stream::UnhandedStream::new(
+                        stream.clone().into(),
+                    ),
+                ),
+                _ => None,
+            };
+            handler(response).await
+        })
+        .await
+}

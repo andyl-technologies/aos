@@ -10,6 +10,9 @@
 #[cfg(target_arch = "wasm32")]
 mod request_capacity;
 
+#[cfg(any(test, target_arch = "wasm32"))]
+mod read_ownership;
+
 #[cfg(target_arch = "wasm32")]
 pub(crate) use request_capacity::raw::with_response as configured_provider_response;
 
