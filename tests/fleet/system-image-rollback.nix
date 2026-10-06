@@ -319,6 +319,7 @@ in {
       UTIL_LINUX = "${pkgs.util-linux}/bin"
       GIT_BIN = "${pkgs.git}/bin"
       CANDIDATE_TOP = "${candidateTop}"
+      CANDIDATE_SOURCE_DRV = "${candidateTop.drvPath}"
       CANDIDATE_IMAGE = "${candidateImage}"
       CANDIDATE_IMAGE_DISK = "${candidateImageDisk}"
       CANDIDATE_IMAGE_INFO = "${candidateImageInfo}"

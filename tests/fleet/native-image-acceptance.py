@@ -117,9 +117,10 @@ def publish_candidate() -> None:
         registry="$HOME/.local/share/apm/registries/native-image"
         mkdir -p "$HOME/.config/apm/registries.d"
         printf '[registry]\\nname = "native-image"\\nurl = "file://%s"\\n\\n[registry.signing_keys]\\nrelease = "%s"\\n' "$registry" "$key" > "$HOME/.config/apm/registries.d/native-image.toml"
+        # Publish the same source derivation that the fixture transfers.
         {APR} --json publish {shlex.quote(CANDIDATE_TOP)} --name aos \\
           --version 9999.0.0-image-rollback --description 'Native physical image acceptance' \\
-          --license Apache-2.0 --maintainer fixture --sysroot \\
+          --license Apache-2.0 --maintainer fixture --sysroot --source-drv {shlex.quote(CANDIDATE_SOURCE_DRV)} \\
           --image-payload {shlex.quote(CANDIDATE_IMAGE)} --image-disk {shlex.quote(CANDIDATE_IMAGE_DISK)} \\
           --image-info {shlex.quote(CANDIDATE_IMAGE_INFO)} --image-format raw \\
           --image-contract-schema aos.image.metadata/v1 \\
