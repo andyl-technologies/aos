@@ -124,7 +124,9 @@ impl LiveVcpuTimeCallbackState {
             .is_some_and(|network| network.rx.commit_uncertain())
     }
 
-    pub(super) fn require_network_rx_commit_certain(&self) -> Result<(), LiveVcpuTimeCallbackError> {
+    pub(super) fn require_network_rx_commit_certain(
+        &self,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
         if self.network_rx_commit_uncertain() {
             return Err(LiveVcpuTimeCallbackError::NetworkRx {
                 source: crate::NetworkRxError::CommitUncertain,
@@ -152,5 +154,4 @@ impl LiveVcpuTimeCallbackState {
             .as_ref()
             .map_or(Ok(false), |network| network.inbound_head_current(original))
     }
-
 }
