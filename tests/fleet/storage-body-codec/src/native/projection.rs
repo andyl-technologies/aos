@@ -203,7 +203,7 @@ fn admission(
         !intents.is_empty()
             && intents.len() <= MAX_DIRECT_BATCH_ITEMS
             && response.reply.errors.is_empty()
-            && response.reply.sessions.is_empty()
+            && response.reply.sessions.len() == intents.len()
             && response.reply.session_summaries.is_empty()
             && response.reply.authorizations.is_empty()
             && response.reply.baseline_permissions.is_empty()
@@ -255,8 +255,27 @@ fn admission(
             "duplicate original intent"
         );
     }
-    for admission in &response.reply.admissions {
+    for (admission, status) in response.reply.admissions.iter().zip(&response.reply.sessions) {
         admission.validate(&original.context.deployment_id)?;
+        let placements = admission
+            .placements
+            .iter()
+            .map(|placement| placement.public_ref(&original.context.deployment_id))
+            .collect::<Result<Vec<_>>>()?;
+        status.validate_for(
+            &DirectSessionRef {
+                session_id: admission.session_id.clone(),
+                logical_fingerprint: admission.logical_fingerprint.clone(),
+            },
+            &admission.intent,
+            &placements,
+        )?;
+        // The Native constructor echoes logical status without provider parts.
+        // Its RV and lifecycle state remain observations, not current SQL proof.
+        ensure!(
+            status.parts.is_empty() && status.next_cursor.is_none() && status.outstanding_grants,
+            "logical admission status contains provider progress or changed accounting"
+        );
         ensure!(
             expected.remove(admission.intent.client_operation_id.as_str())
                 == Some(&admission.intent)

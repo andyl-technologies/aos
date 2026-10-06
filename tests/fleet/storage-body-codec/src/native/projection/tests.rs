@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::native::{Bodies, Capture};
+use aos_hub_core::db::{DirectSqlOwner, DirectUploadSessionRecord};
 use aos_proto_types::RegistryPublicationObjectInput;
 
 fn capture(path: &str, phase: Option<&str>) -> Capture {
@@ -163,6 +164,22 @@ fn admission_fixture() -> DirectUploadAdmission {
 #[test]
 fn actual_direct_admission_binds_public_body_actor_source_and_placements() {
     let admitted = admission_fixture();
+    let record = DirectUploadSessionRecord {
+        admission: admitted.clone(),
+        owner_scope_key: "registry-scope".into(),
+        owner: DirectSqlOwner::Publication,
+        state: DirectSessionState::Creating,
+        resource_version: WireInteger::new(1),
+        final_dependency_phase: None,
+        complete_intent: None,
+        abort_intent: None,
+        baselines: Vec::new(),
+        stage_evidence: None,
+        completion_evidence: None,
+        final_guards: Vec::new(),
+    };
+    let status = record.status("deployment").unwrap();
+
     let public = encode_direct_control(&DirectBatch {
         operation_id: "c".repeat(64),
         items: vec![admitted.intent.clone()],
@@ -193,7 +210,7 @@ fn actual_direct_admission_binds_public_body_actor_source_and_placements() {
         context: original.context.clone(),
         reply: DirectUploadLogicalReply {
             admissions: vec![admitted.clone()],
-            sessions: vec![],
+            sessions: vec![status],
             session_summaries: vec![],
             authorizations: vec![],
             baseline_permissions: vec![],
@@ -211,6 +228,58 @@ fn actual_direct_admission_binds_public_body_actor_source_and_placements() {
         admission(&selected, &request, &reply, &public, &sql(&admitted)).unwrap(),
         1
     );
+
+    let refuses = |changed: &DirectLogicalReplyEnvelope| {
+        assert!(admission(
+            &selected,
+            &request,
+            &encode_direct_control(changed).unwrap(),
+            &public,
+            &sql(&admitted),
+        )
+        .is_err());
+    };
+    let mut missing = response.clone();
+    missing.reply.sessions.clear();
+    refuses(&missing);
+
+    let mut extra = response.clone();
+    extra.reply.sessions.push(record.status("deployment").unwrap());
+    refuses(&extra);
+
+    let mut foreign_session = response.clone();
+    foreign_session.reply.sessions[0].session.session_id = "other-session".into();
+    refuses(&foreign_session);
+
+    let mut foreign_intent = response.clone();
+    foreign_intent.reply.sessions[0].intent.expected_sha256 = "66".repeat(32);
+    refuses(&foreign_intent);
+
+    let mut foreign_placement = response.clone();
+    foreign_placement.reply.sessions[0].placements[0].binding_resource_version = WireInteger::new(8);
+    refuses(&foreign_placement);
+
+    let mut part_progress = response.clone();
+    part_progress.reply.sessions[0].parts.push(DirectPartStatus {
+        placement: record.status("deployment").unwrap().placements[0].clone(),
+        part_number: 1,
+        observed: None,
+        pending_operation_id: None,
+        unknown: false,
+    });
+    refuses(&part_progress);
+
+    let mut cursor = response.clone();
+    cursor.reply.sessions[0].next_cursor = Some(DirectPartCursor {
+        placement: record.status("deployment").unwrap().placements[0].clone(),
+        part_number: 0,
+    });
+    refuses(&cursor);
+
+    let mut changed_accounting = response.clone();
+    changed_accounting.reply.sessions[0].outstanding_grants = false;
+    refuses(&changed_accounting);
+
     let mut foreign = admitted.clone();
     foreign.actor_slot.numeric_id = WireInteger::new(8);
     foreign.principal_id = foreign.actor_slot.principal_id("deployment").unwrap();
