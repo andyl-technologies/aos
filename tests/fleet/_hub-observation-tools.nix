@@ -20,16 +20,16 @@
     name = "observation-selected-build-inputs.json";
     destination = "/selected.json";
     text = builtins.toJSON {
-    inherit sourceCommit sourceTree;
-    runtimeSource = "${runtimeSource}";
-    runtimeArchive = "${runtimeArchive}";
-    runtimeProvenance = selected;
-    nativeExecutable = "${nativeArtifact}/bin/aos-hub";
-    workerArtifact = "${workerArtifact}";
-    workerSourceDigest = builtins.hashString "sha256" (toString worker.src);
-    nativeContract = contract;
-    helperSource = toString helperSource;
-    vendorSource = toString vendor;
+      inherit sourceCommit sourceTree;
+      runtimeSource = "${runtimeSource}";
+      runtimeArchive = "${runtimeArchive}";
+      runtimeProvenance = selected;
+      nativeExecutable = "${nativeArtifact}/bin/aos-hub";
+      workerArtifact = "${workerArtifact}";
+      workerSourceDigest = builtins.hashString "sha256" (toString worker.src);
+      nativeContract = contract;
+      helperSource = toString helperSource;
+      vendorSource = toString vendor;
     };
   };
 
@@ -41,16 +41,18 @@
     dontNukeRefs = true;
     buildDeps = [pkgs.python3];
     runtimeDeps = [];
-    phases = [{
-      name = "prepare";
-      script = ''
-        ${pkgs.python3}/bin/python3 -B -E \
-          ${helperSource}/tests/fleet/observation-tools/prepare_package.py \
-          ${selectedFile}/selected.json ${helperSource} "$out"
-        ${pkgs.python3}/bin/python3 -B -E \
-          ${helperSource}/tests/fleet/observation-tools/extract_tests.py ${runtimeSource}
-      '';
-    }];
+    phases = [
+      {
+        name = "prepare";
+        script = ''
+          ${pkgs.python3}/bin/python3 -B -E \
+            ${helperSource}/tests/fleet/observation-tools/prepare_package.py \
+            ${selectedFile}/selected.json ${helperSource} "$out"
+          ${pkgs.python3}/bin/python3 -B -E \
+            ${helperSource}/tests/fleet/observation-tools/extract_tests.py ${runtimeSource}
+        '';
+      }
+    ];
   };
 
   codec = pkgs.mkCargoPackage {
@@ -59,13 +61,15 @@
     src = prepared;
     cargoRoot = "tests/fleet/storage-body-codec";
     cargoDeps = vendor;
-    cargoEnv = contract.cargoEnv // {
-      CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS = "true";
-      NATIVE_CODEC_REVISION = selected.runtimeCodecRevision;
-      NATIVE_WORKER_SOURCE_DIGEST = selected.workerSourceDigest;
-      NATIVE_APP_VERSION = "aos-hub ${native.version}";
-      NATIVE_BROWSER_HANDLER_SHA256 = selected.browserSource.handlerSourceSha256;
-    };
+    cargoEnv =
+      contract.cargoEnv
+      // {
+        CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS = "true";
+        NATIVE_CODEC_REVISION = selected.runtimeCodecRevision;
+        NATIVE_WORKER_SOURCE_DIGEST = selected.workerSourceDigest;
+        NATIVE_APP_VERSION = "aos-hub ${native.version}";
+        NATIVE_BROWSER_HANDLER_SHA256 = selected.browserSource.handlerSourceSha256;
+      };
     cargoFlags = "--bin aos-storage-body-codec --features native-bodies";
     cargoTestFlags = "--bin aos-storage-body-codec --features native-bodies";
     buildDeps = [pkgs.perl pkgs.pkg-config pkgs.openssl pkgs.sqlite pkgs.protobuf];
@@ -80,27 +84,29 @@ in
   assert selected.workerSourceDigest == builtins.hashString "sha256" (toString worker.src);
   assert builtins.match "[0-9a-f]{40}" sourceCommit != null;
   assert builtins.match "[0-9a-f]{40}" sourceTree != null;
-  pkgs.mkDerivation {
-    pname = "aos-observation-tools";
-    version = "0.1.0";
-    src = null;
-    # Source and wrapper references are intentional, measured build inputs.
-    dontNukeRefs = true;
-    buildDeps = [pkgs.python3];
-    runtimeDeps = [pkgs.python3 pkgs.bash codec];
-    phases = [{
-      name = "install";
-      script = ''
-        ${pkgs.python3}/bin/python3 -B -E \
-          ${helperSource}/tests/fleet/observation-tools/install.py \
-          ${prepared} ${helperSource} ${codec} "$out" \
-          ${pkgs.python3}/bin/python3 ${pkgs.bash}/bin/bash
-      '';
-    }];
-    passthru = {
-      inherit prepared codec;
-      runtimeSourceStorePath = toString runtimeSource;
-      helperSourceStorePath = toString helperSource;
-      runtimeQualification = false;
-    };
-  }
+    pkgs.mkDerivation {
+      pname = "aos-observation-tools";
+      version = "0.1.0";
+      src = null;
+      # Source and wrapper references are intentional, measured build inputs.
+      dontNukeRefs = true;
+      buildDeps = [pkgs.python3];
+      runtimeDeps = [pkgs.python3 pkgs.bash codec];
+      phases = [
+        {
+          name = "install";
+          script = ''
+            ${pkgs.python3}/bin/python3 -B -E \
+              ${helperSource}/tests/fleet/observation-tools/install.py \
+              ${prepared} ${helperSource} ${codec} "$out" \
+              ${pkgs.python3}/bin/python3 ${pkgs.bash}/bin/bash
+          '';
+        }
+      ];
+      passthru = {
+        inherit prepared codec;
+        runtimeSourceStorePath = toString runtimeSource;
+        helperSourceStorePath = toString helperSource;
+        runtimeQualification = false;
+      };
+    }
