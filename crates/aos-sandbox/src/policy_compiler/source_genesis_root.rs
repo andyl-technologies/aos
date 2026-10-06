@@ -11,11 +11,13 @@
 mod capacity;
 mod controller_readback;
 mod coordinator;
+mod global_coordinator;
 mod current;
 mod flight;
 mod pins;
 mod records;
 mod store;
+pub(crate) use store::GlobalRootGenesisNativeCutV2;
 mod successor_issuance;
 mod successor_consumer;
 mod successor_flight;
@@ -23,6 +25,7 @@ mod successor_owner;
 use super::first_source_successor_records as successor_records;
 mod transport;
 mod wire;
+pub use wire::{ROOT_SOURCE_RESOURCE_GENESIS_QUERY_MAGIC_V2, root_source_resource_genesis_payload_bytes_v2};
 
 pub use successor_consumer::{
     FailedOriginalFirstSourceSuccessorV2, FirstSourceSuccessorConsumerPhaseV2,
@@ -76,6 +79,8 @@ pub(in crate::policy_compiler) use controller_readback::ControllerGenesisReadbac
 pub use coordinator::coordinate_provisioned_source_genesis_v1;
 pub use coordinator::{OriginalConfiguredProjectGenesisInvocationV3, FailedConfiguredProjectGenesisInvocationV3};
 pub(crate) use coordinator::unavailable_project_genesis_v3;
+pub use global_coordinator::{OriginalConfiguredGlobalGenesisInvocationV2, FailedConfiguredGlobalGenesisInvocationV2};
+pub(crate) use global_coordinator::unavailable_global_genesis_v2;
 pub use successor_issuance::{
     FailedOriginalSourceSuccessorInvocationV2, OriginalSourceSuccessorInvocationV2,
     OriginalSourceProjectSuccessorInvocationV3, FailedSourceProjectSuccessorInvocationV3,
@@ -88,7 +93,7 @@ pub(crate) use successor_issuance::{
 };
 pub use current::CurrentRootSourceGenesisFloorV1;
 pub use current::CurrentRootSourceProjectGenesisFloorV3;
-pub(in crate::policy_compiler) use flight::CompletedRootSourceGenesisFloorV1;
+pub(crate) use flight::CompletedRootSourceGenesisFloorV1;
 pub(in crate::policy_compiler) use flight::OriginalRootGenesisFlightV1;
 pub(in crate::policy_compiler) use flight::{
     kernel_pair as original_root_kernel_pair_v1, require_open_receive_queue,

@@ -366,6 +366,282 @@ pub(crate) fn acknowledge_source_project_genesis_v3(
     if resident.error().is_some() { Err(()) } else { Ok(()) }
 }
 
+// Only the retained resource Global invocation can supply these original
+// borrowers. No Project-vacancy recipe or decoded packet enters this arm.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+enum GlobalGenesisRootPostsV2<'borrow, 'flight> {
+    Prepared(&'borrow HeldRootSourceGenesisIntentV1<'flight>),
+    Anchored(&'borrow RootSourceGenesisFloorProofV1<'flight>),
+}
+
+#[cfg(target_os = "linux")]
+impl SourceProjectGenesisMutationV3 {
+    fn global_posts(
+        &mut self,
+        source: &ProtectedSourceDomainJournalOwnerV1,
+        controller: &HeldControllerSourceGenesisV1<'_>,
+        root: GlobalGenesisRootPostsV2<'_, '_>,
+    ) {
+        self.controller_post = Some(controller.recheck());
+        self.latch(
+            ProjectGenesisMutationSiteV3::Controller,
+            self.controller_post.as_ref().is_some_and(Result::is_err),
+        );
+        self.source_post = Some(source.require_fixed_named_writer_v1().map_err(SourceGenesisErrorV1::from));
+        self.latch(
+            ProjectGenesisMutationSiteV3::Source,
+            self.source_post.as_ref().is_some_and(Result::is_err),
+        );
+        self.root_post = Some(match root {
+            GlobalGenesisRootPostsV2::Prepared(root) => root.recheck(),
+            GlobalGenesisRootPostsV2::Anchored(root) => root.recheck(),
+        });
+        self.latch(ProjectGenesisMutationSiteV3::Root, self.root_post.as_ref().is_some_and(Result::is_err));
+        self.clock_post = Some(match root {
+            GlobalGenesisRootPostsV2::Prepared(root) => root.independent_clock_v2(),
+            GlobalGenesisRootPostsV2::Anchored(root) => root.independent_clock_v2(),
+        });
+        self.latch(ProjectGenesisMutationSiteV3::Clock, self.clock_post.as_ref().is_some_and(Result::is_err));
+    }
+}
+
+/// Retains the Global resource append and its independent original-owner debt.
+///
+/// # Errors
+/// Refuses an occupied reservoir, mismatched original owners, unsafe or
+/// nonempty Global admission, capacity exhaustion or native/readback failure.
+#[cfg(target_os = "linux")]
+pub(crate) fn append_source_global_genesis_v2(
+    source: &mut ProtectedSourceDomainJournalOwnerV1,
+    controller: &HeldControllerSourceGenesisV1<'_>,
+    root: &HeldRootSourceGenesisIntentV1<'_>,
+    resident: &mut SourceProjectGenesisMutationV3,
+) -> Result<(), ()> {
+    if resident.preparation.is_some() {
+        return Err(());
+    }
+    resident.preparation = Some(prepare_global_genesis_append_v2(source, controller, root));
+    resident.latch(
+        ProjectGenesisMutationSiteV3::Preparation,
+        resident.preparation.as_ref().is_some_and(Result::is_err),
+    );
+    if let Some(Ok((Some(transaction), _))) = &resident.preparation {
+        resident.native = Some(source.journal().commit_global_genesis_append_v2(transaction, root));
+        resident.latch(
+            ProjectGenesisMutationSiteV3::Native,
+            resident.native.as_ref().is_some_and(Result::is_err),
+        );
+    }
+    if resident.first_failure.is_none() {
+        resident.readback = Some((|| {
+            let rows = validate_actual_rows(source.journal())?;
+            let (transaction, expected) = resident.preparation.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(SourceGenesisErrorV1::Stale)?;
+            if rows.receipts.get(&root.record().project()) != Some(expected) {
+                return Err(SourceGenesisErrorV1::Stale);
+            }
+            let pending = SourceGenesisPendingV1 {
+                instance: root.record().instance(),
+                project: root.record().project(),
+                intent: root.record().digest(),
+                receipt: expected.digest(),
+                nonce: root.record().nonce(),
+                names: source.journal().protected_writer_physical_names_v1()?,
+            };
+            if rows.pending.as_ref().is_some_and(|actual| actual != &pending)
+                || (transaction.is_some() && rows.pending.as_ref() != Some(&pending))
+            {
+                return Err(SourceGenesisErrorV1::Stale);
+            }
+            Ok(())
+        })());
+        resident.latch(
+            ProjectGenesisMutationSiteV3::Readback,
+            resident.readback.as_ref().is_some_and(Result::is_err),
+        );
+    }
+    resident.global_posts(source, controller, GlobalGenesisRootPostsV2::Prepared(root));
+    if resident.error().is_some() {
+        Err(())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn prepare_global_genesis_append_v2(
+    source: &mut ProtectedSourceDomainJournalOwnerV1,
+    controller: &HeldControllerSourceGenesisV1<'_>,
+    root: &HeldRootSourceGenesisIntentV1<'_>,
+) -> Result<(Option<JournalTransaction>, SourceTreeGenesisReceiptV1), SourceGenesisErrorV1> {
+    controller.recheck()?;
+    root.recheck()?;
+    let intent = root.record();
+    let acceptance = controller.acceptance();
+    if acceptance.resource_envelope().is_none()
+        || intent.project() != acceptance.project()
+        || intent.acceptance() != acceptance.digest()
+    {
+        return Err(SourceGenesisErrorV1::Conflict);
+    }
+    let journal = source.journal();
+    require_location(journal, intent.source_uid())?;
+    let rows = validate_actual_rows(journal)?;
+    if let Some(receipt) = rows.receipts.get(&intent.project()) {
+        if receipt.instance() != intent.instance()
+            || receipt.intent_digest() != intent.digest()
+            || receipt.acceptance_digest() != acceptance.digest()
+            || &receipt.seed_packet() != acceptance.seed_packet()
+            || receipt.auth_packet() != acceptance.auth_packet()
+            || rows.pending.as_ref().is_some_and(|pending| pending.project != intent.project()
+                || pending.instance != intent.instance() || pending.intent != intent.digest()
+                || pending.receipt != receipt.digest() || pending.nonce != intent.nonce()
+                || journal.protected_writer_physical_names_v1().ok() != Some(pending.names))
+        {
+            return Err(SourceGenesisErrorV1::Conflict);
+        }
+        return Ok((None, receipt.clone()));
+    }
+
+    // Unlike mixed Project admission, fresh Global genesis requires the real
+    // whole empty writer, not merely an absent target in a populated instance.
+    if !rows.receipts.is_empty() || rows.pending.is_some() || journal.all_records().next().is_some() {
+        return Err(SourceGenesisErrorV1::Conflict);
+    }
+    controller.recheck_current_admission()?;
+    root.recheck_current_admission()?;
+    let id = transaction_id(b"append", intent.digest());
+    let pair = prepare_source_tree_genesis_pair_v1(journal, *acceptance.seed_packet(), id)?;
+    let [tree, lineage] = pair.records.as_slice() else {
+        return Err(SourceGenesisErrorV1::NonCanonical);
+    };
+    let receipt = SourceTreeGenesisReceiptV1::from_owner_fields(
+        intent.instance(), intent.digest(), acceptance, pair.tree_head, pair.lineage_head,
+        tree.value().ok_or(SourceGenesisErrorV1::NonCanonical)?,
+        lineage.value().ok_or(SourceGenesisErrorV1::NonCanonical)?,
+    )?;
+    let pending = SourceGenesisPendingV1 {
+        instance: intent.instance(),
+        project: intent.project(),
+        intent: intent.digest(),
+        receipt: receipt.digest(),
+        nonce: intent.nonce(),
+        names: journal.protected_writer_physical_names_v1()?,
+    };
+    let mut records = pair.records;
+    records.push(JournalRecord::put(RecordNamespace::DesiredState, receipt_key(intent.project()), receipt.encode()));
+    records.push(JournalRecord::put(RecordNamespace::DesiredState, PENDING_KEY.to_vec(), pending.encode().to_vec()));
+    let append = JournalTransaction::new(id, records)?;
+    let suffix = ack_transaction(&SourceGenesisAckV1 {
+        instance: intent.instance(),
+        project: intent.project(),
+        receipt: receipt.digest(),
+        root_floor: ObjectDigest::from_bytes([1; 32]),
+        controller_floor: ObjectDigest::from_bytes([1; 32]),
+    })?;
+    journal.preflight_source_tree_genesis_v1(
+        &[append.clone(), suffix],
+        &[SourceGenesisTransitionV1::Append, SourceGenesisTransitionV1::Anchor],
+    )?;
+    controller.recheck_current_admission()?;
+    root.recheck_current_admission()?;
+    require_location(journal, intent.source_uid())?;
+    Ok((Some(append), receipt))
+}
+
+/// Retains the strict Global ACK transaction, native outcome and readback.
+///
+/// # Errors
+/// Refuses changed original floor/receipt/Controller cuts, occupied storage,
+/// unsafe names, insufficient capacity or ambiguous native acknowledgement.
+#[cfg(target_os = "linux")]
+pub(crate) fn acknowledge_source_global_genesis_v2(
+    source: &mut ProtectedSourceDomainJournalOwnerV1,
+    controller: &HeldControllerSourceGenesisV1<'_>,
+    root: &RootSourceGenesisFloorProofV1<'_>,
+    resident: &mut SourceProjectGenesisMutationV3,
+) -> Result<(), ()> {
+    if resident.preparation.is_some() {
+        return Err(());
+    }
+    resident.preparation = Some((|| {
+        controller.recheck()?;
+        root.recheck()?;
+        let journal = source.journal();
+        require_location(journal, root.source_uid())?;
+        let rows = validate_actual_rows(journal)?;
+        let receipt = rows.receipts.get(&root.floor().project()).ok_or(SourceGenesisErrorV1::Stale)?;
+        if receipt != root.floor().receipt() || controller.acceptance().resource_envelope().is_none() {
+            return Err(SourceGenesisErrorV1::Conflict);
+        }
+        controller.validate_source_ack(receipt, root.floor())?;
+        let ack = SourceGenesisAckV1 {
+            instance: receipt.instance(),
+            project: receipt.project(),
+            receipt: receipt.digest(),
+            root_floor: root.floor().digest(),
+            controller_floor: controller.accepted_floor_digest()?,
+        };
+        let transaction = match rows.acks.get(&receipt.project()) {
+            Some(existing) if existing == &ack => None,
+            Some(_) => return Err(SourceGenesisErrorV1::Conflict),
+            None => {
+                let pending = rows.pending.as_ref().ok_or(SourceGenesisErrorV1::Stale)?;
+                if pending.project != receipt.project() || pending.receipt != receipt.digest()
+                    || pending.instance != receipt.instance() || pending.intent != receipt.intent_digest()
+                    || pending.names != journal.protected_writer_physical_names_v1()?
+                {
+                    return Err(SourceGenesisErrorV1::Stale);
+                }
+                let transaction = ack_transaction(&ack)?;
+                journal.preflight_source_tree_genesis_v1(
+                    std::slice::from_ref(&transaction), &[SourceGenesisTransitionV1::Anchor],
+                )?;
+                Some(transaction)
+            }
+        };
+        Ok((transaction, receipt.clone()))
+    })());
+    resident.latch(
+        ProjectGenesisMutationSiteV3::Preparation,
+        resident.preparation.as_ref().is_some_and(Result::is_err),
+    );
+    if let Some(Ok((Some(transaction), _))) = &resident.preparation {
+        resident.native = Some(source.journal().commit_global_genesis_ack_v2(transaction, root));
+        resident.latch(
+            ProjectGenesisMutationSiteV3::Native,
+            resident.native.as_ref().is_some_and(Result::is_err),
+        );
+    }
+    if resident.first_failure.is_none() {
+        resident.readback = Some((|| {
+            let rows = validate_actual_rows(source.journal())?;
+            let ack = rows.acks.get(&root.floor().project()).ok_or(SourceGenesisErrorV1::Stale)?;
+            if rows.pending.is_some() || ack.root_floor != root.floor().digest()
+                || ack.controller_floor != controller.accepted_floor_digest()?
+                || ack.project != root.floor().project()
+                || ack.instance != root.floor().receipt().instance()
+                || ack.receipt != root.floor().receipt_digest()
+                || rows.receipts.get(&root.floor().project()) != Some(root.floor().receipt())
+            {
+                return Err(SourceGenesisErrorV1::Stale);
+            }
+            Ok(())
+        })());
+        resident.latch(
+            ProjectGenesisMutationSiteV3::Readback,
+            resident.readback.as_ref().is_some_and(Result::is_err),
+        );
+    }
+    resident.global_posts(source, controller, GlobalGenesisRootPostsV2::Anchored(root));
+    if resident.error().is_some() {
+        Err(())
+    } else {
+        Ok(())
+    }
+}
+
 /// Observes only a genuine selected target under the owner-created inventory.
 ///
 /// The supplied UID is comparison input from the independently retained Root
@@ -974,7 +1250,7 @@ fn validate_rows_with_lineage(
     Ok(rows)
 }
 
-fn require_location(journal: &Journal, uid: u32) -> Result<(), SourceGenesisErrorV1> {
+pub(crate) fn require_location(journal: &Journal, uid: u32) -> Result<(), SourceGenesisErrorV1> {
     if uid == 0 {
         return Err(SourceGenesisErrorV1::Stale);
     }

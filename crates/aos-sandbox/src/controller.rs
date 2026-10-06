@@ -3086,6 +3086,33 @@ where
             .coordinate_provisioned_source_genesis_v1(input, profile)
     }
 
+    /// Selects only the configured full-resource Global transport family.
+    ///
+    /// This original credential DATA check issues no current admission or payment.
+    ///
+    /// # Errors
+    /// Rejects changed original credential custody, signatures or matched claims.
+    #[cfg(target_os = "linux")]
+    pub fn configured_resource_global_selection_v2(
+        &self,
+        input: &crate::hierarchy::controller_genesis_input::ProvisionedControllerSourceGenesisInputV1,
+    ) -> Result<bool, crate::hierarchy::controller_genesis_input::ControllerSourceGenesisInputErrorV1> {
+        input.selects_resource_global_v2()
+    }
+
+    /// Completes resource-bearing Global genesis through the retained original owners.
+    ///
+    /// # Errors
+    /// Returns the whole failed original loan for worker termination.
+    #[cfg(target_os = "linux")]
+    pub fn coordinate_configured_global_genesis_v2<'writers, 'profile>(
+        &'writers mut self,
+        input: &'writers crate::hierarchy::controller_genesis_input::ProvisionedControllerSourceGenesisInputV1,
+        profile: &'profile crate::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<ObjectDigest, crate::policy_compiler::FailedConfiguredGlobalGenesisInvocationV2<'writers, 'profile>> {
+        self.reconciler.coordinate_configured_global_genesis_v2(input, profile)
+    }
+
     /// Completes approval-free configured initial B genesis through genuine owners.
     ///
     /// This internal selector produces no public Create/Delete admission.

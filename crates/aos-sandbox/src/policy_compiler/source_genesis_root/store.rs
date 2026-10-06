@@ -61,10 +61,67 @@ pub struct RootSourceGenesisAuthorityV1 {
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum RootGenesisOwnerRecipeV3 { StrictV1, ProjectV3 }
 
+#[derive(Clone, Copy)]
+enum GlobalRootMutationPhaseV2 {
+    Initialize,
+    Prepared,
+    Anchor,
+}
+
+// Only this actual strict Global writer constructs a crossing. Its names and
+// initial clock remain borrowed DATA inside the closed native append recipe.
+pub(crate) struct GlobalRootGenesisNativeCutV2<'clock> {
+    phase: GlobalRootMutationPhaseV2,
+    names: ProtectedJournalNamesV1,
+    original: &'clock aos_sandbox_core::RawPairedClockSample,
+    deadline: std::time::Instant,
+}
+
+impl GlobalRootGenesisNativeCutV2<'_> {
+    pub(crate) fn final_crossing(
+        &self,
+        journal: &Journal,
+        initialization: bool,
+        capacity_records: bool,
+        settling: bool,
+    ) -> Result<(), crate::JournalError> {
+        let expected = match self.phase {
+            GlobalRootMutationPhaseV2::Initialize => (true, false, false),
+            GlobalRootMutationPhaseV2::Prepared => (false, true, false),
+            GlobalRootMutationPhaseV2::Anchor => (false, true, true),
+        };
+        if expected != (initialization, capacity_records, settling) {
+            return Err(crate::JournalError::ProtectedBoundary);
+        }
+        capacity::require_owner(journal)?;
+        if journal.protected_writer_physical_names_v1()? != self.names {
+            return Err(crate::JournalError::ProtectedBoundary);
+        }
+        let expiry = if matches!(self.phase, GlobalRootMutationPhaseV2::Initialize | GlobalRootMutationPhaseV2::Prepared) {
+            Some(RootSourceGenesisAuthorityV1::require_project_genesis_current_deployment_v3(journal)
+                .map_err(|cause| crate::JournalError::GlobalGenesisOriginal(Box::new(cause)))?)
+        } else { None };
+        // This is the final native observation, after all frame/fence work.
+        super::flight::observe_root_first_source_successor_clock_v2(Some(*self.original))
+            .and_then(|current| {
+                if std::time::Instant::now() >= self.deadline
+                    || expiry.is_some_and(|expires| current.wall_seconds() >= expires)
+                { Err(SourceGenesisErrorV1::Stale) }
+                else { Ok(()) }
+            })
+            .map_err(|cause| crate::JournalError::GlobalGenesisOriginal(Box::new(cause)))
+    }
+}
+
 /// Retains actual selected Root mutations, source verification and clock debts.
 #[derive(Default)]
 pub struct RootProjectGenesisMutationResultsV3 {
     source: Option<Result<super::super::VerifiedSourceProjectGenesisReadbackV3, super::super::SourceHoldReadbackErrorV1>>,
+    global_source: Option<Result<VerifiedSourceTreeGenesisReadbackV1, super::super::SourceHoldReadbackErrorV1>>,
+    instance_preparation: Option<Result<(), SourceGenesisErrorV1>>,
+    instance_transaction: Option<JournalTransaction>,
+    instance_native: Option<Result<crate::CommitResult, crate::JournalError>>,
+    instance_readback: Option<Result<(), SourceGenesisErrorV1>>,
     preparation: Option<Result<(), SourceGenesisErrorV1>>,
     transaction: Option<JournalTransaction>,
     prepared: Option<crate::journal::PreparedGlobalCapacityReservationV1>,
@@ -80,7 +137,10 @@ pub struct RootProjectGenesisMutationResultsV3 {
 }
 
 #[derive(Clone, Copy)]
-enum RootProjectGenesisSiteV3 { Source, Preparation, NativePrepare, NativeAnchor, Readback, Post, Clock }
+enum RootProjectGenesisSiteV3 {
+    Source, GlobalSource, InstancePreparation, InstanceNative, InstanceReadback,
+    Preparation, NativePrepare, NativeAnchor, Readback, Post, Clock,
+}
 
 impl RootProjectGenesisMutationResultsV3 {
     /// Creates a single-use inert custody reservoir.
@@ -90,6 +150,10 @@ impl RootProjectGenesisMutationResultsV3 {
     pub fn error(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self.first_failure? {
             RootProjectGenesisSiteV3::Source => self.source.as_ref()?.as_ref().err().map(|e| e as _),
+            RootProjectGenesisSiteV3::GlobalSource => self.global_source.as_ref()?.as_ref().err().map(|e| e as _),
+            RootProjectGenesisSiteV3::InstancePreparation => self.instance_preparation.as_ref()?.as_ref().err().map(|e| e as _),
+            RootProjectGenesisSiteV3::InstanceNative => self.instance_native.as_ref()?.as_ref().err().map(|e| e as _),
+            RootProjectGenesisSiteV3::InstanceReadback => self.instance_readback.as_ref()?.as_ref().err().map(|e| e as _),
             RootProjectGenesisSiteV3::Preparation => self.preparation.as_ref()?.as_ref().err().map(|e| e as _),
             RootProjectGenesisSiteV3::NativePrepare => self.native_prepare.as_ref()?.as_ref().err().map(|e| e as _),
             RootProjectGenesisSiteV3::NativeAnchor => self.native_anchor.as_ref()?.as_ref().err().map(|e| e as _),
@@ -525,6 +589,302 @@ impl RootSourceGenesisAuthorityV1 {
                 .require_actual_receipt(receipt, self.intent(project)?.as_ref().map(RootSourceGenesisIntentRecordV1::nonce))?;
         }
         Ok(())
+    }
+
+    /// Accepts only the full-resource Global family on the same strict Root owner.
+    ///
+    /// # Errors
+    /// Rejects truncated/foreign packets, vacancy purpose, changed original
+    /// Source cut or administrative input, and fresh admission in historical mode.
+    pub fn accept_controller_resource_global_v2(
+        &mut self,
+        packet: &[u8],
+        historical: bool,
+    ) -> Result<(Option<ProjectId>, SourceTreeGenesisChallengeV1), SourceGenesisErrorV1> {
+        if packet.len() != super::controller_readback::CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V2 {
+            return Err(SourceGenesisErrorV1::NonCanonical);
+        }
+        let probe = self.accept_controller_readback_for_scope(packet, !historical)?;
+        let accepted = self.accepted.as_ref().ok_or(SourceGenesisErrorV1::Stale)?;
+        if accepted.acceptance.resource_envelope().is_none() || accepted.vacant {
+            return Err(SourceGenesisErrorV1::AdmissionClosed);
+        }
+        probe.ok_or(SourceGenesisErrorV1::Conflict)
+    }
+
+    /// Observes the exact retained Global floor after genuine Controller acceptance.
+    ///
+    /// # Errors
+    /// Rejects unavailable strict full-resource admission, vacancy or changed Root custody.
+    pub fn resource_global_floor_present_v2(&self) -> Result<bool, SourceGenesisErrorV1> {
+        self.require_strict_genesis_recipe_v1()?;
+        self.recheck()?;
+        let accepted = self.accepted.as_ref().ok_or(SourceGenesisErrorV1::Stale)?;
+        if accepted.vacant || accepted.acceptance.resource_envelope().is_none() {
+            return Err(SourceGenesisErrorV1::AdmissionClosed);
+        }
+        let present = self.floor(accepted.acceptance.project())?.is_some();
+        self.recheck()?;
+        Ok(present)
+    }
+
+    fn global_native_cut<'clock>(
+        &self,
+        original: &'clock aos_sandbox_core::RawPairedClockSample,
+        deadline: std::time::Instant,
+        phase: GlobalRootMutationPhaseV2,
+    ) -> Result<GlobalRootGenesisNativeCutV2<'clock>, SourceGenesisErrorV1> {
+        self.require_strict_genesis_recipe_v1()?;
+        self.recheck()?;
+        let accepted = self.accepted.as_ref().ok_or(SourceGenesisErrorV1::Stale)?;
+        if accepted.vacant || accepted.acceptance.resource_envelope().is_none() {
+            return Err(SourceGenesisErrorV1::AdmissionClosed);
+        }
+        Ok(GlobalRootGenesisNativeCutV2 { phase,
+        names: self.names, original, deadline })
+    }
+
+    fn verify_global_genesis_source_v2(
+        &self,
+        packet: &[u8],
+        resident: &mut RootProjectGenesisMutationResultsV3,
+    ) -> Result<(), SourceGenesisErrorV1> {
+        self.require_strict_genesis_recipe_v1()?;
+        self.recheck()?;
+        if resident.global_source.is_some() {
+            return Err(SourceGenesisErrorV1::Conflict);
+        }
+        let accepted = self.accepted.as_ref().ok_or(SourceGenesisErrorV1::Stale)?;
+        if accepted.vacant || accepted.acceptance.resource_envelope().is_none() {
+            return Err(SourceGenesisErrorV1::AdmissionClosed);
+        }
+        let intent = if accepted.historical {
+            let floor = self.floor(accepted.acceptance.project())?;
+            let prior = self.intent(accepted.acceptance.project())?;
+            Some(floor.map(|floor| floor.receipt().intent_digest())
+                .or_else(|| prior.map(|prior| prior.digest())).ok_or(SourceGenesisErrorV1::Conflict)?)
+        } else { None };
+        let challenge = SourceTreeGenesisChallengeV1::new(self.nonce, intent)
+            .map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
+        resident.global_source = Some(verify_source_tree_genesis_readback_v2(packet, &self.pins.source, challenge));
+        resident.latch(RootProjectGenesisSiteV3::GlobalSource, resident.global_source.as_ref().is_some_and(Result::is_err));
+        let observed = resident.global_source.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(SourceGenesisErrorV1::Stale)?;
+        require_same_source_cut(accepted, observed)?;
+        if let Some(receipt) = observed.receipt() {
+            if receipt.acceptance_digest() != accepted.acceptance.digest()
+                || &receipt.seed_packet() != accepted.acceptance.seed_packet()
+                || receipt.auth_packet() != accepted.acceptance.auth_packet()
+            { return Err(SourceGenesisErrorV1::Conflict); }
+        }
+        Ok(())
+    }
+
+    fn ensure_global_instance_retained_v2(
+        &mut self,
+        original: &aos_sandbox_core::RawPairedClockSample,
+        deadline: std::time::Instant,
+        resident: &mut RootProjectGenesisMutationResultsV3,
+    ) -> Result<(), SourceGenesisErrorV1> {
+        if resident.instance_preparation.is_some() {
+            return Err(SourceGenesisErrorV1::Conflict);
+        }
+        resident.instance_preparation = Some((|| {
+            if self.journal.get(RecordNamespace::DesiredState, INSTANCE_KEY).is_some() {
+                return Ok(());
+            }
+            let mut instance = [0; 32];
+            instance[..16].copy_from_slice(&fresh_root_nonce()?);
+            instance[16..].copy_from_slice(&fresh_root_nonce()?);
+            let bytes = instance_bytes(instance)?;
+            let digest = crate::hierarchy::genesis_profile::hash(INSTANCE_TRANSACTION_DOMAIN, &bytes);
+            let mut id = [0; 16];
+            id.copy_from_slice(&digest.as_bytes()[..16]);
+            resident.instance_transaction = Some(JournalTransaction::new(id, vec![
+                JournalRecord::put(RecordNamespace::DesiredState, INSTANCE_KEY.to_vec(), bytes.to_vec()),
+                JournalRecord::put(RecordNamespace::DesiredState, PINS_KEY.to_vec(), self.pins.record_bytes().to_vec()),
+            ])?);
+            self.recheck()?;
+            Ok(())
+        })());
+        resident.latch(RootProjectGenesisSiteV3::InstancePreparation, resident.instance_preparation.as_ref().is_some_and(Result::is_err));
+        if resident.first_failure.is_none() {
+            if let Some(transaction) = &resident.instance_transaction {
+                let returned = self.global_native_cut(original, deadline, GlobalRootMutationPhaseV2::Initialize)
+                    .map_err(|cause| crate::JournalError::GlobalGenesisOriginal(Box::new(cause)))
+                    .and_then(|cut| self.journal.commit_root_global_genesis_initialization_v2(transaction, &cut));
+                resident.instance_native = Some(returned);
+                resident.latch(RootProjectGenesisSiteV3::InstanceNative, resident.instance_native.as_ref().is_some_and(Result::is_err));
+            }
+        }
+        resident.instance_readback = Some((|| {
+            let bytes = self.journal.get(RecordNamespace::DesiredState, INSTANCE_KEY)
+                .ok_or(SourceGenesisErrorV1::Stale)?;
+            decode_instance(bytes)?;
+            if let Some(transaction) = &resident.instance_transaction {
+                if transaction.records().first().and_then(JournalRecord::value) != Some(bytes) {
+                    return Err(SourceGenesisErrorV1::Stale);
+                }
+            }
+            self.recheck()
+        })());
+        resident.latch(RootProjectGenesisSiteV3::InstanceReadback, resident.instance_readback.as_ref().is_some_and(Result::is_err));
+        if resident.first_failure.is_some() {
+            Err(SourceGenesisErrorV1::Stale)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Prepares strict resource-bearing Global genesis with its real native outcomes retained.
+    ///
+    /// # Errors
+    /// Retains source verification, instance creation, reservation, readback and
+    /// original-clock failures. An old intent permits only exact recovery.
+    pub fn prepare_global_genesis_v2(
+        &mut self,
+        packet: &[u8],
+        original: &aos_sandbox_core::RawPairedClockSample,
+        deadline: std::time::Instant,
+        resident: &mut RootProjectGenesisMutationResultsV3,
+    ) -> Result<RootSourceGenesisIntentRecordV1, ()> {
+        if resident.preparation.is_some() {
+            return Err(());
+        }
+        let preparation = (|| {
+            self.verify_global_genesis_source_v2(packet, resident)?;
+            let accepted = self.accepted.as_ref().ok_or(SourceGenesisErrorV1::Stale)?;
+            let project = accepted.acceptance.project();
+            if self.floor(project)?.is_some() {
+                return Err(SourceGenesisErrorV1::Conflict);
+            }
+            if let Some(intent) = self.intent(project)? {
+                require_acceptance(&intent, accepted, self.source_uid)?;
+                let receipt = resident.global_source.as_ref().and_then(|result| result.as_ref().ok())
+                    .and_then(VerifiedSourceTreeGenesisReadbackV1::receipt);
+                match receipt {
+                    Some(receipt) if receipt.intent_digest() == intent.digest()
+                        && receipt.instance() == intent.instance()
+                        && receipt.acceptance_digest() == intent.acceptance() => {}
+                    None if !accepted.historical => { require_current_deployment(&self.journal)?; }
+                    _ => return Err(SourceGenesisErrorV1::Conflict),
+                }
+                resident.intent = Some(intent);
+                return Ok(());
+            }
+            let observed = resident.global_source.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(SourceGenesisErrorV1::Stale)?;
+            if accepted.historical || observed.state() != SourceTreeGenesisStateV1::Empty
+                || self.journal.records(RecordNamespace::DesiredState).any(|(key, _)| key.starts_with(INTENT_PREFIX))
+                || self.journal.records(RecordNamespace::DesiredState).filter(|(key, _)| key.starts_with(FLOOR_PREFIX)).count() >= MAXIMUM_PROJECTS
+            { return Err(SourceGenesisErrorV1::Conflict); }
+            require_current_deployment(&self.journal)?;
+            let acceptance = accepted.acceptance.clone();
+            self.ensure_global_instance_retained_v2(original, deadline, resident)?;
+            let instance = decode_instance(self.journal.get(RecordNamespace::DesiredState, INSTANCE_KEY)
+                .ok_or(SourceGenesisErrorV1::Stale)?)?;
+            let intent = RootSourceGenesisIntentRecordV1::new(instance, self.source_uid, self.nonce, acceptance, self.pins.digest())?;
+            let prepared = self.journal.prepare_global_capacity_reservation_v1(capacity::request(&intent), capacity::admission_id(&intent))?;
+            let transaction = JournalTransaction::new(capacity::admission_id(&intent), vec![
+                JournalRecord::put(RecordNamespace::DesiredState, capacity::intent_key(&intent), intent.record_bytes().to_vec()),
+                prepared.record().clone(),
+            ])?;
+            self.journal.claim_global_capacity_reservation_authority(capacity::request(&intent).purpose)?
+                .preflight_global_capacity_reservation_v1(&prepared, &transaction)?;
+            resident.intent = Some(intent);
+            resident.transaction = Some(transaction);
+            resident.prepared = Some(prepared);
+            self.recheck()?;
+            require_current_deployment(&self.journal)?;
+            Ok(())
+        })();
+        resident.preparation = Some(preparation);
+        resident.latch(RootProjectGenesisSiteV3::Preparation, resident.preparation.as_ref().is_some_and(Result::is_err));
+        if resident.first_failure.is_none() {
+            if let (Some(prepared), Some(transaction)) = (resident.prepared.take(), &resident.transaction) {
+                resident.native_prepare = Some(self.global_native_cut(original, deadline, GlobalRootMutationPhaseV2::Prepared)
+                    .map_err(|cause| crate::JournalError::GlobalGenesisOriginal(Box::new(cause)))
+                    .and_then(|cut| self.journal.commit_root_global_genesis_prepared_v2(prepared, transaction, &cut)));
+                resident.latch(RootProjectGenesisSiteV3::NativePrepare, resident.native_prepare.as_ref().is_some_and(Result::is_err));
+            }
+        }
+        resident.readback = Some((|| {
+            let intent = resident.intent.as_ref().ok_or(SourceGenesisErrorV1::Stale)?;
+            if self.intent(intent.project())?.as_ref() != Some(intent) {
+                return Err(SourceGenesisErrorV1::Stale);
+            }
+            Ok(())
+        })());
+        resident.latch(RootProjectGenesisSiteV3::Readback, resident.readback.as_ref().is_some_and(Result::is_err));
+        resident.posts(self, original, deadline);
+        if resident.error().is_some() { Err(()) } else { resident.intent.as_ref().cloned().ok_or(()) }
+    }
+
+    /// Anchors the same Global receipt without releasing uncertain original custody.
+    ///
+    /// # Errors
+    /// Retains every verification/native/readback result; exact prior floors
+    /// are compared without another append or renewed original deadline.
+    pub fn anchor_global_genesis_v2(
+        &mut self,
+        packet: &[u8],
+        original: &aos_sandbox_core::RawPairedClockSample,
+        deadline: std::time::Instant,
+        resident: &mut RootProjectGenesisMutationResultsV3,
+    ) -> Result<SourceHierarchyFloorRecordV1, ()> {
+        if resident.preparation.is_some() {
+            return Err(());
+        }
+        resident.preparation = Some((|| {
+            self.verify_global_genesis_source_v2(packet, resident)?;
+            let accepted = self.accepted.as_ref().ok_or(SourceGenesisErrorV1::Stale)?;
+            let receipt = resident.global_source.as_ref().and_then(|result| result.as_ref().ok())
+                .and_then(VerifiedSourceTreeGenesisReadbackV1::receipt).ok_or(SourceGenesisErrorV1::Conflict)?.clone();
+            let floor = SourceHierarchyFloorRecordV1::new(receipt, self.pins.digest())?;
+            if let Some(prior) = self.floor(floor.project())? {
+                if prior != floor {
+                    return Err(SourceGenesisErrorV1::Conflict);
+                }
+                resident.floor = Some(prior);
+                return Ok(());
+            }
+            let intent = self.intent(floor.project())?.ok_or(SourceGenesisErrorV1::Conflict)?;
+            require_acceptance(&intent, accepted, self.source_uid)?;
+            if floor.receipt().intent_digest() != intent.digest() {
+                return Err(SourceGenesisErrorV1::Conflict);
+            }
+            let identity = self.journal.root_source_genesis_capacity_identity_v1(&capacity::request(&intent), capacity::admission_id(&intent))?;
+            let reservation = self.journal.recover_global_capacity_reservation_v1(identity)?;
+            let transaction = JournalTransaction::new(capacity::floor_transaction_id(&floor), vec![
+                JournalRecord::put(RecordNamespace::DesiredState, capacity::floor_key(&floor), floor.record_bytes().to_vec()),
+                JournalRecord::delete(RecordNamespace::DesiredState, capacity::intent_key(&intent)), reservation.settlement_record(),
+            ])?;
+            self.journal.claim_global_capacity_reservation_authority(reservation.request().purpose)?
+                .preflight_reserved_terminal_v1(&reservation, &transaction)?;
+            resident.transaction = Some(transaction);
+            resident.reservation = Some(reservation);
+            resident.floor = Some(floor);
+            self.recheck()
+        })());
+        resident.latch(RootProjectGenesisSiteV3::Preparation, resident.preparation.as_ref().is_some_and(Result::is_err));
+        if resident.first_failure.is_none() {
+            if let (Some(reservation), Some(transaction)) = (resident.reservation.take(), &resident.transaction) {
+                resident.native_anchor = Some(self.global_native_cut(original, deadline, GlobalRootMutationPhaseV2::Anchor)
+                    .map_err(|cause| crate::JournalError::GlobalGenesisOriginal(Box::new(cause)))
+                    .and_then(|cut| self.journal.commit_root_global_genesis_anchor_v2(reservation, transaction, &cut)));
+                resident.latch(RootProjectGenesisSiteV3::NativeAnchor, resident.native_anchor.as_ref().is_some_and(Result::is_err));
+            }
+        }
+        resident.readback = Some((|| {
+            let floor = resident.floor.as_ref().ok_or(SourceGenesisErrorV1::Stale)?;
+            if self.floor(floor.project())?.as_ref() != Some(floor) || self.intent(floor.project())?.is_some() {
+                return Err(SourceGenesisErrorV1::Stale);
+            }
+            Ok(())
+        })());
+        resident.latch(RootProjectGenesisSiteV3::Readback, resident.readback.as_ref().is_some_and(Result::is_err));
+        resident.posts(self, original, deadline);
+        if resident.error().is_some() { Err(()) } else { resident.floor.as_ref().cloned().ok_or(()) }
     }
 
     /// Prepares genuine selected genesis with the existing purpose-six reservation.

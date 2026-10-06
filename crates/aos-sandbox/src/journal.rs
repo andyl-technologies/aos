@@ -246,6 +246,10 @@ impl Default for JournalLimits {
 enum ProjectNativeTransitionV3<'cut, 'owner> {
     Genesis(source_tree_successor::ProjectGenesisNativePhaseV3, source_tree_successor::ProjectGenesisNativeCutV3<'cut>),
     #[cfg(target_os = "linux")]
+    GlobalGenesis(GlobalGenesisNativeCutV2<'cut>),
+    #[cfg(target_os = "linux")]
+    GlobalRootGenesis(&'cut crate::policy_compiler::GlobalRootGenesisNativeCutV2<'cut>),
+    #[cfg(target_os = "linux")]
     Issuance {
         transition: controller_source_successor_issuance::Transition,
         completed: &'cut crate::policy_compiler::CompletedRootSourceProjectGenesisFloorV3<'cut, 'cut>,
@@ -256,6 +260,63 @@ enum ProjectNativeTransitionV3<'cut, 'owner> {
     // owner's lifetime in the portable ordinary engine without issuing a cut.
     #[cfg(not(target_os = "linux"))]
     Unsupported(std::convert::Infallible, std::marker::PhantomData<&'owner ()>),
+}
+
+// Global and mixed Project semantics remain separate. This arm contributes
+// only a genuine original cut to the already validated strict native append.
+#[cfg(target_os = "linux")]
+enum GlobalGenesisNativeCutV2<'cut> {
+    SourcePrepared(&'cut crate::policy_compiler::HeldRootSourceGenesisIntentV1<'cut>),
+    SourceAnchored(&'cut crate::policy_compiler::RootSourceGenesisFloorProofV1<'cut>),
+    ControllerAnchored(&'cut crate::policy_compiler::RootSourceGenesisFloorProofV1<'cut>),
+}
+
+#[cfg(target_os = "linux")]
+impl GlobalGenesisNativeCutV2<'_> {
+    fn final_crossing(
+        &self,
+        journal: &Journal,
+        source_transition: source_tree_genesis::SourceGenesisTransitionV1,
+        controller_transition: controller_source_genesis::ControllerSourceGenesisTransition,
+    ) -> Result<(), JournalError> {
+        use controller_source_genesis::ControllerSourceGenesisTransition as Controller;
+        use source_tree_genesis::SourceGenesisTransitionV1 as Source;
+        let original = match self {
+            Self::SourcePrepared(root) if source_transition == Source::Append
+                && controller_transition == Controller::None =>
+            {
+                if journal.protected_owner_uid()? != root.record().source_uid()
+                    || root.record().accepted_input().resource_envelope().is_none()
+                {
+                    return Err(JournalError::ProtectedBoundary);
+                }
+                crate::hierarchy::source_genesis::require_location(journal, root.record().source_uid())
+                    .and_then(|()| root.native_crossing_clock_v2())
+            }
+            Self::SourceAnchored(root) if source_transition == Source::Anchor
+                && controller_transition == Controller::None =>
+            {
+                if root.floor().record_bytes().len() != crate::policy_compiler::SOURCE_HIERARCHY_FLOOR_BYTES_V2 {
+                    return Err(JournalError::ProtectedBoundary);
+                }
+                crate::hierarchy::source_genesis::require_location(journal, root.source_uid())
+                    .and_then(|()| root.native_crossing_clock_v2())
+            }
+            Self::ControllerAnchored(root) if source_transition == Source::None
+                && matches!(controller_transition, Controller::FloorAck | Controller::Complete) =>
+            {
+                if root.floor().record_bytes().len() != crate::policy_compiler::SOURCE_HIERARCHY_FLOOR_BYTES_V2
+                    || journal.protected_owner_uid()? != root.source_uid()
+                {
+                    return Err(JournalError::ProtectedBoundary);
+                }
+                crate::hierarchy::controller_genesis::require_controller(journal, journal.protected_owner_uid()?)
+                    .and_then(|()| root.native_crossing_clock_v2())
+            }
+            _ => return Err(JournalError::ProtectedBoundary),
+        };
+        original.map_err(|cause| JournalError::GlobalGenesisOriginal(Box::new(cause)))
+    }
 }
 
 /// Selects the independently materialized keyspace changed by a record.
@@ -662,6 +723,10 @@ pub enum JournalError {
     #[cfg(target_os = "linux")]
     #[error(transparent)]
     ProjectGenesisOriginal(Box<crate::hierarchy::genesis_profile::SourceGenesisErrorV1>),
+    /// The same retained Global genesis original refused the final crossing.
+    #[cfg(target_os = "linux")]
+    #[error(transparent)]
+    GlobalGenesisOriginal(Box<crate::hierarchy::genesis_profile::SourceGenesisErrorV1>),
     /// The same original Root flight failed its final physical/clock check.
     #[cfg(target_os = "linux")]
     #[error(transparent)]
@@ -3994,6 +4059,60 @@ impl Journal {
     }
 
     #[cfg(target_os = "linux")]
+    pub(crate) fn commit_global_genesis_append_v2(
+        &mut self,
+        transaction: &JournalTransaction,
+        root: &crate::policy_compiler::HeldRootSourceGenesisIntentV1<'_>,
+    ) -> Result<CommitResult, JournalError> {
+        self.commit_with_project_genesis_transition_v3(
+            transaction, None, false, false, false, false, false,
+            SourceProjectAdmissionTransition::None,
+            controller_source_genesis::ControllerSourceGenesisTransition::None,
+            source_tree_genesis::SourceGenesisTransitionV1::Append,
+            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
+            None, None, None,
+            Some(ProjectNativeTransitionV3::GlobalGenesis(GlobalGenesisNativeCutV2::SourcePrepared(root))),
+            None,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn commit_global_genesis_ack_v2(
+        &mut self,
+        transaction: &JournalTransaction,
+        root: &crate::policy_compiler::RootSourceGenesisFloorProofV1<'_>,
+    ) -> Result<CommitResult, JournalError> {
+        self.commit_with_project_genesis_transition_v3(
+            transaction, None, false, false, false, false, false,
+            SourceProjectAdmissionTransition::None,
+            controller_source_genesis::ControllerSourceGenesisTransition::None,
+            source_tree_genesis::SourceGenesisTransitionV1::Anchor,
+            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
+            None, None, None,
+            Some(ProjectNativeTransitionV3::GlobalGenesis(GlobalGenesisNativeCutV2::SourceAnchored(root))),
+            None,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn commit_controller_global_genesis_v2(
+        &mut self,
+        transaction: &JournalTransaction,
+        transition: controller_source_genesis::ControllerSourceGenesisTransition,
+        root: &crate::policy_compiler::RootSourceGenesisFloorProofV1<'_>,
+    ) -> Result<CommitResult, JournalError> {
+        self.commit_with_project_genesis_transition_v3(
+            transaction, None, false, false, false, false, false,
+            SourceProjectAdmissionTransition::None, transition,
+            source_tree_genesis::SourceGenesisTransitionV1::None,
+            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
+            None, None, None,
+            Some(ProjectNativeTransitionV3::GlobalGenesis(GlobalGenesisNativeCutV2::ControllerAnchored(root))),
+            None,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
     pub(crate) fn commit_project_genesis_append_v3(
         &mut self,
         transaction: &JournalTransaction,
@@ -4162,6 +4281,74 @@ impl Journal {
             None, None, None, Some(ProjectNativeTransitionV3::Genesis(source_tree_successor::ProjectGenesisNativePhaseV3::RootAnchor(project),
                 source_tree_successor::ProjectGenesisNativeCutV3::RootServer { original, deadline })),
             None,
+        )
+    }
+
+    /// Appends the retained Global instance under its original Root crossing.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn commit_root_global_genesis_initialization_v2(
+        &mut self,
+        transaction: &JournalTransaction,
+        original: &crate::policy_compiler::GlobalRootGenesisNativeCutV2<'_>,
+    ) -> Result<CommitResult, JournalError> {
+        self.preflight_transactions(std::slice::from_ref(transaction))?;
+        self.commit_with_project_genesis_transition_v3(
+            transaction, None, false, false, false, false, false,
+            SourceProjectAdmissionTransition::None,
+            controller_source_genesis::ControllerSourceGenesisTransition::None,
+            source_tree_genesis::SourceGenesisTransitionV1::None,
+            RootSourceGenesisTransitionV1::Initialize, None, CacheMutationGateV1::Ordinary,
+            None, None, None, Some(ProjectNativeTransitionV3::GlobalRootGenesis(original)), None,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn commit_root_global_genesis_prepared_v2(
+        &mut self,
+        prepared: PreparedGlobalCapacityReservationV1,
+        transaction: &JournalTransaction,
+        original: &crate::policy_compiler::GlobalRootGenesisNativeCutV2<'_>,
+    ) -> Result<(CommitResult, GlobalCapacityReservationV1), JournalError> {
+        if prepared.request.purpose != GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        self.claim_global_capacity_reservation_authority(prepared.request.purpose)?
+            .preflight_global_capacity_reservation_v1(&prepared, transaction)?;
+        let record_digest = Sha256::digest(prepared.record.value().ok_or(JournalError::InvalidTransaction)?).into();
+        let result = self.commit_with_project_genesis_transition_v3(
+            transaction, None, true, false, false, false, false,
+            SourceProjectAdmissionTransition::None,
+            controller_source_genesis::ControllerSourceGenesisTransition::None,
+            source_tree_genesis::SourceGenesisTransitionV1::None,
+            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
+            None, None, None, Some(ProjectNativeTransitionV3::GlobalRootGenesis(original)), None,
+        )?;
+        Ok((result, GlobalCapacityReservationV1 {
+            request: prepared.request,
+            admission_transaction_id: prepared.admission_transaction_id,
+            reservation_id: prepared.reservation_id, record_digest,
+        }))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn commit_root_global_genesis_anchor_v2(
+        &mut self,
+        reservation: GlobalCapacityReservationV1,
+        transaction: &JournalTransaction,
+        original: &crate::policy_compiler::GlobalRootGenesisNativeCutV2<'_>,
+    ) -> Result<CommitResult, JournalError> {
+        if reservation.request.purpose != GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        self.claim_global_capacity_reservation_authority(reservation.request.purpose)?
+            .preflight_reserved_terminal_v1(&reservation, transaction)?;
+        self.commit_with_project_genesis_transition_v3(
+            transaction, Some(reservation.reservation_id), true, false, false, false, false,
+            SourceProjectAdmissionTransition::None,
+            controller_source_genesis::ControllerSourceGenesisTransition::None,
+            source_tree_genesis::SourceGenesisTransitionV1::None,
+            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
+            None, None, None, Some(ProjectNativeTransitionV3::GlobalRootGenesis(original)), None,
         )
     }
 
@@ -4560,6 +4747,23 @@ impl Journal {
         #[cfg(target_os = "linux")]
         if let Some(original) = resource_reservation {
             original.final_crossing()?;
+        }
+
+        #[cfg(target_os = "linux")]
+        if let Some(ProjectNativeTransitionV3::GlobalGenesis(original)) = &project_genesis {
+            original.final_crossing(self, source_genesis_transition, controller_genesis_transition)?;
+        }
+
+        #[cfg(target_os = "linux")]
+        if let Some(ProjectNativeTransitionV3::GlobalRootGenesis(original)) = &project_genesis {
+            if source_genesis_transition != source_tree_genesis::SourceGenesisTransitionV1::None
+                || controller_genesis_transition != controller_source_genesis::ControllerSourceGenesisTransition::None
+                || first_successor.is_some() || resource_reservation.is_some()
+            { return Err(JournalError::ProtectedBoundary); }
+            original.final_crossing(
+                self, root_genesis_transition == RootSourceGenesisTransitionV1::Initialize,
+                allow_capacity_records, settling_reservation.is_some(),
+            )?;
         }
 
         let durable_bytes = match append_and_sync(&mut self.file, &frames) {

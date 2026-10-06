@@ -69,7 +69,7 @@ impl CurrentGen1AncestryV1<'_, '_, '_, '_, '_> {
     }
 }
 
-pub(in crate::policy_compiler) fn consume_completed_gen1_ancestry_v1(
+pub(crate) fn consume_completed_gen1_ancestry_v1(
     controller: &HeldControllerSourceGenesisV1<'_>,
     source: &HeldSourceTreeGenesisObservationV1<'_>,
     inventory: &RetainedTreeInventoryDataV1<'_>,

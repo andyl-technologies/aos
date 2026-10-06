@@ -29,7 +29,7 @@ use crate::publisher_policy::{PublisherPolicyLimits, PublisherPolicyStore};
 const CONTROLLER_ROOT: &str = "/var/lib/aos/sandboxd";
 const CONTROLLER_JOURNAL: &str = "controller.journal";
 
-/// Retains one selected initial-project settlement and its independent debts.
+/// Retains one selected genesis settlement and its independent debts.
 #[cfg(target_os = "linux")]
 #[derive(Default)]
 pub(crate) struct ControllerProjectGenesisMutationV3 {
@@ -43,6 +43,98 @@ pub(crate) struct ControllerProjectGenesisMutationV3 {
 #[cfg(target_os = "linux")]
 #[derive(Clone, Copy)]
 enum ControllerProjectGenesisSiteV3 { Preparation, Native, Readback, Post(usize) }
+
+// Each arm borrows the entered purpose's original owners. Only the record
+// preparation, native append reservoir and independent post schedule are shared.
+#[cfg(target_os = "linux")]
+enum GenesisSettlementOriginal<'cut, 'source, 'flight> {
+    Global {
+        source: &'cut HeldSourceTreeGenesisObservationV1<'source>,
+        root: &'cut RootSourceGenesisFloorProofV1<'flight>,
+    },
+    Project {
+        source: &'cut super::source_genesis::HeldSourceProjectGenesisObservationV3<'source>,
+        root: &'cut crate::policy_compiler::RootSourceProjectGenesisFloorProofV3<'flight>,
+    },
+}
+
+#[cfg(target_os = "linux")]
+impl GenesisSettlementOriginal<'_, '_, '_> {
+    fn source_post(&self) -> Result<(), SourceGenesisErrorV1> {
+        match self {
+            Self::Global { source, .. } => source.recheck(),
+            Self::Project { source, .. } => source.recheck(),
+        }
+    }
+
+    fn root_post(&self) -> Result<(), SourceGenesisErrorV1> {
+        match self {
+            Self::Global { root, .. } => root.recheck(),
+            Self::Project { root, .. } => root.recheck(),
+        }
+    }
+
+    fn floor(&self) -> &SourceHierarchyFloorRecordV1 {
+        match self {
+            Self::Global { root, .. } => root.floor(),
+            Self::Project { root, .. } => root.floor(),
+        }
+    }
+
+    fn require_source(&self, project: ProjectId) -> Result<(), SourceGenesisErrorV1> {
+        let (actual_project, receipt) = match self {
+            Self::Global { source, .. } =>
+                (source.project(), source.receipt()),
+            Self::Project { source, .. } =>
+                (Some(source.project()), source.receipt()),
+        };
+        if actual_project != Some(project) || receipt != Some(self.floor().receipt())
+        {
+            return Err(SourceGenesisErrorV1::Stale);
+        }
+        Ok(())
+    }
+
+    fn require_complete_source(&self) -> Result<(), SourceGenesisErrorV1> {
+        let (state, ack_floor) = match self {
+            Self::Global { source, .. } => (source.state(), source.ack_floor_digest()),
+            Self::Project { source, .. } => (source.state(), source.ack_floor_digest()),
+        };
+        if state != SourceTreeGenesisStateV1::Anchored
+            || ack_floor != Some(self.floor().digest())
+        { return Err(SourceGenesisErrorV1::Stale); }
+        Ok(())
+    }
+
+    fn ack_record_digest(&self) -> Option<ObjectDigest> {
+        match self {
+            Self::Global { source, .. } => source.ack_record_digest(),
+            Self::Project { source, .. } => source.ack_record_digest(),
+        }
+    }
+
+    fn commit(
+        &self,
+        journal: &mut Journal,
+        transaction: &crate::JournalTransaction,
+        complete: bool,
+    ) -> Result<crate::CommitResult, crate::JournalError> {
+        let transition = if complete { Transition::Complete } else { Transition::FloorAck };
+        match self {
+            Self::Global { root, .. } =>
+                journal.commit_controller_global_genesis_v2(transaction, transition, root),
+            Self::Project { root, .. } =>
+                journal.commit_controller_project_genesis_v3(transaction, transition, root),
+        }
+    }
+
+    fn independent_clock(&self) -> Result<(), SourceGenesisErrorV1> {
+        match self {
+            Self::Global { root, .. } => root.independent_clock_v2(),
+            Self::Project { root, .. } => root.independent_clock_v3(),
+        }
+    }
+}
 
 #[cfg(target_os = "linux")]
 #[derive(Default)]
@@ -307,28 +399,45 @@ impl<'controller> HeldControllerSourceGenesisV1<'controller> {
         complete: bool,
         resident: &mut ControllerProjectGenesisMutationV3,
     ) -> Result<(), ()> {
+        self.settle_genesis(GenesisSettlementOriginal::Project { source, root }, complete, resident)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn settle_global_genesis_v2(
+        &mut self,
+        source: &HeldSourceTreeGenesisObservationV1<'_>,
+        root: &RootSourceGenesisFloorProofV1<'_>,
+        complete: bool,
+        resident: &mut ControllerProjectGenesisMutationV3,
+    ) -> Result<(), ()> {
+        self.settle_genesis(GenesisSettlementOriginal::Global { source, root }, complete, resident)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn settle_genesis(
+        &mut self,
+        original: GenesisSettlementOriginal<'_, '_, '_>,
+        complete: bool,
+        resident: &mut ControllerProjectGenesisMutationV3,
+    ) -> Result<(), ()> {
         if resident.preparation.is_some() { return Err(()); }
         let mut expected = None;
         resident.preparation = Some((|| {
             self.recheck()?;
-            source.recheck()?;
-            root.recheck()?;
-            require_floor(&self.acceptance, root.floor())?;
-            if source.project() != self.acceptance.project()
-                || source.receipt() != Some(root.floor().receipt())
-            { return Err(SourceGenesisErrorV1::Stale); }
+            original.source_post()?;
+            original.root_post()?;
+            require_floor(&self.acceptance, original.floor())?;
+            original.require_source(self.acceptance.project())?;
             let journal = self.journal.try_borrow().map_err(|_| SourceGenesisErrorV1::Stale)?;
             let rows = records::rows(&journal, self.acceptance.project())?.ok_or(SourceGenesisErrorV1::Stale)?;
             let (bytes, prior, transaction) = if complete {
-                if source.state() != SourceTreeGenesisStateV1::Anchored
-                    || source.ack_floor_digest() != Some(root.floor().digest())
-                { return Err(SourceGenesisErrorV1::Stale); }
+                original.require_complete_source()?;
                 let ack = rows.ack.ok_or(SourceGenesisErrorV1::Stale)?;
-                let bytes = records::complete_bytes(&ack, source.ack_record_digest().ok_or(SourceGenesisErrorV1::Stale)?, root.floor().digest())?;
+                let bytes = records::complete_bytes(&ack, original.ack_record_digest().ok_or(SourceGenesisErrorV1::Stale)?, original.floor().digest())?;
                 let transaction = records::complete_transaction(self.acceptance.project(), &bytes)?;
                 (bytes, rows.complete, transaction)
             } else {
-                let bytes = records::ack_bytes(self.acceptance.digest(), root.floor().digest(), root.floor().receipt_digest())?;
+                let bytes = records::ack_bytes(self.acceptance.digest(), original.floor().digest(), original.floor().receipt_digest())?;
                 let transaction = records::ack_transaction(self.acceptance.project(), &bytes)?;
                 (bytes, rows.ack, transaction)
             };
@@ -342,9 +451,7 @@ impl<'controller> HeldControllerSourceGenesisV1<'controller> {
         resident.latch(ControllerProjectGenesisSiteV3::Preparation, resident.preparation.as_ref().is_some_and(Result::is_err));
         if let Some(Ok(Some(transaction))) = &resident.preparation {
             match self.journal.try_borrow_mut() {
-                Ok(mut journal) => resident.native = Some(journal.commit_controller_project_genesis_v3(
-                    transaction, if complete { Transition::Complete } else { Transition::FloorAck }, root,
-                )),
+                Ok(mut journal) => resident.native = Some(original.commit(&mut journal, transaction, complete)),
                 Err(_) => resident.readback = Some(Err(SourceGenesisErrorV1::Stale)),
             }
             resident.latch(ControllerProjectGenesisSiteV3::Native, resident.native.as_ref().is_some_and(Result::is_err));
@@ -362,11 +469,11 @@ impl<'controller> HeldControllerSourceGenesisV1<'controller> {
         }
         resident.posts[0] = Some(self.recheck());
         resident.latch(ControllerProjectGenesisSiteV3::Post(0), resident.posts[0].as_ref().is_some_and(Result::is_err));
-        resident.posts[1] = Some(source.recheck());
+        resident.posts[1] = Some(original.source_post());
         resident.latch(ControllerProjectGenesisSiteV3::Post(1), resident.posts[1].as_ref().is_some_and(Result::is_err));
-        resident.posts[2] = Some(root.recheck());
+        resident.posts[2] = Some(original.root_post());
         resident.latch(ControllerProjectGenesisSiteV3::Post(2), resident.posts[2].as_ref().is_some_and(Result::is_err));
-        resident.posts[3] = Some(root.independent_clock_v3());
+        resident.posts[3] = Some(original.independent_clock());
         resident.latch(ControllerProjectGenesisSiteV3::Post(3), resident.posts[3].as_ref().is_some_and(Result::is_err));
         if resident.error().is_some() { Err(()) } else { Ok(()) }
     }
@@ -470,6 +577,20 @@ impl<'controller> HeldControllerSourceGenesisV1<'controller> {
         let envelope = self.acceptance.resource_envelope()
             .ok_or(SourceGenesisErrorV1::AdmissionClosed)?;
         Ok(HeldCurrentProjectResourceDataV3 { controller: self, envelope })
+    }
+
+    // This closed entry lends the same writer only to completed-Global CAS.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn reserve_completed_global_resources_v2(
+        &self,
+        bank: Option<&std::sync::Arc<std::sync::Mutex<crate::controller_resource_reservation::ControllerResourceBankOpeningV1>>>,
+        source: &super::source_genesis::HeldSourceTreeGenesisObservationV1<'_>,
+        inventory: &super::protected_journal::RetainedTreeInventoryDataV1<'_>,
+        root: &crate::policy_compiler::CompletedRootSourceGenesisFloorV1<'_, '_>,
+        profile: &crate::normal_root::ProductionControllerNormalRootProfileV1,
+        resident: &mut crate::controller_resource_reservation::ProjectResourceGrantAttemptV1,
+    ) -> Result<(), ()> {
+        resident.run_global(self, &self.journal, bank, source, inventory, root, profile)
     }
 
     /// Durably accepts the exact floor while its original Root flight is held.

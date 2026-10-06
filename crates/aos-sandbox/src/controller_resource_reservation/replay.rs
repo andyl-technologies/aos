@@ -214,6 +214,54 @@ fn validate_head(state: &State, head: AccountHead, maximum_depth: usize) -> Resu
     Err(ResourceReservationErrorV1::CorruptLedger)
 }
 
+// This lookup recognizes historical initial payment only. The caller must
+// still hold and recheck the current Controller, Source and Completed Root.
+pub(super) fn prior_initial_project_grant(
+    state: &State,
+    expected: AccountHead,
+    acceptance: [u8; 32],
+    instance: [u8; 32],
+) -> Result<Option<super::Claim>, ResourceReservationErrorV1> {
+    if expected.kind != AccountKind::Project || expected.generation != 1
+        || expected.sandbox != [0; 16] || expected.baseline != ResourceVector::ZERO
+    {
+        return Err(ResourceReservationErrorV1::Conflict);
+    }
+    let mut prior = None;
+    for ((namespace, key), bytes) in state {
+        if *namespace != RecordNamespace::ControllerResourceReservation
+            || key.first() != Some(&CLAIM_PREFIX)
+        {
+            continue;
+        }
+        let claim = codec::decode_claim(bytes)?;
+        if claim.child != expected.id { continue; }
+        let child = find_head(state, expected.id)?;
+        if prior.is_some() || claim.enrollment != expected.enrollment
+            || claim.account != expected.parent || claim.owner != acceptance
+            || claim.purpose != ClaimPurpose::InclusiveGrant
+            || claim.project != expected.project || claim.sandbox != expected.sandbox
+            || claim.tree_revision != expected.tree_revision || claim.genesis_instance != instance
+            || claim.amount != finite_ceilings(expected)? || claim.state != ClaimState::Reserved
+            || !matches!(claim.cut, super::ClaimCut::Operation { .. })
+            || child.enrollment != expected.enrollment || child.id != expected.id
+            || child.parent != expected.parent || child.kind != expected.kind
+            || child.project != expected.project || child.sandbox != expected.sandbox
+            || child.tree_revision != expected.tree_revision || child.baseline != expected.baseline
+            || finite_ceilings(child)? != finite_ceilings(expected)?
+        {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        // Its original paid clock/cut remains untouched. A new live Root cut
+        // authenticates this rejoin, not a second payment or renewed old loan.
+        prior = Some(claim);
+    }
+    if prior.is_none() && has_head(state, expected.id) {
+        return Err(ResourceReservationErrorV1::Conflict);
+    }
+    Ok(prior)
+}
+
 pub(super) fn find_head(state: &State, id: [u8; 16]) -> Result<AccountHead, ResourceReservationErrorV1> {
     let bytes = record_bytes(state, HEAD_PREFIX, id)
         .ok_or(ResourceReservationErrorV1::CorruptLedger)?;
