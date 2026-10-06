@@ -220,6 +220,7 @@ in {
   integration.local-factory-construction = import ./local-factory-construction.nix {inherit sourceGate;};
   integration.native-preownership-restore = import ./native-preownership-restore.nix {inherit sourceGate;};
   integration.native-held-lease-renewal = import ./native-held-lease-renewal.nix {inherit sourceGate;};
+  integration.native-lease-output-sync = import ./native-lease-output-sync.nix {inherit sourceGate;};
   integration.native-checked-mutation-publication = import ./native-checked-mutation-publication.nix {inherit sourceGate;};
   integration.native-written-mutation-sync = import ./native-written-mutation-sync.nix {inherit sourceGate;};
   integration.native-retained-request-checks = import ./native-retained-request-checks.nix {inherit sourceGate;};

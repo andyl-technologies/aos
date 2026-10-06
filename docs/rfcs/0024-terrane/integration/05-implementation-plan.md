@@ -3051,6 +3051,22 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   including the absent lower-backend artifact/retained-holder APIs and actual
   Guard types. No stub, weaker receipt or lint suppression replaces those
   remaining implementations.
+  The trunk held-lease context now retains the actual namespace and Original
+  exclusions across whole-lease renewal. Shared durability work synchronizes
+  exact completed outputs and all required Original records while retaining
+  complete historical preimage checks. The final closed acknowledgment keeps
+  its real missing-result diagnostic without changing the Unsupported outcome.
+  All six held-context and five output-sync cases pass on the corrected trunk
+  source, as does `checks.terrane.integration.native-lease-output-sync`.
+  The preceding composition also passes the held-six, mutation-twelve and
+  singleton-nineteen Nix checks, plus the 41 selected native runtime cases
+  except the subsequently corrected missing-diagnostic assertion. Default and
+  Send compilation, strict private rustdoc and both formatters pass. Strict
+  SDK Clippy remains red on unfinished integration paths. The private retained
+  Original-history correction passes full-D waiting, ownership fault boundaries
+  and genuine renewal-I/O refusal; two stopped-Session error assertions and one
+  unchanged 120-second current-authority timeout remain open. These prerequisites
+  grant no unlink/recovery authority and do not complete this task or T1.
   Narrowed
   to trunk scope: compaction is T-GC-2 on
   B-jobs. — satisfies GC-1, GC-3 to GC-7, GC-9 to GC-17, GC-22 to GC-24,

@@ -10,6 +10,9 @@ use crate::guard::{Guard, OriginalAuthority};
 use crate::store::{Clock, ContentValidator, LocalFs, StoreFailure};
 use terrane_core::gc::{GcError, GcLease};
 
+/// Retains a genuine reusable lease publisher beneath an existing namespace holder.
+pub(crate) use crate::selected_bridge::native_collection::HeldLeaseContext;
+
 /// Reports a refused lease proposal or failed native publication.
 #[derive(Debug)]
 pub enum LeaseError {
@@ -79,13 +82,50 @@ impl<'configuration, F, B, V, C> Collector<'configuration, F, B, V, C> {
     }
 }
 
-impl<F, B, V, C> Collector<'_, F, B, V, C>
+impl<'configuration, F, B, V, C> Collector<'configuration, F, B, V, C>
 where
     F: LocalFs + BucketBinding,
     B: Clock + BucketBinding,
     V: ContentValidator + BucketBinding,
     C: Clock,
 {
+    /// Retains the actual configured namespace for ordinary Session renewal.
+    ///
+    /// # Errors
+    /// Refuses read-only configuration, unavailable retention and unsafe or
+    /// replaced namespace/control coordination while acquiring real exclusion.
+    pub(crate) async fn hold_namespace(
+        &self,
+    ) -> Result<crate::bucket::held::SingleHeld<'configuration, F, B, V>, LeaseError> {
+        Ok(crate::bucket::held::SingleHeld::acquire(self.guard.store()).await?)
+    }
+
+    /// Constructs a reusable publisher beneath the caller's actual retained holder.
+    ///
+    /// Supplied controls retain their existing native exclusion and exact
+    /// observations. Absent controls use the genuine configured Original factory;
+    /// neither branch accepts decoded records as a permission constructor.
+    ///
+    /// # Errors
+    /// Refuses mismatched selected Guard/configuration/registration, unsupported
+    /// native clock or exclusions and unsafe or changed protected control inputs.
+    pub(crate) async fn held<'held>(
+        &self,
+        held: &'held crate::bucket::held::HeldBucket<'configuration, F, B, V, true>,
+        controls: Option<&crate::guard::RetainedControls>,
+    ) -> Result<HeldLeaseContext<'held, 'configuration, F, B, V, C>, LeaseError>
+    where
+        'configuration: 'held,
+    {
+        crate::selected_bridge::native_collection::context(
+            self.guard,
+            self.authority,
+            held,
+            controls,
+        )
+        .await
+    }
+
     /// Acquires an absent lease or takes over an expired lease at a higher epoch.
     ///
     /// A live lease, including one with the same holder, refuses acquisition.
@@ -153,3 +193,8 @@ mod fixture;
 #[cfg(all(test, unix, not(feature = "send")))]
 #[path = "lease/local_tests.rs"]
 mod local_tests;
+
+#[cfg(all(test, feature = "tokio", unix))]
+#[path = "lease/held_tests.rs"]
+/// Qualifies actual held-context collector lease renewal and cancellation.
+pub(crate) mod held_tests;

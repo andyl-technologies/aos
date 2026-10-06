@@ -757,6 +757,26 @@ impl NativeFsEffect {
         Ok(self)
     }
 
+    /// Observes completed lease syncs after actual syscall and fresh checks.
+    ///
+    /// # Errors
+    /// Refuses a different plan or unsupported nested retention wrappers.
+    #[cfg(all(test, feature = "tokio", unix))]
+    pub(crate) fn observe_lease_syncs(
+        mut self,
+        sender: std::sync::mpsc::Sender<artifact_seal::lease_publication::LeaseSyncEvent>,
+    ) -> io::Result<Self> {
+        let plan = match &mut self.plan {
+            Plan::RetainedDirectories { operation, .. } => operation.as_mut(),
+            plan => plan,
+        };
+        let Plan::SealLeasePublication(request) = plan else {
+            return Err(io::Error::other("sync observation requires checked lease"));
+        };
+        request.observe_syncs(sender);
+        Ok(self)
+    }
+
     /// Attaches closed test failure strategies to this already sealed effect.
     #[cfg(test)]
     pub(crate) fn inject_test_faults(mut self, faults: Vec<EffectFault>) -> Self {
@@ -1188,3 +1208,7 @@ mod tests;
 
 #[cfg(all(test, feature = "tokio", unix))]
 pub(crate) use artifact_seal::mutation_publication::MutationSyncEvent;
+
+/// Reports actual successful lease syncs without exposing the private result channel.
+#[cfg(all(test, feature = "tokio", unix))]
+pub(crate) use artifact_seal::lease_publication::LeaseSyncEvent;

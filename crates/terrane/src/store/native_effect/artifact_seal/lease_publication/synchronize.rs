@@ -1,13 +1,22 @@
-//! Builds exact mutation outputs for the shared native durability mechanic.
+//! Builds exact lease outputs and complete consumed Original-control durability.
+//!
+//! Historical inputs remain in every full Worker refresh. The inventory cannot
+//! create lease, current authority or elapsed ownership permission.
 
-use super::super::FencePolicy;
 use super::super::publication_sync::outputs::{
     Inventory, Target, insert_target, synchronize as synchronize_outputs,
 };
-use super::{MutationRequest, NativeEffectFailure, Worker};
-use std::{collections::BTreeMap, io, path::PathBuf};
+use super::{FencePolicy, LeaseRequest, NativeEffectFailure, Worker};
+use std::{collections::BTreeMap, io};
 
-fn targets(request: &MutationRequest) -> io::Result<BTreeMap<PathBuf, Target>> {
+/// Synchronizes exact lease outputs and real completed repairs/removals.
+///
+/// # Errors
+/// Refuses inconsistent scopes or preimages, stale authority and actual sync failure.
+pub(super) fn synchronize(
+    request: &LeaseRequest,
+    worker: &mut Worker,
+) -> Result<(), NativeEffectFailure> {
     let mut targets = BTreeMap::new();
     for (path, bytes, root, protected) in [
         (&request.slot_path, &request.slot, &request.control, true),
@@ -29,6 +38,12 @@ fn targets(request: &MutationRequest) -> io::Result<BTreeMap<PathBuf, Target>> {
             &request.root,
             false,
         ),
+        (
+            &request.root.join("gc/lease"),
+            &request.lease,
+            &request.root,
+            false,
+        ),
     ] {
         insert_target(
             &mut targets,
@@ -41,27 +56,15 @@ fn targets(request: &MutationRequest) -> io::Result<BTreeMap<PathBuf, Target>> {
             },
         )?;
     }
-    for (path, bytes) in &request.proofs {
+    for (path, bytes, root, owner) in &request.required_records {
         insert_target(
             &mut targets,
             path.clone(),
             Target {
-                root: request.control.clone(),
-                owner: request.owner,
+                root: root.clone(),
+                owner: *owner,
                 protected: true,
                 expected: Some(bytes.clone()),
-            },
-        )?;
-    }
-    for (path, bytes) in &request.changes {
-        insert_target(
-            &mut targets,
-            path.clone(),
-            Target {
-                root: request.root.clone(),
-                owner: request.owner,
-                protected: false,
-                expected: bytes.clone(),
             },
         )?;
     }
@@ -69,14 +72,12 @@ fn targets(request: &MutationRequest) -> io::Result<BTreeMap<PathBuf, Target>> {
         let (owner, protected) = match write.policy() {
             FencePolicy::Payload { owner } => (owner, false),
             FencePolicy::ProtectedRecord { owner } => (owner, true),
-            _ => return Err(io::Error::other("completed mutation write policy differs")),
+            _ => return Err(io::Error::other("completed lease write policy differs").into()),
         };
         if !request.scopes.iter().any(|scope| {
             scope.path == write.root() && scope.owner == owner && scope.protected == protected
         }) {
-            return Err(io::Error::other(
-                "completed mutation write boundary differs",
-            ));
+            return Err(io::Error::other("completed lease write boundary differs").into());
         }
         insert_target(
             &mut targets,
@@ -89,21 +90,10 @@ fn targets(request: &MutationRequest) -> io::Result<BTreeMap<PathBuf, Target>> {
             },
         )?;
     }
-    Ok(targets)
-}
-
-/// Synchronizes fixed mutation outputs while retaining complete native refresh.
-///
-/// # Errors
-/// Refuses inconsistent output inventories, current authority or actual durability.
-pub(super) fn synchronize(
-    request: &MutationRequest,
-    worker: &mut Worker,
-) -> Result<(), NativeEffectFailure> {
     synchronize_outputs(
         Inventory {
             scopes: &request.scopes,
-            targets: targets(request)?,
+            targets,
             original_directories: &request.original_directories,
             #[cfg(all(test, feature = "tokio"))]
             completed_syncs: request.completed_syncs.as_ref(),

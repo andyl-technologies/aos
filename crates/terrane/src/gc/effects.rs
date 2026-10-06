@@ -60,7 +60,9 @@ pub(crate) async fn publish_checked<F: LocalFs + BucketBinding>(
         names: Vec::new(),
         reads: Vec::new(),
         parents: BTreeMap::new(),
-        writes: None,
+        writes: Some(super::CompletedWrites {
+            records: BTreeMap::new(),
+        }),
         final_check: Some(context.final_check()),
         owner,
     };
@@ -249,6 +251,7 @@ pub(crate) async fn publish_checked<F: LocalFs + BucketBinding>(
             root,
             control: &control,
             checked,
+            writes: frame.writes.as_ref().ok_or_else(unsupported)?,
             slot: &slot,
             transaction: &transaction,
             snapshot: &snapshot_bytes,
@@ -257,7 +260,14 @@ pub(crate) async fn publish_checked<F: LocalFs + BucketBinding>(
     )
     .map_err(failure)?;
     frame.execute(fs, acknowledgment).await?;
-    completed.take().map_err(failure)?;
+    completed.take().map_err(|error| match error {
+        super::NativeEffectFailure::Io(error)
+            if error.kind() == std::io::ErrorKind::Unsupported =>
+        {
+            StoreFailure::with_source(crate::store::StoreErrorKind::Unsupported, error)
+        }
+        error => failure(error),
+    })?;
 
     Ok(CheckedPublication {
         revision: slot.revision,

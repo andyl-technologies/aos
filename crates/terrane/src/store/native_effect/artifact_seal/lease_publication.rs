@@ -7,7 +7,11 @@
 //! namespace/control roots. This mechanic grants no collection, ownership or
 //! elapsed-age authority.
 
-use super::publication_sync::{SyncScope, synchronize};
+use super::super::publication::CompletedWrites;
+use super::publication_sync::SyncScope;
+
+#[path = "lease_publication/synchronize.rs"]
+mod synchronization;
 use super::{FencePolicy, NativeEffectFailure, Path, PathBuf, Plan, Worker};
 use std::{io, sync::mpsc};
 use terrane_core::gc::GcLease;
@@ -25,6 +29,13 @@ pub(in super::super) struct LeaseRequest {
     snapshot: Vec<u8>,
     pointer: Vec<u8>,
     owner: u32,
+    writes: CompletedWrites,
+    scopes: Vec<SyncScope>,
+    original_directories: Vec<(PathBuf, u32)>,
+    required_records: Vec<(PathBuf, Vec<u8>, PathBuf, u32)>,
+    lease: Vec<u8>,
+    #[cfg(all(test, feature = "tokio"))]
+    completed_syncs: Option<mpsc::Sender<LeaseSyncEvent>>,
     result: mpsc::Sender<DurableLease>,
 }
 
@@ -33,6 +44,18 @@ impl LeaseRequest {
     #[cfg(all(test, feature = "tokio"))]
     pub(in super::super) fn path(&self) -> &Path {
         &self.slot_path
+    }
+}
+
+/// Reports completed native lease syncs without granting acknowledgment.
+#[cfg(all(test, feature = "tokio"))]
+pub(crate) use super::publication_sync::outputs::SyncEvent as LeaseSyncEvent;
+
+impl LeaseRequest {
+    /// Attaches a test observation channel to the actual opaque lease request.
+    #[cfg(all(test, feature = "tokio", unix))]
+    pub(in super::super) fn observe_syncs(&mut self, sender: mpsc::Sender<LeaseSyncEvent>) {
+        self.completed_syncs = Some(sender);
     }
 }
 
@@ -70,6 +93,8 @@ pub(in super::super) struct LeaseInputs<'a, 'operation, 'held> {
     pub(in super::super) control: &'a Path,
     /// Closed producer retaining genuine configured lease and consumed controls.
     pub(in super::super) checked: &'a crate::selected_bridge::CheckedGcLease<'operation, 'held>,
+    /// Genuine completed Frame installations and removals.
+    pub(in super::super) writes: &'a CompletedWrites,
     /// Exact selecting slot after closed configured lease producer validation.
     pub(in super::super) slot: &'a PublicationCommit,
     /// Exact lease-only successor preserving all other selected authority.
@@ -95,6 +120,7 @@ pub(in super::super) fn lease_plan(
         root,
         control,
         checked,
+        writes,
         slot,
         transaction,
         snapshot,
@@ -165,6 +191,59 @@ pub(in super::super) fn lease_plan(
     if slot.transaction_digest != *blake3::hash(&transaction_bytes).as_bytes() {
         return Err(io::Error::other("lease slot digest differs").into());
     }
+    let mut scopes = vec![
+        SyncScope {
+            path: root.to_owned(),
+            owner,
+            protected: false,
+        },
+        SyncScope {
+            path: control.to_owned(),
+            owner,
+            protected: true,
+        },
+    ];
+    let mut original_directories = Vec::new();
+    let guard = checked.guard_record();
+    let mut required_records = vec![(
+        guard.path().to_owned(),
+        guard
+            .bytes()
+            .ok_or_else(|| io::Error::other("lease current Guard absent"))?
+            .to_vec(),
+        control.to_owned(),
+        owner,
+    )];
+    let registration = observed
+        .physical_reads()
+        .first()
+        .filter(|read| read.path() == control.join("backend-registration.cbor"))
+        .ok_or_else(|| io::Error::other("lease current backend registration absent"))?;
+    required_records.push((
+        registration.path().to_owned(),
+        registration
+            .bytes()
+            .ok_or_else(|| io::Error::other("lease backend registration body absent"))?
+            .to_vec(),
+        control.to_owned(),
+        owner,
+    ));
+    for controls in checked.effect_context().controls() {
+        scopes.push(SyncScope {
+            path: controls.directory().to_owned(),
+            owner: controls.owner(),
+            protected: true,
+        });
+        original_directories.push((controls.directory().to_owned(), controls.owner()));
+        for record in controls.records() {
+            required_records.push((
+                record.path().to_owned(),
+                record.bytes().to_vec(),
+                controls.directory().to_owned(),
+                controls.owner(),
+            ));
+        }
+    }
     let (sender, receiver) = mpsc::channel();
     Ok((
         Plan::SealLeasePublication(Box::new(LeaseRequest {
@@ -178,6 +257,17 @@ pub(in super::super) fn lease_plan(
             snapshot: snapshot.to_vec(),
             pointer: transaction.snapshot.encode().map_err(io::Error::other)?,
             owner,
+            writes: writes.clone(),
+            scopes,
+            original_directories,
+            required_records,
+            lease: change
+                .new
+                .as_ref()
+                .ok_or_else(|| io::Error::other("lease successor absent"))?
+                .clone(),
+            #[cfg(all(test, feature = "tokio"))]
+            completed_syncs: None,
             result: sender,
         })),
         LeaseReceiver { result: receiver },
@@ -241,21 +331,7 @@ pub(super) fn execute(
     mut worker: Worker,
 ) -> Result<(), NativeEffectFailure> {
     association(&request, &worker)?;
-    synchronize(
-        &mut worker,
-        &[
-            SyncScope {
-                path: request.root.clone(),
-                owner: request.owner,
-                protected: false,
-            },
-            SyncScope {
-                path: request.control.clone(),
-                owner: request.owner,
-                protected: true,
-            },
-        ],
-    )?;
+    synchronization::synchronize(&request, &mut worker)?;
     association(&request, &worker)?;
     let _ = request.result.send(DurableLease { _private: () });
     Ok(())

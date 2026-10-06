@@ -29,7 +29,7 @@ use terrane_core::tree_builder::Tree;
 use terrane_core::tree_format::{ContentRef, Entry, EntryKind, LeafItem, Property, TreeUse};
 
 /// Checks the same bounded canonical metadata admitted by the real fixture writer.
-pub(super) struct Validator;
+pub(crate) struct Validator;
 
 impl ContentValidator for Validator {
     fn validate_meta(&self, upload: &MetaUpload<'_>) -> Result<(), StoreFailure> {
@@ -48,26 +48,26 @@ impl ContentValidator for Validator {
 }
 
 /// Names the real filesystem and actual injected clock used by the native cases.
-pub(super) type Bucket = FileBucket<TestFs, NativeEffectClock, Validator>;
+pub(crate) type Bucket = FileBucket<TestFs, NativeEffectClock, Validator>;
 /// Names the production repository with protected original retention enabled.
-pub(super) type NativeRepository = Repository<Bucket, NativeEffectClock, TestFs>;
+pub(crate) type NativeRepository = Repository<Bucket, NativeEffectClock, TestFs>;
 
 /// Owns real configured storage, signed source history and its injected clock.
-pub(super) struct Fixture {
+pub(crate) struct Fixture {
     /// Private directory containing the real bucket and sibling controls.
     pub(super) parent: PathBuf,
     /// Actual opened native layout and independently configured operator.
-    pub(super) config: FileBucketConfig,
+    pub(crate) config: FileBucketConfig,
     /// Production retained repository that publishes the signed source history.
     pub(super) repository: NativeRepository,
     /// Opaque registration obtained from the genuinely published original context.
-    pub(super) authority: OriginalAuthority,
+    pub(crate) authority: OriginalAuthority,
     /// Exact selected first source record.
     pub(super) head: RefRecord,
     /// Same injected clock state retained by all native effects.
-    pub(super) clock: TestClock,
+    pub(crate) clock: TestClock,
     /// Actual native executor with bounded test queue observation.
-    pub(super) fs: TestFs,
+    pub(crate) fs: TestFs,
 }
 
 fn key(hex: &str) -> [u8; 32] {
@@ -115,7 +115,7 @@ impl Fixture {
     ///
     /// # Panics
     /// Panics when private native setup, original retention or signed publication fails.
-    pub(super) async fn new() -> Self {
+    pub(crate) async fn new() -> Self {
         let fs = TestFs::default();
         let entropy = fs.random_bytes(16).await.unwrap();
         let suffix = entropy
@@ -222,7 +222,7 @@ impl Fixture {
     }
 
     /// Borrows the actual configured historical Guard from the retained repository.
-    pub(super) fn guard(&self) -> &Guard<Bucket, NativeEffectClock> {
+    pub(crate) fn guard(&self) -> &Guard<Bucket, NativeEffectClock> {
         self.repository.coordinator().guard()
     }
 
@@ -443,7 +443,7 @@ impl Fixture {
     ///
     /// # Panics
     /// Panics when the completed fixture's private storage cannot be removed.
-    pub(super) fn cleanup(self) {
+    pub(crate) fn cleanup(self) {
         std::fs::remove_dir_all(self.parent).unwrap();
     }
 }

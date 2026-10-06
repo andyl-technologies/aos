@@ -50,6 +50,19 @@ impl Operation {
 }
 
 impl Session {
+    /// Retains a genuinely acknowledged fixture lease using the production initializer.
+    ///
+    /// # Errors
+    /// Preserves zero duration, unavailable time and already expired receipt refusal.
+    #[cfg(all(test, feature = "tokio", unix))]
+    pub(crate) fn from_receipt(
+        receipt: crate::gc::lease::LeaseReceipt,
+        duration: u64,
+        clock: NativeEffectClock,
+    ) -> Result<Self, CollectionError> {
+        Self::new(receipt.lease, duration, clock)
+    }
+
     /// Retains an acknowledged native lease and the same injected clock state.
     ///
     /// # Errors
@@ -122,7 +135,7 @@ impl Session {
         move || checks.check(expiry).map(|_| ())
     }
 
-    /// Renews the selected whole value before acquiring any checkpoint holder.
+    /// Renews the selected whole value beneath one actual namespace holder.
     ///
     /// # Errors
     /// Permanently refuses stale ownership, expiration, arithmetic exhaustion,
@@ -137,6 +150,35 @@ impl Session {
         V: crate::store::ContentValidator + crate::bucket::BucketBinding,
         C: Clock,
     {
+        let operation = self.operation()?;
+        let exclusion = collector.hold_namespace().await?;
+        let held = exclusion.destination();
+        let mut context = collector.held(&held, None).await?;
+        self.renew_held(&mut context).await?;
+        operation.complete();
+        Ok(())
+    }
+
+    /// Renews using genuine retained namespace/control publication context.
+    ///
+    /// Cancellation or any failed renewal permanently poisons this Session.
+    /// Only an acknowledged own lease-only transition replaces its whole lease;
+    /// later callers must construct fresh expiry-specific final checks.
+    ///
+    /// # Errors
+    /// Refuses poison, discontinuous clock or old expiry, exhausted renewal
+    /// arithmetic, changed whole selection/controls and actual durability failure.
+    pub(crate) async fn renew_held<F, B, V, C>(
+        &mut self,
+        context: &mut crate::gc::lease::HeldLeaseContext<'_, '_, F, B, V, C>,
+    ) -> Result<(), CollectionError>
+    where
+        F: crate::store::LocalFs + crate::bucket::BucketBinding,
+        B: Clock + crate::bucket::BucketBinding,
+        V: crate::store::ContentValidator + crate::bucket::BucketBinding,
+        C: Clock,
+    {
+        let operation = self.operation()?;
         let now = self.recheck()?;
         let duration = self
             .lease
@@ -144,18 +186,11 @@ impl Session {
             .checked_sub(now)
             .and_then(|remaining| remaining.checked_add(self.duration))
             .ok_or(GcError::Exhausted)?;
-        let result = collector.renew(&self.lease, duration).await;
-        match result {
-            Ok(receipt) => {
-                self.lease = receipt.lease;
-                self.recheck()?;
-                Ok(())
-            }
-            Err(error) => {
-                self.checks.poisoned.store(true, Ordering::Release);
-                Err(error.into())
-            }
-        }
+        let receipt = context.renew(self, duration).await?;
+        self.lease = receipt.lease;
+        self.recheck()?;
+        operation.complete();
+        Ok(())
     }
 }
 

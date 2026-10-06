@@ -19,7 +19,7 @@ pub(crate) mod session;
 pub(crate) mod walk;
 
 #[cfg(all(test, feature = "tokio", unix))]
-mod fixture;
+pub(crate) mod fixture;
 #[cfg(all(test, feature = "tokio", unix))]
 mod tests;
 

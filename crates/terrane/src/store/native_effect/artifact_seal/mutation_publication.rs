@@ -48,13 +48,7 @@ impl MutationRequest {
 
 /// Reports successful actual sync syscalls to a fixture, never acknowledgment.
 #[cfg(all(test, feature = "tokio"))]
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum MutationSyncEvent {
-    /// Reports the fixed metadata path after its real descriptor synchronization.
-    File(PathBuf),
-    /// Reports the fixed directory path after its real descriptor synchronization.
-    Directory(PathBuf),
-}
+pub(crate) use super::publication_sync::outputs::SyncEvent as MutationSyncEvent;
 
 impl MutationRequest {
     /// Attaches a fixture-owned observation channel without changing the plan.

@@ -24,6 +24,9 @@ pub use native_clock::NativeEffectClock;
 #[cfg(all(feature = "std", test))]
 pub(crate) use native_clock::gc_test_clock::TestClock;
 
+/// Reports actual successful lease synchronization to native tests without acknowledgment.
+#[cfg(all(feature = "std", test, feature = "tokio", unix))]
+pub(crate) use native_effect::LeaseSyncEvent;
 #[cfg(all(feature = "std", test, feature = "tokio", unix))]
 pub(crate) use native_effect::MutationSyncEvent;
 #[cfg(feature = "std")]
