@@ -412,3 +412,7 @@ pub(super) use tail::{
 #[cfg(test)]
 #[path = "support/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "support/startup_order.rs"]
+mod startup_order;

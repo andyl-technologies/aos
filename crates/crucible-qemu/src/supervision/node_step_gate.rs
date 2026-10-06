@@ -20,6 +20,7 @@
 //! spawn qemu-crucible (Rust plugin + QMP) -> complete plugin setup handshake
 //!   -> QemuLiveHostIoRuntime::from_shmem_fd (independent read-only shmem view)
 //!   -> publish the boot-barrier ceiling while the guest remains stopped
+//!   -> authenticate and grant the sealed native RAM inventory
 //!   -> authenticate QMP and the device projection, then acknowledge `cont`
 //!   -> QemuNodeFactoryRuntime::new(...) -> build_qemu_node_from_completed_setup
 //!   -> drive QemuNode::advance_to_ceiling over a busy-window ceiling schedule
@@ -1435,101 +1436,7 @@ fn build_live_node_with_authority(
         }
     }
 
-    // Native sealed-inventory admission can hold machine creation until its
-    // independent owner receives a grant. Authenticate this channel before
-    // deterministic setup, which may itself await machine_creation_done.
     let mut admitted_registration = config.ram_control_registration.clone();
-    let mut ram_controller = if let Some(registration) = &admitted_registration {
-        let client = ram_control_endpoint
-            .map(|(stream, launch)| {
-                crate::ram_control::RamControlClient::connect_supervised(
-                    stream,
-                    launch.session,
-                    registration.target,
-                    operation_supervisor.clone(),
-                )
-            })
-            .transpose()
-            .map_err(|source| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
-                reason: format!("authenticate independent RAM controller: {source}"),
-            });
-        match client {
-            Ok(client) => client,
-            Err(error) => return Err(reap_failed_live_node_child(child, error)),
-        }
-    } else {
-        None
-    };
-    if let (Some(client), Some(cleanup)) = (&mut ram_controller, &launch_cleanup) {
-        client.retain_launch_cleanup(cleanup.clone());
-    }
-
-    if let Some(registration) = admitted_registration.as_mut() {
-        let grant = (|| {
-            let client = ram_controller.as_mut().ok_or_else(|| {
-                QemuLiveNodeStepGateError::ExactSnapshotInvariant {
-                    reason: String::from("admitted process has no independent RAM controller"),
-                }
-            })?;
-            client
-                .retain_host_service_lease(launch_service_lease.clone().ok_or_else(|| {
-                    QemuLiveNodeStepGateError::ExactSnapshotInvariant {
-                        reason: String::from(
-                            "RAM controller lacks retained host descriptor authority",
-                        ),
-                    }
-                })?)
-                .map_err(|source| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
-                    reason: format!("retain RAM control descriptor authority: {source}"),
-                })?;
-            let inventory = client.inventory().map_err(|source| {
-                QemuLiveNodeStepGateError::ExactSnapshotInvariant {
-                    reason: format!("authenticate complete native RAM inventory: {source}"),
-                }
-            })?;
-            let resources = registration
-                .registrar
-                .admit_inventory(crate::ram_control::RamInventoryAdmission {
-                    target: registration.target,
-                    expected_initial: registration.resources,
-                    declared_ram_bytes: registration.initial_policy.resident_target_bytes,
-                    topology: &inventory.topology,
-                    native_metadata_bytes: inventory.report.native_metadata_bytes,
-                    native_scratch_bytes: inventory.report.native_scratch_bytes,
-                    owner_resources: inventory.report.owner_resources,
-                })
-                .map_err(|source| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
-                    reason: format!("admit actual native RAM inventory: {source}"),
-                })?;
-            if let Some(cleanup) = &launch_cleanup {
-                cleanup.update_resources(resources).map_err(|source| {
-                    QemuLiveNodeStepGateError::ExactSnapshotInvariant {
-                        reason: format!("retain exact unpublished RAM grant: {source}"),
-                    }
-                })?;
-            }
-            let spill_quota_bytes = crate::ram_admission::private_spill_quota_bytes(
-                &inventory.topology,
-            )
-            .map_err(|source| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
-                reason: format!("retain exact native spill partition: {source}"),
-            })?;
-            client
-                .grant_inventory(&inventory, resources, spill_quota_bytes)
-                .map_err(|source| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
-                    reason: format!("grant admitted native RAM resources: {source}"),
-                })?;
-            Ok((resources, spill_quota_bytes))
-        })();
-        match grant {
-            Ok((resources, spill_quota_bytes)) => {
-                registration.resources = resources;
-                registration.spill_quota_bytes = spill_quota_bytes;
-            }
-            Err(error) => return Err(reap_failed_live_node_child(child, error)),
-        }
-    }
-
     let (child, setup) = complete_host_setup_or_reap(child, || {
         complete_qemu_host_plugin_setup_with_plugin_setup_plan(
             resources.into_setup_resources(),
@@ -1594,12 +1501,9 @@ fn build_live_node_with_authority(
         )
         .map_err(|source| QemuLiveNodeStepGateError::HostIoRuntime { source })
     );
-    let mut runtime = runtime
+    let runtime = runtime
         .with_host_operation_supervisor(operation_supervisor.clone())
         .with_launch_cleanup(launch_cleanup.clone());
-    if let Some(registration) = &admitted_registration {
-        runtime = runtime.with_ram_control_registration(registration.clone());
-    }
     let mut runtime = match (console_observation, console_spool.as_ref()) {
         (Some(output), Some(spool)) => {
             let reader = launch_try!(
@@ -1712,6 +1616,112 @@ fn build_live_node_with_authority(
         config.coverage,
         boot_backpressure_payload,
     ));
+    // Callback registration installs the RAM controller only after SIM setup.
+    // Its inventory is sealed at machine_creation_done, which cannot run until
+    // the mapped plugin boot barrier is released. The first ceiling above only
+    // releases that installation barrier: QEMU remains stopped by -S until the
+    // authenticated inventory grant and QMP validation below have completed.
+    let mut ram_controller = if let Some(registration) = &admitted_registration {
+        let client = ram_control_endpoint
+            .map(|(stream, launch)| {
+                crate::ram_control::RamControlClient::connect_supervised(
+                    stream,
+                    launch.session,
+                    registration.target,
+                    operation_supervisor.clone(),
+                )
+            })
+            .transpose()
+            .map_err(|source| QemuLiveNodeStepGateError::RamAdmission {
+                operation: "authenticate independent RAM controller",
+                source,
+            });
+        match client {
+            Ok(client) => client,
+            Err(error) => return Err(reap_failed_live_node_child(child, error)),
+        }
+    } else {
+        None
+    };
+    if let (Some(client), Some(cleanup)) = (&mut ram_controller, &launch_cleanup) {
+        client.retain_launch_cleanup(cleanup.clone());
+    }
+
+    if let Some(registration) = admitted_registration.as_mut() {
+        let grant = (|| {
+            let client = ram_controller.as_mut().ok_or_else(|| {
+                QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+                    reason: String::from("admitted process has no independent RAM controller"),
+                }
+            })?;
+            client
+                .retain_host_service_lease(launch_service_lease.clone().ok_or_else(|| {
+                    QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+                        reason: String::from(
+                            "RAM controller lacks retained host descriptor authority",
+                        ),
+                    }
+                })?)
+                .map_err(|source| QemuLiveNodeStepGateError::RamAdmission {
+                    operation: "retain RAM control descriptor authority",
+                    source,
+                })?;
+            let inventory =
+                client
+                    .inventory()
+                    .map_err(|source| QemuLiveNodeStepGateError::RamAdmission {
+                        operation: "authenticate complete native RAM inventory",
+                        source,
+                    })?;
+            let resources = registration
+                .registrar
+                .admit_inventory(crate::ram_control::RamInventoryAdmission {
+                    target: registration.target,
+                    expected_initial: registration.resources,
+                    declared_ram_bytes: registration.initial_policy.resident_target_bytes,
+                    topology: &inventory.topology,
+                    native_metadata_bytes: inventory.report.native_metadata_bytes,
+                    native_scratch_bytes: inventory.report.native_scratch_bytes,
+                    owner_resources: inventory.report.owner_resources,
+                })
+                .map_err(|source| QemuLiveNodeStepGateError::RamAdmission {
+                    operation: "admit actual native RAM inventory",
+                    source,
+                })?;
+            if let Some(cleanup) = &launch_cleanup {
+                cleanup.update_resources(resources).map_err(|source| {
+                    QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+                        reason: format!("retain exact unpublished RAM grant: {source}"),
+                    }
+                })?;
+            }
+            let spill_quota_bytes = crate::ram_admission::private_spill_quota_bytes(
+                &inventory.topology,
+            )
+            .map_err(|source| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+                reason: format!("retain exact native spill partition: {source}"),
+            })?;
+            client
+                .grant_inventory(&inventory, resources, spill_quota_bytes)
+                .map_err(|source| QemuLiveNodeStepGateError::RamAdmission {
+                    operation: "grant admitted native RAM resources",
+                    source,
+                })?;
+            Ok((resources, spill_quota_bytes))
+        })();
+        match grant {
+            Ok((resources, spill_quota_bytes)) => {
+                registration.resources = resources;
+                registration.spill_quota_bytes = spill_quota_bytes;
+            }
+            Err(error) => return Err(reap_failed_live_node_child(child, error)),
+        }
+    }
+
+    if let Some(registration) = &admitted_registration {
+        runtime = runtime.with_ram_control_registration(registration.clone());
+    }
+
     let mut qmp = launch_try!(
         crate::QemuQmpVmStateControlChannel::connect_unix_socket_supervised_with_policies(
             qmp_config.socket_path(run_directory_path),

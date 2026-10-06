@@ -91,6 +91,33 @@ fn nonready_ack_after_descriptor_handoff_reaps_real_child_before_scheduler_admis
     Ok(())
 }
 
+#[test]
+fn ram_admission_failure_preserves_original_cause_after_real_child_reap()
+-> Result<(), Box<dyn Error>> {
+    let (child, process_id) = sleeping_test_child()?;
+    let primary = QemuLiveNodeStepGateError::RamAdmission {
+        operation: "authenticate independent RAM controller",
+        source: crucible_protocol::ram_control::RamControlError::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "original descriptor-bound controller reset",
+        )),
+    };
+
+    let error = reap_failed_live_node_child(child, primary);
+
+    let source = error
+        .source()
+        .and_then(|source| source.downcast_ref::<crucible_protocol::ram_control::RamControlError>())
+        .ok_or("reaping must preserve the typed RAM transport cause")?;
+    assert!(matches!(
+        source,
+        crucible_protocol::ram_control::RamControlError::Io(io)
+            if io.kind() == std::io::ErrorKind::ConnectionReset
+    ));
+    assert_child_reaped(process_id)?;
+    Ok(())
+}
+
 fn sleeping_test_child() -> Result<(QemuNodeChild, u32), Box<dyn Error>> {
     let child = QemuNodeChild::new(Command::new("sleep").arg("60").spawn()?);
     let process_id = child.process_id();

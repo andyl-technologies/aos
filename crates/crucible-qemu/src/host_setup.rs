@@ -1162,6 +1162,15 @@ pub(crate) mod tests {
         plugin_socket: UnixStream,
         rows: &[FaultCapabilityRowV1],
     ) -> Result<ValidatedSetupRegion, String> {
+        plugin_peer_complete_setup_after_ack(plugin_socket, rows, |_| Ok(()))
+    }
+
+    /// Executes a peer action after real descriptor handoff and SetupAck.
+    pub(crate) fn plugin_peer_complete_setup_after_ack(
+        plugin_socket: UnixStream,
+        rows: &[FaultCapabilityRowV1],
+        after_ack: impl FnOnce(&crucible_shmem::MappedSetupRegion) -> Result<(), String>,
+    ) -> Result<ValidatedSetupRegion, String> {
         let mut plugin = ControlLifecycleStream::connected_unix_stream(plugin_socket)
             .map_err(|error| error.to_string())?;
         let negotiated = plugin
@@ -1203,6 +1212,7 @@ pub(crate) mod tests {
         plugin
             .enter_run_via_shared_memory()
             .map_err(|error| error.to_string())?;
+        after_ack(&mapped)?;
         plugin
             .plugin_read_run_control_frame()
             .map_err(|error| error.to_string())?;

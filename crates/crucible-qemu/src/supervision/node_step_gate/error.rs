@@ -98,6 +98,14 @@ pub enum QemuLiveNodeStepGateError {
         /// Underlying host-setup error.
         source: QemuHostPluginSetupError,
     },
+    /// A pre-CPU RAM controller exchange or inventory admission failed.
+    #[error("{operation} failed: {source}")]
+    RamAdmission {
+        /// Startup phase whose original failure is retained.
+        operation: &'static str,
+        /// Original authenticated transport, supervision, or admission cause.
+        source: crucible_protocol::ram_control::RamControlError,
+    },
     /// The diagnostic path did not name the descriptor-pinned launch directory.
     #[error(
         "configured QEMU run directory {configured} does not match prepared directory {prepared}"
