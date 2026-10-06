@@ -473,6 +473,10 @@ in rec {
     qemuLiveWhiteboxDoorbell = import ./phase2-qemu-live-whitebox-doorbell.nix {inherit pkgs lib;};
     qemuWhiteboxOutResume = import ./phase2-qemu-whitebox-out-resume.nix {inherit pkgs lib;};
     qemuLinuxWhiteboxOutResume = import ./phase2-qemu-linux-whitebox-out-resume.nix {inherit pkgs lib;};
+    qemuLinuxWhiteboxOutResumeDiagnostics = import ./phase2-qemu-linux-whitebox-out-resume.nix {
+      inherit pkgs lib;
+      runtimeDiagnostics = true;
+    };
     qemuRomClampStress = import ./phase2-qemu-rom-clamp-stress.nix {inherit pkgs lib;};
     qemuRomClampAckPollExperiment = import ./phase2-qemu-rom-clamp-stress.nix {
       inherit pkgs lib;
