@@ -498,14 +498,15 @@ fn inherited_package_roles(
     let mut roles = BTreeMap::new();
 
     for package in &manifest.packages {
-        let role = rules
-            .get(package.name.as_str())
-            .copied()
-            .ok_or_else(|| anyhow::anyhow!("package case lacks its criticality classification"))?;
+        // Only published cells carry a role. Build and test inputs are in the
+        // inventory as not-applicable on every platform and have no rule.
         for cell in &package.platforms {
             let MatrixCell::Artifact { artifact } = &cell.decision else {
                 continue;
             };
+            let role = rules.get(package.name.as_str()).copied().ok_or_else(|| {
+                anyhow::anyhow!("package case lacks its criticality classification")
+            })?;
             propagate_package_role(&artifacts, &artifact.artifact_ids, role, &mut roles)?;
         }
     }
