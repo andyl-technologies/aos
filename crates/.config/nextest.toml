@@ -17,11 +17,11 @@ filter = 'package(terrane) & (test(=gc::runner::tests::local_ownership::ownershi
 threads-required = "num-test-threads"
 slow-timeout = { period = "60s", terminate-after = 3 }
 
-# These native restore matrices complete six handoff fixtures or reopen and
-# reconcile two cycles. Their isolated Nix runs take 141 and 166 seconds.
+# These native collector matrices complete six fault or handoff fixtures, or
+# reopen and reconcile two cycles. Their isolated Nix runs take 135-166 seconds.
 # Reserve the slots and allow a third minute without changing operation clocks.
 [[profile.default.overrides]]
-filter = 'package(terrane) & (test(=gc::runner::tests::restore::gc_restore_native_each_handoff_rechecks_current_controls_and_pair) | test(=gc::runner::tests::restore::gc_restore_native_reopen_and_fresh_cycle_make_old_trash_stale))'
+filter = 'package(terrane) & (test(=gc::runner::tests::restore::gc_restore_native_each_handoff_rechecks_current_controls_and_pair) | test(=gc::runner::tests::restore::gc_restore_native_reopen_and_fresh_cycle_make_old_trash_stale) | test(=gc::runner::tests::retirement::gc_initial_retirement_native_trash_faults_keep_exclusion_without_acknowledgment))'
 threads-required = "num-test-threads"
 slow-timeout = { period = "60s", terminate-after = 3 }
 
@@ -29,6 +29,12 @@ slow-timeout = { period = "60s", terminate-after = 3 }
 # their native setup and reconciliation work free of concurrent test load.
 [[profile.default.overrides]]
 filter = 'package(terrane) & (test(=gc::runner::tests::restore::gc_restore_native_metadata_only_pair_handles_imported_unknown) | test(=gc::runner::tests::restore::gc_restore_native_preserves_fresh_live_quarantine_and_selected_values))'
+threads-required = "num-test-threads"
+
+# This genuine multiple-source publication passes alone in 36 seconds. Reserve
+# its slots while preserving the real commit deadline and ordinary test limit.
+[[profile.default.overrides]]
+filter = 'package(terrane) & test(=ref_advance::disclosure_tests::disclosure_boundary_manifest_and_multiple_source_certificates)'
 threads-required = "num-test-threads"
 
 # This integration test launches a matrix of nested offline Cargo checks. Its

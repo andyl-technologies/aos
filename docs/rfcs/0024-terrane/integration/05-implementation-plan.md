@@ -2941,8 +2941,15 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   keep their 120-second limit and receive exclusive slots. Production C/G/D/H
   and lease deadlines remain unchanged. A focused native-retirement-faults
   integration check separately requires the six-fixture trash fault matrix;
-  its selector is explicitly missing on the current trunk. The isolated local
-  deletion matrix initially runs ten cases with one pass and nine failures.
+  its selector is explicitly missing on the current trunk. The unchanged
+  isolated matrix passes in its owning Nix check in 134.65 seconds; all 4,840
+  included files match that derivation. Its exact Nextest selector receives
+  exclusive slots and the same 180-second limit. The existing multiple-source
+  disclosure case receives exclusive slots while preserving its 120-second
+  test limit and real publication deadline; its isolated pass is recorded
+  separately under T-PROV-1. These scheduling changes await native Nextest
+  qualification. The isolated local deletion matrix initially runs ten cases
+  with one pass and nine failures.
   After correcting retained directory descriptors, genuine full-D ownership,
   actual unlink and synchronization, closed progress acknowledgment and
   idempotent Done pass in the exact positive case in 110.32 seconds. Remaining
