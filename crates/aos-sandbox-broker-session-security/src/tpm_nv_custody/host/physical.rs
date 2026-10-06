@@ -289,7 +289,7 @@ impl<'owner, 'origin, 'startup> RetainedHostPhysicalBindingV1<'owner, 'origin, '
     pub(in crate::tpm_nv_custody) fn commit_canary_v2(
         &mut self, step: super::journal::CanaryHostNativeStepV2,
         transaction: &aos_sandbox::JournalTransaction,
-        original: &super::CanaryAuthenticatedRequestV3<'_>,
+        original: &super::CanaryAuthenticatedRequestV3,
     ) -> Result<(), PhysicalTpmFailureV1> {
         self.journal.commit_canary_step_v2(step, transaction, original)?;
         Ok(())
@@ -414,7 +414,7 @@ impl<'owner, 'origin, 'startup> RetainedHostPhysicalBindingV1<'owner, 'origin, '
     }
 
     pub(in crate::tpm_nv_custody) fn spawn_canary_helper_v2(
-        &mut self, original: &super::CanaryAuthenticatedRequestV3<'_>,
+        &mut self, original: &super::CanaryAuthenticatedRequestV3,
     ) -> Result<std::process::Child, PhysicalTpmFailureV1> {
         let command = self.canary.as_mut().and_then(|selected| selected.command.as_mut())
             .ok_or(PhysicalTpmFailureV1::State)?;
@@ -804,20 +804,20 @@ impl<'owner, 'origin, 'startup> HostCanaryPhysicalConsumerV2<'owner, 'origin, 's
     }
 
     pub(super) fn admit(
-        &mut self, original: &super::CanaryAuthenticatedRequestV3<'_>,
+        &mut self, original: &super::CanaryAuthenticatedRequestV3,
     ) -> Result<FloorRecoveryV1, CanaryPhysicalErrorV2> {
         self.physical.admit_canary_host_v2(original)
     }
 
     pub(super) fn main_data(
-        &mut self, original: &super::CanaryAuthenticatedRequestV3<'_>,
+        &mut self, original: &super::CanaryAuthenticatedRequestV3,
     ) -> Result<super::journal::CanaryHostMainDataV2, CanaryPhysicalErrorV2> {
         self.physical.canary_main_data_v2(original)
     }
 
     pub(super) fn fund(
         &mut self, transaction: &aos_sandbox::JournalTransaction,
-        original: &super::CanaryAuthenticatedRequestV3<'_>,
+        original: &super::CanaryAuthenticatedRequestV3,
     ) -> Result<crate::tpm_nv_custody::HostFloorIntentDataV1, CanaryPhysicalErrorV2> {
         self.physical.fund_canary_host_v2(transaction, original)
     }
@@ -825,20 +825,20 @@ impl<'owner, 'origin, 'startup> HostCanaryPhysicalConsumerV2<'owner, 'origin, 's
     pub(super) fn commit(
         &mut self, step: super::journal::CanaryHostNativeStepV2,
         transaction: &aos_sandbox::JournalTransaction,
-        original: &super::CanaryAuthenticatedRequestV3<'_>,
+        original: &super::CanaryAuthenticatedRequestV3,
     ) -> Result<(), CanaryPhysicalErrorV2> {
         self.physical.commit_canary_host_v2(step, transaction, original)
     }
 
     pub(super) fn extend(
         &mut self, transaction: &aos_sandbox::JournalTransaction,
-        original: &super::CanaryAuthenticatedRequestV3<'_>,
+        original: &super::CanaryAuthenticatedRequestV3,
     ) -> Result<(), CanaryPhysicalErrorV2> {
         self.physical.extend_canary_host_v2(transaction, original)
     }
 
     pub(super) fn classify(
-        &mut self, original: &super::CanaryAuthenticatedRequestV3<'_>,
+        &mut self, original: &super::CanaryAuthenticatedRequestV3,
     ) -> Result<FloorRecoveryV1, CanaryPhysicalErrorV2> {
         self.physical.classify_canary_host_v2(original)
     }
@@ -848,7 +848,7 @@ impl<'owner, 'origin, 'startup> HostCanaryPhysicalConsumerV2<'owner, 'origin, 's
     }
 
     pub(super) fn terminal_observations(
-        &mut self, original: &super::CanaryAuthenticatedRequestV3<'_>,
+        &mut self, original: &super::CanaryAuthenticatedRequestV3,
     ) -> Result<(), CanaryPhysicalErrorV2> {
         self.physical.observe_canary_terminal_v2(original)
     }

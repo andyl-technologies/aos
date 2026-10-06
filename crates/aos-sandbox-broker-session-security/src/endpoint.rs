@@ -44,7 +44,7 @@ pub(crate) struct RetainedBrokerOutcomePreparationV1 {
     response: Option<Result<PreparedBrokerResponseV1, BrokerSessionProjectionError>>,
     subject_fields: Option<Result<BrokerOutcomeSubjectV1, BrokerSessionValidationError>>,
     subject: Option<Result<PreparedBrokerOutcomeV1, BrokerSessionArtifactError>>,
-    key: Option<SigningKey>,
+    key: Option<aos_sandbox_broker_session_protocol::artifact::BrokerOutcomeSigningPreparationV1>,
     preparation: Option<Result<(), BrokerSessionSecurityError>>,
     signature: Option<Result<aos_sandbox_broker_session_protocol::SignedBrokerOutcomeV1, BrokerSessionArtifactError>>,
     projection: Option<Result<(), BrokerSessionProjectionError>>,
@@ -76,6 +76,9 @@ impl RetainedBrokerOutcomePreparationV1 {
             return Some(cause);
         }
         if let Some(Err(cause)) = self.subject.as_ref() {
+            return Some(cause);
+        }
+        if let Some(cause) = self.key.as_ref().and_then(|key| key.failure()) {
             return Some(cause);
         }
         if let Some(Err(cause)) = self.preparation.as_ref() {
@@ -916,7 +919,19 @@ impl ProtectedBrokerSessionBrokerV1 {
                 return Err(BrokerSessionSecurityError::Currentness);
             }
             // Read the actual selected key now; no key or seed leaves custody.
-            retained.key = Some(SigningKey::from_bytes(self.inner.files.broker_outcome_seed()?));
+            let key = SigningKey::from_bytes(self.inner.files.broker_outcome_seed()?);
+            let subject = match retained.subject.take() {
+                Some(Ok(subject)) => subject,
+                result => {
+                    retained.subject = result;
+                    return Err(BrokerSessionSecurityError::Currentness);
+                }
+            };
+
+            // Park the actual subject/key owner before its validator can fail.
+            retained.key = Some(subject.into_signing_preparation(key));
+            retained.key.as_mut().ok_or(BrokerSessionSecurityError::Currentness)?
+                .prepare_once().map_err(|_| BrokerSessionSecurityError::Currentness)?;
             Ok(())
         })());
         matches!(retained.preparation, Some(Ok(())))
@@ -930,14 +945,14 @@ impl ProtectedBrokerSessionBrokerV1 {
             return false;
         }
         retained.sign_attempted = true;
-        let (Some(Ok(subject)), Some(key)) = (retained.subject.as_ref(), retained.key.as_ref()) else {
+        let Some(key) = retained.key.as_mut() else {
             return false;
         };
-        retained.signature = Some(subject.sign(key));
-        if let (Some(Ok(subject)), Some(Ok(signature)), Some(Ok(response))) = (
-            retained.subject.as_ref(), retained.signature.as_ref(), retained.response.as_mut(),
+        retained.signature = Some(key.sign_once());
+        if let (Some(key), Some(Ok(signature)), Some(Ok(response))) = (
+            retained.key.as_ref(), retained.signature.as_ref(), retained.response.as_mut(),
         ) {
-            retained.projection = Some(response.fill(subject, signature));
+            retained.projection = Some(key.fill_signed_response(response, signature));
         }
         // A failed sign/projection does not suppress this independent observation.
         retained.post = Some(self.inner.revalidate_after());

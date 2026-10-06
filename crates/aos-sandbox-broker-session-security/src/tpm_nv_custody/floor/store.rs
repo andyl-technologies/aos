@@ -743,7 +743,7 @@ impl<'origin, 'startup> HostSidecarStoreV1<'origin, 'startup> {
     pub(in crate::tpm_nv_custody) fn commit_first_canary_v2(
         &mut self,
         suffix: &HostSuffixPreflightV1,
-        original: &crate::tpm_nv_custody::host::CanaryAuthenticatedRequestV3<'_>,
+        original: &crate::tpm_nv_custody::host::CanaryAuthenticatedRequestV3,
     ) -> Result<aos_sandbox::CommitResult, HostOwnedJournalErrorV1> {
         self.validate_suffix(suffix)?;
         let transaction = suffix.transactions.first()

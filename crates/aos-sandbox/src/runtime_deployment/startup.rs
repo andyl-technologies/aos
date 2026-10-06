@@ -754,6 +754,11 @@ pub struct RuntimeDeploymentStorageDelegateCaptureV2<'origin> {
     startup: &'origin ProductionRuntimeDeploymentStartupV1,
     purpose: &'origin aos_sandbox_protocol::runtime_deployment::canary::CanaryPurposeV2,
     request: Option<aos_sandbox_protocol::runtime_deployment::canary::CanaryPublisherRequestV3>,
+    original_request: Option<Result<
+        aos_sandbox_protocol::runtime_deployment::canary::CanaryPublisherRequestV3,
+        aos_sandbox_protocol::runtime_deployment::DeploymentWireErrorV1,
+    >>,
+    original_request_phase: OriginalRequestPhaseV3,
     job: Option<aos_sandbox_protocol::host_canary_job::HostCanaryJobDataV1>,
     job_bytes: Vec<u8>,
     job_readback: Vec<u8>,
@@ -833,6 +838,24 @@ enum StoragePropertySiteV2 {
     Comparison,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum OriginalRequestPhaseV3 {
+    Legacy,
+    Parsing,
+    Parsed,
+    Capturing,
+    Transferred,
+}
+
+// Selected observations borrow the moved request; Legacy keeps the same owned
+// slot, decode position and ordinary wrappers. Neither disposition is a permit.
+#[derive(Clone, Copy)]
+enum DelegateRequestDispositionV3<'request> {
+    Legacy,
+    ParsedOriginal,
+    Original(&'request super::RuntimeDeploymentOriginalWindowV3),
+}
+
 impl<'origin> RuntimeDeploymentStorageDelegateCaptureV2<'origin> {
     pub(super) fn new(
         startup: &'origin ProductionRuntimeDeploymentStartupV1,
@@ -840,6 +863,7 @@ impl<'origin> RuntimeDeploymentStorageDelegateCaptureV2<'origin> {
     ) -> Self {
         Self {
             startup, purpose, request: None, job: None,
+            original_request: None, original_request_phase: OriginalRequestPhaseV3::Legacy,
             job_bytes: Vec::new(), job_readback: Vec::new(), proc: None, identity: None,
             status: None, status_bytes: Vec::new(), maps: None, maps_bytes: Vec::new(),
             executable: None, comparison_executable: None, properties: None,
@@ -847,6 +871,177 @@ impl<'origin> RuntimeDeploymentStorageDelegateCaptureV2<'origin> {
             observation: None, fragment: crate::immutable_image::PendingImmutableFileV1::default(),
             cgroup_root: None, measured_cgroup_root: None, cgroup: None, cookie: None, attempted: false,
             ready: false, first_failure: std::sync::Arc::new(None),
+        }
+    }
+
+    /// Parks the selected route's sole request decode before authentication.
+    ///
+    /// This prepares only DATA on the genuine empty capture. No authenticated
+    /// window, ready delegate or physical permission follows from decoding.
+    ///
+    /// # Errors
+    /// Preserves the actual malformed-wire error in its original slot, or
+    /// refuses occupied/repeated/fenced preparation. Failure stays closed.
+    pub fn prepare_original_request_once(
+        &mut self,
+        record: &aos_sandbox_linux::seqpacket::descriptor_subject::ReceivedDescriptorRecord,
+    ) -> Result<(), aos_sandbox_protocol::runtime_deployment::DeploymentWireErrorV1> {
+        use aos_sandbox_protocol::runtime_deployment::{
+            DeploymentWireErrorV1, canary::CanaryPublisherRequestV3,
+        };
+
+        if self.attempted || self.ready || self.first_failure.is_some()
+            || self.request.is_some() || self.original_request.is_some()
+            || self.original_request_phase != OriginalRequestPhaseV3::Legacy
+        {
+            self.ready = false;
+            self.original_request_phase = OriginalRequestPhaseV3::Parsing;
+            return Err(DeploymentWireErrorV1);
+        }
+
+        self.original_request_phase = OriginalRequestPhaseV3::Parsing;
+        self.original_request = Some(CanaryPublisherRequestV3::decode(record.payload()));
+
+        match self.original_request.as_ref() {
+            Some(Ok(_)) => {
+                self.original_request_phase = OriginalRequestPhaseV3::Parsed;
+                Ok(())
+            }
+            Some(Err(error)) => Err(*error),
+            None => Err(DeploymentWireErrorV1),
+        }
+    }
+
+    /// Authenticates the sole prepared request and transfers it only on success.
+    ///
+    /// The result owns the request and borrows only the immutable record, not
+    /// this mutable capture or socket. Originals and all native checks remain
+    /// in the same capture engine. No supplied request or scalar binds custody.
+    ///
+    /// # Errors
+    /// Refuses missing/repeated preparation, changed originals or any existing
+    /// capture failure. The authentic first error stays in this original owner.
+    pub fn capture_original_request_once<'record>(
+        &mut self,
+        socket: &mut aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket,
+        record: &'record aos_sandbox_linux::seqpacket::descriptor_subject::ReceivedDescriptorRecord,
+    ) -> Result<super::RuntimeDeploymentAuthenticatedRequestV3<'record>,
+                super::RuntimeDeploymentComparisonErrorV1>
+    {
+        if self.first_failure.is_some() {
+            return Err(self.diagnostic());
+        }
+
+        self.require_vacant_failure();
+
+        let result = if self.attempted || self.ready
+            || self.original_request_phase != OriginalRequestPhaseV3::Parsed
+            || !matches!(self.original_request.as_ref(), Some(Ok(_)))
+        {
+            Err(RuntimeDeploymentStorageDelegateErrorV2::Changed)
+        } else {
+            self.attempted = true;
+            self.ready = false;
+            self.original_request_phase = OriginalRequestPhaseV3::Capturing;
+            self.capture_inner(socket, record, DelegateRequestDispositionV3::ParsedOriginal)
+        };
+        self.retain_result(result)?;
+
+        // All fallible capture/currentness gates precede this infallible move.
+        // A malformed stage keeps its original Result rather than replacing it.
+        let transfer = self.transfer_original_request(record);
+        match transfer {
+            Ok(original) => Ok(original),
+            Err(error) => {
+                self.retain_result(Err(error))?;
+                Err(self.diagnostic())
+            }
+        }
+    }
+
+    fn transfer_original_request<'record>(
+        &mut self,
+        record: &'record aos_sandbox_linux::seqpacket::descriptor_subject::ReceivedDescriptorRecord,
+    ) -> Result<super::RuntimeDeploymentAuthenticatedRequestV3<'record>,
+                RuntimeDeploymentStorageDelegateErrorV2>
+    {
+        if !self.ready || self.original_request_phase != OriginalRequestPhaseV3::Capturing {
+            return Err(RuntimeDeploymentStorageDelegateErrorV2::Changed);
+        }
+        let cookie = self.cookie.ok_or(RuntimeDeploymentStorageDelegateErrorV2::Changed)?;
+        let identity = self.identity.ok_or(RuntimeDeploymentStorageDelegateErrorV2::Changed)?;
+        if !matches!(self.original_request.as_ref(), Some(Ok(_))) {
+            return Err(RuntimeDeploymentStorageDelegateErrorV2::Changed);
+        }
+
+        self.original_request_phase = OriginalRequestPhaseV3::Transferred;
+        match self.original_request.take() {
+            Some(Ok(request)) => {
+                Ok(super::RuntimeDeploymentAuthenticatedRequestV3::from_completed_capture(
+                    request, record, cookie, identity,
+                ))
+            }
+            result => {
+                self.original_request = result;
+                self.ready = false;
+                Err(RuntimeDeploymentStorageDelegateErrorV2::Changed)
+            }
+        }
+    }
+
+    /// Rechecks the current delegate using its same transferred original request.
+    ///
+    /// # Errors
+    /// Refuses a different/fenced capture, changed carrier, full request/job,
+    /// process, service or original clock. Cookie/identity equality alone never
+    /// substitutes for the existing full canonical/native comparison engine.
+    pub fn recheck_original_request(
+        &mut self,
+        socket: &mut aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket,
+        record: &aos_sandbox_linux::seqpacket::descriptor_subject::ReceivedDescriptorRecord,
+        original: &super::RuntimeDeploymentOriginalWindowV3,
+    ) -> Result<(), super::RuntimeDeploymentComparisonErrorV1> {
+        self.recheck_with_request(socket, record, DelegateRequestDispositionV3::Original(original))
+    }
+
+    /// Fills association DATA from the same current delegate and original window.
+    ///
+    /// # Errors
+    /// Refuses missing/transposed originals, fenced custody or incomplete full
+    /// request/job/current observations. This does not produce effect authority.
+    pub fn fill_original_association_data_v2(
+        &mut self,
+        original: &super::RuntimeDeploymentOriginalWindowV3,
+        fields: &mut aos_sandbox_protocol::runtime_deployment::canary::CanaryAssociationFieldsV2,
+    ) -> Result<(), super::RuntimeDeploymentComparisonErrorV1> {
+        self.fill_association_with_request(fields, DelegateRequestDispositionV3::Original(original))
+    }
+
+    fn request_for<'request>(
+        &'request self,
+        disposition: DelegateRequestDispositionV3<'request>,
+    ) -> Result<&'request aos_sandbox_protocol::runtime_deployment::canary::CanaryPublisherRequestV3,
+                RuntimeDeploymentStorageDelegateErrorV2>
+    {
+        match disposition {
+            DelegateRequestDispositionV3::Legacy
+                if self.original_request_phase == OriginalRequestPhaseV3::Legacy =>
+            {
+                self.request.as_ref().ok_or(RuntimeDeploymentStorageDelegateErrorV2::Changed)
+            }
+            DelegateRequestDispositionV3::ParsedOriginal
+                if self.original_request_phase == OriginalRequestPhaseV3::Capturing =>
+            {
+                self.original_request.as_ref().and_then(|result| result.as_ref().ok())
+                    .ok_or(RuntimeDeploymentStorageDelegateErrorV2::Changed)
+            }
+            DelegateRequestDispositionV3::Original(original)
+                if self.original_request_phase == OriginalRequestPhaseV3::Transferred
+                    && original.matches_capture(self.cookie, self.identity) =>
+            {
+                Ok(original.request())
+            }
+            _ => Err(RuntimeDeploymentStorageDelegateErrorV2::Changed),
         }
     }
 
@@ -866,12 +1061,14 @@ impl<'origin> RuntimeDeploymentStorageDelegateCaptureV2<'origin> {
             return Err(self.diagnostic());
         }
         self.require_vacant_failure();
-        let result = if self.attempted || self.first_failure.is_some() {
+        let result = if self.attempted || self.first_failure.is_some()
+            || self.original_request_phase != OriginalRequestPhaseV3::Legacy
+        {
             Err(RuntimeDeploymentStorageDelegateErrorV2::Changed)
         } else {
             self.attempted = true;
             self.ready = false;
-            self.capture_inner(socket, record)
+            self.capture_inner(socket, record, DelegateRequestDispositionV3::Legacy)
         };
         self.retain_result(result)
     }
@@ -886,6 +1083,15 @@ impl<'origin> RuntimeDeploymentStorageDelegateCaptureV2<'origin> {
         socket: &mut aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket,
         record: &aos_sandbox_linux::seqpacket::descriptor_subject::ReceivedDescriptorRecord,
     ) -> Result<(), super::RuntimeDeploymentComparisonErrorV1> {
+        self.recheck_with_request(socket, record, DelegateRequestDispositionV3::Legacy)
+    }
+
+    fn recheck_with_request(
+        &mut self,
+        socket: &mut aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket,
+        record: &aos_sandbox_linux::seqpacket::descriptor_subject::ReceivedDescriptorRecord,
+        request: DelegateRequestDispositionV3<'_>,
+    ) -> Result<(), super::RuntimeDeploymentComparisonErrorV1> {
         if self.first_failure.is_some() {
             return Err(self.diagnostic());
         }
@@ -894,7 +1100,7 @@ impl<'origin> RuntimeDeploymentStorageDelegateCaptureV2<'origin> {
             Err(RuntimeDeploymentStorageDelegateErrorV2::Changed)
         } else {
             self.ready = false;
-            self.recheck_inner(socket, record)
+            self.recheck_inner(socket, record, request)
         };
         self.retain_result(result)
     }
@@ -916,13 +1122,21 @@ impl<'origin> RuntimeDeploymentStorageDelegateCaptureV2<'origin> {
         &mut self,
         fields: &mut aos_sandbox_protocol::runtime_deployment::canary::CanaryAssociationFieldsV2,
     ) -> Result<(), super::RuntimeDeploymentComparisonErrorV1> {
+        self.fill_association_with_request(fields, DelegateRequestDispositionV3::Legacy)
+    }
+
+    fn fill_association_with_request(
+        &mut self,
+        fields: &mut aos_sandbox_protocol::runtime_deployment::canary::CanaryAssociationFieldsV2,
+        request: DelegateRequestDispositionV3<'_>,
+    ) -> Result<(), super::RuntimeDeploymentComparisonErrorV1> {
         if self.first_failure.is_some() { return Err(self.diagnostic()); }
         self.require_vacant_failure();
         let result = if !self.ready {
             Err(RuntimeDeploymentStorageDelegateErrorV2::Changed)
         } else {
             self.ready = false;
-            self.fill_association_inner(fields)
+            self.fill_association_inner(fields, request)
         };
         self.retain_result(result)
     }
@@ -930,8 +1144,12 @@ impl<'origin> RuntimeDeploymentStorageDelegateCaptureV2<'origin> {
     fn fill_association_inner(
         &self,
         fields: &mut aos_sandbox_protocol::runtime_deployment::canary::CanaryAssociationFieldsV2,
+        disposition: DelegateRequestDispositionV3<'_>,
     ) -> Result<(), RuntimeDeploymentStorageDelegateErrorV2> {
-        let request = self.request.as_ref().ok_or(RuntimeDeploymentStorageDelegateErrorV2::Changed)?;
+        let request = self.request_for(disposition)?;
+        if matches!(disposition, DelegateRequestDispositionV3::Original(_)) {
+            self.require_job(disposition)?;
+        }
         let job = self.job.as_ref().ok_or(RuntimeDeploymentStorageDelegateErrorV2::Changed)?;
         let observed = self.observation.as_ref().ok_or(RuntimeDeploymentStorageDelegateErrorV2::Changed)?;
         let identity = self.identity.ok_or(RuntimeDeploymentStorageDelegateErrorV2::Changed)?;
@@ -997,6 +1215,7 @@ impl<'origin> RuntimeDeploymentStorageDelegateCaptureV2<'origin> {
         &mut self,
         socket: &mut aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket,
         record: &aos_sandbox_linux::seqpacket::descriptor_subject::ReceivedDescriptorRecord,
+        disposition: DelegateRequestDispositionV3<'_>,
     ) -> Result<(), RuntimeDeploymentStorageDelegateErrorV2> {
         use aos_sandbox_protocol::runtime_deployment::canary::CanaryPublisherRequestV3;
         use aos_sandbox_protocol::host_canary_job::decode_host_canary_job_v1;
@@ -1004,9 +1223,11 @@ impl<'origin> RuntimeDeploymentStorageDelegateCaptureV2<'origin> {
         self.startup.recheck()?;
         self.cookie = Some(socket.peer().socket_cookie());
         self.require_subject(socket, record)?;
-        self.request = Some(CanaryPublisherRequestV3::decode(record.payload())
-            .map_err(|_| RuntimeDeploymentStorageDelegateErrorV2::Changed)?);
-        let size = self.request.as_ref().ok_or(RuntimeDeploymentStorageDelegateErrorV2::Changed)?.job_bytes as usize;
+        if matches!(disposition, DelegateRequestDispositionV3::Legacy) {
+            self.request = Some(CanaryPublisherRequestV3::decode(record.payload())
+                .map_err(|_| RuntimeDeploymentStorageDelegateErrorV2::Changed)?);
+        }
+        let size = self.request_for(disposition)?.job_bytes as usize;
         self.require_job_descriptor(record, size)?;
         self.job_bytes.try_reserve_exact(size).map_err(|_| RuntimeDeploymentStorageDelegateErrorV2::Changed)?;
         self.job_readback.try_reserve_exact(size).map_err(|_| RuntimeDeploymentStorageDelegateErrorV2::Changed)?;
@@ -1016,7 +1237,7 @@ impl<'origin> RuntimeDeploymentStorageDelegateCaptureV2<'origin> {
             &record.descriptors()[0], &mut self.job_bytes,
         )?;
         self.job = Some(decode_host_canary_job_v1(&self.job_bytes, &self.purpose.approval_pin())?);
-        self.require_job()?;
+        self.require_job(disposition)?;
 
         let original = record.subject().pidfd();
         self.proc = Some(original.prepare_proc_observations_v1());
@@ -1062,7 +1283,7 @@ impl<'origin> RuntimeDeploymentStorageDelegateCaptureV2<'origin> {
         self.cgroup = Some(self.measured_cgroup_root.as_ref()
             .ok_or(RuntimeDeploymentStorageDelegateErrorV2::Changed)?
             .resolve(Path::new(&STORAGE_CGROUP_V2[1..]))?);
-        self.recheck_inner(socket, record)
+        self.recheck_inner(socket, record, disposition)
     }
 
     fn require_subject(
@@ -1113,8 +1334,10 @@ impl<'origin> RuntimeDeploymentStorageDelegateCaptureV2<'origin> {
         Ok(())
     }
 
-    fn require_job(&self) -> Result<(), RuntimeDeploymentStorageDelegateErrorV2> {
-        let request = self.request.as_ref().ok_or(RuntimeDeploymentStorageDelegateErrorV2::Changed)?;
+    fn require_job(&self, disposition: DelegateRequestDispositionV3<'_>)
+        -> Result<(), RuntimeDeploymentStorageDelegateErrorV2>
+    {
+        let request = self.request_for(disposition)?;
         let job = self.job.as_ref().ok_or(RuntimeDeploymentStorageDelegateErrorV2::Changed)?;
         let original = aos_sandbox_protocol::storage_root_export::StorageCanaryExportRequestV1::decode(&request.request)
             .map_err(|_| RuntimeDeploymentStorageDelegateErrorV2::Changed)?;
@@ -1199,11 +1422,12 @@ impl<'origin> RuntimeDeploymentStorageDelegateCaptureV2<'origin> {
         &mut self,
         socket: &mut aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket,
         record: &aos_sandbox_linux::seqpacket::descriptor_subject::ReceivedDescriptorRecord,
+        disposition: DelegateRequestDispositionV3<'_>,
     ) -> Result<(), RuntimeDeploymentStorageDelegateErrorV2> {
         self.startup.recheck()?;
         self.require_subject(socket, record)?;
-        self.require_job()?;
-        let request = self.request.as_ref().ok_or(RuntimeDeploymentStorageDelegateErrorV2::Changed)?;
+        self.require_job(disposition)?;
+        let request = self.request_for(disposition)?;
         if request.encode().map_err(|_| RuntimeDeploymentStorageDelegateErrorV2::Changed)?.as_slice() != record.payload() {
             return Err(RuntimeDeploymentStorageDelegateErrorV2::Changed);
         }

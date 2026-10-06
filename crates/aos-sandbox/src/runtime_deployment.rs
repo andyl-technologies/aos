@@ -13,6 +13,13 @@ mod preparation;
 mod collector;
 mod comparison;
 mod invocation;
+mod original_request;
+
+pub use original_request::{
+    RuntimeDeploymentAuthenticatedRequestV3, RuntimeDeploymentOriginalWindowV3,
+    RuntimeDeploymentOriginalClockCauseV3, RuntimeDeploymentOriginalClockRangeV3,
+    observe_original_runtime_deployment_clock_v3,
+};
 
 pub use startup::{
     ProductionRuntimeDeploymentStartupCaptureV1, ProductionRuntimeDeploymentStartupPartsV1,
