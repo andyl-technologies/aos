@@ -18,6 +18,7 @@ use crucible_daemon::{
     CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V5, ExactCheckpointStore,
     visit_directory_attempt_states_bounded,
 };
+use crucible_qemu::QemuLaunchArtifactIdentity;
 use crucible_session::engine::{LinkDef, LinkLossProbability, MarkerId};
 
 pub(crate) const FAST_ALTERNATIVE: &str =
@@ -63,7 +64,11 @@ fn public_packaged_campaign_exercises_all_materialization_tiers() -> Result<(), 
 fn run_guest_choice_campaign(hot_fork_flight: bool) -> Result<(), Box<dyn Error>> {
     let fixture = FlightFixture::new()?;
     let (compiled, _scenario) = compile_guest_choice_campaign(&fixture)?;
-    create_guest_choice_campaign(&fixture, &compiled, "qemu-11.1.1-crucible")?;
+    let packaged = QemuLaunchArtifactIdentity::authenticate(
+        required_path("CRUCIBLE_FLIGHT_QEMU")?,
+        required_path("CRUCIBLE_FLIGHT_PLUGIN")?,
+    )?;
+    create_guest_choice_campaign(&fixture, &compiled, packaged.qemu_build_id())?;
 
     let authority = write_component_authority(&fixture)?;
     let immutable_inputs = guest_choice_immutable_inputs(&authority)?;
