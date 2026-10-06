@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "codecRevision": "0d5e7c29fab810a13c579532a408c2b5df979c26",
+  "sourceDigest": "2ae2e733beda26bb35807f5b9469fa5637b62dc27d606634253532aa09e4aa24",
+  "issuerVerifier": null,
+  "captures": [
+    {
+      "requestId": "direct",
+      "procedure": "/aos.hub.v1.DirectUploadService/StatusBatch",
+      "method": "POST",
+      "phase": null,
+      "status": 200,
+      "responseContentType": "application/json",
+      "responseContentEncoding": null,
+      "bodies": {
+        "request": {
+          "file": "direct-request.bin",
+          "sha256": "10674b6339795ec3e8f60eec1a7d661f83f6f7a48addc114347d922e033a0665",
+          "byteSize": "256"
+        },
+        "response": {
+          "file": "direct-response.bin",
+          "sha256": "afd1eeac7cdd1f7b82d81134b1b96f25d12121cd939fb559643388654292bf70",
+          "byteSize": "170"
+        }
+      }
+    },
+    {
+      "requestId": "storage",
+      "procedure": "/_internal/storage/v1/execute",
+      "method": "POST",
+      "phase": null,
+      "status": 200,
+      "responseContentType": "application/json",
+      "responseContentEncoding": null,
+      "bodies": {
+        "request": {
+          "file": "storage-request.bin",
+          "sha256": "59104730037d505f03533d3ad7a11d946b1ade7d49e9223a44f82bd511db88fe",
+          "byteSize": "313"
+        },
+        "response": {
+          "file": "storage-response.bin",
+          "sha256": "637cca401e07142c5336fe249c1dc2e54088c23b193528cbccdee532e5b01691",
+          "byteSize": "186"
+        }
+      },
+      "storageWorkSelection": {
+        "sourceDigest": "2ae2e733beda26bb35807f5b9469fa5637b62dc27d606634253532aa09e4aa24",
+        "completionObservedAtUnixMillis": "100000",
+        "originalPlan": {
+          "file": "storage-request.bin",
+          "sha256": "59104730037d505f03533d3ad7a11d946b1ade7d49e9223a44f82bd511db88fe",
+          "byteSize": "313"
+        }
+      }
+    },
+    {
+      "requestId": "browser",
+      "procedure": "/-/instance",
+      "method": "GET",
+      "phase": null,
+      "status": 200,
+      "responseContentType": "text/html; charset=utf-8",
+      "responseContentEncoding": null,
+      "bodies": {
+        "request": {
+          "file": "browser-request.bin",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "byteSize": "0"
+        },
+        "response": {
+          "file": "browser-response.bin",
+          "sha256": "d2d2adad6e96cdee3c88dfbc55b605014941d4a86ca4dcb9c6e858c495d0c552",
+          "byteSize": "1001"
+        }
+      }
+    }
+  ]
+}

@@ -13,6 +13,8 @@ mod copy_request;
 mod files;
 mod ingress;
 mod mirror;
+#[cfg(feature = "native-bodies")]
+mod native;
 mod storage_work;
 
 #[cfg(test)]
@@ -134,6 +136,15 @@ fn inspect(manifest: Manifest) -> Result<Vec<Observation>> {
 fn main() {
     let result = (|| -> Result<()> {
         let args: Vec<_> = std::env::args_os().collect();
+        if args.get(1).is_some_and(|argument| argument == "native-bodies") {
+            #[cfg(feature = "native-bodies")]
+            {
+                ensure!(args.len() == 3, "expected one private native selection file");
+                return native::run_manifest(std::path::Path::new(&args[2]));
+            }
+            #[cfg(not(feature = "native-bodies"))]
+            anyhow::bail!("native body observation requires the native-bodies feature");
+        }
         if args.len() == 3 && args[1] == "copy-request" {
             let selection = files::read_manifest(std::path::Path::new(&args[2]))?;
             let observation = copy_request::inspect(serde_json::from_slice(&selection)?)?;

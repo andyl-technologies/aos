@@ -6,6 +6,10 @@ publish = false
 
 [workspace]
 
+[features]
+default = []
+native-bodies = []
+
 [dependencies]
 aos-doc-model = { path = "../../../crates/aos-doc-model" }
 aos-proto-types = { path = "../../../crates/aos-proto-types" }
