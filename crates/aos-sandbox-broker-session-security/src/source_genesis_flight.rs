@@ -206,7 +206,8 @@ impl RootFirstSourceSuccessorIoV2 {
         recipe: RootFrameRecipeV3, nonce: [u8; 16],
     ) -> Result<(), ()> {
         if !self.incoming.is_empty() || self.decoded.is_some() { return Err(()); }
-        self.incoming.resize(32 + recipe.payload_bytes(), 0);
+        let project_genesis = matches!(recipe, RootFrameRecipeV3::ProjectGenesis(_));
+        self.incoming.resize(if project_genesis { 32 } else { 32 + recipe.payload_bytes() }, 0);
         let mut received = 0;
         let mut original = stream;
         while received < self.incoming.len() {
@@ -226,6 +227,22 @@ impl RootFirstSourceSuccessorIoV2 {
             // Only a checked successful fragment or recognized nonconsuming
             // interrupt may release its count. A fatal actual Result remains.
             self.native = None;
+            if project_genesis && self.incoming.len() == 32 && received == 32 {
+                let RootFrameRecipeV3::ProjectGenesis(phase) = recipe else { return Err(()); };
+                let width = aos_sandbox::policy_compiler::root_source_project_genesis_payload_bytes_v3(
+                    &self.incoming, phase, nonce,
+                );
+                let payload_bytes = width.as_ref().ok().copied();
+                self.decoded = Some(width.map(|_| ()));
+                if self.decoded.as_ref().is_some_and(Result::is_err) && self.selected_failure.is_none() {
+                    self.selected_failure = Some(SelectedRootIoFailureV3::Decode);
+                }
+                self.recipe_post(stream, bookend, recipe)?;
+                let payload_bytes = payload_bytes.ok_or(())?;
+                self.incoming.resize(32 + payload_bytes, 0);
+                // Only a checked positive header result can leave its slot.
+                self.decoded = None;
+            }
         }
         self.decoded = Some(match recipe {
             RootFrameRecipeV3::FirstSuccessor(phase) => decode_root_first_source_successor_frame_v2(&self.incoming, phase, nonce).map(|_| ()),
@@ -736,7 +753,7 @@ pub struct RootProjectGenesisAttemptV3<'stream, 'startup> {
     opening: RootFirstSourceSuccessorOpeningV2,
     owner: Option<RootSourceGenesisAuthorityV1>,
     contexts: [Option<Result<(aos_sandbox::policy_compiler::SourceProjectGenesisChallengeV3, aos_sandbox::policy_compiler::SourceTreeGenesisIntentContextV1), SourceGenesisErrorV1>>; 3],
-    source: [Option<Result<[u8; aos_sandbox::policy_compiler::SOURCE_PROJECT_GENESIS_READBACK_BYTES_V3], io::Error>>; 3],
+    source: [Option<Result<aos_sandbox::policy_compiler::SourceProjectGenesisReadbackPacketV4, io::Error>>; 3],
     prepared: Option<Result<aos_sandbox::policy_compiler::RootSourceGenesisIntentRecordV1, ()>>,
     floor_selection: Option<Result<bool, SourceGenesisErrorV1>>,
     anchored: Option<Result<SourceHierarchyFloorRecordV1, ()>>,
@@ -879,7 +896,7 @@ fn serve_project_genesis_v3(attempt: &mut RootProjectGenesisAttemptV3<'_, '_>) -
     let (challenge, context) = contexts[0].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
     independent?;
     if matches!(route, RootFirstSourceSuccessorRouteV2::Historical) && challenge.intent().is_none() { return Err(SourceGenesisErrorV1::AdmissionClosed); }
-    source[0] = Some(crate::source_signer_exchange::request_root_source_project_genesis_readback_v3(*challenge, context, owner.source_readback_pin(), *source_signer_uid, *controller_gid));
+    source[0] = Some(crate::source_signer_exchange::request_root_source_project_genesis_readback_v4(*challenge, context, owner.source_readback_pin(), *source_signer_uid, *controller_gid));
     if source[0].as_ref().is_some_and(Result::is_err) { *first_failure = Some(RootProjectGenesisAttemptSiteV3::Source(0)); }
     let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
     let packet = source[0].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
@@ -894,7 +911,7 @@ fn serve_project_genesis_v3(attempt: &mut RootProjectGenesisAttemptV3<'_, '_>) -
     // Only an actual settled floor skips Prepared. A historical challenge may
     // instead name an unanchored intent and cannot choose that shortcut.
     let floor = if has_floor {
-        *anchored = Some(owner.anchor_project_genesis_v3(packet, &actual_clock, *deadline, anchor));
+        *anchored = Some(owner.anchor_project_genesis_v3(packet.as_ref(), &actual_clock, *deadline, anchor));
         if anchored.as_ref().is_some_and(Result::is_err) { *first_failure = Some(RootProjectGenesisAttemptSiteV3::Anchor); }
         let held = RootFirstSourceSuccessorBookendV2 { owner: Some(owner), ..before };
         let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
@@ -902,16 +919,17 @@ fn serve_project_genesis_v3(attempt: &mut RootProjectGenesisAttemptV3<'_, '_>) -
         independent?;
         floor
     } else {
-        *prepared = Some(owner.prepare_project_genesis_v3(packet, &actual_clock, *deadline, prepare));
+        *prepared = Some(owner.prepare_project_genesis_v3(packet.as_ref(), &actual_clock, *deadline, prepare));
         if prepared.as_ref().is_some_and(Result::is_err) { *first_failure = Some(RootProjectGenesisAttemptSiteV3::Prepare); }
         let held = RootFirstSourceSuccessorBookendV2 { owner: Some(owner), ..before };
         let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
         let intent = prepared.as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
         independent?;
-        let mut payload = [0; 800];
+        let mut payload = [0; 976];
+        let payload_bytes = 8 + intent.record_bytes().len();
         payload[..8].copy_from_slice(&owner.current_admission_expiry()?.to_be_bytes());
-        payload[8..].copy_from_slice(intent.record_bytes());
-        if io[1].send_project_genesis_v3(stream, &held, Phase::Prepared, nonce, &payload).is_err() {
+        payload[8..payload_bytes].copy_from_slice(intent.record_bytes());
+        if io[1].send_project_genesis_v3(stream, &held, Phase::Prepared, nonce, &payload[..payload_bytes]).is_err() {
             *first_failure = Some(RootProjectGenesisAttemptSiteV3::Io(1)); return Err(SourceGenesisErrorV1::Stale);
         }
         if io[2].read_with_recipe(stream, &held, RootFrameRecipeV3::ProjectGenesis(Phase::Anchor), nonce).is_err() {
@@ -923,12 +941,12 @@ fn serve_project_genesis_v3(attempt: &mut RootProjectGenesisAttemptV3<'_, '_>) -
         let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
         let (challenge, context) = contexts[1].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
         independent?;
-        source[1] = Some(crate::source_signer_exchange::request_root_source_project_genesis_readback_v3(*challenge, context, owner.source_readback_pin(), *source_signer_uid, *controller_gid));
+        source[1] = Some(crate::source_signer_exchange::request_root_source_project_genesis_readback_v4(*challenge, context, owner.source_readback_pin(), *source_signer_uid, *controller_gid));
         if source[1].as_ref().is_some_and(Result::is_err) { *first_failure = Some(RootProjectGenesisAttemptSiteV3::Source(1)); }
         let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
         let packet = source[1].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
         independent?;
-        *anchored = Some(owner.anchor_project_genesis_v3(packet, &actual_clock, *deadline, anchor));
+        *anchored = Some(owner.anchor_project_genesis_v3(packet.as_ref(), &actual_clock, *deadline, anchor));
         if anchored.as_ref().is_some_and(Result::is_err) { *first_failure = Some(RootProjectGenesisAttemptSiteV3::Anchor); }
         let held = RootFirstSourceSuccessorBookendV2 { owner: Some(owner), ..before };
         let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
@@ -952,14 +970,14 @@ fn serve_project_genesis_v3(attempt: &mut RootProjectGenesisAttemptV3<'_, '_>) -
     let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
     let (challenge, context) = contexts[2].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
     independent?;
-    source[2] = Some(crate::source_signer_exchange::request_root_source_project_genesis_readback_v3(*challenge, context, owner.source_readback_pin(), *source_signer_uid, *controller_gid));
+    source[2] = Some(crate::source_signer_exchange::request_root_source_project_genesis_readback_v4(*challenge, context, owner.source_readback_pin(), *source_signer_uid, *controller_gid));
     if source[2].as_ref().is_some_and(Result::is_err) { *first_failure = Some(RootProjectGenesisAttemptSiteV3::Source(2)); }
     let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
     let packet = source[2].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
     independent?;
     // The genuine current-floor Result borrows this owner and stays a named
     // local through terminal failure and Finish, avoiding any self-borrow.
-    let current_result = owner.current_project_genesis_floor_v3(packet);
+    let current_result = owner.current_project_genesis_floor_v3(packet.as_ref());
     let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
     let Ok(current) = &current_result else { terminate_first_successor_root(); };
     if independent.is_err() || current.floor() != floor { terminate_first_successor_root(); }

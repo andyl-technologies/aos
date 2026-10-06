@@ -1220,7 +1220,7 @@ fn hold_successor_with_recipe_v3<'controller>(
     let genesis_complete = {
         let original_controller = hold_existing_completed_source_genesis_v2(journal, intent.project())?;
         if original_controller.acceptance().seed_packet() != &original.seed_packet()
-            || original_controller.acceptance().auth_packet() != &original.auth_packet()
+            || original_controller.acceptance().auth_packet() != original.auth_packet()
         {
             return Err(SourceGenesisErrorV1::Conflict);
         }

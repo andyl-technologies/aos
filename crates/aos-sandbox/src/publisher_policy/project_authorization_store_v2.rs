@@ -17,6 +17,8 @@
 //!   seven ceilings:u32be each | exact AOSPSC02 packet:224
 //! project-auth/current/<project:16> =
 //!   AOSPAUH2 | project:16 | epoch:u64be | request:16 | row-digest:32
+//! AOSPAUR3 retains exact AOSPSC03[400]; AOSPAUH3 selects that row.
+//! Both recipes share the same protected keys and monotonic epoch kernel.
 //! ```
 
 use std::collections::BTreeMap;
@@ -46,6 +48,7 @@ use super::project_authorization_source_v2::{
     VerifiedPublisherProjectAuthorizationSourceV2, commitment,
     parse_unverified_project_authorization_claims_v2,
     verify_current_project_authorization_source_v2,
+    project_authorization_packet_digest, PROJECT_AUTHORIZATION_SOURCE_BYTES_V3,
 };
 use super::{
     PublisherPolicyError, PublisherPolicyStore, decode_policy_revision, encode_policy_head,
@@ -62,6 +65,11 @@ const ROW_DOMAIN: &[u8] = b"aos.sandbox.publisher-project-authorization.row.v2\0
 const RETAINED_HEAD_DOMAIN: &[u8] =
     b"aos.sandbox.publisher-project-authorization.retained-current-head.v2\0";
 const ROW_BYTES: usize = 188 + PACKET_BYTES;
+const ROW_BYTES_V3: usize = 188 + PROJECT_AUTHORIZATION_SOURCE_BYTES_V3;
+const ROW_DOMAIN_V3: &[u8] = b"aos.sandbox.publisher-project-authorization.row.v3\0";
+#[cfg(any(target_os = "linux", test))]
+const RETAINED_HEAD_DOMAIN_V3: &[u8] =
+    b"aos.sandbox.publisher-project-authorization.retained-current-head.v3\0";
 const HEAD_BYTES: usize = 80;
 const CONTROLLER_ROOT: &str = "/var/lib/aos/sandboxd";
 const CONTROLLER_JOURNAL: &str = "controller.journal";
@@ -77,11 +85,18 @@ pub(super) struct RetainedProjectAuthorizationRowV2 {
     publisher_revision_digest: ObjectDigest,
     packet_digest: ObjectDigest,
     limits: TreeLimitsV1,
-    packet: [u8; PACKET_BYTES],
+    packet: Vec<u8>,
+}
+
+impl RetainedProjectAuthorizationRowV2 {
+    pub(super) fn resource_version(&self) -> bool {
+        self.packet.len() == PROJECT_AUTHORIZATION_SOURCE_BYTES_V3
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct RetainedProjectAuthorizationHeadV2 {
+    resource_version: bool,
     pub(super) project: ProjectId,
     epoch: u64,
     request_id: [u8; 16],
@@ -145,7 +160,18 @@ pub(super) fn head_key(project: ProjectId) -> Vec<u8> {
 }
 
 pub(super) fn project_auth_row_digest(bytes: &[u8]) -> ObjectDigest {
-    commitment(ROW_DOMAIN, bytes)
+    let domain = if bytes.get(..8) == Some(b"AOSPAUR3".as_slice()) { ROW_DOMAIN_V3 } else { ROW_DOMAIN };
+    commitment(domain, bytes)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn retained_head_digest(bytes: &[u8]) -> ObjectDigest {
+    let domain = if bytes.get(..8) == Some(b"AOSPAUH3".as_slice()) {
+        RETAINED_HEAD_DOMAIN_V3
+    } else {
+        RETAINED_HEAD_DOMAIN
+    };
+    commitment(domain, bytes)
 }
 
 fn take<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], PublisherPolicyError> {
@@ -156,8 +182,8 @@ fn take<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], Publishe
 }
 
 fn encode_row(value: &RetainedProjectAuthorizationRowV2) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(ROW_BYTES);
-    bytes.extend_from_slice(ROW_MAGIC);
+    let mut bytes = Vec::with_capacity(188 + value.packet.len());
+    bytes.extend_from_slice(if value.resource_version() { b"AOSPAUR3" } else { ROW_MAGIC });
     bytes.extend_from_slice(value.project.as_bytes());
     bytes.extend_from_slice(&value.request_id);
     bytes.extend_from_slice(&value.epoch.to_be_bytes());
@@ -184,7 +210,8 @@ fn encode_row(value: &RetainedProjectAuthorizationRowV2) -> Vec<u8> {
 pub(super) fn decode_row(
     bytes: &[u8],
 ) -> Result<RetainedProjectAuthorizationRowV2, PublisherPolicyError> {
-    if bytes.len() != ROW_BYTES || bytes.get(..8) != Some(ROW_MAGIC) {
+    let resource_version = bytes.len() == ROW_BYTES_V3 && bytes.get(..8) == Some(b"AOSPAUR3".as_slice());
+    if !resource_version && (bytes.len() != ROW_BYTES || bytes.get(..8) != Some(ROW_MAGIC)) {
         return Err(PublisherPolicyError::CorruptState);
     }
     let limits = TreeLimitsV1::new(
@@ -207,7 +234,7 @@ pub(super) fn decode_row(
         publisher_revision_digest: ObjectDigest::from_bytes(take::<32>(bytes, 96)?),
         packet_digest: ObjectDigest::from_bytes(take::<32>(bytes, 128)?),
         limits,
-        packet: take::<PACKET_BYTES>(bytes, 188)?,
+        packet: bytes[188..].to_vec(),
     };
     let claims = parse_unverified_project_authorization_claims_v2(&row.packet)
         .map_err(|_| PublisherPolicyError::CorruptState)?;
@@ -219,7 +246,9 @@ pub(super) fn decode_row(
         || row.publisher_head_digest != claims.publisher_head_digest
         || row.publisher_revision_digest != claims.publisher_revision_digest
         || row.limits != claims.limits
-        || row.packet_digest != commitment(PACKET_DOMAIN, &row.packet)
+        || claims.resource_envelope.is_some() != resource_version
+        || row.packet_digest != project_authorization_packet_digest(&row.packet)
+            .map_err(|_| PublisherPolicyError::CorruptState)?
     {
         return Err(PublisherPolicyError::CorruptState);
     }
@@ -228,7 +257,7 @@ pub(super) fn decode_row(
 
 fn encode_head(value: RetainedProjectAuthorizationHeadV2) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(HEAD_BYTES);
-    bytes.extend_from_slice(HEAD_MAGIC);
+    bytes.extend_from_slice(if value.resource_version { b"AOSPAUH3" } else { HEAD_MAGIC });
     bytes.extend_from_slice(value.project.as_bytes());
     bytes.extend_from_slice(&value.epoch.to_be_bytes());
     bytes.extend_from_slice(&value.request_id);
@@ -239,10 +268,12 @@ fn encode_head(value: RetainedProjectAuthorizationHeadV2) -> Vec<u8> {
 pub(super) fn decode_head(
     bytes: &[u8],
 ) -> Result<RetainedProjectAuthorizationHeadV2, PublisherPolicyError> {
-    if bytes.len() != HEAD_BYTES || bytes.get(..8) != Some(HEAD_MAGIC) {
+    let resource_version = bytes.get(..8) == Some(b"AOSPAUH3".as_slice());
+    if bytes.len() != HEAD_BYTES || (!resource_version && bytes.get(..8) != Some(HEAD_MAGIC)) {
         return Err(PublisherPolicyError::CorruptState);
     }
     let head = RetainedProjectAuthorizationHeadV2 {
+        resource_version,
         project: ProjectId::from_bytes(take::<16>(bytes, 8)?),
         epoch: u64::from_be_bytes(take::<8>(bytes, 24)?),
         request_id: take::<16>(bytes, 32)?,
@@ -262,9 +293,8 @@ fn row_from_verified(
     verified: VerifiedPublisherProjectAuthorizationSourceV2,
     packet: &[u8],
 ) -> Result<RetainedProjectAuthorizationRowV2, ProjectAuthorizationSourceErrorV2> {
-    let packet: [u8; PACKET_BYTES] = packet
-        .try_into()
-        .map_err(|_| ProjectAuthorizationSourceErrorV2::NonCanonical)?;
+    // The shared verifier has already checked the exact version and width.
+    project_authorization_packet_digest(packet)?;
     Ok(RetainedProjectAuthorizationRowV2 {
         project: verified.project(),
         request_id: verified.request_id(),
@@ -275,7 +305,7 @@ fn row_from_verified(
         publisher_revision_digest: verified.publisher_revision_digest(),
         packet_digest: verified.packet_digest(),
         limits: verified.limits(),
-        packet,
+        packet: packet.to_vec(),
     })
 }
 
@@ -301,20 +331,21 @@ pub(super) fn validate_historical_row(
 }
 
 pub(super) fn validate_rows_and_heads(
-    rows: &BTreeMap<ProjectId, BTreeMap<u64, ([u8; 16], ObjectDigest)>>,
+    rows: &BTreeMap<ProjectId, BTreeMap<u64, ([u8; 16], ObjectDigest, bool)>>,
     heads: &BTreeMap<ProjectId, RetainedProjectAuthorizationHeadV2>,
 ) -> Result<(), PublisherPolicyError> {
     if rows.len() != heads.len() {
         return Err(PublisherPolicyError::CorruptState);
     }
     for (project, epochs) in rows {
-        let (&epoch, &(request_id, row_digest)) = epochs
+        let (&epoch, &(request_id, row_digest, resource_version)) = epochs
             .last_key_value()
             .ok_or(PublisherPolicyError::CorruptState)?;
         let head = heads
             .get(project)
             .ok_or(PublisherPolicyError::CorruptState)?;
-        if head.epoch != epoch || head.request_id != request_id || head.row_digest != row_digest {
+        if head.epoch != epoch || head.request_id != request_id || head.row_digest != row_digest
+            || head.resource_version != resource_version {
             return Err(PublisherPolicyError::CorruptState);
         }
     }
@@ -347,7 +378,9 @@ impl PublisherPolicyStore<'_> {
             publisher_revision: verified.publisher_revision_digest(),
             authorization_head,
             limits: verified.limits(),
-            packet: row.packet,
+            // The unversioned successor recipe retains precisely PSC02.
+            // PSC03 must never be shortened into this older signed body.
+            packet: row.packet.try_into().map_err(|_| ProjectAuthorizationSourceErrorV2::NonCanonical)?,
         })
     }
 
@@ -428,7 +461,7 @@ impl PublisherPolicyStore<'_> {
             .journal
             .get(RecordNamespace::PublisherPolicy, &head_key(project))
             .ok_or(ProjectAuthorizationSourceErrorV2::Stale)?;
-        Ok(commitment(RETAINED_HEAD_DOMAIN, head_bytes))
+        Ok(retained_head_digest(head_bytes))
     }
 
     /// Authenticates the current retained decision with the fixed issuer pin.
@@ -526,13 +559,15 @@ impl PublisherPolicyStore<'_> {
         &mut self,
         project: ProjectId,
         seed: [u8; 224],
-        authorization: [u8; 224],
+        authorization: impl AsRef<[u8]>,
     ) -> Result<
         crate::hierarchy::genesis_profile::ControllerSourceGenesisAcceptanceRecordV1,
         crate::hierarchy::genesis_profile::SourceGenesisErrorV1,
     > {
         use crate::hierarchy::genesis_profile::{SourceGenesisErrorV1, hash};
         use crate::public_api_session::PinnedSystemdCredential;
+
+        let authorization = authorization.as_ref();
 
         self.require_fixed_controller_writer_v2()?;
         let claims = parse_unverified_project_authorization_claims_v2(&authorization)?;
@@ -583,7 +618,7 @@ impl PublisherPolicyStore<'_> {
 
         let transaction = hash(
             b"aos.sandbox.source-genesis.project-authorization-retention.v1\0",
-            &authorization,
+            authorization,
         );
         let mut transaction_id = [0; 16];
         transaction_id.copy_from_slice(&transaction.as_bytes()[..16]);
@@ -612,11 +647,12 @@ impl PublisherPolicyStore<'_> {
         project: ProjectId,
         request_id: [u8; 16],
         seed: [u8; 224],
-        authorization: [u8; 224],
+        authorization: impl AsRef<[u8]>,
         seed_issuer: &PinnedControllerSourceTreeSeedIssuerV1,
         authorization_issuer: &PinnedPublisherProjectAuthorizationIssuerV2,
         administrative_roles: ObjectDigest,
     ) -> Result<(), CurrentSourceTreeSeedPreflightErrorV1> {
+        let authorization = authorization.as_ref();
         let (verified, _) = self.verify_project_authorization_retention_v2(
             project,
             request_id,
@@ -629,7 +665,7 @@ impl PublisherPolicyStore<'_> {
             seed,
             authorization,
             verified,
-            commitment(RETAINED_HEAD_DOMAIN, &encode_head(head)),
+            retained_head_digest(&encode_head(head)),
             seed_issuer,
             authorization_issuer,
             administrative_roles,
@@ -641,7 +677,7 @@ impl PublisherPolicyStore<'_> {
         &self,
         project: ProjectId,
         seed: [u8; 224],
-        authorization: [u8; 224],
+        authorization: impl AsRef<[u8]>,
     ) -> Result<
         crate::hierarchy::genesis_profile::ControllerSourceGenesisAcceptanceRecordV1,
         crate::hierarchy::genesis_profile::SourceGenesisErrorV1,
@@ -671,12 +707,14 @@ impl PublisherPolicyStore<'_> {
         &self,
         project: ProjectId,
         seed: [u8; 224],
-        authorization: [u8; 224],
+        authorization: impl AsRef<[u8]>,
     ) -> Result<
         crate::hierarchy::genesis_profile::ControllerSourceGenesisAcceptanceRecordV1,
         CurrentSourceTreeSeedPreflightErrorV1,
     > {
         use crate::public_api_session::PinnedSystemdCredential;
+
+        let authorization = authorization.as_ref();
 
         self.require_fixed_controller_writer_v2()?;
         let authorization_pin = PinnedSystemdCredential::load_project_authorization_issuer_v2()
@@ -741,19 +779,20 @@ impl PublisherPolicyStore<'_> {
             .ok_or(SourceGenesisErrorV1::Stale)?;
         let row = decode_row(bytes)?;
         validate_historical_row(self.journal, &row)?;
-        if &row.packet != acceptance.auth_packet()
+        if row.packet.as_slice() != acceptance.auth_packet()
             || row.publisher_head_digest != acceptance.publisher_pointer()
             || row.publisher_revision_digest != acceptance.publisher_revision()
         {
             return Err(SourceGenesisErrorV1::Stale);
         }
         let historical_head = encode_head(RetainedProjectAuthorizationHeadV2 {
+            resource_version: row.packet.len() == PROJECT_AUTHORIZATION_SOURCE_BYTES_V3,
             project: row.project,
             epoch: row.epoch,
             request_id: row.request_id,
             row_digest: project_auth_row_digest(bytes),
         });
-        if commitment(RETAINED_HEAD_DOMAIN, &historical_head) != acceptance.authorization_head() {
+        if retained_head_digest(&historical_head) != acceptance.authorization_head() {
             return Err(SourceGenesisErrorV1::Stale);
         }
         let seed_pin = PinnedSystemdCredential::load_controller_source_tree_seed_issuer_v1()
@@ -865,7 +904,8 @@ impl PublisherPolicyStore<'_> {
                 && head.is_some_and(|head| {
                     head.request_id == request_id
                         && head.epoch == row.epoch
-                        && head.row_digest == commitment(ROW_DOMAIN, &encode_row(row))
+                        && head.resource_version == row.resource_version()
+                        && head.row_digest == project_auth_row_digest(&encode_row(row))
                 })
         });
         if previous.is_some() && !exact_replay {
@@ -919,7 +959,8 @@ impl PublisherPolicyStore<'_> {
         let row = decode_row(row_bytes)?;
         if head.project != project
             || head.epoch != row.epoch
-            || head.row_digest != commitment(ROW_DOMAIN, row_bytes)
+            || head.resource_version != (row.packet.len() == PROJECT_AUTHORIZATION_SOURCE_BYTES_V3)
+            || head.row_digest != project_auth_row_digest(row_bytes)
         {
             return Err(PublisherPolicyError::CorruptState.into());
         }
@@ -952,10 +993,11 @@ impl PublisherPolicyStore<'_> {
 
 fn head_for_row(row: &RetainedProjectAuthorizationRowV2) -> RetainedProjectAuthorizationHeadV2 {
     RetainedProjectAuthorizationHeadV2 {
+        resource_version: row.packet.len() == PROJECT_AUTHORIZATION_SOURCE_BYTES_V3,
         project: row.project,
         epoch: row.epoch,
         request_id: row.request_id,
-        row_digest: commitment(ROW_DOMAIN, &encode_row(row)),
+        row_digest: project_auth_row_digest(&encode_row(row)),
     }
 }
 
@@ -979,7 +1021,7 @@ fn administrative_roles_digest_v1(
 #[cfg(any(target_os = "linux", test))]
 fn assemble_current_source_genesis_pair_v1(
     seed: [u8; 224],
-    authorization: [u8; 224],
+    authorization: impl AsRef<[u8]>,
     current: VerifiedPublisherProjectAuthorizationSourceV2,
     authorization_head: ObjectDigest,
     seed_issuer: &PinnedControllerSourceTreeSeedIssuerV1,
@@ -993,13 +1035,15 @@ fn assemble_current_source_genesis_pair_v1(
         ControllerSourceGenesisAcceptanceRecordV1, SourceGenesisErrorV1,
     };
 
+    let authorization = authorization.as_ref();
+
     verify_seed_for_current_authorization_v1(
         &seed,
         current,
         authorization_head,
         |packet, expected| verify_controller_source_tree_seed_v1(packet, seed_issuer, expected),
     )?;
-    if current.packet_digest() != commitment(PACKET_DOMAIN, &authorization)
+    if current.packet_digest() != project_authorization_packet_digest(authorization)?
         || seed_issuer.verifying_key() == authorization_issuer.verifying_key()
     {
         return Err(SourceGenesisErrorV1::Stale.into());
@@ -1158,6 +1202,7 @@ mod tests {
         assert!(!replay);
         let row = row_from_verified(verified, &authorization).unwrap();
         let expected_head = encode_head(RetainedProjectAuthorizationHeadV2 {
+            resource_version: false,
             project,
             epoch: 9,
             request_id: [20; 16],
@@ -2017,6 +2062,7 @@ mod tests {
         row.packet_digest = commitment(PACKET_DOMAIN, &row.packet);
         let row_bytes = encode_row(&row);
         let head = RetainedProjectAuthorizationHeadV2 {
+            resource_version: false,
             project,
             epoch: row.epoch,
             request_id: row.request_id,

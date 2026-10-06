@@ -7,6 +7,8 @@
 //!
 //! Every frame carries the same fresh Root nonce. Decoding any frame produces
 //! data only; it cannot adopt an endpoint or create a held Root proof.
+//! The selected Project recipe preserves V3 legacy frames and uses V4 only
+//! for expanded resource records. Terminal floor commitments remain V3.
 
 use super::controller_readback::CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1;
 use super::records::{ROOT_SOURCE_GENESIS_INTENT_BYTES_V1, SOURCE_HIERARCHY_FLOOR_BYTES_V1};
@@ -226,6 +228,25 @@ impl RootSourceGenesisFrameKindV1 {
             Self::Finish => b"AOSSGE03",
         }
     }
+
+    pub(super) const fn project_magic_v4(self) -> &'static [u8; 8] {
+        match self {
+            Self::Prepare => b"AOSSGP04",
+            Self::Prepared => b"AOSSGI04",
+            Self::Anchor => b"AOSSGF04",
+            Self::Anchored => b"AOSSGA04",
+            Self::Complete => b"AOSSGC04",
+            Self::Completed => b"AOSSGD04",
+            Self::Finish => b"AOSSGE04",
+        }
+    }
+
+    const fn resource_payload_bytes(self) -> Option<usize> {
+        match self {
+            Self::Completed | Self::Finish => None,
+            _ => Some(self.payload_bytes() + 176),
+        }
+    }
 }
 
 /// Selects only the same endpoint's approval-free mixed initial-project purpose.
@@ -241,30 +262,60 @@ pub fn encode_root_source_project_genesis_frame_v3(
     output: &mut Vec<u8>, kind: RootSourceGenesisFrameKindV1,
     nonce: [u8; 16], payload: &[u8],
 ) -> Result<(), SourceGenesisErrorV1> {
-    if !output.is_empty() || nonce == [0; 16] || payload.len() != kind.payload_bytes() {
+    let resource_version = kind.resource_payload_bytes() == Some(payload.len());
+    if !output.is_empty() || nonce == [0; 16]
+        || (!resource_version && payload.len() != kind.payload_bytes()) {
         return Err(SourceGenesisErrorV1::NonCanonical);
     }
     let length = ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1 + payload.len();
     output.try_reserve_exact(length).map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
     output.resize(length, 0);
-    write_frame_header(output, kind.project_magic_v3(), 3, nonce);
+    // Completion/Finish retain their shared 32-byte floor commitment recipe.
+    // Expanded typed records use the distinct resource header, never padding.
+    write_frame_header(output,
+        if resource_version { kind.project_magic_v4() } else { kind.project_magic_v3() },
+        if resource_version { 4 } else { 3 }, nonce);
     output[ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1..].copy_from_slice(payload);
     Ok(())
 }
 
-/// Borrows only the exact selected phase under its distinct version-three header.
+/// Borrows an exact selected legacy or full-resource Project phase payload.
 ///
 /// # Errors
 /// Rejects old-purpose frames, changed nonce, reserved bytes or fixed width.
 pub fn decode_root_source_project_genesis_frame_v3(
     frame: &[u8], kind: RootSourceGenesisFrameKindV1, nonce: [u8; 16],
 ) -> Result<&[u8], SourceGenesisErrorV1> {
-    if frame.len() != ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1 + kind.payload_bytes()
-        || !has_frame_header(frame, kind.project_magic_v3(), 3, nonce)
-    {
+    let header = frame.get(..ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1)
+        .ok_or(SourceGenesisErrorV1::NonCanonical)?;
+    let payload_bytes = root_source_project_genesis_payload_bytes_v3(header, kind, nonce)?;
+    if frame.len() != ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1 + payload_bytes {
         return Err(SourceGenesisErrorV1::NonCanonical);
     }
     Ok(&frame[ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1..])
+}
+
+/// Selects an exact Project payload width from its original-nonce header DATA.
+///
+/// This framing check does not authenticate the sender or mint a held proof.
+/// Expanded records use V4; terminal floor commitments keep their shared V3
+/// recipe and still require the actual original completed owner join.
+///
+/// # Errors
+/// Rejects another purpose, phase, version, nonce, reserved byte or sentinel.
+pub fn root_source_project_genesis_payload_bytes_v3(
+    header: &[u8], kind: RootSourceGenesisFrameKindV1, nonce: [u8; 16],
+) -> Result<usize, SourceGenesisErrorV1> {
+    if header.len() != ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1 {
+        return Err(SourceGenesisErrorV1::NonCanonical);
+    }
+    if has_frame_header(header, kind.project_magic_v3(), 3, nonce) {
+        return Ok(kind.payload_bytes());
+    }
+    if has_frame_header(header, kind.project_magic_v4(), 4, nonce) {
+        return kind.resource_payload_bytes().ok_or(SourceGenesisErrorV1::NonCanonical);
+    }
+    Err(SourceGenesisErrorV1::NonCanonical)
 }
 
 /// Encodes one exact phase payload without creating live Root authority.

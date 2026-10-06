@@ -83,11 +83,13 @@ pub use model::{
     PublisherResourceBindingV1, PublisherRevocationHeadV1,
 };
 pub use project_authorization_source_v2::{
-    PROJECT_AUTHORIZATION_SOURCE_BYTES_V2, PinnedPublisherProjectAuthorizationIssuerV2,
+    PROJECT_AUTHORIZATION_SOURCE_BYTES_V2, PROJECT_AUTHORIZATION_SOURCE_BYTES_V3,
+    PinnedPublisherProjectAuthorizationIssuerV2, ProjectResourceAuthorizationClaimsV3,
     ProjectAuthorizationSourceErrorV2, ProjectAuthorizationSourceExpectedV2,
     VerifiedPublisherProjectAuthorizationSourceV2,
     encode_project_authorization_issuer_credential_v2,
     verify_current_project_authorization_source_v2,
+    sign_project_resource_authorization_source_v3,
 };
 
 /// Provides exclusive access to validated current publisher policy state.

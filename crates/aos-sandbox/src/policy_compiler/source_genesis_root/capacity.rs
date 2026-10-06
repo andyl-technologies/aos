@@ -245,7 +245,7 @@ pub(crate) fn validate_settlement(
         || floor.receipt().intent_digest() != intent.digest()
         || floor.receipt().acceptance_digest() != intent.acceptance()
         || &floor.receipt().seed_packet() != intent.accepted_input().seed_packet()
-        || &floor.receipt().auth_packet() != intent.accepted_input().auth_packet()
+        || floor.receipt().auth_packet() != intent.accepted_input().auth_packet()
         || journal
             .get(RecordNamespace::DesiredState, &floor_key(&floor))
             .is_some()

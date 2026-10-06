@@ -97,8 +97,10 @@ pub use flight::{HeldRootSourceProjectGenesisIntentV3, RootSourceProjectGenesisF
 pub(crate) use flight::CompletedRootSourceProjectGenesisFloorV3;
 pub use flight::observe_root_first_source_successor_clock_v2;
 pub use records::{
-    ROOT_SOURCE_GENESIS_INTENT_BYTES_V1, RootSourceGenesisIntentRecordV1,
+    ROOT_SOURCE_GENESIS_INTENT_BYTES_V1, ROOT_SOURCE_GENESIS_INTENT_BYTES_V2,
+    RootSourceGenesisIntentRecordV1,
     SOURCE_GENESIS_DEPLOYMENT_INSTANCE_BYTES_V1, SOURCE_HIERARCHY_FLOOR_BYTES_V1,
+    SOURCE_HIERARCHY_FLOOR_BYTES_V2,
     SourceHierarchyFloorRecordV1,
 };
 pub use store::{
@@ -130,6 +132,7 @@ pub use wire::{
 pub use wire::{
     ROOT_SOURCE_PROJECT_GENESIS_QUERY_MAGIC_V3, ROOT_SOURCE_PROJECT_GENESIS_HELLO_MAGIC_V3,
     encode_root_source_project_genesis_frame_v3, decode_root_source_project_genesis_frame_v3,
+    root_source_project_genesis_payload_bytes_v3,
 };
 pub use wire::{
     ROOT_FIRST_SOURCE_SUCCESSOR_HELLO_MAGIC_V2, ROOT_FIRST_SOURCE_SUCCESSOR_QUERY_MAGIC_V2,

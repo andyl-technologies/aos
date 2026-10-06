@@ -10,13 +10,15 @@
 //! project:16 | publisher-generation:u64be | AOSPOLH1 digest:32 |
 //! AOSPOLR1 digest:32 | request-id:16 | issuer-epoch:u64be |
 //! seven TreeLimitsV1 ceilings:u32be each | Ed25519 signature:64
+//! AOSPSC03 uses the same claims, followed by 22 resource ceilings:u64be
+//! in ResourceDimension::ALL order, then the signature (336 + 64 bytes).
 //!
 //! AOSPAK02 | signer-generation:u64be | Ed25519 public key:32 |
 //! SHA-256(key-domain || preceding 48 bytes):32
 //! ```
 
-use aos_sandbox_core::{ObjectDigest, ProjectId};
-use ed25519_dalek::{Signature, VerifyingKey};
+use aos_sandbox_core::{ObjectDigest, ProjectId, ResourceDimension, ResourceVector};
+use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
@@ -33,18 +35,24 @@ const MAGIC: &[u8; 8] = b"AOSPSC02";
 const KEY_MAGIC: &[u8; 8] = b"AOSPAK02";
 const VERSION: u16 = 2;
 const BODY_BYTES: usize = 160;
+const BODY_BYTES_V3: usize = BODY_BYTES + ResourceDimension::COUNT * 8;
 /// Bounds the exact independently signed project-authorization source packet.
 pub const PROJECT_AUTHORIZATION_SOURCE_BYTES_V2: usize = BODY_BYTES + 64;
+/// Bounds the signed project authorization including all resource dimensions.
+pub const PROJECT_AUTHORIZATION_SOURCE_BYTES_V3: usize = BODY_BYTES_V3 + 64;
 pub(super) const PACKET_BYTES: usize = PROJECT_AUTHORIZATION_SOURCE_BYTES_V2;
 const KEY_BYTES: usize = ROLE_CREDENTIAL_BYTES;
 const SIGNING_DOMAIN: &[u8] =
     b"aos.sandbox.publisher-project-authorization-source.v2\0/var/lib/aos/sandboxd/controller.journal\0";
+const SIGNING_DOMAIN_V3: &[u8] =
+    b"aos.sandbox.publisher-project-authorization-source.v3\0/var/lib/aos/sandboxd/controller.journal\0";
 const KEY_DOMAIN: &[u8] = b"aos.sandbox.publisher-project-authorization-verifier.v2\0";
 pub(super) const HEAD_DOMAIN: &[u8] =
     b"aos.sandbox.publisher-project-authorization.current-head.v2\0";
 pub(super) const REVISION_DOMAIN: &[u8] =
     b"aos.sandbox.publisher-project-authorization.current-revision.v2\0";
 pub(super) const PACKET_DOMAIN: &[u8] = b"aos.sandbox.publisher-project-authorization.packet.v2\0";
+const PACKET_DOMAIN_V3: &[u8] = b"aos.sandbox.publisher-project-authorization.packet.v3\0";
 
 /// Reports an invalid or stale signed project authorization source.
 #[derive(Debug, Error)]
@@ -146,6 +154,77 @@ pub fn encode_project_authorization_issuer_credential_v2(
         .ok_or(ProjectAuthorizationSourceErrorV2::NonCanonical)
 }
 
+/// Describes an offline administrative statement with an explicit full budget.
+///
+/// These values are DATA until the existing issuer signature and current
+/// publisher, epoch and owner joins are verified. No Node ceiling is inherited.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProjectResourceAuthorizationClaimsV3 {
+    /// Identifies the project selected by the administrative signer.
+    pub project: ProjectId,
+    /// Retains the independent administrative issuer generation.
+    pub issuer_generation: u64,
+    /// Identifies the existing publisher revision generation.
+    pub publisher_generation: u64,
+    /// Commits to the exact existing protected publisher pointer.
+    pub publisher_head: ObjectDigest,
+    /// Commits to the exact existing immutable publisher revision.
+    pub publisher_revision: ObjectDigest,
+    /// Correlates the administrative request and matching seed.
+    pub request_id: [u8; 16],
+    /// Carries the administrative epoch, which retention must spend once.
+    pub epoch: u64,
+    /// Carries the same seven independent initial-tree ceilings as PSC02.
+    pub tree_limits: TreeLimitsV1,
+    /// Carries explicit ceilings for every registered resource dimension.
+    pub resource_envelope: ResourceVector,
+}
+
+/// Signs the full administrative resource statement for offline provisioning.
+///
+/// The signer remains the existing AOSPAK02 role. Signing does not install a
+/// credential, retain an epoch, authorize Source mutation or fund a Project.
+///
+/// # Errors
+/// Rejects sentinel claims or tree limits that cannot fit the existing codec.
+pub fn sign_project_resource_authorization_source_v3(
+    claims: ProjectResourceAuthorizationClaimsV3,
+    key: &SigningKey,
+) -> Result<[u8; PROJECT_AUTHORIZATION_SOURCE_BYTES_V3], ProjectAuthorizationSourceErrorV2> {
+    let mut packet = [0; PROJECT_AUTHORIZATION_SOURCE_BYTES_V3];
+    packet[..8].copy_from_slice(b"AOSPSC03");
+    packet[8..10].copy_from_slice(&3_u16.to_be_bytes());
+    packet[12..20].copy_from_slice(&claims.issuer_generation.to_be_bytes());
+    packet[20..36].copy_from_slice(claims.project.as_bytes());
+    packet[36..44].copy_from_slice(&claims.publisher_generation.to_be_bytes());
+    packet[44..76].copy_from_slice(claims.publisher_head.as_bytes());
+    packet[76..108].copy_from_slice(claims.publisher_revision.as_bytes());
+    packet[108..124].copy_from_slice(&claims.request_id);
+    packet[124..132].copy_from_slice(&claims.epoch.to_be_bytes());
+
+    for (index, limit) in [
+        claims.tree_limits.maximum_project_roots(),
+        claims.tree_limits.maximum_project_sandboxes(),
+        claims.tree_limits.maximum_project_live_sandboxes(),
+        claims.tree_limits.maximum_depth(),
+        claims.tree_limits.maximum_children_per_parent(),
+        claims.tree_limits.maximum_descendants(),
+        claims.tree_limits.maximum_live_descendants(),
+    ].into_iter().enumerate() {
+        let limit = u32::try_from(limit).map_err(|_| ProjectAuthorizationSourceErrorV2::NonCanonical)?;
+        packet[132 + index * 4..136 + index * 4].copy_from_slice(&limit.to_be_bytes());
+    }
+    for (index, dimension) in ResourceDimension::ALL.into_iter().enumerate() {
+        packet[BODY_BYTES + index * 8..BODY_BYTES + (index + 1) * 8]
+            .copy_from_slice(&claims.resource_envelope.get(dimension).to_be_bytes());
+    }
+
+    parse_unverified_project_authorization_claims_v2(&packet)?;
+    let signature = key.sign(&signing_preimage(&packet[..BODY_BYTES_V3]));
+    packet[BODY_BYTES_V3..].copy_from_slice(&signature.to_bytes());
+    Ok(packet)
+}
+
 /// Selects a trusted project, request, and previously spent issuer epoch.
 ///
 /// The future issuer must derive these values from protected administrative
@@ -194,9 +273,18 @@ pub struct VerifiedPublisherProjectAuthorizationSourceV2 {
     request_id: [u8; 16],
     epoch: u64,
     packet_digest: ObjectDigest,
+    resource_envelope: Option<ResourceVector>,
 }
 
 impl VerifiedPublisherProjectAuthorizationSourceV2 {
+    /// Returns the explicit signed resource envelope, or none for legacy V2.
+    ///
+    /// This observation is DATA, not paid capacity or a bank admission proof.
+    #[must_use]
+    pub const fn resource_envelope(self) -> Option<ResourceVector> {
+        self.resource_envelope
+    }
+
     /// Returns the signed project identity.
     #[must_use]
     pub const fn project(self) -> ProjectId {
@@ -262,19 +350,15 @@ pub(crate) struct UnverifiedProjectAuthorizationClaimsV2 {
     pub(crate) publisher_revision_digest: ObjectDigest,
     pub(crate) request_id: [u8; 16],
     pub(crate) epoch: u64,
+    pub(crate) resource_envelope: Option<ResourceVector>,
 }
 
 pub(crate) fn parse_unverified_project_authorization_claims_v2(
     bytes: &[u8],
 ) -> Result<UnverifiedProjectAuthorizationClaimsV2, ProjectAuthorizationSourceErrorV2> {
-    if bytes.len() != PACKET_BYTES {
-        return Err(ProjectAuthorizationSourceErrorV2::NonCanonical);
-    }
-    let body = &bytes[..BODY_BYTES];
-    if body[..8] != MAGIC[..]
-        || take::<2>(body, 8)? != VERSION.to_be_bytes()
-        || take::<2>(body, 10)? != [0; 2]
-    {
+    let body_bytes = packet_body_bytes(bytes)?;
+    let body = &bytes[..body_bytes];
+    if take::<2>(body, 10)? != [0; 2] {
         return Err(ProjectAuthorizationSourceErrorV2::NonCanonical);
     }
     let limits = TreeLimitsV1::new(
@@ -287,6 +371,15 @@ pub(crate) fn parse_unverified_project_authorization_claims_v2(
         read_limit(body, 156)?,
     )
     .map_err(|_| ProjectAuthorizationSourceErrorV2::NonCanonical)?;
+    let resource_envelope = if body_bytes == BODY_BYTES_V3 {
+        let mut values = [0; ResourceDimension::COUNT];
+        for (index, value) in values.iter_mut().enumerate() {
+            *value = u64::from_be_bytes(take::<8>(body, BODY_BYTES + index * 8)?);
+        }
+        Some(ResourceVector::new(values))
+    } else {
+        None
+    };
     let claims = UnverifiedProjectAuthorizationClaimsV2 {
         project: ProjectId::from_bytes(take::<16>(body, 20)?),
         limits,
@@ -296,6 +389,7 @@ pub(crate) fn parse_unverified_project_authorization_claims_v2(
         publisher_revision_digest: ObjectDigest::from_bytes(take::<32>(body, 76)?),
         request_id: take::<16>(body, 108)?,
         epoch: u64::from_be_bytes(take::<8>(body, 124)?),
+        resource_envelope,
     };
     if claims.project.as_bytes() == &[0; 16]
         || claims.request_id == [0; 16]
@@ -310,7 +404,7 @@ pub(crate) fn parse_unverified_project_authorization_claims_v2(
     Ok(claims)
 }
 
-/// Verifies a V2 source against its pin and actual protected publisher head.
+/// Verifies a V2 or V3 source against its pin and protected publisher head.
 ///
 /// The packet binds both the `AOSPOLH1` current pointer and the selected
 /// `AOSPOLR1` revision, so a validly encoded replacement with the same
@@ -370,7 +464,8 @@ pub fn verify_current_project_authorization_source_v2(
         publisher_revision_digest: claims.publisher_revision_digest,
         request_id: claims.request_id,
         epoch: claims.epoch,
-        packet_digest: commitment(PACKET_DOMAIN, bytes),
+        packet_digest: project_authorization_packet_digest(bytes)?,
+        resource_envelope: claims.resource_envelope,
     })
 }
 
@@ -383,10 +478,11 @@ pub(crate) fn verify_signed_project_authorization_claims_v2(
     if claims.issuer_generation != issuer.generation {
         return Err(ProjectAuthorizationSourceErrorV2::Stale);
     }
-    let signature = Signature::from_bytes(&take::<64>(bytes, BODY_BYTES)?);
+    let body_bytes = packet_body_bytes(bytes)?;
+    let signature = Signature::from_bytes(&take::<64>(bytes, body_bytes)?);
     issuer
         .key
-        .verify_strict(&signing_preimage(&bytes[..BODY_BYTES]), &signature)
+        .verify_strict(&signing_preimage(&bytes[..body_bytes]), &signature)
         .map_err(|_| ProjectAuthorizationSourceErrorV2::Signature)?;
     Ok(claims)
 }
@@ -407,10 +503,29 @@ fn read_limit(bytes: &[u8], offset: usize) -> Result<usize, ProjectAuthorization
 }
 
 fn signing_preimage(body: &[u8]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(SIGNING_DOMAIN.len() + body.len());
-    bytes.extend_from_slice(SIGNING_DOMAIN);
+    let domain = if body.len() == BODY_BYTES_V3 { SIGNING_DOMAIN_V3 } else { SIGNING_DOMAIN };
+    let mut bytes = Vec::with_capacity(domain.len() + body.len());
+    bytes.extend_from_slice(domain);
     bytes.extend_from_slice(body);
     bytes
+}
+
+// Width, magic and version select one closed recipe before any slicing.
+fn packet_body_bytes(bytes: &[u8]) -> Result<usize, ProjectAuthorizationSourceErrorV2> {
+    match (bytes.len(), bytes.get(..8), bytes.get(8..10)) {
+        (PROJECT_AUTHORIZATION_SOURCE_BYTES_V2, Some(magic), Some(version))
+            if magic == MAGIC && version == VERSION.to_be_bytes() => Ok(BODY_BYTES),
+        (PROJECT_AUTHORIZATION_SOURCE_BYTES_V3, Some(magic), Some(version))
+            if magic == b"AOSPSC03" && version == 3_u16.to_be_bytes() => Ok(BODY_BYTES_V3),
+        _ => Err(ProjectAuthorizationSourceErrorV2::NonCanonical),
+    }
+}
+
+pub(super) fn project_authorization_packet_digest(
+    bytes: &[u8],
+) -> Result<ObjectDigest, ProjectAuthorizationSourceErrorV2> {
+    let domain = if packet_body_bytes(bytes)? == BODY_BYTES_V3 { PACKET_DOMAIN_V3 } else { PACKET_DOMAIN };
+    Ok(commitment(domain, bytes))
 }
 
 fn take<const N: usize>(

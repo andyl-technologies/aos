@@ -10,9 +10,10 @@
 //! AOSCSE01[224] | AOSPSC02[224] | publisher-pointer[32] |
 //! publisher-revision[32] | project-authorization-head[32] |
 //! administrative-role-tuple[32]
+//! AOSSGC02 retains the same seed and joins with exact AOSPSC03[400].
 //! ```
 
-use aos_sandbox_core::{ObjectDigest, ProjectId};
+use aos_sandbox_core::{ObjectDigest, ProjectId, ResourceVector};
 use sha2::{Digest as _, Sha256};
 
 use super::source_seed::{
@@ -26,9 +27,12 @@ use crate::publisher_policy::{
 
 /// Bounds one immutable Controller acceptance of the exact signed inputs.
 pub const CONTROLLER_SOURCE_GENESIS_ACCEPTANCE_BYTES_V1: usize = 608;
+/// Bounds an acceptance retaining the complete signed resource envelope.
+pub const CONTROLLER_SOURCE_GENESIS_ACCEPTANCE_BYTES_V2: usize = 784;
 
 const ACCEPTANCE_MAGIC: &[u8; 8] = b"AOSSGC01";
 const ACCEPTANCE_DOMAIN: &[u8] = b"aos.sandbox.source-genesis.controller-acceptance.v1\0";
+const ACCEPTANCE_DOMAIN_V2: &[u8] = b"aos.sandbox.source-genesis.controller-acceptance.v2\0";
 
 /// Reports a refused or incomplete held Source-genesis flight.
 #[derive(Debug, thiserror::Error)]
@@ -80,31 +84,34 @@ pub enum SourceGenesisErrorV1 {
 /// actual current publisher/project-authorization records before use.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ControllerSourceGenesisAcceptanceRecordV1 {
-    bytes: [u8; CONTROLLER_SOURCE_GENESIS_ACCEPTANCE_BYTES_V1],
+    bytes: Vec<u8>,
     seed: [u8; 224],
-    authorization: [u8; 224],
 }
 
 impl ControllerSourceGenesisAcceptanceRecordV1 {
     pub(crate) fn new(
         seed: [u8; 224],
-        authorization: [u8; 224],
+        authorization: impl AsRef<[u8]>,
         publisher_pointer: ObjectDigest,
         publisher_revision: ObjectDigest,
         authorization_head: ObjectDigest,
         administrative_roles: ObjectDigest,
     ) -> Result<Self, SourceGenesisErrorV1> {
         let claims = decode_source_tree_seed_body_v1(&seed[..160])?;
-        let mut bytes = [0; CONTROLLER_SOURCE_GENESIS_ACCEPTANCE_BYTES_V1];
-        bytes[..8].copy_from_slice(ACCEPTANCE_MAGIC);
-        bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
+        let authorization = authorization.as_ref();
+        let authorization_claims = parse_unverified_project_authorization_claims_v2(authorization)?;
+        let resource_version = authorization_claims.resource_envelope.is_some();
+        let mut bytes = vec![0; 32 + seed.len() + authorization.len() + 128];
+        bytes[..8].copy_from_slice(if resource_version { b"AOSSGC02" } else { ACCEPTANCE_MAGIC });
+        bytes[8..10].copy_from_slice(&(if resource_version { 2_u16 } else { 1 }).to_be_bytes());
         bytes[16..32].copy_from_slice(claims.project().as_bytes());
         bytes[32..256].copy_from_slice(&seed);
-        bytes[256..480].copy_from_slice(&authorization);
-        bytes[480..512].copy_from_slice(publisher_pointer.as_bytes());
-        bytes[512..544].copy_from_slice(publisher_revision.as_bytes());
-        bytes[544..576].copy_from_slice(authorization_head.as_bytes());
-        bytes[576..608].copy_from_slice(administrative_roles.as_bytes());
+        let joins = 256 + authorization.len();
+        bytes[256..joins].copy_from_slice(authorization);
+        bytes[joins..joins + 32].copy_from_slice(publisher_pointer.as_bytes());
+        bytes[joins + 32..joins + 64].copy_from_slice(publisher_revision.as_bytes());
+        bytes[joins + 64..joins + 96].copy_from_slice(authorization_head.as_bytes());
+        bytes[joins + 96..].copy_from_slice(administrative_roles.as_bytes());
         Self::from_record_bytes(&bytes)
     }
 
@@ -113,16 +120,18 @@ impl ControllerSourceGenesisAcceptanceRecordV1 {
     /// # Errors
     /// Rejects wrong framing, sentinel commitments, or differing signed claims.
     pub fn from_record_bytes(bytes: &[u8]) -> Result<Self, SourceGenesisErrorV1> {
-        if bytes.len() != CONTROLLER_SOURCE_GENESIS_ACCEPTANCE_BYTES_V1
-            || bytes.get(..8) != Some(ACCEPTANCE_MAGIC.as_slice())
-            || bytes[8..16] != [0, 1, 0, 0, 0, 0, 0, 0]
-        {
+        let resource_version = bytes.len() == CONTROLLER_SOURCE_GENESIS_ACCEPTANCE_BYTES_V2
+            && bytes.get(..8) == Some(b"AOSSGC02".as_slice())
+            && bytes.get(8..16) == Some([0, 2, 0, 0, 0, 0, 0, 0].as_slice());
+        let legacy = bytes.len() == CONTROLLER_SOURCE_GENESIS_ACCEPTANCE_BYTES_V1
+            && bytes.get(..8) == Some(ACCEPTANCE_MAGIC.as_slice())
+            && bytes.get(8..16) == Some([0, 1, 0, 0, 0, 0, 0, 0].as_slice());
+        if !legacy && !resource_version {
             return Err(SourceGenesisErrorV1::NonCanonical);
         }
         let record = Self {
-            bytes: take(bytes, 0)?,
+            bytes: bytes.to_vec(),
             seed: take(bytes, 32)?,
-            authorization: take(bytes, 256)?,
         };
         let seed_packet = record.seed_packet();
         if &seed_packet[..8] != b"AOSCSE01" || seed_packet[8..12] != [0, 1, 0, 0] {
@@ -140,7 +149,8 @@ impl ControllerSourceGenesisAcceptanceRecordV1 {
             || record.publisher_pointer() != seed.publisher_head()
             || record.publisher_revision() != authorization.publisher_revision_digest
             || record.authorization_head() != seed.project_authorization_head()
-            || record.bytes[480..]
+            || authorization.resource_envelope.is_some() != resource_version
+            || record.bytes[record.joins_offset()..]
                 .chunks_exact(32)
                 .any(|digest| digest == [0; 32])
         {
@@ -165,8 +175,8 @@ impl ControllerSourceGenesisAcceptanceRecordV1 {
 
     /// Borrows the original separate project-authorization packet.
     #[must_use]
-    pub fn auth_packet(&self) -> &[u8; 224] {
-        &self.authorization
+    pub fn auth_packet(&self) -> &[u8] {
+        &self.bytes[256..self.joins_offset()]
     }
 
     pub(crate) fn seed_claims(&self) -> Result<ControllerSourceTreeSeedV1, SourceGenesisErrorV1> {
@@ -176,37 +186,56 @@ impl ControllerSourceGenesisAcceptanceRecordV1 {
     /// Returns the exact protected publisher-pointer commitment.
     #[must_use]
     pub fn publisher_pointer(&self) -> ObjectDigest {
-        digest_at(&self.bytes, 480)
+        digest_at(&self.bytes, self.joins_offset())
     }
 
     /// Returns the exact immutable publisher-revision commitment.
     #[must_use]
     pub fn publisher_revision(&self) -> ObjectDigest {
-        digest_at(&self.bytes, 512)
+        digest_at(&self.bytes, self.joins_offset() + 32)
     }
 
     /// Returns the exact retained administrative authorization head.
     #[must_use]
     pub fn authorization_head(&self) -> ObjectDigest {
-        digest_at(&self.bytes, 544)
+        digest_at(&self.bytes, self.joins_offset() + 64)
     }
 
     /// Returns the two independent administrative role-pin commitment.
     #[must_use]
     pub fn administrative_roles(&self) -> ObjectDigest {
-        digest_at(&self.bytes, 576)
+        digest_at(&self.bytes, self.joins_offset() + 96)
     }
 
     /// Borrows the canonical immutable acceptance bytes.
     #[must_use]
-    pub const fn record_bytes(&self) -> &[u8; CONTROLLER_SOURCE_GENESIS_ACCEPTANCE_BYTES_V1] {
+    pub fn record_bytes(&self) -> &[u8] {
         &self.bytes
     }
 
     /// Returns the domain-separated immutable acceptance commitment.
     #[must_use]
     pub fn digest(&self) -> ObjectDigest {
-        hash(ACCEPTANCE_DOMAIN, &self.bytes)
+        let domain = if self.bytes.len() == CONTROLLER_SOURCE_GENESIS_ACCEPTANCE_BYTES_V2 {
+            ACCEPTANCE_DOMAIN_V2
+        } else {
+            ACCEPTANCE_DOMAIN
+        };
+        hash(domain, &self.bytes)
+    }
+
+    /// Returns signed resource DATA only for the complete SGC02 recipe.
+    ///
+    /// Decoding this value does not authenticate a current owner or pay capacity.
+    #[must_use]
+    pub fn resource_envelope(&self) -> Option<ResourceVector> {
+        parse_unverified_project_authorization_claims_v2(self.auth_packet())
+            .ok()
+            .and_then(|claims| claims.resource_envelope)
+    }
+
+    fn joins_offset(&self) -> usize {
+        self.bytes.len() - 128
     }
 }
 

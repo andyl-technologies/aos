@@ -163,6 +163,34 @@ pub fn sign_fixed_source_project_genesis_readback_v3(
     signer_generation: u64,
     signing_key: &SigningKey,
 ) -> Result<[u8; super::source_genesis_readback::SOURCE_PROJECT_GENESIS_READBACK_BYTES_V3], SourceSignerReadbackErrorV1> {
+    if context.has_resource_authorization() {
+        return Err(SourceHoldReadbackErrorV1::NonCanonical.into());
+    }
+    match sign_fixed_source_project_genesis_readback_v4(
+        expected_controller_uid, challenge, context, signer_generation, signing_key,
+    )? {
+        super::source_genesis_readback::SourceProjectGenesisReadbackPacketV4::Legacy(packet) => Ok(packet),
+        super::source_genesis_readback::SourceProjectGenesisReadbackPacketV4::Resource(_) =>
+            Err(SourceHoldReadbackErrorV1::NonCanonical.into()),
+    }
+}
+
+/// Signs the complete versioned Project receipt through the same fixed reader.
+///
+/// The existing Source key, original view, owner/name checks and independent
+/// posts remain shared with the legacy entry. Context is comparison DATA only.
+///
+/// # Errors
+/// Rejects a foreign UID/context, invalid challenge, incomplete full-family
+/// replay, changed real custody or watermark, and signature failures.
+#[cfg(target_os = "linux")]
+pub fn sign_fixed_source_project_genesis_readback_v4(
+    expected_controller_uid: u32,
+    challenge: super::source_genesis_readback::SourceProjectGenesisChallengeV3,
+    context: &SourceTreeGenesisIntentContextV1,
+    signer_generation: u64,
+    signing_key: &SigningKey,
+) -> Result<super::source_genesis_readback::SourceProjectGenesisReadbackPacketV4, SourceSignerReadbackErrorV1> {
     if expected_controller_uid == 0 || context.source_uid() != expected_controller_uid
         || context.project() != challenge.project()
         || signer_generation == 0
@@ -195,7 +223,7 @@ fn sign_project_genesis_from_view_v3(
     context: &SourceTreeGenesisIntentContextV1,
     signer_generation: u64,
     signing_key: &SigningKey,
-) -> Result<[u8; super::source_genesis_readback::SOURCE_PROJECT_GENESIS_READBACK_BYTES_V3], SourceSignerReadbackErrorV1> {
+) -> Result<super::source_genesis_readback::SourceProjectGenesisReadbackPacketV4, SourceSignerReadbackErrorV1> {
     let project = challenge.project();
     let journal = readback.journal_mut();
     let rows = journal.source_project_genesis_data_v3(project)?.into_genesis();
@@ -220,9 +248,9 @@ fn sign_project_genesis_from_view_v3(
         }
     }
     let ack = rows.acks.get(&project).map(|ack| (ack.root_floor, ack.digest()));
-    super::source_genesis_readback::sign_source_project_genesis_fields_v3(
+    super::source_genesis_readback::sign_source_project_genesis_fields_v4(
         challenge, names, readback.journal_mut().snapshot_sequence(), receipt, ack,
-        instance, signer_generation, signing_key,
+        instance, signer_generation, signing_key, context.has_resource_authorization(),
     ).map_err(Into::into)
 }
 

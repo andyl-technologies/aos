@@ -34,11 +34,40 @@ const DOMAIN: &[u8] = b"aos.sandbox.source-genesis.controller-held-readback.v1\0
 const BODY_BYTES: usize = 800;
 const PROJECT_MAGIC_V3: &[u8; 8] = b"AOSSGR03";
 const PROJECT_DOMAIN_V3: &[u8] = b"aos.sandbox.source-genesis.controller-mixed-readback.v3\0/var/lib/aos/sandboxd/controller.journal\0";
+const PROJECT_RESOURCE_MAGIC_V4: &[u8; 8] = b"AOSSGR04";
+const PROJECT_RESOURCE_DOMAIN_V4: &[u8] = b"aos.sandbox.source-genesis.controller-mixed-resource-readback.v4\0/var/lib/aos/sandboxd/controller.journal\0";
 
 #[derive(Clone, Copy)]
 enum ControllerGenesisReadbackRecipeV3 { StrictV1, ProjectV3 }
 /// Bounds the existing Controller-purpose genesis readback signature packet.
 pub const CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1: usize = BODY_BYTES + 64;
+/// Bounds the existing Project-purpose readback with a complete SGC02 input.
+pub const CONTROLLER_PROJECT_RESOURCE_READBACK_BYTES_V4: usize = BODY_BYTES + 176 + 64;
+
+// Closed DATA framing keeps legacy signature storage allocation-free. Neither
+// variant can construct an original Root, Source or Controller owner loan.
+pub(super) enum ControllerProjectGenesisReadbackPacketV4 {
+    Legacy([u8; CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1]),
+    Resource([u8; CONTROLLER_PROJECT_RESOURCE_READBACK_BYTES_V4]),
+}
+
+impl AsRef<[u8]> for ControllerProjectGenesisReadbackPacketV4 {
+    fn as_ref(&self) -> &[u8] {
+        match self {
+            Self::Legacy(bytes) => bytes,
+            Self::Resource(bytes) => bytes,
+        }
+    }
+}
+
+impl ControllerProjectGenesisReadbackPacketV4 {
+    fn bytes_mut(&mut self) -> &mut [u8] {
+        match self {
+            Self::Legacy(bytes) => bytes,
+            Self::Resource(bytes) => bytes,
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(super) enum ProjectGenesisSignatureFailureV3 { Signature, Post(usize), Refused }
@@ -54,13 +83,14 @@ pub(super) fn capture_project_genesis_readback_v3(
     key: &SigningKey,
     original: &super::flight::OriginalRootGenesisFlightV1<'_>,
     complete: bool,
-    resident: &mut Option<Result<[u8; CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1], SourceGenesisErrorV1>>,
+    resident: &mut Option<Result<ControllerProjectGenesisReadbackPacketV4, SourceGenesisErrorV1>>,
     posts: &mut Vec<Result<(), SourceGenesisErrorV1>>,
 ) -> Result<(), ProjectGenesisSignatureFailureV3> {
     if resident.is_some() { return Err(ProjectGenesisSignatureFailureV3::Refused); }
     *resident = Some((|| {
         controller.recheck()?;
         source.recheck()?;
+        let resource_version = controller.acceptance().resource_envelope().is_some();
         if generation == 0 || source.project() != controller.acceptance().project()
             || source.source_uid() != original.first_successor_source_uid()?
         { return Err(SourceGenesisErrorV1::Stale); }
@@ -70,7 +100,7 @@ pub(super) fn capture_project_genesis_readback_v3(
         } else if let Some(receipt) = source.receipt() {
             if receipt.acceptance_digest() != controller.acceptance().digest()
                 || &receipt.seed_packet() != controller.acceptance().seed_packet()
-                || &receipt.auth_packet() != controller.acceptance().auth_packet()
+                || receipt.auth_packet() != controller.acceptance().auth_packet()
             { return Err(SourceGenesisErrorV1::Stale); }
             1
         } else {
@@ -80,9 +110,16 @@ pub(super) fn capture_project_genesis_readback_v3(
             controller.recheck_current_admission()?;
             2
         };
-        let mut packet = [0; CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1];
-        packet[..8].copy_from_slice(PROJECT_MAGIC_V3);
-        packet[8..10].copy_from_slice(&3_u16.to_be_bytes());
+        let mut owned_packet = if resource_version {
+            ControllerProjectGenesisReadbackPacketV4::Resource([0; CONTROLLER_PROJECT_RESOURCE_READBACK_BYTES_V4])
+        } else {
+            ControllerProjectGenesisReadbackPacketV4::Legacy([0; CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1])
+        };
+        let packet = owned_packet.bytes_mut();
+        let names_offset = 64 + controller.acceptance().record_bytes().len();
+        let body_bytes = packet.len() - 64;
+        packet[..8].copy_from_slice(if resource_version { PROJECT_RESOURCE_MAGIC_V4 } else { PROJECT_MAGIC_V3 });
+        packet[8..10].copy_from_slice(&(if resource_version { 4_u16 } else { 3 }).to_be_bytes());
         packet[10] = kind;
         packet[16..24].copy_from_slice(&generation.to_be_bytes());
         packet[24..28].copy_from_slice(&controller.uid().to_be_bytes());
@@ -90,18 +127,22 @@ pub(super) fn capture_project_genesis_readback_v3(
         packet[32..40].copy_from_slice(&controller.snapshot_sequence()?.to_be_bytes());
         packet[40..48].copy_from_slice(&source.snapshot_sequence().to_be_bytes());
         packet[48..64].copy_from_slice(&original.nonce());
-        packet[64..672].copy_from_slice(controller.acceptance().record_bytes());
-        packet[672..720].copy_from_slice(&controller.names().to_bytes());
-        packet[720..768].copy_from_slice(&source.names().to_bytes());
-        packet[768..800].copy_from_slice(&source.instance().ok_or(SourceGenesisErrorV1::Stale)?);
-        let preimage = [PROJECT_DOMAIN_V3, &packet[..BODY_BYTES]].concat();
+        packet[64..names_offset].copy_from_slice(controller.acceptance().record_bytes());
+        packet[names_offset..names_offset + 48].copy_from_slice(&controller.names().to_bytes());
+        packet[names_offset + 48..names_offset + 96].copy_from_slice(&source.names().to_bytes());
+        packet[names_offset + 96..body_bytes].copy_from_slice(&source.instance().ok_or(SourceGenesisErrorV1::Stale)?);
+        let domain = if resource_version { PROJECT_RESOURCE_DOMAIN_V4 } else { PROJECT_DOMAIN_V3 };
+        let preimage = [domain, &packet[..body_bytes]].concat();
         // Slow owner work follows preparation, then this final genuine pair is
         // sampled immediately before the existing real-key crypto operation.
         controller.recheck()?;
         source.recheck()?;
         if kind == 2 { controller.recheck_current_admission()?; }
         original.first_successor_clock()?;
-        Ok(finish_readback(packet, preimage, key))
+        let signature = key.sign(&preimage);
+        drop(preimage);
+        packet[body_bytes..].copy_from_slice(&signature.to_bytes());
+        Ok(owned_packet)
     })());
     let mut first = resident.as_ref().is_some_and(Result::is_err).then_some(ProjectGenesisSignatureFailureV3::Signature);
     posts.push(controller.recheck());
@@ -156,7 +197,7 @@ fn prepare_current_readback_kind(
     } else if let Some(receipt) = source.receipt() {
         if receipt.acceptance_digest() != controller.acceptance().digest()
             || &receipt.seed_packet() != controller.acceptance().seed_packet()
-            || &receipt.auth_packet() != controller.acceptance().auth_packet()
+            || receipt.auth_packet() != controller.acceptance().auth_packet()
         {
             return Err(SourceGenesisErrorV1::Stale);
         }
@@ -214,6 +255,10 @@ fn prepare_readback(
     generation: u64,
     kind: u8,
 ) -> Result<[u8; CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1], SourceGenesisErrorV1> {
+    // This unversioned signature recipe must not truncate SGC02 into SGC01.
+    if controller.acceptance().resource_envelope().is_some() {
+        return Err(SourceGenesisErrorV1::AdmissionClosed);
+    }
     if nonce == [0; 16] || generation == 0 || source.source_uid() == 0 {
         return Err(SourceGenesisErrorV1::NonCanonical);
     }
@@ -403,11 +448,16 @@ fn verify_with_recipe(
     packet: &[u8], pin: &PinnedControllerHoldSignerV1, nonce: [u8; 16],
     controller_uid: u32, source_uid: u32, recipe: ControllerGenesisReadbackRecipeV3,
 ) -> Result<VerifiedControllerSourceGenesisReadbackV1, SourceGenesisErrorV1> {
+    let resource_version = matches!(recipe, ControllerGenesisReadbackRecipeV3::ProjectV3)
+        && packet.len() == CONTROLLER_PROJECT_RESOURCE_READBACK_BYTES_V4;
     let (magic, version, domain) = match recipe {
         ControllerGenesisReadbackRecipeV3::StrictV1 => (MAGIC, 1_u16, DOMAIN),
+        ControllerGenesisReadbackRecipeV3::ProjectV3 if resource_version =>
+            (PROJECT_RESOURCE_MAGIC_V4, 4_u16, PROJECT_RESOURCE_DOMAIN_V4),
         ControllerGenesisReadbackRecipeV3::ProjectV3 => (PROJECT_MAGIC_V3, 3_u16, PROJECT_DOMAIN_V3),
     };
-    if packet.len() != CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1
+    let packet_bytes = if resource_version { CONTROLLER_PROJECT_RESOURCE_READBACK_BYTES_V4 } else { CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1 };
+    if packet.len() != packet_bytes
         || packet.get(..8) != Some(magic.as_slice())
         || packet[8..10] != version.to_be_bytes()
         || packet[10] > 3
@@ -425,18 +475,21 @@ fn verify_with_recipe(
     {
         return Err(SourceGenesisErrorV1::NonCanonical);
     }
-    ProtectedJournalNamesV1::from_bytes(&packet[672..720])?;
-    let source_names = ProtectedJournalNamesV1::from_bytes(&packet[720..768])?;
+    let body_bytes = packet_bytes - 64;
+    let names_offset = body_bytes - 128;
+    ProtectedJournalNamesV1::from_bytes(&packet[names_offset..names_offset + 48])?;
+    let source_names = ProtectedJournalNamesV1::from_bytes(&packet[names_offset + 48..names_offset + 96])?;
     let acceptance =
-        ControllerSourceGenesisAcceptanceRecordV1::from_record_bytes(&packet[64..672])?;
-    let source_instance = take::<32>(packet, 768)?;
-    if (packet[10] == 0) != (source_instance == [0; 32]) {
+        ControllerSourceGenesisAcceptanceRecordV1::from_record_bytes(&packet[64..names_offset])?;
+    let source_instance = take::<32>(packet, names_offset + 96)?;
+    if (packet[10] == 0) != (source_instance == [0; 32])
+        || acceptance.resource_envelope().is_some() != resource_version {
         return Err(SourceGenesisErrorV1::NonCanonical);
     }
     pin.verifying_key()
         .verify_strict(
-            &[domain, &packet[..BODY_BYTES]].concat(),
-            &Signature::from_bytes(&take(packet, BODY_BYTES)?),
+            &[domain, &packet[..body_bytes]].concat(),
+            &Signature::from_bytes(&take(packet, body_bytes)?),
         )
         .map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
     Ok(VerifiedControllerSourceGenesisReadbackV1 {

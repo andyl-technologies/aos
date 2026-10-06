@@ -70,7 +70,7 @@ pub(super) fn validate_namespace(
     let mut revocations: BTreeMap<RevocationScopeId, Chain> = BTreeMap::new();
     let mut revocation_heads: BTreeMap<RevocationScopeId, u64> = BTreeMap::new();
     let mut project_revocations: BTreeMap<ProjectId, RevocationScopeId> = BTreeMap::new();
-    let mut project_auth_rows: BTreeMap<ProjectId, BTreeMap<u64, ([u8; 16], ObjectDigest)>> =
+    let mut project_auth_rows: BTreeMap<ProjectId, BTreeMap<u64, ([u8; 16], ObjectDigest, bool)>> =
         BTreeMap::new();
     let mut project_auth_heads: BTreeMap<ProjectId, RetainedProjectAuthorizationHeadV2> =
         BTreeMap::new();
@@ -173,7 +173,9 @@ pub(super) fn validate_namespace(
             if project_auth_rows
                 .entry(row.project)
                 .or_default()
-                .insert(row.epoch, (row.request_id, project_auth_row_digest(value)))
+                .insert(row.epoch, (
+                    row.request_id, project_auth_row_digest(value), row.resource_version(),
+                ))
                 .is_some()
             {
                 return Err(PublisherPolicyError::CorruptState);

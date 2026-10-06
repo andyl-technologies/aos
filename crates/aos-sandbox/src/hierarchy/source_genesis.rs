@@ -39,7 +39,10 @@ use super::tree_lineage::{
 };
 
 mod receipt;
-pub use receipt::{SOURCE_TREE_GENESIS_RECEIPT_BYTES_V1, SourceTreeGenesisReceiptV1};
+pub use receipt::{
+    SOURCE_TREE_GENESIS_RECEIPT_BYTES_V1, SOURCE_TREE_GENESIS_RECEIPT_BYTES_V2,
+    SourceTreeGenesisReceiptV1,
+};
 
 /// Distinguishes global absence, a vacant target and actual prepared/ACK data.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -264,7 +267,7 @@ fn prepare_project_genesis_append_v3(
         if receipt.instance() != intent.instance() || receipt.intent_digest() != intent.digest()
             || receipt.acceptance_digest() != acceptance.digest()
             || &receipt.seed_packet() != acceptance.seed_packet()
-            || &receipt.auth_packet() != acceptance.auth_packet()
+            || receipt.auth_packet() != acceptance.auth_packet()
             || rows.pending.as_ref().is_some_and(|pending| pending.project != intent.project()
                 || pending.nonce != intent.nonce()
                 || journal.protected_writer_physical_names_v1().ok() != Some(pending.names))
@@ -573,7 +576,7 @@ pub fn append_source_tree_genesis_v1<'source>(
             || receipt.intent_digest() != intent.digest()
             || receipt.acceptance_digest() != acceptance.digest()
             || &receipt.seed_packet() != acceptance.seed_packet()
-            || &receipt.auth_packet() != acceptance.auth_packet()
+            || receipt.auth_packet() != acceptance.auth_packet()
             || rows.pending.as_ref().is_some_and(|pending| {
                 pending.project != project
                     || pending.nonce != intent.nonce()

@@ -490,12 +490,11 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
         io.action = Some((|| {
             let position = if allowed == [Phase::Finish] { FirstSuccessorReceivePositionV2::Finished } else { FirstSuccessorReceivePositionV2::Open };
             self.receive_first_successor_at_position(32, &mut io.header, &mut io.received, position)?;
-            let phase = allowed.iter().copied().find(|phase| io.header.get(..8) == Some(phase.project_magic_v3().as_slice()))
+            let phase = allowed.iter().copied().find(|phase|
+                super::wire::root_source_project_genesis_payload_bytes_v3(&io.header, *phase, self.nonce).is_ok())
                 .ok_or(SourceGenesisErrorV1::NonCanonical)?;
-            if io.header[8..16] != [0, 3, 0, 0, 0, 0, 0, 0]
-                || take::<16>(&io.header, 16)? != self.nonce
-            { return Err(SourceGenesisErrorV1::NonCanonical); }
-            self.receive_first_successor_at_position(phase.payload_bytes(), &mut io.payload, &mut io.received, position)?;
+            let payload_bytes = super::wire::root_source_project_genesis_payload_bytes_v3(&io.header, phase, self.nonce)?;
+            self.receive_first_successor_at_position(payload_bytes, &mut io.payload, &mut io.received, position)?;
             Ok(phase)
         })());
         io.posts(self);
@@ -512,7 +511,10 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
             return self.project_genesis_floor_from_received_v3(controller, payload)
                 .map(OriginalRootProjectGenesisReplyV3::Anchored);
         }
-        if phase != Phase::Prepared || payload.len() != phase.payload_bytes() { return Err(SourceGenesisErrorV1::NonCanonical); }
+        if phase != Phase::Prepared
+            || (payload.len() != phase.payload_bytes() && payload.len() != phase.payload_bytes() + 176) {
+            return Err(SourceGenesisErrorV1::NonCanonical);
+        }
         let expires = i64::from_be_bytes(take(payload, 0)?);
         let record = RootSourceGenesisIntentRecordV1::from_record_bytes(&payload[8..])?;
         if record.accepted_input() != controller.acceptance() || record.source_uid() != self.source_uid {
@@ -535,7 +537,8 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
         let receipt = floor.receipt();
         let accepted = controller.acceptance();
         if floor.project() != accepted.project() || receipt.acceptance_digest() != accepted.digest()
-            || &receipt.seed_packet() != accepted.seed_packet() || &receipt.auth_packet() != accepted.auth_packet()
+            || &receipt.seed_packet() != accepted.seed_packet()
+            || receipt.auth_packet() != accepted.auth_packet()
         { return Err(SourceGenesisErrorV1::Conflict); }
         self.first_successor_clock()?;
         controller.recheck()?;
@@ -1183,7 +1186,7 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
         if floor.project() != accepted.project()
             || receipt.acceptance_digest() != accepted.digest()
             || &receipt.seed_packet() != accepted.seed_packet()
-            || &receipt.auth_packet() != accepted.auth_packet()
+            || receipt.auth_packet() != accepted.auth_packet()
         {
             return Err(SourceGenesisErrorV1::Conflict);
         }

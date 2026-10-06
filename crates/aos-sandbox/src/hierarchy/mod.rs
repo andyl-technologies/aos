@@ -53,6 +53,7 @@ pub(crate) use tree_lineage::validate_source_project_genesis_members_from_genesi
 pub(crate) use tree_lineage::source_first_successor_tree_readback_v2;
 pub use source_genesis::{
     HeldSourceTreeGenesisObservationV1, SOURCE_TREE_GENESIS_RECEIPT_BYTES_V1,
+    SOURCE_TREE_GENESIS_RECEIPT_BYTES_V2,
     SourceTreeGenesisReceiptV1, SourceTreeGenesisStateV1, observe_source_tree_genesis_v1,
     observe_vacant_source_tree_genesis_project_v1,
 };

@@ -165,6 +165,7 @@ pub use source_genesis_root::{
     OriginalConfiguredProjectGenesisInvocationV3, FailedConfiguredProjectGenesisInvocationV3,
     ROOT_SOURCE_PROJECT_GENESIS_QUERY_MAGIC_V3, ROOT_SOURCE_PROJECT_GENESIS_HELLO_MAGIC_V3,
     encode_root_source_project_genesis_frame_v3, decode_root_source_project_genesis_frame_v3,
+    root_source_project_genesis_payload_bytes_v3,
     ROOT_FIRST_SOURCE_SUCCESSOR_HELLO_MAGIC_V2, ROOT_FIRST_SOURCE_SUCCESSOR_QUERY_MAGIC_V2,
     ROOT_PROJECT_SOURCE_SUCCESSOR_HELLO_MAGIC_V3, ROOT_PROJECT_SOURCE_SUCCESSOR_QUERY_MAGIC_V3,
     RootFirstSourceSuccessorFrameKindV2, decode_root_first_source_successor_frame_v2,
@@ -178,9 +179,11 @@ pub use source_genesis_root::{
     OriginalSourceProjectSuccessorInvocationV3, FailedSourceProjectSuccessorInvocationV3,
     SourceSuccessorIssuancePhaseV2,
     ROOT_SOURCE_GENESIS_HELLO_MAGIC_V1, ROOT_SOURCE_GENESIS_INTENT_BYTES_V1,
+    ROOT_SOURCE_GENESIS_INTENT_BYTES_V2,
     ROOT_SOURCE_GENESIS_QUERY_MAGIC_V1, RootSourceGenesisAuthorityV1,
     RootSourceGenesisFloorProofV1, RootSourceGenesisFrameKindV1, RootSourceGenesisIntentRecordV1,
     SOURCE_GENESIS_DEPLOYMENT_INSTANCE_BYTES_V1, SOURCE_HIERARCHY_FLOOR_BYTES_V1,
+    SOURCE_HIERARCHY_FLOOR_BYTES_V2,
     SourceHierarchyFloorRecordV1, coordinate_provisioned_source_genesis_v1,
     decode_root_source_genesis_frame_v1, encode_root_source_genesis_frame_v1,
     fixed_root_source_genesis_recovery_available_v1,
@@ -452,12 +455,14 @@ pub use root_v8_settled_grant::{
 };
 #[cfg(target_os = "linux")]
 pub use source_genesis_readback::{
-    SOURCE_TREE_GENESIS_INTENT_CONTEXT_BYTES_V1, SourceTreeGenesisIntentContextV1,
+    SOURCE_TREE_GENESIS_INTENT_CONTEXT_BYTES_V1, SOURCE_TREE_GENESIS_INTENT_CONTEXT_BYTES_V2,
+    SourceTreeGenesisIntentContextV1,
 };
 pub use source_genesis_readback::{
     SOURCE_TREE_GENESIS_READBACK_BYTES_V1, SourceTreeGenesisChallengeV1,
     VerifiedSourceTreeGenesisReadbackV1, verify_source_tree_genesis_readback_v1,
     SOURCE_PROJECT_GENESIS_READBACK_BYTES_V3, SourceProjectGenesisChallengeV3,
+    SOURCE_PROJECT_RESOURCE_GENESIS_READBACK_BYTES_V4, SourceProjectGenesisReadbackPacketV4,
     VerifiedSourceProjectGenesisReadbackV3, verify_source_project_genesis_readback_v3,
 };
 pub use source_hold_pin::{SourceHoldPinErrorV1, admit_fixed_source_hold_pin_v1};
@@ -494,6 +499,7 @@ pub use source_signer_readback::{
     sign_fixed_source_project_retirement_readback_v1, sign_fixed_source_signer_readback_v1,
     sign_fixed_source_signer_readback_v2, sign_fixed_source_tree_genesis_readback_v2,
     sign_fixed_source_project_genesis_readback_v3,
+    sign_fixed_source_project_genesis_readback_v4,
 };
 #[cfg(target_os = "linux")]
 pub use v8_successor_clear::clear_current_create_v8_successor_fences_v1;

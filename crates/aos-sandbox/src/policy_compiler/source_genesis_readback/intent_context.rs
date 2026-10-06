@@ -3,6 +3,7 @@
 //! ```text
 //! AOSSGX01 | version:u16=1 | reserved[6] | Source-uid:u32 |
 //! reserved:u32 | Root-role-tuple[32] | Controller-acceptance[608]
+//! AOSSGX02 retains SGC02[784] in the same 56-byte context prefix.
 //! ```
 //!
 //! Root derives these data from its retained intent or floor. They grant no
@@ -21,6 +22,8 @@ use crate::policy_compiler::{RootSourceGenesisIntentRecordV1, SourceHierarchyFlo
 
 /// Bounds the data-only original intent comparison context.
 pub const SOURCE_TREE_GENESIS_INTENT_CONTEXT_BYTES_V1: usize = 664;
+/// Bounds comparison context carrying the complete resource acceptance.
+pub const SOURCE_TREE_GENESIS_INTENT_CONTEXT_BYTES_V2: usize = 840;
 
 /// Carries comparison data without authenticating Root or granting mutation.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -52,11 +55,16 @@ impl SourceTreeGenesisIntentContextV1 {
     /// Rejects another format/width, reserved bytes, sentinel UID/roles or
     /// a noncanonical original Controller acceptance.
     pub fn decode(bytes: &[u8]) -> Result<Self, SourceGenesisErrorV1> {
-        if bytes.len() != SOURCE_TREE_GENESIS_INTENT_CONTEXT_BYTES_V1
-            || bytes.get(..8) != Some(b"AOSSGX01".as_slice())
-            || bytes[8..16] != [0, 1, 0, 0, 0, 0, 0, 0]
-            || bytes[20..24] != [0; 4]
-        {
+        let resource_version = bytes.len() == SOURCE_TREE_GENESIS_INTENT_CONTEXT_BYTES_V2
+            && bytes.get(..8) == Some(b"AOSSGX02".as_slice())
+            && bytes.get(8..16) == Some([0, 2, 0, 0, 0, 0, 0, 0].as_slice());
+        let legacy = bytes.len() == SOURCE_TREE_GENESIS_INTENT_CONTEXT_BYTES_V1
+            && bytes.get(..8) == Some(b"AOSSGX01".as_slice())
+            && bytes.get(8..16) == Some([0, 1, 0, 0, 0, 0, 0, 0].as_slice());
+        if !legacy && !resource_version {
+            return Err(SourceGenesisErrorV1::NonCanonical);
+        }
+        if bytes[20..24] != [0; 4] {
             return Err(SourceGenesisErrorV1::NonCanonical);
         }
         let source_uid = u32::from_be_bytes(
@@ -69,19 +77,24 @@ impl SourceTreeGenesisIntentContextV1 {
                 .try_into()
                 .map_err(|_| SourceGenesisErrorV1::NonCanonical)?,
         );
-        Self::new(
+        let context = Self::new(
             source_uid,
             roles,
             ControllerSourceGenesisAcceptanceRecordV1::from_record_bytes(&bytes[56..])?,
-        )
+        )?;
+        if context.acceptance.resource_envelope().is_some() != resource_version {
+            return Err(SourceGenesisErrorV1::NonCanonical);
+        }
+        Ok(context)
     }
 
     /// Returns the canonical bounded data frame.
     #[must_use]
-    pub fn encode(&self) -> [u8; SOURCE_TREE_GENESIS_INTENT_CONTEXT_BYTES_V1] {
-        let mut bytes = [0; SOURCE_TREE_GENESIS_INTENT_CONTEXT_BYTES_V1];
-        bytes[..8].copy_from_slice(b"AOSSGX01");
-        bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
+    pub fn encode(&self) -> Vec<u8> {
+        let resource_version = self.acceptance.resource_envelope().is_some();
+        let mut bytes = vec![0; 56 + self.acceptance.record_bytes().len()];
+        bytes[..8].copy_from_slice(if resource_version { b"AOSSGX02" } else { b"AOSSGX01" });
+        bytes[8..10].copy_from_slice(&(if resource_version { 2_u16 } else { 1 }).to_be_bytes());
         bytes[16..20].copy_from_slice(&self.source_uid.to_be_bytes());
         bytes[24..56].copy_from_slice(self.roles.as_bytes());
         bytes[56..].copy_from_slice(self.acceptance.record_bytes());
@@ -100,6 +113,12 @@ impl SourceTreeGenesisIntentContextV1 {
         self.acceptance.project()
     }
 
+    /// Selects only the complete resource packet framing, not current authority.
+    #[must_use]
+    pub fn has_resource_authorization(&self) -> bool {
+        self.acceptance.resource_envelope().is_some()
+    }
+
     pub(crate) fn require_actual_receipt(
         &self,
         receipt: &SourceTreeGenesisReceiptV1,
@@ -108,7 +127,7 @@ impl SourceTreeGenesisIntentContextV1 {
         if receipt.project() != self.acceptance.project()
             || receipt.acceptance_digest() != self.acceptance.digest()
             || &receipt.seed_packet() != self.acceptance.seed_packet()
-            || &receipt.auth_packet() != self.acceptance.auth_packet()
+            || receipt.auth_packet() != self.acceptance.auth_packet()
         {
             return Err(SourceGenesisErrorV1::Conflict);
         }

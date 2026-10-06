@@ -148,7 +148,8 @@ impl RootSourceGenesisAuthorityV1 {
         self.confirm_project_genesis_ack_v3(source_packet, &floor)?;
         let current = CurrentRootSourceProjectGenesisFloorV3 {
             owner: self, floor,
-            source_packet: source_packet.try_into().map_err(|_| SourceGenesisErrorV1::NonCanonical)?,
+            source_packet: crate::policy_compiler::SourceProjectGenesisReadbackPacketV4::from_packet_bytes(source_packet)
+                .map_err(|_| SourceGenesisErrorV1::NonCanonical)?,
         };
         current.recheck()?;
         Ok(current)
@@ -197,7 +198,7 @@ impl RootSourceGenesisAuthorityV1 {
 pub struct CurrentRootSourceProjectGenesisFloorV3<'root> {
     owner: &'root RootSourceGenesisAuthorityV1,
     floor: SourceHierarchyFloorRecordV1,
-    source_packet: [u8; crate::policy_compiler::SOURCE_PROJECT_GENESIS_READBACK_BYTES_V3],
+    source_packet: crate::policy_compiler::SourceProjectGenesisReadbackPacketV4,
 }
 
 impl CurrentRootSourceProjectGenesisFloorV3<'_> {
@@ -209,7 +210,7 @@ impl CurrentRootSourceProjectGenesisFloorV3<'_> {
     /// # Errors
     /// Rejects changed owner state or independent Source signature/current cut.
     pub fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
-        self.owner.confirm_project_genesis_ack_v3(&self.source_packet, &self.floor)
+        self.owner.confirm_project_genesis_ack_v3(self.source_packet.as_ref(), &self.floor)
     }
 }
 

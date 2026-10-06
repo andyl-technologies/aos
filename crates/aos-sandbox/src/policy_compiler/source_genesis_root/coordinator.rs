@@ -48,7 +48,7 @@ pub struct OriginalConfiguredProjectGenesisInvocationV3<'writers, 'profile> {
     hello: Vec<u8>,
     hello_received: Option<Result<aos_sandbox_linux::unix_stream::UnixStreamSubjectChunk, aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1>>,
     connection: Option<Result<(), SourceGenesisErrorV1>>,
-    signatures: [Option<Result<[u8; super::controller_readback::CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1], SourceGenesisErrorV1>>; 3],
+    signatures: [Option<Result<super::controller_readback::ControllerProjectGenesisReadbackPacketV4, SourceGenesisErrorV1>>; 3],
     signature_posts: [Vec<Result<(), SourceGenesisErrorV1>>; 3],
     io: [super::flight::ProjectGenesisFlightIoV3; 8],
     append: crate::hierarchy::source_genesis::SourceProjectGenesisMutationV3,
@@ -192,7 +192,7 @@ impl<'writers, 'profile> OriginalConfiguredProjectGenesisInvocationV3<'writers, 
             }
         }
         let packet = self.signatures[0].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
-        if flight.send_project_genesis_phase_v3(Phase::Prepare, packet, &mut self.io[0]).is_err() {
+        if flight.send_project_genesis_phase_v3(Phase::Prepare, packet.as_ref(), &mut self.io[0]).is_err() {
             self.first_failure = Some(ConfiguredProjectGenesisSiteV3::Io(0)); return Err(SourceGenesisErrorV1::Stale.into());
         }
         let phase = match flight.receive_project_genesis_phase_v3(&[Phase::Prepared, Phase::Anchored], &mut self.io[1]) {
@@ -213,7 +213,7 @@ impl<'writers, 'profile> OriginalConfiguredProjectGenesisInvocationV3<'writers, 
                     }
                 }
                 let packet = self.signatures[1].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
-                if flight.send_project_genesis_phase_v3(Phase::Anchor, packet, &mut self.io[2]).is_err() {
+                if flight.send_project_genesis_phase_v3(Phase::Anchor, packet.as_ref(), &mut self.io[2]).is_err() {
                     self.first_failure = Some(ConfiguredProjectGenesisSiteV3::Io(2)); return Err(SourceGenesisErrorV1::Stale.into());
                 }
                 if flight.receive_project_genesis_phase_v3(&[Phase::Anchored], &mut self.io[3]).is_err() {
@@ -244,7 +244,7 @@ impl<'writers, 'profile> OriginalConfiguredProjectGenesisInvocationV3<'writers, 
             }
         }
         let packet = self.signatures[2].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
-        if flight.send_project_genesis_phase_v3(Phase::Complete, packet, &mut self.io[4]).is_err() {
+        if flight.send_project_genesis_phase_v3(Phase::Complete, packet.as_ref(), &mut self.io[4]).is_err() {
             self.first_failure = Some(ConfiguredProjectGenesisSiteV3::Io(4)); return Err(SourceGenesisErrorV1::Stale.into());
         }
         if flight.receive_project_genesis_phase_v3(&[Phase::Completed], &mut self.io[5]).is_err() {

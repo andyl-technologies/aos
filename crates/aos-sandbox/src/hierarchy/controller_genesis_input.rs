@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! CREDENTIALS_DIRECTORY/controller-source-tree-seed-v1 = AOSCSE01[224]
-//! CREDENTIALS_DIRECTORY/project-authorization-source-v2 = AOSPSC02[224]
+//! CREDENTIALS_DIRECTORY/project-authorization-source-v2 = AOSPSC02[224] or AOSPSC03[400]
 //! fixed issuer names = existing independent AOSCSK01[80] and AOSPAK02[80]
 //! ```
 //!
@@ -25,10 +25,12 @@ use super::source_seed::{
 use crate::Journal;
 use crate::public_api_session::PinnedSystemdCredential;
 use crate::publisher_policy::{
-    CurrentSourceTreeSeedPreflightErrorV1, PROJECT_AUTHORIZATION_SOURCE_BYTES_V2,
+    CurrentSourceTreeSeedPreflightErrorV1,
     PinnedPublisherProjectAuthorizationIssuerV2, ProjectAuthorizationSourceErrorV2,
     PublisherPolicyLimits, PublisherPolicyStore, verify_signed_project_authorization_claims_v2,
 };
+#[cfg(test)]
+use crate::publisher_policy::PROJECT_AUTHORIZATION_SOURCE_BYTES_V2;
 
 /// Reports invalid protected delivery or unavailable actual Controller custody.
 #[derive(Debug, thiserror::Error)]
@@ -153,7 +155,7 @@ impl ProvisionedControllerSourceGenesisInputV1 {
         }
         if retained.as_ref().is_some_and(|row| {
             row.acceptance.seed_packet().as_slice() != self.packets[0].bytes()
-                || row.acceptance.auth_packet().as_slice() != self.packets[1].bytes()
+                || row.acceptance.auth_packet() != self.packets[1].bytes()
         }) {
             return Err(SourceGenesisErrorV1::Conflict.into());
         }
@@ -234,12 +236,10 @@ impl ProvisionedControllerSourceGenesisInputV1 {
 
     fn authorization_packet(
         &self,
-    ) -> Result<[u8; PROJECT_AUTHORIZATION_SOURCE_BYTES_V2], ControllerSourceGenesisInputErrorV1>
+    ) -> Result<&[u8], ControllerSourceGenesisInputErrorV1>
     {
-        self.packets[1]
-            .bytes()
-            .try_into()
-            .map_err(|_| ControllerSourceGenesisInputErrorV1::Pair)
+        // Signature/pair verification already selected the exact PSC02/03 recipe.
+        Ok(self.packets[1].bytes())
     }
 }
 

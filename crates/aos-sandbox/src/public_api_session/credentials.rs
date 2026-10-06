@@ -282,8 +282,10 @@ impl PinnedSystemdCredential {
         ];
         let seed =
             Self::open_optional_exact(path.clone(), SOURCE_GENESIS_PACKET_NAMES[0], lengths[0])?;
-        let authorization =
-            Self::open_optional_exact(path, SOURCE_GENESIS_PACKET_NAMES[1], lengths[1])?;
+        let authorization = Self::open_optional_lengths(
+            path, SOURCE_GENESIS_PACKET_NAMES[1],
+            &[lengths[1], crate::publisher_policy::PROJECT_AUTHORIZATION_SOURCE_BYTES_V3 as u64],
+        )?;
         match (seed, authorization) {
             (None, None) => Ok(None),
             (Some(seed), Some(authorization)) => {
@@ -330,15 +332,30 @@ impl PinnedSystemdCredential {
         name: &'static str,
         exact_bytes: u64,
     ) -> Result<Option<Self>, PublicApiSessionError> {
+        Self::open_optional_lengths(path, name, &[exact_bytes])
+    }
+
+    // Shares the existing bounded reader and pins the actual accepted width.
+    // Alternate lengths never select another credential name or trust root.
+    fn open_optional_lengths(
+        path: PathBuf,
+        name: &'static str,
+        lengths: &[u64],
+    ) -> Result<Option<Self>, PublicApiSessionError> {
+        let maximum = lengths.iter().copied().max().ok_or(PublicApiSessionError::Configuration)?;
         let uid = rustix::process::geteuid().as_raw();
         let directory = open_directory(&path, uid)?;
         let stat =
             rustix::fs::fstat(&directory).map_err(|_| PublicApiSessionError::Configuration)?;
         let Some((bytes, file_identity)) =
-            read_optional_exact_one_with_identity(&directory, name, uid, exact_bytes)?
+            read_optional_one_with_identity(&directory, name, uid, maximum)?
         else {
             return Ok(None);
         };
+        let exact_bytes = bytes.len() as u64;
+        if !lengths.contains(&exact_bytes) {
+            return Err(PublicApiSessionError::Configuration);
+        }
         let retained = Self {
             name,
             path,

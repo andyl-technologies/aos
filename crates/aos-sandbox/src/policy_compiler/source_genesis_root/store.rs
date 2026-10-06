@@ -519,7 +519,7 @@ impl RootSourceGenesisAuthorityV1 {
         if let Some(receipt) = observed.receipt() {
             if receipt.acceptance_digest() != accepted.acceptance.digest()
                 || &receipt.seed_packet() != accepted.acceptance.seed_packet()
-                || &receipt.auth_packet() != accepted.acceptance.auth_packet()
+                || receipt.auth_packet() != accepted.acceptance.auth_packet()
             { return Err(SourceGenesisErrorV1::Conflict); }
             SourceTreeGenesisIntentContextV1::new(self.source_uid, self.pins.digest(), accepted.acceptance.clone())?
                 .require_actual_receipt(receipt, self.intent(project)?.as_ref().map(RootSourceGenesisIntentRecordV1::nonce))?;
@@ -1714,7 +1714,7 @@ impl RootSourceGenesisAuthorityV1 {
             .clone();
         if receipt.acceptance_digest() != accepted.acceptance.digest()
             || &receipt.seed_packet() != accepted.acceptance.seed_packet()
-            || &receipt.auth_packet() != accepted.acceptance.auth_packet()
+            || receipt.auth_packet() != accepted.acceptance.auth_packet()
         {
             return Err(SourceGenesisErrorV1::Conflict);
         }

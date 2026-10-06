@@ -7,6 +7,7 @@
 //! independently pinned role tuple[32] | predecessor-floor[32]=0 | checksum[32]
 //! AOSHGF01 | version:u16=1 | reserved[6] | semantic-revision:u64=1 |
 //! predecessor-floor[32]=0 | Source immutable receipt[672] | role tuple[32] | checksum[32]
+//! AOSSGI02 retains SGC02[784]; AOSHGF02 retains SGR02[848]. Both are 968 bytes.
 //! ```
 //!
 //! ACKs, pending fences, physical names, and frame sequences are not part of
@@ -30,6 +31,8 @@ const FLOOR_MAGIC: &[u8; 8] = b"AOSHGF01";
 const INSTANCE_DOMAIN: &[u8] = b"aos.sandbox.source-genesis.root-instance.v1\0";
 const INTENT_DOMAIN: &[u8] = b"aos.sandbox.source-genesis.root-intent.v1\0";
 const FLOOR_DOMAIN: &[u8] = b"aos.sandbox.source-hierarchy.semantic-floor.v1\0";
+const INTENT_DOMAIN_V2: &[u8] = b"aos.sandbox.source-genesis.root-intent.v2\0";
+const FLOOR_DOMAIN_V2: &[u8] = b"aos.sandbox.source-hierarchy.semantic-floor.v2\0";
 
 /// Bounds the exact Root-owned durable deployment-instance row.
 pub const SOURCE_GENESIS_DEPLOYMENT_INSTANCE_BYTES_V1: usize = 80;
@@ -37,6 +40,10 @@ pub const SOURCE_GENESIS_DEPLOYMENT_INSTANCE_BYTES_V1: usize = 80;
 pub const ROOT_SOURCE_GENESIS_INTENT_BYTES_V1: usize = 792;
 /// Bounds one initial semantic per-project Root hierarchy floor.
 pub const SOURCE_HIERARCHY_FLOOR_BYTES_V1: usize = 792;
+/// Bounds an initial intent retaining the full SGC02 acceptance.
+pub const ROOT_SOURCE_GENESIS_INTENT_BYTES_V2: usize = 968;
+/// Bounds an initial floor retaining the full resource authorization receipt.
+pub const SOURCE_HIERARCHY_FLOOR_BYTES_V2: usize = 968;
 
 pub(super) fn instance_bytes(instance: [u8; 32]) -> Result<[u8; 80], SourceGenesisErrorV1> {
     if instance == [0; 32] {
@@ -62,7 +69,7 @@ pub(super) fn decode_instance(bytes: &[u8]) -> Result<[u8; 32], SourceGenesisErr
 /// Carries canonical prepare data, never an independently held Root proof.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RootSourceGenesisIntentRecordV1 {
-    bytes: [u8; ROOT_SOURCE_GENESIS_INTENT_BYTES_V1],
+    bytes: Vec<u8>,
     acceptance: ControllerSourceGenesisAcceptanceRecordV1,
 }
 
@@ -76,16 +83,19 @@ impl RootSourceGenesisIntentRecordV1 {
         acceptance: ControllerSourceGenesisAcceptanceRecordV1,
         roles: ObjectDigest,
     ) -> Result<Self, SourceGenesisErrorV1> {
-        let mut bytes = [0; ROOT_SOURCE_GENESIS_INTENT_BYTES_V1];
-        header(&mut bytes, INTENT_MAGIC);
+        let resource_version = acceptance.resource_envelope().is_some();
+        let mut bytes = vec![0; 88 + acceptance.record_bytes().len() + 96];
+        resource_header(&mut bytes, INTENT_MAGIC, b"AOSSGI02", resource_version);
         bytes[16..48].copy_from_slice(&instance);
         bytes[48..64].copy_from_slice(acceptance.project().as_bytes());
         bytes[64..68].copy_from_slice(&source_uid.to_be_bytes());
         bytes[72..88].copy_from_slice(&nonce);
-        bytes[88..696].copy_from_slice(acceptance.record_bytes());
-        bytes[696..728].copy_from_slice(roles.as_bytes());
-        let checksum = hash(INTENT_DOMAIN, &bytes[..760]);
-        bytes[760..].copy_from_slice(checksum.as_bytes());
+        let joins = bytes.len() - 96;
+        bytes[88..joins].copy_from_slice(acceptance.record_bytes());
+        bytes[joins..joins + 32].copy_from_slice(roles.as_bytes());
+        let domain = if resource_version { INTENT_DOMAIN_V2 } else { INTENT_DOMAIN };
+        let checksum = hash(domain, &bytes[..joins + 64]);
+        bytes[joins + 64..].copy_from_slice(checksum.as_bytes());
         Self::from_record_bytes(&bytes)
     }
 
@@ -94,11 +104,16 @@ impl RootSourceGenesisIntentRecordV1 {
     /// # Errors
     /// Rejects noncanonical framing, sentinels, or changed acceptance bindings.
     pub fn from_record_bytes(bytes: &[u8]) -> Result<Self, SourceGenesisErrorV1> {
-        require_header(bytes, INTENT_MAGIC, ROOT_SOURCE_GENESIS_INTENT_BYTES_V1)?;
+        let resource_version = require_resource_header(
+            bytes, INTENT_MAGIC, b"AOSSGI02",
+            ROOT_SOURCE_GENESIS_INTENT_BYTES_V1, ROOT_SOURCE_GENESIS_INTENT_BYTES_V2,
+        )?;
+        let joins = bytes.len() - 96;
+        let domain = if resource_version { INTENT_DOMAIN_V2 } else { INTENT_DOMAIN };
         let acceptance =
-            ControllerSourceGenesisAcceptanceRecordV1::from_record_bytes(&bytes[88..696])?;
+            ControllerSourceGenesisAcceptanceRecordV1::from_record_bytes(&bytes[88..joins])?;
         let record = Self {
-            bytes: take(bytes, 0)?,
+            bytes: bytes.to_vec(),
             acceptance,
         };
         if record.instance() == [0; 32]
@@ -107,8 +122,9 @@ impl RootSourceGenesisIntentRecordV1 {
             || bytes[68..72] != [0; 4]
             || record.nonce() == [0; 16]
             || record.roles().as_bytes() == &[0; 32]
-            || bytes[728..760] != [0; 32]
-            || hash(INTENT_DOMAIN, &bytes[..760]).as_bytes() != &take::<32>(bytes, 760)?
+            || record.acceptance.resource_envelope().is_some() != resource_version
+            || bytes[joins + 32..joins + 64] != [0; 32]
+            || hash(domain, &bytes[..joins + 64]).as_bytes() != &take::<32>(bytes, joins + 64)?
         {
             return Err(SourceGenesisErrorV1::NonCanonical);
         }
@@ -154,18 +170,23 @@ impl RootSourceGenesisIntentRecordV1 {
     /// Returns the independently protected role tuple commitment.
     #[must_use]
     pub fn roles(&self) -> ObjectDigest {
-        digest_at(&self.bytes, 696)
+        digest_at(&self.bytes, self.bytes.len() - 96)
     }
 
     /// Returns the canonical immutable intent commitment.
     #[must_use]
     pub fn digest(&self) -> ObjectDigest {
-        hash(INTENT_DOMAIN, &self.bytes)
+        let domain = if self.bytes.len() == ROOT_SOURCE_GENESIS_INTENT_BYTES_V2 {
+            INTENT_DOMAIN_V2
+        } else {
+            INTENT_DOMAIN
+        };
+        hash(domain, &self.bytes)
     }
 
     /// Borrows the complete canonical data frame.
     #[must_use]
-    pub const fn record_bytes(&self) -> &[u8; ROOT_SOURCE_GENESIS_INTENT_BYTES_V1] {
+    pub fn record_bytes(&self) -> &[u8] {
         &self.bytes
     }
 }
@@ -173,7 +194,7 @@ impl RootSourceGenesisIntentRecordV1 {
 /// Carries one Root-protected semantic floor as data, not a live read-hold.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceHierarchyFloorRecordV1 {
-    bytes: [u8; SOURCE_HIERARCHY_FLOOR_BYTES_V1],
+    bytes: Vec<u8>,
     receipt: SourceTreeGenesisReceiptV1,
 }
 
@@ -183,13 +204,17 @@ impl SourceHierarchyFloorRecordV1 {
         receipt: SourceTreeGenesisReceiptV1,
         roles: ObjectDigest,
     ) -> Result<Self, SourceGenesisErrorV1> {
-        let mut bytes = [0; SOURCE_HIERARCHY_FLOOR_BYTES_V1];
-        header(&mut bytes, FLOOR_MAGIC);
+        let receipt_bytes = receipt.as_bytes();
+        let resource_version = receipt.auth_packet().len() == 400;
+        let mut bytes = vec![0; 56 + receipt_bytes.len() + 64];
+        resource_header(&mut bytes, FLOOR_MAGIC, b"AOSHGF02", resource_version);
         bytes[16..24].copy_from_slice(&1_u64.to_be_bytes());
-        bytes[56..728].copy_from_slice(&receipt.encode());
-        bytes[728..760].copy_from_slice(roles.as_bytes());
-        let checksum = hash(FLOOR_DOMAIN, &bytes[..760]);
-        bytes[760..].copy_from_slice(checksum.as_bytes());
+        let roles_offset = bytes.len() - 64;
+        bytes[56..roles_offset].copy_from_slice(receipt_bytes);
+        bytes[roles_offset..roles_offset + 32].copy_from_slice(roles.as_bytes());
+        let domain = if resource_version { FLOOR_DOMAIN_V2 } else { FLOOR_DOMAIN };
+        let checksum = hash(domain, &bytes[..roles_offset + 32]);
+        bytes[roles_offset + 32..].copy_from_slice(checksum.as_bytes());
         Self::from_record_bytes(&bytes)
     }
 
@@ -198,17 +223,23 @@ impl SourceHierarchyFloorRecordV1 {
     /// # Errors
     /// Rejects unsupported successors, sentinel roles, or changed receipt bytes.
     pub fn from_record_bytes(bytes: &[u8]) -> Result<Self, SourceGenesisErrorV1> {
-        require_header(bytes, FLOOR_MAGIC, SOURCE_HIERARCHY_FLOOR_BYTES_V1)?;
-        let receipt = SourceTreeGenesisReceiptV1::decode(&bytes[56..728])?;
+        let resource_version = require_resource_header(
+            bytes, FLOOR_MAGIC, b"AOSHGF02",
+            SOURCE_HIERARCHY_FLOOR_BYTES_V1, SOURCE_HIERARCHY_FLOOR_BYTES_V2,
+        )?;
+        let roles_offset = bytes.len() - 64;
+        let domain = if resource_version { FLOOR_DOMAIN_V2 } else { FLOOR_DOMAIN };
+        let receipt = SourceTreeGenesisReceiptV1::decode(&bytes[56..roles_offset])?;
         if bytes[16..24] != 1_u64.to_be_bytes()
             || bytes[24..56] != [0; 32]
-            || bytes[728..760] == [0; 32]
-            || hash(FLOOR_DOMAIN, &bytes[..760]).as_bytes() != &take::<32>(bytes, 760)?
+            || (receipt.auth_packet().len() == 400) != resource_version
+            || bytes[roles_offset..roles_offset + 32] == [0; 32]
+            || hash(domain, &bytes[..roles_offset + 32]).as_bytes() != &take::<32>(bytes, roles_offset + 32)?
         {
             return Err(SourceGenesisErrorV1::NonCanonical);
         }
         Ok(Self {
-            bytes: take(bytes, 0)?,
+            bytes: bytes.to_vec(),
             receipt,
         })
     }
@@ -261,16 +292,21 @@ impl SourceHierarchyFloorRecordV1 {
     /// Returns the original independently pinned role tuple commitment.
     #[must_use]
     pub fn roles(&self) -> ObjectDigest {
-        digest_at(&self.bytes, 728)
+        digest_at(&self.bytes, self.bytes.len() - 64)
     }
     /// Returns the exact canonical semantic floor commitment.
     #[must_use]
     pub fn digest(&self) -> ObjectDigest {
-        hash(FLOOR_DOMAIN, &self.bytes)
+        let domain = if self.bytes.len() == SOURCE_HIERARCHY_FLOOR_BYTES_V2 {
+            FLOOR_DOMAIN_V2
+        } else {
+            FLOOR_DOMAIN
+        };
+        hash(domain, &self.bytes)
     }
     /// Borrows the canonical data; these bytes alone grant no authority.
     #[must_use]
-    pub const fn record_bytes(&self) -> &[u8; SOURCE_HIERARCHY_FLOOR_BYTES_V1] {
+    pub fn record_bytes(&self) -> &[u8] {
         &self.bytes
     }
 }
@@ -284,6 +320,22 @@ pub(super) fn project_key(prefix: &[u8], project: ProjectId) -> Vec<u8> {
 fn header(bytes: &mut [u8], magic: &[u8; 8]) {
     bytes[..8].copy_from_slice(magic);
     bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
+}
+
+fn resource_header(bytes: &mut [u8], legacy: &[u8; 8], current: &[u8; 8], resource_version: bool) {
+    header(bytes, if resource_version { current } else { legacy });
+    bytes[8..10].copy_from_slice(&(if resource_version { 2_u16 } else { 1 }).to_be_bytes());
+}
+
+fn require_resource_header(
+    bytes: &[u8], legacy: &[u8; 8], current: &[u8; 8], legacy_bytes: usize, current_bytes: usize,
+) -> Result<bool, SourceGenesisErrorV1> {
+    if bytes.len() == current_bytes && bytes.get(..8) == Some(current.as_slice())
+        && bytes.get(8..16) == Some([0, 2, 0, 0, 0, 0, 0, 0].as_slice()) {
+        return Ok(true);
+    }
+    require_header(bytes, legacy, legacy_bytes)?;
+    Ok(false)
 }
 
 fn require_header(

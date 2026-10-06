@@ -86,7 +86,7 @@ pub struct OriginalSourceProjectSuccessorInvocationV3<'writers, 'profile, 'crede
     hello: Vec<u8>,
     hello_received: Option<Result<aos_sandbox_linux::unix_stream::UnixStreamSubjectChunk, aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1>>,
     connection: Option<Result<(), SourceGenesisErrorV1>>,
-    signatures: [Option<Result<[u8; super::controller_readback::CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1], SourceGenesisErrorV1>>; 2],
+    signatures: [Option<Result<super::controller_readback::ControllerProjectGenesisReadbackPacketV4, SourceGenesisErrorV1>>; 2],
     signature_posts: [Vec<Result<(), SourceGenesisErrorV1>>; 2],
     io: [super::flight::ProjectGenesisFlightIoV3; 6],
     signing: Option<Result<SourceSuccessorApprovalDataV2, SourceSuccessorCredentialErrorV2>>,
@@ -226,7 +226,7 @@ impl<'writers, 'profile, 'credentials> OriginalSourceProjectSuccessorInvocationV
             }
             let packet = self.signatures[index].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
             let phase = if complete { WirePhase::Complete } else { WirePhase::Prepare };
-            if flight.send_project_genesis_phase_v3(phase, packet, &mut self.io[index * 2]).is_err() {
+            if flight.send_project_genesis_phase_v3(phase, packet.as_ref(), &mut self.io[index * 2]).is_err() {
                 self.first_failure = Some(ProjectIssuerSiteV3::Io(index * 2)); return Err(SourceGenesisErrorV1::Stale.into());
             }
             let expected = if complete { WirePhase::Completed } else { WirePhase::Anchored };

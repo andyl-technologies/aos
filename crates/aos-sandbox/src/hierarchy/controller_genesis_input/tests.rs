@@ -23,7 +23,7 @@ impl Pair {
         let accepted = source_fixture::acceptance(ProjectId::from_bytes([1; 16]));
         Self {
             seed: *accepted.seed_packet(),
-            authorization: *accepted.auth_packet(),
+            authorization: accepted.auth_packet().try_into().unwrap(),
             seed_pin: encode_controller_source_tree_seed_credential_v1(
                 7,
                 &SigningKey::from_bytes(&[41; 32]).verifying_key(),

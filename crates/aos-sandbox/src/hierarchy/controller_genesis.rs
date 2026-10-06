@@ -9,7 +9,7 @@
 use std::cell::RefCell;
 use std::path::Path;
 
-use aos_sandbox_core::{ObjectDigest, ProjectId};
+use aos_sandbox_core::{ObjectDigest, ProjectId, ResourceVector};
 
 use super::genesis_profile::{
     ControllerSourceGenesisAcceptanceRecordV1, SourceGenesisErrorV1, digest_at,
@@ -143,16 +143,17 @@ pub fn hold_controller_source_genesis_v1(
     journal: &mut Journal,
     project: ProjectId,
     seed: [u8; 224],
-    authorization: [u8; 224],
+    authorization: impl AsRef<[u8]>,
 ) -> Result<HeldControllerSourceGenesisV1<'_>, SourceGenesisErrorV1> {
     let uid = journal.protected_owner_uid()?;
+    let authorization = authorization.as_ref();
     require_controller(journal, uid)?;
     if records::pending(journal)?.is_some_and(|pending| pending.project() != project) {
         return Err(SourceGenesisErrorV1::Conflict);
     }
     let current = records::rows(journal, project)?;
     let acceptance = if let Some(row) = current {
-        if row.acceptance.seed_packet() != &seed || row.acceptance.auth_packet() != &authorization {
+        if row.acceptance.seed_packet() != &seed || row.acceptance.auth_packet() != authorization {
             return Err(SourceGenesisErrorV1::Conflict);
         }
         row.acceptance
@@ -210,7 +211,7 @@ pub fn hold_controller_source_genesis_v1(
     Ok(held)
 }
 
-impl HeldControllerSourceGenesisV1<'_> {
+impl<'controller> HeldControllerSourceGenesisV1<'controller> {
     #[cfg(target_os = "linux")]
     pub(crate) fn retained_project_successor_approval_v3(
         &self,
@@ -444,12 +445,31 @@ impl HeldControllerSourceGenesisV1<'_> {
         if store.current_source_genesis_acceptance_from_fixed_issuers_v1(
             self.acceptance.project(),
             *self.acceptance.seed_packet(),
-            *self.acceptance.auth_packet(),
+            self.acceptance.auth_packet(),
         )? != self.acceptance
         {
             return Err(SourceGenesisErrorV1::Stale);
         }
         Ok(())
+    }
+
+    /// Borrows complete signed resource DATA under current Controller custody.
+    ///
+    /// Root and Source must still supply their genuine current joins before the
+    /// native bank can pay this ceiling. This loan is neither a grant nor a
+    /// replacement for those owners or the immediate-parent account CAS.
+    ///
+    /// # Errors
+    /// Rejects legacy statements without all resource dimensions, stale heads,
+    /// substituted accepted input or unavailable original Controller custody.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn borrow_current_project_resources_v3(
+        &self,
+    ) -> Result<HeldCurrentProjectResourceDataV3<'_, 'controller>, SourceGenesisErrorV1> {
+        self.recheck_current_admission()?;
+        let envelope = self.acceptance.resource_envelope()
+            .ok_or(SourceGenesisErrorV1::AdmissionClosed)?;
+        Ok(HeldCurrentProjectResourceDataV3 { controller: self, envelope })
     }
 
     /// Durably accepts the exact floor while its original Root flight is held.
@@ -740,6 +760,47 @@ impl HeldControllerSourceGenesisV1<'_> {
     }
 }
 
+/// Borrows current administrative resource DATA, never paid bank authority.
+#[cfg(target_os = "linux")]
+pub(crate) struct HeldCurrentProjectResourceDataV3<'loan, 'controller> {
+    controller: &'loan HeldControllerSourceGenesisV1<'controller>,
+    envelope: ResourceVector,
+}
+
+#[cfg(target_os = "linux")]
+impl HeldCurrentProjectResourceDataV3<'_, '_> {
+    /// Borrows the exact full packet, project, epoch and head acceptance joins.
+    pub(crate) fn acceptance(&self) -> &ControllerSourceGenesisAcceptanceRecordV1 {
+        self.controller.acceptance()
+    }
+
+    /// Returns the signed ceiling without spending any parent capacity.
+    pub(crate) const fn envelope(&self) -> ResourceVector {
+        self.envelope
+    }
+
+    /// Returns the original held Controller cut for independent owner joins.
+    ///
+    /// # Errors
+    /// Rejects changed named ownership or unavailable original writer custody.
+    pub(crate) fn controller_cut(&self) -> Result<(ProtectedJournalNamesV1, u64), SourceGenesisErrorV1> {
+        self.recheck()?;
+        Ok((self.controller.names(), self.controller.snapshot_sequence()?))
+    }
+
+    /// Rejoins the same original current Controller writer and full packet.
+    ///
+    /// # Errors
+    /// Rejects changed administrative custody, current heads or signed budget.
+    pub(crate) fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
+        self.controller.recheck_current_admission()?;
+        if self.controller.acceptance().resource_envelope() != Some(self.envelope) {
+            return Err(SourceGenesisErrorV1::Stale);
+        }
+        Ok(())
+    }
+}
+
 /// Rechecks only the fixed genuine Controller writer location and ownership.
 ///
 /// # Errors
@@ -766,7 +827,7 @@ fn require_floor(
     if floor.project() != acceptance.project()
         || receipt.acceptance_digest() != acceptance.digest()
         || &receipt.seed_packet() != acceptance.seed_packet()
-        || &receipt.auth_packet() != acceptance.auth_packet()
+        || receipt.auth_packet() != acceptance.auth_packet()
     {
         return Err(SourceGenesisErrorV1::Stale);
     }
@@ -788,7 +849,7 @@ fn require_completed_source_ack(
         || receipt.project() != acceptance.project()
         || receipt.acceptance_digest() != acceptance.digest()
         || &receipt.seed_packet() != acceptance.seed_packet()
-        || &receipt.auth_packet() != acceptance.auth_packet()
+        || receipt.auth_packet() != acceptance.auth_packet()
         || digest_at(&ack, 48) != floor
         || digest_at(&ack, 80) != receipt.digest()
         || row.complete != Some(records::complete_bytes(&ack, source_ack, floor)?)
