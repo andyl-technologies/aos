@@ -27,6 +27,23 @@ def digest(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
+def native_handler_source_sha256(source):
+    """Match the selected producer's known frame-tap source formula."""
+    handler = Path(source) / 'crates/aos-hub/src'
+    observation = (handler / 'server/hybrid_observation.rs').read_bytes()
+    expected = (b'digest.update(include_bytes!("../server.rs"));',
+                b'digest.update(include_bytes!("hybrid_observation.rs"));')
+    if any(observation.count(value) != 1 for value in expected):
+        raise ValueError('Unsupported Native observation source formula')
+    raw = (handler / 'server.rs').read_bytes() + observation
+    frames = b'digest.update(include_bytes!("body_frames.rs"));'
+    if observation.count(frames) == 1:
+        raw += (handler / 'server/body_frames.rs').read_bytes()
+    elif observation.count(frames) != 0:
+        raise ValueError('Ambiguous Native frame source formula')
+    return digest(raw)
+
+
 def closed_json(raw):
     def pairs(items):
         result = {}
@@ -216,10 +233,8 @@ def assess(selected, manifest):
             or selected["runtimeCodecRevision"] != manifest["codecRevision"]
             or selected["sourceDigest"] != manifest["sourceDigest"]):
         raise ValueError("Selected runtime differs from manifest")
-    handler = SOURCE / "crates/aos-hub/src"
     expected_sources = {
-        "nativeHandlerSourceSha256": digest((handler / "server.rs").read_bytes()
-                                            + (handler / "server/hybrid_observation.rs").read_bytes()),
+        "nativeHandlerSourceSha256": native_handler_source_sha256(SOURCE),
         "checkedContextSourceSha256": digest((SOURCE / "crates/aos-hub-core/src/hybrid_ingress/observation.rs").read_bytes()),
     }
     if (selected["runtimeCodecRevision"] != PACKAGE["runtime"]["runtimeCodecRevision"]

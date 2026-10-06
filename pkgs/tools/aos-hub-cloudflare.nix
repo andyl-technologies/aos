@@ -27,7 +27,10 @@
   nodejs,
   python3,
   bash,
+  observationTools ? null,
 }:
+assert observationTools == null || observationTools.selectedNativeArtifact == toString aos-hub;
+assert observationTools == null || observationTools.selectedWorkerArtifact == toString aos-hub-worker-dist;
 mkDerivation {
   pname = "aos-hub-cloudflare";
   version = "0.1.0";
@@ -36,7 +39,8 @@ mkDerivation {
   # at runtime, so they must survive the scrub phase (which nukes any store ref
   # not reachable from a declared output / runtime / propagated dep). The wasm
   # dist is copied into `$out` itself, so it needs no runtime ref.
-  runtimeDeps = [aos-hub miniflare nodejs python3 bash];
+  runtimeDeps = [aos-hub miniflare nodejs python3 bash]
+    ++ (if observationTools == null then [] else [observationTools]);
 
   phases = [
     {
@@ -101,6 +105,15 @@ mkDerivation {
         chmod +x "$out/bin/aos-hub"
         ln -s ${aos-hub}/bin/aos-hub-direct-review "$out/bin/aos-hub-direct-review"
         ln -s ${aos-hub}/bin/aos-hub-provider-conformance "$out/bin/aos-hub-provider-conformance"
+
+        ${if observationTools == null then "" else ''
+          # Explicit helper selection pins the actual Native and Worker tuple.
+          # Linking tools installs no capture, producer flag or acceptance.
+          ln -s ${observationTools}/bin/aos-native-body-observer "$out/bin/aos-native-body-observer"
+          ln -s ${observationTools}/bin/aos-native-body-auth "$out/bin/aos-native-body-auth"
+          ln -s ${observationTools}/bin/aos-hosted-byte-assessment "$out/bin/aos-hosted-byte-assessment"
+          ln -s ${observationTools}/bin/aos-observation-private-wrapper "$out/bin/aos-observation-private-wrapper"
+        ''}
 
         cat > "$out/bin/aos-hub-direct-sdk-conformance" <<EOF
         #!${bash}/bin/bash

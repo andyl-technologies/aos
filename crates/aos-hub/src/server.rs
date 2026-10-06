@@ -18,8 +18,19 @@ use axum::Router;
 use base64::Engine as _;
 use tower_http::catch_panic::CatchPanicLayer;
 
+mod body_frames;
+mod body_inventory;
 mod hybrid_body;
 mod hybrid_observation;
+
+/// Installs optional all-route application frame inventory on the final router.
+///
+/// # Errors
+///
+/// Returns an error if the explicitly selected observation window is invalid.
+pub fn with_optional_body_inventory(app: Router) -> anyhow::Result<Router> {
+    body_inventory::optional(app)
+}
 
 /// Maximum inbound request-body size for the shared RPC surface (8 MiB).
 ///
@@ -226,6 +237,15 @@ pub async fn router_with_hybrid_ingress_and_direct(
         }))
 }
 
+fn observed_status_response(status: StatusCode) -> Response {
+    let mut response = status.into_response();
+    aos_hub_core::application_body_observation::produced(
+        &mut response, b"", "native_status_only", include_bytes!("server.rs"),
+        "actual_refusal_branch_and_transport_context",
+    );
+    response
+}
+
 async fn verify_hybrid_ingress(
     key: Arc<aos_hub_core::hybrid_ingress::HybridIngressKey>,
     deployment_id: String,
@@ -253,10 +273,10 @@ async fn verify_hybrid_ingress(
         .iter()
         .collect::<Vec<_>>();
     if values.len() != 1 {
-        return observation.response(StatusCode::UNAUTHORIZED.into_response(), "envelope_refused");
+        return observation.response(observed_status_response(StatusCode::UNAUTHORIZED), "envelope_refused");
     }
     let Ok(compact) = values[0].to_str() else {
-        return observation.response(StatusCode::UNAUTHORIZED.into_response(), "envelope_refused");
+        return observation.response(observed_status_response(StatusCode::UNAUTHORIZED), "envelope_refused");
     };
     let compact = compact.to_owned();
     let method = request.method().as_str().to_owned();
@@ -278,7 +298,7 @@ async fn verify_hybrid_ingress(
         Ok(assertion) => assertion,
         Err(_) => {
             return observation
-                .response(StatusCode::UNAUTHORIZED.into_response(), "envelope_refused")
+                .response(observed_status_response(StatusCode::UNAUTHORIZED), "envelope_refused")
         }
     };
     observation.authenticated_envelope(&assertion);
@@ -293,12 +313,12 @@ async fn verify_hybrid_ingress(
     .await
     {
         Ok(limit) => limit,
-        Err(status) => return observation.response(status.into_response(), "body_limit_refused"),
+        Err(status) => return observation.response(observed_status_response(status), "body_limit_refused"),
     };
     let (mut parts, body) = request.into_parts();
     let Ok(body) = axum::body::to_bytes(observation.request_body(body), limit).await else {
         return observation.response(
-            StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+            observed_status_response(StatusCode::PAYLOAD_TOO_LARGE),
             "request_body_failed",
         );
     };
@@ -314,7 +334,7 @@ async fn verify_hybrid_ingress(
         Err(error) => {
             tracing::warn!(error = %error, "rejecting hybrid ingress assertion");
             return observation
-                .response(StatusCode::UNAUTHORIZED.into_response(), "body_mac_refused");
+                .response(observed_status_response(StatusCode::UNAUTHORIZED), "body_mac_refused");
         }
     };
     observation.authenticated_body();
@@ -332,13 +352,13 @@ async fn verify_hybrid_ingress(
     }
     let Ok(authority) = HeaderValue::from_str(&assertion.authority) else {
         return observation.response(
-            StatusCode::UNAUTHORIZED.into_response(),
+            observed_status_response(StatusCode::UNAUTHORIZED),
             "transport_context_refused",
         );
     };
     let Ok(client_ip) = HeaderValue::from_str(&assertion.client_ip) else {
         return observation.response(
-            StatusCode::UNAUTHORIZED.into_response(),
+            observed_status_response(StatusCode::UNAUTHORIZED),
             "transport_context_refused",
         );
     };
@@ -349,7 +369,7 @@ async fn verify_hybrid_ingress(
         .insert("x-forwarded-proto", HeaderValue::from_static("https"));
     let Ok(client_ip) = assertion.client_ip.parse() else {
         return observation.response(
-            StatusCode::UNAUTHORIZED.into_response(),
+            observed_status_response(StatusCode::UNAUTHORIZED),
             "transport_context_refused",
         );
     };
@@ -363,7 +383,7 @@ async fn verify_hybrid_ingress(
     let Ok(public_host) = aos_hub_core::connect::attested_authority_host(&assertion.authority)
     else {
         return observation.response(
-            StatusCode::UNAUTHORIZED.into_response(),
+            observed_status_response(StatusCode::UNAUTHORIZED),
             "transport_context_refused",
         );
     };
@@ -393,7 +413,7 @@ async fn verify_hybrid_ingress(
                 .contains_key(aos_hub_core::hybrid_ingress::HYBRID_DELIVERY_HEADER)
         {
             return observation.response(
-                StatusCode::BAD_GATEWAY.into_response(),
+                observed_status_response(StatusCode::BAD_GATEWAY),
                 "delivery_signing_refused",
             );
         }
@@ -411,7 +431,7 @@ async fn verify_hybrid_ingress(
             .and_then(|value| HeaderValue::from_str(&value).ok());
         let Some(signed) = signed else {
             return observation.response(
-                StatusCode::BAD_GATEWAY.into_response(),
+                observed_status_response(StatusCode::BAD_GATEWAY),
                 "delivery_signing_refused",
             );
         };
@@ -426,7 +446,7 @@ async fn verify_hybrid_ingress(
     {
         if response.status() != StatusCode::OK || !matches!(method.as_str(), "GET" | "HEAD") {
             return observation.response(
-                StatusCode::BAD_GATEWAY.into_response(),
+                observed_status_response(StatusCode::BAD_GATEWAY),
                 "delivery_signing_refused",
             );
         }
@@ -443,7 +463,7 @@ async fn verify_hybrid_ingress(
             .and_then(|target| key.sign_delivery(&assertion, target).ok());
         let Some(signed) = signed.and_then(|value| HeaderValue::from_str(&value).ok()) else {
             return observation.response(
-                StatusCode::BAD_GATEWAY.into_response(),
+                observed_status_response(StatusCode::BAD_GATEWAY),
                 "delivery_signing_refused",
             );
         };
@@ -878,7 +898,16 @@ async fn inject_client_ip(
 
 async fn healthz(State(state): State<Arc<AppState>>) -> Response {
     match state.db.list_registries().await {
-        Ok(regs) => (StatusCode::OK, format!("ok ({} registries)\n", regs.len())).into_response(),
+        Ok(regs) => {
+            let body = format!("ok ({} registries)\n", regs.len());
+            let evidence = aos_hub_core::application_body_observation::produced_evidence(
+                body.as_bytes(), "health_registry_count", include_bytes!("server.rs"),
+                "current_sql_registry_count",
+            );
+            let mut response = (StatusCode::OK, body).into_response();
+            if let Some(evidence) = evidence { response.extensions_mut().insert(evidence); }
+            response
+        }
         Err(err) => internal(err),
     }
 }

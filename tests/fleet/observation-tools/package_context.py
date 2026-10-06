@@ -75,7 +75,7 @@ def context(script):
     raw = installed_bytes(directory / 'package-context.json', 1024 * 1024)
     selected = json.loads(raw)
     expected = {'version', 'runtimeSource', 'runtime', 'runtimeProvenance', 'sourceTree', 'nativeAuth',
-                'observerExecutable', 'captureImplementationSha256', 'producerSha256'}
+                'observerExecutable', 'captureImplementationSha256', 'producerSha256', 'clientExecutable'}
     if set(selected) != expected or selected['version'] != 1:
         raise ValueError('Installed helper context differs')
     for reference in (selected['nativeAuth'], selected['observerExecutable']):
@@ -85,8 +85,24 @@ def context(script):
         if (hashlib.sha256(body).hexdigest() != reference['sha256']
                 or str(len(body)) != reference['byteSize']):
             raise ValueError('Installed code commitment differs')
-    if selected['producerSha256'] != {'sdk': None, 'client': None}:
-        # This package currently has no compiled SDK ledger producers. Adding
-        # them requires selected source/artifact correspondence, not log hashes.
-        raise ValueError('Unavailable producer was asserted as installed')
+    validate_producers(selected, directory)
     return selected
+
+
+def validate_producers(selected, directory):
+    """Bind source availability to the selected immutable client artifact."""
+    producer_code = installed_bytes(directory / 'producer_inputs.py', 64 * 1024)
+    namespace = {'__name__': 'installed_producer_inputs'}
+    exec(compile(producer_code, str(directory / 'producer_inputs.py'), 'exec'), namespace)
+    client = selected['clientExecutable']
+    if client is not None:
+        if set(client) != {'file', 'sha256', 'byteSize'}:
+            raise ValueError('Installed client reference differs')
+        with open_installed(client['file']) as stream:
+            length = os.fstat(stream.fileno()).st_size
+            measured = hashlib.file_digest(stream, 'sha256').hexdigest()
+        if measured != client['sha256'] or str(length) != client['byteSize']:
+            raise ValueError('Installed client executable commitment differs')
+    measured = namespace['commitments'](selected['runtimeSource'], client, installed_bytes)
+    if selected['producerSha256'] != measured:
+        raise ValueError('Installed producer source commitment differs')

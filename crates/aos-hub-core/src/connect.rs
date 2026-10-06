@@ -251,8 +251,8 @@ async fn unary<Req, Resp, F, Fut>(
     call: F,
 ) -> Response
 where
-    Req: DeserializeOwned,
-    Resp: Serialize,
+    Req: DeserializeOwned + 'static,
+    Resp: Serialize + 'static,
     F: FnOnce(Arc<RpcService>, Option<String>, Req) -> Fut,
     Fut: std::future::Future<Output = Result<Resp, RpcError>>,
 {
@@ -264,8 +264,11 @@ where
         Ok(req) => req,
         Err(err) => return error_response(&err),
     };
+    let evidence = crate::application_body_observation::rpc::request::<Req, Resp>(&req, &body);
     match call(svc, auth, req).await {
-        Ok(resp) => (
+        Ok(resp) => {
+            let evidence = crate::application_body_observation::rpc::reply(evidence, &resp);
+            let mut response = (
             [
                 (header::CACHE_CONTROL, "no-store"),
                 (header::PRAGMA, "no-cache"),
@@ -273,7 +276,12 @@ where
             ],
             Json(resp),
         )
-            .into_response(),
+            .into_response();
+            if let Some(evidence) = evidence {
+                response.extensions_mut().insert(evidence);
+            }
+            response
+        }
         Err(err) => error_response(&err),
     }
 }

@@ -196,13 +196,13 @@ pub(crate) async fn session_token(deps: ConsoleDeps, headers: HeaderMap) -> Resp
         }
     };
     if !request_has_exact_origin(&headers, &deps.external_url) {
-        return (StatusCode::FORBIDDEN, "invalid request origin").into_response();
+        return observed_session_refusal("invalid request origin", "session_origin_refused");
     }
     let csrf = headers
         .get("x-aos-csrf")
         .and_then(|value| value.to_str().ok());
     if !csrf.is_some_and(|token| verify_csrf_token(&session.secret, token)) {
-        return (StatusCode::FORBIDDEN, "invalid CSRF token").into_response();
+        return observed_session_refusal("invalid CSRF token", "session_csrf_refused");
     }
 
     let grants = match session.grants(&deps.db).await {
@@ -244,14 +244,24 @@ pub(crate) async fn session_token(deps: ConsoleDeps, headers: HeaderMap) -> Resp
             .collect(),
         route_permissions,
     };
-    (
+    let evidence = crate::application_body_observation::canonical(&body, 128 * 1024).map(|reply| {
+        crate::application_body_observation::BodyEvidence {
+            constructor: "browser_session_token",
+            constructor_source_sha256: crate::application_body_observation::image(include_bytes!("handlers.rs")).sha256,
+            request: None, reply,
+            required_projection: "actual_session_origin_csrf_and_bounded_grants_checks",
+        }
+    });
+    let mut response = (
         [
             (header::CACHE_CONTROL, "no-store"),
             (header::PRAGMA, "no-cache"),
         ],
         Json(body),
     )
-        .into_response()
+        .into_response();
+    if let Some(evidence) = evidence { response.extensions_mut().insert(evidence); }
+    response
 }
 
 async fn route_permissions(
@@ -359,7 +369,11 @@ pub(crate) async fn management_app(deps: ConsoleDeps, headers: HeaderMap) -> Res
          <noscript>The AOS Hub management console requires JavaScript.</noscript>\n\
          </body>\n</html>\n"
     );
-    (
+    let evidence = crate::application_body_observation::produced_evidence(
+        html.as_bytes(), "authenticated_management_app", include_bytes!("handlers.rs"),
+        "current_console_template_and_bounded_chrome_projection",
+    );
+    let mut response = (
         [
             (header::CONTENT_TYPE, "text/html; charset=utf-8"),
             (header::CACHE_CONTROL, "no-store"),
@@ -371,7 +385,9 @@ pub(crate) async fn management_app(deps: ConsoleDeps, headers: HeaderMap) -> Res
         ],
         html,
     )
-        .into_response()
+        .into_response();
+    if let Some(evidence) = evidence { response.extensions_mut().insert(evidence); }
+    response
 }
 
 fn html_attribute(value: &str) -> String {
@@ -2257,3 +2273,13 @@ async fn password_login_enabled(deps: &ConsoleDeps) -> bool {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod authentication_tests;
+
+
+fn observed_session_refusal(body: &'static str, constructor: &'static str) -> Response {
+    let mut response = (StatusCode::FORBIDDEN, body).into_response();
+    crate::application_body_observation::produced(
+        &mut response, body.as_bytes(), constructor, include_bytes!("handlers.rs"),
+        "actual_refused_session_origin_or_csrf_branch",
+    );
+    response
+}

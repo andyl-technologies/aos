@@ -28,8 +28,7 @@ class ContextTests(unittest.TestCase):
         self.manifest = json.loads((OBSERVER / "cli-proof/positive-manifest.json").read_bytes())
         source = wrapper.SOURCE
         self.sources = {
-            "nativeHandlerSourceSha256": wrapper.digest((source / "crates/aos-hub/src/server.rs").read_bytes()
-                + (source / "crates/aos-hub/src/server/hybrid_observation.rs").read_bytes()),
+            "nativeHandlerSourceSha256": wrapper.native_handler_source_sha256(source),
             "checkedContextSourceSha256": wrapper.digest((source / "crates/aos-hub-core/src/hybrid_ingress/observation.rs").read_bytes()),
         }
         build_record = json.loads(wrapper.PACKAGE_READER["installed_bytes"](

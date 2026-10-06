@@ -10,6 +10,7 @@
   sourceTree,
   nativeArtifact,
   workerArtifact,
+  clientArtifact ? null,
 }: let
   native = pkgs.aos-hub;
   worker = pkgs.aos-hub-worker-dist;
@@ -30,6 +31,8 @@
       nativeContract = contract;
       helperSource = toString helperSource;
       vendorSource = toString vendor;
+      clientSource = if clientArtifact == null then null else toString pkgs.aos.src;
+      clientExecutable = if clientArtifact == null then null else "${clientArtifact}/bin/aos";
     };
   };
 
@@ -50,6 +53,8 @@
             ${selectedFile}/selected.json ${helperSource} "$out"
           ${pkgs.python3}/bin/python3 -B -E \
             ${helperSource}/tests/fleet/observation-tools/extract_tests.py ${runtimeSource}
+          ${pkgs.python3}/bin/python3 -B -E \
+            ${helperSource}/tests/fleet/observation-tools/producer_inputs_tests.py
         '';
       }
     ];
@@ -78,6 +83,7 @@
     sharedBuildCache = false;
   };
 in
+  assert clientArtifact == null || toString clientArtifact == toString pkgs.aos;
   assert toString nativeArtifact == toString native;
   assert toString workerArtifact == toString worker;
   assert selected.runtimeCodecRevision == sourceCommit;
@@ -108,5 +114,7 @@ in
         runtimeSourceStorePath = toString runtimeSource;
         helperSourceStorePath = toString helperSource;
         runtimeQualification = false;
+      selectedNativeArtifact = toString nativeArtifact;
+      selectedWorkerArtifact = toString workerArtifact;
       };
     }

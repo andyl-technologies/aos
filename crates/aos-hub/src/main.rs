@@ -2043,6 +2043,7 @@ async fn main() -> Result<()> {
                     }
                     None => aos_hub::server::router_with_transport(state, Some(transport)).await,
                 };
+                let app = aos_hub::server::with_optional_body_inventory(app)?;
                 axum::serve(
                     tls_listener,
                     app.into_make_service_with_connect_info::<aos_hub::native_tls::NativeTlsPeer>(),
@@ -2062,6 +2063,7 @@ async fn main() -> Result<()> {
                     }
                     None => router(state).await,
                 };
+                let app = aos_hub::server::with_optional_body_inventory(app)?;
                 axum::serve(
                     listener,
                     app.into_make_service_with_connect_info::<std::net::SocketAddr>(),

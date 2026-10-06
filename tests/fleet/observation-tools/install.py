@@ -20,7 +20,7 @@ def install(prepared, tool_source, codec, output, python, bash):
     library.mkdir(parents=True)
     source = Path(tool_source) / 'tests/fleet/observation-tools'
     for name in ('native_auth.py', 'hosted_assessment.py', 'package_context.py',
-                 'native_auth_tests.py', 'hosted_assessment_tests.py', 'test_support.py'):
+                 'native_auth_tests.py', 'hosted_assessment_tests.py', 'test_support.py', 'producer_inputs.py', 'render_private_wrapper.py'):
         shutil.copyfile(source / name, library / name)
     shutil.copytree(source / 'fixtures', library / 'fixtures')
     provenance = spec['runtimeProvenance']
@@ -30,13 +30,15 @@ def install(prepared, tool_source, codec, output, python, bash):
                    'nativeExecutableSha256', 'workerSourceDigest', 'sourceArchiveSha256')},
                'sourceTree': spec['sourceTree'], 'nativeAuth': reference(library / 'native_auth.py'),
                'observerExecutable': reference(codec / 'bin/aos-storage-body-codec'),
-               'captureImplementationSha256': None, 'producerSha256': {'sdk': None, 'client': None}}
+               'captureImplementationSha256': None, 'producerSha256': spec['producerSha256'],
+               'clientExecutable': spec['clientExecutable']}
     (library / 'package-context.json').write_text(json.dumps(context, indent=2) + '\n')
     binary = output / 'bin'
     binary.mkdir()
     commands = {'aos-native-body-observer': f'{codec}/bin/aos-storage-body-codec native-bodies',
                 'aos-native-body-auth': f'{python} -B -E {library}/native_auth.py',
-                'aos-hosted-byte-assessment': f'{python} -B -E {library}/hosted_assessment.py'}
+                'aos-hosted-byte-assessment': f'{python} -B -E {library}/hosted_assessment.py',
+                'aos-observation-private-wrapper': f'{python} -B -E {library}/render_private_wrapper.py'}
     for name, command in commands.items():
         path = binary / name
         path.write_text(f'#!{bash}\nexec {command} "$@"\n')

@@ -18,45 +18,7 @@ use http_body::{Frame, SizeHint};
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
-#[derive(Default)]
-struct ObservedFrames {
-    digest: Sha256,
-    bytes: u64,
-    eof: bool,
-    failed: bool,
-    overflow: bool,
-}
-
-impl ObservedFrames {
-    fn observe(&mut self, bytes: &[u8]) {
-        if let Some(length) = self.bytes.checked_add(bytes.len() as u64) {
-            self.bytes = length;
-            self.digest.update(bytes);
-        } else {
-            self.overflow = true;
-        }
-    }
-
-    fn receipt(&self) -> FrameReceipt {
-        FrameReceipt {
-            exposed_bytes: self.bytes.to_string(),
-            exposed_sha256: hex::encode(self.digest.clone().finalize()),
-            eof: self.eof,
-            failed: self.failed,
-            overflow: self.overflow,
-        }
-    }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct FrameReceipt {
-    exposed_bytes: String,
-    exposed_sha256: String,
-    eof: bool,
-    failed: bool,
-    overflow: bool,
-}
+use super::body_frames::{FrameReceipt, ObservedFrames};
 
 struct State {
     request_id: Option<String>,
@@ -113,6 +75,7 @@ impl State {
             let mut digest = Sha256::new();
             digest.update(include_bytes!("../server.rs"));
             digest.update(include_bytes!("hybrid_observation.rs"));
+            digest.update(include_bytes!("body_frames.rs"));
             hex::encode(digest.finalize())
         });
         let receipt = Receipt {
@@ -305,21 +268,7 @@ impl HttpBody for ObservedBody {
             } else {
                 &mut state.request
             };
-            match &result {
-                Poll::Ready(Some(Ok(frame))) => {
-                    if let Some(bytes) = frame.data_ref() {
-                        observed.observe(bytes);
-                    }
-                    // Some bodies signal final EOF on their last frame without
-                    // requiring another poll; preserve that actual inner fact.
-                    if self.inner.is_end_stream() {
-                        observed.eof = true;
-                    }
-                }
-                Poll::Ready(None) => observed.eof = true,
-                Poll::Ready(Some(Err(_))) => observed.failed = true,
-                Poll::Pending => {}
-            }
+            observed.observe_result(&result, self.inner.is_end_stream());
         }
         result
     }

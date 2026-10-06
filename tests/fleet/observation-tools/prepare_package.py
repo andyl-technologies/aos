@@ -8,6 +8,7 @@ import sys
 import tarfile
 
 from extract import extract
+from producer_inputs import PAIRS, commitments
 
 
 def digest_file(path):
@@ -43,6 +44,17 @@ def prepare(spec_path, helper, output):
             stream = archive.extractfile(item)
             if stream is None or hashlib.file_digest(stream, 'sha256').hexdigest() != digest_file(expected):
                 raise ValueError('Selected runtime source differs from actual archive')
+    client_path = spec['clientExecutable']
+    client = None
+    if client_path is not None:
+        client = {'file': client_path, 'sha256': digest_file(client_path),
+                  'byteSize': str(Path(client_path).stat().st_size)}
+        if (runtime / PAIRS['client'][1]).exists():
+            for relative in PAIRS['client']:
+                if digest_file(Path(spec['clientSource']) / relative) != digest_file(runtime / relative):
+                    raise ValueError('Client artifact producer source differs from selected archive')
+    spec['clientExecutable'] = client
+    spec['producerSha256'] = commitments(runtime, client)
     (output / 'tests/fleet').mkdir(parents=True)
     shutil.copytree(helper / 'tests/fleet/storage-body-codec', output / 'tests/fleet/storage-body-codec')
     shutil.copytree(helper / 'tests/fleet/observation-tools', output / 'tests/fleet/observation-tools')

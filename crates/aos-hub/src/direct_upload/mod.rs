@@ -141,12 +141,17 @@ impl DirectUploadTransport {
                 )
                 .await
                 .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-            let mut response = (
-                StatusCode::OK,
-                encode_direct_control(&capabilities)
-                    .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?,
-            )
-                .into_response();
+            let encoded = encode_direct_control(&capabilities)
+                .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+            let evidence = aos_hub_core::application_body_observation::produced_evidence(
+                &encoded, "direct_capabilities", include_bytes!("mod.rs"),
+                "exact_target_and_current_direct_profile",
+            ).map(|mut evidence| {
+                evidence.request = Some(aos_hub_core::application_body_observation::image(&body));
+                evidence
+            });
+            let mut response = (StatusCode::OK, encoded).into_response();
+            if let Some(evidence) = evidence { response.extensions_mut().insert(evidence); }
             response.headers_mut().insert(
                 header::CONTENT_TYPE,
                 HeaderValue::from_static("application/json"),
@@ -193,7 +198,15 @@ impl DirectUploadTransport {
             },
         )
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+        let evidence = aos_hub_core::application_body_observation::produced_evidence(
+            &signed.body, "direct_logical_validated", include_bytes!("mod.rs"),
+            "actual_checked_logical_context_original_phase_and_current_sql",
+        ).map(|mut evidence| {
+            evidence.request = Some(aos_hub_core::application_body_observation::image(&body));
+            evidence
+        });
         let mut response = (StatusCode::OK, signed.body).into_response();
+        if let Some(evidence) = evidence { response.extensions_mut().insert(evidence); }
         response.headers_mut().insert(
             header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),

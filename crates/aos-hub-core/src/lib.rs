@@ -64,6 +64,7 @@
 //! target, and randomness reaches `crypto.getRandomValues` through getrandom's
 //! JS backend.
 
+pub mod application_body_observation;
 pub mod auth;
 pub mod backend;
 pub mod binding;

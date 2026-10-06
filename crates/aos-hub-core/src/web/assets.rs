@@ -91,38 +91,41 @@ pub const FONT_LICENSE: &str = include_str!("static_assets/OFL.txt");
 
 /// Serve the stylesheet (`text/css`, 1-hour cache).
 pub async fn stylesheet() -> Response {
-    (
+    let response = (
         [
             (header::CONTENT_TYPE, "text/css"),
             (header::CACHE_CONTROL, "public, max-age=3600"),
         ],
         STYLESHEET,
     )
-        .into_response()
+        .into_response();
+    observed_asset(response, STYLESHEET.as_bytes(), "embedded_static_asset")
 }
 
 /// Serve the JS bundle (`text/javascript`, 1-hour cache).
 pub async fn app_js() -> Response {
-    (
+    let response = (
         [
             (header::CONTENT_TYPE, "text/javascript"),
             (header::CACHE_CONTROL, "public, max-age=3600"),
         ],
         APP_JS,
     )
-        .into_response()
+        .into_response();
+    observed_asset(response, APP_JS.as_bytes(), "embedded_static_asset")
 }
 
 /// Serves the appearance preference bootstrap with a one-hour cache.
 pub async fn theme_js() -> Response {
-    (
+    let response = (
         [
             (header::CONTENT_TYPE, "text/javascript"),
             (header::CACHE_CONTROL, "public, max-age=3600"),
         ],
         THEME_JS,
     )
-        .into_response()
+        .into_response();
+    observed_asset(response, THEME_JS.as_bytes(), "embedded_static_asset")
 }
 
 /// Serves one exact content-addressed browser-console asset.
@@ -145,7 +148,11 @@ pub async fn console_asset(Path(asset): Path<String>) -> Response {
             console_js_name(),
             console_wasm_name(),
         );
-        return (
+        let evidence = crate::application_body_observation::produced_evidence(
+            source.as_bytes(), "console_bootstrap", include_bytes!("assets.rs"),
+            "exact_installed_console_asset_names_and_bytes",
+        );
+        let mut response = (
             [
                 (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
                 (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
@@ -153,19 +160,22 @@ pub async fn console_asset(Path(asset): Path<String>) -> Response {
             source,
         )
             .into_response();
+        if let Some(evidence) = evidence { response.extensions_mut().insert(evidence); }
+        return response;
     }
-    StatusCode::NOT_FOUND.into_response()
+    observed_asset(StatusCode::NOT_FOUND.into_response(), b"", "unknown_console_asset_empty_reply")
 }
 
 fn immutable_asset(content_type: &'static str, bytes: &'static [u8]) -> Response {
-    (
+    let response = (
         [
             (header::CONTENT_TYPE, content_type),
             (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
         ],
         bytes,
     )
-        .into_response()
+        .into_response();
+    observed_asset(response, bytes, "embedded_static_asset")
 }
 
 /// Serves the variable sans-serif font.
@@ -180,22 +190,33 @@ pub async fn font_mono() -> Response {
 
 /// Serve the font license text.
 pub async fn font_license() -> Response {
-    (
+    let response = (
         [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
         FONT_LICENSE,
     )
-        .into_response()
+        .into_response();
+    observed_asset(response, FONT_LICENSE.as_bytes(), "embedded_static_asset")
 }
 
 /// Build a `woff2` font response with a one-day cache (stable, non-hashed URLs,
 /// so not `immutable` — a hub upgrade that reships fonts must take effect).
 fn font_response(bytes: &'static [u8]) -> Response {
-    (
+    let response = (
         [
             (header::CONTENT_TYPE, "font/woff2"),
             (header::CACHE_CONTROL, "public, max-age=86400"),
         ],
         bytes,
     )
-        .into_response()
+        .into_response();
+    observed_asset(response, bytes, "embedded_static_asset")
+}
+
+
+fn observed_asset(mut response: Response, bytes: &[u8], constructor: &'static str) -> Response {
+    crate::application_body_observation::produced(
+        &mut response, bytes, constructor, include_bytes!("assets.rs"),
+        "exact_installed_console_asset_names_and_bytes",
+    );
+    response
 }
