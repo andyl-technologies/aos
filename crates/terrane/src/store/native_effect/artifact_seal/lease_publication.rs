@@ -32,7 +32,7 @@ pub(in super::super) struct LeaseRequest {
 
 impl LeaseRequest {
     /// Borrows the fixed actual slot only for native fault selection.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "tokio"))]
     pub(in super::super) fn path(&self) -> &Path {
         &self.slot_path
     }
