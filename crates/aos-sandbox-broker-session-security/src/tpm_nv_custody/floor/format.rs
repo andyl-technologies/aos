@@ -783,10 +783,7 @@ impl OnlineFloorRoleV1 {
     }
 
     pub(crate) const fn nv_index(self) -> u32 {
-        match self {
-            Self::Controller => 0x0180_a058,
-            Self::Owner => 0x0180_a059,
-        }
+        self.physical_endpoint().nv_index()
     }
 
     pub(crate) const fn directory(self) -> &'static str {
