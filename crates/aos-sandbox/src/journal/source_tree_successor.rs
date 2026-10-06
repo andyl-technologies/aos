@@ -315,11 +315,18 @@ pub(super) fn current_project_genesis_data_v3(
 // Cold replay selects only comparison DATA from the actual canonical pending
 // member. It cannot provide a live selected writer or renew its admission.
 fn replay_rows(state: &State) -> Result<SourceFirstSuccessorRowsV2, JournalError> {
+    replay_family(state).map(SourceProjectFamilyDataV3::into_successor)
+}
+
+// Both owned families stay local to the same immutable comparison window.
+fn replay_family(state: &State) -> Result<SourceProjectFamilyDataV3, JournalError> {
     if !state.keys().any(|(_, key)| key.starts_with(RECEIPT_PREFIX)) {
         // An ordinary genesis-only replay retains its original incomplete
         // genesis handling. Explicit mixed Before observation below still
         // checks every completed member, even without a successor receipt.
-        return current_rows(state);
+        return current_family_with_genesis_selection(
+            state, SourceSuccessorFamilyRecipeV3::SingleProjectV2, None,
+        );
     }
     let selected = state.get(&(RecordNamespace::DesiredState, PENDING_KEY.to_vec()))
         .map(|bytes| SourceFirstSuccessorPendingV2::decode(bytes)
@@ -339,14 +346,14 @@ fn replay_rows(state: &State) -> Result<SourceFirstSuccessorRowsV2, JournalError
             SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected: None },
             Some(project),
             Some(genesis),
-        ).map(SourceProjectFamilyDataV3::into_successor);
+        );
     }
     current_family_with_genesis_data(
         state,
         SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected },
         None,
         Some(genesis),
-    ).map(SourceProjectFamilyDataV3::into_successor)
+    )
 }
 
 fn current_rows_with_recipe(
@@ -966,7 +973,7 @@ fn require_project_genesis_predecessor_v3(
     state: &State,
     transaction: &JournalTransaction,
 ) -> Result<(), JournalError> {
-    let rows = replay_rows(state)?;
+    let SourceProjectFamilyDataV3 { genesis, successor: rows } = replay_family(state)?;
     let receipt = match transaction.records().iter()
         .find(|record| record.key().starts_with(RECEIPT_PREFIX))
     {
@@ -985,7 +992,6 @@ fn require_project_genesis_predecessor_v3(
             receipt.clone()
         }
     };
-    let genesis = super::source_tree_genesis::current_rows(state)?;
     let original = genesis.receipts.get(&receipt.project())
         .ok_or(JournalError::ProtectedBoundary)?;
     if genesis.pending.is_some()
