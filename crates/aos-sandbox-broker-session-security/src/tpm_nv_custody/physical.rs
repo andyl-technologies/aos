@@ -986,7 +986,7 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
     }
 
     pub(in crate::tpm_nv_custody) fn admit_canary_host_v2(
-        &mut self, original: &super::host::CanaryAuthenticatedRequestV3<'_>,
+        &mut self, original: &super::host::CanaryAuthenticatedRequestV3,
     ) -> Result<FloorRecoveryV1, super::host::physical::CanaryPhysicalErrorV2> {
         let operation = CanaryHostOperationV2::begin(self, HostAttemptPhaseV1::Fresh);
         let result = if operation.began {
@@ -996,7 +996,7 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
     }
 
     pub(in crate::tpm_nv_custody) fn canary_main_data_v2(
-        &mut self, original: &super::host::CanaryAuthenticatedRequestV3<'_>,
+        &mut self, original: &super::host::CanaryAuthenticatedRequestV3,
     ) -> Result<super::host::CanaryHostMainDataV2, super::host::physical::CanaryPhysicalErrorV2> {
         let operation = CanaryHostOperationV2::begin(self, HostAttemptPhaseV1::Ready);
         let result = if operation.began {
@@ -1007,7 +1007,7 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
 
     pub(in crate::tpm_nv_custody) fn fund_canary_host_v2(
         &mut self, transaction: &aos_sandbox::JournalTransaction,
-        original: &super::host::CanaryAuthenticatedRequestV3<'_>,
+        original: &super::host::CanaryAuthenticatedRequestV3,
     ) -> Result<super::HostFloorIntentDataV1, super::host::physical::CanaryPhysicalErrorV2> {
         let operation = CanaryHostOperationV2::begin(self, HostAttemptPhaseV1::Ready);
         let result = if operation.began {
@@ -1019,7 +1019,7 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
     pub(in crate::tpm_nv_custody) fn commit_canary_host_v2(
         &mut self, step: super::host::CanaryHostNativeStepV2,
         transaction: &aos_sandbox::JournalTransaction,
-        original: &super::host::CanaryAuthenticatedRequestV3<'_>,
+        original: &super::host::CanaryAuthenticatedRequestV3,
     ) -> Result<(), super::host::physical::CanaryPhysicalErrorV2> {
         let operation = CanaryHostOperationV2::begin(self, HostAttemptPhaseV1::Ready);
         let result = if operation.began {
@@ -1032,7 +1032,7 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
 
     pub(in crate::tpm_nv_custody) fn extend_canary_host_v2(
         &mut self, transaction: &aos_sandbox::JournalTransaction,
-        original: &super::host::CanaryAuthenticatedRequestV3<'_>,
+        original: &super::host::CanaryAuthenticatedRequestV3,
     ) -> Result<(), super::host::physical::CanaryPhysicalErrorV2> {
         let operation = CanaryHostOperationV2::begin(self, HostAttemptPhaseV1::Ready);
         let result = if operation.began {
@@ -1053,7 +1053,7 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
     }
 
     pub(in crate::tpm_nv_custody) fn classify_canary_host_v2(
-        &mut self, original: &super::host::CanaryAuthenticatedRequestV3<'_>,
+        &mut self, original: &super::host::CanaryAuthenticatedRequestV3,
     ) -> Result<FloorRecoveryV1, super::host::physical::CanaryPhysicalErrorV2> {
         let operation = CanaryHostOperationV2::begin(self, HostAttemptPhaseV1::Ready);
         let result = if operation.began {
@@ -1071,7 +1071,7 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
     /// A failed component returns its already resident cause/debt rather than
     /// issuing another pass or manufacturing a fresh positive floor proof.
     pub(in crate::tpm_nv_custody) fn observe_canary_terminal_v2(
-        &mut self, original: &super::host::CanaryAuthenticatedRequestV3<'_>,
+        &mut self, original: &super::host::CanaryAuthenticatedRequestV3,
     ) -> Result<(), super::host::physical::CanaryPhysicalErrorV2> {
         if let RetainedPhysicalBindingV1::Host(host) = &self.binding {
             if let Some(cause) = host.canary_failure_v2() {
@@ -1097,7 +1097,7 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
     }
 
     fn admit_host_inner_v2(
-        &mut self, original: Option<&super::host::CanaryAuthenticatedRequestV3<'_>>,
+        &mut self, original: Option<&super::host::CanaryAuthenticatedRequestV3>,
     ) -> Result<FloorRecoveryV1, PhysicalTpmFailureV1> {
         self.host_mut()?.claim_invocation()?;
         self.host_mut()?.retain_locks()?;
@@ -1174,7 +1174,7 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
     }
 
     fn classify_host_inner_v2(
-        &mut self, original: Option<&super::host::CanaryAuthenticatedRequestV3<'_>>,
+        &mut self, original: Option<&super::host::CanaryAuthenticatedRequestV3>,
     ) -> Result<FloorRecoveryV1, PhysicalTpmFailureV1> {
         self.host_mut()?.capture_disk_cut()?;
         let observation = self.exchange_inner_v2(HelperOperationV1::Read, [0; 32], original)?;
@@ -1300,7 +1300,7 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
         &mut self,
         operation: HelperOperationV1,
         input: [u8; 32],
-        original: Option<&super::host::CanaryAuthenticatedRequestV3<'_>>,
+        original: Option<&super::host::CanaryAuthenticatedRequestV3>,
     ) -> Result<HelperObservationV1, PhysicalTpmFailureV1> {
         self.require_custody()?;
         let request = if self.is_host() {
@@ -1420,7 +1420,7 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
         bytes: &[u8],
         locks: SentLocksV1<'_>,
         frame: Option<HostFrameV1>,
-        original: Option<&super::host::CanaryAuthenticatedRequestV3<'_>>,
+        original: Option<&super::host::CanaryAuthenticatedRequestV3>,
     ) -> Result<(), PhysicalTpmFailureV1> {
         if self.is_retained_broker() {
             let attempt = self.broker_mut()?;
@@ -2142,7 +2142,7 @@ impl<'operation, 'owner, 'origin, 'startup>
     fn finish<T>(
         mut self,
         result: Result<T, PhysicalTpmFailureV1>,
-        original: &super::host::CanaryAuthenticatedRequestV3<'_>,
+        original: &super::host::CanaryAuthenticatedRequestV3,
     ) -> Result<T, super::host::physical::CanaryPhysicalErrorV2> {
         if !self.began {
             let error = match &mut self.owner.binding {

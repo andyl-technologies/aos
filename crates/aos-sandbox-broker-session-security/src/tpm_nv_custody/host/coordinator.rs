@@ -42,79 +42,15 @@ const SIGNING_ANCESTRY_V2: [&str; 3] = [
     "run", "credentials", "aos-sandbox-runtime-publisher.service",
 ];
 
-/// Keeps the exact native request record borrowed through its purpose phases.
-///
-/// Only this coordinator constructs the loan, after Core's genuine Storage
-/// delegate has authenticated that SAME record and full job. Sibling helpers
-/// cannot fabricate it from decoded quantities or renew its original window.
-pub(in crate::tpm_nv_custody) struct CanaryAuthenticatedRequestV3<'record> {
-    request: &'record aos_sandbox_protocol::runtime_deployment::canary::CanaryPublisherRequestV3,
-    record: &'record aos_sandbox_linux::seqpacket::descriptor_subject::ReceivedDescriptorRecord,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub(in crate::tpm_nv_custody) enum CanaryClockCauseV2 {
-    #[error("selected publisher original kernel observation failed")]
-    Kernel(#[source] aos_sandbox_linux::Error),
-    #[error("selected publisher original paired clock observation failed")]
-    Paired {
-        #[source]
-        kernel: aos_sandbox_linux::Error,
-        clock: CanaryClockRangeV2,
-    },
-    #[error("selected publisher original clock observation is invalid")]
-    Clock(#[source] CanaryClockRangeV2),
-    #[error("selected publisher original boot or exclusive window changed")]
-    Changed,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub(in crate::tpm_nv_custody) enum CanaryClockRangeV2 {
-    #[error("CLOCK_BOOTTIME has invalid seconds or nanoseconds")]
-    Range,
-    #[error("CLOCK_BOOTTIME nanosecond arithmetic overflowed")]
-    Overflow,
-}
-
-impl CanaryAuthenticatedRequestV3<'_> {
-    pub(in crate::tpm_nv_custody) fn request(&self)
-        -> &aos_sandbox_protocol::runtime_deployment::canary::CanaryPublisherRequestV3
-    {
-        self.request
-    }
-
-    pub(in crate::tpm_nv_custody) fn require_clock(&self) -> Result<(), CanaryClockCauseV2> {
-        let (boot, now) = original_clock_pair_v2()?;
-        if boot != self.request.boot || now < self.request.not_before
-            || now >= self.request.deadline
-        {
-            return Err(CanaryClockCauseV2::Changed);
-        }
-        Ok(())
-    }
-}
-
-fn original_clock_pair_v2() -> Result<([u8; 16], u64), CanaryClockCauseV2> {
-    let boot = aos_sandbox_linux::boot::KernelBootId::current();
-    let now = original_boottime_v2();
-    match (boot, now) {
-        (Ok(boot), Ok(now)) => Ok((boot.into_bytes(), now)),
-        (Err(kernel), Err(clock)) => Err(CanaryClockCauseV2::Paired { kernel, clock }),
-        (Err(kernel), Ok(_)) => Err(CanaryClockCauseV2::Kernel(kernel)),
-        (Ok(_), Err(clock)) => Err(CanaryClockCauseV2::Clock(clock)),
-    }
-}
-
-fn original_boottime_v2() -> Result<u64, CanaryClockRangeV2> {
-    let value = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
-    let seconds = u64::try_from(value.tv_sec).map_err(|_| CanaryClockRangeV2::Range)?;
-    let nanos = u64::try_from(value.tv_nsec).map_err(|_| CanaryClockRangeV2::Range)?;
-    if nanos >= 1_000_000_000 {
-        return Err(CanaryClockRangeV2::Range);
-    }
-    seconds.checked_mul(1_000_000_000).and_then(|value| value.checked_add(nanos))
-        .ok_or(CanaryClockRangeV2::Overflow)
-}
+// Core constructs this owning window only after authenticating the same request
+// record and full job. Consuming its record loan ends that borrow before any
+// whole-transport mutation; no sibling can fabricate or renew the window.
+pub(in crate::tpm_nv_custody) use aos_sandbox::runtime_deployment::{
+    RuntimeDeploymentOriginalWindowV3 as CanaryAuthenticatedRequestV3,
+    RuntimeDeploymentOriginalClockCauseV3 as CanaryClockCauseV2,
+};
+use aos_sandbox::runtime_deployment::observe_original_runtime_deployment_clock_v3
+    as original_clock_pair_v2;
 
 #[derive(Debug, thiserror::Error)]
 enum CanarySigningCauseV2 {
@@ -663,51 +599,81 @@ pub fn run_runtime_deployment_canary_once_v2(
         }
     };
     let mut journals = super::journal::HostCanaryJournalAdmissionV2::new(origins);
-    let mut request = None;
-    let mut authenticated = false;
+    let mut original = None;
 
-    let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    // Park the sole decode in Core at the old upper-decode frontier, then end
+    // this mutable transport catch before authenticating the same request.
+    let prefix = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         signing.capture_once()?;
         transport.accept(&parts.startup, &mut parts.listener)?;
         transport.receive()?;
         {
-            let (socket, record) = transport.originals()?;
-            // The record and its whole descriptor/native custody are parked
-            // before DATA decode and the genuine current delegate validation.
-            request = Some(CanaryPublisherRequestV3::decode(record.payload())?);
-            delegate.capture_once(socket, record)?;
-            authenticated = true;
+            let (_, record) = transport.originals()?;
+            delegate.prepare_original_request_once(record)?;
         }
-        origins.recheck()?;
-        journals.admit_once()?;
         Ok::<(), CanaryPublisherCauseV2>(())
     }));
-    ledger.retain(match prepared {
+    ledger.retain(match prefix {
         Ok(result) => result,
         Err(_) => Err(CanaryPublisherCauseV2::Unwind),
     });
+
+    if ledger.first.is_none() {
+        // The returned loan borrows only the immutable received record, not
+        // the disjoint accepted socket or mutable delegate captured here.
+        let accepted = &mut transport.accepted;
+        let received = &transport.received;
+        let mut captured = None;
+        let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let socket = publisher_socket_v2(accepted)?;
+            let record = publisher_record_v2(received)?;
+            captured = Some(delegate.capture_original_request_once(socket, record));
+
+            let loan = match captured.take() {
+                Some(Ok(loan)) => loan,
+                Some(Err(cause)) => return Err(cause.into()),
+                None => return Err(CanaryPublisherCauseV2::Changed),
+            };
+            original = Some(loan.into_original_window());
+
+            origins.recheck()?;
+            journals.admit_once()?;
+            Ok::<(), CanaryPublisherCauseV2>(())
+        }));
+
+        // Preserve an earlier returned result if unwind interrupted its pure
+        // handoff. The actual error precedes Unwind; success keeps its window.
+        if let Some(result) = captured.take() {
+            match result {
+                Ok(loan) => original = Some(loan.into_original_window()),
+                Err(cause) => ledger.retain(Err(cause.into())),
+            }
+        }
+        ledger.retain(match prepared {
+            Ok(result) => result,
+            Err(_) => Err(CanaryPublisherCauseV2::Unwind),
+        });
+    }
+
     if ledger.first.is_some() {
         if delegate.first_failure().is_none() && transport.received.as_ref().is_some_and(Result::is_ok) {
             let observed = match transport.originals() {
-                Ok((socket, record)) => delegate.recheck(socket, record).map_err(Into::into),
+                Ok((socket, record)) => match original.as_ref() {
+                    Some(original) => delegate.recheck_original_request(socket, record, original),
+                    None => delegate.recheck(socket, record),
+                }.map_err(Into::into),
                 Err(cause) => Err(cause),
             };
             ledger.retain(observed);
         }
-        let original = if authenticated {
-            Some(CanaryAuthenticatedRequestV3 {
-                request: request.as_ref().unwrap_or_else(|| std::process::abort()),
-                record: publisher_record_v2(&transport.received).unwrap_or_else(|_| std::process::abort()),
-            })
-        } else { None };
         finish_terminal_v2(&parts.startup, Some(origins), Some(&mut signing),
-            &mut transport, &mut ledger, original.as_ref().map(|loan| loan.request));
+            &mut transport, &mut ledger, original.as_ref().map(|loan| loan.request()));
         return ledger.finish();
     }
 
-    let request = request.as_ref().unwrap_or_else(|| std::process::abort());
+    let original = original.unwrap_or_else(|| std::process::abort());
+    let request = original.request();
     let record = publisher_record_v2(&transport.received).unwrap_or_else(|_| std::process::abort());
-    let original = CanaryAuthenticatedRequestV3 { request, record };
     let owner = match journals.owner_mut() {
         Ok(owner) => owner,
         Err(cause) => {
@@ -727,7 +693,7 @@ pub fn run_runtime_deployment_canary_once_v2(
 
     let effected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         physical.prepare_once()?;
-        delegate.recheck(publisher_socket_v2(&mut transport.accepted)?, record)?;
+        delegate.recheck_original_request(publisher_socket_v2(&mut transport.accepted)?, record, &original)?;
         signing.recheck()?;
         original.require_clock()?;
         if physical.admit(&original)? != crate::tpm_nv_custody::FloorRecoveryV1::Current {
@@ -768,7 +734,7 @@ pub fn run_runtime_deployment_canary_once_v2(
             nonce: request.nonce,
         };
 
-        delegate.fill_association_data_v2(&mut fields)?;
+        delegate.fill_original_association_data_v2(&original, &mut fields)?;
         fields.main_transaction = association_transaction_v2(fields.purpose, fields.request_digest,
             fields.storage.primary_head, fields.main_head, fields.ordinal)?;
         let body = fields.encode_body()?;
@@ -784,7 +750,7 @@ pub fn run_runtime_deployment_canary_once_v2(
         // fixed-slot park follows it. Synchronous scheduling straddles remain.
         signing.recheck()?;
         origins.recheck()?;
-        delegate.recheck(publisher_socket_v2(&mut transport.accepted)?, record)?;
+        delegate.recheck_original_request(publisher_socket_v2(&mut transport.accepted)?, record, &original)?;
         physical.terminal_observations(&original)?;
         let key = signing.key.as_ref().ok_or(CanaryPublisherCauseV2::Changed)?;
         original.require_clock()?;
@@ -795,7 +761,7 @@ pub fn run_runtime_deployment_canary_once_v2(
         ledger.retain(signing.recheck().map_err(Into::into));
         ledger.retain(origins.recheck().map_err(Into::into));
         let delegate_post = match publisher_socket_v2(&mut transport.accepted) {
-            Ok(socket) => delegate.recheck(socket, record).map_err(Into::into),
+            Ok(socket) => delegate.recheck_original_request(socket, record, &original).map_err(Into::into),
             Err(cause) => Err(cause),
         };
         ledger.retain(delegate_post);
@@ -818,20 +784,20 @@ pub fn run_runtime_deployment_canary_once_v2(
         ]).map_err(super::HostOwnedJournalErrorV1::from)?);
         let saved = transaction.as_ref().ok_or(CanaryPublisherCauseV2::Changed)?;
 
-        delegate.recheck(publisher_socket_v2(&mut transport.accepted)?, record)?;
+        delegate.recheck_original_request(publisher_socket_v2(&mut transport.accepted)?, record, &original)?;
         signing.recheck()?;
         let intent = physical.fund(saved, &original)?;
-        delegate.recheck(publisher_socket_v2(&mut transport.accepted)?, record)?;
+        delegate.recheck_original_request(publisher_socket_v2(&mut transport.accepted)?, record, &original)?;
         physical.commit(super::journal::CanaryHostNativeStepV2::Prepare, saved, &original)?;
-        delegate.recheck(publisher_socket_v2(&mut transport.accepted)?, record)?;
+        delegate.recheck_original_request(publisher_socket_v2(&mut transport.accepted)?, record, &original)?;
         physical.extend(saved, &original)?;
         for step in [super::journal::CanaryHostNativeStepV2::Main,
             super::journal::CanaryHostNativeStepV2::Finalize]
         {
-            delegate.recheck(publisher_socket_v2(&mut transport.accepted)?, record)?;
+            delegate.recheck_original_request(publisher_socket_v2(&mut transport.accepted)?, record, &original)?;
             physical.commit(step, saved, &original)?;
         }
-        delegate.recheck(publisher_socket_v2(&mut transport.accepted)?, record)?;
+        delegate.recheck_original_request(publisher_socket_v2(&mut transport.accepted)?, record, &original)?;
         if physical.classify(&original)? != crate::tpm_nv_custody::FloorRecoveryV1::Current {
             return Err(CanaryPublisherCauseV2::Changed);
         }
@@ -859,7 +825,7 @@ pub fn run_runtime_deployment_canary_once_v2(
         }
         signing.recheck()?;
         origins.recheck()?;
-        delegate.recheck(publisher_socket_v2(&mut transport.accepted)?, record)?;
+        delegate.recheck_original_request(publisher_socket_v2(&mut transport.accepted)?, record, &original)?;
         physical.terminal_observations(&original)?;
         let key = signing.key.as_ref().ok_or(CanaryPublisherCauseV2::Changed)?;
         original.require_clock()?;
@@ -868,7 +834,7 @@ pub fn run_runtime_deployment_canary_once_v2(
         ledger.retain(signing.recheck().map_err(Into::into));
         ledger.retain(origins.recheck().map_err(Into::into));
         let delegate_post = match publisher_socket_v2(&mut transport.accepted) {
-            Ok(socket) => delegate.recheck(socket, record).map_err(Into::into),
+            Ok(socket) => delegate.recheck_original_request(socket, record, &original).map_err(Into::into),
             Err(cause) => Err(cause),
         };
         ledger.retain(delegate_post);
@@ -884,7 +850,7 @@ pub fn run_runtime_deployment_canary_once_v2(
 
         signing.recheck()?;
         origins.recheck()?;
-        delegate.recheck(publisher_socket_v2(&mut transport.accepted)?, record)?;
+        delegate.recheck_original_request(publisher_socket_v2(&mut transport.accepted)?, record, &original)?;
         physical.terminal_observations(&original)?;
         original.require_clock()?;
         publisher_socket_v2(&mut transport.accepted)?.send_retaining(&reply)?;
@@ -902,7 +868,7 @@ pub fn run_runtime_deployment_canary_once_v2(
     }
     if delegate.first_failure().is_none() {
         let delegate_post = match publisher_socket_v2(&mut transport.accepted) {
-            Ok(socket) => delegate.recheck(socket, record).map_err(Into::into),
+            Ok(socket) => delegate.recheck_original_request(socket, record, &original).map_err(Into::into),
             Err(cause) => Err(cause),
         };
         ledger.retain(delegate_post);

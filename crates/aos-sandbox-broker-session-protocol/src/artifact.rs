@@ -156,12 +156,30 @@ impl PreparedBrokerOutcomeV1 {
     /// Rejects a wrong, weak or mismatched outcome key.
     pub fn sign(&self, key: &SigningKey) -> Result<SignedBrokerOutcomeV1, BrokerSessionArtifactError> {
         require_key(&self.signer, BrokerSessionKeyUsageV1::BrokerOutcome, key.verifying_key().as_bytes())?;
-        Ok(SignedBrokerOutcomeV1 {
+        Ok(self.sign_validated(key))
+    }
+
+    /// Moves this prepared outcome and key into an unvalidated owning operation.
+    ///
+    /// This is cryptographic DATA custody, not protected endpoint or effect
+    /// authority. The caller parks the object before its fallible preparation.
+    #[must_use = "park the key owner before its fallible preparation"]
+    pub fn into_signing_preparation(self, key: SigningKey) -> BrokerOutcomeSigningPreparationV1 {
+        BrokerOutcomeSigningPreparationV1 {
+            prepared: self,
+            key,
+            validation: None,
+            phase: OutcomeSigningPhaseV1::Fresh,
+        }
+    }
+
+    fn sign_validated(&self, key: &SigningKey) -> SignedBrokerOutcomeV1 {
+        SignedBrokerOutcomeV1 {
             method: self.method,
             subject: self.subject.clone(),
             signer: self.signer.clone(),
             signature: BrokerSessionSignature::from_bytes(key.sign(&self.preimage).to_bytes()),
-        })
+        }
     }
 
     /// Fills an already reserved canonical artifact destination.
@@ -184,6 +202,93 @@ impl PreparedBrokerOutcomeV1 {
             &self.signer, &self.subject_bytes, &signed.signature,
         );
         Ok(())
+    }
+}
+
+/// Owns one prepared outcome and key across a caller's final original checks.
+///
+/// This is not a credential, Session or effect permit. It exposes no key or
+/// message and cannot replace either input. Validation errors remain owned.
+pub struct BrokerOutcomeSigningPreparationV1 {
+    // Preserve the old prepared-subject-before-key destructor frontier.
+    prepared: PreparedBrokerOutcomeV1,
+    key: SigningKey,
+    validation: Option<Result<(), BrokerSessionArtifactError>>,
+    phase: OutcomeSigningPhaseV1,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum OutcomeSigningPhaseV1 {
+    Fresh,
+    Ready,
+    Closed,
+}
+
+impl BrokerOutcomeSigningPreparationV1 {
+    /// Validates the original key once and retains the whole returned Result.
+    ///
+    /// # Errors
+    /// Refuses repetition, wrong usage, fingerprint mismatch, invalid or weak
+    /// keys. The actual error remains resident; the returned clone is only an
+    /// artifact-error DATA diagnostic. Failure and unwind stay closed.
+    pub fn prepare_once(&mut self) -> Result<(), BrokerSessionArtifactError> {
+        if self.phase != OutcomeSigningPhaseV1::Fresh || self.validation.is_some() {
+            self.phase = OutcomeSigningPhaseV1::Closed;
+            return Err(BrokerSessionArtifactError::InvalidEnvelope);
+        }
+
+        self.phase = OutcomeSigningPhaseV1::Closed;
+        self.validation = Some(require_key(
+            &self.prepared.signer,
+            BrokerSessionKeyUsageV1::BrokerOutcome,
+            self.key.verifying_key().as_bytes(),
+        ));
+
+        match self.validation.as_ref() {
+            Some(Ok(())) => {
+                self.phase = OutcomeSigningPhaseV1::Ready;
+                Ok(())
+            }
+            Some(Err(error)) => Err(error.clone()),
+            None => Err(BrokerSessionArtifactError::InvalidEnvelope),
+        }
+    }
+
+    /// Borrows the actual retained key-validation failure.
+    #[must_use]
+    pub fn failure(&self) -> Option<&BrokerSessionArtifactError> {
+        self.validation.as_ref().and_then(|result| result.as_ref().err())
+    }
+
+    /// Signs the validated outcome once without rebuilding its canonical DATA.
+    ///
+    /// The short borrow follows the caller's final original checks and clock.
+    /// No validator or canonical encoder runs behind that boundary.
+    ///
+    /// # Errors
+    /// Refuses incomplete/failed preparation or repeated signing. Underlying
+    /// signing has no fallible return; unwind leaves the attempt closed.
+    pub fn sign_once(&mut self) -> Result<SignedBrokerOutcomeV1, BrokerSessionArtifactError> {
+        if self.phase != OutcomeSigningPhaseV1::Ready
+            || !matches!(self.validation.as_ref(), Some(Ok(())))
+        {
+            return Err(BrokerSessionArtifactError::InvalidEnvelope);
+        }
+
+        self.phase = OutcomeSigningPhaseV1::Closed;
+        Ok(self.prepared.sign_validated(&self.key))
+    }
+
+    /// Fills the existing reserved response using this same outcome DATA.
+    ///
+    /// # Errors
+    /// Preserves the existing response/subject/signature/capacity rejection.
+    pub fn fill_signed_response(
+        &self,
+        response: &mut crate::projection::PreparedBrokerResponseV1,
+        signed: &SignedBrokerOutcomeV1,
+    ) -> Result<(), crate::projection::BrokerSessionProjectionError> {
+        response.fill(&self.prepared, signed)
     }
 }
 

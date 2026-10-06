@@ -641,7 +641,7 @@ impl<'owner, 'origin, 'startup> HeldHostPhysicalJournalV1<'owner, 'origin, 'star
         &mut self,
         step: CanaryHostNativeStepV2,
         transaction: &JournalTransaction,
-        original: &super::CanaryAuthenticatedRequestV3<'_>,
+        original: &super::CanaryAuthenticatedRequestV3,
     ) -> Result<(), HostOwnedJournalErrorV1> {
         let index = step.index();
         if self.canary_commits[index].as_ref().is_none_or(|slot| slot.as_ref().is_some())
