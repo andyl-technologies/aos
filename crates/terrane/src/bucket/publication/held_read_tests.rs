@@ -32,6 +32,12 @@ struct ReadGate {
     release: tokio::sync::oneshot::Receiver<()>,
 }
 
+/// Pauses an actual matching read after a measured number of preceding reads.
+struct CountedReadGate {
+    gate: ReadGate,
+    preceding_reads: usize,
+}
+
 #[derive(Default)]
 struct ReadFs {
     metadata_reads: AtomicUsize,
@@ -41,6 +47,7 @@ struct ReadFs {
     read_failure: Mutex<Option<PathBuf>>,
     leaf_replacement: Mutex<Option<PathBuf>>,
     read_gate: Mutex<Option<ReadGate>>,
+    before_read_gate: Mutex<Option<CountedReadGate>>,
     writes: AtomicUsize,
     retained_effects: AtomicUsize,
     effect_permission_change: Mutex<Option<(PathBuf, PathBuf)>>,
@@ -133,6 +140,31 @@ impl LocalFs for ReadFs {
     async fn read_nofollow(&self, path: &Path) -> std::io::Result<Vec<u8>> {
         self.record_reads.fetch_add(1, Ordering::SeqCst);
         self.read_paths.lock().unwrap().push(path.to_owned());
+        let before_read = {
+            let mut pending = self.before_read_gate.lock().unwrap();
+            match pending.as_mut() {
+                Some(counted) if counted.gate.target == path => {
+                    if counted.preceding_reads == 0 {
+                        pending.take().map(|counted| counted.gate)
+                    } else {
+                        counted.preceding_reads -= 1;
+                        None
+                    }
+                }
+                _ => None,
+            }
+        };
+        if let Some(ReadGate {
+            entered, release, ..
+        }) = before_read
+        {
+            entered
+                .send(())
+                .map_err(|_| std::io::Error::other("before-read observer dropped"))?;
+            release
+                .await
+                .map_err(|_| std::io::Error::other("before-read release dropped"))?;
+        }
         if self.read_failure.lock().unwrap().as_deref() == Some(path) {
             return Err(std::io::Error::other("injected unavailable exact read"));
         }
