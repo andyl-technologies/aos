@@ -676,7 +676,7 @@ mod pending_restart_tests {
             checksum_algorithm: profile.checksum_algorithm,
         };
         let session = DirectSessionRef {
-            session_id: "original-session".into(),
+            session_id: "original-session-abc".into(),
             logical_fingerprint: intent.fingerprint().unwrap(),
         };
         let original_status = DirectSessionStatus {
@@ -748,6 +748,14 @@ mod pending_restart_tests {
         // Only the original Complete request may reach the Hub, twice: pending
         // verification, then final committed evidence. No Begin/grant/body path.
         let worker = std::thread::spawn(move || {
+            let expected_batch = DirectBatch {
+                operation_id: commitment(
+                    "completion-barrier-wave",
+                    &[original_complete.operation_id.as_bytes()],
+                ),
+                items: vec![original_complete.clone()],
+            };
+            let expected_body = encode_direct_control(&expected_batch).unwrap();
             let mut captured = Vec::new();
             for state in [
                 DirectSessionState::CompletingStaging,
@@ -779,26 +787,36 @@ mod pending_restart_tests {
                     else {
                         continue;
                     };
-                    let headers = String::from_utf8_lossy(&request[..headers_end]);
-                    let length = headers
+                    let headers = std::str::from_utf8(&request[..headers_end]).unwrap();
+                    let lengths: Vec<_> = headers
                         .lines()
-                        .find_map(|line| {
-                            line.to_ascii_lowercase()
-                                .strip_prefix("content-length: ")
-                                .and_then(|value| value.parse::<usize>().ok())
+                        .filter_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().unwrap())
                         })
-                        .unwrap();
+                        .collect();
+                    assert_eq!(lengths, vec![expected_body.len()]);
+                    assert!(
+                        headers
+                            .lines()
+                            .filter_map(|line| line.split_once(':'))
+                            .all(|(name, _)| !name.eq_ignore_ascii_case("transfer-encoding"))
+                    );
+                    let length = lengths[0];
                     if request.len() >= headers_end + 4 + length {
-                        let body: DirectBatch<DirectCompleteRequest> = decode_direct_control(
-                            &request[headers_end + 4..headers_end + 4 + length],
-                        )
-                        .unwrap();
+                        assert_eq!(request.len(), headers_end + 4 + length);
+                        let request_body = &request[headers_end + 4..];
+                        // Metadata identifiers can match payload substrings. Exact framing and the
+                        // canonical control exclude provider data without guessing substrings.
+                        assert_eq!(request_body, expected_body.as_slice());
+                        let body: DirectBatch<DirectCompleteRequest> =
+                            decode_direct_control(request_body).unwrap();
                         assert_eq!(body.items, vec![original_complete.clone()]);
                         assert!(
                             headers
                                 .starts_with("POST /aos.hub.v1.DirectUploadService/CompleteBatch ")
                         );
-                        assert!(!request.windows(3).any(|bytes| bytes == b"abc"));
                         captured.push(body.clone());
                         let response = DirectUploadResponse {
                             operation_id: body.operation_id,
