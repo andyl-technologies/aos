@@ -59,6 +59,12 @@ in
     srcHash = "sha256-Y1hwtR++gwC9zF6xrFEArtBnVvHSES0+g6KYuJ3OPtI=";
     prevJdk = openjdk-8;
     extraDarwinFrameworks = [java-native-foundation];
+
+    # Run each compiler invocation directly. The shared compiler server loses
+    # its connection during the second bootstrap build in the isolated builder.
+    # Both bootstrap stages still compile the complete JDK image from source.
+    extraConfigureFlags = ["--disable-javac-server"];
+
     # GCC rejects the duplicated using declaration in the AArch64 interpreter.
     extraPatches =
       if stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64
