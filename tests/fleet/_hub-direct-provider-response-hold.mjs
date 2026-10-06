@@ -233,9 +233,11 @@ export async function createResponseHold(root, ports = { listen: 3902, upstream:
   // the later small-body calibration or verification-timeout selection.
   let queuePause = null;
 
-  function endQueuePause(reason) {
+  function endQueuePause(reason, cause = reason) {
     if (!queuePause || ['released', 'cutoff', 'disconnected', 'refused'].includes(queuePause.state)) return;
+    // Keep the first observed cause before cancellation triggers other callbacks.
     queuePause.state = reason;
+    queuePause.terminalCause = cause;
     queuePause.endedAtUnixMillis = Date.now();
     queuePause.cancel?.();
   }
@@ -244,10 +246,12 @@ export async function createResponseHold(root, ports = { listen: 3902, upstream:
     const selection = queuePause;
     selection.state = 'receiving_prefix';
     selection.cancel = () => { reply.destroy(); response.destroy(); };
-    const disconnected = () => endQueuePause('disconnected');
-    response.once('close', disconnected);
-    reply.once('error', disconnected);
-    reply.once('aborted', disconnected);
+    const downstreamClosed = () => endQueuePause('disconnected', 'downstream_close');
+    const upstreamError = () => endQueuePause('disconnected', 'upstream_error');
+    const upstreamAborted = () => endQueuePause('disconnected', 'upstream_aborted');
+    response.once('close', downstreamClosed);
+    reply.once('error', upstreamError);
+    reply.once('aborted', upstreamAborted);
     try {
       requireFact(reply.statusCode === 200
         && header(reply.rawHeaders, 'etag') === identity.ifMatch
@@ -311,9 +315,9 @@ export async function createResponseHold(root, ports = { listen: 3902, upstream:
       reply.destroy();
       response.destroy();
     } finally {
-      response.off('close', disconnected);
-      reply.off('error', disconnected);
-      reply.off('aborted', disconnected);
+      response.off('close', downstreamClosed);
+      reply.off('error', upstreamError);
+      reply.off('aborted', upstreamAborted);
       selection.cancel = null;
     }
   }
@@ -601,9 +605,14 @@ export async function createResponseHold(root, ports = { listen: 3902, upstream:
       if (queuePause?.state === 'armed' && Date.now() >= queuePause.arm.selectionDeadlineUnixMillis) {
         endQueuePause('cutoff');
       }
+      if (queuePause && ['selected', 'receiving_prefix', 'held'].includes(queuePause.state)
+        && Date.now() >= queuePause.selectedAtUnixMillis + queuePause.arm.pauseMillis) {
+        endQueuePause('cutoff');
+      }
       return { version: 1, state: queuePause?.state ?? 'absent',
         receipt: queuePause?.receipt ?? null, receiptFile: queuePause?.receiptFile ?? null,
-        endedAtUnixMillis: queuePause?.endedAtUnixMillis ?? null };
+        endedAtUnixMillis: queuePause?.endedAtUnixMillis ?? null,
+        terminalCause: queuePause?.terminalCause ?? null };
     }
     if (closed(value, ['version', 'kind']) && value.version === 1 && value.kind === 'queue_release') {
       endQueuePause('released');

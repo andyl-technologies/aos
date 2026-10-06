@@ -219,7 +219,36 @@ def direct_provider_hold_command(s3, tools, installation, request):
     body = json.dumps(request, sort_keys=True).encode()
     if len(body) > 16384:
         raise ValueError("Provider response owner control exceeds its bound")
-    return _direct_provider_listener_exchange(s3, tools, installation, body)
+    reply = _direct_provider_listener_exchange(s3, tools, installation, body)
+    if kind == "queue_state":
+        validate_direct_queue_state(reply)
+    return reply
+
+
+def validate_direct_queue_state(reply):
+    """Validate the closed queue observation without treating a terminal as success."""
+    fields = {"version", "state", "receipt", "receiptFile", "endedAtUnixMillis", "terminalCause"}
+    if (not isinstance(reply, dict) or set(reply) != fields
+            or type(reply["version"]) is not int or reply["version"] != 1):
+        raise ValueError("Provider queue state schema differs")
+    active = {"absent", "armed", "selected", "receiving_prefix", "held"}
+    terminal = {"disconnected": {"downstream_close", "upstream_error", "upstream_aborted"},
+        "cutoff": {"cutoff"}, "released": {"released"}, "refused": {"refused"}}
+    state, ended, cause = reply["state"], reply["endedAtUnixMillis"], reply["terminalCause"]
+    if not isinstance(state, str) or not (state in active or state in terminal):
+        raise ValueError("Provider queue state is unknown")
+    if state in active:
+        if ended is not None or cause is not None:
+            raise ValueError("Active provider queue state has a terminal")
+    elif (type(ended) is not int or ended < 0 or not isinstance(cause, str)
+            or cause not in terminal[state]):
+        raise ValueError("Provider queue terminal cause is absent or inconsistent")
+    if any(value is not None and not isinstance(value, dict)
+            for value in (reply["receipt"], reply["receiptFile"])):
+        raise ValueError("Provider queue receipt shape differs")
+    if state == "held" and (reply["receipt"] is None or reply["receiptFile"] is None):
+        raise ValueError("Held provider queue state lacks its receipt")
+    return reply
 
 
 def direct_copy_partial_command(s3, tools, installation, request):

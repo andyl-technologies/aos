@@ -428,6 +428,8 @@ test('queue prefix pause holds a streaming full read, releases once and preserve
     assert.equal(state.receipt.identity.target, FIRST_TARGET);
     assert.equal(state.receipt.downstreamOfferedBytes, '0');
     assert.equal(state.receipt.upstreamComplete, false);
+    assert.equal(state.terminalCause, null);
+    assert.equal(state.endedAtUnixMillis, null);
     assert.equal(sha(await fs.readFile(state.receipt.prefixFile.path)), state.receipt.prefixFile.sha256);
     const raw = await fs.readFile(state.receiptFile.path, 'utf8');
     assert.equal(raw.includes(authorization), false);
@@ -480,12 +482,47 @@ test('queue cutoff and downstream disconnect end the pause without a replacement
       if (disposition === 'disconnected') child.destroy();
       const state = await queueState(facts, disposition);
       assert.equal(state.receipt.downstreamOfferedBytes, '0');
+      assert.equal(state.terminalCause, disposition === 'cutoff' ? 'cutoff' : 'downstream_close');
+      assert.ok(state.endedAtUnixMillis >= state.receipt.heldAtUnixMillis);
       assert.equal(facts.received.length, 1);
       assert.equal((await control(facts.root, { version: 1, kind: 'queue_release' })).status, 'released');
-      assert.equal((await control(facts.root, { version: 1, kind: 'queue_state' })).state, disposition);
+      const afterRelease = await control(facts.root, { version: 1, kind: 'queue_state' });
+      assert.equal(afterRelease.state, disposition);
+      assert.equal(afterRelease.terminalCause, state.terminalCause);
+      assert.equal(afterRelease.endedAtUnixMillis, state.endedAtUnixMillis);
       child.destroy();
     });
   }
+});
+
+test('queue upstream failure remains distinct after downstream cancellation and release', async () => {
+  const body = Buffer.alloc(131072, 19);
+  let backendResponse;
+  await fixture((incoming, outgoing) => {
+    backendResponse = outgoing;
+    outgoing.writeHead(200, { ETag: '"actual-etag"', 'Content-Length': body.length });
+    outgoing.write(body.subarray(0, 65536));
+  }, async facts => {
+    await control(facts.root, queueArm(body));
+    const child = request({ hostname: '127.0.0.1', port: facts.port, path: FIRST_TARGET,
+      headers, agent: false });
+    child.on('error', () => {});
+    child.end();
+    const held = await queueState(facts, 'held');
+
+    backendResponse.destroy();
+    const ended = await queueState(facts, 'disconnected');
+    assert.ok(['upstream_error', 'upstream_aborted'].includes(ended.terminalCause));
+    assert.deepEqual(ended.receipt, held.receipt);
+    assert.equal(ended.receipt.downstreamOfferedBytes, '0');
+    assert.equal(facts.received.length, 1);
+
+    child.destroy();
+    await control(facts.root, { version: 1, kind: 'queue_release' });
+    const retained = await control(facts.root, { version: 1, kind: 'queue_state' });
+    assert.equal(retained.terminalCause, ended.terminalCause);
+    assert.equal(retained.endedAtUnixMillis, ended.endedAtUnixMillis);
+  });
 });
 
 test('queue selection deadline and pause bounds remain independent and closed', async () => {

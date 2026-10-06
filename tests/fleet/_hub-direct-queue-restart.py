@@ -1,7 +1,8 @@
 """Interrupt one retained isolated queue read without repeating its mutations.
 
 The rendezvous joins an independently held GET to an authenticated durable
-Begin without Finish after the exact consumer crash. Neither the held GET nor
+Begin without Finish across the exact consumer restart. A held observation
+precedes the crash invocation; response liveness at the kill remains unknown. Neither the held GET nor
 an ACK alone proves a queue attempt or remote drain. The ordinary mixed/pure
 qualification is a separate run.
 """
@@ -607,6 +608,50 @@ def prepare_direct_queue_pause(worker, s3, tools, process, selector, source, sta
     return arm
 
 
+def direct_restart_controller_order(order):
+    """Check only the controller's local observation and invocation sequence."""
+    fields = ("heldRequestStarted", "heldReplyReturned", "killInvocationStarted",
+        "killInvocationReturned", "postStateRequestStarted", "postStateReplyReturned")
+    if not isinstance(order, dict) or set(order) != set(fields):
+        raise AssertionError("queue restart controller sequence is incomplete")
+    values = [order[name] for name in fields]
+    if any(not isinstance(value, str) or re.fullmatch(r"0|[1-9][0-9]{0,19}", value) is None
+            for value in values):
+        raise AssertionError("queue restart controller sequence is invalid")
+    if any(int(left) > int(right) for left, right in zip(values, values[1:])):
+        raise AssertionError("queue restart controller sequence is reversed")
+
+
+def direct_restart_pause_observations(held, ended, owner, order):
+    """Join the same provider pause using only its local times and fixed causes."""
+    direct_restart_controller_order(order)
+    receipt = held["receipt"]
+    if any(type(receipt[name]) is not int or receipt[name] < 0 for name in (
+            "selectedAtUnixMillis", "heldAtUnixMillis", "cutoffUnixMillis")):
+        raise AssertionError("queue provider local timestamps are invalid")
+    if (held["state"] != "held" or held["endedAtUnixMillis"] is not None
+            or held["terminalCause"] is not None
+            or receipt["owner"] != {name: owner[name] for name in (
+                "pid", "startTicks", "ownerUid", "configurationSha256", "listenerSourceSha256",
+                "listenAddress", "upstreamAddress")}
+            or not (receipt["selectedAtUnixMillis"] <= receipt["heldAtUnixMillis"]
+                < receipt["cutoffUnixMillis"])
+            or not 0 < receipt["cutoffUnixMillis"] - receipt["selectedAtUnixMillis"] <= 35000
+            or receipt["downstreamOfferedBytes"] != "0" or receipt["upstreamComplete"] is not False
+            or ended["receipt"] != receipt or ended["receiptFile"] != held["receiptFile"]):
+        raise AssertionError("queue provider pause identity or local bounds differ")
+    if ended["state"] == "held":
+        if ended["endedAtUnixMillis"] is not None or ended["terminalCause"] is not None:
+            raise AssertionError("held queue pause has an inconsistent terminal")
+    elif ended["state"] == "disconnected":
+        terminal = ended["endedAtUnixMillis"]
+        if (ended["terminalCause"] != "downstream_close" or type(terminal) is not int
+                or not receipt["heldAtUnixMillis"] <= terminal < receipt["cutoffUnixMillis"]):
+            raise AssertionError("queue pause lacks a bounded downstream-close observation")
+    else:
+        raise AssertionError("queue pause ended with a non-restart terminal")
+
+
 def direct_restart_pause_join(record, held, arm, selector, crash):
     """Require an authenticated unfinished Begin for the independently held GET."""
     selected = record["readSelection"]
@@ -626,10 +671,8 @@ def direct_restart_pause_join(record, held, arm, selector, crash):
             or selected["providerSelectorSha256"] != hashlib.sha256(
                 json.dumps(selector, sort_keys=True).encode()).hexdigest()
             or receipt["downstreamOfferedBytes"] != "0" or receipt["upstreamComplete"] is not False
-            or not (int(record["attempt"]["startedAtMillis"]) <= receipt["selectedAtUnixMillis"]
-                    <= receipt["heldAtUnixMillis"] <= int(crash["killedAtUnixNs"]) // 1000000
-                    < receipt["cutoffUnixMillis"])
-            or receipt["cutoffUnixMillis"] - receipt["selectedAtUnixMillis"] > 35000):
+            or not (int(record["attempt"]["startedAtMillis"]) * 1000000
+                    <= int(crash["killedAtUnixNs"]) <= int(crash["observedGoneAtUnixNs"]))):
         raise AssertionError("held provider read lacks exact authenticated unfinished Begin correlation")
     return record
 
@@ -650,20 +693,21 @@ def direct_restart_positive(records, pending, source, crash):
                 or proof["sha256"] != source["sha256"]
                 or before["isolateId"] != after_provider["isolateId"]
                 or int(after_provider["dispatches"]) <= int(before["dispatches"])
-                or int(record["attempt"]["startedAtMillis"]) * 1000000 <= int(crash["killedAtUnixNs"])):
+                or int(record["attempt"]["startedAtMillis"]) * 1000000 <= int(crash["observedGoneAtUnixNs"])):
             raise AssertionError("later delivery lacks a fresh exact full-source positive proof")
     return positive
 
 
 def run_direct_queue_restart(worker, s3, tools, process, identity, control_key_file,
                              selector, source, staging_prefix):
-    """Crash a real held read, then prove its unfinished Begin and fresh recovery."""
+    """Restart after a held-read observation and prove durable Begin and fresh recovery."""
     run_id = os.urandom(32).hex()
     counters, _ = observe_direct_runtime_process(worker, tools, "before-queue-crash")
     arm = prepare_direct_queue_pause(worker, s3, tools, process, selector, source, staging_prefix, run_id)
     driver = None
     held = None
     crash = None
+    order = {}
     try:
         driver = start_direct_restart_original(worker, tools, tools["workerUrl"],
             control_key_file, identity["identityFile"], selector, source, run_id=run_id)
@@ -671,9 +715,13 @@ def run_direct_queue_restart(worker, s3, tools, process, identity, control_key_f
         deadline = time.monotonic() + 1200
         while time.monotonic() < deadline:
             direct_restart_readiness(worker, tools, driver)
+            observation_started = time.monotonic_ns()
             state = direct_provider_hold_command(s3, tools, tools["providerHoldInstallation"],
                 {"version": 1, "kind": "queue_state"})
+            observation_returned = time.monotonic_ns()
             if state["state"] == "held":
+                order.update(heldRequestStarted=str(observation_started),
+                    heldReplyReturned=str(observation_returned))
                 held = state
                 break
             if state["state"] not in {"armed", "selected", "receiving_prefix"}:
@@ -687,22 +735,24 @@ def run_direct_queue_restart(worker, s3, tools, process, identity, control_key_f
                 "pid", "startTicks", "ownerUid", "configurationSha256", "listenerSourceSha256",
                 "listenAddress", "upstreamAddress")}:
             raise AssertionError("queue held GET belongs to a different provider response owner")
-        if (held["endedAtUnixMillis"] is not None
+        if (held["endedAtUnixMillis"] is not None or held["terminalCause"] is not None
                 or held["receipt"]["cutoffUnixMillis"] <= held["receipt"]["heldAtUnixMillis"]):
             raise AssertionError("queue provider pause was not live at selected observation")
         # No Status call precedes the crash: the prior control reply arrived
         # only after Finish. This independent hold proves no
-        # Begin; the authenticated post-crash join below is mandatory.
+        # Begin; the authenticated post-crash join below is mandatory. The
+        # controller sequence proves held-before-invocation, not live-at-kill.
+        order["killInvocationStarted"] = str(time.monotonic_ns())
         crash = crash_direct_recorded_runtime(worker, tools, process, counters)
+        order["killInvocationReturned"] = str(time.monotonic_ns())
         retain_direct_flow("queue-restart-crash.json", crash)
+        order["postStateRequestStarted"] = str(time.monotonic_ns())
         ended = direct_provider_hold_command(s3, tools, tools["providerHoldInstallation"],
             {"version": 1, "kind": "queue_state"})
+        order["postStateReplyReturned"] = str(time.monotonic_ns())
         retain_direct_flow("queue-restart-pause-after-crash.json", ended)
-        if (ended["receipt"] != held["receipt"]
-                or int(crash["killedAtUnixNs"]) // 1000000 >= held["receipt"]["cutoffUnixMillis"]
-                or ended["endedAtUnixMillis"] is not None
-                    and ended["endedAtUnixMillis"] < int(crash["killedAtUnixNs"]) // 1000000):
-            raise AssertionError("queue provider pause ended before exact consumer crash")
+        retain_direct_flow("queue-restart-controller-order.json", order)
+        direct_restart_pause_observations(held, ended, owner, order)
     finally:
         try:
             released = direct_provider_hold_command(s3, tools, tools["providerHoldInstallation"],
@@ -713,7 +763,7 @@ def run_direct_queue_restart(worker, s3, tools, process, identity, control_key_f
                 terminal = finish_direct_restart_driver(worker, tools, driver)
                 retain_direct_flow("queue-restart-rendezvous-failure.json", {
                     "version": 1, "driver": terminal, "heldRead": held,
-                    "reason": "provider_pause_not_proven_at_crash", "consumerCrash": False})
+                    "reason": "held_read_before_restart_not_proven", "consumerCrash": False})
 
     resumed = start_direct_worker(worker, tools, process["configurationFile"], "queue-recovered")
     if resumed["configurationSha256"] != process["configurationSha256"]:
@@ -730,7 +780,7 @@ def run_direct_queue_restart(worker, s3, tools, process, identity, control_key_f
     records = direct_restart_records(after, driver["runId"], source, selected_identity)
     matching = [record for record in records if record["receipt"] is None
                 and record["attempt"]["startedAtMillis"] is not None
-                and int(record["attempt"]["startedAtMillis"]) <= held["receipt"]["selectedAtUnixMillis"]]
+                and int(record["attempt"]["startedAtMillis"]) * 1000000 <= int(crash["killedAtUnixNs"])]
     if len(matching) != 1:
         raise AssertionError("crashed held read lacks one authenticated unfinished attempt")
     pending = direct_restart_pause_join(matching[0], held, arm, selector, crash)
@@ -747,11 +797,13 @@ def run_direct_queue_restart(worker, s3, tools, process, identity, control_key_f
         raise AssertionError("consumer recovery lacks a fresh positive attempt")
     report = {"version": 1, "runId": driver["runId"], "sourceSha256": source["sha256"],
         "sourceBytes": source["byte_size"], "pending": pending, "heldRead": held, "pauseArm": arm,
-        "crash": crash, "resumed": resumed, "originalDriver": original_driver,
+        "crash": crash, "controllerOrder": order, "providerPauseAfterCrash": ended,
+        "providerEndVersusKill": None, "liveAtKill": None, "disconnectCausedByKill": None,
+        "resumed": resumed, "originalDriver": original_driver,
         "afterCrash": after, "recovery": recovered, "positiveAttempts": positive,
         "explicitClosedReadEnqueueObserved": any(item["name"].endswith("-enqueue-capture.json")
             for item in recovered["retained"]["files"]),
         "aboveMeasuredForegroundBudget": None, "serverAcknowledgment": None,
-        "scope": "isolated retained Begin without Finish at consumer crash; actual same-source recovery; not production publication evidence"}
+        "scope": "held-read observation before runtime restart; authenticated unfinished Begin persisted; fresh exact-source recovery; response liveness at kill and disconnect causation unknown; not production publication evidence"}
     retain_direct_flow("actual-queue-restart.json", report)
     return report, resumed

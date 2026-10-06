@@ -387,8 +387,9 @@ class QueuePauseLifecycle(unittest.TestCase):
             "cutoffUnixMillis": 36001, "downstreamOfferedBytes": "0", "upstreamComplete": False,
             "owner": {"pid": 1, "startTicks": "2", "ownerUid": 0, "configurationSha256": "f" * 64,
                 "listenerSourceSha256": "e" * 64, "listenAddress": "127.0.0.1:3902", "upstreamAddress": "127.0.0.1:3900"}}
-        held = {"state": "held", "receipt": receipt, "endedAtUnixMillis": None}
-        crash = {"killedAtUnixNs": "1003000000"}
+        held = {"state": "held", "receipt": receipt, "receiptFile": {"path": "controlled-held.json",
+            "sha256": "1" * 64, "byteSize": "1024"}, "endedAtUnixMillis": None, "terminalCause": None}
+        crash = {"killedAtUnixNs": "1003000000", "observedGoneAtUnixNs": "1003500000"}
         source = {"metadata": False, "byte_size": 2147483648, "sha256": "c" * 64}
         positive = copy.deepcopy(pending)
         positive["attemptNonce"] = "b" * 64
@@ -425,17 +426,78 @@ class QueuePauseLifecycle(unittest.TestCase):
             wrong["readSelection"][field] = value
             with self.subTest(field=field), self.assertRaises(AssertionError):
                 restart.direct_restart_pause_join(wrong, held, arm, selector, crash)
-        for change in ("completed", "past_cutoff", "before_held"):
+        for change in ("completed", "before_begin", "gone_before_kill"):
             wrong = copy.deepcopy(pending)
             changed_crash = dict(crash)
             if change == "completed":
                 wrong["receipt"] = positive["receipt"]
+            elif change == "before_begin":
+                changed_crash["killedAtUnixNs"] = "999000000"
             else:
-                changed_crash["killedAtUnixNs"] = "36001000000" if change == "past_cutoff" else "1001000000"
+                changed_crash["observedGoneAtUnixNs"] = "1002000000"
             with self.subTest(change=change), self.assertRaises(AssertionError):
                 restart.direct_restart_pause_join(wrong, held, arm, selector, changed_crash)
 
-    def scenario(self, after_positive=True, pause_state="held", malformed_positive=False):
+    def controller_order(self):
+        return dict(zip(("heldRequestStarted", "heldReplyReturned", "killInvocationStarted",
+            "killInvocationReturned", "postStateRequestStarted", "postStateReplyReturned"),
+            ("10", "20", "30", "40", "50", "60")))
+
+    def test_local_sequence_and_same_receipt_preserve_unknown_cross_clock_order(self):
+        selector, arm, pending, held, crash, source, positive = self.facts()
+        # Provider clock is deliberately behind Worker time. Only provider-local
+        # ordering and the controller sequence are comparable here.
+        held["receipt"].update(selectedAtUnixMillis=900, heldAtUnixMillis=901,
+            cutoffUnixMillis=35900)
+        ended = {**held, "state": "disconnected", "endedAtUnixMillis": 956,
+            "terminalCause": "downstream_close"}
+        restart.direct_restart_pause_observations(held, ended, held["receipt"]["owner"],
+            self.controller_order())
+        self.assertIs(restart.direct_restart_pause_join(pending, held, arm, selector, crash), pending)
+        self.assertEqual(restart.direct_restart_positive([pending, positive], pending, source, crash),
+            [positive])
+
+    def test_non_restart_terminals_changed_identity_and_reversed_sequence_refuse(self):
+        _, _, _, held, _, _, _ = self.facts()
+        owner, order = held["receipt"]["owner"], self.controller_order()
+        for state, cause in (("cutoff", "cutoff"), ("released", "released"),
+                ("refused", "refused"), ("disconnected", "upstream_error"),
+                ("disconnected", "upstream_aborted"), ("disconnected", None),
+                ("disconnected", "unknown")):
+            ended = {**held, "state": state, "terminalCause": cause, "endedAtUnixMillis": 1003}
+            with self.subTest(state=state, cause=cause), self.assertRaises(AssertionError):
+                restart.direct_restart_pause_observations(held, ended, owner, order)
+        for change in ("receipt", "file", "cutoff", "owner", "complete", "bytes"):
+            ended = copy.deepcopy(held)
+            changed_held, changed_owner = copy.deepcopy(held), dict(owner)
+            if change == "receipt":
+                ended["receipt"]["sourceSha256"] = "9" * 64
+            elif change == "file":
+                ended["receiptFile"]["sha256"] = "9" * 64
+            elif change == "cutoff":
+                ended.update(state="disconnected", terminalCause="downstream_close",
+                    endedAtUnixMillis=held["receipt"]["cutoffUnixMillis"])
+            elif change == "owner":
+                changed_owner["startTicks"] = "foreign"
+            else:
+                changed_held["receipt"]["upstreamComplete" if change == "complete"
+                    else "downstreamOfferedBytes"] = True if change == "complete" else "1"
+                ended = copy.deepcopy(changed_held)
+            with self.subTest(change=change), self.assertRaises(AssertionError):
+                restart.direct_restart_pause_observations(changed_held, ended, changed_owner, order)
+        for change in ("reverse", "missing", "invalid"):
+            wrong = dict(order)
+            if change == "reverse":
+                wrong["killInvocationStarted"] = "19"
+            elif change == "missing":
+                wrong.pop("heldReplyReturned")
+            else:
+                wrong["heldReplyReturned"] = True
+            with self.subTest(change=change), self.assertRaises(AssertionError):
+                restart.direct_restart_pause_observations(held, held, owner, wrong)
+
+    def scenario(self, after_positive=True, pause_state="held", malformed_positive=False,
+                 post_state=None):
         from unittest.mock import patch
         selector, arm, pending, held, crash, source, positive = self.facts()
         if malformed_positive:
@@ -453,7 +515,7 @@ class QueuePauseLifecycle(unittest.TestCase):
             provider.append(request["kind"])
             if request["kind"] == "queue_release":
                 return {"version": 1, "status": "released"}
-            return {**held, "state": pause_state}
+            return post_state if crashes and post_state is not None else {**held, "state": pause_state}
 
         def observe(*args, **kwargs):
             phase = args[6]
@@ -485,11 +547,23 @@ class QueuePauseLifecycle(unittest.TestCase):
                 report, _ = restart.run_direct_queue_restart(None, None, tools, process, identity,
                     "controlled-key-path", selector, source, "controlled-prefix")
                 self.assertEqual(report["positiveAttempts"], [positive])
+                restart.direct_restart_controller_order(report["controllerOrder"])
+                self.assertIsNone(report["providerEndVersusKill"])
+                self.assertIsNone(report["liveAtKill"])
+                self.assertIsNone(report["disconnectCausedByKill"])
         self.assertEqual(provider[-1], "queue_release")
         return observed, crashes
 
     def test_delayed_status_is_not_called_before_crash_and_auto_positive_needs_no_enqueue(self):
         observed, crashes = self.scenario()
+        self.assertEqual(observed, ["status"])
+        self.assertEqual(len(crashes), 1)
+
+    def test_downstream_close_after_held_observation_preserves_recovery_and_null_claims(self):
+        _, _, _, held, _, _, _ = self.facts()
+        ended = {**held, "state": "disconnected", "endedAtUnixMillis": 1002,
+            "terminalCause": "downstream_close"}
+        observed, crashes = self.scenario(post_state=ended)
         self.assertEqual(observed, ["status"])
         self.assertEqual(len(crashes), 1)
 
@@ -507,12 +581,16 @@ class QueuePauseLifecycle(unittest.TestCase):
 
     def test_old_nonce_or_before_crash_positive_never_becomes_recovery(self):
         _, _, pending, _, crash, source, positive = self.facts()
-        for change in ("old_nonce", "early", "replayed", "wrong_source"):
+        for change in ("old_nonce", "early", "before_gone", "replayed", "wrong_source", "no_dispatch"):
             wrong = copy.deepcopy(positive)
             if change == "old_nonce":
                 wrong["attemptNonce"] = pending["attemptNonce"]
             elif change == "early":
                 wrong["attempt"]["startedAtMillis"] = "1002"
+            elif change == "before_gone":
+                wrong["attempt"]["startedAtMillis"] = "1003"
+            elif change == "no_dispatch":
+                wrong["receipt"]["providerAfter"]["dispatches"] = "10"
             elif change == "replayed":
                 wrong["receipt"]["verificationReplayed"] = True
             else:

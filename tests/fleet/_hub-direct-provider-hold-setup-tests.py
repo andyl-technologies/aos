@@ -164,7 +164,16 @@ class ProviderReadinessTests(unittest.TestCase):
     def test_queue_pause_uses_same_owned_socket_with_closed_full_source_limits(self):
         calls = []
         original = setup._direct_provider_listener_exchange
-        setup._direct_provider_listener_exchange = lambda *args: calls.append(json.loads(args[-1])) or {"status": "armed"}
+
+        def exchange(*args):
+            value = json.loads(args[-1])
+            calls.append(value)
+            if value["kind"] == "queue_state":
+                return {"version": 1, "state": "absent", "receipt": None, "receiptFile": None,
+                    "endedAtUnixMillis": None, "terminalCause": None}
+            return {"status": "armed"}
+
+        setup._direct_provider_listener_exchange = exchange
         installation = {"root": self.prepared["root"], "ready": self.ready}
         request = {"version": 1, "kind": "arm_queue_read", "selection": {"version": 1,
             "host": "s3.fleet.test", "targetPrefix": "/fleet-s3/.aos-direct-qualification/actual/.aos-direct-upload/"},
@@ -187,6 +196,33 @@ class ProviderReadinessTests(unittest.TestCase):
                         {"version": 1, "kind": kind, "target": "/unselected"})
         finally:
             setup._direct_provider_listener_exchange = original
+
+    def test_queue_state_requires_closed_consistent_terminal_cause(self):
+        active = {"version": 1, "state": "held", "receipt": {}, "receiptFile": {},
+            "endedAtUnixMillis": None, "terminalCause": None}
+        terminal = {**active, "state": "disconnected", "endedAtUnixMillis": 100,
+            "terminalCause": "downstream_close"}
+        self.assertIs(setup.validate_direct_queue_state(active), active)
+        self.assertIs(setup.validate_direct_queue_state(terminal), terminal)
+        for change in ("missing", "extra", "unknown", "boolean_time", "active_terminal",
+                "wrong_cause", "no_receipt"):
+            wrong = dict(terminal)
+            if change == "missing":
+                wrong.pop("terminalCause")
+            elif change == "extra":
+                wrong["error"] = "unretained"
+            elif change == "unknown":
+                wrong["terminalCause"] = "unknown"
+            elif change == "boolean_time":
+                wrong["endedAtUnixMillis"] = True
+            elif change == "active_terminal":
+                wrong["state"] = "held"
+            elif change == "wrong_cause":
+                wrong["state"] = "cutoff"
+            else:
+                wrong = {**active, "receipt": None}
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                setup.validate_direct_queue_state(wrong)
 
 
 if __name__ == "__main__":
