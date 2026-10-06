@@ -212,7 +212,7 @@ in
                 pkg-config = null;
                 meson = null;
                 ninja = null;
-                binutils = null;
+                binutils = "/aos-binutils";
                 python3 = "/aos-python3";
                 stdenv = {
                   isCross = false;
