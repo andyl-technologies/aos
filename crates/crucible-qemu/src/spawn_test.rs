@@ -1728,6 +1728,12 @@ fn qemu_spawn_clears_inherited_environment_and_preserves_explicit_values()
             env::var("CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN").ok(),
             (pending == "50000").then(|| pending.clone())
         );
+        let native_summary = env::var("CRUCIBLE_QEMU_TEST_NATIVE_SUMMARY_EXPECTED")
+            .unwrap_or_else(|_| String::from("absent"));
+        assert_eq!(
+            env::var_os("CRUCIBLE_NATIVE_CONTROL_DELIVERY_SUMMARY"),
+            (native_summary == "1").then(|| std::ffi::OsString::from("1")),
+        );
         assert!(env::var_os("CRUCIBLE_CONTROL_CALLBACK_WITNESS").is_none());
         child_probe_fixed_fds()?;
         return Ok(());
@@ -1768,6 +1774,11 @@ fn qemu_spawn_clears_inherited_environment_and_preserves_explicit_values()
                 (
                     "CRUCIBLE_QEMU_TEST_IDLE_MINIMUM_EXPECTED",
                     &env::var("CRUCIBLE_QEMU_TEST_IDLE_MINIMUM_EXPECTED")?,
+                ),
+                (
+                    "CRUCIBLE_QEMU_TEST_NATIVE_SUMMARY_EXPECTED",
+                    &env::var("CRUCIBLE_QEMU_TEST_NATIVE_SUMMARY_EXPECTED")
+                        .unwrap_or_else(|_| String::from("absent")),
                 ),
                 (SOURCE_FDS_ENV, &source_fds),
             ],
@@ -1812,7 +1823,8 @@ fn qemu_spawn_clears_inherited_environment_and_preserves_explicit_values()
             .env_remove("CRUCIBLE_OUT_RESUME_RUNTIME_TRACE")
             .env_remove("CRUCIBLE_CONTROL_CALLBACK_WITNESS")
             .env_remove("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS")
-            .env_remove("CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN");
+            .env_remove("CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN")
+            .env_remove("CRUCIBLE_NATIVE_CONTROL_DELIVERY_SUMMARY");
         if let Some(budget) = budget {
             command.env("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS", budget);
         }
@@ -1874,6 +1886,49 @@ fn qemu_spawn_forwards_only_checked_idle_plan_floor() -> Result<(), Box<dyn Erro
         assert!(
             status.success(),
             "checked floor child failed for {minimum:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn qemu_spawn_forwards_only_explicit_native_summary() -> Result<(), Box<dyn Error>> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let current_exe = env::current_exe()?;
+    for (setting, expected) in [
+        (None, "absent"),
+        (Some(std::ffi::OsStr::new("1")), "1"),
+        (Some(std::ffi::OsStr::new("0")), "absent"),
+        (Some(std::ffi::OsStr::new("01")), "absent"),
+        (Some(std::ffi::OsStr::new("true")), "absent"),
+        (Some(std::ffi::OsStr::new("1 ")), "absent"),
+        (Some(std::ffi::OsStr::from_bytes(&[0xff])), "absent"),
+    ] {
+        // This existing probe executes the actual cleared builder and verifies
+        // all three inherited fixed descriptors in the original child process.
+        let mut probe = Command::new(&current_exe);
+        probe
+            .args(["--exact", "spawn::tests::qemu_spawn_clears_inherited_environment_and_preserves_explicit_values"])
+            .env(ENV_CLEAR_PARENT_PROBE, "1")
+            .env(INHERITED_ENV_SENTINEL, "parent-only-value")
+            .env(TIME_OWNERSHIP_EXPECTED, "absent")
+            .env("CRUCIBLE_QEMU_TEST_PENDING_EXPECTED", "absent")
+            .env("CRUCIBLE_QEMU_TEST_RUNTIME_TRACE_EXPECTED", "absent")
+            .env("CRUCIBLE_QEMU_TEST_IDLE_MINIMUM_EXPECTED", "absent")
+            .env("CRUCIBLE_QEMU_TEST_NATIVE_SUMMARY_EXPECTED", expected)
+            .env_remove("CRUCIBLE_NATIVE_CONTROL_DELIVERY_SUMMARY")
+            .env_remove("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS")
+            .env_remove("CRUCIBLE_OUT_RESUME_RUNTIME_TRACE")
+            .env_remove("CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN")
+            .env_remove("CRUCIBLE_CONTROL_CALLBACK_WITNESS")
+            .env_remove("CRUCIBLE_TIME_OWNERSHIP_WITNESS");
+        if let Some(setting) = setting {
+            probe.env("CRUCIBLE_NATIVE_CONTROL_DELIVERY_SUMMARY", setting);
+        }
+        assert!(
+            probe.spawn()?.wait()?.success(),
+            "native summary probe {setting:?}"
         );
     }
     Ok(())

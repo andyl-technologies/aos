@@ -17,11 +17,36 @@
   packedMaintenance ? false,
   tierMaintenance ? false,
   idlePlanDiagnosticMinimumPs ? null,
+  nativeControlSummary ? false,
   policyTimeout ? false,
   singleGuest ? null,
   twoNodeHttp ? false,
   twoNodeHttpServer ? "nginx",
 }:
+assert builtins.isBool nativeControlSummary;
+assert !nativeControlSummary
+|| (
+  singleGuest
+  == "materialization"
+  && !guestChoice
+  && !campaignLifecycle
+  && !envoyNetwork
+  && !envoyKnownFinding
+  && !hotForkFlight
+  && !campaignMidpoint
+  && !findingExactBundle
+  && !findingSignalBundle
+  && !findingForkWrite
+  && !maintenanceTransfer
+  && !interruptedTransfer
+  && !storageRecovery
+  && !packedMaintenance
+  && !tierMaintenance
+  && idlePlanDiagnosticMinimumPs == null
+  && !policyTimeout
+  && !twoNodeHttp
+  && twoNodeHttpServer == "nginx"
+);
 assert idlePlanDiagnosticMinimumPs
 == null
 || (
@@ -317,7 +342,7 @@ assert !interruptedTransfer
   vmTest = testing.mkVMTest {
     name =
       if singleGuest != null
-      then "crucible-single-guest-${singleGuest}"
+      then "crucible-single-guest-${singleGuest}${lib.optionalString nativeControlSummary "-delivery-diagnostics"}"
       else if twoNodeHttp
       then "crucible-${httpFlightName}"
       else if policyTimeout
@@ -452,7 +477,10 @@ assert !interruptedTransfer
       }
       ${lib.optionalString (guestChoice || hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || maintenanceTransfer || singleGuest != null) "export CRUCIBLE_INITRD=${selectedChoiceInitramfs}/initrd.img"}
       export CRUCIBLE_RUN_STATE_ROOT=/tmp/run-state
-      export CRUCIBLE_NATIVE_GUEST_ARCHITECTURE=x86_64${lib.optionalString (maintenanceTransfer || interruptedTransfer || packedMaintenance || tierMaintenance) ("\n"
+      export CRUCIBLE_NATIVE_GUEST_ARCHITECTURE=x86_64${lib.optionalString nativeControlSummary (
+        "\n# Advisory pre-cancel cache only; routine native trace streams stay off.\n"
+        + "export CRUCIBLE_NATIVE_CONTROL_DELIVERY_SUMMARY=1"
+      )}${lib.optionalString (maintenanceTransfer || interruptedTransfer || packedMaintenance || tierMaintenance) ("\n"
         + ''
           # Pending host observations are bounded diagnostics, never guest evidence.
           export CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS=64

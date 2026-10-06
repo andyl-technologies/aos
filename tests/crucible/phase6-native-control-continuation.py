@@ -782,6 +782,46 @@ int main(int argc, char **argv)
 """
 
 
+SUMMARY_SUPPORT = r"""
+#include <sys/stat.h>
+
+#ifndef ARRAY_SIZE
+#define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
+#endif
+static bool rr_crucible_sim_mode(void)
+{
+    return true;
+}
+
+/* Current CPU membership is the original fixture topology, not a new owner. */
+static uint64_t icount_crucible_rr_current_vcpu(void)
+{
+    return current_cpu ? current_cpu->cpu_index : UINT64_MAX;
+}
+#include "control-delivery-summary-native.inc"
+
+/* The original fixture's trace endpoint now carries the actual cache helper. */
+static void rr_crucible_sim_trace_control_delivery(const char *phase,
+    uint64_t request, uint64_t ack, uint64_t complete, uintptr_t rr_token,
+    uintptr_t token, bool deferred, uintptr_t sequence)
+{
+    (void)sequence;
+    rr_control_summary_retain(phase, request, ack, complete,
+                              rr_token, token, deferred);
+}
+
+static void fixture_finish_control_summary(void)
+{
+    bql_lock();
+    g_assert_true(rr_crucible_sim_control_summary_enabled());
+    g_assert_cmpuint(rr_control_summary.observations, >, 0);
+    qemu_plugin_crucible_rr_control_boundary_cancel();
+    g_assert_true(rr_control_summary.dumped);
+    bql_unlock();
+}
+"""
+
+
 def replace_definition(text, definition, signature, replacement):
     original = definition(text, signature)
     assert text.count(original) == 1
@@ -797,6 +837,8 @@ def main():
         "idle-reader-before-park", "idle-reader-after-park",
         "sdk-reader-before-arm", "sdk-reader-arm-gap", "sdk-reader-after-futex",
         "pending-settlement", "two-epochs-after-return", "two-epochs-before-handoff"])
+    parser.add_argument("--delivery-summary", action="store_true",
+                        help="Include the inactive cache overlay in actual delivery controls")
     arguments = parser.parse_args()
     root = arguments.qemu_source.resolve()
     support = runpy.run_path(str(root / "tests/unit/test-crucible-control-deferred.py"))
@@ -909,11 +951,31 @@ def main():
     # The bounded prelude bypasses osdep.h, so load its original config input.
     platform = '#include "config-host.h"\n#ifndef CONFIG_LINUX\n'
     platform += '#error "The control continuation fixture requires configured Linux"\n#endif\n'
-    generated.write_text(platform + prelude + types + EXTRA + extra + bodies + CHECKS)
+    summary = ""
+    checks = CHECKS
+    if arguments.delivery_summary:
+        summary_path = root / "accel/tcg/crucible-control-delivery-summary.c"
+        summary_data = summary_path.read_bytes()
+        (arguments.output_dir / "control-delivery-summary-native.inc").write_bytes(summary_data)
+        extracted.append({"path": str(summary_path),
+                          "sha256": hashlib.sha256(summary_data).hexdigest()})
+        prelude = replace_definition(prelude, definition,
+            "static void rr_crucible_sim_trace_control_delivery(", "")
+        prelude += "\nstatic void rr_crucible_sim_trace_control_delivery(const char *, "
+        prelude += "uint64_t, uint64_t, uint64_t, uintptr_t, uintptr_t, bool, uintptr_t);\n"
+        summary = SUMMARY_SUPPORT
+        # After both genuine actors have joined, exercise original cancellation.
+        # Default generated checks remain byte-identical when this flag is absent.
+        cleanup = "qemu_event_destroy(&rr_dispatch_ceiling_event);"
+        assert checks.count(cleanup) == 2
+        checks = checks.replace(cleanup, "fixture_finish_control_summary();\n    " + cleanup)
+    generated.write_text(platform + prelude + types + EXTRA + extra + summary + bodies + checks)
     extraction = {
         "original_control_deferred_bodies_sha256": original_bodies_hash,
         "additional_bodies": extracted,
         "storage_qualifier_change": "rr_crucible_sim_notify_dispatch_ceiling is static in the standalone fixture; its body is unchanged",
+        "delivery_summary": arguments.delivery_summary,
+        "summary_scope": "Actual cache and cancellation after joined actors; trace endpoint and CPU/runstate remain fixture providers",
         "providers": [
             "Selected net-output fixture CPU/device and time-advance topology; unused branches abort",
             "Real pthread replay/BQL locks and condition wait; bounded AIO slices replace GLib",
@@ -947,11 +1009,30 @@ def main():
                  "idle-reader-before-park", "idle-reader-after-park",
                  "sdk-reader-before-arm", "sdk-reader-arm-gap", "sdk-reader-after-futex",
                  "two-epochs-after-return", "two-epochs-before-handoff"):
-        result = subprocess.run([str(binary), case], cwd=arguments.output_dir,
-                                capture_output=True, text=True, check=True, timeout=10)
-        (arguments.output_dir / f"{case}.stdout").write_text(result.stdout)
-        (arguments.output_dir / f"{case}.stderr").write_text(result.stderr)
-        print(result.stdout, end="")
+        if arguments.delivery_summary:
+            with (arguments.output_dir / f"{case}.stdout").open("w") as stdout, \
+                 (arguments.output_dir / f"{case}.stderr").open("w") as stderr:
+                subprocess.run([str(binary), case], cwd=arguments.output_dir,
+                               stdout=stdout, stderr=stderr, check=True, timeout=10)
+            stdout_text = (arguments.output_dir / f"{case}.stdout").read_text()
+            stderr_text = (arguments.output_dir / f"{case}.stderr").read_text()
+            rows = stderr_text.splitlines(keepends=True)
+            assert 1 <= len(rows) <= 13 and len(stderr_text.encode()) <= 6656
+            assert all(row.startswith("CRUCIBLE-NATIVE-CONTROL-SUMMARY-V1 ")
+                       and row.endswith("\n") and len(row.encode()) <= 512 for row in rows)
+            assert sum("kind=current phase=cancel " in row for row in rows) == 1
+            if case.startswith("two-epochs-"):
+                assert "request=3 ack=3 complete=3 " in rows[0]
+                for phase in ("request", "claim", "registered-enter", "registered-return"):
+                    assert any(f"kind=latest phase={phase} " in row and "request=3 " in row
+                               for row in rows), phase
+        else:
+            result = subprocess.run([str(binary), case], cwd=arguments.output_dir,
+                                    capture_output=True, text=True, check=True, timeout=10)
+            (arguments.output_dir / f"{case}.stdout").write_text(result.stdout)
+            (arguments.output_dir / f"{case}.stderr").write_text(result.stderr)
+            stdout_text = result.stdout
+        print(stdout_text, end="")
         print(f"NATIVE_CONTROL_DELIVERY_PASS case={case}")
 
     # A void callback promises delivery, not completion of the modeled bridge.

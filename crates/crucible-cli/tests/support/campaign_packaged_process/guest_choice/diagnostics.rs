@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[path = "diagnostics/native_control_summary.rs"]
+mod native_control_summary;
+
 // Static fixture stages describe completed operations only. The original
 // authenticated guest/checkpoint assertions remain the qualification oracle.
 pub(super) fn report_maintenance_stage(stage: &'static str) {
@@ -58,6 +61,19 @@ fn recent_idle_plan_rows(service: &CampaignServiceChild) -> Result<Vec<String>, 
 }
 
 pub(super) fn report_recent_callback_context(service: &CampaignServiceChild) {
+    match recent_native_control_summary_rows(service) {
+        Ok(records) => {
+            for record in records {
+                let _write_result = writeln!(std::io::stderr().lock(), "{record}");
+            }
+        }
+        Err(error) => {
+            let _write_result = writeln!(
+                std::io::stderr().lock(),
+                "native control summary unavailable: {error}"
+            );
+        }
+    }
     // Each exact prefix retains <=32 rows of <=512 bytes. Context and final
     // callback summaries survive unrelated rows outside the ordinary tail.
     for (prefix, maximum_bytes) in [
@@ -85,6 +101,17 @@ pub(super) fn report_recent_callback_context(service: &CampaignServiceChild) {
     }
 }
 
+// This accepts text only. Independent fields never authenticate delivery or ACK.
+fn recent_native_control_summary_rows(
+    service: &CampaignServiceChild,
+) -> Result<Vec<String>, Box<dyn Error>> {
+    Ok(service
+        .stderr_recent_lines_with_prefix("CRUCIBLE-NATIVE-CONTROL-SUMMARY-V1 ", 32, 511)?
+        .into_iter()
+        .filter(|row| native_control_summary::valid_row(row))
+        .collect())
+}
+
 // The aggregate service stream can contain several owned QEMU processes.
 // This transport bounds text only; the private child parser owns PID validation.
 fn recent_callback_context_rows(
@@ -106,6 +133,13 @@ pub(super) fn configure_flight_diagnostics(
     invocation: &mut Command,
     diagnostics: FlightDiagnostics,
 ) {
+    // Admit only canonical1; ordinary FC initializers leave this setting absent.
+    // This opt-in does not enable routine callback or native trace streams.
+    if std::env::var("CRUCIBLE_NATIVE_CONTROL_DELIVERY_SUMMARY").as_deref() == Ok("1") {
+        invocation.env("CRUCIBLE_NATIVE_CONTROL_DELIVERY_SUMMARY", "1");
+    } else {
+        invocation.env_remove("CRUCIBLE_NATIVE_CONTROL_DELIVERY_SUMMARY");
+    }
     if matches!(diagnostics, FlightDiagnostics::Disabled) {
         return;
     }
@@ -198,12 +232,12 @@ fn diagnostic_flights_request_admitted_materialization_events() {
             )),
             Some(&minimum.as_deref().map(std::ffi::OsStr::new))
         );
-        assert_eq!(environment.len(), if witness { 4 } else { 6 });
+        assert_eq!(environment.len(), if witness { 5 } else { 7 });
     }
 
     let mut disabled = Command::new("unused-fixture-program");
     configure_flight_diagnostics(&mut disabled, FlightDiagnostics::Disabled);
-    assert_eq!(disabled.get_envs().count(), 0);
+    assert_eq!(disabled.get_envs().count(), 1);
 }
 
 #[test]
@@ -241,9 +275,9 @@ fn aggregate_service_profile_clears_explicit_streams_and_preserves_other_environ
     );
     assert_eq!(
         environment.values().filter(|value| value.is_none()).count(),
-        5
+        6
     );
-    assert_eq!(environment.len(), 7);
+    assert_eq!(environment.len(), 8);
 }
 
 #[test]
@@ -277,6 +311,14 @@ fn materialization_capture_preserves_one_shot_record_outside_the_recent_tail()
     writeln!(service.stderr, "{pending_context}")?;
     let native_context = "CRUCIBLE-NATIVE-STOP-CONTEXT-V1 phase=rearm-shutdown pid=42 gen=3 request=12830 ack=12829 complete=12829 state=2 runstate=4 flush=0 shutdown=1 advance=0 fd=7 scope=unavailable pc=unavailable coord=unavailable";
     writeln!(service.stderr, "{native_context}")?;
+    let delivery_context = "CRUCIBLE-NATIVE-CONTROL-SUMMARY-V1 scope=before-cancel kind=current phase=cancel pid=42 sample=7 request=3 ack=2 complete=2 rr_token=0x3 token=0x3 deferred=1 state=2 runstate=4 owner=0";
+    writeln!(service.stderr, "{delivery_context}")?;
+    writeln!(
+        service.stderr,
+        "{}",
+        delivery_context.replace("scope=before-cancel", "scope=active")
+    )?;
+    writeln!(service.stderr, "{delivery_context} extra=1")?;
 
     let stop_prefix = "CRUCIBLE-CHECKPOINT-STOP-V1 ";
     let stage_prefix = "CRUCIBLE-CONTROL-STAGE-V1 ";
@@ -378,6 +420,16 @@ fn materialization_capture_preserves_one_shot_record_outside_the_recent_tail()
         !service
             .stderr_tail()
             .contains("CRUCIBLE-NATIVE-STOP-CONTEXT-V1 ")
+    );
+
+    assert_eq!(
+        recent_native_control_summary_rows(&service)?,
+        [delivery_context]
+    );
+    assert!(
+        !service
+            .stderr_tail()
+            .contains("CRUCIBLE-NATIVE-CONTROL-SUMMARY-V1")
     );
 
     let stop_rows = recent_callback_context_rows(&service, stop_prefix, 511)?;

@@ -203,3 +203,20 @@ Apache host library. The unit uses explicit CPU, clock, and context providers;
 it does not qualify a physical guest or the complete TCG loop. This unit is not
 a publication root. Any distributed binary must retain the matching complete
 corresponding-source artifact, including these fixtures and builder.
+
+## Inactive bounded control-delivery diagnostic overlay
+
+`tests/crucible/native/control-delivery-summary/native-body.patch` preserves
+selected QEMU file notices and creates
+`accel/tcg/crucible-control-delivery-summary.c` with GPL-2.0-or-later licensing.
+The included implementation belongs to the GPL-compatible native process;
+its private RR helper declarations do not change the public shared-memory or
+control protocol. This inactive overlay does not change the selected atomic
+patch inventory or publish an emulator. Any later distributed native union
+must inventory the created file and retain matching complete source.
+
+The private controls `control-delivery-summary.c` and
+`control-delivery-summary.py` in that directory are GPL-2.0-or-later. They
+compile the actual diagnostic and selected cancellation bodies with explicit
+CPU, BQL and trace providers. They do not authenticate a physical guest,
+active-at-deadline state or the complete native delivery topology.

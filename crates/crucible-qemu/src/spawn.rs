@@ -1128,6 +1128,11 @@ pub(crate) fn guarded_qemu_process_command(
         command.env(AGGREGATE_DIAGNOSTICS, budget);
     }
 
+    // A bounded native final summary does not select routine trace producers.
+    if std::env::var("CRUCIBLE_NATIVE_CONTROL_DELIVERY_SUMMARY").as_deref() == Ok("1") {
+        command.env("CRUCIBLE_NATIVE_CONTROL_DELIVERY_SUMMARY", "1");
+    }
+
     // This exact diagnostic opt-in reaches the plugin without inheriting other
     // host environment or changing deterministic launch inputs.
     // crucible-lint: allow host-nondeterminism-state -- a default-off observation flag cannot change control decisions.
