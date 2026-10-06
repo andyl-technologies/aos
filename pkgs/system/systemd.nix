@@ -306,12 +306,13 @@ in
             's|"libseccomp.so.2"|"${libseccomp}/lib/libseccomp.so.2"|' \
             src/shared/seccomp-util.c
 
-          # Fix shebangs: /usr/bin/env and /bin/bash don't exist in the sandbox
-          for f in $(find . -type f \( -name '*.sh' -o -name '*.py' \)); do
+          # Configure executes helpers such as git-setup.sh directly. Bind
+          # their interpreters through the standard build-environment helper.
+          patchShebangs .
+
+          # Preserve Python shebang pinning for non-executable sources too.
+          for f in $(find . -type f -name '*.py'); do
             if head -1 "$f" | grep -q '^#!'; then
-              sed -i "1s|#!/usr/bin/env bash|#!$CONFIG_SHELL|" "$f"
-              sed -i "1s|#!/bin/bash|#!$CONFIG_SHELL|" "$f"
-              sed -i "1s|#!/usr/bin/bash|#!$CONFIG_SHELL|" "$f"
               sed -i "1s|#!/usr/bin/env python3|#!$nativePython|" "$f"
               sed -i "1s|#!/usr/bin/python3|#!$nativePython|" "$f"
             fi
