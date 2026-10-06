@@ -24,6 +24,14 @@
     "gc::lease::local_tests::native_gc_rc_bindings_acquire_renew_take_over_and_reopen"
   ];
 
+  rootTests = [
+    "gc::runner::walk::tests::native::gc_roots_native_current_inventory_keeps_all_commit_classes_and_live_jobs"
+    "gc::runner::walk::tests::native::gc_roots_native_incomplete_inventory_cannot_replace_selected_authority"
+    "gc::runner::walk::tests::native::gc_roots_native_retained_selection_keeps_absent_history_and_excludes_proposals"
+    "gc::runner::walk::tests::native::gc_roots_native_snapshot_resume_preserves_roots_after_current_ref_moves"
+    "gc::runner::tests::current_roots::gc_current_native_keeps_opaque_notes_absent_history_and_guard_record"
+  ];
+
   markTests = [
     "gc::runner::walk::tests::common_walk_certificates_apply_only_to_direct_entry_objects"
     "gc::runner::walk::tests::common_walk_context_order_is_fieldwise_and_round_trips_exact_state"
@@ -66,6 +74,13 @@
     done
   '';
 in {
+  gc-roots-complete = sourceGate "gc-roots-complete" ''
+    cd crates
+    ${focusedTests "tokio,surface-sdk" rootTests}
+    printf 'PASS: native selected root inventory, retention, opaque Notes and snapshot continuity (5 exact cases)\n' \
+      > "$out/result"
+  '';
+
   gc-mark-reachability = sourceGate "gc-mark-reachability" ''
     cd crates
     ${focusedTests "tokio,surface-sdk" markTests}

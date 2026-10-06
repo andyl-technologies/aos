@@ -344,6 +344,18 @@ The original compile lifetime failure and runtime failures remain preserved.
 Strict native Clippy remains red; no retirement, grace, restore, deletion,
 task merge, milestone exit or freeze is qualified by this composition.
 
+The corrected retirement source `febc7380da91` declares 499 native tests and
+executes eleven owning cases: ten pass and one fails in 173.098 seconds; 488
+remain outside the filter. The remaining fixture inspects the latest transaction
+after reopen has selected a capabilities-probe update. Its corrected ordering
+and the reviewed lint cleanup await requalification. Independently, all four
+new native root-inventory cases pass out of 492 declared tests in 81.430 seconds,
+covering current commit classes/job expiry, selected retained history,
+snapshot/reopen continuity and incomplete-successor refusal. The shared
+`gc-roots-complete` producer requires those four plus the previously qualified
+opaque-Notes/current-root case, with exact inventory validation. Registry and
+format checks pass; composed Nix gates and full T1 remain unqualified.
+
 The preceding completed full qualification records candidate
 `15540ef204ec`, which combines reviewed source discovery, immutable lookup,
 repeatable I/P/G maintenance, separate verifier/preparation work, common Memo
