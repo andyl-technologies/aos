@@ -3,7 +3,7 @@
 {
   revision = "33343f63cb5e8749caadcb251c6b8a90ed0482cf";
   tree = "4f24df196ef8364bf75a61fd22b7f6e054f9fa4c";
-  patch = ./native-costs-baseline-reconstruction.patch;
+  patch = ./_fixtures/native-costs-baseline-reconstruction.patch;
   patchSha256 = "233da2c0995e013c411d6d36f702376de61a48efcff3bcb65c335dfeb7d88e96";
   files = {
     "include/qemu/qtree.h" = "b48246fba9dc199cfc3c77678ed7421d75c4f4c267c6ff42d669110b54ed871b";
