@@ -1562,6 +1562,9 @@ in rec {
       campaignExactMaintenanceTransfer = import ./phase5-campaign-exact-maintenance-transfer-vm.nix {
         inherit pkgs lib;
       };
+      campaignInterruptedTransfer = import ./phase5-campaign-interrupted-transfer-vm.nix {
+        inherit pkgs lib;
+      };
       campaignStorageRecovery = import ./phase5-campaign-storage-recovery-vm.nix {
         inherit pkgs lib;
       };

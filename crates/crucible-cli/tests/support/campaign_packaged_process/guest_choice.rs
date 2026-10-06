@@ -40,6 +40,8 @@ const EXACT_RESUME_PROGRESS_PREFIX: &str = "CRUCIBLE-EXACT-RESUME-PROGRESS-V1 ";
 
 #[path = "guest_choice/diagnostics.rs"]
 mod diagnostics;
+#[path = "guest_choice/interrupted_transfer.rs"]
+mod interrupted_transfer;
 #[path = "guest_choice/lifecycle.rs"]
 mod lifecycle;
 #[path = "guest_choice/maintenance_setup.rs"]

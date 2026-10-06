@@ -12,6 +12,7 @@
   findingSignalBundle ? false,
   findingForkWrite ? false,
   maintenanceTransfer ? false,
+  interruptedTransfer ? false,
   storageRecovery ? false,
   packedMaintenance ? false,
   tierMaintenance ? false,
@@ -26,6 +27,7 @@ assert !packedMaintenance
   && !tierMaintenance
   && !storageRecovery
   && !maintenanceTransfer
+  && !interruptedTransfer
   && !policyTimeout
   && !twoNodeHttp
   && singleGuest == null
@@ -43,6 +45,27 @@ assert !tierMaintenance
 || (
   guestChoice
   && !packedMaintenance
+  && !storageRecovery
+  && !maintenanceTransfer
+  && !interruptedTransfer
+  && !policyTimeout
+  && !twoNodeHttp
+  && singleGuest == null
+  && !findingExactBundle
+  && !findingSignalBundle
+  && !findingForkWrite
+  && !hotForkFlight
+  && !envoyNetwork
+  && !envoyKnownFinding
+  && !campaignLifecycle
+  && !campaignMidpoint
+  && twoNodeHttpServer == "nginx"
+);
+assert !interruptedTransfer
+|| (
+  guestChoice
+  && !packedMaintenance
+  && !tierMaintenance
   && !storageRecovery
   && !maintenanceTransfer
   && !policyTimeout
@@ -281,6 +304,8 @@ assert !tierMaintenance
       then "crucible-campaign-packed-maintenance"
       else if storageRecovery
       then "crucible-campaign-storage-recovery"
+      else if interruptedTransfer
+      then "crucible-campaign-interrupted-transfer"
       else if maintenanceTransfer
       then "crucible-campaign-exact-maintenance-transfer"
       else if hotForkFlight
@@ -305,7 +330,7 @@ assert !tierMaintenance
     memory =
       if envoyProduct
       then 8192
-      else if findingForkWrite || hotForkFlight || storageRecovery || packedMaintenance || tierMaintenance || singleGuestMaterialization || twoNodeHttp
+      else if findingForkWrite || hotForkFlight || storageRecovery || packedMaintenance || tierMaintenance || interruptedTransfer || singleGuestMaterialization || twoNodeHttp
       then 3072
       else 2048;
     headlessVcpuCount =
@@ -316,7 +341,7 @@ assert !tierMaintenance
     # baked genesis alone. The storage-recovery flight also retains S3 objects
     # beside staged checkpoints. Leave writable space on the ext4 rootfs.
     extraWritableMiB =
-      if envoyProduct || storageRecovery || packedMaintenance || tierMaintenance
+      if envoyProduct || storageRecovery || packedMaintenance || tierMaintenance || interruptedTransfer
       then 16384
       else if twoNodeHttp
       then 8192
@@ -336,7 +361,7 @@ assert !tierMaintenance
       );
     testScript = ''
       set -eu
-      ${lib.optionalString (envoyProduct || storageRecovery || packedMaintenance || tierMaintenance || twoNodeHttp) ''
+      ${lib.optionalString (envoyProduct || storageRecovery || packedMaintenance || tierMaintenance || interruptedTransfer || twoNodeHttp) ''
         # The headless harness mounts /tmp as a RAM-sized tmpfs. Put the
         # checkpoint and store workspace on the already-sized ext4 rootfs.
         ${pkgs.util-linux}/bin/mount -o remount,rw /
@@ -644,6 +669,48 @@ assert !tierMaintenance
           printf '%s\n' \
             'gate=gate:campaign-policy-timeout-real-qemu' \
             'proven=typed-policy-timeout,retained-causal-marker'
+        ''
+        else if interruptedTransfer
+        then ''
+          interrupted_selector=packaged::guest_choice::interrupted_transfer::public_exact_recipient_survives_interrupted_archive_and_journal_root_gc
+          interrupted_log=/tmp/campaign-interrupted-transfer.log
+          ${flight}/bin/campaign-store-process-flight --ignored --list \
+            > /tmp/campaign-interrupted-transfer-list.log 2>&1
+          ${pkgs.grep}/bin/grep -Fqx "$interrupted_selector: test" \
+            /tmp/campaign-interrupted-transfer-list.log
+
+          if ! ${pkgs.coreutils}/bin/timeout -k 5 900 \
+            ${flight}/bin/campaign-store-process-flight --ignored --exact \
+            "$interrupted_selector" --nocapture > "$interrupted_log" 2>&1; then
+            cat "$interrupted_log"
+            exit 1
+          fi
+          cat "$interrupted_log"
+          for evidence in \
+            interrupted_transfer_original_corruption_refused=true \
+            interrupted_transfer_both_original_journals_retained=true \
+            interrupted_transfer_partial_exact_copy_authenticated=true \
+            interrupted_transfer_refs_absent_before_completion=true \
+            interrupted_transfer_public_gc_preserved_pending_roots=true \
+            interrupted_transfer_public_gc_reclaimed_orphans=2 \
+            interrupted_transfer_exact_byte_repair=true \
+            interrupted_transfer_identical_retry_authenticated=true \
+            interrupted_transfer_completed_retry_idempotent=true \
+            interrupted_transfer_derived_refs_preserved=2 \
+            interrupted_transfer_exact_origin_preserved=true \
+            interrupted_transfer_execution_bound_guest_progress=true \
+            interrupted_transfer_distinct_authenticated_checkpoint=true \
+            interrupted_transfer_selected_outcome_preserved=true \
+            interrupted_transfer_owned_guest_cleanup=true
+          do
+            ${pkgs.grep}/bin/grep -Fxq "$evidence" "$interrupted_log"
+          done
+          ${pkgs.grep}/bin/grep -Fq \
+            'test result: ok. 1 passed; 0 failed; 0 ignored;' "$interrupted_log"
+          printf '%s\n' \
+            'gate=gate:campaign-interrupted-transfer' \
+            'tasks=T-CAM-5.8' \
+            'tier=real-packaged-qemu'
         ''
         else if maintenanceTransfer
         then ''

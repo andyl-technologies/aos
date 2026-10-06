@@ -7,7 +7,7 @@ use crucible_daemon::{
 };
 use crucible_qemu::QemuLaunchArtifactIdentity;
 
-const ARCHIVE_NAME: &str = "packaged-maintenance";
+pub(super) const ARCHIVE_NAME: &str = "packaged-maintenance";
 const INCOMPATIBLE_BUILD_ID: &str =
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
@@ -15,6 +15,24 @@ const INCOMPATIBLE_BUILD_ID: &str =
 #[ignore = "requires dedicated cgroup-v2 and ext4 project-quota roots inside the VM check"]
 fn public_active_pause_restart_and_executable_transfer_rejects_incompatible_provenance()
 -> Result<(), Box<dyn Error>> {
+    run_transfer_flight(ArchiveTransferMode::Uninterrupted)
+}
+
+/// Selects the retained archive-maintenance window in the shared guest flight.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum ArchiveTransferMode {
+    /// Retains the original uninterrupted transfer and incompatible recipient.
+    Uninterrupted,
+    /// Exercises incomplete journals and public GC before the same exact import.
+    Interrupted,
+}
+
+/// Runs the original source and recipient with one selected archive operation.
+///
+/// # Errors
+///
+/// Returns the original guest, public storage, provenance or cleanup failure.
+pub(super) fn run_transfer_flight(mode: ArchiveTransferMode) -> Result<(), Box<dyn Error>> {
     let source = FlightFixture::new()?;
     let destination = FlightFixture::new()?;
     let (compiled, _scenario) = compile_guest_choice_campaign(&source)?;
@@ -107,14 +125,25 @@ fn public_active_pause_restart_and_executable_transfer_rejects_incompatible_prov
         "pin executable configuration",
     )?;
     let archive_snapshot = json_string(&campaign_status(&source)?, "snapshot")?;
+    if mode == ArchiveTransferMode::Interrupted {
+        interrupted_transfer::derive_source_refs(&source, &archive_snapshot)?;
+    }
     restarted.stop()?;
     assert_no_nested_qemu_processes("source-before-transfer")?;
     require_empty_guest_choice_run_root("source-before-transfer")?;
 
     let configuration = ConfigurationId::parse(&fast_configuration)?;
     let source_pin = selected_pin_checkpoint(&source, configuration)?;
-    let (preflight, transfer) =
-        transfer_executable_archive(&source, &destination, &archive_snapshot)?;
+    let (preflight, transfer) = match mode {
+        ArchiveTransferMode::Uninterrupted => {
+            transfer_executable_archive(&source, &destination, &archive_snapshot)?
+        }
+        ArchiveTransferMode::Interrupted => interrupted_transfer::transfer_after_interruption(
+            &source,
+            &destination,
+            &archive_snapshot,
+        )?,
+    };
     assert_eq!(preflight["schema"], "crucible.cli.campaign-archive-plan.v1");
     assert_eq!(preflight["phase"], "pre-transfer");
     assert_eq!(preflight["policy"], "executable");
@@ -125,11 +154,13 @@ fn public_active_pause_restart_and_executable_transfer_rejects_incompatible_prov
     );
     assert_eq!(transfer["authenticated"], true);
     assert_eq!(transfer["campaign"], CAMPAIGN);
-    assert!(
-        transfer["copied_objects"]
-            .as_u64()
-            .is_some_and(|count| count > 0)
-    );
+    if mode == ArchiveTransferMode::Uninterrupted {
+        assert!(
+            transfer["copied_objects"]
+                .as_u64()
+                .is_some_and(|count| count > 0)
+        );
+    }
     let inspected = inspect_archive(&destination)?;
     assert_eq!(inspected["manifest"], transfer["manifest"]);
     assert_eq!(inspected["authenticated"], true);
@@ -162,6 +193,11 @@ fn public_active_pause_restart_and_executable_transfer_rejects_incompatible_prov
         Some(advanced),
     )?;
     assert_ne!(recipient_checkpoint, advanced);
+    if mode == ArchiveTransferMode::Interrupted {
+        let explanation = wait_for_attempt_explanation(&destination, active)?;
+        assert_eq!(explanation["selection"]["value"], "u64:7");
+        assert_eq!(explanation["proposal"]["request"], terminal_request);
+    }
     recipient.stop()?;
     assert_no_nested_qemu_processes("recipient-after-resume")?;
     require_empty_guest_choice_run_root("recipient-after-resume")?;
@@ -261,34 +297,17 @@ fn selected_pin_checkpoint(
     Ok(checkpoint)
 }
 
-fn transfer_executable_archive(
+/// Executes the original public executable archive command and decodes its records.
+///
+/// # Errors
+///
+/// Returns the original process or authenticated report decoding failure.
+pub(super) fn transfer_executable_archive(
     source: &FlightFixture,
     destination: &FlightFixture,
     snapshot: &str,
 ) -> Result<(Value, Value), Box<dyn Error>> {
-    let output = command(&[
-        "--format",
-        "jsonl",
-        "campaign",
-        "archive",
-        "transfer",
-        "--source-state",
-    ])
-    .arg(&source.state)
-    .arg("--source-policy")
-    .arg(&source.peer_policy)
-    .arg("--source-store")
-    .arg(&source.store)
-    .args(["--source-campaign", CAMPAIGN, "--snapshot", snapshot])
-    .args(["--mode", "executable"])
-    .arg("--destination-state")
-    .arg(&destination.state)
-    .arg("--destination-policy")
-    .arg(&destination.peer_policy)
-    .arg("--destination-store")
-    .arg(&destination.store)
-    .args(["--archive", ARCHIVE_NAME, "--campaign", CAMPAIGN])
-    .output()?;
+    let output = executable_archive_command(source, destination, snapshot).output()?;
     require_success(&output, "transfer executable campaign archive")?;
     Ok((
         serde_json::from_slice(&output.stderr)?,
@@ -296,7 +315,44 @@ fn transfer_executable_archive(
     ))
 }
 
-fn inspect_archive(fixture: &FlightFixture) -> Result<Value, Box<dyn Error>> {
+/// Builds the unchanged public archive arguments for an identical retry.
+pub(super) fn executable_archive_command(
+    source: &FlightFixture,
+    destination: &FlightFixture,
+    snapshot: &str,
+) -> Command {
+    let mut transfer = command(&[
+        "--format",
+        "jsonl",
+        "campaign",
+        "archive",
+        "transfer",
+        "--source-state",
+    ]);
+    transfer
+        .arg(&source.state)
+        .arg("--source-policy")
+        .arg(&source.peer_policy)
+        .arg("--source-store")
+        .arg(&source.store)
+        .args(["--source-campaign", CAMPAIGN, "--snapshot", snapshot])
+        .args(["--mode", "executable"])
+        .arg("--destination-state")
+        .arg(&destination.state)
+        .arg("--destination-policy")
+        .arg(&destination.peer_policy)
+        .arg("--destination-store")
+        .arg(&destination.store)
+        .args(["--archive", ARCHIVE_NAME, "--campaign", CAMPAIGN]);
+    transfer
+}
+
+/// Authenticates the published archive through the original public CLI.
+///
+/// # Errors
+///
+/// Returns the original process or inspection report decoding failure.
+pub(super) fn inspect_archive(fixture: &FlightFixture) -> Result<Value, Box<dyn Error>> {
     run_json(
         command(&[
             "--format", "jsonl", "campaign", "archive", "inspect", "--state",
