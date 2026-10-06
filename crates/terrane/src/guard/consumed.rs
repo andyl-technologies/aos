@@ -315,6 +315,7 @@ impl ConsumedResolver {
             registries: self.snapshot.registries.clone(),
             configuration: self.snapshot.configuration.clone(),
             views: consumed.views.values().cloned().collect(),
+            view_interpretations: None,
         };
         inputs.encode().map_err(|_| invalid())?;
         Ok(inputs)

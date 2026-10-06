@@ -199,6 +199,50 @@ impl Validate for ConfiguredRegistryInputs {
     }
 }
 
+/// Checks ordinary registry shape without granting unsupported semantics.
+///
+/// # Errors
+/// Rejects malformed, overlapping or noncanonical name sets, and vocabularies
+/// differing from a registered property revision, and unregistered property
+/// revisions. Unsupported non-property semantic uints remain ordinary data.
+pub(super) fn registry_structure(
+    registries: &ConfiguredRegistryInputs,
+) -> Result<(), EvidenceError> {
+    names(&registries.behavioral_properties)?;
+    names(&registries.later_properties)?;
+    if registries
+        .later_properties
+        .iter()
+        .any(|name| registries.behavioral_properties.binary_search(name).is_ok())
+    {
+        return Err(EvidenceError::Contradiction);
+    }
+
+    // PROP-30 rejects unregistered property revisions as record data. Exact
+    // known vocabulary is independent of execution support: revision3 has
+    // 35 names even though this implementation does not yet interpret revision3.
+    let registered = match registries.property_revision {
+        1 | 2 => revision_properties(registries.property_revision)?,
+        3 => {
+            let mut properties = REVISION_ONE_PROPERTIES.to_vec();
+            properties.extend(["index-gaps", "index-roots"]);
+            properties.sort_unstable();
+            properties
+        }
+        _ => return Err(EvidenceError::UnsupportedRevision),
+    };
+    if !registries
+        .behavioral_properties
+        .iter()
+        .map(String::as_str)
+        .eq(registered)
+    {
+        return Err(EvidenceError::Contradiction);
+    }
+
+    Ok(())
+}
+
 impl Validate for GuardSnapshot {
     fn validate(&self) -> Result<(), EvidenceError> {
         self.registration.validate()?;
@@ -224,6 +268,26 @@ pub(super) fn property_map(
     bytes: &[u8],
     registries: Option<&ConfiguredRegistryInputs>,
 ) -> Result<(), EvidenceError> {
+    property_map_with_fence(bytes, registries, true)
+}
+
+/// Checks canonical map structure and exact membership in a per-view fence.
+///
+/// # Errors
+/// Rejects malformed property maps and names outside the represented fence.
+/// This does not grant behavior for unsupported semantic profiles.
+pub(super) fn property_map_structure(
+    bytes: &[u8],
+    registries: &ConfiguredRegistryInputs,
+) -> Result<(), EvidenceError> {
+    property_map_with_fence(bytes, Some(registries), false)
+}
+
+fn property_map_with_fence(
+    bytes: &[u8],
+    registries: Option<&ConfiguredRegistryInputs>,
+    interpret_behavior: bool,
+) -> Result<(), EvidenceError> {
     if bytes.len() > MAX_NODE_ITEMS_BYTES {
         return Err(EvidenceError::Cbor(crate::cbor::Error::Limit));
     }
@@ -243,18 +307,20 @@ pub(super) fn property_map(
         crate::tree_format::property_value(&mut decoder)?;
         let value = decoder.slice(value_start, decoder.position())?;
         if let Some(registries) = registries {
-            if registries
+            let behavioral = registries
                 .behavioral_properties
                 .iter()
-                .any(|property| property == name)
-            {
-                validate_property(&Property { name, value })?;
-            } else if !registries
-                .later_properties
-                .iter()
-                .any(|later| later == name)
+                .any(|property| property == name);
+            if !behavioral
+                && !registries
+                    .later_properties
+                    .iter()
+                    .any(|later| later == name)
             {
                 return Err(EvidenceError::Schema);
+            }
+            if behavioral && interpret_behavior {
+                validate_property(&Property { name, value })?;
             }
         } else if REVISION_ONE_PROPERTIES.contains(&name) {
             // Nested records have no revision field. Their original behavioral

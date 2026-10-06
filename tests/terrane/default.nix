@@ -249,6 +249,7 @@ in {
   integration.control-reference-models = import ./control-models.nix {inherit sourceGate;};
   integration.reconciliation-reference-models = import ./reconciliation-models.nix {inherit sourceGate;};
   integration.lineage-reference-models = import ./lineage-models.nix {inherit sourceGate;};
+  integration.consumed-view-context = import ./consumed-view-context.nix {inherit sourceGate;};
   integration.prefix-reference-models = import ./prefix-models.nix {inherit sourceGate;};
   integration.recipe-context-reference-models = import ./recipe-context-models.nix {inherit sourceGate;};
   integration.recorded-context-reference-models = import ./recorded-context-models.nix {inherit sourceGate;};

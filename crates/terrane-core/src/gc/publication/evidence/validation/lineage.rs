@@ -1,6 +1,6 @@
 //! Checks exact control selectors, absolute policy occurrences and commit IDs.
 
-use super::policy::property_map;
+use super::policy::{property_map, property_map_structure, registry_structure};
 use super::*;
 use crate::refs::{Commit, RefClass};
 
@@ -177,6 +177,61 @@ impl Validate for ConsumedViewPolicy {
     }
 }
 
+impl Validate for ConsumedViewInterpretation {
+    fn validate(&self) -> Result<(), EvidenceError> {
+        registry_structure(&self.registries)
+    }
+}
+
+fn view_contexts(
+    inputs: &LineageUsedInputs,
+    contexts: &[ConsumedViewInterpretation],
+) -> Result<(), EvidenceError> {
+    if contexts.windows(2).any(|pair| pair[0].view >= pair[1].view) {
+        return Err(EvidenceError::Schema);
+    }
+
+    let views: alloc::collections::BTreeSet<_> =
+        inputs.views.iter().map(|view| view.view).collect();
+    if views.len() != contexts.len() {
+        return Err(EvidenceError::Contradiction);
+    }
+    for context in contexts {
+        context.validate()?;
+        if !views.contains(&context.view) {
+            return Err(EvidenceError::Contradiction);
+        }
+    }
+
+    // The existing view-policy array keeps its order and representation. Every
+    // row for a used view applies that view's one explicit interpretation.
+    for view in &inputs.views {
+        let index = contexts
+            .binary_search_by_key(&view.view, |context| context.view)
+            .map_err(|_| EvidenceError::Contradiction)?;
+        let context = &contexts[index];
+        let original = view
+            .roots
+            .iter()
+            .find(|root| root.path == b"/")
+            .ok_or(EvidenceError::Contradiction)?;
+        if original.root != context.original_root {
+            return Err(EvidenceError::Contradiction);
+        }
+
+        for root in &view.roots {
+            for layer in &root.layers {
+                property_map_structure(&layer.properties, &context.registries)?;
+                property_map_structure(&layer.overrides, &context.registries)?;
+            }
+        }
+    }
+
+    // Association with actual signed Commit.tree and genuinely selected mode
+    // remains an independent caller check, never a claim-decoder capability.
+    Ok(())
+}
+
 impl Validate for LineageUsedInputs {
     fn validate(&self) -> Result<(), EvidenceError> {
         issuers(&self.issuers)?;
@@ -185,12 +240,20 @@ impl Validate for LineageUsedInputs {
         self.registries.validate()?;
         self.configuration.validate()?;
 
-        for view in &self.views {
-            view.validate()?;
-            for root in &view.roots {
-                for layer in &root.layers {
-                    property_map(&layer.properties, Some(&self.registries))?;
-                    property_map(&layer.overrides, Some(&self.registries))?;
+        if let Some(contexts) = &self.view_interpretations {
+            for view in &self.views {
+                view.validate()?;
+            }
+            view_contexts(self, contexts)?;
+        } else {
+            // Preserve the legacy global fence and absent-key validation exactly.
+            for view in &self.views {
+                view.validate()?;
+                for root in &view.roots {
+                    for layer in &root.layers {
+                        property_map(&layer.properties, Some(&self.registries))?;
+                        property_map(&layer.overrides, Some(&self.registries))?;
+                    }
                 }
             }
         }
@@ -198,6 +261,43 @@ impl Validate for LineageUsedInputs {
         // Authentic signed trees and independent defaults, ordering and
         // completeness of actually used inputs cannot be inferred from bytes.
         Ok(())
+    }
+}
+
+impl LineageUsedInputs {
+    /// Reports whether complete supported per-view interpretation data is present.
+    ///
+    /// Absence returns false without inferring a Legacy selection. A true result
+    /// describes ordinary data only; it authenticates no signed source or producer
+    /// and grants no original/current authority, index relationship or cold/carry
+    /// permission. An empty used set supplies no nonempty signed-source evidence.
+    ///
+    /// # Errors
+    /// Rejects malformed or contradictory inputs, unsupported per-view semantic
+    /// profiles, and property values violating their supported per-view fence.
+    pub fn check_supported_view_contexts(&self) -> Result<bool, EvidenceError> {
+        self.validate()?;
+        let Some(contexts) = &self.view_interpretations else {
+            return Ok(false);
+        };
+        for context in contexts {
+            context.check_supported_interpretation()?;
+        }
+
+        for view in &self.views {
+            let index = contexts
+                .binary_search_by_key(&view.view, |context| context.view)
+                .map_err(|_| EvidenceError::Contradiction)?;
+            let registries = &contexts[index].registries;
+            for root in &view.roots {
+                for layer in &root.layers {
+                    property_map(&layer.properties, Some(registries))?;
+                    property_map(&layer.overrides, Some(registries))?;
+                }
+            }
+        }
+
+        Ok(true)
     }
 }
 

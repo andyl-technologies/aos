@@ -1820,8 +1820,15 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   completion are inferred. D-110 separately records the missing per-view used
   interpretation needed for eligible cold reuse and source carry. Its optional
   ordinary-data context preserves old encodings; absent context requires normal
-  full admission and fresh lineage before no-walk reuse. The context codec,
-  genuine producer and current-selection reuse checks remain unqualified.
+  full admission and fresh lineage before no-walk reuse. The ordinary context
+  codec now passes eleven exact `consumed-view-context` integration cases and
+  all 488 core tests on the trunk. Strict core Clippy, no-std compilation,
+  private rustdoc, default/std-send/tokio-SDK compilation and both formatters
+  pass; the existing 39 publication vectors and ten model cases remain green.
+  PROP-30 requires exact registered property vocabularies and rejects unknown
+  property revisions independently of execution support. Existing producers
+  still record absent context. Genuine capture, current-selection comparison,
+  index qualification and cold/source-carry checks remain unqualified.
   T-DRV-2, ALG-32, task merges and T1 remain open.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe

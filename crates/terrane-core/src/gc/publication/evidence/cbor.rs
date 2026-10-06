@@ -26,8 +26,11 @@ macro_rules! codec {
             /// Encodes the untrusted value with its exact canonical record shape.
             ///
             /// # Errors
-            /// Rejects invalid fields, unregistered revisions, and contradictions
-            /// decidable from represented evidence. No private capability is created.
+            /// Rejects invalid fields and contradictions decidable from represented
+            /// evidence. Revisions refuse where the record requires supported
+            /// interpretation. Property revisions require registered vocabularies;
+            /// per-view contexts retain unsupported non-property semantic uint data.
+            /// No private capability is created.
             pub fn encode(&self) -> Result<Vec<u8>, EvidenceError> {
                 self.validate()?;
                 let mut output = Vec::new();
@@ -38,8 +41,11 @@ macro_rules! codec {
             /// Decodes canonical bytes as untrusted typed evidence.
             ///
             /// # Errors
-            /// Rejects noncanonical or oversized input, unknown fields or revisions,
-            /// invalid shapes, represented contradictions, and trailing bytes.
+            /// Rejects noncanonical or oversized input, unknown fields, invalid
+            /// shapes, represented contradictions, and trailing bytes. Unsupported
+            /// revisions refuse where the record requires supported interpretation;
+            /// per-view non-property semantic uints require a separate support check.
+            /// Unregistered property revisions reject even in ordinary context data.
             pub fn decode(bytes: &[u8]) -> Result<Self, EvidenceError> {
                 let mut decoder = Decoder::new(bytes);
                 let record = read::<Self>(&mut decoder)?;

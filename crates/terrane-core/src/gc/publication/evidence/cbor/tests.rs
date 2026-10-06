@@ -14,6 +14,7 @@ mod guard;
 mod lineage;
 mod original;
 mod published;
+mod view_interpretation;
 
 const BEHAVIOR_NAMES: &[&str] = &[
     "acl",
@@ -322,6 +323,7 @@ fn used() -> LineageUsedInputs {
         registries: registries(),
         configuration: config(),
         views: vec![],
+        view_interpretations: None,
     }
 }
 

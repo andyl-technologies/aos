@@ -14,6 +14,9 @@
 
 mod cbor;
 mod validation;
+mod view_interpretation;
+
+pub use view_interpretation::{ConsumedViewInterpretation, ViewInterpretationMode};
 
 use super::{BackendBinding, PublicationError, RawDigest};
 use crate::refs::{Locality, RefRecord};
@@ -403,6 +406,10 @@ pub struct LineageUsedInputs {
     pub configuration: TrustedGuardConfig,
     /// Claimed actually consumed signed views and root-policy occurrences.
     pub views: Vec<ConsumedViewPolicy>,
+    /// Optional exact per-view interpretation data; absence never means Legacy.
+    ///
+    /// This ordinary claim grants no cold-fork, source-carry or current authority.
+    pub view_interpretations: Option<Vec<ConsumedViewInterpretation>>,
 }
 
 /// Carries canonical source evidence without creating verified source lineage.
