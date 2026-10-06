@@ -1941,6 +1941,28 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   the same independently checked 4,855-file source. Required inline Index
   admission, lawful initial/preserved binding gaps and actual pre-signing
   incremental I/P/G maintenance remain separate unfinished writer obligations.
+  The locally preserved merge-selection correction at `e147f58219` uses actual
+  completed view selection and passes its three existing exact native helper
+  cases, strict three-profile quality and both formatters. This supplies no new
+  genuine Recorded merge or cold-fork qualification. The ordinary full-profile
+  comparison prerequisite at `6a211f715e` retains independently selected
+  namespace inputs without selecting configuration from decoded lineage.
+  Existing verified consumers retain their signed-root and physical-profile
+  checks. Fifteen exact existing authoring, historical-index and Recorded-history
+  cases pass, as do strict three-profile Clippy/private rustdoc and both
+  formatters. Both hermetic inputs match all 4,855 included file images;
+  a subsequent documentation-only correction clarifies the selection boundary.
+  The isolated native writer additionally passes all eight exact
+  `native-index-publication` cases on unchanged source preserved at
+  `f4ae2b17c3`. Its actual input matches all 4,861 included images.
+  Cases cover publication and full carriers, incremental maintenance, typed
+  divergence and dropped-binding refusals, lawful missing-value gaps, backfill,
+  inert historical attributes and independently configured reopening.
+  Work reporting separates retained/staged input acquisition, real delegated
+  store calls, reconstruction, verification and maintenance; it does not claim
+  total publication I/O. Qualification after composition with the shared view
+  helper remains pending. These local prerequisites do not close a task or
+  qualify the full current trunk gate set.
   T-DRV-2, ALG-32, task merges and T1 remain open.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
@@ -3026,6 +3048,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   fixtures must distinguish real selection/repair reads and mandatory repair
   synchronization from later direct artifact verification; no production
   verification or repair condition is relaxed.
+  The corrected filtered-generation fixture passes the same three store gates
+  and application compilation on independently matched source. Its four new
+  runtime cases still fail during setup: a plain Filter body correctly violates
+  STORE-33's canonical-CBOR requirement. None reaches its behavior assertions.
+  The reviewed fixture correction preserves that typed refusal and supplies
+  independently encoded canonical Filter data; runtime qualification is pending.
 - [ ] **T-GC-1** Mark-and-sweep collector: roots, mark, grace, two-phase
   sweep, singleton lease, resumability, retention values `gc`, `lease`,
   `ttl`, `forever`, and ordinary reflog duration/count selection. D-78
@@ -3075,8 +3103,18 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   corrected Notes reconciliation case passes in 127.96 seconds; cancellation
   fails in 138.69 seconds at an earlier missing-current-directory-fence refusal,
   before its expected post-durable-Cancelled interruption. The remaining three
-  checks are running. Original failures remain preserved; no full matrix,
-  deletion gate, timing fix or task qualification is inferred.
+  checks subsequently pass: current handoff refusals in 189.46 seconds,
+  missing/swallowed acknowledgment refusals in 105.70 seconds, and canceled
+  waiter recovery in 117.16 seconds. All five actual inputs match the same
+  frozen source. A reviewed correction frames the owned artifacts' actual
+  ancestor directories before cancellation, preserving strict fence lookup.
+  Its focused run advances beyond the missing-directory refusal, then fails
+  final restoration in 181.26 seconds at a fresh collector Session check.
+  That diagnostic establishes no expiry, poisoning or scheduling cause.
+  Strict default Clippy separately reports two equivalent conditional-style
+  corrections; later profiles and rustdoc do not run on that attempt.
+  Original failures remain preserved; no full matrix, deletion gate, timing
+  fix or task qualification is inferred.
   The reviewed pure journal, marking, proof-context, checkpoint, retention and
   grace-window bodies now replace their trunk declarations. All 27 adopted
   paths, including 16 independent hexadecimal witnesses, match the qualified
