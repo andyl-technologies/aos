@@ -202,12 +202,26 @@ def observe_direct_restart_readiness(worker, tools, driver):
                 if state == 'Z' and (os.WIFEXITED(wait_status) or os.WIFSIGNALED(wait_status)):
                     result['exitCode'] = os.waitstatus_to_exitcode(wait_status)
                 result['ready'] = original['present']
-                result['category'] = ('original_ready' if result['ready'] else
-                    'driver_missing' if identity is None else
-                    'driver_exited_before_original' if state in ('Z', 'X', 'x') else
-                    'waiting_for_original')
-                if (state == 'Z' or identity is None) and not result['ready']:
+                terminal = state in ('Z', 'X', 'x')
+                if terminal or identity is None:
                     terminal_stderr(root)
+
+                # A retained Start original does not make a later failed driver
+                # healthy. Missing/reaped status stays unknown; only its owned
+                # stderr can supply a known failure category, never an exit code.
+                known_error = result['stderrCategory'] in (
+                    'private_input_refused', 'control_key_refused',
+                    'runtime_identity_refused', 'source_refused', 'source_changed',
+                    'control_acknowledgement_unknown', 'multiple_known_errors')
+                if result['ready'] and terminal and result['exitCode'] != 0:
+                    result['category'] = 'driver_exited_after_original'
+                elif result['ready'] and identity is None and known_error:
+                    result['category'] = 'driver_status_unknown_after_original'
+                else:
+                    result['category'] = ('original_ready' if result['ready'] else
+                        'driver_missing' if identity is None else
+                        'driver_exited_before_original' if terminal else
+                        'waiting_for_original')
             except FileNotFoundError:
                 if result['category'] != 'output_custody_unknown':
                     result['category'] = 'driver_missing'

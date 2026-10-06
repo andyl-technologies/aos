@@ -155,7 +155,7 @@ class RestartReadiness(unittest.TestCase):
                 "Path('/proc/self/comm').write_text('ready) (child');"
                 "status=int(sys.stdin.readline());"
                 "sys.stderr.write('Private inputs must be owner-only regular files within bounds. '"
-                "'private-output-sentinel\\n');sys.stderr.flush();raise SystemExit(status)"
+                "'private-output-sentinel\\n' if status else '');sys.stderr.flush();raise SystemExit(status)"
             )
             try:
                 process = subprocess.Popen([python, "-c", program], stdin=subprocess.PIPE,
@@ -237,6 +237,37 @@ class RestartReadiness(unittest.TestCase):
             self.assertEqual(overflow["stderrCategory"], "stderr_bound_exceeded")
             self.assertEqual(process.wait(timeout=5), observation["exitCode"])
 
+    def test_post_start_exit_retains_failure_and_missing_status_stays_unknown(self):
+        with self.driver() as (driver, process, tools):
+            original = self.original(driver)
+            before = original.read_bytes()
+            self.exit_without_reaping(process, 9)
+            retained = []
+            restart.retain_direct_flow = lambda name, value: retained.append(value)
+
+            with self.assertRaises(AssertionError):
+                restart.direct_restart_readiness(None, tools, driver)
+            observed = retained[-1]
+            self.assertEqual(observed["category"], "driver_exited_after_original")
+            self.assertTrue(observed["ready"])
+            self.assertTrue(observed["custody"])
+            self.assertEqual(observed["exitCode"], 9)
+            self.assertEqual(observed["stderrCategory"], "private_input_refused")
+            self.assertTrue(observed["stderrEof"])
+            self.assertNotIn("private-output-sentinel", json.dumps(observed))
+            self.assertEqual(original.read_bytes(), before)
+
+            self.assertEqual(process.wait(timeout=5), 9)
+            with self.assertRaises(AssertionError):
+                restart.direct_restart_readiness(None, tools, driver)
+            observed = retained[-1]
+            self.assertEqual(observed["category"], "driver_status_unknown_after_original")
+            self.assertTrue(observed["ready"])
+            self.assertFalse(observed["custody"])
+            self.assertIsNone(observed["exitCode"])
+            self.assertEqual(observed["stderrCategory"], "private_input_refused")
+            self.assertEqual(original.read_bytes(), before)
+
     def test_reaped_exit_has_unknown_status_and_unknown_observation_refuses(self):
         with self.driver() as (driver, process, tools):
             self.exit_without_reaping(process, 7)
@@ -278,6 +309,11 @@ class RestartReadiness(unittest.TestCase):
             self.original(driver)
             self.assertTrue(restart.direct_restart_readiness(None, tools, driver))
             self.exit_without_reaping(process, 0)
+            observed = restart.observe_direct_restart_readiness(None, tools, driver)
+            self.assertEqual(observed["category"], "original_ready")
+            self.assertTrue(observed["custody"])
+            self.assertEqual(observed["exitCode"], 0)
+            self.assertTrue(restart.direct_restart_readiness(None, tools, driver))
             self.assertEqual(process.wait(timeout=5), 0)
             observation = restart.observe_direct_restart_readiness(None, tools, driver)
             self.assertEqual(observation["category"], "original_ready")

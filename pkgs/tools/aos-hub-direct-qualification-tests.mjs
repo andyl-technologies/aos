@@ -11,6 +11,9 @@ import { join, resolve } from "node:path";
 const openssl = process.argv[2];
 const driver = resolve(process.argv[3] ?? "pkgs/tools/aos-hub-direct-qualification.mjs");
 if (!openssl?.startsWith("/nix/store/")) throw new Error("Supply the source-built AOS OpenSSL path.");
+const python = process.argv[4];
+const collector = resolve(process.argv[5] ?? "tests/fleet/_hub-direct-qualification.py");
+if (!python?.startsWith("/nix/store/")) throw new Error("Supply the source-built AOS Python path.");
 const root = await mkdtemp("/tmp/aos-direct-qualification-driver-tests-");
 await chmod(root, 0o700);
 const cert = join(root, "test.crt"), privateKey = join(root, "test.key");
@@ -25,6 +28,14 @@ await writeFile(keyFile, secret, { mode: 0o600 });
 const payload = Buffer.alloc(16 * 1024 * 1024 + 17, 0x36), payloadFile = join(root, "payload");
 await writeFile(payloadFile, payload, { mode: 0o600 });
 const digest = bytes => createHash("sha256").update(bytes).digest("hex");
+// Production Grant replies pass through serde_json::Value's sorted maps.
+const sorted = value => Array.isArray(value) ? value.map(sorted)
+  : value !== null && typeof value === "object"
+    ? Object.fromEntries(Object.keys(value).sort().map(key => [key, sorted(value[key])])) : value;
+const placement = { placementId: "1", placementFingerprint: "bb".repeat(32),
+  placementResourceVersion: "2", writeSpecVersion: "3", bindingId: "4",
+  bindingResourceVersion: "5", bindingWriteRevision: "6", profileFingerprint: "dd".repeat(32),
+  privatePolicyDigest: "ee".repeat(32), checksumAlgorithm: "md5" };
 const mac = (domain, bytes) => createHmac("sha256", secret).update("aos-storage-work-v1\0").update(domain).update(bytes).digest("hex");
 let scenario, child, origin, original, uploaded, receipt;
 const calls = [], partOrder = [];
@@ -60,10 +71,30 @@ const server = createServer({ cert: await readFile(cert), key: await readFile(pr
         providerBefore: { isolateId: "driver-isolate", dispatches: 0 }, providerAfter: { isolateId: "driver-isolate", dispatches: 0 } }; break;
       case "begin": break;
       case "grant": result = { grants: action.parts.map(part => ({ sessionId: "session", logicalFingerprint: "aa".repeat(32),
-        placement: { placementId: "1", placementFingerprint: "bb".repeat(32), checksumAlgorithm: "md5" },
+        placement,
         grantId: "cc".repeat(32), grantRevision: "1", part, method: "PUT", url: `${origin}/part/${part.partNumber}`,
         requiredHeaders: [{ name: "content-md5", value: part.checksum.value }] })) }; break;
-      case "report": assert.equal(action.reports.length, 3); break;
+      case "report": {
+        assert.equal(action.reports.length, 3);
+        for (const report of action.reports) {
+          const fields = Object.keys(placement);
+          const part = report.observed.part;
+          const orderedPart = { partNumber: part.partNumber, offset: part.offset,
+            byteSize: part.byteSize, sha256: part.sha256,
+            checksum: { algorithm: part.checksum.algorithm, value: part.checksum.value } };
+          const canonical = { session: { sessionId: report.session.sessionId,
+            logicalFingerprint: report.session.logicalFingerprint },
+            placement: Object.fromEntries(fields.map(field => [field, report.placement[field]])),
+            operationId: report.operationId, grantId: report.grantId, grantRevision: report.grantRevision,
+            observed: { part: orderedPart, etag: report.observed.etag } };
+          if (JSON.stringify(report) !== JSON.stringify(canonical)) {
+            console.error("Controlled peer refused noncanonical Report field ordering or schema.");
+            throw new Error("Noncanonical typed Report.");
+          }
+          assert.deepEqual(report.placement, placement);
+        }
+        break;
+      }
       case "close": assert.equal(uploaded, payload.length); assert.equal(action.deferEnqueue, true); break;
       case "enqueue": {
         const started = Date.now() - 20, finished = Date.now();
@@ -83,9 +114,9 @@ const server = createServer({ cert: await readFile(cert), key: await readFile(pr
         nextAttempt: action.afterAttempt === 0 ? 1 : null }; break;
       default: throw new Error("Unexpected control action.");
     }
-    const reply = Buffer.from(JSON.stringify({ version: 1, requestSha256: digest(bytes), nonce: control.nonce,
+    const reply = Buffer.from(JSON.stringify(sorted({ version: 1, requestSha256: digest(bytes), nonce: control.nonce,
       sourceDigest: control.sourceDigest, scriptVersion: scenario === "wrong-runtime" ? "different-script" : control.scriptVersion,
-      observedAtMillis: String(Date.now()), result }));
+      observedAtMillis: String(Date.now()), result })));
     response.writeHead(200, { "content-type": "application/json",
       "x-aos-direct-qualification-signature": mac("aos.direct-upload.qualification-reply.v1\0", reply) });
     response.end(reply);
@@ -125,6 +156,52 @@ try {
   assert.notEqual(wrongUncertainty.exit, 0); assert.deepEqual(calls, ["clock"]);
   assert.equal((await readdir(wrongUncertainty.output)).includes("source-identity.json"), false);
   const positive = await run("positive", "positive"); assert.equal(positive.exit, 0);
+  assert.ok(calls.includes("expired_mutation"));
+  const evidenceNames = await readdir(positive.output);
+  assert.ok(evidenceNames.includes("00010-expired-mutation-pending.json"));
+  assert.ok(evidenceNames.includes("00010-expired-mutation-capture.json"));
+  assert.ok(evidenceNames.every(name => /^[a-z0-9][a-z0-9-]{0,127}\.json$/.test(name)));
+
+  // Execute the existing collector's actual emitted guest programs against the
+  // real driver output. Only the guest transport is local to this regression.
+  const retention = join(root, "retention"); await mkdir(retention, { mode: 0o700 });
+  const collectorProgram = `
+import importlib.util, json, subprocess, sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location('qualification_collector', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+def local_guest_command(_worker, command, timeout=60):
+    command = command.strip()
+    header, remainder = command.split('\\n', 1)
+    marker = header.split("<<'", 1)[1].split("'", 1)[0]
+    program = remainder.rsplit('\\n' + marker, 1)[0]
+    result = subprocess.run([sys.executable, '-B', '-c', program],
+        check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+    return result.stdout.decode()
+
+module.private_guest_command = local_guest_command
+original = json.loads((Path(sys.argv[2]) / 'original.json').read_text())
+retained = module.retain_direct_qualification_files(None, sys.executable, sys.argv[2], original['runId'])
+assert any(item['name'] == '00010-expired-mutation-pending.json' for item in retained['files'])
+assert retained['driverManifestPresent'] is True
+pending = Path(sys.argv[2]) / '00010-expired-mutation-pending.json'
+pending.rename(pending.with_name('00010-expired_mutation-pending.json'))
+try:
+    module.retain_direct_qualification_files(None, sys.executable, sys.argv[2], original['runId'])
+except subprocess.CalledProcessError as error:
+    assert b'qualification evidence inventory exceeds bounds' in error.stderr
+else:
+    raise AssertionError('collector accepted an underscore evidence filename')
+finally:
+    pending.with_name('00010-expired_mutation-pending.json').rename(pending)
+print('PASS actual driver evidence accepted; old underscore filename refused by existing collector')
+`;
+  const collected = spawnSync(python, ["-B", "-c", collectorProgram, collector, positive.output],
+    { cwd: retention, encoding: "utf8" });
+  assert.equal(collected.status, 0, collected.stderr);
   assert.equal(uploaded, payload.length); assert.notEqual(partOrder[0], 1);
   const runtime = JSON.parse(await readFile(join(positive.output, "runtime-raw.json")));
   assert.equal(runtime.observations.samples[0].byteSize, String(payload.length));

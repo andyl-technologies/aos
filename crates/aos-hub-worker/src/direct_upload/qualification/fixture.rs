@@ -307,18 +307,7 @@ pub(crate) fn admission(
             }
         }
     };
-    let actor_slot = DirectActorSlot {
-        kind: DirectActorKind::ServiceAccount,
-        numeric_id: WireInteger::new(1),
-        incarnation: uuid::Uuid::from_slice(
-            &hex::decode(journal::digest(&(
-                &original.run_id,
-                &object.object_id,
-                "fixture-actor",
-            ))?)?[..16],
-        )?
-        .to_string(),
-    };
+    let actor_slot = super::super::qualification_actor::slot(&original.run_id, &object.object_id)?;
     let mut admission = DirectUploadAdmission {
         session_id: journal::digest(&(&original.run_id, &object.object_id, "private-source"))?,
         principal_id: actor_slot.principal_id(deployment)?,

@@ -77,7 +77,14 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => { cancelled = true; for (const controller of active) controller.abort(); });
 }
 async function observe(kind, intent, dispatch, timeout = 30000) {
-  const name = `${String(++sequence).padStart(5, "0")}-${kind}`;
+  // Wire action names stay unchanged; retained filenames use the collector's
+  // closed lower-kebab spelling. The unique sequence and create-only save keep
+  // two dispatches from overwriting one another after normalization.
+  const filenameKind = kind.replaceAll("_", "-");
+  if (!/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(filenameKind) || filenameKind.length > 64) {
+    throw new Error("Observation kind cannot form a bounded evidence filename.");
+  }
+  const name = `${String(++sequence).padStart(5, "0")}-${filenameKind}`;
   if (cancelled) { await save(`${name}-cancelled.json`, { ...intent, state: "cancelled_before_dispatch" });
     throw new Error("Cancellation prevents further effects."); }
   await save(`${name}-pending.json`, { ...intent, state: "pending" });
@@ -200,6 +207,38 @@ async function inspectSource(handle, metadata) {
   return { handle, before, parts, plan: { objectId: randomBytes(32).toString("hex"), byteSize: String(size),
     expectedSha256: whole.digest("hex"), partSize: String(partSize), metadata } };
 }
+
+// Replies carry sorted JSON maps, but the authenticated Report must reproduce
+// the declared Core DTO field order exactly. Reject extra/missing fields rather
+// than silently eliding a changed grant schema while reconstructing that order.
+function reportRecord(value, fields) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+      || Object.keys(value).length !== fields.length
+      || fields.some(field => !Object.hasOwn(value, field) || value[field] === undefined)) {
+    throw new Error("Report source differs from the closed grant schema.");
+  }
+  return Object.fromEntries(fields.map(field => [field, value[field]]));
+}
+
+function reportPart(part) {
+  const result = reportRecord(part, ["partNumber", "offset", "byteSize", "sha256", "checksum"]);
+  result.checksum = reportRecord(part.checksum, ["algorithm", "value"]);
+  return result;
+}
+
+function reportPlacement(placement) {
+  return reportRecord(placement, ["placementId", "placementFingerprint", "placementResourceVersion",
+    "writeSpecVersion", "bindingId", "bindingResourceVersion", "bindingWriteRevision",
+    "profileFingerprint", "privatePolicyDigest", "checksumAlgorithm"]);
+}
+
+function reportObservation(objectId, grant, etag) {
+  return { session: { sessionId: grant.sessionId, logicalFingerprint: grant.logicalFingerprint },
+    placement: reportPlacement(grant.placement), operationId: canonicalHash([objectId, "report", grant.part.partNumber]),
+    grantId: grant.grantId, grantRevision: grant.grantRevision,
+    observed: { part: reportPart(grant.part), etag } };
+}
+
 async function upload(source, grant) {
   const part = grant.part, offset = Number(part.offset), size = Number(part.byteSize);
   return observe("upload-part", { runId, objectId: source.plan.objectId, partNumber: part.partNumber,
@@ -228,9 +267,7 @@ async function upload(source, grant) {
     await save(`${name}-positive.json`, { objectId: source.plan.objectId, partNumber: part.partNumber,
       startedAtMillis: String(started), finishedAtMillis: String(Date.now()), status: response.status,
       responseSha256: hash(responseBytes), etag });
-    return { session: { sessionId: grant.sessionId, logicalFingerprint: grant.logicalFingerprint },
-      placement: grant.placement, operationId: canonicalHash([source.plan.objectId, "report", part.partNumber]),
-      grantId: grant.grantId, grantRevision: grant.grantRevision, observed: { part, etag } };
+    return reportObservation(source.plan.objectId, grant, etag);
   });
 }
 async function concurrent(items, maximum, dispatch) {
