@@ -236,6 +236,29 @@ pub(crate) struct ProtectedBrokerRequestWriteV1 {
     expected_revision: u64,
 }
 
+// These real allocations outlive the unchanged observation. Field order
+// preserves the old reverse-local destruction order on failure or unwind.
+struct PreparedBrokerSuccessorOriginalsV1 {
+    replacement_history: BrokerSessionDurableHistoryV1,
+    terminal: BrokerSessionDurableRecordV1,
+    traffic: BrokerSessionTrafficStateV1,
+    decoded_history: BrokerSessionDurableHistoryV1,
+}
+
+impl PreparedBrokerSuccessorOriginalsV1 {
+    fn into_write(
+        self,
+        before: &ProtectedBrokerSessionJournalSnapshotV1,
+    ) -> ProtectedBrokerRequestWriteV1 {
+        ProtectedBrokerRequestWriteV1 {
+            history: self.replacement_history,
+            expected_generation: before.generation,
+            expected_head: before.current_head,
+            expected_revision: self.terminal.revision(),
+        }
+    }
+}
+
 impl ProtectedBrokerRequestWriteV1 {
     fn prepare_initial_from_snapshot(
         request: &AuthenticatedBrokerMethodRequestV1,
@@ -293,9 +316,25 @@ impl ProtectedBrokerRequestWriteV1 {
     ) -> Result<Self, BrokerSessionSecurityError> {
         require_current_session(transcript, context)?;
         let before = authority.read_current(transcript.protocol())?;
-        let history = before.decode_history()?;
-        let traffic = reconstruct_traffic(&history, transcript, context)?;
-        let terminal = history.head().map_err(map_durable)?.clone();
+        let originals = Self::prepare_successor_originals_from_snapshot(
+            request, context, transcript, peer, &before,
+        )?;
+        require_unchanged(authority, transcript.protocol(), &before)?;
+        Ok(originals.into_write(&before))
+    }
+
+    // This pure recipe retains both histories and the replay/terminal owners;
+    // its caller supplies the actual current-read sandwich or original cut.
+    fn prepare_successor_originals_from_snapshot(
+        request: &AuthenticatedBrokerMethodRequestV1,
+        context: &ProtectedBrokerSessionVerificationContextV1,
+        transcript: &VerifiedBrokerSessionTranscriptV1,
+        peer: &ObservedBrokerPeerExecutionV1,
+        before: &ProtectedBrokerSessionJournalSnapshotV1,
+    ) -> Result<PreparedBrokerSuccessorOriginalsV1, BrokerSessionSecurityError> {
+        let decoded_history = before.decode_history()?;
+        let traffic = reconstruct_traffic(&decoded_history, transcript, context)?;
+        let terminal = decoded_history.head().map_err(map_durable)?.clone();
         let current_bindings = before.protected_bindings(context)?;
         let request_catalog = request
             .catalog_binding()
@@ -326,15 +365,14 @@ impl ProtectedBrokerRequestWriteV1 {
             successor_bindings,
         )
         .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        let mut records = history.records().to_vec();
+        let mut records = decoded_history.records().to_vec();
         records.push(record);
-        let history = BrokerSessionDurableHistoryV1::from_records(records).map_err(map_durable)?;
-        require_unchanged(authority, transcript.protocol(), &before)?;
-        Ok(Self {
-            history,
-            expected_generation: before.generation,
-            expected_head: before.current_head,
-            expected_revision: terminal.revision(),
+        let replacement_history = BrokerSessionDurableHistoryV1::from_records(records).map_err(map_durable)?;
+        Ok(PreparedBrokerSuccessorOriginalsV1 {
+            replacement_history,
+            terminal,
+            traffic,
+            decoded_history,
         })
     }
 
