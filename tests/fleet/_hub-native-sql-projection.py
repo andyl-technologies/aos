@@ -93,7 +93,7 @@ def native_sql_query(checkpoints, deployment, role):
     query = (
         "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY; "
         "SET LOCAL statement_timeout='15s'; SET LOCAL lock_timeout='5s'; "
-        "SELECT json_build_object('database',current_database(),'databaseOid',(SELECT oid::text FROM pg_database WHERE datname=current_database()),'serverPort',inet_server_port(),'serverAddress',inet_server_addr()::text,'user',current_user,"
+        "SELECT json_build_object('database',current_database(),'databaseOid',(SELECT oid::text FROM pg_database WHERE datname=current_database()),'serverPort',inet_server_port(),'serverAddress',host(inet_server_addr()),'user',current_user,"
         "'backendPid',pg_backend_pid(),'readOnly',current_setting('transaction_read_only'),"
         "'isolation',current_setting('transaction_isolation'),'snapshot',pg_current_snapshot()::text,"
         "'snapshotAt',transaction_timestamp()::text,'observedAt',clock_timestamp()::text,"

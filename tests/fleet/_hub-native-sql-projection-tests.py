@@ -43,6 +43,8 @@ class Collector(unittest.TestCase):
         self.assertTrue(query.endswith('COMMIT;'))
         self.assertIn("session_id IN ('synthetic-session')", query)
         self.assertIn('pg_current_snapshot()', query)
+        self.assertIn("'serverAddress',host(inet_server_addr())", query)
+        self.assertNotIn('inet_server_addr()::text', query)
         self.assertNotIn('admission_json::json AS admission FROM', query)
         for changed in ([{'kind': 'other'}], self.checkpoints * 33,
                         [{'kind': 'admission_checked_transaction', 'sessionId': "x';DELETE"}]):
