@@ -703,8 +703,7 @@ pub fn encode_atomic_object_payload(
     limits: CacheRecoveryLimitsV1,
 ) -> Result<Vec<u8>, RecoveryError> {
     let limits = limits.validate()?;
-    payload.validate(limits)?;
-    encode_atomic_payload_components(payload, limits)
+    payload.validated_payload_bytes(limits)
 }
 
 /// Decodes typed object components against their separately protected header.

@@ -200,6 +200,14 @@ impl CacheAtomicObjectPayloadV1 {
     }
 
     fn validate(&self, limits: CacheRecoveryLimitsV1) -> Result<(), RecoveryError> {
+        self.validated_payload_bytes(limits).map(|_| ())
+    }
+
+    // Retains the canonical bytes already required by the final digest check.
+    fn validated_payload_bytes(
+        &self,
+        limits: CacheRecoveryLimitsV1,
+    ) -> Result<Vec<u8>, RecoveryError> {
         self.record.validate()?;
         self.plan
             .validate()
@@ -336,10 +344,11 @@ impl CacheAtomicObjectPayloadV1 {
         if let Some(global) = &self.global_after {
             validate_global_recovery_state(global, self.plan.partition, limits)?;
         }
-        if self.record.payload != canonical_payload_digest(self, limits)? {
+        let bytes = encode_atomic_payload_components(self, limits)?;
+        if self.record.payload != payload_digest_bytes(&bytes) {
             return Err(RecoveryError::PayloadMismatch);
         }
-        Ok(())
+        Ok(bytes)
     }
 }
 
