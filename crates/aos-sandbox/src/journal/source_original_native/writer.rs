@@ -843,9 +843,7 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
         }
         let floor = selected.ok_or(invalid("original Source completion floor absent"))?;
         let continuations = derive_original_source_continuations_v5(
-            journal.state.iter()
-                .filter(|((namespace, _), _)| *namespace == RecordNamespace::SourceProviderAuthority)
-                .map(|((_, key), value)| (key.as_slice(), value.as_slice())),
+            super::owner_views(&journal.state),
             Some(origin.admission_comparison()), floor.original_provenance(),
             floor.original_provenance().claims().configuration,
         ).map_err(|_| invalid("original Source completion continuations"))?;
@@ -963,9 +961,7 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
         {
             return Err(invalid("original Source initial quartet shape"));
         }
-        let owner_rows = || journal.state.iter()
-            .filter(|((namespace, _), _)| *namespace == RecordNamespace::SourceProviderAuthority)
-            .map(|((_, key), value)| (key.as_slice(), value.as_slice()));
+        let owner_rows = || super::owner_views(&journal.state);
         let proposal = propose_original_source_applying_v5(
             owner_rows(),
             quartet.records().iter().map(|record| (record.key(), record.value())),
@@ -1047,9 +1043,8 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
             }
         }
         let floor = selected.ok_or(invalid("original Source transfer floor missing"))?;
-        let mut owners = journal.state.iter()
-            .filter(|((namespace, _), _)| *namespace == RecordNamespace::SourceProviderAuthority)
-            .map(|((_, key), value)| (key.clone(), value.clone()))
+        let mut owners = super::owner_views(&journal.state)
+            .map(|(key, value)| (key.to_vec(), value.to_vec()))
             .collect::<std::collections::BTreeMap<_, _>>();
         for record in owner_transaction.records() {
             if record.namespace() != RecordNamespace::SourceProviderAuthority {

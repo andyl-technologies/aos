@@ -803,14 +803,6 @@ fn insert_id(ids: &mut BTreeSet<[u8; 32]>, identifier: [u8; 32]) -> Result<(), J
 
 fn bound_source_state(state: &State, limits: JournalLimits) -> Result<(), JournalError> {
     bounded_snapshot_bytes(state, limits)?;
-    if state.keys().any(|(namespace, _)| {
-        !matches!(
-            namespace,
-            RecordNamespace::SourceProviderAuthority | RecordNamespace::GlobalCapacityReservation
-        )
-    }) {
-        return Err(invalid("Source capacity DATA contains foreign namespace"));
-    }
     for ((_, key), value) in state {
         let payload = key
             .len()
