@@ -241,7 +241,11 @@ impl CampaignRepository {
     ) -> Result<usize, CampaignRepositoryError> {
         let mut stack = roots.into_iter().map(|id| (id, false)).collect::<Vec<_>>();
         let mut visited = BTreeSet::new();
-        let mut verified_merkle_positions = BTreeSet::new();
+        let mut verified_merkle_positions = if anchors.is_empty() {
+            VerifiedMerklePositions::structure()
+        } else {
+            VerifiedMerklePositions::objects()
+        };
 
         while let Some((id, exact_leaf)) = stack.pop() {
             if anchors.contains(&id) {
@@ -273,11 +277,7 @@ impl CampaignRepository {
                         .verify_closure_objects_cached(id, &mut verified_merkle_positions)?
                 };
                 if let Some(objects) = collected.as_deref_mut() {
-                    objects.extend(
-                        verified_merkle_positions
-                            .iter()
-                            .map(|(node, _prefix)| *node),
-                    );
+                    objects.extend(verified_merkle_positions.ids());
                 }
                 if visited
                     .len()
