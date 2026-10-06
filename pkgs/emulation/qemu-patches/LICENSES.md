@@ -66,6 +66,7 @@ The atomic integration patch creates these QEMU source files:
 | `tests/unit/test-crucible-cold-fault-predicates.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-lazy-memory-identity.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-accel-classification.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-fault-rule-presence.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-control-deferred.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-control-observer.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-control-delivery.py` | GPL-2.0-or-later | Explicit SPDX identifier |

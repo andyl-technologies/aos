@@ -220,6 +220,7 @@ in rec {
     qemuColdFaultPredicates = import ./phase1-qemu-cold-fault-predicates.nix {inherit pkgs;};
     qemuLazyMemoryIdentity = import ./phase1-qemu-lazy-memory-identity.nix {inherit pkgs;};
     qemuAccelClassification = import ./phase1-qemu-accel-classification.nix {inherit pkgs;};
+    qemuFaultRulePresence = import ./phase1-qemu-fault-rule-presence.nix {inherit pkgs;};
     qemuBlockShmem = import ./phase1-qemu-block-shmem.nix {inherit pkgs lib;};
     qemuNinePShmem = import ./phase1-qemu-9p-shmem.nix {inherit pkgs lib;};
     qmpCommand = import ./qmp-command.nix {inherit pkgs;};
