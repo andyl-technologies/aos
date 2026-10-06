@@ -31,6 +31,7 @@ fn member(window: &Arc<Window>) -> Arc<Mutex<Member>> {
         status: Some(200),
         returned: true,
         typed_evidence: None,
+        sql_projection: None,
         request: ObservedFrames::default(),
         reply: ObservedFrames::default(),
     }))

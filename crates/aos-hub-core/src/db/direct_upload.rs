@@ -16,6 +16,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use super::Database;
+use crate::application_body_observation::sql_projection::Pending;
 use crate::backend::{CheckedStatement, Statement};
 use crate::direct_upload::*;
 use crate::value::Row;
@@ -165,6 +166,8 @@ impl Database {
                     code: DirectItemErrorCode::Conflict
                 }
             );
+            let checkpoint =
+                Pending::admission(deployment, &existing, now, true, authority_statements.len());
             self.direct_batch(&existing)
                 .checked_batch(
                     &[
@@ -174,6 +177,9 @@ impl Database {
                     .concat(),
                 )
                 .await?;
+            if let Some(checkpoint) = checkpoint {
+                checkpoint.completed();
+            }
             return Ok(existing);
         }
         ensure!(
@@ -272,6 +278,8 @@ impl Database {
         };
         statements.push(current_guard(&record, now)?);
         statements.extend(authority_statements.clone());
+        let checkpoint =
+            Pending::admission(deployment, &record, now, false, authority_statements.len());
         if let Err(error) = self.direct_batch(&record).checked_batch(&statements).await {
             // A concurrent exact admission may win; a business uniqueness conflict
             // with another session or immutable original remains a hard refusal.
@@ -283,6 +291,13 @@ impl Database {
                     && existing.owner == *owner
                     && existing.owner_scope_key == owner_scope_key
                 {
+                    let recovery_checkpoint = Pending::admission(
+                        deployment,
+                        &existing,
+                        now,
+                        true,
+                        authority_statements.len(),
+                    );
                     self.direct_batch(&existing)
                         .checked_batch(
                             &[
@@ -292,10 +307,16 @@ impl Database {
                             .concat(),
                         )
                         .await?;
+                    if let Some(checkpoint) = recovery_checkpoint {
+                        checkpoint.completed();
+                    }
                     return Ok(existing);
                 }
             }
             return Err(error).context("retaining direct admission");
+        }
+        if let Some(checkpoint) = checkpoint {
+            checkpoint.completed();
         }
         Ok(record)
     }
@@ -797,4 +818,202 @@ fn load_owner(row: &Row, target: &DirectUploadTarget) -> Result<DirectSqlOwner> 
         "retained direct SQL target mismatch"
     );
     Ok(owner)
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod sql_checkpoint_tests {
+    use super::*;
+    use crate::application_body_observation::{
+        confirm_sql_constructor, observe_with_sql_projection,
+    };
+
+    async fn original(db: &Database) -> DirectUploadSessionRecord {
+        db.install_write_failure_test_tickets().await.unwrap();
+        let user = db.create_user("direct@example.test", None).await.unwrap();
+        let actor_slot = DirectActorSlot {
+            kind: DirectActorKind::User,
+            numeric_id: WireInteger::new(user as u64),
+            incarnation: db
+                .principal_incarnation(crate::domain::Principal::user(user))
+                .await
+                .unwrap()
+                .unwrap(),
+        };
+        let credential = |purpose: &str| DirectCredentialRevision {
+            purpose: purpose.into(),
+            credential_id: "profile".into(),
+            generation: WireInteger::new(1),
+            secret_version_ref: "profile:1".into(),
+            credential_fingerprint: "a".repeat(64),
+        };
+        let mut admission = DirectUploadAdmission {
+            session_id: "original-session".into(),
+            principal_id: actor_slot.principal_id("deployment").unwrap(),
+            actor_slot,
+            intent: DirectUploadIntent {
+                version: 1,
+                client_operation_id: "b".repeat(64),
+                target: DirectUploadTarget::CacheObject {
+                    cache_id: "cache:00000000000000000000000000000001".into(),
+                    path: "single-pre".into(),
+                },
+                expected_sha256: "c".repeat(64),
+                byte_size: WireInteger::new(1),
+                part_size: WireInteger::new(8 * 1024 * 1024),
+                dependency_phase: DirectDependencyPhase::Content,
+                transfer_mode: DirectTransferMode::DirectRequired,
+            },
+            logical_fingerprint: String::new(),
+            expires_at: WireInteger::new(100),
+            placements: vec![DirectPlacement {
+                placement_id: WireInteger::new(1),
+                placement_resource_version: WireInteger::new(1),
+                write_spec_version: WireInteger::new(1),
+                binding_id: WireInteger::new(1),
+                binding_resource_version: WireInteger::new(1),
+                binding_write_revision: WireInteger::new(1),
+                final_key: "cache/single-pre".into(),
+                staging_prefix: ".aos-direct-upload".into(),
+                private_stage_policy: DirectPrivateStagePolicyRef {
+                    policy_id: "private".into(),
+                    policy_digest: "d".repeat(64),
+                    namespace: "bucket".into(),
+                },
+                protected_profile_digest: "e".repeat(64),
+                checksum_algorithm: DirectChecksumAlgorithm::Md5,
+                physical: DirectPhysicalContext::DeploymentR2 {
+                    deployment_id: "deployment".into(),
+                    bucket_namespace: "bucket".into(),
+                },
+                write_credential: credential("write"),
+                read_credential: credential("read"),
+                presign_credential: credential("presign"),
+            }],
+        };
+        admission.logical_fingerprint = admission.fingerprint("deployment").unwrap();
+        db.admit_direct_upload(
+            "deployment",
+            &admission,
+            "cache:00000000000000000000000000000001",
+            &DirectSqlOwner::Cache {
+                cache_id: 1,
+                ticket_id: "cache-single-pre".into(),
+            },
+            10,
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn admission_emits_only_after_actual_checked_success_and_labels_observed_rv() {
+        let db = Database::open_in_memory().await.unwrap();
+        let (record, projection) = observe_with_sql_projection(async {
+            let record = original(&db).await;
+            confirm_sql_constructor("direct_logical_validated");
+            record
+        })
+        .await;
+        let value: serde_json::Value =
+            serde_json::from_slice(&projection.unwrap().encoded().unwrap()).unwrap();
+        let checkpoint = &value["checkpoints"][0];
+        assert_eq!(checkpoint["kind"], "admission_checked_transaction");
+        assert_eq!(checkpoint["observedStatusResourceVersion"], "1");
+        assert_eq!(checkpoint["retainedOriginal"], false);
+        assert!(checkpoint.get("expectedResourceVersion").is_none());
+        assert_eq!(
+            checkpoint["admission"]["sha256"],
+            hex::encode(Sha256::digest(
+                encode_direct_control(&record.admission).unwrap()
+            ))
+        );
+
+        let (replay, projection) = observe_with_sql_projection(async {
+            let replay = db
+                .admit_direct_upload_checked(
+                    "deployment",
+                    &record.admission,
+                    &record.owner_scope_key,
+                    &record.owner,
+                    Vec::new(),
+                    11,
+                )
+                .await
+                .unwrap();
+            confirm_sql_constructor("direct_logical_validated");
+            replay
+        })
+        .await;
+        assert_eq!(replay, record);
+        let value: serde_json::Value =
+            serde_json::from_slice(&projection.unwrap().encoded().unwrap()).unwrap();
+        assert_eq!(value["checkpoints"][0]["retainedOriginal"], true);
+        assert_eq!(
+            value["checkpoints"][0]["observedStatusResourceVersion"],
+            "1"
+        );
+
+        let (refused, projection) = observe_with_sql_projection(async {
+            let refused = db
+                .admit_direct_upload_checked(
+                    "deployment",
+                    &record.admission,
+                    &record.owner_scope_key,
+                    &record.owner,
+                    vec![CheckedStatement::exact(
+                        "UPDATE users SET deleted_at = deleted_at WHERE id = -1",
+                        Vec::new(),
+                        1,
+                    )],
+                    12,
+                )
+                .await;
+            confirm_sql_constructor("direct_logical_validated");
+            refused
+        })
+        .await;
+        assert!(refused.is_err());
+        assert!(projection.is_none());
+        assert_eq!(
+            db.direct_upload_session("deployment", &record.admission.session_id)
+                .await
+                .unwrap()
+                .unwrap(),
+            record
+        );
+
+        let changed_incarnation =
+            if record.admission.actor_slot.incarnation == "00000000-0000-0000-0000-000000000001" {
+                "00000000-0000-0000-0000-000000000002"
+            } else {
+                "00000000-0000-0000-0000-000000000001"
+            };
+        db.backend
+            .execute(
+                "UPDATE users SET principal_incarnation = ?2 WHERE id = ?1",
+                &vals![
+                    integer(record.admission.actor_slot.numeric_id).unwrap(),
+                    changed_incarnation
+                ],
+            )
+            .await
+            .unwrap();
+        let (refused, projection) = observe_with_sql_projection(async {
+            let refused = db
+                .admit_direct_upload_checked(
+                    "deployment",
+                    &record.admission,
+                    &record.owner_scope_key,
+                    &record.owner,
+                    Vec::new(),
+                    13,
+                )
+                .await;
+            confirm_sql_constructor("direct_logical_validated");
+            refused
+        })
+        .await;
+        assert!(refused.is_err());
+        assert!(projection.is_none());
+    }
 }

@@ -89,6 +89,7 @@ pub(crate) fn reply<Resp: Serialize + 'static>(
     source.update(include_bytes!("../application_body_observation.rs"));
     source.update(include_bytes!("rpc.rs"));
     source.update(include_bytes!("../connect.rs"));
+    super::confirm_sql_constructor(prepared.kind);
     Some(BodyEvidence {
         constructor: prepared.kind,
         constructor_source_sha256: hex::encode(source.finalize()),

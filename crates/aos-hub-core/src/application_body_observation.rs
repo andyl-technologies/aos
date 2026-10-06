@@ -12,9 +12,17 @@ use std::future::Future;
 use std::io::{self, Write};
 
 pub(crate) mod rpc;
+pub mod sql_projection;
+
+#[derive(Default)]
+struct ObservationScope {
+    checkpoints: Vec<sql_projection::Checkpoint>,
+    constructor: Option<&'static str>,
+    invalid: bool,
+}
 
 #[cfg(not(target_arch = "wasm32"))]
-tokio::task_local! { static ENABLED: (); }
+tokio::task_local! { static ENABLED: std::cell::RefCell<ObservationScope>; }
 
 /// Commits to bytes from one actual source-selected encoder.
 #[derive(Clone, Debug, Serialize)]
@@ -46,14 +54,85 @@ pub struct BodyEvidence {
 ///
 /// The scope grants no permissions and does not propagate into spawned tasks.
 pub async fn observe<F: Future>(handler: F) -> F::Output {
+    observe_with_sql_projection(handler).await.0
+}
+
+/// Runs one handler and retains bounded checkpoints from that same request task.
+///
+/// The optional data is a private response-extension bridge, not SQL authority.
+/// It is absent on Wasm, incomplete observations and unrelated constructors.
+/// Spawned tasks do not inherit this scope.
+pub async fn observe_with_sql_projection<F: Future>(
+    handler: F,
+) -> (F::Output, Option<sql_projection::SqlProjection>) {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        ENABLED.scope((), handler).await
+        ENABLED
+            .scope(
+                std::cell::RefCell::new(ObservationScope::default()),
+                async {
+                    let output = handler.await;
+                    let projection = ENABLED
+                        .try_with(|scope| {
+                            let mut scope = scope.try_borrow_mut().ok()?;
+                            if scope.invalid {
+                                return None;
+                            }
+                            let constructor = scope.constructor?;
+                            sql_projection::SqlProjection::new(
+                                std::mem::take(&mut scope.checkpoints),
+                                constructor,
+                            )
+                        })
+                        .ok()
+                        .flatten();
+                    (output, projection)
+                },
+            )
+            .await
     }
     #[cfg(target_arch = "wasm32")]
     {
-        handler.await
+        (handler.await, None)
     }
+}
+
+pub(crate) fn confirm_sql_constructor(constructor: &'static str) {
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = ENABLED.try_with(|scope| {
+        if let Ok(mut scope) = scope.try_borrow_mut() {
+            if scope.constructor.is_some_and(|prior| prior != constructor) {
+                scope.invalid = true;
+            }
+            scope.constructor = Some(constructor);
+        }
+    });
+    #[cfg(target_arch = "wasm32")]
+    let _ = constructor;
+}
+
+pub(crate) fn invalidate_sql_projection() {
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = ENABLED.try_with(|scope| {
+        if let Ok(mut scope) = scope.try_borrow_mut() {
+            scope.invalid = true;
+        }
+    });
+}
+
+pub(crate) fn record_sql_checkpoint(checkpoint: sql_projection::Checkpoint) {
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = ENABLED.try_with(|scope| {
+        if let Ok(mut scope) = scope.try_borrow_mut() {
+            if scope.checkpoints.len() >= sql_projection::MAX_CHECKPOINTS {
+                scope.invalid = true;
+            } else {
+                scope.checkpoints.push(checkpoint);
+            }
+        }
+    });
+    #[cfg(target_arch = "wasm32")]
+    let _ = checkpoint;
 }
 
 /// Reports whether the explicit Native observation scope is present.
@@ -146,6 +225,7 @@ pub fn produced_evidence(
     if !enabled() || bytes.len() > 64 * 1024 * 1024 {
         return None;
     }
+    confirm_sql_constructor(constructor);
     Some(BodyEvidence {
         constructor,
         constructor_source_sha256: hex::encode(Sha256::digest(source)),

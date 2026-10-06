@@ -11,6 +11,7 @@
 //! ```
 
 use super::body_frames::{FrameReceipt, ObservedFrames};
+use aos_hub_core::application_body_observation::sql_projection::SqlProjection;
 use axum::body::{Body, Bytes, HttpBody};
 use axum::extract::{Request, State};
 use axum::middleware::Next;
@@ -26,6 +27,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::Instant;
 
 const MAX_PENDING: u64 = 4096;
+const MAX_SQL_EVENT_BYTES: usize = 16 * 1024;
 const MAX_WINDOW_MILLIS: u64 = 3_600_000;
 
 #[derive(Deserialize, Serialize)]
@@ -182,6 +184,58 @@ impl Window {
         }));
     }
 
+    // The child is emitted only after the actual request/reply owner completes.
+    // Its exact raw encoding, rather than a reader's JSON reconstruction, binds
+    // the member to the bounded Core source checkpoint aggregate.
+    fn sql_projection(
+        &self,
+        member: &Member,
+        evidence: &aos_hub_core::application_body_observation::BodyEvidence,
+    ) -> Option<aos_hub_core::application_body_observation::EncodedImage> {
+        let projection = member.sql_projection.as_ref()?;
+        if !member.returned
+            || member.status != Some(200)
+            || !projection.matches_constructor(evidence)
+        {
+            return None;
+        }
+        let child = SqlProjectionReceipt {
+            version: 1,
+            event: "sql_projection",
+            window_id: &self.policy.window_id,
+            policy_sha256: &self.policy_sha256,
+            producer_sha256: source_sha256(),
+            admission_ordinal: member.ordinal.to_string(),
+            method: &member.method,
+            path_sha256: &member.path_sha256,
+            request_id: &member.request_id,
+            transport_call_id: &member.transport_call_id,
+            status: 200,
+            typed_evidence: evidence,
+            projection,
+        };
+        let raw = serde_json::to_vec(&child).ok()?;
+        if raw.len() > MAX_SQL_EVENT_BYTES {
+            return None;
+        }
+        let encoded = std::str::from_utf8(&raw).ok()?;
+        #[cfg(test)]
+        if let Ok(mut records) = self.records.lock() {
+            if records.len() < 128 {
+                records.push(serde_json::from_slice(&raw).ok()?);
+            }
+        }
+        #[cfg(test)]
+        if let Ok(mut records) = self.raw_records.lock() {
+            if records.len() < 128 {
+                records.push(encoded.to_owned());
+            }
+        }
+        let _subscriber = tracing::dispatcher::set_default(&self.dispatcher);
+        tracing::info!("native_application_sql_projection {encoded}");
+        Some(aos_hub_core::application_body_observation::image(&raw))
+    }
+
     fn finish(&self, member: &Member) {
         let Ok(mut counters) = self.counters.lock() else {
             return;
@@ -201,6 +255,10 @@ impl Window {
             && !reply.overflow
             && !member.request.trailers
             && !member.reply.trailers;
+        let typed_evidence = matched_evidence(member);
+        let sql_projection = typed_evidence
+            .as_ref()
+            .and_then(|evidence| self.sql_projection(member, evidence));
         let record = MemberReceipt {
             version: 1,
             event: "member",
@@ -220,7 +278,8 @@ impl Window {
             reply_offered: reply,
             request_trailers: member.request.trailers,
             reply_trailers: member.reply.trailers,
-            typed_evidence: matched_evidence(member),
+            typed_evidence,
+            sql_projection,
         };
         let Ok(raw) = serde_json::to_vec(&record) else {
             counters.overflow = true;
@@ -267,6 +326,26 @@ struct MemberReceipt<'a> {
     request_trailers: bool,
     reply_trailers: bool,
     typed_evidence: Option<aos_hub_core::application_body_observation::BodyEvidence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sql_projection: Option<aos_hub_core::application_body_observation::EncodedImage>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SqlProjectionReceipt<'a> {
+    version: u8,
+    event: &'static str,
+    window_id: &'a str,
+    policy_sha256: &'a str,
+    producer_sha256: &'a str,
+    admission_ordinal: String,
+    method: &'a str,
+    path_sha256: &'a str,
+    request_id: &'a Option<String>,
+    transport_call_id: &'a Option<String>,
+    status: u16,
+    typed_evidence: &'a aos_hub_core::application_body_observation::BodyEvidence,
+    projection: &'a SqlProjection,
 }
 
 fn matched_evidence(
@@ -310,6 +389,7 @@ struct Member {
     status: Option<u16>,
     returned: bool,
     typed_evidence: Option<aos_hub_core::application_body_observation::BodyEvidence>,
+    sql_projection: Option<SqlProjection>,
     request: ObservedFrames,
     reply: ObservedFrames,
 }
@@ -345,12 +425,23 @@ async fn observe(State(window): State<Arc<Window>>, request: Request, next: Next
         status: None,
         returned: false,
         typed_evidence: None,
+        sql_projection: None,
         request: ObservedFrames::default(),
         reply: ObservedFrames::default(),
     }));
     let (parts, body) = request.into_parts();
     let request = Request::from_parts(parts, tap(body, &member, false));
-    let response = aos_hub_core::application_body_observation::observe(next.run(request)).await;
+    let (mut response, projection) =
+        aos_hub_core::application_body_observation::observe_with_sql_projection(next.run(request))
+            .await;
+    if let Some(projection) = projection.filter(|projection| {
+        response
+            .extensions()
+            .get::<aos_hub_core::application_body_observation::BodyEvidence>()
+            .is_some_and(|evidence| projection.matches_constructor(evidence))
+    }) {
+        response.extensions_mut().insert(projection);
+    }
     if let Ok(mut state) = member.lock() {
         state.status = Some(response.status().as_u16());
         state.returned = true;
@@ -358,6 +449,7 @@ async fn observe(State(window): State<Arc<Window>>, request: Request, next: Next
             .extensions()
             .get::<aos_hub_core::application_body_observation::BodyEvidence>()
             .cloned();
+        state.sql_projection = response.extensions().get::<SqlProjection>().cloned();
     }
     let (parts, body) = response.into_parts();
     Response::from_parts(parts, tap(body, &member, true))
@@ -493,3 +585,202 @@ pub(super) fn optional(app: Router) -> anyhow::Result<Router> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod sql_checkpoint_tests {
+    use super::*;
+    use aos_hub_core::application_body_observation::{
+        image, observe_with_sql_projection, produced_evidence,
+    };
+    use aos_hub_core::db::{Database, NewRegistryPublication, RegistryPublicationManifestObject};
+
+    async fn actual_checkpoint() -> (
+        SqlProjection,
+        aos_hub_core::application_body_observation::BodyEvidence,
+        Vec<u8>,
+    ) {
+        let db = Database::open_in_memory().await.unwrap();
+        let registry = db
+            .register_registry("bridge-registry", &[], false)
+            .await
+            .unwrap();
+        let publication = "bridge-publication";
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: publication.into(),
+            registry_id: registry,
+            generation: "bridge-generation".into(),
+            manifest_digest: "a".repeat(64),
+            refs_digest: "b".repeat(64),
+            default_commit: None,
+            parent_publication_id: None,
+        })
+        .await
+        .unwrap();
+        db.begin_registry_publication_manifest_session(
+            publication,
+            registry,
+            &"a".repeat(64),
+            1,
+            "synthetic-private-lease",
+            100,
+        )
+        .await
+        .unwrap();
+        let objects = [RegistryPublicationManifestObject {
+            object_key: "objects/aa/bridge".into(),
+            expected_hash: "c".repeat(64),
+            expected_size: 10,
+            object_kind: "immutable".into(),
+        }];
+        let ((evidence, reply), projection) = observe_with_sql_projection(async {
+            let session = db
+                .append_registry_publication_manifest_chunk(
+                    publication,
+                    "synthetic-private-lease",
+                    0,
+                    &"d".repeat(64),
+                    &objects,
+                    101,
+                )
+                .await
+                .unwrap();
+            let reply = serde_json::to_vec(&aos_proto_types::RegistryPublicationManifestSession {
+                publication_id: session.publication_id,
+                lease_token: session.lease_token,
+                manifest_digest: session.manifest_digest,
+                object_count: u32::try_from(session.expected_object_count).unwrap(),
+                admitted_object_count: u32::try_from(session.admitted_object_count).unwrap(),
+                next_chunk_index: u32::try_from(session.next_chunk_index).unwrap(),
+                state: session.state,
+                lease_expires_at: session.lease_expires_at.unwrap_or_default(),
+            })
+            .unwrap();
+            let mut evidence = produced_evidence(
+                &reply,
+                "publication_manifest_append",
+                b"synthetic bridge encoder fixture",
+                "bounded_original_and_current_sql_projection",
+            )
+            .unwrap();
+            evidence.request = Some(image(b"synthetic original"));
+            (evidence, reply)
+        })
+        .await;
+        (projection.unwrap(), evidence, reply)
+    }
+
+    fn member(
+        projection: SqlProjection,
+        evidence: aos_hub_core::application_body_observation::BodyEvidence,
+        reply: &[u8],
+    ) -> Member {
+        let window = Window::new(
+            Policy {
+                version: 1,
+                window_id: "a".repeat(32),
+                start_unix_millis: "1".into(),
+                end_unix_millis: "2".into(),
+            },
+            Instant::now(),
+            Instant::now() + Duration::from_secs(10),
+        )
+        .unwrap();
+        let ordinal = window.admit().unwrap();
+        let mut request_frames = ObservedFrames::default();
+        request_frames.observe(b"synthetic original");
+        request_frames.eof = true;
+        let mut reply_frames = ObservedFrames::default();
+        reply_frames.observe(reply);
+        reply_frames.eof = true;
+        Member {
+            window,
+            ordinal,
+            method: "POST".into(),
+            path_sha256: hex::encode(Sha256::digest(b"/synthetic-append-fixture")),
+            request_id: Some("b".repeat(32)),
+            transport_call_id: None,
+            status: Some(200),
+            returned: true,
+            typed_evidence: Some(evidence),
+            sql_projection: Some(projection),
+            request: request_frames,
+            reply: reply_frames,
+        }
+    }
+
+    #[tokio::test]
+    async fn child_raw_commitment_joins_the_completed_actual_member_only() {
+        let (projection, evidence, reply) = actual_checkpoint().await;
+        let member = member(projection, evidence, &reply);
+        let window = Arc::clone(&member.window);
+        drop(member);
+        let raw = window.raw_records.lock().unwrap();
+        let child = raw
+            .iter()
+            .find(|raw| {
+                serde_json::from_str::<serde_json::Value>(raw).unwrap()["event"] == "sql_projection"
+            })
+            .unwrap();
+        let record: serde_json::Value = raw
+            .iter()
+            .find_map(|raw| {
+                let value: serde_json::Value = serde_json::from_str(raw).unwrap();
+                (value["event"] == "member").then_some(value)
+            })
+            .unwrap();
+        assert_eq!(
+            record["sqlProjection"]["sha256"],
+            image(child.as_bytes()).sha256
+        );
+        assert_eq!(record["sqlProjection"]["byteSize"], child.len().to_string());
+        let child: serde_json::Value = serde_json::from_str(child).unwrap();
+        assert_eq!(child["admissionOrdinal"], record["admissionOrdinal"]);
+        assert_eq!(child["requestId"], record["requestId"]);
+        assert_eq!(child["typedEvidence"], record["typedEvidence"]);
+        assert_eq!(
+            child["projection"]["checkpoints"][0]["kind"],
+            "manifest_append_checked_transaction"
+        );
+        assert!(child.get("transactionId").is_none());
+        assert!(child.get("sqlReaderAuthority").is_none());
+        assert!(!serde_json::to_string(&child["projection"])
+            .unwrap()
+            .contains("synthetic-private-lease"));
+    }
+
+    #[tokio::test]
+    async fn incomplete_changed_or_trailer_bodies_never_emit_a_sql_child() {
+        let (projection, evidence, reply) = actual_checkpoint().await;
+        for variant in 0..7 {
+            let mut member = member(projection.clone(), evidence.clone(), &reply);
+            match variant {
+                0 => member.request.eof = false,
+                1 => member.reply.failed = true,
+                2 => member.request.trailers = true,
+                3 => member.reply.trailers = true,
+                4 => member.typed_evidence.as_mut().unwrap().reply = image(b"changed reply"),
+                5 => member.typed_evidence.as_mut().unwrap().constructor = "publication_get",
+                6 => {
+                    member.typed_evidence.as_mut().unwrap().request =
+                        Some(image(b"changed original"))
+                }
+                _ => unreachable!(),
+            }
+            let window = Arc::clone(&member.window);
+            drop(member);
+            let records = window.records.lock().unwrap();
+            assert!(records
+                .iter()
+                .all(|record| record["event"] != "sql_projection"));
+            let record = records
+                .iter()
+                .find(|record| record["event"] == "member")
+                .unwrap();
+            assert!(record.get("sqlProjection").is_none());
+            assert_eq!(
+                record["requestConsumed"]["exposedBytes"],
+                b"synthetic original".len().to_string()
+            );
+        }
+    }
+}

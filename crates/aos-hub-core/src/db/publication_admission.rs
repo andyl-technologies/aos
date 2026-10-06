@@ -10,6 +10,7 @@ use std::collections::BTreeSet;
 use anyhow::{bail, Result};
 use sha2::{Digest as _, Sha256};
 
+use crate::application_body_observation::sql_projection::Pending;
 use crate::backend::CheckedStatement;
 
 use super::{validate_key_bytes, Database};
@@ -229,6 +230,14 @@ impl Database {
             bail!("publication manifest lease token is stale");
         }
         if chunk_index < session.next_chunk_index {
+            let checkpoint = Pending::append(
+                &session,
+                chunk_index,
+                chunk_digest,
+                objects.len(),
+                now,
+                true,
+            );
             let receipt = self
                 .backend
                 .query_opt(
@@ -244,6 +253,9 @@ impl Database {
             if persisted_digest != chunk_digest || persisted_count != i64::try_from(objects.len())?
             {
                 bail!("publication manifest chunk retry does not match its receipt");
+            }
+            if let Some(checkpoint) = checkpoint {
+                checkpoint.completed();
             }
             return Ok(session);
         }
@@ -312,7 +324,18 @@ impl Database {
             ],
             1,
         ));
+        let checkpoint = Pending::append(
+            &session,
+            chunk_index,
+            chunk_digest,
+            objects.len(),
+            now,
+            false,
+        );
         self.backend.checked_batch(&statements).await?;
+        if let Some(checkpoint) = checkpoint {
+            checkpoint.completed();
+        }
         self.registry_publication_manifest_session(publication_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("publication manifest session disappeared"))
@@ -872,5 +895,143 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(operations, ["query", "checked_batch", "query"]);
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod sql_checkpoint_tests {
+    use super::*;
+    use crate::application_body_observation::{
+        confirm_sql_constructor, observe_with_sql_projection,
+    };
+    use crate::db::NewRegistryPublication;
+
+    #[tokio::test]
+    async fn append_first_write_and_retained_retry_have_distinct_real_db_guarantees() {
+        let db = Database::open_in_memory().await.unwrap();
+        let registry = db
+            .register_registry("checkpoint-registry", &[], false)
+            .await
+            .unwrap();
+        let publication = "checkpoint-publication";
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: publication.into(),
+            registry_id: registry,
+            generation: "checkpoint-generation".into(),
+            manifest_digest: "a".repeat(64),
+            refs_digest: "b".repeat(64),
+            default_commit: None,
+            parent_publication_id: None,
+        })
+        .await
+        .unwrap();
+        let before = db
+            .begin_registry_publication_manifest_session(
+                publication,
+                registry,
+                &"a".repeat(64),
+                2,
+                "synthetic-private-lease",
+                100,
+            )
+            .await
+            .unwrap();
+        let objects = [RegistryPublicationManifestObject {
+            object_key: "objects/aa/checkpoint".into(),
+            expected_hash: "c".repeat(64),
+            expected_size: 10,
+            object_kind: "immutable".into(),
+        }];
+        let (first, projection) = observe_with_sql_projection(async {
+            let first = db
+                .append_registry_publication_manifest_chunk(
+                    publication,
+                    &before.lease_token,
+                    0,
+                    &"d".repeat(64),
+                    &objects,
+                    101,
+                )
+                .await
+                .unwrap();
+            confirm_sql_constructor("publication_manifest_append");
+            first
+        })
+        .await;
+        assert_eq!(first.resource_version, before.resource_version + 1);
+        let value: serde_json::Value =
+            serde_json::from_slice(&projection.unwrap().encoded().unwrap()).unwrap();
+        assert_eq!(
+            value["checkpoints"][0]["kind"],
+            "manifest_append_checked_transaction"
+        );
+        assert_eq!(
+            value["checkpoints"][0]["expectedResourceVersion"],
+            before.resource_version.to_string()
+        );
+
+        // An exact retained retry remains valid after the old lease horizon;
+        // it cannot be described as another first-write lease/RV transaction.
+        let (retry, projection) = observe_with_sql_projection(async {
+            let retry = db
+                .append_registry_publication_manifest_chunk(
+                    publication,
+                    &before.lease_token,
+                    0,
+                    &"d".repeat(64),
+                    &objects,
+                    2_000,
+                )
+                .await
+                .unwrap();
+            confirm_sql_constructor("publication_manifest_append");
+            retry
+        })
+        .await;
+        assert_eq!(retry, first);
+        let value: serde_json::Value =
+            serde_json::from_slice(&projection.unwrap().encoded().unwrap()).unwrap();
+        assert_eq!(
+            value["checkpoints"][0]["kind"],
+            "manifest_append_retained_receipt"
+        );
+        assert!(value["checkpoints"][0]
+            .get("expectedResourceVersion")
+            .is_none());
+        assert_eq!(
+            value["checkpoints"][0]["observedSessionResourceVersion"],
+            first.resource_version.to_string()
+        );
+
+        for (token, index, digest, now) in [
+            (before.lease_token.as_str(), 0, "e".repeat(64), 102),
+            ("changed-token", 0, "d".repeat(64), 102),
+            (before.lease_token.as_str(), 1, "e".repeat(64), 2_000),
+        ] {
+            let (result, projection) = observe_with_sql_projection(async {
+                let result = db
+                    .append_registry_publication_manifest_chunk(
+                        publication,
+                        token,
+                        index,
+                        &digest,
+                        &objects,
+                        now,
+                    )
+                    .await;
+                confirm_sql_constructor("publication_manifest_append");
+                result
+            })
+            .await;
+            assert!(result.is_err());
+            assert!(projection.is_none());
+        }
+        assert_eq!(
+            db.registry_publication_manifest_session(publication)
+                .await
+                .unwrap()
+                .unwrap(),
+            first
+        );
     }
 }
