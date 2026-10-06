@@ -1,4 +1,4 @@
-From f9a79a88ac52a502fd174c263a8a749debc4dbdd Mon Sep 17 00:00:00 2001
+From 5daaf7803d00d92efc22eb4afcacf15e7e19dab7 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Sat, 3 Oct 2026 07:08:17 +0000
 Subject: [PATCH] Integrate deterministic execution and private fork I/O
@@ -64,6 +64,13 @@ conditions and their evaluation order. Exercise production bodies, arbitrary
 kinds, complete comparison reads, modeled vector replacement, native fork
 inheritance and compiled causal negatives. Retain uninstrumented O2 object
 evidence with explicit reduced-translation-unit and runtime limits.
+
+Adapt the memory-identity fixture to direct register-rule presence.
+Retain the bounded command-kind check and rule-family boolean provider,
+extract the actual register predicate, and preserve every eligibility,
+identity, active, invalid and cleanup assertion. Verify strict prototype
+diagnostics, compiled eager-identity and rule-presence causal negatives,
+accelerator classification, and Git-free default fixture execution.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -167290,10 +167297,10 @@ index 0000000000000000000000000000000000000000..ee2bb16e87d73feab53496231bcb3f46
 +}
 diff --git a/tests/unit/test-crucible-lazy-memory-identity.py b/tests/unit/test-crucible-lazy-memory-identity.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..83cdda957938561083fb96f51d773fad06b5e7cf
+index 0000000000000000000000000000000000000000..43fc2e788019da47087362648c66db0a0fc67272
 --- /dev/null
 +++ b/tests/unit/test-crucible-lazy-memory-identity.py
-@@ -0,0 +1,421 @@
+@@ -0,0 +1,414 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise production memory guards and instruction identity helpers.
 +
@@ -167332,7 +167339,6 @@ index 0000000000000000000000000000000000000000..83cdda957938561083fb96f51d773fad
 +typedef struct MMULookupLocals {
 +    struct { unsigned int flags; } page[2];
 +} MMULookupLocals;
-+typedef struct QemuCrucibleFaultRule { unsigned int tag; } QemuCrucibleFaultRule;
 +#define TLB_MMIO 1
 +#define INSN_START_WORDS 2
 +#define ICOUNT_PRECISE 1
@@ -167438,16 +167444,11 @@ index 0000000000000000000000000000000000000000..83cdda957938561083fb96f51d773fad
 +    ends++;
 +}
 +
-+static void qemu_crucible_fault_rule_foreach(
-+    unsigned int tag, void (*visit)(const QemuCrucibleFaultRule *, void *),
-+    void *opaque)
++static bool qemu_crucible_fault_rule_kind_present(uint16_t command_kind)
 +{
-+    QemuCrucibleFaultRule rule = { .tag = tag };
-+
-+    g_assert_cmpuint(tag, ==, CRUCIBLE_FAULT_COMMAND_CPU_REGISTER_TRANSFORM);
-+    if (register_rule) {
-+        visit(&rule, opaque);
-+    }
++    g_assert_cmpuint(command_kind, ==,
++                    CRUCIBLE_FAULT_COMMAND_CPU_REGISTER_TRANSFORM);
++    return register_rule;
 +}
 +
 +static bool crucible_instruction_rule_registry_active(void)
@@ -167688,7 +167689,6 @@ index 0000000000000000000000000000000000000000..83cdda957938561083fb96f51d773fad
 +            "bool qemu_crucible_fault_memory_fetch_rules_active(",
 +            "bool qemu_crucible_fault_memory_cpu_rules_active(",
 +        ]],
-+        definition(register, "static void crucible_register_active_visit("),
 +        definition(register, "bool qemu_crucible_fault_register_rules_active("),
 +        definition(instruction, "bool qemu_crucible_fault_instruction_rules_active("),
 +        begin,
