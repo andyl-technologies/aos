@@ -1775,10 +1775,11 @@ in
                 aio-fork-custody.result stop-context.result control-continuation.result
               for case in reader-before-park reader-after-park reader-after-handoff \
                 idle-reader-before-park idle-reader-after-park \
-                sdk-reader-before-arm sdk-reader-arm-gap sdk-reader-after-futex; do
+                sdk-reader-before-arm sdk-reader-arm-gap sdk-reader-after-futex \
+                two-epochs-after-return two-epochs-before-handoff; do
                 grep -Fxq "NATIVE_CONTROL_DELIVERY_PASS case=$case" control-continuation.result
               done
-              test "$(grep -c '^NATIVE_CONTROL_DELIVERY_PASS ' control-continuation.result)" -eq 8
+              test "$(grep -c '^NATIVE_CONTROL_DELIVERY_PASS ' control-continuation.result)" -eq 10
               grep -Fxq 'CONDITIONAL_SETTLEMENT_REFUSAL_PASS: modeled bridge only; no native retry contract' \
                 control-continuation.result
               cat tcg-fast-paths.result

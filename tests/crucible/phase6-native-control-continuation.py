@@ -79,6 +79,10 @@ static unsigned rr_parks, idle_parks, callback_return_notifications;
 static bool rr_finished, source_delivered, pump_ready, pump_cleared;
 static bool refuse_first, force_handoff, idle_case, fixture_finished;
 static bool sdk_case, sdk_arm_gap, sdk_unlock_seen;
+static bool two_epochs, two_epochs_handoff, epoch_gate_seen, epoch_gate_released;
+static bool epoch_rr_outer_ready;
+static unsigned epoch_callback_returns, epoch_no_request, epoch_settled;
+static uint32_t epoch_observed_tokens[3];
 static uint32_t sdk_wake_signal;
 static long sdk_thread_id;
 static unsigned sdk_pin_calls, sdk_unpin_calls;
@@ -225,10 +229,35 @@ static void qemu_cond_wait_bql(void *condition)
     g_assert_cmpint(pthread_cond_wait(&fixture_halt, &fixture_bql), ==, 0);
     locked = true;
 }
+static void hold_epoch_schedule(void)
+{
+    /* Control only this external schedule; native generations remain untouched. */
+    pthread_mutex_lock(&fixture_state);
+    epoch_gate_seen = true;
+    pthread_cond_broadcast(&fixture_changed);
+    while (!epoch_gate_released) {
+        pthread_cond_wait(&fixture_changed, &fixture_state);
+    }
+    pthread_mutex_unlock(&fixture_state);
+}
+
 static void qemu_plugin_control_drain_notify(void)
 {
     if (qemu_plugin_control_drain_callback_depth == 0 && control_calls) {
         callback_return_notifications++;
+    }
+    if (two_epochs && qemu_plugin_control_drain_callback_depth == 0) {
+        unsigned returned = qatomic_load_acquire(
+            &qemu_plugin_control_boundary_generation);
+
+        pthread_mutex_lock(&fixture_state);
+        epoch_callback_returns = returned;
+        pthread_cond_broadcast(&fixture_changed);
+        pthread_mutex_unlock(&fixture_state);
+        if (returned == 2 && !two_epochs_handoff) {
+            /* The actual registered callback returned before this notification. */
+            hold_epoch_schedule();
+        }
     }
 }
 /* This composition never enters network, stop or timer provider branches. */
@@ -327,6 +356,13 @@ static void *main_loop(void *opaque)
                 sched_yield();
             }
         }
+        if (two_epochs && reader_calls == 1 &&
+            (descriptors[0].revents & POLLIN)) {
+            /* Require an actual ready-source RR handoff for the middle epoch. */
+            while (qatomic_load_acquire(&rr_main_loop_dispatch_requested) == 0) {
+                sched_yield();
+            }
+        }
         replay_mutex_lock();
         bql_lock();
         if (descriptors[0].revents & POLLIN) {
@@ -348,6 +384,11 @@ static void *main_loop(void *opaque)
         rr_crucible_sim_main_loop_poll(NULL, &poll_state);
         bql_unlock();
         replay_mutex_unlock();
+        if (two_epochs_handoff &&
+            qatomic_load_acquire(&qemu_plugin_control_boundary_generation) == 2) {
+            /* Gate the external loop after the original pass releases its locks. */
+            hold_epoch_schedule();
+        }
         rr_crucible_sim_main_loop_replay_released();
     }
     return NULL;
@@ -443,6 +484,157 @@ static void await_sdk_futex_park(void)
     g_error("owned SDK actor did not enter its original FUTEX_WAIT");
 }
 
+
+/* Modeled shared request/ACK only; delivery uses the original registered native C. */
+static void observe_epoch_control(unsigned int index, uint64_t raw, void *opaque)
+{
+    uint32_t token = qatomic_load_acquire(&shared_request);
+
+    g_assert_true(locked);
+    g_assert_null(current_cpu);
+    g_assert_cmpuint(raw, ==, 17);
+    g_assert_cmpuint(qemu_plugin_control_drain_callback_depth, ==, 1);
+    g_assert_cmpuint(control_calls, <, G_N_ELEMENTS(epoch_observed_tokens));
+    epoch_observed_tokens[control_calls++] = token;
+    if (token & 1) {
+        g_assert_cmpuint(token, ==, 3301);
+        epoch_no_request++;
+        return;
+    }
+
+    g_assert_true(token == 3300 || token == 3302);
+    g_assert_cmpuint(qatomic_load_acquire(&shared_ack), ==, token);
+    qatomic_store_release(&shared_ack, token + 1);
+    qatomic_store_release(&shared_request, token + 1);
+    epoch_settled++;
+}
+
+static void *epoch_rr_owner(void *opaque)
+{
+    locked = false;
+    current_cpu = &cpu;
+    bql_lock();
+    qatomic_store_release(&sdk_thread_id, syscall(SYS_gettid));
+    QemuPluginCrucibleIdleCallbackDisposition disposition =
+        qemu_plugin_fire_vcpu_idle_cb(&cpu);
+
+    g_assert_cmpint(disposition, ==, QEMU_PLUGIN_CRUCIBLE_IDLE_CALLBACK_RESCAN);
+    g_assert_true(sdk_status == QEMU_PLUGIN_CRUCIBLE_IDLE_WAIT_WOKEN ||
+                  sdk_status == QEMU_PLUGIN_CRUCIBLE_IDLE_WAIT_VALUE_CHANGED);
+    g_assert_cmpuint(control_calls, ==, 1);
+    g_assert_null(qemu_plugin_crucible_active_idle_wake_signal);
+    g_assert_cmpuint(sdk_pin_calls, ==, 1);
+    g_assert_cmpuint(sdk_unpin_calls, ==, 1);
+
+    /* Re-enter the original outer RR ordering after the SDK releases its wait. */
+    bql_unlock();
+    rr_replay_mutex_lock();
+    bql_lock();
+    pthread_mutex_lock(&fixture_state);
+    epoch_rr_outer_ready = true;
+    pthread_cond_broadcast(&fixture_changed);
+    pthread_mutex_unlock(&fixture_state);
+    while (control_calls < 3) {
+        rr_crucible_sim_wait_at_dispatch_ceiling();
+        if (qemu_plugin_crucible_rr_control_boundary_pending()) {
+            rr_replay_mutex_unlock();
+            rr_crucible_sim_acknowledge_control_boundary();
+            bql_unlock();
+            rr_replay_mutex_lock();
+            bql_lock();
+        }
+    }
+    rr_replay_mutex_unlock();
+    g_assert_false(qemu_plugin_crucible_control_boundary_outstanding());
+    bql_unlock();
+    return NULL;
+}
+
+static void wake_modeled_scheduler(void)
+{
+    qatomic_fetch_add(&sdk_wake_signal, 1);
+    g_assert_cmpint(qemu_futex(&sdk_wake_signal, FUTEX_WAKE, 1,
+                             NULL, NULL, 0), >=, 0);
+}
+
+static void ring_epoch_doorbell(void)
+{
+    host_writes++;
+    g_assert_cmpint(eventfd_write(original_fd, 1), ==, 0);
+}
+
+static void run_two_epochs(pthread_t *rr_thread)
+{
+    qatomic_store_release(&shared_request, 3300);
+    qatomic_store_release(&shared_ack, 3300);
+    g_assert_cmpint(pthread_create(rr_thread, NULL, epoch_rr_owner, NULL), ==, 0);
+    await_sdk_futex_park();
+    wake_modeled_scheduler();
+    ring_epoch_doorbell();
+
+    pthread_mutex_lock(&fixture_state);
+    while (!epoch_rr_outer_ready || epoch_callback_returns < 1) {
+        pthread_cond_wait(&fixture_changed, &fixture_state);
+    }
+    pthread_mutex_unlock(&fixture_state);
+    g_assert_cmpuint(qatomic_load_acquire(&shared_request), ==, 3301);
+
+    /* A distinct constructed notification observes the settled odd request. */
+    ring_epoch_doorbell();
+    pthread_mutex_lock(&fixture_state);
+    while (!epoch_gate_seen) {
+        pthread_cond_wait(&fixture_changed, &fixture_state);
+    }
+    pthread_mutex_unlock(&fixture_state);
+    g_assert_cmpuint(qatomic_load_acquire(&shared_request), ==, 3301);
+
+    /* Model the separate same-ceiling wake before publishing the next request. */
+    wake_modeled_scheduler();
+    g_assert_cmpuint(qatomic_load_acquire(&shared_request), ==, 3301);
+    qatomic_store_release(&shared_ack, 3302);
+    qatomic_store_release(&shared_request, 3302);
+    wake_modeled_scheduler();
+    ring_epoch_doorbell();
+    pthread_mutex_lock(&fixture_state);
+    epoch_gate_released = true;
+    pthread_cond_broadcast(&fixture_changed);
+    pthread_mutex_unlock(&fixture_state);
+    g_assert_cmpint(pthread_join(*rr_thread, NULL), ==, 0);
+}
+
+static void verify_two_epochs(const char *name)
+{
+    g_assert_cmpuint(host_writes, ==, 3);
+    g_assert_cmpuint(reader_calls, ==, 3);
+    g_assert_cmpuint(reader_bytes, ==, 3 * sizeof(eventfd_t));
+    g_assert_cmpuint(reader_drains, ==, 3);
+    g_assert_cmpuint(control_calls, ==, 3);
+    g_assert_cmpuint(epoch_callback_returns, ==, 3);
+    g_assert_cmpuint(epoch_settled, ==, 2);
+    g_assert_cmpuint(epoch_no_request, ==, 1);
+    g_assert_cmpuint(epoch_observed_tokens[0], ==, 3300);
+    g_assert_cmpuint(epoch_observed_tokens[1], ==, 3301);
+    g_assert_cmpuint(epoch_observed_tokens[2], ==, 3302);
+    g_assert_cmpuint(qatomic_load_acquire(&shared_ack), ==, 3303);
+    g_assert_cmpuint(qemu_plugin_rr_control_request_generation, ==, 3);
+    g_assert_cmpuint(qemu_plugin_rr_control_ack_generation, ==, 3);
+    g_assert_cmpuint(qemu_plugin_rr_control_complete_generation, ==, 3);
+    g_assert_cmpuint(qemu_plugin_control_boundary_scheduled, ==, 0);
+    g_assert_cmpuint(event_write, ==, 0);
+    g_assert_cmpuint(rr_main_loop_dispatch_requested, >=, 1);
+    g_assert_cmpuint(rr_main_loop_dispatch_completed, ==,
+                     rr_main_loop_dispatch_requested);
+    g_assert_cmpuint(rr_main_loop_dispatch_acknowledged, ==,
+                     rr_main_loop_dispatch_requested);
+    g_assert_false(qemu_plugin_crucible_control_boundary_outstanding());
+    printf("case=%s host_writes=3 reader_calls=3 drains=3 callbacks=3 "
+           "observed_tokens=3300,3301,3302 settled=2 no_request=1 "
+           "modeled_ack=3303 native_epochs=3 handoff=%" PRIu64 "/%" PRIu64
+           "/%" PRIu64 " pins=%u/%u\n", name,
+           rr_main_loop_dispatch_requested, rr_main_loop_dispatch_completed,
+           rr_main_loop_dispatch_acknowledged, sdk_pin_calls, sdk_unpin_calls);
+}
+
 int main(int argc, char **argv)
 {
     bool before_park = argc == 2 &&
@@ -452,7 +644,9 @@ int main(int argc, char **argv)
     pthread_t main_thread, rr_thread;
 
     g_assert_cmpint(argc, ==, 2);
-    sdk_case = strncmp(argv[1], "sdk-reader-", 11) == 0;
+    two_epochs = strncmp(argv[1], "two-epochs-", 11) == 0;
+    two_epochs_handoff = strcmp(argv[1], "two-epochs-before-handoff") == 0;
+    sdk_case = two_epochs || strncmp(argv[1], "sdk-reader-", 11) == 0;
     sdk_arm_gap = strcmp(argv[1], "sdk-reader-arm-gap") == 0;
     idle_case = sdk_case || strncmp(argv[1], "idle-reader-", 12) == 0;
     refuse_first = strcmp(argv[1], "pending-settlement") == 0;
@@ -463,7 +657,7 @@ int main(int argc, char **argv)
     cpu.halt_cond = &fixture_halt;
     cpu.created = cpu.in_list = true;
     cpu.halted = idle_case;
-    qemu_plugin_control_boundary_cb = observe_control;
+    qemu_plugin_control_boundary_cb = two_epochs ? observe_epoch_control : observe_control;
     qemu_plugin_vcpu_idle_resume_idle_cb = observe_sdk_idle;
     original_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     aio_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
@@ -478,6 +672,18 @@ int main(int argc, char **argv)
     g_assert_nonnull(registered_reader);
     g_assert_cmpint(pthread_create(&main_thread, NULL, main_loop, NULL), ==, 0);
 
+    if (two_epochs) {
+        run_two_epochs(&rr_thread);
+        qatomic_store_release(&fixture_finished, true);
+        fixture_notify_aio();
+        g_assert_cmpint(pthread_join(main_thread, NULL), ==, 0);
+        verify_two_epochs(argv[1]);
+        qemu_event_destroy(&rr_dispatch_ceiling_event);
+        qemu_event_destroy(&rr_main_loop_resume_event);
+        g_assert_cmpint(close(original_fd), ==, 0);
+        g_assert_cmpint(close(aio_fd), ==, 0);
+        return 0;
+    }
     if (!before_park) {
         g_assert_cmpint(pthread_create(&rr_thread, NULL, rr_owner, NULL), ==, 0);
         if (sdk_case && !sdk_arm_gap) {
@@ -590,7 +796,7 @@ def main():
         "reader-before-park", "reader-after-park", "reader-after-handoff",
         "idle-reader-before-park", "idle-reader-after-park",
         "sdk-reader-before-arm", "sdk-reader-arm-gap", "sdk-reader-after-futex",
-        "pending-settlement"])
+        "pending-settlement", "two-epochs-after-return", "two-epochs-before-handoff"])
     arguments = parser.parse_args()
     root = arguments.qemu_source.resolve()
     support = runpy.run_path(str(root / "tests/unit/test-crucible-control-deferred.py"))
@@ -721,6 +927,8 @@ def main():
             "Actual QemuEvent bodies and selected Linux futex header",
             "No active generic wake epoch, queued CPU work, lifecycle stop or guest execution; SDK cases model the durable exit-request wake in their CPU kick provider",
             "Scalar modeled shared request/ack and bridge readiness; no Rust bridge or shared-memory proof",
+            "Two-epoch schedules gate only the external callback-return notification or main-loop release seam; native generations are never written by the test",
+            "Two successful shared requests3300/3302 include a constructed third doorbell observing odd3301; this is not a physical3998 notification attribution",
         ],
     }
     (arguments.output_dir / "extracted-bodies.json").write_text(json.dumps(extraction, indent=2) + "\n")
@@ -737,7 +945,8 @@ def main():
 
     for case in ("reader-before-park", "reader-after-park", "reader-after-handoff",
                  "idle-reader-before-park", "idle-reader-after-park",
-                 "sdk-reader-before-arm", "sdk-reader-arm-gap", "sdk-reader-after-futex"):
+                 "sdk-reader-before-arm", "sdk-reader-arm-gap", "sdk-reader-after-futex",
+                 "two-epochs-after-return", "two-epochs-before-handoff"):
         result = subprocess.run([str(binary), case], cwd=arguments.output_dir,
                                 capture_output=True, text=True, check=True, timeout=10)
         (arguments.output_dir / f"{case}.stdout").write_text(result.stdout)
