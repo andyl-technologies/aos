@@ -94,12 +94,10 @@
   nativeQemu = pkgs.qemu-crucible;
   nativePlugin = pkgs.crucible-qemu-plugin;
   rootImage = import ./_ram-native-root-image.nix {inherit pkgs;};
-  selectors = [
-    "finding_exact_vm::packaged_finding_bundle_fork_write_is_noncanonical"
-    "finding_exact_vm::packaged_finding_bundle_replays_without_source_owner"
-    "finding_exact_vm::packaged_finding_bundle_retains_selected_fault_and_guest_response"
-    "public_campaign_debug_opens_authenticated_finding_at_fast_midpoint"
-  ];
+  nativeCliTests = import ../../pkgs/tools/crucible/_native-cli-tests.nix {inherit lib;};
+  selectors =
+    map (execution: execution.selector)
+    (builtins.filter (execution: execution.target == "campaign_store_process") nativeCliTests.byGate.finding);
   lanes = builtins.genList (index: "cli-${toString index}") 8;
 
   # Preserve the existing native scenario's semantic limits. Physical owners

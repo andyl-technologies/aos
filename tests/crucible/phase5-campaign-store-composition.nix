@@ -11,17 +11,9 @@
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
-  gcNativeSelectors = [
-    "offline_gc_plans_reopens_and_applies_one_exact_empty_store"
-    "offline_gc_cancellation_is_durable_and_apply_refuses_it"
-    "public_campaign_store_flight_survives_gc_and_service_restart"
-    "public_checkpoint_pause_survives_stopped_service_gc_and_cold_resume"
-    "public_composed_store_flight_evicts_cache_and_flushes_write_back"
-    "public_offline_archive_transfer_reports_and_authenticates_sensitive_closure"
-    "public_archive_transfer_is_backend_neutral_across_compressed_stores"
-    "public_worked_network_archive_survives_packed_repack_outage_and_corruption"
-  ];
-  nativeGcSkips = lib.concatMapStringsSep " " (selector: "--skip ${selector}") gcNativeSelectors;
+  nativeCliTests = import ../../pkgs/tools/crucible/_native-cli-tests.nix {inherit lib;};
+  compositionNativeTests = builtins.filter (execution: execution.target == "gate_campaign_store_composition") nativeCliTests.assignments;
+  nativeCliSkips = lib.concatMapStringsSep " " (execution: "--skip ${execution.selector}") compositionNativeTests;
 in
   pkgs.mkDerivation {
     pname = "crucible-phase5-campaign-store-composition";
@@ -134,13 +126,7 @@ in
             -p crucible-cli \
             --features test-double \
             --test gate_campaign_store_composition \
-            -- --test-threads=1 \
-            --skip campaign_store_process::finding_exact_vm::packaged_finding_bundle_fork_write_is_noncanonical \
-            --skip campaign_store_process::finding_exact_vm::packaged_finding_bundle_replays_without_source_owner \
-            --skip campaign_store_process::finding_exact_vm::packaged_finding_bundle_retains_selected_fault_and_guest_response \
-            --skip campaign_store_process::public_campaign_debug_opens_authenticated_finding_at_fast_midpoint \
-            --skip campaign_store_process::packaged_campaign_service_uses_mtls_without_debug_authority \
-            ${nativeGcSkips}
+            -- --test-threads=1 ${nativeCliSkips}
           socket_listing=$(cargo test \
             --frozen --offline --target-dir "$target" \
             --manifest-path crates/Cargo.toml \

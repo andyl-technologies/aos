@@ -78,6 +78,8 @@
     ["--workspace"] ++ map (package: "--exclude ${package}") (nonCrucibleWorkspacePackages ++ gplSidePackages)
   );
   packageFlags = builtins.concatStringsSep " " (map (package: "-p ${package}") controllerPackages);
+  nativeCliTests = import ./_native-cli-tests.nix {inherit lib;};
+  nextestDiagnostics = "--color=never --status-level=fail --final-status-level=fail --failure-output=final";
   docPackages = builtins.filter (package: package != "crucible-cli") controllerPackages;
   docPackageFlags = builtins.concatStringsSep " " (map (package: "-p ${package}") docPackages);
   doctestPackages = builtins.filter (package: package != "crucible-cli") controllerPackages;
@@ -198,11 +200,15 @@
     cargoNextestOpenFilesLimit = 4096;
     # The shared Cargo check phase disables interactive progress. Leave the
     # failed test and its captured output at the end of the controller log.
-    nextestFlags = "--color=never --status-level=fail --final-status-level=fail --failure-output=final";
+    # Installed quota and deployed-owner cases run in their exact registered
+    # kernel gates. Every ordinary test in the same binaries remains selected.
+    nextestFlags = "${nextestDiagnostics} --filter-expr ${lib.escapeShellArg nativeCliTests.nextestFilter}";
     passthru = {
       cargoArtifacts = controllerArtifacts;
       cargoDeps = cargoDeps;
       inherit pagingQualificationReceipt;
+      nativeCliTestAssignments = nativeCliTests.assignments;
+      nativeCliCargoSkipFlags = nativeCliTests.cargoSkipFlags;
     };
 
     # Only a successful kernel flight can supply this build input. Embed its

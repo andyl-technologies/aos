@@ -54,33 +54,8 @@
   guest = import ./phase4-packaged-campaign-choice-guest.nix {inherit pkgs;};
   quotaInstaller = import ./_catalog-quota-installer.nix {inherit pkgs lib;};
   gateway = pkgs.crucible.passthru.debugGateway;
-  unitSelectors = [
-    "cli::campaign::gc::tests::offline_gc_plans_reopens_and_applies_one_exact_empty_store"
-    "cli::campaign::gc::tests::offline_gc_cancellation_is_durable_and_apply_refuses_it"
-  ];
-  processSelectors = [
-    "public_campaign_store_flight_survives_gc_and_service_restart"
-    "public_checkpoint_pause_survives_stopped_service_gc_and_cold_resume"
-    "public_composed_store_flight_evicts_cache_and_flushes_write_back"
-    "public_offline_archive_transfer_reports_and_authenticates_sensitive_closure"
-    "public_archive_transfer_is_backend_neutral_across_compressed_stores"
-    "public_worked_network_archive_survives_packed_repack_outage_and_corruption"
-  ];
-  executions =
-    map (selector: {
-      target = "crucible-unit";
-      inherit selector;
-    })
-    unitSelectors
-    ++ lib.concatMap (target:
-      map (selector: {
-        inherit target;
-        selector =
-          if target == "gate_campaign_store_composition"
-          then "campaign_store_process::${selector}"
-          else selector;
-      })
-      processSelectors) ["campaign_store_process" "gate_campaign_store_composition"];
+  nativeCliTests = import ../../pkgs/tools/crucible/_native-cli-tests.nix {inherit lib;};
+  executions = nativeCliTests.byGate.gc;
   flight = pkgs.mkCargoPackage {
     pname = "crucible-cli-native-gc-flight";
     version = "0";

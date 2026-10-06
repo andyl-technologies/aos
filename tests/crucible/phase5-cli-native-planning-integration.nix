@@ -54,14 +54,8 @@
   };
   guest = production.passthru.idleGuest;
   quotaInstaller = import ./_catalog-quota-installer.nix {inherit pkgs lib;};
-  executions =
-    map (selector: {
-      target = "native_input_planning";
-      inherit selector;
-    }) [
-      "plain_native_run_plans_and_completes_on_one_deployed_owner"
-      "plain_native_fuzz_plans_and_records_real_coverage_on_one_deployed_owner"
-    ];
+  nativeCliTests = import ../../pkgs/tools/crucible/_native-cli-tests.nix {inherit lib;};
+  executions = nativeCliTests.byGate.planning;
   lanes = builtins.genList (index: "planning-${toString index}") (builtins.length executions);
   buildGraph = builtins.hashString "sha256" (lib.concatStringsSep "\n" [
     pkgs.linux.drvPath

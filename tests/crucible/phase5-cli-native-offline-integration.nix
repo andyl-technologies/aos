@@ -11,36 +11,8 @@
   rootImage = import ./_ram-native-root-image.nix {inherit pkgs;};
   guest = import ./phase4-packaged-campaign-choice-guest.nix {inherit pkgs;};
   quotaInstaller = import ./_catalog-quota-installer.nix {inherit pkgs lib;};
-  selectors = [
-    "cli_exit_machine_readable_process_stdout_is_pure_json"
-    "cli_selftest_honors_machine_output_trace_and_quiet"
-    "cli_save_machine_readable_jsonl_rejects_session_owned_export"
-    "cli_exit_machine_readable_search_fuzz_jsonl_reports_final_outcome"
-    "cli_exit_machine_readable_search_retained_evidence_failure_jsonl_reports_final_outcome"
-    "cli_exit_machine_readable_replay_check_jsonl_reports_final_outcome"
-    "cli_exit_machine_readable_replay_error_reports_one_failed_outcome"
-    "cli_exit_machine_readable_replay_to_savepoint_jsonl_reports_final_outcome"
-  ];
-  executions =
-    map (selector: {
-      target = "machine_readable";
-      inherit selector;
-    })
-    selectors
-    ++ [
-      {
-        target = "serve_process";
-        selector = "serve_process_exits_zero_on_sigterm";
-      }
-      {
-        target = "campaign_store_process";
-        selector = "packaged_campaign_service_uses_mtls_without_debug_authority";
-      }
-      {
-        target = "gate_campaign_store_composition";
-        selector = "campaign_store_process::packaged_campaign_service_uses_mtls_without_debug_authority";
-      }
-    ];
+  nativeCliTests = import ../../pkgs/tools/crucible/_native-cli-tests.nix {inherit lib;};
+  executions = nativeCliTests.byGate.offline;
   lanes = builtins.genList (index: "offline-${toString index}") (builtins.length executions);
   buildGraph = builtins.hashString "sha256" (lib.concatStringsSep "\n" [
     pkgs.linux.drvPath
