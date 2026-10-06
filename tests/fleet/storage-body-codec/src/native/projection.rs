@@ -66,6 +66,8 @@ pub(super) struct Observation {
     object_payload_bytes: Option<String>,
     sql_reader_authority: &'static str,
     missing: [&'static str; 1],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sql_originals: Option<Vec<ReaderOriginal>>,
 }
 
 #[derive(Deserialize)]
@@ -75,6 +77,18 @@ struct ChunkReceipt {
     chunk_index: u32,
     chunk_digest: String,
     object_count: u32,
+    #[serde(default)]
+    accepted_at: Option<String>,
+    #[serde(default)]
+    registry_id: Option<String>,
+    #[serde(default)]
+    resource_version: Option<String>,
+    #[serde(default)]
+    state: Option<String>,
+    #[serde(default)]
+    manifest_digest: Option<String>,
+    #[serde(default)]
+    lease_expires_at: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -84,6 +98,155 @@ struct AdmissionRow {
     publication_id: String,
     state: String,
     admission: DirectUploadAdmission,
+    #[serde(default)]
+    resource_version: Option<String>,
+    #[serde(default)]
+    owner_scope_key: Option<String>,
+    #[serde(default)]
+    cache_id: Option<String>,
+    #[serde(default)]
+    cache_ticket_id: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+enum ReaderOriginal {
+    Admission {
+        session_id: String,
+        admission: aos_hub_core::application_body_observation::EncodedImage,
+        owner: aos_hub_core::application_body_observation::EncodedImage,
+        owner_scope_sha256: String,
+        reader_status_resource_version: String,
+        reader_state: String,
+    },
+    ManifestChunk {
+        publication_id: String,
+        chunk_index: u32,
+        chunk_digest: String,
+        object_count: u32,
+        accepted_at: String,
+        registry_id: String,
+        reader_session_resource_version: String,
+        reader_state: String,
+        manifest_digest: String,
+        reader_lease_expires_at: Option<String>,
+    },
+}
+
+fn positive_reader_version(value: &str) -> Result<()> {
+    let parsed: i64 = value.parse()?;
+    ensure!(
+        parsed > 0 && parsed.to_string() == value,
+        "noncanonical reader-time version"
+    );
+    Ok(())
+}
+
+fn reader_originals(kind: &str, sql: &[u8]) -> Result<Option<Vec<ReaderOriginal>>> {
+    if kind == "publication_manifest_append" {
+        let row: ChunkReceipt = serde_json::from_slice(sql)?;
+        let Some(version) = row.resource_version else {
+            ensure!(
+                row.accepted_at.is_none()
+                    && row.registry_id.is_none()
+                    && row.state.is_none()
+                    && row.manifest_digest.is_none()
+                    && row.lease_expires_at.is_none(),
+                "partial SQL chunk reader projection"
+            );
+            return Ok(None);
+        };
+        positive_reader_version(&version)?;
+        ensure!(
+            matches!(row.state.as_deref(), Some("accepting" | "sealed")),
+            "SQL reader session state differs"
+        );
+        let registry = row
+            .registry_id
+            .ok_or_else(|| anyhow::anyhow!("missing SQL registry"))?;
+        positive_reader_version(&registry)?;
+        return Ok(Some(vec![ReaderOriginal::ManifestChunk {
+            publication_id: row.publication_id,
+            chunk_index: row.chunk_index,
+            chunk_digest: row.chunk_digest,
+            object_count: row.object_count,
+            accepted_at: row
+                .accepted_at
+                .ok_or_else(|| anyhow::anyhow!("missing SQL accepted time"))?,
+            registry_id: registry,
+            reader_session_resource_version: version,
+            reader_state: row
+                .state
+                .ok_or_else(|| anyhow::anyhow!("missing SQL session state"))?,
+            manifest_digest: row
+                .manifest_digest
+                .ok_or_else(|| anyhow::anyhow!("missing SQL manifest digest"))?,
+            reader_lease_expires_at: row.lease_expires_at,
+        }]));
+    }
+    let mut rows = Vec::new();
+    let mut enriched = None;
+    for line in std::str::from_utf8(sql)?.lines() {
+        let row: AdmissionRow = serde_json::from_str(line)?;
+        let raw_row: serde_json::Value = serde_json::from_str(line)?;
+        let canonical_original: serde_json::Value =
+            serde_json::from_slice(&encode_direct_control(&row.admission)?)?;
+        ensure!(
+            raw_row.get("admission") == Some(&canonical_original),
+            "SQL nested admission has unknown or noncanonical typed values"
+        );
+        let present = row.resource_version.is_some();
+        ensure!(
+            enriched.is_none_or(|first| first == present),
+            "mixed SQL admission reader images"
+        );
+        enriched = Some(present);
+        let Some(version) = row.resource_version else {
+            ensure!(
+                row.owner_scope_key.is_none()
+                    && row.cache_id.is_none()
+                    && row.cache_ticket_id.is_none(),
+                "partial SQL owner projection"
+            );
+            continue;
+        };
+        positive_reader_version(&version)?;
+        ensure!(
+            row.cache_id.is_none()
+                && row.cache_ticket_id.is_none()
+                && matches!(
+                    &row.admission.intent.target,
+                    DirectUploadTarget::PublicationObject { .. }
+                ),
+            "SQL owner is not the actual publication original"
+        );
+        ensure!(
+            rows.len() < 32,
+            "SQL admission reader exceeds source checkpoint bound"
+        );
+        let scope = row
+            .owner_scope_key
+            .ok_or_else(|| anyhow::anyhow!("missing SQL owner scope"))?;
+        ensure!(
+            !scope.is_empty() && scope.len() <= 64,
+            "SQL owner scope exceeds bound"
+        );
+        let admission = encode_direct_control(&row.admission)?;
+        let owner = serde_json::to_vec(&("publication", None::<i64>, None::<&str>))?;
+        rows.push(ReaderOriginal::Admission {
+            session_id: row.session_id,
+            admission: aos_hub_core::application_body_observation::image(&admission),
+            owner: aos_hub_core::application_body_observation::image(&owner),
+            owner_scope_sha256: files::digest(scope.as_bytes()),
+            reader_status_resource_version: version,
+            reader_state: row.state,
+        });
+    }
+    Ok(enriched.filter(|value| *value).map(|_| rows))
 }
 
 /// Compares selected immutable originals without granting reader authority.
@@ -98,7 +261,7 @@ pub(super) fn inspect(
     reply: &[u8],
     consumed: &mut usize,
 ) -> Result<Observation> {
-    let (kind, original_sha, sql_sha, count) = match selection {
+    let (kind, original_sha, sql_sha, count, sql_originals) = match selection {
         Selection::PublicationAppend {
             original_request,
             immutable_chunk_receipt,
@@ -115,6 +278,7 @@ pub(super) fn inspect(
                 files::digest(&original),
                 files::digest(&sql),
                 count,
+                reader_originals("publication_manifest_append", &sql)?,
             )
         }
         Selection::DirectAdmission {
@@ -135,6 +299,7 @@ pub(super) fn inspect(
                 files::digest(&original),
                 files::digest(&sql),
                 count,
+                reader_originals("direct_logical_admission", &sql)?,
             )
         }
     };
@@ -149,6 +314,7 @@ pub(super) fn inspect(
         object_payload_bytes: None,
         sql_reader_authority: "not_checked_join_measured_read_only_source_process_and_window",
         missing: ["independent_sql_reader_custody_and_temporal_current_fences"],
+        sql_originals,
     })
 }
 

@@ -417,6 +417,7 @@
     cp ${./_hub-external-inventory-resume.py} "$out/_hub-external-inventory-resume.py"
     cp ${./_hub-external-workflow-accounting.py} "$out/_hub-external-workflow-accounting.py"
     cp ${./_hub-external-mirror-accounting.py} "$out/_hub-external-mirror-accounting.py"
+    cp ${./_hub-native-sql-projection.py} "$out/_hub-native-sql-projection.py"
     cp ${./_hub-direct-boundary.py} "$out/_hub-direct-boundary.py"
     cp ${./_hub-direct-runtime-observations.py} "$out/_hub-direct-runtime-observations.py"
     cp ${./_hub-external-copy-window.py} "$out/_hub-external-copy-window.py"
@@ -776,6 +777,7 @@ in {
       + builtins.readFile ./_hub-direct-provider-hold-setup.py
       + builtins.readFile ./_hub-direct-verification-source.py
       + builtins.readFile ./_hub-direct-verification-timeout.py
+      + builtins.readFile ./_hub-native-sql-projection.py
       + builtins.readFile ./_hub-direct-operator.py
       + builtins.readFile ./_hub-direct-configuration.py
       + builtins.readFile ./_hub-direct-review.py
@@ -1139,6 +1141,7 @@ in {
               }},
               "workerSourcePath": "${workerDist.src}", "workerDistribution": "${workerDist}",
               "wasm": "${workerDist}/index.wasm", "shim": "${workerDist}/shim.mjs",
+              "nativeSqlProjectionCollector": "${managedFixtureModules}/_hub-native-sql-projection.py",
               "processSampler": "${processSampler}/value", "installationObserver": "${installationObserver}/value",
               "namespaceObserver": "${namespaceObserver}/value", "queueObserver": "${queueObserver}/value",
               "acceptanceInstaller": "${acceptanceInstaller}/value", "qualificationDriver": "${qualificationDriver}/value",
@@ -1158,6 +1161,7 @@ in {
               "issuerAuthorityPrivateKey": "/run/credentials/@system/hybrid-fleet-private-key",
               "issuerCertificateHost": "localhost", "fleetCaPem": ${builtins.toJSON caCertificate},
               "nativeDatabaseUrlFile": "/run/hybrid-bootstrap-credentials/database-url",
+              "nativeDatabaseHost": DATABASE_HOST,
               "nativeStorageWorkKeyFile": "/run/credentials/@system/hybrid-fleet-storage-key",
               "nativeIngressKeyFile": "/run/credentials/@system/hybrid-fleet-ingress-key",
               "sharedControlInterpreter": "${pkgs.glibc}/lib/ld-linux-x86-64.so.2",

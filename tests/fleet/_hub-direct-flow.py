@@ -842,11 +842,17 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
         retain_direct_flow("actual-storage-final-sql-contexts.json", final_sql)
         storage_workflow_assessment = assess_selected_storage_workflow(storage_codec_input,
             identity["identity"]["sourceDigest"], native_copy_capture, final_sql)
+    sql_checkpoints = native_sql_checkpoints(
+        observed_native_messages(native_copy_log.read_text(), native_copy_capture))
+    sql_projection = capture_native_sql_projection(native, database_machine, tools, sql_checkpoints,
+        credentials['operatorReader'], native_copy_capture, database_host=tools['nativeDatabaseHost'])
+    retain_direct_flow("actual-native-sql-projection-reader.json", sql_projection)
     workflow_capture = {"version": 1, "protectedHeaders": protected_headers,
         "headerLogWindows": header_windows, "nativeJournalWindow": native_copy_window,
         "nativeProcess": {name: native_copy_capture[name] for name in
             ("pid", "startTicks", "executableSha256")},
         "authenticatedStorageTransports": storage_transports,
+        "nativeSqlProjectionReader": sql_projection,
         "storageCodecSelection": storage_codec_reference,
         "storageWorkflowAssessment": storage_workflow_assessment,
         "providerApplicationBodies": {"rawReportSha256": provider_window["sha256"],

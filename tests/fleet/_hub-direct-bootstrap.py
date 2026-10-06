@@ -31,7 +31,7 @@ def bootstrap_external_direct(client, worker, database_machine, tools,
     )
     reader = provision_operator_reader(
         database_machine, worker, tools["python"], tools["postgres"], database_host,
-        selected_tables=CREDENTIAL_CUSTODY_METADATA_TABLES,
+        selected_tables=CREDENTIAL_CUSTODY_METADATA_TABLES + NATIVE_SQL_TABLES,
     )
     version_references = {
         purpose: f"secret://fleet/direct/{purpose}/v1"

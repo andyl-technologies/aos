@@ -162,6 +162,102 @@ fn admission_fixture() -> DirectUploadAdmission {
 }
 
 #[test]
+fn sql_reader_admission_uses_core_encoding_and_retains_reader_time_state() {
+    let admission = admission_fixture();
+    let mut row = serde_json::json!({
+        "sessionId": admission.session_id,
+        "publicationId": "a".repeat(32),
+        "state": "committed",
+        "admission": admission,
+        "resourceVersion": "9",
+        "ownerScopeKey": "synthetic-owner",
+        "cacheId": null,
+        "cacheTicketId": null
+    });
+    let raw = serde_json::to_vec(&row).unwrap();
+    let observed = reader_originals("direct_logical_admission", &raw)
+        .unwrap()
+        .unwrap();
+    let encoded = serde_json::to_value(&observed).unwrap();
+    let original = encode_direct_control(&admission).unwrap();
+    assert_eq!(encoded[0]["admission"]["sha256"], files::digest(&original));
+    assert_eq!(encoded[0]["readerStatusResourceVersion"], "9");
+    assert_eq!(encoded[0]["readerState"], "committed");
+    assert!(encoded[0].get("sqlReaderAuthority").is_none());
+
+    for (field, changed) in [
+        ("resourceVersion", serde_json::json!("09")),
+        ("resourceVersion", serde_json::json!("0")),
+        ("cacheId", serde_json::json!("1")),
+        ("cacheTicketId", serde_json::json!("other-owner")),
+        ("ownerScopeKey", serde_json::json!("")),
+    ] {
+        let mut invalid = row.clone();
+        invalid[field] = changed;
+        assert!(reader_originals(
+            "direct_logical_admission",
+            &serde_json::to_vec(&invalid).unwrap()
+        )
+        .is_err());
+    }
+    let mut unknown = row.clone();
+    unknown["admission"]["unclassified"] = serde_json::json!("payload");
+    assert!(reader_originals(
+        "direct_logical_admission",
+        &serde_json::to_vec(&unknown).unwrap()
+    )
+    .is_err());
+    row["unclassified"] = serde_json::json!("payload");
+    assert!(reader_originals(
+        "direct_logical_admission",
+        &serde_json::to_vec(&row).unwrap()
+    )
+    .is_err());
+}
+
+#[test]
+fn sql_reader_chunk_keeps_sealed_later_state_separate_from_receipt_identity() {
+    let mut row = serde_json::json!({
+        "publicationId": "a".repeat(32),
+        "chunkIndex": 3,
+        "chunkDigest": "b".repeat(64),
+        "objectCount": 64,
+        "acceptedAt": "100",
+        "registryId": "1",
+        "resourceVersion": "9",
+        "state": "sealed",
+        "manifestDigest": "c".repeat(64),
+        "leaseExpiresAt": null
+    });
+    let observed = reader_originals(
+        "publication_manifest_append",
+        &serde_json::to_vec(&row).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    let encoded = serde_json::to_value(&observed).unwrap();
+    assert_eq!(encoded[0]["objectCount"], 64);
+    assert_eq!(encoded[0]["readerSessionResourceVersion"], "9");
+    assert_eq!(encoded[0]["readerState"], "sealed");
+    assert!(encoded[0]["readerLeaseExpiresAt"].is_null());
+    assert!(encoded[0].get("sourceLeaseChecked").is_none());
+
+    row["registryId"] = serde_json::json!("01");
+    assert!(reader_originals(
+        "publication_manifest_append",
+        &serde_json::to_vec(&row).unwrap()
+    )
+    .is_err());
+    row["registryId"] = serde_json::json!("1");
+    row.as_object_mut().unwrap().remove("resourceVersion");
+    assert!(reader_originals(
+        "publication_manifest_append",
+        &serde_json::to_vec(&row).unwrap()
+    )
+    .is_err());
+}
+
+#[test]
 fn actual_direct_admission_binds_public_body_actor_source_and_placements() {
     let admitted = admission_fixture();
     let record = DirectUploadSessionRecord {
