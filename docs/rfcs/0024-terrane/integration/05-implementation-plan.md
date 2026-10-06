@@ -424,6 +424,19 @@ methods also pass strict private rustdoc. They do not supply exclusion or clock
 constructors, and the full current floor and default strict lint remain
 unqualified.
 
+The composed synchronous executor reachability check on `8768bcf86a5d`
+reduces both default and `std,send` strict lint failures to one library and
+ten test diagnostics. It does not establish clean portable lint. Its first
+public-doctest attempt fails before rustdoc on 42 missing core APIs; no example
+runs. A single byte-identical core source timestamp refresh causes Cargo to
+dispatch a core rebuild and select matching metadata/library artifacts. Both
+public examples then pass, with all 553 frozen source images unchanged. The
+verbose command reveals an inherited compiler-cache wrapper whose AOS source
+provenance is unverified. This is a public-access compile result, not complete
+hermetic qualification; subsequent local checks must remove that inherited
+wrapper. Original failed attempts remain recorded. Actual Nix gates qualify
+their own declared AOS tool closures independently.
+
 The preceding completed full qualification records candidate
 `15540ef204ec`, which combines reviewed source discovery, immutable lookup,
 repeatable I/P/G maintenance, separate verifier/preparation work, common Memo
