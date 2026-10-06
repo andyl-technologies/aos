@@ -78,6 +78,121 @@ impl NetworkFixture {
 }
 
 #[test]
+fn live_empty_rx_pass_leaves_a_later_publication_for_exactly_one_delivery() {
+    let mut fixture = NetworkFixture::new();
+    let state = fixture.state();
+
+    assert_eq!(state.inject_due_network_inbound(20, 20), Ok(()));
+    assert_eq!(fixture.inbound.read_index(), 0);
+    assert_eq!(fixture.inbound.write_index(), 0);
+    RX_ATTEMPTS.with_borrow(|attempts| assert!(attempts.is_empty()));
+
+    fixture.enqueue(0, b"published-after-empty");
+    assert_eq!(state.inject_due_network_inbound(20, 20), Ok(()));
+    assert_eq!(state.inject_due_network_inbound(20, 20), Ok(()));
+
+    assert_eq!(fixture.inbound.read_index(), 1);
+    RX_ATTEMPTS.with_borrow(|attempts| {
+        assert_eq!(attempts, &vec![b"published-after-empty".to_vec()]);
+    });
+}
+
+#[test]
+fn live_future_rx_preview_retains_the_original_head_without_guest_delivery() {
+    let mut fixture = NetworkFixture::new();
+    let frame = fixture.enqueue(0, b"future");
+    let state = fixture.state();
+    let original = state.network_inbound_head_observe();
+
+    assert_eq!(state.inject_due_network_inbound(19, 19), Ok(()));
+
+    assert_eq!(state.network_inbound_head_observe(), original);
+    assert_eq!(fixture.inbound.read_index(), 0);
+    assert_eq!(fixture.inbound_entries[0], frame);
+    RX_ATTEMPTS.with_borrow(|attempts| assert!(attempts.is_empty()));
+}
+
+#[test]
+fn live_empty_rx_still_rejects_an_invalid_delivery_window_and_releases_admission() {
+    let mut fixture = NetworkFixture::new();
+    let state = fixture.state();
+
+    assert_eq!(
+        state.inject_due_network_inbound(19, 20),
+        Err(LiveVcpuTimeCallbackError::InboundFrames {
+            source: InboundFrameError::InvalidDeliveryWindow {
+                passed_delivery_floor_icount: 20,
+                consumer_current_icount: 19,
+            },
+        })
+    );
+
+    assert!(
+        state
+            .network
+            .as_ref()
+            .is_some_and(|network| !network.rx_delivery_active.load(Ordering::Acquire))
+    );
+    assert_eq!(state.inject_due_network_inbound(20, 20), Ok(()));
+    RX_ATTEMPTS.with_borrow(|attempts| assert!(attempts.is_empty()));
+}
+
+#[test]
+fn live_empty_rx_still_validates_ring_geometry_before_returning() {
+    let mut fixture = NetworkFixture::new();
+    let mut state = fixture.state();
+    let Some(network) = state.network.as_mut() else {
+        panic!("network fixture should retain its registered network");
+    };
+    // The allocation remains four entries; this shorter view deliberately
+    // violates ring geometry without constructing an invalid memory range.
+    network.inbound.entry_count = 3;
+
+    assert_eq!(
+        state.inject_due_network_inbound(20, 20),
+        Err(LiveVcpuTimeCallbackError::InboundFrames {
+            source: InboundFrameError::RingOperation {
+                ring_index: 1,
+                source: crucible_shmem::SpscRingError::InvalidCapacity { capacity: 3 },
+            },
+        })
+    );
+
+    assert!(
+        state
+            .network
+            .as_ref()
+            .is_some_and(|network| !network.rx_delivery_active.load(Ordering::Acquire))
+    );
+    assert_eq!(fixture.inbound.read_index(), 0);
+    RX_ATTEMPTS.with_borrow(|attempts| assert!(attempts.is_empty()));
+}
+
+#[test]
+fn live_owned_rx_admission_precedes_preview_errors_and_preserves_the_pending_head() {
+    let mut fixture = NetworkFixture::new();
+    fixture.enqueue(0, b"outer-owner");
+    let state = fixture.state();
+    let Some(network) = state.network.as_ref() else {
+        panic!("network fixture should retain its registered network");
+    };
+    network.rx_delivery_active.store(true, Ordering::Release);
+
+    assert_eq!(state.inject_due_network_inbound(19, 20), Ok(()));
+
+    assert!(network.rx_delivery_active.load(Ordering::Acquire));
+    assert_eq!(fixture.inbound.read_index(), 0);
+    RX_ATTEMPTS.with_borrow(|attempts| assert!(attempts.is_empty()));
+
+    network.rx_delivery_active.store(false, Ordering::Release);
+    assert_eq!(state.inject_due_network_inbound(20, 20), Ok(()));
+    assert_eq!(fixture.inbound.read_index(), 1);
+    RX_ATTEMPTS.with_borrow(|attempts| {
+        assert_eq!(attempts, &vec![b"outer-owner".to_vec()]);
+    });
+}
+
+#[test]
 fn live_later_frame_error_never_replays_the_accepted_prefix() {
     let mut fixture = NetworkFixture::new();
     fixture.enqueue(0, b"accepted");

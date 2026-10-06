@@ -1,0 +1,608 @@
+{
+  "schema": "crucible.classifier-profile-corrective-audit.v1",
+  "status": "complete-read-only-correction-no-new-profile-build-or-vm",
+  "superseded_claim": {
+    "artifact": "tests/crucible/fixtures/tcg-linux-classification-profile-diagnostics-2026-10-05.json",
+    "sha256": "1ef68a94bac77cd0bca2e18f5402a5fc79673f052df5db844367897f6be97fbe",
+    "commit": "d4e78aa5c7",
+    "scope": "Only the interpretation sentence claiming current_accel_name and dynamic_cast functions are absent from the classifier leaf list is superseded. The prior report, its full aggregates, raw data, identities, all four native proofs and every performance result remain unchanged.",
+    "original_inaccurate_sentence": "current_accel_name and dynamic_cast functions are absent from classifier leaf list.",
+    "corrected_sentence": "Name/type query functions are absent from the displayed top30 exclusive functions, but remain present in the complete leaf list:18 samples total. Fourteen are under the general plugin tick API,3 under x86 opcode-state restore and1 under PIT channel info; none is under helper_rdtsc.",
+    "cause": "The original interpretation generalized a top30 display to the full exclusive function list."
+  },
+  "exact_existing_profile": {
+    "raw_cpu_profile_sha256": "a263b981e299e0176ec79b077173b6e2b535cc9acb953226fd2d00bc23824bd0",
+    "decoded_complete_stack_artifact_label": "classification-profile/cpu.prof.json",
+    "decoded_sha256": "3a618d7a6acc4568ad3d9b8cbd6fd00834d807d7062024107951f973c67d5256",
+    "total_samples": 3405,
+    "sampling_period_us": 10000,
+    "all_instrumented_durations_excluded_from_all_performance_means": true,
+    "qemu": {
+      "path": "store:q0mx33zhzc0zaj3m0jdf6g0pp72nw6xx-qemu-crucible-11.1.1/bin/qemu-system-x86_64",
+      "sha256": "aa99de3d47fc9c7ad98dc7a61fec41717e161ee1e44956e3be86157ceea90443",
+      "bytes": 31351672
+    },
+    "plugin": {
+      "path": "artifact:crucible-accel-classification-plugin/optimized-final/plugin.so",
+      "sha256": "0a0c8a5225340632efdaec19870dffc9b0dc583d227b7a50ffd46103cbfd7c3c",
+      "bytes": 2552696
+    },
+    "symbol_map": {
+      "path": "store:q0mx33zhzc0zaj3m0jdf6g0pp72nw6xx-qemu-crucible-11.1.1/share/qemu/symbols/qemu-system-x86_64.tsv",
+      "sha256": "7449d58a7967fc2100228015683859d82c79772c07fa94b737608fe41a94f89a",
+      "bytes": 1789334
+    },
+    "qemu_build_id": "b91c5f2b48c7dde30d80e7acd42a0b07e6647cfbc532574cc7d29a8ac2a9a302"
+  },
+  "actual_residual_leaves": {
+    "total": 18,
+    "exclusive_functions": [
+      [
+        "object_class_dynamic_cast_assert",
+        8
+      ],
+      [
+        "current_accel_name",
+        6
+      ],
+      [
+        "object_dynamic_cast_assert",
+        3
+      ],
+      [
+        "__strcmp_evex",
+        1
+      ]
+    ],
+    "caller_groups": {
+      "plugin general tick API": 14,
+      "x86 restore opcode state": 3,
+      "PIT channel info": 1
+    },
+    "samples_under_helper_rdtsc": 0,
+    "every_actual_caller_stack": [
+      {
+        "count": 1,
+        "frames": [
+          "object_class_dynamic_cast_assert",
+          "current_accel_name",
+          "qemu_plugin_sim_tick_observed",
+          "crucible_qemu_plugin::runtime::live_callbacks::crucible_qemu_plugin_live_vcpu_resume_cb",
+          "qemu_plugin_fire_vcpu_resume_cb",
+          "rr_crucible_sim_sync_vcpu_halt_callbacks.part.0",
+          "rr_cpu_thread_loop",
+          "rr_cpu_thread_fn",
+          "qemu_thread_start",
+          "start_profiled_thread",
+          "start_thread",
+          "clone3"
+        ],
+        "caller_group": "plugin general tick API"
+      },
+      {
+        "count": 1,
+        "frames": [
+          "current_accel_name",
+          "qemu_plugin_sim_tick_observed",
+          "crucible_qemu_plugin::runtime::live_callbacks::crucible_qemu_plugin_live_vcpu_resume_cb",
+          "qemu_plugin_fire_vcpu_resume_cb",
+          "rr_crucible_sim_sync_vcpu_halt_callbacks.part.0",
+          "rr_cpu_thread_loop",
+          "rr_cpu_thread_fn",
+          "qemu_thread_start",
+          "start_profiled_thread",
+          "start_thread",
+          "clone3"
+        ],
+        "caller_group": "plugin general tick API"
+      },
+      {
+        "count": 1,
+        "frames": [
+          "object_class_dynamic_cast_assert",
+          "current_accel_name",
+          "qemu_plugin_sim_tick_observed",
+          "<crucible_qemu_plugin::runtime::live_callbacks::LiveVcpuTimeCallbackState>::pump_fault_commands::{closure#0}",
+          "<crucible_qemu_plugin::fault_command::FaultCommandBridge>::pump_inner",
+          "<crucible_qemu_plugin::fault_command::FaultCommandBridge as crucible_qemu_plugin::runtime::live_callbacks::LiveFaultCommandControl>::pump_with_offset_reader",
+          "<crucible_qemu_plugin::runtime::live_callbacks::LiveVcpuTimeCallbackState>::pump_fault_commands",
+          "crucible_qemu_plugin::runtime::live_callbacks::crucible_qemu_plugin_live_max_advance_icount_cb",
+          "crucible_sim_shmem_max_advance_icount",
+          "rr_cpu_thread_loop",
+          "rr_cpu_thread_fn",
+          "qemu_thread_start",
+          "start_profiled_thread",
+          "start_thread",
+          "clone3"
+        ],
+        "caller_group": "plugin general tick API"
+      },
+      {
+        "count": 1,
+        "frames": [
+          "object_dynamic_cast_assert",
+          "x86_restore_state_to_opc",
+          "cpu_restore_state_from_tb",
+          "cpu_io_recompile",
+          "store:q0mx33zhzc0zaj3m0jdf6g0pp72nw6xx-qemu-crucible-11.1.1/bin/qemu-system-x86_64+0x3c2f49",
+          "do_ld4_mmu",
+          "helper_ldul_mmu",
+          "[anonymous-rwxp]+0x10e957"
+        ],
+        "caller_group": "x86 restore opcode state"
+      },
+      {
+        "count": 1,
+        "frames": [
+          "object_dynamic_cast_assert",
+          "x86_restore_state_to_opc",
+          "cpu_restore_state_from_tb",
+          "cpu_io_recompile",
+          "store:q0mx33zhzc0zaj3m0jdf6g0pp72nw6xx-qemu-crucible-11.1.1/bin/qemu-system-x86_64+0x3c3188",
+          "do_st_8",
+          "do_st8_mmu",
+          "[anonymous-rwxp]+0x465a93b"
+        ],
+        "caller_group": "x86 restore opcode state"
+      },
+      {
+        "count": 1,
+        "frames": [
+          "__strcmp_evex",
+          "qemu_plugin_sim_tick_observed",
+          "crucible_qemu_plugin::runtime::live_callbacks::crucible_qemu_plugin_live_max_advance_icount_cb",
+          "crucible_sim_shmem_max_advance_icount",
+          "rr_cpu_thread_loop",
+          "rr_cpu_thread_fn",
+          "qemu_thread_start",
+          "start_profiled_thread",
+          "start_thread",
+          "clone3"
+        ],
+        "caller_group": "plugin general tick API"
+      },
+      {
+        "count": 1,
+        "frames": [
+          "current_accel_name",
+          "qemu_plugin_sim_tick_observed",
+          "<crucible_qemu_plugin::runtime::live_callbacks::LiveVcpuTimeCallbackState>::pump_fault_commands::{closure#0}",
+          "<crucible_qemu_plugin::fault_command::FaultCommandBridge>::pump_inner",
+          "<crucible_qemu_plugin::fault_command::FaultCommandBridge as crucible_qemu_plugin::runtime::live_callbacks::LiveFaultCommandControl>::pump_with_offset_reader",
+          "<crucible_qemu_plugin::runtime::live_callbacks::LiveVcpuTimeCallbackState>::pump_fault_commands",
+          "<crucible_qemu_plugin::runtime::live_callbacks::LiveVcpuTimeCallbackState>::publish_current_icount_for_boundary",
+          "crucible_qemu_plugin::runtime::live_callbacks::crucible_qemu_plugin_live_publish_icount_cb",
+          "crucible_sim_shmem_publish_current_icount",
+          "rr_cpu_thread_loop",
+          "rr_cpu_thread_fn",
+          "qemu_thread_start",
+          "start_profiled_thread",
+          "start_thread",
+          "clone3"
+        ],
+        "caller_group": "plugin general tick API"
+      },
+      {
+        "count": 1,
+        "frames": [
+          "current_accel_name",
+          "qemu_plugin_sim_tick_observed",
+          "<crucible_qemu_plugin::runtime::live_callbacks::LiveVcpuTimeCallbackState>::pump_fault_commands::{closure#0}",
+          "<crucible_qemu_plugin::fault_command::FaultCommandBridge>::pump_inner",
+          "<crucible_qemu_plugin::fault_command::FaultCommandBridge as crucible_qemu_plugin::runtime::live_callbacks::LiveFaultCommandControl>::pump_with_offset_reader",
+          "<crucible_qemu_plugin::runtime::live_callbacks::LiveVcpuTimeCallbackState>::pump_fault_commands",
+          "<crucible_qemu_plugin::runtime::live_callbacks::LiveVcpuTimeCallbackState>::publish_current_icount_for_boundary",
+          "crucible_qemu_plugin::runtime::live_callbacks::crucible_qemu_plugin_live_publish_icount_cb",
+          "crucible_sim_shmem_publish_current_icount",
+          "rr_cpu_thread_loop",
+          "rr_cpu_thread_fn",
+          "qemu_thread_start",
+          "start_profiled_thread",
+          "start_thread",
+          "clone3"
+        ],
+        "caller_group": "plugin general tick API"
+      },
+      {
+        "count": 1,
+        "frames": [
+          "object_class_dynamic_cast_assert",
+          "current_accel_name",
+          "qemu_plugin_sim_tick_observed",
+          "<crucible_qemu_plugin::runtime::live_callbacks::LiveVcpuTimeCallbackState>::pump_fault_commands",
+          "crucible_qemu_plugin::runtime::live_callbacks::crucible_qemu_plugin_live_max_advance_icount_cb",
+          "crucible_sim_shmem_max_advance_icount",
+          "rr_cpu_thread_loop",
+          "rr_cpu_thread_fn",
+          "qemu_thread_start",
+          "start_profiled_thread",
+          "start_thread",
+          "clone3"
+        ],
+        "caller_group": "plugin general tick API"
+      },
+      {
+        "count": 1,
+        "frames": [
+          "object_class_dynamic_cast_assert",
+          "current_accel_name",
+          "qemu_plugin_sim_tick_observed",
+          "<crucible_qemu_plugin::runtime::live_callbacks::LiveVcpuTimeCallbackState>::pump_fault_commands",
+          "crucible_qemu_plugin::runtime::live_callbacks::crucible_qemu_plugin_live_max_advance_icount_cb",
+          "crucible_sim_shmem_max_advance_icount",
+          "rr_cpu_thread_loop",
+          "rr_cpu_thread_fn",
+          "qemu_thread_start",
+          "start_profiled_thread",
+          "start_thread",
+          "clone3"
+        ],
+        "caller_group": "plugin general tick API"
+      },
+      {
+        "count": 1,
+        "frames": [
+          "object_class_dynamic_cast_assert",
+          "current_accel_name",
+          "qemu_plugin_sim_tick_observed",
+          "crucible_qemu_plugin::runtime::live_callbacks::crucible_qemu_plugin_live_max_advance_icount_cb",
+          "crucible_sim_shmem_max_advance_icount",
+          "rr_cpu_thread_loop",
+          "rr_cpu_thread_fn",
+          "qemu_thread_start",
+          "start_profiled_thread",
+          "start_thread",
+          "clone3"
+        ],
+        "caller_group": "plugin general tick API"
+      },
+      {
+        "count": 1,
+        "frames": [
+          "object_class_dynamic_cast_assert",
+          "pit_get_channel_info",
+          "pcspk_io_read",
+          "memory_region_read_accessor",
+          "access_with_adjusted_size",
+          "memory_region_dispatch_read",
+          "address_space_ldm_internal",
+          "address_space_ldub",
+          "helper_inb",
+          "[anonymous-rwxp]+0x212b7d1"
+        ],
+        "caller_group": "PIT channel info"
+      },
+      {
+        "count": 1,
+        "frames": [
+          "object_class_dynamic_cast_assert",
+          "current_accel_name",
+          "qemu_plugin_sim_tick_observed",
+          "<crucible_qemu_plugin::runtime::live_callbacks::LiveVcpuTimeCallbackState>::pump_fault_commands::{closure#0}",
+          "<crucible_qemu_plugin::fault_command::FaultCommandBridge>::pump_inner",
+          "<crucible_qemu_plugin::fault_command::FaultCommandBridge as crucible_qemu_plugin::runtime::live_callbacks::LiveFaultCommandControl>::pump_with_offset_reader",
+          "<crucible_qemu_plugin::runtime::live_callbacks::LiveVcpuTimeCallbackState>::pump_fault_commands",
+          "crucible_qemu_plugin::runtime::live_callbacks::crucible_qemu_plugin_live_max_advance_icount_cb",
+          "crucible_sim_shmem_max_advance_icount",
+          "rr_cpu_thread_loop",
+          "rr_cpu_thread_fn",
+          "qemu_thread_start",
+          "start_profiled_thread",
+          "start_thread",
+          "clone3"
+        ],
+        "caller_group": "plugin general tick API"
+      },
+      {
+        "count": 1,
+        "frames": [
+          "object_class_dynamic_cast_assert",
+          "current_accel_name",
+          "qemu_plugin_sim_tick_observed",
+          "<crucible_qemu_plugin::runtime::live_callbacks::LiveVcpuTimeCallbackState>::pump_fault_commands::{closure#0}",
+          "<crucible_qemu_plugin::fault_command::FaultCommandBridge>::pump_inner",
+          "<crucible_qemu_plugin::fault_command::FaultCommandBridge as crucible_qemu_plugin::runtime::live_callbacks::LiveFaultCommandControl>::pump_with_offset_reader",
+          "<crucible_qemu_plugin::runtime::live_callbacks::LiveVcpuTimeCallbackState>::pump_fault_commands",
+          "crucible_qemu_plugin::runtime::live_callbacks::crucible_qemu_plugin_live_max_advance_icount_cb",
+          "crucible_sim_shmem_max_advance_icount",
+          "rr_cpu_thread_loop",
+          "rr_cpu_thread_fn",
+          "qemu_thread_start",
+          "start_profiled_thread",
+          "start_thread",
+          "clone3"
+        ],
+        "caller_group": "plugin general tick API"
+      },
+      {
+        "count": 1,
+        "frames": [
+          "current_accel_name",
+          "qemu_plugin_sim_tick_observed",
+          "<crucible_qemu_plugin::runtime::live_callbacks::LiveVcpuTimeCallbackState>::pump_fault_commands",
+          "crucible_qemu_plugin::runtime::live_callbacks::crucible_qemu_plugin_live_max_advance_icount_cb",
+          "crucible_sim_shmem_max_advance_icount",
+          "rr_cpu_thread_loop",
+          "rr_cpu_thread_fn",
+          "qemu_thread_start",
+          "start_profiled_thread",
+          "start_thread",
+          "clone3"
+        ],
+        "caller_group": "plugin general tick API"
+      },
+      {
+        "count": 1,
+        "frames": [
+          "current_accel_name",
+          "qemu_plugin_sim_tick_observed",
+          "<crucible_qemu_plugin::runtime::live_callbacks::LiveVcpuTimeCallbackState>::pump_fault_commands::{closure#0}",
+          "<crucible_qemu_plugin::fault_command::FaultCommandBridge>::pump_inner",
+          "<crucible_qemu_plugin::fault_command::FaultCommandBridge as crucible_qemu_plugin::runtime::live_callbacks::LiveFaultCommandControl>::pump_with_offset_reader",
+          "<crucible_qemu_plugin::runtime::live_callbacks::LiveVcpuTimeCallbackState>::pump_fault_commands",
+          "crucible_qemu_plugin::runtime::live_callbacks::crucible_qemu_plugin_live_max_advance_icount_cb",
+          "crucible_sim_shmem_max_advance_icount",
+          "rr_cpu_thread_loop",
+          "rr_cpu_thread_fn",
+          "qemu_thread_start",
+          "start_profiled_thread",
+          "start_thread",
+          "clone3"
+        ],
+        "caller_group": "plugin general tick API"
+      },
+      {
+        "count": 1,
+        "frames": [
+          "current_accel_name",
+          "qemu_plugin_sim_tick_observed",
+          "<crucible_qemu_plugin::runtime::live_callbacks::LiveVcpuTimeCallbackState>::logical_icount_for_raw",
+          "<crucible_qemu_plugin::runtime::live_callbacks::LiveVcpuTimeCallbackState>::publish_current_icount_for_boundary",
+          "crucible_qemu_plugin::runtime::live_callbacks::crucible_qemu_plugin_live_publish_icount_cb",
+          "crucible_sim_shmem_publish_current_icount",
+          "rr_cpu_thread_loop",
+          "rr_cpu_thread_fn",
+          "qemu_thread_start",
+          "start_profiled_thread",
+          "start_thread",
+          "clone3"
+        ],
+        "caller_group": "plugin general tick API"
+      },
+      {
+        "count": 1,
+        "frames": [
+          "object_dynamic_cast_assert",
+          "x86_restore_state_to_opc",
+          "cpu_restore_state_from_tb",
+          "cpu_io_recompile",
+          "store:q0mx33zhzc0zaj3m0jdf6g0pp72nw6xx-qemu-crucible-11.1.1/bin/qemu-system-x86_64+0x3c2f49",
+          "do_ld4_mmu",
+          "helper_ldul_mmu",
+          "[anonymous-rwxp]+0x10e957"
+        ],
+        "caller_group": "x86 restore opcode state"
+      }
+    ],
+    "top30_exclusive_functions_contain_no_name_type_query": true,
+    "stack_totals_independently_recomputed": 18
+  },
+  "read_only_typed_cpu_conversion_proof": {
+    "conclusion": "CPU(env_archcpu(env)) already performs unchecked typed pointer arithmetic. env_cpu(env) computes the same CPUState pointer; substitution would improve style but does not eliminate a QOM call or demonstrate a speed win. No production source was changed.",
+    "source_revision": "ee97d5506f9e2c38614fbdec732ea58dad89b0a4",
+    "definition_and_layout_proofs": [
+      {
+        "source_path": "include/hw/core/cpu.h",
+        "revision": "ee97d5506f9e2c38614fbdec732ea58dad89b0a4",
+        "whole_file_sha256": "204ad253f3fdd32e245291bb91d6a1c26591286117e3750e372012c9e3ee8d01",
+        "git_blob": "16883f1bb2d315dae0f1e13a5142700e3ac10d46",
+        "read_only_excerpts": [
+          {
+            "first_line": 50,
+            "last_line": 56,
+            "source": "#define TYPE_CPU \"cpu\"\n\n/* Since this macro is used a lot in hot code paths and in conjunction with\n * FooCPU *foo_env_get_cpu(), we deviate from usual QOM practice by using\n * an unchecked cast.\n */\n#define CPU(obj) ((CPUState *)(obj))\n"
+          }
+        ]
+      },
+      {
+        "source_path": "include/exec/cpu-common.h",
+        "revision": "ee97d5506f9e2c38614fbdec732ea58dad89b0a4",
+        "whole_file_sha256": "a0636baa6ba1531e5e71a1374866e6e07183b6d4b4f6b8fda66285fc1a2315df",
+        "git_blob": "6594f7fa1be0d24d19fcda9f9c5832a214bf00a1",
+        "read_only_excerpts": [
+          {
+            "first_line": 82,
+            "last_line": 113,
+            "source": "/**\n * env_archcpu(env)\n * @env: The architecture environment\n *\n * Return the ArchCPU associated with the environment.\n */\nstatic inline ArchCPU *env_archcpu(CPUArchState *env)\n{\n    return (void *)env - sizeof(CPUState);\n}\n\n/**\n * env_cpu_const(env)\n * @env: The architecture environment\n *\n * Return the CPUState associated with the environment.\n */\nstatic inline const CPUState *env_cpu_const(const CPUArchState *env)\n{\n    return (void *)env - sizeof(CPUState);\n}\n\n/**\n * env_cpu(env)\n * @env: The architecture environment\n *\n * Return the CPUState associated with the environment.\n */\nstatic inline CPUState *env_cpu(CPUArchState *env)\n{\n    return (CPUState *)env_cpu_const(env);\n}\n"
+          }
+        ]
+      },
+      {
+        "source_path": "target/i386/cpu.h",
+        "revision": "ee97d5506f9e2c38614fbdec732ea58dad89b0a4",
+        "whole_file_sha256": "4cccf4bdcc99e5cf5d89820134064479e73126fa5d382230078490183fb7c6e1",
+        "git_blob": "eb816c9d4e7148ad30b8f79b2d44a90ddb98011c",
+        "read_only_excerpts": [
+          {
+            "first_line": 2334,
+            "last_line": 2338,
+            "source": "struct ArchCPU {\n    CPUState parent_obj;\n\n    CPUX86State env;\n    VMChangeStateEntry *vmsentry;\n"
+          }
+        ]
+      },
+      {
+        "source_path": "target/i386/tcg/misc_helper.c",
+        "revision": "ee97d5506f9e2c38614fbdec732ea58dad89b0a4",
+        "whole_file_sha256": "274d9c19c7a4baee32679b851341112e2b68a28358618a1da2b634960dd96dde",
+        "git_blob": "b201933cbb2c30ddac2d2c9fe945cea220859958",
+        "read_only_excerpts": [
+          {
+            "first_line": 68,
+            "last_line": 99,
+            "source": "void helper_rdtsc(CPUX86State *env)\n{\n    uint64_t val;\n\n    if ((env->cr[4] & CR4_TSD_MASK) && ((env->hflags & HF_CPL_MASK) != 0)) {\n        raise_exception_ra(env, EXCP0D_GPF, GETPC());\n    }\n    cpu_svm_check_intercept_param(env, SVM_EXIT_RDTSC, 0, GETPC());\n\n    val = cpu_get_tsc(env) + env->tsc_offset;\n    if (qemu_crucible_fault_clock_source_active(\n            QEMU_CRUCIBLE_CLOCK_X86_TSC,\n            CPU(env_archcpu(env))->cpu_index)) {\n        bool read_error;\n        uint64_t transformed;\n\n        if (!qemu_crucible_fault_clock_read_ticks(\n                QEMU_CRUCIBLE_CLOCK_X86_TSC,\n                CPU(env_archcpu(env))->cpu_index, val,\n                qemu_crucible_fault_observed_icount(),\n                &transformed, &read_error)) {\n            error_report(\"Crucible x86 TSC transform failed\");\n            abort();\n        }\n        if (read_error) {\n            raise_exception_ra(env, EXCP0D_GPF, GETPC());\n        }\n        val = transformed;\n    }\n    env->regs[R_EAX] = (uint32_t)(val);\n    env->regs[R_EDX] = (uint32_t)(val >> 32);\n}\n"
+          }
+        ]
+      }
+    ],
+    "preconditions": "The TCG helper receives a valid CPUX86State embedded immediately after CPUState in the realized x86 ArchCPU. Both existing conversion helpers require the same valid embedded environment; neither invokes a QOM type assertion.",
+    "exact_binary_assembly": {
+      "helper_start": "0x8c0ac0",
+      "size_hex": "0x10d",
+      "cpu_index_load1": "0x8c0b09 mov -0x3dc8(%rbx),%esi",
+      "cpu_index_load2": "0x8c0b73 mov -0x3dc8(%rbx),%esi",
+      "QOM_query_calls_inside_helper": false,
+      "identity": "28dc7284cc2aae8757f213520d80cee77e08322a68430463fcc55ca20d4357eb",
+      "original_disassembly_artifact_label": "classification-profile/helper-rdtsc-exact-disassembly.txt",
+      "original_disassembly_sha256": "28dc7284cc2aae8757f213520d80cee77e08322a68430463fcc55ca20d4357eb",
+      "complete_machine_bytes_hex": "55534883ec2864488b1c252800000048895c24184889fbf6874802000004740df68330010000030f85b8000000488b4c243831d2be6e0000004889dfe85f5ef8ff4889dfe867aef9ff8bb338c2ffff48038300350000bf010000004889c5e86d09bfff84c0753989e848c1ed2048890348896b10488b44241864482b04252800000075734883c4285b5d31c031d231c931f631ff4531c04531c9c30f1f440000c644240f0048c744241000000000e83dc6bdff8bb338c2ffff4c8d4c240f4889ea4c8d4424104889c1bf01000000e8ad14bfff84c07425807c240f007507488b6c2410eb82488b542438be0d0000004889dfe85971feffe81493aaff488d3d75e22f00e8f8532300e873abaaff",
+      "machine_bytes_sha256": "139b9db2c35518f82f766a10a787ce6c513844f987f5c6d2567e49c5b17ca418",
+      "machine_bytes": 269,
+      "disassembly": "\nstore:q0mx33zhzc0zaj3m0jdf6g0pp72nw6xx-qemu-crucible-11.1.1/bin/qemu-system-x86_64:     file format elf64-x86-64\n\n\nDisassembly of section .text:\n\n00000000008c0ac0 <qemu_plugin_register_blk_event_cb@@Base+0x11bc50>:\n  8c0ac0:\t55                   \tpush   %rbp\n  8c0ac1:\t53                   \tpush   %rbx\n  8c0ac2:\t48 83 ec 28          \tsub    $0x28,%rsp\n  8c0ac6:\t64 48 8b 1c 25 28 00 \tmov    %fs:0x28,%rbx\n  8c0acd:\t00 00 \n  8c0acf:\t48 89 5c 24 18       \tmov    %rbx,0x18(%rsp)\n  8c0ad4:\t48 89 fb             \tmov    %rdi,%rbx\n  8c0ad7:\tf6 87 48 02 00 00 04 \ttestb  $0x4,0x248(%rdi)\n  8c0ade:\t74 0d                \tje     8c0aed <qemu_plugin_register_blk_event_cb@@Base+0x11bc7d>\n  8c0ae0:\tf6 83 30 01 00 00 03 \ttestb  $0x3,0x130(%rbx)\n  8c0ae7:\t0f 85 b8 00 00 00    \tjne    8c0ba5 <qemu_plugin_register_blk_event_cb@@Base+0x11bd35>\n  8c0aed:\t48 8b 4c 24 38       \tmov    0x38(%rsp),%rcx\n  8c0af2:\t31 d2                \txor    %edx,%edx\n  8c0af4:\tbe 6e 00 00 00       \tmov    $0x6e,%esi\n  8c0af9:\t48 89 df             \tmov    %rbx,%rdi\n  8c0afc:\te8 5f 5e f8 ff       \tcall   846960 <qemu_plugin_register_blk_event_cb@@Base+0xa1af0>\n  8c0b01:\t48 89 df             \tmov    %rbx,%rdi\n  8c0b04:\te8 67 ae f9 ff       \tcall   85b970 <qemu_plugin_register_blk_event_cb@@Base+0xb6b00>\n  8c0b09:\t8b b3 38 c2 ff ff    \tmov    -0x3dc8(%rbx),%esi\n  8c0b0f:\t48 03 83 00 35 00 00 \tadd    0x3500(%rbx),%rax\n  8c0b16:\tbf 01 00 00 00       \tmov    $0x1,%edi\n  8c0b1b:\t48 89 c5             \tmov    %rax,%rbp\n  8c0b1e:\te8 6d 09 bf ff       \tcall   4b1490 <qemu_plugin_crucible_fault_clock_bindings_seal@@Base+0x4c0>\n  8c0b23:\t84 c0                \ttest   %al,%al\n  8c0b25:\t75 39                \tjne    8c0b60 <qemu_plugin_register_blk_event_cb@@Base+0x11bcf0>\n  8c0b27:\t89 e8                \tmov    %ebp,%eax\n  8c0b29:\t48 c1 ed 20          \tshr    $0x20,%rbp\n  8c0b2d:\t48 89 03             \tmov    %rax,(%rbx)\n  8c0b30:\t48 89 6b 10          \tmov    %rbp,0x10(%rbx)\n  8c0b34:\t48 8b 44 24 18       \tmov    0x18(%rsp),%rax\n  8c0b39:\t64 48 2b 04 25 28 00 \tsub    %fs:0x28,%rax\n  8c0b40:\t00 00 \n  8c0b42:\t75 73                \tjne    8c0bb7 <qemu_plugin_register_blk_event_cb@@Base+0x11bd47>\n  8c0b44:\t48 83 c4 28          \tadd    $0x28,%rsp\n  8c0b48:\t5b                   \tpop    %rbx\n  8c0b49:\t5d                   \tpop    %rbp\n  8c0b4a:\t31 c0                \txor    %eax,%eax\n  8c0b4c:\t31 d2                \txor    %edx,%edx\n  8c0b4e:\t31 c9                \txor    %ecx,%ecx\n  8c0b50:\t31 f6                \txor    %esi,%esi\n  8c0b52:\t31 ff                \txor    %edi,%edi\n  8c0b54:\t45 31 c0             \txor    %r8d,%r8d\n  8c0b57:\t45 31 c9             \txor    %r9d,%r9d\n  8c0b5a:\tc3                   \tret\n  8c0b5b:\t0f 1f 44 00 00       \tnopl   0x0(%rax,%rax,1)\n  8c0b60:\tc6 44 24 0f 00       \tmovb   $0x0,0xf(%rsp)\n  8c0b65:\t48 c7 44 24 10 00 00 \tmovq   $0x0,0x10(%rsp)\n  8c0b6c:\t00 00 \n  8c0b6e:\te8 3d c6 bd ff       \tcall   49d1b0 <qemu_plugin_icount_raw@@Base+0x30>\n  8c0b73:\t8b b3 38 c2 ff ff    \tmov    -0x3dc8(%rbx),%esi\n  8c0b79:\t4c 8d 4c 24 0f       \tlea    0xf(%rsp),%r9\n  8c0b7e:\t48 89 ea             \tmov    %rbp,%rdx\n  8c0b81:\t4c 8d 44 24 10       \tlea    0x10(%rsp),%r8\n  8c0b86:\t48 89 c1             \tmov    %rax,%rcx\n  8c0b89:\tbf 01 00 00 00       \tmov    $0x1,%edi\n  8c0b8e:\te8 ad 14 bf ff       \tcall   4b2040 <qemu_plugin_crucible_fault_clock_bindings_seal@@Base+0x1070>\n  8c0b93:\t84 c0                \ttest   %al,%al\n  8c0b95:\t74 25                \tje     8c0bbc <qemu_plugin_register_blk_event_cb@@Base+0x11bd4c>\n  8c0b97:\t80 7c 24 0f 00       \tcmpb   $0x0,0xf(%rsp)\n  8c0b9c:\t75 07                \tjne    8c0ba5 <qemu_plugin_register_blk_event_cb@@Base+0x11bd35>\n  8c0b9e:\t48 8b 6c 24 10       \tmov    0x10(%rsp),%rbp\n  8c0ba3:\teb 82                \tjmp    8c0b27 <qemu_plugin_register_blk_event_cb@@Base+0x11bcb7>\n  8c0ba5:\t48 8b 54 24 38       \tmov    0x38(%rsp),%rdx\n  8c0baa:\tbe 0d 00 00 00       \tmov    $0xd,%esi\n  8c0baf:\t48 89 df             \tmov    %rbx,%rdi\n  8c0bb2:\te8 59 71 fe ff       \tcall   8a7d10 <qemu_plugin_register_blk_event_cb@@Base+0x102ea0>\n  8c0bb7:\te8 14 93 aa ff       \tcall   369ed0 <__stack_chk_fail@plt>\n  8c0bbc:\t48 8d 3d 75 e2 2f 00 \tlea    0x2fe275(%rip),%rdi        # bbee38 <qemu_plugin_register_blk_event_cb@@Base+0x419fc8>\n  8c0bc3:\te8 f8 53 23 00       \tcall   af5fc0 <qemu_plugin_register_blk_event_cb@@Base+0x351150>\n  8c0bc8:\te8 73 ab aa ff       \tcall   36b740 <abort@plt>\n",
+      "instruction_coordinate_scope": "Function bounds are taken from this exact packaged ELF's pre-strip defined-function TSV. Objdump display labels use nearby exported dynamic symbols after stripping and do not rename the helper or establish call identities. The recorded direct loads show CPU index access without type-query calls.",
+      "objdump": {
+        "path": "store:6zgd9kcbnvnvvz1y4jwb46ys7j7i1cwn-binutils-2.41/bin/objdump",
+        "sha256": "2eea50a561f91cb940da960affffb5b1d739ca79cf826bd202976bd085d82364"
+      },
+      "actual_disassembly_command": [
+        "AOS_OBJDUMP",
+        "-d",
+        "--start-address=0x8c0ac0",
+        "--stop-address=0x8c0bcd",
+        "EXACT_CLASSIFIER_QEMU"
+      ]
+    }
+  },
+  "unchanged_four_eighteen_field_native_proofs": [
+    {
+      "artifact_label": "versus-reference-0.json",
+      "sha256": "af25343f8c450d68d2761c06607c0fba0dbf63c982b08047003499bab62298c7",
+      "reference_sha256": "f0a8b3f18ee841a474d904200600ade4e7e03abcc1333a670a3a5c8892685af9",
+      "profile_result_sha256": "3c930c267ef14e35f86067985873610f6de1082c41cab89549fc00dc00202011",
+      "compared_fields": [
+        "raw_icount",
+        "logical_tick",
+        "idle_wake_tick",
+        "registers",
+        "timer_witness",
+        "device_projection_manifest",
+        "ram_sha256",
+        "ram_bytes",
+        "serial_sha256",
+        "markers",
+        "advances",
+        "status",
+        "kernel",
+        "initrd",
+        "ram_mib",
+        "coverage",
+        "fingerprint",
+        "whitebox"
+      ],
+      "missing_fields": [],
+      "differing_fields": [],
+      "profile_witness_matches_reference": true
+    },
+    {
+      "artifact_label": "versus-reference-1.json",
+      "sha256": "b27c52b2b9021173a995fcabdacfb3f87c891e355fa7a7e55048a49f270072bc",
+      "reference_sha256": "25a198157f77ad7394d16c7cba4d793cb59d2f77c0aa6e7ea99ac16bfe230c2f",
+      "profile_result_sha256": "3c930c267ef14e35f86067985873610f6de1082c41cab89549fc00dc00202011",
+      "compared_fields": [
+        "raw_icount",
+        "logical_tick",
+        "idle_wake_tick",
+        "registers",
+        "timer_witness",
+        "device_projection_manifest",
+        "ram_sha256",
+        "ram_bytes",
+        "serial_sha256",
+        "markers",
+        "advances",
+        "status",
+        "kernel",
+        "initrd",
+        "ram_mib",
+        "coverage",
+        "fingerprint",
+        "whitebox"
+      ],
+      "missing_fields": [],
+      "differing_fields": [],
+      "profile_witness_matches_reference": true
+    },
+    {
+      "artifact_label": "versus-reference-2.json",
+      "sha256": "20931ec14c42300f8f6cfa2729e0581e0c31fc52e00ac2b2543a0a16e7007400",
+      "reference_sha256": "b8d9899f257641d8d89fbe6d453932c5b4066c2b248d875e16af31b18193c069",
+      "profile_result_sha256": "3c930c267ef14e35f86067985873610f6de1082c41cab89549fc00dc00202011",
+      "compared_fields": [
+        "raw_icount",
+        "logical_tick",
+        "idle_wake_tick",
+        "registers",
+        "timer_witness",
+        "device_projection_manifest",
+        "ram_sha256",
+        "ram_bytes",
+        "serial_sha256",
+        "markers",
+        "advances",
+        "status",
+        "kernel",
+        "initrd",
+        "ram_mib",
+        "coverage",
+        "fingerprint",
+        "whitebox"
+      ],
+      "missing_fields": [],
+      "differing_fields": [],
+      "profile_witness_matches_reference": true
+    },
+    {
+      "artifact_label": "versus-reference-3.json",
+      "sha256": "95f21a4451e7d6f7eef942f63569808bb5e5ffd5060fbafbb75d4424f7204a2f",
+      "reference_sha256": "89b80c75c86af48aba9c6836a3e98a47a3d44bb29fd07994637cde36bdbe0aee",
+      "profile_result_sha256": "3c930c267ef14e35f86067985873610f6de1082c41cab89549fc00dc00202011",
+      "compared_fields": [
+        "raw_icount",
+        "logical_tick",
+        "idle_wake_tick",
+        "registers",
+        "timer_witness",
+        "device_projection_manifest",
+        "ram_sha256",
+        "ram_bytes",
+        "serial_sha256",
+        "markers",
+        "advances",
+        "status",
+        "kernel",
+        "initrd",
+        "ram_mib",
+        "coverage",
+        "fingerprint",
+        "whitebox"
+      ],
+      "missing_fields": [],
+      "differing_fields": [],
+      "profile_witness_matches_reference": true
+    }
+  ],
+  "validation": {
+    "prior_committed_report_sha_unchanged": "PASS",
+    "full_residual_stack_sum18": "PASS",
+    "top30_display_qualification": "PASS",
+    "four_eighteen_field_reference_proofs": "PASS",
+    "exact269_byte_function_bounds": "PASS",
+    "read_only_source_and_binary_audit": "PASS",
+    "recursive_no_private_or_literal_store_paths": "PASS"
+  },
+  "timing_window_scope_clarification": {
+    "performance_report": "tests/crucible/fixtures/tcg-linux-classification-performance-2026-10-05.json",
+    "performance_report_sha256": "388771c764d35f59480bb347521de62283eb66eff78102e88baba7342f24fe6c",
+    "clarification": "Timed windows excluded this optimization team's builds, tests, other VMs and profiling. CPU affinity and platform metadata were retained. This does not establish that the entire shared host was idle or exclude other users' activity.",
+    "samples_and_distributions_unchanged": true
+  }
+}
