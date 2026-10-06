@@ -10,7 +10,9 @@
 //! ```
 
 use super::{canonical, BodyEvidence, EncodedImage};
-use crate::db::{DirectSqlOwner, DirectUploadSessionRecord, RegistryPublicationManifestSessionRecord};
+use crate::db::{
+    DirectSqlOwner, DirectUploadSessionRecord, RegistryPublicationManifestSessionRecord,
+};
 use crate::direct_upload::WireInteger;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
@@ -188,17 +190,17 @@ impl Pending {
         // The original uses the same declared serde field order as the actual
         // Direct control encoder. Its credential values never enter this record.
         let owner = match &record.owner {
-            DirectSqlOwner::Cache { cache_id, ticket_id } => canonical(
-                &("cache", Some(*cache_id), Some(ticket_id.as_str())), 1024,
-            ),
-            DirectSqlOwner::Publication => canonical(
-                &("publication", None::<i64>, None::<&str>), 1024,
-            ),
-            DirectSqlOwner::Oci => canonical(
-                &("oci", None::<i64>, None::<&str>), 1024,
-            ),
+            DirectSqlOwner::Cache {
+                cache_id,
+                ticket_id,
+            } => canonical(&("cache", Some(*cache_id), Some(ticket_id.as_str())), 1024),
+            DirectSqlOwner::Publication => {
+                canonical(&("publication", None::<i64>, None::<&str>), 1024)
+            }
+            DirectSqlOwner::Oci => canonical(&("oci", None::<i64>, None::<&str>), 1024),
         };
-        let (Some(owner), Some(admission)) = (owner, canonical(&record.admission, 1024 * 1024)) else {
+        let (Some(owner), Some(admission)) = (owner, canonical(&record.admission, 1024 * 1024))
+        else {
             super::invalidate_sql_projection();
             return None;
         };
