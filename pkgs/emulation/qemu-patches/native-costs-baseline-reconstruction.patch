@@ -1,0 +1,78 @@
+diff --git a/accel/tcg/tb-maint.c b/accel/tcg/tb-maint.c
+index bcab8b991987caece86e5f7db7aa6f7cad1cb332..7b69161e5dcb3925ede6a107b52cbefd76827482 100644
+--- a/accel/tcg/tb-maint.c
++++ b/accel/tcg/tb-maint.c
+@@ -640,9 +640,13 @@ static struct page_collection *page_collection_lock(tb_page_addr_t start,
+         }
+         assert_page_locked(pd);
+         PAGE_FOR_EACH_TB(unused, unused, pd, tb, n) {
+-            if (page_trylock_add(set, tb_page_addr0(tb)) ||
+-                (tb_page_addr1(tb) != -1 &&
+-                 page_trylock_add(set, tb_page_addr1(tb)))) {
++            tb_page_addr_t other_addr = n ? tb_page_addr0(tb)
++                                         : tb_page_addr1(tb);
++
++            /* The tagged page is already locked and in the collection. */
++            if (other_addr != -1 &&
++                (other_addr >> TARGET_PAGE_BITS) != index &&
++                page_trylock_add(set, other_addr)) {
+                 /* drop all locks, and reacquire in order */
+                 q_tree_foreach(set->tree, page_entry_unlock, NULL);
+                 goto retry;
+diff --git a/util/qemu-thread-posix.c b/util/qemu-thread-posix.c
+index 38925e9bf24119bd8f97f61ed3a77f0efe331855..1b59d60925d365c2f3747dad8c06d5df41488ccf 100644
+--- a/util/qemu-thread-posix.c
++++ b/util/qemu-thread-posix.c
+@@ -30,6 +30,7 @@ typedef struct CrucibleHotForkMutexEntry {
+     uint64_t registration_id;
+     int64_t owner_thread_id;
+     uint32_t recursion_depth;
++    /* The registry guard serializes waiter updates and their readers. */
+     uint32_t acquisition_waiters;
+     uint32_t condition_waiters;
+     int64_t condition_waiter_thread_id;
+@@ -487,7 +488,7 @@ static void crucible_hot_fork_mutex_wait_begin(QemuMutex *mutex)
+     crucible_hot_fork_mutex_registry_lock();
+     entry = crucible_hot_fork_mutex_entry(mutex);
+     if (entry) {
+-        qatomic_inc(&entry->acquisition_waiters);
++        entry->acquisition_waiters++;
+     }
+     crucible_hot_fork_mutex_registry_unlock();
+ }
+@@ -502,7 +503,7 @@ static void crucible_hot_fork_mutex_wait_cancel(QemuMutex *mutex)
+         if (qatomic_read(&entry->acquisition_waiters) == 0) {
+             qatomic_set(&entry->ownership_valid, false);
+         } else {
+-            qatomic_dec(&entry->acquisition_waiters);
++            entry->acquisition_waiters--;
+         }
+     }
+     crucible_hot_fork_mutex_registry_unlock();
+@@ -542,7 +543,7 @@ static void crucible_hot_fork_mutex_acquired(QemuMutex *mutex)
+     if (qatomic_read(&entry->acquisition_waiters) == 0) {
+         qatomic_set(&entry->ownership_valid, false);
+     } else {
+-        qatomic_dec(&entry->acquisition_waiters);
++        entry->acquisition_waiters--;
+     }
+     crucible_hot_fork_mutex_registry_unlock();
+ }
+@@ -606,7 +607,7 @@ static void crucible_hot_fork_mutex_condition_wait_begin(QemuMutex *mutex)
+     owner = qatomic_read(&entry->owner_thread_id);
+     depth = qatomic_read(&entry->recursion_depth);
+ 
+-    if (qatomic_fetch_inc(&entry->condition_waiters) == 0) {
++    if (entry->condition_waiters++ == 0) {
+         qatomic_set(&entry->condition_waiter_thread_id,
+                     crucible_mutex_owner_thread_id());
+     } else {
+@@ -645,7 +646,7 @@ static void crucible_hot_fork_mutex_condition_wait_end(QemuMutex *mutex)
+     qatomic_set(&entry->recursion_depth, 1);
+     if (qatomic_read(&entry->condition_waiters) == 0) {
+         qatomic_set(&entry->ownership_valid, false);
+-    } else if (qatomic_fetch_dec(&entry->condition_waiters) == 1) {
++    } else if (entry->condition_waiters-- == 1) {
+         qatomic_set(&entry->condition_waiter_thread_id, 0);
+     }
+     crucible_hot_fork_mutex_registry_unlock();
