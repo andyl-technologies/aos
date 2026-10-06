@@ -124,6 +124,9 @@ def publish_candidate() -> None:
           --image-info {shlex.quote(CANDIDATE_IMAGE_INFO)} --image-format raw \\
           --image-contract-schema aos.image.metadata/v1 \\
           --no-ca --registry native-image --key-id release > /tmp/native-image-publication.json
+        # Admission requires published NAR metadata even for pre-imported bytes.
+        {APR} cache generate --registry native-image --output /tmp/native-image-cache \\
+          --cache-url file:///tmp/native-image-cache --registry-key-id release --jobs 2
         {APR} release 1.0.0 --registry native-image --key-id release
         {APM} registry --system add "file://$registry" --name native-image --tag 1.0.0 --trust-key "$public" --no-clone
         {APM} update --system --registry native-image
