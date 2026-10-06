@@ -228,7 +228,7 @@ pub(super) fn whole_database_encoded_length(
         .ok_or(GitModelError::InvalidModel)
 }
 
-fn descriptor_encoded_length(value: &GitDescriptorV1) -> Result<usize, GitModelError> {
+pub(super) fn descriptor_encoded_length(value: &GitDescriptorV1) -> Result<usize, GitModelError> {
     44_usize
         .checked_add(value.descriptor().media_type().as_str().len())
         .ok_or(GitModelError::InvalidModel)
@@ -883,7 +883,7 @@ fn preflight_graph(bytes: &mut &[u8]) -> Result<(), GitModelError> {
     )?;
     Ok(())
 }
-fn preflight_refs(bytes: &mut &[u8]) -> Result<(), GitModelError> {
+pub(super) fn preflight_refs(bytes: &mut &[u8]) -> Result<(), GitModelError> {
     let count = read_count(bytes, MAXIMUM_GIT_GRAPH_ROOTS)?;
     for _ in 0..count {
         let length = usize::from(u16::from_be_bytes(take(bytes)?));

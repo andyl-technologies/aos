@@ -13,8 +13,9 @@
 use aos_sandbox_core::{ObjectDigest, ProjectId, ResourceId, Revision};
 
 use super::format::{
-    decode_descriptor, decode_whole_database, encode_descriptor, encode_whole_database,
-    preflight_descriptor, preflight_whole_database,
+    decode_descriptor, decode_whole_database, descriptor_encoded_length, encode_descriptor,
+    encode_whole_database, preflight_descriptor, preflight_whole_database,
+    whole_database_encoded_length,
 };
 use super::{
     GitExportGenerationDigestV1, GitExportGenerationV1, GitModelError, GitObjectFormatV1,
@@ -93,35 +94,11 @@ pub(super) fn validate_pack_record_size(
 }
 
 fn pack_encoded_length(value: &ImmutablePackGenerationV1) -> Result<usize, GitModelError> {
-    let descriptor_length = |descriptor: &super::GitDescriptorV1| {
-        44_usize.checked_add(descriptor.descriptor().media_type().as_str().len())
-    };
-    let database = value.database();
-    let whole_database = 336_usize
-        .checked_add(
-            database
-                .graph()
-                .roots()
-                .len()
-                .checked_mul(32)
-                .ok_or(GitModelError::InvalidModel)?,
-        )
-        .and_then(|length| {
-            length.checked_add(
-                database
-                    .validator()
-                    .report()
-                    .descriptor()
-                    .media_type()
-                    .as_str()
-                    .len(),
-            )
-        })
-        .ok_or(GitModelError::InvalidModel)?;
-    let pack = descriptor_length(value.pack()).ok_or(GitModelError::InvalidModel)?;
-    let index = descriptor_length(value.index()).ok_or(GitModelError::InvalidModel)?;
+    let whole_database = whole_database_encoded_length(value.database())?;
+    let pack = descriptor_encoded_length(value.pack())?;
+    let index = descriptor_encoded_length(value.index())?;
     let multi = match value.multi_pack_index() {
-        Some(descriptor) => descriptor_length(descriptor).ok_or(GitModelError::InvalidModel)?,
+        Some(descriptor) => descriptor_encoded_length(descriptor)?,
         None => 0,
     };
     let body = 196_usize

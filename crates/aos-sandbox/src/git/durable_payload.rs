@@ -14,7 +14,7 @@ use aos_sandbox_core::{ObjectDigest, PrincipalId, ProjectId, ResourceId, Revisio
 
 use super::format::{
     decode_export, decode_refs, decode_whole_database, encode_export, encode_git_receive_plan_v1,
-    encode_refs, encode_whole_database, export_encoded_length, preflight_export,
+    encode_refs, encode_whole_database, export_encoded_length, preflight_export, preflight_refs,
     preflight_whole_database, refs_encoded_length, whole_database_encoded_length,
 };
 use super::pack_format::decode_pack_generation_payload_v1;
@@ -557,23 +557,7 @@ fn preflight_payload(kind: GitDurableRecordKindV1, encoded: &[u8]) -> Result<(),
 fn preflight_repository(bytes: &mut &[u8]) -> Result<(), GitModelError> {
     take_slice(bytes, 8 + 16 * 4 + 8 + 40)?;
     preflight_whole_database(bytes)?;
-    let count = usize::try_from(u32::from_be_bytes(take(bytes)?))
-        .map_err(|_| GitModelError::CorruptEncoding)?;
-    if count > super::model::MAXIMUM_GIT_GRAPH_ROOTS {
-        return Err(GitModelError::CorruptEncoding);
-    }
-    for _ in 0..count {
-        let length = usize::from(u16::from_be_bytes(take(bytes)?));
-        if length == 0 || length > super::model::MAXIMUM_GIT_REF_BYTES {
-            return Err(GitModelError::CorruptEncoding);
-        }
-        take_slice(
-            bytes,
-            length
-                .checked_add(32)
-                .ok_or(GitModelError::CorruptEncoding)?,
-        )?;
-    }
+    preflight_refs(bytes)?;
     take_slice(bytes, 32)?;
     Ok(())
 }
