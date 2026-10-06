@@ -1,4 +1,4 @@
-From 33343f63cb5e8749caadcb251c6b8a90ed0482cf Mon Sep 17 00:00:00 2001
+From f67d9cd50d8902b88d6ae8f0b7c81671478e9e90 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Sat, 3 Oct 2026 07:08:17 +0000
 Subject: [PATCH] Integrate deterministic execution and private fork I/O
@@ -81,6 +81,32 @@ nameless safe-getter contracts, named mode matrices, lifecycle identity
 continuity, exact query order and counts, signed edge values and compiled
 causal negatives. Carry the exact rule-presence lazy-memory test adapter.
 Keep ordinary RR barriers unchanged and qualification limits explicit.
+
+Use the existing registry guard for tracked mutex waiter counter updates
+without redundant atomic read-modify-write operations. Preserve unsigned
+wrap, underflow refusal, condition waiter identity, ownership transitions,
+all inventory windows and retained fork transaction ordering. Exercise real
+pthread mutex and condition operations, contended acquisition, timeout and
+error paths, differential inventory traces and five causal negatives.
+
+Collect the opposite TB page directly from its tagged page-list membership.
+Skip a missing or already held page while preserving transitive discovery,
+sorted lock acquisition, retry and release semantics. Exercise production
+collection bodies, both page tags, reversed physical order, same-page
+membership, lock contention and the omitted-page causal negative.
+
+Carry a system-mode x86 self-modifying-code regression for single-page and
+cross-page instruction writes, including reversed physical mappings. Keep
+production-body fixture coverage and full-system qualification distinct.
+
+Use the real compiler annotation and branch-prediction macros in the
+native waiter and page-collection fixtures. Preserve strict prototype and
+warning diagnostics, active test assertions and all production bodies.
+
+Declare extracted public mutex inventory and condition functions with
+their original header signatures. Retain strict prototype and declaration
+warnings, active assertions and production counter ordering in candidate
+and differential-reference translation units.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -3023,7 +3049,7 @@ index 1ffcb4b2d2d0fc37c80f92ebcd76ed8a85fa7cae..9645e74d829fb2d8fd078305a5907b90
      tcg_gen_ld_i32(cpu_index, tcg_env,
                     offsetof(CPUState, cpu_index) - sizeof(CPUState));
 diff --git a/accel/tcg/tb-maint.c b/accel/tcg/tb-maint.c
-index 4313864d2c5d24e30dc1cfbcdf9a81eb7eb0e323..bcab8b991987caece86e5f7db7aa6f7cad1cb332 100644
+index 4313864d2c5d24e30dc1cfbcdf9a81eb7eb0e323..7b69161e5dcb3925ede6a107b52cbefd76827482 100644
 --- a/accel/tcg/tb-maint.c
 +++ b/accel/tcg/tb-maint.c
 @@ -20,6 +20,7 @@
@@ -3034,6 +3060,23 @@ index 4313864d2c5d24e30dc1cfbcdf9a81eb7eb0e323..bcab8b991987caece86e5f7db7aa6f7c
  #include "exec/cputlb.h"
  #include "exec/log.h"
  #include "exec/page-protection.h"
+@@ -639,9 +640,13 @@ static struct page_collection *page_collection_lock(tb_page_addr_t start,
+         }
+         assert_page_locked(pd);
+         PAGE_FOR_EACH_TB(unused, unused, pd, tb, n) {
+-            if (page_trylock_add(set, tb_page_addr0(tb)) ||
+-                (tb_page_addr1(tb) != -1 &&
+-                 page_trylock_add(set, tb_page_addr1(tb)))) {
++            tb_page_addr_t other_addr = n ? tb_page_addr0(tb)
++                                         : tb_page_addr1(tb);
++
++            /* The tagged page is already locked and in the collection. */
++            if (other_addr != -1 &&
++                (other_addr >> TARGET_PAGE_BITS) != index &&
++                page_trylock_add(set, other_addr)) {
+                 /* drop all locks, and reacquire in order */
+                 q_tree_foreach(set->tree, page_entry_unlock, NULL);
+                 goto retry;
 diff --git a/accel/tcg/tcg-accel-ops-icount.c b/accel/tcg/tcg-accel-ops-icount.c
 index d0f7b410fab3186f0359eed2b0c50dcab7d58b3e..ab3d984e1c76c500e35fe8cfd2cf747623a074b0 100644
 --- a/accel/tcg/tcg-accel-ops-icount.c
@@ -148057,6 +148100,162 @@ index d7f8f0ae0ad4ed24f91b1c44ec36fff81c37631e..1e4bc21cff92c508a934a2affb52c19a
  endif
  if t.length() > 0
    alias_target('test-plugins', t)
+diff --git a/tests/tcg/x86_64/system/self-modifying-code.c b/tests/tcg/x86_64/system/self-modifying-code.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..c5e26756c5abdc84f0be76461e8d61f12391ce3c
+--- /dev/null
++++ b/tests/tcg/x86_64/system/self-modifying-code.c
+@@ -0,0 +1,150 @@
++/*
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ *
++ * Exercise system-mode code invalidation through guest writes. Boundary
++ * instructions cover both tagged page lists; a temporary mapping reverses
++ * their physical order. The boot support identity-maps the backing pages.
++ */
++
++#include <stdbool.h>
++#include <stdint.h>
++#include <minilib.h>
++
++#define PAGE_SIZE 4096
++#define ADDRESS_MASK UINT64_C(0x000ffffffffff000)
++#define TEST_MAPPING UINT64_C(0x40000000)
++
++static uint8_t code_pages[2 * PAGE_SIZE]
++    __attribute__((aligned(PAGE_SIZE)));
++
++static uint64_t test_page_table[512]
++    __attribute__((aligned(PAGE_SIZE)));
++
++static __attribute__((noinline)) uint32_t execute_code(volatile uint8_t *code)
++{
++    uint32_t (*function)(void) = (uint32_t (*)(void))(uintptr_t)code;
++
++    /* Keep guest code writes on their intended side of each execution. */
++    asm volatile("" ::: "memory");
++    return function();
++}
++
++static void emit_return(volatile uint8_t *code, uint32_t value)
++{
++    code[0] = 0xb8; /* mov immediate, %eax */
++    for (unsigned int i = 0; i < 4; i++) {
++        code[i + 1] = value >> (i * 8);
++    }
++    code[5] = 0xc3; /* ret */
++}
++
++static bool check_value(const char *name, volatile uint8_t *code,
++                         uint32_t expected)
++{
++    uint32_t actual = execute_code(code);
++
++    if (actual != expected) {
++        ml_printf("%s: expected %x, got %x\n", name, expected, actual);
++        return false;
++    }
++    return true;
++}
++
++static bool check_boundary(const char *name, volatile uint8_t *pages)
++{
++    volatile uint8_t *code = pages + PAGE_SIZE - 2;
++
++    emit_return(code, UINT32_C(0x44332211));
++    if (!check_value(name, code, UINT32_C(0x44332211))) {
++        return false;
++    }
++
++    /* The immediate's first byte belongs to the TB's first physical page. */
++    code[1] = 0x12;
++    if (!check_value(name, code, UINT32_C(0x44332212))) {
++        return false;
++    }
++
++    /* Its second byte belongs to the TB's second physical page. */
++    code[2] = 0x23;
++    return check_value(name, code, UINT32_C(0x44332312));
++}
++
++static void invalidate_mapping(void)
++{
++    asm volatile("invlpg (%0)" :: "r"(TEST_MAPPING) : "memory");
++    asm volatile("invlpg (%0)" :: "r"(TEST_MAPPING + PAGE_SIZE) : "memory");
++}
++
++static bool check_reverse_mapping(void)
++{
++    uint64_t root_address;
++    uint64_t *root, *directory_pointer, *directory;
++    uint64_t original_entry;
++    bool passed;
++
++    asm volatile("mov %%cr3, %0" : "=r"(root_address));
++    root = (uint64_t *)(uintptr_t)(root_address & ADDRESS_MASK);
++    directory_pointer = (uint64_t *)(uintptr_t)(root[0] & ADDRESS_MASK);
++    directory = (uint64_t *)(uintptr_t)(directory_pointer[1] & ADDRESS_MASK);
++    original_entry = directory[0];
++
++    /* Replace only the unused 1 GiB mapping; retain the boot identity map. */
++    test_page_table[0] = (uintptr_t)(code_pages + PAGE_SIZE) | 7;
++    test_page_table[1] = (uintptr_t)code_pages | 7;
++    directory[0] = (uintptr_t)test_page_table | 7;
++    invalidate_mapping();
++    passed = check_boundary("reverse physical pages",
++                            (volatile uint8_t *)(uintptr_t)TEST_MAPPING);
++
++    directory[0] = original_entry;
++    invalidate_mapping();
++    return passed;
++}
++
++static bool check_current_block(void)
++{
++    volatile uint8_t *code = code_pages + 128;
++    static const uint8_t instructions[] = {
++        /* movb $42, 1(%rip): patches the following instruction's immediate. */
++        0xc6, 0x05, 0x01, 0x00, 0x00, 0x00, 0x2a,
++        0xb8, 0x01, 0x00, 0x00, 0x00, /* mov $1, %eax */
++        0xc3,                         /* ret */
++    };
++
++    for (unsigned int i = 0; i < sizeof(instructions); i++) {
++        code[i] = instructions[i];
++    }
++    return check_value("current block", code, 42);
++}
++
++int main(void)
++{
++    volatile uint8_t *single = code_pages + 63;
++
++    emit_return(single, 1);
++    if (!check_value("single page", single, 1)) {
++        return 1;
++    }
++
++    /* A data write on the same physical page must preserve code protection. */
++    ((volatile uint8_t *)code_pages)[0] = 0x5a;
++    single[1] = 2;
++    if (!check_value("patch after non-code write", single, 2)) {
++        return 1;
++    }
++
++    /* The immediate is naturally aligned for an atomic guest write. */
++    __atomic_store_n((uint32_t *)(uintptr_t)(single + 1), 3, __ATOMIC_SEQ_CST);
++    if (!check_value("atomic patch", single, 3)) {
++        return 1;
++    }
++
++    if (!check_boundary("consecutive physical pages", code_pages) ||
++        !check_reverse_mapping() || !check_current_block()) {
++        return 1;
++    }
++
++    ml_printf("self-modifying code: passed\n");
++    return 0;
++}
 diff --git a/tests/unit/check-json-parser.c b/tests/unit/check-json-parser.c
 index 656a47524708e2a0e524cd1ff25d7ae0fd06e659..21a5585d8f96f329c6cd08a7cd2bb561aa604abe 100644
 --- a/tests/unit/check-json-parser.c
@@ -170858,6 +171057,487 @@ index 0000000000000000000000000000000000000000..92f7e7b7c4fdbe109ae0754186357da2
 +
 +if __name__ == "__main__":
 +    main()
+diff --git a/tests/unit/test-crucible-mutex-waiter-counters.py b/tests/unit/test-crucible-mutex-waiter-counters.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..7c0e740270c5f06ea7e1dde755888dfe36b4266e
+--- /dev/null
++++ b/tests/unit/test-crucible-mutex-waiter-counters.py
+@@ -0,0 +1,475 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Exercise guarded production waiter counters with real pthread operations.
++
++The native mutex/condition operations and registry bodies execute unchanged.
++Hook barriers expose transaction boundaries without changing their ordering.
++An optional reference source runs the same checks and must produce the same
++normalized inventory trace. This fixture does not prove a running guest or
++the complete retained-runtime transaction; the owner-cache and hot-fork child
++tests supply the existing native fork and retained-transaction coverage.
++
++Dependencies are Python 3, a C compiler, pthreads, GLib development headers
++and libraries, and the repository headers. CC, CFLAGS, and LDFLAGS select the
++configured source-built toolchain and GLib flags.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import runpy
++import shlex
++import subprocess
++
++
++ROOT = Path(__file__).resolve().parents[2]
++OWNER_FIXTURE = runpy.run_path(str(Path(__file__).with_name(
++    "test-crucible-mutex-owner-cache.py")))
++definition = OWNER_FIXTURE["definition"]
++
++
++HOOKS = r"""
++#include <time.h>
++
++enum Window { NONE, ADMITTED, NATIVE_ACQUIRED, UNLOCK_BEGIN, NATIVE_UNLOCKED,
++              CONDITION_ONE, CONDITION_TWO };
++
++static QemuMutex tested;
++static QemuCond condition;
++static pthread_mutex_t schedule_lock = PTHREAD_MUTEX_INITIALIZER;
++static pthread_cond_t schedule_changed = PTHREAD_COND_INITIALIZER;
++static enum Window arrived, released;
++static __thread bool expose_lock_windows;
++static __thread enum Window expose_condition_window;
++static bool condition_released;
++
++static void rendezvous(enum Window window)
++{
++    assert(pthread_mutex_lock(&schedule_lock) == 0);
++    arrived = window;
++    assert(pthread_cond_broadcast(&schedule_changed) == 0);
++    while (released != window) {
++        assert(pthread_cond_wait(&schedule_changed, &schedule_lock) == 0);
++    }
++    assert(pthread_mutex_unlock(&schedule_lock) == 0);
++}
++
++static void await_window(enum Window window)
++{
++    assert(pthread_mutex_lock(&schedule_lock) == 0);
++    while (arrived != window) {
++        assert(pthread_cond_wait(&schedule_changed, &schedule_lock) == 0);
++    }
++    assert(pthread_mutex_unlock(&schedule_lock) == 0);
++}
++
++static void release_window(enum Window window)
++{
++    assert(pthread_mutex_lock(&schedule_lock) == 0);
++    released = window;
++    assert(pthread_cond_broadcast(&schedule_changed) == 0);
++    assert(pthread_mutex_unlock(&schedule_lock) == 0);
++}
++
++static void qemu_mutex_pre_lock(QemuMutex *mutex, const char *file, int line)
++{
++    if (mutex == &tested && expose_lock_windows) {
++        rendezvous(ADMITTED);
++    }
++}
++
++static void qemu_mutex_post_lock(QemuMutex *mutex, const char *file, int line)
++{
++    if (mutex == &tested && expose_lock_windows) {
++        rendezvous(NATIVE_ACQUIRED);
++    }
++}
++
++static void qemu_mutex_pre_unlock(QemuMutex *mutex, const char *file, int line)
++{
++    if (mutex == &tested && expose_lock_windows) {
++        rendezvous(UNLOCK_BEGIN);
++    } else if (mutex == &tested && expose_condition_window != NONE) {
++        enum Window window = expose_condition_window;
++
++        expose_condition_window = NONE;
++        rendezvous(window);
++    }
++}
++
++/* The native unlock completes before this barrier and registry completion. */
++static int observed_native_unlock(pthread_mutex_t *mutex)
++{
++    int result = pthread_mutex_unlock(mutex);
++
++    if (result == 0 && mutex == &tested.lock && expose_lock_windows) {
++        rendezvous(NATIVE_UNLOCKED);
++    }
++    return result;
++}
++
++#define pthread_mutex_unlock observed_native_unlock
++#define trace_qemu_mutex_unlock(...) ((void)0)
++#define trace_qemu_mutex_locked(...) ((void)0)
++"""
++
++
++CHECKS = r"""
++#undef pthread_mutex_unlock
++
++static CrucibleHotForkMutexEntry *tested_entry(void)
++{
++    return &crucible_hot_fork_mutexes[tested.crucible_hot_fork_slot];
++}
++
++static void lock_tested(void)
++{
++    qemu_mutex_lock_impl(&tested, __FILE__, __LINE__);
++}
++
++static void unlock_tested(void)
++{
++    qemu_mutex_unlock_impl(&tested, __FILE__, __LINE__);
++}
++
++static void snapshot(const char *label, unsigned depth, unsigned acquiring,
++                     unsigned waiting, bool unlocking, bool valid)
++{
++    QemuMutexHotForkInventory inventory;
++    QemuMutexHotForkInventoryEntry *found = NULL;
++
++    qemu_mutex_hot_fork_inventory(&inventory);
++    g_assert_false(inventory.overflowed);
++    for (size_t i = 0; i < inventory.entry_count; i++) {
++        if (inventory.entries[i].mutex_id ==
++            tested.crucible_hot_fork_registration_id) {
++            found = &inventory.entries[i];
++        }
++    }
++    g_assert_nonnull(found);
++    g_assert_cmpuint(found->recursion_depth, ==, depth);
++    g_assert_cmpuint(found->acquisition_waiters, ==, acquiring);
++    g_assert_cmpuint(found->condition_waiters, ==, waiting);
++    g_assert_cmpint(found->unlock_active, ==, unlocking);
++    g_assert_cmpint(found->ownership_valid, ==, valid);
++    g_assert_cmpint(found->owner_thread_id != 0, ==, depth != 0);
++    printf("%s generation=%" PRIu64 " depth=%u acquiring=%u condition=%u "
++           "unlock=%u valid=%u\n", label, inventory.generation, depth,
++           acquiring, waiting, unlocking, valid);
++    qemu_mutex_hot_fork_inventory_destroy(&inventory);
++}
++
++static void *one_lock_cycle(void *unused)
++{
++    expose_lock_windows = true;
++    lock_tested();
++    unlock_tested();
++    expose_lock_windows = false;
++    return NULL;
++}
++
++static void check_transaction_windows(void)
++{
++    pthread_t worker;
++
++    qemu_mutex_init(&tested);
++    assert(pthread_create(&worker, NULL, one_lock_cycle, NULL) == 0);
++    await_window(ADMITTED);
++    snapshot("admitted", 0, 1, 0, false, true);
++    release_window(ADMITTED);
++    await_window(NATIVE_ACQUIRED);
++    snapshot("native-acquired", 0, 1, 0, false, true);
++    release_window(NATIVE_ACQUIRED);
++    await_window(UNLOCK_BEGIN);
++    snapshot("unlock-begin", 0, 0, 0, true, true);
++    release_window(UNLOCK_BEGIN);
++    await_window(NATIVE_UNLOCKED);
++    snapshot("native-unlocked", 0, 0, 0, true, true);
++    release_window(NATIVE_UNLOCKED);
++    assert(pthread_join(worker, NULL) == 0);
++    snapshot("completed", 0, 0, 0, false, true);
++}
++
++static void *failed_trylock(void *unused)
++{
++    g_assert_cmpint(qemu_mutex_trylock_impl(&tested, __FILE__, __LINE__),
++                    ==, -EBUSY);
++    return NULL;
++}
++
++static void check_trylock(void)
++{
++    pthread_t worker;
++
++    lock_tested();
++    assert(pthread_create(&worker, NULL, failed_trylock, NULL) == 0);
++    assert(pthread_join(worker, NULL) == 0);
++    snapshot("failed-trylock", 1, 0, 0, false, true);
++    unlock_tested();
++    g_assert_cmpint(qemu_mutex_trylock_impl(&tested, __FILE__, __LINE__), ==, 0);
++    snapshot("successful-trylock", 1, 0, 0, false, true);
++    unlock_tested();
++}
++
++static void *condition_waiter(void *window)
++{
++    lock_tested();
++    expose_condition_window = (enum Window)(uintptr_t)window;
++    while (!condition_released) {
++        qemu_cond_wait_impl(&condition, &tested, __FILE__, __LINE__);
++    }
++    unlock_tested();
++    return NULL;
++}
++
++static void check_condition_waiters(void)
++{
++    pthread_t first, second;
++
++    qemu_cond_init(&condition);
++    assert(pthread_create(&first, NULL, condition_waiter,
++                          (void *)(uintptr_t)CONDITION_ONE) == 0);
++    await_window(CONDITION_ONE);
++    snapshot("condition-one", 0, 0, 1, false, true);
++    crucible_hot_fork_mutex_registry_lock();
++    g_assert_cmpint(tested_entry()->condition_waiter_thread_id, >, 0);
++    crucible_hot_fork_mutex_registry_unlock();
++    release_window(CONDITION_ONE);
++
++    assert(pthread_create(&second, NULL, condition_waiter,
++                          (void *)(uintptr_t)CONDITION_TWO) == 0);
++    await_window(CONDITION_TWO);
++    snapshot("condition-two", 0, 0, 2, false, true);
++    crucible_hot_fork_mutex_registry_lock();
++    g_assert_cmpint(tested_entry()->condition_waiter_thread_id, ==, -1);
++    crucible_hot_fork_mutex_registry_unlock();
++    release_window(CONDITION_TWO);
++
++    /* Native acquisition proves both workers reached their atomic waits. */
++    lock_tested();
++    condition_released = true;
++    assert(pthread_cond_broadcast(&condition.cond) == 0);
++    unlock_tested();
++    assert(pthread_join(first, NULL) == 0);
++    assert(pthread_join(second, NULL) == 0);
++    snapshot("condition-completed", 0, 0, 0, false, true);
++    crucible_hot_fork_mutex_registry_lock();
++    g_assert_cmpint(tested_entry()->condition_waiter_thread_id, ==, 0);
++    crucible_hot_fork_mutex_registry_unlock();
++    lock_tested();
++    g_assert_false(qemu_cond_timedwait_impl(&condition, &tested, 0,
++                                           __FILE__, __LINE__));
++    snapshot("condition-timeout", 1, 0, 0, false, true);
++    unlock_tested();
++    qemu_cond_destroy(&condition);
++}
++
++static void *contended_cycles(void *unused)
++{
++    for (unsigned i = 0; i < 2000; i++) {
++        lock_tested();
++        unlock_tested();
++    }
++    return NULL;
++}
++
++static void check_contended_cycles(void)
++{
++    pthread_t workers[8];
++
++    for (size_t i = 0; i < G_N_ELEMENTS(workers); i++) {
++        assert(pthread_create(&workers[i], NULL, contended_cycles, NULL) == 0);
++    }
++    for (size_t i = 0; i < G_N_ELEMENTS(workers); i++) {
++        assert(pthread_join(workers[i], NULL) == 0);
++    }
++    snapshot("contended-completed", 0, 0, 0, false, true);
++}
++
++static void check_error_and_wrap_semantics(void)
++{
++    CrucibleHotForkMutexEntry *entry;
++
++    crucible_hot_fork_mutex_wait_cancel(&tested);
++    snapshot("cancel-underflow", 0, 0, 0, false, false);
++    crucible_hot_fork_mutex_registry_lock();
++    entry = tested_entry();
++    entry->ownership_valid = true;
++    crucible_hot_fork_mutex_registry_unlock();
++    assert(pthread_mutex_lock(&tested.lock) == 0);
++    crucible_hot_fork_mutex_acquired(&tested);
++    snapshot("acquired-underflow", 1, 0, 0, false, false);
++    unlock_tested();
++    crucible_hot_fork_mutex_registry_lock();
++    entry->ownership_valid = true;
++    entry->acquisition_waiters = UINT32_MAX;
++    crucible_hot_fork_mutex_registry_unlock();
++    crucible_hot_fork_mutex_wait_begin(&tested);
++    snapshot("acquisition-wrap", 0, 0, 0, false, true);
++
++    /* Preserve existing unsigned wrap; this change adds no overflow policy. */
++    lock_tested();
++    crucible_hot_fork_mutex_registry_lock();
++    entry->condition_waiters = UINT32_MAX;
++    crucible_hot_fork_mutex_registry_unlock();
++    crucible_hot_fork_mutex_condition_wait_begin(&tested);
++    snapshot("condition-wrap", 0, 0, 0, false, true);
++    crucible_hot_fork_mutex_condition_wait_end(&tested);
++    snapshot("condition-underflow", 1, 0, 0, false, false);
++    crucible_hot_fork_mutex_registry_lock();
++    entry->ownership_valid = true;
++    entry->condition_waiter_thread_id = 0;
++    crucible_hot_fork_mutex_registry_unlock();
++    unlock_tested();
++}
++
++int main(void)
++{
++    check_transaction_windows();
++    check_trylock();
++    check_condition_waiters();
++    check_contended_cycles();
++    check_error_and_wrap_semantics();
++    qemu_mutex_destroy(&tested);
++    return 0;
++}
++"""
++
++
++SIGNATURES = [
++    "static void error_exit(",
++    "static void crucible_hot_fork_mutex_registry_lock(",
++    "static void crucible_hot_fork_mutex_registry_unlock(",
++    "static void crucible_hot_fork_mutex_latch_inconsistent(",
++    "static void crucible_hot_fork_mutex_changed(",
++    "static void crucible_hot_fork_mutex_slots_init(",
++    "static size_t crucible_hot_fork_mutex_address_hash(",
++    "static bool crucible_hot_fork_mutex_address_find(",
++    "static bool crucible_hot_fork_mutex_address_insert(",
++    "static bool crucible_hot_fork_mutex_address_remove(",
++    "static void crucible_hot_fork_mutex_address_rebuild(",
++    "static bool crucible_hot_fork_mutex_entry_quiescent(",
++    "static CrucibleHotForkMutexEntry *crucible_hot_fork_mutex_entry(",
++    "static void crucible_hot_fork_mutex_register(",
++    "static void crucible_hot_fork_mutex_wait_begin(",
++    "static void crucible_hot_fork_mutex_wait_cancel(",
++    "static void crucible_hot_fork_mutex_acquired(",
++    "static void crucible_hot_fork_mutex_unlock_begin(",
++    "static void crucible_hot_fork_mutex_unlock_end(",
++    "static void crucible_hot_fork_mutex_condition_wait_begin(",
++    "static void crucible_hot_fork_mutex_condition_wait_end(",
++    "static int crucible_hot_fork_mutex_inventory_entry_compare(",
++    "void qemu_mutex_hot_fork_inventory(",
++    "void qemu_mutex_hot_fork_inventory_destroy(",
++    "void qemu_mutex_init(", "void qemu_mutex_destroy(",
++    "void qemu_mutex_lock_impl(", "int qemu_mutex_trylock_impl(",
++    "void qemu_mutex_unlock_impl(", "void qemu_cond_init(",
++    "void qemu_cond_destroy(", "void qemu_cond_wait_impl(",
++    "static inline clockid_t qemu_timedwait_clockid(",
++    "static void compute_abs_deadline(",
++    "static bool TSA_NO_TSA\nqemu_cond_timedwait_ts(",
++    "bool qemu_cond_timedwait_impl(",
++]
++
++
++def generated_source(source, negative_control):
++    """Extract the real registry and native operation bodies."""
++    header = (ROOT / "include/qemu/thread.h").read_text()
++    types = header[header.index("typedef struct QemuMutexHotForkInventoryEntry {"):
++                   header.index("/*\n * Snapshot every active QemuMutex/")]
++    declaration_signatures = [
++        "void qemu_mutex_hot_fork_inventory(",
++        "void qemu_mutex_hot_fork_inventory_destroy(",
++        "void qemu_cond_init(",
++        "void qemu_cond_destroy(",
++        "void TSA_NO_TSA qemu_cond_wait_impl(",
++        "bool qemu_cond_timedwait_impl(",
++    ]
++    declarations = []
++    for signature in declaration_signatures:
++        start = header.index(signature)
++        declarations.append(header[start:header.index(";", start) + 1])
++    globals_source = source[
++        source.index("static pthread_mutex_t crucible_hot_fork_mutex_registry_guard"):
++        source.index("/*\n * This is not defined on Linux")]
++    globals_source += "\nstatic __thread bool crucible_hot_fork_mutex_registry_held;\n"
++    prelude = OWNER_FIXTURE["PRELUDE"]
++    for name in ("pre_lock", "post_lock", "pre_unlock"):
++        prelude = prelude.replace(definition(prelude,
++            f"static void qemu_mutex_{name}("), "")
++    bodies = "\n\n".join(definition(source, signature)
++                            for signature in SIGNATURES)
++
++    mutations = {
++        "admission": ("static void crucible_hot_fork_mutex_wait_begin(",
++                      "        entry->acquisition_waiters++;", ""),
++        "cancel": ("static void crucible_hot_fork_mutex_wait_cancel(",
++                   "            entry->acquisition_waiters--;", ""),
++        "acquired": ("static void crucible_hot_fork_mutex_acquired(",
++                     "        entry->acquisition_waiters--;", ""),
++        "condition-begin": (
++            "static void crucible_hot_fork_mutex_condition_wait_begin(",
++            "entry->condition_waiters++ == 0", "entry->condition_waiters == 0"),
++        "condition-end": (
++            "static void crucible_hot_fork_mutex_condition_wait_end(",
++            "entry->condition_waiters-- == 1", "entry->condition_waiters == 1"),
++    }
++    if negative_control:
++        signature, before, after = mutations[negative_control]
++        original = definition(bodies, signature)
++        assert original.count(before) == 1
++        bodies = bodies.replace(original, original.replace(before, after))
++    return (prelude + types + "\n".join(declarations) + "\n" +
++            globals_source + HOOKS + bodies + CHECKS)
++
++
++def run_fixture(source_path, output_dir, negative_control=None):
++    """Compile and run one production-source variant with a time bound."""
++    output_dir.mkdir(parents=True, exist_ok=True)
++    generated = output_dir / "mutex-waiter-counters.c"
++    generated.write_text(generated_source(source_path.read_text(),
++                                          negative_control))
++    binary = output_dir / "mutex-waiter-counters"
++    command = [os.environ.get("CC", "cc"),
++               *shlex.split(os.environ.get("CFLAGS", "")),
++               "-std=gnu11", "-Wall", "-Werror", "-Wmissing-prototypes",
++               "-Wredundant-decls", "-Wstrict-prototypes", "-UNDEBUG",
++               str(generated),
++               "-o", str(binary),
++               *shlex.split(os.environ.get("LDFLAGS", "")), "-pthread"]
++    (output_dir / "compile-command.json").write_text(
++        json.dumps({"cwd": os.getcwd(), "argv": command}, indent=2) + "\n")
++    compilation = subprocess.run(command, capture_output=True, text=True)
++    (output_dir / "compile.stdout").write_text(compilation.stdout)
++    (output_dir / "compile.stderr").write_text(compilation.stderr)
++    compilation.check_returncode()
++    result = subprocess.run([str(binary)], capture_output=True,
++                            text=True, timeout=60, cwd=output_dir)
++    (output_dir / "trace.txt").write_text(result.stdout)
++    (output_dir / "run.stderr").write_text(result.stderr)
++    (output_dir / "run-status.json").write_text(
++        json.dumps({"returncode": result.returncode}, indent=2) + "\n")
++    result.check_returncode()
++    return result.stdout
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--reference-source", type=Path)
++    parser.add_argument("--negative-control",
++                        choices=["admission", "cancel", "acquired",
++                                 "condition-begin", "condition-end"])
++    arguments = parser.parse_args()
++    trace = run_fixture(ROOT / "util/qemu-thread-posix.c",
++                        arguments.output_dir, arguments.negative_control)
++    if arguments.reference_source:
++        reference_trace = run_fixture(arguments.reference_source,
++                                      arguments.output_dir / "reference")
++        if trace != reference_trace:
++            raise AssertionError("production and reference inventory traces differ")
++    print(trace, end="")
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-net-output-stop.py b/tests/unit/test-crucible-net-output-stop.py
 new file mode 100644
 index 0000000000000000000000000000000000000000..2f8c065358238a2d4da1221cef0d3efdffa3f177
@@ -182085,6 +182765,410 @@ index 0000000000000000000000000000000000000000..13ca7573b80183e1f73489c4b268a2e0
 +
 +if __name__ == "__main__":
 +    main()
+diff --git a/tests/unit/test-crucible-tcg-page-collection.py b/tests/unit/test-crucible-tcg-page-collection.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..a8255fae1727f8c836a7bbf1257b79958fcd556a
+--- /dev/null
++++ b/tests/unit/test-crucible-tcg-page-collection.py
+@@ -0,0 +1,398 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Exercise native system-mode TB page collection and tagged-list insertion.
++
++The production function bodies and list iterator are extracted unchanged.
++GLib owns the real tree; pthread mutexes provide page locks. A transient busy
++trylock is injected explicitly to exercise deterministic retry ordering. The
++PageDesc table and dirty-code notification are providers, not a guest MMU.
++This does not replace system-mode SMC, MTTCG, or replay integration tests.
++
++For a differential run, select baseline definitions with --revision REF or
++--source-root ROOT, then run the working tree into a separate --output-dir.
++Compare stdout: each case prints its exact L (lock), T (successful trylock),
++B (busy trylock), and U (unlock) page-index trace, followed by the success
++marker "page-collection: passed". Stderr reports tree-lookup counts separately;
++those intentionally differ. The 64-TB single-page case uses 65 lookups before
++the tagged-page optimization and one afterward. --omit-other-page must fail.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import shlex
++import subprocess
++
++
++ROOT = Path(__file__).resolve().parents[2]
++
++
++def definition(source, signature):
++    """Return a complete source definition beginning at its signature."""
++    start = source.index(signature)
++    brace = source.index("{", start)
++    depth = 1
++    end = brace + 1
++    while depth:
++        depth += (source[end] == "{") - (source[end] == "}")
++        end += 1
++    return source[start:end]
++
++
++PRELUDE = r"""
++#include <assert.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++#include <pthread.h>
++#include <glib.h>
++#include "qemu/compiler.h"
++#include "qemu/qtree.h"
++
++#define TARGET_PAGE_BITS 12
++#define TARGET_PAGE_MASK (~(UINT64_C(4096) - 1))
++#define PAGE_SIZE UINT64_C(4096)
++#define MAX_PAGES 16
++typedef uint64_t tb_page_addr_t;
++typedef pthread_mutex_t QemuSpin;
++typedef struct PageDesc PageDesc;
++typedef int PageForEachNext;
++typedef struct TranslationBlock {
++    tb_page_addr_t page_addr[2];
++    uintptr_t page_next[2];
++    uint16_t size;
++} TranslationBlock;
++"""
++
++
++PROVIDERS = r"""
++static PageDesc fixture_pages[MAX_PAGES];
++static bool present[MAX_PAGES], held[MAX_PAGES];
++static int transient_busy_index = -1;
++static unsigned int tree_lookups, trace_count;
++static struct {
++    char operation;
++    unsigned int index;
++} trace[256];
++
++static unsigned int lock_index(QemuSpin *lock)
++{
++    for (unsigned int i = 0; i < MAX_PAGES; i++) {
++        if (lock == &fixture_pages[i].lock) {
++            return i;
++        }
++    }
++    assert(false);
++    return 0;
++}
++
++static void record_lock(char operation, unsigned int index)
++{
++    assert(trace_count < sizeof(trace) / sizeof(trace[0]));
++    trace[trace_count].operation = operation;
++    trace[trace_count++].index = index;
++}
++
++static void qemu_spin_lock(QemuSpin *lock)
++{
++    unsigned int index = lock_index(lock);
++
++    assert(!held[index]);
++    assert(pthread_mutex_lock(lock) == 0);
++    held[index] = true;
++    record_lock('L', index);
++}
++
++static bool qemu_spin_trylock(QemuSpin *lock)
++{
++    unsigned int index = lock_index(lock);
++
++    assert(!held[index]);
++    if ((int)index == transient_busy_index) {
++        transient_busy_index = -1;
++        record_lock('B', index);
++        return true;
++    }
++    assert(pthread_mutex_trylock(lock) == 0);
++    held[index] = true;
++    record_lock('T', index);
++    return false;
++}
++
++static void qemu_spin_unlock(QemuSpin *lock)
++{
++    unsigned int index = lock_index(lock);
++
++    assert(held[index]);
++    held[index] = false;
++    record_lock('U', index);
++    assert(pthread_mutex_unlock(lock) == 0);
++}
++
++static void assert_page_locked(const PageDesc *pd)
++{
++    assert(held[pd - fixture_pages]);
++}
++
++static void assert_no_pages_locked(void)
++{
++    for (unsigned int i = 0; i < MAX_PAGES; i++) {
++        assert(!held[i]);
++    }
++}
++
++static void page_lock__debug(const PageDesc *pd) { }
++static void page_unlock__debug(const PageDesc *pd) { }
++
++static PageDesc *page_find(tb_page_addr_t index)
++{
++    assert(index < MAX_PAGES);
++    return present[index] ? &fixture_pages[index] : NULL;
++}
++
++static PageDesc *page_find_alloc(tb_page_addr_t index, bool alloc)
++{
++    assert(!alloc);
++    assert(page_find(index));
++    return page_find(index);
++}
++
++static void tlb_protect_code(tb_page_addr_t addr)
++{
++    assert_page_locked(page_find(addr >> TARGET_PAGE_BITS));
++}
++
++static gpointer counted_tree_lookup(QTree *tree, gconstpointer key)
++{
++    tree_lookups++;
++    return q_tree_lookup(tree, key);
++}
++
++#define q_tree_lookup counted_tree_lookup
++"""
++
++
++EXERCISE = r"""
++#undef q_tree_lookup
++
++static void reset_fixture(void)
++{
++    assert_no_pages_locked();
++    for (unsigned int i = 0; i < MAX_PAGES; i++) {
++        fixture_pages[i].first_tb = 0;
++        present[i] = false;
++    }
++    transient_busy_index = -1;
++    tree_lookups = 0;
++    trace_count = 0;
++}
++
++static void add_tb(TranslationBlock *tb, unsigned int first,
++                   int second, unsigned int offset)
++{
++    *tb = (TranslationBlock) {
++        .page_addr = { first * PAGE_SIZE + offset,
++                       second < 0 ? -1 : second * PAGE_SIZE },
++        .size = 32,
++    };
++    present[first] = true;
++    assert(pthread_mutex_lock(&fixture_pages[first].lock) == 0);
++    held[first] = true;
++    if (second >= 0 && (unsigned int)second != first) {
++        present[second] = true;
++        assert(pthread_mutex_lock(&fixture_pages[second].lock) == 0);
++        held[second] = true;
++    }
++    /* Native insertion checks lock ownership and creates both list tags. */
++    tb_record(tb);
++    held[first] = false;
++    assert(pthread_mutex_unlock(&fixture_pages[first].lock) == 0);
++    if (second >= 0 && (unsigned int)second != first) {
++        held[second] = false;
++        assert(pthread_mutex_unlock(&fixture_pages[second].lock) == 0);
++    }
++}
++
++static void check_collection(const char *name, unsigned int first,
++                             unsigned int last, unsigned int expected_mask,
++                             const char *expected_trace)
++{
++    struct page_collection *pages;
++    unsigned int found_mask = 0;
++    char actual_trace[1024];
++    size_t position = 0;
++
++    trace_count = 0;
++    pages = page_collection_lock(first * PAGE_SIZE, last * PAGE_SIZE + 7);
++    for (unsigned int i = 0; i < MAX_PAGES; i++) {
++        tb_page_addr_t index = i;
++        struct page_entry *entry = q_tree_lookup(pages->tree, &index);
++
++        if (entry) {
++            assert(entry->pd == &fixture_pages[i]);
++            assert(entry->locked && held[i]);
++            found_mask |= 1u << i;
++        } else {
++            assert(!held[i]);
++        }
++    }
++    assert(found_mask == expected_mask);
++    page_collection_unlock(pages);
++    assert_no_pages_locked();
++
++    for (unsigned int i = 0; i < trace_count; i++) {
++        int written = snprintf(actual_trace + position,
++                               sizeof(actual_trace) - position,
++                               "%c%u ", trace[i].operation, trace[i].index);
++
++        assert(written > 0 && (size_t)written < sizeof(actual_trace) - position);
++        position += written;
++    }
++    actual_trace[position] = 0;
++    assert(strcmp(actual_trace, expected_trace) == 0);
++    printf("%s: %s\n", name, actual_trace);
++    fprintf(stderr, "%s: tree-lookups=%u\n", name, tree_lookups);
++}
++
++int main(void)
++{
++    TranslationBlock blocks[64];
++
++    for (unsigned int i = 0; i < MAX_PAGES; i++) {
++        assert(pthread_mutex_init(&fixture_pages[i].lock, NULL) == 0);
++    }
++
++    reset_fixture();
++    check_collection("absent", 4, 4, 0, "");
++
++    reset_fixture();
++    present[4] = true;
++    check_collection("empty", 4, 4, 1u << 4, "L4 U4 ");
++
++    reset_fixture();
++    for (unsigned int i = 0; i < 64; i++) {
++        add_tb(&blocks[i], 4, -1, i * 32);
++    }
++    check_collection("single-page", 4, 4, 1u << 4, "L4 U4 ");
++
++    reset_fixture();
++    add_tb(&blocks[0], 4, 4, 4090);
++    check_collection("physical-alias", 4, 4, 1u << 4, "L4 U4 ");
++
++    reset_fixture();
++    add_tb(&blocks[0], 2, 5, 4090);
++    check_collection("tag-zero", 2, 2, (1u << 2) | (1u << 5),
++                     "L2 L5 U2 U5 ");
++
++    reset_fixture();
++    add_tb(&blocks[0], 5, 2, 4090);
++    check_collection("tag-one", 2, 2, (1u << 2) | (1u << 5),
++                     "L2 L5 U2 U5 ");
++
++    reset_fixture();
++    add_tb(&blocks[0], 5, 2, 4090);
++    check_collection("reverse-order", 5, 5, (1u << 2) | (1u << 5),
++                     "L5 T2 U2 U5 ");
++
++    reset_fixture();
++    add_tb(&blocks[0], 5, 2, 4090);
++    transient_busy_index = 2;
++    check_collection("retry", 5, 5, (1u << 2) | (1u << 5),
++                     "L5 B2 U5 L2 L5 U2 U5 ");
++
++    reset_fixture();
++    add_tb(&blocks[0], 2, 5, 4090);
++    add_tb(&blocks[1], 2, 5, 4080);
++    check_collection("dedup-and-range", 2, 5, (1u << 2) | (1u << 5),
++                     "L2 L5 U2 U5 ");
++
++    for (unsigned int i = 0; i < MAX_PAGES; i++) {
++        assert(pthread_mutex_destroy(&fixture_pages[i].lock) == 0);
++    }
++    puts("page-collection: passed");
++    return 0;
++}
++"""
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--source-root", type=Path, default=ROOT)
++    parser.add_argument("--revision",
++                        help="Read native definitions from a Git revision")
++    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--emit-only", action="store_true")
++    parser.add_argument("--omit-other-page", action="store_true",
++                        help="Negative control: omit native other-page discovery")
++    args = parser.parse_args()
++
++    def read_source(path):
++        if args.revision:
++            return subprocess.check_output(
++                ["git", "-C", str(args.source_root), "show", "--no-ext-diff",
++                 "--end-of-options", args.revision + ":" + path], text=True)
++        return (args.source_root / path).read_text()
++
++    maintenance = read_source("accel/tcg/tb-maint.c")
++    system_maintenance = maintenance[maintenance.index("struct PageDesc {"):]
++    header = read_source("include/exec/translation-block.h")
++    iterator_start = maintenance.index("#define TB_FOR_EACH_TAGGED(")
++    iterator_end = maintenance.index("\n\n", iterator_start)
++    declarations = "\n".join(
++        definition(maintenance, name) + ";" for name in (
++            "struct PageDesc {", "struct page_entry {",
++            "struct page_collection {"))
++    accessors = "\n".join(definition(header, name) for name in (
++        "static inline tb_page_addr_t tb_page_addr0(",
++        "static inline tb_page_addr_t tb_page_addr1("))
++    functions = "\n".join(definition(system_maintenance, name) for name in (
++        "static void page_lock(PageDesc *pd)",
++        "static bool page_trylock(PageDesc *pd)",
++        "static void page_unlock(PageDesc *pd)",
++        "static inline struct page_entry *\npage_entry_new(",
++        "static void page_entry_destroy(",
++        "static bool page_entry_trylock(",
++        "static void do_page_entry_lock(",
++        "static gboolean page_entry_lock(",
++        "static gboolean page_entry_unlock(",
++        "static bool page_trylock_add(",
++        "static gint tb_page_addr_cmp(",
++        "static struct page_collection *page_collection_lock(",
++        "static void page_collection_unlock(",
++        "static void tb_page_add(",
++        "static void tb_record(TranslationBlock *tb)"))
++    if args.omit_other_page:
++        before = "page_trylock_add(set, other_addr)"
++        if before not in functions:
++            raise ValueError("Negative control requires the tagged-page change")
++        functions = functions.replace(before, "false", 1)
++
++    source_text = "\n".join((
++        PRELUDE, declarations, accessors,
++        maintenance[iterator_start:iterator_end],
++        "#define PAGE_FOR_EACH_TB(start, last, pd, tb, n) "
++        "TB_FOR_EACH_TAGGED((pd)->first_tb, tb, n, page_next)",
++        PROVIDERS, functions, EXERCISE))
++    args.output_dir.mkdir(parents=True, exist_ok=True)
++    source = args.output_dir / "page-collection.c"
++    executable = args.output_dir / "page-collection"
++    source.write_text(source_text)
++    if args.emit_only:
++        return
++
++    command = shlex.split(os.environ.get("CC", "cc"))
++    command += shlex.split(os.environ.get("CFLAGS", ""))
++    # Configured release flags may disable assertions; these are test actions.
++    command += ["-UNDEBUG", "-std=gnu11", "-Wall", "-Werror", "-pthread",
++                "-I" + str(args.source_root / "include"),
++                str(source), "-o", str(executable)]
++    command += shlex.split(os.environ.get("LDFLAGS", ""))
++    (args.output_dir / "compile-command.json").write_text(
++        json.dumps(command, indent=2) + "\n")
++    subprocess.run(command, check=True)
++    subprocess.run([str(executable)], check=True, timeout=15)
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-template-control-drain.py b/tests/unit/test-crucible-template-control-drain.py
 new file mode 100644
 index 0000000000000000000000000000000000000000..7ad8b95b8a26a98d6dd2f9948f353df68951cf9a
@@ -188538,10 +189622,10 @@ index d17135f585aef5fd0adf7a6e0f889eeebfade754..a8a35db75afbf1a9aca85b47b4c0a740
  
  void qemu_coroutine_enter(Coroutine *co)
 diff --git a/util/qemu-thread-posix.c b/util/qemu-thread-posix.c
-index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0efe331855 100644
+index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..1b59d60925d365c2f3747dad8c06d5df41488ccf 100644
 --- a/util/qemu-thread-posix.c
 +++ b/util/qemu-thread-posix.c
-@@ -22,6 +22,123 @@
+@@ -22,6 +22,124 @@
  #include <pthread_np.h>
  #endif
  
@@ -188553,6 +189637,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
 +    uint64_t registration_id;
 +    int64_t owner_thread_id;
 +    uint32_t recursion_depth;
++    /* The registry guard serializes waiter updates and their readers. */
 +    uint32_t acquisition_waiters;
 +    uint32_t condition_waiters;
 +    int64_t condition_waiter_thread_id;
@@ -188665,7 +189750,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
  /*
   * This is not defined on Linux, but the man page indicates
   * the buffer must be at least 16 bytes, including the NUL
-@@ -59,6 +176,542 @@ static void error_exit(int err, const char *msg)
+@@ -59,6 +177,542 @@ static void error_exit(int err, const char *msg)
      abort();
  }
  
@@ -188980,7 +190065,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
 +    crucible_hot_fork_mutex_registry_lock();
 +    entry = crucible_hot_fork_mutex_entry(mutex);
 +    if (entry) {
-+        qatomic_inc(&entry->acquisition_waiters);
++        entry->acquisition_waiters++;
 +    }
 +    crucible_hot_fork_mutex_registry_unlock();
 +}
@@ -188995,7 +190080,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
 +        if (qatomic_read(&entry->acquisition_waiters) == 0) {
 +            qatomic_set(&entry->ownership_valid, false);
 +        } else {
-+            qatomic_dec(&entry->acquisition_waiters);
++            entry->acquisition_waiters--;
 +        }
 +    }
 +    crucible_hot_fork_mutex_registry_unlock();
@@ -189035,7 +190120,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
 +    if (qatomic_read(&entry->acquisition_waiters) == 0) {
 +        qatomic_set(&entry->ownership_valid, false);
 +    } else {
-+        qatomic_dec(&entry->acquisition_waiters);
++        entry->acquisition_waiters--;
 +    }
 +    crucible_hot_fork_mutex_registry_unlock();
 +}
@@ -189099,7 +190184,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
 +    owner = qatomic_read(&entry->owner_thread_id);
 +    depth = qatomic_read(&entry->recursion_depth);
 +
-+    if (qatomic_fetch_inc(&entry->condition_waiters) == 0) {
++    if (entry->condition_waiters++ == 0) {
 +        qatomic_set(&entry->condition_waiter_thread_id,
 +                    crucible_mutex_owner_thread_id());
 +    } else {
@@ -189138,7 +190223,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
 +    qatomic_set(&entry->recursion_depth, 1);
 +    if (qatomic_read(&entry->condition_waiters) == 0) {
 +        qatomic_set(&entry->ownership_valid, false);
-+    } else if (qatomic_fetch_dec(&entry->condition_waiters) == 1) {
++    } else if (entry->condition_waiters-- == 1) {
 +        qatomic_set(&entry->condition_waiter_thread_id, 0);
 +    }
 +    crucible_hot_fork_mutex_registry_unlock();
@@ -189208,7 +190293,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
  static inline clockid_t qemu_timedwait_clockid(void)
  {
  #ifdef CONFIG_PTHREAD_CONDATTR_SETCLOCK
-@@ -83,21 +736,48 @@ void qemu_mutex_init(QemuMutex *mutex)
+@@ -83,21 +737,48 @@ void qemu_mutex_init(QemuMutex *mutex)
  {
      int err;
  
@@ -189259,7 +190344,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
  }
  
  void qemu_mutex_lock_impl(QemuMutex *mutex, const char *file, const int line)
-@@ -105,11 +785,13 @@ void qemu_mutex_lock_impl(QemuMutex *mutex, const char *file, const int line)
+@@ -105,11 +786,13 @@ void qemu_mutex_lock_impl(QemuMutex *mutex, const char *file, const int line)
      int err;
  
      assert(mutex->initialized);
@@ -189273,7 +190358,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
  }
  
  int qemu_mutex_trylock_impl(QemuMutex *mutex, const char *file, const int line)
-@@ -117,11 +799,14 @@ int qemu_mutex_trylock_impl(QemuMutex *mutex, const char *file, const int line)
+@@ -117,11 +800,14 @@ int qemu_mutex_trylock_impl(QemuMutex *mutex, const char *file, const int line)
      int err;
  
      assert(mutex->initialized);
@@ -189288,7 +190373,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
      if (err != EBUSY) {
          error_exit(err, __func__);
      }
-@@ -133,10 +818,12 @@ void qemu_mutex_unlock_impl(QemuMutex *mutex, const char *file, const int line)
+@@ -133,10 +819,12 @@ void qemu_mutex_unlock_impl(QemuMutex *mutex, const char *file, const int line)
      int err;
  
      assert(mutex->initialized);
@@ -189301,7 +190386,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
  }
  
  void qemu_rec_mutex_init(QemuRecMutex *mutex)
-@@ -144,6 +831,7 @@ void qemu_rec_mutex_init(QemuRecMutex *mutex)
+@@ -144,6 +832,7 @@ void qemu_rec_mutex_init(QemuRecMutex *mutex)
      int err;
      pthread_mutexattr_t attr;
  
@@ -189309,7 +190394,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
      pthread_mutexattr_init(&attr);
      pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
      err = pthread_mutex_init(&mutex->m.lock, &attr);
-@@ -152,6 +840,7 @@ void qemu_rec_mutex_init(QemuRecMutex *mutex)
+@@ -152,6 +841,7 @@ void qemu_rec_mutex_init(QemuRecMutex *mutex)
          error_exit(err, __func__);
      }
      mutex->m.initialized = true;
@@ -189317,7 +190402,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
  }
  
  void qemu_rec_mutex_destroy(QemuRecMutex *mutex)
-@@ -236,9 +925,11 @@ void qemu_cond_wait_impl(QemuCond *cond, QemuMutex *mutex, const char *file, con
+@@ -236,9 +926,11 @@ void qemu_cond_wait_impl(QemuCond *cond, QemuMutex *mutex, const char *file, con
      int err;
  
      assert(cond->initialized);
@@ -189329,7 +190414,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
      if (err)
          error_exit(err, __func__);
  }
-@@ -250,9 +941,11 @@ qemu_cond_timedwait_ts(QemuCond *cond, QemuMutex *mutex, struct timespec *ts,
+@@ -250,9 +942,11 @@ qemu_cond_timedwait_ts(QemuCond *cond, QemuMutex *mutex, struct timespec *ts,
      int err;
  
      assert(cond->initialized);
@@ -189341,7 +190426,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
      if (err && err != ETIMEDOUT) {
          error_exit(err, __func__);
      }
-@@ -379,19 +1072,901 @@ typedef struct {
+@@ -379,19 +1073,901 @@ typedef struct {
      void *(*start_routine)(void *);
      void *arg;
      char *name;
@@ -190243,7 +191328,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
      g_free(qemu_thread_args->name);
      g_free(qemu_thread_args);
  
-@@ -410,9 +1985,11 @@ static void *qemu_thread_start(void *args)
+@@ -410,9 +1986,11 @@ static void *qemu_thread_start(void *args)
  #pragma GCC diagnostic ignored "-Wstringop-overflow"
  #endif
  
@@ -190255,7 +191340,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
  
  #pragma GCC diagnostic pop
  
-@@ -450,12 +2027,16 @@ void qemu_thread_create(QemuThread *thread, const char *name,
+@@ -450,12 +2028,16 @@ void qemu_thread_create(QemuThread *thread, const char *name,
      qemu_thread_args->name = g_strdup(name);
      qemu_thread_args->start_routine = start_routine;
      qemu_thread_args->arg = arg;
