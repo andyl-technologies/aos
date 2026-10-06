@@ -50,9 +50,9 @@
             printf '%s\n' candidate-executor > "$packageRuntime/rollout-test-identity"
           '';
       });
-  candidatePackageRuntime = assert lib.assertMsg (
+  candidatePackageRuntime = assert (
     !replaceExecutor || toString candidateAos.packageRuntime != toString pkgs.aos.packageRuntime
-  ) "Image rollback qualification requires a distinct candidate executor";
+  );
     candidateAos.packageRuntime;
   candidatePkgs =
     pkgs
