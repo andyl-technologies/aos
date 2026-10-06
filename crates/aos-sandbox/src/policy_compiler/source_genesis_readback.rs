@@ -10,6 +10,7 @@
 //! physical-names[48] | receipt[672] | ACK-floor[32] | ACK-record[32] |
 //! Ed25519 signature[64]
 //! AOSSGO03 preserves this width for the selected legacy Project purpose.
+//! AOSSGO02 retains receipt[848] for the strict full-resource purpose.
 //! AOSSGO04 retains receipt[848] and its distinct resource-purpose signature.
 //! ```
 
@@ -28,6 +29,7 @@ const BODY_BYTES: usize = 864;
 #[derive(Clone, Copy)]
 enum GenesisReadbackRecipe {
     StrictV1,
+    StrictResourceV2,
     ProjectV3 { project: ProjectId, vacant_instance: Option<[u8; 32]> },
     ProjectResourceV4 { project: ProjectId, vacant_instance: Option<[u8; 32]> },
 }
@@ -36,6 +38,7 @@ impl GenesisReadbackRecipe {
     fn magic(self) -> &'static [u8; 8] {
         match self {
             Self::StrictV1 => MAGIC,
+            Self::StrictResourceV2 => b"AOSSGO02",
             Self::ProjectV3 { .. } => b"AOSSGO03",
             Self::ProjectResourceV4 { .. } => b"AOSSGO04",
         }
@@ -44,6 +47,7 @@ impl GenesisReadbackRecipe {
     fn version(self) -> u16 {
         match self {
             Self::StrictV1 => 1,
+            Self::StrictResourceV2 => 2,
             Self::ProjectV3 { .. } => 3,
             Self::ProjectResourceV4 { .. } => 4,
         }
@@ -52,17 +56,22 @@ impl GenesisReadbackRecipe {
     fn domain(self) -> &'static [u8] {
         match self {
             Self::StrictV1 => SIGNATURE_DOMAIN,
+            Self::StrictResourceV2 => b"aos.sandbox.source-tree-genesis.observation.signature.v2\0",
             Self::ProjectV3 { .. } => b"aos.sandbox.source-tree-genesis.mixed-observation.signature.v3\0",
             Self::ProjectResourceV4 { .. } => b"aos.sandbox.source-tree-genesis.mixed-resource-observation.signature.v4\0",
         }
     }
 
     fn body_bytes(self) -> usize {
-        if matches!(self, Self::ProjectResourceV4 { .. }) {
+        if self.resource_version() {
             BODY_BYTES + 176
         } else {
             BODY_BYTES
         }
+    }
+
+    fn resource_version(self) -> bool {
+        matches!(self, Self::StrictResourceV2 | Self::ProjectResourceV4 { .. })
     }
 }
 
@@ -76,6 +85,9 @@ pub use intent_context::{
 
 /// Bounds a Source-only genesis observation including its dedicated signature.
 pub const SOURCE_TREE_GENESIS_READBACK_BYTES_V1: usize = BODY_BYTES + 64;
+
+/// Bounds the distinct full-resource strict Source observation packet.
+pub const SOURCE_TREE_GENESIS_READBACK_BYTES_V2: usize = BODY_BYTES + 176 + 64;
 
 /// Bounds the distinct approval-free mixed initial-project observation.
 pub const SOURCE_PROJECT_GENESIS_READBACK_BYTES_V3: usize = BODY_BYTES + 64;
@@ -92,6 +104,12 @@ pub enum SourceProjectGenesisReadbackPacketV4 {
     /// Retains the exact full-resource Project signature packet.
     Resource([u8; SOURCE_PROJECT_RESOURCE_GENESIS_READBACK_BYTES_V4]),
 }
+
+/// Retains bounded strict genesis DATA using the same two-width packet storage.
+///
+/// Each purpose-specific verifier still authenticates its own closed header and
+/// signing domain. This storage alias supplies neither a signature nor an owner.
+pub type SourceTreeGenesisReadbackPacketV2 = SourceProjectGenesisReadbackPacketV4;
 
 impl AsRef<[u8]> for SourceProjectGenesisReadbackPacketV4 {
     fn as_ref(&self) -> &[u8] {
@@ -126,7 +144,7 @@ impl SourceProjectGenesisReadbackPacketV4 {
         }
     }
 
-    fn into_legacy(self) -> Result<[u8; SOURCE_PROJECT_GENESIS_READBACK_BYTES_V3], SourceHoldReadbackErrorV1> {
+    pub(super) fn into_legacy(self) -> Result<[u8; SOURCE_PROJECT_GENESIS_READBACK_BYTES_V3], SourceHoldReadbackErrorV1> {
         match self {
             Self::Legacy(bytes) => Ok(bytes),
             Self::Resource(_) => Err(SourceHoldReadbackErrorV1::NonCanonical),
@@ -329,6 +347,27 @@ pub fn verify_source_tree_genesis_readback_v1(
     verify_genesis_with_recipe(packet, signer, challenge, GenesisReadbackRecipe::StrictV1)
 }
 
+/// Verifies an exact legacy or full-resource strict Source observation.
+///
+/// The complete packet remains DATA; the actual current Root owner must still
+/// join it to its original Controller completion and held Source family.
+///
+/// # Errors
+/// Rejects foreign purpose/domain, malformed nested receipt or phase, changed
+/// original nonce/intent, generation or the independently pinned signature.
+pub fn verify_source_tree_genesis_readback_v2(
+    packet: &[u8],
+    signer: &PinnedSourceHoldReadbackSignerV1,
+    challenge: SourceTreeGenesisChallengeV1,
+) -> Result<VerifiedSourceTreeGenesisReadbackV1, SourceHoldReadbackErrorV1> {
+    let recipe = if packet.len() == SOURCE_TREE_GENESIS_READBACK_BYTES_V2 {
+        GenesisReadbackRecipe::StrictResourceV2
+    } else {
+        GenesisReadbackRecipe::StrictV1
+    };
+    verify_genesis_with_recipe(packet, signer, challenge, recipe)
+}
+
 fn verify_genesis_with_recipe(
     packet: &[u8], signer: &PinnedSourceHoldReadbackSignerV1,
     challenge: SourceTreeGenesisChallengeV1, recipe: GenesisReadbackRecipe,
@@ -352,7 +391,8 @@ fn verify_genesis_with_recipe(
         return Err(SourceHoldReadbackErrorV1::NonCanonical);
     }
     let (state, receipt, ack_floor, ack_record) = match packet[10] {
-        0 if matches!(recipe, GenesisReadbackRecipe::StrictV1) && challenge.intent().is_none()
+        0 if matches!(recipe, GenesisReadbackRecipe::StrictV1 | GenesisReadbackRecipe::StrictResourceV2)
+            && challenge.intent().is_none()
             && packet[128..body_bytes].iter().all(|byte| *byte == 0) =>
         {
             (SourceTreeGenesisStateV1::Empty, None, None, None)
@@ -363,7 +403,7 @@ fn verify_genesis_with_recipe(
             if challenge.intent() != Some(receipt.intent_digest()) {
                 return Err(SourceHoldReadbackErrorV1::Stale);
             }
-            if (receipt.auth_packet().len() == 400) != matches!(recipe, GenesisReadbackRecipe::ProjectResourceV4 { .. }) {
+            if (receipt.auth_packet().len() == 400) != recipe.resource_version() {
                 return Err(SourceHoldReadbackErrorV1::NonCanonical);
             }
             let floor = take::<32>(packet, ack_offset)?;
@@ -425,6 +465,23 @@ pub(super) fn sign_source_tree_genesis_fields_v1(
         GenesisReadbackRecipe::StrictV1)?.into_legacy()
 }
 
+pub(super) fn sign_source_tree_genesis_fields_v2(
+    challenge: SourceTreeGenesisChallengeV1,
+    names: ProtectedJournalNamesV1,
+    sequence: u64,
+    receipt: Option<&SourceTreeGenesisReceiptV1>,
+    ack: Option<(ObjectDigest, ObjectDigest)>,
+    generation: u64,
+    key: &SigningKey,
+) -> Result<SourceTreeGenesisReadbackPacketV2, SourceHoldReadbackErrorV1> {
+    let recipe = if receipt.is_some_and(|receipt| receipt.auth_packet().len() == 400) {
+        GenesisReadbackRecipe::StrictResourceV2
+    } else {
+        GenesisReadbackRecipe::StrictV1
+    };
+    sign_genesis_with_recipe(challenge, names, sequence, receipt, ack, generation, key, recipe)
+}
+
 pub(super) fn sign_source_project_genesis_fields_v3(
     challenge: SourceProjectGenesisChallengeV3, names: ProtectedJournalNamesV1,
     sequence: u64, receipt: Option<&SourceTreeGenesisReceiptV1>,
@@ -465,7 +522,7 @@ fn sign_genesis_with_recipe(
     ack: Option<(ObjectDigest, ObjectDigest)>, generation: u64,
     key: &SigningKey, recipe: GenesisReadbackRecipe,
 ) -> Result<SourceProjectGenesisReadbackPacketV4, SourceHoldReadbackErrorV1> {
-    let resource_version = matches!(recipe, GenesisReadbackRecipe::ProjectResourceV4 { .. });
+    let resource_version = recipe.resource_version();
     if receipt.is_some_and(|receipt| (receipt.auth_packet().len() == 400) != resource_version) {
         return Err(SourceHoldReadbackErrorV1::NonCanonical);
     }
@@ -492,7 +549,7 @@ fn sign_genesis_with_recipe(
         1
     } else {
         match recipe {
-            GenesisReadbackRecipe::StrictV1 => 0,
+            GenesisReadbackRecipe::StrictV1 | GenesisReadbackRecipe::StrictResourceV2 => 0,
             GenesisReadbackRecipe::ProjectV3 { .. } | GenesisReadbackRecipe::ProjectResourceV4 { .. } => 3,
         }
     };

@@ -738,6 +738,7 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
     // and clock checks remain, but an open queue is not a terminal invariant.
     pub(in crate::policy_compiler) fn receive_q04_final_source_observation(
         &self,
+        resource_version: bool,
         output: &mut Vec<u8>,
         received: &mut Option<Result<
             UnixStreamSubjectChunk,
@@ -746,7 +747,11 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
     ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
         self.receive_q04_at_position(
             ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1
-                + super::super::SOURCE_TREE_GENESIS_READBACK_BYTES_V1,
+                + if resource_version {
+                    super::super::SOURCE_TREE_GENESIS_READBACK_BYTES_V2
+                } else {
+                    super::super::SOURCE_TREE_GENESIS_READBACK_BYTES_V1
+                },
             output, received, Q04ReceivePositionV1::FinalSourceObservation,
         )
     }
@@ -847,7 +852,7 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
         generation: u64,
         key: &ed25519_dalek::SigningKey,
         resident: &mut Option<Result<
-            [u8; super::controller_readback::CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1],
+            super::controller_readback::ControllerGenesisReadbackPacketV2,
             SourceGenesisErrorV1,
         >>,
         first: &mut Option<crate::policy_compiler::create_q04::CreateQ04ErrorV1>,
@@ -866,7 +871,7 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
         generation: u64,
         key: &ed25519_dalek::SigningKey,
         resident: &mut Option<Result<
-            [u8; super::controller_readback::CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1],
+            super::controller_readback::ControllerGenesisReadbackPacketV2,
             SourceGenesisErrorV1,
         >>,
         first: &mut Option<crate::policy_compiler::create_q04::CreateQ04ErrorV1>,
@@ -979,7 +984,7 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
         controller: &HeldControllerSourceGenesisV1<'_>,
         original_frame: &[u8],
     ) -> Result<RootSourceGenesisFloorProofV1<'flight>, SourceGenesisErrorV1> {
-        let payload = decode_root_source_genesis_frame_v1(original_frame, Phase::Anchored, self.nonce)?;
+        let payload = super::wire::decode_root_source_genesis_frame_v2(original_frame, Phase::Anchored, self.nonce)?;
         self.floor_from_original_payload(controller, payload)
     }
 

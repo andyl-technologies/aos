@@ -22,10 +22,10 @@ use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV
 use crate::normal_root::ProductionControllerNormalRootProfileV1;
 
 use super::super::source_genesis_root::{
-    CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1, OriginalRootGenesisFlightV1,
+    ControllerGenesisReadbackPacketV2, OriginalRootGenesisFlightV1,
     ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1, RootCreateQ04TransferKindV1,
     RootSourceGenesisFrameKindV1, decode_root_create_q04_transfer_v1,
-    encode_root_source_genesis_frame_v1,
+    encode_root_source_genesis_frame_v2,
 };
 use super::super::{
     CLOSED_CONTROLLER_HOLD_READBACK_BYTES_V1, CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1,
@@ -91,11 +91,11 @@ pub(crate) struct OriginalCreateQ04InvocationV1<'profile> {
     prehold: Vec<u8>,
     prehold_chunk: Vec<u8>,
     prehold_response: Vec<u8>,
-    prepare: Option<[u8; CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1]>,
-    complete: Option<[u8; CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1]>,
-    refresh_complete: Vec<[u8; CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1]>,
+    prepare: Option<ControllerGenesisReadbackPacketV2>,
+    complete: Option<ControllerGenesisReadbackPacketV2>,
+    refresh_complete: Vec<ControllerGenesisReadbackPacketV2>,
     refresh_source_frames: Vec<Vec<u8>>,
-    refresh_sign_result: Option<Result<[u8; CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1], SourceGenesisErrorV1>>,
+    refresh_sign_result: Option<Result<ControllerGenesisReadbackPacketV2, SourceGenesisErrorV1>>,
     controller_current: Option<[u8; CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1]>,
     controller_hold: Option<[u8; CLOSED_CONTROLLER_HOLD_READBACK_BYTES_V1]>,
     claim: Vec<u8>,
@@ -431,10 +431,11 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
             }
         }
         let prepare = self.prepare.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
-        self.sent = encode_root_source_genesis_frame_v1(RootSourceGenesisFrameKindV1::Prepare, nonce, prepare)?;
+        self.sent = encode_root_source_genesis_frame_v2(RootSourceGenesisFrameKindV1::Prepare, nonce, prepare.as_ref())?;
         flight.q04_send_original(&self.sent)?;
         flight.receive_q04_exact(
-            ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1 + RootSourceGenesisFrameKindV1::Anchored.payload_bytes(),
+            ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1
+                + RootSourceGenesisFrameKindV1::Anchored.payload_bytes_for_resource(controller.acceptance().resource_envelope().is_some()),
             &mut self.floor_frame, &mut self.received,
         )?;
         // Prepared is never accepted by this existing-only route. The same
@@ -452,7 +453,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
             }
         }
         let complete = self.complete.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
-        self.sent = encode_root_source_genesis_frame_v1(RootSourceGenesisFrameKindV1::Complete, nonce, complete)?;
+        self.sent = encode_root_source_genesis_frame_v2(RootSourceGenesisFrameKindV1::Complete, nonce, complete.as_ref())?;
         flight.q04_send_original(&self.sent)?;
         flight.receive_q04_exact(
             ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1 + RootSourceGenesisFrameKindV1::Completed.payload_bytes(),
@@ -467,7 +468,12 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         // This exact original returned packet is retained as Claim field11;
         // it is not a Controller-produced signature or a stand-alone floor.
         flight.receive_q04_exact(
-            ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1 + super::super::SOURCE_TREE_GENESIS_READBACK_BYTES_V1,
+            ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1
+                + if complete.as_ref().len() == super::super::source_genesis_root::CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V2 {
+                    super::super::SOURCE_TREE_GENESIS_READBACK_BYTES_V2
+                } else {
+                    super::super::SOURCE_TREE_GENESIS_READBACK_BYTES_V1
+                },
             &mut self.source_frame, &mut self.received,
         )?;
         decode_root_create_q04_transfer_v1(&self.source_frame, RootCreateQ04TransferKindV1::SourceObservation, nonce)?;
@@ -479,8 +485,8 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
     }
 
     // Only a permitted same-owner selfwrite calls this closed continuation.
-    // Complete864 is signed by the existing genuine Controller/gen1 engine;
-    // only Root can produce the returned Source928 observation. Original
+    // Complete864/1040 uses the genuine Controller/gen1 engine; only Root
+    // obtains the corresponding full Source928/1104 observation. Original
     // packets and partials stay resident, and no sequence is edited in DATA.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn refresh_after_selfwrite(
@@ -581,15 +587,23 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         let complete = self.refresh_complete.last().ok_or(CreateQ04ErrorV1::ChangedCut)?;
         self.sent.clear();
         super::super::source_genesis_root::encode_root_create_q04_transfer_v1(
-            &mut self.sent, RootCreateQ04TransferKindV1::SourceRefresh, nonce, complete,
+            &mut self.sent, RootCreateQ04TransferKindV1::SourceRefresh, nonce, complete.as_ref(),
         )?;
         flight.q04_send_original(&self.sent)?;
         let response = self.refresh_source_frames.last_mut().ok_or(CreateQ04ErrorV1::ChangedCut)?;
         if final_source_observation {
-            flight.receive_q04_final_source_observation(response, &mut self.received)?;
+            flight.receive_q04_final_source_observation(
+                complete.as_ref().len() == super::super::source_genesis_root::CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V2,
+                response, &mut self.received,
+            )?;
         } else {
             flight.receive_q04_exact(
-                ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1 + super::super::SOURCE_TREE_GENESIS_READBACK_BYTES_V1,
+                ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1
+                + if complete.as_ref().len() == super::super::source_genesis_root::CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V2 {
+                    super::super::SOURCE_TREE_GENESIS_READBACK_BYTES_V2
+                } else {
+                    super::super::SOURCE_TREE_GENESIS_READBACK_BYTES_V1
+                },
                 response, &mut self.received,
             )?;
         }
@@ -957,7 +971,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
             &self.source_frame, RootCreateQ04TransferKindV1::SourceObservation, nonce,
         )?;
         let precut = super::q04_original_precut_digest_v1(
-            &request, &preview, complete, source,
+            &request, &preview, complete.as_ref(), source,
             crate::journal::ProtectedJournalNamesV1::from_bytes(&reply[400..448])?,
             u64::from_be_bytes(super::fixed(reply, 392)),
         )?;
@@ -970,7 +984,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         let expected_claim_length = request.fields()[1..4].iter()
             .chain(preview.fields()[3..7].iter())
             .chain(std::iter::once(&preview.fields()[8]))
-            .try_fold(3432_usize, |sum, field| sum.checked_add(field.len()).ok_or(CreateQ04ErrorV1::Bounds))?;
+            .try_fold(2504_usize + source.len(), |sum, field| sum.checked_add(field.len()).ok_or(CreateQ04ErrorV1::Bounds))?;
         if request.fields()[0] != prepared.metadata.as_slice()
             || request.fields()[4] != prepared.proposed.as_slice()
             || preview.staged()? != prepared.staged
@@ -1355,7 +1369,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
 
         let flight = self.flight.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
         let nonce = flight.q04_terminal_nonce()?;
-        let floor_payload = super::super::source_genesis_root::decode_root_source_genesis_frame_v1(
+        let floor_payload = super::super::source_genesis_root::decode_root_source_genesis_frame_v2(
             &self.floor_frame, RootSourceGenesisFrameKindV1::Anchored, nonce,
         )?;
         let floor = super::super::SourceHierarchyFloorRecordV1::from_record_bytes(floor_payload)?;
@@ -1389,7 +1403,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
     }
 
     // Root independently verifies its real Source-role pin before returning
-    // each Source928 packet. This consumer trusts that authenticated original
+    // each full Source packet. This consumer trusts that authenticated original
     // producer boundary; it does not invent a separate Controller Source pin.
     // Its own exact current Controller/Source native and gen1 checks remain.
     #[allow(clippy::too_many_arguments)]

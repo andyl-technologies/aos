@@ -26,7 +26,8 @@ use crate::lifecycle::protected_journal_join::{
 
 use super::source_genesis_readback::{
     SOURCE_TREE_GENESIS_READBACK_BYTES_V1, SourceTreeGenesisChallengeV1,
-    SourceTreeGenesisIntentContextV1, sign_source_tree_genesis_fields_v1,
+    SourceTreeGenesisIntentContextV1, SourceTreeGenesisReadbackPacketV2,
+    sign_source_tree_genesis_fields_v2,
 };
 use super::source_hold_readback::{
     SOURCE_HOLD_READBACK_BYTES_V1, SourceHoldReadbackChallengeV1, SourceHoldReadbackErrorV1,
@@ -128,6 +129,30 @@ pub fn sign_fixed_source_tree_genesis_readback_v2(
     signer_generation: u64,
     signing_key: &SigningKey,
 ) -> Result<[u8; SOURCE_TREE_GENESIS_READBACK_BYTES_V1], SourceSignerReadbackErrorV1> {
+    if intent_context.is_some_and(SourceTreeGenesisIntentContextV1::has_resource_authorization) {
+        return Err(SourceHoldReadbackErrorV1::NonCanonical.into());
+    }
+    sign_fixed_source_tree_genesis_readback_v3(
+        expected_controller_uid, project, challenge, intent_context, signer_generation, signing_key,
+    )?.into_legacy().map_err(Into::into)
+}
+
+/// Signs the exact legacy or resource strict observation on the same fixed view.
+///
+/// This version retains the complete signed authorization and original receipt.
+/// It does not supply Root, Controller or current administrative authority.
+///
+/// # Errors
+/// Rejects mixed project/context/intent, unsafe reader custody, malformed full
+/// replay, foreign original joins or a changed actual Source cut.
+pub fn sign_fixed_source_tree_genesis_readback_v3(
+    expected_controller_uid: u32,
+    project: Option<ProjectId>,
+    challenge: SourceTreeGenesisChallengeV1,
+    intent_context: Option<&SourceTreeGenesisIntentContextV1>,
+    signer_generation: u64,
+    signing_key: &SigningKey,
+) -> Result<SourceTreeGenesisReadbackPacketV2, SourceSignerReadbackErrorV1> {
     if expected_controller_uid == 0
         || signer_generation == 0
         || project.is_some_and(|project| project.as_bytes() == &[0; 16])
@@ -138,7 +163,7 @@ pub fn sign_fixed_source_tree_genesis_readback_v2(
         return Err(SourceHoldReadbackErrorV1::NonCanonical.into());
     }
     with_source_signer_journal_view(expected_controller_uid, |readback| {
-        sign_genesis_readback_from_view(
+        sign_genesis_readback_from_view_v2(
             readback,
             project,
             challenge,
@@ -263,6 +288,22 @@ pub(super) fn sign_genesis_readback_from_view(
     signer_generation: u64,
     signing_key: &SigningKey,
 ) -> Result<[u8; SOURCE_TREE_GENESIS_READBACK_BYTES_V1], SourceSignerReadbackErrorV1> {
+    if intent_context.is_some_and(SourceTreeGenesisIntentContextV1::has_resource_authorization) {
+        return Err(SourceHoldReadbackErrorV1::NonCanonical.into());
+    }
+    sign_genesis_readback_from_view_v2(
+        readback, project, challenge, intent_context, signer_generation, signing_key,
+    )?.into_legacy().map_err(Into::into)
+}
+
+fn sign_genesis_readback_from_view_v2(
+    readback: &mut ReadOnlyProtectedJournal,
+    project: Option<ProjectId>,
+    challenge: SourceTreeGenesisChallengeV1,
+    intent_context: Option<&SourceTreeGenesisIntentContextV1>,
+    signer_generation: u64,
+    signing_key: &SigningKey,
+) -> Result<SourceTreeGenesisReadbackPacketV2, SourceSignerReadbackErrorV1> {
     let rows = crate::hierarchy::source_genesis::validate_actual_rows(readback.journal_mut())
         .map_err(|_| SourceSignerReadbackErrorV1::Stale)?;
     let names = readback.physical_names_v1();
@@ -312,7 +353,7 @@ pub(super) fn sign_genesis_readback_from_view(
     let ack = project
         .and_then(|project| rows.acks.get(&project))
         .map(|ack| (ack.root_floor, ack.digest()));
-    let packet = sign_source_tree_genesis_fields_v1(
+    let packet = sign_source_tree_genesis_fields_v2(
         challenge,
         names,
         sequence,

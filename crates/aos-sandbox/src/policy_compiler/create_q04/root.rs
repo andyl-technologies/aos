@@ -27,8 +27,8 @@ use super::super::source_genesis_root::{
     Q04RootGen1CutLoanV1, RootCreateQ04TransferKindV1, RootSourceGenesisAuthorityV1,
     RootSourceGenesisFrameKindV1, ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1,
     ROOT_SOURCE_GENESIS_HELLO_MAGIC_V1,
-    decode_root_create_q04_transfer_v1, decode_root_source_genesis_frame_v1, encode_root_create_q04_transfer_v1,
-    encode_root_source_genesis_frame_v1, original_root_kernel_pair_v1,
+    decode_root_create_q04_transfer_v1, decode_root_source_genesis_frame_v2, encode_root_create_q04_transfer_v1,
+    encode_root_source_genesis_frame_v2, original_root_kernel_pair_v1,
     require_open_receive_queue, wait_original_root_v1,
 };
 use super::super::{
@@ -980,8 +980,9 @@ pub struct OriginalRootCreateQ04AttemptV1<'startup> {
     sent_progress: Cell<usize>,
     send_result: RefCell<Option<Result<usize, rustix::io::Errno>>>,
     shutdown_result: Option<Result<(), std::io::Error>>,
-    source_received: Option<Result<[u8; SOURCE_TREE_GENESIS_READBACK_BYTES_V1], std::io::Error>>,
-    source_observations: Vec<[u8; SOURCE_TREE_GENESIS_READBACK_BYTES_V1]>,
+    source_received: Option<Result<super::super::SourceTreeGenesisReadbackPacketV2, std::io::Error>>,
+    source_observations: Vec<super::super::SourceTreeGenesisReadbackPacketV2>,
+    source_resource_posts: Vec<RootResourceSourcePostsV2>,
     floor: Option<SourceHierarchyFloorRecordV1>,
     stage: Option<super::super::binding_v2::Q04RootStageRecipeV1>,
     preview: Vec<u8>,
@@ -1045,6 +1046,7 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
             shutdown_result: None,
             source_received: None,
             source_observations: Vec::new(),
+            source_resource_posts: Vec::new(),
             floor: None,
             stage: None,
             preview: Vec::new(),
@@ -1211,15 +1213,21 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
             if !self.controller_complete.is_empty() || !self.source_complete.is_empty() {
                 return Err(CreateQ04ErrorV1::ChangedCut);
             }
-            self.source_complete.try_reserve_exact(SOURCE_TREE_GENESIS_READBACK_BYTES_V1)?;
+            let bytes = if self.floor.as_ref().is_some_and(|floor| floor.receipt().auth_packet().len() == 400) {
+                super::super::SOURCE_TREE_GENESIS_READBACK_BYTES_V2
+            } else {
+                SOURCE_TREE_GENESIS_READBACK_BYTES_V1
+            };
+            self.source_complete.try_reserve_exact(bytes)?;
         }
         let slot = match purpose {
             RootSourceObservationPurposeV1::Preparation => RootControllerFrameSlotV1::Prepare,
             RootSourceObservationPurposeV1::Completion => RootControllerFrameSlotV1::Complete,
             RootSourceObservationPurposeV1::Refresh => {
                 if self.refresh_frames.len() >= MAXIMUM_SOURCE_OBSERVATIONS - 2
-                    || self.controller_complete.len() != super::super::source_genesis_root::CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1
-                    || self.source_complete.len() != SOURCE_TREE_GENESIS_READBACK_BYTES_V1
+                    || super::require_genesis_observation_pair_widths(
+                        &self.controller_complete, &self.source_complete,
+                    ).is_err()
                 {
                     return Err(CreateQ04ErrorV1::ChangedCut);
                 }
@@ -1229,16 +1237,14 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
                 RootControllerFrameSlotV1::Refresh
             }
         };
-        let length = ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1
-            + super::super::source_genesis_root::CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1;
-        self.receive_original_exact(length, slot)?;
+        self.receive_original_genesis_frame(slot)?;
         self.recheck_original()?;
         let root = self.root.as_mut().ok_or(CreateQ04ErrorV1::ChangedCut)?;
         let packet = match purpose {
-            RootSourceObservationPurposeV1::Preparation => decode_root_source_genesis_frame_v1(
+            RootSourceObservationPurposeV1::Preparation => decode_root_source_genesis_frame_v2(
                 &self.controller_frame, RootSourceGenesisFrameKindV1::Prepare, root.nonce(),
             )?,
-            RootSourceObservationPurposeV1::Completion => decode_root_source_genesis_frame_v1(
+            RootSourceObservationPurposeV1::Completion => decode_root_source_genesis_frame_v2(
                 &self.completion_frame, RootSourceGenesisFrameKindV1::Complete, root.nonce(),
             )?,
             RootSourceObservationPurposeV1::Refresh => decode_root_create_q04_transfer_v1(
@@ -1274,6 +1280,22 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
         context: SourceTreeGenesisIntentContextV1,
         purpose: RootSourceObservationPurposeV1,
     ) -> Result<RootCreateQ04SourceObservationLoanV1<'_, 'startup>, ()> {
+        let resource_posts = if context.has_resource_authorization() {
+            if self.cause.borrow().is_some() || self.postcheck_debt.borrow().is_some()
+                || self.source_resource_posts.len() >= MAXIMUM_SOURCE_OBSERVATIONS {
+                self.cause.borrow_mut().get_or_insert(CreateQ04ErrorV1::ChangedCut);
+                return Err(());
+            }
+            if self.source_resource_posts.try_reserve_exact(1).map_err(|error| {
+                self.cause.borrow_mut().get_or_insert(error.into());
+            }).is_err() {
+                return Err(());
+            }
+            self.source_resource_posts.push(RootResourceSourcePostsV2::default());
+            self.source_resource_posts.last_mut()
+        } else {
+            None
+        };
         // All slot checks preceded the potentially effectful RPC. The loan
         // contains disjoint original borrows, not a self-reference or getter.
         let (Some(startup), Some(root), Some(state), Some(stream), Some(peer), Some(clock), Some(started)) = (
@@ -1294,6 +1316,7 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
             purpose,
             received: &mut self.source_received,
             observations: &mut self.source_observations,
+            resource_posts,
             source_complete: &mut self.source_complete,
             controller_complete: &self.controller_complete,
             floor: &mut self.floor,
@@ -1319,12 +1342,12 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
         self.recheck_original()?;
         let root = self.root.as_mut().ok_or(CreateQ04ErrorV1::ChangedCut)?;
         let source = self.source_observations.last().ok_or(CreateQ04ErrorV1::ChangedCut)?;
-        let floor = root.recover_floor(Some(source.as_slice()))?
+        let floor = root.recover_floor(Some(source.as_ref()))?
             .ok_or(CreateQ04ErrorV1::ChangedCut)?;
         if self.floor.as_ref() != Some(&floor) {
             return Err(CreateQ04ErrorV1::ChangedCut);
         }
-        self.sent = encode_root_source_genesis_frame_v1(
+        self.sent = encode_root_source_genesis_frame_v2(
             RootSourceGenesisFrameKindV1::Anchored, root.nonce(), floor.record_bytes(),
         )?;
         self.write_original(&self.sent)?;
@@ -1355,7 +1378,7 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
         }
         let digest = current.floor().digest();
         drop(current);
-        self.sent = encode_root_source_genesis_frame_v1(
+        self.sent = encode_root_source_genesis_frame_v2(
             RootSourceGenesisFrameKindV1::Completed, root.nonce(), digest.as_bytes(),
         )?;
         self.write_original(&self.sent)?;
@@ -1498,6 +1521,23 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
         length: usize,
         slot: RootControllerFrameSlotV1,
     ) -> Result<(), CreateQ04ErrorV1> {
+        self.receive_original_exact_with_header(length, slot, false)
+    }
+
+    fn receive_original_genesis_frame(
+        &mut self, slot: RootControllerFrameSlotV1,
+    ) -> Result<(), CreateQ04ErrorV1> {
+        let length = ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1
+            + super::super::source_genesis_root::CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1;
+        self.receive_original_exact_with_header(length, slot, true)
+    }
+
+    fn receive_original_exact_with_header(
+        &mut self,
+        mut length: usize,
+        slot: RootControllerFrameSlotV1,
+        mut genesis_header: bool,
+    ) -> Result<(), CreateQ04ErrorV1> {
         if length == 0 || length > 4096 || self.received.is_some()
             || !self.controller_frame_buffer(slot)?.is_empty()
         {
@@ -1506,7 +1546,41 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
         self.controller_frame_buffer_mut(slot)?.try_reserve_exact(length)?;
         loop {
             let copied = self.controller_frame_buffer(slot)?.len();
-            if copied == length { break; }
+            if copied == length {
+                if !genesis_header { break; }
+                // This is the old fixed receive's final owner/clock post.
+                // Even malformed sizing DATA cannot move ahead of that post.
+                self.recheck_original()?;
+                // The original legacy receive/allocation schedule finishes
+                // before DATA framing can select the resource-only extension.
+                let header = &self.controller_frame_buffer(slot)?[..ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1];
+                let resource_version = match slot {
+                    RootControllerFrameSlotV1::Refresh => [0, 3],
+                    _ => [0, 2],
+                };
+                if header[8..10] != resource_version {
+                    return Ok(());
+                }
+                let nonce = self.root.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?.nonce();
+                let payload_bytes = match slot {
+                    RootControllerFrameSlotV1::Prepare => super::super::source_genesis_root::strict_genesis_payload_bytes_from_header(
+                        header, RootSourceGenesisFrameKindV1::Prepare, nonce,
+                    ).map_err(CreateQ04ErrorV1::from),
+                    RootControllerFrameSlotV1::Complete => super::super::source_genesis_root::strict_genesis_payload_bytes_from_header(
+                        header, RootSourceGenesisFrameKindV1::Complete, nonce,
+                    ).map_err(CreateQ04ErrorV1::from),
+                    RootControllerFrameSlotV1::Refresh => super::super::source_genesis_root::q04_genesis_refresh_payload_bytes_from_header(header, nonce),
+                    _ => Err(CreateQ04ErrorV1::ChangedCut),
+                }?;
+                genesis_header = false;
+                let complete_length = ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1 + payload_bytes;
+                if complete_length == length { return Ok(()); }
+                if complete_length != length + 176 {
+                    return Err(CreateQ04ErrorV1::ChangedCut);
+                }
+                self.controller_frame_buffer_mut(slot)?.try_reserve_exact(176)?;
+                length = complete_length;
+            }
             self.recheck_original()?;
             self.received = Some(self.stream.as_mut().ok_or(CreateQ04ErrorV1::ChangedCut)?
                 .try_receive_subject_chunk_retaining(length - copied));
@@ -1868,7 +1942,7 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
         let claim_length = request_fields[1..4].iter()
             .chain(preview_fields[3..7].iter())
             .chain(std::iter::once(&preview_fields[8]))
-            .try_fold(3432_usize, |sum, field| sum.checked_add(field.len()).ok_or(CreateQ04ErrorV1::Bounds))?;
+            .try_fold(2504_usize + self.source_complete.len(), |sum, field| sum.checked_add(field.len()).ok_or(CreateQ04ErrorV1::Bounds))?;
         if claim_length > super::MAXIMUM_CLAIM_BYTES {
             return Err(CreateQ04ErrorV1::Bounds);
         }
@@ -2205,7 +2279,7 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
         self.claim_source_observation = Some(self.source_observations.len().checked_sub(1)
             .ok_or(CreateQ04ErrorV1::ChangedCut)?);
         if self.source_observations.get(self.claim_source_observation
-            .ok_or(CreateQ04ErrorV1::ChangedCut)?).map(|packet| packet.as_slice())
+            .ok_or(CreateQ04ErrorV1::ChangedCut)?).map(|packet| packet.as_ref())
             != Some(self.source_complete.as_slice())
         {
             return Err(CreateQ04ErrorV1::ChangedCut);
@@ -2975,7 +3049,7 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
         let claim = gen1.verify_claim(&self.claim, identity)?;
         let fields = claim.fields();
         if self.source_observations.get(self.claim_source_observation.ok_or(CreateQ04ErrorV1::ChangedCut)?)
-            .map(|packet| packet.as_slice()) != Some(fields[11])
+            .map(|packet| packet.as_ref()) != Some(fields[11])
         {
             return Err(CreateQ04ErrorV1::ChangedCut);
         }
@@ -3360,12 +3434,20 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
     }
 }
 
+// The actual resource-only observation reserves all independent Result owners
+// before the RPC. The paired sample remains whole and runs last even on Err.
+#[derive(Default)]
+struct RootResourceSourcePostsV2 {
+    owners: [Option<Result<(), CreateQ04ErrorV1>>; 5],
+    clock: Option<Result<RawPairedClockSample, CreateQ04ErrorV1>>,
+}
+
 /// Lends one actual Root-selected request to the unchanged fixed Source RPC.
 ///
 /// The loan exposes only existing request/key DATA. It retains the actual Root
 /// owner and original stream/startup/state loans; it cannot clone, extract or
 /// manufacture an authority. Its caller parks the actual returned `Result`
-/// through [`Self::park_result`] before any post-RPC checks or diagnostics.
+/// through [`Self::park_result`] or [`Self::park_result_v2`] before postchecks.
 pub struct RootCreateQ04SourceObservationLoanV1<'attempt, 'startup> {
     root: &'attempt mut RootSourceGenesisAuthorityV1,
     original: RootOriginalInputLoanV1<'attempt, 'startup>,
@@ -3373,8 +3455,9 @@ pub struct RootCreateQ04SourceObservationLoanV1<'attempt, 'startup> {
     challenge: SourceTreeGenesisChallengeV1,
     context: SourceTreeGenesisIntentContextV1,
     purpose: RootSourceObservationPurposeV1,
-    received: &'attempt mut Option<Result<[u8; SOURCE_TREE_GENESIS_READBACK_BYTES_V1], std::io::Error>>,
-    observations: &'attempt mut Vec<[u8; SOURCE_TREE_GENESIS_READBACK_BYTES_V1]>,
+    received: &'attempt mut Option<Result<super::super::SourceTreeGenesisReadbackPacketV2, std::io::Error>>,
+    observations: &'attempt mut Vec<super::super::SourceTreeGenesisReadbackPacketV2>,
+    resource_posts: Option<&'attempt mut RootResourceSourcePostsV2>,
     source_complete: &'attempt mut Vec<u8>,
     controller_complete: &'attempt [u8],
     floor: &'attempt mut Option<SourceHierarchyFloorRecordV1>,
@@ -3405,8 +3488,20 @@ impl RootCreateQ04SourceObservationLoanV1<'_, '_> {
     /// owner/clock check failure. The enclosing attempt remains closed; this
     /// does not repair the old RPC's callee-local pre-return custody gap.
     pub fn park_result(
-        mut self,
+        self,
         returned: Result<[u8; SOURCE_TREE_GENESIS_READBACK_BYTES_V1], std::io::Error>,
+    ) -> Result<(), ()> {
+        self.park_result_v2(returned.map(super::super::SourceTreeGenesisReadbackPacketV2::Legacy))
+    }
+
+    /// Parks the full resource packet before all independent owner posts.
+    ///
+    /// # Errors
+    /// Retains the actual RPC cause, Root post and original-flight post without
+    /// renewing the deadline. The original clock-bearing post runs last.
+    pub fn park_result_v2(
+        mut self,
+        returned: Result<super::super::SourceTreeGenesisReadbackPacketV2, std::io::Error>,
     ) -> Result<(), ()> {
         *self.received = Some(returned);
         if matches!(self.received, Some(Err(_))) {
@@ -3419,10 +3514,39 @@ impl RootCreateQ04SourceObservationLoanV1<'_, '_> {
         }
         // A negative result still gets physical postchecks without renewing
         // availability. Their error is debt, never a replacement first cause.
-        let checked = self.root.recheck().map_err(CreateQ04ErrorV1::from)
-            .and_then(|()| self.original.recheck_owned().map(|_| ()));
-        if let Err(error) = checked {
-            self.retain_error(error);
+        if let Some(posts) = self.resource_posts.as_mut() {
+            posts.owners[0] = Some(self.root.recheck().map_err(CreateQ04ErrorV1::from));
+            self.original.recheck_resource_posts(posts);
+            for result in posts.owners.iter_mut() {
+                if result.as_ref().is_some_and(Result::is_err) {
+                    let mut cause = self.original.cause.borrow_mut();
+                    let mut debt = self.postcheck_debt.borrow_mut();
+                    let destination = if cause.is_none() { &mut *cause } else { &mut *debt };
+                    // If both error owners are occupied, the complete later
+                    // result remains in this original attempt's parked slot.
+                    if destination.is_none() {
+                        if let Some(Err(error)) = result.take() {
+                            *destination = Some(error);
+                        }
+                    }
+                }
+            }
+            if posts.clock.as_ref().is_some_and(Result::is_err) {
+                let mut cause = self.original.cause.borrow_mut();
+                let mut debt = self.postcheck_debt.borrow_mut();
+                let destination = if cause.is_none() { &mut *cause } else { &mut *debt };
+                if destination.is_none() {
+                    if let Some(Err(error)) = posts.clock.take() {
+                        *destination = Some(error);
+                    }
+                }
+            }
+        } else {
+            let checked = self.root.recheck().map_err(CreateQ04ErrorV1::from)
+                .and_then(|()| self.original.recheck_owned().map(|_| ()));
+            if let Err(error) = checked {
+                self.retain_error(error);
+            }
         }
         if self.original.cause.borrow().is_none() {
             let accepted = self.accept_original_packet();
@@ -3444,11 +3568,11 @@ impl RootCreateQ04SourceObservationLoanV1<'_, '_> {
             .ok_or(CreateQ04ErrorV1::ChangedCut)?;
         let completed = !matches!(self.purpose, RootSourceObservationPurposeV1::Preparation);
         let floor = if completed {
-            let current = self.root.q04_refresh_completed_gen1(self.controller_complete, packet)?;
+            let current = self.root.q04_refresh_completed_gen1(self.controller_complete, packet.as_ref())?;
             current.recheck()?;
             current.floor().clone()
         } else {
-            self.root.recover_floor(Some(packet.as_slice()))?
+            self.root.recover_floor(Some(packet.as_ref()))?
                 .ok_or(CreateQ04ErrorV1::ChangedCut)?
         };
         if self.floor.as_ref().is_some_and(|prior| prior != &floor) {
@@ -3459,7 +3583,7 @@ impl RootCreateQ04SourceObservationLoanV1<'_, '_> {
 
         if completed {
             self.source_complete.clear();
-            self.source_complete.extend_from_slice(packet);
+            self.source_complete.extend_from_slice(packet.as_ref());
         }
         *self.floor = Some(floor);
         // Capacity and slot vacancy were checked before invocation. This
@@ -3608,6 +3732,21 @@ impl RootOriginalInputLoanV1<'_, '_> {
         )?;
 
         recheck_original_clock(self.clock, self.started)
+    }
+
+    // These are independent negative bookends, not retry/admission authority.
+    // The caller already parked the RPC and Root post in the same reservoir.
+    fn recheck_resource_posts(&self, posts: &mut RootResourceSourcePostsV2) {
+        posts.owners[1] = Some(self.startup.recheck().map_err(CreateQ04ErrorV1::from));
+        posts.owners[2] = Some(self.peer.recheck_stream(self.stream).map_err(CreateQ04ErrorV1::from));
+        posts.owners[3] = Some(require_open_receive_queue(self.stream.as_fd()).map_err(CreateQ04ErrorV1::from));
+        posts.owners[4] = Some(self.state.require_protected_named_location(
+            Path::new(PROTECTED_POLICY_ROOT),
+            POLICY_STATE_JOURNAL,
+            0,
+            policy_state_journal_limits(),
+        ).map_err(CreateQ04ErrorV1::from));
+        posts.clock = Some(recheck_original_clock(self.clock, self.started));
     }
 
     // A boolean model-verifier surface must not erase the real first I/O

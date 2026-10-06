@@ -28,7 +28,7 @@ use super::super::protected_owner::{
 };
 use super::super::source_genesis_readback::{
     SourceTreeGenesisChallengeV1, SourceTreeGenesisIntentContextV1,
-    VerifiedSourceTreeGenesisReadbackV1, verify_source_tree_genesis_readback_v1,
+    VerifiedSourceTreeGenesisReadbackV1, verify_source_tree_genesis_readback_v2,
 };
 use super::capacity;
 use super::controller_readback::{self, VerifiedControllerSourceGenesisReadbackV1};
@@ -888,7 +888,10 @@ impl RootSourceGenesisAuthorityV1 {
         let controller_sequence = u64::from_be_bytes(
             crate::hierarchy::genesis_profile::take::<8>(controller_packet, 32)?,
         );
-        let controller_names = ProtectedJournalNamesV1::from_bytes(&controller_packet[672..720])?;
+        let names_offset = controller_packet.len() - 192;
+        let controller_names = ProtectedJournalNamesV1::from_bytes(
+            &controller_packet[names_offset..names_offset + 48],
+        )?;
         Ok(Q04RootGen1CutLoanV1 {
             owner: self,
             current,
@@ -1582,7 +1585,7 @@ impl RootSourceGenesisAuthorityV1 {
             }
             None
         } else {
-            let observed = verify_source_tree_genesis_readback_v1(
+            let observed = verify_source_tree_genesis_readback_v2(
                 source_packet.ok_or(SourceGenesisErrorV1::NonCanonical)?,
                 &self.pins.source,
                 challenge,
@@ -1705,7 +1708,7 @@ impl RootSourceGenesisAuthorityV1 {
         let challenge = SourceTreeGenesisChallengeV1::new(self.nonce, Some(intent_digest))
             .map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
         let observed =
-            verify_source_tree_genesis_readback_v1(source_packet, &self.pins.source, challenge)
+            verify_source_tree_genesis_readback_v2(source_packet, &self.pins.source, challenge)
                 .map_err(|_| SourceGenesisErrorV1::Stale)?;
         require_same_source_cut(accepted, &observed)?;
         let receipt = observed
@@ -1789,7 +1792,7 @@ impl RootSourceGenesisAuthorityV1 {
             SourceTreeGenesisChallengeV1::new(self.nonce, Some(floor.receipt().intent_digest()))
                 .map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
         let observed =
-            verify_source_tree_genesis_readback_v1(source_packet, &self.pins.source, challenge)
+            verify_source_tree_genesis_readback_v2(source_packet, &self.pins.source, challenge)
                 .map_err(|_| SourceGenesisErrorV1::Stale)?;
         require_same_source_cut(accepted, &observed)?;
         super::current::require_anchored_observation(&observed, floor)?;

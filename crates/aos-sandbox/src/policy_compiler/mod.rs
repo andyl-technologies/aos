@@ -172,7 +172,8 @@ pub use source_genesis_root::{
     encode_root_first_source_successor_frame_v2,
     encode_root_project_source_successor_frame_v3, decode_root_project_source_successor_frame_v3,
     observe_root_first_source_successor_clock_v2,
-    CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1, CurrentRootSourceGenesisFloorV1,
+    CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1, CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V2,
+    CurrentRootSourceGenesisFloorV1,
     HeldRootSourceGenesisIntentV1, ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1,
     HeldRootSourceProjectGenesisIntentV3, RootSourceProjectGenesisFloorProofV3,
     FailedOriginalSourceSuccessorInvocationV2, OriginalSourceSuccessorInvocationV2,
@@ -186,6 +187,7 @@ pub use source_genesis_root::{
     SOURCE_HIERARCHY_FLOOR_BYTES_V2,
     SourceHierarchyFloorRecordV1, coordinate_provisioned_source_genesis_v1,
     decode_root_source_genesis_frame_v1, encode_root_source_genesis_frame_v1,
+    decode_root_source_genesis_frame_v2, encode_root_source_genesis_frame_v2,
     fixed_root_source_genesis_recovery_available_v1,
     sign_controller_source_genesis_completion_readback_v1,
     sign_controller_source_genesis_readback_v1,
@@ -459,8 +461,10 @@ pub use source_genesis_readback::{
     SourceTreeGenesisIntentContextV1,
 };
 pub use source_genesis_readback::{
-    SOURCE_TREE_GENESIS_READBACK_BYTES_V1, SourceTreeGenesisChallengeV1,
+    SOURCE_TREE_GENESIS_READBACK_BYTES_V1, SOURCE_TREE_GENESIS_READBACK_BYTES_V2,
+    SourceTreeGenesisReadbackPacketV2, SourceTreeGenesisChallengeV1,
     VerifiedSourceTreeGenesisReadbackV1, verify_source_tree_genesis_readback_v1,
+    verify_source_tree_genesis_readback_v2,
     SOURCE_PROJECT_GENESIS_READBACK_BYTES_V3, SourceProjectGenesisChallengeV3,
     SOURCE_PROJECT_RESOURCE_GENESIS_READBACK_BYTES_V4, SourceProjectGenesisReadbackPacketV4,
     VerifiedSourceProjectGenesisReadbackV3, verify_source_project_genesis_readback_v3,
@@ -498,6 +502,7 @@ pub use source_signer_readback::{
     sign_fixed_source_project_reservation_readback_v1,
     sign_fixed_source_project_retirement_readback_v1, sign_fixed_source_signer_readback_v1,
     sign_fixed_source_signer_readback_v2, sign_fixed_source_tree_genesis_readback_v2,
+    sign_fixed_source_tree_genesis_readback_v3,
     sign_fixed_source_project_genesis_readback_v3,
     sign_fixed_source_project_genesis_readback_v4,
 };

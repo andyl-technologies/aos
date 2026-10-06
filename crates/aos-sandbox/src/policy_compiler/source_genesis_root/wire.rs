@@ -217,6 +217,26 @@ impl RootSourceGenesisFrameKindV1 {
         }
     }
 
+    const fn resource_magic_v2(self) -> &'static [u8; 8] {
+        match self {
+            Self::Prepare => b"AOSSGP02",
+            Self::Prepared => b"AOSSGI02",
+            Self::Anchor => b"AOSSGF02",
+            Self::Anchored => b"AOSSGA02",
+            Self::Complete => b"AOSSGC02",
+            Self::Completed => b"AOSSGD02",
+            Self::Finish => b"AOSSGE02",
+        }
+    }
+
+    pub(in crate::policy_compiler) const fn payload_bytes_for_resource(self, resource: bool) -> usize {
+        match self {
+            Self::Completed | Self::Finish => self.payload_bytes(),
+            _ if resource => self.payload_bytes() + 176,
+            _ => self.payload_bytes(),
+        }
+    }
+
     pub(super) const fn project_magic_v3(self) -> &'static [u8; 8] {
         match self {
             Self::Prepare => b"AOSSGP03",
@@ -336,6 +356,27 @@ pub fn encode_root_source_genesis_frame_v1(
     Ok(frame)
 }
 
+/// Encodes an exact strict legacy or full-resource genesis phase as DATA.
+///
+/// # Errors
+/// Rejects a sentinel nonce or a width outside the selected phase recipes.
+pub fn encode_root_source_genesis_frame_v2(
+    kind: RootSourceGenesisFrameKindV1,
+    nonce: [u8; 16],
+    payload: &[u8],
+) -> Result<Vec<u8>, SourceGenesisErrorV1> {
+    if payload.len() == kind.payload_bytes() {
+        return encode_root_source_genesis_frame_v1(kind, nonce, payload);
+    }
+    if nonce == [0; 16] || payload.len() != kind.payload_bytes_for_resource(true) {
+        return Err(SourceGenesisErrorV1::NonCanonical);
+    }
+    let mut frame = vec![0; ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1 + payload.len()];
+    write_frame_header(&mut frame, kind.resource_magic_v2(), 2, nonce);
+    frame[ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1..].copy_from_slice(payload);
+    Ok(frame)
+}
+
 /// Borrows a canonical phase payload after exact header and nonce comparison.
 ///
 /// # Errors
@@ -351,6 +392,42 @@ pub fn decode_root_source_genesis_frame_v1(
         return Err(SourceGenesisErrorV1::NonCanonical);
     }
     Ok(&frame[ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1..])
+}
+
+/// Borrows a strict legacy or full-resource payload after exact framing checks.
+///
+/// # Errors
+/// Rejects foreign purpose, nonce, version, reserved bytes or exact width.
+pub fn decode_root_source_genesis_frame_v2(
+    frame: &[u8],
+    kind: RootSourceGenesisFrameKindV1,
+    nonce: [u8; 16],
+) -> Result<&[u8], SourceGenesisErrorV1> {
+    if frame.len() == ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1 + kind.payload_bytes() {
+        return decode_root_source_genesis_frame_v1(frame, kind, nonce);
+    }
+    if frame.len() != ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1 + kind.payload_bytes_for_resource(true)
+        || !has_frame_header(frame, kind.resource_magic_v2(), 2, nonce)
+    {
+        return Err(SourceGenesisErrorV1::NonCanonical);
+    }
+    Ok(&frame[ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1..])
+}
+
+pub(in crate::policy_compiler) fn strict_genesis_payload_bytes_from_header(
+    header: &[u8], kind: RootSourceGenesisFrameKindV1, nonce: [u8; 16],
+) -> Result<usize, SourceGenesisErrorV1> {
+    if header.len() != ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1 {
+        return Err(SourceGenesisErrorV1::NonCanonical);
+    }
+    if has_frame_header(header, kind.magic(), 1, nonce) {
+        return Ok(kind.payload_bytes());
+    }
+    if kind.payload_bytes_for_resource(true) != kind.payload_bytes()
+        && has_frame_header(header, kind.resource_magic_v2(), 2, nonce) {
+        return Ok(kind.payload_bytes_for_resource(true));
+    }
+    Err(SourceGenesisErrorV1::NonCanonical)
 }
 
 // Both modes use this exact header engine. The ordinary entry retains its
@@ -397,6 +474,22 @@ pub(in crate::policy_compiler) enum RootCreateQ04TransferKindV1 {
 
 #[cfg(target_os = "linux")]
 impl RootCreateQ04TransferKindV1 {
+    fn resource_magic(self) -> Option<&'static [u8; 8]> {
+        match self {
+            Self::SourceObservation => Some(b"AOSQ4O02"),
+            Self::SourceRefresh => Some(b"AOSQ4H02"),
+            _ => None,
+        }
+    }
+
+    fn resource_payload_bytes(self) -> Option<usize> {
+        match self {
+            Self::SourceObservation => Some(crate::policy_compiler::SOURCE_TREE_GENESIS_READBACK_BYTES_V2),
+            Self::SourceRefresh => Some(super::controller_readback::CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V2),
+            _ => None,
+        }
+    }
+
     fn magic(self) -> &'static [u8; 8] {
         match self {
             Self::PreviewIndex => b"AOSQ4V01",
@@ -456,13 +549,17 @@ pub(in crate::policy_compiler) fn encode_root_create_q04_transfer_v1(
 ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
     use crate::policy_compiler::create_q04::CreateQ04ErrorV1;
 
-    if !output.is_empty() || original_nonce == [0; 16] || !kind.require_payload(payload.len()) {
+    let resource_magic = kind.resource_magic()
+        .filter(|_| kind.resource_payload_bytes() == Some(payload.len()));
+    if !output.is_empty() || original_nonce == [0; 16]
+        || (resource_magic.is_none() && !kind.require_payload(payload.len())) {
         return Err(CreateQ04ErrorV1::ChangedCut);
     }
     let length = ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1 + payload.len();
     output.try_reserve_exact(length)?;
     output.resize(length, 0);
-    write_frame_header(output, kind.magic(), 2, original_nonce);
+    write_frame_header(output, resource_magic.unwrap_or(kind.magic()),
+        if resource_magic.is_some() { 3 } else { 2 }, original_nonce);
     output[ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1..].copy_from_slice(payload);
     Ok(())
 }
@@ -475,12 +572,36 @@ pub(in crate::policy_compiler) fn decode_root_create_q04_transfer_v1(
 ) -> Result<&[u8], crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
     use crate::policy_compiler::create_q04::CreateQ04ErrorV1;
 
-    if !has_frame_header(frame, kind.magic(), 2, original_nonce)
-        || !kind.require_payload(frame.len() - ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1)
-    {
+    let Some(payload) = frame.get(ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1..) else {
+        return Err(CreateQ04ErrorV1::ChangedCut);
+    };
+    let legacy = has_frame_header(frame, kind.magic(), 2, original_nonce)
+        && kind.require_payload(payload.len());
+    let resource = kind.resource_magic().is_some_and(|magic|
+        has_frame_header(frame, magic, 3, original_nonce)
+            && kind.resource_payload_bytes() == Some(payload.len()));
+    if !legacy && !resource {
         return Err(CreateQ04ErrorV1::ChangedCut);
     }
-    Ok(&frame[ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1..])
+    Ok(payload)
+}
+
+pub(in crate::policy_compiler) fn q04_genesis_refresh_payload_bytes_from_header(
+    header: &[u8], original_nonce: [u8; 16],
+) -> Result<usize, crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+    use crate::policy_compiler::create_q04::CreateQ04ErrorV1;
+
+    if header.len() != ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1 {
+        return Err(CreateQ04ErrorV1::ChangedCut);
+    }
+    let kind = RootCreateQ04TransferKindV1::SourceRefresh;
+    if has_frame_header(header, kind.magic(), 2, original_nonce) {
+        return Ok(CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1);
+    }
+    if kind.resource_magic().is_some_and(|magic| has_frame_header(header, magic, 3, original_nonce)) {
+        return kind.resource_payload_bytes().ok_or(CreateQ04ErrorV1::ChangedCut);
+    }
+    Err(CreateQ04ErrorV1::ChangedCut)
 }
 
 #[cfg(test)]

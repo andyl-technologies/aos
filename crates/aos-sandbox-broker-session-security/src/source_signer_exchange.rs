@@ -15,6 +15,8 @@
 //! AOSSSP09 | first-successor observation2784
 //! AOSSSR10 | fresh-nonce16 | original-intent32 | project16 | Intent1248
 //! AOSSSP10 | explicit mixed-project Source observation2784
+//! AOSSSR12 | selected full-resource Project context840; AOSSSP12 | packet1104
+//! AOSSSR13 | strict full-resource genesis context840; AOSSSP13 | packet1104
 //! ```
 
 use std::error::Error;
@@ -56,6 +58,8 @@ use aos_sandbox::policy_compiler::{
     SOURCE_TREE_GENESIS_INTENT_CONTEXT_BYTES_V2,
     SOURCE_PROJECT_RESOURCE_GENESIS_READBACK_BYTES_V4, SourceProjectGenesisReadbackPacketV4,
     sign_fixed_source_project_genesis_readback_v4,
+    sign_fixed_source_tree_genesis_readback_v3, verify_source_tree_genesis_readback_v2,
+    SourceTreeGenesisReadbackPacketV2, SOURCE_TREE_GENESIS_READBACK_BYTES_V2,
 };
 use aos_sandbox_core::{ObjectDigest, ProjectId};
 use rustix::net::sockopt::{socket_acceptconn, socket_peercred};
@@ -90,6 +94,8 @@ const REQUEST_PROJECT_RESOURCE_GENESIS_MAGIC_V4: &[u8; 8] = b"AOSSSR12";
 const REPLY_PROJECT_RESOURCE_GENESIS_MAGIC_V4: &[u8; 8] = b"AOSSSP12";
 const REQUEST_PROJECT_RESOURCE_GENESIS_BYTES_V4: usize = REQUEST_BYTES + SOURCE_TREE_GENESIS_INTENT_CONTEXT_BYTES_V2;
 const REPLY_PROJECT_RESOURCE_GENESIS_BYTES_V4: usize = 8 + SOURCE_PROJECT_RESOURCE_GENESIS_READBACK_BYTES_V4;
+const REQUEST_RESOURCE_GENESIS_MAGIC: &[u8; 8] = b"AOSSSR13";
+const REPLY_RESOURCE_GENESIS_MAGIC: &[u8; 8] = b"AOSSSP13";
 const REQUEST_FIRST_SUCCESSOR_BYTES: usize = REQUEST_BYTES + 1248;
 const REPLY_FIRST_SUCCESSOR_BYTES: usize = 8 + SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2;
 const REPLY_GENESIS_BYTES: usize = 8 + SOURCE_TREE_GENESIS_READBACK_BYTES_V1;
@@ -157,13 +163,25 @@ fn exchange_project_genesis_request<const REPLY: usize, const PACKET: usize>(
     request: &[u8], reply_magic: &[u8; 8], signer_uid: u32, socket_gid: u32,
     signer: &PinnedSourceHoldReadbackSignerV1, challenge: SourceProjectGenesisChallengeV3,
 ) -> io::Result<[u8; PACKET]> {
+    exchange_source_genesis_request::<REPLY, PACKET>(
+        request, reply_magic, signer_uid, socket_gid, |packet| {
+            verify_source_project_genesis_readback_v3(packet, signer, challenge)
+                .map(|_| ()).map_err(io::Error::other)
+        },
+    )
+}
+
+fn exchange_source_genesis_request<const REPLY: usize, const PACKET: usize>(
+    request: &[u8], reply_magic: &[u8; 8], signer_uid: u32, socket_gid: u32,
+    verify: impl FnOnce(&[u8]) -> io::Result<()>,
+) -> io::Result<[u8; PACKET]> {
     let mut stream = connect_source_signer(signer_uid, socket_gid)?;
     stream.write_all(request)?;
     stream.shutdown(std::net::Shutdown::Write)?;
     let packet = read_framed_reply::<REPLY, PACKET>(&mut stream, reply_magic)?;
     // Verification stays inside the same original endpoint lifetime, exactly
     // as in the legacy request path; a helper return cannot release it early.
-    verify_source_project_genesis_readback_v3(&packet, signer, challenge).map_err(io::Error::other)?;
+    verify(&packet)?;
     Ok(packet)
 }
 
@@ -376,11 +394,59 @@ pub fn request_root_source_tree_genesis_readback_v2(
     Ok(packet)
 }
 
+/// Requests a complete resource strict observation through the existing signer.
+///
+/// Legacy context delegates to request08 unchanged. Resource context uses the
+/// distinct request13 purpose on the same original endpoint and pinned key.
+///
+/// # Errors
+/// Rejects mixed context/project/intent, foreign socket or peer custody, exact
+/// framing/EOF, changed original joins or a bad Source-purpose signature.
+pub fn request_root_source_tree_genesis_readback_v3(
+    challenge: SourceTreeGenesisChallengeV1,
+    project: Option<ProjectId>,
+    intent_context: Option<&SourceTreeGenesisIntentContextV1>,
+    signer: &PinnedSourceHoldReadbackSignerV1,
+    signer_uid: u32,
+    socket_gid: u32,
+) -> io::Result<SourceTreeGenesisReadbackPacketV2> {
+    if !intent_context.is_some_and(SourceTreeGenesisIntentContextV1::has_resource_authorization) {
+        return request_root_source_tree_genesis_readback_v2(
+            challenge, project, intent_context, signer, signer_uid, socket_gid,
+        ).map(SourceTreeGenesisReadbackPacketV2::Legacy);
+    }
+    if signer_uid == 0 || socket_gid == 0 {
+        return Err(invalid_data("invalid Source genesis signer identity"));
+    }
+    let request = encode_strict_genesis_request::<REQUEST_PROJECT_RESOURCE_GENESIS_BYTES_V4>(
+        challenge, project, intent_context,
+    )?;
+    let packet = exchange_source_genesis_request::<REPLY_PROJECT_RESOURCE_GENESIS_BYTES_V4, SOURCE_TREE_GENESIS_READBACK_BYTES_V2>(
+        &request, REPLY_RESOURCE_GENESIS_MAGIC, signer_uid, socket_gid, |packet| {
+            let verified = verify_source_tree_genesis_readback_v2(packet, signer, challenge)
+                .map_err(io::Error::other)?;
+            if verified.receipt().map(|receipt| receipt.project()) != project {
+                return Err(invalid_data("changed Source genesis project"));
+            }
+            Ok(())
+        },
+    )?;
+    Ok(SourceTreeGenesisReadbackPacketV2::Resource(packet))
+}
+
 fn encode_genesis_request(
     challenge: SourceTreeGenesisChallengeV1,
     project: Option<ProjectId>,
     intent_context: Option<&SourceTreeGenesisIntentContextV1>,
 ) -> io::Result<[u8; REQUEST_GENESIS_BYTES]> {
+    encode_strict_genesis_request(challenge, project, intent_context)
+}
+
+fn encode_strict_genesis_request<const BYTES: usize>(
+    challenge: SourceTreeGenesisChallengeV1,
+    project: Option<ProjectId>,
+    intent_context: Option<&SourceTreeGenesisIntentContextV1>,
+) -> io::Result<[u8; BYTES]> {
     if project.is_some() != challenge.intent().is_some()
         || project.is_some_and(|project| project.as_bytes() == &[0; 16])
         || project.is_some() != intent_context.is_some()
@@ -388,12 +454,17 @@ fn encode_genesis_request(
     {
         return Err(invalid_data("mixed Source genesis scope"));
     }
-    // The legacy request cannot retain a full-resource intent context.
-    if intent_context.is_some_and(SourceTreeGenesisIntentContextV1::has_resource_authorization) {
+    let resource = intent_context.is_some_and(SourceTreeGenesisIntentContextV1::has_resource_authorization);
+    let expected = if resource { REQUEST_PROJECT_RESOURCE_GENESIS_BYTES_V4 } else { REQUEST_GENESIS_BYTES };
+    if BYTES != expected {
         return Err(invalid_data("foreign Source genesis context width"));
     }
-    let mut request = [0; REQUEST_GENESIS_BYTES];
-    request[..8].copy_from_slice(REQUEST_GENESIS_MAGIC);
+    let context_bytes = intent_context.map(SourceTreeGenesisIntentContextV1::encode);
+    if context_bytes.as_ref().is_some_and(|bytes| bytes.len() != BYTES - REQUEST_BYTES) {
+        return Err(invalid_data("foreign Source genesis context width"));
+    }
+    let mut request = [0; BYTES];
+    request[..8].copy_from_slice(if resource { REQUEST_RESOURCE_GENESIS_MAGIC } else { REQUEST_GENESIS_MAGIC });
     request[8..24].copy_from_slice(&challenge.nonce());
     if let Some(intent) = challenge.intent() {
         request[24..56].copy_from_slice(intent.as_bytes());
@@ -401,20 +472,24 @@ fn encode_genesis_request(
     if let Some(project) = project {
         request[56..72].copy_from_slice(project.as_bytes());
     }
-    if let Some(context) = intent_context {
-        request[REQUEST_BYTES..].copy_from_slice(&context.encode());
+    if let Some(bytes) = context_bytes {
+        request[REQUEST_BYTES..].copy_from_slice(&bytes);
     }
     Ok(request)
 }
 
 fn decode_genesis_request(
-    request: &[u8; REQUEST_GENESIS_BYTES],
+    request: &[u8],
 ) -> io::Result<(
     SourceTreeGenesisChallengeV1,
     Option<ProjectId>,
     Option<SourceTreeGenesisIntentContextV1>,
 )> {
-    if request[..8] != *REQUEST_GENESIS_MAGIC {
+    let resource = request.len() == REQUEST_PROJECT_RESOURCE_GENESIS_BYTES_V4
+        && request.get(..8) == Some(REQUEST_RESOURCE_GENESIS_MAGIC.as_slice());
+    let legacy = request.len() == REQUEST_GENESIS_BYTES
+        && request.get(..8) == Some(REQUEST_GENESIS_MAGIC.as_slice());
+    if !resource && !legacy {
         return Err(invalid_data("foreign Source genesis request"));
     }
     let nonce = request[8..24]
@@ -433,7 +508,15 @@ fn decode_genesis_request(
         .map(|_| SourceTreeGenesisIntentContextV1::decode(&request[REQUEST_BYTES..]))
         .transpose()
         .map_err(io::Error::other)?;
-    if encode_genesis_request(challenge, project, context.as_ref())? != *request {
+    if context.as_ref().is_some_and(SourceTreeGenesisIntentContextV1::has_resource_authorization) != resource {
+        return Err(invalid_data("foreign Source genesis context recipe"));
+    }
+    let canonical = if resource {
+        encode_strict_genesis_request::<REQUEST_PROJECT_RESOURCE_GENESIS_BYTES_V4>(challenge, project, context.as_ref())?.as_slice() == request
+    } else {
+        encode_genesis_request(challenge, project, context.as_ref())?.as_slice() == request
+    };
+    if !canonical {
         return Err(invalid_data("noncanonical Source genesis request"));
     }
     Ok((challenge, project, context))
@@ -949,19 +1032,32 @@ fn serve_request(
         return Ok(());
     }
     if request[..8] == *REQUEST_PROJECT_GENESIS_MAGIC_V3
-        || request[..8] == *REQUEST_PROJECT_RESOURCE_GENESIS_MAGIC_V4 {
-        let resource_version = request[..8] == *REQUEST_PROJECT_RESOURCE_GENESIS_MAGIC_V4;
+        || request[..8] == *REQUEST_PROJECT_RESOURCE_GENESIS_MAGIC_V4
+        || request[..8] == *REQUEST_RESOURCE_GENESIS_MAGIC {
+        let strict_resource = request[..8] == *REQUEST_RESOURCE_GENESIS_MAGIC;
+        let resource_version = strict_resource || request[..8] == *REQUEST_PROJECT_RESOURCE_GENESIS_MAGIC_V4;
         let request_bytes = if resource_version { REQUEST_PROJECT_RESOURCE_GENESIS_BYTES_V4 } else { REQUEST_GENESIS_BYTES };
         let mut expanded = [0; REQUEST_PROJECT_RESOURCE_GENESIS_BYTES_V4];
         expanded[..REQUEST_BYTES].copy_from_slice(&request);
         stream.read_exact(&mut expanded[REQUEST_BYTES..request_bytes])?;
         require_request_eof(stream)?;
-        let (challenge, context) = decode_project_genesis_request_v3(&expanded[..request_bytes])?;
+        let strict_inputs = strict_resource
+            .then(|| decode_genesis_request(&expanded[..request_bytes])).transpose()?;
+        let project_inputs = (!strict_resource)
+            .then(|| decode_project_genesis_request_v3(&expanded[..request_bytes])).transpose()?;
         let signing_key_result = credentials.signing_key();
         let Ok(signing_key) = &signing_key_result else { std::process::exit(1); };
-        let returned = sign_fixed_source_project_genesis_readback_v4(
-            controller_uid, challenge, &context, credentials.generation(), signing_key,
-        );
+        let returned = if let Some((challenge, project, context)) = &strict_inputs {
+            sign_fixed_source_tree_genesis_readback_v3(
+                controller_uid, *project, *challenge, context.as_ref(), credentials.generation(), signing_key,
+            )
+        } else {
+            let (challenge, context) = project_inputs.as_ref()
+                .ok_or_else(|| invalid_data("missing selected genesis recipe"))?;
+            sign_fixed_source_project_genesis_readback_v4(
+                controller_uid, *challenge, context, credentials.generation(), signing_key,
+            )
+        };
         let credential_post = credentials.signing_key();
         let peer_post = socket_peercred(&*stream);
         let Ok(packet) = &returned else { std::process::exit(1); };
@@ -971,7 +1067,9 @@ fn serve_request(
             || later_peer.uid != peer.uid || later_peer.gid != peer.gid || later_peer.pid != peer.pid
         { std::process::exit(1); }
         let sent = if resource_version {
-            write_framed_reply::<REPLY_PROJECT_RESOURCE_GENESIS_BYTES_V4>(stream, REPLY_PROJECT_RESOURCE_GENESIS_MAGIC_V4, packet.as_ref())
+            write_framed_reply::<REPLY_PROJECT_RESOURCE_GENESIS_BYTES_V4>(stream,
+                if strict_resource { REPLY_RESOURCE_GENESIS_MAGIC } else { REPLY_PROJECT_RESOURCE_GENESIS_MAGIC_V4 },
+                packet.as_ref())
         } else {
             write_framed_reply::<REPLY_GENESIS_BYTES>(stream, REPLY_PROJECT_GENESIS_MAGIC_V3, packet.as_ref())
         };

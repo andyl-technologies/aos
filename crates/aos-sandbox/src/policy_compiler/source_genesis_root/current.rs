@@ -10,7 +10,7 @@ use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
 use crate::hierarchy::source_genesis::SourceTreeGenesisStateV1;
 
 use super::super::source_genesis_readback::{
-    SOURCE_TREE_GENESIS_READBACK_BYTES_V1, VerifiedSourceTreeGenesisReadbackV1,
+    SourceTreeGenesisReadbackPacketV2, VerifiedSourceTreeGenesisReadbackV1,
 };
 use super::{RootSourceGenesisAuthorityV1, SourceHierarchyFloorRecordV1};
 
@@ -69,7 +69,7 @@ impl<'root> CurrentRootFirstSourceSuccessorFloorV2<'root> {
 pub struct CurrentRootSourceGenesisFloorV1<'root> {
     owner: &'root RootSourceGenesisAuthorityV1,
     floor: SourceHierarchyFloorRecordV1,
-    source_packet: [u8; SOURCE_TREE_GENESIS_READBACK_BYTES_V1],
+    source_packet: SourceTreeGenesisReadbackPacketV2,
 }
 
 /// Retains the actual selected populated floor and complete mixed Root family.
@@ -130,7 +130,7 @@ impl CurrentRootSourceGenesisFloorV1<'_> {
     /// selected image/policy and unchanged deadline before every crossing.
     pub fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
         self.owner
-            .confirm_source_ack(&self.source_packet, &self.floor)
+            .confirm_source_ack(self.source_packet.as_ref(), &self.floor)
     }
 }
 
@@ -179,8 +179,7 @@ impl RootSourceGenesisAuthorityV1 {
             .floor(accepted.acceptance.project())?
             .ok_or(SourceGenesisErrorV1::Conflict)?;
         self.confirm_source_ack(source_packet, &floor)?;
-        let source_packet = source_packet
-            .try_into()
+        let source_packet = SourceTreeGenesisReadbackPacketV2::from_packet_bytes(source_packet)
             .map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
         let current = CurrentRootSourceGenesisFloorV1 {
             owner: self,

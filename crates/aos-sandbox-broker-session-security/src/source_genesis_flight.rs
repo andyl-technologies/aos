@@ -1059,10 +1059,10 @@ fn observe_root_create_q04_source(
     controller_gid: u32,
 ) -> Result<(), ()> {
     let (challenge, project, context, signer) = observation.request();
-    let returned = request_root_source_tree_genesis_readback_v2(
+    let returned = crate::source_signer_exchange::request_root_source_tree_genesis_readback_v3(
         challenge, Some(project), Some(context), signer, source_signer_uid, controller_gid,
     );
-    observation.park_result(returned)
+    observation.park_result_v2(returned)
 }
 
 // The client's original 60-second deadline starts before connection. Root's

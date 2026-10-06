@@ -68,10 +68,11 @@ pub(crate) use capacity::{
     validate_settlement as validate_root_source_genesis_capacity_settlement_v1,
 };
 pub use controller_readback::{
-    CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1,
+    CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1, CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V2,
     sign_controller_source_genesis_completion_readback_v1,
     sign_controller_source_genesis_readback_v1,
 };
+pub(in crate::policy_compiler) use controller_readback::ControllerGenesisReadbackPacketV2;
 pub use coordinator::coordinate_provisioned_source_genesis_v1;
 pub use coordinator::{OriginalConfiguredProjectGenesisInvocationV3, FailedConfiguredProjectGenesisInvocationV3};
 pub(crate) use coordinator::unavailable_project_genesis_v3;
@@ -123,11 +124,13 @@ pub(in crate::policy_compiler) fn wait_original_root_v1(
 pub(in crate::policy_compiler) use wire::{
     RootCreateQ04TransferKindV1, decode_root_create_q04_transfer_v1,
     encode_root_create_q04_transfer_v1,
+    strict_genesis_payload_bytes_from_header, q04_genesis_refresh_payload_bytes_from_header,
 };
 pub use wire::{
     ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1, ROOT_SOURCE_GENESIS_HELLO_MAGIC_V1,
     ROOT_SOURCE_GENESIS_QUERY_MAGIC_V1, RootSourceGenesisFrameKindV1,
     decode_root_source_genesis_frame_v1, encode_root_source_genesis_frame_v1,
+    decode_root_source_genesis_frame_v2, encode_root_source_genesis_frame_v2,
 };
 pub use wire::{
     ROOT_SOURCE_PROJECT_GENESIS_QUERY_MAGIC_V3, ROOT_SOURCE_PROJECT_GENESIS_HELLO_MAGIC_V3,

@@ -1369,7 +1369,7 @@ fn require_claim_field_bounds(
         || fields[8].len() != super::CLOSED_POLICY_BINDING_BYTES_V2
         || fields[9].len() != super::CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1
         || fields[10].len() != super::CLOSED_CONTROLLER_HOLD_READBACK_BYTES_V1
-        || fields[11].len() != super::SOURCE_TREE_GENESIS_READBACK_BYTES_V1
+        || !matches!(fields[11].len(), super::SOURCE_TREE_GENESIS_READBACK_BYTES_V1 | super::SOURCE_TREE_GENESIS_READBACK_BYTES_V2)
         || fields[12].len() != crate::cache_residency::CLOSED_CACHE_OWNER_READBACK_BYTES_V2
         || fields[13] != identity.bytes()
     {
@@ -2004,10 +2004,8 @@ pub(crate) fn q04_original_precut_digest_v1(
     state_names: crate::journal::ProtectedJournalNamesV1,
     state_sequence: u64,
 ) -> Result<ObjectDigest, CreateQ04ErrorV1> {
-    if controller_complete.len() != super::source_genesis_root::CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1
-        || source_observation.len() != super::SOURCE_TREE_GENESIS_READBACK_BYTES_V1
-        || state_sequence == 0
-    {
+    require_genesis_observation_pair_widths(controller_complete, source_observation)?;
+    if state_sequence == 0 {
         return Err(CreateQ04ErrorV1::Bounds);
     }
     let original = request.fields();
@@ -2028,6 +2026,22 @@ pub(crate) fn q04_original_precut_digest_v1(
         digest.update(field);
     }
     Ok(ObjectDigest::from_bytes(digest.finalize().into()))
+}
+
+// This is shape DATA only. Root authenticates both complete packets on the
+// current original owner before any caller may consume their semantic joins.
+pub(super) fn require_genesis_observation_pair_widths(
+    controller: &[u8], source: &[u8],
+) -> Result<(), CreateQ04ErrorV1> {
+    let legacy = controller.len() == super::source_genesis_root::CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1
+        && source.len() == super::SOURCE_TREE_GENESIS_READBACK_BYTES_V1;
+    let resource = controller.len() == super::source_genesis_root::CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V2
+        && source.len() == super::SOURCE_TREE_GENESIS_READBACK_BYTES_V2;
+    if legacy || resource {
+        Ok(())
+    } else {
+        Err(CreateQ04ErrorV1::Bounds)
+    }
 }
 
 // This canonical pre-envelope seed excludes the final Cut and every future
