@@ -229,6 +229,13 @@ ordinary conformance checkers are unchanged. The corrected harness has passing
 format, evaluation and inner/outer AOS Bash syntax checks, with no new execution
 claim. This diagnostic is outside the conformance gate aggregate.
 
+The normal native disclosure suites now apply the feature matrix's serial
+case scheduling policy. Every selector, required witness, feature profile,
+successful execution check and internal competing-writer case remains intact;
+no clock or operation deadline changes. The original composed aggregate
+captures additional `Expired` failures under its prior scheduling. This
+harness change alone establishes neither their cause nor passing gates.
+
 The preceding completed full qualification records candidate
 `15540ef204ec`, which combines reviewed source discovery, immutable lookup,
 repeatable I/P/G maintenance, separate verifier/preparation work, common Memo

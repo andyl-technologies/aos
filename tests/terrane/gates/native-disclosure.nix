@@ -6,8 +6,10 @@
   qualifySuite = package: features: selector: required: ''
     cargo test --frozen --offline -p ${package} --lib ${features} ${lib.escapeShellArg selector} -- --list > "$TMPDIR/inventory.log"
     python3 ../tests/terrane/check_native_gate.py inventory "$TMPDIR/inventory.log" ${lib.escapeShellArg (builtins.toJSON required)}
+    # Independent native fixtures use real operation deadlines. As in the
+    # feature matrix, bound case fanout while retaining each case's own races.
     # Failed case output must survive teardown of the local test sandbox.
-    if cargo test --frozen --offline -p ${package} --lib ${features} ${lib.escapeShellArg selector} > "$TMPDIR/native.log"; then
+    if cargo test --frozen --offline -p ${package} --lib ${features} ${lib.escapeShellArg selector} -- --test-threads=1 > "$TMPDIR/native.log"; then
       python3 ../tests/terrane/check_native_gate.py execution "$TMPDIR/native.log" ${lib.escapeShellArg (builtins.toJSON required)}
     else
       native_test_status=$?
