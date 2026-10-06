@@ -146,14 +146,14 @@ def observe_direct_issuer_cold_refusal(native, tools, original, signed_head):
                             or metadata.st_mode & 0o077 or metadata.st_size > 1048576):
                         raise ValueError('retained issuer configuration/key custody differs')
                     values[name] = hashlib.file_digest(source, 'sha256').hexdigest()
-            journal = (root / 'journal.sqlite').lstat()
+            journal = (root / 'journal' / 'journal.sqlite').lstat()
             if not stat.S_ISREG(journal.st_mode) or journal.st_uid != os.getuid():
                 raise ValueError('retained issuer journal is not the original regular resource')
             return {'files': values, 'journalDevice': journal.st_dev, 'journalInode': journal.st_ino}
         def history():
             # These are independent read-only bytes, not a permission clock or
             # an operator resolution. Serving retains its unresolved marker.
-            connection = sqlite3.connect('file:' + str(root / 'journal.sqlite') + '?mode=ro',
+            connection = sqlite3.connect('file:' + str(root / 'journal' / 'journal.sqlite') + '?mode=ro',
                 uri=True, timeout=2)
             try:
                 connection.execute('BEGIN')

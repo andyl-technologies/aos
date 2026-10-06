@@ -55,7 +55,7 @@ def provision_external_issuer(native, worker, python, openssl, installation,
     root = issuer_root
     configuration = {
         "format_version": 1, "listen": listen,
-        "journal_file": root + "/journal.sqlite", "installation": installation,
+        "journal_file": root + "/journal/journal.sqlite", "installation": installation,
         "hub_root": hub_root, "hub_sqlite_file": None,
         "policy": {"timing_profile": timing_profile},
         "clock_uncertainty": str(clock_uncertainty),
@@ -77,6 +77,8 @@ def provision_external_issuer(native, worker, python, openssl, installation,
 
         root = Path({root!r})
         root.mkdir(mode=0o700, exist_ok=False)
+        # Initialization requires an empty dedicated parent, separate from keys.
+        (root / 'journal').mkdir(mode=0o700, exist_ok=False)
         configuration = json.loads(base64.b64decode({encoded_configuration!r}, validate=True))
         certificate_check = subprocess.run([{openssl!r}, 'x509', '-noout',
             '-in', configuration['tls']['certificate_file'], '-checkhost',
@@ -139,6 +141,93 @@ def provision_external_issuer(native, worker, python, openssl, installation,
     return result
 
 
+def initialize_external_issuer(native, python, authority_executable,
+                               configuration_file, publication_file):
+    """Retain bounded private initialization diagnostics before reporting failure.
+
+    Only the fixed phase, category, exit status and collection bounds reach the
+    driver. Raw stderr remains in a create-only owner-private issuer file.
+    """
+    result = json.loads(private_guest_command(native, textwrap.dedent(f"""
+        {shlex.quote(python)} - <<'NATIVE_ISSUER_INITIALIZATION'
+        import json, os, selectors, subprocess, time
+        from pathlib import Path
+
+        root = Path({configuration_file!r}).parent
+        stderr_descriptor = os.open(root / 'initialize.stderr',
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        result_descriptor = os.open(root / 'initialize-result.json',
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        arguments = [{authority_executable!r}, 'initialize', '--configuration',
+            {configuration_file!r}, '--publication', {publication_file!r}]
+        body = bytearray()
+        overflow = timed_out = eof = False
+        with os.fdopen(stderr_descriptor, 'wb') as private_stderr:
+            with subprocess.Popen(arguments, stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE) as process:
+                deadline = time.monotonic() + 110
+                with selectors.DefaultSelector() as selector:
+                    selector.register(process.stderr, selectors.EVENT_READ)
+                    while not eof:
+                        if time.monotonic() >= deadline:
+                            timed_out = True
+                            break
+                        if not selector.select(timeout=0.1):
+                            continue
+                        chunk = os.read(process.stderr.fileno(), 8192)
+                        if not chunk:
+                            eof = True
+                            break
+                        remaining = 65536 - len(body)
+                        body.extend(chunk[:remaining])
+                        if len(chunk) > remaining:
+                            overflow = True
+                            break
+                if overflow or timed_out:
+                    process.kill()
+                try:
+                    exit_code = process.wait(timeout=max(0.1, deadline - time.monotonic()))
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+                    process.kill()
+                    exit_code = process.wait(timeout=5)
+            private_stderr.write(body)
+            private_stderr.flush()
+            os.fsync(private_stderr.fileno())
+
+        category = 'success' if exit_code == 0 else 'other_failure'
+        if overflow:
+            category = 'stderr_bound_exceeded'
+        elif timed_out:
+            category = 'initialization_timeout'
+        elif exit_code != 0:
+            # Exact source error text selects a category; it never reaches the driver.
+            for message, known in (
+                    (b'issuer journal requires a dedicated private directory', 'journal_directory'),
+                    (b'noncanonical initial publication', 'publication_encoding'),
+                    (b'clock uncertainty exceeds reviewed profile', 'clock_profile')):
+                if message in body:
+                    category = known
+                    break
+        result = {{'phase': 'issuer_initialize', 'category': category,
+            'exitCode': exit_code, 'stderrBytes': len(body), 'stderrComplete': eof,
+            'stderrOverflow': overflow, 'timedOut': timed_out}}
+        with os.fdopen(result_descriptor, 'wb') as output:
+            output.write(json.dumps(result, separators=(',', ':')).encode())
+            output.flush()
+            os.fsync(output.fileno())
+        print(json.dumps(result))
+        NATIVE_ISSUER_INITIALIZATION
+    """), timeout=120))
+    label = "issuer-initialize-" + hashlib.sha256(os.fsencode(configuration_file)).hexdigest()[:16]
+    retain_direct_flow(label + ".json", result)
+    if (result["exitCode"] != 0 or result["stderrOverflow"] or result["timedOut"]
+            or not result["stderrComplete"]):
+        raise RuntimeError("issuer initialization failed: " + result["category"]
+                           + " (exit " + str(result["exitCode"]) + ")")
+    return result
+
+
 def export_external_authority(worker, native, python, bootstrap_executable,
                               authority_executable, authority_id, association_id,
                               deployment_id, admitted_prefix):
@@ -183,11 +272,9 @@ def export_external_authority(worker, native, python, bootstrap_executable,
             os.fsync(output.fileno())
         NATIVE_ACTUAL_PUBLICATION
     """))
-    private_guest_command(native, shlex.join([
-        authority_executable, "initialize", "--configuration",
-        "/var/lib/hybrid-authority/configuration.json", "--publication",
-        "/var/lib/hybrid-authority/publication.json",
-    ]), timeout=120)
+    initialize_external_issuer(native, python, authority_executable,
+        "/var/lib/hybrid-authority/configuration.json",
+        "/var/lib/hybrid-authority/publication.json")
 
     root = Path("external-direct-authority")
     root.mkdir(mode=0o700)

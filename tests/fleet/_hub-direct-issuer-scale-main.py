@@ -214,7 +214,7 @@ def _scale_issuer_resource(native, worker, tools, selected, renewal):
         **{name: installation[name] for name in ("issuer_resource_id", "runtime_identity", "executor_identity")}}
     profile = {name: selected["timingProfile"][name] for name in (
         "profile_id", "review_digest", "maximum_lifetime", "maximum_clock_uncertainty")}
-    configuration = {"format_version": 1, "listen": "127.0.0.1:8444", "journal_file": root + "/journal.sqlite",
+    configuration = {"format_version": 1, "listen": "127.0.0.1:8444", "journal_file": root + "/journal/journal.sqlite",
         "installation": installation, "hub_root": "/var/lib/aos-hub", "hub_sqlite_file": None,
         "policy": {"timing_profile": profile}, "clock_uncertainty": "2",
         "clock_commit_latency": str(selected["clockCommitLatencySeconds"]), "issuance_enabled": True,
@@ -227,6 +227,8 @@ def _scale_issuer_resource(native, worker, tools, selected, renewal):
         from pathlib import Path
         root = Path(selected['root'])
         root.mkdir(mode=0o700, exist_ok=False)
+        # Configuration and keys must never occupy the journal's private parent.
+        (root / 'journal').mkdir(mode=0o700, exist_ok=False)
         seed = os.urandom(32)
         check = subprocess.run([selected['openssl'], 'x509', '-noout', '-in', selected['certificate'],
             '-checkhost', selected['hostname']], capture_output=True, check=False, timeout=15)
@@ -573,8 +575,8 @@ def _scale_run_actual_case(native, worker, tools, database_host, artifacts, cont
     install_direct_guest_file(native, python, case["issuerStore"] + "/publication.json", publication)
     # This actual packaged command validates policy, private key/clock/resource
     # custody and initial publication. Failure is retained, never auto-repaired.
-    private_guest_command(native, shlex.join([tools["authority"], "initialize", "--configuration",
-        case["issuerStore"] + "/configuration.json", "--publication", case["issuerStore"] + "/publication.json"]), timeout=120)
+    initialize_external_issuer(native, python, tools["authority"],
+        case["issuerStore"] + "/configuration.json", case["issuerStore"] + "/publication.json")
     return _scale_measure_case(native, worker, tools, artifacts, selection, case, source, labels, issuer, projection)
 
 
