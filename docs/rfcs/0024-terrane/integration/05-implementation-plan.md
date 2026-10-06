@@ -236,6 +236,26 @@ no clock or operation deadline changes. The original composed aggregate
 captures additional `Expired` failures under its prior scheduling. This
 harness change alone establishes neither their cause nor passing gates.
 
+The original immutable private composition `65922b0704d8` finishes its
+keep-going current-trunk aggregate with ten failed gate dependencies and
+unchanged source. Its serial native feature profile executes 454 cases:
+450 pass and four retirement/readmission paths return `Unsupported`; later
+profiles do not run. Both mandatory formatters and the diff check pass.
+The preceding parallel suites also preserve expiration and bounded fixture
+timeout failures. These results do not qualify the changed scheduling harness.
+
+The separate shared collector candidate `559d806ac9bb` retains completed
+history dependency cuts, exact absolute root occurrences and immutable read
+interpretations. Actual selected side-record inspection retains physical
+preimages without marking unrelated discoveries; semantic cache hits still
+record their identities. Four genuine native witnesses pass, including private
+source erasure and explicit-empty interpretation refusal. Native, standard and
+no-default builds, strict private rustdoc, both formatters and application test
+target compilation pass. All twelve changed source images match the actual
+application derivation. Strict Clippy still rejects unused interfaces awaiting
+their production traversal consumers and inherited unused code. This private
+candidate grants no retirement or deletion authority and advances no task.
+
 The preceding completed full qualification records candidate
 `15540ef204ec`, which combines reviewed source discovery, immutable lookup,
 repeatable I/P/G maintenance, separate verifier/preparation work, common Memo
