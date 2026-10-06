@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
-import { createServer, request } from 'node:http';
+import { createServer, request, ServerResponse } from 'node:http';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -389,5 +389,219 @@ test('source-supported query signing preserves raw URI while fresh signature/dat
     await assert.rejects(read(facts.port, { target: target('d'.repeat(64)), headers: signedHeaders }));
     assert.equal(facts.received[1].target, target('d'.repeat(64)));
     assert.equal((await events(facts.root)).filter(row => row.kind === 'response_held').length, 1);
+  });
+});
+
+function queueArm(body, extra = {}) {
+  return { version: 1, kind: 'arm_queue_read', selection: firstArm(body).selection,
+    expectedSourceSha256: sha(body), expectedSourceBytes: String(body.length),
+    expectedPrefixSha256: sha(body.subarray(0, 65536)), selectionContextSha256: 'd'.repeat(64),
+    selectionDeadlineUnixMillis: Date.now() + 10000, pauseMillis: 2000, ...extra };
+}
+
+async function queueState(facts, expected) {
+  for (let count = 0; count < 200; count++) {
+    const state = await control(facts.root, { version: 1, kind: 'queue_state' });
+    if (state.state === expected) return state;
+    await delay(5);
+  }
+  assert.fail(`queue owner did not reach ${expected}`);
+}
+
+test('queue prefix pause holds a streaming full read, releases once and preserves calibration', async () => {
+  const body = Buffer.alloc(262144, 43);
+  await fixture((incoming, outgoing) => {
+    outgoing.writeHead(200, { ETag: '"actual-etag"', 'Content-Length': body.length });
+    outgoing.write(body.subarray(0, 65536));
+    setTimeout(() => outgoing.end(body.subarray(65536)), 100);
+  }, async facts => {
+    assert.equal((await control(facts.root, queueArm(body))).status, 'armed');
+    let offered = false;
+    const child = request({ hostname: '127.0.0.1', port: facts.port, path: FIRST_TARGET,
+      headers, agent: false }, () => { offered = true; });
+    child.on('error', () => {});
+    child.end();
+    const state = await queueState(facts, 'held');
+    assert.equal(offered, false);
+    assert.equal(state.receipt.sourceBytes, String(body.length));
+    assert.equal(state.receipt.prefixFile.byteSize, '65536');
+    assert.equal(state.receipt.identity.target, FIRST_TARGET);
+    assert.equal(state.receipt.downstreamOfferedBytes, '0');
+    assert.equal(state.receipt.upstreamComplete, false);
+    assert.equal(sha(await fs.readFile(state.receipt.prefixFile.path)), state.receipt.prefixFile.sha256);
+    const raw = await fs.readFile(state.receiptFile.path, 'utf8');
+    assert.equal(raw.includes(authorization), false);
+    assert.equal(raw.includes('Cookie'), false);
+    assert.equal((await control(facts.root, { version: 1, kind: 'queue_release' })).status, 'released');
+    await queueState(facts, 'released');
+    assert.equal(facts.received.length, 1, 'release does not issue another GET');
+    assert.equal((await control(facts.root, queueArm(body))).status, 'refused');
+    assert.equal((await control(facts.root, { version: 1, kind: 'calibrate', selection })).status, 'selected');
+    child.destroy();
+  });
+});
+
+test('queue wrong prefix passes through; mismatched source, etag and length fail closed', async () => {
+  const body = Buffer.alloc(131072, 31);
+  for (const change of ['prefix', 'source', 'etag', 'length', 'completed']) {
+    await fixture((incoming, outgoing) => {
+      const actual = change === 'source' ? Buffer.alloc(body.length, 32) : body;
+      outgoing.writeHead(200, { ETag: change === 'etag' ? '"foreign"' : '"actual-etag"',
+        'Content-Length': change === 'length' ? String(body.length + 1)
+          : change === 'completed' ? '65536' : String(body.length) });
+      outgoing.end(change === 'completed' ? actual.subarray(0, 65536) : actual);
+    }, async facts => {
+      await control(facts.root, queueArm(body));
+      if (change === 'prefix') {
+        assert.deepEqual((await read(facts.port)).body, body);
+        assert.equal((await control(facts.root, { version: 1, kind: 'queue_state' })).state, 'armed');
+      } else {
+        await assert.rejects(read(facts.port, { target: FIRST_TARGET }));
+        assert.equal((await queueState(facts, 'refused')).receipt, null);
+      }
+      assert.equal(facts.received.length, 1);
+    });
+  }
+});
+
+test('queue cutoff and downstream disconnect end the pause without a replacement read', async () => {
+  const body = Buffer.alloc(131072, 17);
+  for (const disposition of ['cutoff', 'disconnected']) {
+    await fixture((incoming, outgoing) => {
+      outgoing.writeHead(200, { ETag: '"actual-etag"', 'Content-Length': body.length });
+      outgoing.write(body.subarray(0, 65536));
+    }, async facts => {
+      await control(facts.root, queueArm(body, { pauseMillis: 1000 }));
+      const child = request({ hostname: '127.0.0.1', port: facts.port, path: FIRST_TARGET, headers,
+        agent: false });
+      child.on('error', () => {});
+      child.end();
+      await queueState(facts, 'held');
+      if (disposition === 'disconnected') child.destroy();
+      const state = await queueState(facts, disposition);
+      assert.equal(state.receipt.downstreamOfferedBytes, '0');
+      assert.equal(facts.received.length, 1);
+      assert.equal((await control(facts.root, { version: 1, kind: 'queue_release' })).status, 'released');
+      assert.equal((await control(facts.root, { version: 1, kind: 'queue_state' })).state, disposition);
+      child.destroy();
+    });
+  }
+});
+
+test('queue selection deadline and pause bounds remain independent and closed', async () => {
+  const body = Buffer.alloc(131072);
+  await fixture(normal(body), async facts => {
+    for (const extra of [{ pauseMillis: 35001 }, { pauseMillis: 0 },
+      { selectionDeadlineUnixMillis: Date.now() - 1 }, { expectedSourceBytes: '65536' },
+      { expectedPrefixSha256: 'foreign' }, { unexpected: true }]) {
+      assert.equal((await control(facts.root, queueArm(body, extra))).status, 'refused');
+    }
+    await control(facts.root, queueArm(body, { selectionDeadlineUnixMillis: Date.now() + 50 }));
+    await delay(60);
+    assert.equal((await control(facts.root, { version: 1, kind: 'queue_state' })).state, 'cutoff');
+    assert.equal(facts.received.length, 0);
+  });
+});
+
+
+test('already completed upstream response cannot become a held queue attempt', async () => {
+  const body = Buffer.alloc(65537, 3);
+  await fixture(normal(body), async facts => {
+    await control(facts.root, queueArm(body));
+    await assert.rejects(read(facts.port, { target: FIRST_TARGET }));
+    assert.equal((await queueState(facts, 'refused')).receipt, null);
+    assert.equal(facts.received.length, 1);
+  });
+});
+
+test('queue deadline covers stalled upstream headers and incomplete prefix', async () => {
+  const body = Buffer.alloc(131072, 9);
+  for (const phase of ['headers', 'prefix']) {
+    await fixture((incoming, outgoing) => {
+      if (phase === 'prefix') {
+        outgoing.writeHead(200, { ETag: '"actual-etag"', 'Content-Length': body.length });
+        outgoing.write(body.subarray(0, 1024));
+      }
+    }, async facts => {
+      await control(facts.root, queueArm(body, { pauseMillis: 100 }));
+      await assert.rejects(read(facts.port, { target: FIRST_TARGET }));
+      assert.equal((await queueState(facts, 'cutoff')).receipt, null);
+      assert.equal(facts.received.length, 1);
+    });
+  }
+});
+
+
+test('downstream close during real held-event fsync remains ordered and observed once', async () => {
+  const body = Buffer.from('selected calibration body');
+  await fixture(normal(body), async facts => {
+    const calibration = await calibrate(facts, body);
+    await control(facts.root, armed(calibration, body));
+    let release;
+    let entered;
+    let closed;
+    const heldGate = new Promise(resolve => { release = resolve; });
+    const persistenceEntered = new Promise(resolve => { entered = resolve; });
+    const serverClosed = new Promise(resolve => { closed = resolve; });
+    const originalOpen = fs.open;
+    const originalEmit = ServerResponse.prototype.emit;
+    const originalAssignSocket = ServerResponse.prototype.assignSocket;
+    const selectedResponses = new WeakSet();
+    ServerResponse.prototype.assignSocket = function (socket) {
+      if (socket.localPort === facts.port) selectedResponses.add(this);
+      return originalAssignSocket.call(this, socket);
+    };
+    fs.open = async (...arguments_) => {
+      const file = await originalOpen(...arguments_);
+      if (String(arguments_[0]).startsWith(facts.root + '/event-')) {
+        let heldEvent = false;
+        const write = file.writeFile.bind(file);
+        const sync = file.sync.bind(file);
+        file.writeFile = async bytes => {
+          heldEvent = JSON.parse(bytes).kind === 'response_held';
+          return write(bytes);
+        };
+        file.sync = async () => {
+          if (heldEvent) { entered(); await heldGate; }
+          return sync();
+        };
+      }
+      return file;
+    };
+    ServerResponse.prototype.emit = function (name, ...arguments_) {
+      if (name === 'close' && selectedResponses.has(this)) closed();
+      return originalEmit.call(this, name, ...arguments_);
+    };
+    const child = request({ hostname: '127.0.0.1', port: facts.port, path: TARGET,
+      headers, agent: false });
+    child.on('error', () => {});
+    try {
+      child.end();
+      await Promise.race([persistenceEntered, delay(3000).then(() => assert.fail('held fsync not reached'))]);
+      child.destroy();
+      await Promise.race([serverClosed, delay(3000).then(() => assert.fail('server close not observed'))]);
+      assert.equal((await events(facts.root)).some(row => row.kind === 'downstream_closed'), false);
+      release();
+      for (let index = 0; index < 200; index++) {
+        if ((await events(facts.root)).some(row => row.kind === 'downstream_closed')) break;
+        await delay(5);
+      }
+      const rows = await events(facts.root);
+      const held = rows.filter(row => row.kind === 'response_held');
+      const ended = rows.filter(row => row.kind === 'downstream_closed');
+      assert.equal(held.length, 1);
+      assert.equal(ended.length, 1);
+      assert.ok(held[0].sequence < ended[0].sequence);
+      assert.equal(ended[0].closeCause, 'downstream');
+      assert.equal(ended[0].remoteDrain, null);
+      assert.equal(ended[0].downstreamOfferedBytes, '0');
+      assert.equal(facts.received.length, 2);
+    } finally {
+      release();
+      child.destroy();
+      fs.open = originalOpen;
+      ServerResponse.prototype.emit = originalEmit;
+      ServerResponse.prototype.assignSocket = originalAssignSocket;
+    }
   });
 });

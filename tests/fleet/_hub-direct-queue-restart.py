@@ -1,8 +1,9 @@
 """Interrupt one retained isolated queue read without repeating its mutations.
 
-The rendezvous is an authenticated durable Begin without Finish. It does not
-claim that the read was active, that bytes had reached the provider, or that a
-local ACK was settled. The ordinary mixed/pure qualification is a separate run.
+The rendezvous joins an independently held GET to an authenticated durable
+Begin without Finish after the exact consumer crash. Neither the held GET nor
+an ACK alone proves a queue attempt or remote drain. The ordinary mixed/pure
+qualification is a separate run.
 """
 
 import base64
@@ -16,12 +17,14 @@ import time
 
 
 def start_direct_restart_original(worker, tools, origin, control_key_file,
-                                  identity_file, selector, source):
+                                  identity_file, selector, source, run_id=None):
     """Launch a single actual bulk original and retain its exact driver lifetime."""
     if (source["metadata"] is not False or source["byte_size"] != 2147483648
             or not re.fullmatch(r"[0-9a-f]{64}", source["sha256"])):
         raise ValueError("queue restart requires the selected actual 2 GiB bulk file")
-    run_id = os.urandom(32).hex()
+    run_id = os.urandom(32).hex() if run_id is None else run_id
+    if re.fullmatch(r"[0-9a-f]{64}", run_id) is None:
+        raise ValueError("queue restart run identity differs")
     root = "/var/lib/hybrid-worker/operator/restart-" + run_id
     arguments = [tools["node"], tools["qualificationDriver"], "--origin", origin,
         "--control-key-file", control_key_file, "--identity-file", identity_file,
@@ -379,7 +382,25 @@ def direct_restart_records(observation, run_id, source, identity):
         body = (Path(observation["retained"]["directory"]) / selected["name"]).read_bytes()
         if hashlib.sha256(body).hexdigest() != selected["sha256"]:
             raise ValueError("retained queue inspection changed")
-        result = _closed_review_json(body)["result"]
+        capture = _closed_review_json(body)
+        authentication_name = selected["name"].removesuffix("-capture.json") + "-authentication.json"
+        authentication_files = [item for item in observation["retained"]["files"]
+                                if item["name"] == authentication_name]
+        if len(authentication_files) != 1:
+            raise ValueError("queue inspection lacks its retained authenticated exchange")
+        authentication_body = (Path(observation["retained"]["directory"]) / authentication_name).read_bytes()
+        if hashlib.sha256(authentication_body).hexdigest() != authentication_files[0]["sha256"]:
+            raise ValueError("queue inspection authentication changed")
+        authentication = _closed_review_json(authentication_body)
+        # The selected driver verifies the reply MAC before writing a capture.
+        # This links that actual exchange to these exact retained bytes; it
+        # neither re-verifies a MAC without its key nor invents authentication.
+        if (authentication["status"] != 200 or authentication["responseSha256"] != selected["sha256"]
+                or authentication["requestSha256"] != capture["requestSha256"]
+                or capture["sourceDigest"] != identity["sourceDigest"]
+                or capture["scriptVersion"] != identity["scriptVersion"]):
+            raise ValueError("queue inspection exchange or installed source differs")
+        result = capture["result"]
         original = result["original"]
         if (original["runId"] != run_id
                 or original["sourceDigest"] != identity["sourceDigest"]
@@ -402,7 +423,8 @@ def direct_restart_records(observation, run_id, source, identity):
                 raise ValueError("retained queue attempt identity is invalid")
             records.append({"objectId": object_id, "attemptNonce": nonce,
                 "attempt": record["attempt"], "receipt": record["receipt"],
-                "inspectionSha256": selected["sha256"]})
+                "inspectionSha256": selected["sha256"],
+                "readSelection": direct_restart_read_selection(result)})
     return records
 
 
@@ -519,73 +541,106 @@ def finish_direct_restart_driver(worker, tools, driver):
     return {"process": outcome, "retained": retained}
 
 
-def run_direct_queue_restart(worker, tools, process, identity, control_key_file,
-                             selector, source):
-    """Recover a real closed bulk original across a consumer crash, preserving unknowns."""
-    driver = start_direct_restart_original(worker, tools, tools["workerUrl"],
-        control_key_file, identity["identityFile"], selector, source)
-    retain_direct_flow("queue-restart-original-driver.json", driver)
-    identity_body = read_direct_guest_file(worker, tools["python"], identity["identityFile"], 262144)
-    selected_identity = _closed_review_json(identity_body)
-    selected_identity = selected_identity.get("identity", selected_identity)
-    pending = None
-    inspections = []
-    deadline = time.monotonic() + 1200
-    index = 0
-    # The authenticated Start creates original.json before any source mutation.
-    # Until then a status request would describe an absent run rather than a
-    # delivery; inspect only after that actual capture exists.
-    while time.monotonic() < deadline:
-        ready = direct_restart_readiness(worker, tools, driver)
-        if not ready:
-            time.sleep(1)
-            continue
-        observed = observe_direct_prequalification_phase(worker, tools, tools["workerUrl"],
-            control_key_file, identity["identityFile"], driver["runId"], "status",
-            "before-crash-" + str(index), wait_seconds=0)
-        inspections.append(observed)
-        records = direct_restart_records(observed, driver["runId"], source, selected_identity)
-        if any(record["receipt"] is not None for record in records):
-            terminal = finish_direct_restart_driver(worker, tools, driver)
-            retain_direct_flow("queue-restart-rendezvous-failure.json", {
-                "version": 1, "driver": terminal, "inspections": inspections,
-                "reason": "read_finished_before_restart_rendezvous", "consumerCrash": False,
-            })
-            raise AssertionError("queue read finished before the actual restart rendezvous")
-        pending = next((record for record in records if record["receipt"] is None), None)
-        if pending is not None:
-            break
-        index += 1
-        if index >= 256:
-            break
-        time.sleep(1)
-    if pending is None:
-        terminal = finish_direct_restart_driver(worker, tools, driver)
-        retain_direct_flow("queue-restart-rendezvous-failure.json", {
-            "version": 1, "driver": terminal, "inspections": inspections,
-            "reason": "no_closed_begin_without_finish_before_deadline", "consumerCrash": False,
-        })
-        raise AssertionError("no retained closed Begin without Finish observed before crash deadline")
-    counters, _ = observe_direct_runtime_process(worker, tools, "before-queue-crash")
-    crash = crash_direct_recorded_runtime(worker, tools, process, counters)
-    retain_direct_flow("queue-restart-crash.json", crash)
-    resumed = start_direct_worker(worker, tools, process["configurationFile"], "queue-recovered")
-    if resumed["configurationSha256"] != process["configurationSha256"]:
-        raise ValueError("consumer restart changed the selected runtime configuration")
-    retain_direct_flow("queue-restart-new-runner.json", resumed)
-    wait_worker_transport(worker, tools["curl"], tools["python"], True,
-                          observation_label="worker-queue-recovered")
-    original_driver = finish_direct_restart_driver(worker, tools, driver)
-    after = observe_direct_prequalification_phase(worker, tools, tools["workerUrl"],
-        control_key_file, identity["identityFile"], driver["runId"], "status", "after-crash", 0)
-    recovered = observe_direct_prequalification_phase(worker, tools, tools["workerUrl"],
-        control_key_file, identity["identityFile"], driver["runId"], "requeue", "recovered", 600)
-    records = direct_restart_records(recovered, driver["runId"], source, selected_identity)
+def direct_restart_read_selection(result):
+    """Project authenticated closed stage coordinates without credential bytes."""
+    job = result["closed"].get("job")
+    if job is None:
+        return None
+    placements = [item for item in job["admission"]["placements"]
+                  if item["placementId"] == job["placementId"]]
+    if len(placements) != 1:
+        raise ValueError("queue closed job lacks one selected placement")
+    placement = placements[0]
+    cohort = placement["physical"]["readCohort"]
+    alias = cohort["alias"]["spec"]
+    session = job["admission"]["sessionId"]
+    stage_key = (placement["stagingPrefix"] + "/" + hashlib.sha256(session.encode()).hexdigest()
+                 + "/" + placement["placementId"] + "/payload")
+    return {"target": "/" + alias["bucket"] + "/" + stage_key,
+        "host": alias["host"]["value"], "port": alias["port"],
+        "etag": job["closed"]["result"]["outcome"]["etag"],
+        "sourceBytes": job["admission"]["intent"]["byteSize"],
+        "sourceSha256": job["admission"]["intent"]["expectedSha256"],
+        "providerSelectorSha256": hashlib.sha256(json.dumps(
+            result["original"]["provider"]["selector"], sort_keys=True).encode()).hexdigest()}
+
+
+def prepare_direct_queue_pause(worker, s3, tools, process, selector, source, staging_prefix, run_id):
+    """Bind a bounded prefix observation to the actual unchanged bulk source."""
+    prefix = json.loads(direct_guest_python(worker, tools["python"], """
+        import hashlib, os, stat
+
+        descriptor = os.open(selected['file'], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, 'rb') as stream:
+            before = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
+                    or before.st_nlink != 1 or stat.S_IMODE(before.st_mode) != 0o600
+                    or before.st_size != selected['byte_size']):
+                raise ValueError('queue source custody or full length differs')
+            body = stream.read(65536)
+            after = os.fstat(stream.fileno())
+            if (len(body) != 65536 or (before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+                    != (after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
+                raise ValueError('queue source prefix changed')
+        print(json.dumps({'sha256': hashlib.sha256(body).hexdigest(), 'byteSize': '65536'}))
+    """, source))
+    # The selection deadline covers upload/settlement. The separate pause
+    # ceiling begins only when the real GET is selected.
+    deadline = int(direct_guest_python(s3, tools["python"],
+        "import time; print(time.time_ns() // 1000000 + 1200000)", {}))
+    selection = {"version": 1, "host": "s3.fleet.test",
+        "targetPrefix": "/fleet-s3/" + staging_prefix + "/"}
+    context = {"runId": run_id, "sourceSha256": source["sha256"],
+        "sourceBytes": str(source["byte_size"]), "prefix": prefix,
+        "selectorSha256": hashlib.sha256(json.dumps(selector, sort_keys=True).encode()).hexdigest(),
+        "configurationSha256": process["configurationSha256"], "selection": selection}
+    arm = {"version": 1, "kind": "arm_queue_read", "selection": selection,
+        "expectedSourceSha256": source["sha256"], "expectedSourceBytes": str(source["byte_size"]),
+        "expectedPrefixSha256": prefix["sha256"],
+        "selectionContextSha256": hashlib.sha256(json.dumps(context, sort_keys=True).encode()).hexdigest(),
+        "selectionDeadlineUnixMillis": deadline, "pauseMillis": 35000}
+    reply = direct_provider_hold_command(s3, tools, tools["providerHoldInstallation"], arm)
+    if reply != {"version": 1, "status": "armed"}:
+        raise AssertionError("queue provider pause was not armed")
+    retain_direct_flow("queue-restart-pause-arm.json", {"context": context, "request": arm, "reply": reply,
+        "owner": tools["providerHoldInstallation"]["ready"]})
+    return arm
+
+
+def direct_restart_pause_join(record, held, arm, selector, crash):
+    """Require an authenticated unfinished Begin for the independently held GET."""
+    selected = record["readSelection"]
+    receipt = held["receipt"]
+    identity = receipt["identity"]
+    if (record["receipt"] is not None or selected is None
+            or identity["method"] != "GET" or identity["range"] is not None
+            or identity["target"] != selected["target"] or identity["host"] != selected["host"]
+            or selected["port"] != 443 or identity["ifMatch"] != selected["etag"]
+            or receipt["sourceSha256"] != arm["expectedSourceSha256"]
+            or receipt["sourceBytes"] != arm["expectedSourceBytes"]
+            or str(selected["sourceBytes"]) != receipt["sourceBytes"]
+            or selected["sourceSha256"] != receipt["sourceSha256"]
+            or receipt["prefixFile"]["sha256"] != arm["expectedPrefixSha256"]
+            or receipt["prefixFile"]["byteSize"] != "65536"
+            or receipt["selectionContextSha256"] != arm["selectionContextSha256"]
+            or selected["providerSelectorSha256"] != hashlib.sha256(
+                json.dumps(selector, sort_keys=True).encode()).hexdigest()
+            or receipt["downstreamOfferedBytes"] != "0" or receipt["upstreamComplete"] is not False
+            or not (int(record["attempt"]["startedAtMillis"]) <= receipt["selectedAtUnixMillis"]
+                    <= receipt["heldAtUnixMillis"] <= int(crash["killedAtUnixNs"]) // 1000000
+                    < receipt["cutoffUnixMillis"])
+            or receipt["cutoffUnixMillis"] - receipt["selectedAtUnixMillis"] > 35000):
+        raise AssertionError("held provider read lacks exact authenticated unfinished Begin correlation")
+    return record
+
+
+def direct_restart_positive(records, pending, source, crash):
+    """Validate existing fresh recovery receipts before deciding whether to enqueue."""
     unfinished = [record for record in records if record["attemptNonce"] == pending["attemptNonce"]]
+    if len(unfinished) != 1 or unfinished[0]["receipt"] is not None:
+        raise AssertionError("consumer crash did not retain the original unfinished attempt")
     positive = [record for record in records if record["receipt"] is not None
                 and record["attemptNonce"] != pending["attemptNonce"]]
-    if len(unfinished) != 1 or unfinished[0]["receipt"] is not None or not positive:
-        raise AssertionError("consumer crash did not preserve unfinished original and a later positive attempt")
     for record in positive:
         receipt = record["receipt"]
         proof = receipt["proof"]
@@ -597,8 +652,101 @@ def run_direct_queue_restart(worker, tools, process, identity, control_key_file,
                 or int(after_provider["dispatches"]) <= int(before["dispatches"])
                 or int(record["attempt"]["startedAtMillis"]) * 1000000 <= int(crash["killedAtUnixNs"])):
             raise AssertionError("later delivery lacks a fresh exact full-source positive proof")
+    return positive
+
+
+def run_direct_queue_restart(worker, s3, tools, process, identity, control_key_file,
+                             selector, source, staging_prefix):
+    """Crash a real held read, then prove its unfinished Begin and fresh recovery."""
+    run_id = os.urandom(32).hex()
+    counters, _ = observe_direct_runtime_process(worker, tools, "before-queue-crash")
+    arm = prepare_direct_queue_pause(worker, s3, tools, process, selector, source, staging_prefix, run_id)
+    driver = None
+    held = None
+    crash = None
+    try:
+        driver = start_direct_restart_original(worker, tools, tools["workerUrl"],
+            control_key_file, identity["identityFile"], selector, source, run_id=run_id)
+        retain_direct_flow("queue-restart-original-driver.json", driver)
+        deadline = time.monotonic() + 1200
+        while time.monotonic() < deadline:
+            direct_restart_readiness(worker, tools, driver)
+            state = direct_provider_hold_command(s3, tools, tools["providerHoldInstallation"],
+                {"version": 1, "kind": "queue_state"})
+            if state["state"] == "held":
+                held = state
+                break
+            if state["state"] not in {"armed", "selected", "receiving_prefix"}:
+                raise AssertionError("queue provider pause ended before consumer crash")
+            time.sleep(0.05)
+        if held is None:
+            raise AssertionError("actual queue read was not selected before original deadline")
+        retain_direct_flow("queue-restart-held-read.json", held)
+        owner = tools["providerHoldInstallation"]["ready"]
+        if held["receipt"]["owner"] != {name: owner[name] for name in (
+                "pid", "startTicks", "ownerUid", "configurationSha256", "listenerSourceSha256",
+                "listenAddress", "upstreamAddress")}:
+            raise AssertionError("queue held GET belongs to a different provider response owner")
+        if (held["endedAtUnixMillis"] is not None
+                or held["receipt"]["cutoffUnixMillis"] <= held["receipt"]["heldAtUnixMillis"]):
+            raise AssertionError("queue provider pause was not live at selected observation")
+        # No Status call precedes the crash: the prior control reply arrived
+        # only after Finish. This independent hold proves no
+        # Begin; the authenticated post-crash join below is mandatory.
+        crash = crash_direct_recorded_runtime(worker, tools, process, counters)
+        retain_direct_flow("queue-restart-crash.json", crash)
+        ended = direct_provider_hold_command(s3, tools, tools["providerHoldInstallation"],
+            {"version": 1, "kind": "queue_state"})
+        retain_direct_flow("queue-restart-pause-after-crash.json", ended)
+        if (ended["receipt"] != held["receipt"]
+                or int(crash["killedAtUnixNs"]) // 1000000 >= held["receipt"]["cutoffUnixMillis"]
+                or ended["endedAtUnixMillis"] is not None
+                    and ended["endedAtUnixMillis"] < int(crash["killedAtUnixNs"]) // 1000000):
+            raise AssertionError("queue provider pause ended before exact consumer crash")
+    finally:
+        try:
+            released = direct_provider_hold_command(s3, tools, tools["providerHoldInstallation"],
+                {"version": 1, "kind": "queue_release"})
+            retain_direct_flow("queue-restart-pause-release.json", released)
+        finally:
+            if crash is None and driver is not None:
+                terminal = finish_direct_restart_driver(worker, tools, driver)
+                retain_direct_flow("queue-restart-rendezvous-failure.json", {
+                    "version": 1, "driver": terminal, "heldRead": held,
+                    "reason": "provider_pause_not_proven_at_crash", "consumerCrash": False})
+
+    resumed = start_direct_worker(worker, tools, process["configurationFile"], "queue-recovered")
+    if resumed["configurationSha256"] != process["configurationSha256"]:
+        raise ValueError("consumer restart changed the selected runtime configuration")
+    retain_direct_flow("queue-restart-new-runner.json", resumed)
+    wait_worker_transport(worker, tools["curl"], tools["python"], True,
+                          observation_label="worker-queue-recovered")
+    identity_body = read_direct_guest_file(worker, tools["python"], identity["identityFile"], 262144)
+    selected_identity = _closed_review_json(identity_body)
+    selected_identity = selected_identity.get("identity", selected_identity)
+    original_driver = finish_direct_restart_driver(worker, tools, driver)
+    after = observe_direct_prequalification_phase(worker, tools, tools["workerUrl"],
+        control_key_file, identity["identityFile"], driver["runId"], "status", "after-crash", 0)
+    records = direct_restart_records(after, driver["runId"], source, selected_identity)
+    matching = [record for record in records if record["receipt"] is None
+                and record["attempt"]["startedAtMillis"] is not None
+                and int(record["attempt"]["startedAtMillis"]) <= held["receipt"]["selectedAtUnixMillis"]]
+    if len(matching) != 1:
+        raise AssertionError("crashed held read lacks one authenticated unfinished attempt")
+    pending = direct_restart_pause_join(matching[0], held, arm, selector, crash)
+    positive = direct_restart_positive(records, pending, source, crash)
+    # Automatic recovery can already have completed during startup/inspection.
+    # Its exact fresh proof is acceptance; another Enqueue is not needed then.
+    recovered = after
+    if not positive:
+        recovered = observe_direct_prequalification_phase(worker, tools, tools["workerUrl"],
+            control_key_file, identity["identityFile"], driver["runId"], "requeue", "recovered", 600)
+        records = direct_restart_records(recovered, driver["runId"], source, selected_identity)
+        positive = direct_restart_positive(records, pending, source, crash)
+    if not positive:
+        raise AssertionError("consumer recovery lacks a fresh positive attempt")
     report = {"version": 1, "runId": driver["runId"], "sourceSha256": source["sha256"],
-        "sourceBytes": source["byte_size"], "pending": pending, "before": inspections,
+        "sourceBytes": source["byte_size"], "pending": pending, "heldRead": held, "pauseArm": arm,
         "crash": crash, "resumed": resumed, "originalDriver": original_driver,
         "afterCrash": after, "recovery": recovered, "positiveAttempts": positive,
         "explicitClosedReadEnqueueObserved": any(item["name"].endswith("-enqueue-capture.json")

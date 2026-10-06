@@ -45,7 +45,8 @@ class RestartFences(unittest.TestCase):
             identity = {"sourceDigest": "b" * 64, "scriptVersion": "emulated-" + "b" * 64,
                         "publicOrigin": "https://fixture.test"}
             source = {"byte_size": 2147483648, "sha256": "c" * 64}
-            value = {"result": {"original": {"runId": run_id, **identity,
+            value = {"requestSha256": "f" * 64,
+                "sourceDigest": identity["sourceDigest"], "scriptVersion": identity["scriptVersion"], "result": {"original": {"runId": run_id, **identity,
                 "objects": [{"objectId": "d" * 64, "metadata": False,
                     "byteSize": "2147483648", "expectedSha256": "c" * 64}]},
                 "objectId": "d" * 64, "closed": {"controlled": True},
@@ -54,8 +55,14 @@ class RestartFences(unittest.TestCase):
             def observation(document):
                 body = json.dumps(document).encode()
                 selected.write_bytes(body)
+                digest = hashlib.sha256(body).hexdigest()
+                authentication = Path(directory) / "00001-inspect-authentication.json"
+                authentication_body = json.dumps({"status": 200, "requestSha256": "f" * 64,
+                    "responseSha256": digest}).encode()
+                authentication.write_bytes(authentication_body)
                 return {"retained": {"directory": directory,
-                    "files": [{"name": selected.name, "sha256": hashlib.sha256(body).hexdigest()}]}}
+                    "files": [{"name": selected.name, "sha256": digest},
+                        {"name": authentication.name, "sha256": hashlib.sha256(authentication_body).hexdigest()}]}}
 
             self.assertEqual(len(restart.direct_restart_records(
                 observation(value), run_id, source, identity)), 1)
@@ -68,6 +75,10 @@ class RestartFences(unittest.TestCase):
             selected.write_bytes(b"changed private observation")
             with self.assertRaises(ValueError):
                 restart.direct_restart_records(changed, run_id, source, identity)
+            missing_authentication = observation(value)
+            missing_authentication["retained"]["files"] = missing_authentication["retained"]["files"][:1]
+            with self.assertRaises(ValueError):
+                restart.direct_restart_records(missing_authentication, run_id, source, identity)
             unclosed = copy.deepcopy(value)
             unclosed["result"]["closed"] = None
             self.assertEqual(restart.direct_restart_records(
@@ -356,6 +367,158 @@ class RestartReadiness(unittest.TestCase):
             self.assertEqual(original.stat().st_size, 524289)
             self.assertEqual(observation["stderrReadBytes"], 0)
             self.assertEqual(process.wait(timeout=5), 4)
+
+
+class QueuePauseLifecycle(unittest.TestCase):
+    def facts(self):
+        selector = {"kind": "synthetic_public_selector"}
+        arm = {"expectedSourceSha256": "c" * 64, "expectedSourceBytes": "2147483648",
+            "expectedPrefixSha256": "d" * 64, "selectionContextSha256": "e" * 64}
+        selection = {"host": "s3.fleet.test", "port": 443, "target": "/fleet-s3/stage/actual/payload",
+            "etag": '\"actual\"', "sourceBytes": "2147483648", "sourceSha256": "c" * 64,
+            "providerSelectorSha256": hashlib.sha256(json.dumps(selector, sort_keys=True).encode()).hexdigest()}
+        pending = {"attemptNonce": "a" * 64, "receipt": None, "readSelection": selection,
+            "attempt": {"nonce": "a" * 64, "startedAtMillis": "1000", "providerBefore": {
+                "isolateId": "controlled-original-isolate", "dispatches": "10"}}}
+        receipt = {"identity": {"method": "GET", "host": selection["host"], "target": selection["target"],
+            "ifMatch": selection["etag"], "range": None}, "sourceSha256": "c" * 64,
+            "sourceBytes": "2147483648", "prefixFile": {"sha256": "d" * 64, "byteSize": "65536"},
+            "selectionContextSha256": "e" * 64, "selectedAtUnixMillis": 1001, "heldAtUnixMillis": 1002,
+            "cutoffUnixMillis": 36001, "downstreamOfferedBytes": "0", "upstreamComplete": False,
+            "owner": {"pid": 1, "startTicks": "2", "ownerUid": 0, "configurationSha256": "f" * 64,
+                "listenerSourceSha256": "e" * 64, "listenAddress": "127.0.0.1:3902", "upstreamAddress": "127.0.0.1:3900"}}
+        held = {"state": "held", "receipt": receipt, "endedAtUnixMillis": None}
+        crash = {"killedAtUnixNs": "1003000000"}
+        source = {"metadata": False, "byte_size": 2147483648, "sha256": "c" * 64}
+        positive = copy.deepcopy(pending)
+        positive["attemptNonce"] = "b" * 64
+        positive["attempt"].update(nonce="b" * 64, startedAtMillis="1004")
+        positive["receipt"] = {"verificationReplayed": False,
+            "proof": {"byte_size": "2147483648", "sha256": "c" * 64},
+            "providerAfter": {"isolateId": "controlled-original-isolate", "dispatches": "11"}}
+        return selector, arm, pending, held, crash, source, positive
+
+    def test_closed_stage_projection_uses_session_commitment_not_business_key(self):
+        result = {"original": {"provider": {"selector": {"selected": True}}}, "closed": {"job": {
+            "placementId": "1", "admission": {"sessionId": "actual-session",
+                "intent": {"byteSize": "2147483648", "expectedSha256": "c" * 64},
+                "placements": [{"placementId": "1", "stagingPrefix": ".aos-direct-upload",
+                    "finalKey": "unrelated-business-key", "physical": {"readCohort": {"alias": {"spec": {
+                        "bucket": "fleet-s3", "host": {"value": "s3.fleet.test"}, "port": 443}}}}}]},
+            "closed": {"result": {"outcome": {"etag": '\"actual\"'}}}}}}
+        selected = restart.direct_restart_read_selection(result)
+        self.assertEqual(selected["target"], "/fleet-s3/.aos-direct-upload/"
+            + "22975b5e2eebf9ede4b039540307f1abd4489674e68ac34f2da9194d3afcba64/1/payload")
+        self.assertEqual(selected["etag"], '\"actual\"')
+        changed = copy.deepcopy(result)
+        changed["closed"]["job"]["admission"]["placements"].append(
+            changed["closed"]["job"]["admission"]["placements"][0])
+        with self.assertRaises(ValueError):
+            restart.direct_restart_read_selection(changed)
+
+    def test_held_get_never_substitutes_for_unfinished_authenticated_attempt(self):
+        selector, arm, pending, held, crash, source, positive = self.facts()
+        self.assertIs(restart.direct_restart_pause_join(pending, held, arm, selector, crash), pending)
+        for field, value in (("target", "/foreign"), ("etag", '\"foreign\"'),
+                             ("sourceSha256", "f" * 64), ("sourceBytes", "65536")):
+            wrong = copy.deepcopy(pending)
+            wrong["readSelection"][field] = value
+            with self.subTest(field=field), self.assertRaises(AssertionError):
+                restart.direct_restart_pause_join(wrong, held, arm, selector, crash)
+        for change in ("completed", "past_cutoff", "before_held"):
+            wrong = copy.deepcopy(pending)
+            changed_crash = dict(crash)
+            if change == "completed":
+                wrong["receipt"] = positive["receipt"]
+            else:
+                changed_crash["killedAtUnixNs"] = "36001000000" if change == "past_cutoff" else "1001000000"
+            with self.subTest(change=change), self.assertRaises(AssertionError):
+                restart.direct_restart_pause_join(wrong, held, arm, selector, changed_crash)
+
+    def scenario(self, after_positive=True, pause_state="held", malformed_positive=False):
+        from unittest.mock import patch
+        selector, arm, pending, held, crash, source, positive = self.facts()
+        if malformed_positive:
+            positive["receipt"]["proof"]["sha256"] = "f" * 64
+        observed = []
+        provider = []
+        crashes = []
+        identity = {"identityFile": "controlled-private-identity"}
+        process = {"configurationFile": "controlled-config", "configurationSha256": "f" * 64}
+        driver = {"runId": "1" * 64}
+        tools = {"workerUrl": "https://controlled.test", "python": sys.executable,
+                 "curl": "controlled-curl", "providerHoldInstallation": {"ready": held["receipt"]["owner"]}}
+
+        def command(_s3, _tools, _installation, request):
+            provider.append(request["kind"])
+            if request["kind"] == "queue_release":
+                return {"version": 1, "status": "released"}
+            return {**held, "state": pause_state}
+
+        def observe(*args, **kwargs):
+            phase = args[6]
+            observed.append(phase)
+            self.assertTrue(crashes, "no authenticated Status may delay the actual crash")
+            return {"phase": phase, "retained": {"files": []}}
+
+        def records(observation, *_args):
+            return [pending, positive] if after_positive or observation["phase"] == "requeue" else [pending]
+
+        def crash_runtime(*_args):
+            crashes.append(True)
+            return crash
+
+        substitutions = dict(observe_direct_runtime_process=lambda *_args: ({}, None),
+            prepare_direct_queue_pause=lambda *_args: arm,
+            start_direct_restart_original=lambda *_args, **_kw: driver,
+            retain_direct_flow=lambda *_args: None, direct_restart_readiness=lambda *_args: True,
+            direct_provider_hold_command=command, crash_direct_recorded_runtime=crash_runtime,
+            start_direct_worker=lambda *_args: dict(process), wait_worker_transport=lambda *_a, **_kw: None,
+            read_direct_guest_file=lambda *_args: b'{}', finish_direct_restart_driver=lambda *_args: {},
+            observe_direct_prequalification_phase=observe, direct_restart_records=records)
+        with patch.multiple(restart, create=True, **substitutions):
+            if pause_state != "held" or malformed_positive:
+                with self.assertRaises(AssertionError):
+                    restart.run_direct_queue_restart(None, None, tools, process, identity,
+                        "controlled-key-path", selector, source, "controlled-prefix")
+            else:
+                report, _ = restart.run_direct_queue_restart(None, None, tools, process, identity,
+                    "controlled-key-path", selector, source, "controlled-prefix")
+                self.assertEqual(report["positiveAttempts"], [positive])
+        self.assertEqual(provider[-1], "queue_release")
+        return observed, crashes
+
+    def test_delayed_status_is_not_called_before_crash_and_auto_positive_needs_no_enqueue(self):
+        observed, crashes = self.scenario()
+        self.assertEqual(observed, ["status"])
+        self.assertEqual(len(crashes), 1)
+
+    def test_pending_uses_existing_bounded_requeue_but_malformed_positive_refuses(self):
+        observed, _ = self.scenario(after_positive=False)
+        self.assertEqual(observed, ["status", "requeue"])
+        self.scenario(malformed_positive=True)
+
+    def test_cutoff_disconnect_or_refusal_releases_without_crash(self):
+        for state in ("cutoff", "disconnected", "refused"):
+            with self.subTest(state=state):
+                observed, crashes = self.scenario(pause_state=state)
+                self.assertEqual(observed, [])
+                self.assertEqual(crashes, [])
+
+    def test_old_nonce_or_before_crash_positive_never_becomes_recovery(self):
+        _, _, pending, _, crash, source, positive = self.facts()
+        for change in ("old_nonce", "early", "replayed", "wrong_source"):
+            wrong = copy.deepcopy(positive)
+            if change == "old_nonce":
+                wrong["attemptNonce"] = pending["attemptNonce"]
+            elif change == "early":
+                wrong["attempt"]["startedAtMillis"] = "1002"
+            elif change == "replayed":
+                wrong["receipt"]["verificationReplayed"] = True
+            else:
+                wrong["receipt"]["proof"]["sha256"] = "f" * 64
+            with self.subTest(change=change), self.assertRaises(AssertionError):
+                restart.direct_restart_positive([pending, wrong], pending, source, crash)
 
 
 if __name__ == "__main__":

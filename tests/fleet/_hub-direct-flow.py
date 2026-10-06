@@ -1050,9 +1050,10 @@ def run_external_direct_fleet(client, native, worker, s3, database_machine, tool
         "hybrid-fleet-r2", worker_controls["keyFiles"]["HUB_DIRECT_UPLOAD_GUARD_KEY"])
     bulk = prepare_direct_qualification_bulk(worker, tools["python"], "/var/lib/hybrid-worker/qualification-bulk")
     metadata = prepare_direct_qualification_metadata(worker, tools["python"], "/var/lib/hybrid-worker/qualification-metadata")
-    queue_restart, process = run_direct_queue_restart(worker, tools, process, identity,
+    queue_restart, process = run_direct_queue_restart(worker, s3, tools, process, identity,
         worker_controls["keyFiles"]["HUB_DIRECT_UPLOAD_CONFORMANCE_KEY"],
-        authority["exported"]["bootstrap"]["selector"], bulk[0])
+        authority["exported"]["bootstrap"]["selector"], bulk[0],
+        authority["exported"]["bootstrap"]["staging_prefix"])
     # This first measurement supplies the real runtime reference required by
     # the structural Copy domain. It is explicitly a preflight, not the final
     # configuration or process that will be qualified for publication.

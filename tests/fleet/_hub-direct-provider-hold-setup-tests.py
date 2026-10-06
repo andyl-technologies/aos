@@ -161,5 +161,33 @@ class ProviderReadinessTests(unittest.TestCase):
                 setup.direct_provider_hold_command(None, {}, installation, changed)
 
 
+    def test_queue_pause_uses_same_owned_socket_with_closed_full_source_limits(self):
+        calls = []
+        original = setup._direct_provider_listener_exchange
+        setup._direct_provider_listener_exchange = lambda *args: calls.append(json.loads(args[-1])) or {"status": "armed"}
+        installation = {"root": self.prepared["root"], "ready": self.ready}
+        request = {"version": 1, "kind": "arm_queue_read", "selection": {"version": 1,
+            "host": "s3.fleet.test", "targetPrefix": "/fleet-s3/.aos-direct-qualification/actual/.aos-direct-upload/"},
+            "expectedSourceSha256": "a" * 64, "expectedSourceBytes": "2147483648",
+            "expectedPrefixSha256": "b" * 64, "selectionContextSha256": "c" * 64,
+            "selectionDeadlineUnixMillis": 1234567, "pauseMillis": 35000}
+        try:
+            self.assertEqual(setup.direct_provider_hold_command(None, {}, installation, request), {"status": "armed"})
+            self.assertEqual(calls, [request])
+            for field, value in (("pauseMillis", 35001), ("pauseMillis", True),
+                                 ("expectedSourceBytes", "65536"), ("expectedPrefixSha256", "invalid"),
+                                 ("selectionDeadlineUnixMillis", True)):
+                changed = {**request, field: value}
+                with self.subTest(field=field), self.assertRaises(ValueError):
+                    setup.direct_provider_hold_command(None, {}, installation, changed)
+            for kind in ("queue_state", "queue_release"):
+                setup.direct_provider_hold_command(None, {}, installation, {"version": 1, "kind": kind})
+                with self.assertRaises(ValueError):
+                    setup.direct_provider_hold_command(None, {}, installation,
+                        {"version": 1, "kind": kind, "target": "/unselected"})
+        finally:
+            setup._direct_provider_listener_exchange = original
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -229,6 +229,95 @@ export async function createResponseHold(root, ports = { listen: 3902, upstream:
   const sockets = new Set();
   const pending = new Set();
 
+  // Queue rendezvous owns a separate one-shot selection. It must not consume
+  // the later small-body calibration or verification-timeout selection.
+  let queuePause = null;
+
+  function endQueuePause(reason) {
+    if (!queuePause || ['released', 'cutoff', 'disconnected', 'refused'].includes(queuePause.state)) return;
+    queuePause.state = reason;
+    queuePause.endedAtUnixMillis = Date.now();
+    queuePause.cancel?.();
+  }
+
+  async function pauseQueueRead(response, reply, identity) {
+    const selection = queuePause;
+    selection.state = 'receiving_prefix';
+    selection.cancel = () => { reply.destroy(); response.destroy(); };
+    const disconnected = () => endQueuePause('disconnected');
+    response.once('close', disconnected);
+    reply.once('error', disconnected);
+    reply.once('aborted', disconnected);
+    try {
+      requireFact(reply.statusCode === 200
+        && header(reply.rawHeaders, 'etag') === identity.ifMatch
+        && header(reply.rawHeaders, 'content-length') === selection.arm.expectedSourceBytes
+        && header(reply.rawHeaders, 'transfer-encoding') === null,
+      'queue response incarnation or full length differs');
+
+      // Read only the prefix while the upstream remains paused. Node applies
+      // socket backpressure; the application never accumulates the full object.
+      const blocks = [];
+      let size = 0;
+      await new Promise((resolve_, reject) => {
+        const cleanup = () => {
+          reply.off('readable', readable);
+          reply.off('end', ended);
+          reply.off('error', reject_);
+          reply.off('close', ended);
+        };
+        const reject_ = error => { cleanup(); reject(error); };
+        const ended = () => reject_(new Error('queue read ended before bounded prefix selection'));
+        const readable = () => {
+          while (size < BODY_BOUND) {
+            const block = reply.read(BODY_BOUND - size);
+            if (block === null) break;
+            blocks.push(block);
+            size += block.length;
+          }
+          if (size === BODY_BOUND) { cleanup(); resolve_(); }
+        };
+        reply.on('readable', readable);
+        reply.once('end', ended);
+        reply.once('close', ended);
+        reply.once('error', reject_);
+        readable();
+      });
+      const prefix = Buffer.concat(blocks);
+      requireFact(selection.state === 'receiving_prefix' && !reply.readableEnded
+        && !reply.complete
+        && sha(prefix) === selection.arm.expectedPrefixSha256,
+      'queue source prefix differs or response already completed');
+      const prefixFile = await retain(root, 'queue-prefix.private', prefix);
+      selection.receipt = { version: 1, identity,
+        owner: { pid: ready.pid, startTicks: ready.startTicks, ownerUid: ready.ownerUid,
+          configurationSha256: ready.configurationSha256, listenerSourceSha256: ready.listenerSourceSha256,
+          listenAddress: ready.listenAddress, upstreamAddress: ready.upstreamAddress },
+        selectionContextSha256: selection.arm.selectionContextSha256,
+        sourceSha256: selection.arm.expectedSourceSha256,
+        sourceBytes: selection.arm.expectedSourceBytes, prefixFile,
+        selectedAtUnixMillis: selection.selectedAtUnixMillis,
+        heldAtUnixMillis: Date.now(), cutoffUnixMillis: selection.selectedAtUnixMillis + selection.arm.pauseMillis,
+        upstreamComplete: false, downstreamOfferedBytes: '0', remoteDrain: null };
+      selection.receiptFile = await retain(root, 'queue-held.json', encode(selection.receipt));
+      requireFact(selection.state === 'receiving_prefix', 'queue pause ended during retention');
+      selection.state = 'held';
+      await new Promise(resolve_ => {
+        if (response.destroyed) return resolve_();
+        response.once('close', resolve_);
+      });
+    } catch {
+      endQueuePause('refused');
+      reply.destroy();
+      response.destroy();
+    } finally {
+      response.off('close', disconnected);
+      reply.off('error', disconnected);
+      reply.off('aborted', disconnected);
+      selection.cancel = null;
+    }
+  }
+
   async function event(kind, facts = {}) {
     if (events >= 32) {
       if (observationsComplete) {
@@ -248,23 +337,43 @@ export async function createResponseHold(root, ports = { listen: 3902, upstream:
   }
 
   async function holdResponse(response, receiptFile, selectionFacts) {
-    await event('response_held', { receiptFile, ...selectionFacts,
-      holdUntilUnixMillis: String(arm.holdUntilUnixMillis), downstreamOfferedBytes: '0', remoteDrain: null });
-    // This deadline is a fixture ceiling. The actual original's earlier cutoff
-    // and signed terminal must be joined independently by the caller.
-    await new Promise(resolve_ => {
-      let fixtureClosed = false;
-      const timer = setTimeout(() => {
-        fixtureClosed = true;
-        event('hold_deadline_reached', { downstreamOfferedBytes: '0', remoteDrain: null })
-          .finally(() => { response.destroy(); resolve_(); });
-      }, Math.max(1, arm.holdUntilUnixMillis - Date.now()));
-      response.once('close', () => {
-        clearTimeout(timer);
-        event('downstream_closed', { downstreamOfferedBytes: '0', remoteDrain: null,
-          closeCause: fixtureClosed ? 'fixture_ceiling' : 'downstream' }).finally(resolve_);
-      });
+    let fixtureClosed = false;
+    const alreadyClosed = response.closed || response.destroyed;
+    let closeCause = alreadyClosed ? 'downstream' : null;
+    let timer = null;
+    let observedClose;
+    let closeListener;
+    const closeObserved = new Promise(resolve_ => {
+      observedClose = resolve_;
+      closeListener = () => {
+        closeCause = fixtureClosed ? 'fixture_ceiling' : 'downstream';
+        if (timer) clearTimeout(timer);
+        resolve_();
+      };
+      // Subscribe before persistence: a visible held-event file does not mean
+      // its fsync has finished, and the peer can close during that await.
+      if (alreadyClosed) resolve_();
+      else response.once('close', closeListener);
     });
+    timer = alreadyClosed ? null : setTimeout(() => {
+      fixtureClosed = true;
+      closeCause = 'fixture_ceiling';
+      event('hold_deadline_reached', { downstreamOfferedBytes: '0', remoteDrain: null })
+        .finally(() => { response.destroy(); observedClose(); });
+    }, Math.max(1, arm.holdUntilUnixMillis - Date.now()));
+    try {
+      await event('response_held', { receiptFile, ...selectionFacts,
+        holdUntilUnixMillis: String(arm.holdUntilUnixMillis), downstreamOfferedBytes: '0',
+        downstreamClosedBeforeHeld: alreadyClosed, remoteDrain: null });
+      // This deadline is a fixture ceiling. The actual original's earlier
+      // cutoff and signed terminal remain independent caller evidence.
+      await closeObserved;
+      await event('downstream_closed', { downstreamOfferedBytes: '0', remoteDrain: null,
+        closeCause });
+    } finally {
+      if (timer) clearTimeout(timer);
+      response.off('close', closeListener);
+    }
   }
 
   async function firstSelectedResponse(response, upstream, identity, requestFile, candidate) {
@@ -383,7 +492,27 @@ export async function createResponseHold(root, ports = { listen: 3902, upstream:
             firstSelected = false;
           }
         }
-        if (firstSelected) {
+        let queueSelected = false;
+        if (queuePause?.state === 'armed' && Date.now() < queuePause.arm.selectionDeadlineUnixMillis
+          && request.method === 'GET') {
+          try {
+            queueSelected = objectTarget(request.url).target.startsWith(queuePause.arm.selection.targetPrefix)
+              && header(request.rawHeaders, 'host') === queuePause.arm.selection.host
+              && header(request.rawHeaders, 'range') === null;
+          } catch {
+            queueSelected = false;
+          }
+        }
+        if (queueSelected) {
+          kind = 'queue';
+          // Reserve before opening the upstream; no second GET can become
+          // another selected delivery while the prefix is read.
+          queuePause.state = 'selected';
+          queuePause.selectedAtUnixMillis = Date.now();
+          requireFact(Buffer.byteLength(JSON.stringify(request.rawHeaders)) <= HEADER_BOUND,
+            'queue request headers exceed bound');
+          identity = requestIdentity(request);
+        } else if (firstSelected) {
           // A prefix is only an observation selector. An invalid signing form
           // passes through without becoming a held candidate.
           try {
@@ -421,8 +550,11 @@ export async function createResponseHold(root, ports = { listen: 3902, upstream:
         const upstream = upstreamRequest({ hostname: '127.0.0.1', port: ports.upstream,
           method: request.method, path: request.url, headers: request.rawHeaders,
           setHost: false, maxHeaderSize: HEADER_BOUND, agent: false });
-        const cutoff = kind && kind !== 'first' ? setTimeout(() => upstream.destroy(new Error('selected upstream deadline expired')),
-          Math.max(1, (arm?.holdUntilUnixMillis ?? Date.now() + 30000) - Date.now())) : null;
+        const cutoff = kind === 'queue' ? setTimeout(() => endQueuePause('cutoff'),
+          Math.max(1, queuePause.selectedAtUnixMillis + queuePause.arm.pauseMillis - Date.now()))
+          : kind && kind !== 'first' ? setTimeout(() => upstream.destroy(new Error('selected upstream deadline expired')),
+            Math.max(1, (arm?.holdUntilUnixMillis ?? Date.now() + 30000) - Date.now())) : null;
+        if (kind === 'queue') queuePause.cancel = () => { upstream.destroy(); response.destroy(); };
         upstream.once('error', error => response.destroy(error));
         response.once('close', () => upstream.destroy());
         try {
@@ -430,7 +562,9 @@ export async function createResponseHold(root, ports = { listen: 3902, upstream:
           upstream.once('error', reject);
           upstream.once('response', reply => {
             reply.once('end', () => { if (cutoff) clearTimeout(cutoff); });
-            if (kind === 'first') {
+            if (kind === 'queue') {
+              pauseQueueRead(response, reply, identity).then(resolve_, reject);
+            } else if (kind === 'first') {
               firstSelectedResponse(response, reply, identity, requestFile, candidate)
                 .then(resolve_, error => { reply.destroy(); reject(error); });
             } else if (kind) {
@@ -450,7 +584,8 @@ export async function createResponseHold(root, ports = { listen: 3902, upstream:
           if (cutoff) clearTimeout(cutoff);
         }
       } catch (error) {
-        if (kind) await event('selected_refused', { phase: kind, reason: error.message,
+        if (kind === 'queue') endQueuePause('refused');
+        else if (kind) await event('selected_refused', { phase: kind, reason: error.message,
           downstreamOfferedBytes: '0', remoteDrain: null });
         response.destroy();
       } finally {
@@ -462,6 +597,37 @@ export async function createResponseHold(root, ports = { listen: 3902, upstream:
   }
 
   async function command(value) {
+    if (closed(value, ['version', 'kind']) && value.version === 1 && value.kind === 'queue_state') {
+      if (queuePause?.state === 'armed' && Date.now() >= queuePause.arm.selectionDeadlineUnixMillis) {
+        endQueuePause('cutoff');
+      }
+      return { version: 1, state: queuePause?.state ?? 'absent',
+        receipt: queuePause?.receipt ?? null, receiptFile: queuePause?.receiptFile ?? null,
+        endedAtUnixMillis: queuePause?.endedAtUnixMillis ?? null };
+    }
+    if (closed(value, ['version', 'kind']) && value.version === 1 && value.kind === 'queue_release') {
+      endQueuePause('released');
+      return { version: 1, status: 'released' };
+    }
+    if (value?.kind === 'arm_queue_read') {
+      requireFact(closed(value, ['version', 'kind', 'selection', 'expectedSourceSha256',
+        'expectedSourceBytes', 'expectedPrefixSha256', 'selectionContextSha256',
+        'selectionDeadlineUnixMillis', 'pauseMillis']) && value.version === 1 && queuePause === null
+        && HEX.test(value.expectedSourceSha256) && HEX.test(value.expectedPrefixSha256)
+        && HEX.test(value.selectionContextSha256)
+        && typeof value.expectedSourceBytes === 'string' && /^[1-9][0-9]{0,9}$/.test(value.expectedSourceBytes)
+        && Number(value.expectedSourceBytes) > BODY_BOUND && Number(value.expectedSourceBytes) <= 2147483648
+        && Number.isSafeInteger(value.selectionDeadlineUnixMillis)
+        && value.selectionDeadlineUnixMillis > Date.now()
+        && value.selectionDeadlineUnixMillis - Date.now() <= 1200000
+        && Number.isSafeInteger(value.pauseMillis) && value.pauseMillis > 0 && value.pauseMillis <= 35000,
+      'queue read arm differs from bounded source selection');
+      validateFirstSelection(value.selection);
+      requireFact(value.selection.targetPrefix.split('/').slice(1, -1).every(Boolean),
+        'queue prefix contains an empty component');
+      queuePause = { arm: structuredClone(value), state: 'armed', receipt: null, receiptFile: null };
+      return { version: 1, status: 'armed' };
+    }
     if (closed(value, ['version', 'kind']) && value.version === 1 && value.kind === 'state') {
       return { version: 1, calibrated: calibrated?.receiptFile ?? null, firstResponse,
         armed: arm !== null, attempted, observationsComplete, scope: 'observation_only_no_authorization' };

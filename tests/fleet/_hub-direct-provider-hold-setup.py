@@ -176,6 +176,11 @@ def direct_provider_hold_command(s3, tools, installation, request):
         raise ValueError("Provider response owner control selection differs")
     fields = {
         "state": {"version", "kind"},
+        "queue_state": {"version", "kind"},
+        "queue_release": {"version", "kind"},
+        "arm_queue_read": {"version", "kind", "selection", "expectedSourceSha256",
+            "expectedSourceBytes", "expectedPrefixSha256", "selectionContextSha256",
+            "selectionDeadlineUnixMillis", "pauseMillis"},
         "arm_first_response": {"version", "kind", "selection", "expectedSourceBodySha256",
             "expectedSourceBodyBytes", "selectionContextSha256", "holdUntilUnixMillis"},
     }
@@ -190,7 +195,14 @@ def direct_provider_hold_command(s3, tools, installation, request):
             or int(request["expectedSourceBodyBytes"]) > 65536
             or type(request["holdUntilUnixMillis"]) is not int):
         raise ValueError("Provider response owner first-response commitment differs")
-    if kind == "arm_first_response":
+    if kind == "arm_queue_read" and (
+            any(not isinstance(request[name], str) or re.fullmatch(r"[0-9a-f]{64}", request[name]) is None
+                for name in ("expectedSourceSha256", "expectedPrefixSha256", "selectionContextSha256"))
+            or request["expectedSourceBytes"] != "2147483648"
+            or type(request["selectionDeadlineUnixMillis"]) is not int
+            or type(request["pauseMillis"]) is not int or not 1 <= request["pauseMillis"] <= 35000):
+        raise ValueError("Provider queue pause source or timing commitment differs")
+    if kind in {"arm_first_response", "arm_queue_read"}:
         selection = request["selection"]
         if (not isinstance(selection, dict) or set(selection) != {"version", "host", "targetPrefix"}
                 or type(selection["version"]) is not int or selection["version"] != 1
