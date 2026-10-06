@@ -471,12 +471,16 @@ fn current_family_with_genesis_selection(
             return Err(JournalError::ProtectedBoundary);
         }
         match genesis_selection {
-            Some(project) => crate::hierarchy::validate_source_project_genesis_members_v3(
-                state, &rows.receipts, project,
-            )?,
-            None => crate::hierarchy::validate_source_project_continuation_members_v3(
-                state, &rows.receipts, None,
-            )?,
+            Some(project) => {
+                crate::hierarchy::validate_source_project_genesis_members_from_genesis_data_v3(
+                    state, &genesis, &rows.receipts, project,
+                )?
+            }
+            None => {
+                crate::hierarchy::validate_source_project_continuation_members_from_genesis_data_v3(
+                    state, &genesis, &rows.receipts,
+                )?
+            }
         }
     }
     Ok(SourceProjectFamilyDataV3 { genesis, successor: rows })

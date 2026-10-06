@@ -415,7 +415,7 @@ pub(crate) fn validate_source_first_successor_members_v2(
     appended_pair: Option<&[JournalRecord]>,
 ) -> Result<(), JournalError> {
     validate_source_successor_members(
-        state, SourceSuccessorMemberRecipe::SingleProjectV2(receipt), appended_pair,
+        state, SourceSuccessorMemberRecipe::SingleProjectV2(receipt), appended_pair, None,
     )
 }
 
@@ -432,6 +432,7 @@ pub(crate) fn validate_source_project_continuation_members_v3(
             proposed: proposed.map(|(receipt, _)| receipt),
         },
         proposed.map(|(_, pair)| pair),
+        None,
     )
 }
 
@@ -445,6 +446,50 @@ pub(crate) fn validate_source_project_genesis_members_v3(
         state,
         SourceSuccessorMemberRecipe::MixedGenesisV3 { receipts, selected },
         None,
+        None,
+    )
+}
+
+/// Compares current members using genesis DATA from the same immutable family fold.
+///
+/// The caller borrows the actual rows decoded from `state` in its enclosing
+/// complete comparison. This DATA carries no writer or currentness authority.
+///
+/// # Errors
+///
+/// Rejects malformed lineage or any initial/successor member mismatch.
+pub(crate) fn validate_source_project_continuation_members_from_genesis_data_v3(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    genesis: &crate::journal::source_tree_genesis::SourceGenesisRowsV1,
+    receipts: &BTreeMap<ProjectId, crate::policy_compiler::SourceFirstSuccessorReceiptV2>,
+) -> Result<(), JournalError> {
+    validate_source_successor_members(
+        state,
+        SourceSuccessorMemberRecipe::MixedProjectsV3 { receipts, proposed: None },
+        None,
+        Some(genesis),
+    )
+}
+
+/// Compares selected initial members using the same fold's already-decoded DATA.
+///
+/// Only the selected initial project may await ACK. The borrowed genesis rows
+/// remain owned by the enclosing immutable family comparison.
+///
+/// # Errors
+///
+/// Rejects malformed lineage, foreign pending rows or member mismatches.
+pub(crate) fn validate_source_project_genesis_members_from_genesis_data_v3(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    genesis: &crate::journal::source_tree_genesis::SourceGenesisRowsV1,
+    receipts: &BTreeMap<ProjectId, crate::policy_compiler::SourceFirstSuccessorReceiptV2>,
+    selected: ProjectId,
+) -> Result<(), JournalError> {
+    validate_source_successor_members(
+        state,
+        SourceSuccessorMemberRecipe::MixedGenesisV3 { receipts, selected },
+        None,
+        Some(genesis),
     )
 }
 
@@ -486,6 +531,7 @@ fn validate_source_successor_members(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
     recipe: SourceSuccessorMemberRecipe<'_>,
     appended_pair: Option<&[JournalRecord]>,
+    parsed_genesis: Option<&crate::journal::source_tree_genesis::SourceGenesisRowsV1>,
 ) -> Result<(), JournalError> {
     let invalid = || JournalError::ProtectedBoundary;
     let heads = if let Some(pair) = appended_pair {
@@ -532,7 +578,16 @@ fn validate_source_successor_members(
     } else {
         replay_closed_tree_lineage_state_v2(state).map_err(|_| invalid())?
     };
-    let genesis = crate::journal::source_tree_genesis::current_rows(state)?;
+    // Ordinary and prospective comparisons still decode after lineage replay.
+    // Current mixed comparisons borrow the enclosing fold's exact genesis rows.
+    let owned_genesis;
+    let genesis = match parsed_genesis {
+        Some(genesis) => genesis,
+        None => {
+            owned_genesis = crate::journal::source_tree_genesis::current_rows(state)?;
+            &owned_genesis
+        }
+    };
     let selected_genesis = match &recipe {
         SourceSuccessorMemberRecipe::MixedGenesisV3 { selected, .. } => Some(*selected),
         _ => None,

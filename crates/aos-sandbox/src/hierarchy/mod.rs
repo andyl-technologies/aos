@@ -48,6 +48,8 @@ pub(crate) use source_successor_materialization::{
 pub(crate) use tree_lineage::validate_source_first_successor_members_v2;
 pub(crate) use tree_lineage::validate_source_project_continuation_members_v3;
 pub(crate) use tree_lineage::validate_source_project_genesis_members_v3;
+pub(crate) use tree_lineage::validate_source_project_continuation_members_from_genesis_data_v3;
+pub(crate) use tree_lineage::validate_source_project_genesis_members_from_genesis_data_v3;
 pub(crate) use tree_lineage::source_first_successor_tree_readback_v2;
 pub use source_genesis::{
     HeldSourceTreeGenesisObservationV1, SOURCE_TREE_GENESIS_RECEIPT_BYTES_V1,
