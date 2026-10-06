@@ -89,13 +89,12 @@ impl PhysicalTpmNvIoV1 {
 
     #[cfg(feature = "online-nix")]
     pub(in crate::recovery::journal::tpm_floor) fn retain_online(
-        profile: crate::tpm_nv_custody::OnlineFloorProfileV1,
-        auth: &[u8; 32],
+        preparation: &crate::nix_service::floor::OnlinePhysicalInputPreparationV1<'_>,
         locks: [ProtectedJournalLockCustodyV1; 2],
         origin: crate::nix_service::floor::OnlineOriginV1,
         deadline: crate::handshake::OriginalBrokerColdDeadlineV1,
     ) -> Self {
-        Self { owner: RetainedPhysicalTpmOwnerV1::retain_online(profile, auth, locks, origin, deadline) }
+        Self { owner: RetainedPhysicalTpmOwnerV1::retain_online(preparation, locks, origin, deadline) }
     }
 
     #[cfg(feature = "online-nix")]

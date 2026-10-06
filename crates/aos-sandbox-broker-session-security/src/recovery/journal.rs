@@ -1020,12 +1020,12 @@ impl BrokerMainOpenV1 {
         let name = PROTECTED_SESSION_JOURNAL.to_owned();
         // Both originals remain in caller slots through all checks/allocation.
         // These final moves contain no effect or subsequent fallible gate.
-        if supplied.authority.is_none() {
+        if !supplied.has_original_authority() {
             return Err(BrokerSessionSecurityError::Currentness);
         }
         match (custody.take(), provision.take()) {
             (Some(custody_original), Some(mut provision_original)) => {
-                let authority = match provision_original.authority.take() {
+                let authority = match provision_original.take_original_authority() {
                     Some(authority) => authority,
                     None => {
                         *custody = Some(custody_original);
