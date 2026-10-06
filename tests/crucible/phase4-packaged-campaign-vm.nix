@@ -278,6 +278,12 @@ assert !interruptedTransfer
     selectable = true;
     campaignFlight = true;
   };
+  # Early maintenance branches consume the initial runtime selection. Keep
+  # that immutable guest asset identical to the one copied into the VM.
+  selectedChoiceInitramfs =
+    if guestChoice || hotForkFlight
+    then networkChoiceInitramfs
+    else choiceInitramfs;
   envoyNetworkRootImage = import ./_envoy-network-guest.nix {inherit pkgs;};
   httpRootImage = import ./_nginx-curl-http-200-guest.nix {
     inherit pkgs;
@@ -352,13 +358,7 @@ assert !interruptedTransfer
       ++ (lib.optional twoNodeHttp httpRootImage)
       ++ (lib.optionals storageRecovery [storageRecoveryRunner pkgs.garage pkgs.bash pkgs.gawk])
       ++ (lib.optional (findingExactBundle || findingSignalBundle || findingForkWrite || envoyKnownFinding) pkgs.crucible)
-      ++ (
-        if guestChoice || hotForkFlight
-        then [networkChoiceInitramfs]
-        else if campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || singleGuest != null
-        then [choiceInitramfs]
-        else []
-      );
+      ++ (lib.optional (guestChoice || hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || singleGuest != null) selectedChoiceInitramfs);
     testScript = ''
       set -eu
       ${lib.optionalString (envoyProduct || storageRecovery || packedMaintenance || tierMaintenance || interruptedTransfer || twoNodeHttp) ''
@@ -431,9 +431,22 @@ assert !interruptedTransfer
         then "${httpRootImage}/root.ext4"
         else "${flight}/root.raw"
       }
-      ${lib.optionalString (guestChoice || hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || maintenanceTransfer || singleGuest != null) "export CRUCIBLE_INITRD=${choiceInitramfs}/initrd.img"}
+      ${lib.optionalString (guestChoice || hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || maintenanceTransfer || singleGuest != null) "export CRUCIBLE_INITRD=${selectedChoiceInitramfs}/initrd.img"}
       export CRUCIBLE_RUN_STATE_ROOT=/tmp/run-state
       export CRUCIBLE_NATIVE_GUEST_ARCHITECTURE=x86_64
+      # A missing closure member must name its configured asset, rather than
+      # failing later with a bare ENOENT from guest campaign compilation.
+      for flight_asset in CRUCIBLE_PROCESS_FLIGHT_BINARY CRUCIBLE_FLIGHT_QEMU \
+        CRUCIBLE_FLIGHT_PLUGIN CRUCIBLE_KERNEL CRUCIBLE_ROOT_IMAGE \
+        ${lib.optionalString (guestChoice || hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || maintenanceTransfer || singleGuest != null) "CRUCIBLE_INITRD"}
+      do
+        flight_asset_path="''${!flight_asset:-}"
+        if [ ! -f "$flight_asset_path" ] || [ ! -r "$flight_asset_path" ]; then
+          printf 'missing or unreadable packaged flight asset: %s=%s\n' \
+            "$flight_asset" "$flight_asset_path" >&2
+          exit 1
+        fi
+      done
       ${
         if singleGuest != null
         then ''
