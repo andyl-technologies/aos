@@ -154,16 +154,7 @@ impl FloorProfileV1 {
 
     /// Computes the Name of the exact written TPMS_NV_PUBLIC, without a TPM2B prefix.
     pub(crate) fn nv_name(self) -> [u8; 34] {
-        let mut public = [0; 14];
-        public[0..4].copy_from_slice(&self.endpoint.nv_index().to_be_bytes());
-        public[4..6].copy_from_slice(&0x000b_u16.to_be_bytes());
-        public[6..10].copy_from_slice(&NV_ATTRIBUTES_WRITTEN.to_be_bytes());
-        // Empty authPolicy occupies two zero bytes at 10..12.
-        public[12..14].copy_from_slice(&32_u16.to_be_bytes());
-        let mut name = [0; 34];
-        name[..2].copy_from_slice(&0x000b_u16.to_be_bytes());
-        name[2..].copy_from_slice(&hash_parts(b"", &[&public]));
-        name
+        written_nv_name(self.endpoint.nv_index())
     }
 }
 
@@ -813,16 +804,7 @@ impl OnlineFloorRoleV1 {
     }
 
     fn nv_name(self) -> [u8; 34] {
-        let mut public = [0; 14];
-        public[..4].copy_from_slice(&self.nv_index().to_be_bytes());
-        public[4..6].copy_from_slice(&0x000b_u16.to_be_bytes());
-        public[6..10].copy_from_slice(&NV_ATTRIBUTES_WRITTEN.to_be_bytes());
-        public[12..14].copy_from_slice(&32_u16.to_be_bytes());
-
-        let mut name = [0; 34];
-        name[..2].copy_from_slice(&0x000b_u16.to_be_bytes());
-        name[2..].copy_from_slice(&hash_parts(b"", &[&public]));
-        name
+        written_nv_name(self.nv_index())
     }
 
     fn route(self) -> [u8; 32] {
@@ -1287,6 +1269,21 @@ impl FloorIntentDataV1 {
             _ => Err(FloorErrorV1::Provisioning),
         }
     }
+}
+
+/// Computes written-public Name DATA for an already selected private role.
+fn written_nv_name(nv_index: u32) -> [u8; 34] {
+    let mut public = [0; 14];
+    public[0..4].copy_from_slice(&nv_index.to_be_bytes());
+    public[4..6].copy_from_slice(&0x000b_u16.to_be_bytes());
+    public[6..10].copy_from_slice(&NV_ATTRIBUTES_WRITTEN.to_be_bytes());
+    // Empty authPolicy occupies two zero bytes at 10..12.
+    public[12..14].copy_from_slice(&32_u16.to_be_bytes());
+
+    let mut name = [0; 34];
+    name[..2].copy_from_slice(&0x000b_u16.to_be_bytes());
+    name[2..].copy_from_slice(&hash_parts(b"", &[&public]));
+    name
 }
 
 fn header(bytes: &mut [u8], magic: &[u8; 8]) {
