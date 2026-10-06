@@ -100,16 +100,17 @@ def publish_candidate() -> None:
         export PATH={GIT_BIN}:{NIX_BIN}:$PATH
         mkdir -p "$HOME" "$NIX_CONF_DIR"
         printf 'experimental-features = nix-command\\nsandbox = false\\nbuild-users-group =\\n' > "$NIX_CONF_DIR/nix.conf"
-        if keygen=$({APR} keys generate release --registry native-image 2>&1); then
+        if keygen=$({APR} --json keys generate release --registry native-image); then
             :
         else
             status=$?
             printf '%s\\n' "$keygen" >&2
             exit "$status"
         fi
-        public=$(printf '%s\\n' "$keygen" | {JQ} -Rr 'select(startswith("Public key:")) | split(" ") | last')
+        public=$(printf '%s\\n' "$keygen" | {JQ} -er '.public_key')
+        key=$(printf '%s\\n' "$keygen" | {JQ} -er '.private_key')
         test -n "$public"
-        key="$HOME/.config/apm/keys/native-image-release.key"
+        test -s "$key"
         {APR} create native-image --trust-key "$public" --trust-key-id release --key "$key"
         registry="$HOME/.local/share/apm/registries/native-image"
         mkdir -p "$HOME/.config/apm/registries.d"
