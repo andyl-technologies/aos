@@ -449,6 +449,16 @@ The registry check independently requires every T0/T1 plan gate citation to
 belong to this floor. Missing implementations and the unqualified ext4 workflow
 therefore prevent aggregate success.
 
+The current floor additionally requires `checks.terrane.integration.local-sdk-checkout`:
+five exact public-API witnesses for pinned ref/fixed-commit checkout, scoped
+entries, registry/mode/endpoint/policy refusals, fresh authority checks and
+completed-directory lifecycle. Its new consuming test target remains under
+implementation; registration supplies no runtime qualification. This local
+prerequisite does not claim the broader named `sdk-checkout` gate's future
+remote parity, job or extended algebra obligations, which remain ordered by
+T2/T3 and the branch worklines. The CLI frontend and genuine ext4 workflow also
+remain unqualified local deployment obligations.
+
 The preceding completed full qualification records candidate
 `15540ef204ec`, which combines reviewed source discovery, immutable lookup,
 repeatable I/P/G maintenance, separate verifier/preparation work, common Memo

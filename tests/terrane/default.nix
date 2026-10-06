@@ -164,6 +164,7 @@
     registry);
 
   localWorkflow = import ./local-workflow-ext4.nix {inherit pkgs lib;};
+  localSdkCheckout = import ./local-sdk-checkout.nix {inherit sourceGate;};
 
   # These T1 obligations remain in the current floor even before their task
   # files are adopted. AD-11 makes Memo and index maintenance trunk work.
@@ -183,13 +184,13 @@
     pname = "terrane-current-gates";
     version = "0.1.0";
     src = null;
-    buildDeps = map (name: registeredGates.${name}) currentTrunkGateNames ++ [localWorkflow];
+    buildDeps = map (name: registeredGates.${name}) currentTrunkGateNames ++ [localWorkflow localSdkCheckout];
     phases = [
       {
         name = "check";
         script = ''
           mkdir -p "$out"
-          printf 'PASS: %s current Terrane gates and the local ext4 workflow\n' ${toString (builtins.length currentTrunkGateNames)} \
+          printf 'PASS: %s current Terrane gates, public local SDK checkout and the local ext4 workflow\n' ${toString (builtins.length currentTrunkGateNames)} \
             > "$out/result"
         '';
       }
@@ -201,6 +202,7 @@ in {
   gates = aggregate // registeredGates;
   activeGates = implementedGates;
   integration.local-workflow-ext4 = localWorkflow;
+  integration.local-sdk-checkout = localSdkCheckout;
   integration.publication-format-vectors = import ./publication-vectors.nix {inherit sourceGate;};
   integration.pack-format-vectors = import ./pack-vectors.nix {inherit sourceGate;};
   integration.collection-reference-generator = import ./collection-reference.nix {inherit pkgs;};
