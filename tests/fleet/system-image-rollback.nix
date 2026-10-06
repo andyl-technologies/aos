@@ -191,6 +191,37 @@
   rolloutClosureInfo = lib.build.closureInfo {inherit pkgs;} {
     rootPaths = rolloutFixtureRoots;
   };
+  # Sequential NAR reads avoid walking the complete source tree over 9p.
+  # This transport is a host fixture artifact, not a published image input.
+  rolloutTransport = pkgs.mkDerivation {
+    pname = "aos-native-image-fixture-transport";
+    version = "1";
+    src = null;
+    buildDeps = [pkgs.bash pkgs.nix pkgs.zstd pkgs.coreutils];
+    exportReferencesGraph.roots = rolloutFixtureRoots;
+    outputChecks.out = {};
+    dontStrip = true;
+    dontNukeRefs = true;
+
+    phases = [
+      {
+        name = "build";
+        script = ''
+          set -eu
+          ${pkgs.coreutils}/bin/mkdir -p "$out/nars"
+          ${pkgs.coreutils}/bin/cp ${rolloutClosureInfo}/registration ${rolloutClosureInfo}/store-paths "$out/"
+          export out
+          ${pkgs.bash}/bin/bash -euo pipefail -c ${lib.escapeShellArg ''
+            while IFS= read -r store_path; do
+              name=$(${pkgs.coreutils}/bin/basename "$store_path")
+              ${pkgs.nix}/bin/nix-store --dump "$store_path" \
+                | ${pkgs.zstd}/bin/zstd -q -3 -T1 -c > "$out/nars/$name.nar.zst"
+            done < ${rolloutClosureInfo}/store-paths
+          ''}
+        '';
+      }
+    ];
+  };
   enrollmentFixtureRoots = [pkgs.efitools pkgs.secure-boot-test-keys];
   enrollmentClosureInfo = lib.build.closureInfo {inherit pkgs;} {
     rootPaths = enrollmentFixtureRoots;
@@ -261,7 +292,7 @@ in {
       memoryMiB = 8192;
       tpm = true;
       packages = ["aos-test-agent"];
-      extraClosures = rolloutFixtureRoots;
+      extraClosures = rolloutFixtureRoots ++ [rolloutTransport];
       hostStoreMount = true;
       extraModules = [
         {
@@ -335,7 +366,7 @@ in {
       exec(compile(${builtins.toJSON (builtins.readFile ./native-image-acceptance.py)},
           "native-image-acceptance.py", "exec"), IMAGE_ACCEPTANCE.__dict__)
 
-      def install_fixture_closure(closure_name, roots):
+      def install_fixture_closure(closure_name, roots, transport_name=""):
           """Copies and verifies exact fixture objects through a read-only export."""
           runtime.succeed(textwrap.dedent(f"""
               set -eu
@@ -348,11 +379,33 @@ in {
                 aos-host-store /run/aos-host-store
               closure=/run/aos-host-store/{shlex.quote(closure_name)}
               test -r "$closure/registration"
+              transport_name={shlex.quote(transport_name)}
+              stage=""
+              trap 'if test -n "$stage"; then ${pkgs.coreutils}/bin/rm -rf -- "$stage"; fi' EXIT
+              if test -n "$transport_name"; then
+                transport="/run/aos-host-store/$transport_name"
+                ${pkgs.diffutils}/bin/cmp "$closure/registration" "$transport/registration"
+                ${pkgs.diffutils}/bin/cmp "$closure/store-paths" "$transport/store-paths"
+              fi
               while IFS= read -r store_path; do
                 if test ! -e "$store_path" && test ! -L "$store_path"; then
-                  source_path="/run/aos-host-store/$(${pkgs.coreutils}/bin/basename "$store_path")"
-                  ${pkgs.coreutils}/bin/cp --archive --no-target-directory --no-clobber \
-                    "$source_path" "$store_path"
+                  if test -n "$transport_name"; then
+                    source_path="$transport/nars/$(${pkgs.coreutils}/bin/basename "$store_path").nar.zst"
+                    # The private directory shares the /var-backed store overlay,
+                    # so publication is a rename, never a second copy or overwrite.
+                    stage=$(${pkgs.coreutils}/bin/mktemp -d /nix/store/.aos-fixture-nar.XXXXXX)
+                    ${pkgs.bash}/bin/bash -euo pipefail -c \
+                      '${pkgs.zstd}/bin/zstd -q -d -c -- "$1" | ${pkgs.nix}/bin/nix-store --restore "$2"' \
+                      aos-fixture-nar "$source_path" "$stage/object"
+                    ${pkgs.coreutils}/bin/mv --no-copy --no-target-directory --update=none-fail \
+                      "$stage/object" "$store_path"
+                    ${pkgs.coreutils}/bin/rmdir -- "$stage"
+                    stage=""
+                  else
+                    source_path="/run/aos-host-store/$(${pkgs.coreutils}/bin/basename "$store_path")"
+                    ${pkgs.coreutils}/bin/cp --archive --no-target-directory --no-clobber \
+                      "$source_path" "$store_path"
+                  fi
                 fi
               done < "$closure/store-paths"
               ${pkgs.nix}/bin/nix-store --load-db < "$closure/registration"
@@ -378,6 +431,7 @@ in {
       install_fixture_closure(
           ${builtins.toJSON (baseNameOf rolloutClosureInfo)},
           ${builtins.toJSON (map builtins.toString rolloutFixtureRoots)},
+          transport_name=${builtins.toJSON (baseNameOf rolloutTransport)},
       )
       IMAGE_ACCEPTANCE.run()
     '';
