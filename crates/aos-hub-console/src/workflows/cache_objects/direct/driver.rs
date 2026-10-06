@@ -6,8 +6,8 @@ use serde::Serialize;
 use web_sys::File;
 
 use crate::direct_upload_model::{
-    capability_target, operation_id, validate_declared_source, validate_object_size, GrantLifetime, PartCheckpoint, PartDispatchContext,
-    PartReceipt, ResumeHead, SourcePart, BROWSER_PART_BYTES,
+    capability_target, operation_id, validate_declared_source, validate_object_size, GrantLifetime,
+    PartCheckpoint, PartDispatchContext, PartReceipt, ResumeHead, SourcePart, BROWSER_PART_BYTES,
 };
 use crate::transport::ApiClient;
 
@@ -575,8 +575,11 @@ async fn transfer_wave(
         work.into_iter()
             .map(|(key, mut record, grant, profile, retained)| async move {
                 let _permit = crate::direct_upload_pool::acquire().await;
-                capabilities.validate_at_for(&capabilities.target, browser_now()?)
-                    .and_then(|()| capabilities.validate_actor_for(&head.deployment_id, &head.principal_id))
+                capabilities
+                    .validate_at_for(&capabilities.target, browser_now()?)
+                    .and_then(|()| {
+                        capabilities.validate_actor_for(&head.deployment_id, &head.principal_id)
+                    })
                     .map_err(|_| PAUSED.to_string())?;
                 let body = source::verified_part(file, &record.original).await?;
                 let first = client

@@ -74,8 +74,7 @@ fn PublicationBegin(
         error.set(None);
         busy.set(true);
         spawn_local(async move {
-            match direct::begin(&client, request).await
-            {
+            match direct::begin(&client, request).await {
                 Ok(response) => publication.set(Some(response)),
                 Err(failure) => error.set(Some(failure.to_string())),
             }
@@ -253,7 +252,7 @@ fn PublicationObjectUpload(
                 Ok(value) => {
                     publication.set(Some(value));
                     status.set(Some("Verified on every required placement".to_string()));
-                },
+                }
                 Err(failure) => error.set(Some(failure.to_string())),
             }
             busy.set(false);

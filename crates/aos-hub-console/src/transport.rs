@@ -123,7 +123,9 @@ impl ApiClient {
     ///
     /// # Errors
     /// Refuses unknown policy or failed authentication without selecting legacy.
-    pub(crate) async fn publication_actor(&self) -> Result<Option<(String, String)>, TransportError> {
+    pub(crate) async fn publication_actor(
+        &self,
+    ) -> Result<Option<(String, String)>, TransportError> {
         let mut bearer = self.session_guard().access_token.clone();
         let mut policy = self.upload_policy_for(&bearer).await?;
         if policy.is_none() {
@@ -133,7 +135,9 @@ impl ApiClient {
             policy = self.upload_policy_for(&bearer).await?;
         }
         let policy = policy.ok_or(TransportError::SessionExpired)?;
-        Ok(policy.actor().map(|(deployment, principal)| (deployment.into(), principal.into())))
+        Ok(policy
+            .actor()
+            .map(|(deployment, principal)| (deployment.into(), principal.into())))
     }
 
     /// Sends bounded metadata admission under the original authenticated actor.
@@ -149,39 +153,49 @@ impl ApiClient {
         request: &Q,
         actor: &(String, String),
     ) -> Result<R, TransportError> {
-        use aos_proto_types::*;
         use aos_proto_types::direct_upload::encode_direct_control;
-        let large_reply = matches!(path,
+        use aos_proto_types::*;
+        let large_reply = matches!(
+            path,
             PUBLISH_SERVICE_SEAL_REGISTRY_PUBLICATION_MANIFEST_PATH
-            | PUBLISH_SERVICE_GET_REGISTRY_PUBLICATION_PATH
+                | PUBLISH_SERVICE_GET_REGISTRY_PUBLICATION_PATH
         );
-        if !matches!(path,
+        if !matches!(
+            path,
             REGISTRY_SERVICE_GET_REGISTRY_PATH
-            | PUBLISH_SERVICE_LIST_REGISTRY_PUBLICATIONS_PATH
-            | PUBLISH_SERVICE_BEGIN_REGISTRY_PUBLICATION_MANIFEST_PATH
-            | PUBLISH_SERVICE_APPEND_REGISTRY_PUBLICATION_MANIFEST_PATH
-            | PUBLISH_SERVICE_SEAL_REGISTRY_PUBLICATION_MANIFEST_PATH
-            | PUBLISH_SERVICE_GET_REGISTRY_PUBLICATION_PATH
+                | PUBLISH_SERVICE_LIST_REGISTRY_PUBLICATIONS_PATH
+                | PUBLISH_SERVICE_BEGIN_REGISTRY_PUBLICATION_MANIFEST_PATH
+                | PUBLISH_SERVICE_APPEND_REGISTRY_PUBLICATION_MANIFEST_PATH
+                | PUBLISH_SERVICE_SEAL_REGISTRY_PUBLICATION_MANIFEST_PATH
+                | PUBLISH_SERVICE_GET_REGISTRY_PUBLICATION_PATH
         ) {
             return Err(TransportError::InvalidPath);
         }
         let body = encode_direct_control(request).map_err(|_| {
             TransportError::DirectUpload("The publication control exceeds its byte limit")
         })?;
-        let limit = if large_reply { 64 * 1024 * 1024 } else {
+        let limit = if large_reply {
+            64 * 1024 * 1024
+        } else {
             aos_proto_types::direct_upload::MAX_DIRECT_CONTROL_BYTES
         };
         for attempt in 0..2 {
             let bearer = self.session_guard().access_token.clone();
             if let Some(policy) = self.upload_policy_for(&bearer).await? {
                 if policy.actor() != Some((actor.0.as_str(), actor.1.as_str())) {
-                    return Err(TransportError::DirectUpload("The publication actor or policy changed"));
+                    return Err(TransportError::DirectUpload(
+                        "The publication actor or policy changed",
+                    ));
                 }
-                let send = policy.dispatch_with(
-                    &bearer, &browser_origin()?,
-                    direct_browser_now().map_err(|_| TransportError::SessionExpired)?,
-                    false, |proven| send_bounded_connect(path, proven, &body, limit),
-                ).map_err(|_| TransportError::SessionExpired)?;
+                let send = policy
+                    .dispatch_with(
+                        &bearer,
+                        &browser_origin()?,
+                        direct_browser_now().map_err(|_| TransportError::SessionExpired)?,
+                        false,
+                        |proven| send_bounded_connect(path, proven, &body, limit),
+                    )
+                    .map_err(|_| TransportError::SessionExpired)?;
                 let (status, reply) = send.await?;
                 if status == 200 {
                     return serde_json::from_slice(&reply).map_err(|_| {
@@ -189,9 +203,14 @@ impl ApiClient {
                     });
                 }
                 if status != 401 {
-                    return Err(TransportError::DirectUpload("Publication admission was refused; original progress was preserved"));
+                    return Err(TransportError::DirectUpload(
+                        "Publication admission was refused; original progress was preserved",
+                    ));
                 }
-                *self.upload_policy.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+                *self
+                    .upload_policy
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
             }
             if attempt == 1 {
                 return Err(TransportError::SessionExpired);
@@ -924,7 +943,13 @@ async fn send_direct_connect(
     bearer: &str,
     body: &[u8],
 ) -> Result<(u16, Vec<u8>), TransportError> {
-    send_bounded_connect(path, bearer, body, aos_proto_types::direct_upload::MAX_DIRECT_CONTROL_BYTES).await
+    send_bounded_connect(
+        path,
+        bearer,
+        body,
+        aos_proto_types::direct_upload::MAX_DIRECT_CONTROL_BYTES,
+    )
+    .await
 }
 
 async fn send_bounded_connect(
