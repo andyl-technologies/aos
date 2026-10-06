@@ -57,9 +57,8 @@
       drainObservation = executable drainObservation "aos-qualified-rollout-drain-observation";
     };
   };
+  # Retained site sources can configure only native package options.
   qualificationSetupBody = ''
-    aos.apm.drainScript = ${builtins.toJSON module.aos.apm.drainScript};
-    aos.apm.healthScript = ${builtins.toJSON module.aos.apm.healthScript};
     aos.imageRollout.drain = builtins.fromJSON ${builtins.toJSON (builtins.toJSON module.aos.imageRollout.drain)};
     aos.imageRollout.drainObservation = builtins.fromJSON ${builtins.toJSON (builtins.toJSON module.aos.imageRollout.drainObservation)};
   '';

@@ -281,6 +281,8 @@ in {
           aos.networking.interfaces.eth0.address = "192.168.50.11/24";
           aos.apm.desiredPackages = [ "aos-test-agent" ];
 
+          ${rolloutPolicy.qualificationSetupBody}
+
           aos.abilities.configuration.operations.file.effects.rollback-hosts = {
             lifetime = "instance";
             input = {
