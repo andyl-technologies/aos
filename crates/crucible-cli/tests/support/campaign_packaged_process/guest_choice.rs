@@ -42,8 +42,12 @@ const EXACT_RESUME_PROGRESS_PREFIX: &str = "CRUCIBLE-EXACT-RESUME-PROGRESS-V1 ";
 mod diagnostics;
 #[path = "guest_choice/lifecycle.rs"]
 mod lifecycle;
+#[path = "guest_choice/maintenance_setup.rs"]
+mod maintenance_setup;
 #[path = "guest_choice/maintenance_transfer.rs"]
 mod maintenance_transfer;
+#[path = "guest_choice/packed_maintenance.rs"]
+mod packed_maintenance;
 #[path = "guest_choice/storage_recovery.rs"]
 mod storage_recovery;
 

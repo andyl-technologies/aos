@@ -200,7 +200,7 @@ crucible	src/scheduler/tests/concurrent	retry	1
 crucible	src/scheduler/io_inventory/fixed_consumers	retry	1
 crucible	src/scheduler/tests/cap_boundary	retry	1
 crucible	src/scheduler/tests/run_admission/input_boundary	retry	1
-crucible-cli	tests/support/campaign_packaged_process/guest_choice/storage_recovery	retry	1
+crucible-cli	tests/support/campaign_packaged_process/guest_choice/maintenance_setup	retry	1
 crucible-qemu-plugin	src/block_io/completion	retry	1
 crucible-qemu-plugin	src/block_io_tests	retry	1
 crucible-qemu-plugin	src/ninep_io	retry	1

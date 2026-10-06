@@ -38,38 +38,13 @@ fn public_exact_paused_guest_recovers_from_s3_outage_and_expired_credentials()
     grant_and_start_guest_choice_campaign(&fixture)?;
 
     let genesis = json_string(&compiled, "genesis_artifact")?;
-    let (discovery, explanation) = wait_for_initial_discovery(&fixture, &mut service, &genesis)?;
-    let parent = json_string(&explanation["observation"], "child_artifact")?;
-    let configuration = json_string(&explanation["observation"], "child")?;
-    let recovery = wait_for_choice(&fixture, "network.recovery-policy", &parent, &configuration)?;
-    let mut known = attempt_states(&fixture)?
-        .into_keys()
-        .collect::<BTreeSet<_>>();
-    known.insert(discovery);
-
-    let fast = submit_choice(
+    let (active, terminal_request) = maintenance_setup::select_running_maintenance_attempt(
         &fixture,
-        &recovery,
-        &format!("discrete:{FAST_ALTERNATIVE}"),
-        "next-choice",
+        &mut service,
+        &genesis,
         0x91,
+        0x92,
     )?;
-    let fast_request = accepted_branch_request(&fast)?;
-    let fast_attempt =
-        wait_for_new_completed_attempt(&fixture, &mut service, &known, &fast_request)?;
-    known.insert(fast_attempt);
-    let fast_explanation = wait_for_attempt_observation(&fixture, fast_attempt)?;
-    let fast_parent = json_string(&fast_explanation["observation"], "child_artifact")?;
-    let fast_configuration = json_string(&fast_explanation["observation"], "child")?;
-    let retry = wait_for_choice(
-        &fixture,
-        "network.retry-quanta",
-        &fast_parent,
-        &fast_configuration,
-    )?;
-    let terminal = submit_choice(&fixture, &retry, "u64:7", "terminal", 0x92)?;
-    let terminal_request = accepted_branch_request(&terminal)?;
-    let active = wait_for_new_running_attempt(&fixture, &mut service, &known, &terminal_request)?;
     attest_fingerprint_enabled_qemu_descendants(&service, "storage-recovery-source")?;
 
     let mut command_sequence = 0x93_u64;
@@ -217,7 +192,12 @@ fn public_exact_paused_guest_recovers_from_s3_outage_and_expired_credentials()
     Ok(())
 }
 
-fn require_live_owner_gc_refusal(fixture: &FlightFixture) -> Result<(), Box<dyn Error>> {
+/// Requires public GC to refuse a live owner before creating its journal.
+///
+/// # Errors
+///
+/// Returns a process or filesystem failure while exercising the public command.
+pub(super) fn require_live_owner_gc_refusal(fixture: &FlightFixture) -> Result<(), Box<dyn Error>> {
     assert!(!fixture.journal.exists());
     let rejected = output_with_timeout(fixture.gc_command("plan"), Duration::from_secs(20))?;
     assert!(

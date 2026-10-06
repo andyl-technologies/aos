@@ -13,11 +13,30 @@
   findingForkWrite ? false,
   maintenanceTransfer ? false,
   storageRecovery ? false,
+  packedMaintenance ? false,
   policyTimeout ? false,
   singleGuest ? null,
   twoNodeHttp ? false,
   twoNodeHttpServer ? "nginx",
-}: let
+}:
+assert !packedMaintenance
+|| (
+  guestChoice
+  && !storageRecovery
+  && !maintenanceTransfer
+  && !policyTimeout
+  && !twoNodeHttp
+  && singleGuest == null
+  && !findingExactBundle
+  && !findingSignalBundle
+  && !findingForkWrite
+  && !hotForkFlight
+  && !envoyNetwork
+  && !envoyKnownFinding
+  && !campaignLifecycle
+  && !campaignMidpoint
+  && twoNodeHttpServer == "nginx"
+); let
   singleGuestMaterialization = singleGuest == "materialization";
   envoyDirect = assert builtins.elem twoNodeHttpServer ["nginx" "envoy-direct" "envoy-proxy"];
   assert twoNodeHttpServer == "nginx" || twoNodeHttp;
@@ -235,6 +254,8 @@
       then "crucible-${httpFlightName}"
       else if policyTimeout
       then "crucible-packaged-campaign-policy-timeout"
+      else if packedMaintenance
+      then "crucible-campaign-packed-maintenance"
       else if storageRecovery
       then "crucible-campaign-storage-recovery"
       else if maintenanceTransfer
@@ -261,7 +282,7 @@
     memory =
       if envoyProduct
       then 8192
-      else if findingForkWrite || hotForkFlight || storageRecovery || singleGuestMaterialization || twoNodeHttp
+      else if findingForkWrite || hotForkFlight || storageRecovery || packedMaintenance || singleGuestMaterialization || twoNodeHttp
       then 3072
       else 2048;
     headlessVcpuCount =
@@ -272,7 +293,7 @@
     # baked genesis alone. The storage-recovery flight also retains S3 objects
     # beside staged checkpoints. Leave writable space on the ext4 rootfs.
     extraWritableMiB =
-      if envoyProduct || storageRecovery
+      if envoyProduct || storageRecovery || packedMaintenance
       then 16384
       else if twoNodeHttp
       then 8192
@@ -292,7 +313,7 @@
       );
     testScript = ''
       set -eu
-      ${lib.optionalString (envoyProduct || storageRecovery || twoNodeHttp) ''
+      ${lib.optionalString (envoyProduct || storageRecovery || packedMaintenance || twoNodeHttp) ''
         # The headless harness mounts /tmp as a RAM-sized tmpfs. Put the
         # checkpoint and store workspace on the already-sized ext4 rootfs.
         ${pkgs.util-linux}/bin/mount -o remount,rw /
@@ -462,6 +483,45 @@
           ${pkgs.grep}/bin/grep -Fq \
             'test result: ok. 1 passed; 0 failed; 0 ignored;' "$http_log"
           printf '%s\n' 'gate=gate:${httpFlightName}'
+        ''
+        else if packedMaintenance
+        then ''
+          packed_selector=packaged::guest_choice::packed_maintenance::public_exact_paused_guest_survives_packed_repack_corruption_and_gc
+          packed_log=/tmp/campaign-packed-maintenance.log
+          if ! ${flight}/bin/campaign-store-process-flight --ignored --list \
+            > /tmp/campaign-packed-maintenance-list.log 2>&1; then
+            cat /tmp/campaign-packed-maintenance-list.log
+            exit 1
+          fi
+          ${pkgs.grep}/bin/grep -Fqx \
+            "$packed_selector: test" /tmp/campaign-packed-maintenance-list.log
+
+          if ! ${pkgs.coreutils}/bin/timeout -k 5 7200 \
+            ${flight}/bin/campaign-store-process-flight --ignored --exact \
+            "$packed_selector" --nocapture > "$packed_log" 2>&1; then
+            cat "$packed_log"
+            exit 1
+          fi
+          cat "$packed_log"
+          for evidence in \
+            packed_maintenance_real_exact_pause=true \
+            packed_maintenance_public_repack_authenticated=true \
+            packed_maintenance_corrupt_index_refused_before_guest=true \
+            packed_maintenance_original_index_restored=true \
+            packed_maintenance_nonempty_gc_preserves_checkpoint=true \
+            packed_maintenance_exact_origin_preserved=true \
+            packed_maintenance_scheduler_observed_guest_progress=true \
+            packed_maintenance_distinct_authenticated_checkpoint=true \
+            packed_maintenance_selected_outcome_preserved=true \
+            packed_maintenance_derived_refs_preserved=2 \
+            packed_maintenance_final_guest_cleanup=true
+          do
+            ${pkgs.grep}/bin/grep -Fxq "$evidence" "$packed_log"
+          done
+          ${pkgs.grep}/bin/grep -Fq \
+            'test result: ok. 1 passed; 0 failed; 0 ignored;' "$packed_log"
+          printf '%s\n' 'gate=gate:campaign-packed-maintenance' \
+            'tasks=T-CAM-5.8' 'tier=real-packaged-qemu'
         ''
         else if storageRecovery
         then ''

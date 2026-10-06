@@ -1565,6 +1565,9 @@ in rec {
       campaignStorageRecovery = import ./phase5-campaign-storage-recovery-vm.nix {
         inherit pkgs lib;
       };
+      campaignPackedMaintenance = import ./phase5-campaign-packed-maintenance-vm.nix {
+        inherit pkgs lib;
+      };
       campaignPolicyTimeoutVm = import ./phase5-campaign-policy-timeout-vm.nix {
         inherit pkgs lib;
       };
