@@ -9,6 +9,9 @@ use crate::executor_pool::{PausedCheckpointObserver, PreparedExecutorActor};
 use crate::supervision::AssignmentHostWatchdogGuard;
 use crucible_linux_resource::host_supervision::HostOperationSupervisor;
 
+mod failure;
+pub use failure::PreparationExpiredCause;
+
 pub(super) struct PackagedPreparation {
     pub(super) actor: PreparedExecutorActor<DirectoryAssignmentLedger, PackagedAttemptAdmission>,
     pub(super) host_operational_registry: crate::HostOperationalRegistry,
@@ -394,6 +397,10 @@ pub(super) fn run_capture<T>(
         preparation.checkpoints.metadata_resource_authority()?,
     )?;
     let _metadata_scope = decoding.enter();
+    // Reserve the exact optional error box before capture effects. An expired
+    // capture may still return a useful launch or checkpoint failure; its
+    // storage keeps this original credit until the diagnostic's final drop.
+    let expiry_cause_resources = decoding.reserve_scratch_array::<PackagedQemuExecutorError>(1)?;
 
     let ceiling = config
         .assignment_resources()
@@ -528,8 +535,5 @@ pub(super) fn run_capture<T>(
             preparation: result.err().map(Box::new),
         });
     }
-    if expired {
-        return Err(PackagedQemuExecutorError::PreparationExpired);
-    }
-    result
+    failure::finish_capture(result, expired, expiry_cause_resources)
 }

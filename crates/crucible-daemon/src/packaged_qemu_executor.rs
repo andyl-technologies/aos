@@ -100,6 +100,7 @@ pub use ram_catalog::{PackagedRamCatalogConfig, PackagedRamCatalogConfigError};
 
 pub(crate) mod guarded;
 mod preparation;
+pub use preparation::PreparationExpiredCause;
 mod status;
 #[cfg(test)]
 mod tests;
@@ -2177,7 +2178,11 @@ pub enum PackagedQemuExecutorError {
     },
     /// Preparation expired before its cleaned native candidate could be accepted.
     #[error("packaged preparation host allowance expired")]
-    PreparationExpired,
+    PreparationExpired {
+        /// Failure returned by the canceled capture, when one was available.
+        #[source]
+        source: Option<PreparationExpiredCause>,
+    },
     /// The internal deployment contract named no campaign.
     #[error("packaged QEMU executor has no campaign")]
     NoCampaigns,

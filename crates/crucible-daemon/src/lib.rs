@@ -523,7 +523,7 @@ pub use packaged_qemu_executor::{
     PackagedQemuExecutorJoinError, PackagedQemuExecutorJoinFailures,
     PackagedQemuExecutorStartError, PackagedQemuHotForkConfig, PackagedQemuHotForkConfigError,
     PackagedQemuHotForkSourceShutdownError, PackagedRamCatalogConfig,
-    PackagedRamCatalogConfigError,
+    PackagedRamCatalogConfigError, PreparationExpiredCause,
 };
 #[cfg(target_os = "linux")]
 pub(crate) use paused_checkpoint_promotion::{
