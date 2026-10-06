@@ -129,6 +129,27 @@ pub(crate) struct SourceFirstSuccessorRowsV2 {
     pub(crate) pending: Option<SourceFirstSuccessorPendingV2>,
 }
 
+/// Owns the two decoded families from one complete local DATA comparison.
+///
+/// These maps carry no writer, Root floor loan or admission authority. Each
+/// consumer moves its required family out within the same observation window;
+/// the other family is dropped rather than retained across an owner effect.
+pub(crate) struct SourceProjectFamilyDataV3 {
+    genesis: super::source_tree_genesis::SourceGenesisRowsV1,
+    successor: SourceFirstSuccessorRowsV2,
+}
+
+impl SourceProjectFamilyDataV3 {
+    /// Moves the already-decoded genesis rows, discarding successor DATA.
+    pub(crate) fn into_genesis(self) -> super::source_tree_genesis::SourceGenesisRowsV1 {
+        self.genesis
+    }
+
+    fn into_successor(self) -> SourceFirstSuccessorRowsV2 {
+        self.successor
+    }
+}
+
 pub(crate) fn receipt_key(project: ProjectId) -> Vec<u8> {
     [RECEIPT_PREFIX, project.as_bytes()].concat()
 }
@@ -272,6 +293,25 @@ pub(crate) fn current_project_genesis_rows_v3(
     )
 }
 
+/// Returns both already-decoded families after the same selected whole fold.
+///
+/// # Errors
+/// Rejects a sentinel project or any incomplete predecessor, successor,
+/// capacity or lineage join. Returned DATA grants no live owner permission.
+pub(super) fn current_project_genesis_data_v3(
+    state: &State,
+    selected: ProjectId,
+) -> Result<SourceProjectFamilyDataV3, JournalError> {
+    if selected.as_bytes() == &[0; 16] {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    current_family_with_genesis_selection(
+        state,
+        SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected: None },
+        Some(selected),
+    )
+}
+
 // Cold replay selects only comparison DATA from the actual canonical pending
 // member. It cannot provide a live selected writer or renew its admission.
 fn replay_rows(state: &State) -> Result<SourceFirstSuccessorRowsV2, JournalError> {
@@ -306,6 +346,15 @@ fn current_rows_with_genesis_selection(
     recipe: SourceSuccessorFamilyRecipeV3,
     genesis_selection: Option<ProjectId>,
 ) -> Result<SourceFirstSuccessorRowsV2, JournalError> {
+    current_family_with_genesis_selection(state, recipe, genesis_selection)
+        .map(SourceProjectFamilyDataV3::into_successor)
+}
+
+fn current_family_with_genesis_selection(
+    state: &State,
+    recipe: SourceSuccessorFamilyRecipeV3,
+    genesis_selection: Option<ProjectId>,
+) -> Result<SourceProjectFamilyDataV3, JournalError> {
     let mut rows = SourceFirstSuccessorRowsV2 {
         receipts: BTreeMap::new(),
         acks: BTreeMap::new(),
@@ -430,7 +479,7 @@ fn current_rows_with_genesis_selection(
             )?,
         }
     }
-    Ok(rows)
+    Ok(SourceProjectFamilyDataV3 { genesis, successor: rows })
 }
 
 /// Derives exact ACK sizing from the receipt and the sole canonical frame codec.

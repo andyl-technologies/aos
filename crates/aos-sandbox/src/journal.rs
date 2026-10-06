@@ -3691,6 +3691,19 @@ impl Journal {
         )
     }
 
+    /// Returns the already-decoded selected genesis and successor family DATA.
+    ///
+    /// # Errors
+    /// Rejects a poisoned writer or any incomplete selected whole-family join.
+    /// This comparison does not lend mutation, signing or Root currentness.
+    pub(crate) fn source_project_genesis_data_v3(
+        &self,
+        selected: aos_sandbox_core::ProjectId,
+    ) -> Result<source_tree_successor::SourceProjectFamilyDataV3, JournalError> {
+        self.ensure_healthy()?;
+        source_tree_successor::current_project_genesis_data_v3(&self.state, selected)
+    }
+
     #[cfg(target_os = "linux")]
     pub(crate) fn preflight_project_source_genesis_v3(
         &self,

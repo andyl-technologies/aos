@@ -198,8 +198,7 @@ fn sign_project_genesis_from_view_v3(
 ) -> Result<[u8; super::source_genesis_readback::SOURCE_PROJECT_GENESIS_READBACK_BYTES_V3], SourceSignerReadbackErrorV1> {
     let project = challenge.project();
     let journal = readback.journal_mut();
-    journal.source_project_genesis_rows_v3(project)?;
-    let rows = journal.source_tree_genesis_rows_v1()?;
+    let rows = journal.source_project_genesis_data_v3(project)?.into_genesis();
     let receipt = rows.receipts.get(&project);
     if rows.receipts.is_empty()
         || receipt.map(|receipt| receipt.intent_digest()) != challenge.intent()

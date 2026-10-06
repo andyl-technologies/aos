@@ -230,8 +230,8 @@ pub(crate) fn append_source_project_genesis_v3(
     if resident.first_failure.is_none() {
         resident.readback = Some((|| {
             let journal = source.journal();
-            journal.source_project_genesis_rows_v3(root.record().project())?;
-            let rows = journal.source_tree_genesis_rows_v1()?;
+            let rows = journal.source_project_genesis_data_v3(root.record().project())?
+                .into_genesis();
             let (_, expected) = resident.preparation.as_ref().and_then(|r| r.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
             if rows.receipts.get(&root.record().project()) != Some(expected) {
                 return Err(SourceGenesisErrorV1::Stale);
@@ -259,8 +259,7 @@ fn prepare_project_genesis_append_v3(
     }
     let journal = source.journal();
     require_location(journal, intent.source_uid())?;
-    journal.source_project_genesis_rows_v3(intent.project())?;
-    let rows = journal.source_tree_genesis_rows_v1()?;
+    let rows = journal.source_project_genesis_data_v3(intent.project())?.into_genesis();
     if let Some(receipt) = rows.receipts.get(&intent.project()) {
         if receipt.instance() != intent.instance() || receipt.intent_digest() != intent.digest()
             || receipt.acceptance_digest() != acceptance.digest()
@@ -318,8 +317,8 @@ pub(crate) fn acknowledge_source_project_genesis_v3(
         root.recheck()?;
         let journal = source.journal();
         require_location(journal, root.source_uid())?;
-        journal.source_project_genesis_rows_v3(root.floor().project())?;
-        let rows = journal.source_tree_genesis_rows_v1()?;
+        let rows = journal.source_project_genesis_data_v3(root.floor().project())?
+            .into_genesis();
         let receipt = rows.receipts.get(&root.floor().project()).ok_or(SourceGenesisErrorV1::Stale)?;
         if receipt != root.floor().receipt() { return Err(SourceGenesisErrorV1::Conflict); }
         controller.validate_source_ack(receipt, root.floor())?;
@@ -350,8 +349,8 @@ pub(crate) fn acknowledge_source_project_genesis_v3(
     if resident.first_failure.is_none() {
         resident.readback = Some((|| {
             let journal = source.journal();
-            journal.source_project_genesis_rows_v3(root.floor().project())?;
-            let rows = journal.source_tree_genesis_rows_v1()?;
+            let rows = journal.source_project_genesis_data_v3(root.floor().project())?
+                .into_genesis();
             let ack = rows.acks.get(&root.floor().project()).ok_or(SourceGenesisErrorV1::Stale)?;
             if rows.pending.is_some() || ack.root_floor != root.floor().digest()
                 || ack.controller_floor != controller.accepted_floor_digest()?
@@ -381,8 +380,7 @@ pub(crate) fn observe_project_genesis_v3<'loan>(
     inventory.recheck()?;
     let journal = inventory.journal();
     require_location(journal, expected_source_uid)?;
-    journal.source_project_genesis_rows_v3(project)?;
-    let rows = journal.source_tree_genesis_rows_v1()?;
+    let rows = journal.source_project_genesis_data_v3(project)?.into_genesis();
     if rows.receipts.is_empty()
         || rows.pending.as_ref().is_some_and(|pending| pending.project != project)
     {
