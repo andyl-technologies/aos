@@ -81,7 +81,9 @@
     if minimal
     then featureFlags
     else "PERL_PATH=${buildPerl}/bin/perl PYTHON_PATH=${buildPython3}/bin/python3";
-  buildShellFlag = "SHELL_PATH=${buildBash}/bin/bash";
+  # Make evaluates included version/platform files before Git assigns SHELL.
+  # Both make's interpreter and Git's generated helpers use the builder Bash.
+  buildShellFlag = "SHELL=${buildBash}/bin/bash SHELL_PATH=${buildBash}/bin/bash";
   # Link the declared target library without executing curl-config, whose
   # interpreter may be unavailable in the sandbox or on a cross builder.
   curlLinkFlag = ''CURL_LDFLAGS="-L${curl}/lib -lcurl"'';
@@ -153,7 +155,11 @@ in
       {
         name = "configure";
         script = ''
-          make configure${lib.optionalString stdenv.isCross ''
+          # Source generators and template hooks execute directly, independently
+          # of make's interpreter and the generated runtime helper shebangs.
+          grep -IlrZ '^#!/bin/sh$' . \
+            | xargs -0 -r sed -i '1s|^#!/bin/sh$|#!${buildBash}/bin/bash|'
+          make configure ${buildShellFlag}${targetPlatformFlags}${lib.optionalString stdenv.isCross ''
 
             # These runtime probes describe fixed target-libc behavior. Seed
             # them when the target binaries cannot run on the Linux builder.
@@ -162,7 +168,7 @@ in
           ''}${lib.optionalString isDarwinCross ''
             export ac_cv_iconv_omits_bom=no
           ''}
-          ./configure \
+          ${buildBash}/bin/bash ./configure \
             $configureFlags \
             --prefix=$out \
             --with-curl=${curl} \
