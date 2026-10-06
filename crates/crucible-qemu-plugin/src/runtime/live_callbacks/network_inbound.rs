@@ -41,6 +41,28 @@ impl LiveVcpuTimeCallbackState {
             )
             .map_err(|source| LiveVcpuTimeCallbackError::InboundFrames { source })?
         };
+        if preview.frames().is_empty() {
+            return Ok(());
+        }
+
+        // Keep admission through guest delivery and every prefix commit, but
+        // reserve the frame-sized delivery stack only for a nonempty preview.
+        self.inject_previewed_network_inbound(
+            network,
+            &preview,
+            current_icount,
+            passed_delivery_floor_icount,
+        )
+    }
+
+    #[inline(never)]
+    fn inject_previewed_network_inbound(
+        &self,
+        network: &LiveNetworkCallbackState,
+        preview: &crate::inbound::InboundFrameBatch,
+        current_icount: u64,
+        passed_delivery_floor_icount: u64,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
         if let Some(first) = preview.frames().first() {
             let original_head = self
                 .network_inbound_head_observe()?
