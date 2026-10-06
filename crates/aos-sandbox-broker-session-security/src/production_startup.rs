@@ -152,6 +152,8 @@ enum ControllerBindingFailure {
 /// descriptor or image claim. Optional floor image and worker custody remain
 /// separate; worker-only delivery creates no method-46 launch owner.
 pub struct ProductionStorageStartupV1 {
+    // This field fences selected unwind before activation or sidecars release.
+    selected: Option<StorageResourceRecipientStartupCustodyV1>,
     activation: ProductionBrokerSessionActivationV1,
     export: RecordSubjectListener,
     live_export: Option<RecordSubjectListener>,
@@ -169,6 +171,348 @@ pub type ProductionStorageStartupPartsV1 = (
     Option<RecordSubjectListener>,
     Option<RecordSubjectListener>,
 );
+
+type StorageResourceRecipientWorkerPartsV1 = (
+    aos_sandbox_storage::activation::StorageSystemdListenersV1,
+    Option<OwnedFd>,
+    Option<StorageOriginalWorkerStartupV3>,
+);
+
+#[derive(Clone, Copy)]
+enum StorageResourceRecipientStartupStageV1 {
+    Capture,
+    Mode,
+    Presence,
+    Profile,
+    Listener,
+    Post,
+    Closed,
+}
+
+/// Retains selected original image and complete admission observations.
+///
+/// Startup moves this into its same activation at `into_parts`, without a
+/// recursive owner or disposing the Legacy image. It grants no floor authority.
+pub(crate) struct StorageResourceRecipientStartupCustodyV1 {
+    image_destination: Arc<Option<File>>,
+    legacy_image: Option<Pid1LaunchImageV1>,
+    mode: Result<crate::recovery::ModePinV1, crate::recovery::FloorErrorV1>,
+    presence: Result<(), crate::recovery::FloorErrorV1>,
+    profile: Result<ControllerProfileDeliveryV1, crate::BrokerSessionSecurityError>,
+    listener: Result<(), crate::ProductionBrokerSessionActivationErrorV1>,
+    post: Result<(), crate::recovery::FloorErrorV1>,
+}
+
+impl Drop for StorageResourceRecipientStartupCustodyV1 {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            std::process::abort();
+        }
+    }
+}
+
+// Every selected returned original/result has a destination before its next
+// check. An armed attempt aborts before any of these fields can be released.
+struct StorageResourceRecipientStartupAttemptV1 {
+    recipient: Option<aos_sandbox_storage::activation::StorageResourceRecipientCaptureV1>,
+    captured: Option<Result<StorageResourceRecipientWorkerPartsV1, StorageOriginalWorkerStartupErrorV3>>,
+    image_destination: Option<Arc<Option<File>>>,
+    image: Option<Pid1LaunchImageV1>,
+    control: Option<RecordSubjectListener>,
+    export: Option<RecordSubjectListener>,
+    live_export: Option<RecordSubjectListener>,
+    zfs_hold: Option<RecordSubjectListener>,
+    operator: Option<RecordSubjectListener>,
+    existing_output: Option<RecordSubjectListener>,
+    worker: Option<StorageOriginalWorkerStartupV3>,
+    failed_worker: Option<StorageOriginalWorkerStartupErrorV3>,
+    activation: Option<ProductionBrokerSessionActivationV1>,
+    mode: Option<Result<crate::recovery::ModePinV1, crate::recovery::FloorErrorV1>>,
+    presence: Option<Result<(), crate::recovery::FloorErrorV1>>,
+    profile: Option<Result<ControllerProfileDeliveryV1, crate::BrokerSessionSecurityError>>,
+    listener: Option<Result<(), crate::ProductionBrokerSessionActivationErrorV1>>,
+    post: Option<Result<(), crate::recovery::FloorErrorV1>>,
+    first: Option<StorageResourceRecipientStartupStageV1>,
+    attempted: bool,
+    admitted: bool,
+    armed: bool,
+}
+
+impl StorageResourceRecipientStartupAttemptV1 {
+    fn new(recipient: aos_sandbox_storage::activation::StorageResourceRecipientCaptureV1) -> Self {
+        Self {
+            recipient: Some(recipient),
+            captured: None,
+            image_destination: Some(Arc::new(None)),
+            image: None,
+            control: None,
+            export: None,
+            live_export: None,
+            zfs_hold: None,
+            operator: None,
+            existing_output: None,
+            worker: None,
+            failed_worker: None,
+            activation: Some(ProductionBrokerSessionActivationV1::prearm_storage_resource_recipient()),
+            mode: None,
+            presence: None,
+            profile: None,
+            listener: None,
+            post: None,
+            first: None,
+            attempted: false,
+            admitted: false,
+            armed: true,
+        }
+    }
+
+    fn capture_once(&mut self) -> bool {
+        if self.attempted || self.first.is_some() {
+            self.first.get_or_insert(StorageResourceRecipientStartupStageV1::Closed);
+            return false;
+        }
+        self.attempted = true;
+        let Some(recipient) = self.recipient.as_mut() else {
+            self.first = Some(StorageResourceRecipientStartupStageV1::Closed);
+            return false;
+        };
+        if recipient.capture_once() {
+            recipient.admit_worker_once();
+        }
+        let Some(recipient) = self.recipient.take() else {
+            self.first = Some(StorageResourceRecipientStartupStageV1::Closed);
+            return false;
+        };
+        self.captured = Some(recipient.into_original_worker_parts());
+        if !matches!(self.captured.as_ref(), Some(Ok(_))) {
+            self.first = Some(StorageResourceRecipientStartupStageV1::Capture);
+            return false;
+        }
+
+        let Some(destination) = self.image_destination.as_mut().and_then(Arc::get_mut) else {
+            self.first = Some(StorageResourceRecipientStartupStageV1::Closed);
+            return false;
+        };
+        if destination.is_some() {
+            self.first = Some(StorageResourceRecipientStartupStageV1::Closed);
+            return false;
+        }
+        let Some(Ok(((control, export, live_export, zfs_hold, operator, existing_output), image, worker))) =
+            self.captured.take()
+        else {
+            std::process::abort();
+        };
+        self.control = Some(control);
+        self.export = Some(export);
+        self.live_export = live_export;
+        self.zfs_hold = zfs_hold;
+        self.operator = operator;
+        self.existing_output = existing_output;
+        self.worker = worker;
+        *destination = image.map(File::from);
+        if destination.is_none() || self.worker.is_none() {
+            self.first = Some(StorageResourceRecipientStartupStageV1::Closed);
+            return false;
+        }
+
+        let Some(destination) = self.image_destination.as_ref() else {
+            std::process::abort();
+        };
+        self.image = Some(Pid1LaunchImageV1 {
+            endpoint: ProtectedBrokerSessionFixedEndpointV1::StorageBroker,
+            process: std::process::id(),
+            file: LaunchImageFile::Retained(Arc::clone(destination)),
+            profile_delivery: ControllerProfileDeliveryV1::Pending,
+        });
+        true
+    }
+
+    fn admit_once(&mut self) -> bool {
+        if self.first.is_some() || !self.attempted || self.admitted
+            || self.image.is_none() || self.worker.is_none()
+        {
+            self.first.get_or_insert(StorageResourceRecipientStartupStageV1::Closed);
+            return false;
+        }
+        self.admitted = true;
+        self.mode = Some(crate::recovery::ModePinV1::open_storage_worker_image_mode());
+        let required = match self.mode.as_ref() {
+            Some(Ok(mode)) => mode.is_required(),
+            _ => {
+                self.first = Some(StorageResourceRecipientStartupStageV1::Mode);
+                return false;
+            }
+        };
+        self.admit_image_and_listener(required);
+
+        // A genuine returned pin receives its independent post even when
+        // presence/profile/listener failed. Later debt cannot replace FIRST.
+        if let Some(Ok(mode)) = self.mode.as_ref() {
+            self.post = Some(mode.revalidate());
+        }
+        if !matches!(self.post.as_ref(), Some(Ok(()))) {
+            self.first.get_or_insert(StorageResourceRecipientStartupStageV1::Post);
+        }
+        self.first.is_none()
+    }
+
+    fn admit_image_and_listener(&mut self, required: bool) {
+        let Some(Ok(mode)) = self.mode.as_ref() else {
+            self.first.get_or_insert(StorageResourceRecipientStartupStageV1::Closed);
+            return;
+        };
+        // Legacy keeps its worker original while the floor receives absence.
+        let supplied = required && self.image.is_some();
+        self.presence = Some(mode.require_storage_worker_launch_image_presence(supplied));
+        if !matches!(self.presence.as_ref(), Some(Ok(()))) {
+            self.first = Some(StorageResourceRecipientStartupStageV1::Presence);
+            return;
+        }
+        self.profile = Some(profile_delivery_for_endpoint(
+            ProtectedBrokerSessionFixedEndpointV1::StorageBroker,
+        ));
+        if !matches!(self.profile.as_ref(), Some(Ok(ControllerProfileDeliveryV1::Storage))) {
+            self.first = Some(StorageResourceRecipientStartupStageV1::Profile);
+            return;
+        }
+        let Some(image) = self.image.as_mut() else {
+            self.first = Some(StorageResourceRecipientStartupStageV1::Closed);
+            return;
+        };
+        image.profile_delivery = ControllerProfileDeliveryV1::Storage;
+
+        let Some(activation) = self.activation.as_mut() else {
+            self.first = Some(StorageResourceRecipientStartupStageV1::Closed);
+            return;
+        };
+        self.listener = Some(activation.admit_retained_storage_listener(&mut self.control));
+        if !matches!(self.listener.as_ref(), Some(Ok(()))) {
+            self.first = Some(StorageResourceRecipientStartupStageV1::Listener);
+            return;
+        }
+        if required {
+            activation.retain_launch_image(self.image.take());
+        }
+    }
+
+    fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self.first? {
+            StorageResourceRecipientStartupStageV1::Capture => self.captured.as_ref()
+                .and_then(|result| result.as_ref().err())
+                .map(|error| error as &dyn std::error::Error),
+            StorageResourceRecipientStartupStageV1::Mode => self.mode.as_ref()
+                .and_then(|result| result.as_ref().err())
+                .map(|error| error as &dyn std::error::Error),
+            StorageResourceRecipientStartupStageV1::Presence => self.presence.as_ref()
+                .and_then(|result| result.as_ref().err())
+                .map(|error| error as &dyn std::error::Error),
+            StorageResourceRecipientStartupStageV1::Profile => self.profile.as_ref()
+                .and_then(|result| result.as_ref().err())
+                .map(|error| error as &dyn std::error::Error),
+            StorageResourceRecipientStartupStageV1::Listener => self.listener.as_ref()
+                .and_then(|result| result.as_ref().err())
+                .map(|error| error as &dyn std::error::Error),
+            StorageResourceRecipientStartupStageV1::Post => self.post.as_ref()
+                .and_then(|result| result.as_ref().err())
+                .map(|error| error as &dyn std::error::Error),
+            StorageResourceRecipientStartupStageV1::Closed => {
+                Some(&crate::BrokerSessionSecurityError::Currentness)
+            }
+        }
+    }
+
+    fn into_startup(mut self) -> Result<
+        (ProductionStorageStartupV1, Option<StorageOriginalWorkerStartupV3>),
+        ProductionStorageResourceRecipientStartupErrorV1,
+    > {
+        let complete = self.first.is_none() && self.admitted
+            && self.activation.is_some() && self.export.is_some()
+            && self.control.is_none() && self.worker.is_some()
+            && self.image_destination.as_ref().is_some_and(|slot| slot.as_ref().is_some())
+            && matches!(self.mode.as_ref(), Some(Ok(_)))
+            && matches!(self.presence.as_ref(), Some(Ok(())))
+            && matches!(self.profile.as_ref(), Some(Ok(ControllerProfileDeliveryV1::Storage)))
+            && matches!(self.listener.as_ref(), Some(Ok(())))
+            && matches!(self.post.as_ref(), Some(Ok(())));
+        if !complete {
+            self.first.get_or_insert(StorageResourceRecipientStartupStageV1::Closed);
+            if self.worker.is_some() {
+                self.failed_worker = Some(StorageOriginalWorkerStartupErrorV3::retain_service_failure(
+                    startup_error("Storage resource-recipient startup is closed"),
+                    self.worker.take(),
+                ));
+            }
+            return Err(ProductionStorageResourceRecipientStartupErrorV1 { original: self });
+        }
+
+        let (Some(activation), Some(export), Some(image_destination), Some(worker),
+            Some(mode), Some(presence), Some(profile), Some(listener), Some(post)) = (
+            self.activation.take(), self.export.take(), self.image_destination.take(),
+            self.worker.take(), self.mode.take(), self.presence.take(), self.profile.take(),
+            self.listener.take(), self.post.take(),
+        ) else {
+            std::process::abort();
+        };
+        let startup = ProductionStorageStartupV1 {
+            selected: Some(StorageResourceRecipientStartupCustodyV1 {
+                image_destination,
+                legacy_image: self.image.take(),
+                mode,
+                presence,
+                profile,
+                listener,
+                post,
+            }),
+            activation,
+            export,
+            live_export: self.live_export.take(),
+            zfs_hold: self.zfs_hold.take(),
+            operator: self.operator.take(),
+            existing_output: self.existing_output.take(),
+        };
+        self.armed = false;
+        Ok((startup, Some(worker)))
+    }
+}
+
+impl Drop for StorageResourceRecipientStartupAttemptV1 {
+    fn drop(&mut self) {
+        if self.armed {
+            std::process::abort();
+        }
+    }
+}
+
+/// Owns the first selected startup cause and every returned upper original.
+///
+/// The failed attempt cannot be retried or converted into admitted startup.
+/// Its destruction aborts before originals release; formatting only borrows
+/// the actual resident cause and never authorizes drain or recovery.
+pub struct ProductionStorageResourceRecipientStartupErrorV1 {
+    original: StorageResourceRecipientStartupAttemptV1,
+}
+
+impl std::fmt::Debug for ProductionStorageResourceRecipientStartupErrorV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("ProductionStorageResourceRecipientStartupErrorV1")
+            .field("cause", &self.original.failure()).finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for ProductionStorageResourceRecipientStartupErrorV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.original.failure() {
+            Some(error) => std::fmt::Display::fmt(error, formatter),
+            None => formatter.write_str("selected Storage startup is closed"),
+        }
+    }
+}
+
+impl std::error::Error for ProductionStorageResourceRecipientStartupErrorV1 {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.original.failure()
+    }
+}
 
 // Own the genuine startup BEFORE the additional mode observation. This guard
 // fences only this synchronous Security route: interruption closes the worker
@@ -251,6 +595,40 @@ impl ProductionStorageStartupV1 {
     > {
         let captured = take_systemd_startup()?;
         let (listeners, image, startup) = captured.into_original_worker_parts()?;
+        Self::admit_original_worker_route(listeners, image, startup)
+    }
+
+    /// Admits only the selected actual resource-recipient table before startup.
+    ///
+    /// This retains the component outside Core's startup Box and uses the same
+    /// fixed mode and listener engines. The selected upper owner retains the
+    /// same returned image and listeners; it issues no native or Project permission.
+    ///
+    /// # Errors
+    ///
+    /// Owns the full failed recipient, worker and upper native observations.
+    /// Destruction of a failed selected attempt aborts before originals release.
+    pub fn capture_resource_recipient_startup(
+        captured: aos_sandbox_storage::activation::StorageResourceRecipientCaptureV1,
+    ) -> Result<
+        (Self, Option<aos_sandbox_storage::activation::StorageOriginalWorkerStartupV3>),
+        ProductionStorageResourceRecipientStartupErrorV1,
+    > {
+        let mut attempt = StorageResourceRecipientStartupAttemptV1::new(captured);
+        if attempt.capture_once() {
+            attempt.admit_once();
+        }
+        attempt.into_startup()
+    }
+
+    fn admit_original_worker_route(
+        listeners: aos_sandbox_storage::activation::StorageSystemdListenersV1,
+        image: Option<OwnedFd>,
+        startup: Option<aos_sandbox_storage::activation::StorageOriginalWorkerStartupV3>,
+    ) -> Result<
+        (Self, Option<aos_sandbox_storage::activation::StorageOriginalWorkerStartupV3>),
+        aos_sandbox_storage::activation::StorageOriginalWorkerStartupErrorV3,
+    > {
         let route = StorageWorkerImageRouteObservation::begin(startup);
 
         // This extra retained mode interval is worker-only. No-image capture
@@ -311,6 +689,7 @@ impl ProductionStorageStartupV1 {
             .map_err(|error| startup_error(error.to_string()))?;
         activation.retain_launch_image(image);
         Ok(Self {
+            selected: None,
             activation,
             export,
             live_export,
@@ -322,7 +701,10 @@ impl ProductionStorageStartupV1 {
 
     /// Transfers the fixed activation and every existing sidecar listener.
     #[must_use]
-    pub fn into_parts(self) -> ProductionStorageStartupPartsV1 {
+    pub fn into_parts(mut self) -> ProductionStorageStartupPartsV1 {
+        if let Some(custody) = self.selected.take() {
+            self.activation.retain_storage_recipient_startup(custody);
+        }
         (
             self.activation,
             self.export,
@@ -398,6 +780,12 @@ fn launch_profile_delivery(
     supplied: bool,
 ) -> Result<ControllerProfileDeliveryV1, crate::BrokerSessionSecurityError> {
     crate::recovery::require_launch_image_presence(endpoint, supplied)?;
+    profile_delivery_for_endpoint(endpoint)
+}
+
+fn profile_delivery_for_endpoint(
+    endpoint: ProtectedBrokerSessionFixedEndpointV1,
+) -> Result<ControllerProfileDeliveryV1, crate::BrokerSessionSecurityError> {
     match endpoint {
         ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient => {
             Ok(ControllerProfileDeliveryV1::Pending)

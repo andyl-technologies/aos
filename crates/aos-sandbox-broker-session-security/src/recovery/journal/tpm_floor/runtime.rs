@@ -545,6 +545,22 @@ pub(in crate::recovery::journal) fn require_launch_image_presence(
         _ => return Err(FloorErrorV1::Provisioning),
     };
     let mode = ModePinV1::open(endpoint)?;
+    require_launch_image_presence_with_mode(endpoint, &mode, supplied)
+}
+
+// Selected Storage keeps its actual pin resident instead of reopening the name.
+pub(super) fn require_storage_worker_launch_image_presence(
+    mode: &ModePinV1,
+    supplied: bool,
+) -> Result<(), FloorErrorV1> {
+    require_launch_image_presence_with_mode(FloorEndpointV1::StorageBroker, mode, supplied)
+}
+
+fn require_launch_image_presence_with_mode(
+    endpoint: FloorEndpointV1,
+    mode: &ModePinV1,
+    supplied: bool,
+) -> Result<(), FloorErrorV1> {
     require_mode_image_presence(mode.mode(), supplied)?;
     if mode.mode() == ImageFloorModeV1::Required {
         super::backend::confinement::require_owner(endpoint)?;

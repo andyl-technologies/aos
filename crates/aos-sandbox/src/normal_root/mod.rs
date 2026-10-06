@@ -78,7 +78,9 @@ pub use storage_worker_origin::{
     CapturedStorageLaunchV3, PID1_LAUNCH_IMAGE_FD_NAME, RejectedStorageWorkerOriginV3,
     StorageCgroupRootErrorV3, StorageLaunchCaptureErrorV3, StorageLaunchListenersV3,
     StorageWorkerOriginAdmissionErrorV3, StorageWorkerOriginCauseV3, StorageWorkerOriginV3,
+    StorageResourceRecipientCaptureV1, StorageResourceRecipientErrorV1,
     capture_storage_launch_v3, open_storage_cgroup_root_v3,
+    storage_resource_recipient_selected_v1,
 };
 
 pub(super) const PID1_FD_NAME: &str = "aos-normal-root-pid1-image";

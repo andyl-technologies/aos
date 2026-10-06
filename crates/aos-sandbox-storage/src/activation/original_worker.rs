@@ -21,6 +21,8 @@ use crate::service::StorageServiceError;
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum StorageOriginalWorkerStartupCauseV3 {
     #[error(transparent)]
+    ResourceRecipient(aos_sandbox::normal_root::StorageResourceRecipientErrorV1),
+    #[error(transparent)]
     Service(#[from] StorageServiceError),
     #[error(transparent)]
     Linux(#[from] aos_sandbox_linux::Error),
@@ -157,6 +159,25 @@ pub(super) fn admit_captured(
                 admitted: None,
             })
         }
+    }
+}
+
+pub(super) fn admit_resource_recipient(
+    captured: aos_sandbox::normal_root::StorageResourceRecipientCaptureV1,
+) -> Result<
+    (StorageSystemdListenersV1, Option<OwnedFd>, Option<StorageOriginalWorkerStartupV3>),
+    StorageOriginalWorkerStartupErrorV3,
+> {
+    match captured.into_worker_parts() {
+        Ok((listeners, image, startup)) => Ok((
+            listeners, image,
+            startup.map(|original| StorageOriginalWorkerStartupV3 { original }),
+        )),
+        Err(error) => Err(StorageOriginalWorkerStartupErrorV3 {
+            cause: StorageOriginalWorkerStartupCauseV3::ResourceRecipient(error),
+            rejected: None,
+            admitted: None,
+        }),
     }
 }
 

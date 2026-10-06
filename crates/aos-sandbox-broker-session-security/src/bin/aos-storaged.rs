@@ -89,6 +89,8 @@ enum StorageStartupRunErrorV3 {
     #[error(transparent)]
     Original(#[from] aos_sandbox_storage::activation::StorageOriginalWorkerStartupErrorV3),
     #[error(transparent)]
+    SelectedStartup(#[from] aos_sandbox_broker_session_security::ProductionStorageResourceRecipientStartupErrorV1),
+    #[error(transparent)]
     OriginalConstruction(#[from] aos_sandbox_storage::runtime::StorageOriginalNativeConstructionClosedV1),
     #[error(transparent)]
     Template(aos_sandbox_storage::guest_root_inventory::GuestRootInventoryErrorV1),
@@ -249,7 +251,12 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
 
     // Claim the complete systemd table before any inherited slot can be
     // reused. The broker session owns only its fixed control listener.
-    let (startup, original_worker_startup) = if command == StorageStartupCommandV4::Serve
+    let (startup, original_worker_startup) = if
+        aos_sandbox_storage::activation::storage_resource_recipient_selected_v1()
+    {
+        let captured = aos_sandbox_storage::activation::StorageResourceRecipientCaptureV1::begin();
+        aos_sandbox_broker_session_security::ProductionStorageStartupV1::capture_resource_recipient_startup(captured)?
+    } else if command == StorageStartupCommandV4::Serve
         && arguments.zfs_hold_key_configured
     {
         aos_sandbox_broker_session_security::ProductionStorageStartupV1::capture_original_worker_startup()?

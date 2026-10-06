@@ -11,6 +11,7 @@ use aos_sandbox::normal_root::{
     CapturedStorageLaunchV3, StorageLaunchCaptureErrorV3, StorageLaunchListenersV3,
     capture_storage_launch_v3,
 };
+pub use aos_sandbox::normal_root::storage_resource_recipient_selected_v1;
 
 use crate::service::StorageServiceError;
 
@@ -20,6 +21,51 @@ pub const PID1_LAUNCH_IMAGE_FD_NAME: &str =
 
 /// The fixed Storage listener roles, without any TPM or image authorization.
 pub type StorageSystemdListenersV1 = StorageLaunchListenersV3;
+
+/// Prearms selected resource-recipient custody without exposing its pair.
+///
+/// This is not a Project, floor or native-effect permission. Its only producer
+/// consumes the complete actual inherited table through Core's sole engine.
+#[must_use]
+pub struct StorageResourceRecipientCaptureV1 {
+    original: aos_sandbox::normal_root::StorageResourceRecipientCaptureV1,
+}
+
+impl StorageResourceRecipientCaptureV1 {
+    /// Creates empty resident destinations before startup observation.
+    pub const fn begin() -> Self {
+        Self {
+            original: aos_sandbox::normal_root::StorageResourceRecipientCaptureV1::begin(),
+        }
+    }
+
+    /// Parks complete capture and its actual error before returning a status.
+    pub fn capture_once(&mut self) -> bool {
+        self.original.capture_once()
+    }
+
+    /// Parks the original Startup Result before independent component posts.
+    pub fn admit_worker_once(&mut self) -> bool {
+        self.original.admit_worker_once()
+    }
+
+    /// Borrows the earliest actual cause, never a portable paid marker.
+    pub fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.original.failure()
+    }
+
+    /// Transfers only admitted startup roles, retaining the resource pair.
+    ///
+    /// # Errors
+    ///
+    /// Owns the complete failed recipient and partial Startup custody.
+    pub fn into_original_worker_parts(self) -> Result<
+        (StorageSystemdListenersV1, Option<OwnedFd>, Option<StorageOriginalWorkerStartupV3>),
+        StorageOriginalWorkerStartupErrorV3,
+    > {
+        original_worker::admit_resource_recipient(self.original)
+    }
+}
 
 /// Owns an observed complete startup table, not authenticated image custody.
 pub struct CapturedStorageStartupV1 {

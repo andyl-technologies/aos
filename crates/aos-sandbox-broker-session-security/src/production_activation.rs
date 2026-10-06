@@ -86,6 +86,8 @@ enum ActivationAcceptPurposeV1 {
 pub struct ProductionBrokerSessionActivationV1 {
     // Fence a failed selected cold flight before any activation field drops.
     storage_cold: Option<crate::handshake::RetainedStorageColdOpenV1>,
+    // Selected startup fences unwind before its control/image fields release.
+    selected_storage_startup: Option<crate::production_startup::StorageResourceRecipientStartupCustodyV1>,
     listeners: Vec<FixedListenerV1>,
     launch_image: Option<crate::production_startup::Pid1LaunchImageV1>,
 }
@@ -114,6 +116,86 @@ impl ProductionBrokerSessionActivationV1 {
         image: Option<crate::production_startup::Pid1LaunchImageV1>,
     ) {
         self.launch_image = image;
+    }
+
+    /// Preallocates the fixed destination before selected original capture.
+    pub(crate) fn prearm_storage_resource_recipient() -> Self {
+        Self {
+            storage_cold: None,
+            selected_storage_startup: None,
+            listeners: Vec::with_capacity(1),
+            launch_image: None,
+        }
+    }
+
+    /// Admits the resident selected control without consuming a rejected original.
+    ///
+    /// # Errors
+    /// Rejects a reused destination, missing control or the same fixed-path
+    /// failure as ordinary Storage listener adoption.
+    pub(crate) fn admit_retained_storage_listener(
+        &mut self,
+        control: &mut Option<RecordSubjectListener>,
+    ) -> Result<(), ProductionBrokerSessionActivationErrorV1> {
+        if !self.listeners.is_empty() || self.listeners.capacity() < 1
+            || self.launch_image.is_some() || self.storage_cold.is_some()
+            || self.selected_storage_startup.is_some()
+        {
+            return Err(ProductionBrokerSessionActivationErrorV1::Activation(
+                "selected Storage listener destination is unavailable",
+            ));
+        }
+        let original = control.as_ref().ok_or(
+            ProductionBrokerSessionActivationErrorV1::Activation(
+                "selected Storage control listener is absent",
+            ),
+        )?;
+        require_storage_listener_path(original)?;
+
+        // All checks and allocation precede removal of the same original.
+        let Some(listener) = control.take() else {
+            std::process::abort();
+        };
+        self.listeners.push(FixedListenerV1 {
+            endpoint: ProtectedBrokerSessionFixedEndpointV1::StorageBroker,
+            listener,
+        });
+        Ok(())
+    }
+
+    /// Moves the same selected startup observations into their fixed activation.
+    pub(crate) fn retain_storage_recipient_startup(
+        &mut self,
+        custody: crate::production_startup::StorageResourceRecipientStartupCustodyV1,
+    ) {
+        if self.selected_storage_startup.is_some()
+            || !matches!(self.listeners.as_slice(), [fixed]
+                if fixed.endpoint == ProtectedBrokerSessionFixedEndpointV1::StorageBroker)
+        {
+            std::process::abort();
+        }
+        self.selected_storage_startup = Some(custody);
+    }
+
+    /// Borrows the same selected Required image for a later private floor crossing.
+    ///
+    /// This grants no Required47 admission and never reopens or clones an image.
+    ///
+    /// # Errors
+    /// Rejects another endpoint, absent selected custody or a missing/unbound image.
+    pub(crate) fn borrow_storage_resource_recipient_launch_image(
+        &self,
+    ) -> Result<&crate::production_startup::Pid1LaunchImageV1, crate::BrokerSessionSecurityError> {
+        if self.selected_storage_startup.is_none()
+            || !matches!(self.listeners.as_slice(), [fixed]
+                if fixed.endpoint == ProtectedBrokerSessionFixedEndpointV1::StorageBroker)
+        {
+            return Err(crate::BrokerSessionSecurityError::Currentness);
+        }
+        let image = self.launch_image.as_ref()
+            .ok_or(crate::BrokerSessionSecurityError::Currentness)?;
+        image.require_endpoint(ProtectedBrokerSessionFixedEndpointV1::StorageBroker)?;
+        Ok(image)
     }
 
     /// Adopts the controller-, RootMount-, and Storage-facing Host listeners.
@@ -175,7 +257,7 @@ impl ProductionBrokerSessionActivationV1 {
         ] {
             listeners.push(FixedListenerV1 { endpoint, listener });
         }
-        Ok(Self { storage_cold: None, listeners, launch_image: None })
+        Ok(Self { storage_cold: None, selected_storage_startup: None, listeners, launch_image: None })
     }
 
     /// Adopts the complete fixed Host listener set for VM qualification.
@@ -224,6 +306,7 @@ impl ProductionBrokerSessionActivationV1 {
             listeners: fixed,
             launch_image: None,
             storage_cold: None,
+            selected_storage_startup: None,
         })
     }
 
@@ -260,11 +343,12 @@ impl ProductionBrokerSessionActivationV1 {
         listener: RecordSubjectListener,
     ) -> Result<Self, ProductionBrokerSessionActivationErrorV1> {
         let endpoint = ProtectedBrokerSessionFixedEndpointV1::StorageBroker;
-        listener.require_local_filesystem_path(Path::new(endpoint.production_socket_path()))?;
+        require_storage_listener_path(&listener)?;
         Ok(Self {
             listeners: vec![FixedListenerV1 { endpoint, listener }],
             launch_image: None,
             storage_cold: None,
+            selected_storage_startup: None,
         })
     }
 
@@ -347,6 +431,7 @@ impl ProductionBrokerSessionActivationV1 {
             listeners: vec![FixedListenerV1 { endpoint, listener }],
             launch_image: None,
             storage_cold: None,
+            selected_storage_startup: None,
         })
     }
 
@@ -564,6 +649,7 @@ impl ProductionBrokerSessionActivationV1 {
             listeners,
             launch_image: None,
             storage_cold: None,
+            selected_storage_startup: None,
         })
     }
 
@@ -577,6 +663,7 @@ impl ProductionBrokerSessionActivationV1 {
             listeners: vec![FixedListenerV1 { endpoint, listener }],
             launch_image: None,
             storage_cold: None,
+            selected_storage_startup: None,
         })
     }
 
@@ -603,6 +690,15 @@ impl ProductionBrokerSessionActivationV1 {
             Err(_) => Err(ProductionBrokerSessionActivationErrorV1::Kernel),
         }
     }
+}
+
+// Both ordinary and selected Storage admission borrow the same fixed predicate.
+fn require_storage_listener_path(
+    listener: &RecordSubjectListener,
+) -> Result<(), ProductionBrokerSessionActivationErrorV1> {
+    let endpoint = ProtectedBrokerSessionFixedEndpointV1::StorageBroker;
+    listener.require_local_filesystem_path(Path::new(endpoint.production_socket_path()))?;
+    Ok(())
 }
 
 pub(crate) fn validate_activation_process(
