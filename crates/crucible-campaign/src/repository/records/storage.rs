@@ -379,7 +379,10 @@ impl CampaignRepository {
             return Err(integrity("lineage-envelope-shape"));
         }
         let scenario = self.read_scenario_artifact(lineage.scenario_content().content_id())?;
-        let genesis = self.read_configuration_artifact(lineage.genesis_content().content_id())?;
+        let genesis = self.read_configuration_artifact_with_scenario(
+            lineage.genesis_content().content_id(),
+            Some((lineage.scenario_content(), &scenario)),
+        )?;
         if scenario.scenario() != lineage.scenario()
             || scenario.payload_schema() != lineage.scenario_schema()
             || genesis.scenario() != lineage.scenario()
@@ -410,6 +413,23 @@ impl CampaignRepository {
         &self,
         id: ContentId,
     ) -> Result<ConfigurationArtifact, CampaignRepositoryError> {
+        self.read_configuration_artifact_with_scenario(id, None)
+    }
+
+    /// Reuses an already authenticated scenario only within its owner's load.
+    ///
+    /// The exact artifact ID, not the semantic scenario ID, selects reuse.
+    /// Ordinary configuration loads and different child IDs authenticate anew.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original missing, corrupt, canonical-shape, or scenario-owner
+    /// error from the configuration and its exact scenario artifact.
+    fn read_configuration_artifact_with_scenario(
+        &self,
+        id: ContentId,
+        authenticated_scenario: Option<(ScenarioArtifactId, &ScenarioArtifact)>,
+    ) -> Result<ConfigurationArtifact, CampaignRepositoryError> {
         let envelope = self.read_envelope(id)?;
         if envelope.record_kind() != crate::CampaignRecordKind::ConfigurationArtifact {
             return Err(integrity("configuration-artifact-envelope-shape"));
@@ -418,7 +438,16 @@ impl CampaignRepository {
         if artifact.id()?.content_id() != id {
             return Err(integrity("configuration-artifact-envelope-shape"));
         }
-        let scenario = self.read_scenario_artifact(artifact.scenario_artifact().content_id())?;
+        let loaded_scenario;
+        let scenario = if let Some((_, scenario)) =
+            authenticated_scenario.filter(|(known_id, _)| *known_id == artifact.scenario_artifact())
+        {
+            scenario
+        } else {
+            loaded_scenario =
+                self.read_scenario_artifact(artifact.scenario_artifact().content_id())?;
+            &loaded_scenario
+        };
         if scenario.scenario() != artifact.scenario() {
             return Err(integrity("configuration-scenario-artifact-mismatch"));
         }

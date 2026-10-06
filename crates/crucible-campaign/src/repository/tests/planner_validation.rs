@@ -5,6 +5,9 @@ use super::*;
 #[path = "planner_validation/merkle_reads.rs"]
 mod merkle_reads;
 
+#[path = "planner_validation/lineage_reads.rs"]
+mod lineage_reads;
+
 #[derive(Clone, Copy)]
 enum ReadFault {
     Missing,
