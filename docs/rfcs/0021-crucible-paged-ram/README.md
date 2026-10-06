@@ -49,9 +49,10 @@ Lowercase uses are ordinary prose. Numbered requirement identifiers provide
 stable review and acceptance-test references within this proposed edition.
 
 Statements explicitly described as *current*, *baseline*, or *informative*
-describe the source revision above. Requirements and schemas describe proposed
-behavior. A source link demonstrates an integration point; it does not prove
-that its proposed replacement already exists. Chapter 02 is authoritative for
+describe the source revision above unless the section identifies a different
+revision. Requirements and schemas describe proposed behavior. A source link
+demonstrates an integration point; it does not prove that its proposed
+replacement already exists. Chapter 02 is authoritative for
 logical memory encoding; physical object and protocol encodings belong to the
 versioned implementation contracts identified in chapters 07–09.
 
@@ -77,7 +78,7 @@ partially upgraded production combination.
 | [07](07-checkpoints-and-storage.md) | Direct logical checkpoints, durable objects, scalable indices, restore |
 | [08](08-state-transfer.md) | Authenticated root differences, retention, cancellation, publication |
 | [09](09-security-and-cutover.md) | Trust, process/license boundary, version registry, coordinated cutover |
-| [10](10-validation-and-performance.md) | Independent oracles, adversarial acceptance, measured budgets |
+| [10](10-validation-and-performance.md) | Independent oracles, adversarial acceptance, measured budgets, dated validation record |
 | [11](11-implementation-plan.md) | Work packages, dependency graph, stop/go evidence |
 | [12](12-decisions-and-open-questions.md) | Decisions, alternatives, unresolved deployment choices |
 | [13](13-references.md) | Repository and external reference documents |
@@ -102,6 +103,6 @@ Failures are typed host failures and do not become guest findings.
 
 All relevant foundations change together: admission, launch, dirty tracking,
 fingerprints, fork barriers, checkpoint schemas, content storage, transfer,
-supervision, host capability checks, and protocol versions. Acceptance requires
-both an independent logical-state oracle and proof that the real adversarial
-paths were exercised.
+supervision, host capability checks, and protocol versions. Implementation
+qualification requires both an independent logical-state oracle and proof
+that the real adversarial paths were exercised.
