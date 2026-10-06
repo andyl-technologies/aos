@@ -8,7 +8,6 @@
   llvm,
   linux-headers,
   cmake,
-  gnumake,
   bootstrapTools,
   glibc,
   stdenv,
@@ -21,6 +20,14 @@
     then buildPackages.llvm
     else llvm;
   buildTargetPrefix = lib.toUpper (builtins.replaceStrings ["-"] ["_"] stdenv.buildPlatform.config);
+
+  # CMake's compiler probes and aws-lc builds use generated Makefiles whose
+  # default shell is /bin/sh. A command-line binding also reaches recursive
+  # make invocations without replacing Cargo's jobserver flags.
+  buildMake = buildPackages.writeShellScriptBin "make" ''
+    exec ${buildPackages.gnumake}/bin/make \
+      SHELL=${buildPackages.bash}/bin/bash "$@"
+  '';
 
   # Firecracker's build script compiles seccomp policies on the build machine.
   # Its seccompiler dependency must link and load native libseccomp while the
@@ -144,7 +151,7 @@ in
       # Splicing Linux headers as a build dependency selects native syscall
       # numbers. Cross compilation uses the target sysroot and bindgen flags.
       ++ lib.optionals (!isLinuxCross) [linux-headers]
-      ++ [cmake gnumake]
+      ++ [cmake buildMake]
       ++ lib.optionals isLinuxCross [buildPackages.libseccomp];
 
     cargoEnv = lib.optionalAttrs isLinuxCross {
