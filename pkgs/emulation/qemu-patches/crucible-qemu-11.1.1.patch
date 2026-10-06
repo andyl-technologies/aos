@@ -1,4 +1,4 @@
-From 250a6b448ea0901bef47955122a3d7db82ed5193 Mon Sep 17 00:00:00 2001
+From ee97d5506f9e2c38614fbdec732ea58dad89b0a4 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Sat, 3 Oct 2026 07:08:17 +0000
 Subject: [PATCH] Integrate deterministic execution and private fork I/O
@@ -48,6 +48,15 @@ Avoid accelerator identity lookups on cold TB paths while retaining the
 predicate result, active continuation, RR cursor and TB semantics.
 Exercise production genesis, resume, selection and VMState post-load
 bodies, exhaustive predicate cases, and the reversed-order negative.
+
+Classify the current accelerator instance once before publication and its
+initialization callback. Preserve exact sim display name matching, independent
+failed-init retries, nameless and early startup false results, reset and restore
+identity, fork inheritance, diagnostic names, and predicate operand order.
+Use the instance classification on icount, RR and fault mode predicates without
+changing timer effects, execution counts, scheduling or BQL fences. Exercise
+production init, getter and predicate bodies, all modes, inherited and custom
+class names, call-count and order assertions, and compiled causal negatives.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -139,6 +148,34 @@ index 00a400243f0b28d82ef3b8e825a1dc9d02bd2c65..46cced064cdaf8913c5efeab80e9856e
      g_free(acc_name);
  
      if (acc) {
+diff --git a/accel/accel-system.c b/accel/accel-system.c
+index 9176665202d2ba7613911882f4bfffcf7e6f92b2..37da92cd4affa94060db893faf85e263610c78c4 100644
+--- a/accel/accel-system.c
++++ b/accel/accel-system.c
+@@ -40,6 +40,9 @@ int accel_init_machine(AccelState *accel, MachineState *ms)
+ {
+     AccelClass *acc = ACCEL_GET_CLASS(accel);
+     int ret;
++
++    /* Callbacks may query the current mode as soon as it is published. */
++    accel->is_sim = acc->name && strcmp(acc->name, "sim") == 0;
+     ms->accelerator = accel;
+     *(acc->allowed) = true;
+     ret = acc->init_machine(accel, ms);
+@@ -58,6 +61,13 @@ AccelState *current_accel(void)
+     return current_machine->accelerator;
+ }
+ 
++bool current_accel_is_sim(void)
++{
++    AccelState *accel = current_machine ? current_machine->accelerator : NULL;
++
++    return accel && accel->is_sim;
++}
++
+ void accel_setup_post(MachineState *ms)
+ {
+     AccelState *accel = ms->accelerator;
 diff --git a/accel/tcg/atomic_template.h b/accel/tcg/atomic_template.h
 index f7924078f77d42edb4b491787969715e717e0989..ebee2217475d784c58fd67d6306e7b77d3f459e5 100644
 --- a/accel/tcg/atomic_template.h
@@ -1941,7 +1978,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..4b7b3f9e442a941df9ba23e4169a34a7
  
  uint8_t cpu_ldb_code_mmu(CPUArchState *env, vaddr addr,
 diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
-index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..d59c9b76f287a6aa8c8de0571a2deebb617d4148 100644
+index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..0e4b0c3b8e2dc618cd99ee9473a55bdd8a2b84b0 100644
 --- a/accel/tcg/icount-common.c
 +++ b/accel/tcg/icount-common.c
 @@ -24,11 +24,18 @@
@@ -2009,7 +2046,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..d59c9b76f287a6aa8c8de0571a2deebb
 +bool icount_crucible_sim_mode(void)
 +{
 +    return use_icount == ICOUNT_PRECISE &&
-+           strcmp(current_accel_name(), "sim") == 0;
++           current_accel_is_sim();
 +}
 +
 +
@@ -2033,7 +2070,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..d59c9b76f287a6aa8c8de0571a2deebb
  
 +uint64_t icount_crucible_rr_switch_quantum(void)
 +{
-+    if (strcmp(current_accel_name(), "sim") != 0) {
++    if (!current_accel_is_sim()) {
 +        return 0;
 +    }
 +    return crucible_rr_switch_quantum;
@@ -2974,7 +3011,7 @@ index 4313864d2c5d24e30dc1cfbcdf9a81eb7eb0e323..bcab8b991987caece86e5f7db7aa6f7c
  #include "exec/log.h"
  #include "exec/page-protection.h"
 diff --git a/accel/tcg/tcg-accel-ops-icount.c b/accel/tcg/tcg-accel-ops-icount.c
-index d0f7b410fab3186f0359eed2b0c50dcab7d58b3e..4eddc0d431f87ebb53024eeec070253574bc649a 100644
+index d0f7b410fab3186f0359eed2b0c50dcab7d58b3e..ab3d984e1c76c500e35fe8cfd2cf747623a074b0 100644
 --- a/accel/tcg/tcg-accel-ops-icount.c
 +++ b/accel/tcg/tcg-accel-ops-icount.c
 @@ -27,6 +27,7 @@
@@ -3022,7 +3059,7 @@ index d0f7b410fab3186f0359eed2b0c50dcab7d58b3e..4eddc0d431f87ebb53024eeec0702535
 -            deadline = INT32_MAX;
 +        deadline_ps = qemu_clock_deadline_ps_all(QEMU_CLOCK_VIRTUAL,
 +                                                 QEMU_TIMER_ATTR_ALL);
-+        if (strcmp(current_accel_name(), "sim") != 0 ||
++        if (!current_accel_is_sim() ||
 +            icount_enabled() != ICOUNT_PRECISE) {
 +            int64_t realtime_ns = qemu_clock_deadline_ns_all(
 +                QEMU_CLOCK_REALTIME, QEMU_TIMER_ATTR_ALL);
@@ -3087,7 +3124,7 @@ index d0f7b410fab3186f0359eed2b0c50dcab7d58b3e..4eddc0d431f87ebb53024eeec0702535
 +            limit = icount_get_limit();
 +        }
 +        if (limit <= 0) {
-+            if (strcmp(current_accel_name(), "sim") == 0 &&
++            if (current_accel_is_sim() &&
 +                icount_enabled() == ICOUNT_PRECISE) {
 +                return 0;
 +            }
@@ -3126,7 +3163,7 @@ index d0f7b410fab3186f0359eed2b0c50dcab7d58b3e..4eddc0d431f87ebb53024eeec0702535
  
 -    cpu->icount_budget = MIN(icount_get_limit(), cpu_budget);
 +    if (rr_switch_quantum != 0 && limit <= 0 &&
-+        (strcmp(current_accel_name(), "sim") != 0 ||
++        (!current_accel_is_sim() ||
 +         icount_enabled() != ICOUNT_PRECISE)) {
 +        cpu->icount_budget = cpu_budget;
 +    } else {
@@ -3195,7 +3232,7 @@ index 16a301b6dc0ba515ecbc4073b28968f0a0604d14..b74307a0ba8684fe0c68fcfe5817fcc2
  
 diff --git a/accel/tcg/tcg-accel-ops-preemption.c b/accel/tcg/tcg-accel-ops-preemption.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..64a0a5db661128340846bd948505d7aa18e5641f
+index 0000000000000000000000000000000000000000..76140d303d1b89512472ebc4f0d0577a1472a20c
 --- /dev/null
 +++ b/accel/tcg/tcg-accel-ops-preemption.c
 @@ -0,0 +1,302 @@
@@ -3336,7 +3373,7 @@ index 0000000000000000000000000000000000000000..64a0a5db661128340846bd948505d7aa
 +
 +static bool crucible_sim_preemption_mode(void)
 +{
-+    return strcmp(current_accel_name(), "sim") == 0 &&
++    return current_accel_is_sim() &&
 +           icount_enabled() == ICOUNT_PRECISE &&
 +           icount_crucible_rr_switch_quantum() != 0 &&
 +           crucible_sim_shmem_dispatch_registered();
@@ -3502,7 +3539,7 @@ index 0000000000000000000000000000000000000000..64a0a5db661128340846bd948505d7aa
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118082d7f100dd7655e57e28b55418d294..e7bfee229a4f79126d2ca94b6e6ae21be0bdec8a 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..f40ceb6734858ff52312074a3459c90cbf3011cf 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
 @@ -27,45 +27,1814 @@
@@ -4379,7 +4416,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..e7bfee229a4f79126d2ca94b6e6ae21b
 +
 +static bool rr_crucible_sim_mode(void)
 +{
-+    return strcmp(current_accel_name(), "sim") == 0 &&
++    return current_accel_is_sim() &&
 +           icount_enabled() == ICOUNT_PRECISE;
 +}
 +
@@ -5352,7 +5389,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..e7bfee229a4f79126d2ca94b6e6ae21b
  
  static void rr_start_kick_timer(void)
  {
-+    if (strcmp(current_accel_name(), "sim") == 0) {
++    if (current_accel_is_sim()) {
 +        /*
 +         * Sim mode rotates vCPUs deterministically via rr_switch_quantum;
 +         * the stock virtual-time kick timer is redundant and would inject
@@ -55276,6 +55313,20 @@ index f0c7ee7542c24507f13787e57d3098db1fecf5d1..be1da32bd91c649e9b5c2271fd727cf7
      bool (*cpu_thread_is_idle)(CPUState *cpu);
  
      /**
+diff --git a/include/accel/accel-ops.h b/include/accel/accel-ops.h
+index 9f3f329c448dd0f59998b02641a85dda96d4d152..4664a40da7afdead4db6ec573ed29a5c2e38ddc3 100644
+--- a/include/accel/accel-ops.h
++++ b/include/accel/accel-ops.h
+@@ -15,6 +15,9 @@ struct AccelState {
+     Object parent_obj;
+ 
+     AccelGdbConfig gdbstub;
++
++    /* Exact class-name classification, immutable after system publication. */
++    bool is_sim;
+ };
+ 
+ struct AccelClass {
 diff --git a/include/block/block-global-state.h b/include/block/block-global-state.h
 index ed89999f0fbcb5cf6792964d671b00f9b9d4ab51..9984a888684bf6cf420ab1992f1662a52c26c860 100644
 --- a/include/block/block-global-state.h
@@ -60370,6 +60421,27 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..3ccf8615b0e87c58b038b7b9e4ea9872
  /**
   * qemu_plugin_scoreboard_new() - alloc a new scoreboard
   *
+diff --git a/include/qemu/accel.h b/include/qemu/accel.h
+index 6f65f1cb89a0dbd3d4a0ef1766c4e06e59fffb7e..8d6cafe7b71144a9e3c9d8849f4bbe94e74d3ea3 100644
+--- a/include/qemu/accel.h
++++ b/include/qemu/accel.h
+@@ -45,6 +45,16 @@ AccelClass *accel_find(const char *opt_name);
+ AccelState *current_accel(void);
+ const char *current_accel_name(void);
+ 
++/**
++ * current_accel_is_sim:
++ *
++ * Returns whether the current system accelerator has the exact name "sim".
++ * Returns false while there is no current machine or accelerator, or its
++ * class has no name. The instance classification survives reset, VMState
++ * restore and process fork.
++ */
++bool current_accel_is_sim(void);
++
+ void accel_init_interfaces(AccelClass *ac);
+ 
+ int accel_init_machine(AccelState *accel, MachineState *ms);
 diff --git a/include/qemu/aio.h b/include/qemu/aio.h
 index e65e90093a73aa3f917361ee6b543a6c0fed94fa..f289348cd06a6b88ca219d312403386776d22974 100644
 --- a/include/qemu/aio.h
@@ -81101,7 +81173,7 @@ index 0000000000000000000000000000000000000000..72b2a1320db867cae97f384a2e47c167
 +}
 diff --git a/plugins/crucible-fault-clock.c b/plugins/crucible-fault-clock.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..22402cb4b2fd35318ab38e75908ef93d6cfceec1
+index 0000000000000000000000000000000000000000..4eb0540ef5f26a902381bd985e7e0e4410800034
 --- /dev/null
 +++ b/plugins/crucible-fault-clock.c
 @@ -0,0 +1,4640 @@
@@ -81281,7 +81353,7 @@ index 0000000000000000000000000000000000000000..22402cb4b2fd35318ab38e75908ef93d
 +
 +static bool crucible_clock_mode(void)
 +{
-+    return strcmp(current_accel_name(), "sim") == 0 &&
++    return current_accel_is_sim() &&
 +           icount_enabled() == ICOUNT_PRECISE;
 +}
 +
@@ -93789,7 +93861,7 @@ index 0000000000000000000000000000000000000000..956059d73495bbe1aacf19550ebe19b1
 +}
 diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..86710650697f08f69254251b9bd8f41b30facaef
+index 0000000000000000000000000000000000000000..d1688c26f255a2a2da2e22320bd47e8cace5e0da
 --- /dev/null
 +++ b/plugins/crucible-fault-lifecycle.c
 @@ -0,0 +1,2764 @@
@@ -93993,7 +94065,7 @@ index 0000000000000000000000000000000000000000..86710650697f08f69254251b9bd8f41b
 +
 +static bool crucible_lifecycle_mode(void)
 +{
-+    return strcmp(current_accel_name(), "sim") == 0 &&
++    return current_accel_is_sim() &&
 +           icount_enabled() == ICOUNT_PRECISE;
 +}
 +
@@ -97961,7 +98033,7 @@ index 0000000000000000000000000000000000000000..4e4c1457c80b594038357e0ca8c10231
 +}
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..6318723d6670ae8460d75d7709d3cdfb262c376c
+index 0000000000000000000000000000000000000000..b5599d5f163ee54fc234535b41dfc835417e83c9
 --- /dev/null
 +++ b/plugins/crucible-fault-node.c
 @@ -0,0 +1,13200 @@
@@ -107023,7 +107095,7 @@ index 0000000000000000000000000000000000000000..6318723d6670ae8460d75d7709d3cdfb
 +bool qemu_crucible_fault_memory_rules_active(void)
 +{
 +    if (crucible_memory_recursive || !crucible_node_rules ||
-+        strcmp(current_accel_name(), "sim") != 0 ||
++        !current_accel_is_sim() ||
 +        icount_enabled() != ICOUNT_PRECISE) {
 +        return false;
 +    }
@@ -112519,7 +112591,7 @@ index 0000000000000000000000000000000000000000..1fb9a26a6625b76db01a04b2e7614a95
 +}
 diff --git a/plugins/crucible-fault-vcpu-service.c b/plugins/crucible-fault-vcpu-service.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..2460175df1e5e74a5f3807e2d9f203d28e1e89fa
+index 0000000000000000000000000000000000000000..fdfa46c14e970b71817c656df1f8b9c49eed4dcd
 --- /dev/null
 +++ b/plugins/crucible-fault-vcpu-service.c
 @@ -0,0 +1,1484 @@
@@ -112602,7 +112674,7 @@ index 0000000000000000000000000000000000000000..2460175df1e5e74a5f3807e2d9f203d2
 +
 +static bool crucible_vcpu_service_mode(void)
 +{
-+    return strcmp(current_accel_name(), "sim") == 0 &&
++    return current_accel_is_sim() &&
 +           icount_enabled() == ICOUNT_PRECISE &&
 +           icount_crucible_rr_switch_quantum() != 0;
 +}
@@ -151625,6 +151697,701 @@ index aa1f719b08169025f3d9f9f0fd82113d27325c78..cfa736135e6e2e50cd1bab20a17004d2
      if (g_test_perf()) {
          g_test_add_func("/perf/lifecycle", perf_lifecycle);
          g_test_add_func("/perf/nesting", perf_nesting);
+diff --git a/tests/unit/test-crucible-accel-classification.py b/tests/unit/test-crucible-accel-classification.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..366ef97f0e0a216dab6e63b61f14c86253b423e3
+--- /dev/null
++++ b/tests/unit/test-crucible-accel-classification.py
+@@ -0,0 +1,689 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Exercise instance classification and hot mode predicates from production.
++
++The unchanged production declarations, initialization/getter and predicate bodies
++run against bounded QOM, machine, CPU, timer, replay and fault-registry providers.
++A real fork checks inherited instance memory. Reset and restore only model the
++unchanged accelerator identity; this does not execute native reset, migration,
++QOM registration, a translated guest, scheduling or a full emulator build.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import runpy
++import shlex
++import subprocess
++
++
++ROOT = Path(__file__).resolve().parents[2]
++definition = runpy.run_path(str(Path(__file__).with_name(
++    "test-crucible-net-output-stop.py")))["definition"]
++
++PRELUDE = r"""
++#include <assert.h>
++#include <limits.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/wait.h>
++#include <unistd.h>
++
++typedef struct AccelState AccelState;
++typedef struct AccelClass AccelClass;
++typedef struct MachineState MachineState;
++typedef struct AccelOpsClass AccelOpsClass;
++typedef struct Error Error;
++typedef struct AddressSpace AddressSpace;
++typedef struct GString GString;
++typedef struct GPtrArray GPtrArray;
++typedef uint64_t hwaddr;
++
++typedef struct ObjectClass {
++    bool sim_ancestor;
++} ObjectClass;
++
++typedef struct Object {
++    AccelClass *klass;
++} Object;
++
++typedef struct BoundedICountDecrement {
++    struct {
++        uint16_t low;
++    } u16;
++} BoundedICountDecrement;
++
++typedef struct CPUState {
++    struct CPUState *next;
++    struct {
++        BoundedICountDecrement icount_decr;
++    } neg;
++    int64_t icount_extra, icount_budget;
++} CPUState;
++
++/* PRODUCTION_DECLARATIONS */
++
++struct MachineState {
++    AccelState *accelerator;
++};
++
++bool current_accel_is_sim(void);
++AccelState *current_accel(void);
++const char *current_accel_name(void);
++int accel_init_machine(AccelState *, MachineState *);
++bool icount_crucible_sim_mode(void);
++uint64_t icount_crucible_rr_switch_quantum(void);
++int64_t icount_percpu_budget(int);
++bool qemu_crucible_fault_memory_rules_active(void);
++
++static MachineState *current_machine;
++static AccelState *initializing;
++static unsigned int class_reads, name_reads, mode_reads, callbacks, unrefs;
++static unsigned int compat_sets;
++static bool callback_expected;
++static int callback_status;
++static bool recording = true;
++static char trace[256];
++static size_t trace_length;
++
++static void event(char value)
++{
++    if (recording) {
++        assert(trace_length + 1 < sizeof(trace));
++        trace[trace_length++] = value;
++        trace[trace_length] = 0;
++    }
++}
++
++static void clear_trace(void)
++{
++    trace_length = 0;
++    trace[0] = 0;
++}
++
++static void expect_trace(const char *expected)
++{
++    if (strcmp(trace, expected)) {
++        fprintf(stderr, "trace '%s', expected '%s'\n", trace, expected);
++        assert(!"production predicate/provider order changed");
++    }
++    clear_trace();
++}
++
++static AccelClass *object_get_class(AccelState *accel)
++{
++    class_reads++;
++    event('Q');
++    assert(accel);
++    return accel->parent_obj.klass;
++}
++
++#define OBJECT_GET_CLASS(type, obj, name) object_get_class(obj)
++#define TYPE_ACCEL "accel"
++/* PRODUCTION_CLASS_MACRO */
++#define OBJECT(obj) (&(obj)->parent_obj)
++
++static int counted_strcmp(const char *, const char *) __attribute__((unused));
++static int counted_strcmp(const char *left, const char *right)
++{
++    name_reads++;
++    event('S');
++    if (initializing) {
++        /* Classification must precede publication, not just its callback. */
++        assert(current_machine->accelerator != initializing);
++    }
++    return strcmp(left, right);
++}
++#define strcmp counted_strcmp
++
++static void object_unref(Object *object)
++{
++    event('U');
++    unrefs++;
++    assert(!current_machine->accelerator);
++    assert(!*object->klass->allowed);
++}
++
++static void object_set_accelerator_compat_props(GPtrArray *properties)
++{
++    event('P');
++    compat_sets++;
++    assert(properties == current_machine->accelerator->parent_obj.klass->compat_props);
++}
++
++/* PRODUCTION_ACCEL_BODIES */
++
++static bool counted_mode_query(void)
++{
++    mode_reads++;
++    event('G');
++    return current_accel_is_sim();
++}
++#define current_accel_is_sim counted_mode_query
++
++static int init_callback(AccelState *accel, MachineState *machine)
++{
++    event('I');
++    callbacks++;
++    initializing = NULL;
++    assert(machine->accelerator == accel);
++    assert(*accel->parent_obj.klass->allowed);
++    assert(current_accel_is_sim() == callback_expected);
++    return callback_status;
++}
++
++static void *object_dynamic_cast(Object *object, const char *type)
++{
++    assert(!memcmp(type, "sim-accel", sizeof("sim-accel")));
++    return object->klass->parent_class.sim_ancestor ? object : NULL;
++}
++
++static ICountMode use_icount;
++static uint64_t crucible_rr_switch_quantum = 5;
++
++static int icount_enabled(void)
++{
++    event('E');
++    return use_icount;
++}
++
++static bool crucible_sim_shmem_dispatch_registered(void)
++{
++    event('D');
++    return true;
++}
++
++static bool crucible_memory_recursive;
++static void *crucible_node_rules;
++typedef struct BoundedIndex {
++    unsigned int len;
++} BoundedIndex;
++static BoundedIndex gpa_index, gva_index;
++static BoundedIndex *crucible_memory_gpa_index = &gpa_index;
++static BoundedIndex *crucible_memory_gva_index = &gva_index;
++static void *unused_index;
++
++#define MIN(a, b) ((a) < (b) ? (a) : (b))
++#define QEMU_CLOCK_VIRTUAL 1
++#define QEMU_CLOCK_REALTIME 2
++#define QEMU_TIMER_ATTR_ALL 7
++#define REPLAY_MODE_PLAY 1
++#define CRUCIBLE_SIM_TICKS_PER_INSTRUCTION 50
++#define PICOSECONDS_PER_NANOSECOND 1000
++static int replay_mode;
++static int64_t virtual_deadline = 2000;
++static int64_t realtime_deadline = 100;
++static int64_t replay_instructions = 9;
++
++static int64_t qemu_clock_deadline_ps_all(int clock, int attributes)
++{
++    assert(clock == QEMU_CLOCK_VIRTUAL && attributes == QEMU_TIMER_ATTR_ALL);
++    event('V');
++    return virtual_deadline;
++}
++
++static int64_t qemu_clock_deadline_ns_all(int clock, int attributes)
++{
++    assert(clock == QEMU_CLOCK_REALTIME && attributes == QEMU_TIMER_ATTR_ALL);
++    event('R');
++    return realtime_deadline;
++}
++
++static int64_t qemu_soonest_timeout(int64_t first, int64_t second)
++{
++    event('N');
++    return first < 0 ? second : MIN(first, second);
++}
++
++static int64_t icount_round_ps(int64_t value)
++{
++    event('O');
++    return value / 1000;
++}
++
++static int64_t replay_get_instructions(void)
++{
++    event('Y');
++    return replay_instructions;
++}
++
++static uint64_t icount_crucible_rr_cursor_position(void)
++{
++    event('J');
++    return 2;
++}
++
++static void icount_handle_deadline(void)
++{
++    event('H');
++}
++
++static void replay_mutex_lock(void)
++{
++    event('L');
++}
++
++static void bql_lock(void)
++{
++    event('B');
++}
++
++static void icount_notify_aio_contexts(void)
++{
++    event('A');
++}
++
++static void bql_unlock(void)
++{
++    event('b');
++}
++#define g_assert assert
++#define g_error(...) abort()
++
++static CPUState first = { 0 }, second = { 0 };
++static CPUState *first_cpu = &first;
++static int timer;
++static int *rr_kick_vcpu_timer;
++static bool pending;
++#define CPU_NEXT(cpu) ((cpu)->next)
++#define TCG_KICK_PERIOD 100
++
++static void rr_kick_thread(void *opaque)
++{
++    assert(!opaque);
++}
++
++static int *timer_new_ns(int clock, void (*callback)(void *), void *opaque)
++{
++    event('T');
++    assert(clock == QEMU_CLOCK_VIRTUAL && callback == rr_kick_thread && !opaque);
++    return &timer;
++}
++
++static bool timer_pending(int *value)
++{
++    event('p');
++    assert(value == &timer);
++    return pending;
++}
++
++static bool timer_mod_after_ns(int *value, int period)
++{
++    event('M');
++    assert(value == &timer && period == TCG_KICK_PERIOD);
++    pending = true;
++    return true;
++}
++
++/* PRODUCTION_PREDICATES */
++"""
++
++CHECKS = r"""
++static void initialize(AccelState *accel, MachineState *machine,
++                       bool expected, int status)
++{
++    current_machine = machine;
++    callback_expected = expected;
++    callback_status = status;
++    initializing = accel;
++    clear_trace();
++    assert(accel_init_machine(accel, machine) == status);
++    initializing = NULL;
++    if (accel->parent_obj.klass->name) {
++        expect_trace(status < 0 ? "QSIGU" : "QSIGP");
++    } else {
++        expect_trace(status < 0 ? "QIGU" : "QIGP");
++    }
++    assert(current_accel_is_sim() == (status >= 0 && expected));
++    expect_trace("G");
++}
++
++static void lifecycle_checks(void)
++{
++    bool sim_allowed = false, tcg_allowed = false;
++    AccelClass sim = { .name = "sim", .allowed = &sim_allowed,
++                       .init_machine = init_callback };
++    AccelClass tcg = { .name = "tcg", .allowed = &tcg_allowed,
++                       .init_machine = init_callback };
++    sim.parent_class.sim_ancestor = true;
++    MachineState machine = { 0 }, alternate = { 0 };
++    AccelState failed = { .parent_obj.klass = &sim };
++    AccelState ordinary = { .parent_obj.klass = &tcg };
++    AccelState again = { .parent_obj.klass = &sim };
++
++    current_machine = NULL;
++    assert(!current_accel_is_sim());
++    current_machine = &machine;
++    assert(!current_accel_is_sim());
++    clear_trace();
++
++    initialize(&failed, &machine, true, -7);
++    assert(!machine.accelerator && !sim_allowed && unrefs == 1);
++    initialize(&ordinary, &machine, false, 0);
++    assert(current_accel() == &ordinary);
++    initialize(&again, &alternate, true, 0);
++
++    /* Machine identity changes expose accidental cross-instance global state. */
++    current_machine = &machine;
++    assert(!current_accel_is_sim());
++    current_machine = &alternate;
++    assert(current_accel_is_sim());
++    clear_trace();
++
++    /* Reset/VMState leave the audited instance identity intact. */
++    AccelState *identity = alternate.accelerator;
++    use_icount = ICOUNT_DISABLED;
++    assert(current_accel_is_sim());
++    use_icount = ICOUNT_PRECISE;
++    assert(current_accel_is_sim() && alternate.accelerator == identity);
++    clear_trace();
++
++    pid_t child = fork();
++    assert(child >= 0);
++    if (!child) {
++        assert(current_accel_is_sim());
++        assert(alternate.accelerator == identity);
++        current_machine = &machine;
++        assert(!current_accel_is_sim());
++        _exit(0);
++    }
++    int status;
++    assert(waitpid(child, &status, 0) == child);
++    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
++
++    bool nameless_allowed = false;
++    AccelClass nameless = { .allowed = &nameless_allowed,
++                            .init_machine = init_callback };
++    AccelState no_name = { .parent_obj.klass = &nameless, .is_sim = true };
++    MachineState unnamed_machine = { 0 };
++    initialize(&no_name, &unnamed_machine, false, 0);
++    assert(nameless_allowed && current_accel() == &no_name);
++    assert(current_accel_name() == NULL);
++    expect_trace("Q");
++    assert(callbacks == 4 && compat_sets == 3);
++    puts("PASS production accel classification: callback-first query, initialized nameless class, failed init/retry, sim/tcg/sim instance isolation, identity continuity and native fork");
++}
++
++static void mode_matrix(void)
++{
++    const char *names[] = { NULL, "other", "sim", "tcg", "Sim", "sim-extra",
++                            "xsim", "", "sim ", "simulation", "QTest", "Nitro",
++                            "WHPX", "KVM", "MSHV", "HVF", "Xen" };
++    unsigned int cases = 0;
++
++    for (size_t name = 0; name < sizeof(names) / sizeof(names[0]); name++) {
++        for (unsigned int ancestry = 0; ancestry < 2; ancestry++) {
++            bool allowed = false;
++            AccelClass klass = { .name = names[name], .allowed = &allowed,
++                                  .init_machine = init_callback };
++            klass.parent_class.sim_ancestor = ancestry;
++            AccelState accel = { .parent_obj.klass = &klass };
++            MachineState machine = { 0 };
++            bool sim = name == 2;
++
++            current_machine = &machine;
++            if (names[name]) {
++                initialize(&accel, &machine, sim, 0);
++            }
++            for (int mode = ICOUNT_DISABLED; mode <= ICOUNT_ADAPTATIVE; mode++) {
++                use_icount = mode;
++                bool precise = mode == ICOUNT_PRECISE;
++                clear_trace();
++                assert(icount_crucible_sim_mode() == (sim && precise));
++                expect_trace(precise ? "G" : "");
++                assert(rr_crucible_sim_mode() == (sim && precise));
++                expect_trace(sim ? "GE" : "G");
++                assert(crucible_clock_mode() == (sim && precise));
++                expect_trace(sim ? "GE" : "G");
++                assert(crucible_lifecycle_mode() == (sim && precise));
++                expect_trace(sim ? "GE" : "G");
++                assert(icount_crucible_rr_switch_quantum() == (sim ? 5 : 0));
++                expect_trace("G");
++                assert(crucible_vcpu_service_mode() == (sim && precise));
++                expect_trace(sim ? (precise ? "GEG" : "GE") : "G");
++                assert(crucible_sim_preemption_mode() == (sim && precise));
++                expect_trace(sim ? (precise ? "GEGD" : "GE") : "G");
++
++                crucible_node_rules = &unused_index;
++                gpa_index.len = 1;
++                assert(qemu_crucible_fault_memory_rules_active() == (sim && precise));
++                expect_trace(sim ? "GE" : "G");
++                crucible_memory_recursive = true;
++                assert(!qemu_crucible_fault_memory_rules_active());
++                expect_trace("");
++                crucible_memory_recursive = false;
++                crucible_node_rules = NULL;
++                assert(!qemu_crucible_fault_memory_rules_active());
++                expect_trace("");
++
++                rr_kick_vcpu_timer = NULL;
++                first.next = &second;
++                pending = false;
++                rr_start_kick_timer();
++                assert((rr_kick_vcpu_timer != NULL) == !sim);
++                expect_trace(sim ? "G" : "GTpM");
++                rr_start_kick_timer();
++                expect_trace(sim ? "G" : "Gp");
++                pending = false;
++                rr_start_kick_timer();
++                expect_trace(sim ? "G" : "GpM");
++                rr_kick_vcpu_timer = NULL;
++                first.next = NULL;
++                rr_start_kick_timer();
++                expect_trace("G");
++
++                const char *limit_trace = sim && precise ? "GV" :
++                    precise ? "GVGRNOO" : sim ? "VGERNOO" : "VGRNOO";
++                assert(icount_get_limit() == (sim && precise ? 40 : 2));
++                expect_trace(limit_trace);
++                assert(icount_percpu_budget(2) == (sim ? (precise ? 3 : 2) : 1));
++                char budget_trace[64];
++                snprintf(budget_trace, sizeof(budget_trace), "%sGJ", limit_trace);
++                expect_trace(budget_trace);
++
++                CPUState cpu = { 0 };
++                icount_prepare_for_run_locked(&cpu, 4, false);
++                assert(cpu.icount_budget == (sim && precise ? 4 : 2));
++                assert(cpu.neg.icount_decr.u16.low == cpu.icount_budget);
++                assert(cpu.icount_extra == 0);
++                char prepare_trace[64];
++                snprintf(prepare_trace, sizeof(prepare_trace), "GL%s", limit_trace);
++                expect_trace(prepare_trace);
++                cases++;
++            }
++        }
++    }
++    assert(cases == 102);
++    puts("PASS production accel classification: 102 none/sim/tcg/concrete/arbitrary-name, inheritance and precise/adaptive/off cases retain exact query order, budgets and timer effects");
++}
++
++static void deadline_and_hot_queries(void)
++{
++    bool allowed = false;
++    AccelClass klass = { .name = "sim", .allowed = &allowed,
++                          .init_machine = init_callback };
++    AccelState accel = { .parent_obj.klass = &klass };
++    MachineState machine = { 0 };
++    initialize(&accel, &machine, true, 0);
++    use_icount = ICOUNT_PRECISE;
++    virtual_deadline = 0;
++    clear_trace();
++    assert(icount_percpu_budget(2) == 0);
++    expect_trace("GVGJHGVGE");
++    CPUState cpu = { 0 };
++    icount_prepare_for_run_locked(&cpu, 4, true);
++    assert(cpu.icount_budget == 0 && cpu.icount_extra == 0);
++    expect_trace("GGVGEBAb");
++
++    realtime_deadline = 0;
++    for (int mode = ICOUNT_DISABLED; mode <= ICOUNT_ADAPTATIVE; mode++) {
++        if (mode == ICOUNT_PRECISE) {
++            continue;
++        }
++        use_icount = mode;
++        assert(icount_percpu_budget(2) == 3);
++        expect_trace("VGERNOOGJHVGERNOOGE");
++        CPUState ordinary = { 0 };
++        icount_prepare_for_run_locked(&ordinary, 4, true);
++        assert(ordinary.icount_budget == 4);
++        assert(ordinary.neg.icount_decr.u16.low == 4);
++        assert(ordinary.icount_extra == 0);
++        expect_trace("GVGERNOOGE");
++    }
++    realtime_deadline = 100;
++    use_icount = ICOUNT_PRECISE;
++
++    crucible_rr_switch_quantum = 0;
++    assert(!crucible_vcpu_service_mode());
++    expect_trace("GEG");
++    assert(!crucible_sim_preemption_mode());
++    expect_trace("GEG");
++    crucible_rr_switch_quantum = 5;
++
++    replay_mode = REPLAY_MODE_PLAY;
++    assert(icount_get_limit() == 9);
++    expect_trace("Y");
++    replay_mode = 0;
++    virtual_deadline = -1;
++    assert(icount_get_limit() == INT32_MAX);
++    expect_trace("GV");
++    virtual_deadline = 2000;
++
++    unsigned int old_classes = class_reads, old_names = name_reads;
++    crucible_node_rules = &unused_index;
++    gpa_index.len = 1;
++    recording = false;
++    for (unsigned int query = 0; query < 10000; query++) {
++        assert(current_accel_is_sim());
++        assert(icount_crucible_sim_mode());
++        assert(rr_crucible_sim_mode());
++        assert(crucible_clock_mode());
++        assert(crucible_lifecycle_mode());
++        assert(crucible_vcpu_service_mode());
++        assert(crucible_sim_preemption_mode());
++        assert(qemu_crucible_fault_memory_rules_active());
++        rr_start_kick_timer();
++    }
++    recording = true;
++    assert(class_reads == old_classes && name_reads == old_names);
++    assert(!memcmp(current_accel_name(), "sim", sizeof("sim")));
++    expect_trace("Q");
++    assert(class_reads == old_classes + 1 && name_reads == old_names);
++    puts("PASS production accel classification: zero-deadline/replay paths and 90000 hot calls retain effects without repeated QOM casts or name comparisons");
++}
++
++int main(void)
++{
++    lifecycle_checks();
++    mode_matrix();
++    deadline_and_hot_queries();
++    return 0;
++}
++"""
++
++
++def source_range(source, start, end):
++    """Extract a declaration group without modifying its text."""
++    return source[source.index(start):source.index(end)]
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--negative-control", choices=[
++        "publication-order", "callback-order", "shared-classification",
++        "stale-retry", "superclass-match", "repeated-name-query",
++        "predicate-order"])
++    arguments = parser.parse_args()
++    arguments.output_dir.mkdir(parents=True, exist_ok=True)
++    accel_header = (ROOT / "include/qemu/accel.h").read_text()
++    ops = (ROOT / "include/accel/accel-ops.h").read_text()
++    icount_header = (ROOT / "include/exec/icount.h").read_text()
++    declarations = "\n\n".join([
++        source_range(icount_header, "typedef enum {", "/* Ordinary -icount"),
++        source_range(accel_header, "typedef struct AccelGdbConfig {",
++                     "bool accel_supports_guest_debug"),
++        source_range(ops, "struct AccelState {", "#endif"),
++    ])
++    system = (ROOT / "accel/accel-system.c").read_text()
++    common = (ROOT / "accel/accel-common.c").read_text()
++    bodies = "\n\n".join([
++        definition(system, "int accel_init_machine("),
++        definition(system, "AccelState *current_accel("),
++        definition(system, "bool current_accel_is_sim("),
++        definition(common, "const char *current_accel_name("),
++    ])
++    classification = '    accel->is_sim = acc->name && strcmp(acc->name, "sim") == 0;'
++    assert bodies.count(classification) == 1
++    negative = arguments.negative_control
++    if negative in {"publication-order", "callback-order"}:
++        bodies = bodies.replace(classification + "\n", "")
++        anchor = ('    ms->accelerator = accel;' if negative == "publication-order"
++                  else '    ret = acc->init_machine(accel, ms);')
++        bodies = bodies.replace(anchor, anchor + "\n" + classification)
++    elif negative == "shared-classification":
++        bodies = 'static bool shared_sim;\n' + bodies.replace(
++            classification, classification + '\n    shared_sim = accel->is_sim;')
++        bodies = bodies.replace('return accel && accel->is_sim;',
++                                'return accel && shared_sim;')
++    elif negative == "stale-retry":
++        bodies = bodies.replace(classification,
++            '    static bool classified;\n    if (!classified) {\n' + classification +
++            '\n        classified = true;\n    }')
++    elif negative == "superclass-match":
++        # Preserve classification-provider effects so the negative exposes
++        # incorrect ancestry semantics rather than a missing comparison trace.
++        bodies = bodies.replace(classification,
++            '    accel->is_sim = acc->name &&\n'
++            '        (strcmp(acc->name, "sim"),\n'
++            '         object_dynamic_cast(OBJECT(accel), "sim-accel")) != NULL;')
++    elif negative == "repeated-name-query":
++        bodies = bodies.replace('return accel && accel->is_sim;',
++            'return accel && strcmp(ACCEL_GET_CLASS(accel)->name, "sim") == 0;')
++    predicates = []
++    for file, signatures in [
++        ("accel/tcg/icount-common.c", ["bool icount_crucible_sim_mode(",
++                                     "uint64_t icount_crucible_rr_switch_quantum("]),
++        ("accel/tcg/tcg-accel-ops-rr.c", ["static bool rr_crucible_sim_mode(void)\n{",
++                                       "static void rr_start_kick_timer(void)\n{"]),
++        ("accel/tcg/tcg-accel-ops-preemption.c", ["static bool crucible_sim_preemption_mode("]),
++        ("plugins/crucible-fault-clock.c", ["static bool crucible_clock_mode("]),
++        ("plugins/crucible-fault-lifecycle.c", ["static bool crucible_lifecycle_mode("]),
++        ("plugins/crucible-fault-vcpu-service.c", ["static bool crucible_vcpu_service_mode("]),
++        ("plugins/crucible-fault-node.c", ["bool qemu_crucible_fault_memory_rules_active("]),
++        ("accel/tcg/tcg-accel-ops-icount.c", ["static int64_t icount_get_limit(",
++            "int64_t icount_percpu_budget(", "static void icount_prepare_for_run_locked("]),
++    ]:
++        source = (ROOT / file).read_text()
++        predicates.extend(definition(source, signature) for signature in signatures)
++    predicate_bodies = "\n\n".join(predicates)
++    if negative == "predicate-order":
++        predicate_bodies = predicate_bodies.replace(
++            'return current_accel_is_sim() &&\n           icount_enabled() == ICOUNT_PRECISE;',
++            'return icount_enabled() == ICOUNT_PRECISE &&\n           current_accel_is_sim();')
++    prelude = PRELUDE.replace("/* PRODUCTION_DECLARATIONS */", declarations)
++    class_macro = source_range(accel_header, "#define ACCEL_GET_CLASS(obj)",
++                               "AccelClass *accel_find")
++    prelude = prelude.replace("/* PRODUCTION_CLASS_MACRO */", class_macro)
++    prelude = prelude.replace("/* PRODUCTION_ACCEL_BODIES */",
++        'static void *object_dynamic_cast(Object *, const char *) __attribute__((unused));\n' + bodies)
++    prelude = prelude.replace("/* PRODUCTION_PREDICATES */", predicate_bodies)
++    generated = arguments.output_dir / "accel-classification.c"
++    generated.write_text(prelude + "\n" + CHECKS)
++    binary = arguments.output_dir / "accel-classification"
++    command = [os.environ.get("CC", "cc"),
++               *shlex.split(os.environ.get("CFLAGS", "")),
++               str(generated), "-o", str(binary),
++               *shlex.split(os.environ.get("LDFLAGS", ""))]
++    (arguments.output_dir / "compile-command.json").write_text(
++        json.dumps({"cwd": os.getcwd(), "argv": command}, indent=2) + "\n")
++    subprocess.run(command, check=True)
++    print("Compiled production accel classification fixture", flush=True)
++    subprocess.run([str(binary)], cwd=arguments.output_dir, check=True)
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-acpi-piix-fingerprint.c b/tests/unit/test-crucible-acpi-piix-fingerprint.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..4cfd97da94807463be4ce5d202b645672491972e
@@ -155881,7 +156648,7 @@ index 0000000000000000000000000000000000000000..8d80e3052d7c9a6b187e2f7095f7ab8e
 +    main()
 diff --git a/tests/unit/test-crucible-cold-fault-predicates.py b/tests/unit/test-crucible-cold-fault-predicates.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..e463b0cc66a91c9cf1bf509241612f841d6669c9
+index 0000000000000000000000000000000000000000..a52e32aabb49f817afba9fdeddbdc3f437f45aff
 --- /dev/null
 +++ b/tests/unit/test-crucible-cold-fault-predicates.py
 @@ -0,0 +1,685 @@
@@ -155968,10 +156735,10 @@ index 0000000000000000000000000000000000000000..e463b0cc66a91c9cf1bf509241612f84
 +static CPUState *current_cpu = (CPUState *)&flushes;
 +static CPUState *first_cpu = (CPUState *)&deadline_updates;
 +
-+static const char *current_accel_name(void)
++static bool current_accel_is_sim(void)
 +{
 +    accel_reads++;
-+    return accel_name;
++    return strcmp(accel_name, "sim") == 0;
 +}
 +
 +static int icount_enabled(void)
@@ -165935,7 +166702,7 @@ index 0000000000000000000000000000000000000000..ee2bb16e87d73feab53496231bcb3f46
 +}
 diff --git a/tests/unit/test-crucible-lazy-memory-identity.py b/tests/unit/test-crucible-lazy-memory-identity.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..9e64ac2c400b56793077d3f913f62e21ae82285e
+index 0000000000000000000000000000000000000000..83cdda957938561083fb96f51d773fad06b5e7cf
 --- /dev/null
 +++ b/tests/unit/test-crucible-lazy-memory-identity.py
 @@ -0,0 +1,421 @@
@@ -166019,10 +166786,10 @@ index 0000000000000000000000000000000000000000..9e64ac2c400b56793077d3f913f62e21
 +    uint32_t ordinal;
 +} received;
 +
-+static const char *current_accel_name(void)
++static bool current_accel_is_sim(void)
 +{
 +    accelerator_reads++;
-+    return accel;
++    return strcmp(accel, "sim") == 0;
 +}
 +
 +static int icount_enabled(void)
@@ -166362,10 +167129,10 @@ index 0000000000000000000000000000000000000000..9e64ac2c400b56793077d3f913f62e21
 +    main()
 diff --git a/tests/unit/test-crucible-lifecycle-projection.py b/tests/unit/test-crucible-lifecycle-projection.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..44a597e40e108dd747f6b15429cf7b58581d484e
+index 0000000000000000000000000000000000000000..72322337e9268bd8ff07cb55a376e392ee8668fd
 --- /dev/null
 +++ b/tests/unit/test-crucible-lifecycle-projection.py
-@@ -0,0 +1,324 @@
+@@ -0,0 +1,328 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise actual lifecycle encoders and custody rebind with bounded state.
 +
@@ -166446,7 +167213,11 @@ index 0000000000000000000000000000000000000000..44a597e40e108dd747f6b15429cf7b58
 +static int precision = ICOUNT_PRECISE;
 +static bool marker_pending;
 +
-+static const char *current_accel_name(void) { return accel; }
++static bool current_accel_is_sim(void)
++{
++    return strcmp(accel, "sim") == 0;
++}
++
 +static int icount_enabled(void) { return precision; }
 +static bool qemu_crucible_fault_lifecycle_ready_marker_pending(void)
 +{
@@ -169389,10 +170160,10 @@ index 0000000000000000000000000000000000000000..92f7e7b7c4fdbe109ae0754186357da2
 +    main()
 diff --git a/tests/unit/test-crucible-net-output-stop.py b/tests/unit/test-crucible-net-output-stop.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..bddd4d55d60bed1dca29cdd58c4ebebf6f82a2bb
+index 0000000000000000000000000000000000000000..2f8c065358238a2d4da1221cef0d3efdffa3f177
 --- /dev/null
 +++ b/tests/unit/test-crucible-net-output-stop.py
-@@ -0,0 +1,675 @@
+@@ -0,0 +1,681 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise production TX, VM-stop, clock completion, and RR parking bodies.
 +
@@ -169592,6 +170363,12 @@ index 0000000000000000000000000000000000000000..bddd4d55d60bed1dca29cdd58c4ebebf
 +static int64_t icount_get_raw(void) { return raw_icount; }
 +static uint64_t qemu_plugin_icount_raw(void) { return raw_icount; }
 +static const char *current_accel_name(void) { return accel; }
++
++static bool current_accel_is_sim(void)
++{
++    return strcmp(current_accel_name(), "sim") == 0;
++}
++
 +static bool qemu_tcg_mttcg_enabled(void) { return mttcg; }
 +static bool qemu_cpu_is_self(CPUState *target) { return self; }
 +static bool qemu_in_vcpu_thread(void) { return current_cpu != NULL; }
@@ -177589,10 +178366,10 @@ index 0000000000000000000000000000000000000000..22e321204c3443ea7d63c9329ea1208d
 +}
 diff --git a/tests/unit/test-crucible-snapshot-fast-path.py b/tests/unit/test-crucible-snapshot-fast-path.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..baf0281247c4f0d1c8c1871f60356ebef4430c64
+index 0000000000000000000000000000000000000000..9b0020ffe5b924aeb1544f62ee19c0e9201a0861
 --- /dev/null
 +++ b/tests/unit/test-crucible-snapshot-fast-path.py
-@@ -0,0 +1,366 @@
+@@ -0,0 +1,371 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise production snapshot continuation and RR restoration bodies.
 +
@@ -177663,6 +178440,11 @@ index 0000000000000000000000000000000000000000..baf0281247c4f0d1c8c1871f60356ebe
 +{
 +    accel_reads++;
 +    return accel_name;
++}
++
++static bool current_accel_is_sim(void)
++{
++    return strcmp(current_accel_name(), "sim") == 0;
 +}
 +
 +static int64_t icount_get_raw(void)
@@ -180554,10 +181336,10 @@ index 0000000000000000000000000000000000000000..7ad8b95b8a26a98d6dd2f9948f353df6
 +    main()
 diff --git a/tests/unit/test-crucible-vcpu-service-time.c b/tests/unit/test-crucible-vcpu-service-time.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..fdafa1613411f94c367055016735de55d7469f1c
+index 0000000000000000000000000000000000000000..fcaf79206b24b8b0c789097dfea173d06b437586
 --- /dev/null
 +++ b/tests/unit/test-crucible-vcpu-service-time.c
-@@ -0,0 +1,345 @@
+@@ -0,0 +1,350 @@
 +/*
 + * Crucible vCPU service instruction-to-tick accounting tests.
 + *
@@ -180614,6 +181396,11 @@ index 0000000000000000000000000000000000000000..fdafa1613411f94c367055016735de55
 +const char *current_accel_name(void)
 +{
 +    return test_accel;
++}
++
++bool current_accel_is_sim(void)
++{
++    return strcmp(test_accel, "sim") == 0;
 +}
 +
 +bool crucible_sim_shmem_dispatch_registered(void)
