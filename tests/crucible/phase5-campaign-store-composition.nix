@@ -201,6 +201,52 @@ in
               --lib "$recovery_test" -- --exact --test-threads=1
           done
 
+          # The public daemon exits at its original snapshot boundary only in
+          # this explicit feature build. Default builds omit the new control.
+          unset CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER
+          publication_test=write_back_interruption::public_write_back_snapshot_process_loss_retains_roots_and_retries
+          default_publication_listing=$(cargo test \
+            --frozen --offline --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-cli --test campaign_store_process \
+            "$publication_test" -- --exact --list)
+          if printf '%s\n' "$default_publication_listing" \
+            | grep -Fqx "$publication_test: test"; then
+            echo 'write-back fault control unexpectedly present without recovery feature' >&2
+            exit 1
+          fi
+          for public_write_back_test in \
+            "$publication_test" \
+            public_composed_store_flight_evicts_cache_and_flushes_write_back
+          do
+            publication_listing=$(cargo test \
+              --frozen --offline --target-dir "$target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-cli --features destructive-recovery-faults \
+              --test campaign_store_process "$public_write_back_test" -- --exact --list)
+            printf '%s\n' "$publication_listing" | grep -Fqx "$public_write_back_test: test"
+            publication_log="$TMPDIR/$public_write_back_test.log"
+            if ! cargo test \
+              --frozen --offline --target-dir "$target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-cli --features destructive-recovery-faults \
+              --test campaign_store_process "$public_write_back_test" \
+              -- --exact --nocapture --test-threads=1 > "$publication_log" 2>&1; then
+              cat "$publication_log" >&2
+              exit 1
+            fi
+            cat "$publication_log"
+            grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$publication_log"
+          done
+          grep -Fq 'write_back_uncommitted_snapshot_process_exit=86' \
+            "$TMPDIR/$publication_test.log"
+          grep -Fq 'write_back_pending_publication_roots_survive_public_gc=true' \
+            "$TMPDIR/$publication_test.log"
+          grep -Fq 'write_back_interrupted_publication_identical_recovery=true' \
+            "$TMPDIR/$publication_test.log"
+          grep -Fq 'write_back_process_recovery_all_pending_completed=true' \
+            "$TMPDIR/$publication_test.log"
+
           # Exercise daemon restart, durable transfer repair/retry, interrupted
           # journals, quota, cache, write-back roots, packed, and S3 global GC.
           for daemon_test in \

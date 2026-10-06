@@ -614,6 +614,10 @@ mod archive_transfer;
 #[path = "campaign_store_process/live_s3_product.rs"]
 mod live_s3_product;
 
+#[cfg(feature = "destructive-recovery-faults")]
+#[path = "campaign_store_process/write_back_interruption.rs"]
+mod write_back_interruption;
+
 struct FlightFixture {
     _temporary: TempDir,
     fixture: PathBuf,
