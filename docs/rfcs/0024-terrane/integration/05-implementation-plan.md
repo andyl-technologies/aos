@@ -1903,6 +1903,20 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   fail explicitly; declaration alone qualifies no implementation or task.
   The declaration's initial Nix run compiles, then exits 1 naming all eight
   missing cases. Registry completeness and both mandatory formatters pass.
+  The isolated mixed-view implementation now passes all eight exact cases,
+  including genuine complete disclosure with Legacy and Recorded-1 ancestry.
+  Its full Core run passes 674 of 674 tests with none skipped; strict all-target
+  Clippy, private rustdoc, no-default compilation and both formatters pass.
+  Application qualification compiles 111 executable targets across 29 packages
+  and 74 integration targets without running them. Both actual Nix inputs match
+  all 4,852 included tracked files. Earlier compiler and fixture failures remain
+  preserved; the positive Recorded-1 fixture uses a valid inert binding that
+  also passes the unchanged enclosing Recorded-3 comparison. Production
+  verification does not change to accommodate those fixture failures.
+  The reviewed nine-file source is preserved locally at `3ae281e69e65`.
+  Independent attribute-profile and captured-selection helpers separately pass
+  strict native/default/Send quality and all eight historical-index cases at
+  `649446a0e8a8`. Authoring admission and publication remain unfinished.
   T-DRV-2, ALG-32, task merges and T1 remain open.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
@@ -3010,6 +3024,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   a bounded reopen-boundary oracle correction still needs review and execution.
   The remaining five cases do not execute. The original full native suite
   stays red, and no task, milestone or checkbox advances.
+  After reviewing that reopen oracle, a subsequent owning run passes the first
+  eight deletion cases, including the actual fault prefixes, ownership handoff,
+  closed acknowledgment refusals and waiter recovery. The ninth fails on an
+  unsupported Note key in its fixture before reconciliation assertions; the
+  tenth does not execute. A test-only correction uses the existing supported
+  opaque profile Note family in both the publication and exact-record oracle.
+  The unchanged production source and corrected ten-case matrix are rerunning;
+  no full matrix or deletion gate result is inferred from the eight passes.
   The reviewed pure journal, marking, proof-context, checkpoint, retention and
   grace-window bodies now replace their trunk declarations. All 27 adopted
   paths, including 16 independent hexadecimal witnesses, match the qualified
@@ -3225,6 +3247,21 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Original failures and production deadlines remain unchanged. These results
   qualify only the isolated source; no task merge or checkbox advances. Fresh
   Recorded candidate admission and required index completion are separate.
+  A new complete native run with the reviewed measured scheduling changes
+  executes all 570 discovered cases: 569 pass, one publication expires and none
+  time out or skip. UUID `8e9bfc85-70b3-4373-857e-f1871fb9a236` takes
+  2,710.534 seconds on unchanged `a1ef041c2d6f`; all 4,840 source/configuration
+  guards match. The failed case is
+  `disclosure_projection_safe_index_rebuild_requires_current_attribute_producers`,
+  whose narrowed publication returns `Advance(Expired)` before its final
+  forbidden-producer read. The original full failure remains unqualified.
+  That unchanged case separately passes alone with existing phase tracing:
+  UUID `84cff25d-0c5d-45cf-871d-84de56302742`, 96.625 seconds, one pass and
+  569 deliberately filtered cases. Its narrowed publication dispatches at
+  20.238 seconds and reaches durable acknowledgment at 25.878 seconds from
+  the actual request origin, within unchanged C30. No corresponding trace
+  exists for the full-run failure, so this diagnostic establishes no cause
+  or timing fix and replaces neither failed full result.
   A shared `VerifiedHistory::append_verified` prerequisite now preserves
   completed disclosure boundaries, original root/bootstrap scopes and selected
   side records across history unions. Both public inputs must have completed
