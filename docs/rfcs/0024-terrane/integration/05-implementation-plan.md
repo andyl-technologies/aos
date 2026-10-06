@@ -665,7 +665,15 @@ checks. The corrected source uses the actual held Guard's independently retained
 Original state, including disclosure roles and public trust, while preserving
 protected snapshot, lineage, source, Original and full-profile checks. The original
 first case passes in 9.33 seconds after removing the diagnostic instrumentation.
-The remaining cases and complete gate are still being qualified.
+All twelve exact cases subsequently pass with zero ignored on the same frozen
+source, including genuine public fork publication with zero observed TreeNode
+gets, puts and validator decodes. Strict Clippy then identifies a large private
+enum and a complex tuple type; their reviewed representation repair preserves
+the qualification predicates. The successor passes default and Send Clippy and
+rustdoc but initially fails native Clippy on two fixture lock panics. Fallible
+fixture error propagation is under final qualification; the twelve-case owning
+check must pass on that final source. Source-preserving collection and the full
+`algebra-fork` gate remain pending.
 
 The test-only bucket observer records actual typed Node/Commit get and put
 attempts before catalog lookup, admission or deduplication. The same per-bucket
@@ -3192,7 +3200,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Every retained input and current/pair callback remains checked at each native
   handoff. The unchanged cancellation case now passes with zero ignored in
   183.78 seconds; all 4,848 actual hermetic input files independently match the
-  frozen source. Restore regressions and the complete deletion gate remain pending.
+  frozen source. Three focused restore regressions also pass with zero ignored:
+  actual sync/no-acknowledgment faults, current/pair handoffs and canceled workers.
+  The final source differs only by required test-module formatting and passes both
+  formatters, strict all-target Clippy and private rustdoc in default, Send and
+  native configurations, and application test-target compilation. All 4,848 files
+  in that actual quality input independently match the frozen source. The original
+  ten-case deletion check is running; its result and the complete gate remain
+  pending.
   The reviewed pure journal, marking, proof-context, checkpoint, retention and
   grace-window bodies now replace their trunk declarations. All 27 adopted
   paths, including 16 independent hexadecimal witnesses, match the qualified
