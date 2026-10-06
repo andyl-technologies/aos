@@ -16,6 +16,8 @@ use crucible_campaign::{
 };
 use crucible_protocol::SelectionRequest;
 
+mod contract_context;
+
 struct ScriptedPhysicalReplay {
     node: NodeId,
     upcoming: VecDeque<SelectablePlanPendingRequest>,
