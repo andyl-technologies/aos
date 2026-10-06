@@ -40,6 +40,93 @@ use super::{
     Q04PreholdPublicationDataV1, Q04PreholdTransferRecipeV1,
 };
 
+// This pre-completion borrower admits only conservative preparation payment.
+// Its private constructor is below the genuine original Anchored receive;
+// it is not a Completed ancestry, child-grant or detached currentness proof.
+pub(crate) struct OriginalQ04ProjectPreparationLoanV1<'cut, 'controller, 'source, 'flight> {
+    controller: &'cut crate::hierarchy::controller_genesis::HeldControllerSourceGenesisV1<'controller>,
+    source: &'cut crate::hierarchy::source_genesis::HeldSourceTreeGenesisObservationV1<'source>,
+    inventory: &'cut crate::hierarchy::protected_journal::RetainedTreeInventoryDataV1<'source>,
+    root: &'cut super::super::source_genesis_root::RootSourceGenesisFloorProofV1<'flight>,
+    original: aos_sandbox_core::RawPairedClockSample,
+    nonce: [u8; 16],
+}
+
+impl OriginalQ04ProjectPreparationLoanV1<'_, '_, '_, '_> {
+    pub(crate) fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
+        self.controller.recheck_current_admission()?;
+        self.source.require_retained_inventory_v1(self.inventory)?;
+        self.controller.recheck_completed_source_ack(self.source)?;
+        self.root.recheck()?;
+        let floor = self.root.floor();
+        if floor.semantic_revision() != 1 || floor.predecessor().is_some()
+            || self.source.project() != Some(floor.project())
+            || self.controller.acceptance().project() != floor.project()
+            || self.source.source_uid() != self.root.source_uid()
+            || self.source.receipt() != Some(floor.receipt())
+            || self.source.ack_floor_digest() != Some(floor.digest())
+            || self.source.ack_record_digest().is_none()
+        {
+            return Err(SourceGenesisErrorV1::Conflict);
+        }
+        let (tree, head, lineage) = self.inventory.trees()?
+            .find(|(tree, _, _)| tree.project() == floor.project())
+            .ok_or(SourceGenesisErrorV1::Conflict)?;
+        if tree.tree_generation().get() != 1 || tree.records().next().is_some()
+            || tree.tombstones().next().is_some()
+            || head != floor.tree_head() || lineage != floor.lineage_head()
+        {
+            return Err(SourceGenesisErrorV1::Conflict);
+        }
+        self.controller.borrow_current_project_resources_v3()?.recheck()?;
+        Ok(())
+    }
+
+    pub(crate) fn data(&self) -> Result<crate::controller_resource_reservation::OriginalPreparationData, SourceGenesisErrorV1> {
+        self.recheck()?;
+        let authorization = self.controller.borrow_current_project_resources_v3()?;
+        let project = authorization.acceptance().project();
+        let (tree, _, _) = self.inventory.trees()?
+            .find(|(tree, _, _)| tree.project() == project)
+            .ok_or(SourceGenesisErrorV1::Conflict)?;
+        let tree = crate::hierarchy::codec::tree_commitment_v1(tree)
+            .map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
+        let floor = self.root.floor();
+        let deadline = self.original.boottime_nanoseconds().checked_add(60_000_000_000)
+            .ok_or(SourceGenesisErrorV1::Stale)?;
+        Ok(crate::controller_resource_reservation::OriginalPreparationData {
+            project: *project.as_bytes(),
+            authorization: *authorization.acceptance().digest().as_bytes(),
+            tree: *tree.as_bytes(), instance: floor.instance(),
+            operation: [0; 16], amount: authorization.envelope(), original: self.original,
+            deadline, nonce: self.nonce,
+            controller_names: self.controller.names(), source_names: self.source.names(),
+            source_sequence: self.source.snapshot_sequence(), floor: *floor.digest().as_bytes(),
+            tree_head: *floor.tree_head().as_bytes(), lineage_head: *floor.lineage_head().as_bytes(),
+        })
+    }
+
+    pub(crate) fn observe_posts(&self, posts: &mut [Option<Result<(), SourceGenesisErrorV1>>; 3]) {
+        posts[0] = Some(self.controller.recheck_current_admission());
+        posts[1] = Some(self.source.require_retained_inventory_v1(self.inventory));
+        posts[2] = Some(self.root.recheck());
+    }
+}
+
+pub(crate) struct OriginalQ04CompletedPreparationLoanV1<'cut, 'controller, 'source, 'completed, 'flight> {
+    original: OriginalQ04ProjectPreparationLoanV1<'cut, 'controller, 'source, 'flight>,
+    completed: &'cut super::super::source_genesis_root::CompletedRootSourceGenesisFloorV1<'completed, 'flight>,
+}
+
+impl OriginalQ04CompletedPreparationLoanV1<'_, '_, '_, '_, '_> {
+    pub(crate) fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
+        self.original.recheck()?;
+        super::super::public_create_source::consume_completed_gen1_ancestry_v1(
+            self.original.controller, self.original.source, self.original.inventory, self.completed,
+        )
+    }
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Q04ClientPhaseV1 {
     Prehold,
@@ -63,6 +150,7 @@ pub(crate) struct Q04ControllerPreparationV1 {
     source_uid: u32,
     floor: aos_sandbox_core::ObjectDigest,
     ancestry: aos_sandbox_core::ObjectDigest,
+    candidate: super::super::CompiledPolicyCandidateV1,
     publication_recipe: super::super::protected_journal::Q04IndependentPublicationRecipeV1,
 }
 
@@ -72,10 +160,18 @@ impl Q04ControllerPreparationV1 {
     pub(crate) fn proposed(&self) -> &[u8] { &self.proposed }
 
     pub(crate) fn metadata(&self) -> &[u8; PREHOLD_METADATA_BYTES] { &self.metadata }
+
+    pub(crate) fn candidate(&self) -> &super::super::CompiledPolicyCandidateV1 {
+        &self.candidate
+    }
 }
 
 pub(crate) struct OriginalCreateQ04InvocationV1<'profile> {
     profile: &'profile ProductionControllerNormalRootProfileV1,
+    resource_bank: Option<std::sync::Arc<std::sync::Mutex<crate::controller_resource_reservation::ControllerResourceBankOpeningV1>>>,
+    preparation_operation: Option<aos_sandbox_core::OperationId>,
+    resource_preparation: Option<crate::controller_resource_reservation::ProjectPreparationReservationAttemptV1>,
+    component_admission: Option<Result<(), crate::controller_resource_reservation::ResourceReservationErrorV1>>,
     raw: Option<OwnedFd>,
     adopted: Option<RetainedUnixStream>,
     flight: Option<OriginalRootGenesisFlightV1<'profile>>,
@@ -130,6 +226,13 @@ pub(crate) struct OriginalQ04FinalRootObservationV1<'invocation, 'profile, 'cut>
 impl OriginalQ04FinalRootObservationV1<'_, '_, '_> {
     pub(crate) fn identity(&self) -> &super::Q04CutIdentityV1 {
         self.identity
+    }
+
+    // This borrows the genuine returned phase under the final original loan.
+    // Its digest is terminal history DATA, never new Root/current authority.
+    pub(crate) fn terminal_digest(&self) -> Result<aos_sandbox_core::ObjectDigest, CreateQ04ErrorV1> {
+        self.recheck()?;
+        self.invocation.root_phase(self.identity, 3).map(|phase| phase.digest())
     }
 
     pub(crate) fn recheck(&self) -> Result<(), CreateQ04ErrorV1> {
@@ -348,6 +451,10 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
     pub(crate) fn park(profile: &'profile ProductionControllerNormalRootProfileV1) -> Self {
         Self {
             profile,
+            resource_bank: None,
+            preparation_operation: None,
+            resource_preparation: None,
+            component_admission: None,
             raw: None,
             adopted: None,
             flight: None,
@@ -396,6 +503,59 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         self.retain_result(result)
     }
 
+    pub(crate) fn arm_resource_preparation(
+        &mut self,
+        journal: &Journal,
+        bank: &std::sync::Arc<std::sync::Mutex<crate::controller_resource_reservation::ControllerResourceBankOpeningV1>>,
+        operation: aos_sandbox_core::OperationId,
+    ) -> Result<(), CreateQ04ErrorV1> {
+        if self.flight.is_some() || self.resource_preparation.is_some() {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        self.resource_bank = Some(std::sync::Arc::clone(bank));
+        self.preparation_operation = Some(operation);
+        self.resource_preparation = Some(crate::controller_resource_reservation::ProjectPreparationReservationAttemptV1::new());
+        self.component_admission = Some(crate::controller_resource_reservation::require_controller_interval(
+            bank, journal, self.profile,
+        ));
+        if matches!(self.component_admission, Some(Ok(()))) { Ok(()) }
+        else { Err(CreateQ04ErrorV1::ChangedCut) }
+    }
+
+    pub(crate) fn require_resource_preparation(&self) -> Result<(), CreateQ04ErrorV1> {
+        self.resource_preparation.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?
+            .require_preparation()
+            .map_err(|error| CreateQ04ErrorV1::ResourceReservation(Box::new(error)))
+    }
+
+    pub(crate) fn resource_preparation(&self) -> Result<&crate::ProjectPreparationReservationAttemptV1, CreateQ04ErrorV1> {
+        self.require_resource_preparation()?;
+        self.resource_preparation.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)
+    }
+
+    pub(crate) fn recheck_resource_bank(&self, journal: &Journal) -> Result<(), CreateQ04ErrorV1> {
+        let bank = self.resource_bank.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
+        crate::controller_resource_reservation::require_controller_interval(bank, journal, self.profile)
+            .map_err(|error| CreateQ04ErrorV1::ResourceReservation(Box::new(error)))
+    }
+
+    pub(crate) fn take_resource_preparation(
+        &mut self,
+    ) -> Result<crate::controller_resource_reservation::ProjectPreparationReservationAttemptV1, CreateQ04ErrorV1> {
+        if !self.cleared { return Err(CreateQ04ErrorV1::ChangedCut); }
+        self.resource_preparation.take().ok_or(CreateQ04ErrorV1::ChangedCut)
+    }
+
+    pub(crate) fn resource_terminal_observation<'invocation, 'cut>(
+        &'invocation self,
+        identity: &'cut super::Q04CutIdentityV1,
+    ) -> Result<OriginalQ04FinalRootObservationV1<'invocation, 'profile, 'cut>, CreateQ04ErrorV1> {
+        if !self.cleared { return Err(CreateQ04ErrorV1::ChangedCut); }
+        let original = OriginalQ04FinalRootObservationV1 { invocation: self, identity };
+        original.recheck()?;
+        Ok(original)
+    }
+
     fn connect_original_gen1(
         &mut self,
         journal: &mut Journal,
@@ -441,6 +601,42 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         // Prepared is never accepted by this existing-only route. The same
         // sole original-floor constructor checks the actual acceptance/receipt.
         let floor = flight.q04_floor_from_frame(&controller, &self.floor_frame)?;
+        // Payment precedes Complete signing, so that authentic packet contains
+        // the new native sequence. No signed bytes are patched after a CAS.
+        let controller = if let Some(reservation) = self.resource_preparation.as_mut() {
+            let operation = self.preparation_operation.ok_or(CreateQ04ErrorV1::ChangedCut)?;
+            let bank = self.resource_bank.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
+            let original = flight.q04_original_clock()?;
+            let loan = OriginalQ04ProjectPreparationLoanV1 {
+                controller: &controller, source: &acknowledged, inventory: &inventory,
+                root: &floor, original, nonce,
+            };
+            reservation.prepare(&loan, operation).map_err(|()| CreateQ04ErrorV1::ChangedCut)?;
+            drop(loan);
+            drop(controller);
+            reservation.append(journal, bank, self.profile);
+
+            // Reacquisition failure cannot suppress the available Source,
+            // original Root or final raw-clock observations after native Err.
+            let controller = match hold_existing_completed_source_genesis_v2(journal, project) {
+                Ok(controller) => controller,
+                Err(error) => {
+                    let _ = reservation.post_unavailable_controller(
+                        error, acknowledged.require_retained_inventory_v1(&inventory),
+                        floor.recheck(), self.profile,
+                    );
+                    return Err(CreateQ04ErrorV1::ChangedCut);
+                }
+            };
+            let loan = OriginalQ04ProjectPreparationLoanV1 {
+                controller: &controller, source: &acknowledged, inventory: &inventory,
+                root: &floor, original, nonce,
+            };
+            reservation.post(&loan, self.profile).map_err(|()| CreateQ04ErrorV1::ChangedCut)?;
+            controller
+        } else {
+            controller
+        };
         flight.capture_q04_complete_readback(
             &controller, &acknowledged, signer_generation, signer,
             &mut self.refresh_sign_result, &mut self.first, &mut self.postcheck_debt,
@@ -463,6 +659,16 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         super::super::public_create_source::consume_completed_gen1_ancestry_v1(
             &controller, &acknowledged, &inventory, &completed,
         )?;
+        if let Some(reservation) = self.resource_preparation.as_mut() {
+            let loan = OriginalQ04CompletedPreparationLoanV1 {
+                original: OriginalQ04ProjectPreparationLoanV1 {
+                    controller: &controller, source: &acknowledged, inventory: &inventory,
+                    root: &floor, original: flight.q04_original_clock()?, nonce,
+                },
+                completed: &completed,
+            };
+            reservation.confirm_completed(&loan).map_err(|()| CreateQ04ErrorV1::ChangedCut)?;
+        }
 
         // Only Root can perform the selected root-UID Source signer request.
         // This exact original returned packet is retained as Claim field11;
@@ -775,7 +981,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         )?;
         Ok(Q04ControllerPreparationV1 {
             source: current, staged, proposed, metadata, controller_uid, source_uid,
-            floor, ancestry: heads.ancestry(), publication_recipe,
+            floor, ancestry: heads.ancestry(), candidate, publication_recipe,
         })
     }
 

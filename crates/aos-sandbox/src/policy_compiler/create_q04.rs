@@ -24,6 +24,8 @@ pub(super) mod root;
 pub(crate) use client::{
     OriginalCreateQ04InvocationV1, OriginalQ04FinalRootObservationV1, OriginalQ04RootCacheLoanV1,
     Q04ControllerPreparationV1,
+    OriginalQ04ProjectPreparationLoanV1,
+    OriginalQ04CompletedPreparationLoanV1,
 };
 pub(crate) use root::{
     Q04RootAuthorityHistoryV1, RootOriginalInputLoanV1,
@@ -133,6 +135,9 @@ pub enum CreateQ04ErrorV1 {
     /// A protected native journal or exact phase transition failed.
     #[error(transparent)]
     Journal(#[from] JournalError),
+    /// The same enrolled bank refused an original preparation or child CAS.
+    #[error(transparent)]
+    ResourceReservation(Box<crate::controller_resource_reservation::ResourceReservationErrorV1>),
     /// The sole native parser or a later original-name bookend failed.
     #[error("Q04 original native history failed: {first}")]
     NativeHistory {

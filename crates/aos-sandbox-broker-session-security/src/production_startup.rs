@@ -642,6 +642,7 @@ pub(crate) struct ControllerStartupContinuationV1 {
     image: Option<Pid1LaunchImageV1>,
     publisher: Option<OwnedFd>,
     git: Option<OwnedFd>,
+    resource_opening: Option<aos_sandbox::ControllerResourceBankOpeningV1>,
     issue: bool,
     root_completed: bool,
     first_failure: Option<ControllerContinuationFailure>,
@@ -697,6 +698,7 @@ impl ControllerStartupContinuationV1 {
             image: None,
             publisher: None,
             git: None,
+            resource_opening: None,
             issue,
             root_completed: false,
             first_failure: None,
@@ -730,6 +732,7 @@ impl ControllerStartupContinuationV1 {
             || self.image.is_some()
             || self.publisher.is_some()
             || self.git.is_some()
+            || self.resource_opening.is_some()
             || self.returned.as_ref().is_none_or(|startup| startup.nix_capture.is_some())
         {
             self.first_failure.get_or_insert(ControllerContinuationFailure::Closed);
@@ -742,13 +745,17 @@ impl ControllerStartupContinuationV1 {
         let CapturedControllerStartupV1 {
             publisher_descriptor,
             launch_image,
-            normal_root_capture,
+            mut normal_root_capture,
             nix_capture: _,
             git_source_listener,
         } = returned;
         self.publisher = publisher_descriptor;
         self.image = launch_image;
         self.git = git_source_listener;
+        // The exact upstream closed capture, never caller FDs or a capsule,
+        // transfers its same original pair before selected profile admission.
+        self.resource_opening = normal_root_capture.take_resource_enrollment()
+            .map(aos_sandbox::ControllerResourceBankOpeningV1::begin);
         self.root = Some(normal_root_capture.begin_retained_selected_admission());
 
         let Some(root) = self.root.as_mut() else {
@@ -785,6 +792,7 @@ impl ControllerStartupContinuationV1 {
             && self.image.is_none()
             && self.publisher.is_none()
             && self.git.is_none()
+            && self.resource_opening.is_none()
         {
             // FIRST6 settled only its real early, empty nonpositive absence.
             self.armed = false;
@@ -865,6 +873,12 @@ impl ControllerStartupContinuationV1 {
 
     pub(crate) fn profile(&self) -> Option<&ProductionControllerNormalRootProfileV1> {
         self.profile.as_deref()
+    }
+
+    pub(crate) fn take_resource_opening(
+        &mut self,
+    ) -> Option<aos_sandbox::ControllerResourceBankOpeningV1> {
+        self.resource_opening.take()
     }
 
     pub(crate) fn profile_share(&self) -> Option<Arc<ProductionControllerNormalRootProfileV1>> {

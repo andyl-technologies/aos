@@ -1,0 +1,507 @@
+//! Admits original PID1 bootstrap custody into the one native resource bank.
+//!
+//! Image policy pays the finite trusted bootstrap interval. The bank verifies
+//! those same bytes with the sole resource arithmetic before recording the
+//! node and two inclusive envelopes. A capsule alone cannot enter this path:
+//! the original closed Controller table and current fixed launch are required.
+//! Native uncertainty retains the entire transaction and original descriptors.
+
+use std::os::unix::fs::{FileExt as _, MetadataExt as _};
+
+use aos_sandbox_core::{ResourceAccount, ResourceCeilings, ResourceVector};
+use aos_sandbox_linux::boot::KernelBootId;
+use rustix::fs::{OFlags, SealFlags, fcntl_get_seals, fcntl_getfl, fstatfs};
+use sha2::{Digest as _, Sha256};
+
+use super::{
+    AccountHead, AccountKind, Claim, ClaimCut, ClaimPurpose, ClaimState,
+    ControllerResourceEnrollmentCaptureV1, EnrollmentIdentity, ImageBootstrapPolicy,
+    ResourceReservationErrorV1, Transition, TransitionOriginal, codec, matches_record, replay,
+};
+use crate::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct OriginalEnrollment {
+    pub(super) identity: EnrollmentIdentity,
+    pub(super) policy: ImageBootstrapPolicy,
+    pub(super) recipient_invocation: [u8; 16],
+}
+
+impl ControllerResourceEnrollmentCaptureV1 {
+    fn observe(
+        &self,
+        profile: &crate::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<OriginalEnrollment, ResourceReservationErrorV1> {
+        if self.process != std::process::id() {
+            return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
+        }
+        let (invocation, producer) = profile.require_resource_producer()?;
+        let original = observe_original_pair(&self.policy, &self.enrollment)?;
+        if original.recipient_invocation != invocation || original.identity.invocation != producer
+            || profile.require_resource_producer()? != (invocation, producer)
+        {
+            return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
+        }
+        Ok(original)
+    }
+}
+
+// These fixed file and canonical DATA checks do not issue enrollment. Each
+// purpose-closed caller independently rejoins its actual PID1 recipient.
+pub(super) fn observe_original_pair(
+    policy_file: &std::fs::File,
+    enrollment_file: &std::fs::File,
+) -> Result<OriginalEnrollment, ResourceReservationErrorV1> {
+    let policy_metadata = policy_file.metadata()?;
+    let delivery_metadata = enrollment_file.metadata()?;
+    let seals = fcntl_get_seals(enrollment_file)?;
+    if !policy_metadata.is_file()
+        || policy_metadata.len() != codec::IMAGE_POLICY_BYTES as u64
+        || policy_metadata.uid() != 0 || policy_metadata.gid() != 0
+        || policy_metadata.mode() & 0o222 != 0
+        || fstatfs(policy_file)?.f_type as u64 != 0xe0f5_e1e2
+        || fcntl_getfl(policy_file)? & OFlags::ACCMODE != OFlags::RDONLY
+        || !delivery_metadata.is_file() || delivery_metadata.len() != 152
+        || delivery_metadata.nlink() != 0 || delivery_metadata.uid() != 0
+        || !seals.contains(SealFlags::SEAL | SealFlags::GROW | SealFlags::SHRINK | SealFlags::WRITE)
+    {
+        return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
+    }
+
+    let mut policy_bytes = [0; codec::IMAGE_POLICY_BYTES];
+    let mut delivery_bytes = [0; 152];
+    policy_file.read_exact_at(&mut policy_bytes, 0)?;
+    enrollment_file.read_exact_at(&mut delivery_bytes, 0)?;
+    let policy = codec::decode_image_policy(&policy_bytes)?;
+    let (identity, recipient_invocation) = codec::decode_pid1_delivery(&delivery_bytes)?;
+    if identity.node != policy.node || identity.epoch != policy.epoch
+        || identity.manifest != <[u8; 32]>::from(Sha256::digest(policy_bytes))
+        || identity.boot != KernelBootId::current()?.into_bytes()
+    {
+        return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
+    }
+    Ok(OriginalEnrollment { identity, policy, recipient_invocation })
+}
+
+pub(super) struct EnrollmentTransition {
+    transaction_id: [u8; 16],
+    heads: [AccountHead; 3],
+    claims: [Claim; 2],
+}
+
+impl EnrollmentTransition {
+    fn prepare(original: &OriginalEnrollment) -> Result<Self, ResourceReservationErrorV1> {
+        let identity = original.identity;
+        let policy = original.policy;
+        policy.validate()?;
+        let node = policy.node;
+        let controller = account_id(identity, b"controller");
+        let components = account_id(identity, b"components");
+        let root_account = ResourceAccount::from_usage(
+            ResourceCeilings::bounded(policy.capacity), policy.baseline, ResourceVector::ZERO,
+        )?.reserve(policy.controller)?.reserve(policy.components)?;
+        let head = |id, parent, kind, account, baseline| AccountHead {
+            enrollment: identity, id, parent, kind, generation: 1,
+            project: [0; 16], sandbox: [0; 16], tree_revision: [0; 32], account, baseline,
+        };
+        let child_account = |amount| ResourceAccount::from_usage(
+            ResourceCeilings::bounded(amount), ResourceVector::ZERO, ResourceVector::ZERO,
+        );
+        let heads = [
+            head(node, [0; 16], AccountKind::Node, root_account, policy.baseline),
+            head(controller, node, AccountKind::Controller, child_account(policy.controller)?, ResourceVector::ZERO),
+            head(components, node, AccountKind::Components, child_account(policy.components)?, ResourceVector::ZERO),
+        ];
+        let claim = |child, amount, purpose| Claim {
+            enrollment: identity, id: account_id(identity, &child), account: node, child,
+            owner: identity.manifest, purpose, operation: [0; 16], project: [0; 16],
+            sandbox: [0; 16], tree_revision: [0; 32], cut: ClaimCut::BootLifetime,
+            genesis_instance: [0; 32],
+            amount, state: ClaimState::Reserved,
+        };
+        Ok(Self {
+            transaction_id: aos_sandbox_core::OperationId::new().into_bytes(),
+            heads,
+            claims: [
+                claim(controller, policy.controller, ClaimPurpose::ControllerBootstrap),
+                claim(components, policy.components, ClaimPurpose::ComponentEnvelope),
+            ],
+        })
+    }
+
+    fn transaction(&self) -> Result<JournalTransaction, ResourceReservationErrorV1> {
+        let mut records = Vec::with_capacity(5);
+        for head in self.heads {
+            records.push(JournalRecord::put(
+                RecordNamespace::ControllerResourceReservation,
+                replay::key(replay::HEAD_PREFIX, head.id).to_vec(),
+                codec::encode_head(head)?.to_vec(),
+            ));
+        }
+        for claim in self.claims {
+            records.push(JournalRecord::put(
+                RecordNamespace::ControllerResourceReservation,
+                replay::key(replay::CLAIM_PREFIX, claim.id).to_vec(),
+                codec::encode_claim(claim)?.to_vec(),
+            ));
+        }
+        Ok(JournalTransaction::new(self.transaction_id, records)?)
+    }
+
+    pub(super) fn require_current(
+        &self,
+        state: &replay::State,
+        transaction: &JournalTransaction,
+    ) -> Result<(), JournalError> {
+        self.require_exact(state, transaction).map_err(|_| JournalError::ProtectedBoundary)
+    }
+
+    fn require_exact(
+        &self,
+        state: &replay::State,
+        transaction: &JournalTransaction,
+    ) -> Result<(), ResourceReservationErrorV1> {
+        if replay::validate(state)?.is_some()
+            || transaction.id() != &self.transaction_id || transaction.records().len() != 5
+        {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        for (record, head) in transaction.records()[..3].iter().zip(self.heads) {
+            if !matches_record(record, replay::HEAD_PREFIX, head.id, &codec::encode_head(head)?) {
+                return Err(ResourceReservationErrorV1::Conflict);
+            }
+        }
+        for (record, claim) in transaction.records()[3..].iter().zip(self.claims) {
+            if !matches_record(record, replay::CLAIM_PREFIX, claim.id, &codec::encode_claim(claim)?) {
+                return Err(ResourceReservationErrorV1::Conflict);
+            }
+        }
+        Ok(())
+    }
+
+    fn require_returned(&self, journal: &Journal) -> Result<(), ResourceReservationErrorV1> {
+        let state = journal.controller_resource_state_v1()?;
+        if replay::validate(state)? != Some(self.heads[0].enrollment)
+            || !journal.controller_resource_contains_transaction_v1(&self.transaction_id)?
+        {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        for expected in self.heads {
+            if replay::find_head(state, expected.id)? != expected {
+                return Err(ResourceReservationErrorV1::Conflict);
+            }
+        }
+        for expected in self.claims {
+            let actual = replay::record_bytes(state, replay::CLAIM_PREFIX, expected.id)
+                .ok_or(ResourceReservationErrorV1::Conflict)?;
+            if codec::decode_claim(actual)? != expected {
+                return Err(ResourceReservationErrorV1::Conflict);
+            }
+        }
+        Ok(())
+    }
+}
+
+fn account_id(identity: EnrollmentIdentity, role: &[u8]) -> [u8; 16] {
+    let mut hash = Sha256::new();
+    hash.update(b"AOS-resource-account-v1\0");
+    hash.update(identity.node);
+    hash.update(identity.epoch);
+    hash.update(role);
+    let hash = hash.finalize();
+    let mut id = [0; 16];
+    id.copy_from_slice(&hash[..16]);
+    id
+}
+
+/// Keeps the first bank-open transaction and every native/post result resident.
+///
+/// A failed opening cannot be retried or turned into a loan by replay DATA.
+/// This owner keeps the actual PID1 files for its whole Controller lifetime.
+#[must_use]
+pub struct ControllerResourceBankOpeningV1 {
+    original: ControllerResourceEnrollmentCaptureV1,
+    preopen: Option<ControllerResourcePreopenPostV1>,
+    preopen_attempted: bool,
+    observed: Option<Result<OriginalEnrollment, ResourceReservationErrorV1>>,
+    prepared: Option<Result<(EnrollmentTransition, JournalTransaction), ResourceReservationErrorV1>>,
+    names: Option<Result<crate::journal::ProtectedJournalNamesV1, JournalError>>,
+    native: Option<Result<crate::journal::CommitResult, JournalError>>,
+    readback: Option<Result<(), ResourceReservationErrorV1>>,
+    journal_post: Option<Result<(), JournalError>>,
+    profile_post: Option<Result<[u8; 16], crate::normal_root::NormalRootStartupErrorV1>>,
+    attempted: bool,
+}
+
+impl ControllerResourceBankOpeningV1 {
+    // Rechecks the original producer, not a decoded capsule or a new opener.
+    pub(super) fn require_enrolled(
+        &self,
+        journal: &Journal,
+        profile: &crate::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<EnrollmentIdentity, ResourceReservationErrorV1> {
+        if self.failure().is_some() || !matches!(self.native, Some(Ok(_)))
+            || !matches!(self.readback, Some(Ok(())))
+        {
+            return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
+        }
+        let original = self.observed.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
+        let current = self.original.observe(profile)?;
+        let names = self.names.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
+        if current.identity != original.identity || current.policy != original.policy
+            || current.recipient_invocation != original.recipient_invocation
+            || journal.protected_writer_physical_names_v1()? != *names
+            || replay::validate(journal.controller_resource_state_v1()?)? != Some(original.identity)
+        {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        Ok(original.identity)
+    }
+
+    /// Parks the same original startup pair without observations or allocation.
+    pub fn begin(original: ControllerResourceEnrollmentCaptureV1) -> Self {
+        Self {
+            original, preopen: None, preopen_attempted: false,
+            observed: None, prepared: None, names: None, native: None, readback: None,
+            journal_post: None, profile_post: None, attempted: false,
+        }
+    }
+
+    /// Admits the original PID1-paid bootstrap interval before a Journal opens.
+    ///
+    /// This once-only admission retains independent observations even after
+    /// an earlier failure. It issues neither native Bank enrollment nor an
+    /// operation/read reservation, and creates no construction deadline.
+    ///
+    /// # Errors
+    /// Borrows the first retained original recipient, file, or binding cause.
+    /// Reentry and failed or interrupted admission never create another loan.
+    pub fn admit_preopen_once(
+        &mut self,
+        profile: &crate::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<(), &(dyn std::error::Error + 'static)> {
+        if self.preopen_attempted || self.attempted {
+            return Err(&CLOSED);
+        }
+        self.preopen_attempted = true;
+        self.preopen = Some(ControllerResourcePreopenPostV1::new());
+        let post = self.preopen.as_mut().ok_or(
+            &CLOSED as &(dyn std::error::Error + 'static),
+        )?;
+        post.observe(&self.original, profile, None);
+        post.require_success()
+    }
+
+    /// Borrows the same live bootstrap owner without issuing native enrollment.
+    ///
+    /// The loan is non-Clone and remains tied to the original files/profile.
+    /// It cannot expose amounts, descriptors, a new epoch, or a refund.
+    ///
+    /// # Errors
+    /// Rejects absent, failed or spent pre-opening admission and foreign
+    /// processes. Its independent current observations must precede effects.
+    pub fn borrow_preopen<'owner>(
+        &'owner self,
+        profile: &'owner crate::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<ControllerResourcePreopenLoanV1<'owner>, &(dyn std::error::Error + 'static)> {
+        if self.attempted || self.original.process != std::process::id() {
+            return Err(&CLOSED);
+        }
+        let post = self.preopen.as_ref().ok_or(
+            &CLOSED as &(dyn std::error::Error + 'static),
+        )?;
+        post.require_success()?;
+        Ok(ControllerResourcePreopenLoanV1 { opening: self, profile })
+    }
+
+    /// Enrolls the finite bootstrap accounts once on the original protected writer.
+    ///
+    /// # Errors
+    /// Borrows the original observation, preparation, commit or independent
+    /// post refusal. Ambiguous commits stay resident and never expose a bank.
+    pub fn open_once(
+        &mut self,
+        journal: &mut Journal,
+        profile: &crate::normal_root::ProductionControllerNormalRootProfileV1,
+        node: [u8; 16],
+    ) -> Result<(), &(dyn std::error::Error + 'static)> {
+        if self.attempted {
+            return Err(&CLOSED);
+        }
+        self.attempted = true;
+        if self.preopen_attempted
+            && self.preopen.as_ref().is_none_or(|post| post.require_success().is_err())
+        {
+            // Failed admission cannot reach enrollment, but the supplied
+            // writer/profile still lend their independent negative posts.
+            self.journal_post = Some(journal.validate_held_protected_names());
+            self.profile_post = Some(profile.require_resource_delivery());
+            return Err(self.failure().unwrap_or(&CLOSED));
+        }
+        self.observed = Some(self.original.observe(profile).and_then(|original| {
+            if original.identity.node != node {
+                return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
+            }
+            Ok(original)
+        }));
+        self.names = Some(journal.protected_writer_physical_names_v1());
+        if let Some(Ok(original)) = self.observed.as_ref() {
+            self.prepared = Some((|| {
+                let transition = EnrollmentTransition::prepare(original)?;
+                let transaction = transition.transaction()?;
+                transition.require_exact(journal.controller_resource_state_v1()?, &transaction)?;
+                Ok((transition, transaction))
+            })());
+        }
+        if self.names.as_ref().is_some_and(Result::is_ok) {
+            if let Some(Ok((transition, transaction))) = self.prepared.as_ref() {
+                self.native = Some(journal.commit_controller_resource_transition_v1(
+                    transaction,
+                    &Transition { original: TransitionOriginal::Enrollment(transition), crossing: None },
+                ));
+            }
+        }
+
+        if let Some(Ok((transition, _))) = self.prepared.as_ref() {
+            // A commit Err does not suppress same-writer negative readback.
+            self.readback = Some(transition.require_returned(journal));
+        }
+        // Both independent posts run after native Err and observation Err.
+        self.journal_post = Some(journal.validate_held_protected_names());
+        self.profile_post = Some(profile.require_resource_delivery());
+        if let Some(cause) = self.failure() {
+            return Err(cause);
+        }
+        if !matches!(self.native, Some(Ok(_))) {
+            return Err(&CLOSED);
+        }
+        Ok(())
+    }
+
+    /// Borrows the earliest original cause in the fixed opening schedule.
+    pub fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.preopen.as_ref().and_then(ControllerResourcePreopenPostV1::failure)
+            .or_else(|| self.observed.as_ref().and_then(|result| result.as_ref().err())
+            .map(|error| error as &(dyn std::error::Error + 'static))
+            )
+            .or_else(|| self.names.as_ref().and_then(|result| result.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.prepared.as_ref().and_then(|result| result.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.native.as_ref().and_then(|result| result.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.readback.as_ref().and_then(|result| result.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.journal_post.as_ref().and_then(|result| result.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.profile_post.as_ref().and_then(|result| result.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+    }
+}
+
+/// Borrows only the original Controller's PID1 bootstrap obligation.
+///
+/// This owner-bound short loan is not an operation/read permit or native
+/// enrollment. Dropping it refunds nothing and cannot replace the originals.
+pub struct ControllerResourcePreopenLoanV1<'owner> {
+    opening: &'owner ControllerResourceBankOpeningV1,
+    profile: &'owner crate::normal_root::ProductionControllerNormalRootProfileV1,
+}
+
+impl ControllerResourcePreopenLoanV1<'_> {
+    pub(crate) fn require_node(&self, node: [u8; 16]) -> Result<(), ResourceReservationErrorV1> {
+        let original = self.opening.preopen.as_ref()
+            .and_then(|post| post.pair.as_ref())
+            .and_then(|result| result.as_ref().ok())
+            .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
+        if original.identity.node != node {
+            return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn observe_into(&self, post: &mut ControllerResourcePreopenPostV1) {
+        let admitted = self.opening.preopen.as_ref()
+            .and_then(|post| post.pair.as_ref())
+            .and_then(|result| result.as_ref().ok());
+        post.observe(&self.opening.original, self.profile, admitted);
+    }
+}
+
+/// Retains whole independent original recipient, file and binding observations.
+///
+/// A vacant or successful report is never independently payment authority.
+/// Only the original opening's closed loan can populate a construction post.
+pub struct ControllerResourcePreopenPostV1 {
+    before: Option<Result<([u8; 16], [u8; 16]), crate::normal_root::NormalRootStartupErrorV1>>,
+    pair: Option<Result<OriginalEnrollment, ResourceReservationErrorV1>>,
+    after: Option<Result<([u8; 16], [u8; 16]), crate::normal_root::NormalRootStartupErrorV1>>,
+    binding: Option<Result<(), ResourceReservationErrorV1>>,
+    attempted: bool,
+}
+
+impl ControllerResourcePreopenPostV1 {
+    pub(crate) const fn new() -> Self {
+        Self { before: None, pair: None, after: None, binding: None, attempted: false }
+    }
+
+    fn observe(
+        &mut self,
+        original: &ControllerResourceEnrollmentCaptureV1,
+        profile: &crate::normal_root::ProductionControllerNormalRootProfileV1,
+        admitted: Option<&OriginalEnrollment>,
+    ) {
+        if self.attempted {
+            return;
+        }
+        self.attempted = true;
+        self.before = Some(profile.require_resource_producer());
+        self.pair = Some(observe_original_pair(&original.policy, &original.enrollment));
+        // A native/profile Err does not suppress the independent negative post.
+        self.after = Some(profile.require_resource_producer());
+        self.binding = Some((|| {
+            let before = self.before.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
+            let pair = self.pair.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
+            let after = self.after.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
+            if original.process != std::process::id() || before != after
+                || pair.recipient_invocation != before.0 || pair.identity.invocation != before.1
+                || admitted.is_some_and(|previous| {
+                    previous.identity != pair.identity || previous.policy != pair.policy
+                        || previous.recipient_invocation != pair.recipient_invocation
+                })
+            {
+                return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
+            }
+            Ok(())
+        })());
+    }
+
+    pub(crate) fn require_success(&self) -> Result<(), &(dyn std::error::Error + 'static)> {
+        if let Some(cause) = self.failure() {
+            return Err(cause);
+        }
+        if !matches!(self.binding, Some(Ok(()))) {
+            return Err(&CLOSED);
+        }
+        Ok(())
+    }
+
+    /// Borrows the earliest cause without taking any result or original.
+    pub fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.before.as_ref().and_then(|result| result.as_ref().err())
+            .map(|error| error as &(dyn std::error::Error + 'static))
+            .or_else(|| self.pair.as_ref().and_then(|result| result.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.after.as_ref().and_then(|result| result.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.binding.as_ref().and_then(|result| result.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+    }
+}
+
+static CLOSED: ResourceReservationErrorV1 = ResourceReservationErrorV1::EnrollmentUnavailable;

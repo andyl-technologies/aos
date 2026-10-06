@@ -43,7 +43,7 @@
     && cfg.operatorRecoveryStorageOwnerKey != null;
   sourceOriginalWorkerStartup = cfg.sourceOriginalWorkerStartup.enable;
   startupImageDelivery = cfg.method46TpmFloor.required || sourceOriginalWorkerStartup
-    || cfg.nixGenerationPrepare.enable;
+    || cfg.nixGenerationPrepare.enable || config.aos.sandbox.resourceBank.policy != null;
   coverageCredentialFields = {
     gitCoverageEnrollment = "git-upload-coverage-enrollment-v1";
     gitCoverageOwnerCatalog = "git-upload-owner-catalog-v1";

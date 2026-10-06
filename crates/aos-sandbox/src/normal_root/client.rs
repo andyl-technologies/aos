@@ -19,7 +19,8 @@ use std::path::Path;
 use aos_sandbox_linux::cgroup::RetainedCgroupAnchor;
 use aos_sandbox_linux::guest_confinement::require_subject;
 use aos_sandbox_linux::inherited_fd::{
-    ControllerInitialActivationTableV1, duplicate_initial_activation_table,
+    ControllerInitialActivationTableV1, ControllerResourceInitialActivationTableV1,
+    duplicate_initial_activation_table,
 };
 use aos_sandbox_linux::pidfd::PidFd;
 use aos_sandbox_linux::selinux_policy::VerifiedLiveSelinuxPolicy;
@@ -40,6 +41,8 @@ pub(super) const PROFILE_NAME: &str = "aos-normal-root-client-profile";
 const PUBLISHER_NAME: &str = "aos-sandboxd-publisher";
 const TPM_IMAGE_NAME: &str = "aos-method46-pid1-image";
 const GIT_SOURCE_LISTENER_NAME: &str = "aos-git-source-cut";
+pub(crate) const RESOURCE_POLICY_NAME: &str = "aos-resource-image-policy-v1";
+pub(crate) const RESOURCE_ENROLLMENT_NAME: &str = "aos-resource-pid1-enrollment-v1";
 
 /// Retains the selected profile from Controller's complete first launch table.
 ///
@@ -51,6 +54,8 @@ pub struct ProductionControllerNormalRootCaptureV1 {
     nix: Option<super::nix_startup::ProductionControllerNixStartupCaptureV1>,
     nix_delivery: Option<OwnedFd>,
     git_source_listener: Option<OwnedFd>,
+    resource_enrollment: Option<crate::ControllerResourceEnrollmentCaptureV1>,
+    resource_delivery: bool,
 }
 
 /// Keeps the existing publisher and method-46 roles separate from the profile.
@@ -106,6 +111,8 @@ impl ProductionControllerNormalRootCaptureV1 {
         let mut nix_profile = None;
         let mut nix_pid1 = None;
         let mut git_source_listener = None;
+        let mut resource_policy = None;
+        let mut resource_enrollment = None;
         for (name, descriptor) in names.iter().zip(descriptors) {
             match controller_role(name) {
                 Some(ControllerRole::Profile) => profile = Some(descriptor),
@@ -114,6 +121,8 @@ impl ProductionControllerNormalRootCaptureV1 {
                 Some(ControllerRole::NixProfile) => nix_profile = Some(descriptor),
                 Some(ControllerRole::NixPid1) => nix_pid1 = Some(descriptor),
                 Some(ControllerRole::Git) => git_source_listener = Some(descriptor),
+                Some(ControllerRole::ResourcePolicy) => resource_policy = Some(descriptor),
+                Some(ControllerRole::ResourceEnrollment) => resource_enrollment = Some(descriptor),
                 None => return Err(NormalRootStartupErrorV1::Activation),
             }
         }
@@ -134,6 +143,14 @@ impl ProductionControllerNormalRootCaptureV1 {
             _ => return Err(NormalRootStartupErrorV1::Activation),
         };
 
+        let resource_enrollment = match (resource_policy, resource_enrollment) {
+            (Some(policy), Some(enrollment)) => Some(
+                crate::ControllerResourceEnrollmentCaptureV1::from_original_table(policy, enrollment),
+            ),
+            (None, None) => None,
+            _ => return Err(NormalRootStartupErrorV1::Activation),
+        };
+        let resource_delivery = resource_enrollment.is_some();
         Ok((
             Self {
                 profile,
@@ -141,6 +158,8 @@ impl ProductionControllerNormalRootCaptureV1 {
                 nix,
                 nix_delivery,
                 git_source_listener,
+                resource_enrollment,
+                resource_delivery,
             },
             publisher,
             image,
@@ -164,6 +183,14 @@ impl ProductionControllerNormalRootCaptureV1 {
     #[must_use]
     pub fn take_git_source_listener(&mut self) -> Option<OwnedFd> {
         self.git_source_listener.take()
+    }
+
+    /// Moves the same original PID1 resource pair to its sole bank owner once.
+    ///
+    /// Missing delivery cannot be replaced by a pathname, capsule or vector.
+    #[must_use]
+    pub fn take_resource_enrollment(&mut self) -> Option<crate::ControllerResourceEnrollmentCaptureV1> {
+        self.resource_enrollment.take()
     }
 
     /// Moves this actual returned capture into an armed admission reservoir.
@@ -239,8 +266,8 @@ pub struct ProductionControllerInitialCaptureAttemptV1 {
     nix_enabled: bool,
     git_enabled: bool,
     names: Vec<String>,
-    table: ControllerInitialActivationTableV1,
-    raw: [Option<OwnedFd>; 6],
+    table: Option<ControllerCaptureTable>,
+    raw: [Option<OwnedFd>; 8],
     unrouted: Option<OwnedFd>,
     profile: Option<OwnedFd>,
     publisher: Option<OwnedFd>,
@@ -251,6 +278,8 @@ pub struct ProductionControllerInitialCaptureAttemptV1 {
     root_duplicate: Option<OwnedFd>,
     nix: Option<super::nix_startup::ProductionControllerNixStartupCaptureV1>,
     git: Option<OwnedFd>,
+    resource_policy: Option<OwnedFd>,
+    resource_enrollment: Option<OwnedFd>,
     completed: Option<ProductionControllerNormalRootStartupPartsV1>,
     attempted: bool,
     failure: Option<InitialCaptureFailure>,
@@ -264,8 +293,8 @@ impl ProductionControllerInitialCaptureAttemptV1 {
             nix_enabled,
             git_enabled: git_source_cut,
             names: Vec::new(),
-            table: ControllerInitialActivationTableV1::new(),
-            raw: [None, None, None, None, None, None],
+            table: None,
+            raw: [None, None, None, None, None, None, None, None],
             unrouted: None,
             profile: None,
             publisher: None,
@@ -276,6 +305,8 @@ impl ProductionControllerInitialCaptureAttemptV1 {
             root_duplicate: None,
             nix: None,
             git: None,
+            resource_policy: None,
+            resource_enrollment: None,
             completed: None,
             attempted: false,
             failure: None,
@@ -331,6 +362,8 @@ impl ProductionControllerInitialCaptureAttemptV1 {
             || self.root_duplicate.is_some()
             || self.nix.is_some()
             || self.git.is_some()
+            || self.resource_policy.is_some()
+            || self.resource_enrollment.is_some()
         {
             return None;
         }
@@ -347,7 +380,11 @@ impl ProductionControllerInitialCaptureAttemptV1 {
             Some(InitialCaptureFailure::Duplicate(cause)) => {
                 ControllerInitialCaptureFailureRefV1::Duplicate(cause)
             }
-            Some(InitialCaptureFailure::Table) => match self.table.failure() {
+            Some(InitialCaptureFailure::Table) => match self
+                .table
+                .as_ref()
+                .and_then(ControllerCaptureTable::failure)
+            {
                 Some(cause) => ControllerInitialCaptureFailureRefV1::Table(cause),
                 None => ControllerInitialCaptureFailureRefV1::Closed,
             },
@@ -360,13 +397,26 @@ impl ProductionControllerInitialCaptureAttemptV1 {
     fn capture_body(&mut self) -> Result<(), InitialCaptureFailure> {
         self.names = controller_names(self.publisher_enabled, self.nix_enabled, self.git_enabled)
             .map_err(InitialCaptureFailure::Startup)?;
-        if self.table.observe_once(self.names.len()).is_err() {
+        if self.table.is_some() {
+            return Err(InitialCaptureFailure::Closed);
+        }
+
+        // The permanent outer attempt latch precedes this one-time closed
+        // choice. An unused armed ordinary table is never constructed/dropped.
+        let resource_delivery = self.names.iter().any(|name| name == RESOURCE_POLICY_NAME);
+        self.table = Some(if resource_delivery {
+            ControllerCaptureTable::Resource(ControllerResourceInitialActivationTableV1::new())
+        } else {
+            ControllerCaptureTable::Ordinary(ControllerInitialActivationTableV1::new())
+        });
+        let table = self.table.as_mut().ok_or(InitialCaptureFailure::Closed)?;
+        if table.observe_once(self.names.len()).is_err() {
             return Err(InitialCaptureFailure::Table);
         }
         if self.raw.iter().any(Option::is_some) || self.unrouted.is_some() {
             return Err(InitialCaptureFailure::Closed);
         }
-        let Some(raw) = self.table.take_completed_entries() else {
+        let Some(raw) = table.take_completed_entries() else {
             return Err(InitialCaptureFailure::Closed);
         };
         self.raw = raw;
@@ -379,6 +429,8 @@ impl ProductionControllerInitialCaptureAttemptV1 {
                 Some(ControllerRole::NixProfile) => &mut self.nix_profile,
                 Some(ControllerRole::NixPid1) => &mut self.nix_pid1,
                 Some(ControllerRole::Git) => &mut self.git,
+                Some(ControllerRole::ResourcePolicy) => &mut self.resource_policy,
+                Some(ControllerRole::ResourceEnrollment) => &mut self.resource_enrollment,
                 None => return Err(InitialCaptureFailure::Startup(NormalRootStartupErrorV1::Activation)),
             };
             if target.is_some() || entry.is_none() || self.unrouted.is_some() {
@@ -436,6 +488,19 @@ impl ProductionControllerInitialCaptureAttemptV1 {
             return Err(InitialCaptureFailure::Closed);
         }
         let image_present = self.image.is_some();
+        let resource_delivery = self.resource_policy.is_some();
+        let resource_originals = (self.resource_policy.take(), self.resource_enrollment.take());
+        let resource_enrollment = match resource_originals {
+            (Some(policy), Some(enrollment)) => Some(
+                crate::ControllerResourceEnrollmentCaptureV1::from_original_table(policy, enrollment),
+            ),
+            (None, None) => None,
+            (policy, enrollment) => {
+                self.resource_policy = policy;
+                self.resource_enrollment = enrollment;
+                return Err(InitialCaptureFailure::Closed);
+            }
+        };
         self.completed = Some((
             ProductionControllerNormalRootCaptureV1 {
                 profile: self.profile.take(),
@@ -443,6 +508,8 @@ impl ProductionControllerInitialCaptureAttemptV1 {
                 nix: self.nix.take(),
                 nix_delivery: self.nix_delivery.take(),
                 git_source_listener: self.git.take(),
+                resource_enrollment,
+                resource_delivery,
             },
             self.publisher.take(),
             self.image.take(),
@@ -469,6 +536,45 @@ impl Drop for AbortControllerCaptureUnwind {
     }
 }
 
+// Both closed modes retain their own original Linux error and complete table.
+// The shared Core routing reservoir receives all eight slots before any later
+// fallible action; the ordinary six-slot transfer leaves two empty tail slots.
+enum ControllerCaptureTable {
+    Ordinary(ControllerInitialActivationTableV1),
+    Resource(ControllerResourceInitialActivationTableV1),
+}
+
+impl ControllerCaptureTable {
+    fn observe_once(&mut self, count: usize) -> Result<(), &aos_sandbox_linux::Error> {
+        match self {
+            Self::Ordinary(table) => table.observe_once(count),
+            Self::Resource(table) => table.observe_once(count),
+        }
+    }
+
+    fn failure(&self) -> Option<&aos_sandbox_linux::Error> {
+        match self {
+            Self::Ordinary(table) => table.failure(),
+            Self::Resource(table) => table.failure(),
+        }
+    }
+
+    fn take_completed_entries(&mut self) -> Option<[Option<OwnedFd>; 8]> {
+        match self {
+            Self::Ordinary(table) => {
+                let original = table.take_completed_entries()?;
+                let mut entries = [const { None }; 8];
+                for (destination, descriptor) in entries.iter_mut().zip(original) {
+                    *destination = descriptor;
+                }
+
+                Some(entries)
+            }
+            Self::Resource(table) => table.take_completed_entries(),
+        }
+    }
+}
+
 enum ControllerRole {
     Profile,
     Publisher,
@@ -476,6 +582,8 @@ enum ControllerRole {
     NixProfile,
     NixPid1,
     Git,
+    ResourcePolicy,
+    ResourceEnrollment,
 }
 
 fn controller_role(name: &str) -> Option<ControllerRole> {
@@ -486,6 +594,8 @@ fn controller_role(name: &str) -> Option<ControllerRole> {
         super::nix_startup::CONTROLLER_PROFILE_NAME => Some(ControllerRole::NixProfile),
         super::nix_startup::CONTROLLER_PID1_NAME => Some(ControllerRole::NixPid1),
         GIT_SOURCE_LISTENER_NAME => Some(ControllerRole::Git),
+        RESOURCE_POLICY_NAME => Some(ControllerRole::ResourcePolicy),
+        RESOURCE_ENROLLMENT_NAME => Some(ControllerRole::ResourceEnrollment),
         _ => None,
     }
 }
@@ -495,7 +605,7 @@ fn controller_names(
     nix_enabled: bool,
     git_source_cut: bool,
 ) -> Result<Vec<String>, NormalRootStartupErrorV1> {
-    let names = startup::names(6)?;
+    let names = startup::names(8)?;
     if !valid_backend_names(&names, publisher, nix_enabled, git_source_cut) {
         return Err(NormalRootStartupErrorV1::Activation);
     }
@@ -517,9 +627,34 @@ pub struct ProductionControllerNormalRootProfileV1 {
     cgroup: RetainedCgroupAnchor,
     tpm_image: bool,
     nix_delivery: Option<RetainedImmutableFileV1>,
+    resource_delivery: bool,
 }
 
 impl ProductionControllerNormalRootProfileV1 {
+    pub(crate) fn require_resource_delivery(&self) -> Result<[u8; 16], NormalRootStartupErrorV1> {
+        self.require_resource_producer().map(|(invocation, _producer)| invocation)
+    }
+
+    pub(crate) fn require_resource_producer(
+        &self,
+    ) -> Result<([u8; 16], [u8; 16]), NormalRootStartupErrorV1> {
+        if !self.resource_delivery {
+            return Err(NormalRootStartupErrorV1::Activation);
+        }
+        self.recheck()?;
+        let (properties, unit) = service::read_properties(
+            UNIT, std::process::id(), service::RESOURCE_SERVICE_PROPERTIES,
+        )?;
+        let (producer, common) = properties.split_last()
+            .ok_or(NormalRootStartupErrorV1::Service)?;
+        let observed = service::immutable_observation(decode_delivery_with_resource_bank(
+            common, &unit, self.profile_file.path(), self.tpm_image,
+            self.nix_delivery.as_ref().map(|file| file.path()), true,
+        )?)?;
+        service::require_same(&self.observed, &observed)?;
+        Ok((observed.invocation, service::decode_resource_producer(producer)?))
+    }
+
     /// Returns the original selected profile path for exact delivery comparison.
     ///
     /// This borrowed name grants no readiness or journal authority. Consumers
@@ -573,6 +708,7 @@ impl ProductionControllerNormalRootProfileV1 {
             self.profile_file.path(),
             self.tpm_image,
             self.nix_delivery.as_ref().map(|file| file.path()),
+            self.resource_delivery,
         )?;
         service::require_same(&self.observed, &observed)?;
         self.fragment
@@ -704,11 +840,12 @@ fn observe_delivery(
     profile_path: &Path,
     tpm_image: bool,
     nix_profile: Option<&Path>,
+    resource_delivery: bool,
 ) -> Result<service::ServiceObservationV1, NormalRootStartupErrorV1> {
     let (service, unit) =
         service::read_properties(UNIT, std::process::id(), service::SERVICE_PROPERTIES)?;
-    service::immutable_observation(decode_delivery_with_backends(
-        &service, &unit, profile_path, tpm_image, nix_profile,
+    service::immutable_observation(decode_delivery_with_resource_bank(
+        &service, &unit, profile_path, tpm_image, nix_profile, resource_delivery,
     )?)
 }
 
@@ -727,6 +864,17 @@ pub(super) fn decode_delivery_with_backends(
     profile_path: &Path,
     tpm_image: bool,
     nix_profile: Option<&Path>,
+) -> Result<service::ServiceObservationV1, NormalRootStartupErrorV1> {
+    decode_delivery_with_resource_bank(properties, unit, profile_path, tpm_image, nix_profile, false)
+}
+
+pub(super) fn decode_delivery_with_resource_bank(
+    properties: &[OwnedValue],
+    unit: &[OwnedValue],
+    profile_path: &Path,
+    tpm_image: bool,
+    nix_profile: Option<&Path>,
+    resource_delivery: bool,
 ) -> Result<service::ServiceObservationV1, NormalRootStartupErrorV1> {
     let [
         cgroup,
@@ -762,7 +910,7 @@ pub(super) fn decode_delivery_with_backends(
         || bool::try_from(nnp).ok() != Some(true)
         || u32::try_from(maximum).ok() != Some(0)
         || u32::try_from(stored).ok() != Some(0)
-        || !extras.is_empty()
+        || !valid_resource_delivery_names(extras.inner(), resource_delivery)
         || extras.element_signature() != Value::from("").value_signature()
         || files.len() != 1 + usize::from(tpm_image) + 2 * usize::from(nix_profile.is_some())
     {
@@ -814,7 +962,10 @@ fn valid_backend_names(
         .filter(|name| name.as_str() == super::nix_startup::CONTROLLER_PID1_NAME)
         .count();
 
-    names.len() <= 6
+    names.len() <= 8
+        && names.iter().filter(|name| name.as_str() == RESOURCE_POLICY_NAME).count() <= 1
+        && names.iter().filter(|name| name.as_str() == RESOURCE_POLICY_NAME).count()
+            == names.iter().filter(|name| name.as_str() == RESOURCE_ENROLLMENT_NAME).count()
         && nix_profile == usize::from(nix_enabled)
         && nix_profile == nix_pid1
         && names.iter().filter(|name| name.as_str() == GIT_SOURCE_LISTENER_NAME).count()
@@ -841,8 +992,17 @@ fn valid_backend_names(
                     | super::nix_startup::CONTROLLER_PROFILE_NAME
                     | super::nix_startup::CONTROLLER_PID1_NAME
                     | GIT_SOURCE_LISTENER_NAME
+                    | RESOURCE_POLICY_NAME | RESOURCE_ENROLLMENT_NAME
             )
         })
+}
+
+pub(super) fn valid_resource_delivery_names(names: &[Value<'_>], selected: bool) -> bool {
+    if !selected {
+        return names.is_empty();
+    }
+    matches!(names, [Value::Str(policy), Value::Str(enrollment)]
+        if policy.as_str() == RESOURCE_POLICY_NAME && enrollment.as_str() == RESOURCE_ENROLLMENT_NAME)
 }
 
 #[cfg(test)]

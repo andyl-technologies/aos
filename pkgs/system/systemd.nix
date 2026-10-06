@@ -164,6 +164,7 @@ in
       ./patches/0021-fixed-source-launcher-image-loan.patch
       ./patches/0021-nspawn-host-readiness-report.patch
       ./patches/0022-pin-online-nix-unit-fragment-before-spawn.patch
+      ./patches/0023-controller-resource-enrollment.patch
     ];
 
     buildDeps = [
