@@ -100,7 +100,13 @@ def publish_candidate() -> None:
         export PATH={GIT_BIN}:{NIX_BIN}:$PATH
         mkdir -p "$HOME" "$NIX_CONF_DIR"
         printf 'experimental-features = nix-command\\nsandbox = false\\nbuild-users-group =\\n' > "$NIX_CONF_DIR/nix.conf"
-        keygen=$({APR} keys generate release --registry native-image 2>&1)
+        if keygen=$({APR} keys generate release --registry native-image 2>&1); then
+            :
+        else
+            status=$?
+            printf '%s\\n' "$keygen" >&2
+            exit "$status"
+        fi
         public=$(printf '%s\\n' "$keygen" | {JQ} -Rr 'select(startswith("Public key:")) | split(" ") | last')
         test -n "$public"
         key="$HOME/.config/apm/keys/native-image-release.key"
@@ -210,9 +216,8 @@ def retire(request: dict[str, Any]) -> None:
 
 
 def run() -> None:
-    """Checks executor handoff, real rollback, health fallback, and slot retirement."""
+    """Checks transitions after the fixture enrolls firmware and stages its inputs."""
     runtime.wait_until_succeeds(f"{SYSTEMCTL} is-active --quiet aos-image-boot-commit.service", timeout=600)
-    secure_boot()
     original = generation(image_state(), image_state()["running"])
     assert_identity(original)
     publish_candidate()
