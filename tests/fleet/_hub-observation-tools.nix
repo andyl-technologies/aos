@@ -31,8 +31,14 @@
       nativeContract = contract;
       helperSource = toString helperSource;
       vendorSource = toString vendor;
-      clientSource = if clientArtifact == null then null else toString pkgs.aos.src;
-      clientExecutable = if clientArtifact == null then null else "${clientArtifact}/bin/aos";
+      clientSource =
+        if clientArtifact == null
+        then null
+        else toString pkgs.aos.src;
+      clientExecutable =
+        if clientArtifact == null
+        then null
+        else "${clientArtifact}/bin/aos";
     };
   };
 
@@ -114,7 +120,7 @@ in
         runtimeSourceStorePath = toString runtimeSource;
         helperSourceStorePath = toString helperSource;
         runtimeQualification = false;
-      selectedNativeArtifact = toString nativeArtifact;
-      selectedWorkerArtifact = toString workerArtifact;
+        selectedNativeArtifact = toString nativeArtifact;
+        selectedWorkerArtifact = toString workerArtifact;
       };
     }

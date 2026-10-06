@@ -205,11 +205,9 @@ pub async fn router_with_hybrid_ingress_and_direct(
     work: Arc<crate::storage_work::RemoteStorageWorkClient>,
     direct: Option<Arc<dyn crate::direct_upload::DirectUploadTransportFactory>>,
 ) -> Router {
-    let surface: Arc<dyn aos_hub_core::fetch::SurfaceProvider> =
-        Arc::new(crate::storage_work::HybridSurfaceProvider::new(
-            Arc::clone(&state.db),
-            Arc::clone(&work),
-        ));
+    let surface: Arc<dyn aos_hub_core::fetch::SurfaceProvider> = Arc::new(
+        crate::storage_work::HybridSurfaceProvider::new(Arc::clone(&state.db), Arc::clone(&work)),
+    );
     let writes: Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider> = Arc::new(
         crate::storage_work::HybridSurfaceWrites::new(Arc::clone(&state.db), work),
     );
@@ -240,7 +238,10 @@ pub async fn router_with_hybrid_ingress_and_direct(
 fn observed_status_response(status: StatusCode) -> Response {
     let mut response = status.into_response();
     aos_hub_core::application_body_observation::produced(
-        &mut response, b"", "native_status_only", include_bytes!("server.rs"),
+        &mut response,
+        b"",
+        "native_status_only",
+        include_bytes!("server.rs"),
         "actual_refusal_branch_and_transport_context",
     );
     response
@@ -273,10 +274,16 @@ async fn verify_hybrid_ingress(
         .iter()
         .collect::<Vec<_>>();
     if values.len() != 1 {
-        return observation.response(observed_status_response(StatusCode::UNAUTHORIZED), "envelope_refused");
+        return observation.response(
+            observed_status_response(StatusCode::UNAUTHORIZED),
+            "envelope_refused",
+        );
     }
     let Ok(compact) = values[0].to_str() else {
-        return observation.response(observed_status_response(StatusCode::UNAUTHORIZED), "envelope_refused");
+        return observation.response(
+            observed_status_response(StatusCode::UNAUTHORIZED),
+            "envelope_refused",
+        );
     };
     let compact = compact.to_owned();
     let method = request.method().as_str().to_owned();
@@ -297,8 +304,10 @@ async fn verify_hybrid_ingress(
     ) {
         Ok(assertion) => assertion,
         Err(_) => {
-            return observation
-                .response(observed_status_response(StatusCode::UNAUTHORIZED), "envelope_refused")
+            return observation.response(
+                observed_status_response(StatusCode::UNAUTHORIZED),
+                "envelope_refused",
+            )
         }
     };
     observation.authenticated_envelope(&assertion);
@@ -313,7 +322,9 @@ async fn verify_hybrid_ingress(
     .await
     {
         Ok(limit) => limit,
-        Err(status) => return observation.response(observed_status_response(status), "body_limit_refused"),
+        Err(status) => {
+            return observation.response(observed_status_response(status), "body_limit_refused")
+        }
     };
     let (mut parts, body) = request.into_parts();
     let Ok(body) = axum::body::to_bytes(observation.request_body(body), limit).await else {
@@ -333,8 +344,10 @@ async fn verify_hybrid_ingress(
         Ok(assertion) => assertion,
         Err(error) => {
             tracing::warn!(error = %error, "rejecting hybrid ingress assertion");
-            return observation
-                .response(observed_status_response(StatusCode::UNAUTHORIZED), "body_mac_refused");
+            return observation.response(
+                observed_status_response(StatusCode::UNAUTHORIZED),
+                "body_mac_refused",
+            );
         }
     };
     observation.authenticated_body();
@@ -901,11 +914,15 @@ async fn healthz(State(state): State<Arc<AppState>>) -> Response {
         Ok(regs) => {
             let body = format!("ok ({} registries)\n", regs.len());
             let evidence = aos_hub_core::application_body_observation::produced_evidence(
-                body.as_bytes(), "health_registry_count", include_bytes!("server.rs"),
+                body.as_bytes(),
+                "health_registry_count",
+                include_bytes!("server.rs"),
                 "current_sql_registry_count",
             );
             let mut response = (StatusCode::OK, body).into_response();
-            if let Some(evidence) = evidence { response.extensions_mut().insert(evidence); }
+            if let Some(evidence) = evidence {
+                response.extensions_mut().insert(evidence);
+            }
             response
         }
         Err(err) => internal(err),

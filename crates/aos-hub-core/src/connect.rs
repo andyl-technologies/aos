@@ -269,14 +269,14 @@ where
         Ok(resp) => {
             let evidence = crate::application_body_observation::rpc::reply(evidence, &resp);
             let mut response = (
-            [
-                (header::CACHE_CONTROL, "no-store"),
-                (header::PRAGMA, "no-cache"),
-                (header::REFERRER_POLICY, "no-referrer"),
-            ],
-            Json(resp),
-        )
-            .into_response();
+                [
+                    (header::CACHE_CONTROL, "no-store"),
+                    (header::PRAGMA, "no-cache"),
+                    (header::REFERRER_POLICY, "no-referrer"),
+                ],
+                Json(resp),
+            )
+                .into_response();
             if let Some(evidence) = evidence {
                 response.extensions_mut().insert(evidence);
             }
@@ -774,9 +774,7 @@ fn canonical_endpoint_host(host: &str) -> Result<crate::db::InboundEndpointHost,
 /// # Errors
 ///
 /// Returns an error for malformed, noncanonical, or userinfo-bearing authorities.
-pub fn attested_authority_host(
-    authority: &str,
-) -> Result<crate::db::InboundEndpointHost, ()> {
+pub fn attested_authority_host(authority: &str) -> Result<crate::db::InboundEndpointHost, ()> {
     let authority = authority
         .parse::<axum::http::uri::Authority>()
         .map_err(|_| ())?;
@@ -2194,9 +2192,21 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         apply_delete_project
     );
     // Permanent physical authority decisions remain instance-root only.
-    r = rpc_route!(r, "/aos.hub.v1.StorageAuthorityService/PlanStorageAuthorityDecision", plan_storage_authority_decision);
-    r = rpc_route!(r, "/aos.hub.v1.StorageAuthorityService/StorageAuthorityDecision", apply_storage_authority_decision);
-    r = rpc_route!(r, "/aos.hub.v1.StorageAuthorityService/GetAuthority", get_storage_authority);
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.StorageAuthorityService/PlanStorageAuthorityDecision",
+        plan_storage_authority_decision
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.StorageAuthorityService/StorageAuthorityDecision",
+        apply_storage_authority_decision
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.StorageAuthorityService/GetAuthority",
+        get_storage_authority
+    );
     // BindingService — final topology identity/spec lifecycle.
     r = rpc_route!(
         r,
@@ -3443,11 +3453,31 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         apply_delete_webhook
     );
     // PublishService
-    r = rpc_route!(r, "/aos.hub.v1.PublishService/UpsertStagedRelease", upsert_staged_release);
-    r = rpc_route!(r, "/aos.hub.v1.PublishService/GetStagedRelease", get_staged_release);
-    r = rpc_route!(r, "/aos.hub.v1.PublishService/ListStagedReleases", list_staged_releases);
-    r = rpc_route!(r, "/aos.hub.v1.PublishService/FinalizeStagedRelease", finalize_staged_release);
-    r = rpc_route!(r, "/aos.hub.v1.PublishService/DiscardStagedRelease", discard_staged_release);
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/UpsertStagedRelease",
+        upsert_staged_release
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/GetStagedRelease",
+        get_staged_release
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/ListStagedReleases",
+        list_staged_releases
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/FinalizeStagedRelease",
+        finalize_staged_release
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/DiscardStagedRelease",
+        discard_staged_release
+    );
     r = rpc_route!(
         r,
         "/aos.hub.v1.PublishService/BeginRegistryPublication",
@@ -3543,7 +3573,9 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         put(
             |State(state): State<SharedState>,
              Path((publication_id, object_id)): Path<(String, i64)>,
-             hybrid_origin: Option<axum::extract::Extension<crate::hybrid_ingress::HybridOriginRequest>>,
+             hybrid_origin: Option<
+                axum::extract::Extension<crate::hybrid_ingress::HybridOriginRequest>,
+            >,
              headers: HeaderMap,
              request: Request| {
                 let svc = from_state(state);
@@ -3638,7 +3670,8 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
                         if hybrid_origin.is_none() {
                             return StatusCode::FORBIDDEN.into_response();
                         }
-                        let body = match axum::body::to_bytes(request.into_body(), 256 * 1024).await {
+                        let body = match axum::body::to_bytes(request.into_body(), 256 * 1024).await
+                        {
                             Ok(body) => body,
                             Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
                         };

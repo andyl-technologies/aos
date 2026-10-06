@@ -24,7 +24,7 @@ use aos_hub_core::service::RouteReservationKeyring as _;
 use clap::{Args, Parser, Subcommand};
 
 use aos_hub::db::Database;
-use aos_hub::server::{AppState, router};
+use aos_hub::server::{router, AppState};
 
 mod database_input;
 mod indexing;
@@ -2565,7 +2565,11 @@ fn spawn_oci_provider_inventory(
             {
                 Ok(stats) => {
                     continuation = stats.continuation;
-                    if continuation.is_some() { 1 } else { 60 }
+                    if continuation.is_some() {
+                        1
+                    } else {
+                        60
+                    }
                 }
                 Err(error) => {
                     tracing::warn!(error = %format!("{error:#}"), "OCI provider inventory pass failed");
@@ -2853,18 +2857,16 @@ mod production_vm_coverage {
         assert_eq!(restore.confirm_database_instance, "hub-v2");
         assert_eq!(restore.confirm_deployment_id, "deployment-1");
 
-        assert!(
-            Cli::try_parse_from([
-                "aos-hub",
-                "worker",
-                "restore-bookmark",
-                "--url",
-                "https://aos.andyl.org",
-                "--bookmark",
-                "0000007b-0000b26e",
-            ])
-            .is_err()
-        );
+        assert!(Cli::try_parse_from([
+            "aos-hub",
+            "worker",
+            "restore-bookmark",
+            "--url",
+            "https://aos.andyl.org",
+            "--bookmark",
+            "0000007b-0000b26e",
+        ])
+        .is_err());
     }
 
     fn collect_native_leaves(

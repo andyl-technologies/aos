@@ -149,7 +149,9 @@ pub async fn console_asset(Path(asset): Path<String>) -> Response {
             console_wasm_name(),
         );
         let evidence = crate::application_body_observation::produced_evidence(
-            source.as_bytes(), "console_bootstrap", include_bytes!("assets.rs"),
+            source.as_bytes(),
+            "console_bootstrap",
+            include_bytes!("assets.rs"),
             "exact_installed_console_asset_names_and_bytes",
         );
         let mut response = (
@@ -160,10 +162,16 @@ pub async fn console_asset(Path(asset): Path<String>) -> Response {
             source,
         )
             .into_response();
-        if let Some(evidence) = evidence { response.extensions_mut().insert(evidence); }
+        if let Some(evidence) = evidence {
+            response.extensions_mut().insert(evidence);
+        }
         return response;
     }
-    observed_asset(StatusCode::NOT_FOUND.into_response(), b"", "unknown_console_asset_empty_reply")
+    observed_asset(
+        StatusCode::NOT_FOUND.into_response(),
+        b"",
+        "unknown_console_asset_empty_reply",
+    )
 }
 
 fn immutable_asset(content_type: &'static str, bytes: &'static [u8]) -> Response {
@@ -212,10 +220,12 @@ fn font_response(bytes: &'static [u8]) -> Response {
     observed_asset(response, bytes, "embedded_static_asset")
 }
 
-
 fn observed_asset(mut response: Response, bytes: &[u8], constructor: &'static str) -> Response {
     crate::application_body_observation::produced(
-        &mut response, bytes, constructor, include_bytes!("assets.rs"),
+        &mut response,
+        bytes,
+        constructor,
+        include_bytes!("assets.rs"),
         "exact_installed_console_asset_names_and_bytes",
     );
     response

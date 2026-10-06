@@ -166,10 +166,7 @@ impl Session {
             .expires_at
             .saturating_sub(crate::clock::now_unix_secs())
             .clamp(1, BROWSER_ACCESS_TOKEN_TTL_SECS);
-        let token = deps.jwt_keys.mint(
-            &self.access_auth(),
-            ttl,
-        )?;
+        let token = deps.jwt_keys.mint(&self.access_auth(), ttl)?;
         Ok(format!("Bearer {token}"))
     }
 }
@@ -247,8 +244,12 @@ pub(crate) async fn session_token(deps: ConsoleDeps, headers: HeaderMap) -> Resp
     let evidence = crate::application_body_observation::canonical(&body, 128 * 1024).map(|reply| {
         crate::application_body_observation::BodyEvidence {
             constructor: "browser_session_token",
-            constructor_source_sha256: crate::application_body_observation::image(include_bytes!("handlers.rs")).sha256,
-            request: None, reply,
+            constructor_source_sha256: crate::application_body_observation::image(include_bytes!(
+                "handlers.rs"
+            ))
+            .sha256,
+            request: None,
+            reply,
             required_projection: "actual_session_origin_csrf_and_bounded_grants_checks",
         }
     });
@@ -260,7 +261,9 @@ pub(crate) async fn session_token(deps: ConsoleDeps, headers: HeaderMap) -> Resp
         Json(body),
     )
         .into_response();
-    if let Some(evidence) = evidence { response.extensions_mut().insert(evidence); }
+    if let Some(evidence) = evidence {
+        response.extensions_mut().insert(evidence);
+    }
     response
 }
 
@@ -370,7 +373,9 @@ pub(crate) async fn management_app(deps: ConsoleDeps, headers: HeaderMap) -> Res
          </body>\n</html>\n"
     );
     let evidence = crate::application_body_observation::produced_evidence(
-        html.as_bytes(), "authenticated_management_app", include_bytes!("handlers.rs"),
+        html.as_bytes(),
+        "authenticated_management_app",
+        include_bytes!("handlers.rs"),
         "current_console_template_and_bounded_chrome_projection",
     );
     let mut response = (
@@ -386,7 +391,9 @@ pub(crate) async fn management_app(deps: ConsoleDeps, headers: HeaderMap) -> Res
         html,
     )
         .into_response();
-    if let Some(evidence) = evidence { response.extensions_mut().insert(evidence); }
+    if let Some(evidence) = evidence {
+        response.extensions_mut().insert(evidence);
+    }
     response
 }
 
@@ -2274,11 +2281,13 @@ async fn password_login_enabled(deps: &ConsoleDeps) -> bool {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod authentication_tests;
 
-
 fn observed_session_refusal(body: &'static str, constructor: &'static str) -> Response {
     let mut response = (StatusCode::FORBIDDEN, body).into_response();
     crate::application_body_observation::produced(
-        &mut response, body.as_bytes(), constructor, include_bytes!("handlers.rs"),
+        &mut response,
+        body.as_bytes(),
+        constructor,
+        include_bytes!("handlers.rs"),
         "actual_refused_session_origin_or_csrf_branch",
     );
     response
