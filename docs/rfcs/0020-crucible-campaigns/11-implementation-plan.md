@@ -116,10 +116,11 @@ and derivation retry after the target advances. Reopening the same immutable
 store reconstructs both histories and their distinct lifecycle states.
 
 The complete gate runs the campaign crate suite and the required exact model
-measurement and raw replay evidence tests. It can be qualified independently:
+measurement and raw replay evidence tests. It can be qualified independently
+from the repository root in `nix develop` or its direnv environment:
 
-```text
-bash ./aos-dev --release build check \
+```sh
+bash tools/dev/aos-dev --release build check \
   crucible.phase1.gates.campaignModel.isolatedGate --no-out-link
 ```
 
