@@ -817,12 +817,12 @@ async fn publish(input: PublishInput<'_>, printer: &Printer) -> Result<()> {
             container,
             &object_directory,
         )?;
-        aos_package::registry::container_stage::upload_container_stage_with_options(
+        aos_package::registry::container_stage::upload_container_stage_with_client(
             &record.revision,
             &object_directory,
             registry_origin,
             namespace,
-            Some(registry_token),
+            &registry_client,
             &options,
             &mount_from,
         )
