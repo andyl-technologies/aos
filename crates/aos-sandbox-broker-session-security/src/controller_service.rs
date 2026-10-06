@@ -1054,6 +1054,28 @@ fn run_retained_controller(
                 "exclusive Git cohort cannot create or reconstruct Source genesis",
             ));
         }
+        let first_global_prefix_selection = resource_bank.as_ref().map(|bank| {
+            bank.lock().map(|bank| bank.selects_first_global_prefix())
+        });
+        let first_global_prefix_selected = match &first_global_prefix_selection {
+            Some(Ok(selected)) => *selected,
+            Some(Err(_)) => worker.terminate(ControllerResidentCauseV1::Closed(
+                "FirstGlobal original bank lock failure retained",
+            )),
+            None => false,
+        };
+        if first_global_prefix_selected {
+            let Some(profile) = profile else {
+                worker.terminate(ControllerResidentCauseV1::Closed("FirstGlobal original profile is absent"));
+            };
+            // The entered executor parks its actual prefix before either
+            // selector can replay, allocate, sign or connect. The outward
+            // status does not carry or manufacture a spending loan.
+            let prepared = controller.prepare_first_global_prefix_v1(profile);
+            if prepared.is_err() {
+                worker.terminate(ControllerResidentCauseV1::Closed("FirstGlobal prefix original failure retained"));
+            }
+        }
         // Only the selected image-bank startup consults this additional family
         // selector. Budgetless ordinary startup retains its old observation order.
         let resource_global_result = if resource_bank.is_some() {
@@ -1072,6 +1094,19 @@ fn run_retained_controller(
                 "configured project history comparison failed",
             )),
         };
+        // The same stored prefix remains charged, but its unused rows cannot
+        // pay a different coordinator or an absent-input continuation.
+        let refuse_skipped_first_global = |reason| -> ! {
+            let closed = profile.map(|original| original.close_first_global_prefix_v1());
+            let _original_close = &closed;
+            worker.terminate(ControllerResidentCauseV1::Closed(reason))
+        };
+        if first_global_prefix_selected
+            && (!resource_global
+                || configured_selection == Some(aos_sandbox::controller::ConfiguredProjectStartupSelectionV3::MixedProject))
+        {
+            refuse_skipped_first_global("FirstGlobal prefix cannot enter an unrelated startup purpose");
+        }
         let (replay_genesis, selected_genesis) = if configured_selection == Some(aos_sandbox::controller::ConfiguredProjectStartupSelectionV3::MixedProject) {
             let Some(input) = genesis else { worker.terminate(ControllerResidentCauseV1::Closed("configured mixed pair is absent")); };
             let Some(profile) = profile else { worker.terminate(ControllerResidentCauseV1::Closed("configured mixed startup requires the original Root profile")); };
@@ -1113,6 +1148,9 @@ fn run_retained_controller(
                 "retained first Source successor selection failed",
             )),
         };
+        if first_global_prefix_selected && successor_project.is_some() {
+            refuse_skipped_first_global("FirstGlobal prefix cannot enter a retained Source successor");
+        }
         let selected_genesis = match (successor_project, genesis) {
             (Some(project), Some(input)) if input.project() == project => {
                 // This compares actual configured credentials with the retained
@@ -4003,6 +4041,7 @@ fn parse_identity(
 
 struct ProductionEffectExecutor {
     resource_bank: Option<Arc<Mutex<aos_sandbox::ControllerResourceBankOpeningV1>>>,
+    first_global_prefix: Option<aos_sandbox::ControllerFirstGlobalPrefixAttemptV1>,
 
     snapshot_ownership: Option<SnapshotOwnershipDonationV3>,
     pending_snapshot_derivative: Option<storage_snapshot::authorization::SnapshotDerivativeAttemptV3>,
@@ -4130,6 +4169,7 @@ impl ProductionEffectExecutor {
     ) -> Self {
         Self {
             resource_bank: None,
+            first_global_prefix: None,
             snapshot_ownership: None,
             pending_snapshot_derivative: None,
             #[cfg(feature = "online-nix")]
@@ -6252,6 +6292,57 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         original.into_outcome()
     }
 
+    fn prepare_first_global_prefix_v1(
+        &mut self,
+        journal: &mut Journal,
+        profile: &aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<(), aos_sandbox::ResourceReservationErrorV1> {
+        let bank = self.resource_bank.as_ref()
+            .ok_or(aos_sandbox::ResourceReservationErrorV1::EnrollmentUnavailable)?;
+        if self.first_global_prefix.is_some() {
+            return Err(aos_sandbox::ResourceReservationErrorV1::Conflict);
+        }
+        self.first_global_prefix = Some(
+            aos_sandbox::ControllerFirstGlobalPrefixAttemptV1::new(Arc::clone(bank)),
+        );
+        // These are actual resident original representations, not deployment
+        // flags or a new default Session masquerading as an unused owner.
+        let shape = (|| {
+            let sessions = self.sessions.lock()
+                .map_err(|_| aos_sandbox::ResourceReservationErrorV1::Conflict)?;
+            if sessions.host.is_some()
+                || sessions.mount.is_some()
+                || sessions.storage.is_some()
+                || sessions.storage_cold.is_some()
+                || sessions.network.is_some()
+                || sessions.storage_root.has_pending()
+                || sessions.storage_root.requires_reconnect()
+                || self.pending_attachment_slot_attempt.is_some()
+                || self.pending_attachment_catalog_query.is_some()
+                || self.pending_attachment_mount_attempt.is_some()
+                || self.pending_attachment_source_attempt.is_some()
+                || self.pending_attachment_source_consume.is_some()
+                || self.pending_cache_pin.is_some()
+                || self.pending_cache_unpin.is_some()
+                || self.pending_source_commit.is_some()
+                || self.pending_snapshot_coordination.is_some()
+                || self.pending_atomic_snapshot.is_some()
+                || self.pending_snapshot_derivative.is_some()
+                || self.q04.is_some()
+            {
+                return Err(aos_sandbox::ResourceReservationErrorV1::Conflict);
+            }
+            #[cfg(feature = "online-nix")]
+            if sessions.nix_resolve.is_some() || sessions.nix_input_source.is_some() {
+                return Err(aos_sandbox::ResourceReservationErrorV1::Conflict);
+            }
+            Ok(())
+        })();
+        self.first_global_prefix.as_mut()
+            .ok_or(aos_sandbox::ResourceReservationErrorV1::Conflict)?
+            .prepare_once(journal, &mut self.source_domains, profile, shape)
+    }
+
     fn coordinate_configured_global_genesis_v2<'writers, 'profile>(
         &'writers mut self,
         journal: &'writers mut Journal,
@@ -6268,6 +6359,13 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             profile,
             self.resource_bank.clone(),
         );
+        if let Some(prefix) = self.first_global_prefix.as_ref() {
+            if original.attach_first_global_prefix(prefix).is_err() {
+                // The whole attachment failure and independent posts/LAST
+                // precede fixed credential loading or SigningKey creation.
+                return original.into_outcome();
+            }
+        }
 
         if let Err(error) = with_process_controller_hold_signer_v1(|generation, signer| {
             original.run_with_signer(generation, signer);

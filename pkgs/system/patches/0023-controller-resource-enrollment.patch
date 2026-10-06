@@ -21,7 +21,7 @@ diff --git a/src/core/aos-resource-enrollment.c b/src/core/aos-resource-enrollme
 new file mode 100644
 --- /dev/null
 +++ b/src/core/aos-resource-enrollment.c
-@@ -0,0 +1,411 @@
+@@ -0,0 +1,422 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +
 +#include <fcntl.h>
@@ -43,6 +43,8 @@ new file mode 100644
 +#define AOS_RESOURCE_POLICY_BODY 744U
 +#define AOS_RESOURCE_HOST_POLICY_BYTES 1128U
 +#define AOS_RESOURCE_HOST_POLICY_BODY 1096U
++#define AOS_RESOURCE_FIRST_GLOBAL_POLICY_BYTES 1304U
++#define AOS_RESOURCE_FIRST_GLOBAL_POLICY_BODY 1272U
 +#define AOS_RESOURCE_VECTOR_BYTES (22U * 8U)
 +#define AOS_RESOURCE_COMPONENTS_OFFSET (40U + 3U * AOS_RESOURCE_VECTOR_BYTES)
 +#define AOS_RESOURCE_CONCURRENT_OPERATIONS 21U
@@ -73,7 +75,7 @@ new file mode 100644
 +        bool admitted;
 +        sd_id128_t boot;
 +        sd_id128_t invocation;
-+        uint8_t policy[AOS_RESOURCE_HOST_POLICY_BYTES];
++        uint8_t policy[AOS_RESOURCE_FIRST_GLOBAL_POLICY_BYTES];
 +        size_t policy_bytes;
 +        uint64_t job_limit;
 +        uint64_t jobs;
@@ -132,7 +134,8 @@ new file mode 100644
 +            fstatfs(enrollment.policy_fd, &fs) < 0)
 +                return -errno;
 +        if (!S_ISREG(st.st_mode) ||
-+            (st.st_size != AOS_RESOURCE_POLICY_BYTES && st.st_size != AOS_RESOURCE_HOST_POLICY_BYTES) ||
++            (st.st_size != AOS_RESOURCE_POLICY_BYTES && st.st_size != AOS_RESOURCE_HOST_POLICY_BYTES &&
++             st.st_size != AOS_RESOURCE_FIRST_GLOBAL_POLICY_BYTES) ||
 +            st.st_uid != 0 || st.st_gid != 0 || (st.st_mode & 0222) != 0 ||
 +            fs.f_type != AOS_RESOURCE_EROFS_MAGIC)
 +                return -EPERM;
@@ -150,9 +153,12 @@ new file mode 100644
 +                        return -EBADMSG;
 +                used += returned;
 +        }
++        bool first_global = enrollment.policy_bytes == AOS_RESOURCE_FIRST_GLOBAL_POLICY_BYTES;
 +        bool host_policy = enrollment.policy_bytes == AOS_RESOURCE_HOST_POLICY_BYTES;
-+        size_t body_bytes = host_policy ? AOS_RESOURCE_HOST_POLICY_BODY : AOS_RESOURCE_POLICY_BODY;
-+        if (memcmp(enrollment.policy, host_policy ? "AOSRSB02" : "AOSRSB01", 8) != 0)
++        size_t body_bytes = first_global ? AOS_RESOURCE_FIRST_GLOBAL_POLICY_BODY :
++                            (host_policy ? AOS_RESOURCE_HOST_POLICY_BODY : AOS_RESOURCE_POLICY_BODY);
++        const char *magic = first_global ? "AOSRSB03" : (host_policy ? "AOSRSB02" : "AOSRSB01");
++        if (memcmp(enrollment.policy, magic, 8) != 0)
 +                return -EBADMSG;
 +        sha256_direct(enrollment.policy, body_bytes, digest);
 +        if (memcmp(digest, enrollment.policy + body_bytes, sizeof(digest)) != 0)
@@ -215,11 +221,16 @@ new file mode 100644
 +        return 0;
 +}
 +
++static bool host_policy_family(void) {
++        return enrollment.policy_bytes == AOS_RESOURCE_HOST_POLICY_BYTES ||
++               enrollment.policy_bytes == AOS_RESOURCE_FIRST_GLOBAL_POLICY_BYTES;
++}
++
 +bool aos_resource_host_selected_name(const char *name) {
 +        /* manager_startup establishes this original before enumeration. A
 +         * lookup never opens/reparses policy or initializes an issuer. */
 +        return enrollment.admitted && enrollment.first_error == 0 &&
-+               enrollment.policy_bytes == AOS_RESOURCE_HOST_POLICY_BYTES &&
++               host_policy_family() &&
 +               streq_ptr(name, "aos-sandbox-hostd.service") &&
 +               aos_network_image_guard_active();
 +}
@@ -275,7 +286,7 @@ new file mode 100644
 +                return &enrollment.controller_invocation;
 +        if (streq_ptr(unit->id, "aos-storaged.service"))
 +                return &enrollment.storage_invocation;
-+        if (enrollment.policy_bytes == AOS_RESOURCE_HOST_POLICY_BYTES &&
++        if (host_policy_family() &&
 +            streq_ptr(unit->id, "aos-sandbox-hostd.service"))
 +                return &enrollment.host_invocation;
 +        return NULL;
@@ -286,7 +297,7 @@ new file mode 100644
 +                return &enrollment.controller_delivery;
 +        if (streq_ptr(unit->id, "aos-storaged.service"))
 +                return &enrollment.storage_delivery;
-+        if (enrollment.policy_bytes == AOS_RESOURCE_HOST_POLICY_BYTES &&
++        if (host_policy_family() &&
 +            streq_ptr(unit->id, "aos-sandbox-hostd.service"))
 +                return &enrollment.host_delivery;
 +        return NULL;

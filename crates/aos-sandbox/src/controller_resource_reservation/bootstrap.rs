@@ -56,7 +56,8 @@ pub(super) fn observe_original_pair(
     let delivery_metadata = enrollment_file.metadata()?;
     let seals = fcntl_get_seals(enrollment_file)?;
     if !policy_metadata.is_file()
-        || ![codec::IMAGE_POLICY_BYTES as u64, codec::HOST_IMAGE_POLICY_BYTES as u64]
+        || ![codec::IMAGE_POLICY_BYTES as u64, codec::HOST_IMAGE_POLICY_BYTES as u64,
+            codec::FIRST_GLOBAL_IMAGE_POLICY_BYTES as u64]
             .contains(&policy_metadata.len())
         || policy_metadata.uid() != 0 || policy_metadata.gid() != 0
         || policy_metadata.mode() & 0o222 != 0
@@ -80,8 +81,17 @@ pub(super) fn observe_original_pair(
             let (identity, recipient_invocation) = codec::decode_pid1_delivery(&delivery_bytes)?;
             (policy, identity, recipient_invocation,
                 <[u8; 32]>::from(Sha256::digest(policy_bytes)))
-        } else {
+        } else if policy_metadata.len() == codec::HOST_IMAGE_POLICY_BYTES as u64 {
             let mut policy_bytes = [0; codec::HOST_IMAGE_POLICY_BYTES];
+            let mut delivery_bytes = [0; 152];
+            policy_file.read_exact_at(&mut policy_bytes, 0)?;
+            enrollment_file.read_exact_at(&mut delivery_bytes, 0)?;
+            let policy = codec::decode_image_policy(&policy_bytes)?;
+            let (identity, recipient_invocation) = codec::decode_pid1_delivery(&delivery_bytes)?;
+            (policy, identity, recipient_invocation,
+                <[u8; 32]>::from(Sha256::digest(policy_bytes)))
+        } else {
+            let mut policy_bytes = [0; codec::FIRST_GLOBAL_IMAGE_POLICY_BYTES];
             let mut delivery_bytes = [0; 152];
             policy_file.read_exact_at(&mut policy_bytes, 0)?;
             enrollment_file.read_exact_at(&mut delivery_bytes, 0)?;
@@ -104,6 +114,7 @@ pub(super) struct EnrollmentTransition {
     heads: [AccountHead; 3],
     claims: [Claim; 2],
     host: Option<(AccountHead, [Claim; 2])>,
+    first_global: Option<Claim>,
 }
 
 impl EnrollmentTransition {
@@ -135,6 +146,22 @@ impl EnrollmentTransition {
             sandbox: [0; 16], tree_revision: [0; 32], cut: ClaimCut::BootLifetime,
             genesis_instance: [0; 32],
             amount, state: ClaimState::Reserved,
+        };
+        let first_global = if let Some(prefix) = policy.first_global_prefix {
+            let retained_service = policy.controller.checked_sub(prefix)?;
+            heads[1].baseline = retained_service;
+            heads[1].account = ResourceAccount::from_usage(
+                ResourceCeilings::bounded(policy.controller),
+                retained_service,
+                ResourceVector::ZERO,
+            )?.reserve(prefix)?;
+            Some(Claim {
+                id: account_id(identity, b"controller-first-global-prefix-v1"),
+                account: controller,
+                ..claim([0; 16], prefix, ClaimPurpose::ControllerFirstGlobalPrefix)
+            })
+        } else {
+            None
         };
         let host = if let Some(host_policy) = policy.host {
             let host_id = account_id(identity, b"host-component-v2");
@@ -170,11 +197,13 @@ impl EnrollmentTransition {
                 claim(components, policy.components, ClaimPurpose::ComponentEnvelope),
             ],
             host,
+            first_global,
         })
     }
 
     fn transaction(&self) -> Result<JournalTransaction, ResourceReservationErrorV1> {
-        let mut records = Vec::with_capacity(if self.host.is_some() { 8 } else { 5 });
+        let members = if self.first_global.is_some() { 9 } else if self.host.is_some() { 8 } else { 5 };
+        let mut records = Vec::with_capacity(members);
         for head in self.heads {
             records.push(JournalRecord::put(
                 RecordNamespace::ControllerResourceReservation,
@@ -205,6 +234,13 @@ impl EnrollmentTransition {
                 ));
             }
         }
+        if let Some(claim) = self.first_global {
+            records.push(JournalRecord::put(
+                RecordNamespace::ControllerResourceReservation,
+                replay::key(replay::CLAIM_PREFIX, claim.id).to_vec(),
+                codec::encode_claim(claim)?.to_vec(),
+            ));
+        }
         Ok(JournalTransaction::new(self.transaction_id, records)?)
     }
 
@@ -223,7 +259,8 @@ impl EnrollmentTransition {
     ) -> Result<(), ResourceReservationErrorV1> {
         if replay::validate(state)?.is_some()
             || transaction.id() != &self.transaction_id
-            || transaction.records().len() != if self.host.is_some() { 8 } else { 5 }
+            || transaction.records().len() != if self.first_global.is_some() { 9 }
+                else if self.host.is_some() { 8 } else { 5 }
         {
             return Err(ResourceReservationErrorV1::Conflict);
         }
@@ -248,6 +285,14 @@ impl EnrollmentTransition {
         }
         for (record, claim) in transaction.records()[claim_offset..claim_offset + 2].iter().zip(self.claims) {
             if !matches_record(record, replay::CLAIM_PREFIX, claim.id, &codec::encode_claim(claim)?) {
+                return Err(ResourceReservationErrorV1::Conflict);
+            }
+        }
+        if let Some(claim) = self.first_global {
+            if !matches_record(
+                &transaction.records()[8], replay::CLAIM_PREFIX, claim.id,
+                &codec::encode_claim(claim)?,
+            ) {
                 return Err(ResourceReservationErrorV1::Conflict);
             }
         }
@@ -283,6 +328,13 @@ impl EnrollmentTransition {
                 if codec::decode_claim(actual)? != expected {
                     return Err(ResourceReservationErrorV1::Conflict);
                 }
+            }
+        }
+        if let Some(expected) = self.first_global {
+            let actual = replay::record_bytes(state, replay::CLAIM_PREFIX, expected.id)
+                .ok_or(ResourceReservationErrorV1::Conflict)?;
+            if codec::decode_claim(actual)? != expected {
+                return Err(ResourceReservationErrorV1::Conflict);
             }
         }
         Ok(())
@@ -321,6 +373,41 @@ pub struct ControllerResourceBankOpeningV1 {
 }
 
 impl ControllerResourceBankOpeningV1 {
+    /// Reports only the already-held image family's prefix selection DATA.
+    ///
+    /// This allocation-free selector does not observe PID1, construct a loan,
+    /// rearm first use or authorize a native effect.
+    #[must_use]
+    pub fn selects_first_global_prefix(&self) -> bool {
+        self.observed.as_ref().and_then(|result| result.as_ref().ok())
+            .is_some_and(|original| original.policy.first_global_prefix.is_some())
+    }
+
+    // Only the entered FirstGlobal constructor uses this genuine held origin
+    // before its newly bounded property observations. The returned DATA never
+    // escapes the private bank children or substitutes for their current join.
+    pub(super) fn first_global_original(
+        &self,
+        journal: &Journal,
+    ) -> Result<OriginalEnrollment, ResourceReservationErrorV1> {
+        if self.failure().is_some() || !matches!(self.native, Some(Ok(_)))
+            || !matches!(self.readback, Some(Ok(())))
+        {
+            return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
+        }
+        let original = self.observed.as_ref().and_then(|result| result.as_ref().ok())
+            .copied().ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
+        let names = self.names.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
+        let actual = observe_original_pair(&self.original.policy, &self.original.enrollment)?;
+        if actual != original || journal.protected_writer_physical_names_v1()? != *names
+            || replay::validate(journal.controller_resource_state_v1()?)? != Some(original.identity)
+        {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        Ok(original)
+    }
+
     // Rechecks the original producer, not a decoded capsule or a new opener.
     pub(super) fn require_enrolled(
         &self,

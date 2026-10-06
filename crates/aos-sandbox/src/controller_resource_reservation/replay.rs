@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use aos_sandbox_core::{ResourceDimension, ResourceLimit, ResourceVector};
+use aos_sandbox_core::{ResourceAccount, ResourceDimension, ResourceLimit, ResourceVector};
 
 use super::{AccountHead, AccountKind, ClaimPurpose, ClaimState, EnrollmentIdentity, ResourceReservationErrorV1, codec, q04, settlement};
 use crate::RecordNamespace;
@@ -135,7 +135,8 @@ pub(super) fn validate(state: &State) -> Result<Option<EnrollmentIdentity>, Reso
                     ClaimPurpose::HostComponentBootstrap =>
                         parent.kind == AccountKind::Components && child.kind == AccountKind::Operation,
                     ClaimPurpose::Snapshot | ClaimPurpose::ProjectPreparation
-                        | ClaimPurpose::Q04Preparation | ClaimPurpose::HostControlInterval => false,
+                        | ClaimPurpose::Q04Preparation | ClaimPurpose::HostControlInterval
+                        | ClaimPurpose::ControllerFirstGlobalPrefix => false,
                 };
                 if !purpose_matches {
                     return Err(ResourceReservationErrorV1::CorruptLedger);
@@ -173,9 +174,47 @@ pub(super) fn validate(state: &State) -> Result<Option<EnrollmentIdentity>, Reso
             {
                 require_host_component(state, claim)?;
             }
+            if claim.purpose == ClaimPurpose::ControllerFirstGlobalPrefix {
+                require_first_global_prefix(parent, claim)?;
+            }
         }
     }
     Ok(enrollment)
+}
+
+// The original image supplies the expected P in the entered opening check.
+// Replay independently enforces the closed native identity and accounting;
+// a correctly decoded row alone is never a receiving or spending constructor.
+fn require_first_global_prefix(
+    controller: AccountHead,
+    claim: super::Claim,
+) -> Result<(), ResourceReservationErrorV1> {
+    let identity = claim.enrollment;
+    let controller_id = super::bootstrap::account_id(identity, b"controller");
+    let claim_id = super::bootstrap::account_id(identity, b"controller-first-global-prefix-v1");
+    let ceiling = finite_ceilings(controller)?;
+    let retained = ceiling.checked_sub(claim.amount)?;
+    let expected = match claim.state {
+        ClaimState::Reserved => ResourceAccount::from_usage(
+            aos_sandbox_core::ResourceCeilings::bounded(ceiling),
+            retained,
+            claim.amount,
+        )?,
+        ClaimState::Committed => ResourceAccount::from_usage(
+            aos_sandbox_core::ResourceCeilings::bounded(ceiling),
+            ceiling,
+            ResourceVector::ZERO,
+        )?,
+        ClaimState::Released => return Err(ResourceReservationErrorV1::CorruptLedger),
+    };
+    if controller.kind != AccountKind::Controller || controller.id != controller_id
+        || claim.account != controller_id || claim.id != claim_id
+        || controller.baseline != retained || controller.account != expected
+        || controller.generation != if claim.state == ClaimState::Reserved { 1 } else { 2 }
+    {
+        return Err(ResourceReservationErrorV1::CorruptLedger);
+    }
+    Ok(())
 }
 
 // The Host record is a single Components subdivision with a reserved control

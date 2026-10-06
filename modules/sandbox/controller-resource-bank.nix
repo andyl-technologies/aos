@@ -84,15 +84,22 @@
         default = null;
         description = "Full reserved Host control interval vector inside Components, paid once.";
       };
+      firstGlobalPrefix = lib.mkOption {
+        type = lib.types.nullOr vectorType;
+        default = null;
+        description = "Full once-only FirstGlobal prefix subdivision of Controller, not another Node grant.";
+      };
     };
   };
 
   policy = pkgs.runCommand "aos-controller-resource-bootstrap-policy-v1" {
     nativeBuildInputs = [pkgs.python3 pkgs.coreutils];
     policyJson = builtins.toJSON (
-      if cfg.policy.hostService == null && cfg.policy.hostControl == null
-      then builtins.removeAttrs cfg.policy ["hostService" "hostControl"]
-      else cfg.policy
+      if cfg.policy.firstGlobalPrefix != null
+      then cfg.policy
+      else if cfg.policy.hostService == null && cfg.policy.hostControl == null
+      then builtins.removeAttrs cfg.policy ["hostService" "hostControl" "firstGlobalPrefix"]
+      else builtins.removeAttrs cfg.policy ["firstGlobalPrefix"]
     );
     dimensionJson = builtins.toJSON dimensions;
     controllerMinimumJson = builtins.toJSON controllerMinimum;
@@ -116,8 +123,10 @@
         raise ValueError("resource dimension registry is inconsistent")
     legacy_fields = {"node", "epoch", "capacity", "baseline", "controller", "components"}
     host_fields = legacy_fields | {"hostService", "hostControl"}
-    host_selected = set(policy) == host_fields
-    if set(policy) not in (legacy_fields, host_fields):
+    prefix_fields = host_fields | {"firstGlobalPrefix"}
+    prefix_selected = set(policy) == prefix_fields
+    host_selected = set(policy) in (host_fields, prefix_fields)
+    if set(policy) not in (legacy_fields, host_fields, prefix_fields):
         raise ValueError("resource policy must contain its complete fixed schema")
 
     def identity(name):
@@ -172,13 +181,34 @@
                 raise ValueError("the Host service/control interval is incomplete")
         host_vectors = (host_service, host_control)
 
-    body = (b"AOSRSB02" if host_selected else b"AOSRSB01") + identity("node") + identity("epoch")
+    prefix_vectors = ()
+    if prefix_selected:
+        prefix = vector("firstGlobalPrefix")
+        if any(prefix[index] > controller[index] for index in range(22)):
+            raise ValueError("the FirstGlobal prefix exceeds its already-paid Controller")
+        for name, minimum in controller_minimum.items():
+            index = dimensions.index(name)
+            if controller[index] - prefix[index] < minimum:
+                raise ValueError("the retained Controller service envelope is below its existing producer bound")
+        if any(prefix[dimensions.index(name)] == 0 for name in (
+            "cpu-micros-per-period", "memory-bytes", "pids", "open-files", "concurrent-operations"
+        )):
+            raise ValueError("the FirstGlobal prefix provision is incomplete")
+        quota = prefix[dimensions.index("cpu-micros-per-period")]
+        if quota % 1000 != 0:
+            raise ValueError("the selected 100ms CPU quota must convert exactly to integral percent")
+        prefix_vectors = (prefix,)
+
+    magic = b"AOSRSB03" if prefix_selected else (b"AOSRSB02" if host_selected else b"AOSRSB01")
+    body = magic + identity("node") + identity("epoch")
     for values in (capacity, baseline, controller, components):
         body += struct.pack(">22Q", *values)
     for values in host_vectors:
         body += struct.pack(">22Q", *values)
+    for values in prefix_vectors:
+        body += struct.pack(">22Q", *values)
     encoded = body + hashlib.sha256(body).digest()
-    if len(encoded) != (1128 if host_selected else 776):
+    if len(encoded) != (1304 if prefix_selected else (1128 if host_selected else 776)):
         raise ValueError("native bootstrap policy width changed")
     Path(sys.argv[1]).write_bytes(encoded)
     PY
@@ -227,11 +257,23 @@ in {
             && !config.aos.sandbox.hostBroker.canary);
         message = "V2 resource policy requires the selected Host control service, not ordinary or Canary activation.";
       }
+      {
+        assertion = cfg.policy.firstGlobalPrefix == null
+          || (cfg.policy.hostService != null && cfg.policy.hostControl != null);
+        message = "V3 FirstGlobal policy extends the complete selected Host image family.";
+      }
     ];
     aos.sandbox.resourceBank._imagePolicy = policy;
     environment.etc."aos/resource-bootstrap-v1" = {
       source = "${policy}/bootstrap.bin";
       mode = "0444";
+    };
+    systemd.services.aos-sandboxd.serviceConfig = lib.mkIf (cfg.policy.firstGlobalPrefix != null) {
+      # The same finite period is checked against the original cpu.max OFD;
+      # configuration alone is not admission or proof of effective enforcement.
+      CPUAccounting = true;
+      CPUQuotaPeriodSec = "100ms";
+      CPUQuota = "${toString (cfg.policy.firstGlobalPrefix.cpu-micros-per-period / 1000)}%";
     };
   };
 }
