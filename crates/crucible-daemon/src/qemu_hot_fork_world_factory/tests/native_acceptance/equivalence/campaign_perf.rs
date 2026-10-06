@@ -26,12 +26,46 @@ mod campaign_queue_scan;
 
 const CAMPAIGN: &str = "native-performance-short-branch";
 
+pub(super) struct CampaignPlannerSample {
+    pub(super) nanoseconds: u64,
+    pub(super) work: CampaignPlannerWork,
+}
+
+/// Owns already accepted planner results until serialization after timing.
+pub(super) struct CampaignPlannerWork {
+    scenario: crucible_campaign::ScenarioArtifact,
+    genesis: crucible_campaign::ConfigurationArtifact,
+    parent: crucible_campaign::ConfigurationId,
+    request: BranchRequest,
+    proposal: crucible_campaign::Proposal,
+    snapshot: crucible_campaign::CampaignSnapshotId,
+    queue: campaign_queue_scan::QueueScanMeasurement,
+}
+
+impl CampaignPlannerWork {
+    pub(super) fn record(&self) -> serde_json::Value {
+        serde_json::json!({
+            "scenario_artifact": self.scenario.id().expect("scenario identity").to_text(),
+            "genesis_artifact": self.genesis.id().expect("genesis identity").to_text(),
+            "parent_configuration": self.parent.to_hex(),
+            "request_bytes": self.request.canonical_bytes(),
+            "proposal_bytes": self.proposal.canonical_bytes(),
+            "snapshot": self.snapshot.to_text(),
+            "queue_attempts": self.queue.attempts,
+            "queue_pages": self.queue.pages,
+            "queue_scanned_entries": self.queue.scanned_entries,
+            "queue_empty_pages": self.queue.empty_pages,
+            "ordered_attempts_digest": self.queue.ordered_attempts_digest.to_hex().as_str(),
+        })
+    }
+}
+
 pub(super) fn measure_campaign_planner_queue_at_boundary(
     source: &crucible::ScenarioDefForm,
     input: &CrucibleAttemptExecution,
     boundary: &BoundaryEvidence,
     index: usize,
-) -> u64 {
+) -> CampaignPlannerSample {
     let storage_root = PathBuf::from(
         std::env::var_os("CRUCIBLE_CAMPAIGN_PERF_STORAGE_ROOT")
             .expect("packaged campaign performance storage root"),
@@ -298,7 +332,18 @@ pub(super) fn measure_campaign_planner_queue_at_boundary(
         storage_root.display()
     );
     println!("corpus_{index}_campaign_storage_physical_bytes={physical_bytes}");
-    elapsed
+    CampaignPlannerSample {
+        nanoseconds: elapsed,
+        work: CampaignPlannerWork {
+            scenario: scenario_artifact,
+            genesis: genesis_artifact,
+            parent: parent_artifact.configuration(),
+            request,
+            proposal,
+            snapshot: result.new_snapshot,
+            queue: queue_measurement,
+        },
+    }
 }
 
 fn command_id(index: usize, operation: &str) -> CampaignCommandId {

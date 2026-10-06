@@ -36,6 +36,8 @@ mod campaign_perf;
 mod child;
 #[path = "equivalence/evidence.rs"]
 mod evidence;
+#[path = "equivalence/performance_work.rs"]
+mod performance_work;
 #[path = "equivalence/siblings.rs"]
 mod siblings;
 #[path = "equivalence/source_watchdog.rs"]
@@ -956,6 +958,16 @@ fn production_whole_world_survives_ten_thousand_lifecycles_without_leaks() {
 #[test]
 #[ignore = "requires the packaged patched QEMU, cgroup v2, and project quotas"]
 fn production_hot_fork_meets_whole_world_performance_ratchets() {
+    if let Ok(sample) = std::env::var("CRUCIBLE_CAMPAIGN_PERF_SAMPLE_ID") {
+        assert!(
+            sample.len() == 32
+                && sample
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        );
+        println!("\ncampaign_performance_sample_id={sample}");
+    }
+    let case_started = operational_monotonic_nanoseconds();
     const CORPUS_SIZE: usize = 3;
     const KNOWN_DIRTY_KIB: u64 = 1024 * 4;
     const DIRTY_OVERHEAD_KIB: u64 = 64 * 1024;
@@ -1026,6 +1038,7 @@ fn production_hot_fork_meets_whole_world_performance_ratchets() {
     let mut hot_steady = 0_u64;
     let mut exact_steady = 0_u64;
     let mut campaign_planner_queue_samples = Vec::with_capacity(CORPUS_SIZE);
+    let mut retained_work = Vec::with_capacity(CORPUS_SIZE);
     let mut hot_guest_continuation_samples = Vec::with_capacity(CORPUS_SIZE);
     for index in 0..CORPUS_SIZE {
         let source_lane = format!("performance-source-{index}");
@@ -1047,8 +1060,11 @@ fn production_hot_fork_meets_whole_world_performance_ratchets() {
         assert_eq!(boundary, checkpoint_boundary);
         let campaign_sample =
             measure_campaign_planner_queue_at_boundary(&source, &input, &boundary, index);
-        campaign_planner_queue_samples.push(campaign_sample);
-        println!("corpus_{index}_campaign_planner_queue_ns={campaign_sample}");
+        campaign_planner_queue_samples.push(campaign_sample.nanoseconds);
+        println!(
+            "corpus_{index}_campaign_planner_queue_ns={}",
+            campaign_sample.nanoseconds
+        );
         let world = live_source
             .prepare_hot_fork_source_world()
             .expect("prepare performance source");
@@ -1147,6 +1163,7 @@ fn production_hot_fork_meets_whole_world_performance_ratchets() {
         println!("corpus_{index}_exact_guest_continuation_ns={exact_steady_sample}");
         assert_continuation_equivalent("performance exact restore", &hot, &exact_evidence);
         QemuFreshAttemptLifecycleOwner::shutdown(&mut exact).expect("shutdown exact corpus member");
+        retained_work.push((campaign_sample.work, hot, exact_evidence));
 
         println!("corpus_{index}_vm_pte_kib={}", measurement.vm_pte_kib);
         println!("corpus_{index}_vm_data_kib={}", measurement.vm_data_kib);
@@ -1223,6 +1240,15 @@ fn production_hot_fork_meets_whole_world_performance_ratchets() {
     println!("known_dirty_guest_pages=1024");
     println!("memory_metrics=VmPTE,VmData,AnonHugePages,numa_maps");
     println!("multi_node_launch_model=max-plus-bounded-orchestration");
+    let case_elapsed = operational_monotonic_nanoseconds()
+        .checked_sub(case_started)
+        .expect("performance case monotonic clock regressed");
+    println!("campaign_performance_case_elapsed_ns={case_elapsed}");
+
+    // Retain actual work after all original measured operations and assertions.
+    for (index, (planner, hot, exact)) in retained_work.iter().enumerate() {
+        performance_work::emit(index, planner.record(), hot, exact);
+    }
 }
 
 fn drive_fresh_source_to_semantic_depth(
