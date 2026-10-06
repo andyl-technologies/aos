@@ -789,11 +789,13 @@ pub fn encode_global_recovery_state(
     limits: CacheRecoveryLimitsV1,
 ) -> Result<Vec<u8>, RecoveryError> {
     let limits = limits.validate()?;
-    validate_global_recovery_state(state, partition, limits)?;
-    let mut writer = CanonicalWriter::new(b"AOSGLB01", limits.maximum_payload_bytes)?;
-    write_global_recovery_state(&mut writer, state, limits)?;
-    writer.digest(state.digest)?;
-    Ok(writer.finish())
+    let mut body = validated_global_recovery_body(state, partition, limits)?;
+    body.digest(state.digest)?;
+    let mut bytes = body.finish();
+    // The existing writer established the fixed 16-byte header. Its digest
+    // was checked before appending; only finalized DATA changes wire purpose.
+    bytes[..8].copy_from_slice(b"AOSGLB01");
+    Ok(bytes)
 }
 
 /// Decodes complete global recovery state from canonical bounded bytes.
@@ -945,6 +947,15 @@ pub(super) fn validate_global_recovery_state(
     partition: PhysicalPartitionId,
     limits: CacheRecoveryLimitsV1,
 ) -> Result<(), RecoveryError> {
+    validated_global_recovery_body(state, partition, limits).map(|_| ())
+}
+
+// The encoder retains these bytes only within this immutable validation window.
+fn validated_global_recovery_body(
+    state: &CacheGlobalRecoveryStateV1,
+    partition: PhysicalPartitionId,
+    limits: CacheRecoveryLimitsV1,
+) -> Result<CanonicalWriter, RecoveryError> {
     if state
         .node_quota
         .validate()
@@ -1021,11 +1032,17 @@ pub(super) fn validate_global_recovery_state(
     }
     if state.poison.is_some_and(|poison| {
         poison.operation.as_bytes() == &[0; 16] || poison.record_digest.as_bytes() == &[0; 32]
-    }) || state.digest != global_state_digest(state, limits)?
-    {
+    }) {
         return Err(RecoveryError::PayloadMismatch);
     }
-    Ok(())
+    let body = global_recovery_body(state, limits)?;
+    if state.digest != digest_bytes(
+        b"aos.sandbox.cache.global-recovery-state.v1\0",
+        body.as_bytes(),
+    ) {
+        return Err(RecoveryError::PayloadMismatch);
+    }
+    Ok(body)
 }
 
 pub(super) fn global_pending_effects(
@@ -1053,12 +1070,20 @@ pub(super) fn global_state_digest(
     state: &CacheGlobalRecoveryStateV1,
     limits: CacheRecoveryLimitsV1,
 ) -> Result<ObjectDigest, RecoveryError> {
-    let mut writer = CanonicalWriter::new(b"AOSGLD01", limits.maximum_payload_bytes)?;
-    write_global_recovery_state(&mut writer, state, limits)?;
+    let body = global_recovery_body(state, limits)?;
     Ok(digest_bytes(
         b"aos.sandbox.cache.global-recovery-state.v1\0",
-        writer.as_bytes(),
+        body.as_bytes(),
     ))
+}
+
+fn global_recovery_body(
+    state: &CacheGlobalRecoveryStateV1,
+    limits: CacheRecoveryLimitsV1,
+) -> Result<CanonicalWriter, RecoveryError> {
+    let mut writer = CanonicalWriter::new(b"AOSGLD01", limits.maximum_payload_bytes)?;
+    write_global_recovery_state(&mut writer, state, limits)?;
+    Ok(writer)
 }
 
 pub(super) fn write_node_quota(
