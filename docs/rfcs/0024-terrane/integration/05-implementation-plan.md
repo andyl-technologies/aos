@@ -3134,7 +3134,19 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   require genuine earlier certificate publication followed by completed
   Recorded history, exact original-root associations, complete dependencies,
   independent current fences and retained Original roles. Missing selectors
-  fail explicitly. Implementation and qualification remain pending; fresh
+  fail explicitly. The isolated implementation now passes those four exact
+  owning Nix cases and ten focused native cases on unchanged source, including
+  six existing completed-view regressions. Every one of the 4,837 included
+  source files matches the actual owning derivation. Native, default and Send
+  strict all-target Clippy and private rustdoc pass, as do the default build,
+  all 156 default-profile tests, application test-target compilation and both
+  mandatory formatters. Full native Nextest remains red: 570 run, 564 passed,
+  one expired publication failure and five existing restore/retirement cases
+  timed out at 120 seconds, with none skipped. The unchanged multiple-source
+  disclosure case separately passes alone in 36.095 seconds; this diagnostic
+  does not replace the failed full run or establish a causal explanation.
+  Original failures and production deadlines remain unchanged. These results
+  qualify only the isolated source; no task merge or checkbox advances. Fresh
   Recorded candidate admission and required index completion are separate.
   A shared `VerifiedHistory::append_verified` prerequisite now preserves
   completed disclosure boundaries, original root/bootstrap scopes and selected
