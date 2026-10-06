@@ -12,9 +12,9 @@ use anyhow::{Context, Result, bail, ensure};
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
-const IMAGE_PROFILE: &str = "/var/lib/profiles/image";
-const BOOT_ROOT: &str = "/boot";
-const RETENTION_ROOT: &str = "EFI/.aos-rollout-retention";
+use crate::image_profile::{BOOT_ROOT, IMAGE_PROFILE, PayloadSource, private_directory};
+
+const RETENTION_ROOT: &str = "rollout-retention";
 const BOOT_ARTIFACT_CONTRACT: &str = "contract.json";
 const MAX_BOOT_ARTIFACT_CONTRACT_BYTES: u64 = 64 * 1024;
 
@@ -319,7 +319,7 @@ fn apply(
 ) -> Result<serde_json::Value> {
     match (role, method) {
         (BootPlatformRole::ArtifactStorage, "retain") => {
-            with_writable_boot(tools, || retain_payloads(rollout))?;
+            retain_payloads(rollout)?;
             storage_observation(observation_schema, rollout)
         }
         (BootPlatformRole::ArtifactStorage, "release") => {
@@ -636,9 +636,12 @@ fn installed_entry(identity: &ImageIdentity) -> Result<String> {
     ensure!(!evidence.retired, "boot generation is physically retired");
     let recorded = safe_entry_path(&evidence.installed_entry)?;
     if let Some(source) = &evidence.uki_source_path {
-        let source = safe_source_path(source)?;
-        if source.starts_with("EFI/.aos-candidates") {
-            checked_staged_bytes(evidence, &Path::new(BOOT_ROOT).join(source))?;
+        let source = PayloadSource::parse(source)?;
+        if matches!(source, PayloadSource::Staged(_)) {
+            checked_staged_bytes(
+                evidence,
+                &source.resolve(Path::new(BOOT_ROOT), Path::new(IMAGE_PROFILE)),
+            )?;
             return recorded
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -859,15 +862,21 @@ fn stable_entry(entry: &str) -> Result<String> {
 
 fn retention_directory(rollout: &RolloutRequest) -> Result<PathBuf> {
     let digest = Sha256Digest::of_canonical("aos.boot.artifact-storage-request/v1", rollout)?;
-    Ok(Path::new(BOOT_ROOT)
+    Ok(Path::new(IMAGE_PROFILE)
         .join(RETENTION_ROOT)
         .join(digest.to_string().replace(':', "-")))
 }
 
 fn retain_payloads(rollout: &RolloutRequest) -> Result<()> {
     let directory = retention_directory(rollout)?;
-    fs::create_dir_all(&directory)?;
-    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
+    let parent = private_directory(Path::new(IMAGE_PROFILE), RETENTION_ROOT)?;
+    private_directory(
+        &parent,
+        directory
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("retention directory name is not UTF-8")?,
+    )?;
     let predecessor_entry = installed_entry(&rollout.predecessor)?;
     let candidate_entry = installed_entry(&rollout.candidate)?;
     let predecessor_digest = copy_identity_payload(
@@ -893,26 +902,6 @@ fn retain_payloads(rollout: &RolloutRequest) -> Result<()> {
         &directory.join("manifest.json"),
         &aos_contract::canonical::to_vec(&manifest)?,
     )
-}
-
-fn safe_source_path(value: &str) -> Result<PathBuf> {
-    if let Ok(path) = safe_entry_path(value) {
-        return Ok(path);
-    }
-    let parts = value.split('/').collect::<Vec<_>>();
-    ensure!(
-        parts.len() == 4
-            && parts[0] == "EFI"
-            && parts[1] == ".aos-candidates"
-            && parts[3] == "candidate.efi",
-        "invalid staged UKI source"
-    );
-    let generation: u32 = parts[2].parse()?;
-    ensure!(
-        generation > 0 && generation.to_string() == parts[2],
-        "invalid staged generation"
-    );
-    Ok(PathBuf::from(value))
 }
 
 fn checked_staged_bytes(
@@ -964,11 +953,12 @@ fn promote_candidate(identity: &ImageIdentity, reset_count: bool) -> Result<()> 
     let Some(source) = &evidence.uki_source_path else {
         return Ok(());
     };
-    let source = safe_source_path(source)?;
-    if !source.starts_with("EFI/.aos-candidates") {
+    let source = PayloadSource::parse(source)?;
+    if !matches!(source, PayloadSource::Staged(_)) {
         return Ok(());
     }
-    let bytes = checked_staged_bytes(evidence, &Path::new(BOOT_ROOT).join(&source))?;
+    let source = source.resolve(Path::new(BOOT_ROOT), Path::new(IMAGE_PROFILE));
+    let bytes = checked_staged_bytes(evidence, &source)?;
     let destination = Path::new(BOOT_ROOT).join(safe_entry_path(&evidence.installed_entry)?);
     if !prepare_counted_payload(
         destination
@@ -984,10 +974,7 @@ fn promote_candidate(identity: &ImageIdentity, reset_count: bool) -> Result<()> 
         return Ok(());
     }
     for suffix in [".measurement", ".measurement.sig"] {
-        let sidecar = PathBuf::from(format!(
-            "{}{suffix}",
-            Path::new(BOOT_ROOT).join(&source).display()
-        ));
+        let sidecar = PathBuf::from(format!("{}{suffix}", source.display()));
         ensure!(
             fs::symlink_metadata(&sidecar)?.is_file(),
             "staged measurement sidecar is not regular"
@@ -1056,9 +1043,12 @@ fn copy_identity_payload(
         .boot_provider_state
         .evidence;
     if let Some(source) = &evidence.uki_source_path {
-        let source = safe_source_path(source)?;
-        if source.starts_with("EFI/.aos-candidates") {
-            let bytes = checked_staged_bytes(evidence, &Path::new(BOOT_ROOT).join(source))?;
+        let source = PayloadSource::parse(source)?;
+        if matches!(source, PayloadSource::Staged(_)) {
+            let bytes = checked_staged_bytes(
+                evidence,
+                &source.resolve(Path::new(BOOT_ROOT), Path::new(IMAGE_PROFILE)),
+            )?;
             let digest = Sha256Digest::of_bytes(&bytes);
             if destination.exists() {
                 ensure!(
@@ -1151,10 +1141,14 @@ fn physical_release_observed(rollout: &RolloutRequest) -> Result<bool> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
-    retired_payload_is_absent(Path::new(BOOT_ROOT), inactive)
+    retired_payload_is_absent(Path::new(BOOT_ROOT), Path::new(IMAGE_PROFILE), inactive)
 }
 
-fn retired_payload_is_absent(boot_root: &Path, inactive: &ImageGeneration) -> Result<bool> {
+fn retired_payload_is_absent(
+    boot_root: &Path,
+    profile: &Path,
+    inactive: &ImageGeneration,
+) -> Result<bool> {
     let evidence = &inactive.boot_provider_state.evidence;
     let entry = safe_entry_path(&evidence.installed_entry)?;
     let filename = entry
@@ -1179,7 +1173,7 @@ fn retired_payload_is_absent(boot_root: &Path, inactive: &ImageGeneration) -> Re
         }
     }
     if let Some(source) = &evidence.uki_source_path {
-        let source = boot_root.join(safe_source_path(source)?);
+        let source = PayloadSource::parse(source)?.resolve(boot_root, profile);
         for suffix in ["", ".measurement", ".measurement.sig"] {
             match fs::symlink_metadata(PathBuf::from(format!("{}{suffix}", source.display()))) {
                 Ok(_) => return Ok(false),
@@ -1320,9 +1314,9 @@ fn remove_inactive_payload(rollout: &RolloutRequest, retained: &RetentionManifes
         }
     }
     if let Some(source) = &inactive.boot_provider_state.evidence.uki_source_path {
-        let source = safe_source_path(source)?;
-        if source.starts_with("EFI/.aos-candidates") {
-            let path = Path::new(BOOT_ROOT).join(source);
+        let source = PayloadSource::parse(source)?;
+        if matches!(source, PayloadSource::Staged(_)) {
+            let path = source.resolve(Path::new(BOOT_ROOT), Path::new(IMAGE_PROFILE));
             for suffix in ["", ".measurement", ".measurement.sig"] {
                 remove_regular_payload(&PathBuf::from(format!("{}{suffix}", path.display())))?;
             }
@@ -1502,21 +1496,24 @@ mod tests {
 
     #[test]
     fn staged_source_is_confined_and_bound_to_exact_bytes() {
-        assert!(safe_source_path("EFI/.aos-candidates/12/candidate.efi").is_ok());
+        assert!(PayloadSource::parse("candidates/12/candidate.efi").is_ok());
         for path in [
-            "EFI/.aos-candidates/0/candidate.efi",
-            "EFI/.aos-candidates/01/candidate.efi",
-            "EFI/.aos-candidates/12/other.efi",
-            "EFI/.aos-candidates/../candidate.efi",
+            "candidates/0/candidate.efi",
+            "candidates/01/candidate.efi",
+            "candidates/12/other.efi",
+            "candidates/../candidate.efi",
+            "/candidates/12/candidate.efi",
+            "candidates/12/../candidate.efi",
+            "EFI/.aos-candidates/12/candidate.efi",
         ] {
-            assert!(safe_source_path(path).is_err());
+            assert!(PayloadSource::parse(path).is_err());
         }
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("candidate.efi");
         fs::write(&path, b"authenticated UKI").unwrap();
         let evidence = SystemdBootGenerationEvidence {
             installed_entry: "EFI/Linux/candidate-gen12+3.efi".into(),
-            uki_source_path: Some("EFI/.aos-candidates/12/candidate.efi".into()),
+            uki_source_path: Some("candidates/12/candidate.efi".into()),
             uki_sha256: Some(Sha256Digest::of_bytes(b"authenticated UKI").to_string()),
             uki_byte_size: Some(17),
             retired: false,
@@ -1529,6 +1526,24 @@ mod tests {
         );
         fs::write(&path, b"substituted bytes").unwrap();
         assert!(checked_staged_bytes(&evidence, &path).is_err());
+    }
+
+    #[test]
+    fn staged_and_installed_sources_resolve_in_separate_namespaces() {
+        let boot = Path::new("/example/esp");
+        let profile = Path::new("/example/profile");
+        assert_eq!(
+            PayloadSource::parse("candidates/12/candidate.efi")
+                .unwrap()
+                .resolve(boot, profile),
+            profile.join("candidates/12/candidate.efi")
+        );
+        assert_eq!(
+            PayloadSource::parse("EFI/Linux/gen12.efi")
+                .unwrap()
+                .resolve(boot, profile),
+            boot.join("EFI/Linux/gen12.efi")
+        );
     }
 
     #[test]
@@ -1633,34 +1648,39 @@ mod tests {
     #[test]
     fn completed_release_requires_all_owned_payload_variants_and_sidecars_absent() {
         let directory = tempfile::tempdir().unwrap();
-        let boot = directory.path();
+        let boot = directory.path().join("esp");
+        let profile = directory.path().join("profile");
         let installed = boot.join("EFI/Linux");
-        let hidden = boot.join("EFI/.aos-candidates/2");
+        let hidden = profile.join("candidates/2");
         fs::create_dir_all(&installed).unwrap();
         fs::create_dir_all(&hidden).unwrap();
         let generation: ImageGeneration = serde_json::from_value(serde_json::json!({
             "number":2, "toplevel":"/nix/store/image", "native_executor_ref":"/nix/store/executor",
             "state_version":"1", "boot_artifact_contract":"/nix/store/contract",
             "boot_provider_state": {"schema":"aos.systemd.boot-generation-state/v1",
-                "evidence":{"installed-entry":"EFI/Linux/gen2+3.efi", "uki-source-path":"EFI/.aos-candidates/2/candidate.efi", "retired":true}}
+                "evidence":{"installed-entry":"EFI/Linux/gen2+3.efi", "uki-source-path":"candidates/2/candidate.efi", "retired":true}}
         })).unwrap();
         fs::write(installed.join("foreign.efi"), b"foreign payload").unwrap();
-        assert!(retired_payload_is_absent(boot, &generation).unwrap());
+        assert!(retired_payload_is_absent(&boot, &profile, &generation).unwrap());
 
         let counted = installed.join("gen2+0-3.efi");
         fs::write(&counted, b"owned payload").unwrap();
-        assert!(!retired_payload_is_absent(boot, &generation).unwrap());
+        assert!(!retired_payload_is_absent(&boot, &profile, &generation).unwrap());
         fs::remove_file(&counted).unwrap();
         let sidecar = installed.join("gen2+0-3.efi.measurement.sig");
         fs::write(&sidecar, b"owned measurement").unwrap();
-        assert!(!retired_payload_is_absent(boot, &generation).unwrap());
+        assert!(!retired_payload_is_absent(&boot, &profile, &generation).unwrap());
         fs::remove_file(&sidecar).unwrap();
+        let staged = hidden.join("candidate.efi");
+        fs::write(&staged, b"retained authenticated source").unwrap();
+        assert!(!retired_payload_is_absent(&boot, &profile, &generation).unwrap());
+        fs::remove_file(&staged).unwrap();
         let hidden_sidecar = hidden.join("candidate.efi.measurement");
         fs::write(&hidden_sidecar, b"staged measurement").unwrap();
-        assert!(!retired_payload_is_absent(boot, &generation).unwrap());
+        assert!(!retired_payload_is_absent(&boot, &profile, &generation).unwrap());
         fs::remove_file(&hidden_sidecar).unwrap();
 
-        assert!(retired_payload_is_absent(boot, &generation).unwrap());
+        assert!(retired_payload_is_absent(&boot, &profile, &generation).unwrap());
         assert_eq!(
             fs::read(installed.join("foreign.efi")).unwrap(),
             b"foreign payload"

@@ -10,8 +10,8 @@ use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
-const BOOT_ROOT: &str = "/boot";
-const IMAGE_STATE: &str = "/var/lib/profiles/image/state.json";
+use crate::image_profile::{BOOT_ROOT, IMAGE_PROFILE, PayloadSource};
+
 const BOOT_STORAGE_METADATA: &str = "/run/current-system/meta/boot-storage.json";
 const MOUNTINFO: &str = "/proc/self/mountinfo";
 
@@ -75,8 +75,10 @@ pub(crate) fn run(arguments: &[String]) -> Result<()> {
 
 fn verified_evidence(public_key: &Path, openssl: &Path, objcopy: &Path) -> Result<Value> {
     validate_boot_mount()?;
-    let images: Value =
-        serde_json::from_slice(&read_bounded(Path::new(IMAGE_STATE), 1024 * 1024)?)?;
+    let images: Value = serde_json::from_slice(&read_bounded(
+        &Path::new(IMAGE_PROFILE).join("state.json"),
+        1024 * 1024,
+    )?)?;
     let running_number = images
         .get("running")
         .and_then(Value::as_u64)
@@ -110,13 +112,8 @@ fn verified_evidence(public_key: &Path, openssl: &Path, objcopy: &Path) -> Resul
         .get("boot_provider_state")
         .and_then(|state| state.get("evidence"))
         .context("running image omits backend evidence")?;
-    let recorded = safe_source_path(
-        provider
-            .get("uki-source-path")
-            .and_then(Value::as_str)
-            .context("running image has no authenticated UKI source path")?,
-    )?;
-    let recorded_uki = Path::new(BOOT_ROOT).join(&recorded);
+    let recorded_uki =
+        retained_uki_source(provider, Path::new(BOOT_ROOT), Path::new(IMAGE_PROFILE))?;
     let installed = safe_uki_path(
         provider
             .get("installed-entry")
@@ -129,7 +126,7 @@ fn verified_evidence(public_key: &Path, openssl: &Path, objcopy: &Path) -> Resul
     read_bounded(&signature, 16 * 1024)?;
     let measurement_bytes = read_bounded(&measurement, 4096)?;
     // Verify the exact buffered document that is parsed below. Re-reading the
-    // writable ESP path after verification would introduce a substitution race.
+    // mutable payload path after verification would introduce a substitution race.
     let mut verifier = Command::new(openssl)
         .env_clear()
         .args(["dgst", "-sha256", "-verify"])
@@ -332,24 +329,12 @@ fn safe_uki_path(recorded: &str) -> Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 
-fn safe_source_path(value: &str) -> Result<PathBuf> {
-    if let Ok(path) = safe_uki_path(value) {
-        return Ok(path);
-    }
-    let parts = value.split('/').collect::<Vec<_>>();
-    ensure!(
-        parts.len() == 4
-            && parts[0] == "EFI"
-            && parts[1] == ".aos-candidates"
-            && parts[3] == "candidate.efi",
-        "invalid staged UKI source"
-    );
-    let generation: u32 = parts[2].parse()?;
-    ensure!(
-        generation > 0 && generation.to_string() == parts[2],
-        "invalid staged generation"
-    );
-    Ok(PathBuf::from(value))
+fn retained_uki_source(evidence: &Value, boot_root: &Path, profile: &Path) -> Result<PathBuf> {
+    let source = evidence
+        .get("uki-source-path")
+        .and_then(Value::as_str)
+        .context("running image has no authenticated UKI source path")?;
+    Ok(PayloadSource::parse(source)?.resolve(boot_root, profile))
 }
 
 fn resolve_unique_live_uki(boot_root: &Path, recorded: &Path) -> Result<PathBuf> {
@@ -469,5 +454,39 @@ mod tests {
         assert_eq!(parsed.uki_sha256, "a".repeat(64));
         assert_eq!(parsed.expected_pcr11, format!("sha256:{}", "b".repeat(64)));
         assert!(parse_measurement("aos.uki-measurement/v1\nuki_sha256=AA\n").is_err());
+    }
+
+    #[test]
+    fn staged_measurements_use_profile_sources_independently_of_live_efi_entries() {
+        let boot = Path::new("/example/esp");
+        let profile = Path::new("/example/profile");
+        let evidence = serde_json::json!({
+            "uki-source-path": "candidates/2/candidate.efi",
+            "installed-entry": "EFI/Linux/candidate-gen2+3.efi"
+        });
+        assert_eq!(
+            retained_uki_source(&evidence, boot, profile).unwrap(),
+            profile.join("candidates/2/candidate.efi")
+        );
+
+        let initial = serde_json::json!({"uki-source-path": "EFI/Linux/initial.efi"});
+        assert_eq!(
+            retained_uki_source(&initial, boot, profile).unwrap(),
+            boot.join("EFI/Linux/initial.efi")
+        );
+        for source in [
+            "../candidate.efi",
+            "candidates/02/candidate.efi",
+            "EFI/.aos-candidates/2/candidate.efi",
+        ] {
+            assert!(
+                retained_uki_source(
+                    &serde_json::json!({"uki-source-path":source}),
+                    boot,
+                    profile
+                )
+                .is_err()
+            );
+        }
     }
 }

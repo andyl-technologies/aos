@@ -1,7 +1,7 @@
 //! Stages authenticated systemd images into the opposite immutable root slot.
 //!
 //! The source disk and every published artifact must match signed delivery
-//! metadata. Storage is read-back verified before hidden ESP publication;
+//! metadata. Storage is read-back verified before durable profile publication;
 //! staging never exposes a discoverable normal boot entry or selects a boot.
 
 use std::collections::BTreeMap;
@@ -19,6 +19,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::executable::validate_store_executable;
+use crate::image_profile::{IMAGE_PROFILE, candidate_path, private_directory};
 
 #[path = "image_stage/copy_up.rs"]
 mod copy_up;
@@ -59,7 +60,7 @@ struct Tools {
 /// # Errors
 /// Returns an error for invalid input, active-slot or retained-slot conflicts,
 /// unsafe device topology, hash or boot identity drift, write/read-back failure,
-/// or failure to restore the ESP's read-only posture.
+/// or failure to durably publish authenticated profile payloads.
 pub(crate) fn run_from_process() -> Result<()> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
     ensure!(
@@ -347,18 +348,14 @@ fn stage(request: &Request, tools: &Tools) -> Result<Value> {
             .arg(hash_destination)
             .arg(string(root, "root_hash")?),
     )?;
-    validate_esp_mount(&devices["ESP"])?;
-    successful(Command::new(&tools.mount).args(["-o", "remount,rw", "/boot"]))?;
-    let hidden = format!("EFI/.aos-candidates/{}", request.generation);
-    let publication = publish_hidden(
-        &Path::new("/boot").join(&hidden),
+    let source = candidate_path(request.generation)?;
+    publish_candidate(
+        Path::new(IMAGE_PROFILE),
+        request.generation,
         &uki_path,
         &measurement,
         &signature,
-    );
-    let readonly = successful(Command::new(&tools.mount).args(["-o", "remount,ro", "/boot"]));
-    publication?;
-    readonly?;
+    )?;
     Ok(json!({
         "schema":"aos.image-candidate-staged", "generation":request.generation,
         "toplevel":string(&request.candidate, "toplevel")?,
@@ -367,7 +364,7 @@ fn stage(request: &Request, tools: &Tools) -> Result<Value> {
             "schema":"aos.systemd.boot-generation-state/v1",
             "evidence":{
                 "installed-entry":format!("EFI/Linux/candidate-gen{}+3.efi", request.generation),
-                "uki-source-path":format!("{hidden}/candidate.efi"),
+                "uki-source-path":source,
                 "uki-sha256":string(fact,"sha256")?, "uki-byte-size":integer(fact,"size_bytes")?,
                 "slot":target.to_ascii_uppercase()
             }
@@ -642,13 +639,16 @@ fn write_block(source: &Path, destination: &Path, size: u64, digest: &str) -> Re
     Ok(())
 }
 
-fn publish_hidden(
-    destination: &Path,
+fn publish_candidate(
+    profile: &Path,
+    generation: u32,
     uki: &Path,
     measurement: &Path,
     signature: &Path,
 ) -> Result<()> {
-    fs::create_dir_all(destination)?;
+    candidate_path(generation)?;
+    let candidates = private_directory(profile, "candidates")?;
+    let destination = private_directory(&candidates, &generation.to_string())?;
     for (source, name) in [
         (uki, "candidate.efi"),
         (measurement, "candidate.efi.measurement"),
@@ -659,6 +659,7 @@ fn publish_hidden(
             .write(true)
             .create(true)
             .truncate(true)
+            .mode(0o600)
             .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
             .open(&temp)?;
         io::copy(&mut File::open(source)?, &mut output)?;
@@ -669,7 +670,7 @@ fn publish_hidden(
         );
         fs::rename(temp, destination.join(name))?;
     }
-    File::open(destination)?.sync_all()?;
+    File::open(&destination)?.sync_all()?;
     File::open(
         destination
             .parent()
@@ -1017,16 +1018,41 @@ mod tests {
     }
 
     #[test]
-    fn publication_keeps_normal_entries_hidden() {
+    fn publication_retains_private_sources_outside_the_esp() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("uki");
         fs::write(&source, b"pinned artifact").unwrap();
-        let hidden = temp.path().join("EFI/.aos-candidates/2");
-        publish_hidden(&hidden, &source, &source, &source).unwrap();
-        assert_eq!(
-            fs::read(hidden.join("candidate.efi")).unwrap(),
-            b"pinned artifact"
-        );
+        let profile = temp.path().join("profile");
+        fs::create_dir(&profile).unwrap();
+        publish_candidate(&profile, 2, &source, &source, &source).unwrap();
+        let hidden = profile.join(candidate_path(2).unwrap());
+        assert_eq!(fs::read(&hidden).unwrap(), b"pinned artifact");
         assert!(!temp.path().join("EFI/Linux").exists());
+    }
+
+    #[test]
+    fn interrupted_profile_publication_replays_identical_signed_artifacts() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("uki");
+        fs::write(&source, b"signed candidate").unwrap();
+        let candidates = private_directory(temp.path(), "candidates").unwrap();
+        let generation = private_directory(&candidates, "2").unwrap();
+        fs::write(generation.join(".candidate.efi.tmp"), b"partial").unwrap();
+
+        publish_candidate(temp.path(), 2, &source, &source, &source).unwrap();
+        publish_candidate(temp.path(), 2, &source, &source, &source).unwrap();
+
+        for name in [
+            "candidate.efi",
+            "candidate.efi.measurement",
+            "candidate.efi.measurement.sig",
+        ] {
+            assert_eq!(
+                fs::read(generation.join(name)).unwrap(),
+                b"signed candidate"
+            );
+        }
+        assert!(!generation.join(".candidate.efi.tmp").exists());
+        assert!(!temp.path().join("EFI").exists());
     }
 }

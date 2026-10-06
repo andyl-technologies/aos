@@ -245,7 +245,13 @@ def assert_candidate(record: dict[str, Any]) -> None:
     if record["toplevel"] != CANDIDATE_TOP or record["native_executor_ref"] != CANDIDATE_EXECUTOR or record["boot_artifact_contract"] != CANDIDATE_BOOT_CONTRACT:
         raise RuntimeError("physical candidate differs from its signed immutable fixture")
     evidence = record["boot_provider_state"]["evidence"]
-    source = "/boot/" + evidence["uki-source-path"]
+    relative = evidence["uki-source-path"]
+    if re.fullmatch(r"candidates/[1-9][0-9]*/candidate\.efi", relative):
+        source = "/var/lib/profiles/image/" + relative
+    elif re.fullmatch(r"EFI/Linux/[^/\x00]+\.efi", relative):
+        source = "/boot/" + relative
+    else:
+        raise RuntimeError("candidate payload source is outside its canonical namespace")
     actual = runtime.succeed(f"{SHA256SUM} {shlex.quote(source)}").split()[0]
     if actual != evidence["uki-sha256"].removeprefix("sha256:"):
         raise RuntimeError("installed UKI payload differs from its authenticated receipt")
