@@ -32,7 +32,15 @@ pub(super) fn select_running_maintenance_attempt(
         fast_command,
     )?;
     let fast_request = accepted_branch_request(&fast)?;
-    let fast_attempt = wait_for_new_completed_attempt(fixture, service, &known, &fast_request)?;
+    // This branch cold-replays the same Linux source as the ordinary
+    // guest-choice flight, so it keeps that flight's existing panic guard.
+    let fast_attempt = wait_for_new_completed_attempt_with_timeout(
+        fixture,
+        service,
+        &known,
+        &fast_request,
+        GUEST_CHOICE_ATTEMPT_WAIT,
+    )?;
     known.insert(fast_attempt);
     diagnostics::report_maintenance_stage("fast-recovery-attempt-completed");
     let fast_explanation = wait_for_attempt_observation(fixture, fast_attempt)?;

@@ -443,7 +443,13 @@ assert !interruptedTransfer
       }
       ${lib.optionalString (guestChoice || hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || maintenanceTransfer || singleGuest != null) "export CRUCIBLE_INITRD=${selectedChoiceInitramfs}/initrd.img"}
       export CRUCIBLE_RUN_STATE_ROOT=/tmp/run-state
-      export CRUCIBLE_NATIVE_GUEST_ARCHITECTURE=x86_64
+      export CRUCIBLE_NATIVE_GUEST_ARCHITECTURE=x86_64${lib.optionalString (maintenanceTransfer || interruptedTransfer || packedMaintenance || tierMaintenance) ("\n"
+        + ''
+          # Pending host observations are bounded diagnostics, never guest evidence.
+          export CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS=64
+          unset CRUCIBLE_CONTROL_CALLBACK_WITNESS CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN \
+            CRUCIBLE_RR_CLAMP_TAIL CRUCIBLE_PHASE7_IDLE_TRACE CRUCIBLE_TIME_OWNERSHIP_WITNESS
+        '')}
       # A missing closure member must name its configured asset, rather than
       # failing later with a bare ENOENT from guest campaign compilation.
       for flight_asset in CRUCIBLE_PROCESS_FLIGHT_BINARY CRUCIBLE_FLIGHT_QEMU \

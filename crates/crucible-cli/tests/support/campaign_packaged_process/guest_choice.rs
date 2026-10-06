@@ -1337,21 +1337,6 @@ pub(crate) fn attempt_states(
     Ok(states)
 }
 
-pub(crate) fn wait_for_new_completed_attempt(
-    fixture: &FlightFixture,
-    service: &mut CampaignServiceChild,
-    known: &BTreeSet<AttemptExecutionKey>,
-    request: &str,
-) -> Result<AttemptExecutionKey, Box<dyn Error>> {
-    wait_for_new_completed_attempt_with_timeout(
-        fixture,
-        service,
-        known,
-        request,
-        Duration::from_secs(120),
-    )
-}
-
 pub(crate) fn wait_for_new_completed_attempt_with_timeout(
     fixture: &FlightFixture,
     service: &mut CampaignServiceChild,
@@ -1431,6 +1416,9 @@ fn campaign_execution_diagnostics(
     service: &mut CampaignServiceChild,
     known_attempts: &BTreeSet<AttemptExecutionKey>,
 ) -> String {
+    // Capture the original pending wait before service Drop initiates
+    // cancellation: shutdown SIGKILL must not stand in for the first failure.
+    diagnostics::report_recent_host_wait_observations(service);
     let boundary_log = fixture._temporary.path().join(format!(
         "guest-selectable-boundary-{}.log",
         service.child.id()

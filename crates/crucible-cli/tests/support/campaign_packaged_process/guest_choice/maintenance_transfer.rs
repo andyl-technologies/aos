@@ -70,8 +70,15 @@ pub(super) fn run_transfer_flight(mode: ArchiveTransferMode) -> Result<(), Box<d
         0x81,
     )?;
     let fast_request = accepted_branch_request(&fast)?;
-    let fast_attempt =
-        wait_for_new_completed_attempt(&source, &mut service, &known_attempts, &fast_request)?;
+    // Reaching this branch requires the same cold Linux replay as the
+    // ordinary guest-choice flight, rather than an already-running guest.
+    let fast_attempt = wait_for_new_completed_attempt_with_timeout(
+        &source,
+        &mut service,
+        &known_attempts,
+        &fast_request,
+        GUEST_CHOICE_ATTEMPT_WAIT,
+    )?;
     known_attempts.insert(fast_attempt);
     diagnostics::report_maintenance_stage("transfer-fast-recovery-completed");
     let fast_explanation = wait_for_attempt_observation(&source, fast_attempt)?;
