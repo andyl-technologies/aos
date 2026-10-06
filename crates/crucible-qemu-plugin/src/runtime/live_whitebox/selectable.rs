@@ -139,6 +139,11 @@ impl LiveSelectableReplyShmemConsumer {
         }
     }
 
+    fn has_reply(&mut self) -> Result<bool, LiveWhiteboxError> {
+        let (header, entries) = self.ring_parts();
+        header.has_whitebox_marker(entries).map_err(callback_error)
+    }
+
     fn peek(&mut self) -> Result<Option<WhiteboxMarkerEntry>, LiveWhiteboxError> {
         let (header, entries) = self.ring_parts();
         header.peek_whitebox_marker(entries).map_err(callback_error)
@@ -177,6 +182,26 @@ impl LiveSelectableState {
 
     /// Delivers one exact reply before the resumed vCPU may execute.
     pub(super) fn deliver_reply<W>(
+        &mut self,
+        current_icount: u64,
+        vcpu_index: u32,
+        writer: &mut W,
+    ) -> Result<Option<SelectionReply>, LiveWhiteboxError>
+    where
+        W: WhiteboxGuestInputWriter + ?Sized,
+    {
+        if !self.reply_input.has_reply()? {
+            return Ok(None);
+        }
+
+        self.deliver_available_reply(current_icount, vcpu_index, writer)
+    }
+
+    // Keep entry-sized return values and decoding buffers off the empty resume
+    // path. Availability is advisory; this serialized consumer still re-peeks
+    // the actual envelope before validation, consumption, or guest writes.
+    #[inline(never)]
+    fn deliver_available_reply<W>(
         &mut self,
         current_icount: u64,
         vcpu_index: u32,
