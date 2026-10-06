@@ -282,9 +282,10 @@ mod tests {
     }
 
     #[test]
-    fn pending_hint_does_not_decode_or_validate_command_fields() {
+    fn pending_hint_does_not_decode_or_validate_command_fields()
+    -> Result<(), PreemptionMailboxError> {
         let slot = NodeSlot::new(KIND_VM);
-        let sequence = slot.publish_preemption_command(command()).unwrap();
+        let sequence = slot.publish_preemption_command(command())?;
 
         // Unowned observers must not decode fields that another consumer can
         // release for replacement. Admission still requires the validated read.
@@ -307,13 +308,15 @@ mod tests {
             })
         );
 
-        slot.acknowledge_preemption_command(sequence).unwrap();
+        slot.acknowledge_preemption_command(sequence)?;
         assert!(!slot.has_pending_preemption_command());
         assert_eq!(slot.pending_preemption_command(), Ok(None));
+
+        Ok(())
     }
 
     #[test]
-    fn pending_hint_handles_publication_sequence_wrap() {
+    fn pending_hint_handles_publication_sequence_wrap() -> Result<(), PreemptionMailboxError> {
         let slot = NodeSlot::new(KIND_VM);
         slot.preemption_published_sequence
             .store(u32::MAX, Ordering::Release);
@@ -321,7 +324,7 @@ mod tests {
             .store(u32::MAX, Ordering::Release);
         assert!(!slot.has_pending_preemption_command());
 
-        let sequence = slot.publish_preemption_command(command()).unwrap();
+        let sequence = slot.publish_preemption_command(command())?;
 
         assert_eq!(sequence, 0);
         assert!(slot.has_pending_preemption_command());
@@ -333,7 +336,9 @@ mod tests {
             }))
         );
 
-        slot.acknowledge_preemption_command(sequence).unwrap();
+        slot.acknowledge_preemption_command(sequence)?;
         assert!(!slot.has_pending_preemption_command());
+
+        Ok(())
     }
 }
