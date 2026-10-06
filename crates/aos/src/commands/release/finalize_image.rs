@@ -44,8 +44,9 @@ pub(super) async fn run(
 
     let selected_keys = parse_role_keys(&args.signer_keys)?;
     let authorizer = PlanImageAuthorizer::new(&plan, plan_digest, selected_keys)?;
-    let signer = ExternalSigner::new(
-        args.signer_executable.clone(),
+    let signer = ExternalSigner::resolve(
+        args.signer_executable.as_deref(),
+        args.signer_config.as_deref(),
         Duration::from_secs(args.signer_timeout_seconds),
     )?;
     let finalized = finalize_image_set(

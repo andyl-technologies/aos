@@ -350,6 +350,7 @@ extern "C" fn live_coverage_tb_translate(tb: *mut QemuPluginTb, userdata: *mut c
     // SAFETY: registration publishes a fully initialized pinned state and the
     // plugin rejects QEMU modes that could invoke these callbacks concurrently.
     let state = unsafe { &mut *state };
+    let state_pointer = std::ptr::from_mut(state);
     let Some(_in_flight) = state.quiescence.enter() else {
         // Teardown closed callback admission before this translation began.
         return;
@@ -397,7 +398,7 @@ extern "C" fn live_coverage_tb_translate(tb: *mut QemuPluginTb, userdata: *mut c
         offset: map_index * std::mem::size_of::<u64>(),
     };
     let metadata = Box::pin(LiveCoverageBlock {
-        state: std::ptr::from_mut(state),
+        state: state_pointer,
         instruction_count: instruction_count_u64,
         guest_pc,
         block_len,

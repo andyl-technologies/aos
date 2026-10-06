@@ -13,7 +13,7 @@
   };
   selected = nativeProfile.passthru.atomicPatch;
 in
-  assert selected.commit == "49ad6bdc2083e445df2c5e56062b2c14a7b890fa";
+  assert selected.commit == "b3fece0fb940570d33234dc7df3e2a8e20046516";
     nativeProfile.overrideAttrs (previous: {
       phases = let
         original = name:

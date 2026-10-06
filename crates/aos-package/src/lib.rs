@@ -1628,6 +1628,9 @@ pub enum RegistryCommand {
         /// Identifier for --trust-key inside keys.toml
         #[arg(long = "trust-key-id")]
         trust_key_id: Option<String>,
+        /// Add another active key to the initial keys.toml (repeatable; requires --trust-key)
+        #[arg(long = "roster-key", value_name = "ID=TRUST_LINE")]
+        roster_key: Vec<String>,
         /// Private key path used to sign the initial commit
         /// (required with --trust-key)
         #[arg(long)]
@@ -5492,15 +5495,20 @@ async fn run_registry(
             remote,
             trust_key,
             trust_key_id,
+            roster_key,
             key,
             key_id,
         } => {
+            let roster = registry_ops::InitialRoster {
+                trust_key: trust_key.as_deref(),
+                trust_key_id: trust_key_id.as_deref(),
+                roster_keys: roster_key,
+            };
             registry_ops::create(
                 config,
                 name,
                 remote.as_deref(),
-                trust_key.as_deref(),
-                trust_key_id.as_deref(),
+                &roster,
                 key.as_deref(),
                 key_id.as_deref(),
                 printer,

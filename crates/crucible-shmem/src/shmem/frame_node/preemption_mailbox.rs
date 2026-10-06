@@ -44,7 +44,27 @@ impl NodeSlot {
         Ok(sequence)
     }
 
+    /// Reports whether the preemption sequences currently differ.
+    ///
+    /// This advisory observation reads only the publication and consumption
+    /// sequences. It neither validates command fields nor acquires consumer
+    /// ownership. A consumer must acquire its admission guard and reread
+    /// [`Self::pending_preemption_command`] before applying a command: another
+    /// consumer can acknowledge this observation or a producer can publish a
+    /// replacement before admission.
+    #[must_use]
+    pub fn has_pending_preemption_command(&self) -> bool {
+        let published = self.preemption_published_sequence.load(Ordering::Acquire);
+        let consumed = self.preemption_consumed_sequence.load(Ordering::Acquire);
+        published != consumed
+    }
+
     /// Acquire-loads the next scheduler preemption, if one is outstanding.
+    ///
+    /// The caller must exclude other consumers while decoding, applying, and
+    /// acknowledging the command. Until that acknowledgement, the producer may
+    /// not replace its payload. [`Self::has_pending_preemption_command`] provides
+    /// an advisory sequence observation before consumer ownership is acquired.
     ///
     /// # Errors
     ///
@@ -243,4 +263,82 @@ pub enum PreemptionMailboxError {
         /// Latest plugin-consumed sequence.
         consumed_sequence: u32,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn command() -> SchedulerPreemptionCommand {
+        SchedulerPreemptionCommand {
+            at_tick: 75,
+            deadline_tick: 50,
+            ceiling_tick: 100,
+            kind: SchedulerPreemptionKind::InterruptAt {
+                target_vcpu: 0,
+                irq: 41,
+            },
+        }
+    }
+
+    #[test]
+    fn pending_hint_does_not_decode_or_validate_command_fields()
+    -> Result<(), PreemptionMailboxError> {
+        let slot = NodeSlot::new(KIND_VM);
+        let sequence = slot.publish_preemption_command(command())?;
+
+        // Unowned observers must not decode fields that another consumer can
+        // release for replacement. Admission still requires the validated read.
+        slot.preemption_kind.store(u8::MAX, Ordering::Relaxed);
+        assert!(slot.has_pending_preemption_command());
+        assert_eq!(
+            slot.pending_preemption_command(),
+            Err(PreemptionMailboxError::UnknownKind { kind: u8::MAX })
+        );
+
+        slot.preemption_kind
+            .store(command().kind.to_wire().0, Ordering::Relaxed);
+        slot.preemption_deadline_tick.store(101, Ordering::Relaxed);
+        assert!(slot.has_pending_preemption_command());
+        assert_eq!(
+            slot.pending_preemption_command(),
+            Err(PreemptionMailboxError::InvalidWindow {
+                deadline_tick: 101,
+                ceiling_tick: 100,
+            })
+        );
+
+        slot.acknowledge_preemption_command(sequence)?;
+        assert!(!slot.has_pending_preemption_command());
+        assert_eq!(slot.pending_preemption_command(), Ok(None));
+
+        Ok(())
+    }
+
+    #[test]
+    fn pending_hint_handles_publication_sequence_wrap() -> Result<(), PreemptionMailboxError> {
+        let slot = NodeSlot::new(KIND_VM);
+        slot.preemption_published_sequence
+            .store(u32::MAX, Ordering::Release);
+        slot.preemption_consumed_sequence
+            .store(u32::MAX, Ordering::Release);
+        assert!(!slot.has_pending_preemption_command());
+
+        let sequence = slot.publish_preemption_command(command())?;
+
+        assert_eq!(sequence, 0);
+        assert!(slot.has_pending_preemption_command());
+        assert_eq!(
+            slot.pending_preemption_command(),
+            Ok(Some(PublishedPreemptionCommand {
+                sequence,
+                command: command(),
+            }))
+        );
+
+        slot.acknowledge_preemption_command(sequence)?;
+        assert!(!slot.has_pending_preemption_command());
+
+        Ok(())
+    }
 }

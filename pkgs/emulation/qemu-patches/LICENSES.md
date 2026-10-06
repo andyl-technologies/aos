@@ -59,6 +59,15 @@ The atomic integration patch creates these QEMU source files:
 | `tests/unit/test-crucible-net-output-stop.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-net-stop-chain.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-stop-context.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-tcg-fast-paths.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-mutex-owner-cache.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-snapshot-fast-path.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-settle-prepark.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-cold-fault-predicates.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-lazy-memory-identity.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-accel-classification.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-fault-rule-presence.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-rr-sim-barriers.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-control-deferred.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-control-observer.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-control-delivery.py` | GPL-2.0-or-later | Explicit SPDX identifier |

@@ -1,9 +1,10 @@
 //! Exact planned Nix realization, reproducibility checks, and build evidence.
 //!
-//! Every planned derivation is realized and then repeat-built with Nix
-//! `--check`. The plan's registry tier decides what a failed check means:
-//! production fails the step closed, while the testing tier records each
-//! affected output as [`ReproducibilityResult::NotReproduced`] and continues.
+//! Every planned derivation is realized. A production-tier plan then
+//! repeat-builds each derivation with Nix `--check` and fails the step closed
+//! on any difference. A testing-tier plan skips the repeat build, whose result
+//! could not change its outcome, and records every output as
+//! [`ReproducibilityResult::NotChecked`].
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
@@ -70,10 +71,23 @@ pub(super) fn run(args: &ReleaseBuildArgs, nix: &NixRunner, printer: &Printer) -
         derivations.len()
     ));
     nix.realise_derivations(&derivations, false)?;
-    printer.info("Repeat-building planned derivations with Nix --check...");
-    let checks = nix.check_derivations(&derivations)?;
-    let unreproduced = admit_check_failures(tier, &checks)?;
-    warn_unreproduced(printer, tier, &unreproduced);
+    let repeat_build = if tier.requires_repeat_build_check() {
+        printer.info("Repeat-building planned derivations with Nix --check...");
+        let checks = nix.check_derivations(&derivations)?;
+        let unreproduced = admit_check_failures(tier, &checks)?;
+        warn_unreproduced(printer, tier, &unreproduced);
+        RepeatBuild::Checked(unreproduced)
+    } else {
+        printer.info(&format!(
+            "Skipping the Nix --check repeat build: the {tier} registry tier records \
+             outputs as not checked"
+        ));
+        RepeatBuild::Skipped
+    };
+    let unreproduced = match &repeat_build {
+        RepeatBuild::Checked(unreproduced) => unreproduced.clone(),
+        RepeatBuild::Skipped => BTreeMap::new(),
+    };
 
     let source_paths = planned
         .values()
@@ -101,12 +115,7 @@ pub(super) fn run(args: &ReleaseBuildArgs, nix: &NixRunner, printer: &Printer) -
             info.deriver.as_deref(),
             expected.derivation,
             expected.store_path,
-            |deriver| {
-                nix.store_query(
-                    Path::new(deriver),
-                    &["--query", "--binding", expected.output],
-                )
-            },
+            |derivation| nix.derivation_outputs(Path::new(derivation)),
         )?;
         info.references.sort();
         info.references.dedup();
@@ -124,7 +133,7 @@ pub(super) fn run(args: &ReleaseBuildArgs, nix: &NixRunner, printer: &Printer) -
             nar_size: info.nar_size,
             closure_size: info.closure_size,
             references: info.references,
-            reproducibility: reproducibility_of(expected.derivation, &unreproduced),
+            reproducibility: repeat_build.result_of(expected.derivation),
         });
     }
     let sources = source_paths
@@ -183,13 +192,17 @@ pub(super) fn run(args: &ReleaseBuildArgs, nix: &NixRunner, printer: &Printer) -
         return Ok(());
     }
     let not_reproduced = report.not_reproduced().count();
+    let action = match repeat_build {
+        RepeatBuild::Checked(_) => "Built and repeat-checked",
+        RepeatBuild::Skipped => "Built (repeat build skipped)",
+    };
     let summary = if not_reproduced == 0 {
         String::new()
     } else {
         format!(" ({not_reproduced} recorded as not reproduced)")
     };
     printer.success(&format!(
-        "Built and repeat-checked {} planned outputs{summary}; evidence written to {}",
+        "{action} {} planned outputs{summary}; evidence written to {}",
         report.outputs.len(),
         args.output.display()
     ));
@@ -203,24 +216,31 @@ pub(super) fn run(args: &ReleaseBuildArgs, nix: &NixRunner, printer: &Printer) -
 /// deriver. Input-addressed derivations that differ only in fixed-output
 /// inputs, such as a source fetch with a different URL list but the same
 /// hash, produce the same output paths. A different recorded deriver is
-/// accepted only when it is a store derivation that Nix itself binds, for
-/// the planned output name, to exactly the planned store path. The evidence
-/// still names the planned derivation.
+/// accepted only when it is a store derivation whose output of the same
+/// name produces exactly the planned store path. The evidence still names
+/// the planned derivation.
 ///
-/// `bind_output` receives the recorded deriver and returns the store path
-/// Nix binds to the planned output name.
+/// The plan names a package alias of a non-default output by the logical
+/// output `out`, and a package output built by a separate derivation by its
+/// package output name, so the Nix output name is found on the planned
+/// derivation: it is the output that produces the planned store path.
+///
+/// `outputs` returns a derivation's Nix output names and the store path each
+/// produces, as read by [`NixRunner::derivation_outputs`].
 ///
 /// # Errors
 ///
 /// Returns an error when no deriver is recorded, when the recorded deriver
-/// is not a store derivation, when its binding cannot be read, or when it
-/// binds the planned output name to a different store path.
+/// is not a store derivation, when either derivation's outputs cannot be
+/// read, when no output of the planned derivation produces the planned
+/// store path, or when the recorded deriver's output of that name is absent
+/// or produces a different path.
 fn require_equivalent_deriver(
     id: &str,
     recorded: Option<&str>,
     planned: &str,
     store_path: &str,
-    bind_output: impl FnOnce(&str) -> Result<String>,
+    outputs: impl Fn(&str) -> Result<BTreeMap<String, String>>,
 ) -> Result<()> {
     let Some(recorded) = recorded else {
         bail!("realized output {id} has no recorded deriver");
@@ -232,9 +252,18 @@ fn require_equivalent_deriver(
         bail!("realized output {id} names a deriver outside the Nix store: {recorded}");
     }
 
-    let bound = bind_output(recorded)
+    let planned_outputs = outputs(planned)
+        .with_context(|| format!("reading the outputs of {id}'s planned derivation"))?;
+    let Some(output) = planned_outputs
+        .iter()
+        .find_map(|(name, path)| (path == store_path).then_some(name))
+    else {
+        bail!("no output of {id}'s planned derivation produces {store_path}");
+    };
+
+    let recorded_outputs = outputs(recorded)
         .with_context(|| format!("reading the outputs of {id}'s recorded deriver {recorded}"))?;
-    if bound.trim() != store_path {
+    if recorded_outputs.get(output).map(String::as_str) != Some(store_path) {
         bail!("realized output {id} has a different deriver than the plan");
     }
     Ok(())
@@ -268,15 +297,25 @@ fn admit_check_failures(
     Ok(unreproduced)
 }
 
-/// Returns the recorded repeat-build result for an output's derivation.
-fn reproducibility_of(
-    derivation: &str,
-    unreproduced: &BTreeMap<String, String>,
-) -> ReproducibilityResult {
-    if unreproduced.contains_key(derivation) {
-        ReproducibilityResult::NotReproduced
-    } else {
-        ReproducibilityResult::Reproduced
+/// The repeat-build pass as the registry tier ran it.
+enum RepeatBuild {
+    /// Every derivation was repeat-built; the map names those that did not
+    /// reproduce, with their reasons.
+    Checked(BTreeMap<String, String>),
+    /// The tier does not run repeat builds.
+    Skipped,
+}
+
+impl RepeatBuild {
+    /// Returns the recorded repeat-build result for an output's derivation.
+    fn result_of(&self, derivation: &str) -> ReproducibilityResult {
+        match self {
+            Self::Skipped => ReproducibilityResult::NotChecked,
+            Self::Checked(unreproduced) if unreproduced.contains_key(derivation) => {
+                ReproducibilityResult::NotReproduced
+            }
+            Self::Checked(_) => ReproducibilityResult::Reproduced,
+        }
     }
 }
 
@@ -305,10 +344,22 @@ fn instantiate_planned_roots(
     plan: &ReleasePlan,
     planned_derivations: &[PathBuf],
 ) -> Result<()> {
+    // Instantiate exactly as `step plan` evaluated: the native platform
+    // without `crossSystem`, because passing it selects a cross stdenv whose
+    // derivations differ from the planned native ones.
+    let build_platform: String =
+        serde_json::from_value(nix.eval_json("stdenv.buildPlatform.system")?)
+            .context("decoding the native Nix build platform")?;
+    let cross_target =
+        |platform: Platform| (platform.as_str() != build_platform).then_some(platform.as_str());
+
     let mut instantiated = BTreeSet::new();
     for platform in Platform::ALL {
         instantiated.extend(
-            nix.instantiate_all_for_target("releasePackageDerivationRoots", platform.as_str())?,
+            nix.instantiate_all_for_target(
+                "releasePackageDerivationRoots",
+                cross_target(platform),
+            )?,
         );
     }
 
@@ -321,7 +372,11 @@ fn instantiate_planned_roots(
             if !matches!(cell.decision, MatrixCell::Artifact { .. }) {
                 continue;
             }
-            instantiated.insert(nix.instantiate_for_target(&attribute, cell.platform.as_str())?);
+            let derivation = match cross_target(cell.platform) {
+                Some(target) => nix.instantiate_for_target(&attribute, target)?,
+                None => nix.instantiate(&attribute)?,
+            };
+            instantiated.insert(derivation);
         }
     }
 
@@ -444,39 +499,103 @@ mod tests {
 
     use super::*;
 
-    const PLANNED_DRV: &str = "/nix/store/2cy5z4qwn0wq2qx774wzk3x252zkxx09-abseil-cpp-1.drv";
-    const EQUIVALENT_DRV: &str = "/nix/store/1sfvcsz3kqc7a4xfy114x3yycsa61rxv-abseil-cpp-1.drv";
-    const OUTPUT_PATH: &str = "/nix/store/49br0y2s9c52ln7bxph87faa3kdkiyfz-abseil-cpp-1";
+    const PLANNED_DRV: &str = "/nix/store/k7gj3crbgracfq1wnn39g7jsc87df0jz-glibc-2.39.drv";
+    const EQUIVALENT_DRV: &str = "/nix/store/1sfvcsz3kqc7a4xfy114x3yycsa61rxv-glibc-2.39.drv";
+    const MAIN_PATH: &str = "/nix/store/49br0y2s9c52ln7bxph87faa3kdkiyfz-glibc-2.39";
+    const GETENT_PATH: &str = "/nix/store/l8l50qx80k70lclql35krjs6kris01pb-glibc-2.39-getent";
+
+    /// Lists the planned and equivalent derivations' `out` and `getent`
+    /// outputs, with the recorded deriver's `getent` producing `getent`.
+    fn outputs(getent: &'static str) -> impl Fn(&str) -> Result<BTreeMap<String, String>> {
+        move |derivation| {
+            let getent = match derivation {
+                PLANNED_DRV => GETENT_PATH,
+                EQUIVALENT_DRV => getent,
+                _ => bail!("unexpected derivation {derivation}"),
+            };
+            Ok(BTreeMap::from([
+                ("out".to_string(), MAIN_PATH.to_string()),
+                ("getent".to_string(), getent.to_string()),
+            ]))
+        }
+    }
 
     #[test]
     fn planned_deriver_is_accepted_without_a_lookup() -> Result<()> {
-        require_equivalent_deriver("id", Some(PLANNED_DRV), PLANNED_DRV, OUTPUT_PATH, |_| {
+        require_equivalent_deriver("id", Some(PLANNED_DRV), PLANNED_DRV, GETENT_PATH, |_| {
             bail!("the planned deriver needs no lookup")
         })
     }
 
     #[test]
-    fn equivalent_deriver_binding_the_planned_path_is_accepted() -> Result<()> {
+    fn equivalent_deriver_producing_the_planned_output_is_accepted() -> Result<()> {
         require_equivalent_deriver(
             "id",
             Some(EQUIVALENT_DRV),
             PLANNED_DRV,
-            OUTPUT_PATH,
-            |deriver| {
-                assert_eq!(deriver, EQUIVALENT_DRV);
-                Ok(format!("{OUTPUT_PATH}\n"))
-            },
+            GETENT_PATH,
+            outputs(GETENT_PATH),
         )
     }
 
     #[test]
-    fn deriver_binding_another_path_is_rejected() {
+    fn equivalence_uses_the_nix_output_not_the_logical_out_name() {
+        // The recorded deriver's `out` is the shared main path, so a check on
+        // the logical name would compare the wrong output.
         let result = require_equivalent_deriver(
             "id",
             Some(EQUIVALENT_DRV),
             PLANNED_DRV,
-            OUTPUT_PATH,
-            |_| Ok("/nix/store/hsjw5riiksy5w04rc4413asvr5c4k9h7-abseil-cpp-1".to_string()),
+            GETENT_PATH,
+            outputs("/nix/store/hsjw5riiksy5w04rc4413asvr5c4k9h7-glibc-2.39-getent"),
+        );
+
+        assert!(result.is_err_and(|error| error.to_string().contains("different deriver")));
+    }
+
+    #[test]
+    fn separately_built_outputs_compare_their_own_output_name() -> Result<()> {
+        // A package output such as glibc's `bin` can be the `out` of a
+        // separate utilities derivation; the plan records that derivation.
+        let planned = "/nix/store/m4lhxxij7p4zkcs17z48pmiab56rpgyl-glibc-2.39-utilities.drv";
+        let recorded = "/nix/store/0c7kahqpg2c3nqm8cp7n0rc4f5b1n2ha-glibc-2.39-utilities.drv";
+        let utilities = "/nix/store/9xyc5f1bzwdmvd0gv8grd0p8a0b5h0mx-glibc-2.39-utilities";
+
+        require_equivalent_deriver("id", Some(recorded), planned, utilities, |derivation| {
+            if derivation != planned && derivation != recorded {
+                bail!("unexpected derivation {derivation}");
+            }
+            Ok(BTreeMap::from([("out".to_string(), utilities.to_string())]))
+        })
+    }
+
+    #[test]
+    fn planned_derivation_must_produce_the_planned_path() {
+        let result = require_equivalent_deriver(
+            "id",
+            Some(EQUIVALENT_DRV),
+            PLANNED_DRV,
+            "/nix/store/mlpmyg9jpridbzyjk4327mzw7hj175j2-other",
+            outputs(GETENT_PATH),
+        );
+
+        assert!(result.is_err_and(|error| error.to_string().contains("no output")));
+    }
+
+    #[test]
+    fn recorded_deriver_must_have_the_planned_output() {
+        let result = require_equivalent_deriver(
+            "id",
+            Some(EQUIVALENT_DRV),
+            PLANNED_DRV,
+            GETENT_PATH,
+            |derivation| {
+                let mut outputs = outputs(GETENT_PATH)(derivation)?;
+                if derivation == EQUIVALENT_DRV {
+                    outputs.remove("getent");
+                }
+                Ok(outputs)
+            },
         );
 
         assert!(result.is_err_and(|error| error.to_string().contains("different deriver")));
@@ -484,15 +603,14 @@ mod tests {
 
     #[test]
     fn missing_or_foreign_derivers_are_rejected() {
-        let missing = require_equivalent_deriver("id", None, PLANNED_DRV, OUTPUT_PATH, |_| {
-            Ok(OUTPUT_PATH.to_string())
-        });
+        let missing =
+            require_equivalent_deriver("id", None, PLANNED_DRV, GETENT_PATH, outputs(GETENT_PATH));
         let foreign = require_equivalent_deriver(
             "id",
-            Some("/tmp/abseil-cpp-1.drv"),
+            Some("/tmp/glibc-2.39.drv"),
             PLANNED_DRV,
-            OUTPUT_PATH,
-            |_| Ok(OUTPUT_PATH.to_string()),
+            GETENT_PATH,
+            outputs(GETENT_PATH),
         );
 
         assert!(missing.is_err());
@@ -500,12 +618,12 @@ mod tests {
     }
 
     #[test]
-    fn unreadable_deriver_binding_fails_closed() {
+    fn unreadable_outputs_fail_closed() {
         let result = require_equivalent_deriver(
             "id",
             Some(EQUIVALENT_DRV),
             PLANNED_DRV,
-            OUTPUT_PATH,
+            GETENT_PATH,
             |_| bail!("derivation is not valid"),
         );
 
@@ -589,16 +707,17 @@ mod tests {
         );
 
         // Every output of a failed derivation is unreproduced; others are not.
+        let repeat_build = RepeatBuild::Checked(unreproduced);
         assert_eq!(
-            reproducibility_of("/nix/store/a-nondeterministic.drv", &unreproduced),
+            repeat_build.result_of("/nix/store/a-nondeterministic.drv"),
             ReproducibilityResult::NotReproduced
         );
         assert_eq!(
-            reproducibility_of("/nix/store/b-overloaded.drv", &unreproduced),
+            repeat_build.result_of("/nix/store/b-overloaded.drv"),
             ReproducibilityResult::NotReproduced
         );
         assert_eq!(
-            reproducibility_of("/nix/store/c-reproduced.drv", &unreproduced),
+            repeat_build.result_of("/nix/store/c-reproduced.drv"),
             ReproducibilityResult::Reproduced
         );
         Ok(())
@@ -627,11 +746,25 @@ mod tests {
             let unreproduced = admit_check_failures(tier, &clean)?;
             assert!(unreproduced.is_empty());
             assert_eq!(
-                reproducibility_of("/nix/store/a-x.drv", &unreproduced),
+                RepeatBuild::Checked(unreproduced).result_of("/nix/store/a-x.drv"),
                 ReproducibilityResult::Reproduced
             );
         }
         Ok(())
+    }
+
+    #[test]
+    fn skipped_repeat_builds_record_every_output_as_not_checked() {
+        assert_eq!(
+            RepeatBuild::Skipped.result_of("/nix/store/a-x.drv"),
+            ReproducibilityResult::NotChecked
+        );
+    }
+
+    #[test]
+    fn only_production_requires_repeat_builds() {
+        assert!(RegistryTier::Production.requires_repeat_build_check());
+        assert!(!RegistryTier::Testing.requires_repeat_build_check());
     }
 
     #[test]

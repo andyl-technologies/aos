@@ -91,7 +91,7 @@
   };
 in
   assert !pkgs.stdenv.isCross && pkgs.stdenv.hostPlatform.isLinux;
-  assert selected.commit == "49ad6bdc2083e445df2c5e56062b2c14a7b890fa";
+  assert selected.commit == "b3fece0fb940570d33234dc7df3e2a8e20046516";
     pkgs.mkDerivation {
       pname = "crucible-uart-origin-baseline";
       version = "0";

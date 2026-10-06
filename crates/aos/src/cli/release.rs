@@ -493,9 +493,13 @@ pub struct ReleaseTimestampRefreshArgs {
     #[arg(long = "signing-key", value_name = "KEY_ID=PATH", required = true)]
     pub signing_keys: Vec<String>,
 
-    /// Absolute path to the deployment-configured signer executable
+    /// Absolute path to an external signer; defaults to the bundled signer
     #[arg(long)]
-    pub signer_executable: PathBuf,
+    pub signer_executable: Option<PathBuf>,
+
+    /// Signer configuration, passed as AOS_RELEASE_SIGNER_CONFIG
+    #[arg(long, value_name = "PATH")]
+    pub signer_config: Option<PathBuf>,
 
     /// Maximum duration of each external signer operation in seconds
     #[arg(long, default_value_t = 120)]
@@ -564,9 +568,13 @@ pub struct ReleaseTufArgs {
     #[arg(long = "snapshot-key", value_name = "KEY_ID=PATH", required = true)]
     pub snapshot_keys: Vec<String>,
 
-    /// Absolute path to the deployment-configured signer executable
+    /// Absolute path to an external signer; defaults to the bundled signer
     #[arg(long)]
-    pub signer_executable: PathBuf,
+    pub signer_executable: Option<PathBuf>,
+
+    /// Signer configuration, passed as AOS_RELEASE_SIGNER_CONFIG
+    #[arg(long, value_name = "PATH")]
+    pub signer_config: Option<PathBuf>,
 
     /// Maximum duration of each external signer operation in seconds
     #[arg(long, default_value_t = 120)]
@@ -686,9 +694,13 @@ pub struct ReleaseFinalizeImageArgs {
     #[arg(long)]
     pub assembly: PathBuf,
 
-    /// Absolute path to the deployment-configured signer executable
+    /// Absolute path to an external signer; defaults to the bundled signer
     #[arg(long)]
-    pub signer_executable: PathBuf,
+    pub signer_executable: Option<PathBuf>,
+
+    /// Signer configuration, passed as AOS_RELEASE_SIGNER_CONFIG
+    #[arg(long, value_name = "PATH")]
+    pub signer_config: Option<PathBuf>,
 
     /// Exact role key as ROLE=KEY_ID; repeat for all three image roles
     #[arg(long = "signer-key", value_name = "ROLE=KEY_ID", required = true)]
@@ -741,9 +753,13 @@ pub struct ReleasePrepareRegistryArgs {
     #[arg(long)]
     pub transaction: PathBuf,
 
-    /// Absolute path to the deployment-configured signer executable
+    /// Absolute path to an external signer; defaults to the bundled signer
     #[arg(long)]
-    pub signer_executable: PathBuf,
+    pub signer_executable: Option<PathBuf>,
+
+    /// Signer configuration, passed as AOS_RELEASE_SIGNER_CONFIG
+    #[arg(long, value_name = "PATH")]
+    pub signer_config: Option<PathBuf>,
 
     /// Provenance roster key and public trust line as KEY_ID=PATH
     #[arg(long, value_name = "KEY_ID=PATH")]
@@ -796,9 +812,13 @@ pub struct ReleaseFinalizeRegistryArgs {
     #[arg(long)]
     pub result: PathBuf,
 
-    /// Absolute path to the deployment-configured signer executable
+    /// Absolute path to an external signer; defaults to the bundled signer
     #[arg(long)]
-    pub signer_executable: PathBuf,
+    pub signer_executable: Option<PathBuf>,
+
+    /// Signer configuration, passed as AOS_RELEASE_SIGNER_CONFIG
+    #[arg(long, value_name = "PATH")]
+    pub signer_config: Option<PathBuf>,
 
     /// Registry roster key and public trust line as KEY_ID=PATH
     #[arg(long, value_name = "KEY_ID=PATH")]
@@ -859,9 +879,13 @@ pub struct ReleaseFinalizeArgs {
     )]
     pub verification_identities: Vec<String>,
 
-    /// Absolute path to the deployment-configured signer executable
+    /// Absolute path to an external signer; defaults to the bundled signer
     #[arg(long)]
-    pub signer_executable: PathBuf,
+    pub signer_executable: Option<PathBuf>,
+
+    /// Signer configuration, passed as AOS_RELEASE_SIGNER_CONFIG
+    #[arg(long, value_name = "PATH")]
+    pub signer_config: Option<PathBuf>,
 
     /// Maximum duration of each external signer operation in seconds
     #[arg(long, default_value_t = 120)]
@@ -898,9 +922,13 @@ pub struct ReleaseFinalizeCacheArgs {
     #[arg(long)]
     pub verification_identity: String,
 
-    /// Absolute path to the deployment-configured signer executable
+    /// Absolute path to an external signer; defaults to the bundled signer
     #[arg(long)]
-    pub signer_executable: PathBuf,
+    pub signer_executable: Option<PathBuf>,
+
+    /// Signer configuration, passed as AOS_RELEASE_SIGNER_CONFIG
+    #[arg(long, value_name = "PATH")]
+    pub signer_config: Option<PathBuf>,
 
     /// Maximum duration of each signer operation in seconds
     #[arg(long, default_value_t = 120)]
@@ -1092,9 +1120,13 @@ pub struct ReleaseQualifyRunArgs {
     #[arg(long, default_value_t = 1800)]
     pub executor_timeout_seconds: u64,
 
-    /// Absolute path to the qualification authority signer executable
+    /// Absolute path to an external authority signer; defaults to the bundled signer
     #[arg(long)]
-    pub authority_executable: PathBuf,
+    pub authority_executable: Option<PathBuf>,
+
+    /// Authority signer configuration, passed as AOS_RELEASE_SIGNER_CONFIG
+    #[arg(long, value_name = "PATH")]
+    pub authority_config: Option<PathBuf>,
 
     /// Qualification authority public key as KEY_ID=PATH
     #[arg(long, value_name = "KEY_ID=PATH")]
@@ -1301,9 +1333,13 @@ pub enum ReleaseSignerCommand {
 
 #[derive(Args)]
 pub struct ReleaseSignerInvokeArgs {
-    /// Absolute path to the deployment-configured signer executable
+    /// Absolute path to an external signer; defaults to the bundled signer
     #[arg(long)]
-    pub executable: PathBuf,
+    pub executable: Option<PathBuf>,
+
+    /// Signer configuration, passed as AOS_RELEASE_SIGNER_CONFIG
+    #[arg(long, value_name = "PATH")]
+    pub signer_config: Option<PathBuf>,
 
     /// Canonical signing-request JSON
     #[arg(long)]

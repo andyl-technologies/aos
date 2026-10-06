@@ -307,6 +307,151 @@ fn apr_create_with_trust_key_requires_and_signs_initial_commit() -> Result<()> {
     Ok(())
 }
 
+/// A first canonical release plans from the single root commit, so every key
+/// it signs with must already be active there. `--roster-key` commits those
+/// extra keys in the root commit alongside the primary `--trust-key`.
+#[test]
+fn apr_create_commits_roster_keys_in_the_root_commit() -> Result<()> {
+    let tmp = tempfile::TempDir::new()?;
+    let home = tmp.path().join("home");
+    if !git_supports_sha256(&home)? {
+        eprintln!("skipping apr create e2e: git cannot initialize a sha256 repository");
+        return Ok(());
+    }
+    let signer = TestKey::write(&home, "fresh", [41_u8; 32], "signer")?;
+    let provenance = TestKey::write(&home, "fresh", [42_u8; 32], "provenance")?;
+    let provenance_argument = format!("provenance-v1={}", provenance.trust_key);
+
+    // Extra roster keys without a primary --trust-key are refused.
+    let without_primary = run_apr_err(
+        &home,
+        &[
+            "create",
+            "fresh",
+            "--roster-key",
+            &provenance_argument,
+            "--key",
+            signer.path_str(),
+        ],
+    )?;
+    assert!(output_text(&without_primary).contains("--roster-key requires --trust-key"));
+
+    let create_args = [
+        "create",
+        "fresh",
+        "--trust-key",
+        &signer.trust_key,
+        "--trust-key-id",
+        "signer-v1",
+        "--roster-key",
+        &provenance_argument,
+        "--key",
+        signer.path_str(),
+    ];
+
+    let preview = run_apr_json(
+        &home,
+        &[&create_args[..], &["--dry-run", "--json"]].concat(),
+    )?;
+    assert_eq!(preview["dry_run"], serde_json::json!(true));
+    assert_eq!(preview["trust_key_id"], serde_json::json!("signer-v1"));
+    assert_eq!(
+        preview["roster_key_ids"],
+        serde_json::json!(["provenance-v1"])
+    );
+
+    let created = run_apr_json(&home, &[&create_args[..], &["--json"]].concat())?;
+    assert_eq!(created["trust_key_id"], serde_json::json!("signer-v1"));
+    assert_eq!(
+        created["roster_key_ids"],
+        serde_json::json!(["provenance-v1"])
+    );
+
+    let registry_dir = home.join(".local/share/apm/registries").join("fresh");
+    assert_eq!(git(&registry_dir, &["rev-list", "--count", "HEAD"])?, "1");
+    assert!(git_ssh::verify_commit_signature(
+        &registry_dir,
+        "HEAD",
+        &[signer.trust_key.clone()],
+    )?);
+
+    let roster = keys::load_keys_toml_at_commit(&registry_dir, "HEAD")?
+        .context("the root commit carries keys.toml")?;
+    assert_eq!(
+        roster
+            .active
+            .iter()
+            .map(|entry| (entry.id.as_str(), entry.key.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("signer-v1", signer.trust_key.as_str()),
+            ("provenance-v1", provenance.trust_key.as_str()),
+        ],
+    );
+    assert!(roster.revoked.is_empty());
+
+    Ok(())
+}
+
+#[test]
+fn apr_create_rejects_invalid_roster_keys_before_writing() -> Result<()> {
+    let tmp = tempfile::TempDir::new()?;
+    let home = tmp.path().join("home");
+    let signer = TestKey::write(&home, "fresh", [43_u8; 32], "signer")?;
+    let other = TestKey::write(&home, "fresh", [44_u8; 32], "other")?;
+    let foreign = TestKey::write(&home, "other", [45_u8; 32], "foreign")?;
+
+    let cases = [
+        (
+            "duplicate id",
+            format!("initial={}", other.trust_key),
+            "reuses roster key id 'initial'",
+        ),
+        (
+            "missing separator",
+            other.trust_key.clone(),
+            "must have the form",
+        ),
+        (
+            "malformed trust line",
+            "provenance=not-a-key".to_string(),
+            "malformed signing key",
+        ),
+        (
+            "foreign registry",
+            format!("provenance={}", foreign.trust_key),
+            "expected 'fresh'",
+        ),
+    ];
+
+    for (case, argument, expected) in cases {
+        let output = run_apr_err(
+            &home,
+            &[
+                "create",
+                "fresh",
+                "--trust-key",
+                &signer.trust_key,
+                "--roster-key",
+                &argument,
+                "--key",
+                signer.path_str(),
+            ],
+        )?;
+        let text = output_text(&output);
+        assert!(
+            text.contains(expected),
+            "{case}: expected {expected:?} in {text}"
+        );
+    }
+    assert!(
+        !home.join(".local/share/apm/registries/fresh").exists(),
+        "a rejected roster must not create the registry"
+    );
+
+    Ok(())
+}
+
 struct TestKey {
     trust_key: String,
     path: PathBuf,
@@ -421,6 +566,19 @@ fn run_apr(home: &Path, args: &[&str]) -> Result<String> {
         );
     }
     Ok(output_text(&output))
+}
+
+/// Run `apr` with `--json` among `args` and parse its stdout document.
+fn run_apr_json(home: &Path, args: &[&str]) -> Result<serde_json::Value> {
+    let output = apr_command(home)
+        .args(args)
+        .output()
+        .with_context(|| format!("running apr {}", args.join(" ")))?;
+    if !output.status.success() {
+        bail!("apr {} failed:\n{}", args.join(" "), output_text(&output));
+    }
+    serde_json::from_slice(&output.stdout)
+        .with_context(|| format!("parsing JSON from apr {}", args.join(" ")))
 }
 
 fn run_apr_err(home: &Path, args: &[&str]) -> Result<Output> {

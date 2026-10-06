@@ -1854,11 +1854,10 @@ fn joined_teardown_reports_outstanding_retained_request_but_success_is_silent() 
             slot.request_control_boundary(6, None)
                 .unwrap_or_else(|error| panic!("owned request: {error}"));
         }
-        let admission = handle
-            .quiescence
+        let quiescence = Arc::clone(&handle.quiescence);
+        let admission = quiescence
             .enter()
             .unwrap_or_else(|| panic!("original admitted work"));
-        let quiescence = Arc::clone(&handle.quiescence);
         let worker = std::thread::spawn(move || {
             handle.quiesce();
             let mut rows = Vec::new();

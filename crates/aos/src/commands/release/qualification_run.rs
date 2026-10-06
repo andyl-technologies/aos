@@ -582,8 +582,9 @@ async fn sign_receipt(
     let key_bytes =
         capture::control_file(Path::new(key_path), "qualification authority public key")?;
     let trusted = TrustedEd25519Key::from_encoded(key_id, &key_bytes)?;
-    let signer = ExternalSigner::new(
-        args.authority_executable.clone(),
+    let signer = ExternalSigner::resolve(
+        args.authority_executable.as_deref(),
+        args.authority_config.as_deref(),
         bounded_timeout(args.authority_timeout_seconds, "qualification authority")?,
     )?;
     let response = signer

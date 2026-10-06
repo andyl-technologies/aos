@@ -9,6 +9,7 @@
   pkg-config,
   meson,
   ninja,
+  binutils,
   python3,
   python3-pygdbmi,
   setuptools,
@@ -130,6 +131,10 @@
     if stdenv.isCross
     then buildPackages.python3
     else python3;
+  buildBinutils =
+    if stdenv.isCross
+    then buildPackages.binutils
+    else binutils;
   buildMeson =
     if stdenv.isCross
     then buildPackages.meson
@@ -542,6 +547,7 @@ in
             buildPackages.pkg-config
             buildMeson
             buildPackages.ninja
+            buildBinutils
             buildPython
             buildSetuptools
             buildDistlib
@@ -556,6 +562,7 @@ in
             pkg-config
             meson
             ninja
+            buildBinutils
             python3
             setuptools
             distlib
@@ -1735,6 +1742,15 @@ in
                   "control-observer", "control-delivery",
                   "stopped-control-rearm", "template-control-drain", "net-stop-chain",
                   "aio-fork-custody", "stop-context",
+                  "tcg-fast-paths",
+                  "mutex-owner-cache",
+                  "snapshot-fast-path",
+                  "settle-prepark",
+                  "cold-fault-predicates",
+                  "lazy-memory-identity",
+                  "accel-classification",
+                  "fault-rule-presence",
+                  "rr-sim-barriers",
               ):
                   with (source_root / f"{name}.result").open("w") as result:
                       subprocess.run([
@@ -1765,6 +1781,24 @@ in
               test "$(grep -c '^NATIVE_CONTROL_DELIVERY_PASS ' control-continuation.result)" -eq 8
               grep -Fxq 'CONDITIONAL_SETTLEMENT_REFUSAL_PASS: modeled bridge only; no native retry contract' \
                 control-continuation.result
+              cat tcg-fast-paths.result
+              grep -q '^PASS production TCG fast paths:' tcg-fast-paths.result
+              cat mutex-owner-cache.result
+              grep -q '^PASS production mutex owner cache:' mutex-owner-cache.result
+              cat snapshot-fast-path.result
+              grep -q '^PASS production snapshot fast path:' snapshot-fast-path.result
+              cat settle-prepark.result
+              grep -q '^PASS production settle prepark:' settle-prepark.result
+              cat cold-fault-predicates.result
+              grep -q '^PASS production cold fault predicates:' cold-fault-predicates.result
+              cat lazy-memory-identity.result
+              grep -q '^PASS production lazy memory identity:' lazy-memory-identity.result
+              cat accel-classification.result
+              grep -q '^PASS production accel classification:' accel-classification.result
+              cat fault-rule-presence.result
+              grep -q '^PASS production-body differential rule-presence fixture' fault-rule-presence.result
+              cat rr-sim-barriers.result
+              grep -q '^PASS healthy ordinary 8->3 cycles per CPU' rr-sim-barriers.result
               grep -Fxq 'PASS production TX/stop/clock/RR: batches, race, completion settlement, paused ack, explicit retry' \
                 net-output-stop.result
               grep -Fxq 'PASS lifecycle production encode/rebind: full save retained, canonical custody independence, guest frontier sensitivity, invalid rebind refusal' \
@@ -3100,12 +3134,12 @@ in
                    r"&crucible_global_virtual_timer_owner, owner\);\s*\}", 1),
                   ("sim precise unresolved deadline budget", icount,
                    r"if \(limit <= 0\) \{\s*"
-                   r"if \(strcmp\(current_accel_name\(\), \"sim\"\) == 0 &&\s*"
+                   r"if \(current_accel_is_sim\(\) &&\s*"
                    r"icount_enabled\(\) == ICOUNT_PRECISE\) \{\s*return 0;\s*\}"
                    r"\s*return \(int64_t\)remaining;\s*\}", 1),
                   ("generic RR unresolved deadline fallback", icount,
                    r"if \(rr_switch_quantum != 0 && limit <= 0 &&\s*"
-                   r"\(strcmp\(current_accel_name\(\), \"sim\"\) != 0 \|\|\s*"
+                   r"\(!current_accel_is_sim\(\) \|\|\s*"
                    r"icount_enabled\(\) != ICOUNT_PRECISE\)\) \{\s*"
                    r"cpu->icount_budget = cpu_budget;", 1),
                   ("sole global virtual timer owner registration", rr,
@@ -4252,6 +4286,19 @@ in
               done
             ''}
 
+            ${lib.optionalString (!stdenv.hostPlatform.isDarwin) ''
+              # ELF-relative function ranges survive stripping and let local
+              # profilers resolve samples without retaining DWARF or paths.
+              for executable in "$out"/bin/qemu-system-*; do
+                [ -f "$executable" ] || continue
+                executable_name=''${executable##*/}
+                ${buildPython}/bin/python3 ${./_qemu-function-map.py} \
+                  --nm ${buildBinutils}/bin/nm \
+                  --executable "$executable" \
+                  --output "$out/share/qemu/symbols/$executable_name.tsv"
+              done
+            ''}
+
             ${lib.optionalString (stdenv.isCross && !isDarwinCross) ''
               # QEMU's generated Meson cross file preserves explicitly found
               # GLib paths but drops the wrapper's remaining install RPATH.
@@ -4312,7 +4359,9 @@ in
               for name in net-output-stop lifecycle-projection control-deferred \
                 control-observer control-delivery stopped-control-rearm \
                 template-control-drain net-stop-chain aio-fork-custody stop-context \
-                control-continuation; do
+                control-continuation tcg-fast-paths mutex-owner-cache snapshot-fast-path settle-prepark \
+                cold-fault-predicates lazy-memory-identity accel-classification \
+                fault-rule-presence rr-sim-barriers; do
                 install -m 644 "$name.result" \
                   "$out/share/aos/crucible/$name.result"
                 install -m 644 "$name-proof/compile-command.json" \

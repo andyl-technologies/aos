@@ -968,20 +968,25 @@
     crucible-hot-fork
     crucible-hot-fork-async-worker-barrier
     crucible-hot-fork-block-barrier
+    crucible-hot-fork-block-seal
     crucible-hot-fork-child-console
     crucible-hot-fork-child-diagnostics
     crucible-hot-fork-child-files
     crucible-hot-fork-child-process
     crucible-hot-fork-child-process-contract
     crucible-hot-fork-child-qmp
+    crucible-hot-fork-cold-stop
     crucible-hot-fork-plugin-barrier
     crucible-hot-fork-plugin-endpoints
     crucible-hot-fork-private-rings
     crucible-hot-fork-rcu-barrier
+    crucible-hot-fork-source-graph
     crucible-hot-fork-template
     query-crucible-checkpoint-epoch
     query-crucible-fingerprint-projection-manifest
+    query-crucible-hot-fork-block-seal
     query-crucible-hot-fork-child-runtime
+    query-crucible-hot-fork-cold-stop
     query-crucible-hot-fork-plugin-resource-inventory
     query-crucible-selectable-reply-boundary
     x-crucible-adopt-launch-fdsets

@@ -883,6 +883,7 @@ let
     "libs/_libfontenc.nix" = "cross-build-helper";
     "libs/_libjxl-sources.nix" = "target-independent-source";
     "libs/_librsvg-sources.nix" = "target-independent-source";
+    "libs/_mesa-rust-sources.nix" = "target-independent-source";
     "libs/_libxcb.nix" = "cross-build-helper";
     "libs/_sharp-libheif.nix" = "cross-build-helper";
     "libs/_sharp-ultrahdr.nix" = "cross-build-helper";
@@ -1291,6 +1292,21 @@ in rec {
       decision.state == "eligible" && decision.blockers == [])
     names;
 
+  # Package outputs published for one release cell. A public alias of one
+  # non-default derivation output publishes only that selected output.
+  releasePublishedOutputs = package: let
+    selectedOutput = package.outputName or "out";
+  in
+    if selectedOutput == "out"
+    then package.outputs or ["out"]
+    else [selectedOutput];
+
+  # A package may bind an output attribute to a separately built derivation,
+  # as glibc binds `bin` to its utilities derivation. Release evidence must
+  # name the derivation that actually produces each output path.
+  releaseOutputDerivation = package: output:
+    builtins.unsafeDiscardStringContext (package.${output}.drvPath or package.drvPath);
+
   releaseDerivations = {
     system,
     packages,
@@ -1306,10 +1322,7 @@ in rec {
         selectedOutput = package.outputName or "out";
         hasConfiguration = selectedOutput == "out" && package ? config;
         artifactPrefix = "package/${name}/${system}";
-        publishedOutputs =
-          if selectedOutput == "out"
-          then package.outputs or ["out"]
-          else [selectedOutput];
+        packageDerivation = builtins.unsafeDiscardStringContext package.drvPath;
         normalizeSource = source: let
           sourcePath = toString source;
           storePath = builtins.match "^(/nix/store/[0-9a-z]{32}-[^/]+)(/.*)?$" sourcePath;
@@ -1375,19 +1388,31 @@ in rec {
             homepage = package.meta.homepage or null;
             license_expression = licenseExpression;
           };
-        derivation = builtins.unsafeDiscardStringContext package.drvPath;
+        derivation = packageDerivation;
         outputs =
-          (map (output: {
-              # A public alias of one non-default derivation output is itself a
-              # single-output package root. Normalize that selected root to `out`
-              # so package qualification cannot silently exercise a sibling output.
-              name =
-                if selectedOutput == "out"
-                then output
-                else "out";
-              store_path = builtins.unsafeDiscardStringContext (toString package.${output});
-            })
-            publishedOutputs)
+          (map (
+              output: let
+                outputDerivation = releaseOutputDerivation package output;
+              in
+                {
+                  # A public alias of one non-default derivation output is itself a
+                  # single-output package root. Normalize that selected root to `out`
+                  # so package qualification cannot silently exercise a sibling output.
+                  name =
+                    if selectedOutput == "out"
+                    then output
+                    else "out";
+                  store_path = builtins.unsafeDiscardStringContext (toString package.${output});
+                }
+                # The common case omits the field: the package derivation
+                # produces the output.
+                // (
+                  if outputDerivation == packageDerivation
+                  then {}
+                  else {derivation = outputDerivation;}
+                )
+            )
+            (releasePublishedOutputs package))
           ++ (
             if hasConfiguration
             then
@@ -1434,6 +1459,21 @@ in rec {
   }: let
     selectedNames = releaseDerivationNames system names;
     selectedPackages = map (name: packages.${name}) selectedNames;
+    # Outputs built by a separate derivation are planned under that
+    # derivation, so it must be registered as a root of its own.
+    separateOutputRoots =
+      builtins.concatMap (
+        package:
+          map (output: package.${output}) (
+            builtins.filter (
+              output:
+                releaseOutputDerivation package output
+                != builtins.unsafeDiscardStringContext package.drvPath
+            )
+            (releasePublishedOutputs package)
+          )
+      )
+      selectedPackages;
     configuredPackages =
       builtins.filter (
         package: (package.outputName or "out") == "out" && package ? config
@@ -1441,6 +1481,7 @@ in rec {
       selectedPackages;
   in
     selectedPackages
+    ++ separateOutputRoots
     ++ map (package: package.config) configuredPackages
     ++ (
       if configuredPackages == []
