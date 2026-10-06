@@ -403,15 +403,9 @@ async fn fetch_inner(
             })?;
         }
         for download in &downloads {
-            crate::store::import_nar_with_compression(
-                &download.local_path,
-                &download.store_path,
-                &download.references,
-                download.deriver.as_deref(),
-                &download.compression,
-            )
-            .await
-            .with_context(|| format!("importing pinned path {}", download.store_path))?;
+            crate::store::import_nar(&download.local_path, &download.narinfo)
+                .await
+                .with_context(|| format!("importing pinned path {}", download.store_path))?;
         }
     }
 

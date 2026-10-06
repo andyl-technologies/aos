@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::cli_triage_debug::guest_input_message;
+use crucible_core::SIM_TICKS_PER_NS;
 
 #[test]
 fn debug_goto_accepts_an_unambiguous_event_log_coordinate() -> Result<(), Box<dyn Error>> {
@@ -254,6 +255,86 @@ pub(super) fn cli_debug_guest_channels_require_mutation_authorization_and_preser
         .expect_err("zero guest idle timeout must be rejected");
     assert!(matches!(error, CliError::Usage(_)));
     Ok(())
+}
+
+#[test]
+fn cli_debug_guest_idle_timeout_preserves_physical_units() -> Result<(), Box<dyn Error>> {
+    for (input, expected) in [
+        ("1000", Duration::from_nanos(1)),
+        ("1000tick", Duration::from_nanos(1)),
+        ("1000ticks", Duration::from_nanos(1)),
+        ("1ns", Duration::from_nanos(1)),
+        ("2us", Duration::from_micros(2)),
+        ("250ms", Duration::from_millis(250)),
+        ("30s", Duration::from_secs(30)),
+    ] {
+        let plan = debug_guest_idle_timeout_plan(Some(input))?;
+
+        assert_eq!(plan.guest_idle_timeout, expected, "{input}");
+    }
+
+    let default = debug_guest_idle_timeout_plan(None)?;
+    assert_eq!(default.guest_idle_timeout, Duration::from_secs(30));
+    Ok(())
+}
+
+#[test]
+fn cli_debug_guest_idle_timeout_rejects_lossy_and_out_of_range_projection()
+-> Result<(), Box<dyn Error>> {
+    for input in ["1", "1tick", "999ticks", "1001ticks"] {
+        let error = debug_guest_idle_timeout_plan(Some(input))
+            .expect_err("fractional nanosecond host timeout must be rejected");
+
+        assert!(matches!(error, CliError::Usage(_)), "{input}");
+        assert!(error.to_string().contains("whole-nanosecond"), "{input}");
+    }
+
+    let maximum_nanos = u64::MAX / SIM_TICKS_PER_NS;
+    for input in [
+        format!("{maximum_nanos}ns"),
+        format!("{}ticks", maximum_nanos * SIM_TICKS_PER_NS),
+    ] {
+        let plan = debug_guest_idle_timeout_plan(Some(&input))?;
+
+        assert_eq!(plan.guest_idle_timeout, Duration::from_nanos(maximum_nanos));
+    }
+
+    for input in [
+        format!("{}ns", maximum_nanos + 1),
+        format!("{}ticks", u64::MAX),
+        String::from("18446744073709551616ticks"),
+    ] {
+        assert!(
+            matches!(
+                debug_guest_idle_timeout_plan(Some(&input)),
+                Err(CliError::Usage(_))
+            ),
+            "{input}"
+        );
+    }
+    Ok(())
+}
+
+fn debug_guest_idle_timeout_plan(timeout: Option<&str>) -> Result<DebugInvocationPlan, CliError> {
+    let mut arguments = vec![
+        "crucible",
+        "debug",
+        "--session",
+        "7:12:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "--node",
+        "node-a",
+        "--allow-mutate",
+    ];
+    if let Some(timeout) = timeout {
+        arguments.extend(["--guest-idle-timeout", timeout]);
+    }
+    arguments.extend(["exec", "--", "/bin/true"]);
+    let cli = Cli::parse_from(arguments);
+    let Commands::Debug(args) = &cli.command else {
+        panic!("expected debug command");
+    };
+
+    plan_debug_invocation(&cli, args)
 }
 
 #[tokio::test(flavor = "current_thread")]

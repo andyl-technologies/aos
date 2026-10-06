@@ -13,6 +13,9 @@ crucible-protocol = { path = "../crucible-protocol" }
 libc = { workspace = true }
 thiserror = { workspace = true }
 
+[dev-dependencies]
+crucible-campaign = { path = "../crucible-campaign" }
+
 [[bin]]
 name = "crucible-guest"
 path = "src/main.rs"

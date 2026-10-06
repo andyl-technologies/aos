@@ -8,7 +8,7 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
+  planTest = builtins.readFile ../../crates/crucible/tests/event_graph_serialization.rs;
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
@@ -22,7 +22,7 @@
       }
       {
         label = "T-SPAT-12 completion names scenario composition";
-        needle = "`World::scenario_def_with_plan`";
+        needle = "`World::scenario_def_with_plan_properties_and_seed`";
       }
       {
         label = "T-SPAT-12 completion names gate";
@@ -43,24 +43,24 @@
         needle = "\"crucible.model.plan.v5\"";
       }
       {
-        label = "plan canonical entry helper";
-        needle = "fn from_canonical_parts(graph: EventGraph, fault_signals: FaultSignalPlan)";
+        label = "plan carries a canonical event graph";
+        needle = "pub(super) graph: EventGraph,";
       }
       {
-        label = "world-validated event graph";
-        needle = "validate_event_graph_plan";
+        label = "plan carries a canonical fault signal layer";
+        needle = "pub(super) fault_signals: FaultSignalPlan,";
       }
       {
         label = "plan material helper";
         needle = "fn plan_material(plan: &Plan) -> String";
       }
       {
-        label = "signal plan identity enters canonical material";
-        needle = "fault_signals.id().to_hex()";
+        label = "plan material includes fault signals";
+        needle = "fn plan_parts_material(graph: &EventGraph, fault_signals: &FaultSignalPlan) -> String";
       }
       {
-        label = "world-plan scenario helper";
-        needle = "pub fn scenario_def_with_plan(&self, plan: &Plan) -> Result<ScenarioDef, EngineError>";
+        label = "world-plan-properties-seed scenario helper";
+        needle = "pub fn scenario_def_with_plan_properties_and_seed";
       }
       {
         label = "scenario world-plan domain";
@@ -79,12 +79,8 @@
         needle = "content_hash_hex(plan.content_hash())";
       }
       {
-        label = "scenario includes empty properties compatibility";
-        needle = "Ok(self.scenario_def_from_components(plan, &Properties::empty(), Seed::default()))";
-      }
-      {
         label = "world validates plan before scenario composition";
-        needle = "plan.validate_for_world(self)?;";
+        needle = "plan.validate_for_world_with_properties(self, &properties)?;";
       }
     ]
     ++ lib.optionals (hasInfix ''
@@ -95,26 +91,40 @@
       model) [
       "crates/crucible/src/model.rs: plan identity field must not be public"
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/tests/event_graph_serialization.rs" planTest [
       {
-        label = "plan content-address regression";
-        needle = "fn plan_content_address_preserves_declared_event_order()";
+        label = "plan content-address test";
+        needle = "fn event_graph_plan_round_trips_through_toml_and_binary()";
       }
       {
-        label = "declared event order affects canonical bytes";
-        needle = "assert_ne!(plan.canonical_bytes(), reordered_plan.canonical_bytes());";
+        label = "test checks current plan domain";
+        needle = "\"crucible.model.plan.v5\"";
       }
       {
-        label = "declared event order affects plan identity";
-        needle = "assert_ne!(plan.content_hash(), reordered_plan.content_hash());";
+        label = "test checks canonical plan bytes";
+        needle = "assert_eq!(parsed_toml.canonical_bytes(), plan.canonical_bytes());";
       }
       {
-        label = "reuse and scenario sensitivity regression";
-        needle = "spatial_components_have_independent_content_addresses_and_cross_reuse";
+        label = "test checks plan reuse across compatible worlds";
+        needle = "assert_eq!(changed_world_plan.content_hash(), plan.content_hash())";
       }
       {
-        label = "incompatible world rejection";
-        needle = "incompatible_world.scenario_def_with_plan(&plan)";
+        label = "test checks scenario plan sensitivity";
+        needle = "assert_eq!(form.plan(), &plan);";
+      }
+      {
+        label = "test checks empty-plan compatibility";
+        needle = "fault_signal_semantic_version = 2";
+      }
+    ]
+    ++ failuresFor "crates/crucible/src/model.rs" model [
+      {
+        label = "signal layer changes plan identity";
+        needle = "fn outer_plan_identity_commits_to_the_complete_fault_layer()";
+      }
+      {
+        label = "signal plan identity change is asserted";
+        needle = "assert_ne!(plan.content_hash(), baseline.content_hash())";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -177,8 +187,17 @@ in
               --target-dir "$TMPDIR/crucible-spatial-plan-component-target" \
               --manifest-path crates/Cargo.toml \
               -p crucible \
-              --lib \
-              plan_content_address \
+              --test event_graph_serialization \
+              event_graph_plan_round_trips_through_toml_and_binary \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-spatial-plan-component-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible \
+              --test event_graph_serialization \
+              graph_plan_is_the_scenario_plan_component \
               -- --test-threads=1
           '';
         }
@@ -194,7 +213,7 @@ in
             related_gates=gate:content-address,gate:e2e-determinism
             spatial_graph_task=orthogonal-plan-component
             component=plan
-            canonical_order=declared-event-order-and-signal-binding-identity
+            canonical_order=event-graph-plus-signal-program-and-binding
             scenario_identity=world-ref-plus-plan-ref
             RESULT
           '';

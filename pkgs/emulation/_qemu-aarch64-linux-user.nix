@@ -17,8 +17,8 @@
   glib,
   zlib,
 }: let
-  series = import ./qemu-patches/_series.nix;
-  version = series.qemuVersion;
+  qemuSource = import ./qemu-patches/_atomic-patch.nix;
+  version = qemuSource.qemuVersion;
   configureFlags = [
     "--target-list=aarch64-linux-user"
     "--disable-system"
@@ -41,8 +41,8 @@ in
     inherit version;
 
     src = fetchurl {
-      urls = [series.qemuSourceUrl];
-      hash = series.qemuSourceHash;
+      urls = [qemuSource.qemuSourceUrl];
+      hash = qemuSource.qemuSourceHash;
     };
 
     buildDeps = [
@@ -128,7 +128,7 @@ in
           cat > "$out/share/aos/qemu-user/build-identity.env" <<'IDENTITY'
           qemu_package=qemu-aarch64-linux-user
           qemu_version=${version}
-          qemu_source_hash=${series.qemuSourceHash}
+          qemu_source_hash=${qemuSource.qemuSourceHash}
           qemu_configure_flags_hash=${configureFlagsHash}
           qemu_configure_target_list=aarch64-linux-user
           qemu_plugins_enabled=false

@@ -128,6 +128,10 @@
         label = "guest depends on protocol ABI";
         needle = "crucible-protocol = { path = \"../crucible-protocol\" }";
       }
+      {
+        label = "guest depends on shared typed choice model";
+        needle = "crucible-campaign = { path = \"../crucible-campaign\" }";
+      }
     ]
     ++ failuresFor "crates/crucible-guest/src/lib.rs" guestLib [
       {

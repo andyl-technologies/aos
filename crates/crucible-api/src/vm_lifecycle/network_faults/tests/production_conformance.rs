@@ -7,9 +7,10 @@ fn production_resolve_availability_suppresses_the_routed_frame() {
     let (world, segment) = availability_world();
     let scenario = SchedulerLivenessScenario::from_runnable_world(
         "production-resolve-availability",
-        Shift::default(),
         16,
-        SimInstant { nanos: 128 },
+        SimInstant {
+            ticks: 128 * crucible::model::SIM_TICKS_PER_NS,
+        },
         0,
         &world,
     );
@@ -20,7 +21,7 @@ fn production_resolve_availability_suppresses_the_routed_frame() {
         WorldIoLayoutPolicy::default(),
     )
     .unwrap_or_else(|error| panic!("test scheduler should build: {error}"));
-    let mut nodes = ProductionNodeSet::new();
+    let mut nodes = QemuNodeSet::new();
     let runtime = ProductionFaultRuntime::new(
         down_plan_at(segment, FaultPhase::Resolve),
         Some(Arc::new(NoArtifacts)),
@@ -39,7 +40,7 @@ fn production_resolve_availability_suppresses_the_routed_frame() {
     interceptor
         .evaluate_boundary(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             &mut scheduler,

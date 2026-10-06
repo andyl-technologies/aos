@@ -34,7 +34,7 @@ fn forwarder_and_contact_replacements_execute_only_within_world_contracts() {
         transition_sequence: 1,
         opportunity: None,
         coordinate: FaultCoordinate {
-            virtual_nanos: 0,
+            virtual_ticks: 0,
             retired_instructions: None,
         },
         cause: BindingActionCause::Signal,
@@ -46,7 +46,7 @@ fn forwarder_and_contact_replacements_execute_only_within_world_contracts() {
         technology: object_id("network-forwarder-v1"),
         result_schema: object_id("network-forwarder-state-v1"),
         result_digest: ContentHash::from_bytes(&[1]),
-        release_nanos: 1,
+        release_ticks: 1,
         action: forwarder_action,
     };
 
@@ -83,7 +83,7 @@ fn forwarder_and_contact_replacements_execute_only_within_world_contracts() {
         transition_sequence: 1,
         opportunity: None,
         coordinate: FaultCoordinate {
-            virtual_nanos: 0,
+            virtual_ticks: 0,
             retired_instructions: None,
         },
         cause: BindingActionCause::Signal,
@@ -95,7 +95,7 @@ fn forwarder_and_contact_replacements_execute_only_within_world_contracts() {
         technology: object_id("network-contact-v1"),
         result_schema: object_id("network-contact-plan-v1"),
         result_digest: ContentHash::from_bytes(b"contact-plan-a"),
-        release_nanos: 1,
+        release_ticks: 1,
         action: contact_action,
     };
     let contact_interval = |beam: &str| crucible::model::NetworkPolicyContactInterval {
@@ -103,8 +103,8 @@ fn forwarder_and_contact_replacements_execute_only_within_world_contracts() {
         service_resource: object_id(&format!("resource-{beam}")),
         route_cost: positive("route_cost", 1),
         routing_propagation_nanos: 1,
-        start_nanos: 0,
-        end_nanos: 100,
+        start_ticks: 0,
+        end_ticks: 100,
         source: object_id("ground"),
         destination: object_id("satellite"),
         beam: object_id(beam),

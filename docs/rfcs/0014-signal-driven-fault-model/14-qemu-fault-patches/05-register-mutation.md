@@ -1,4 +1,4 @@
-# Patch 0051 — `crucible-register-mutate`
+# Capability task 0051 — `crucible-register-mutate`
 
 ## Purpose
 
@@ -10,9 +10,10 @@ mutation; it does not expose a generic host pointer or debugger interface.
 
 - Provides `qemu.register.mutate.x86_64.v1` and
   `qemu.register.mutate.aarch64.v1`.
-- Depends on 0047–0048 and existing per-vCPU register/RR introspection.
-- Persistent access transforms also depend on the architecture hook portion of
-  this patch and are VMState-complete under 0067.
+- Requires the capabilities specified by capability tasks 0047–0048 and the
+  existing per-vCPU register/RR introspection.
+- Persistent access transforms also require this capability's architecture hook
+  and the VMState contract specified by capability task 0067.
 
 ## Architecture register manifests
 
@@ -142,8 +143,9 @@ value. Flushing translated blocks alone is insufficient: the current execution
 loop could otherwise continue past the exact boundary without giving the new
 control-flow state or the event consumer a synchronization point.
 
-Reserved bits are preserved. Modeling an illegal architectural state uses patch
-0052 exception injection, not writing a QEMU-invalid reserved combination.
+Reserved bits are preserved. Modeling an illegal architectural state uses the
+exception-injection capability specified by capability task 0052, not a write
+of a QEMU-invalid reserved combination.
 Mutation of PC/RIP changes the next instruction and is evidenced as a control-
 flow mutation; target translation must be valid or the resulting guest
 architecture exception must be deterministic.
@@ -226,7 +228,7 @@ event.
 ## VMState
 
 Architectural values already participate in CPU VMState; persistent rule tables
-and pending commands are added by 0067. Save/load validates identical register
+and pending commands are added by capability task 0067. Save/load validates identical register
 manifest hash and CPU model.
 
 ## Live microtests
@@ -239,7 +241,8 @@ manifest hash and CPU model.
    failures leave state unchanged.
 4. Exercise persistent stuck read/write rules where advertised.
 5. Save/restore after each group and compare uninterrupted execution.
-6. Revert patch and fail live mutation gate; prove non-sim inertness.
+6. Run the live mutation gate against pristine QEMU and require capability
+   absence; prove non-sim inertness with the atomic patch installed.
 
 The rejection gate distinguishes inconsistent command framing from
 architectural validation. Different register identities in the action and

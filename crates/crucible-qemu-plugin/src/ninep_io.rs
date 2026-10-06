@@ -5,7 +5,11 @@
 //! the reserved deterministic 9p executor rings and holds device-I/O virtual
 //! time for the whole device invocation burst.
 
-use std::{array, cell::Cell};
+use std::{
+    array,
+    cell::{Cell, RefCell},
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use thiserror::Error;
 
@@ -15,8 +19,8 @@ use crucible_shmem::{
 };
 
 use crate::{
-    DeviceIoBurstState, DeviceIoFreezeError, DeviceIoRequestRelease, DeviceIoRequestToken,
-    PluginDeviceIoFreeze, shmem_ordering::PluginShmemOrdering,
+    DeviceIoBurstState, DeviceIoFreezeError, DeviceIoRequestOutcome, DeviceIoRequestRelease,
+    DeviceIoRequestToken, PluginDeviceIoFreeze, shmem_ordering::PluginShmemOrdering,
 };
 
 const NINEP_IO_SLOT_U32: u32 = SLOT_9P_IO as u32;
@@ -28,19 +32,155 @@ const NINEP_EIO: u32 = 5;
 const NINEP_EINVAL: u32 = 22;
 const NINEP_ENOSYS: u32 = 38;
 const NINEP_EROFS: u32 = 30;
+static NEXT_NINEP_OWNER_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_ninep_owner_id() -> u64 {
+    // Request IDs can repeat in separate callback states; this owner ID may not.
+    match NEXT_NINEP_OWNER_ID.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        current.checked_add(1)
+    }) {
+        Ok(owner_id) => owner_id,
+        Err(_) => std::process::abort(),
+    }
+}
 
 /// Registration-time-fixed 9p callback state.
 #[derive(Debug)]
 pub struct PluginNinePIo {
+    owner_id: u64,
     vm_slot: u32,
     ninep_slot: u32,
     outbound_ring_index: u32,
     inbound_ring_index: u32,
     next_request_id: Cell<u32>,
     pending_request_ids: PendingNinePRequests,
+    pending_delivery: RefCell<Option<PendingNinePDelivery>>,
+}
+
+#[derive(Debug)]
+struct PendingNinePDelivery {
+    frame: FrameEntry,
+    response: NinePResponse,
+    delivered: bool,
+    quarantine: Option<NinePIoError>,
+}
+
+/// Factual custody of one original inbound ring head before guest delivery.
+///
+/// The observation is process-local and must be rechecked against the original
+/// live ring. It carries no fixed-input Source, Host actor, or permission to
+/// consume the frame.
+#[derive(Clone, Debug)]
+pub struct NinePInboundHead {
+    ring_index: u32,
+    ring_generation: u64,
+    read_index: u64,
+    frame: FrameEntry,
+}
+
+impl NinePInboundHead {
+    /// Returns the registration-fixed directed inbox index.
+    #[must_use]
+    pub const fn ring_index(&self) -> u32 {
+        self.ring_index
+    }
+
+    /// Returns the generation issued when the mapped ring owner was installed.
+    #[must_use]
+    pub const fn ring_generation(&self) -> u64 {
+        self.ring_generation
+    }
+
+    /// Returns the original absolute consumer frontier.
+    #[must_use]
+    pub const fn read_index(&self) -> u64 {
+        self.read_index
+    }
+
+    /// Returns the original physical response key.
+    #[must_use]
+    pub fn delivery_key(&self) -> FrameDeliveryKey {
+        self.frame.delivery_key()
+    }
 }
 
 impl PluginNinePIo {
+    /// Observes the registered physical head for an original pending request.
+    ///
+    /// The caller retains the original request token in the live callback map.
+    /// A different request at the same ring head returns `None`; it cannot be
+    /// selected by copying a request id or a previously observed frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NinePIoError`] for a wrong ring, malformed head, or invalid
+    /// original device-I/O token.
+    pub fn observe_inbound_head(
+        &self,
+        freeze: &PluginDeviceIoFreeze,
+        inbound_ring: &NinePInboundRing<'_>,
+        token: &NinePRequestToken,
+    ) -> Result<Option<NinePInboundHead>, NinePIoError> {
+        self.check_inbound_ring(inbound_ring)?;
+        if inbound_ring.registered_generation() == 0
+            || token.ninep_owner_id != self.owner_id
+            || self.pending_delivery.borrow().is_some()
+            || !self.pending_request_ids.contains(token.request_id)
+            || !freeze.burst_active()
+            || !token.device_token.burst_member()
+        {
+            return Ok(None);
+        }
+        freeze
+            .completion_current(&token.device_token, DeviceIoRequestOutcome::Completed)
+            .map_err(|source| NinePIoError::DeviceIoFreeze { source })?;
+
+        let read_index = PluginShmemOrdering::consumer_read_index(inbound_ring.header);
+        let head = peek_head_frame(inbound_ring)?;
+        if PluginShmemOrdering::consumer_read_index(inbound_ring.header) != read_index {
+            return Ok(None);
+        }
+        let Some(frame) = head else {
+            return Ok(None);
+        };
+        if frame.src_node != self.ninep_slot || frame.seq != token.request_id {
+            return Ok(None);
+        }
+
+        Ok(Some(NinePInboundHead {
+            ring_index: self.inbound_ring_index,
+            ring_generation: inbound_ring.registered_generation(),
+            read_index,
+            frame,
+        }))
+    }
+
+    /// Rechecks the same actual head and original pending request before use.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NinePIoError`] for a wrong ring, malformed head, or invalid
+    /// original device-I/O token. A moved or consumed head returns `false`.
+    pub fn inbound_head_current(
+        &self,
+        freeze: &PluginDeviceIoFreeze,
+        inbound_ring: &NinePInboundRing<'_>,
+        token: &NinePRequestToken,
+        observed: &NinePInboundHead,
+    ) -> Result<bool, NinePIoError> {
+        if observed.ring_index != self.inbound_ring_index
+            || observed.ring_generation != inbound_ring.registered_generation()
+            || PluginShmemOrdering::consumer_read_index(inbound_ring.header) != observed.read_index
+        {
+            return Ok(false);
+        }
+        let current = self.observe_inbound_head(freeze, inbound_ring, token)?;
+        Ok(current.is_some_and(|current| {
+            current.read_index == observed.read_index
+                && same_response_frame(&current.frame, &observed.frame)
+        }))
+    }
+
     /// Builds 9p callback state from the directed rings selected at registration.
     ///
     /// # Errors
@@ -81,12 +221,14 @@ impl PluginNinePIo {
     #[must_use]
     pub fn new(vm_slot: u32, outbound_ring_index: u32, inbound_ring_index: u32) -> Self {
         Self {
+            owner_id: next_ninep_owner_id(),
             vm_slot,
             ninep_slot: NINEP_IO_SLOT_U32,
             outbound_ring_index,
             inbound_ring_index,
             next_request_id: Cell::new(0),
             pending_request_ids: PendingNinePRequests::new(),
+            pending_delivery: RefCell::new(None),
         }
     }
 
@@ -118,6 +260,14 @@ impl PluginNinePIo {
     #[must_use]
     pub fn next_request_id(&self) -> u32 {
         self.next_request_id.get()
+    }
+
+    pub(crate) fn pending_delivery_len(&self, request_id: u32) -> Option<usize> {
+        self.pending_delivery
+            .borrow()
+            .as_ref()
+            .filter(|pending| pending.response.request_id() == request_id)
+            .map(|pending| pending.response.payload().len())
     }
 
     /// Starts one multi-request 9p burst.
@@ -194,6 +344,7 @@ impl PluginNinePIo {
             request_id,
             payload_len: request.payload().len(),
             token: NinePRequestToken {
+                ninep_owner_id: self.owner_id,
                 request_id,
                 device_token,
             },
@@ -202,12 +353,17 @@ impl PluginNinePIo {
 
     /// Polls one raw 9p response and delivers it when its delivery icount is due.
     ///
+    /// A no-effect guest-delivery failure retains the original ring head and
+    /// token. Once guest delivery succeeds, a blocked ring dequeue can be
+    /// retried without delivering the response a second time.
+    ///
     /// # Errors
     ///
     /// Returns [`NinePIoError`] when the inbound ring does not match registration
-    /// state, the due response is malformed or for another request, the SPSC
-    /// dequeue fails, delivery to QEMU fails, or the device-I/O token cannot be
-    /// completed or failed.
+    /// state, the due response is malformed or for another request, or the
+    /// device-I/O token cannot be completed or failed. Recoverable delivery and
+    /// dequeue failures return [`NinePPoll::Retry`] with the original token.
+    /// A consumed head that differs from the preview is quarantined.
     pub fn poll_response<D>(
         &self,
         freeze: &mut PluginDeviceIoFreeze,
@@ -221,9 +377,75 @@ impl PluginNinePIo {
         D: NinePGuestCompletion + ?Sized,
     {
         self.check_inbound_ring(inbound_ring)?;
-        let Some(head) = peek_head_frame(inbound_ring)? else {
+        if let Some(source) = self
+            .pending_delivery
+            .borrow()
+            .as_ref()
+            .and_then(|pending| pending.quarantine.clone())
+        {
+            return Ok(NinePPoll::Quarantined { token, source });
+        }
+        let head = match peek_head_frame(inbound_ring) {
+            Ok(head) => head,
+            Err(source) => {
+                let delivered = self
+                    .pending_delivery
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|pending| pending.delivered);
+                if delivered {
+                    return Ok(self.quarantine(token, source));
+                }
+                return Err(source);
+            }
+        };
+        let Some(head) = head else {
+            let missing_delivered_head = self
+                .pending_delivery
+                .borrow()
+                .as_ref()
+                .filter(|pending| pending.delivered)
+                .map(|pending| pending.frame.delivery_key());
+            if let Some(expected) = missing_delivered_head {
+                return Ok(self.quarantine(
+                    token,
+                    NinePIoError::DequeuedUnexpectedFrame {
+                        ring_index: self.inbound_ring_index,
+                        expected,
+                        actual: None,
+                    },
+                ));
+            }
             return Ok(NinePPoll::NotReady { token });
         };
+        let staged_head = {
+            let pending = self.pending_delivery.borrow();
+            pending.as_ref().map(|staged| {
+                (
+                    staged.response.request_id(),
+                    staged.frame.delivery_key(),
+                    same_response_frame(&staged.frame, &head),
+                    staged.delivered,
+                )
+            })
+        };
+        if let Some((request_id, expected, same_head, delivered)) = staged_head {
+            if request_id != token.request_id {
+                return Ok(NinePPoll::NotReady { token });
+            }
+            if !same_head {
+                let source = NinePIoError::DequeuedUnexpectedFrame {
+                    ring_index: self.inbound_ring_index,
+                    expected,
+                    actual: Some(head.delivery_key()),
+                };
+                return Ok(if delivered {
+                    self.quarantine(token, source)
+                } else {
+                    NinePPoll::Retry { token, source }
+                });
+            }
+        }
         if head.delivery_icount > current_icount {
             return Ok(NinePPoll::NotReady { token });
         }
@@ -251,6 +473,28 @@ impl PluginNinePIo {
             });
         }
 
+        if !self.pending_request_ids.contains(token.request_id) {
+            return Err(NinePIoError::PendingRequestMissing {
+                request_id: token.request_id,
+            });
+        }
+        if let Err(source) =
+            freeze.completion_current(&token.device_token, DeviceIoRequestOutcome::Completed)
+        {
+            return Ok(NinePPoll::Retry {
+                token,
+                source: NinePIoError::DeviceIoFreeze { source },
+            });
+        }
+        if !freeze.burst_active() || !token.device_token.burst_member() {
+            return Ok(NinePPoll::Retry {
+                token,
+                source: NinePIoError::BurstCustodyMissing {
+                    request_id: head.seq,
+                },
+            });
+        }
+
         let payload = match head.payload() {
             Ok(payload) => payload.to_vec(),
             Err(source) => {
@@ -264,41 +508,79 @@ impl PluginNinePIo {
             }
         };
         let response = NinePResponse::new(head.seq, payload);
-        let request_id = token.request_id;
-        let release = freeze
-            .complete_request(slot, token.device_token)
-            .map_err(|source| NinePIoError::DeviceIoFreeze { source })?;
-        self.pending_request_ids.remove(request_id)?;
+        if self.pending_delivery.borrow().is_none() {
+            self.pending_delivery.replace(Some(PendingNinePDelivery {
+                frame: head.clone(),
+                response: response.clone(),
+                delivered: false,
+                quarantine: None,
+            }));
+        }
 
-        let Some(dequeued) =
+        let delivered = self
+            .pending_delivery
+            .borrow()
+            .as_ref()
+            .is_some_and(|p| p.delivered);
+        if !delivered {
+            if let Err(source) = deliver.complete_9p_response(&response) {
+                return Ok(NinePPoll::Retry {
+                    token,
+                    source: NinePIoError::GuestCompletion {
+                        request_id: response.request_id(),
+                        source,
+                    },
+                });
+            }
+            if let Some(staged) = self.pending_delivery.borrow_mut().as_mut() {
+                staged.delivered = true;
+            }
+        }
+
+        let dequeued =
             PluginShmemOrdering::dequeue_inbound_frame(inbound_ring.header, inbound_ring.entries)
                 .map_err(|source| NinePIoError::RingDequeue {
-                ring_index: self.inbound_ring_index,
-                source,
-            })?
-        else {
-            return Err(NinePIoError::DequeuedUnexpectedFrame {
+                    ring_index: self.inbound_ring_index,
+                    source,
+                });
+        let Some(dequeued) = (match dequeued {
+            Ok(dequeued) => dequeued,
+            Err(source) => return Ok(NinePPoll::Retry { token, source }),
+        }) else {
+            let source = NinePIoError::DequeuedUnexpectedFrame {
                 ring_index: self.inbound_ring_index,
                 expected: head.delivery_key(),
                 actual: None,
-            });
+            };
+            return Ok(self.quarantine(token, source));
         };
-        if dequeued.delivery_key() != head.delivery_key() {
-            return Err(NinePIoError::DequeuedUnexpectedFrame {
+        if !same_response_frame(&dequeued, &head) {
+            let source = NinePIoError::DequeuedUnexpectedFrame {
                 ring_index: self.inbound_ring_index,
                 expected: head.delivery_key(),
                 actual: Some(dequeued.delivery_key()),
-            });
+            };
+            return Ok(self.quarantine(token, source));
         }
 
-        deliver.complete_9p_response(&response).map_err(|source| {
-            NinePIoError::GuestCompletion {
-                request_id: response.request_id(),
-                release,
-                source,
-            }
-        })?;
+        let request_id = token.request_id;
+        // The original burst is still active, so completion has no wake path.
+        // Token validation and pending membership were checked before delivery;
+        // no external callback runs between dequeue and this count release.
+        let release = match freeze.complete_request(slot, token.device_token) {
+            Ok(release) => release,
+            Err(_) => std::process::abort(),
+        };
+        self.pending_request_ids.remove(request_id)?;
+        self.pending_delivery.replace(None);
         Ok(NinePPoll::Completed { response, release })
+    }
+
+    fn quarantine(&self, token: NinePRequestToken, source: NinePIoError) -> NinePPoll {
+        if let Some(staged) = self.pending_delivery.borrow_mut().as_mut() {
+            staged.quarantine = Some(source.clone());
+        }
+        NinePPoll::Quarantined { token, source }
     }
 
     /// Ends one 9p device burst after all request tokens have completed.
@@ -516,6 +798,7 @@ impl<'a> NinePOutboundRing<'a> {
 #[derive(Clone, Copy)]
 pub struct NinePInboundRing<'a> {
     ring_index: u32,
+    registered_generation: u64,
     src_slot: u32,
     dst_slot: u32,
     header: &'a RingHeader,
@@ -523,6 +806,10 @@ pub struct NinePInboundRing<'a> {
 }
 
 impl<'a> NinePInboundRing<'a> {
+    pub(crate) const fn registered_generation(&self) -> u64 {
+        self.registered_generation
+    }
+
     /// Builds an inbound 9p ring view.
     #[must_use]
     pub const fn new(
@@ -534,6 +821,25 @@ impl<'a> NinePInboundRing<'a> {
     ) -> Self {
         Self {
             ring_index,
+            registered_generation: 0,
+            src_slot,
+            dst_slot,
+            header,
+            entries,
+        }
+    }
+
+    pub(crate) const fn registered(
+        ring_index: u32,
+        registered_generation: u64,
+        src_slot: u32,
+        dst_slot: u32,
+        header: &'a RingHeader,
+        entries: &'a [FrameEntry],
+    ) -> Self {
+        Self {
+            ring_index,
+            registered_generation,
             src_slot,
             dst_slot,
             header,
@@ -773,6 +1079,7 @@ pub fn handle_ninep_wire_fuzz_message(frame: &[u8], msize: u32) -> NinePWireHand
 #[must_use = "9p request tokens must be consumed by 9p poll completion or failure"]
 #[derive(Debug, PartialEq, Eq)]
 pub struct NinePRequestToken {
+    ninep_owner_id: u64,
     request_id: u32,
     device_token: DeviceIoRequestToken,
 }
@@ -840,6 +1147,20 @@ pub enum NinePPoll {
         /// The still-pending request token.
         token: NinePRequestToken,
     },
+    /// Delivery or settlement can be retried with the retained original token.
+    Retry {
+        /// The original request token, still held by the freeze state.
+        token: NinePRequestToken,
+        /// The reason the original response remains pending.
+        source: NinePIoError,
+    },
+    /// A consumed, mismatched head cannot be replayed as the original response.
+    Quarantined {
+        /// The original token remains held while the callback fails closed.
+        token: NinePRequestToken,
+        /// The terminal ring identity mismatch.
+        source: NinePIoError,
+    },
     /// A due response was delivered and the request token was released.
     Completed {
         /// The raw response delivered to the guest.
@@ -852,6 +1173,9 @@ pub enum NinePPoll {
 /// A safe adapter for delivering a decoded raw 9p response to QEMU.
 pub trait NinePGuestCompletion {
     /// Completes one guest 9p request.
+    ///
+    /// An error must leave the guest output unchanged so the same response can
+    /// be retried. A successful completion must expose the entire response.
     ///
     /// # Errors
     ///
@@ -1012,6 +1336,12 @@ pub enum NinePIoError {
         /// The missing request id.
         request_id: u32,
     },
+    /// The original request no longer has an active burst for atomic settlement.
+    #[error("9p request {request_id} has no active burst custody")]
+    BurstCustodyMissing {
+        /// The original request id.
+        request_id: u32,
+    },
     /// Constructing a shared-memory frame failed.
     #[error("9p frame construction failed: {source}")]
     Frame {
@@ -1097,11 +1427,18 @@ pub enum NinePIoError {
     GuestCompletion {
         /// The request id being completed.
         request_id: u32,
-        /// The request release created before attempting guest completion.
-        release: DeviceIoRequestRelease,
         /// The guest completion error.
         source: NinePGuestCompletionError,
     },
+}
+
+fn same_response_frame(expected: &FrameEntry, observed: &FrameEntry) -> bool {
+    expected.delivery_key() == observed.delivery_key()
+        && expected.len == observed.len
+        && matches!(
+            (expected.payload(), observed.payload()),
+            (Ok(expected), Ok(observed)) if expected == observed
+        )
 }
 
 fn peek_head_frame(ring: &NinePInboundRing<'_>) -> Result<Option<FrameEntry>, NinePIoError> {
@@ -1139,6 +1476,93 @@ mod tests {
     use crucible_shmem::{
         KIND_VM, MAX_FRAME_DATA, RegionConfig, RegionLayout, ReservedExecutorSlot,
     };
+
+    #[test]
+    fn inbound_head_custody_follows_the_original_request_and_read_frontier() {
+        let slot = NodeSlot::new(KIND_VM);
+        let mut freeze = PluginDeviceIoFreeze::new();
+        let ninep = PluginNinePIo::new(2, 10, 11);
+        start_burst(&ninep, &mut freeze, &slot);
+
+        let outbound_header = RingHeader::new();
+        let mut outbound_entries = empty_entries(4);
+        let mut outbound = outbound_ring(10, 2, &outbound_header, &mut outbound_entries);
+        let first = submit_raw(&ninep, &mut freeze, &slot, &mut outbound, 70).into_token();
+        let second = submit_raw(&ninep, &mut freeze, &slot, &mut outbound, 70).into_token();
+        let other_owner = PluginNinePIo::new(2, 10, 11);
+        let copied_request_id =
+            submit_raw(&other_owner, &mut freeze, &slot, &mut outbound, 70).into_token();
+        assert_eq!(copied_request_id.request_id(), first.request_id());
+
+        let inbound_header = RingHeader::new();
+        let mut inbound_entries = empty_entries(4);
+        enqueue(
+            &inbound_header,
+            &mut inbound_entries,
+            response_frame(80, first.request_id(), b"Rfirst"),
+        );
+        enqueue(
+            &inbound_header,
+            &mut inbound_entries,
+            response_frame(80, second.request_id(), b"Rsecond"),
+        );
+        let inbound = inbound_ring(11, 2, &inbound_header, &inbound_entries);
+
+        let observed = ninep
+            .observe_inbound_head(&freeze, &inbound, &first)
+            .unwrap_or_else(|error| panic!("original inbound head should be readable: {error}"))
+            .unwrap_or_else(|| panic!("first request owns the physical head"));
+        assert_eq!(observed.ring_index(), 11);
+        assert_eq!(observed.ring_generation(), 1);
+        assert_eq!(observed.read_index(), 0);
+        assert_eq!(observed.delivery_key().seq, first.request_id());
+        let unregistered =
+            NinePInboundRing::new(11, NINEP_IO_SLOT_U32, 2, &inbound_header, &inbound_entries);
+        assert!(
+            ninep
+                .observe_inbound_head(&freeze, &unregistered, &first)
+                .unwrap_or_else(|error| panic!(
+                    "unregistered ring view should be a factual refusal: {error}"
+                ))
+                .is_none()
+        );
+        assert!(
+            ninep
+                .inbound_head_current(&freeze, &inbound, &first, &observed)
+                .unwrap_or_else(|error| panic!(
+                    "original head currentness should be readable: {error}"
+                ))
+        );
+        assert!(
+            ninep
+                .observe_inbound_head(&freeze, &inbound, &second)
+                .unwrap_or_else(|error| panic!("second request should be readable: {error}"))
+                .is_none()
+        );
+        assert!(
+            ninep
+                .observe_inbound_head(&freeze, &inbound, &copied_request_id)
+                .unwrap_or_else(|error| panic!("foreign token must be a factual refusal: {error}"))
+                .is_none()
+        );
+
+        PluginShmemOrdering::dequeue_inbound_frame(&inbound_header, &inbound_entries)
+            .unwrap_or_else(|error| panic!("physical dequeue should succeed: {error}"))
+            .unwrap_or_else(|| panic!("first response should be present"));
+        assert!(
+            !ninep
+                .inbound_head_current(&freeze, &inbound, &first, &observed)
+                .unwrap_or_else(|error| panic!("moved head should be a factual refusal: {error}"))
+        );
+        assert!(
+            ninep
+                .observe_inbound_head(&freeze, &inbound, &second)
+                .unwrap_or_else(|error| panic!(
+                    "second original request should still be readable: {error}"
+                ))
+                .is_some()
+        );
+    }
 
     #[test]
     fn ninep_io_state_binds_reserved_9p_rings() {
@@ -1487,7 +1911,7 @@ mod tests {
     }
 
     #[test]
-    fn ninep_poll_guest_completion_failure_still_releases_request_token() {
+    fn ninep_poll_guest_completion_failure_retains_original_head_and_token() {
         let slot = NodeSlot::new(KIND_VM);
         let mut freeze = PluginDeviceIoFreeze::new();
         let ninep = PluginNinePIo::new(2, 10, 11);
@@ -1509,33 +1933,283 @@ mod tests {
             ..RecordingCompletion::default()
         };
 
-        let error =
+        let token =
             match ninep.poll_response(&mut freeze, &slot, &inbound, &mut completion, 90, token) {
-                Ok(_) => panic!("guest completion failure should be returned"),
-                Err(error) => error,
+                Ok(NinePPoll::Retry {
+                    token,
+                    source:
+                        NinePIoError::GuestCompletion {
+                            request_id: 0,
+                            source,
+                        },
+                }) => {
+                    assert_eq!(
+                        source,
+                        NinePGuestCompletionError::new("guest completion failure")
+                    );
+                    token
+                }
+                other => panic!("guest failure must retain the original token: {other:?}"),
             };
-        match error {
-            NinePIoError::GuestCompletion {
-                request_id: 0,
-                release,
-                source,
-            } => {
+        assert_eq!(inbound_header.read_index(), 0);
+        assert_eq!(freeze.pending_requests(), 1);
+        assert!(freeze.burst_active());
+        assert_eq!(slot.snapshot().device_io_active, 1);
+        assert!(completion.responses.is_empty());
+
+        completion.fail_message = None;
+        let original_head = inbound_entries[0].clone();
+        inbound_entries[0] = response_frame(90, 0, b"changed");
+        let inbound = inbound_ring(11, 2, &inbound_header, &inbound_entries);
+        let token =
+            match ninep.poll_response(&mut freeze, &slot, &inbound, &mut completion, 90, token) {
+                Ok(NinePPoll::Retry {
+                    token,
+                    source: NinePIoError::DequeuedUnexpectedFrame { .. },
+                }) => token,
+                other => panic!("changed original head must refuse delivery: {other:?}"),
+            };
+        assert_eq!(inbound_header.read_index(), 0);
+        assert_eq!(freeze.pending_requests(), 1);
+        assert!(completion.responses.is_empty());
+
+        inbound_entries[0] = original_head;
+        let inbound = inbound_ring(11, 2, &inbound_header, &inbound_entries);
+        let result = ninep.poll_response(&mut freeze, &slot, &inbound, &mut completion, 90, token);
+        match result {
+            Ok(NinePPoll::Completed { response, release }) => {
+                assert_eq!(response.payload(), b"Rread");
                 assert_eq!(release.pending_requests(), 0);
                 assert_eq!(release.outcome(), crate::DeviceIoRequestOutcome::Completed);
-                assert!(release.burst_active());
-                assert!(release.device_io_active());
-                assert_eq!(
-                    source,
-                    NinePGuestCompletionError::new("guest completion failure")
-                );
             }
-            other => panic!("guest failure should be guest completion error: {other:?}"),
+            other => panic!("retry must settle the same response: {other:?}"),
         }
         assert_eq!(inbound_header.read_index(), 1);
         assert_eq!(freeze.pending_requests(), 0);
         assert!(freeze.burst_active());
         assert_eq!(slot.snapshot().device_io_active, 1);
+        assert_eq!(completion.responses.len(), 1);
+    }
+
+    #[test]
+    fn ninep_poll_retries_settlement_without_delivering_twice() {
+        let slot = NodeSlot::new(KIND_VM);
+        let mut freeze = PluginDeviceIoFreeze::new();
+        let ninep = PluginNinePIo::new(2, 10, 11);
+        start_burst(&ninep, &mut freeze, &slot);
+        let outbound_header = RingHeader::new();
+        let mut outbound_entries = empty_entries(4);
+        let mut outbound = outbound_ring(10, 2, &outbound_header, &mut outbound_entries);
+        let token = submit_raw(&ninep, &mut freeze, &slot, &mut outbound, 77).into_token();
+        let inbound_header = RingHeader::new();
+        let mut inbound_entries = empty_entries(4);
+        enqueue(
+            &inbound_header,
+            &mut inbound_entries,
+            response_frame(90, 0, b"Rread"),
+        );
+        let inbound = inbound_ring(11, 2, &inbound_header, &inbound_entries);
+        let mut completion = HoldConsumerOnDelivery {
+            ring: &inbound_header,
+            delivered: 0,
+        };
+
+        let token =
+            match ninep.poll_response(&mut freeze, &slot, &inbound, &mut completion, 90, token) {
+                Ok(NinePPoll::Retry {
+                    token,
+                    source:
+                        NinePIoError::RingDequeue {
+                            source: SpscRingError::ConsumerBarrierHeld,
+                            ..
+                        },
+                }) => token,
+                other => panic!("held consumer must retain settlement: {other:?}"),
+            };
+        assert_eq!(completion.delivered, 1);
+        assert_eq!(inbound_header.read_index(), 0);
+        assert_eq!(freeze.pending_requests(), 1);
+        assert!(matches!(
+            ninep.burst_done(&mut freeze, &slot),
+            Err(NinePIoError::DeviceIoFreeze {
+                source: DeviceIoFreezeError::BurstDoneWithPendingRequests {
+                    pending_requests: 1,
+                },
+            })
+        ));
+        assert!(freeze.burst_active());
+
+        assert!(!inbound_header.release_hot_fork_consumers().held());
+        let result = ninep.poll_response(&mut freeze, &slot, &inbound, &mut completion, 90, token);
+        assert!(matches!(result, Ok(NinePPoll::Completed { .. })));
+        assert_eq!(completion.delivered, 1);
+        assert_eq!(inbound_header.read_index(), 1);
+        assert_eq!(freeze.pending_requests(), 0);
+    }
+
+    #[test]
+    fn ninep_poll_quarantines_changed_head_after_delivered_settlement_retry() {
+        let slot = NodeSlot::new(KIND_VM);
+        let mut freeze = PluginDeviceIoFreeze::new();
+        let ninep = PluginNinePIo::new(2, 10, 11);
+        start_burst(&ninep, &mut freeze, &slot);
+        let outbound_header = RingHeader::new();
+        let mut outbound_entries = empty_entries(4);
+        let mut outbound = outbound_ring(10, 2, &outbound_header, &mut outbound_entries);
+        let token = submit_raw(&ninep, &mut freeze, &slot, &mut outbound, 77).into_token();
+        let inbound_header = RingHeader::new();
+        let mut inbound_entries = empty_entries(4);
+        enqueue(
+            &inbound_header,
+            &mut inbound_entries,
+            response_frame(90, 0, b"Rread"),
+        );
+        let inbound = inbound_ring(11, 2, &inbound_header, &inbound_entries);
+        let mut completion = HoldConsumerOnDelivery {
+            ring: &inbound_header,
+            delivered: 0,
+        };
+        let token =
+            match ninep.poll_response(&mut freeze, &slot, &inbound, &mut completion, 90, token) {
+                Ok(NinePPoll::Retry { token, .. }) => token,
+                other => panic!("consumer hold should retain original head: {other:?}"),
+            };
+
+        assert!(!inbound_header.release_hot_fork_consumers().held());
+        inbound_entries[0] = response_frame(90, 0, b"changed");
+        let changed = inbound_ring(11, 2, &inbound_header, &inbound_entries);
+        let result = ninep.poll_response(&mut freeze, &slot, &changed, &mut completion, 90, token);
+        assert!(matches!(result, Ok(NinePPoll::Quarantined { .. })));
+        assert_eq!(completion.delivered, 1);
+        assert_eq!(inbound_header.read_index(), 0);
+        assert_eq!(freeze.pending_requests(), 1);
+    }
+
+    #[test]
+    fn ninep_poll_quarantines_missing_head_after_delivered_settlement_retry() {
+        let slot = NodeSlot::new(KIND_VM);
+        let mut freeze = PluginDeviceIoFreeze::new();
+        let ninep = PluginNinePIo::new(2, 10, 11);
+        start_burst(&ninep, &mut freeze, &slot);
+        let outbound_header = RingHeader::new();
+        let mut outbound_entries = empty_entries(4);
+        let mut outbound = outbound_ring(10, 2, &outbound_header, &mut outbound_entries);
+        let token = submit_raw(&ninep, &mut freeze, &slot, &mut outbound, 77).into_token();
+        let inbound_header = RingHeader::new();
+        let mut inbound_entries = empty_entries(4);
+        enqueue(
+            &inbound_header,
+            &mut inbound_entries,
+            response_frame(90, 0, b"Rread"),
+        );
+        let inbound = inbound_ring(11, 2, &inbound_header, &inbound_entries);
+        let mut completion = HoldConsumerOnDelivery {
+            ring: &inbound_header,
+            delivered: 0,
+        };
+        let token =
+            match ninep.poll_response(&mut freeze, &slot, &inbound, &mut completion, 90, token) {
+                Ok(NinePPoll::Retry { token, .. }) => token,
+                other => panic!("consumer hold should retain original head: {other:?}"),
+            };
+
+        assert!(!inbound_header.release_hot_fork_consumers().held());
+        assert!(
+            inbound_header
+                .dequeue(&inbound_entries)
+                .unwrap_or_else(|error| panic!("test consumer should dequeue: {error}"))
+                .is_some()
+        );
+        let result = ninep.poll_response(&mut freeze, &slot, &inbound, &mut completion, 90, token);
+        assert!(matches!(result, Ok(NinePPoll::Quarantined { .. })));
+        assert_eq!(completion.delivered, 1);
+        assert_eq!(inbound_header.read_index(), 1);
+        assert_eq!(freeze.pending_requests(), 1);
+    }
+
+    #[test]
+    fn ninep_poll_refuses_foreign_freeze_before_guest_delivery() {
+        let slot = NodeSlot::new(KIND_VM);
+        let mut freeze = PluginDeviceIoFreeze::new();
+        let ninep = PluginNinePIo::new(2, 10, 11);
+        start_burst(&ninep, &mut freeze, &slot);
+        let outbound_header = RingHeader::new();
+        let mut outbound_entries = empty_entries(4);
+        let mut outbound = outbound_ring(10, 2, &outbound_header, &mut outbound_entries);
+        let token = submit_raw(&ninep, &mut freeze, &slot, &mut outbound, 77).into_token();
+        let inbound_header = RingHeader::new();
+        let mut inbound_entries = empty_entries(4);
+        enqueue(
+            &inbound_header,
+            &mut inbound_entries,
+            response_frame(90, 0, b"Rread"),
+        );
+        let inbound = inbound_ring(11, 2, &inbound_header, &inbound_entries);
+        let mut completion = RecordingCompletion::default();
+        let mut foreign_freeze = PluginDeviceIoFreeze::new();
+
+        let result = ninep.poll_response(
+            &mut foreign_freeze,
+            &slot,
+            &inbound,
+            &mut completion,
+            90,
+            token,
+        );
+        assert!(matches!(
+            result,
+            Ok(NinePPoll::Retry {
+                source: NinePIoError::DeviceIoFreeze {
+                    source: DeviceIoFreezeError::CompletionForDifferentFreezeState { .. },
+                },
+                ..
+            })
+        ));
+        assert_eq!(inbound_header.read_index(), 0);
+        assert_eq!(freeze.pending_requests(), 1);
         assert!(completion.responses.is_empty());
+    }
+
+    #[test]
+    fn ninep_poll_quarantines_head_removed_during_guest_delivery() {
+        let slot = NodeSlot::new(KIND_VM);
+        let mut freeze = PluginDeviceIoFreeze::new();
+        let ninep = PluginNinePIo::new(2, 10, 11);
+        start_burst(&ninep, &mut freeze, &slot);
+        let outbound_header = RingHeader::new();
+        let mut outbound_entries = empty_entries(4);
+        let mut outbound = outbound_ring(10, 2, &outbound_header, &mut outbound_entries);
+        let token = submit_raw(&ninep, &mut freeze, &slot, &mut outbound, 77).into_token();
+        let inbound_header = RingHeader::new();
+        let mut inbound_entries = empty_entries(4);
+        enqueue(
+            &inbound_header,
+            &mut inbound_entries,
+            response_frame(90, 0, b"Rread"),
+        );
+        let inbound = inbound_ring(11, 2, &inbound_header, &inbound_entries);
+        let mut completion = StealConsumerOnDelivery {
+            ring: &inbound_header,
+            entries: &inbound_entries,
+            delivered: 0,
+        };
+
+        let token =
+            match ninep.poll_response(&mut freeze, &slot, &inbound, &mut completion, 90, token) {
+                Ok(NinePPoll::Quarantined {
+                    token,
+                    source: NinePIoError::DequeuedUnexpectedFrame { actual: None, .. },
+                }) => token,
+                other => panic!("stolen head must be quarantined: {other:?}"),
+            };
+        assert_eq!(completion.delivered, 1);
+        assert_eq!(freeze.pending_requests(), 1);
+        assert_eq!(inbound_header.read_index(), 1);
+
+        let result = ninep.poll_response(&mut freeze, &slot, &inbound, &mut completion, 90, token);
+        assert!(matches!(result, Ok(NinePPoll::Quarantined { .. })));
+        assert_eq!(completion.delivered, 1);
+        assert_eq!(freeze.pending_requests(), 1);
     }
 
     #[test]
@@ -1631,6 +2305,43 @@ mod tests {
         fail_message: Option<&'static str>,
     }
 
+    struct HoldConsumerOnDelivery<'a> {
+        ring: &'a RingHeader,
+        delivered: usize,
+    }
+
+    impl NinePGuestCompletion for HoldConsumerOnDelivery<'_> {
+        fn complete_9p_response(
+            &mut self,
+            _response: &NinePResponse,
+        ) -> Result<(), NinePGuestCompletionError> {
+            self.delivered += 1;
+            assert!(self.ring.hold_hot_fork_consumers().quiescent());
+            Ok(())
+        }
+    }
+
+    struct StealConsumerOnDelivery<'a> {
+        ring: &'a RingHeader,
+        entries: &'a [FrameEntry],
+        delivered: usize,
+    }
+
+    impl NinePGuestCompletion for StealConsumerOnDelivery<'_> {
+        fn complete_9p_response(
+            &mut self,
+            _response: &NinePResponse,
+        ) -> Result<(), NinePGuestCompletionError> {
+            self.delivered += 1;
+            let removed = self
+                .ring
+                .dequeue(self.entries)
+                .unwrap_or_else(|error| panic!("test consumer should dequeue: {error}"));
+            assert!(removed.is_some());
+            Ok(())
+        }
+    }
+
     impl NinePGuestCompletion for RecordingCompletion {
         fn complete_9p_response(
             &mut self,
@@ -1645,7 +2356,7 @@ mod tests {
     }
 
     fn layout() -> RegionLayout {
-        match RegionLayout::for_config(RegionConfig::new(2, 4, 0)) {
+        match RegionLayout::for_config(RegionConfig::new(2, 4)) {
             Ok(layout) => layout,
             Err(error) => panic!("layout should be valid: {error}"),
         }
@@ -1688,7 +2399,7 @@ mod tests {
         header: &'a RingHeader,
         entries: &'a [FrameEntry],
     ) -> NinePInboundRing<'a> {
-        NinePInboundRing::new(ring_index, NINEP_IO_SLOT_U32, vm_slot, header, entries)
+        NinePInboundRing::registered(ring_index, 1, NINEP_IO_SLOT_U32, vm_slot, header, entries)
     }
 
     fn start_burst(ninep: &PluginNinePIo, freeze: &mut PluginDeviceIoFreeze, slot: &NodeSlot) {

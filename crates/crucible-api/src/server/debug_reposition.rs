@@ -20,7 +20,7 @@ where
 {
     let body = match authorized_debug_reposition_body(&state, identity.as_ref(), request).await {
         Ok(body) => body,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let (session, generation, holder, coordinate) = match parse_debug_goto_request(&body) {
         Ok(parsed) => parsed,
@@ -37,7 +37,7 @@ where
     .await
     {
         Ok(dispatch) => dispatch,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let result =
         match complete_debug_operation(
@@ -71,7 +71,7 @@ where
 {
     let body = match authorized_debug_reposition_body(&state, identity.as_ref(), request).await {
         Ok(body) => body,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let (session, generation, holder, grain) = match parse_debug_reverse_step_request(&body) {
         Ok(parsed) => parsed,
@@ -88,7 +88,7 @@ where
     .await
     {
         Ok(dispatch) => dispatch,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let result = match complete_debug_operation(operation_guard, async move {
         dispatch.reverse_step(grain).await
@@ -122,7 +122,7 @@ where
 {
     let body = match authorized_debug_reposition_body(&state, identity.as_ref(), request).await {
         Ok(body) => body,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let (session, generation, holder, condition) = match parse_debug_reverse_continue_request(&body)
     {
@@ -140,7 +140,7 @@ where
     .await
     {
         Ok(dispatch) => dispatch,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let result = match complete_debug_operation(operation_guard, async move {
         dispatch.reverse_continue(condition).await
@@ -170,7 +170,7 @@ async fn authorized_debug_reposition_body<L, F>(
     state: &Http2LifecycleState<L, F>,
     identity: Option<&Extension<DebugTransportIdentity>>,
     request: Request<Body>,
-) -> Result<Vec<u8>, Response>
+) -> Result<Vec<u8>, Box<Response>>
 where
     L: QuantumLoop + Send + 'static,
     F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
@@ -179,9 +179,9 @@ where
         + 'static,
 {
     if state.mode.is_read_only() {
-        return Err(read_only_rejection_response("debug-reposition"));
+        return Err(Box::new(read_only_rejection_response("debug-reposition")));
     }
-    debug_principal(&state.debug_authorization, identity).map_err(|response| *response)?;
+    debug_principal(&state.debug_authorization, identity)?;
     read_debug_rpc_body(request).await
 }
 
@@ -191,7 +191,7 @@ async fn authorized_reposition_dispatch<L, F>(
     session: SessionRef,
     generation: u64,
     holder: DebugControllerHolderId,
-) -> Result<crate::DebugRepositionDispatch, Response>
+) -> Result<crate::DebugRepositionDispatch, Box<Response>>
 where
     L: QuantumLoop + Send + 'static,
     F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
@@ -199,19 +199,18 @@ where
         + Sync
         + 'static,
 {
-    let (client, role) =
-        debug_principal(&state.debug_authorization, identity).map_err(|response| *response)?;
+    let (client, role) = debug_principal(&state.debug_authorization, identity)?;
     let lease = DebugControllerLease { client, generation };
     authorize_debug_holder(state, session, &lease, holder).await?;
     let control_plane = state.control_plane.lock().await;
     for capability in [DebugCapability::Control, DebugCapability::Observe] {
         control_plane
             .authorize_debug_controller_operation(session, &lease, &role, capability)
-            .map_err(lifecycle_error_response)?;
+            .map_err(|error| Box::new(lifecycle_error_response(error)))?;
     }
     control_plane
         .debug_reposition_dispatch(session)
-        .map_err(lifecycle_error_response)
+        .map_err(|error| Box::new(lifecycle_error_response(error)))
 }
 
 fn parse_debug_goto_request(

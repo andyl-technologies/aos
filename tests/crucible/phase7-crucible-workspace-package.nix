@@ -12,7 +12,7 @@
   phaseTemplatesNix = builtins.readFile ../../stdenv/phases.nix;
   phaseTemplates = import ../../stdenv/phases.nix;
   cargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  expectedCargoDepsHash = "sha256-c6rtjOAYqRNYvToyYa6B5y653LERFPkMkuVHJKhKpjg=";
+  expectedCargoDepsHash = "sha256-qruC6y8zCgNkjpfVL1rktjw1oHfns1NhWqPnbUORBuQ=";
   packageInventory = import ../../pkgs/tools/crucible/_packages.nix;
   workspaceManifest = builtins.fromTOML (builtins.readFile ../../crates/Cargo.toml);
   defaultChecks = builtins.readFile ./default.nix;
@@ -107,6 +107,10 @@
       {
         label = "bounded controller Nextest open-file ceiling";
         needle = "cargoNextestOpenFilesLimit = 4096;";
+      }
+      {
+        label = "bounded controller Nextest failure diagnostics";
+        needle = ''nextestFlags = "--color=never --status-level=fail --final-status-level=fail --failure-output=final";'';
       }
       {
         label = "bounded Nextest ceiling recorded in build metadata";

@@ -41,6 +41,10 @@ pub(super) fn execute_name(value: &Value) -> Option<&str> {
     value.get("execute").and_then(Value::as_str)
 }
 
+pub(super) fn oob_execute_name(value: &Value) -> Option<&str> {
+    value.get("exec-oob").and_then(Value::as_str)
+}
+
 pub(super) fn assert_timeout_budget(timeouts: &[Duration], budget: Duration) {
     assert!(!timeouts.is_empty());
     assert!(
@@ -48,18 +52,6 @@ pub(super) fn assert_timeout_budget(timeouts: &[Duration], budget: Duration) {
             .iter()
             .all(|timeout| !timeout.is_zero() && *timeout <= budget)
     );
-}
-
-pub(super) fn checkpoint_with_hash_byte(byte: u8) -> Checkpoint {
-    Checkpoint::new(
-        content_hash_with_byte(byte),
-        content_hash_with_byte(byte.wrapping_add(1)),
-        CheckpointKind::Fat,
-    )
-}
-
-pub(super) fn content_hash_with_byte(byte: u8) -> ContentHash {
-    ContentHash { bytes: [byte; 32] }
 }
 
 #[derive(Debug)]

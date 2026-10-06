@@ -4,7 +4,7 @@ use super::*;
 use crate::LifecycleResourceLimit;
 
 #[test]
-fn durable_run_state_rejects_old_outer_version_before_owned_decode() {
+fn durable_run_state_rejects_unsupported_outer_version_before_owned_decode() {
     let root =
         tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));
     let manifest = recovery_manifest(recovery_process(7, "/aos/qemu-current"), None);
@@ -27,9 +27,9 @@ fn durable_run_state_rejects_old_outer_version_before_owned_decode() {
     .unwrap_or_else(|error| panic!("current run state should persist: {error}"));
     let current = fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("current run state should read: {error}"));
-    let old = current.replacen("\"version\": 2", "\"version\": 1", 1);
-    fs::write(&path, old)
-        .unwrap_or_else(|error| panic!("old-version fixture should write: {error}"));
+    let unsupported = current.replacen("\"version\": 2", "\"version\": 4294967295", 1);
+    fs::write(&path, unsupported)
+        .unwrap_or_else(|error| panic!("unsupported-version fixture should write: {error}"));
 
     let error = quantum_loop::decode_prior_run_state(
         root.path(),
@@ -37,8 +37,8 @@ fn durable_run_state_rejects_old_outer_version_before_owned_decode() {
         FaultResourceLimits::default(),
     )
     .err()
-    .unwrap_or_else(|| panic!("old outer version should fail before owned decode"));
-    assert!(error.contains("incompatible version 1"));
+    .unwrap_or_else(|| panic!("unsupported outer version should fail before owned decode"));
+    assert!(error.contains("incompatible version 4294967295"));
 }
 
 #[test]

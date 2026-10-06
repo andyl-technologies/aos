@@ -27,7 +27,8 @@ use thiserror::Error;
 use crate::quantum_boundary::{QuantumBoundary, classify_quantum_boundary};
 use crate::{
     QemuAdvanceCompletionFence, QemuAsyncQuantumCompletion, QemuNodeChannelError,
-    QemuNodeEmittedFrame, QemuNodeIdleState, QemuNodePendingQuantum, QemuShmemHotPathChannel,
+    QemuNodeEmittedFrame, QemuNodeIdleState, QemuNodePendingQuantum, QemuQuantumStopCondition,
+    QemuShmemHotPathChannel,
 };
 
 mod channel;
@@ -57,8 +58,6 @@ pub struct QemuQuantumShmemConfig {
     pub vm_slot: u32,
     /// Physical router slot index in the shared-memory region.
     pub router_slot: u32,
-    /// Fixed icount shift used for virtual-time publication.
-    pub shift_bits: u8,
     /// Observation-only basic-block coverage policy for the host drain.
     pub coverage: BasicBlockCoverageConfig,
 }
@@ -74,7 +73,6 @@ impl QemuQuantumShmemConfig {
             },
             vm_slot,
             router_slot: DEFAULT_ROUTER_SLOT,
-            shift_bits: 0,
             coverage: BasicBlockCoverageConfig::off(),
         }
     }
@@ -84,13 +82,6 @@ impl QemuQuantumShmemConfig {
     pub fn with_router(mut self, router: NodeId, router_slot: u32) -> Self {
         self.router = router;
         self.router_slot = router_slot;
-        self
-    }
-
-    /// Returns this configuration with a different fixed icount shift.
-    #[must_use]
-    pub const fn with_shift_bits(mut self, shift_bits: u8) -> Self {
-        self.shift_bits = shift_bits;
         self
     }
 
@@ -301,8 +292,9 @@ pub struct QemuPendingQuantum {
     /// coordinate. This distinguishes that terminal state from a stale running
     /// report against the original scheduler ceiling.
     pub initial_control_boundary_ack: u32,
-    /// Fresh plugin publication required because scheduler input capped this quantum.
+    /// Fresh plugin publication required by delivery or next-idle semantics.
     pub completion_fence: Option<QemuAdvanceCompletionFence>,
+    stop_condition: QemuQuantumStopCondition,
     operation_start: usize,
     inbound_consumption: QemuInboundConsumptionBaseline,
 }
@@ -379,11 +371,6 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         view: QemuQuantumShmemView<'a>,
         send_authorizer: &'a dyn SchedulerSendAuthorizer,
     ) -> Result<Self, QemuQuantumError> {
-        if config.shift_bits >= 64 {
-            return Err(QemuQuantumError::InvalidShift {
-                shift_bits: config.shift_bits,
-            });
-        }
         let inbound_delivery_ledger = inbound_delivery_ledger_from_view(&view)?;
         Ok(Self {
             config,
@@ -401,11 +388,6 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         inbound_delivery_ledger: &'a mut VecDeque<FrameDeliveryKey>,
         send_authorizer: &'a dyn SchedulerSendAuthorizer,
     ) -> Result<Self, QemuQuantumError> {
-        if config.shift_bits >= 64 {
-            return Err(QemuQuantumError::InvalidShift {
-                shift_bits: config.shift_bits,
-            });
-        }
         Ok(Self {
             config,
             view,
@@ -506,6 +488,7 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
     pub fn start_quantum(
         &mut self,
         horizon: ExecutionHorizon,
+        stop_condition: QemuQuantumStopCondition,
     ) -> Result<QemuPendingQuantum, QemuQuantumError> {
         let operation_start = self.operation_log.len();
         self.record(QemuQuantumOperation::ReadNodeReport);
@@ -533,13 +516,14 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         self.record(QemuQuantumOperation::FutexWake);
         self.view
             .node_slot
-            .publish_scheduler_inbox_and_ceiling(
+            .publish_scheduler_inbox_and_advance(
                 self.config.vm_slot,
                 self.config.router_slot,
                 self.view.inbound_ring,
                 self.view.inbound_entries,
                 &[],
                 ceiling,
+                stop_condition,
             )
             .map_err(|source| QemuQuantumError::SchedulerWakePublication {
                 operation: "publish scheduler inbox and ceiling",
@@ -555,11 +539,14 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
             initial_device_io_freeze,
             report_generation: initial_snapshot.publish_gen,
             initial_control_boundary_ack: initial_snapshot.control_boundary_ack,
-            completion_fence: earliest_delivery
-                .filter(|delivery_icount| *delivery_icount <= horizon.icount.retired)
-                .map(|_| QemuAdvanceCompletionFence {
-                    initial_publish_generation: initial_snapshot.publish_gen,
-                }),
+            completion_fence: (stop_condition == QemuQuantumStopCondition::NextAuthenticatedIdle
+                || earliest_delivery
+                    .is_some_and(|delivery_icount| delivery_icount <= horizon.icount.retired))
+            .then_some(QemuAdvanceCompletionFence {
+                initial_publish_generation: initial_snapshot.publish_gen,
+                stop_condition,
+            }),
+            stop_condition,
             operation_start,
             inbound_consumption,
         })
@@ -606,10 +593,20 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
                 retired: final_snapshot.idle_wake_icount,
             });
         }
-        if matches!(
-            classify_quantum_boundary(&final_state, pending.ceiling.retired),
-            QuantumBoundary::Pending
-        ) && !completed_clamp
+        let boundary = classify_quantum_boundary(
+            &final_state,
+            pending.ceiling.retired,
+            pending.stop_condition,
+        );
+        let stale_next_idle_boundary = pending.stop_condition
+            == QemuQuantumStopCondition::NextAuthenticatedIdle
+            && final_snapshot.publish_gen == pending.report_generation;
+        let stale_quiesced_boundary = matches!(boundary, QuantumBoundary::Paused { at, deadline }
+            if at == deadline)
+            && final_snapshot.publish_gen == pending.report_generation;
+        if stale_next_idle_boundary
+            || ((matches!(boundary, QuantumBoundary::Pending) || stale_quiesced_boundary)
+                && !completed_clamp)
         {
             return Err(QemuQuantumError::PluginReportNotPublished {
                 current_icount: final_snapshot.current_icount,
@@ -622,8 +619,10 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         let inbound_frames_consumed =
             self.observe_inbound_consumption(pending, final_state.current_icount.retired)?;
         let emitted_frames = self.drain_emitted_outbound()?;
-        let outcome = if completed_clamp
-            && final_state.current_icount.retired < pending.requested_horizon.retired
+        let outcome = if (matches!(boundary, QuantumBoundary::Paused { .. })
+            && pending.stop_condition == QemuQuantumStopCondition::NextAuthenticatedIdle)
+            || (completed_clamp
+                && final_state.current_icount.retired < pending.requested_horizon.retired)
         {
             AdvanceOutcome::Paused {
                 at: final_state.current_icount,
@@ -662,7 +661,7 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         &mut self,
         horizon: ExecutionHorizon,
     ) -> Result<QemuQuantumReport, QemuQuantumError> {
-        let pending = self.start_quantum(horizon)?;
+        let pending = self.start_quantum(horizon, QemuQuantumStopCondition::Ceiling)?;
         self.finish_quantum(pending)
     }
 
@@ -754,19 +753,27 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         self.record(QemuQuantumOperation::EnqueueInboundFrame);
         self.record(QemuQuantumOperation::StoreSchedulerCeiling);
         self.record(QemuQuantumOperation::FutexWake);
-        let snapshot = self.view.node_slot.snapshot();
-        let ceiling =
-            authorize_advance_ceiling(snapshot.current_icount, snapshot.max_advance_icount, None)
-                .map_err(|source| QemuQuantumError::Lookahead { source })?;
+        let current_icount = self.view.node_slot.snapshot().current_icount;
+        let (max_advance_icount, stop_condition) = self
+            .view
+            .node_slot
+            .load_scheduler_advance()
+            .map_err(|source| QemuQuantumError::NodeSlot {
+                operation: "load scheduler advance for inbound wake",
+                source,
+            })?;
+        let ceiling = authorize_advance_ceiling(current_icount, max_advance_icount, None)
+            .map_err(|source| QemuQuantumError::Lookahead { source })?;
         self.view
             .node_slot
-            .publish_scheduler_inbox_and_ceiling(
+            .publish_scheduler_inbox_and_advance(
                 self.config.vm_slot,
                 entry.src_node,
                 self.view.inbound_ring,
                 self.view.inbound_entries,
                 std::slice::from_ref(entry),
                 ceiling,
+                stop_condition,
             )
             .map_err(|source| QemuQuantumError::SchedulerWakePublication {
                 operation: "publish inbound frame and scheduler ceiling",

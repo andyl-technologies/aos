@@ -3,7 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginNinePIo",
   taskIds ? [],
-  openTaskIds ? [],
+  openTaskIds ? ["T-PLUG-13"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -48,10 +48,6 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
-      {
-        label = "T-PLUG-13 cites its live completion gate";
-        needle = "Completed by `checks.crucible.phase2.qemuLive9pIo`";
-      }
       {
         label = "9p callback wording";
         needle = "Implement the 9p submit/poll/burst-done callbacks against the";

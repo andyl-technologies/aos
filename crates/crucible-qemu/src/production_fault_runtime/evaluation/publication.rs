@@ -146,13 +146,14 @@ mod tests {
         )
         .unwrap_or_else(|error| panic!("empty production runtime should build: {error}"));
         let coordinate = FaultCoordinate {
-            virtual_nanos: 17,
+            virtual_ticks: 17,
             retired_instructions: Some(23),
         };
         let choice = BindingSearchChoice {
             id: SearchChoiceId::from_content_hash(ContentHash::from_bytes(b"staged-choice")),
             candidates_digest: ContentHash::from_bytes(b"staged-candidates"),
             candidate_count: 2,
+            candidate_semantics: crucible::model::BindingSearchCandidateSemantics::Outcome,
             selected_index: Some(1),
             overridden: true,
         };

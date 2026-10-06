@@ -21,13 +21,13 @@ pub(super) fn scan_content(path: &Path, content: &str) -> Vec<String> {
         };
 
         match identifier.as_str() {
-            "SystemTime" => push_finding(
+            "SystemTime" | "UNIX_EPOCH" => push_finding(
                 &mut findings,
                 path,
                 content,
                 token.line,
                 "host wall-clock",
-                "SystemTime",
+                identifier,
                 "host-wall-clock",
             ),
             "Instant" => push_finding(

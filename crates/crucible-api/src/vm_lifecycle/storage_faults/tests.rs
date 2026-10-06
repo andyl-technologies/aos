@@ -61,7 +61,7 @@ fn storage_evidence_action() -> ResolvedBindingAction {
         transition_sequence: 1,
         opportunity: Some(ContentHash::from_bytes(b"storage-evidence-opportunity")),
         coordinate: FaultCoordinate {
-            virtual_nanos: 17,
+            virtual_ticks: 17,
             retired_instructions: None,
         },
         cause: crucible::model::BindingActionCause::Signal,
@@ -73,12 +73,12 @@ fn observation(evidence: &'static [u8]) -> FaultObservation {
     observation_at(0, evidence)
 }
 
-fn observation_at(nanos: u64, evidence: &'static [u8]) -> FaultObservation {
+fn observation_at(ticks: u64, evidence: &'static [u8]) -> FaultObservation {
     FaultObservation {
         semantic_version: FAULT_RUNTIME_STATE_VERSION,
         kind: FaultObservationKind::EffectApplied,
         coordinate: FaultCoordinate {
-            virtual_nanos: nanos,
+            virtual_ticks: ticks,
             retired_instructions: None,
         },
         binding: None,
@@ -346,13 +346,14 @@ fn production_ninep_coordinator_mutates_result_and_visibility_state() {
     topology
         .storage_policy_artifacts
         .sort_by(|left, right| left.id.cmp(&right.id));
-    let world = World::from_content_hash(ContentHash::from_bytes(b"ninep-coordinator-world"))
+    let world = World::from_nodes(Vec::new())
+        .unwrap_or_else(|error| panic!("empty test world should build: {error}"))
         .with_fault_topology(topology)
         .unwrap_or_else(|error| panic!("test 9p policy world should validate: {error}"));
     let target = ResolvedFaultTarget::NinePDevice {
         device: ContentHash::from_bytes(b"ninep-device"),
     };
-    let nodes = ProductionNodeSet::new();
+    let nodes = QemuNodeSet::new();
     let runtime = ProductionFaultRuntime::new(
         FaultSignalPlan::empty(),
         None,
@@ -368,7 +369,6 @@ fn production_ninep_coordinator_mutates_result_and_visibility_state() {
         observations: Arc::new(Mutex::new(ProductionFaultObservationJournal::default())),
         world,
         target: target.clone(),
-        icount_shift: 0,
         resource_limits: FaultResourceLimits::compiled_maximum(),
     };
 
@@ -413,8 +413,8 @@ fn production_ninep_coordinator_mutates_result_and_visibility_state() {
         transition_sequence: 1,
         opportunity: None,
         coordinate: FaultCoordinate {
-            virtual_nanos: 10,
-            retired_instructions: Some(10),
+            virtual_ticks: 10,
+            retired_instructions: None,
         },
         cause: crucible::model::BindingActionCause::Signal,
         expected_precondition: None,
@@ -442,7 +442,7 @@ fn production_ninep_coordinator_mutates_result_and_visibility_state() {
                 EffectSpecification::Storage(StorageEffectSpecification::NinePVisibility {
                     update: object_id,
                     delay_nanos: Some(
-                        crucible::model::PositiveU64::new("delay_nanos", 5).unwrap_or_else(
+                        crucible::model::PositiveU64::new("delay_nanos", 1).unwrap_or_else(
                             |error| panic!("test visibility delay should validate: {error}"),
                         ),
                     ),
@@ -459,14 +459,14 @@ fn production_ninep_coordinator_mutates_result_and_visibility_state() {
         transition_sequence: 1,
         opportunity: None,
         coordinate: FaultCoordinate {
-            virtual_nanos: 10,
-            retired_instructions: Some(10),
+            virtual_ticks: 7,
+            retired_instructions: None,
         },
         cause: crucible::model::BindingActionCause::Signal,
         expected_precondition: None,
     };
     let allocation =
-        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 4, 0))
+        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 4))
             .unwrap_or_else(|error| panic!("test shared region should allocate: {error}"));
     let layout = allocation.layout();
     let bytes = allocation
@@ -486,12 +486,13 @@ fn production_ninep_coordinator_mutates_result_and_visibility_state() {
     assert_eq!(observations.len(), 1);
     assert_eq!(servicer.visibility_state().committed_frontier(), 1);
     assert_eq!(servicer.visibility_state().visible_frontier(0), (0, 0));
+    // The authored 1 ns delay preserves the action's 7 ps phase.
     servicer
-        .advance_visibility(14, &std::collections::BTreeMap::new())
+        .advance_visibility(1_006, &std::collections::BTreeMap::new())
         .unwrap_or_else(|error| panic!("pre-release visibility should advance: {error}"));
     assert_eq!(servicer.visibility_state().visible_frontier(0), (0, 0));
     servicer
-        .advance_visibility(15, &std::collections::BTreeMap::new())
+        .advance_visibility(1_007, &std::collections::BTreeMap::new())
         .unwrap_or_else(|error| panic!("release visibility should advance: {error}"));
     assert_eq!(servicer.visibility_state().visible_frontier(0), (1, 1));
 

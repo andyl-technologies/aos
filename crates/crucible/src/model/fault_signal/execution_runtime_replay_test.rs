@@ -18,7 +18,7 @@ fn resolved_effect_trace_public_decode_round_trips_nonempty_and_applies_authored
     recorder
         .evaluate_boundary(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             0,
@@ -72,11 +72,66 @@ fn resolved_effect_trace_public_decode_round_trips_nonempty_and_applies_authored
 }
 
 #[test]
+fn signal_preflight_charges_campaign_records_against_one_authored_limit() {
+    let base = test_plan();
+    let limits = FaultResourceLimits {
+        resolved_effect_records: 2,
+        ..FaultResourceLimits::default()
+    };
+    let plan = FaultSignalPlan::new(base.programs().to_vec(), base.bindings().to_vec(), limits)
+        .unwrap_or_else(|error| panic!("limited plan: {error}"));
+    let mut owner = OwnedFaultExecutionRuntime::new(
+        plan,
+        Arc::new(NoArtifacts),
+        SignalBoundarySnapshot::default(),
+        ContentHash::from_bytes(b"shared-effect-budget"),
+        manifests(),
+    )
+    .unwrap_or_else(|error| panic!("owner: {error}"));
+    let mut backend = HostFaultActionSink::new(limits);
+    owner.set_external_effect_count(2);
+    assert!(matches!(
+        owner.evaluate_boundary_with_backend(
+            FaultCoordinate {
+                virtual_ticks: 0,
+                retired_instructions: None,
+            },
+            0,
+            &mut backend,
+        ),
+        Err(FaultExecutionError::Runtime(
+            FaultRuntimeError::ResourceLimit(FaultResourceLimitError::Exceeded {
+                field: "resolved_effect_records",
+                current: 2,
+                requested: 1,
+                configured: 2,
+                ..
+            })
+        ))
+    ));
+    assert_eq!(owner.recorded_effect_count(), 0);
+    assert!(backend.state().is_empty());
+
+    owner.set_external_effect_count(1);
+    owner
+        .evaluate_boundary_with_backend(
+            FaultCoordinate {
+                virtual_ticks: 0,
+                retired_instructions: None,
+            },
+            0,
+            &mut backend,
+        )
+        .unwrap_or_else(|error| panic!("one remaining record should admit: {error}"));
+    assert_eq!(owner.recorded_effect_count(), 1);
+}
+
+#[test]
 fn recomputed_replay_rejects_a_derivation_continuation_mismatch() {
     let plan = test_plan();
     let seed = ContentHash::from_bytes(b"recomputed-derivation-mismatch");
     let coordinate = FaultCoordinate {
-        virtual_nanos: 0,
+        virtual_ticks: 0,
         retired_instructions: None,
     };
     let mut recorder = FaultExecutionRuntime::new(
@@ -123,7 +178,7 @@ fn recomputed_replay_authenticates_a_zero_action_work_item() {
     let plan = network_outcome_plan();
     let seed = ContentHash::from_bytes(b"zero-action-recomputed-replay");
     let coordinate = FaultCoordinate {
-        virtual_nanos: 0,
+        virtual_ticks: 0,
         retired_instructions: None,
     };
     let mut recorder = FaultExecutionRuntime::new(
@@ -179,7 +234,7 @@ fn complete_checkpoint_identity_and_aggregate_limit_cover_nested_state() {
     runtime
         .evaluate_boundary(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             0,
@@ -204,13 +259,14 @@ fn complete_checkpoint_identity_and_aggregate_limit_cover_nested_state() {
         bytes
     );
 
-    let mut retired_version = checkpoint.clone();
-    retired_version.semantic_version = 2;
-    let retired_bytes = retired_version
+    let mut noncurrent = checkpoint.clone();
+    noncurrent.semantic_version = 0;
+    noncurrent.binding_runtime.semantic_version = 0;
+    let noncurrent_bytes = noncurrent
         .canonical_bytes()
-        .unwrap_or_else(|error| panic!("retired checkpoint fixture: {error}"));
+        .unwrap_or_else(|error| panic!("noncurrent checkpoint fixture: {error}"));
     assert_eq!(
-        FaultRuntimeCheckpoint::from_canonical_bytes(&retired_bytes, &plan, seed),
+        FaultRuntimeCheckpoint::from_canonical_bytes(&noncurrent_bytes, &plan, seed),
         Err(FaultRuntimeError::VersionOrIdentityMismatch)
     );
 
@@ -255,7 +311,7 @@ fn complete_checkpoint_identity_and_aggregate_limit_cover_nested_state() {
     );
     let mut mutated = checkpoint.clone();
     mutated.binding_runtime.scheduler_cursor = Some(FaultSchedulerCursor {
-        virtual_nanos: 1,
+        virtual_ticks: 1,
         same_coordinate_sequence: 0,
     });
     assert_ne!(
@@ -302,7 +358,7 @@ fn fault_runtime_checkpoint_preflights_authored_record_count_before_decode() {
     runtime
         .evaluate_boundary(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             0,
@@ -383,7 +439,7 @@ fn failed_replay_installation_leaves_the_owned_continuation_unchanged() {
     recorder
         .evaluate_boundary(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             0,
@@ -451,7 +507,7 @@ fn checkpoint_growth_is_rejected_before_the_live_backend_commits() {
         owner
             .evaluate_boundary_with_backend(
                 FaultCoordinate {
-                    virtual_nanos: 0,
+                    virtual_ticks: 0,
                     retired_instructions: None,
                 },
                 0,

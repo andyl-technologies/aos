@@ -1,35 +1,30 @@
 //! Out-of-band QEMU launch-channel configuration.
 //!
 //! This module owns control-plane launch channels that are outside the
-//! scheduler hot path. The gdbstub channel is operator-mediated debugging, and
-//! QMP is machine control for snapshot and shutdown operations.
+//! scheduler hot path. The gdbstub channel is a private endpoint mediated by
+//! the lifecycle debug gateway, and QMP controls snapshots and shutdown.
 
 use std::path::{Path, PathBuf};
 
 use super::validation::{QemuPreSpawnLaunchValidationError, option_values, unique_comma_value};
 use super::{QemuLaunchCommandError, validate_launch_text};
 
-/// Configuration for the debug-session QEMU gdbstub proxy channel.
+/// Configuration for QEMU's private debug-session gdbstub channel.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuGdbstubChannelConfig {
     qemu_endpoint: String,
-    operator_listen: String,
 }
 
 impl QemuGdbstubChannelConfig {
-    /// Builds a validated gdbstub proxy channel configuration.
+    /// Builds a validated private gdbstub channel configuration.
     ///
     /// # Errors
     ///
-    /// Returns [`QemuLaunchCommandError`] when either endpoint is empty or
-    /// contains a newline or NUL byte.
-    pub fn new(
-        qemu_endpoint: impl Into<String>,
-        operator_listen: impl Into<String>,
-    ) -> Result<Self, QemuLaunchCommandError> {
+    /// Returns [`QemuLaunchCommandError`] when the endpoint is malformed or
+    /// does not bind a relative Unix socket in QEMU's guarded run directory.
+    pub fn new(qemu_endpoint: impl Into<String>) -> Result<Self, QemuLaunchCommandError> {
         let config = Self {
             qemu_endpoint: qemu_endpoint.into(),
-            operator_listen: operator_listen.into(),
         };
         config.validate()?;
         Ok(config)
@@ -39,12 +34,6 @@ impl QemuGdbstubChannelConfig {
     #[must_use]
     pub fn qemu_endpoint(&self) -> &str {
         &self.qemu_endpoint
-    }
-
-    /// Returns the operator-facing `--gdb-listen` endpoint owned by the proxy.
-    #[must_use]
-    pub fn operator_listen(&self) -> &str {
-        &self.operator_listen
     }
 
     /// Returns whether Crucible mediates the QEMU gdbstub to the operator endpoint.
@@ -71,15 +60,31 @@ impl QemuGdbstubChannelConfig {
         false
     }
 
-    /// Validates the launch/proxy endpoint strings.
+    /// Validates the private launch endpoint.
     ///
     /// # Errors
     ///
-    /// Returns [`QemuLaunchCommandError::InvalidLaunchText`] when an endpoint is
-    /// empty or contains a newline or NUL byte.
+    /// Returns [`QemuLaunchCommandError::InvalidLaunchText`] for unstable text,
+    /// or [`QemuLaunchCommandError::InvalidGdbstubEndpoint`] for a non-private
+    /// listener.
     pub fn validate(&self) -> Result<(), QemuLaunchCommandError> {
         validate_launch_text("qemu_gdbstub_endpoint", &self.qemu_endpoint)?;
-        validate_launch_text("gdb_listen_endpoint", &self.operator_listen)
+        let socket_name = self
+            .qemu_endpoint
+            .strip_prefix("unix:")
+            .and_then(|endpoint| endpoint.strip_suffix(",server=on,wait=off"))
+            .ok_or_else(|| QemuLaunchCommandError::InvalidGdbstubEndpoint {
+                endpoint: self.qemu_endpoint.clone(),
+            })?;
+        if socket_name.is_empty()
+            || matches!(socket_name, "." | "..")
+            || socket_name.contains(['/', ','])
+        {
+            return Err(QemuLaunchCommandError::InvalidGdbstubEndpoint {
+                endpoint: self.qemu_endpoint.clone(),
+            });
+        }
+        Ok(())
     }
 }
 

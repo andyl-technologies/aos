@@ -10,10 +10,69 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
   networkInitramfs = import ./phase2-qemu-live-network-io-guest.nix {inherit pkgs;};
   fuzzGuest = import ./phase5-cli-fuzz-guest.nix {inherit pkgs;};
+  liveFixtures = pkgs.mkDerivation {
+    pname = "crucible-phase5-cli-search-fuzz-live-fixtures";
+    version = "0";
+    src = crucibleSrc;
+    buildDeps = [pkgs.coreutils pkgs.rust pkgs.sed];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          set -eu
+          cp -R "$src" source
+          chmod -R u+w source
+          cd source
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          set -eu
+          export CARGO_HOME="$TMPDIR/cargo"
+          export CARGO_TARGET_DIR="$TMPDIR/phase5-live-fixtures-target"
+          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
+            cd source
+          fi
+          mkdir -p "$CARGO_HOME" .cargo
+          if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
+            sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
+              > .cargo/config.toml
+          else
+            printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
+              > .cargo/config.toml
+          fi
+        '';
+      }
+      {
+        name = "materialize-live-fixtures";
+        script = ''
+          set -eu
+          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
+            cd source
+          fi
+          cd crates
+          cargo test --frozen --offline -p crucible \
+            --example phase5_live_asset_fixture -- --test-threads=1
+          cargo run --frozen --offline -p crucible \
+            --example phase5_live_asset_fixture -- \
+            ${pkgs.linux-crucible}/boot/vmlinuz-${pkgs.linux-crucible.version} \
+            ${fuzzGuest}/fuzz-guest.elf \
+            ${pkgs.crucible-fixtures}/share/crucible/fixtures/root/aos-minimal-root.ext4 \
+            ${networkInitramfs}/initrd.img \
+            "$out"
+        '';
+      }
+    ];
+  };
+  searchFixture = "${liveFixtures}/search.scenario.toml";
+  fuzzFixture = "${liveFixtures}/fuzz.family.toml";
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
+  cliLiveFuzz = builtins.readFile ../../crates/crucible-cli/src/cli/run_save/qemu_live/fuzz.rs;
   cliMachineReadable = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   engineModel = import ./_crucible-model-source.nix {inherit lib;};
@@ -39,7 +98,7 @@
       }
       {
         label = "T-CLI-13 retained evidence CLI progress";
-        needle = "hidden retained-evidence fixture input";
+        needle = "public search\n  path accepts `--retained-evidence`";
       }
       {
         label = "T-CLI-13 terminal retained evidence CLI progress";
@@ -47,7 +106,7 @@
       }
       {
         label = "T-CLI-13 terminal retained sometimes CLI progress";
-        needle = "terminal `sometimes` failures through local-double\n  `search`";
+        needle = "terminal `sometimes` failures through search";
       }
       {
         label = "T-CLI-13 local-double sampled API progress";
@@ -71,7 +130,7 @@
       }
       {
         label = "T-CLI-13 local-double fuzz runner progress";
-        needle = "executes local `--backend double fuzz` through\n  `ScenarioFamily::fuzz_coverage_guided`";
+        needle = "The test-only\n  `--backend double fuzz` path executes\n  `ScenarioFamily::fuzz_coverage_guided`";
       }
       {
         label = "T-CLI-13 local-double fuzz corpus progress";
@@ -125,7 +184,7 @@
       }
       {
         label = "phase5 CLI retained evidence fixture progress";
-        needle = "hidden local-double\n  `crucible.search-retained-evidence.v1` retained-evidence fixture loading";
+        needle = "public\n  `crucible.search-retained-evidence.v1` retained-evidence loading";
       }
       {
         label = "phase5 CLI terminal retained evidence fixture progress";
@@ -133,7 +192,7 @@
       }
       {
         label = "phase5 CLI terminal retained sometimes fixture progress";
-        needle = "local-double CLI coverage for retained\n  after-quiescence and terminal `sometimes` failures";
+        needle = "CLI coverage for retained\n  after-quiescence and terminal `sometimes` failures";
       }
       {
         label = "phase5 CLI retained evidence white-box validation progress";
@@ -223,7 +282,7 @@
       }
       {
         label = "search retained evidence argument";
-        needle = "retained_evidence: Option<PathBuf>";
+        needle = "#[arg(long, value_name = \"path\")]\n    retained_evidence: Option<PathBuf>";
       }
       {
         label = "search retained evidence plan";
@@ -474,16 +533,12 @@
         needle = "!search_line.contains(\"counterexample=\")";
       }
       {
-        label = "fuzz runner blocker";
-        needle = "requires the exploration-engine driver over phase-6 fuzzing policies tracked by T-CLI-13";
-      }
-      {
         label = "scenario family TOML loader";
         needle = "fn load_fuzz_family_file";
       }
       {
         label = "scenario family schema";
-        needle = "crucible.scenario-family.v2";
+        needle = "crucible.scenario-family.v3";
       }
       {
         label = "local-double fuzz runner";
@@ -506,6 +561,18 @@
         needle = "fn run_local_qemu_fuzz_workflow";
       }
       {
+        label = "live fuzz explores authenticated typed choices";
+        needle = ".with_exploration(exploration)";
+      }
+      {
+        label = "live fuzz authenticates selected scheduler actions";
+        needle = "authenticate_qemu_fuzz_campaign(&form, &campaign, parent_id, sample_index, energy)";
+      }
+      {
+        label = "live fuzz retains replayed production corpus";
+        needle = "persist_qemu_fuzz_corpus(corpus, &execution.corpus_candidates)";
+      }
+      {
         label = "stored fuzz family loader";
         needle = "fn load_stored_fuzz_family";
       }
@@ -518,8 +585,8 @@
         needle = "enum FuzzDispatchRoute";
       }
       {
-        label = "built-in fuzz proof route";
-        needle = "FuzzDispatchRoute::BuiltInFaultCampaignProof";
+        label = "packaged-QEMU fuzz route";
+        needle = "Some(FuzzDispatchRoute::LocalPackagedBackend)";
       }
       {
         label = "local-double fuzz injectable family runner";
@@ -1020,6 +1087,20 @@
         needle = "guest_reachable_warn_with_terminal_quiescence_oracle";
       }
     ]
+    ++ failuresFor "crates/crucible-cli/src/cli/run_save/qemu_live/fuzz.rs" cliLiveFuzz [
+      {
+        label = "live fuzz samples from accepted coverage";
+        needle = "sample_coverage_guided(context.plan.config, sequence, &guidance)";
+      }
+      {
+        label = "live fuzz updates sampling guidance from admitted coverage";
+        needle = "&mut guidance,\n            candidates,";
+      }
+      {
+        label = "live fuzz retains only novel coverage in guidance";
+        needle = "if novel > 0 {\n        observed.extend(coverage_ids.iter().copied());\n        guidance.push(feedback.clone());";
+      }
+    ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
         label = "phase5 exposes CLI search/fuzz workflow check";
@@ -1029,24 +1110,21 @@
 in
   if failures != []
   then throw "crucible phase5 CLI search/fuzz workflow check failed:\n${builtins.concatStringsSep "\n" failures}"
-  else
-    pkgs.mkDerivation {
-      pname = "crucible-phase5-cli-search-fuzz-workflow";
+  else let
+    sourceChecks = pkgs.mkDerivation {
+      pname = "crucible-phase5-cli-search-fuzz-source-checks";
       version = "0";
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
       src = crucibleSrc;
 
       buildDeps = [
         pkgs.coreutils
-        pkgs.crucible
         pkgs.rust
         pkgs.sed
+        pkgs.pkg-config
+        pkgs.sqlite
       ];
-
-      ATTR_PATH = attrPath;
-      TASK_IDS = builtins.concatStringsSep "," taskIds;
-      OPEN_TASK_IDS = builtins.concatStringsSep "," openTaskIds;
-      DEPENDENCY_COUNT = toString (builtins.length dependencies);
-      DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
+      runtimeDeps = [pkgs.sqlite];
 
       phases = [
         {
@@ -1091,81 +1169,28 @@ in
               -p crucible-cli \
               cli_search_fuzz \
               -- --test-threads=1
-            cargo test \
+            if ! cargo test \
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-cli-search-fuzz-workflow-target" \
               -p crucible-cli \
+              --features test-double \
               cli_exit_machine_readable_search_fuzz_jsonl_reports_final_outcome \
-              -- --test-threads=1
-
-            mkdir -p \
-              "$TMPDIR/crucible-cli-search-artifacts" \
-              "$TMPDIR/crucible-cli-search-store" \
-              "$TMPDIR/crucible-cli-fuzz-artifacts" \
-              "$TMPDIR/crucible-cli-fuzz-store"
-            CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
-              CRUCIBLE_RUN_STATE_ROOT="$TMPDIR/crucible-cli-search-state" \
-              "${pkgs.crucible}/bin/crucible" \
-              --backend qemu \
-              --seed 42 \
-              --format jsonl \
-              --artifact-dir "$TMPDIR/crucible-cli-search-artifacts" \
-              --store "$TMPDIR/crucible-cli-search-store" \
-              search \
-              ../tests/crucible/fixtures/live-qemu-search.scenario.toml \
-              --max-states 1 \
-              --on-violation collect \
-              > "$TMPDIR/production-search.jsonl"
-            CRUCIBLE_KERNEL="${fuzzGuest}/fuzz-guest.elf" \
-              CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
-              CRUCIBLE_RUN_STATE_ROOT="$TMPDIR/crucible-cli-fuzz-state" \
-              "${pkgs.crucible}/bin/crucible" \
-                --backend qemu \
-                --seed 42 \
-                --format jsonl \
-                --artifact-dir "$TMPDIR/crucible-cli-fuzz-artifacts" \
-                --store "$TMPDIR/crucible-cli-fuzz-store" \
-                fuzz \
-                ../tests/crucible/fixtures/live-qemu-fuzz.family.toml \
-                --runs 1 \
-                > "$TMPDIR/production-fuzz.jsonl"
-
-            test -n "$(
+              -- --test-threads=1 \
+              > "$TMPDIR/machine-readable-search-fuzz-test.log" 2>&1; then
+              cat "$TMPDIR/machine-readable-search-fuzz-test.log"
+              exit 1
+            fi
+            named_test_count="$(
               sed -n \
-                '/"kind":"search_live_realizations".*"runtime_frontiers=[1-9][0-9]* branch_replay_validations=[1-9][0-9]* backend=live"/p' \
-                "$TMPDIR/production-search.jsonl"
+                '/^test cli_exit_machine_readable_search_fuzz_jsonl_reports_final_outcome \.\.\. ok$/p' \
+                "$TMPDIR/machine-readable-search-fuzz-test.log" \
+                | wc -l
             )"
-            test -n "$(
-              sed -n \
-                '/"kind":"search_branch_execution".*choices=[1-9][0-9]* backend=live"/p' \
-                "$TMPDIR/production-search.jsonl"
-            )"
-            test -n "$(
-              sed -n \
-                '/"kind":"live_backend_execution".*"operation=search-live-branches/p' \
-                "$TMPDIR/production-search.jsonl"
-            )"
-            test -n "$(
-              sed -n \
-                '/"kind":"final_outcome".*"subcommand=search status=passed exit_code=0/p' \
-                "$TMPDIR/production-search.jsonl"
-            )"
-            test -n "$(
-              sed -n \
-                '/"kind":"fuzz_coverage_feedback".*blocks=[1-9][0-9]*/p' \
-                "$TMPDIR/production-fuzz.jsonl"
-            )"
-            test -n "$(
-              sed -n \
-                '/"kind":"live_backend_execution".*"operation=fuzz-live-campaign/p' \
-                "$TMPDIR/production-fuzz.jsonl"
-            )"
-            test -n "$(
-              sed -n \
-                '/"kind":"final_outcome".*"subcommand=fuzz status=passed exit_code=0/p' \
-                "$TMPDIR/production-fuzz.jsonl"
-            )"
+            if [ "$named_test_count" -ne 1 ]; then
+              cat "$TMPDIR/machine-readable-search-fuzz-test.log"
+              exit 1
+            fi
           '';
         }
         {
@@ -1173,18 +1198,223 @@ in
           script = ''
             set -eu
             mkdir -p "$out"
+            touch "$out/passed"
+          '';
+        }
+      ];
+    };
+
+    deployment = builtins.toFile "search-fuzz-packaged-executor.toml" ''
+      schema = "crucible.campaign-packaged-executor"
+      version = 2
+      cgroup_root = "/sys/fs/cgroup/crucible"
+      run_root = "/tmp/attempts/run"
+      attempt_namespace = "cli-search-fuzz"
+      first_project_id = 33000
+      project_id_count = 1
+      child_user_id = 65534
+      child_group_id = 65534
+      maximum_tasks = 64
+      maximum_inodes = 4096
+      finish_timeout_ms = 15000
+      maximum_slots = 1
+      maximum_vcpus = 2
+      maximum_resident_bytes = 2147483648
+      maximum_disk_bytes = 2147483648
+      maximum_execution_quanta = 10000
+      maximum_checkpoint_bytes = 1073741824
+      worker_count = 1
+      host_architecture = "${pkgs.stdenv.hostPlatform.parsed.cpu.name}"
+      qemu_profile = "deterministic-tcg-v1"
+
+      [operations]
+      listener_workers = 4
+      pending_connections = 16
+      requests_per_connection = 4096
+      accept_poll_interval_ms = 10
+      exchange_read_timeout_ms = 30000
+      exchange_write_timeout_ms = 30000
+      runtime_poll_interval_ms = 100
+      planner_scan_limit = 1024
+      planner_input_bytes = 16777216
+      planner_fuel = 1025
+      executor_scan_limit = 1024
+      worker_slots_per_campaign = 1
+    '';
+
+    testing = import ../../lib/testing {inherit pkgs lib;};
+    vmTest = testing.mkVMTest {
+      name = "crucible-phase5-cli-search-fuzz-live-qemu";
+      memory = 4096;
+      rootfsDeps = [
+        deployment
+        liveFixtures
+        fuzzGuest
+        networkInitramfs
+        pkgs.coreutils
+        pkgs.crucible
+        pkgs.e2fsprogs
+        pkgs.grep
+        pkgs.sed
+        pkgs.util-linux
+      ];
+      testScript = ''
+        set -eu
+
+        cleanup_attempt_mount() {
+          status="$?"
+          if [ "$status" -ne 0 ]; then
+            for log in \
+              /tmp/production-search.jsonl \
+              /tmp/production-search.stderr \
+              /tmp/production-fuzz.jsonl; do
+              if [ -f "$log" ]; then
+                echo "==> Tail of $log"
+                ${pkgs.coreutils}/bin/tail -c 16384 "$log"
+              fi
+            done
+          fi
+          ${pkgs.util-linux}/bin/umount /tmp/attempts > /dev/null 2>&1 || true
+        }
+
+        trap cleanup_attempt_mount EXIT HUP INT TERM
+        mkdir -p /sys/fs/cgroup
+        ${pkgs.util-linux}/bin/mount -t cgroup2 none /sys/fs/cgroup
+        echo '+cpu +memory +pids' > /sys/fs/cgroup/cgroup.subtree_control
+        mkdir /sys/fs/cgroup/crucible
+        echo '+cpu +memory +pids' > /sys/fs/cgroup/crucible/cgroup.subtree_control
+
+        truncate -s 4G /tmp/attempts.img
+        ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -F -O quota,project \
+          -E quotatype=prjquota /tmp/attempts.img
+        mkdir /tmp/attempts
+        ${pkgs.util-linux}/bin/mount -o loop,prjquota \
+          /tmp/attempts.img /tmp/attempts
+        mkdir -m 700 /tmp/attempts/run /tmp/run-state
+        install -m 600 ${deployment} /tmp/executor.toml
+
+        export CRUCIBLE_CAMPAIGN_DEPLOYMENT=/tmp/executor.toml
+
+        mkdir -p \
+          "/tmp/crucible-cli-search-artifacts" \
+          "/tmp/crucible-cli-search-store" \
+          "/tmp/crucible-cli-fuzz-artifacts" \
+          "/tmp/crucible-cli-fuzz-store" \
+          "/tmp/crucible-cli-fuzz-corpus"
+        CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
+          CRUCIBLE_RUN_STATE_ROOT="/tmp/crucible-cli-search-state" \
+          "${pkgs.crucible}/bin/crucible" \
+          --backend qemu \
+          --seed 42 \
+          --format jsonl \
+          --artifact-dir "/tmp/crucible-cli-search-artifacts" \
+          --store "/tmp/crucible-cli-search-store" \
+          search \
+          ${searchFixture} \
+          --max-states 2 \
+          --on-violation collect \
+          > "/tmp/production-search.jsonl" \
+          2> "/tmp/production-search.stderr"
+        CRUCIBLE_KERNEL="${fuzzGuest}/fuzz-guest.elf" \
+          CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
+          CRUCIBLE_RUN_STATE_ROOT="/tmp/crucible-cli-fuzz-state" \
+          "${pkgs.crucible}/bin/crucible" \
+          --backend qemu \
+          --seed 42 \
+          --format jsonl \
+          --artifact-dir "/tmp/crucible-cli-fuzz-artifacts" \
+          --store "/tmp/crucible-cli-fuzz-store" \
+          fuzz \
+          ${fuzzFixture} \
+          --runs 1 \
+          --corpus "/tmp/crucible-cli-fuzz-corpus" \
+          > "/tmp/production-fuzz.jsonl"
+
+        test -n "$(
+          sed -n \
+            '/"kind":"search_campaign_execution".*observations=2 branch_requests=[1-9][0-9]*.*backend=live"/p' \
+            "/tmp/production-search.jsonl"
+        )"
+        test -n "$(
+          sed -n \
+            '/"kind":"search_campaign_branch".*maximum_attempts=[1-9][0-9]* backend=live"/p' \
+            "/tmp/production-search.jsonl"
+        )"
+        test -n "$(
+          sed -n \
+            '/"kind":"live_backend_execution".*"operation=search-campaign/p' \
+            "/tmp/production-search.jsonl"
+        )"
+        test -n "$(
+          sed -n \
+            '/"kind":"final_outcome".*"subcommand=search status=passed exit_code=0/p' \
+            "/tmp/production-search.jsonl"
+        )"
+        test -n "$(
+          sed -n \
+            '/"kind":"fuzz_coverage_feedback".*blocks=[1-9][0-9]*/p' \
+            "/tmp/production-fuzz.jsonl"
+        )"
+        test -n "$(
+          sed -n \
+            '/"kind":"fuzz_campaign_execution".*branch_requests=[1-9][0-9]* override_observations=[1-9][0-9]*/p' \
+            "/tmp/production-fuzz.jsonl"
+        )"
+        test -n "$(
+          sed -n \
+            '/retained_entries=[1-9][0-9]*.*replay_oracle_validations=[1-9][0-9]*.*generated_mutants=[1-9][0-9]*.*store_puts=[1-9][0-9]*/p' \
+            "/tmp/production-fuzz.jsonl"
+        )"
+        test -n "$(
+          sed -n \
+            '/"kind":"live_backend_execution".*"operation=fuzz-live-campaign/p' \
+            "/tmp/production-fuzz.jsonl"
+        )"
+        test -n "$(
+          sed -n \
+            '/"kind":"final_outcome".*"subcommand=fuzz status=passed exit_code=0/p' \
+            "/tmp/production-fuzz.jsonl"
+        )"
+
+        cat /tmp/production-search.jsonl
+        cat /tmp/production-fuzz.jsonl
+        ${pkgs.util-linux}/bin/umount /tmp/attempts
+        trap - EXIT HUP INT TERM
+      '';
+    };
+  in
+    pkgs.mkDerivation {
+      pname = "crucible-phase5-cli-search-fuzz-workflow";
+      version = "0";
+      src = null;
+      buildDeps = [pkgs.coreutils sourceChecks vmTest];
+
+      ATTR_PATH = attrPath;
+      TASK_IDS = builtins.concatStringsSep "," taskIds;
+      OPEN_TASK_IDS = builtins.concatStringsSep "," openTaskIds;
+      DEPENDENCY_COUNT = toString (builtins.length dependencies);
+      DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
+
+      phases = [
+        {
+          name = "write-result";
+          script = ''
+            set -eu
+            mkdir -p "$out"
+            cp "${vmTest}/serial.log" "$out/vm-serial.log"
             cat > "$out/result" <<'RESULT'
             PASS
             check=$ATTR_PATH
             tasks=$TASK_IDS
             open_tasks=$OPEN_TASK_IDS
             status=complete
-            evidence_scope=packaged-production-cli-live-qemu-search-fuzz
+            evidence_scope=packaged-production-cli-live-qemu-vm
             component=crucible-cli
             contract=search-fuzz-workflow-complete
             process_search_fuzz=production-qemu-jsonl-final-outcome
             state_space=live-qemu-frontier-branch-realization
             fuzz_feedback=live-qemu-basic-block-coverage
+            machine_readable_named_tests=1
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';

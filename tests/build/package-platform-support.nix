@@ -242,6 +242,12 @@
   configuredPackage = releasePackageByName "k3s-worker";
   configuredOutput = name:
     builtins.head (builtins.filter (output: output.name == name) configuredPackage.outputs);
+  # glibc binds its `bin` output attribute to a separately built utilities
+  # derivation, while getent aliases an output of the main glibc derivation.
+  glibcRelease = releasePackageByName "glibc";
+  glibcBinOutput =
+    builtins.head (builtins.filter (output: output.name == "bin") glibcRelease.outputs);
+  getentOutput = builtins.head (releasePackageByName "getent").outputs;
   releaseSourcesComplete =
     builtins.all (
       package:
@@ -365,6 +371,11 @@ in
   assert (configuredOutput "config").output == "config";
   assert (configuredOutput "configuration-base").derivation == configurationBaseProbe.drvPath;
   assert (configuredOutput "configuration-base").output == "out";
+  assert glibcBinOutput.derivation == builtins.unsafeDiscardStringContext pkgs.glibc.bin.drvPath;
+  assert glibcBinOutput.derivation != glibcRelease.derivation;
+  assert !(glibcBinOutput ? output);
+  assert !(getentOutput ? derivation);
+  assert (releasePackageByName "getent").derivation == glibcRelease.derivation;
   assert builtins.length (releasePackageByName "aos").source_store_paths >= 2;
   assert builtins.length (releasePackageByName "docker-compose").source_store_paths >= 2;
   assert builtins.length (releasePackageByName "envoy").source_store_paths >= 2;

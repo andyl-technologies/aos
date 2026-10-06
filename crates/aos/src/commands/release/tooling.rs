@@ -1,8 +1,9 @@
 //! The release tooling environment: the Nix closure the coordinator runs from.
 //!
-//! Release commands do not read the coordinator's own store path or the
-//! qualification executors from the maintainer configuration. Both belong to
-//! the tooling the operator installed, so they are discovered from it:
+//! Release commands do not read the coordinator's own store path, the
+//! qualification executors, or the bundled release signer from the maintainer
+//! configuration. All belong to the tooling the operator installed, so they
+//! are discovered from it:
 //!
 //! - the **tooling closure** is `$AOS_RELEASE_TOOLING` when the
 //!   `aos-release-tooling` wrapper set it, else the `/nix/store/<name>` root
@@ -12,6 +13,11 @@
 //! - the **native executors** live inside that closure at
 //!   `libexec/aos-release/executors/<platform>/`, each holding the `run`
 //!   program and an `identity` file naming the identity it must report.
+//! - the **bundled signer** is the repository's file-backed
+//!   `aos-release-signer` at `libexec/aos-release/signer/aos-release-signer`.
+//!   A maintainer configuration that names no external signer executable
+//!   signs through it, so the signer always comes from the same closure as
+//!   the coordinator and accepts exactly the registries the coordinator does.
 //!
 //! A binary outside the Nix store (a plain `cargo build`) has no closure. It
 //! can inspect state, but a command that freezes or qualifies a release
@@ -21,10 +27,13 @@
 //! ```text
 //! /nix/store/<hash>-aos-release-tooling-<version>/
 //! ├── bin/aos                      wrapper exporting AOS_RELEASE_TOOLING
-//! └── libexec/aos-release/executors/
-//!     └── x86_64-linux/
-//!         ├── run                  qualification executor program
-//!         └── identity             "aos-x86_64-linux-qualification-v1"
+//! └── libexec/aos-release/
+//!     ├── executors/
+//!     │   └── x86_64-linux/
+//!     │       ├── run              qualification executor program
+//!     │       └── identity         "aos-x86_64-linux-qualification-v1"
+//!     └── signer/
+//!         └── aos-release-signer   bundled file-backed release signer
 //! ```
 
 use std::collections::BTreeMap;
@@ -52,6 +61,9 @@ const EXECUTOR_PROGRAM: &str = "run";
 /// Executor identity file name inside a platform directory.
 const EXECUTOR_IDENTITY: &str = "identity";
 
+/// Bundled release signer program inside the tooling closure.
+const SIGNER_PROGRAM: &str = "libexec/aos-release/signer/aos-release-signer";
+
 /// One installed native qualification executor.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct Executor {
@@ -61,11 +73,12 @@ pub(super) struct Executor {
     pub(super) identity: String,
 }
 
-/// The tooling closure and the executors it ships.
+/// The tooling closure and the executors and signer it ships.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct ToolingEnvironment {
     closure: PathBuf,
     executors: BTreeMap<Platform, Executor>,
+    signer: Option<PathBuf>,
 }
 
 impl ToolingEnvironment {
@@ -114,22 +127,42 @@ impl ToolingEnvironment {
     /// Reads the tooling environment rooted at `closure`.
     ///
     /// # Errors
-    /// Returns an error when `closure` is not a directory or its executor
-    /// directory is malformed.
+    /// Returns an error when `closure` is not a directory, its executor
+    /// directory is malformed, or its bundled signer is present but unsafe to
+    /// execute.
     pub(super) fn from_closure(closure: &Path) -> Result<Self> {
         if !closure.is_dir() {
             bail!("tooling closure {} is not a directory", closure.display());
         }
         let executors = read_executors(&closure.join(EXECUTORS_DIRECTORY))?;
+        let signer = read_signer(&closure.join(SIGNER_PROGRAM))?;
         Ok(Self {
             closure: closure.to_path_buf(),
             executors,
+            signer,
         })
     }
 
     /// Returns the closure root.
     pub(super) fn closure(&self) -> &Path {
         &self.closure
+    }
+
+    /// Returns the bundled release signer program.
+    ///
+    /// # Errors
+    /// Returns an error when the closure ships no bundled signer, so a
+    /// configuration that relies on it fails closed instead of falling back
+    /// to some other program.
+    pub(super) fn signer(&self) -> Result<&Path> {
+        self.signer.as_deref().with_context(|| {
+            format!(
+                "tooling closure {} ships no bundled release signer at {SIGNER_PROGRAM}; \
+                 install release tooling that bundles it or configure an external \
+                 signer executable",
+                self.closure.display()
+            )
+        })
     }
 
     /// Returns the digest bound by `tooling` fitness.
@@ -180,6 +213,18 @@ pub(super) fn detected_digest() -> Result<Option<Sha256Digest>> {
         .transpose()
 }
 
+/// Reports whether `path` resolves into a Nix store path.
+///
+/// Symbolic links are resolved first, so a path that merely starts with
+/// `/nix/store` but leads elsewhere is not a store path. An unresolvable
+/// path is not one either.
+pub(super) fn resolves_into_store(path: &Path) -> bool {
+    path.canonicalize()
+        .ok()
+        .and_then(|canonical| closure_root(&canonical))
+        .is_some()
+}
+
 /// Returns the `/nix/store/<name>` root containing `path`, if any.
 fn closure_root(path: &Path) -> Option<PathBuf> {
     let store = Path::new(STORE_ROOT);
@@ -189,6 +234,24 @@ fn closure_root(path: &Path) -> Option<PathBuf> {
         _ => return None,
     };
     Some(store.join(name))
+}
+
+/// Reads the bundled signer at `path`, if the closure ships one.
+///
+/// Absence is not an error here: only a configuration that relies on the
+/// bundled signer needs it, and [`ToolingEnvironment::signer`] refuses then.
+/// A present signer must pass the same executable checks as an external one.
+fn read_signer(path: &Path) -> Result<Option<PathBuf>> {
+    match path.symlink_metadata() {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("inspecting {}", path.display()));
+        }
+    }
+    super::signer::validate_signer_executable(path)
+        .with_context(|| format!("inspecting bundled signer {}", path.display()))?;
+    Ok(Some(path.to_path_buf()))
 }
 
 /// Reads every `<platform>/{run,identity}` executor under `directory`.
@@ -251,6 +314,16 @@ mod tests {
         Ok(())
     }
 
+    fn write_signer(root: &Path, mode: u32) -> Result<PathBuf> {
+        let program = root.join(SIGNER_PROGRAM);
+        if let Some(parent) = program.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&program, b"#!/bin/sh\nexit 0\n")?;
+        fs::set_permissions(&program, fs::Permissions::from_mode(mode))?;
+        Ok(program)
+    }
+
     #[test]
     fn closure_root_is_the_first_store_component() {
         assert_eq!(
@@ -308,6 +381,60 @@ mod tests {
 
         write_executor(root.path(), "x86_64-linux", "")?;
         assert!(ToolingEnvironment::from_closure(root.path()).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn finds_the_bundled_signer_inside_the_closure() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let program = write_signer(root.path(), 0o555)?;
+
+        let tooling = ToolingEnvironment::from_closure(root.path())?;
+        assert_eq!(tooling.signer()?, program);
+        Ok(())
+    }
+
+    #[test]
+    fn a_closure_without_the_bundled_signer_fails_closed() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        write_executor(
+            root.path(),
+            "x86_64-linux",
+            "aos-x86_64-linux-qualification-v1",
+        )?;
+
+        let tooling = ToolingEnvironment::from_closure(root.path())?;
+        let error = tooling.signer().err().map(|error| error.to_string());
+        assert!(
+            error
+                .as_deref()
+                .is_some_and(|message| message.contains(SIGNER_PROGRAM)),
+            "{error:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_an_unsafe_bundled_signer() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        write_signer(root.path(), 0o775)?;
+        assert!(ToolingEnvironment::from_closure(root.path()).is_err());
+
+        let linked = tempfile::tempdir()?;
+        let program = write_signer(linked.path(), 0o555)?;
+        fs::hard_link(&program, linked.path().join("alias"))?;
+        assert!(ToolingEnvironment::from_closure(linked.path()).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn only_paths_that_resolve_into_the_store_are_store_paths() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let program = write_signer(root.path(), 0o555)?;
+        assert!(!resolves_into_store(&program));
+
+        let absent = Path::new("/nix/store/absent-aos/bin/aos");
+        assert!(!resolves_into_store(absent));
         Ok(())
     }
 }

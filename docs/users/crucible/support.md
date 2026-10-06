@@ -9,7 +9,7 @@ a type or CLI flag as a production-support promise.
 
 | Status | Meaning |
 |---|---|
-| Packaged | Available through `nix build .#pkg-crucible` and the installed `crucible` CLI. |
+| Packaged | Available through `aos-dev build package crucible` in the development shell and the installed `crucible` CLI. |
 | Public API | Available to Rust scenario generators or lifecycle integrations, but not necessarily exposed as a CLI command. |
 | Certified | Exercised against patched QEMU by a repository Nix gate or executable example. The gate may not be selectable by `crucible selftest`. |
 | Model only | Admitted and evaluated by the deterministic host model, but without a packaged guest-device or operator workflow. |
@@ -25,11 +25,32 @@ Faults are authored in a scenario and executed by the matching adapter.
 | Surface | Status | Boundary |
 |---|---|---|
 | Local patched-QEMU lifecycle | Packaged, primary | Linux host; validated QEMU/plugin pair; durable run-state directory. |
-| `run`, `verify`, save/resume/fork, replay | Packaged | Operate on canonical scenarios, schedules, checkpoints, and artifacts. See the [command reference](reference.md#command-line-interface). |
+| `run`, `verify`, save/resume, replay | Packaged | Operate on canonical scenarios, schedules, checkpoints, and artifacts. See the [command reference](reference.md#command-line-interface). |
 | Bounded search, fuzzing, triage | Packaged | Search and campaign budgets must be explicit; only admitted choices are explored. |
 | Interactive/debug workflow | Packaged with narrower paths | Some operations require a running daemon session, a retained checkpoint, a debug-capable guest, or an explicit non-canonical fork. |
 | HTTP/2 daemon | Packaged, limited fidelity | The daemon exposes the documented lifecycle routes; it is not a distributed scheduler or a remote equivalent of every local CLI path. |
 | Distributed campaigns and fleet storage | Public/certification surfaces | Repository APIs and gates exist, but there is no general packaged fleet operator workflow. |
+
+Local `run` requires a provisioned campaign-executor deployment and durable
+run-state root; see [first-run prerequisites](README.md#first-run). Its
+unattended route currently accepts only `--save-on never`. Dedicated save and
+resume workflows have their own admitted boundaries and closure requirements.
+
+### Current execution refusals
+
+The selected production backend enforces exact bounded advances and real device
+completion deadlines. The following cases remain explicit refusals:
+
+- an unresolved input already due at the current scheduler coordinate;
+- a node advance carrying native preemption commands, because the selected
+  adapter cannot authenticate their consumption; and
+- a linked topology with no positive representable advance strictly before an
+  incoming producer's earliest possible delivery, including one-tick cycles.
+
+Future input delivery and linked advances are bounded by the actual mapped
+timeline. A model or schema admitting a preemption or topology does not remove
+these runtime limits. Increasing host workers, timeouts, or budgets does not
+provide missing execution authority.
 
 The packaged CLI discovers only its matched patched QEMU and plugin. It does
 not use arbitrary host QEMU builds, KVM, `tc`, `netem`, host namespaces, or
@@ -81,7 +102,7 @@ targets, adapter evidence, and fingerprints in guest coordinates. It supports:
 
 - canonical event logs and independent reduction with `verify`;
 - exact, durable whole-world checkpoints at admitted boundaries;
-- save, resume, fork, and fresh-process replay;
+- save, resume, and fresh-process replay;
 - locked resolved-effect replay and recomputed signal replay where the selected
   API or artifact carries that material; and
 - bounded counterfactual search over explicitly declared choices.

@@ -1,8 +1,6 @@
 //! Stable per-node snapshots and logical-time conversion.
 
-use super::*;
-
-/// A stable acquire snapshot of a [`NodeSlot`].
+/// A stable acquire snapshot of a [`crate::NodeSlot`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NodeSlotSnapshot {
     /// The node's published current icount.
@@ -21,10 +19,18 @@ pub struct NodeSlotSnapshot {
     pub kind: u8,
     /// Nonzero while device I/O is active.
     pub device_io_active: u8,
+    /// Raw scheduler advance-stop condition from the current ABI.
+    pub advance_stop_condition: u8,
+    /// Stable even sequence for the paired scheduler advance publication.
+    pub advance_publication_sequence: u64,
     /// The even publish generation observed for this snapshot.
     pub publish_gen: u32,
     /// Plugin acknowledgement count for drained QEMU control boundaries.
     pub control_boundary_ack: u32,
+    /// Fault-command producer index bound to the acknowledged control request.
+    pub control_boundary_fault_command_frontier: u64,
+    /// Fingerprint request generation bound to the acknowledged control request.
+    pub control_boundary_capture_request: u32,
     /// QEMU's raw retired-instruction count paired with the published logical time.
     pub logical_time_raw_icount: u64,
     /// Logical target carried by the most recent restore request.
@@ -33,6 +39,31 @@ pub struct NodeSlotSnapshot {
     pub logical_time_restore_request: u32,
     /// Plugin-published logical-time restore acknowledgement generation.
     pub logical_time_restore_ack: u32,
+    /// Most recent plugin-validated actual virtual-timer callback witness.
+    pub virtual_timer_witness: Option<VirtualTimerFireWitness>,
+}
+
+/// Exact native evidence for one completed `QEMU_CLOCK_VIRTUAL` callback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VirtualTimerFireWitness {
+    /// QEMU witness generation.
+    pub generation: u64,
+    /// Armed exact timer expiry on QEMU's picosecond virtual clock.
+    pub deadline_ps: u64,
+    /// Published logical idle-wake tick.
+    pub deadline_tick: u64,
+    /// Raw QEMU icount at arm.
+    pub armed_raw_icount: u64,
+    /// Saved picosecond expiry of the timer whose callback ran.
+    pub fired_expire_ps: u64,
+    /// Picosecond virtual time at actual callback invocation.
+    pub fired_virtual_ps: u64,
+    /// Raw QEMU icount at actual callback invocation.
+    pub fired_raw_icount: u64,
+    /// Actual-callback completion flag.
+    pub completed: u32,
+    /// Reserved field, zero in the current ABI.
+    pub reserved: u32,
 }
 
 /// One host-published logical-time restore request.
@@ -44,19 +75,8 @@ pub struct LogicalTimeRestoreRequest {
     pub target_icount: u64,
 }
 
-/// Converts an icount into virtual nanoseconds with the fixed shift.
-///
-/// # Errors
-///
-/// Returns [`NodeSlotError::InvalidShift`] when `shift_bits >= 64`, and
-/// [`NodeSlotError::VirtualTimeOverflow`] when the shifted value does not fit in
-/// `u64`.
-pub fn icount_to_virtual_ns(icount: u64, shift_bits: u8) -> Result<u64, NodeSlotError> {
-    if shift_bits >= 64 {
-        return Err(NodeSlotError::InvalidShift { shift_bits });
-    }
-    let nanos_per_icount = 1_u64 << shift_bits;
-    icount
-        .checked_mul(nanos_per_icount)
-        .ok_or(NodeSlotError::VirtualTimeOverflow { icount, shift_bits })
+/// Projects an exact logical tick onto QEMU's integer-nanosecond clock.
+#[must_use]
+pub const fn icount_to_virtual_ns(icount: u64) -> u64 {
+    icount / crate::TICKS_PER_NS
 }

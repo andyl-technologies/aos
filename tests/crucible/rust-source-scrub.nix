@@ -33,6 +33,14 @@
       source = "\"// /* */\" fn visible() {}";
       expected = spaces 10 + " fn visible() {}";
     }
+    {
+      source = "let x = r#\"one \"quote\" // hidden\"#;\nnext();";
+      expected = "let x = " + spaces 26 + ";\nnext();";
+    }
+    {
+      source = "r##\"one\n\"# still inside\"##\nnext();";
+      expected = spaces 7 + "\n" + spaces 18 + "\nnext();";
+    }
   ];
   largeSource = builtins.concatStringsSep "\n" (builtins.genList (_: "// hidden") 2000) + "\nfn visible() {}";
   largeResult = scrub largeSource;
