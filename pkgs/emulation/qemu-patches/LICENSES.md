@@ -153,6 +153,7 @@ The atomic integration patch creates these QEMU source files:
 | `tests/unit/test-crucible-acpi-pm-wide-clock.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-ich9-aux-wide-clock.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/tcg/plugins/crucible-resident-ram.h` | GPL-2.0-or-later | Explicit SPDX identifier; bounded resident logical-RAM component fixture authority |
+| `tests/unit/test-crucible-child-memory-limit.py` | GPL-2.0-or-later | Explicit SPDX identifier; real kernel child limit and cancellation component checks |
 | `tests/tcg/plugins/crucible-resident-ram-observer.c` | GPL-2.0-or-later | Explicit SPDX identifier; resident logical-RAM startup fixture without paging qualification |
 
 The separately built Rust `crucible-qemu-plugin` and C

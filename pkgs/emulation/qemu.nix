@@ -1720,11 +1720,29 @@ in
               environment["CC"] = command[0]
               environment["CFLAGS"] = shlex.join(flags)
               environment["LDFLAGS"] = "-L${glib.dev}/lib -Wl,-rpath,${glib}/lib -lglib-2.0"
+              for script, source, result_name, marker in (
+                  ("${../../tests/crucible/ram-write-generation-native.py}",
+                   source_root / "plugins/crucible-paged-ram.c",
+                   "ram-write-generation", "ram_write_generation_authorization_component=passed"),
+                  ("${../../tests/crucible/ram-dirty-plane-native.py}",
+                   source_root, "ram-dirty-plane",
+                   "ram_dirty_plane_activation_component=passed"),
+              ):
+                  with (source_root / f"{result_name}.result").open("w") as result:
+                      subprocess.run([
+                          sys.executable, script, "--source", str(source),
+                          "--cc", command[0],
+                      ], env=environment, stdout=result, check=True)
+                  result_text = (source_root / f"{result_name}.result").read_text()
+                  if marker not in result_text.splitlines():
+                      raise RuntimeError(f"missing native component result: {marker}")
+                  (Path(os.environ["out"]) / "share/aos/crucible" / f"{result_name}.result").write_text(result_text)
               for name in (
                   "net-output-stop", "lifecycle-projection", "control-deferred",
                   "control-observer", "control-delivery",
                   "stopped-control-rearm", "template-control-drain", "net-stop-chain",
                   "aio-fork-custody", "stop-context", "ram-arena",
+                  "child-memory-limit",
                   "tcg-fast-paths",
                   "mutex-owner-cache",
                   "snapshot-fast-path",
@@ -1746,7 +1764,10 @@ in
               cat net-output-stop.result lifecycle-projection.result \
                 control-deferred.result control-observer.result control-delivery.result \
                 stopped-control-rearm.result template-control-drain.result net-stop-chain.result \
-                aio-fork-custody.result stop-context.result ram-arena.result
+                aio-fork-custody.result stop-context.result ram-arena.result \
+                child-memory-limit.result
+              grep -Fxq 'Crucible child memory limits PASS' child-memory-limit.result
+              cp child-memory-limit.result "$out/share/aos/crucible/child-memory-limit.result"
               grep -Fxq 'RAM_ARENA_AUTHORITY_PASS: private/preallocated/partial geometry; shared and mutable readonly-file refusal; real sealed inode/COW authority; unmigratable ROMD producer dirty obligations' \
                 ram-arena.result
               cp ram-arena.result "$out/share/aos/crucible/ram-arena.result"

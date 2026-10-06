@@ -1,4 +1,4 @@
-From 4fa66a108a959203f4fcb8e7b9c7f9e6bd2dab46 Mon Sep 17 00:00:00 2001
+From cabcbee46478327234ab41441f729434acec7a63 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Tue, 6 Oct 2026 07:05:00 +0000
 Subject: [PATCH] Integrate deterministic execution and authenticated paged RAM
@@ -13378,7 +13378,7 @@ index b629575fcf808d6ee0c3e3d724d49d521dc2bb6a..78c06d8272a8f57713b64e99d776e6db
  {
      SocketChardev *s = SOCKET_CHARDEV(chr);
 diff --git a/cpu-common.c b/cpu-common.c
-index adb76b3a786c06d08ae89c5623d26bf75755d432..5960444189a50b8bca0670a02dc40562e992834e 100644
+index adb76b3a786c06d08ae89c5623d26bf75755d432..8fae248b0224cbf441db96744b560e7729aa9bda 100644
 --- a/cpu-common.c
 +++ b/cpu-common.c
 @@ -33,6 +33,12 @@ static QemuCond qemu_work_cond;
@@ -13394,7 +13394,19 @@ index adb76b3a786c06d08ae89c5623d26bf75755d432..5960444189a50b8bca0670a02dc40562
  
  void qemu_init_cpu_list(void)
  {
-@@ -249,6 +255,7 @@ void end_exclusive(void)
+@@ -130,6 +136,11 @@ struct qemu_work_item {
+     bool free, exclusive, done;
+ };
+ 
++size_t qemu_cpu_async_work_size(void)
++{
++    return sizeof(struct qemu_work_item);
++}
++
+ static void queue_work_on_cpu(CPUState *cpu, struct qemu_work_item *wi)
+ {
+     qemu_mutex_lock(&cpu->work_mutex);
+@@ -249,6 +260,7 @@ void end_exclusive(void)
  /* Wait for exclusive ops to finish, and begin cpu execution.  */
  void cpu_exec_start(CPUState *cpu)
  {
@@ -57915,7 +57927,7 @@ index 5f3b1327de0aa287c1859bf155a47c8815ebb08d..b726a4cbd5f2dae44f78ecbaefc4a92a
  
  SiFiveUARTState *sifive_uart_create(MemoryRegion *address_space, hwaddr base,
 diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
-index b54035fb13b22a530692186b0afbe2718f1fb8b8..16883f1bb2d315dae0f1e13a5142700e3ac10d46 100644
+index b54035fb13b22a530692186b0afbe2718f1fb8b8..cec7c74bbb56d26b1e8bb4879453d2f770549aae 100644
 --- a/include/hw/core/cpu.h
 +++ b/include/hw/core/cpu.h
 @@ -63,6 +63,7 @@ typedef int (*WriteCoreDumpFunction)(const void *buf, size_t size,
@@ -58167,7 +58179,18 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..16883f1bb2d315dae0f1e13a5142700e
  /**
   * TranslateForDebugResult: gives result of cpu_translate_for_debug()
   *
-@@ -1088,6 +1288,7 @@ void process_queued_cpu_work(CPUState *cpu);
+@@ -927,6 +1127,10 @@ void run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data);
+  */
+ void async_run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data);
+ 
++/* Native admission charges the concrete queued object plus its allocator
++ * envelope before a paused dirty-log transaction queues per-listener work. */
++size_t qemu_cpu_async_work_size(void);
++
+ /**
+  * async_safe_run_on_cpu:
+  * @cpu: The vCPU to run on.
+@@ -1088,6 +1292,7 @@ void process_queued_cpu_work(CPUState *cpu);
   * cpu_exit.
   */
  void cpu_exec_start(CPUState *cpu);
@@ -60189,7 +60212,7 @@ index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..36c355bf303715c91112dcceb32fb779
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..0a8d4328481ac48722e386309251fb869bb31c35 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..e5fe3bd1e032379b746d591b31bcb6d1520b9917 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,326 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -61680,14 +61703,12 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..0a8d4328481ac48722e386309251fb86
   * needed.
   */
  QEMU_PLUGIN_API
-@@ -1172,125 +2292,805 @@ void qemu_plugin_set_pc(uint64_t vaddr);
-  * avoid attempting to read data which may not yet be written and should use
-  * the memory callback API instead.
-  *
-- * Returns true on success and false on failure.
-+ * Returns true on success and false on failure.
-+ */
-+QEMU_PLUGIN_API
+@@ -1175,122 +2295,802 @@ void qemu_plugin_set_pc(uint64_t vaddr);
+  * Returns true on success and false on failure.
+  */
+ QEMU_PLUGIN_API
+-bool qemu_plugin_read_memory_vaddr(uint64_t addr,
+-                                   GByteArray *data, size_t len);
 +bool qemu_plugin_read_memory_vaddr(uint64_t addr,
 +                                   GByteArray *data, size_t len);
 +
@@ -62180,10 +62201,8 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..0a8d4328481ac48722e386309251fb86
 + *
 + * This AOS Crucible extension is required for exact idle fast-forward and never
 + * consults QEMU_CLOCK_REALTIME or QEMU_CLOCK_HOST.
-  */
- QEMU_PLUGIN_API
--bool qemu_plugin_read_memory_vaddr(uint64_t addr,
--                                   GByteArray *data, size_t len);
++ */
++QEMU_PLUGIN_API
 +int64_t qemu_plugin_clock_deadline_ps(void);
  
  /**
@@ -62564,7 +62583,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..0a8d4328481ac48722e386309251fb86
  
  /**
   * qemu_plugin_scoreboard_new() - alloc a new scoreboard
-@@ -1363,6 +3163,337 @@ void qemu_plugin_u64_set(qemu_plugin_u64 entry, unsigned int vcpu_index,
+@@ -1363,6 +3163,343 @@ void qemu_plugin_u64_set(qemu_plugin_u64 entry, unsigned int vcpu_index,
  QEMU_PLUGIN_API
  uint64_t qemu_plugin_u64_sum(qemu_plugin_u64 entry);
  
@@ -62667,6 +62686,12 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..0a8d4328481ac48722e386309251fb86
 +QEMU_PLUGIN_API
 +int qemu_plugin_crucible_ram_physical_validate_v1(uint64_t token,
 +                                                 uint64_t topology_generation);
++
++/** Reads the independent writer generation through a retained physical hold. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_ram_write_generation_v1(uint64_t token,
++                                                 uint64_t topology_generation,
++                                                 uint64_t *generation);
 +
 +QEMU_PLUGIN_API
 +int qemu_plugin_crucible_ram_physical_end_v1(uint64_t token);
@@ -64560,10 +64585,10 @@ index 0000000000000000000000000000000000000000..cbd838fd1869464a864c6accf040fee2
 +#endif /* QEMU_CRUCIBLE_IDLE_WAIT_H */
 diff --git a/include/qemu/crucible-paged-ram.h b/include/qemu/crucible-paged-ram.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..e7fc36818a50e4256338eefb6299e0f8128fbdec
+index 0000000000000000000000000000000000000000..941452a6a740b1b2d8a5f2d9d7515bea0c7e384c
 --- /dev/null
 +++ b/include/qemu/crucible-paged-ram.h
-@@ -0,0 +1,87 @@
+@@ -0,0 +1,88 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +#ifndef QEMU_CRUCIBLE_PAGED_RAM_H
 +#define QEMU_CRUCIBLE_PAGED_RAM_H
@@ -64593,6 +64618,7 @@ index 0000000000000000000000000000000000000000..e7fc36818a50e4256338eefb6299e0f8
 +void qemu_crucible_ram_borrow_inventory(QemuCrucibleRamBorrowInventory *out);
 +int qemu_crucible_ram_physical_listener_inventory(uint64_t *count, Error **errp);
 +uint64_t qemu_crucible_ram_physical_listener_generation(void);
++int qemu_crucible_ram_dirty_rearm_metadata_bytes(uint64_t *bytes);
 +
 +/* Core ownership survives independent system/plugin linking. Only a retained
 + * native physical receipt may publish the irreversible seal. */
@@ -67550,7 +67576,7 @@ index a1ef7696cb56c7e8ef0bd269898c9185419287c2..6bb18f133e987699c4467b5283bc1bb8
   * Returns true if executing within IOThread context,
   * false otherwise.
 diff --git a/include/system/memory.h b/include/system/memory.h
-index 2192fc9bdc5b7c2115cf82d5120b280fee750d6d..29512be86d7fbda35429576993286100d1064110 100644
+index 2192fc9bdc5b7c2115cf82d5120b280fee750d6d..555133a75c620211fd170f10c63f989134d37031 100644
 --- a/include/system/memory.h
 +++ b/include/system/memory.h
 @@ -70,7 +70,17 @@ static inline void fuzz_dma_read_cb(size_t addr,
@@ -67652,7 +67678,18 @@ index 2192fc9bdc5b7c2115cf82d5120b280fee750d6d..29512be86d7fbda35429576993286100
  /* memory_region_ram_resize: Resize a RAM region.
   *
   * Resizing RAM while migrating can result in the migration being canceled.
-@@ -2670,6 +2739,15 @@ void address_space_unregister_map_client(AddressSpace *as, QEMUBH *bh);
+@@ -2350,6 +2419,10 @@ void memory_listener_register(MemoryListener *listener, AddressSpace *filter);
+  */
+ void memory_listener_unregister(MemoryListener *listener);
+ 
++/* Counts registered callbacks by native identity under the BQL. Names and
++ * configured vCPU counts do not establish actual listener membership. */
++uint64_t memory_listener_commit_count(void (*commit)(MemoryListener *listener));
++
+ /**
+  * memory_global_dirty_log_start: begin dirty logging for all regions
+  *
+@@ -2670,6 +2743,15 @@ void address_space_unregister_map_client(AddressSpace *as, QEMUBH *bh);
  /* Internal functions, part of the implementation of address_space_read.  */
  MemTxResult address_space_read_full(const AddressSpace *as, hwaddr addr,
                                      MemTxAttrs attrs, void *buf, hwaddr len);
@@ -67668,7 +67705,7 @@ index 2192fc9bdc5b7c2115cf82d5120b280fee750d6d..29512be86d7fbda35429576993286100
  MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
                                     MemTxAttrs attrs, void *buf,
                                     hwaddr len, hwaddr addr1, hwaddr l,
-@@ -2739,7 +2817,8 @@ MemTxResult address_space_read(const AddressSpace *as, hwaddr addr,
+@@ -2739,7 +2821,8 @@ MemTxResult address_space_read(const AddressSpace *as, hwaddr addr,
              fv = address_space_to_flatview(as);
              l = len;
              mr = flatview_translate(fv, addr, &addr1, &l, false, attrs);
@@ -70627,10 +70664,10 @@ index 8fe0876a3dab43aa3dc7376ada20b149b7c9d032..5434d4501636c9aad39475c8f6920e48
      if (mon->commands == &qmp_commands) {
          error_set(errp, ERROR_CLASS_COMMAND_NOT_FOUND,
 diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
-index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8a45067fe71ab2e79aa51e9ac4e556f637d4df00 100644
+index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..4c5ac1ef3331db769372b751d74926015f9ab2e8 100644
 --- a/monitor/qmp-cmds.c
 +++ b/monitor/qmp-cmds.c
-@@ -14,53 +14,6775 @@
+@@ -14,53 +14,6815 @@
   */
  
  #include "qemu/osdep.h"
@@ -71307,6 +71344,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8a45067fe71ab2e79aa51e9ac4e556f6
 +    uint64_t cgroup_procs_inode;
 +    uint64_t cancellation_eventfd_id;
 +    uint64_t maximum_file_bytes;
++    uint64_t maximum_locked_bytes;
 +    uint64_t template_generation;
 +    uint64_t generation;
 +} CrucibleHotForkChildProcessContractStage;
@@ -71499,6 +71537,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8a45067fe71ab2e79aa51e9ac4e556f6
 +    int child_process_cgroup_procs_fd;
 +    int child_process_cancellation_fd;
 +    uint64_t maximum_file_bytes;
++    uint64_t maximum_locked_bytes;
 +    QemuBlockHotForkChildFiles *child_files;
 +    QemuCrucibleHotForkParentIdentity parent_identity;
 +    QemuCrucibleHotForkRuntimeTransaction runtime;
@@ -76193,6 +76232,8 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8a45067fe71ab2e79aa51e9ac4e556f6
 +        crucible_hot_fork_child_process_contract_stage.cancellation_fd;
 +    operation->maximum_file_bytes =
 +        crucible_hot_fork_child_process_contract_stage.maximum_file_bytes;
++    operation->maximum_locked_bytes =
++        crucible_hot_fork_child_process_contract_stage.maximum_locked_bytes;
 +    operation->excluded_fd_count = 0;
 +
 +    result = crucible_hot_fork_operation_add_excluded_fd(
@@ -76356,15 +76397,21 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8a45067fe71ab2e79aa51e9ac4e556f6
 +        .rlim_cur = operation->maximum_file_bytes,
 +        .rlim_max = operation->maximum_file_bytes,
 +    };
++    struct rlimit lock_limit = {
++        .rlim_cur = operation->maximum_locked_bytes,
++        .rlim_max = operation->maximum_locked_bytes,
++    };
++    struct rlimit observed_file_limit;
++    struct rlimit observed_lock_limit;
 +    int ready;
 +    int result = 0;
- 
--NameInfo *qmp_query_name(Error **errp)
++
 +    if (operation->child_process_cgroup_fd < 0 ||
 +        operation->child_process_cgroup_procs_fd < 0 ||
 +        operation->child_process_cancellation_fd < 0 ||
 +        operation->maximum_file_bytes == 0 ||
-+        operation->maximum_file_bytes == UINT64_MAX) {
++        operation->maximum_file_bytes == UINT64_MAX ||
++        operation->maximum_locked_bytes == UINT64_MAX) {
 +        return -EINVAL;
 +    }
 +    do {
@@ -76374,8 +76421,16 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8a45067fe71ab2e79aa51e9ac4e556f6
 +        result = -errno;
 +    } else if (ready != 0) {
 +        result = cancellation.revents & POLLIN ? -ECANCELED : -EIO;
-+    } else if (setrlimit(RLIMIT_FSIZE, &file_limit) < 0) {
++    } else if (setrlimit(RLIMIT_FSIZE, &file_limit) < 0 ||
++               setrlimit(RLIMIT_MEMLOCK, &lock_limit) < 0 ||
++               getrlimit(RLIMIT_FSIZE, &observed_file_limit) < 0 ||
++               getrlimit(RLIMIT_MEMLOCK, &observed_lock_limit) < 0) {
 +        result = -errno;
++    } else if (observed_file_limit.rlim_cur != file_limit.rlim_cur ||
++               observed_file_limit.rlim_max != file_limit.rlim_max ||
++               observed_lock_limit.rlim_cur != lock_limit.rlim_cur ||
++               observed_lock_limit.rlim_max != lock_limit.rlim_max) {
++        result = -EIO;
 +    }
 +    close(operation->child_process_cgroup_fd);
 +    close(operation->child_process_cgroup_procs_fd);
@@ -76385,7 +76440,8 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8a45067fe71ab2e79aa51e9ac4e556f6
 +    operation->child_process_cancellation_fd = -1;
 +    return result;
 +}
-+
+ 
+-NameInfo *qmp_query_name(Error **errp)
 +/*
 + * Exit status base of a child that failed reconstruction.  The status is
 + * this base plus the failed step, numbered in the order the steps run in
@@ -76788,7 +76844,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8a45067fe71ab2e79aa51e9ac4e556f6
 +    CrucibleHotForkChildProcessContractState *report =
 +        g_new0(CrucibleHotForkChildProcessContractState, 1);
 +
-+    report->schema_version = 3;
++    report->schema_version = 4;
 +    report->generation = stage->generation;
 +    report->template_generation = stage->template_generation;
 +    report->staged = stage->staged;
@@ -76803,6 +76859,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8a45067fe71ab2e79aa51e9ac4e556f6
 +    report->cgroup_procs_inode = stage->cgroup_procs_inode;
 +    report->cancellation_eventfd_id = stage->cancellation_eventfd_id;
 +    report->maximum_file_bytes = stage->maximum_file_bytes;
++    report->maximum_locked_bytes = stage->maximum_locked_bytes;
 +    report->cgroup_placement_bound = stage->staged;
 +    return report;
 +}
@@ -76812,7 +76869,8 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8a45067fe71ab2e79aa51e9ac4e556f6
 +    const char *cancellation_fdname,
 +    uint64_t cgroup_device, uint64_t cgroup_inode,
 +    uint64_t cgroup_procs_inode,
-+    uint64_t cancellation_eventfd_id, uint64_t maximum_file_bytes)
++    uint64_t cancellation_eventfd_id, uint64_t maximum_file_bytes,
++    uint64_t maximum_locked_bytes)
 +{
 +    CrucibleHotForkChildProcessContractStage *stage =
 +        &crucible_hot_fork_child_process_contract_stage;
@@ -76826,7 +76884,8 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8a45067fe71ab2e79aa51e9ac4e556f6
 +        stage->cgroup_inode == cgroup_inode &&
 +        stage->cgroup_procs_inode == cgroup_procs_inode &&
 +        stage->cancellation_eventfd_id == cancellation_eventfd_id &&
-+        stage->maximum_file_bytes == maximum_file_bytes;
++        stage->maximum_file_bytes == maximum_file_bytes &&
++        stage->maximum_locked_bytes == maximum_locked_bytes;
 +}
 +
 +CrucibleHotForkChildProcessContractState *
@@ -76841,6 +76900,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8a45067fe71ab2e79aa51e9ac4e556f6
 +    bool has_expected_cancellation_eventfd_id,
 +    uint64_t expected_cancellation_eventfd_id,
 +    bool has_maximum_file_bytes, uint64_t maximum_file_bytes,
++    bool has_maximum_locked_bytes, uint64_t maximum_locked_bytes,
 +    Error **errp)
 +{
 +    CrucibleHotForkChildProcessContractStage *stage =
@@ -76848,6 +76908,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8a45067fe71ab2e79aa51e9ac4e556f6
 +    CrucibleHotForkChildProcessContractState *report = NULL;
 +    CrucibleHotForkPluginBarrierState *plugin_barrier = NULL;
 +    struct rlimit file_limit;
++    struct rlimit lock_limit;
 +    uint64_t observed_device = 0;
 +    uint64_t observed_inode = 0;
 +    uint64_t observed_procs_inode = 0;
@@ -76879,7 +76940,8 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8a45067fe71ab2e79aa51e9ac4e556f6
 +            !has_expected_cancellation_eventfd_id ||
 +            expected_cancellation_eventfd_id == 0 ||
 +            !has_maximum_file_bytes || maximum_file_bytes == 0 ||
-+            maximum_file_bytes == UINT64_MAX) {
++            maximum_file_bytes == UINT64_MAX ||
++            !has_maximum_locked_bytes || maximum_locked_bytes == UINT64_MAX) {
 +            error_setg(errp, "Crucible hot-fork child process contract "
 +                       "requires one exact bounded descriptor basis");
 +            goto out;
@@ -76901,6 +76963,17 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8a45067fe71ab2e79aa51e9ac4e556f6
 +        if (file_limit.rlim_max != RLIM_INFINITY &&
 +            maximum_file_bytes > file_limit.rlim_max) {
 +            error_setg(errp, "Crucible hot-fork child file-size ceiling "
++                       "exceeds the source QEMU hard limit");
++            goto out;
++        }
++        if (getrlimit(RLIMIT_MEMLOCK, &lock_limit) < 0) {
++            error_setg_errno(errp, errno,
++                             "Could not inspect QEMU locked-memory limit");
++            goto out;
++        }
++        if (lock_limit.rlim_max != RLIM_INFINITY &&
++            maximum_locked_bytes > lock_limit.rlim_max) {
++            error_setg(errp, "Crucible hot-fork child locked-memory ceiling "
 +                       "exceeds the source QEMU hard limit");
 +            goto out;
 +        }
@@ -76950,7 +77023,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8a45067fe71ab2e79aa51e9ac4e556f6
 +                    expected_cgroup_device, expected_cgroup_inode,
 +                    expected_cgroup_procs_inode,
 +                    expected_cancellation_eventfd_id,
-+                    maximum_file_bytes) || stage->consumed ||
++                    maximum_file_bytes, maximum_locked_bytes) || stage->consumed ||
 +                stage->template_generation !=
 +                    crucible_hot_fork_template_generation) {
 +                error_setg(errp, "Different or consumed Crucible hot-fork "
@@ -76982,6 +77055,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8a45067fe71ab2e79aa51e9ac4e556f6
 +        stage->cancellation_eventfd_id =
 +            expected_cancellation_eventfd_id;
 +        stage->maximum_file_bytes = maximum_file_bytes;
++        stage->maximum_locked_bytes = maximum_locked_bytes;
 +        stage->template_generation = crucible_hot_fork_template_generation;
 +        stage->generation++;
 +        report = crucible_hot_fork_child_process_contract_report();
@@ -76990,7 +77064,8 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8a45067fe71ab2e79aa51e9ac4e556f6
 +        if (cgroup_fdname || cgroup_procs_fdname || cancellation_fdname ||
 +            has_expected_cgroup_device || has_expected_cgroup_inode ||
 +            has_expected_cgroup_procs_inode ||
-+            has_expected_cancellation_eventfd_id || has_maximum_file_bytes) {
++            has_expected_cancellation_eventfd_id || has_maximum_file_bytes ||
++            has_maximum_locked_bytes) {
 +            error_setg(errp, "Crucible hot-fork child process contract query "
 +                       "accepts no descriptor basis");
 +            goto out;
@@ -77002,12 +77077,13 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8a45067fe71ab2e79aa51e9ac4e556f6
 +            !has_expected_cgroup_device || !has_expected_cgroup_inode ||
 +            !has_expected_cgroup_procs_inode ||
 +            !has_expected_cancellation_eventfd_id ||
-+            !has_maximum_file_bytes ||
++            !has_maximum_file_bytes || !has_maximum_locked_bytes ||
 +            !crucible_hot_fork_child_process_contract_matches(
 +                cgroup_fdname, cgroup_procs_fdname, cancellation_fdname,
 +                expected_cgroup_device, expected_cgroup_inode,
 +                expected_cgroup_procs_inode,
-+                expected_cancellation_eventfd_id, maximum_file_bytes)) {
++                expected_cancellation_eventfd_id, maximum_file_bytes,
++                maximum_locked_bytes)) {
 +            error_setg(errp, "Crucible hot-fork child process contract "
 +                       "release requires the exact retained basis");
 +            goto out;
@@ -77033,6 +77109,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8a45067fe71ab2e79aa51e9ac4e556f6
 +        stage->cgroup_procs_inode = 0;
 +        stage->cancellation_eventfd_id = 0;
 +        stage->maximum_file_bytes = 0;
++        stage->maximum_locked_bytes = 0;
 +        stage->template_generation = 0;
 +        report = crucible_hot_fork_child_process_contract_report();
 +        break;
@@ -77422,7 +77499,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8a45067fe71ab2e79aa51e9ac4e556f6
  }
  
  void qmp_cont(Error **errp)
-@@ -68,7 +6790,23 @@ void qmp_cont(Error **errp)
+@@ -68,7 +6830,23 @@ void qmp_cont(Error **errp)
      BlockBackend *blk;
      BlockJob *job;
      Error *local_err = NULL;
@@ -77446,7 +77523,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8a45067fe71ab2e79aa51e9ac4e556f6
      /* if there is a dump in background, we should wait until the dump
       * finished */
      if (qemu_system_dump_in_progress()) {
-@@ -116,6 +6854,155 @@ void qmp_cont(Error **errp)
+@@ -116,6 +6894,155 @@ void qmp_cont(Error **errp)
      }
  }
  
@@ -77602,7 +77679,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8a45067fe71ab2e79aa51e9ac4e556f6
  void qmp_add_client(const char *protocol, const char *fdname,
                      bool has_skipauth, bool skipauth, bool has_tls, bool tls,
                      Error **errp)
-@@ -207,3 +7094,49 @@ static void __attribute__((__constructor__)) monitor_init_qmp_commands(void)
+@@ -207,3 +7134,49 @@ static void __attribute__((__constructor__)) monitor_init_qmp_commands(void)
                           qmp_marshal_qmp_capabilities,
                           QCO_ALLOW_PRECONFIG, 0);
  }
@@ -120020,10 +120097,10 @@ index 0000000000000000000000000000000000000000..e8d98a0beb68a58aed72e673fb28070c
 +}
 diff --git a/plugins/crucible-paged-ram.c b/plugins/crucible-paged-ram.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..5d9226a3c0fe383768fa78bf755ae32ec9d46531
+index 0000000000000000000000000000000000000000..3f63e10233e6db537abda89b0926adf7bbf65e96
 --- /dev/null
 +++ b/plugins/crucible-paged-ram.c
-@@ -0,0 +1,1839 @@
+@@ -0,0 +1,1882 @@
 +/*
 + * Logical RAM observation and host paging ownership.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -120110,6 +120187,7 @@ index 0000000000000000000000000000000000000000..5d9226a3c0fe383768fa78bf755ae32e
 +static qemu_plugin_crucible_ram_admission_cb_v1 admission_observer;
 +static uint64_t native_metadata_live;
 +static uint64_t rust_metadata_budget;
++static uint64_t admitted_rearm_metadata;
 +static bool admission_grant_open;
 +static bool admission_grant_applied;
 +static uint64_t admission_grant_owner;
@@ -120305,6 +120383,24 @@ index 0000000000000000000000000000000000000000..5d9226a3c0fe383768fa78bf755ae32e
 +    return status;
 +}
 +
++int qemu_plugin_crucible_ram_write_generation_v1(uint64_t token,
++                                                 uint64_t topology,
++                                                 uint64_t *generation)
++{
++    int status;
++
++    if (!generation) {
++        return -EINVAL;
++    }
++    *generation = 0;
++    status = qemu_plugin_crucible_ram_physical_validate_v1(token, topology);
++    if (status) {
++        return status;
++    }
++    *generation = qatomic_read(&dirty_generation);
++    return *generation ? 0 : -EOVERFLOW;
++}
++
 +int qemu_plugin_crucible_ram_physical_end_v1(uint64_t token)
 +{
 +    int status;
@@ -120344,10 +120440,28 @@ index 0000000000000000000000000000000000000000..5d9226a3c0fe383768fa78bf755ae32e
 +
 +int qemu_plugin_crucible_ram_pin_topology_v1(uint64_t token, uint64_t generation)
 +{
++    Error *error = NULL;
++    uint64_t rearm_metadata;
 +    int status = qemu_plugin_crucible_ram_physical_validate_v1(token, generation);
 +
 +    if (status || qatomic_read(&paging_topology_pinned)) {
 +        return status ? status : -EBUSY;
++    }
++    status = qemu_crucible_ram_dirty_rearm_metadata_bytes(&rearm_metadata);
++    if (status || rearm_metadata > admitted_rearm_metadata) {
++        return status ? status : -ENOSPC;
++    }
++    /* A pager may activate before the first root capture. Arm native writers
++     * under the retained physical fence before exposing registration authority.
++     * The memory transaction rearms TCG translations; queued flushes run before
++     * the single-RR owner resumes guest execution. Initial capture stays full. */
++    if (!memory_global_dirty_log_start(GLOBAL_DIRTY_CRUCIBLE_RAM, &error)) {
++        error_free(error);
++        return -EIO;
++    }
++    status = qemu_plugin_crucible_ram_physical_validate_v1(token, generation);
++    if (status) {
++        return status;
 +    }
 +    /* The retained RCU owner excludes reclamation while these current headers
 +     * are selected. Topology preflight refuses replacement before mutation. */
@@ -120911,6 +121025,12 @@ index 0000000000000000000000000000000000000000..5d9226a3c0fe383768fa78bf755ae32e
 +    native_floor = (uint64_t)regions->len *
 +        2 * (sizeof(CrucibleRamRegion) + 32 + 2 * sizeof(void *)) + 128 +
 +        qemu_crucible_ram_owner_metadata_bytes();
++    status = qemu_crucible_ram_dirty_rearm_metadata_bytes(&admitted_rearm_metadata);
++    if (!status && admitted_rearm_metadata <= UINT64_MAX - native_floor) {
++        native_floor += admitted_rearm_metadata;
++    } else if (!status) {
++        status = -EOVERFLOW;
++    }
 +    if (qatomic_read(&native_metadata_live) > UINT64_MAX - native_floor) {
 +        status = -EOVERFLOW;
 +    } else {
@@ -122344,10 +122464,10 @@ index 22b7afed9f650c866f81aa154e6ba03dcc606c44..35878d22adc5ee64b1c7f5f86c6e631c
 +  'data': { 'vcpu-index': 'uint32', '*expected-generation': 'uint64' },
 +  'returns': 'CruciblePausedCpu' }
 diff --git a/qapi/run-state.json b/qapi/run-state.json
-index a5771ad46815528fef2c2ebfa538d4e023a19969..ab8029303e4cb06548ce027c0545cde70aeb810a 100644
+index a5771ad46815528fef2c2ebfa538d4e023a19969..c47d751e4c0f85463f80bdae5468b2c69371e30d 100644
 --- a/qapi/run-state.json
 +++ b/qapi/run-state.json
-@@ -133,6 +133,3178 @@
+@@ -133,6 +133,3187 @@
    'allow-preconfig': true }
  
  ##
@@ -124282,6 +124402,9 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..ab8029303e4cb06548ce027c0545cde7
 +#
 +# @maximum-file-bytes: exact child RLIMIT_FSIZE ceiling
 +#
++# @maximum-locked-bytes: child RLIMIT_MEMLOCK ceiling, authored
++#     independently; zero prohibits locks
++#
 +# @cgroup-placement-bound: whether first-instruction cgroup placement
 +#     through the retained cgroup.procs descriptor is bound
 +#
@@ -124301,6 +124424,7 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..ab8029303e4cb06548ce027c0545cde7
 +            'cgroup-procs-inode': 'uint64',
 +            'cancellation-eventfd-id': 'uint64',
 +            'maximum-file-bytes': 'uint64',
++            'maximum-locked-bytes': 'uint64',
 +            'cgroup-placement-bound': 'bool' } }
 +
 +##
@@ -124335,6 +124459,10 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..ab8029303e4cb06548ce027c0545cde7
 +#
 +# @maximum-file-bytes: nonzero child RLIMIT_FSIZE ceiling
 +#
++# @maximum-locked-bytes: finite independently authored child
++#     RLIMIT_MEMLOCK
++#     ceiling; zero is valid
++#
 +# Returns: @CrucibleHotForkChildProcessContractState
 +#
 +# Since: 10.0 (Crucible downstream extension)
@@ -124348,7 +124476,8 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..ab8029303e4cb06548ce027c0545cde7
 +            '*expected-cgroup-inode': 'uint64',
 +            '*expected-cgroup-procs-inode': 'uint64',
 +            '*expected-cancellation-eventfd-id': 'uint64',
-+            '*maximum-file-bytes': 'uint64' },
++            '*maximum-file-bytes': 'uint64',
++            '*maximum-locked-bytes': 'uint64' },
 +  'returns': 'CrucibleHotForkChildProcessContractState',
 +  'allow-oob': true }
 +
@@ -125526,6 +125655,136 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..ab8029303e4cb06548ce027c0545cde7
  # @SHUTDOWN:
  #
  # Emitted when the virtual machine has shut down, indicating that QEMU
+@@ -156,7 +3337,8 @@
+ #
+ #     <- { "event": "SHUTDOWN",
+ #          "data": { "guest": true, "reason": "guest-shutdown" },
+-#          "timestamp": { "seconds": 1267040730, "microseconds": 682951 } }
++#          "timestamp": { "seconds": 1267040730, "microseconds":
++#     682951 } }
+ ##
+ { 'event': 'SHUTDOWN', 'data': { 'guest': 'bool', 'reason': 'ShutdownCause' } }
+ 
+@@ -171,7 +3353,8 @@
+ # .. qmp-example::
+ #
+ #     <- { "event": "POWERDOWN",
+-#          "timestamp": { "seconds": 1267040730, "microseconds": 682951 } }
++#          "timestamp": { "seconds": 1267040730, "microseconds":
++#     682951 } }
+ ##
+ { 'event': 'POWERDOWN' }
+ 
+@@ -193,7 +3376,8 @@
+ #
+ #     <- { "event": "RESET",
+ #          "data": { "guest": false, "reason": "guest-reset" },
+-#          "timestamp": { "seconds": 1267041653, "microseconds": 9518 } }
++#          "timestamp": { "seconds": 1267041653, "microseconds":
++#     9518 } }
+ ##
+ { 'event': 'RESET', 'data': { 'guest': 'bool', 'reason': 'ShutdownCause' } }
+ 
+@@ -207,7 +3391,8 @@
+ # .. qmp-example::
+ #
+ #     <- { "event": "STOP",
+-#          "timestamp": { "seconds": 1267041730, "microseconds": 281295 } }
++#          "timestamp": { "seconds": 1267041730, "microseconds":
++#     281295 } }
+ ##
+ { 'event': 'STOP' }
+ 
+@@ -221,7 +3406,8 @@
+ # .. qmp-example::
+ #
+ #     <- { "event": "RESUME",
+-#          "timestamp": { "seconds": 1271770767, "microseconds": 582542 } }
++#          "timestamp": { "seconds": 1271770767, "microseconds":
++#     582542 } }
+ ##
+ { 'event': 'RESUME' }
+ 
+@@ -236,7 +3422,8 @@
+ # .. qmp-example::
+ #
+ #     <- { "event": "SUSPEND",
+-#          "timestamp": { "seconds": 1344456160, "microseconds": 309119 } }
++#          "timestamp": { "seconds": 1344456160, "microseconds":
++#     309119 } }
+ ##
+ { 'event': 'SUSPEND' }
+ 
+@@ -255,7 +3442,8 @@
+ # .. qmp-example::
+ #
+ #     <- { "event": "SUSPEND_DISK",
+-#          "timestamp": { "seconds": 1344456160, "microseconds": 309119 } }
++#          "timestamp": { "seconds": 1344456160, "microseconds":
++#     309119 } }
+ ##
+ { 'event': 'SUSPEND_DISK' }
+ 
+@@ -270,7 +3458,8 @@
+ # .. qmp-example::
+ #
+ #     <- { "event": "WAKEUP",
+-#          "timestamp": { "seconds": 1344522075, "microseconds": 745528 } }
++#          "timestamp": { "seconds": 1344522075, "microseconds":
++#     745528 } }
+ ##
+ { 'event': 'WAKEUP' }
+ 
+@@ -293,7 +3482,8 @@
+ #
+ #     <- { "event": "WATCHDOG",
+ #          "data": { "action": "reset" },
+-#          "timestamp": { "seconds": 1267061043, "microseconds": 959568 } }
++#          "timestamp": { "seconds": 1267061043, "microseconds":
++#     959568 } }
+ ##
+ { 'event': 'WATCHDOG',
+   'data': { 'action': 'WatchdogAction' } }
+@@ -438,7 +3628,8 @@
+ #
+ #     <- { "event": "GUEST_PANICKED",
+ #          "data": { "action": "pause" },
+-#          "timestamp": { "seconds": 1648245231, "microseconds": 900001 } }
++#          "timestamp": { "seconds": 1648245231, "microseconds":
++#     900001 } }
+ ##
+ { 'event': 'GUEST_PANICKED',
+   'data': { 'action': 'GuestPanicAction', '*info': 'GuestPanicInformation' } }
+@@ -458,7 +3649,8 @@
+ #
+ #     <- { "event": "GUEST_CRASHLOADED",
+ #          "data": { "action": "run" },
+-#          "timestamp": { "seconds": 1648245259, "microseconds": 893771 } }
++#          "timestamp": { "seconds": 1648245259, "microseconds":
++#     893771 } }
+ ##
+ { 'event': 'GUEST_CRASHLOADED',
+   'data': { 'action': 'GuestPanicAction', '*info': 'GuestPanicInformation' } }
+@@ -473,7 +3665,8 @@
+ # .. qmp-example::
+ #
+ #     <- { "event": "GUEST_PVSHUTDOWN",
+-#          "timestamp": { "seconds": 1648245259, "microseconds": 893771 } }
++#          "timestamp": { "seconds": 1648245259, "microseconds":
++#     893771 } }
+ ##
+ { 'event': 'GUEST_PVSHUTDOWN' }
+ 
+@@ -664,7 +3857,8 @@
+ #                    "action": "fatal",
+ #                    "flags": { "action-required": false,
+ #                               "recursive": false } },
+-#          "timestamp": { "seconds": 1267061043, "microseconds": 959568 } }
++#          "timestamp": { "seconds": 1267061043, "microseconds":
++#     959568 } }
+ ##
+ { 'event': 'MEMORY_FAILURE',
+   'data': { 'recipient': 'MemoryFailureRecipient',
 diff --git a/qemu-options.hx b/qemu-options.hx
 index 34970fffc94b4d79b6c2cbfc12efab9ad88855f2..12c2dfaf3f82ad3fe317f9c6939a75da9011c71b 100644
 --- a/qemu-options.hx
@@ -132604,7 +132863,7 @@ index b8f7157cc346a37095700d51f96b1a353d06b549..101f4d1e946aaec3a750ce9e3117488d
  
      /*
 diff --git a/system/memory.c b/system/memory.c
-index 5fc36708ec349d94605f0503c647d7f9d1475a2d..8ae6610c5e78a49476af93c6e3ac9940df350d0c 100644
+index 5fc36708ec349d94605f0503c647d7f9d1475a2d..346e6d92fe639a70a0357f56231732eac1dcf5c8 100644
 --- a/system/memory.c
 +++ b/system/memory.c
 @@ -21,6 +21,7 @@
@@ -132765,7 +133024,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..8ae6610c5e78a49476af93c6e3ac9940
          MEMORY_LISTENER_CALL_GLOBAL(log_global_stop, Reverse);
      }
  }
-@@ -3083,13 +3161,50 @@ static void listener_del_address_space(MemoryListener *listener,
+@@ -3083,13 +3161,62 @@ static void listener_del_address_space(MemoryListener *listener,
      flatview_unref(view);
  }
  
@@ -132795,6 +133054,18 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..8ae6610c5e78a49476af93c6e3ac9940
 +    return 0;
 +}
 +
++uint64_t memory_listener_commit_count(void (*commit)(MemoryListener *listener))
++{
++    MemoryListener *listener;
++    uint64_t count = 0;
++
++    assert(bql_locked());
++    QTAILQ_FOREACH(listener, &memory_listeners, link) {
++        count += listener->commit == commit;
++    }
++    return count;
++}
++
  void memory_listener_register(MemoryListener *listener, AddressSpace *as)
  {
      MemoryListener *other = NULL;
@@ -132816,7 +133087,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..8ae6610c5e78a49476af93c6e3ac9940
      listener->address_space = as;
      if (QTAILQ_EMPTY(&memory_listeners)
          || listener->priority >= QTAILQ_LAST(&memory_listeners)->priority) {
-@@ -3128,6 +3243,7 @@ void memory_listener_unregister(MemoryListener *listener)
+@@ -3128,6 +3255,7 @@ void memory_listener_unregister(MemoryListener *listener)
          return;
      }
  
@@ -132851,7 +133122,7 @@ index cd3193d170b2b5759cb34e4087a6d0ebfa805287..57459ab307b81deebd0b35fb15efef46
 +  ))
  endif
 diff --git a/system/physmem.c b/system/physmem.c
-index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435ab8dbfdd4 100644
+index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef1f386a8e 100644
 --- a/system/physmem.c
 +++ b/system/physmem.c
 @@ -48,6 +48,7 @@
@@ -133035,7 +133306,39 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
  static MemoryRegion *system_memory;
  static MemoryRegion *system_io;
  
-@@ -588,6 +748,58 @@ MemoryRegion *flatview_translate(FlatView *fv, hwaddr addr, hwaddr *xlat,
+@@ -174,6 +334,31 @@ typedef struct CPUAddressSpace {
+     MemoryListener tcg_as_listener;
+ } CPUAddressSpace;
+ 
++int qemu_crucible_ram_dirty_rearm_metadata_bytes(uint64_t *bytes)
++{
++    uint64_t count;
++    uint64_t allocation;
++
++    if (!bytes || !bql_locked()) {
++        return -EINVAL;
++    }
++    *bytes = 0;
++    count = memory_listener_commit_count(tcg_commit);
++    /* The measured work object is individually allocated. This native metadata
++     * partition also reserves allocator alignment/header and bookkeeping space,
++     * separately from the existing host-private I/O scratch partition. */
++    allocation = qemu_cpu_async_work_size();
++    if (allocation > UINT64_MAX - 128) {
++        return -EOVERFLOW;
++    }
++    allocation += 128;
++    if (count > UINT64_MAX / allocation) {
++        return -EOVERFLOW;
++    }
++    *bytes = count * allocation;
++    return 0;
++}
++
+ struct DirtyBitmapSnapshot {
+     ram_addr_t start;
+     ram_addr_t end;
+@@ -588,6 +773,58 @@ MemoryRegion *flatview_translate(FlatView *fv, hwaddr addr, hwaddr *xlat,
      return mr;
  }
  
@@ -133094,7 +133397,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
  #ifdef CONFIG_TCG
  
  typedef struct TCGIOMMUNotifier {
-@@ -782,6 +994,9 @@ void cpu_address_space_init(CPUState *cpu, int asidx,
+@@ -782,6 +1019,9 @@ void cpu_address_space_init(CPUState *cpu, int asidx,
          newas->tcg_as_listener.log_global_after_sync = tcg_log_global_after_sync;
          newas->tcg_as_listener.commit = tcg_commit;
          newas->tcg_as_listener.name = "tcg";
@@ -133104,7 +133407,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
          memory_listener_register(&newas->tcg_as_listener, as);
      }
  }
-@@ -929,11 +1144,13 @@ bool physical_memory_get_dirty_flag(ram_addr_t addr, unsigned client)
+@@ -929,11 +1169,26 @@ bool physical_memory_get_dirty_flag(ram_addr_t addr, unsigned client)
  
  bool physical_memory_is_clean(ram_addr_t addr)
  {
@@ -133113,8 +133416,21 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
 -    bool migration =
 -        physical_memory_get_dirty_flag(addr, DIRTY_MEMORY_MIGRATION);
 -    return !(vga && code && migration);
-+    for (unsigned int client = 0; client < DIRTY_MEMORY_NUM; client++) {
-+        if (!physical_memory_get_dirty_flag(addr, client)) {
++    unsigned long page = addr >> TARGET_PAGE_BITS;
++    unsigned long index = page / DIRTY_MEMORY_BLOCK_SIZE;
++    unsigned long offset = page % DIRTY_MEMORY_BLOCK_SIZE;
++    unsigned int clients = (global_dirty_tracking & GLOBAL_DIRTY_CRUCIBLE_RAM) ?
++        DIRTY_MEMORY_NUM : DIRTY_MEMORY_CRUCIBLE_RAM;
++
++    /* The RAM root client is armed by its first coherent capture or paging
++     * activation. Dormant metadata must not keep TCG stores on the slow path.
++     * All bitmap headers share this one RCU lifetime; bits remain atomic. */
++    RCU_READ_LOCK_GUARD();
++    for (unsigned int client = 0; client < clients; client++) {
++        DirtyMemoryBlocks *blocks =
++            qatomic_rcu_read(&ram_list.dirty_memory[client]);
++
++        if (!test_bit(offset, blocks->blocks[index])) {
 +            return true;
 +        }
 +    }
@@ -133123,7 +133439,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
  }
  
  static bool physical_memory_all_dirty(ram_addr_t start, ram_addr_t length,
-@@ -1006,6 +1223,14 @@ void physical_memory_set_dirty_flag(ram_addr_t addr, unsigned client)
+@@ -1006,6 +1261,14 @@ void physical_memory_set_dirty_flag(ram_addr_t addr, unsigned client)
      blocks = qatomic_rcu_read(&ram_list.dirty_memory[client]);
  
      set_bit_atomic(offset, blocks->blocks[idx]);
@@ -133138,10 +133454,16 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
  }
  
  void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
-@@ -1016,6 +1241,14 @@ void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
+@@ -1016,6 +1279,20 @@ void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
      unsigned long idx, offset, base;
      int i;
  
++    /* Initial/full captures read every page. Until tracking is armed, setting
++     * its inactive bitmap provides no observation and adds store-path work. */
++    if (!(global_dirty_tracking & GLOBAL_DIRTY_CRUCIBLE_RAM)) {
++        mask &= ~(1 << DIRTY_MEMORY_CRUCIBLE_RAM);
++    }
++
 +    if ((mask & (1 << DIRTY_MEMORY_CRUCIBLE_CHECKPOINT)) &&
 +        (global_dirty_tracking & GLOBAL_DIRTY_CRUCIBLE_CHECKPOINT)) {
 +        qemu_crucible_checkpoint_dirty_generation_advance();
@@ -133153,7 +133475,18 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
      if (!mask && !xen_enabled()) {
          return;
      }
-@@ -1046,6 +1279,16 @@ void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
+@@ -1025,7 +1302,9 @@ void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
+ 
+     WITH_RCU_READ_LOCK_GUARD() {
+         for (i = 0; i < DIRTY_MEMORY_NUM; i++) {
+-            blocks[i] = qatomic_rcu_read(&ram_list.dirty_memory[i]);
++            if (mask & (1 << i)) {
++                blocks[i] = qatomic_rcu_read(&ram_list.dirty_memory[i]);
++            }
+         }
+ 
+         idx = page / DIRTY_MEMORY_BLOCK_SIZE;
+@@ -1046,6 +1325,16 @@ void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
                  bitmap_set_atomic(blocks[DIRTY_MEMORY_CODE]->blocks[idx],
                                    offset, next - page);
              }
@@ -133170,7 +133503,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
  
              page = next;
              idx++;
-@@ -1248,7 +1491,8 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
+@@ -1248,7 +1537,8 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
                      nbits = ctpopl(temp);
                      qatomic_or(&blocks[DIRTY_MEMORY_VGA][idx][offset], temp);
  
@@ -133180,7 +133513,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
                          qatomic_or(
                                  &blocks[DIRTY_MEMORY_MIGRATION][idx][offset],
                                  temp);
-@@ -1257,6 +1501,18 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
+@@ -1257,6 +1547,18 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
                              total_dirty_pages += nbits;
                          }
                      }
@@ -133199,7 +133532,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
  
                      num_dirty += nbits;
  
-@@ -1280,9 +1536,15 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
+@@ -1280,9 +1582,15 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
          uint8_t clients = tcg_enabled() ? DIRTY_CLIENTS_ALL
                                          : DIRTY_CLIENTS_NOCODE;
  
@@ -133216,7 +133549,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
  
          /*
           * bitmap-traveling is faster than memory-traveling (for addr...)
-@@ -2031,6 +2293,11 @@ int qemu_ram_resize(RAMBlock *block, ram_addr_t newsize, Error **errp)
+@@ -2031,6 +2339,11 @@ int qemu_ram_resize(RAMBlock *block, ram_addr_t newsize, Error **errp)
           * sizes), however, we have to notify if the unaligned size changed.
           */
          if (unaligned_size != memory_region_size(block->mr)) {
@@ -133228,7 +133561,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
              memory_region_set_size(block->mr, unaligned_size);
              if (block->resized) {
                  block->resized(block->idstr, unaligned_size, block->host);
-@@ -2055,6 +2322,8 @@ int qemu_ram_resize(RAMBlock *block, ram_addr_t newsize, Error **errp)
+@@ -2055,6 +2368,8 @@ int qemu_ram_resize(RAMBlock *block, ram_addr_t newsize, Error **errp)
          return -EINVAL;
      }
  
@@ -133237,7 +133570,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
      /* Notify before modifying the ram block and touching the bitmaps. */
      if (block->host) {
          ram_block_notify_resize(block->host, oldsize, newsize);
-@@ -2062,6 +2331,7 @@ int qemu_ram_resize(RAMBlock *block, ram_addr_t newsize, Error **errp)
+@@ -2062,6 +2377,7 @@ int qemu_ram_resize(RAMBlock *block, ram_addr_t newsize, Error **errp)
  
      physical_memory_clear_dirty_range(block->offset, block->used_length);
      block->used_length = newsize;
@@ -133245,7 +133578,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
      physical_memory_set_dirty_range(block->offset, block->used_length,
                                          DIRTY_CLIENTS_ALL);
      memory_region_set_size(block->mr, unaligned_size);
-@@ -2105,6 +2375,14 @@ void qemu_ram_msync(RAMBlock *block, ram_addr_t start, ram_addr_t length)
+@@ -2105,6 +2421,14 @@ void qemu_ram_msync(RAMBlock *block, ram_addr_t start, ram_addr_t length)
      }
  }
  
@@ -133260,7 +133593,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
  /* Called with ram_list.mutex held */
  static void dirty_memory_extend(ram_addr_t new_ram_size)
  {
-@@ -2126,6 +2404,12 @@ static void dirty_memory_extend(ram_addr_t new_ram_size)
+@@ -2126,6 +2450,12 @@ static void dirty_memory_extend(ram_addr_t new_ram_size)
          old_blocks = qatomic_rcu_read(&ram_list.dirty_memory[i]);
          new_blocks = g_malloc(sizeof(*new_blocks) +
                                sizeof(new_blocks->blocks[0]) * new_num_blocks);
@@ -133273,7 +133606,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
  
          if (old_num_blocks) {
              memcpy(new_blocks->blocks, old_blocks->blocks,
-@@ -2134,12 +2418,16 @@ static void dirty_memory_extend(ram_addr_t new_ram_size)
+@@ -2134,12 +2464,16 @@ static void dirty_memory_extend(ram_addr_t new_ram_size)
  
          for (j = old_num_blocks; j < new_num_blocks; j++) {
              new_blocks->blocks[j] = bitmap_new(DIRTY_MEMORY_BLOCK_SIZE);
@@ -133291,7 +133624,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
          }
      }
  
-@@ -2156,6 +2444,8 @@ static void ram_block_add(RAMBlock *new_block, Error **errp)
+@@ -2156,6 +2490,8 @@ static void ram_block_add(RAMBlock *new_block, Error **errp)
      ram_addr_t ram_size;
      Error *err = NULL;
  
@@ -133300,7 +133633,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
      qemu_mutex_lock_ramlist();
      new_block->offset = find_ram_offset(new_block->max_length);
  
-@@ -2264,6 +2554,7 @@ static void ram_block_add(RAMBlock *new_block, Error **errp)
+@@ -2264,6 +2600,7 @@ static void ram_block_add(RAMBlock *new_block, Error **errp)
  
      /* Write list before version */
      qatomic_store_release(&ram_list.version, ram_list.version + 1);
@@ -133308,7 +133641,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
      qemu_mutex_unlock_ramlist();
  
      physical_memory_set_dirty_range(new_block->offset,
-@@ -2597,15 +2888,21 @@ void qemu_ram_free(RAMBlock *block)
+@@ -2597,15 +2934,21 @@ void qemu_ram_free(RAMBlock *block)
          return;
      }
  
@@ -133330,7 +133663,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
      qatomic_set(&ram_list.mru_block, NULL);
      /* Write list before version */
      qatomic_store_release(&ram_list.version, ram_list.version + 1);
-@@ -2688,6 +2985,12 @@ void qemu_ram_remap(ram_addr_t addr)
+@@ -2688,6 +3031,12 @@ void qemu_ram_remap(ram_addr_t addr)
                  qemu_ram_setup_dump(vaddr, page_size);
              }
  
@@ -133343,7 +133676,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
              break;
          }
      }
-@@ -3145,6 +3448,42 @@ static void invalidate_and_set_dirty(MemoryRegion *mr, hwaddr addr,
+@@ -3145,6 +3494,42 @@ static void invalidate_and_set_dirty(MemoryRegion *mr, hwaddr addr,
      physical_memory_set_dirty_range(addr, length, dirty_log_mask);
  }
  
@@ -133386,7 +133719,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
  void memory_region_flush_rom_device(MemoryRegion *mr, hwaddr addr, hwaddr size)
  {
      /*
-@@ -3230,7 +3569,8 @@ static bool flatview_access_allowed(MemoryRegion *mr, MemTxAttrs attrs,
+@@ -3230,7 +3615,8 @@ static bool flatview_access_allowed(MemoryRegion *mr, MemTxAttrs attrs,
  static MemTxResult flatview_write_continue_step(MemTxAttrs attrs,
                                                  const uint8_t *buf,
                                                  hwaddr len, hwaddr mr_addr,
@@ -133396,7 +133729,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
  {
      if (!flatview_access_allowed(mr, attrs, mr_addr, *l)) {
          return MEMTX_ACCESS_ERROR;
-@@ -3270,8 +3610,35 @@ static MemTxResult flatview_write_continue_step(MemTxAttrs attrs,
+@@ -3270,8 +3656,35 @@ static MemTxResult flatview_write_continue_step(MemTxAttrs attrs,
          uint8_t *ram_ptr = qemu_ram_ptr_length(mr->ram_block, mr_addr, l,
                                                 false, true);
  
@@ -133434,7 +133767,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
  
          return MEMTX_OK;
      }
-@@ -3282,14 +3649,15 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
+@@ -3282,14 +3695,15 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
                                             MemTxAttrs attrs,
                                             const void *ptr,
                                             hwaddr len, hwaddr mr_addr,
@@ -133453,7 +133786,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
  
          len -= l;
          buf += l;
-@@ -3300,7 +3668,8 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
+@@ -3300,7 +3714,8 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
          }
  
          l = len;
@@ -133463,7 +133796,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
      }
  
      return result;
-@@ -3312,21 +3681,24 @@ static MemTxResult flatview_write(FlatView *fv, hwaddr addr, MemTxAttrs attrs,
+@@ -3312,21 +3727,24 @@ static MemTxResult flatview_write(FlatView *fv, hwaddr addr, MemTxAttrs attrs,
  {
      hwaddr l;
      hwaddr mr_addr;
@@ -133491,7 +133824,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
  {
      if (!flatview_access_allowed(mr, attrs, mr_addr, *l)) {
          return MEMTX_ACCESS_ERROR;
-@@ -3365,6 +3737,26 @@ static MemTxResult flatview_read_continue_step(MemTxAttrs attrs, uint8_t *buf,
+@@ -3365,6 +3783,26 @@ static MemTxResult flatview_read_continue_step(MemTxAttrs attrs, uint8_t *buf,
  
          memcpy(buf, ram_ptr, *l);
  
@@ -133518,7 +133851,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
          return MEMTX_OK;
      }
  }
-@@ -3377,10 +3769,18 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
+@@ -3377,10 +3815,18 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
  {
      MemTxResult result = MEMTX_OK;
      uint8_t *buf = ptr;
@@ -133538,7 +133871,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
  
          len -= l;
          buf += l;
-@@ -3391,7 +3791,8 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
+@@ -3391,7 +3837,8 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
          }
  
          l = len;
@@ -133548,7 +133881,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
      }
  
      return result;
-@@ -3403,10 +3804,12 @@ static MemTxResult flatview_read(FlatView *fv, hwaddr addr,
+@@ -3403,10 +3850,12 @@ static MemTxResult flatview_read(FlatView *fv, hwaddr addr,
  {
      hwaddr l;
      hwaddr mr_addr;
@@ -133562,7 +133895,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
      if (!flatview_access_allowed(mr, attrs, mr_addr, l)) {
          return MEMTX_ACCESS_ERROR;
      }
-@@ -3456,6 +3859,73 @@ MemTxResult address_space_rw(const AddressSpace *as, hwaddr addr,
+@@ -3456,6 +3905,73 @@ MemTxResult address_space_rw(const AddressSpace *as, hwaddr addr,
      }
  }
  
@@ -133636,7 +133969,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
  MemTxResult address_space_set(const AddressSpace *as, hwaddr addr,
                                uint8_t c, hwaddr len, MemTxAttrs attrs)
  {
-@@ -3555,6 +4025,12 @@ typedef struct {
+@@ -3555,6 +4071,12 @@ typedef struct {
      MemoryRegion *mr;
      hwaddr addr;
      size_t len;
@@ -133649,7 +133982,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
      uint8_t buffer[];
  } BounceBuffer;
  
-@@ -3724,7 +4200,9 @@ void *address_space_map(AddressSpace *as,
+@@ -3724,7 +4246,9 @@ void *address_space_map(AddressSpace *as,
      fv = address_space_to_flatview(as);
      mr = flatview_translate(fv, addr, &xlat, &l, is_write, attrs);
  
@@ -133660,7 +133993,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
          size_t used = qatomic_read(&as->bounce_buffer_size);
          for (;;) {
              hwaddr alloc = MIN(as->max_bounce_buffer_size - used, l);
-@@ -3749,13 +4227,52 @@ void *address_space_map(AddressSpace *as,
+@@ -3749,13 +4273,52 @@ void *address_space_map(AddressSpace *as,
          bounce->mr = mr;
          bounce->addr = addr;
          bounce->len = l;
@@ -133717,7 +134050,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
          return bounce->buffer;
      }
  
-@@ -3763,7 +4280,12 @@ void *address_space_map(AddressSpace *as,
+@@ -3763,7 +4326,12 @@ void *address_space_map(AddressSpace *as,
      *plen = flatview_extend_translation(fv, addr, len, mr, xlat,
                                          l, is_write, attrs);
      fuzz_dma_read_cb(addr, *plen, mr);
@@ -133731,7 +134064,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
  }
  
  /* Unmaps a memory region previously mapped by address_space_map().
-@@ -3778,6 +4300,7 @@ void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len,
+@@ -3778,6 +4346,7 @@ void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len,
  
      mr = memory_region_from_host(buffer, &addr1);
      if (mr != NULL) {
@@ -133739,7 +134072,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
          if (is_write) {
              invalidate_and_set_dirty(mr, addr1, access_len);
          }
-@@ -3792,11 +4315,54 @@ void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len,
+@@ -3792,11 +4361,54 @@ void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len,
      BounceBuffer *bounce = container_of(buffer, BounceBuffer, buffer);
      assert(bounce->magic == BOUNCE_BUFFER_MAGIC);
  
@@ -133796,7 +134129,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
      qatomic_sub(&as->bounce_buffer_size, bounce->len);
      bounce->magic = ~BOUNCE_BUFFER_MAGIC;
      memory_region_unref(bounce->mr);
-@@ -3839,6 +4405,10 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
+@@ -3839,6 +4451,10 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
  
      assert(len > 0);
  
@@ -133807,7 +134140,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
      l = len;
      cache->fv = address_space_get_flatview(as);
      d = flatview_to_dispatch(cache->fv);
-@@ -3863,17 +4433,82 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
+@@ -3863,17 +4479,82 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
          l = flatview_extend_translation(cache->fv, addr, len, mr,
                                          cache->xlat, l, is_write,
                                          MEMTXATTRS_UNSPECIFIED);
@@ -133892,7 +134225,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
  void address_space_cache_invalidate(const MemoryRegionCache *cache,
                                      hwaddr addr,
                                      hwaddr access_len)
-@@ -3890,6 +4525,16 @@ void address_space_cache_destroy(MemoryRegionCache *cache)
+@@ -3890,6 +4571,16 @@ void address_space_cache_destroy(MemoryRegionCache *cache)
          return;
      }
  
@@ -133909,7 +134242,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
      if (xen_map_cache_enabled()) {
          xen_invalidate_map_cache_entry(cache->ptr);
      }
-@@ -3941,8 +4586,8 @@ static MemTxResult address_space_write_continue_cached(MemTxAttrs attrs,
+@@ -3941,8 +4632,8 @@ static MemTxResult address_space_write_continue_cached(MemTxAttrs attrs,
      const uint8_t *buf = ptr;
  
      for (;;) {
@@ -133920,7 +134253,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
  
          len -= l;
          buf += l;
-@@ -3968,7 +4613,8 @@ static MemTxResult address_space_read_continue_cached(MemTxAttrs attrs,
+@@ -3968,7 +4659,8 @@ static MemTxResult address_space_read_continue_cached(MemTxAttrs attrs,
      uint8_t *buf = ptr;
  
      for (;;) {
@@ -133930,7 +134263,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
          len -= l;
          buf += l;
          mr_addr += l;
-@@ -4070,6 +4716,36 @@ int cpu_memory_rw_debug(CPUState *cpu, vaddr addr,
+@@ -4070,6 +4762,36 @@ int cpu_memory_rw_debug(CPUState *cpu, vaddr addr,
      return 0;
  }
  
@@ -133967,7 +134300,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..2f62c3edc9de13f19bb419915142435a
  int qemu_ram_foreach_block(RAMBlockIterFunc func, void *opaque)
  {
      RAMBlock *block;
-@@ -4222,6 +4898,12 @@ int ram_block_discard_range(RAMBlock *rb, uint64_t offset, size_t length)
+@@ -4222,6 +4944,12 @@ int ram_block_discard_range(RAMBlock *rb, uint64_t offset, size_t length)
      if (rb->guest_memfd >= 0) {
          ret = ram_block_discard_guest_memfd_range(rb, offset, length);
      }
@@ -163754,6 +164087,208 @@ index 0000000000000000000000000000000000000000..466cb68b550440c42bfac416dff9adac
 +    )
 +    subprocess.run(command, check=True)
 +    subprocess.run([str(binary)], check=True, timeout=10)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/tests/unit/test-crucible-child-memory-limit.py b/tests/unit/test-crucible-child-memory-limit.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..2af3f20f8e25fb2a9d7f394e9b628f87d990deea
+--- /dev/null
++++ b/tests/unit/test-crucible-child-memory-limit.py
+@@ -0,0 +1,196 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Executes child resource-limit installation against the real Linux kernel.
++
++The production child function is extracted unchanged. Only its operation
++metadata is modeled; fork, eventfd, descriptor ownership, resource limits,
++memory locking and cancellation are actual syscalls. This component test does
++not establish complete guest paging or fork reconstruction qualification.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import shlex
++import subprocess
++
++
++ROOT = Path(__file__).resolve().parents[2]
++
++
++def definition(source: str, signature: str) -> str:
++    start = source.index(signature)
++    opening = source.index("{", start)
++    depth = 0
++    for index in range(opening, len(source)):
++        if source[index] == "{":
++            depth += 1
++        elif source[index] == "}":
++            depth -= 1
++            if depth == 0:
++                return source[start:index + 1]
++    raise AssertionError(f"unterminated production function: {signature}")
++
++
++PRELUDE = r"""
++#ifndef _GNU_SOURCE
++#define _GNU_SOURCE
++#endif
++#include <assert.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <poll.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <sys/eventfd.h>
++#include <sys/mman.h>
++#include <sys/resource.h>
++#include <sys/wait.h>
++#include <unistd.h>
++
++typedef struct CrucibleHotForkOperation {
++    int child_process_cgroup_fd;
++    int child_process_cgroup_procs_fd;
++    int child_process_cancellation_fd;
++    uint64_t maximum_file_bytes;
++    uint64_t maximum_locked_bytes;
++} CrucibleHotForkOperation;
++"""
++
++
++TESTS = r"""
++static struct rlimit limit(int resource)
++{
++    struct rlimit value;
++    assert(getrlimit(resource, &value) == 0);
++    return value;
++}
++
++static void child_case(unsigned int kind)
++{
++    struct rlimit original = limit(RLIMIT_MEMLOCK);
++    CrucibleHotForkOperation operation = {
++        .child_process_cgroup_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK),
++        .child_process_cgroup_procs_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK),
++        .child_process_cancellation_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK),
++        .maximum_file_bytes = 4096,
++        .maximum_locked_bytes = kind == 0 ? 0 : 4096,
++    };
++    assert(operation.child_process_cgroup_fd >= 0);
++    assert(operation.child_process_cgroup_procs_fd >= 0);
++    assert(operation.child_process_cancellation_fd >= 0);
++
++    if (kind == 2) {
++        uint64_t signal = 1;
++        assert(write(operation.child_process_cancellation_fd,
++                     &signal, sizeof(signal)) == sizeof(signal));
++    } else if (kind == 3) {
++        struct rlimit denied = { .rlim_cur = 0, .rlim_max = 0 };
++        assert(setrlimit(RLIMIT_MEMLOCK, &denied) == 0);
++    } else if (kind == 4) {
++        operation.maximum_locked_bytes = UINT64_MAX;
++    }
++
++    int descriptors[] = {
++        operation.child_process_cgroup_fd,
++        operation.child_process_cgroup_procs_fd,
++        operation.child_process_cancellation_fd,
++    };
++    int result = crucible_hot_fork_apply_child_process_contract(&operation);
++
++    if (kind == 4) {
++        assert(result == -EINVAL);
++        for (unsigned int index = 0; index < 3; index++) {
++            assert(fcntl(descriptors[index], F_GETFD) >= 0);
++            assert(close(descriptors[index]) == 0);
++        }
++    } else {
++        for (unsigned int index = 0; index < 3; index++) {
++            assert(fcntl(descriptors[index], F_GETFD) == -1 && errno == EBADF);
++        }
++        assert(operation.child_process_cgroup_fd == -1);
++        assert(operation.child_process_cgroup_procs_fd == -1);
++        assert(operation.child_process_cancellation_fd == -1);
++    }
++
++    struct rlimit observed = limit(RLIMIT_MEMLOCK);
++    if (kind == 2 || kind == 4) {
++        assert(result == (kind == 2 ? -ECANCELED : -EINVAL));
++        assert(observed.rlim_cur == original.rlim_cur);
++        assert(observed.rlim_max == original.rlim_max);
++    } else if (kind == 3) {
++        assert(result == -EPERM);
++        assert(observed.rlim_cur == 0 && observed.rlim_max == 0);
++    } else {
++        assert(result == 0);
++        assert(observed.rlim_cur == operation.maximum_locked_bytes);
++        assert(observed.rlim_max == operation.maximum_locked_bytes);
++        struct rlimit file = limit(RLIMIT_FSIZE);
++        assert(file.rlim_cur == 4096 && file.rlim_max == 4096);
++
++        void *page = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
++                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++        assert(page != MAP_FAILED);
++        int locked = mlock(page, 4096);
++        if (kind == 0) {
++            assert(locked == -1 && errno == EPERM);
++        } else {
++            assert(locked == 0);
++            assert(munlock(page, 4096) == 0);
++        }
++        assert(munmap(page, 4096) == 0);
++    }
++}
++
++int main(void)
++{
++    struct rlimit original_lock = limit(RLIMIT_MEMLOCK);
++    struct rlimit original_file = limit(RLIMIT_FSIZE);
++    assert(original_lock.rlim_max == RLIM_INFINITY || original_lock.rlim_max >= 4096);
++    assert(original_file.rlim_max == RLIM_INFINITY || original_file.rlim_max >= 4096);
++
++    for (unsigned int kind = 0; kind < 5; kind++) {
++        pid_t child = fork();
++        assert(child >= 0);
++        if (child == 0) {
++            child_case(kind);
++            _exit(0);
++        }
++        int status;
++        assert(waitpid(child, &status, 0) == child);
++        assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
++
++        struct rlimit parent_lock = limit(RLIMIT_MEMLOCK);
++        struct rlimit parent_file = limit(RLIMIT_FSIZE);
++        assert(parent_lock.rlim_cur == original_lock.rlim_cur);
++        assert(parent_lock.rlim_max == original_lock.rlim_max);
++        assert(parent_file.rlim_cur == original_file.rlim_cur);
++        assert(parent_file.rlim_max == original_file.rlim_max);
++    }
++    puts("Crucible child memory limits PASS");
++    return 0;
++}
++"""
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--output-dir", type=Path, required=True)
++    arguments = parser.parse_args()
++    source = (ROOT / "monitor/qmp-cmds.c").read_text()
++    function = definition(source, "static int crucible_hot_fork_apply_child_process_contract(")
++    arguments.output_dir.mkdir(parents=True, exist_ok=True)
++    fixture = arguments.output_dir / "child-memory-limit.c"
++    binary = arguments.output_dir / "child-memory-limit"
++    fixture.write_text("\n\n".join([PRELUDE, function, TESTS]))
++    command = [*shlex.split(os.environ["CC"]),
++               *shlex.split(os.environ.get("CFLAGS", "")),
++               "-std=gnu11", "-Wall", "-Wextra", "-Werror", str(fixture),
++               "-o", str(binary), *shlex.split(os.environ.get("LDFLAGS", ""))]
++    (arguments.output_dir / "compile-command.json").write_text(json.dumps(command, indent=2) + "\n")
++    subprocess.run(command, check=True)
++    subprocess.run([str(binary)], cwd=arguments.output_dir, check=True, timeout=10)
 +
 +
 +if __name__ == "__main__":
