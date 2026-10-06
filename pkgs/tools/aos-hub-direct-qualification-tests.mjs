@@ -57,6 +57,9 @@ const server = createServer({ cert: await readFile(cert), key: await readFile(pr
     assert.equal(request.headers["x-aos-direct-qualification-signature"], mac("aos.direct-upload.qualification-request.v1\0", bytes));
     const control = JSON.parse(bytes), action = control.action; calls.push(action.kind);
     if (scenario === "unknown" && action.kind === "begin") { request.socket.destroy(); return; }
+    if (scenario === "timeout-inspect-failure" && action.kind === "inspect" && action.afterAttempt === 1) {
+      request.socket.destroy(); return;
+    }
     if (scenario === "cancel" && action.kind === "clock") { child.kill("SIGTERM"); await new Promise(done => setTimeout(done, 30)); }
     let result = {};
     switch (action.kind) {
@@ -106,12 +109,21 @@ const server = createServer({ cert: await readFile(cert), key: await readFile(pr
           proof: { sha256: digest(payload), byte_size: String(payload.length) } };
         break;
       }
-      case "status": result = { original, objects: original.objects.map(object => ({ objectId: object.objectId,
-        closed: true, verified: Boolean(receipt), attemptCount: receipt ? 1 : 0 })) }; break;
-      case "inspect": result = { original, objectId: action.objectId, closed: { settlementMillis: "5" },
+      case "status": {
+        const objects = original.objects.map(object => ({ objectId: object.objectId,
+          closed: true, verified: Boolean(receipt) && !scenario.startsWith("timeout-"), attemptCount: receipt ? 1 : 0 }));
+        result = { original, objects: scenario === "missing-status" ? []
+          : scenario === "duplicate-status" ? [...objects, ...objects] : objects };
+        break;
+      }
+      case "inspect":
+        assert.ok(original.objects.some(object => object.objectId === action.objectId));
+        result = { original: scenario === "timeout-foreign-original" ? { ...original, runId: "00".repeat(32) } : original,
+        objectId: action.objectId, closed: { settlementMillis: "5" },
         attempts: action.afterAttempt === 0 ? [{ attempt: { nonce: "ee".repeat(32) }, receipt: null }]
           : receipt ? [{ attempt: receipt.attempt, receipt }] : [],
-        nextAttempt: action.afterAttempt === 0 ? 1 : null }; break;
+        nextAttempt: scenario === "timeout-stale-cursor" ? 0
+          : scenario === "timeout-page-bound" ? action.afterAttempt + 1 : action.afterAttempt === 0 ? 1 : null }; break;
       default: throw new Error("Unexpected control action.");
     }
     const reply = Buffer.from(JSON.stringify(sorted({ version: 1, requestSha256: digest(bytes), nonce: control.nonce,
@@ -137,7 +149,7 @@ async function run(name, mode, phase = "run") {
   let logs = ""; child.stdout.on("data", bytes => { logs += bytes; }); child.stderr.on("data", bytes => { logs += bytes; });
   const exit = await new Promise((done, reject) => { child.once("error", reject); child.once("exit", done); });
   await writeFile(join(root, `${name}.log`), logs, { mode: 0o600 });
-  return { output, exit };
+  return { output, exit, logs };
 }
 try {
   const sourceClock = await run("source-clock", "positive", "clock"); assert.equal(sourceClock.exit, 0);
@@ -214,6 +226,55 @@ print('PASS actual driver evidence accepted; old underscore filename refused by 
   const replay = await run("terminal-replay", "replay"); assert.equal(replay.exit, 0);
   const replayRuntime = JSON.parse(await readFile(join(replay.output, "runtime-raw.json")));
   assert.equal(replayRuntime.observations.samples.length, 0);
+
+  for (const mode of ["timeout-positive", "timeout-inspect-failure", "timeout-foreign-original",
+    "timeout-stale-cursor", "timeout-page-bound"]) {
+    const timeout = await run(mode, mode);
+    assert.notEqual(timeout.exit, 0);
+    assert.match(timeout.logs, /Queue observation deadline elapsed; closed originals remain recoverable\./);
+    assert.equal(uploaded, payload.length);
+    const afterEnqueue = calls.slice(calls.indexOf("enqueue") + 1);
+    const inspectCount = mode === "timeout-page-bound" ? 32
+      : mode === "timeout-positive" || mode === "timeout-inspect-failure" ? 2 : 1;
+    assert.deepEqual(afterEnqueue, ["status", ...Array(inspectCount).fill("inspect")]);
+    for (const kind of ["start", "begin", "grant", "report", "close", "enqueue"]) {
+      assert.equal(calls.filter(call => call === kind).length, 1);
+    }
+
+    const diagnosis = JSON.parse(await readFile(join(timeout.output, "queue-deadline-inspection.json")));
+    const savedOriginal = JSON.parse(await readFile(join(timeout.output, "original.json")));
+    assert.deepEqual(savedOriginal, original);
+    assert.deepEqual(diagnosis.objectIds, original.objects.map(object => object.objectId));
+    assert.equal(diagnosis.state, "incomplete");
+    assert.equal(diagnosis.inspection, mode === "timeout-positive" ? "complete" : "unknown");
+    assert.equal(diagnosis.unknownEffects, "retained_without_replay");
+    const names = await readdir(timeout.output);
+    assert.equal(names.includes("runtime-raw.json"), false);
+    assert.equal(JSON.parse(await readFile(join(timeout.output, "incomplete-run-outcome.json"))).state, "incomplete");
+    const captures = [];
+    for (const name of names.filter(name => name.endsWith("-inspect-capture.json"))) {
+      captures.push(JSON.parse(await readFile(join(timeout.output, name))));
+      assert.ok(names.includes(name.replace("-capture.json", "-authentication.json")));
+    }
+    assert.equal(captures.length, mode === "timeout-inspect-failure" ? 1 : inspectCount);
+    if (mode === "timeout-positive") assert.deepEqual(captures[1].result.attempts[0].receipt, receipt);
+    if (mode === "timeout-inspect-failure") assert.ok(names.some(name => name.endsWith("-inspect-unknown.json")));
+    for (const name of names) {
+      const content = await readFile(join(timeout.output, name), "utf8");
+      assert.equal(content.includes(secret), false);
+      assert.equal(content.includes("/part/"), false);
+    }
+  }
+
+  for (const mode of ["missing-status", "duplicate-status"]) {
+    const invalid = await run(mode, mode);
+    assert.notEqual(invalid.exit, 0);
+    assert.match(invalid.logs, /Queue status differs from selected original object coverage\./);
+    assert.deepEqual(calls.slice(calls.indexOf("enqueue") + 1), ["status"]);
+    assert.equal((await readdir(invalid.output)).includes("runtime-raw.json"), false);
+    assert.equal(JSON.parse(await readFile(join(invalid.output, "incomplete-run-outcome.json"))).state, "incomplete");
+  }
+
   const wrongRuntime = await run("wrong-runtime", "wrong-runtime"); assert.notEqual(wrongRuntime.exit, 0);
   assert.equal(calls.includes("begin"), false); assert.equal(calls.includes("grant"), false);
   const unknown = await run("unknown", "unknown"); assert.notEqual(unknown.exit, 0);

@@ -283,12 +283,66 @@ async function concurrent(items, maximum, dispatch) {
   return results;
 }
 
+async function inspectOriginalObjects(objectIds, { deadline = Infinity, maximumPages = Infinity } = {}) {
+  const selected = new Set(objectIds);
+  if (!selected.size || selected.size > 32 || selected.size !== objectIds.length
+      || objectIds.some(id => !original.objects.some(object => object.objectId === id))) {
+    throw new Error("Inspection must select bounded exact original objects.");
+  }
+  const originalHash = canonicalHash(original), receipts = [];
+  let pages = 0;
+  for (const object of original.objects.filter(object => selected.has(object.objectId))) {
+    let after = 0;
+    do {
+      if (Date.now() >= deadline || pages >= maximumPages) {
+        throw new Error("Diagnostic inspection bound elapsed; remaining attempts are unknown.");
+      }
+      pages += 1;
+      const capture = await control({ kind: "inspect", objectId: object.objectId, afterAttempt: after });
+      const page = capture.result;
+      if (page.objectId !== object.objectId || canonicalHash(page.original) !== originalHash
+          || !Array.isArray(page.attempts) || page.attempts.length > 1
+          || (page.nextAttempt !== null && (page.nextAttempt !== after + 1 || page.nextAttempt > 128))) {
+        throw new Error("Inspection page differs from the original or bounded cursor.");
+      }
+      for (const attempt of page.attempts) {
+        if (attempt.receipt) receipts.push({ object, receipt: attempt.receipt, closed: page.closed,
+          replySha256: capture.responseSha256 });
+      }
+      after = page.nextAttempt;
+    } while (after !== null);
+  }
+  return receipts;
+}
+
 async function waitForObjects(objectIds) {
   const selected = new Set(objectIds), deadline = Date.now() + wait * 1000;
+  if (!selected.size || selected.size !== objectIds.length) {
+    throw new Error("Queue waiting requires unique selected original objects.");
+  }
   do {
     const status = await control({ kind: "status" });
-    if (status.result.objects.filter(object => selected.has(object.objectId)).every(object => object.verified)) return;
-    if (Date.now() >= deadline) throw new Error("Queue observation deadline elapsed; closed originals remain recoverable.");
+    const objects = status.result.objects.filter(object => selected.has(object.objectId));
+    if (objects.length !== selected.size || new Set(objects.map(object => object.objectId)).size !== selected.size) {
+      throw new Error("Queue status differs from selected original object coverage.");
+    }
+    if (objects.every(object => object.verified)) return;
+    if (Date.now() >= deadline) {
+      // Inspect is observation only. It cannot extend queue waiting or replay a
+      // mutation, and diagnostic failure must not replace the deadline error.
+      try {
+        let inspection = "complete";
+        try {
+          // No new dispatch after 30 seconds or 32 pages; the final in-flight
+          // request still uses the existing 30-second control timeout.
+          await inspectOriginalObjects(objectIds, { deadline: Date.now() + 30000, maximumPages: 32 });
+        } catch { inspection = "unknown"; }
+        await save("queue-deadline-inspection.json", { version: 1, runId, objectIds,
+          state: "incomplete", inspection, unknownEffects: "retained_without_replay" });
+      } finally {
+        throw new Error("Queue observation deadline elapsed; closed originals remain recoverable.");
+      }
+    }
     if (cancelled) throw new Error("Cancelled before another queue observation.");
     await new Promise(done => setTimeout(done, 1000));
   } while (true);
@@ -373,17 +427,7 @@ try {
       if (cancelled) throw new Error("Cancelled before another status dispatch.");
       await new Promise(done => setTimeout(done, 1000));
     } while (true);
-    for (const object of original.objects) {
-      let after = 0;
-      do {
-        const capture = await control({ kind: "inspect", objectId: object.objectId, afterAttempt: after });
-        for (const attempt of capture.result.attempts) {
-          if (attempt.receipt) completed.push({ object, receipt: attempt.receipt, closed: capture.result.closed,
-            replySha256: capture.responseSha256 });
-        }
-        after = capture.result.nextAttempt;
-      } while (after !== null);
-    }
+    completed = await inspectOriginalObjects(original.objects.map(object => object.objectId));
     const audience = { version: 1, executionKind: original.executionKind, deploymentId: original.deploymentId,
       publicOrigin: original.publicOrigin, sourceDigest: original.sourceDigest, scriptVersion: original.scriptVersion };
     const runtime = [], bulk = [], metadata = [], mixed = [];
