@@ -11,11 +11,13 @@ import json
 import re
 import shlex
 import textwrap
+import time
 from typing import Any
 
 
 IMAGE_STATE = "/var/lib/profiles/image/state.json"
 IMAGE_RECEIPT = "/var/lib/profiles/image/active-native-rollout.json"
+SITE_WORKTREE = "/var/lib/aos-test/native-image-site"
 BOOT_GUID = "8be4df61-93ca-11d2-aa0d-00e098032b8c"
 
 
@@ -147,11 +149,57 @@ def publish_candidate() -> None:
             raise RuntimeError("signed provider contract lacks both measured physical slots")
 
 
+def wait_for_transition(predicate: str, unit: str, timeout: float = 1800) -> None:
+    """Waits for a physical transition and rejects a failed submission promptly."""
+    unit_name = shlex.quote(unit + ".service")
+    journalctl = shlex.quote(SYSTEMCTL.rsplit("/", 1)[0] + "/journalctl")
+    # CLD_EXITED is 1; shutdown signals can precede a legitimate physical reboot.
+    command = textwrap.dedent(f"""
+        if {predicate}; then
+            exit 0
+        fi
+        result=$({SYSTEMCTL} show {unit_name} --property=Result --value)
+        code=$({SYSTEMCTL} show {unit_name} --property=ExecMainCode --value)
+        status=$({SYSTEMCTL} show {unit_name} --property=ExecMainStatus --value)
+        if test "$result" = exit-code && test "$code" = 1 && test "$status" -gt 0; then
+            {{
+                {SYSTEMCTL} show {unit_name} --property=ActiveState,SubState,Result,ExecMainStatus
+                {journalctl} --unit={unit_name} --no-pager --lines=40
+            }} 2>&1 | {COREUTILS}/head --bytes=65536
+            exit 125
+        fi
+        exit 1
+    """)
+    deadline = time.monotonic() + timeout
+    last_error = "transition predicate has not succeeded"
+
+    while time.monotonic() < deadline:
+        try:
+            code, stdout, stderr = runtime.execute(command)
+        except Exception as error:
+            # The control channel can disappear during an expected reboot.
+            last_error = str(error)
+        else:
+            if code == 125:
+                diagnostic = (stdout + stderr).decode("utf-8", errors="replace")
+                raise RuntimeError(f"image transition unit {unit} failed: {diagnostic}")
+            if code == 0:
+                return
+            last_error = stderr.decode("utf-8", errors="replace")
+
+        time.sleep(0.5)
+
+    raise RuntimeError(f"image transition timed out after {timeout}s: {predicate}: {last_error}")
+
+
 def invoke_reboot(arguments: str, label: str) -> None:
     """Runs the ordinary native CLI and requires a real subsequent boot."""
     before = runtime.succeed(f"{COREUTILS}/cat /proc/sys/kernel/random/boot_id").strip()
     runtime.succeed(f"{SYSTEMD_RUN} --quiet --unit={shlex.quote(label)} --property=Type=exec {APM} {arguments}")
-    runtime.wait_until_succeeds(f"test \"$({COREUTILS}/cat /proc/sys/kernel/random/boot_id)\" != {shlex.quote(before)}", timeout=1800)
+    wait_for_transition(
+        f"test \"$({COREUTILS}/cat /proc/sys/kernel/random/boot_id)\" != {shlex.quote(before)}",
+        label,
+    )
     runtime.wait_until_succeeds(f"{SYSTEMCTL} is-active --quiet aos-image-boot-commit.service", timeout=900)
     runtime.wait_until_succeeds(f"{JQ} -e '.pending == null and .active_rollout == null' {IMAGE_STATE}", timeout=900)
 
@@ -162,7 +210,11 @@ def counted_boot_fallback(original: dict[str, Any]) -> None:
     runtime.succeed(f"{SYSTEMD_RUN} --quiet --unit=native-image-counted-failure --property=Type=exec {APM} upgrade --system --yes --drain --reboot")
     boot_ids = set()
     for left, done in ((2, 1), (1, 2), (0, 3)):
-        runtime.wait_until_succeeds(f"test \"$({COREUTILS}/readlink /run/current-system)\" = {shlex.quote(CANDIDATE_TOP)}", timeout=1800)
+        candidate_selected = f"test \"$({COREUTILS}/readlink /run/current-system)\" = {shlex.quote(CANDIDATE_TOP)}"
+        if done == 1:
+            wait_for_transition(candidate_selected, "native-image-counted-failure")
+        else:
+            runtime.wait_until_succeeds(candidate_selected, timeout=1800)
         runtime.wait_until_succeeds(f"{SYSTEMCTL} is-failed --quiet aos-activate.service", timeout=900)
         state = image_state()
         candidate = generation(state, state["pending"])
@@ -206,12 +258,12 @@ def retire(request: dict[str, Any]) -> None:
     """Submits explicit expired lease retirement through ordinary operator source."""
     deadline = request["retention-expires-at-millis"] // 1000 + 1
     runtime.succeed(f"{DATE} -s @{deadline}")
-    worktree = "/var/lib/aos-test/native-image-retirement"
-    runtime.succeed(f"{COREUTILS}/mkdir -p {worktree}; {COREUTILS}/chmod 0700 {worktree}")
+    source_path = "/var/lib/aos-test/native-image-retirement.nix"
     source = "{ ... }: { aos.imageRollout.retiredRequests = [ (builtins.fromJSON " + json.dumps(json.dumps(request)) + ") ]; }"
     encoded = base64.b64encode(source.encode()).decode()
-    runtime.succeed(f"printf %s {shlex.quote(encoded)} | {COREUTILS}/base64 -d > {worktree}/configuration.nix")
-    runtime.succeed(f"{APM} switch --worktree {worktree} --eval-root /var/lib/aos-test/native-image-retirement-eval", timeout=1800)
+    runtime.succeed(f"printf %s {shlex.quote(encoded)} | {COREUTILS}/base64 -d > {source_path}")
+    runtime.succeed(f"{APM} config add {source_path} --name native-image-retirement.nix --worktree {SITE_WORKTREE}")
+    runtime.succeed(f"{APM} config apply --worktree {SITE_WORKTREE} --eval-root /var/lib/aos-test/native-image-retirement-eval", timeout=1800)
 
 
 def run() -> None:
@@ -219,6 +271,8 @@ def run() -> None:
     runtime.wait_until_succeeds(f"{SYSTEMCTL} is-active --quiet aos-image-boot-commit.service", timeout=600)
     # Fault inputs must be created after enrollment seals the persistent volume.
     runtime.succeed(f"{COREUTILS}/mkdir -p /var/lib/aos-test")
+    # Retain site sources before image selections append transient intent modules.
+    runtime.succeed(f"{APM} config discard --worktree {SITE_WORKTREE}", timeout=1800)
     original = generation(image_state(), image_state()["running"])
     assert_identity(original)
     publish_candidate()
