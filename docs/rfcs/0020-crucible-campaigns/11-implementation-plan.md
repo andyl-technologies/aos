@@ -17,7 +17,7 @@ The task list and requirement traceability remain authoritative for completion.
 | Area | Established evidence | Remaining work |
 | --- | --- | --- |
 | Core package and execution | Packaged boot, CLI, two-node HTTP, native checkpoint, Rust aggregate, license boundary, and source co-retention passed. | Complete T-CAM-9.1's campaign-disabled/enabled gate coverage and the release profiles. |
-| Guest choices and checkpoint lifecycle | Selected guest execution reached its authenticated boundary; selected-state promotion exceeded its existing 180-second host watchdog. | Qualify packaged checkpoint/restart choices, the complete public lifecycle, storage recovery, and promotion/restore under T-CAM-2.8, T-CAM-4.8, T-CAM-5.8, and T-CAM-9.3. |
+| Guest choices and checkpoint lifecycle | The complete public packaged lifecycle passed on signed source `678cb854`; selected-state promotion remains unqualified. | Qualify packaged checkpoint/restart choices, storage recovery, and promotion/restore under T-CAM-2.8, T-CAM-5.8, and T-CAM-9.3. |
 | Native hot fork | The VMState-only fixture passed three children, two retained-source restorations, and zero thread/descriptor leaks. | Complete the supported-product inventory, exact/thin equivalence, scaling, deep-template, pressure, and multi-node matrices in Phases 6 and 7. This fixture does not qualify the full product profile. |
 | Product and measurement integration | The two-node HTTP fixture completed through the packaged public campaign surface. | T-CAM-3.6's known-finding integration and T-CAM-8.6's five-VM Envoy failover/recovery remain unqualified. |
 | Performance | Focused regression checks cover assertion-prefix and sparse-marker evaluation. | T-CAM-9.2 still requires the measured reference baseline, million-admission evidence, and complete scaling gate. |
@@ -1354,14 +1354,20 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   the same candidate sequence, preserve the target signature, and retain the
   selected schedule length, start, end, basis, seed, candidate bounds, and every
   replay outcome in the current minimization policy and transcript.
-- [ ] **T-CAM-4.8** Automate the packaged local campaign lifecycle through lazy
+- [x] **T-CAM-4.8** Automate the packaged local campaign lifecycle through lazy
   widening, additive finite branching, edge deduplication, live status,
   explanation, bounded pressure, pause/restart/resume, steering, and graceful
   stop using only public interfaces.
-  Existing coverage proves exact selection of the bounded
-  interesting window, immutable-prefix confinement, deterministic rerun, and
-  signature-preserving shrink. The task remains open for the complete packaged
-  integration gate.
+  `gate:campaign-packaged-lifecycle` passed on signed source `678cb854` through
+  the packaged public CLI and real guest choices. It selected FAST and SAFE
+  branches, verified finite cardinality two and two deduplicated edges, observed
+  live status and request explanations, and exercised proposal/attempt limits
+  of three/one through terminal success. Pause and service restart preserved
+  the exact paused snapshot before resume; imported-policy steering and graceful
+  stop produced completed status and its report. The exact test passed in
+  1,027.11 seconds with the original 3,600-second outer and 600-second selectable
+  and branch observation guards. This qualification does not close checkpoint
+  promotion, storage recovery, or other campaign gates.
 - [x] **T-CAM-4.9** Implement the authoritative language-neutral
   `CampaignService`, pure `PlannerEngine`, and local `ExecutorService` schemas;
   provide direct and loopback-RPC adapters, golden vectors, fake components,
