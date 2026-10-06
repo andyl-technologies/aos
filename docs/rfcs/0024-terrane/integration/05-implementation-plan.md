@@ -1917,6 +1917,30 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Independent attribute-profile and captured-selection helpers separately pass
   strict native/default/Send quality and all eight historical-index cases at
   `649446a0e8a8`. Authoring admission and publication remain unfinished.
+  The isolated executed-view lifecycle is now preserved at `d8aef83d75`:
+  closed admission supplies its exact signed view/root and independently
+  selected profile through staged history and genuine mixed disclosure.
+  Recorded meanings survive later operations and metadata adapters; Legacy
+  defaults are not cached as overrides. Strict Clippy and private rustdoc
+  pass for actual default, std/send and native profiles. Its original
+  replacement fixture fails at the earlier real `guard-install` refusal;
+  the corrected fixture checks that refusal and the unchanged protected
+  state. All three exact authoring cases subsequently pass in a private
+  hermetic check, including two successive Recorded publications. Portable
+  Terrane compilation passes with twenty warnings, without a strict
+  no-default-profile lint claim. The separate same-invocation read-history
+  reuse prerequisite at `62a7a4d9fe` preserves current authority, scope, token,
+  domain and trust checks. Actual native Nextest runs all seven authoring and
+  Recorded-history cases successfully, with 569 deliberately filtered cases;
+  UUID `5cd9e4dd-cee6-42c6-a916-4e3525df5f0c` takes 64.435 seconds.
+  Strict default/Send/native quality and both formatters pass on that source;
+  both private hermetic inputs match all 4,855 included files. The preceding
+  Recorded owning check passed two cases, then returned `Expired` in its third;
+  its fourth did not execute. That failure remains preserved. The owning
+  check on the new read source now passes all four exact cases; its input is
+  the same independently checked 4,855-file source. Required inline Index
+  admission, lawful initial/preserved binding gaps and actual pre-signing
+  incremental I/P/G maintenance remain separate unfinished writer obligations.
   T-DRV-2, ALG-32, task merges and T1 remain open.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
@@ -2992,6 +3016,16 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `checks.terrane.gates.prov-disclosure-boundary`,
   `checks.terrane.gates.ref-advance-ordering`,
   `checks.terrane.gates.ref-epoch-fencing`, `checks.terrane.gates.ref-watch`.
+  The shared test-only counted read boundary is pushed at `d00ec63cee`.
+  It preserves existing post-body gates and permits a fixture to pause an
+  actual artifact read after a measured genuine repair prefix. All 45 exact
+  `bucket-file-cas` and three `native-content-observation` cases pass, as do
+  both formatters. The separate held-upload draft passes its three existing
+  store gates and application compilation, but all four new witnesses fail
+  during setup because they incorrectly assume a filter exists. Corrected
+  fixtures must distinguish real selection/repair reads and mandatory repair
+  synchronization from later direct artifact verification; no production
+  verification or repair condition is relaxed.
 - [ ] **T-GC-1** Mark-and-sweep collector: roots, mark, grace, two-phase
   sweep, singleton lease, resumability, retention values `gc`, `lease`,
   `ttl`, `forever`, and ordinary reflog duration/count selection. D-78
@@ -3030,8 +3064,19 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   unsupported Note key in its fixture before reconciliation assertions; the
   tenth does not execute. A test-only correction uses the existing supported
   opaque profile Note family in both the publication and exact-record oracle.
-  The unchanged production source and corrected ten-case matrix are rerunning;
-  no full matrix or deletion gate result is inferred from the eight passes.
+  The next unchanged-production run again passes eight cases; its ninth reaches
+  actual resumed Done, then fails because the final fixture oracle looks up a
+  bare Note name instead of the canonical selected ref-record key. The reviewed
+  test-only correction derives that key with `BucketKey::ref_record`.
+  The following full ten-case run passes four cases, then refuses during the
+  fault matrix's real `mark_batch` lease renewal; the last five do not execute.
+  That denial covers several checks and establishes no expiry or load cause.
+  Independent frozen-source checks now run those five cases separately. The
+  corrected Notes reconciliation case passes in 127.96 seconds; cancellation
+  fails in 138.69 seconds at an earlier missing-current-directory-fence refusal,
+  before its expected post-durable-Cancelled interruption. The remaining three
+  checks are running. Original failures remain preserved; no full matrix,
+  deletion gate, timing fix or task qualification is inferred.
   The reviewed pure journal, marking, proof-context, checkpoint, retention and
   grace-window bodies now replace their trunk declarations. All 27 adopted
   paths, including 16 independent hexadecimal witnesses, match the qualified
