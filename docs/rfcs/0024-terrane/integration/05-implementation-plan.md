@@ -1829,6 +1829,21 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   property revisions independently of execution support. Existing producers
   still record absent context. Genuine capture, current-selection comparison,
   index qualification and cold/source-carry checks remain unqualified.
+  A separately composed native producer now captures each actual consumed-view
+  interpretation only after successful owning history verification or closed
+  admission. Six actual native cases pass: published candidate context,
+  completed Recorded history, missing Original association refusal, required
+  index refusal before its owning validator exists, refusal to relabel Legacy
+  admission and exact revision-one vocabulary. All 666 core tests and eleven
+  context cases pass on the same frozen candidate, together with fourteen
+  stopped-Session and held/output-sync regressions. Strict native, default and
+  Send Clippy, no-std compilation, private rustdoc, the context/publication/model
+  Nix checks and both formatters pass. The first attempt's malformed property
+  fixture and native borrow errors remain preserved; two test-only corrections
+  precede this successful run. Existing private property and attribute profiles
+  remain intact. Required index completion, tracked Recorded disclosure,
+  independent cold reuse and source carry remain incomplete. This candidate is
+  isolated and unpublished; it does not qualify the full trunk gate set.
   T-DRV-2, ALG-32, task merges and T1 remain open.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
