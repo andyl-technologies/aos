@@ -14,6 +14,7 @@
   maintenanceTransfer ? false,
   storageRecovery ? false,
   packedMaintenance ? false,
+  tierMaintenance ? false,
   policyTimeout ? false,
   singleGuest ? null,
   twoNodeHttp ? false,
@@ -22,6 +23,26 @@
 assert !packedMaintenance
 || (
   guestChoice
+  && !tierMaintenance
+  && !storageRecovery
+  && !maintenanceTransfer
+  && !policyTimeout
+  && !twoNodeHttp
+  && singleGuest == null
+  && !findingExactBundle
+  && !findingSignalBundle
+  && !findingForkWrite
+  && !hotForkFlight
+  && !envoyNetwork
+  && !envoyKnownFinding
+  && !campaignLifecycle
+  && !campaignMidpoint
+  && twoNodeHttpServer == "nginx"
+);
+assert !tierMaintenance
+|| (
+  guestChoice
+  && !packedMaintenance
   && !storageRecovery
   && !maintenanceTransfer
   && !policyTimeout
@@ -254,6 +275,8 @@ assert !packedMaintenance
       then "crucible-${httpFlightName}"
       else if policyTimeout
       then "crucible-packaged-campaign-policy-timeout"
+      else if tierMaintenance
+      then "crucible-campaign-tier-maintenance"
       else if packedMaintenance
       then "crucible-campaign-packed-maintenance"
       else if storageRecovery
@@ -282,7 +305,7 @@ assert !packedMaintenance
     memory =
       if envoyProduct
       then 8192
-      else if findingForkWrite || hotForkFlight || storageRecovery || packedMaintenance || singleGuestMaterialization || twoNodeHttp
+      else if findingForkWrite || hotForkFlight || storageRecovery || packedMaintenance || tierMaintenance || singleGuestMaterialization || twoNodeHttp
       then 3072
       else 2048;
     headlessVcpuCount =
@@ -293,7 +316,7 @@ assert !packedMaintenance
     # baked genesis alone. The storage-recovery flight also retains S3 objects
     # beside staged checkpoints. Leave writable space on the ext4 rootfs.
     extraWritableMiB =
-      if envoyProduct || storageRecovery || packedMaintenance
+      if envoyProduct || storageRecovery || packedMaintenance || tierMaintenance
       then 16384
       else if twoNodeHttp
       then 8192
@@ -313,7 +336,7 @@ assert !packedMaintenance
       );
     testScript = ''
       set -eu
-      ${lib.optionalString (envoyProduct || storageRecovery || packedMaintenance || twoNodeHttp) ''
+      ${lib.optionalString (envoyProduct || storageRecovery || packedMaintenance || tierMaintenance || twoNodeHttp) ''
         # The headless harness mounts /tmp as a RAM-sized tmpfs. Put the
         # checkpoint and store workspace on the already-sized ext4 rootfs.
         ${pkgs.util-linux}/bin/mount -o remount,rw /
@@ -483,6 +506,45 @@ assert !packedMaintenance
           ${pkgs.grep}/bin/grep -Fq \
             'test result: ok. 1 passed; 0 failed; 0 ignored;' "$http_log"
           printf '%s\n' 'gate=gate:${httpFlightName}'
+        ''
+        else if tierMaintenance
+        then ''
+          tier_selector=packaged::guest_choice::tier_maintenance::public_exact_paused_guest_survives_tier_cache_eviction_and_promotion
+          tier_log=/tmp/campaign-tier-maintenance.log
+          if ! ${flight}/bin/campaign-store-process-flight --ignored --list \
+            > /tmp/campaign-tier-maintenance-list.log 2>&1; then
+            cat /tmp/campaign-tier-maintenance-list.log
+            exit 1
+          fi
+          ${pkgs.grep}/bin/grep -Fqx \
+            "$tier_selector: test" /tmp/campaign-tier-maintenance-list.log
+
+          if ! ${pkgs.coreutils}/bin/timeout -k 5 7200 \
+            ${flight}/bin/campaign-store-process-flight --ignored --exact \
+            "$tier_selector" --nocapture > "$tier_log" 2>&1; then
+            cat "$tier_log"
+            exit 1
+          fi
+          cat "$tier_log"
+          for evidence in \
+            tier_maintenance_real_exact_pause=true \
+            tier_maintenance_stale_gc_refused_before_deletion=true \
+            tier_maintenance_reachable_cache_evicted=true \
+            tier_maintenance_required_restore_preserved=true \
+            tier_maintenance_authenticated_cache_repromoted=true \
+            tier_maintenance_exact_origin_preserved=true \
+            tier_maintenance_scheduler_observed_guest_progress=true \
+            tier_maintenance_distinct_authenticated_checkpoint=true \
+            tier_maintenance_selected_outcome_preserved=true \
+            tier_maintenance_derived_refs_preserved=2 \
+            tier_maintenance_final_guest_cleanup=true
+          do
+            ${pkgs.grep}/bin/grep -Fxq "$evidence" "$tier_log"
+          done
+          ${pkgs.grep}/bin/grep -Fq \
+            'test result: ok. 1 passed; 0 failed; 0 ignored;' "$tier_log"
+          printf '%s\n' 'gate=gate:campaign-tier-maintenance' \
+            'tasks=T-CAM-5.8' 'tier=real-packaged-qemu'
         ''
         else if packedMaintenance
         then ''

@@ -50,6 +50,8 @@ mod maintenance_transfer;
 mod packed_maintenance;
 #[path = "guest_choice/storage_recovery.rs"]
 mod storage_recovery;
+#[path = "guest_choice/tier_maintenance.rs"]
+mod tier_maintenance;
 
 #[test]
 #[ignore = "requires dedicated cgroup-v2 and ext4 project-quota roots inside the VM check"]

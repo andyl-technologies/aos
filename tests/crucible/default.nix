@@ -1568,6 +1568,9 @@ in rec {
       campaignPackedMaintenance = import ./phase5-campaign-packed-maintenance-vm.nix {
         inherit pkgs lib;
       };
+      campaignTierMaintenance = import ./phase5-campaign-tier-maintenance-vm.nix {
+        inherit pkgs lib;
+      };
       campaignPolicyTimeoutVm = import ./phase5-campaign-policy-timeout-vm.nix {
         inherit pkgs lib;
       };
