@@ -6,7 +6,7 @@
 //! These shared declarations do not qualify runtime replay; the owning check
 //! requires actual loading, failure, divergence and mandatory-input witnesses.
 
-mod persistence;
+pub mod persistence;
 
 #[cfg(test)]
 mod tests;

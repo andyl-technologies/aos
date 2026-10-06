@@ -63,7 +63,7 @@ pub(crate) use merge::RebaseRequest;
 pub(crate) use original::{AssociationView, BootstrapView, RegistrationView};
 #[cfg(feature = "std")]
 pub use original::{OriginalAuthority, OriginalCommitContext, RetainedBootstrap};
-pub use read::AuthorizedSnapshot;
+pub use read::{AuthorizedSnapshot, indexes};
 pub(crate) use snapshot::{TreeEvidence, invalid};
 pub use staged::{CommitRequest, StagedUpload};
 #[cfg(feature = "std")]

@@ -1,6 +1,6 @@
 //! Keeps authenticated read witnesses private and rechecks live policy before reachable content I/O.
 
-mod indexes;
+pub mod indexes;
 
 use terrane_core::auth::{self, Request, RequestRoot, Verb};
 use terrane_core::codec::{Codec, parse_envelope};

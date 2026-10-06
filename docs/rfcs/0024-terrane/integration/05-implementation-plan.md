@@ -1989,7 +1989,8 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   These local prerequisites do not close a task or
   qualify the full current trunk gate set.
   Shared module registrations now reserve independent native indexed-read and
-  common Memo persistence leaves. Their owning integration checks require six
+  common Memo persistence leaves at public `guard::indexes` and
+  `derivation::persistence` paths. Their owning integration checks require six
   and four exact, nonignored cases respectively; absent implementations fail
   discovery explicitly. Registry completeness and both formatters pass on the
   registration-only source. This supplies no indexed-answer, persisted Memo,
