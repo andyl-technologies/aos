@@ -63,6 +63,12 @@ ONLINE_NIX_KNOWN_DOMAINS = (
     "aos_nix_online_store_reader_t",
 )
 ONLINE_NIX_DOMAINS = ()
+# The bank recipe selects only these existing recipients, never Host or helpers.
+RESOURCE_BANK_KNOWN_RECIPIENTS = (
+    "aos_sandbox_controller_t",
+    "aos_sandbox_storage_t",
+)
+RESOURCE_BANK_RECIPIENTS = ()
 ONLINE_NIX_HELPERS = ONLINE_NIX_DOMAINS[1:3]
 ONLINE_NIX_IMAGE_IOCTL_CELLS = (("aos_sandbox_nix_t", "aos_nix_online_store_t"),)
 ENFORCING = (*OWNER_DOMAINS, *HELPER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY, OFFLINE_PREPARE, OFFLINE_HELPER, *SELECTED_MOUNT_SOURCE_DOMAINS, *ONLINE_NIX_DOMAINS, *RUNTIME_DOMAINS)
@@ -645,11 +651,40 @@ def matrix(Access, Transition, accesses, ordinary_domains):
     negative.extend(runtime_negative)
     transitions.extend(runtime_transitions)
 
+    bank_positive, bank_negative = _resource_bank_matrix(Access, accesses)
+    positive.extend(bank_positive)
+    negative.extend(bank_negative)
+
     view_positive, view_negative, view_transitions = view_policy.matrix(Access, Transition, accesses, all_roles)
     positive.extend(view_positive)
     negative.extend(view_negative)
     transitions.extend(view_transitions)
     return tuple(sorted(set(positive))), tuple(sorted(set(negative))), tuple(transitions)
+
+
+def _resource_bank_matrix(Access, accesses):
+    """Describes inherited read-only capsules for the exact two bank recipients."""
+
+    if not RESOURCE_BANK_RECIPIENTS:
+        return [], []
+    if RESOURCE_BANK_RECIPIENTS != RESOURCE_BANK_KNOWN_RECIPIENTS:
+        raise ValueError("unexpected resource bank recipient cohort")
+
+    positive = []
+    negative = []
+    for recipient in RESOURCE_BANK_RECIPIENTS:
+        positive.append(Access(recipient, "init_t", "fd", "use"))
+        positive.extend(accesses(
+            recipient, "init_tmpfs_t", "file", ("getattr", "read"),
+        ))
+        negative.extend(accesses(
+            recipient, "init_tmpfs_t", "file",
+            ("append", "create", "entrypoint", "execute", "execute_no_trans",
+             "ioctl", "link", "lock", "map", "open", "relabelfrom", "relabelto",
+             "rename", "setattr", "unlink", "write"),
+        ))
+
+    return positive, negative
 
 
 def _runtime_deployment_matrix(Access, Transition, accesses, all_roles):

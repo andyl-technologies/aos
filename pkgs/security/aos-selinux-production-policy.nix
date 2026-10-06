@@ -25,6 +25,7 @@
   sourceProviderMount ? false,
   onlineNix ? false,
   runtimeDeploymentPublisher ? false,
+  resourceBankEnrollment ? false,
   aos-nix-runtime-tpm-helpers ? null,
   aos-nix-online-store-reader ? null,
 }: let
@@ -59,12 +60,26 @@
     else if runtimeDeploymentPublisher
     then source
     else builtins.elemAt parts 0 + "\n" + builtins.elemAt ending 2;
+  closedResourceBankSource = source: let
+    parts = builtins.split "\n# AOS_RESOURCE_BANK_ENROLLMENT_BEGIN\n" source;
+    ending =
+      if builtins.length parts == 3
+      then builtins.split "# AOS_RESOURCE_BANK_ENROLLMENT_END\n" (builtins.elemAt parts 2)
+      else [];
+  in
+    if builtins.length parts != 3 || builtins.length ending != 3
+      || builtins.length (builtins.split "# AOS_RESOURCE_BANK_ENROLLMENT_BEGIN\n" source) != 3
+      || builtins.length (builtins.split "# AOS_RESOURCE_BANK_ENROLLMENT_END\n" source) != 3
+    then throw "resource bank policy requires exactly one closed block"
+    else if resourceBankEnrollment
+    then source
+    else builtins.elemAt parts 0 + "\n" + builtins.elemAt ending 2;
   # The suffix has one fixed beginning and ending, and no trailing source.
   # The false branch restores the exact original newline, not a blank block.
   closedSelectedSource = path: let
     source = closedRuntimeSource (
       if path == policySupport + "/owner_confinement.te"
-      then closedOnlineSource (builtins.readFile path)
+      then closedResourceBankSource (closedOnlineSource (builtins.readFile path))
       else builtins.readFile path
     );
     parts = builtins.split "\n# AOS_SELECTED_MOUNT_SOURCE_BEGIN\n" source;
@@ -82,14 +97,22 @@
     if builtins.length (builtins.split pattern source) != 3
     then throw "selected owner DATA requires exactly one fixed initializer"
     else builtins.replaceStrings [literal] [replacement] source;
+  resourceBankOwnerData =
+    if resourceBankEnrollment
+    then replaceSelectedInitializer
+      "RESOURCE_BANK_RECIPIENTS = \\(\\)"
+      "RESOURCE_BANK_RECIPIENTS = ()"
+      "RESOURCE_BANK_RECIPIENTS = RESOURCE_BANK_KNOWN_RECIPIENTS"
+      (builtins.readFile (policySupport + "/owner_policy.py"))
+    else builtins.readFile (policySupport + "/owner_policy.py");
   runtimeOwnerData =
     if runtimeDeploymentPublisher
     then replaceSelectedInitializer
       "RUNTIME_DOMAINS = \\(\\)"
       "RUNTIME_DOMAINS = ()"
       "RUNTIME_DOMAINS = RUNTIME_KNOWN_DOMAINS"
-      (builtins.readFile (policySupport + "/owner_policy.py"))
-    else builtins.readFile (policySupport + "/owner_policy.py");
+      resourceBankOwnerData
+    else resourceBankOwnerData;
   mountSourceOwnerData =
     if !sourceProviderMount
     then runtimeOwnerData
@@ -118,7 +141,7 @@
   # Selected checks import the rendered immutable DATA beside the same checker.
   # No policy observation or runtime option chooses its expected permissions.
   checkerScript =
-    if sourceProviderMount || onlineNix || runtimeDeploymentPublisher
+    if sourceProviderMount || onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment
     then "selected-policy-checker/effective_policy.py"
     else "${policySupport}/effective_policy.py";
   # toFile cannot carry an output reference, and the policy must not build
@@ -295,7 +318,7 @@ in
           attribute_negative_module=aos_sandbox_attribute_negative
           export PYTHONPATH=${setools}/lib/python3/site-packages
 
-          ${if sourceProviderMount || onlineNix || runtimeDeploymentPublisher then ''
+          ${if sourceProviderMount || onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment then ''
             mkdir selected-policy-checker
             cp -R ${policySupport}/. selected-policy-checker/
             chmod u+w selected-policy-checker
@@ -583,7 +606,7 @@ in
             deficient-binary-diagnostic \
             "$evidence_root/"
           install -m 0644 ${fileContexts} "$evidence_root/aos_sandbox.fc"
-          ${if onlineNix || runtimeDeploymentPublisher then ''
+          ${if onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment then ''
             # Adjacent modules and rendered expectation DATA are the same
             # inputs used above; the relative passthru has no output cycle.
             mkdir -p "$out/share/aos/selected-policy-checker"
@@ -612,7 +635,7 @@ in
         refpolicy-production.src
         linux.src
       ];
-    } // (if onlineNix || runtimeDeploymentPublisher then {
+    } // (if onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment then {
       effectivePolicyCheckerRelative = "share/aos/selected-policy-checker/effective_policy.py";
     } else {});
 
