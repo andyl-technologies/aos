@@ -3500,6 +3500,60 @@ impl StorageBrokerRuntime {
         policy: PeerPolicy,
         current_clock: &RawPairedClockSample,
     ) -> Result<([u8; 16], StorageOperation, StorageAdmissionOutcome), StorageRuntimeError> {
+        self.admit_signed_apply_intent_inner(
+            request_body,
+            artifacts,
+            protocol_version,
+            peer,
+            policy,
+            current_clock,
+            None,
+        )
+        .map(|(_, operation_id, operation, outcome)| (operation_id, operation, outcome))
+    }
+
+    /// Admits a signed Apply after checking its authenticated request identity.
+    ///
+    /// The header request identity remains distinct from the operation key
+    /// used for catalog lookup and execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a mismatched header or any admission failure
+    /// reported by [`Self::admit_signed_apply_intent`].
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn admit_authenticated_signed_apply_intent(
+        &mut self,
+        request_body: &[u8],
+        authenticated_request_id: &[u8; 16],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        current_clock: &RawPairedClockSample,
+    ) -> Result<([u8; 16], [u8; 16], StorageOperation, StorageAdmissionOutcome), StorageRuntimeError> {
+        self.admit_signed_apply_intent_inner(
+            request_body,
+            artifacts,
+            protocol_version,
+            peer,
+            policy,
+            current_clock,
+            Some(authenticated_request_id),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn admit_signed_apply_intent_inner(
+        &mut self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        current_clock: &RawPairedClockSample,
+        authenticated_request_id: Option<&[u8; 16]>,
+    ) -> Result<([u8; 16], [u8; 16], StorageOperation, StorageAdmissionOutcome), StorageRuntimeError> {
         self.require_git_coverage_new_admission_v1()?;
         if self.apply_readiness == StorageApplyReadiness::WorkspaceBackendUnavailable
             || protocol_version != ProtocolVersion::new(1, 0)
@@ -3531,6 +3585,10 @@ impl StorageBrokerRuntime {
         if semantics.header().protocol_version() != protocol_version {
             return Err(StorageRuntimeError::Recovery);
         }
+        let request_id = *semantics.header().request_id();
+        if authenticated_request_id.is_some_and(|expected| expected != &request_id) {
+            return Err(StorageRuntimeError::Recovery);
+        }
         let operation = semantics.operation();
         let result = match apply_admission_route(operation) {
             StorageApplyAdmissionRoute::Workspace => {
@@ -3551,7 +3609,7 @@ impl StorageBrokerRuntime {
                         &manifest,
                         &sandbox_spec,
                     )
-                    .map(|outcome| (operation_id, operation, outcome));
+                    .map(|outcome| (request_id, operation_id, operation, outcome));
             }
             StorageApplyAdmissionRoute::Generic => self.coordinator.admit_apply_intent(
                 request_body,
@@ -3565,7 +3623,7 @@ impl StorageBrokerRuntime {
         };
         let outcome =
             self.finish_live_transaction_mutation(result, StorageRuntimeError::Admission)?;
-        Ok((operation_id, operation, outcome))
+        Ok((request_id, operation_id, operation, outcome))
     }
 
     /// Executes one already-admitted Prepared effect under fresh authority.

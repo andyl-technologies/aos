@@ -862,15 +862,17 @@ impl DormantStorageBrokerCallsiteV1 for DormantStorageApplyCompositionV1 {
         if current_clock.host_boot_id() != protected_boot_id {
             return Err(DormantStorageBrokerCallErrorV1::StaleKernel);
         }
-        let (admitted_id, operation, admission) = self.runtime.admit_signed_apply_intent(
-            request_body,
-            artifacts,
-            protocol_version,
-            peer,
-            policy,
-            &current_clock,
-        )?;
-        if admitted_id != request_id {
+        let (admitted_request_id, operation_id, operation, admission) =
+            self.runtime.admit_authenticated_signed_apply_intent(
+                request_body,
+                &request_id,
+                artifacts,
+                protocol_version,
+                peer,
+                policy,
+                &current_clock,
+            )?;
+        if admitted_request_id != request_id {
             return Err(DormantStorageBrokerCallErrorV1::StaleKernel);
         }
 
@@ -883,7 +885,7 @@ impl DormantStorageBrokerCallsiteV1 for DormantStorageApplyCompositionV1 {
                 }
                 Ok(sample)
             };
-            Some(self.runtime.execute_admitted(request_id, &mut clock)?)
+            Some(self.runtime.execute_admitted(operation_id, &mut clock)?)
         } else {
             None
         };
@@ -895,7 +897,7 @@ impl DormantStorageBrokerCallsiteV1 for DormantStorageApplyCompositionV1 {
             execution.as_ref(),
         );
         Ok(DormantStorageBrokerObservationV1 {
-            operation_id: request_id,
+            operation_id,
             operation,
             admission,
             execution,
