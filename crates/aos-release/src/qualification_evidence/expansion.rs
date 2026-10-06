@@ -137,7 +137,12 @@ pub(super) fn expand(
             } else {
                 None
             };
-            let predecessor = if requirement.id == "image-update-recovery"
+            // A qualification snapshot is the first installed source and has
+            // no predecessor; selection already drops its update cases, and
+            // its recovery-image package cases record no update transition.
+            let predecessor = if plan.is_qualification_snapshot() {
+                None
+            } else if requirement.id == "image-update-recovery"
                 || claim.as_ref().is_some_and(|claim| {
                     claim.minimum_assurance >= AssuranceLevel::A2
                         && claim
@@ -147,7 +152,8 @@ pub(super) fn expand(
                 })
                 || package_rule.is_some_and(|rule| {
                     matches!(rule.execution, Some(PackageExecution::RecoveryImage { .. }))
-                }) {
+                })
+            {
                 Some(plan.qualification_predecessor.clone().ok_or_else(|| {
                     anyhow::anyhow!("qualification execution requires a frozen predecessor")
                 })?)
