@@ -220,7 +220,7 @@ def _scale_issuer_resource(native, worker, tools, selected, renewal):
         "clock_commit_latency": str(selected["clockCommitLatencySeconds"]), "issuance_enabled": True,
         "publisher_key_file": root + "/publisher.key", "renewal_key_file": root + "/renewal.key",
         "signing_seed_file": root + "/signing-seed.key", "signing_key_id": selected["signingKeyId"],
-        "tls": {"certificate_file": tools["issuerCertificate"], "private_key_file": tools["issuerPrivateKey"],
+        "tls": {"certificate_file": tools["issuerCertificate"], "private_key_file": tools["issuerAuthorityPrivateKey"],
             "expected_server_name": tools["issuerCertificateHost"]}}
     observed = json.loads(direct_guest_python(native, tools["python"], """
         import hashlib, os, subprocess

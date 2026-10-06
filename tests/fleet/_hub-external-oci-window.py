@@ -179,7 +179,7 @@ def run_external_oci_business_lane(client, native, worker, s3, database_machine,
     issuer = provision_external_issuer(native, worker, pair_tools["python"], pair_tools["openssl"],
         selection["issuerInstallation"], selection["timingProfile"], selection["clockUncertaintySeconds"],
         selection["clockCommitLatencySeconds"], selection["issuerSigningKeyId"], renewal,
-        pair_tools["issuerCertificate"], pair_tools["issuerPrivateKey"], pair_tools["issuerCertificateHost"],
+        pair_tools["issuerCertificate"], pair_tools["issuerAuthorityPrivateKey"], pair_tools["issuerCertificateHost"],
         issuer_root=coordinates["nativeRoot"] + "/issuer",
         worker_operator_root=coordinates["workerRoot"] + "/operator", listen="127.0.0.1:4680",
         hub_root=coordinates["nativeRoot"] + "/hub")

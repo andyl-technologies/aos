@@ -1151,6 +1151,7 @@ in {
               "s3Ca": "${s3PublicTrust}/value",
               "s3PublicTrust": "${s3PublicTrust}/value",
               "issuerCertificate": "${serverCertificate}/value", "issuerPrivateKey": "${serverPrivateKey}/value",
+              "issuerAuthorityPrivateKey": "/run/credentials/@system/hybrid-fleet-private-key",
               "issuerCertificateHost": "localhost", "fleetCaPem": ${builtins.toJSON caCertificate},
               "nativeDatabaseUrlFile": "/run/hybrid-bootstrap-credentials/database-url",
               "nativeStorageWorkKeyFile": "/run/credentials/@system/hybrid-fleet-storage-key",

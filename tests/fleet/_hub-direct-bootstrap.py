@@ -130,7 +130,7 @@ def prepare_external_authority(controls, credential_report, worker, native, tool
         native, worker, tools["python"], tools["openssl"], installation,
         selection["timingProfile"], selection["clockUncertaintySeconds"],
         selection["clockCommitLatencySeconds"], selection["issuerSigningKeyId"],
-        renewal_key, tools["issuerCertificate"], tools["issuerPrivateKey"],
+        renewal_key, tools["issuerCertificate"], tools["issuerAuthorityPrivateKey"],
         tools["issuerCertificateHost"],
     )
     exported = export_external_authority(

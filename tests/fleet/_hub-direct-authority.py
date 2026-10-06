@@ -289,38 +289,103 @@ def export_external_authority(worker, native, python, bootstrap_executable,
                                for name, body in documents.items()}}
 
 
-def start_external_issuer(native, python, authority_executable):
-    """Launch the initialized issuer and retain its actual process identity."""
-    return json.loads(private_guest_command(native, textwrap.dedent(f"""
+def start_external_issuer(native, python, authority_executable, *,
+                          issuer_root="/var/lib/hybrid-authority",
+                          qualification_observation_file=None):
+    """Retain a safe startup result before requiring actual process observation."""
+    arguments = [authority_executable, "serve", "--configuration",
+                 issuer_root + "/configuration.json"]
+    if qualification_observation_file is not None:
+        arguments += ["--qualification-observation", qualification_observation_file]
+    result = json.loads(private_guest_command(native, textwrap.dedent(f"""
         {shlex.quote(python)} - <<'NATIVE_ISSUER_PROCESS'
         import hashlib, json, os, subprocess, time
         from pathlib import Path
 
-        root = Path('/var/lib/hybrid-authority')
-        descriptor = os.open(root / 'serve.log', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(descriptor, 'wb') as log:
-            process = subprocess.Popen([{authority_executable!r}, 'serve',
-                '--configuration', str(root / 'configuration.json')],
-                stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
-        time.sleep(0.2)
-        if process.poll() is not None:
-            raise ValueError('initialized issuer exited before process observation')
-        status = Path('/proc/' + str(process.pid))
-        executable = os.readlink(status / 'exe')
-        executable_digest = hashlib.file_digest(open(status / 'exe', 'rb'), 'sha256').hexdigest()
-        start_ticks = (status / 'stat').read_text().rsplit(')', 1)[1].split()[19]
-        receipt = {{'version': 1, 'pid': process.pid, 'startTicks': start_ticks,
-            'executable': executable, 'executableSha256': executable_digest,
-            'machineRole': 'native_metadata_issuer', 'listener': '127.0.0.1:8444',
-            'scope': 'process startup only; authenticated lease observations pending'}}
-        descriptor = os.open(root / 'process.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(descriptor, 'w') as output:
-            json.dump(receipt, output, sort_keys=True, separators=(',', ':'))
-            output.flush()
-            os.fsync(output.fileno())
-        print(json.dumps(receipt))
+        root = Path({issuer_root!r})
+        process = None
+        receipt = None
+        log_created = False
+        phase, category = 'launch', 'launch_failure'
+        try:
+            descriptor = os.open(root / 'serve.log', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            log_created = True
+            with os.fdopen(descriptor, 'wb') as log:
+                process = subprocess.Popen({arguments!r}, stdin=subprocess.DEVNULL,
+                    stdout=log, stderr=log, start_new_session=True)
+            time.sleep(0.2)
+            if process.poll() is not None:
+                phase, category = 'early_exit', 'other_failure'
+            else:
+                phase, category = 'process_observation', 'observation_failure'
+                status = Path('/proc/' + str(process.pid))
+                executable = os.readlink(status / 'exe')
+                with open(status / 'exe', 'rb') as executable_file:
+                    executable_digest = hashlib.file_digest(executable_file, 'sha256').hexdigest()
+                start_ticks = (status / 'stat').read_text().rsplit(')', 1)[1].split()[19]
+                if process.poll() is None:
+                    receipt = {{'version': 1, 'pid': process.pid, 'startTicks': start_ticks,
+                        'executable': executable, 'executableSha256': executable_digest,
+                        'machineRole': 'native_metadata_issuer', 'listener': '127.0.0.1:8444',
+                        'scope': 'process startup only; authenticated lease observations pending'}}
+                    phase, category = 'observed', 'process_observed'
+        except (OSError, ValueError, IndexError):
+            # Exception text and private logs never cross the guest boundary.
+            pass
+
+        exit_code = process.poll() if process is not None else None
+        if receipt is not None and exit_code is not None:
+            receipt = None
+            phase, category = 'early_exit', 'other_failure'
+        log_bytes, diagnostic, overflow = None, None, None
+        try:
+            if not log_created:
+                raise OSError('startup log was not created')
+            with open(root / 'serve.log', 'rb') as log:
+                log_bytes = os.fstat(log.fileno()).st_size
+                diagnostic = log.read(65536)
+            overflow = log_bytes > 65536
+        except OSError:
+            receipt = None
+            if log_created:
+                phase, category = 'log_inspection', 'log_inspection_failure'
+        if phase == 'early_exit' and diagnostic is not None and not overflow:
+            if b'grants group/other permissions' in diagnostic:
+                category = 'permissions'
+            elif any(message in diagnostic for message in (
+                    b'TLS certificate file is empty',
+                    b'TLS private-key file contains no supported key',
+                    b'TLS certificate and private key are incompatible',
+                    b'opening TLS certificate', b'opening TLS private key')):
+                category = 'tls'
+            elif any(message in diagnostic for message in (
+                    b'unresolved clock session', b'configured issuer policy differs',
+                    b'clock commit latency', b'clock observation')):
+                category = 'clock'
+        summary = {{'version': 1, 'phase': phase, 'category': category,
+            'exitCode': exit_code, 'logBytes': log_bytes,
+            'inspectedLogBytes': len(diagnostic) if diagnostic is not None else None,
+            'logOverflow': overflow,
+            'logComplete': exit_code is not None and diagnostic is not None and not overflow}}
+
+        def retain(name, value):
+            descriptor = os.open(root / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, 'w') as output:
+                json.dump(value, output, sort_keys=True, separators=(',', ':'))
+                output.flush()
+                os.fsync(output.fileno())
+
+        retain('startup-result.json', summary)
+        if receipt is not None:
+            retain('process.json', receipt)
+        print(json.dumps({{'summary': summary, 'process': receipt}}))
         NATIVE_ISSUER_PROCESS
-    """)))
+    """), timeout=120))
+    label = "issuer-startup-" + hashlib.sha256(os.fsencode(issuer_root)).hexdigest()[:16]
+    retain_direct_flow(label + ".json", result["summary"])
+    if result["process"] is None:
+        raise RuntimeError("issuer startup failed: " + result["summary"]["category"])
+    return result["process"]
 
 
 def hydrate_external_authority(worker, python, bootstrap_executable, exported,
