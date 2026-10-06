@@ -225,4 +225,24 @@ in {
   in
     assert refuses (lib.types.ints.between 9007199254740992 9223372036854775807);
     assert refuses (lib.types.ints.between (-9223372036854775807) (-9007199254740992)); true;
+  nativeIntegerDocumentationPreserved = let
+    type = lib.types.ints.between 9007199254740992 9223372036854775807;
+    native = lib.evalModules {
+      inherit lib;
+      modules = [
+        {
+          options.value = lib.mkOption {inherit type;};
+          config.value = 9007199254740992;
+        }
+      ];
+    };
+    declaration = builtins.head (builtins.filter (entry: entry.pathStr == "value") native._optionDecls);
+  in
+    assert native.config.value == 9007199254740992;
+    assert declaration.type
+    == {
+      kind = "opaque";
+      signature = type.description;
+    };
+    assert declaration.typeSig == type.description; true;
 }

@@ -3,6 +3,11 @@
   lib,
   allowOpaque ? false,
 }: let
+  opaqueSchema = type: {
+    kind = "opaque";
+    signature = type.description;
+  };
+
   projectInteger = type: schema: let
     minimum = schema.min or null;
     maximum = schema.max or null;
@@ -12,7 +17,10 @@
       || (!representable maximum && maximum < 0);
   in
     if empty
-    then throw "Option type '${type.description}' has no integers representable in canonical JSON."
+    then
+      if allowOpaque
+      then opaqueSchema type
+      else throw "Option type '${type.description}' has no integers representable in canonical JSON."
     else
       schema
       // {
@@ -39,19 +47,12 @@
     (builtins.removeAttrs options ["_module"]);
 
   project = type: let
-    schema =
-      type._aosDocType or {
-        kind = "opaque";
-        signature = type.description;
-      };
+    schema = type._aosDocType or (opaqueSchema type);
   in
     if !(type._portable or true)
     then
       if allowOpaque
-      then {
-        kind = "opaque";
-        signature = type.description;
-      }
+      then opaqueSchema type
       else throw "Option type '${type.description}' uses a Nix predicate that cannot validate deferred runtime values."
     else if type ? _refinementConstraints
     then {
