@@ -556,6 +556,43 @@ control receipt can retain its same acquired native exclusions and exact origina
 observations for renewal without reacquiring the already-held control lock;
 cloning neither refreshes authority nor creates a new physical receipt.
 
+The shared checked Guard/ref publisher also requires its own closed native
+durability acknowledgment. Its private factory binds the exact whole successor,
+selected slot, transaction, snapshot, pointer and protected proof records to
+the actual checked mutation. The native worker retains the initial selected
+Guard and source-lineage physical observations alongside existing Original
+controls, synchronizes exact metadata on retained nofollow descriptors and
+required directories, and refreshes current controls after a queued handoff
+before the actual sync. Unit success or swallowed native failure cannot fill
+the private result channel. `checks.terrane.integration.native-checked-mutation-publication`
+requires six exact genuine repository cases for success, missing acknowledgment,
+actual sync failures, replaced records, cancellation and queued directory sync.
+Lease selection and its private acknowledgment remain independently required.
+This prerequisite proves neither full-D ownership nor complete ALG-32 publication;
+its owning witnesses and regressions must pass before it is qualified. The first
+test compilation's incorrect epoch field and unconditional test-only path import
+remain recorded and are corrected directly, without suppressing workspace lints.
+
+The acknowledgment's six native and owning Nix cases, ref ordering, nineteen
+lease cases, three collector-clock cases, private rustdoc, default/Send builds
+and application test-target compilation pass. Full trunk qualification remains
+red. Its bucket CAS selector exposed the missing D-108 protected ACTIVATION
+reader case, restored with exact-key and unsafe-mode refusal coverage. The
+package test run also scheduled hundreds of filesystem cases despite a
+two-core builder allocation and reported expiry and timeout failures; package
+Nextest now uses the existing bounded thread option without changing deadlines.
+Original failures remain recorded, including unsupported legacy retirement
+fixtures. Neither these prerequisites nor a focused pass closes a T1 task.
+With the bounded package setting, the full native profile runs 383 cases:
+374 pass and nine fail, with no skipped cases. Six failures concern legacy
+retirement/copy fixtures; three multiwriter cases exceed the unchanged
+30-second publication bound. The full package and aggregate checks still fail.
+Bucket CAS now passes, while bucket atomic-write lacks its actual creation
+witness on the trunk; that producer and case remain in the private composition.
+Both mandatory formatters pass. Reusing authenticated immutable token data is
+under review as an optimization; fresh time, issuer, caveat and physical checks
+remain required, and no expiry cause or deadline fix is established.
+
 The existing private cold-fork source candidate retains its original commit
 `78eb15c7f6` and current prerequisite composition for review and adaptation.
 `checks.terrane.integration.native-cold-fork-source` requires its six exact

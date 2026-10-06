@@ -232,7 +232,7 @@ pub(super) fn execute(
         &request.pending,
         request.owner,
     )?;
-    worker.file_sync(&file)?;
+    worker.file_sync(&file, &[])?;
     worker.refresh(&[])?;
     checked_protected(
         &mut file,
@@ -242,7 +242,7 @@ pub(super) fn execute(
         request.owner,
     )?;
     for directory in directories.iter().rev() {
-        worker.directory_sync(directory, false)?;
+        worker.directory_sync(directory, false, &[])?;
         worker.refresh(&[])?;
         checked_protected(
             &mut file,

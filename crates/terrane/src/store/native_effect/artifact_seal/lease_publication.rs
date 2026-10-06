@@ -7,10 +7,8 @@
 //! namespace/control roots. This mechanic grants no collection, ownership or
 //! elapsed-age authority.
 
-use super::{
-    FencePolicy, NativeEffectFailure, Path, PathBuf, Plan, Worker, checked_body, checked_protected,
-    directories_below, open_native,
-};
+use super::publication_sync::{SyncScope, synchronize};
+use super::{FencePolicy, NativeEffectFailure, Path, PathBuf, Plan, Worker};
 use std::{io, sync::mpsc};
 use terrane_core::gc::GcLease;
 use terrane_core::gc::publication::{PublicationCommit, PublicationProof, PublicationTransaction};
@@ -243,87 +241,21 @@ pub(super) fn execute(
     mut worker: Worker,
 ) -> Result<(), NativeEffectFailure> {
     association(&request, &worker)?;
-    let mut records = Vec::new();
-    for read in &worker.projection.preimages {
-        let Some(bytes) = &read.expected else {
-            continue;
-        };
-        let inside_control = read.path.starts_with(&request.control);
-        let inside_root = read.path.starts_with(&request.root);
-        if !inside_control && !inside_root {
-            continue;
-        }
-        // Pack descriptors remain metadata-only for this protocol. Their real
-        // creator/pair durability and full native continuity are checked separately.
-        if read
-            .path
-            .extension()
-            .is_some_and(|extension| extension == "pack")
-        {
-            continue;
-        }
-        let stamp = read
-            .metadata
-            .ok_or_else(|| io::Error::other("lease lacks present metadata"))?;
-        let expected_policy = if inside_control {
-            FencePolicy::ProtectedRecord {
+    synchronize(
+        &mut worker,
+        &[
+            SyncScope {
+                path: request.root.clone(),
                 owner: request.owner,
-            }
-        } else {
-            FencePolicy::Payload {
-                owner: request.owner,
-            }
-        };
-        let correct = match (read.policy, expected_policy) {
-            (
-                FencePolicy::ProtectedRecord { owner: a },
-                FencePolicy::ProtectedRecord { owner: b },
-            )
-            | (FencePolicy::Payload { owner: a }, FencePolicy::Payload { owner: b }) => a == b,
-            _ => false,
-        };
-        if !correct || read.identity != Some(stamp.identity) {
-            return Err(io::Error::other("lease preimage policy differs").into());
-        }
-        let directories = directories_below(
-            read,
-            if inside_control {
-                &request.control
-            } else {
-                &request.root
+                protected: false,
             },
-            request.owner,
-            inside_control,
-        )?;
-        let file = open_native(&read.path, false)?;
-        records.push((
-            read.path.clone(),
-            bytes.clone(),
-            stamp,
-            inside_control,
-            file,
-            directories,
-        ));
-    }
-    for (path, bytes, stamp, protected, file, directories) in &mut records {
-        let check = |file: &mut std::fs::File| -> io::Result<()> {
-            if *protected {
-                checked_protected(file, path, *stamp, bytes, request.owner)
-            } else {
-                checked_body(file, path, *stamp, bytes, request.owner)
-            }
-        };
-        association(&request, &worker)?;
-        check(file)?;
-        worker.file_sync(file)?;
-        check(file)?;
-        association(&request, &worker)?;
-        for directory in directories.iter().rev() {
-            worker.directory_sync(directory, false)?;
-            check(file)?;
-            association(&request, &worker)?;
-        }
-    }
+            SyncScope {
+                path: request.control.clone(),
+                owner: request.owner,
+                protected: true,
+            },
+        ],
+    )?;
     association(&request, &worker)?;
     let _ = request.result.send(DurableLease { _private: () });
     Ok(())

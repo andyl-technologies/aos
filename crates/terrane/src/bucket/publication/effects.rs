@@ -86,7 +86,14 @@ fn io_failure(error: std::io::Error) -> StoreFailure {
     if error.kind() == std::io::ErrorKind::Unsupported {
         unsupported()
     } else {
-        StoreFailure::new(StoreErrorKind::Unavailable { retry_after: None })
+        StoreFailure::with_source(StoreErrorKind::Unavailable { retry_after: None }, error)
+    }
+}
+
+fn native_failure(error: NativeEffectFailure) -> StoreFailure {
+    match error {
+        NativeEffectFailure::Rejected(error) => error,
+        NativeEffectFailure::Io(error) => io_failure(error),
     }
 }
 
@@ -186,6 +193,20 @@ pub(crate) async fn publish_checked<F: LocalFs + BucketBinding>(
     let control = frame.observation(fs, observed, 0).await?;
     for (index, source) in checked.sources().iter().enumerate() {
         frame.observation(fs, source, index + 1).await?;
+    }
+    for retained in context.selected_reads() {
+        let read = retained.record();
+        frame
+            .observed_read(
+                fs,
+                read.path(),
+                read.bytes(),
+                read.metadata(),
+                FencePolicy::ProtectedRecord {
+                    owner: retained.owner(),
+                },
+            )
+            .await?;
     }
     // Each submitted worker owns every descriptor, including independent
     // source configuration locks. Cancellation cannot release those inputs.
@@ -431,6 +452,16 @@ pub(crate) async fn publish_checked<F: LocalFs + BucketBinding>(
             },
         )
         .await?;
+    let (acknowledgment, completed) = super::artifact_seal::mutation_publication::mutation_plan(
+        checked,
+        &slot,
+        &transaction,
+        &snapshot_bytes,
+    )
+    .map_err(native_failure)?;
+    frame.execute(fs, acknowledgment).await?;
+    completed.take().map_err(native_failure)?;
+
     Ok(CheckedPublication {
         revision: slot.revision,
         digest: digest(&slot_bytes),

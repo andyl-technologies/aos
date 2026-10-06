@@ -51,12 +51,77 @@ pub(crate) struct LocalControlInputs<'guard, F: LocalFs> {
 pub(crate) struct GuardEffectContext {
     final_check: super::OwnedFinalCheck,
     controls: Vec<crate::guard::RetainedControls>,
+    selected_reads: Vec<SelectedControlRead>,
+}
+
+/// Retains one actual separately protected selected read and its configured owner.
+///
+/// Only this producer binds records to actual backend observations. It grants
+/// no mutation, actor or trust authority and accepts no caller UID.
+pub(crate) struct SelectedControlRead {
+    record: crate::bucket::publication::receipts::RecordRead,
+    owner: u32,
+}
+
+impl SelectedControlRead {
+    /// Borrows the exact actual protected record and its initial physical preimage.
+    pub(crate) fn record(&self) -> &crate::bucket::publication::receipts::RecordRead {
+        &self.record
+    }
+
+    /// Returns the independently configured owner of that actual observation.
+    pub(crate) fn owner(&self) -> u32 {
+        self.owner
+    }
+}
+
+// Binds ordinary physical read data only to the actual configured backend owner.
+fn selected_control_read(
+    observed: &SelectedObservation<'_>,
+    record: crate::bucket::publication::receipts::RecordRead,
+) -> SelectedControlRead {
+    SelectedControlRead {
+        record,
+        owner: observed.configured_operator_uid(),
+    }
+}
+
+// Captures the initial protected selected preimages before any staging work.
+async fn capture_selected_reads<F, B, V, const WRITABLE: bool>(
+    held: &HeldBucket<'_, F, B, V, WRITABLE>,
+    observed: &SelectedObservation<'_>,
+    names: &[&str],
+) -> Result<Vec<SelectedControlRead>, StoreFailure>
+where
+    F: LocalFs + BucketBinding,
+    B: Clock + BucketBinding,
+    V: ContentValidator + BucketBinding,
+{
+    let mut reads = Vec::new();
+    if let Some(record) = held.selected_guard_snapshot_record(observed).await? {
+        reads.push(selected_control_read(observed, record));
+    }
+    let mut unique = std::collections::BTreeSet::new();
+    for name in names {
+        if !unique.insert(*name) {
+            continue;
+        }
+        if let Some(record) = held.selected_lineage_record(observed, name).await? {
+            reads.push(selected_control_read(observed, record));
+        }
+    }
+    Ok(reads)
 }
 
 impl GuardEffectContext {
     /// Retains the same genuine owned request check for submitted dispatch.
     pub(crate) fn final_check(&self) -> super::OwnedFinalCheck {
         self.final_check.clone()
+    }
+
+    /// Borrows protected selected preimages retained through native acknowledgment.
+    pub(crate) fn selected_reads(&self) -> &[SelectedControlRead] {
+        &self.selected_reads
     }
 
     /// Borrows each owner's exact controls and already duplicated kernel exclusions.
@@ -98,6 +163,8 @@ where
         started,
         timing,
     } = request;
+    let selected_reads =
+        capture_selected_reads(coordinator.store(), observed, &[source.as_str()]).await?;
     publication.validate_target(&target)?;
     coordinator.check_time(started)?;
     let consumed = ConsumedResolver::new(concrete, authority)?;
@@ -135,6 +202,7 @@ where
         effect_context: Some(GuardEffectContext {
             final_check: final_check.clone(),
             controls: vec![retained_controls],
+            selected_reads,
         }),
     };
     match held.publish_checked(permit).await {
@@ -186,6 +254,15 @@ where
     use terrane_core::gc::publication::{CommittedSelection, SourceLineage};
     use terrane_core::refs::{RefClass, RefName};
 
+    let source_names = publication
+        .admitted
+        .source_authorization
+        .as_ref()
+        .map(|source| source.reference.as_str())
+        .into_iter()
+        .collect::<Vec<_>>();
+    let selected_reads =
+        capture_selected_reads(coordinator.store(), observed, &source_names).await?;
     let crate::ref_advance::RetainedPublication {
         admitted,
         original,
@@ -350,6 +427,7 @@ where
         effect_context: Some(GuardEffectContext {
             final_check: final_check.clone(),
             controls: vec![retained_controls],
+            selected_reads,
         }),
     };
     #[cfg(test)]
@@ -448,6 +526,7 @@ where
     B: Clock + BucketBinding + 'static,
     V: ContentValidator + BucketBinding + 'static,
 {
+    let selected_reads = capture_selected_reads(held, observed, &[]).await?;
     observed.revalidate().await?;
     let operator = held.operator_uid(observed).await?;
     if guard.store().publication_operator_uid() != Some(operator)
@@ -520,6 +599,7 @@ where
         effect_context: Some(GuardEffectContext {
             final_check: final_check.clone(),
             controls: vec![retained_controls],
+            selected_reads,
         }),
     };
     let receipt = held.publish_checked(permit).await?;

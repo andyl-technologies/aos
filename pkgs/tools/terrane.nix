@@ -26,6 +26,8 @@ in
     cargoRoot = "crates";
     cargoFlags = "-p terrane-cli --bin terrane";
     cargoNextest = true;
+    # Keep real-time lease fixtures within the builder's allocated CPU budget.
+    cargoNextestMaxTestThreads = 2;
     cargoTestFlags = lib.concatStringsSep " " (map (package: "-p ${package}") testPackages);
     doCheck = true;
     cargoCheckWrapper =

@@ -4,11 +4,21 @@
 //! descriptor has supplied the verified bytes and durable synchronization. Its
 //! private fields retain the original physical observations and exclusions.
 //! Decoded journal bytes cannot construct a seal or select creator authority.
+//! Selected Guard/ref and lease acknowledgments use the same bounded descriptor
+//! synchronization while retaining their distinct closed producer validation.
 //!
 //! ```text
 //! durable Pending -> installed bytes -> descriptor + directory sync -> seal
 //! seal + exact current Pending -> protected Committed + directory sync
 //! ```
+
+/// Synchronizes genuine publication metadata without creating result channels.
+#[path = "artifact_seal/publication_sync.rs"]
+mod publication_sync;
+
+/// Closes actual checked Guard/ref selected publication durability.
+#[path = "artifact_seal/mutation_publication.rs"]
+pub(super) mod mutation_publication;
 
 /// Closes actual whole collector lease publication durability.
 #[path = "artifact_seal/lease_publication.rs"]
@@ -351,19 +361,19 @@ impl Worker {
         self.projection.refresh(changed)
     }
 
-    fn file_sync(&mut self, file: &File) -> io::Result<()> {
+    fn file_sync(&mut self, file: &File, changed: &[&Path]) -> Result<(), NativeEffectFailure> {
         #[cfg(test)]
         if self.faults.contains(&EffectFault::BeforeFileSync) {
-            return Err(io::Error::other("injected creation file sync failure"));
+            return Err(io::Error::other("injected creation file sync failure").into());
         }
+        self.refresh(changed)?;
         file.sync_all()?;
         #[cfg(all(test, feature = "tokio"))]
         wait_test_gate(&mut self.gates, TestGatePhase::AfterSourceSync)?;
+        self.refresh(changed)?;
         #[cfg(test)]
         if self.faults.contains(&EffectFault::AfterFileSync) {
-            return Err(io::Error::other(
-                "injected creation failure after file sync",
-            ));
+            return Err(io::Error::other("injected creation failure after file sync").into());
         }
         Ok(())
     }
@@ -372,7 +382,8 @@ impl Worker {
         &mut self,
         directory: &NativeOpenedDirectory,
         committed: bool,
-    ) -> io::Result<()> {
+        changed: &[&Path],
+    ) -> Result<(), NativeEffectFailure> {
         #[cfg(not(test))]
         let _ = committed;
         directory.check()?;
@@ -390,8 +401,13 @@ impl Worker {
                         directory.path.clone(),
                     ))
         {
-            return Err(io::Error::other("injected creation directory sync failure"));
+            return Err(io::Error::other("injected creation directory sync failure").into());
         }
+        // A physical worker can queue at the native handoff. Recheck the
+        // complete genuine Frame after release, before performing this syscall.
+        // Only this operation's already verified changed leaves are exempted.
+        self.refresh(changed)?;
+        directory.check()?;
         directory.file.sync_all()?;
         directory.check()?;
         #[cfg(all(test, feature = "tokio"))]
@@ -407,10 +423,10 @@ impl Worker {
                         directory.path.clone(),
                     ))
         {
-            return Err(io::Error::other(
-                "injected creation failure after directory sync",
-            ));
+            return Err(io::Error::other("injected creation failure after directory sync").into());
         }
+        self.refresh(changed)?;
+        directory.check()?;
         Ok(())
     }
 }
@@ -418,14 +434,16 @@ impl Worker {
 /// Identifies closed creation and lease operations, including their retention wrapper.
 pub(super) fn owns(plan: &Plan) -> bool {
     match plan {
-        Plan::SealLeasePublication(_)
+        Plan::SealMutationPublication(_)
+        | Plan::SealLeasePublication(_)
         | Plan::SealPendingCreation(_)
         | Plan::SealArtifact(_)
         | Plan::CommitCreation(_) => true,
         Plan::RetainedDirectories { operation, .. } => {
             matches!(
                 operation.as_ref(),
-                Plan::SealLeasePublication(_)
+                Plan::SealMutationPublication(_)
+                    | Plan::SealLeasePublication(_)
                     | Plan::SealPendingCreation(_)
                     | Plan::SealArtifact(_)
                     | Plan::CommitCreation(_)
@@ -478,6 +496,7 @@ pub(super) fn execute(effect: NativeFsEffect) -> Result<(), NativeEffectFailure>
     wait_test_gate(&mut worker.gates, TestGatePhase::BeforeChecks)?;
     worker.refresh(&[])?;
     match plan {
+        Plan::SealMutationPublication(request) => mutation_publication::execute(*request, worker),
         Plan::SealLeasePublication(request) => lease_publication::execute(*request, worker),
         Plan::SealPendingCreation(request) => pending::execute(*request, worker),
         Plan::SealArtifact(request) => seal(*request, worker),
@@ -586,14 +605,14 @@ fn seal(mut request: SealRequest, mut worker: Worker) -> Result<(), NativeEffect
     worker.refresh(&[])?;
     request.pending.recheck_installed(&worker.projection)?;
     checked_body(&mut file, &path, stamp, &request.bytes, request.owner)?;
-    worker.file_sync(&file)?;
+    worker.file_sync(&file, &[])?;
     worker.refresh(&[])?;
     request.pending.recheck_installed(&worker.projection)?;
     checked_body(&mut file, &path, stamp, &request.bytes, request.owner)?;
     // Only namespace-root and descendant directory receipts are synchronized.
     // System ancestors above the actual namespace are checked, never flushed.
     for directory in directories.iter().rev() {
-        worker.directory_sync(directory, false)?;
+        worker.directory_sync(directory, false, &[])?;
         worker.refresh(&[])?;
         request.pending.recheck_installed(&worker.projection)?;
         checked_body(&mut file, &path, stamp, &request.bytes, request.owner)?;
@@ -703,7 +722,7 @@ fn commit(mut request: CommitRequest, mut worker: Worker) -> Result<(), NativeEf
         &committed,
         owner,
     )?;
-    worker.file_sync(&staged)?;
+    worker.file_sync(&staged, &changed)?;
     checked_protected(
         &mut staged,
         &request.temporary,
@@ -712,7 +731,7 @@ fn commit(mut request: CommitRequest, mut worker: Worker) -> Result<(), NativeEf
         owner,
     )?;
     for directory in directories.iter().rev() {
-        worker.directory_sync(directory, false)?;
+        worker.directory_sync(directory, false, &changed)?;
     }
     worker.refresh(&changed)?;
     request.seal.projection.refresh(&changed)?;
@@ -788,7 +807,7 @@ fn commit(mut request: CommitRequest, mut worker: Worker) -> Result<(), NativeEf
         return Err(io::Error::other("injected creation failure after commitment rename").into());
     }
     for directory in directories.iter().rev() {
-        worker.directory_sync(directory, true)?;
+        worker.directory_sync(directory, true, &changed)?;
         worker.refresh(&changed)?;
         request.seal.projection.refresh(&changed)?;
         request.seal.pending.recheck_committed()?;

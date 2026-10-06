@@ -387,6 +387,7 @@ enum Plan {
     // Only the native worker can populate the result channel or consume a seal
     // into a protected creation-journal commitment.
     SealLeasePublication(Box<artifact_seal::lease_publication::LeaseRequest>),
+    SealMutationPublication(Box<artifact_seal::mutation_publication::MutationRequest>),
     SealPendingCreation(Box<artifact_seal::PendingRequest>),
     SealArtifact(Box<artifact_seal::SealRequest>),
     CommitCreation(Box<artifact_seal::CommitRequest>),
@@ -588,6 +589,9 @@ impl std::error::Error for NativeEffectFailure {
 /// Identifies actual planned phases only for existing native fault wrappers.
 #[cfg(test)]
 pub(crate) enum EffectFaultProbe<'a> {
+    /// Identifies durability of a genuinely checked Guard/ref selected slot.
+    #[cfg(feature = "tokio")]
+    SealMutationPublication(&'a std::path::Path),
     /// Identifies durability of the exact selected collector lease slot.
     #[cfg(feature = "tokio")]
     SealLeasePublication(&'a std::path::Path),
@@ -695,6 +699,10 @@ impl NativeFsEffect {
         };
         match plan {
             #[cfg(feature = "tokio")]
+            Plan::SealMutationPublication(request) => {
+                EffectFaultProbe::SealMutationPublication(request.path())
+            }
+            #[cfg(feature = "tokio")]
             Plan::SealLeasePublication(request) => {
                 EffectFaultProbe::SealLeasePublication(request.path())
             }
@@ -731,6 +739,32 @@ impl NativeFsEffect {
     #[cfg(test)]
     pub(crate) fn inject_test_faults(mut self, faults: Vec<EffectFault>) -> Self {
         self.faults = faults;
+        self
+    }
+
+    /// Observes the actual before/after directory-sync handoffs without changing its plan.
+    ///
+    /// Only native tests use these channels. An after-sync signal proves the
+    /// actual syscall boundary was reached; absence cannot create acknowledgment.
+    #[cfg(all(test, feature = "tokio", unix))]
+    pub(crate) fn test_directory_sync_handoff(
+        mut self,
+        before: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+        after: std::sync::mpsc::Sender<()>,
+    ) -> Self {
+        self.gates.push(TestGate {
+            phase: TestGatePhase::BeforeDirectorySync,
+            arrived: before,
+            release,
+        });
+        let (released, resume) = std::sync::mpsc::channel();
+        let _ = released.send(());
+        self.gates.push(TestGate {
+            phase: TestGatePhase::AfterDirectorySync,
+            arrived: after,
+            release: resume,
+        });
         self
     }
 
@@ -853,7 +887,8 @@ impl NativeFsEffect {
             fresh_projection(None)?;
 
             match plan {
-                Plan::SealLeasePublication(_)
+                Plan::SealMutationPublication(_)
+                | Plan::SealLeasePublication(_)
                 | Plan::SealPendingCreation(_)
                 | Plan::SealArtifact(_)
                 | Plan::CommitCreation(_) => {

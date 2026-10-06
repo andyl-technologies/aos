@@ -18,6 +18,9 @@ use terrane_core::bucket::BucketKey;
 
 mod candidate_slot;
 
+#[cfg(unix)]
+mod mutation_ack;
+
 use candidate_slot::{CandidateSlotBarrier, CandidateSlotPause};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -32,6 +35,8 @@ enum Failure {
 
 #[derive(Clone, Default)]
 pub(super) struct FaultFs {
+    #[cfg(unix)]
+    mutation: mutation_ack::Hooks,
     failure: Arc<Mutex<Option<Failure>>>,
     ref_read_failure: Arc<Mutex<Option<usize>>>,
     lock_calls: Arc<AtomicUsize>,
@@ -509,6 +514,9 @@ impl LocalFs for FaultFs {
                 crate::store::EffectFaultProbe::DirectorySync(_) => "directory sync",
                 crate::store::EffectFaultProbe::RenameNoReplace(_) => "create-once rename",
                 crate::store::EffectFaultProbe::Rename(_) => "replacing rename",
+                crate::store::EffectFaultProbe::SealMutationPublication(_) => {
+                    "checked mutation publication"
+                }
                 crate::store::EffectFaultProbe::SealLeasePublication(path) => {
                     eprintln!("lease publication slot {}", path.display());
                     "lease publication"
@@ -522,6 +530,13 @@ impl LocalFs for FaultFs {
                 self.metadata_batches.load(Ordering::SeqCst),
                 self.protected_read_calls.load(Ordering::SeqCst),
             );
+        }
+        #[cfg(unix)]
+        if matches!(
+            effect.fault_probe(),
+            crate::store::EffectFaultProbe::SealMutationPublication(_)
+        ) {
+            return mutation_ack::execute(self, effect).await;
         }
         let mut effect = effect;
         let content_failure = match effect.fault_probe() {

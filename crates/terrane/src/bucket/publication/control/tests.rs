@@ -228,6 +228,81 @@ fn assert_same_read(left: &RecordRead, right: &RecordRead) {
 }
 
 #[tokio::test]
+async fn activation_staging_accepts_only_its_exact_protected_key() {
+    let (parent, bucket) = fixture().await;
+    let holder = SingleHeld::acquire_read_only(&bucket).await.unwrap();
+    let control = Control::open(&bucket, false).await.unwrap();
+    let path = control.path.join("publication/ACTIVATION");
+    let bytes = TokioLocalFs
+        .read_nofollow(&control.path.join("publication/commits/0"))
+        .await
+        .unwrap();
+    TokioLocalFs.write_new(&path, &bytes).await.unwrap();
+    TokioLocalFs
+        .set_permissions_and_sync(&path, std::fs::Permissions::from_mode(0o600))
+        .await
+        .unwrap();
+    bucket.inner.fs.reset(false);
+    let scalar = control
+        .read_record_observed(&bucket.inner.fs, "publication/ACTIVATION")
+        .await
+        .unwrap();
+    assert_eq!(scalar.bytes(), Some(bytes.as_slice()));
+    assert_eq!(
+        *bucket.inner.fs.scalar_reads.lock().unwrap(),
+        vec![path.clone()]
+    );
+    bucket.inner.fs.reset(true);
+    let native = control
+        .read_record_observed(&bucket.inner.fs, "publication/ACTIVATION")
+        .await
+        .unwrap();
+    assert_same_read(&scalar, &native);
+    assert_eq!(bucket.inner.fs.native_reads.load(Ordering::SeqCst), 1);
+    assert!(bucket.inner.fs.scalar_reads.lock().unwrap().is_empty());
+    for key in [
+        "publication/ACTIVATION/child",
+        "publication/ACTIVATION:0",
+        "publication/activation",
+        "publication/../ACTIVATION",
+        "publication/ACTIVATION/",
+    ] {
+        bucket.inner.fs.reset(true);
+        assert!(
+            control
+                .read_record_observed(&bucket.inner.fs, key)
+                .await
+                .is_err(),
+            "{key}"
+        );
+        assert_eq!(
+            bucket.inner.fs.native_reads.load(Ordering::SeqCst),
+            0,
+            "{key}"
+        );
+        assert!(
+            bucket.inner.fs.scalar_reads.lock().unwrap().is_empty(),
+            "{key}"
+        );
+        assert_eq!(bucket.inner.fs.effects.load(Ordering::SeqCst), 0, "{key}");
+    }
+    TokioLocalFs
+        .set_permissions_and_sync(&path, std::fs::Permissions::from_mode(0o644))
+        .await
+        .unwrap();
+    bucket.inner.fs.reset(true);
+    assert!(
+        control
+            .read_record_observed(&bucket.inner.fs, "publication/ACTIVATION")
+            .await
+            .is_err()
+    );
+    assert_eq!(bucket.inner.fs.effects.load(Ordering::SeqCst), 0);
+    drop(holder);
+    tokio::fs::remove_dir_all(parent).await.unwrap();
+}
+
+#[tokio::test]
 async fn protected_native_consumer_preserves_complete_selected_record_transcript() {
     let (parent, bucket) = fixture().await;
     let name = "refs/heads/_/protected-read";

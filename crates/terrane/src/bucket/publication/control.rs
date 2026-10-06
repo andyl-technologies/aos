@@ -614,7 +614,7 @@ impl Control {
 }
 
 fn registered(key: &str) -> bool {
-    if key == "backend-registration.cbor" {
+    if matches!(key, "backend-registration.cbor" | "publication/ACTIVATION") {
         return true;
     }
     if let Some(value) = key.strip_prefix("publication/commits/") {
