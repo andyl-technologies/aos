@@ -3094,6 +3094,9 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   source, not the full trunk collector gate. Actual unlink/recovery and the
   excluded-but-still-Live fresh-admission branch remain unqualified, and this
   task and T1 remain open.
+  The same checkpointed isolated source separately passes the original genuine
+  retirement/readmission/exact-restore Nextest case. It exercises the actual
+  collector producer and does not cover the mixed-live fresh-admission gap.
   Narrowed
   to trunk scope: compaction is T-GC-2 on
   B-jobs. — satisfies GC-1, GC-3 to GC-7, GC-9 to GC-17, GC-22 to GC-24,
@@ -3108,6 +3111,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   core. Current-ACL commit guarding and durable disclosure certificate
   verification/publication are joint with T-REF-2 and T-DOM-1; merge admission
   with T-ALG-2; wire and command error translation with their runtime tasks.
+  A focused `checks.terrane.integration.native-recorded-disclosure` check is
+  registered before its isolated native implementation. Its four exact cases
+  require genuine earlier certificate publication followed by completed
+  Recorded history, exact original-root associations, complete dependencies,
+  independent current fences and retained Original roles. Missing selectors
+  fail explicitly. Implementation and qualification remain pending; fresh
+  Recorded candidate admission and required index completion are separate.
   A shared `VerifiedHistory::append_verified` prerequisite now preserves
   completed disclosure boundaries, original root/bootstrap scopes and selected
   side records across history unions. Both public inputs must have completed

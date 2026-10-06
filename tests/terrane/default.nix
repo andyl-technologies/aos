@@ -243,6 +243,7 @@ in {
   integration.index-source = import ./index-source.nix {inherit sourceGate;};
   integration.index-reference-models = import ./index-models.nix {inherit sourceGate;};
   integration.disclosure-denied-diagnostic = import ./disclosure-denied-diagnostic.nix {inherit sourceGate;};
+  integration.native-recorded-disclosure = import ./native-recorded-disclosure.nix {inherit sourceGate;};
   integration.property-registry = import ./property-registry.nix {inherit sourceGate;};
   integration.container-reference-models = import ./container-models.nix {inherit sourceGate;};
   integration.refs-reference-models = import ./refs-models.nix {inherit sourceGate;};
