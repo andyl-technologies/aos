@@ -8,6 +8,9 @@
 //! Controls can supersede the projection while an earlier effect is pending.
 
 mod observe_reservation;
+mod current_publication;
+
+pub(crate) use current_publication::{ExecutionPublicationCauseV1, ExecutionPublicationDebtsV1};
 
 use aos_proto::aos::sandbox::local::v1::{
     ApplyHostExecutionRequestV1, BrokerAuthorizationArtifactsV1, BrokerDescriptorEntry,
@@ -339,6 +342,18 @@ impl ControllerExecutionIntentV1 {
         journal: &mut Journal,
         completion: &ControllerExecutionCompletionV1,
     ) -> Result<(), EffectFailure> {
+        self.commit_control_projection_retained(project, journal, completion, &mut None)
+    }
+
+    // The production continuation parks the actual native append Result;
+    // the compatibility wrapper above retains its established return contract.
+    fn commit_control_projection_retained(
+        &self,
+        project: ProjectId,
+        journal: &mut Journal,
+        completion: &ControllerExecutionCompletionV1,
+        native_append: &mut Option<Result<aos_sandbox::CommitResult, aos_sandbox::JournalError>>,
+    ) -> Result<(), EffectFailure> {
         if self.action == ControllerExecutionActionV1::Authorize {
             return Err(EffectFailure::Retryable(
                 "execution authorization cannot publish a public phase".to_owned(),
@@ -482,7 +497,10 @@ impl ControllerExecutionIntentV1 {
             )],
         )
         .map_err(retryable)?;
-        journal.commit(&transaction).map_err(retryable)?;
+        *native_append = Some(journal.commit(&transaction));
+        if let Some(Err(error)) = native_append.as_ref() {
+            return Err(retryable(error));
+        }
         Ok(())
     }
 
@@ -1043,15 +1061,16 @@ struct ExecutionExchangeContextV1 {
 #[derive(Default)]
 pub(crate) struct ControllerExecutionExchangeV1 {
     exchange: RetainedBrokerExchangeV1<ExecutionExchangeContextV1>,
+    publication: Option<current_publication::ExecutionPublicationAttemptV1>,
 }
 
 impl ControllerExecutionExchangeV1 {
     pub(crate) const fn has_pending(&self) -> bool {
-        self.exchange.has_pending()
+        self.exchange.has_pending() || self.publication.is_some()
     }
 
     pub(crate) const fn needs_fresh_authorization(&self) -> bool {
-        !self.exchange.has_request() && !self.exchange.requires_reconnect()
+        self.publication.is_none() && !self.exchange.has_request() && !self.exchange.requires_reconnect()
     }
 
     pub(crate) const fn requires_reconnect(&self) -> bool {

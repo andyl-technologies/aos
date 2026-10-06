@@ -3182,6 +3182,23 @@ impl ProtectedBrokerSessionOwnerV1 {
             .revalidate_broker_outcome(owner, connection_peer)
     }
 
+    /// Loans execution terminal currentness without discarding failed custody.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original owner with a failed fixed terminal validation.
+    pub(crate) fn retain_execution_outcome_current<'authority>(
+        &'authority mut self,
+        owner: ProtectedBrokerOutcomeCurrentnessOwnerV1,
+        connection_peer: &'authority ConnectionPeerIdentity,
+    ) -> Result<
+        ProtectedBrokerOutcomeCurrentV1<'authority>,
+        (ProtectedBrokerOutcomeCurrentnessOwnerV1, BrokerSessionSecurityError),
+    > {
+        self.journal
+            .retain_execution_outcome_current(owner, connection_peer)
+    }
+
     // Comparison borrows the original terminal owner so an error cannot drop
     // its signed packets or currentness before the selected caller parks it.
     pub(crate) fn compare_git_coverage_outcome_v1(
@@ -5011,6 +5028,47 @@ impl ProtectedBrokerSessionJournalV1 {
         connection_peer: &'authority ConnectionPeerIdentity,
     ) -> Result<ProtectedBrokerOutcomeCurrentV1<'authority>, BrokerSessionSecurityError> {
         self.validate_broker_outcome(&owner, connection_peer)?;
+        Ok(ProtectedBrokerOutcomeCurrentV1 {
+            authority: self,
+            connection_peer,
+            owner,
+        })
+    }
+
+    /// Retains the original execution owner on every failed terminal check.
+    ///
+    /// The successful value is the existing sole-journal loan, not a new
+    /// authority class. Only the original Controller Host client can enter;
+    /// the same complete validator checks its protected floor and terminal.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original owner and actual error for another endpoint or
+    /// method, or any failed protected terminal and live-peer validation.
+    pub(crate) fn retain_execution_outcome_current<'authority>(
+        &'authority mut self,
+        owner: ProtectedBrokerOutcomeCurrentnessOwnerV1,
+        connection_peer: &'authority ConnectionPeerIdentity,
+    ) -> Result<
+        ProtectedBrokerOutcomeCurrentV1<'authority>,
+        (ProtectedBrokerOutcomeCurrentnessOwnerV1, BrokerSessionSecurityError),
+    > {
+        let fixed = fixed_endpoint(ProtectedBrokerSessionFixedEndpointV1::ControllerHostClient);
+        let checked = if self.directory != Path::new(fixed.journal_root)
+            || self.endpoint.role() != BrokerSessionDurableEndpointV1::Client
+            || owner.transcript.protocol() != BrokerSessionProtocolV1::Host
+            || owner.request.direction() != AuthenticatedBrokerRequestDirectionV1::ClientSend
+            || !matches!(owner.request.method(),
+                BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
+                    | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION)
+        {
+            Err(BrokerSessionSecurityError::Currentness)
+        } else {
+            self.validate_broker_outcome(&owner, connection_peer)
+        };
+        if let Err(error) = checked {
+            return Err((owner, error));
+        }
         Ok(ProtectedBrokerOutcomeCurrentV1 {
             authority: self,
             connection_peer,

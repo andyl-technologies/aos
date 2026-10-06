@@ -3905,6 +3905,22 @@ impl DormantAuthenticatedBrokerSessionV1 {
             .revalidate_broker_outcome(currentness, self.socket.peer())
     }
 
+    /// Forwards the same socket and sole owner without taking failed custody.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original owner with the actual fixed execution check error.
+    pub(super) fn retain_execution_outcome_current<'session>(
+        &'session mut self,
+        currentness: crate::ProtectedBrokerOutcomeCurrentnessOwnerV1,
+    ) -> Result<
+        crate::ProtectedBrokerOutcomeCurrentV1<'session>,
+        (crate::ProtectedBrokerOutcomeCurrentnessOwnerV1, BrokerSessionSecurityError),
+    > {
+        self.owner
+            .retain_execution_outcome_current(currentness, self.socket.peer())
+    }
+
     pub(super) fn compare_atomic_snapshot_predecessor_v3(
         &mut self,
         currentness: &crate::ProtectedBrokerOutcomeCurrentnessOwnerV1,

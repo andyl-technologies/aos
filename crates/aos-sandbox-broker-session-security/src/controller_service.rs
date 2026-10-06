@@ -3133,6 +3133,13 @@ fn ensure_controller_broker_sessions(
     node_id: [u8; 16],
     sessions: &mut ControllerBrokerSessions,
 ) -> Result<(), CycleFailure> {
+    // Reconnect must not release the original terminal and append/post results.
+    if sessions.host.as_ref().is_some_and(ControllerHostPublication::has_execution_publication_debt) {
+        if let Some(worker) = sessions.storage_terminal.as_ref().and_then(std::sync::Weak::upgrade) {
+            worker.close(ControllerResidentCauseV1::Closed("original execution publication remains occupied"));
+        }
+        return Err(CycleFailure::Fatal("original execution publication remains occupied".to_owned()));
+    }
     if sessions.storage.as_ref().is_some_and(|storage| storage.has_pending_capture_candidate()
         || (storage.has_capture_candidate() && sessions.storage_root.requires_reconnect()))
     {
@@ -6586,14 +6593,12 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                     )
                 })
                 .transpose()?;
-            let observation = host.query_execution(&intent, authorization.as_ref())?;
-            drop(sessions);
+            let observation = host.query_execution(&intent, authorization.as_ref(), context.project(), journal)?;
             return match observation {
                 execution::ControllerExecutionObservationV1::Absent => {
                     Ok(EffectObservation::Absent)
                 }
                 execution::ControllerExecutionObservationV1::Applied(completion) => {
-                    intent.commit_control_projection(context.project(), journal, &completion)?;
                     Ok(EffectObservation::Applied(completion.receipt))
                 }
             };
@@ -6793,9 +6798,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                     )
                 })
                 .transpose()?;
-            let completion = host.apply_execution(&intent, authorization.as_ref())?;
-            drop(sessions);
-            intent.commit_control_projection(context.project(), journal, &completion)?;
+            let completion = host.apply_execution(&intent, authorization.as_ref(), context.project(), journal)?;
             return Ok(completion.receipt);
         }
         if plan.public_mutation_method()

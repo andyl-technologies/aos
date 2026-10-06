@@ -420,6 +420,18 @@ impl DormantPreparedBrokerRequestV1 {
 #[must_use = "receive or retain the exact outstanding request"]
 pub struct DormantOutstandingBrokerRequestV1(AuthenticatedBrokerMethodRequestV1);
 
+/// Retains returned execution response DATA and failed native admission.
+#[derive(Default)]
+pub(crate) struct ExecutionPublicationReceiveCustodyV1 {
+    pub(crate) packet: Option<Vec<u8>>,
+    pub(crate) decoded: Option<Result<
+        aos_sandbox_broker_session_protocol::CanonicalBrokerResponseEnvelopeV1,
+        aos_sandbox_broker_session_protocol::BrokerSessionProjectionError,
+    >>,
+    pub(crate) native_error: Option<BrokerSessionSecurityError>,
+    pub(crate) rejected_replay: Option<ProtectedBrokerOutcomeReplayV1>,
+}
+
 impl DormantOutstandingBrokerRequestV1 {
     /// Returns the original signed deadline for response readiness polling.
     pub(crate) const fn deadline_boottime_nanoseconds(&self) -> u64 {
@@ -6431,16 +6443,51 @@ impl DormantAuthenticatedBrokerSessionV1 {
         &mut self,
         request: DormantPreparedBrokerRequestV1,
     ) -> Result<DormantBrokerRequestSendProgressV1, DormantBrokerSessionHandshakeErrorV1> {
+        match self.send_authenticated_request_borrowed(&request) {
+            Ok(true) => Ok(DormantBrokerRequestSendProgressV1::Sent(
+                DormantOutstandingBrokerRequestV1(request.0),
+            )),
+            Ok(false) => {
+                Ok(DormantBrokerRequestSendProgressV1::Pending(request))
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Sends the original execution query without dropping it on failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns the exact prepared request with the actual send error. No
+    /// replacement request, retry, or recovery is performed.
+    pub(crate) fn send_execution_publication_request(
+        &mut self,
+        request: DormantPreparedBrokerRequestV1,
+    ) -> Result<DormantBrokerRequestSendProgressV1,
+        (DormantPreparedBrokerRequestV1, DormantBrokerSessionHandshakeErrorV1)>
+    {
+        if request.0.method() != BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION {
+            return Err((request, DormantBrokerSessionHandshakeErrorV1::RemoteInvalid));
+        }
+        match self.send_authenticated_request_borrowed(&request) {
+            Ok(true) => Ok(DormantBrokerRequestSendProgressV1::Sent(DormantOutstandingBrokerRequestV1(request.0))),
+            Ok(false) => Ok(DormantBrokerRequestSendProgressV1::Pending(request)),
+            Err(error) => Err((request, error)),
+        }
+    }
+
+    // Both wrappers enter the same packet send, preserving Legacy's consuming
+    // error disposition while the execution wrapper returns original custody.
+    fn send_authenticated_request_borrowed(
+        &mut self,
+        request: &DormantPreparedBrokerRequestV1,
+    ) -> Result<bool, DormantBrokerSessionHandshakeErrorV1> {
         if request.0.method() == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT {
             self.0.confirm_original_host_argument_archive(&request.0)?;
         }
         match self.0.send_request_packet(request.0.canonical_packet()) {
-            Ok(()) => Ok(DormantBrokerRequestSendProgressV1::Sent(
-                DormantOutstandingBrokerRequestV1(request.0),
-            )),
-            Err(handshake::DormantBrokerSessionHandshakeErrorV1::Transport) => {
-                Ok(DormantBrokerRequestSendProgressV1::Pending(request))
-            }
+            Ok(()) => Ok(true),
+            Err(handshake::DormantBrokerSessionHandshakeErrorV1::Transport) => Ok(false),
             Err(error) => Err(error.into()),
         }
     }
@@ -6455,27 +6502,99 @@ impl DormantAuthenticatedBrokerSessionV1 {
         &mut self,
         outstanding: DormantOutstandingBrokerRequestV1,
     ) -> Result<DormantBrokerResponseProgressV1, DormantBrokerSessionHandshakeErrorV1> {
+        self.receive_authenticated_response_borrowed(&outstanding, None).map(|committed| {
+            match committed {
+                Some(committed) => DormantBrokerResponseProgressV1::Committed(committed),
+                None => DormantBrokerResponseProgressV1::Pending(outstanding),
+            }
+        })
+    }
+
+    /// Receives one execution response while retaining failed request custody.
+    ///
+    /// # Errors
+    ///
+    /// Returns the exact outstanding request with the actual transport error.
+    /// Returned packet, decode failure and native admission error remain in the
+    /// supplied DATA custody; ambiguous native commits retain their recovery.
+    pub(crate) fn receive_execution_publication_response(
+        &mut self,
+        outstanding: DormantOutstandingBrokerRequestV1,
+        custody: &mut ExecutionPublicationReceiveCustodyV1,
+    ) -> Result<DormantBrokerResponseProgressV1,
+        (DormantOutstandingBrokerRequestV1, DormantBrokerSessionHandshakeErrorV1)>
+    {
+        if !matches!(outstanding.0.method(), BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
+            | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION)
+        {
+            return Err((outstanding, DormantBrokerSessionHandshakeErrorV1::RemoteInvalid));
+        }
+        match self.receive_authenticated_response_borrowed(&outstanding, Some(custody)) {
+            Ok(Some(committed)) => Ok(DormantBrokerResponseProgressV1::Committed(committed)),
+            Ok(None) => Ok(DormantBrokerResponseProgressV1::Pending(outstanding)),
+            Err(error) => Err((outstanding, error)),
+        }
+    }
+
+    // Sole receive/decode/admission/commit algorithm. Legacy passes no resident
+    // DATA destination and preserves its exact consuming failure semantics.
+    fn receive_authenticated_response_borrowed(
+        &mut self,
+        outstanding: &DormantOutstandingBrokerRequestV1,
+        mut custody: Option<&mut ExecutionPublicationReceiveCustodyV1>,
+    ) -> Result<Option<ProtectedBrokerOutcomeCommitResultV1>, DormantBrokerSessionHandshakeErrorV1> {
         let maximum = usize::try_from(outstanding.0.maximum_response_bytes())
             .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
         let packet = match self.0.receive_response_packet(maximum) {
             Ok(packet) => packet,
             Err(handshake::DormantBrokerSessionHandshakeErrorV1::Transport) => {
-                return Ok(DormantBrokerResponseProgressV1::Pending(outstanding));
+                return Ok(None);
             }
             Err(error) => return Err(error.into()),
         };
-        let outcome = decode_canonical_response_v1(&packet)
-            .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
-        let (gate, _) = self.0.reopen_broker_outcome(&outstanding.0)?;
-        let pending = match gate.admit_outcome(&outcome)? {
-            crate::ProtectedBrokerOutcomeAdmissionV1::New { advancement } => advancement,
-            crate::ProtectedBrokerOutcomeAdmissionV1::ExactReplay { .. } => {
-                return Err(DormantBrokerSessionHandshakeErrorV1::RemoteInvalid);
+        let local_decoded;
+        let decoded = if let Some(retained) = custody.as_deref_mut() {
+            retained.packet = Some(packet);
+            retained.decoded = retained.packet.as_ref().map(|bytes| decode_canonical_response_v1(bytes));
+            &retained.decoded
+        } else {
+            local_decoded = Some(decode_canonical_response_v1(&packet));
+            &local_decoded
+        };
+        let Some(Ok(outcome)) = decoded else {
+            return Err(DormantBrokerSessionHandshakeErrorV1::RemoteInvalid);
+        };
+        let reopened = self.0.reopen_broker_outcome(&outstanding.0);
+        let gate = match reopened {
+            Ok((gate, _)) => gate,
+            Err(error) => {
+                if let Some(retained) = custody.as_deref_mut() {
+                    retained.native_error = Some(error);
+                    return Err(DormantBrokerSessionHandshakeErrorV1::RemoteInvalid);
+                }
+                return Err(error.into());
             }
         };
-        Ok(DormantBrokerResponseProgressV1::Committed(
-            self.0.commit_broker_outcome(pending),
-        ))
+        let admitted = gate.admit_outcome(outcome);
+        let pending = match admitted {
+            Err(error) => {
+                if let Some(retained) = custody.as_deref_mut() {
+                    retained.native_error = Some(error);
+                    return Err(DormantBrokerSessionHandshakeErrorV1::RemoteInvalid);
+                }
+                return Err(error.into());
+            }
+            Ok(admission) => match admission {
+            crate::ProtectedBrokerOutcomeAdmissionV1::New { advancement } => advancement,
+            crate::ProtectedBrokerOutcomeAdmissionV1::ExactReplay { replay } => {
+                if let Some(retained) = custody.as_deref_mut() {
+                    retained.rejected_replay = Some(replay);
+                }
+                return Err(DormantBrokerSessionHandshakeErrorV1::RemoteInvalid);
+            }
+            },
+        };
+        Ok(Some(self.0.commit_broker_outcome(pending)))
     }
 
     /// Receives and commits one Host scope response with its exact descriptors.
@@ -6754,6 +6873,22 @@ impl DormantAuthenticatedBrokerSessionV1 {
         currentness: ProtectedBrokerOutcomeCurrentnessOwnerV1,
     ) -> Result<ProtectedBrokerOutcomeCurrentV1<'session>, BrokerSessionSecurityError> {
         self.0.revalidate_broker_outcome(currentness)
+    }
+
+    /// Loans the original execution terminal, returning failed ownership intact.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original owner and actual error when the fixed execution
+    /// endpoint, protected terminal, floor, or live peer is no longer current.
+    pub(crate) fn retain_execution_outcome_current<'session>(
+        &'session mut self,
+        currentness: ProtectedBrokerOutcomeCurrentnessOwnerV1,
+    ) -> Result<
+        ProtectedBrokerOutcomeCurrentV1<'session>,
+        (ProtectedBrokerOutcomeCurrentnessOwnerV1, BrokerSessionSecurityError),
+    > {
+        self.0.retain_execution_outcome_current(currentness)
     }
 
     /// Rechecks the exact borrowed Inventory predecessor without consuming it.
