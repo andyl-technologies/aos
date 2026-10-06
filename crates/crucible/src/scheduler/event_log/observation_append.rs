@@ -19,7 +19,7 @@ impl EventLog {
             entries.push(scheduler_event_log_entry(
                 sequence,
                 VirtualTime {
-                    ticks: observation.coordinate.virtual_nanos,
+                    ticks: observation.coordinate.virtual_ticks,
                 },
                 SchedulerEventLogPayload::FaultObservation(observation),
             ));

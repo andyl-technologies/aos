@@ -3,7 +3,7 @@
 use super::*;
 
 struct RefineCoordinateActions {
-    retired_instructions: u64,
+    retired_instructions: Option<u64>,
     expected_prepared_retired: Option<u64>,
     live_precondition: ContentHash,
     commits: usize,
@@ -69,7 +69,7 @@ impl FaultActionSink for RefineCoordinateActions {
                 FaultRuntimeError::UnknownAdapterTransaction,
             ))?;
         for result in &mut prepared.results {
-            result.observation.coordinate.retired_instructions = Some(self.retired_instructions);
+            result.observation.coordinate.retired_instructions = self.retired_instructions;
         }
         Ok(prepared)
     }
@@ -156,22 +156,31 @@ fn locked_replay_retains_and_enforces_a_backend_refined_coordinate() {
         FaultResourceLimits::default(),
     )
     .unwrap_or_else(|error| panic!("invalid unrefined coordinate runtime: {error}"));
+    let mut unrefined_recorded = Vec::new();
     let unrefined_result = unrefined_runtime.evaluate_boundary_traced(
         coordinate(0),
         0,
-        &mut AcceptActions::default(),
+        &mut RefineCoordinateActions {
+            retired_instructions: None,
+            expected_prepared_retired: None,
+            live_precondition: recorded_precondition(),
+            commits: 0,
+            prepared: None,
+        },
         None,
-        &mut Vec::new(),
+        &mut unrefined_recorded,
     );
     assert!(
-        matches!(
-            unrefined_result,
-            Err(BindingRuntimeError::AdapterCommit(
-                FaultRuntimeError::IncompleteAdapterState
-            ))
-        ),
+        unrefined_result.is_ok(),
         "unexpected unrefined result: {unrefined_result:?}"
     );
+    assert_eq!(
+        unrefined_recorded[0].records[0]
+            .coordinate
+            .retired_instructions,
+        None
+    );
+    assert!(unrefined_recorded[0].records[0].validate().is_ok());
 
     let mut recorder = FaultBindingRuntime::new(
         &program,
@@ -188,7 +197,7 @@ fn locked_replay_retains_and_enforces_a_backend_refined_coordinate() {
             coordinate(0),
             0,
             &mut RefineCoordinateActions {
-                retired_instructions: 73,
+                retired_instructions: Some(73),
                 expected_prepared_retired: None,
                 live_precondition: recorded_precondition(),
                 commits: 0,
@@ -204,15 +213,12 @@ fn locked_replay_retains_and_enforces_a_backend_refined_coordinate() {
         Some(73)
     );
     assert!(recorded[0].records[0].matches_recomputed_action(&evaluation.actions[0]));
-    let mut incomplete_node_record = recorded[0].records[0].clone();
-    incomplete_node_record.coordinate.retired_instructions = None;
-    assert_eq!(
-        incomplete_node_record.validate(),
-        Err(FaultContractError::InvalidPayload)
-    );
-    assert!(
-        !evaluation.actions[0].accepts_observation_coordinate(evaluation.actions[0].coordinate)
-    );
+    let mut node_record_without_raw_sample = recorded[0].records[0].clone();
+    node_record_without_raw_sample
+        .coordinate
+        .retired_instructions = None;
+    assert!(node_record_without_raw_sample.validate().is_ok());
+    assert!(evaluation.actions[0].accepts_observation_coordinate(evaluation.actions[0].coordinate));
     let mut host_action = evaluation.actions[0].clone();
     host_action.effect = Arc::new(availability_effect());
     let mut illicit_host_coordinate = host_action.coordinate;
@@ -239,7 +245,7 @@ fn locked_replay_retains_and_enforces_a_backend_refined_coordinate() {
             coordinate(0),
             0,
             &mut RefineCoordinateActions {
-                retired_instructions: 74,
+                retired_instructions: Some(74),
                 expected_prepared_retired: Some(73),
                 live_precondition: recorded_precondition(),
                 commits: 0,
@@ -269,7 +275,7 @@ fn locked_replay_retains_and_enforces_a_backend_refined_coordinate() {
             coordinate(0),
             0,
             &mut RefineCoordinateActions {
-                retired_instructions: 73,
+                retired_instructions: Some(73),
                 expected_prepared_retired: Some(73),
                 live_precondition: recorded_precondition(),
                 commits: 0,
@@ -293,7 +299,7 @@ fn locked_replay_retains_and_enforces_a_backend_refined_coordinate() {
     )
     .unwrap_or_else(|error| panic!("invalid divergent-state replay: {error}"));
     let mut divergent_sink = RefineCoordinateActions {
-        retired_instructions: 73,
+        retired_instructions: Some(73),
         expected_prepared_retired: Some(73),
         live_precondition: ContentHash::from_bytes(b"divergent-live-precondition"),
         commits: 0,

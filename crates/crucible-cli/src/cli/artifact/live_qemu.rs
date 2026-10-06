@@ -1,26 +1,35 @@
-//! Canonical live-QEMU replay contracts embedded in v3 artifacts.
+//! Canonical live-QEMU replay contracts embedded in reproduction artifacts.
 //!
-//! The contract records execution controls that cannot be recovered from a
-//! terminal model configuration alone. The scenario and typed schedule remain
-//! authoritative in the paired model-reproduction component.
+//! The contract records the complete initial scenario and schedule, terminal
+//! snapshot, and execution controls that cannot be recovered from a terminal
+//! model configuration alone. Replay also requires the paired model component
+//! to carry identical scenario and final-schedule material.
 
 use super::*;
 
-const LIVE_QEMU_REPLAY_CONTRACT_SCHEMA: &str = "crucible.live-qemu-replay-contract.v3";
+const LIVE_QEMU_REPLAY_CONTRACT_SCHEMA: &str = "crucible.live-qemu-replay-contract.v5";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LiveQemuReplayContract {
     pub(crate) producer: String,
+    pub(crate) execution_owner: RunExecutionOwner,
+    pub(crate) execution_mode: RunExecutionMode,
+    pub(crate) initial_configuration: String,
+    pub(crate) initial_scenario: Vec<u8>,
+    pub(crate) initial_schedule: Vec<u8>,
     pub(crate) terminal_condition: String,
     pub(crate) terminal_status: String,
     pub(crate) terminal_outcome: String,
     pub(crate) terminal_configuration: String,
     pub(crate) final_frontier_ticks: u64,
     pub(crate) final_quanta: u64,
+    pub(crate) final_event_log_len: u64,
+    pub(crate) final_schedule: Vec<u8>,
+    pub(crate) terminal_savepoint: Option<Vec<u8>>,
     pub(crate) budget_timed_out: bool,
     pub(crate) max_virtual_time_ticks: Option<u64>,
     pub(crate) max_quanta: Option<u64>,
-    pub(crate) run_ceiling_icount: Option<u64>,
+    pub(crate) run_ceiling_ticks: Option<u64>,
     pub(crate) lifecycle_quantum_budget: Option<u64>,
     pub(crate) coverage: bool,
     pub(crate) fingerprint_scope: LiveQemuFingerprintScope,
@@ -29,6 +38,7 @@ pub(crate) struct LiveQemuReplayContract {
     pub(crate) startup_controls: Vec<LiveQemuReplayControl>,
     pub(crate) initial_controls: Vec<LiveQemuReplayControl>,
     pub(crate) controls: Vec<LiveQemuReplayControl>,
+    pub(crate) reproduction_commands: Vec<crucible_api::ReproductionCommandRecord>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,12 +52,6 @@ pub(crate) enum LiveQemuReplayBranch {
         base_decisions: u64,
         frontier_ticks: u64,
         seed: u64,
-    },
-    PrefixOverrides {
-        base_decisions: u64,
-        frontier_ticks: u64,
-        decision_start: u64,
-        decision_end: u64,
     },
 }
 
@@ -71,6 +75,29 @@ impl LiveQemuReplayContract {
         artifact_line(
             &mut text,
             &[
+                "execution",
+                match self.execution_owner {
+                    RunExecutionOwner::Session => "session",
+                    RunExecutionOwner::Campaign => "campaign",
+                },
+                match self.execution_mode {
+                    RunExecutionMode::Interactive => "interactive",
+                    RunExecutionMode::ToCompletion => "to-completion",
+                },
+            ],
+        );
+        artifact_line(
+            &mut text,
+            &[
+                "initial",
+                &self.initial_configuration,
+                &hex_bytes(&self.initial_scenario),
+                &hex_bytes(&self.initial_schedule),
+            ],
+        );
+        artifact_line(
+            &mut text,
+            &[
                 "terminal",
                 &self.terminal_condition,
                 &self.terminal_status,
@@ -79,6 +106,19 @@ impl LiveQemuReplayContract {
                 &self.final_frontier_ticks.to_string(),
                 &self.final_quanta.to_string(),
                 bool_label(self.budget_timed_out),
+            ],
+        );
+        artifact_line(
+            &mut text,
+            &[
+                "snapshot",
+                &self.final_event_log_len.to_string(),
+                &hex_bytes(&self.final_schedule),
+                &self
+                    .terminal_savepoint
+                    .as_deref()
+                    .map(hex_bytes)
+                    .unwrap_or_else(|| String::from("none")),
             ],
         );
         artifact_line(
@@ -94,7 +134,7 @@ impl LiveQemuReplayContract {
             &mut text,
             &[
                 "lifecycle",
-                &optional_u64_label(self.run_ceiling_icount),
+                &optional_u64_label(self.run_ceiling_ticks),
                 &optional_u64_label(self.lifecycle_quantum_budget),
             ],
         );
@@ -138,22 +178,6 @@ impl LiveQemuReplayContract {
                     &seed.to_string(),
                 ],
             ),
-            LiveQemuReplayBranch::PrefixOverrides {
-                base_decisions,
-                frontier_ticks,
-                decision_start,
-                decision_end,
-            } => artifact_line(
-                &mut text,
-                &[
-                    "branch",
-                    "prefix-overrides",
-                    &base_decisions.to_string(),
-                    &frontier_ticks.to_string(),
-                    &decision_start.to_string(),
-                    &decision_end.to_string(),
-                ],
-            ),
         }
         for index in &self.network_choice_indices {
             artifact_line(&mut text, &["choice", "network", &index.to_string()]);
@@ -166,6 +190,29 @@ impl LiveQemuReplayContract {
                 &["control", &control.sequence.to_string(), &control.command],
             );
         }
+        for record in &self.reproduction_commands {
+            artifact_line(
+                &mut text,
+                &[
+                    "record",
+                    &record.sequence.to_string(),
+                    session_command_name(record.payload.command),
+                    &hex_bytes(record.payload.command_payload.as_bytes()),
+                    &record.payload.scheduler_batch.to_string(),
+                    &record
+                        .payload
+                        .scheduler_control
+                        .as_deref()
+                        .map(|value| hex_bytes(value.as_bytes()))
+                        .unwrap_or_else(|| String::from("none")),
+                    &record.virtual_time.ticks.to_string(),
+                    &record.quanta.to_string(),
+                    &record.at_sequence.to_string(),
+                    "accepted",
+                    &record.observational_order.to_string(),
+                ],
+            );
+        }
         text.into_bytes()
     }
 
@@ -175,7 +222,10 @@ impl LiveQemuReplayContract {
         })?;
         let mut schema = None;
         let mut producer = None;
+        let mut execution = None;
+        let mut initial = None;
         let mut terminal = None;
+        let mut snapshot = None;
         let mut bounds = None;
         let mut lifecycle = None;
         let mut fingerprint_scope = None;
@@ -184,6 +234,7 @@ impl LiveQemuReplayContract {
         let mut startup_controls = Vec::new();
         let mut initial_controls = Vec::new();
         let mut controls = Vec::new();
+        let mut reproduction_commands = Vec::new();
         for (line_index, line) in text.lines().enumerate() {
             let fields = parse_artifact_fields(line)?;
             let Some(tag) = fields.first().map(String::as_str) else {
@@ -198,6 +249,45 @@ impl LiveQemuReplayContract {
                     require_field_count(line_index, tag, &fields, 2)?;
                     validate_required_field("live replay producer", &fields[1])?;
                     set_once(&mut producer, line_index, tag, fields[1].clone())?;
+                }
+                "execution" => {
+                    require_field_count(line_index, tag, &fields, 3)?;
+                    let owner = match fields[1].as_str() {
+                        "session" => RunExecutionOwner::Session,
+                        "campaign" => RunExecutionOwner::Campaign,
+                        other => {
+                            return Err(artifact_line_error(
+                                line_index,
+                                tag,
+                                &format!("unknown execution owner `{other}`"),
+                            ));
+                        }
+                    };
+                    let mode = match fields[2].as_str() {
+                        "interactive" => RunExecutionMode::Interactive,
+                        "to-completion" => RunExecutionMode::ToCompletion,
+                        other => {
+                            return Err(artifact_line_error(
+                                line_index,
+                                tag,
+                                &format!("unknown execution mode `{other}`"),
+                            ));
+                        }
+                    };
+                    set_once(&mut execution, line_index, tag, (owner, mode))?;
+                }
+                "initial" => {
+                    require_field_count(line_index, tag, &fields, 4)?;
+                    set_once(
+                        &mut initial,
+                        line_index,
+                        tag,
+                        (
+                            fields[1].clone(),
+                            parse_hex_bytes(line_index, tag, &fields[2])?,
+                            parse_hex_bytes(line_index, tag, &fields[3])?,
+                        ),
+                    )?;
                 }
                 "terminal" => {
                     require_field_count(line_index, tag, &fields, 8)?;
@@ -226,6 +316,24 @@ impl LiveQemuReplayContract {
                             parse_optional_u64(line_index, tag, &fields[1])?,
                             parse_optional_u64(line_index, tag, &fields[2])?,
                             parse_bool(line_index, tag, &fields[3])?,
+                        ),
+                    )?;
+                }
+                "snapshot" => {
+                    require_field_count(line_index, tag, &fields, 4)?;
+                    let savepoint = if fields[3] == "none" {
+                        None
+                    } else {
+                        Some(parse_hex_bytes(line_index, tag, &fields[3])?)
+                    };
+                    set_once(
+                        &mut snapshot,
+                        line_index,
+                        tag,
+                        (
+                            parse_u64(line_index, tag, &fields[1])?,
+                            parse_hex_bytes(line_index, tag, &fields[2])?,
+                            savepoint,
                         ),
                     )?;
                 }
@@ -286,6 +394,10 @@ impl LiveQemuReplayContract {
                         _ => controls.push(control),
                     }
                 }
+                "record" => {
+                    require_field_count(line_index, tag, &fields, 11)?;
+                    reproduction_commands.push(parse_reproduction_record(line_index, &fields)?);
+                }
                 other => {
                     return Err(artifact_line_error(
                         line_index,
@@ -312,13 +424,21 @@ impl LiveQemuReplayContract {
             .ok_or_else(|| artifact_error("live-QEMU replay contract has no terminal target"))?;
         let (max_virtual_time_ticks, max_quanta, coverage) =
             bounds.ok_or_else(|| artifact_error("live-QEMU replay contract has no bounds"))?;
-        let (run_ceiling_icount, lifecycle_quantum_budget) = lifecycle
+        let (run_ceiling_ticks, lifecycle_quantum_budget) = lifecycle
             .ok_or_else(|| artifact_error("live-QEMU replay contract has no lifecycle limits"))?;
         let producer =
             producer.ok_or_else(|| artifact_error("live-QEMU replay contract has no producer"))?;
+        let (execution_owner, execution_mode) = execution
+            .ok_or_else(|| artifact_error("live-QEMU replay contract has no execution route"))?;
+        let (initial_configuration, initial_scenario, initial_schedule) =
+            initial.ok_or_else(|| {
+                artifact_error("live-QEMU replay contract has no initial configuration")
+            })?;
+        let (final_event_log_len, final_schedule, terminal_savepoint) = snapshot
+            .ok_or_else(|| artifact_error("live-QEMU replay contract has no final snapshot"))?;
         if !matches!(
             producer.as_str(),
-            "run" | "verify" | "search" | "fuzz" | "fork"
+            "run" | "campaign-run" | "campaign-search" | "verify" | "search" | "fuzz"
         ) {
             return Err(artifact_error(format!(
                 "live-QEMU replay contract has unsupported producer `{producer}`"
@@ -326,16 +446,24 @@ impl LiveQemuReplayContract {
         }
         let contract = Self {
             producer,
+            execution_owner,
+            execution_mode,
+            initial_configuration,
+            initial_scenario,
+            initial_schedule,
             terminal_condition,
             terminal_status,
             terminal_outcome,
             terminal_configuration,
             final_frontier_ticks,
             final_quanta,
+            final_event_log_len,
+            final_schedule,
+            terminal_savepoint,
             budget_timed_out,
             max_virtual_time_ticks,
             max_quanta,
-            run_ceiling_icount,
+            run_ceiling_ticks,
             lifecycle_quantum_budget,
             coverage,
             fingerprint_scope: fingerprint_scope.ok_or_else(|| {
@@ -347,6 +475,7 @@ impl LiveQemuReplayContract {
             startup_controls,
             initial_controls,
             controls,
+            reproduction_commands,
         };
         contract.validate_semantics()?;
         if contract.encode() != bytes {
@@ -358,6 +487,64 @@ impl LiveQemuReplayContract {
     }
 
     fn validate_semantics(&self) -> Result<(), CliError> {
+        if self.execution_mode == RunExecutionMode::Interactive
+            && self.execution_owner != RunExecutionOwner::Session
+        {
+            return Err(artifact_error(
+                "interactive live-QEMU artifacts require the session execution owner",
+            ));
+        }
+        if self.execution_mode == RunExecutionMode::ToCompletion
+            && self.execution_owner != RunExecutionOwner::Campaign
+        {
+            return Err(artifact_error(
+                "to-completion live-QEMU artifacts require the campaign execution owner",
+            ));
+        }
+        let initial_scenario =
+            crucible::ScenarioDefForm::from_compact_binary(&self.initial_scenario)
+                .map_err(|error| artifact_error(format!("decode initial scenario: {error}")))?;
+        if initial_scenario.to_compact_binary() != self.initial_scenario {
+            return Err(artifact_error("initial scenario encoding is not canonical"));
+        }
+        let initial_schedule = crucible::Schedule::from_compact_binary(&self.initial_schedule)
+            .map_err(|error| artifact_error(format!("decode initial schedule: {error}")))?;
+        if initial_schedule.to_compact_binary() != self.initial_schedule {
+            return Err(artifact_error("initial schedule encoding is not canonical"));
+        }
+        let initial_configuration = crucible::Configuration {
+            def: initial_scenario.scenario_def(),
+            schedule: initial_schedule,
+        };
+        if format_content_hash_ref(initial_configuration.id()) != self.initial_configuration {
+            return Err(artifact_error(
+                "initial configuration identity does not match its scenario and schedule",
+            ));
+        }
+        let final_schedule = crucible::Schedule::from_compact_binary(&self.final_schedule)
+            .map_err(|error| artifact_error(format!("decode final schedule: {error}")))?;
+        if final_schedule.to_compact_binary() != self.final_schedule {
+            return Err(artifact_error("final schedule encoding is not canonical"));
+        }
+        if let Some(bytes) = &self.terminal_savepoint {
+            let checkpoint = crucible::Checkpoint::from_compact_binary(bytes)
+                .map_err(|error| artifact_error(format!("decode terminal savepoint: {error}")))?;
+            if checkpoint.to_compact_binary() != *bytes {
+                return Err(artifact_error(
+                    "terminal savepoint encoding is not canonical",
+                ));
+            }
+        }
+        for (index, record) in self.reproduction_commands.iter().enumerate() {
+            let expected = u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1);
+            if record.sequence != expected {
+                return Err(artifact_error(
+                    "reproduction record sequences must be contiguous from one",
+                ));
+            }
+            let _ = crucible_session::SessionControlLogEntry::try_from(record.clone())
+                .map_err(|error| artifact_error(error.to_string()))?;
+        }
         if self
             .network_choice_indices
             .windows(2)
@@ -368,16 +555,15 @@ impl LiveQemuReplayContract {
             ));
         }
         let fork_branch = !matches!(self.branch, LiveQemuReplayBranch::None);
-        if (self.producer == "fork") != fork_branch {
+        if fork_branch && self.producer != "campaign-run" {
             return Err(artifact_error(
-                "live-QEMU replay branch recipes are required only for fork artifacts",
+                "live-QEMU replay branches require the campaign-run producer",
             ));
         }
         let branch_start = match &self.branch {
             LiveQemuReplayBranch::None => 0,
             LiveQemuReplayBranch::Resume { base_decisions, .. }
-            | LiveQemuReplayBranch::Reseed { base_decisions, .. }
-            | LiveQemuReplayBranch::PrefixOverrides { base_decisions, .. } => *base_decisions,
+            | LiveQemuReplayBranch::Reseed { base_decisions, .. } => *base_decisions,
         };
         if self
             .network_choice_indices
@@ -385,29 +571,20 @@ impl LiveQemuReplayContract {
             .any(|index| *index < branch_start)
         {
             return Err(artifact_error(
-                "fork replay choices must belong to the post-branch suffix",
-            ));
-        }
-        if let LiveQemuReplayBranch::PrefixOverrides {
-            base_decisions,
-            decision_start,
-            decision_end,
-            ..
-        } = &self.branch
-            && (decision_start != base_decisions || decision_end < decision_start)
-        {
-            return Err(artifact_error(
-                "fork prefix-override coordinates are not a contiguous branch suffix",
+                "branch replay choices must belong to the post-branch suffix",
             ));
         }
         let terminal_scope = self.fingerprint_scope == LiveQemuFingerprintScope::TerminalAllNodes;
-        if matches!(self.producer.as_str(), "search" | "fork") != terminal_scope {
+        let requires_terminal_scope = self.execution_mode == RunExecutionMode::Interactive
+            || self.producer == "campaign-search"
+            || fork_branch;
+        if requires_terminal_scope != terminal_scope {
             return Err(artifact_error(
                 "live-QEMU replay fingerprint scope is incompatible with its producer",
             ));
         }
-        if self.producer == "search"
-            && (self.run_ceiling_icount.is_none() || self.lifecycle_quantum_budget.is_none())
+        if matches!(self.producer.as_str(), "search" | "campaign-search")
+            && (self.run_ceiling_ticks.is_none() || self.lifecycle_quantum_budget.is_none())
         {
             return Err(artifact_error(
                 "search replay contracts require explicit lifecycle ceilings",
@@ -415,22 +592,90 @@ impl LiveQemuReplayContract {
         }
         validate_controls("startup", &self.startup_controls, |command| {
             matches!(command, "start" | "continue" | "step-quantum")
-                || self.producer == "fork" && command == "fork"
         })?;
         validate_controls("initial", &self.initial_controls, |command| {
             command == "query"
         })?;
-        if self.producer == "fork"
-            && (control_commands(&self.startup_controls) != ["fork", "continue"]
+        if fork_branch
+            && (control_commands(&self.startup_controls) != ["start", "continue"]
                 || control_commands(&self.initial_controls) != ["query"])
         {
             return Err(artifact_error(
-                "live-QEMU fork replay requires startup controls `fork,continue` and one initial `query`",
+                "live-QEMU branch replay requires startup controls `start,continue` and one initial `query`",
             ));
         }
         validate_controls("acknowledged", &self.controls, known_control_command)?;
         Ok(())
     }
+}
+
+fn parse_reproduction_record(
+    line_index: usize,
+    fields: &[String],
+) -> Result<crucible_api::ReproductionCommandRecord, CliError> {
+    let command = parse_session_command_kind(line_index, &fields[2])?;
+    let command_payload = String::from_utf8(parse_hex_bytes(line_index, "record", &fields[3])?)
+        .map_err(|error| {
+            artifact_line_error(
+                line_index,
+                "record",
+                &format!("command payload is not UTF-8: {error}"),
+            )
+        })?;
+    let scheduler_control = if fields[5] == "none" {
+        None
+    } else {
+        Some(
+            String::from_utf8(parse_hex_bytes(line_index, "record", &fields[5])?).map_err(
+                |error| {
+                    artifact_line_error(
+                        line_index,
+                        "record",
+                        &format!("scheduler control is not UTF-8: {error}"),
+                    )
+                },
+            )?,
+        )
+    };
+    if fields[9] != "accepted" {
+        return Err(artifact_line_error(
+            line_index,
+            "record",
+            "unknown reproduction command result",
+        ));
+    }
+    Ok(crucible_api::ReproductionCommandRecord {
+        sequence: parse_u64(line_index, "record", &fields[1])?,
+        payload: crucible_api::ReproductionCommandPayload {
+            command,
+            command_payload,
+            scheduler_batch: parse_u64(line_index, "record", &fields[4])?,
+            scheduler_control,
+        },
+        virtual_time: crucible::VirtualTime {
+            ticks: parse_u64(line_index, "record", &fields[6])?,
+        },
+        quanta: parse_u64(line_index, "record", &fields[7])?,
+        at_sequence: parse_u64(line_index, "record", &fields[8])?,
+        result: crucible_api::ReproductionCommandResult::Accepted,
+        observational_order: parse_u64(line_index, "record", &fields[10])?,
+    })
+}
+
+fn parse_session_command_kind(
+    line_index: usize,
+    command: &str,
+) -> Result<SessionCommandKind, CliError> {
+    SessionCommandKind::ALL
+        .into_iter()
+        .find(|candidate| session_command_name(*candidate) == command)
+        .ok_or_else(|| {
+            artifact_line_error(
+                line_index,
+                "record",
+                &format!("unknown reproduction command `{command}`"),
+            )
+        })
 }
 
 fn control_commands(controls: &[LiveQemuReplayControl]) -> Vec<&str> {
@@ -484,7 +729,6 @@ fn known_control_command(command: &str) -> bool {
             | "set-breakpoint"
             | "remove-breakpoint"
             | "create-savepoint"
-            | "fork"
             | "query"
             | "stop"
             | "exhaust-budget"
@@ -519,15 +763,6 @@ fn parse_branch(
                 base_decisions: parse_u64(line_index, tag, &fields[2])?,
                 frontier_ticks: parse_u64(line_index, tag, &fields[3])?,
                 seed: parse_u64(line_index, tag, &fields[4])?,
-            })
-        }
-        Some("prefix-overrides") => {
-            require_field_count(line_index, tag, fields, 6)?;
-            Ok(LiveQemuReplayBranch::PrefixOverrides {
-                base_decisions: parse_u64(line_index, tag, &fields[2])?,
-                frontier_ticks: parse_u64(line_index, tag, &fields[3])?,
-                decision_start: parse_u64(line_index, tag, &fields[4])?,
-                decision_end: parse_u64(line_index, tag, &fields[5])?,
             })
         }
         Some(other) => Err(artifact_line_error(

@@ -906,8 +906,8 @@ impl<L> Engine<L> {
             .breakpoints
             .iter()
             .map(|(id, spec, was_true)| {
-                let mut pass = ConditionEvaluationPass::from_log_prefix(
-                    prefix.clone(),
+                let mut pass = ConditionEvaluationPass::from_log_prefix_ref(
+                    &prefix,
                     self.breakpoint_host_metadata.oracle_at(self.frontier),
                 )
                 .with_once_latches(self.breakpoints.once_latches(id))
@@ -1208,27 +1208,114 @@ impl<L: QuantumLoop> Engine<L> {
     /// if the replay loop cannot advance, or a control-replay mismatch error if
     /// the artifact records a control entry for a boundary not reached by replay.
     pub fn replay_control_replay_artifact(
+        &mut self,
         artifact: &SessionControlReplayArtifact,
-        graph: TemporalGraph,
-        quantum_loop: L,
     ) -> Result<EngineSnapshot, SessionError> {
-        let mut engine = Self::new(artifact.initial_configuration.clone(), graph, quantum_loop);
-        engine.apply_command(SessionCommand::Start)?;
-        engine.apply_command(SessionCommand::Continue)?;
+        self.replay_control_replay_artifact_inner(artifact, None)
+    }
+
+    /// Replays an operator-stopped artifact and samples its owned terminal nodes.
+    ///
+    /// Samples are obtained through the backend's existing fingerprint API at
+    /// the original paused boundary, immediately before the final recorded Stop.
+    /// The Stop and all control, event, frontier, quantum, and snapshot checks
+    /// remain part of replay. Sampling never drives an additional quantum.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError`] for invalid replay state or records, an empty
+    /// or repeated node list, an unpaused final boundary, backend sampling or
+    /// shutdown refusal, or final snapshot divergence. A sampling refusal still
+    /// executes the recorded Stop; simultaneous failures preserve both causes.
+    pub fn replay_control_replay_artifact_with_terminal_fingerprints(
+        &mut self,
+        artifact: &SessionControlReplayArtifact,
+        nodes: &[NodeId],
+    ) -> Result<(EngineSnapshot, Vec<FingerprintSample>), SessionError> {
+        let mut nodes = nodes.to_vec();
+        nodes.sort_by(|left, right| left.name.cmp(&right.name));
+        if nodes.is_empty()
+            || nodes.windows(2).any(|pair| pair[0] == pair[1])
+            || artifact.control_log.last().is_none_or(|entry| {
+                entry.command != SessionCommandKind::Stop
+                    || entry.quanta != artifact.final_snapshot.quanta
+            })
+            || !matches!(
+                artifact.final_snapshot.state,
+                EngineState::Stopped {
+                    outcome: Outcome::Stopped
+                }
+            )
+        {
+            return Err(SessionError::ControlReplayRecordInvalid {
+                sequence: artifact
+                    .control_log
+                    .last()
+                    .map_or(0, |entry| entry.sequence),
+                reason: String::from(
+                    "terminal sampling requires unique nodes and a final operator Stop",
+                ),
+            });
+        }
+
+        let mut fingerprints = Vec::with_capacity(nodes.len());
+        let snapshot =
+            self.replay_control_replay_artifact_inner(artifact, Some((&nodes, &mut fingerprints)))?;
+        Ok((snapshot, fingerprints))
+    }
+
+    fn replay_control_replay_artifact_inner(
+        &mut self,
+        artifact: &SessionControlReplayArtifact,
+        mut terminal_sampling: Option<(&[NodeId], &mut Vec<FingerprintSample>)>,
+    ) -> Result<EngineSnapshot, SessionError> {
+        if self.configuration != artifact.initial_configuration {
+            return Err(SessionError::ControlReplayInitialConfigurationMismatch {
+                expected: artifact.initial_configuration.id(),
+                actual: self.configuration.id(),
+            });
+        }
+        if !matches!(self.state, EngineState::Loaded)
+            || self.quanta != 0
+            || self.event_log_len != 0
+            || !self.boundary_control_log.is_empty()
+        {
+            return Err(self.invalid_engine_state("replay_control_replay_artifact"));
+        }
+        self.validate_control_replay_records(artifact)?;
+
+        self.apply_command(SessionCommand::Start)?;
+        self.apply_command(SessionCommand::Continue)?;
 
         let mut log_index = 0;
-        while engine.quanta < artifact.final_snapshot.quanta {
-            engine.replay_controls_at_current_boundary(artifact, &mut log_index)?;
-            let _ = engine.step_quantum()?;
+        while self.quanta < artifact.final_snapshot.quanta {
+            self.replay_controls_at_current_boundary(
+                artifact,
+                &mut log_index,
+                &mut terminal_sampling,
+            )?;
+            let _ = self.step_quantum()?;
         }
-        engine.replay_controls_at_current_boundary(artifact, &mut log_index)?;
+        self.replay_controls_at_current_boundary(artifact, &mut log_index, &mut terminal_sampling)?;
         if let Some(entry) = artifact.control_log.get(log_index) {
             return Err(SessionError::ControlReplayBoundaryMismatch {
-                current_quanta: engine.quanta,
+                current_quanta: self.quanta,
                 recorded_quanta: entry.quanta,
             });
         }
-        let replayed = engine.snapshot();
+
+        self.next_boundary_control_sequence = artifact
+            .control_log
+            .last()
+            .map_or(0, |entry| entry.sequence);
+        self.next_boundary_control_batch = artifact
+            .control_log
+            .iter()
+            .map(|entry| entry.scheduler_batch)
+            .max()
+            .unwrap_or(0);
+
+        let replayed = self.snapshot();
         if replayed != artifact.final_snapshot {
             return Err(SessionError::ControlReplayFinalSnapshotMismatch {
                 expected: Box::new(artifact.final_snapshot.clone()),
@@ -1238,10 +1325,69 @@ impl<L: QuantumLoop> Engine<L> {
         Ok(replayed)
     }
 
+    fn validate_control_replay_records(
+        &self,
+        artifact: &SessionControlReplayArtifact,
+    ) -> Result<(), SessionError> {
+        let mut previous_batch = 0;
+        let mut previous_scheduler_boundary = None;
+        for (index, entry) in artifact.control_log.iter().enumerate() {
+            let expected_sequence = u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1);
+            if entry.sequence != expected_sequence {
+                return Err(SessionError::ControlReplayRecordInvalid {
+                    sequence: entry.sequence,
+                    reason: format!(
+                        "sequence must be contiguous from one; expected {expected_sequence}"
+                    ),
+                });
+            }
+            if entry.result != SessionControlResult::Accepted {
+                return Err(SessionError::ControlReplayRecordInvalid {
+                    sequence: entry.sequence,
+                    reason: String::from("result must be accepted"),
+                });
+            }
+            match (&entry.scheduler_control, entry.scheduler_batch) {
+                (None, 0) => {
+                    previous_scheduler_boundary = None;
+                }
+                (Some(_), batch) if batch == previous_batch => {
+                    let boundary = (
+                        entry.quanta,
+                        entry.frontier,
+                        entry.event_log_sequence_before,
+                    );
+                    if previous_scheduler_boundary != Some(boundary) {
+                        return Err(SessionError::ControlReplayBatchMismatch {
+                            sequence: entry.sequence,
+                            scheduler_batch: batch,
+                        });
+                    }
+                }
+                (Some(_), batch) if batch == previous_batch.saturating_add(1) => {
+                    previous_batch = batch;
+                    previous_scheduler_boundary = Some((
+                        entry.quanta,
+                        entry.frontier,
+                        entry.event_log_sequence_before,
+                    ));
+                }
+                (None, batch) | (Some(_), batch) => {
+                    return Err(SessionError::ControlReplayBatchMismatch {
+                        sequence: entry.sequence,
+                        scheduler_batch: batch,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn replay_controls_at_current_boundary(
         &mut self,
         artifact: &SessionControlReplayArtifact,
         log_index: &mut usize,
+        terminal_sampling: &mut Option<(&[NodeId], &mut Vec<FingerprintSample>)>,
     ) -> Result<(), SessionError> {
         while let Some(entry) = artifact.control_log.get(*log_index) {
             if entry.quanta < self.quanta {
@@ -1259,8 +1405,40 @@ impl<L: QuantumLoop> Engine<L> {
                     recorded: entry.frontier,
                 });
             }
+            if entry.event_log_sequence_before != usize_to_u64(self.event_log_len) {
+                return Err(SessionError::ControlReplayRecordInvalid {
+                    sequence: entry.sequence,
+                    reason: format!(
+                        "event boundary {} does not match replay event boundary {}",
+                        entry.event_log_sequence_before, self.event_log_len
+                    ),
+                });
+            }
             if entry.scheduler_control.is_none() {
-                self.replay_non_scheduler_boundary_control(entry.command)?;
+                let samples = if entry.command == SessionCommandKind::Stop
+                    && *log_index + 1 == artifact.control_log.len()
+                    && let Some((nodes, _)) = terminal_sampling.as_ref()
+                {
+                    Some(self.sample_control_replay_terminal_fingerprints(nodes))
+                } else {
+                    None
+                };
+                let stopped = self.replay_non_scheduler_boundary_control(entry);
+                if let Some(Err(sampling)) = samples.as_ref()
+                    && let Err(shutdown) = stopped.as_ref()
+                {
+                    return Err(SessionError::ControlReplayTerminalSamplingCleanup {
+                        sampling: Box::new(sampling.clone()),
+                        shutdown: Box::new(shutdown.clone()),
+                    });
+                }
+                stopped?;
+                self.boundary_control_log.push(entry.clone());
+                if let Some(samples) = samples
+                    && let Some((_, fingerprints)) = terminal_sampling.as_mut()
+                {
+                    **fingerprints = samples?;
+                }
                 *log_index += 1;
                 continue;
             }
@@ -1272,6 +1450,7 @@ impl<L: QuantumLoop> Engine<L> {
                     scheduler_batch,
                 });
             }
+            let batch_start = *log_index;
             let mut controls = Vec::new();
             while let Some(batch_entry) = artifact.control_log.get(*log_index) {
                 if batch_entry.quanta != self.quanta
@@ -1290,20 +1469,80 @@ impl<L: QuantumLoop> Engine<L> {
                 *log_index += 1;
             }
             self.apply_control_operations_at_boundary(controls)?;
+            self.boundary_control_log
+                .extend_from_slice(&artifact.control_log[batch_start..*log_index]);
         }
         Ok(())
     }
 
+    fn sample_control_replay_terminal_fingerprints(
+        &mut self,
+        nodes: &[NodeId],
+    ) -> Result<Vec<FingerprintSample>, SessionError> {
+        if !matches!(self.state, EngineState::Paused { .. }) {
+            return Err(self.invalid_engine_state("sample paused replay terminal fingerprints"));
+        }
+        nodes
+            .iter()
+            .map(|node| {
+                self.quantum_loop
+                    .sample_fingerprint(node.clone())
+                    .map_err(SessionError::from)
+            })
+            .collect()
+    }
+
     fn replay_non_scheduler_boundary_control(
         &mut self,
-        command: SessionCommandKind,
+        entry: &SessionControlLogEntry,
     ) -> Result<(), SessionError> {
-        match command {
-            SessionCommandKind::Pause | SessionCommandKind::Fork => {
+        match entry.command {
+            SessionCommandKind::Pause => {
                 self.active_step = None;
                 self.state = EngineState::Paused {
                     reason: PauseReason::UserRequested,
                 };
+            }
+            SessionCommandKind::Fork if matches!(self.state, EngineState::Running) => {
+                self.active_step = None;
+                self.state = EngineState::Paused {
+                    reason: PauseReason::UserRequested,
+                };
+            }
+            SessionCommandKind::Fork => {}
+            SessionCommandKind::Continue => {
+                self.active_step = None;
+                self.state = EngineState::Running;
+            }
+            SessionCommandKind::StepQuantum => self.begin_replayed_step(StepMode::Quantum),
+            SessionCommandKind::StepEvent => self.begin_replayed_step(StepMode::Event),
+            SessionCommandKind::StepAssertion => self.begin_replayed_step(StepMode::Assertion),
+            SessionCommandKind::StepTimer => self.begin_replayed_step(StepMode::Timer),
+            SessionCommandKind::StepDuration => {
+                self.begin_replayed_step(StepMode::Duration(StepMode::DEFAULT_DURATION));
+            }
+            SessionCommandKind::SetBreakpoint => {
+                let SessionControlPayload::SetBreakpoint { spec } = &entry.payload else {
+                    return Err(SessionError::ControlReplayRecordInvalid {
+                        sequence: entry.sequence,
+                        reason: String::from("set-breakpoint record omitted its typed payload"),
+                    });
+                };
+                let _ = self.breakpoints.insert(spec.clone());
+            }
+            SessionCommandKind::RemoveBreakpoint => {
+                let SessionControlPayload::RemoveBreakpoint { id } = &entry.payload else {
+                    return Err(SessionError::ControlReplayRecordInvalid {
+                        sequence: entry.sequence,
+                        reason: String::from("remove-breakpoint record omitted its typed payload"),
+                    });
+                };
+                if !self.breakpoints.remove(*id) {
+                    return Err(SessionError::BreakpointNotFound { id: *id });
+                }
+            }
+            SessionCommandKind::CreateSavepoint => {
+                let _ = self.save_current_checkpoint()?;
             }
             SessionCommandKind::Stop => {
                 self.pending_control.clear();
@@ -1314,15 +1553,6 @@ impl<L: QuantumLoop> Engine<L> {
                 self.stop_after_budget_exhaustion()?;
             }
             SessionCommandKind::Start
-            | SessionCommandKind::Continue
-            | SessionCommandKind::StepQuantum
-            | SessionCommandKind::StepEvent
-            | SessionCommandKind::StepAssertion
-            | SessionCommandKind::StepTimer
-            | SessionCommandKind::StepDuration
-            | SessionCommandKind::SetBreakpoint
-            | SessionCommandKind::RemoveBreakpoint
-            | SessionCommandKind::CreateSavepoint
             | SessionCommandKind::Query
             | SessionCommandKind::AttachGdb
             | SessionCommandKind::DebugGoto
@@ -1332,6 +1562,11 @@ impl<L: QuantumLoop> Engine<L> {
             | SessionCommandKind::GuestIntrospection => {}
         }
         Ok(())
+    }
+
+    fn begin_replayed_step(&mut self, mode: StepMode) {
+        self.active_step = Some(ActiveStep::new(mode, self.frontier));
+        self.state = EngineState::Running;
     }
 
     /// Applies one actor-owned command at a state-machine boundary.
@@ -1385,6 +1620,9 @@ impl<L: QuantumLoop> Engine<L> {
             SessionCommand::Continue => {
                 if matches!(self.state, EngineState::Paused { .. }) {
                     self.reject_debug_forward_without_branch(&command)?;
+                    if self.quanta > 0 {
+                        self.record_boundary_control(&command, None);
+                    }
                     self.active_step = None;
                     self.state = EngineState::Running;
                     Ok(self.snapshot())
@@ -1410,6 +1648,7 @@ impl<L: QuantumLoop> Engine<L> {
             SessionCommand::Step { mode } => match self.state {
                 EngineState::Running | EngineState::Paused { .. } => {
                     self.reject_debug_forward_without_branch(&command)?;
+                    self.record_boundary_control(&command, None);
                     self.active_step = Some(ActiveStep::new(*mode, self.frontier));
                     self.state = EngineState::Running;
                     Ok(self.snapshot())
@@ -1484,9 +1723,7 @@ impl<L: QuantumLoop> Engine<L> {
                 if matches!(self.state, EngineState::Stopped { .. }) {
                     Err(self.invalid_transition(command.clone()))
                 } else {
-                    if matches!(self.state, EngineState::Running) {
-                        self.record_boundary_control(&command, None);
-                    }
+                    self.record_boundary_control(&command, None);
                     self.pending_control.clear();
                     self.active_step = None;
                     self.debug_branch_required = false;
@@ -1500,9 +1737,7 @@ impl<L: QuantumLoop> Engine<L> {
                 if matches!(self.state, EngineState::Stopped { .. }) {
                     Err(self.invalid_transition(command.clone()))
                 } else {
-                    if matches!(self.state, EngineState::Running) {
-                        self.record_boundary_control(&command, None);
-                    }
+                    self.record_boundary_control(&command, None);
                     self.debug_branch_required = false;
                     self.stop_after_budget_exhaustion()?;
                     Ok(self.snapshot())
@@ -1511,6 +1746,7 @@ impl<L: QuantumLoop> Engine<L> {
             SessionCommand::Query { kind, reply } => {
                 if matches!(self.state, EngineState::Running) {
                     self.admit_control_operation(ControlOperationKind::Query);
+                    self.record_boundary_control(&command, Some(ControlOperationKind::Query));
                 }
                 let snapshot = self.snapshot();
                 let result = match kind {
@@ -1656,58 +1892,74 @@ impl<L: QuantumLoop> Engine<L> {
                     Err(self.invalid_transition(command.clone()))
                 }
             },
-            SessionCommand::DebugForkNonCanonical { request, reply } => match self.state {
-                EngineState::Running | EngineState::Paused { .. } => {
-                    self.validate_event_log_prefix(event_log)?;
-                    let attach = self.current_debug_attach("debug-fork-non-canonical")?;
-                    let introspection_node =
-                        request.actions.first().and_then(|action| match action {
-                            DebugNonCanonicalBranchAction::GuestIntrospection { node } => {
-                                Some(node.clone())
+            SessionCommand::DebugForkNonCanonical { request, reply } => {
+                match self.state {
+                    EngineState::Running | EngineState::Paused { .. } => {
+                        self.validate_event_log_prefix(event_log)?;
+                        let attach = self.current_debug_attach("debug-fork-non-canonical")?;
+                        let introspection_node =
+                            request.actions.first().and_then(|action| match action {
+                                DebugNonCanonicalBranchAction::GuestIntrospection { node } => {
+                                    Some(node.clone())
+                                }
+                                _ => None,
+                            });
+                        if let Some(node) = introspection_node.as_ref()
+                            && self.white_box_policies.get(node) != Some(&WhiteBoxPolicy::Enabled)
+                        {
+                            return Err(SessionError::GuestIntrospectionNotAuthorized {
+                                node: node.name.clone(),
+                            });
+                        }
+                        let mut candidate_graph = self.graph.clone();
+                        let report = candidate_graph
+                            .debug_non_canonical_branch(&attach, request, event_log)?;
+                        let entries = report
+                            .event_log_with_fork_marker
+                            .iter()
+                            .skip(event_log.len())
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        let entries = self
+                            .quantum_loop
+                            .append_noncanonical_debug_event_log_entries(entries)?;
+                        self.append_boundary_event_log_entries(entries)?;
+                        let guest_edit = request.actions.iter().any(|action| {
+                            matches!(action, DebugNonCanonicalBranchAction::GuestEdit(_))
+                        });
+                        self.graph = candidate_graph;
+                        self.debug_branch_required = false;
+                        self.debug_coordinator
+                            .forked_non_canonical(self.configuration.id());
+                        if guest_edit {
+                            if matches!(self.state, EngineState::Running) {
+                                self.active_step = None;
+                                self.state = EngineState::Paused {
+                                    reason: PauseReason::UserRequested,
+                                };
                             }
-                            _ => None,
-                        });
-                    if let Some(node) = introspection_node.as_ref()
-                        && self.white_box_policies.get(node) != Some(&WhiteBoxPolicy::Enabled)
-                    {
-                        return Err(SessionError::GuestIntrospectionNotAuthorized {
-                            node: node.name.clone(),
-                        });
+                            // A failed gateway transition leaves an accurately marked,
+                            // paused branch whose operator relay still denies writes.
+                            self.quantum_loop.authorize_noncanonical_guest_write()?;
+                        }
+                        if let Some(node) = introspection_node {
+                            self.begin_debug_guest_activation(node, report, reply.clone());
+                        } else if matches!(self.state, EngineState::Running) {
+                            self.active_step = None;
+                            self.state = EngineState::Paused {
+                                reason: PauseReason::UserRequested,
+                            };
+                            reply.complete(Ok(report));
+                        } else {
+                            reply.complete(Ok(report));
+                        }
+                        Ok(self.snapshot())
                     }
-                    let mut candidate_graph = self.graph.clone();
-                    let report =
-                        candidate_graph.debug_non_canonical_branch(&attach, request, event_log)?;
-                    let entries = report
-                        .event_log_with_fork_marker
-                        .iter()
-                        .skip(event_log.len())
-                        .cloned()
-                        .collect::<Vec<_>>();
-                    let entries = self
-                        .quantum_loop
-                        .append_noncanonical_debug_event_log_entries(entries)?;
-                    self.append_boundary_event_log_entries(entries)?;
-                    self.graph = candidate_graph;
-                    self.debug_branch_required = false;
-                    self.debug_coordinator
-                        .forked_non_canonical(self.configuration.id());
-                    if let Some(node) = introspection_node {
-                        self.begin_debug_guest_activation(node, report, reply.clone());
-                    } else if matches!(self.state, EngineState::Running) {
-                        self.active_step = None;
-                        self.state = EngineState::Paused {
-                            reason: PauseReason::UserRequested,
-                        };
-                        reply.complete(Ok(report));
-                    } else {
-                        reply.complete(Ok(report));
+                    EngineState::Loaded | EngineState::Stopped { .. } => {
+                        Err(self.invalid_transition(command.clone()))
                     }
-                    Ok(self.snapshot())
                 }
-                EngineState::Loaded | EngineState::Stopped { .. } => {
-                    Err(self.invalid_transition(command.clone()))
-                }
-            },
+            }
             SessionCommand::GuestIntrospection {
                 node,
                 channel_id,

@@ -335,7 +335,10 @@ pub struct SendResponse {
 }
 
 enum CommandReplyObserver {
-    Unit(oneshot::Receiver<Result<(), SessionError>>),
+    Unit {
+        receiver: oneshot::Receiver<Result<(), SessionError>>,
+        observed: Option<oneshot::Sender<()>>,
+    },
     BreakpointId(oneshot::Receiver<Result<BreakpointId, SessionError>>),
     BreakpointRemoval(oneshot::Receiver<Result<bool, SessionError>>),
     Savepoint(oneshot::Receiver<Result<SavepointInfo, SessionError>>),
@@ -362,7 +365,13 @@ impl CommandReplyObserver {
         StreamingApiError,
     > {
         let rejected = match self {
-            Self::Unit(receiver) => rejected_from_reply(receiver, command).await?,
+            Self::Unit { receiver, observed } => {
+                let result = rejected_from_reply(receiver, command).await;
+                if let Some(observed) = observed {
+                    let _ = observed.send(());
+                }
+                result?
+            }
             Self::BreakpointId(receiver) => match await_reply(receiver, command).await? {
                 Ok(id) => return Ok((CommandResultStatus::Accepted, None, Some(id), None)),
                 Err(error) => Some(session_error_rejection_kind(&error)),
@@ -432,6 +441,12 @@ pub enum StreamingApiError {
         /// Command kind that could not be sent or acknowledged.
         command: SessionCommandKind,
     },
+    /// An accepted command omitted the response payload required by its contract.
+    #[error("streaming command {command:?} returned no required response payload")]
+    CommandResponseMissing {
+        /// Command kind whose response payload was missing.
+        command: SessionCommandKind,
+    },
     /// The live mirror did not publish the expected state in the yield budget.
     #[error("streaming command {command:?} did not reach state {expected:?}")]
     StateDidNotAdvance {
@@ -446,15 +461,6 @@ pub enum StreamingApiError {
         /// Number of skipped frames reported by the event-log stream.
         skipped: u64,
     },
-    /// A legacy peer reported state-update lag instead of coalescing it.
-    ///
-    /// Current in-process and RPC receivers retain this variant for wire and
-    /// source compatibility but recover to their newest available state.
-    #[error("streaming state-update subscriber lagged by {skipped} frames")]
-    StateUpdateStreamLagged {
-        /// Number of skipped frames reported by the state-transition stream.
-        skipped: u64,
-    },
 }
 
 /// In-process streaming API handle for one live session.
@@ -467,6 +473,35 @@ pub struct InProcessStreamingSession {
     reproduction_log: SessionReproductionLog,
     state_transitions: SessionStateTransitionBus,
     max_actor_yields: u64,
+    command_policy: StreamingCommandPolicy,
+}
+
+#[derive(Clone, Copy)]
+enum StreamingCommandPolicy {
+    All,
+    QueryAndStop,
+}
+
+impl StreamingCommandPolicy {
+    const fn permits(self, command: SessionCommandKind) -> bool {
+        match self {
+            Self::All => true,
+            Self::QueryAndStop => {
+                matches!(
+                    command,
+                    SessionCommandKind::Query | SessionCommandKind::Stop
+                )
+            }
+        }
+    }
+
+    fn capabilities(self) -> StreamingCapabilitySet {
+        let mut capabilities = StreamingCapabilitySet::current();
+        capabilities
+            .commands
+            .retain(|capability| self.permits(capability.command_kind));
+        capabilities
+    }
 }
 
 impl InProcessStreamingSession {
@@ -488,7 +523,13 @@ impl InProcessStreamingSession {
             reproduction_log,
             state_transitions,
             max_actor_yields: STREAMING_COMMAND_MAX_ACTOR_YIELDS,
+            command_policy: StreamingCommandPolicy::All,
         }
+    }
+
+    pub(crate) const fn with_read_only_debug_policy(mut self) -> Self {
+        self.command_policy = StreamingCommandPolicy::QueryAndStop;
+        self
     }
 
     /// Returns a copy of this handle with an explicit actor-yield wait budget.
@@ -532,6 +573,7 @@ impl InProcessStreamingSession {
             events,
             state_updates,
             max_actor_yields: self.max_actor_yields,
+            command_policy: self.command_policy,
         })
     }
 
@@ -560,6 +602,10 @@ impl InProcessStreamingSession {
     /// an expected state update is not observed.
     pub async fn send(&self, request: SendRequest) -> Result<SendResponse, StreamingApiError> {
         self.validate_session(request.session, request.expected_epoch)?;
+        let command_kind = SessionCommandKind::from(&request.command);
+        if !self.command_policy.permits(command_kind) {
+            return Ok(policy_rejection(request.command_id, command_kind));
+        }
         dispatch_command(
             self.session,
             &self.sender,
@@ -604,7 +650,7 @@ impl InProcessStreamingSession {
                 event_log_len: attach_tail.next_sequence,
                 state: live.state_kind,
                 version: RPC_PROTOCOL_VERSION,
-                capabilities: StreamingCapabilitySet::current(),
+                capabilities: self.command_policy.capabilities(),
                 snapshot: Some(snapshot),
             },
             events,
@@ -644,6 +690,7 @@ pub struct ControlStream {
     events: SessionEventLogStream,
     state_updates: SessionStateTransitionStream,
     max_actor_yields: u64,
+    command_policy: StreamingCommandPolicy,
 }
 
 impl ControlStream {
@@ -673,15 +720,11 @@ impl ControlStream {
     ///
     /// Superseded updates may be coalesced when the subscriber falls behind the
     /// bounded state-update tail. The returned sequence remains monotone.
-    ///
-    /// # Errors
-    ///
-    /// This method currently has no recoverable error condition. Its result
-    /// remains fallible for compatibility with the combined streaming API.
-    pub async fn recv_state_update(
-        &mut self,
-    ) -> Result<Option<StreamingStateUpdateFrame>, StreamingApiError> {
-        recv_api_state_update(self.session, &mut self.state_updates).await
+    pub async fn recv_state_update(&mut self) -> Option<StreamingStateUpdateFrame> {
+        self.state_updates
+            .recv_latest()
+            .await
+            .map(|frame| state_update_frame(self.session, frame))
     }
 
     /// Receives the next event or state-update frame.
@@ -705,6 +748,10 @@ impl ControlStream {
         command_id: u64,
         command: SessionCommand,
     ) -> Result<SendResponse, StreamingApiError> {
+        let command_kind = SessionCommandKind::from(&command);
+        if !self.command_policy.permits(command_kind) {
+            return Ok(policy_rejection(command_id, command_kind));
+        }
         dispatch_command(
             self.session,
             &self.sender,
@@ -714,6 +761,22 @@ impl ControlStream {
             command,
         )
         .await
+    }
+}
+
+fn policy_rejection(command_id: u64, command_kind: SessionCommandKind) -> SendResponse {
+    SendResponse {
+        result: CommandResult {
+            command_id,
+            command_kind,
+            status: CommandResultStatus::Rejected {
+                reason: CommandRejectionKind::InvalidState,
+            },
+        },
+        state_update: None,
+        query_result: None,
+        breakpoint_id: None,
+        savepoint_info: None,
     }
 }
 
@@ -752,15 +815,11 @@ impl WatchStream {
     ///
     /// Superseded updates may be coalesced when the subscriber falls behind the
     /// bounded state-update tail. The returned sequence remains monotone.
-    ///
-    /// # Errors
-    ///
-    /// This method currently has no recoverable error condition. Its result
-    /// remains fallible for compatibility with the combined streaming API.
-    pub async fn recv_state_update(
-        &mut self,
-    ) -> Result<Option<StreamingStateUpdateFrame>, StreamingApiError> {
-        recv_api_state_update(self.session, &mut self.state_updates).await
+    pub async fn recv_state_update(&mut self) -> Option<StreamingStateUpdateFrame> {
+        self.state_updates
+            .recv_latest()
+            .await
+            .map(|frame| state_update_frame(self.session, frame))
     }
 
     /// Receives the next event or state-update frame.
@@ -885,9 +944,17 @@ fn command_with_reply_observer(
         ),
         None => {
             let (reply, receiver) = CommandReply::channel();
+            // Continue releases autonomous execution. Give its observer a
+            // scheduling opportunity without changing deferred step completion.
+            let (reply, observed) = if matches!(command, SessionCommand::Continue) {
+                let (observed, observation) = oneshot::channel();
+                (reply.with_observation(observation), Some(observed))
+            } else {
+                (reply, None)
+            };
             (
                 SessionCommand::acknowledged(command, reply),
-                Some(CommandReplyObserver::Unit(receiver)),
+                Some(CommandReplyObserver::Unit { receiver, observed }),
             )
         }
     }
@@ -938,6 +1005,9 @@ fn session_error_rejection_kind(error: &SessionError) -> CommandRejectionKind {
         | SessionError::ControlReplayFrontierMismatch { .. }
         | SessionError::ControlReplayBatchMismatch { .. }
         | SessionError::ControlReplayFinalSnapshotMismatch { .. }
+        | SessionError::ControlReplayInitialConfigurationMismatch { .. }
+        | SessionError::ControlReplayRecordInvalid { .. }
+        | SessionError::ControlReplayTerminalSamplingCleanup { .. }
         | SessionError::DebugRuntimeRepositionMismatch(_) => CommandRejectionKind::Internal,
     }
 }
@@ -952,8 +1022,7 @@ fn engine_error_rejection_kind(error: &EngineError) -> CommandRejectionKind {
         | EngineError::DebugTargetResolverFailureNotFound { .. }
         | EngineError::DebugTimeTravelCoordinateNotFound { .. }
         | EngineError::DebugTimeTravelUnknownNode { .. } => CommandRejectionKind::NotFound,
-        EngineError::NotImplemented { .. }
-        | EngineError::WorldNodeUnsupportedWorkload { .. }
+        EngineError::WorldNodeUnsupportedWorkload { .. }
         | EngineError::WorldNodeUnsupportedWorkloadConfigTree { .. }
         | EngineError::WorldNodeUnsupportedWorkloadPattern { .. }
         | EngineError::WorldNodeUnsupportedWorkloadSpikeMode { .. }
@@ -971,35 +1040,22 @@ fn schedule_error_rejection_kind(error: &crucible::ScheduleError) -> CommandReje
 
 fn scheduler_error_rejection_kind(error: &SchedulerError) -> CommandRejectionKind {
     match error {
-        SchedulerError::NotImplemented { .. } => CommandRejectionKind::Unsupported,
         SchedulerError::Backend(error) => backend_error_rejection_kind(error),
         SchedulerError::TimeConversion(_) | SchedulerError::TopologyActivationInPast { .. } => {
             CommandRejectionKind::InvalidArgument
         }
-        SchedulerError::BoundaryViolation { .. } | SchedulerError::ResourceLimit { .. } => {
-            CommandRejectionKind::Internal
-        }
+        SchedulerError::BoundaryViolation { .. }
+        | SchedulerError::OperationalBoundary { .. }
+        | SchedulerError::ResourceLimit { .. } => CommandRejectionKind::Internal,
     }
 }
 
 const fn backend_error_rejection_kind(error: &BackendError) -> CommandRejectionKind {
     match error {
-        BackendError::NotImplemented { .. } | BackendError::Unsupported { .. } => {
-            CommandRejectionKind::Unsupported
-        }
+        BackendError::Unsupported { .. } => CommandRejectionKind::Unsupported,
         BackendError::Rejected { .. } => CommandRejectionKind::InvalidArgument,
         BackendError::ResourceLimit { .. } => CommandRejectionKind::Internal,
     }
-}
-
-async fn recv_api_state_update(
-    session: SessionRef,
-    state_updates: &mut SessionStateTransitionStream,
-) -> Result<Option<StreamingStateUpdateFrame>, StreamingApiError> {
-    Ok(state_updates
-        .recv_latest()
-        .await
-        .map(|frame| state_update_frame(session, frame)))
 }
 
 async fn recv_api_frame(
@@ -1010,8 +1066,8 @@ async fn recv_api_frame(
     // crucible-lint: allow unordered-select -- API stream multiplexing preserves per-source ordering.
     tokio::select! {
         event = recv_api_event(events) => event.map(|frame| frame.map(StreamingFrame::Event)),
-        state_update = recv_api_state_update(session, state_updates) => {
-            state_update.map(|frame| frame.map(StreamingFrame::StateUpdate))
+        state_update = state_updates.recv_latest() => {
+            Ok(state_update.map(|frame| StreamingFrame::StateUpdate(state_update_frame(session, frame))))
         }
     }
 }

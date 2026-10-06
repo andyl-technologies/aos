@@ -8,7 +8,7 @@ fn network_rx_fails_loudly_at_canonical_delivery_attempt_limit() {
     let mut queue = RecordingRxQueue::not_ready();
     let frame = frame(20, 1, 0, b"bounded");
     let first = network_rx
-        .inject_due_frames_from_idle_context(&mut queue, 20, 20, std::slice::from_ref(&frame))
+        .inject_due_frames_for_test(&mut queue, 20, 20, std::slice::from_ref(&frame))
         .unwrap_or_else(|error| panic!("first bounded attempt should be admitted: {error}"));
     assert_eq!(first.retained_frame_key(), Some(frame.delivery_key()));
     frame
@@ -21,7 +21,7 @@ fn network_rx_fails_loudly_at_canonical_delivery_attempt_limit() {
     for attempt in 1..NETWORK_RX_DELIVERY_ATTEMPT_LIMIT {
         let current_icount = 20 + u64::from(attempt) * NETWORK_RX_RETRY_INTERVAL_ICOUNT;
         let injection = network_rx
-            .inject_due_frames_from_idle_context(
+            .inject_due_frames_for_test(
                 &mut queue,
                 current_icount,
                 current_icount,
@@ -37,7 +37,7 @@ fn network_rx_fails_loudly_at_canonical_delivery_attempt_limit() {
     let terminal_icount =
         20 + u64::from(NETWORK_RX_DELIVERY_ATTEMPT_LIMIT) * NETWORK_RX_RETRY_INTERVAL_ICOUNT;
     assert_eq!(
-        network_rx.inject_due_frames_from_idle_context(
+        network_rx.inject_due_frames_for_test(
             &mut queue,
             terminal_icount,
             terminal_icount,
@@ -67,7 +67,7 @@ fn network_rx_retries_canonically_retained_past_frame() {
     let retry_icount = 19 + NETWORK_RX_RETRY_INTERVAL_ICOUNT;
 
     let waiting = network_rx
-        .inject_due_frames_from_idle_context(
+        .inject_due_frames_for_test(
             &mut queue,
             retry_icount - 1,
             retry_icount - 1,
@@ -79,7 +79,7 @@ fn network_rx_retries_canonically_retained_past_frame() {
     assert!(queue.queued_payloads.is_empty());
 
     let injection = network_rx
-        .inject_due_frames_from_idle_context(
+        .inject_due_frames_for_test(
             &mut queue,
             retry_icount,
             retry_icount,
@@ -104,7 +104,7 @@ fn network_rx_overshoot_cannot_retry_twice_at_one_coordinate() {
     let overshot_icount = 20 + 10 * NETWORK_RX_RETRY_INTERVAL_ICOUNT;
 
     let retry = network_rx
-        .inject_due_frames_from_idle_context(
+        .inject_due_frames_for_test(
             &mut queue,
             overshot_icount,
             overshot_icount,
@@ -117,7 +117,7 @@ fn network_rx_overshoot_cannot_retry_twice_at_one_coordinate() {
         .unwrap_or_else(|error| panic!("record overshot retained attempt: {error}"));
 
     let same_coordinate = network_rx
-        .inject_due_frames_from_idle_context(
+        .inject_due_frames_for_test(
             &mut queue,
             overshot_icount,
             overshot_icount,
@@ -145,7 +145,7 @@ fn network_rx_retained_head_authorizes_blocked_fifo_backlog() {
     let retry_icount = 18 + NETWORK_RX_RETRY_INTERVAL_ICOUNT;
 
     let injection = network_rx
-        .inject_due_frames_from_idle_context(
+        .inject_due_frames_for_test(
             &mut queue,
             retry_icount,
             retry_icount,

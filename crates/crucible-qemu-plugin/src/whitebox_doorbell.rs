@@ -14,18 +14,25 @@ pub use crucible_protocol::{
     WHITEBOX_DOORBELL_FRAME_REGENERATION_RULE, WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION,
     WHITEBOX_DOORBELL_KIND_ASSERTION, WHITEBOX_DOORBELL_KIND_COVERAGE,
     WHITEBOX_DOORBELL_KIND_EVENT, WHITEBOX_DOORBELL_KIND_LIFECYCLE,
-    WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST, WHITEBOX_DOORBELL_LIFECYCLE_SETUP_COMPLETE,
+    WHITEBOX_DOORBELL_KIND_MEASUREMENT_BEGIN, WHITEBOX_DOORBELL_KIND_MEASUREMENT_END,
+    WHITEBOX_DOORBELL_KIND_METRIC_SAMPLE, WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST,
+    WHITEBOX_DOORBELL_KIND_SEMANTIC_MARKER, WHITEBOX_DOORBELL_LIFECYCLE_SETUP_COMPLETE,
     WHITEBOX_DOORBELL_LIFECYCLE_TEST_DONE, WHITEBOX_DOORBELL_MARKER_KIND_COUNT,
     WHITEBOX_DOORBELL_PROTOCOL_VERSION, WHITEBOX_DOORBELL_RANDOM_REQUEST_MAX_WIDTH_BYTES,
     WHITEBOX_DOORBELL_X86_64_ABI, WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES,
-    WHITEBOX_DOORBELL_X86_64_RESERVED_PORT, WhiteboxAssertionMarkerBody,
-    WhiteboxAssertionMarkerFlavor, WhiteboxCoverageMarkerBody, WhiteboxDoorbellAbi,
-    WhiteboxDoorbellArchitecture, WhiteboxDoorbellFrame, WhiteboxDoorbellFrameDecodeError,
-    WhiteboxDoorbellFrameEncodeError, WhiteboxDoorbellFrameGoldenVector,
-    WhiteboxDoorbellInstruction, WhiteboxDoorbellMarkerKind, WhiteboxDoorbellTrapAbi,
-    WhiteboxEventMarkerBody, WhiteboxLifecycleMarkerEvent, WhiteboxMarkerDetail,
-    WhiteboxMarkerPayload, WhiteboxMarkerPayloadDecodeError, WhiteboxMarkerPayloadEncodeError,
-    WhiteboxMarkerPayloadGoldenVector, WhiteboxRandomRequestBody, decode_whitebox_marker_payload,
+    WHITEBOX_DOORBELL_X86_64_RESERVED_PORT, WHITEBOX_MARKER_BODY_MAX_BYTES,
+    WHITEBOX_MEASUREMENT_IDENTIFIER_MAX_BYTES, WHITEBOX_MEASUREMENT_VALUE_KIND_COUNT,
+    WHITEBOX_MEASUREMENT_VECTOR_MAX_ELEMENTS, WHITEBOX_SEMANTIC_MARKER_MAX_DETAILS,
+    WhiteboxAssertionMarkerBody, WhiteboxAssertionMarkerFlavor, WhiteboxCoverageMarkerBody,
+    WhiteboxDoorbellAbi, WhiteboxDoorbellArchitecture, WhiteboxDoorbellFrame,
+    WhiteboxDoorbellFrameDecodeError, WhiteboxDoorbellFrameEncodeError,
+    WhiteboxDoorbellFrameGoldenVector, WhiteboxDoorbellInstruction, WhiteboxDoorbellMarkerKind,
+    WhiteboxDoorbellTrapAbi, WhiteboxEventMarkerBody, WhiteboxLifecycleMarkerEvent,
+    WhiteboxMarkerDetail, WhiteboxMarkerPayload, WhiteboxMarkerPayloadDecodeError,
+    WhiteboxMarkerPayloadEncodeError, WhiteboxMarkerPayloadGoldenVector,
+    WhiteboxMeasurementBoundaryBody, WhiteboxMeasurementValue, WhiteboxMeasurementValueKind,
+    WhiteboxMetricSampleBody, WhiteboxRandomRequestBody, WhiteboxReducedRational,
+    WhiteboxSemanticMarkerBody, WhiteboxSemanticMarkerDetail, decode_whitebox_marker_payload,
     encode_aarch64_hint_instruction, encode_whitebox_doorbell_frame, encode_whitebox_marker_frame,
     encode_whitebox_marker_payload_body, encode_x86_64_out_imm8_al_instruction,
     whitebox_doorbell_abi_for_architecture,
@@ -35,12 +42,20 @@ use thiserror::Error;
 
 use crate::{PluginDeviceCallbackKind, PluginSwitch};
 
-/// QEMU plugin API label for translation-block instrumentation.
-pub const QEMU_PLUGIN_DOORBELL_TRANSLATION_SYMBOL: &str = "qemu_plugin_register_vcpu_tb_trans_cb";
+mod selectable;
+pub use selectable::{
+    CatalogedSelectableService, SELECTABLE_CATALOG_HARD_MAX_DECLARATIONS,
+    SELECTABLE_CATALOG_HARD_MAX_REQUESTS, SelectableCallbackCoordinate, SelectableCatalog,
+    SelectableCatalogError, SelectableCatalogExpectation, SelectableCatalogFreeze,
+    SelectableCatalogLimits, SelectableCatalogPhase, SelectableDecisionAuthority,
+    SelectableDoorbellError, SelectableDoorbellOutcome, SelectableDoorbellService,
+    SelectableDoorbellServiceError, SelectableExpectedDeclaration, SelectableExpectedPresence,
+    SelectablePendingRequest, SelectableRegistrationService, SelectableReplyDisposition,
+    SelectableReplyService, handle_whitebox_selectable_callback,
+};
+
 /// QEMU plugin API label for installing callbacks on translated instructions.
 pub const QEMU_PLUGIN_DOORBELL_EXEC_CB_SYMBOL: &str = "qemu_plugin_register_vcpu_insn_exec_cb";
-/// QEMU plugin API label for reading a register during a callback.
-pub const QEMU_PLUGIN_READ_REGISTER_SYMBOL: &str = "qemu_plugin_read_register";
 /// QEMU capability label for registering the reserved white-box doorbell trap.
 pub const QEMU_PLUGIN_REGISTER_DOORBELL_TRAP_SYMBOL: &str = QEMU_PLUGIN_DOORBELL_EXEC_CB_SYMBOL;
 /// QEMU capability label for reading guest memory at the trap icount.
@@ -162,7 +177,7 @@ impl PluginWhiteboxDoorbell {
     /// payload range is too large, the guest-memory API fails or returns a
     /// different byte count, the frame is malformed, or the marker sink rejects
     /// the observational entry.
-    pub fn service_trap<R, S>(
+    fn service_trap<R, S>(
         &self,
         reader: &mut R,
         sink: &mut S,
@@ -442,7 +457,7 @@ where
 /// Returns [`AppRandomDoorbellError`] when the white-box capability path fails,
 /// the decision source cannot record the draw, or the reply cannot be delivered
 /// at the trap icount.
-pub fn handle_whitebox_app_random_callback<R, D, W>(
+pub(crate) fn handle_whitebox_app_random_callback<R, D, W>(
     doorbell: &PluginWhiteboxDoorbell,
     capability: &WhiteboxGuestInputCapability,
     reader: &mut R,
@@ -453,7 +468,7 @@ pub fn handle_whitebox_app_random_callback<R, D, W>(
 ) -> Result<AppRandomDoorbellOutcome, AppRandomDoorbellError>
 where
     R: GuestMemoryReader + ?Sized,
-    D: AppRandomDecisionSource + ?Sized,
+    D: BackendRngEvidenceSource + ?Sized,
     W: WhiteboxGuestInputWriter + ?Sized,
 {
     let payload =
@@ -546,6 +561,27 @@ pub struct AppRandomDoorbellRequest {
 }
 
 impl AppRandomDoorbellRequest {
+    #[cfg(test)]
+    pub(crate) fn test_request(
+        node_name: &str,
+        guest_request_id: u32,
+        width_bytes: u8,
+        stream_tag: &str,
+    ) -> Self {
+        Self {
+            node_name: node_name.to_owned(),
+            guest_request_id,
+            trap_icount: 1,
+            width_bytes,
+            stream_tag: stream_tag.to_owned(),
+            reply_range: GuestMemoryRange::new(
+                GuestMemoryAddressSpace::Virtual,
+                0x1000,
+                usize::from(width_bytes),
+            ),
+        }
+    }
+
     fn from_frame(
         node_name: &str,
         event: WhiteboxDoorbellTrapEvent,
@@ -640,9 +676,9 @@ impl AppRandomDoorbellRequest {
     }
 }
 
-/// Decision metadata returned after recording `Decision::AppRandom`.
+/// Typed backend evidence returned after serving application randomness.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AppRandomDecisionRecord {
+pub(crate) struct BackendRngEvidenceRecord {
     node_name: String,
     stream_tag: String,
     request_id: u64,
@@ -650,8 +686,8 @@ pub struct AppRandomDecisionRecord {
     value: u64,
 }
 
-impl AppRandomDecisionRecord {
-    /// Builds a decision record matching the engine's `Decision::AppRandom` data.
+impl BackendRngEvidenceRecord {
+    /// Builds a record matching the served backend RNG evidence.
     #[must_use]
     pub fn new(
         node_name: impl Into<String>,
@@ -701,27 +737,27 @@ impl AppRandomDecisionRecord {
 }
 
 /// Source that records and serves app-controlled randomness decisions.
-pub trait AppRandomDecisionSource {
-    /// Draws from the seeded decision source and records `Decision::AppRandom`.
+pub(crate) trait BackendRngEvidenceSource {
+    /// Draws from the seeded decision source and returns typed RNG evidence.
     ///
     /// # Errors
     ///
-    /// Returns [`AppRandomDecisionError`] when the engine-side recorder cannot
+    /// Returns [`BackendRngEvidenceError`] when the engine-side recorder cannot
     /// serve the request.
     fn serve_app_random(
         &mut self,
         request: &AppRandomDoorbellRequest,
-    ) -> Result<AppRandomDecisionRecord, AppRandomDecisionError>;
+    ) -> Result<BackendRngEvidenceRecord, BackendRngEvidenceError>;
 }
 
 /// A failure from the engine-side app-random decision source.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 #[error("app-random decision source failed: {message}")]
-pub struct AppRandomDecisionError {
+pub(crate) struct BackendRngEvidenceError {
     message: String,
 }
 
-impl AppRandomDecisionError {
+impl BackendRngEvidenceError {
     /// Builds an app-random decision source failure.
     #[must_use]
     pub fn new(message: impl Into<String>) -> Self {
@@ -729,17 +765,11 @@ impl AppRandomDecisionError {
             message: message.into(),
         }
     }
-
-    /// Returns the backend diagnostic.
-    #[must_use]
-    pub fn message(&self) -> &str {
-        &self.message
-    }
 }
 
 /// Result of handling one app-random doorbell request.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AppRandomDoorbellOutcome {
+pub(crate) enum AppRandomDoorbellOutcome {
     /// A valid request was recorded and replied to at the trap icount.
     Served(AppRandomDoorbellService),
     /// A malformed or non-random-request frame was diagnosed and dropped.
@@ -751,9 +781,9 @@ pub enum AppRandomDoorbellOutcome {
 
 /// Metadata for one served app-random request.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AppRandomDoorbellService {
+pub(crate) struct AppRandomDoorbellService {
     request: AppRandomDoorbellRequest,
-    decision: AppRandomDecisionRecord,
+    decision: BackendRngEvidenceRecord,
     injection: WhiteboxGuestInputInjection,
 }
 
@@ -764,16 +794,10 @@ impl AppRandomDoorbellService {
         &self.request
     }
 
-    /// Returns the recorded `Decision::AppRandom` metadata.
+    /// Returns the typed backend RNG evidence.
     #[must_use]
-    pub const fn decision(&self) -> &AppRandomDecisionRecord {
+    pub const fn decision(&self) -> &BackendRngEvidenceRecord {
         &self.decision
-    }
-
-    /// Returns the exact host-to-guest injection metadata.
-    #[must_use]
-    pub const fn injection(&self) -> WhiteboxGuestInputInjection {
-        self.injection
     }
 }
 
@@ -844,6 +868,12 @@ impl AppRandomDecodeDiagnostic {
                     actual: kind,
                 }
             }
+            WhiteboxMarkerPayloadDecodeError::BodyTooLarge { len, max_len } => {
+                AppRandomDecodeDiagnosticKind::PayloadLengthExceedsBound {
+                    declared_len: len,
+                    max_payload_len: max_len,
+                }
+            }
             WhiteboxMarkerPayloadDecodeError::PayloadTooShort { kind, .. }
             | WhiteboxMarkerPayloadDecodeError::LengthPrefixExceedsPayload { kind, .. }
             | WhiteboxMarkerPayloadDecodeError::TrailingBytes { kind, .. }
@@ -864,6 +894,27 @@ impl AppRandomDecodeDiagnostic {
                 AppRandomDecodeDiagnosticKind::UnexpectedKind {
                     expected: WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST,
                     actual: WHITEBOX_DOORBELL_KIND_LIFECYCLE,
+                }
+            }
+            WhiteboxMarkerPayloadDecodeError::InvalidMeasurementIdentifier { kind, .. } => {
+                AppRandomDecodeDiagnosticKind::UnexpectedKind {
+                    expected: WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST,
+                    actual: kind.wire_value(),
+                }
+            }
+            WhiteboxMarkerPayloadDecodeError::InvalidMeasurementValueKind { .. }
+            | WhiteboxMarkerPayloadDecodeError::InvalidReducedRational { .. }
+            | WhiteboxMarkerPayloadDecodeError::MeasurementVectorTooLong { .. } => {
+                AppRandomDecodeDiagnosticKind::UnexpectedKind {
+                    expected: WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST,
+                    actual: WHITEBOX_DOORBELL_KIND_METRIC_SAMPLE,
+                }
+            }
+            WhiteboxMarkerPayloadDecodeError::TooManyTypedDetails { .. }
+            | WhiteboxMarkerPayloadDecodeError::NonCanonicalDetailOrder { .. } => {
+                AppRandomDecodeDiagnosticKind::UnexpectedKind {
+                    expected: WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST,
+                    actual: WHITEBOX_DOORBELL_KIND_SEMANTIC_MARKER,
                 }
             }
         };
@@ -974,11 +1025,11 @@ pub enum AppRandomDecodeDiagnosticKind {
 
 /// An error while serving an app-random doorbell request.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum AppRandomDoorbellError {
+pub(crate) enum AppRandomDoorbellError {
     /// The underlying white-box doorbell path failed.
     #[error("white-box doorbell path failed while serving app-random: {0}")]
     Doorbell(WhiteboxDoorbellError),
-    /// The decision source failed to draw or record `Decision::AppRandom`.
+    /// The decision source failed to draw or record typed RNG evidence.
     #[error(
         "app-random decision source failed for node {node_name} stream {stream_tag} width {width_bits}: {source}"
     )]
@@ -990,7 +1041,7 @@ pub enum AppRandomDoorbellError {
         /// Requested decision width in bits.
         width_bits: u8,
         /// Engine-side decision source error.
-        source: AppRandomDecisionError,
+        source: BackendRngEvidenceError,
     },
     /// The decision source returned metadata for the wrong node.
     #[error("app-random decision node {actual} does not match request node {expected}")]
@@ -1042,7 +1093,7 @@ pub enum AppRandomDoorbellError {
 
 fn validate_decision_record(
     request: &AppRandomDoorbellRequest,
-    decision: &AppRandomDecisionRecord,
+    decision: &BackendRngEvidenceRecord,
 ) -> Result<(), AppRandomDoorbellError> {
     if decision.node_name() != request.node_name() {
         return Err(AppRandomDoorbellError::DecisionNodeMismatch {

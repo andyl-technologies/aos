@@ -1,31 +1,33 @@
-//! Ordered asynchronous publication of detached fingerprint captures.
+//! Ordered publication of detached fingerprint captures.
 
 use std::thread::{self, JoinHandle};
 
 use super::*;
+use crate::runtime::worker_quiescence::{LiveWorkerQuiescence, WORKER_FINGERPRINT};
 
-/// One detached fingerprint capture queued for ordered digest publication.
-enum LiveFingerprintDigestWork {
-    /// Publishes asynchronously for an ordinary scheduler quantum.
-    Publish(CapturedFingerprintSample),
-    /// Publishes before acknowledging an exact stopped control boundary.
-    PublishAndAcknowledge {
-        captured: CapturedFingerprintSample,
-        // crucible-lint: allow stringly-error -- the private worker channel transports a diagnostic that is immediately wrapped in the typed callback error.
-        completion: mpsc::SyncSender<Result<(), String>>,
-    },
+/// One requested capture queued before its control-boundary acknowledgement.
+struct LiveFingerprintDigestWork {
+    captured: CapturedFingerprintSample,
+    capture_request: u32,
+}
+
+/// Typed diagnostic retained when publication fails in the digest worker.
+#[derive(Clone)]
+struct FingerprintPublicationFailure {
+    message: String,
 }
 
 /// Bounded owner thread that digests detached captures and publishes samples.
 pub(super) struct LiveFingerprintDigestWorker {
     sender: Option<mpsc::SyncSender<LiveFingerprintDigestWork>>,
-    failed: Arc<Mutex<Option<String>>>,
+    failed: Arc<Mutex<Option<FingerprintPublicationFailure>>>,
     join: Option<JoinHandle<()>>,
 }
 
 impl LiveFingerprintDigestWorker {
     pub(super) fn spawn(
         slot: StableFingerprintSlotHandle,
+        quiescence: Arc<LiveWorkerQuiescence>,
     ) -> Result<Self, LiveVcpuTimeCallbackError> {
         let (sender, receiver) = mpsc::sync_channel::<LiveFingerprintDigestWork>(1);
         let failed = Arc::new(Mutex::new(None));
@@ -33,28 +35,37 @@ impl LiveFingerprintDigestWorker {
         let join = thread::Builder::new()
             .name("crucible-fingerprint-digest".to_owned())
             .spawn(move || {
-                while let Ok(work) = receiver.recv() {
-                    let (captured, completion) = match work {
-                        LiveFingerprintDigestWork::Publish(captured) => (captured, None),
-                        LiveFingerprintDigestWork::PublishAndAcknowledge {
-                            captured,
-                            completion,
-                        } => (captured, Some(completion)),
+                loop {
+                    let idle = quiescence.idle(WORKER_FINGERPRINT);
+                    let Ok(work) = receiver.recv() else {
+                        break;
                     };
-                    let sample = captured.digest();
+                    let pending = idle.received();
+                    let _operation = pending.enter();
+                    let sample = work.captured.digest();
                     let result = slot
                         .get()
                         .publish(&sample)
-                        .map_err(|error| error.to_string());
-                    if let Some(completion) = completion {
-                        let _completion_result = completion.send(result.clone());
-                    }
-                    if let Err(message) = result {
+                        .map_err(|error| FingerprintPublicationFailure {
+                            message: error.to_string(),
+                        })
+                        .and_then(|()| {
+                            slot.get()
+                                .acknowledge_capture_v1(work.capture_request)
+                                .then_some(())
+                                .ok_or_else(|| FingerprintPublicationFailure {
+                                    message: format!(
+                                        "fingerprint capture request {} changed before publication",
+                                        work.capture_request
+                                    ),
+                                })
+                        });
+                    if let Err(publication_failure) = result {
                         let mut failure = match worker_failed.lock() {
                             Ok(failure) => failure,
                             Err(poisoned) => poisoned.into_inner(),
                         };
-                        *failure = Some(message);
+                        *failure = Some(publication_failure);
                         break;
                     }
                 }
@@ -72,57 +83,27 @@ impl LiveFingerprintDigestWorker {
     pub(super) fn submit(
         &self,
         captured: CapturedFingerprintSample,
+        capture_request: u32,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
         let failure = match self.failed.lock() {
             Ok(failure) => failure,
             Err(poisoned) => poisoned.into_inner(),
         };
-        if let Some(message) = failure.as_ref() {
+        if let Some(publication_failure) = failure.as_ref() {
             return Err(LiveVcpuTimeCallbackError::FingerprintWorkerFailed {
-                message: message.clone(),
-            });
-        }
-        drop(failure);
-        let sender = self
-            .sender
-            .as_ref()
-            .ok_or(LiveVcpuTimeCallbackError::FingerprintWorkerUnavailable)?;
-        // This callback runs only at a scheduler boundary where guest time is
-        // already fenced. Backpressure preserves every exact sample without
-        // making host digest speed part of simulated execution.
-        sender
-            .send(LiveFingerprintDigestWork::Publish(captured))
-            .map_err(|_error| LiveVcpuTimeCallbackError::FingerprintWorkerUnavailable)
-    }
-
-    pub(super) fn submit_and_wait(
-        &self,
-        captured: CapturedFingerprintSample,
-    ) -> Result<(), LiveVcpuTimeCallbackError> {
-        let failure = match self.failed.lock() {
-            Ok(failure) => failure,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        if let Some(message) = failure.as_ref() {
-            return Err(LiveVcpuTimeCallbackError::FingerprintWorkerFailed {
-                message: message.clone(),
+                message: publication_failure.message.clone(),
             });
         }
         drop(failure);
 
-        let (completion, completed) = mpsc::sync_channel(1);
         self.sender
             .as_ref()
             .ok_or(LiveVcpuTimeCallbackError::FingerprintWorkerUnavailable)?
-            .send(LiveFingerprintDigestWork::PublishAndAcknowledge {
+            .send(LiveFingerprintDigestWork {
                 captured,
-                completion,
+                capture_request,
             })
-            .map_err(|_error| LiveVcpuTimeCallbackError::FingerprintWorkerUnavailable)?;
-        completed
-            .recv()
-            .map_err(|_error| LiveVcpuTimeCallbackError::FingerprintWorkerUnavailable)?
-            .map_err(|message| LiveVcpuTimeCallbackError::FingerprintWorkerFailed { message })
+            .map_err(|_error| LiveVcpuTimeCallbackError::FingerprintWorkerUnavailable)
     }
 }
 

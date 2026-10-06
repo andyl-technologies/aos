@@ -12,43 +12,43 @@ pub(super) fn encode_node_state(
     match state {
         EvaluatorNodeState::Hysteresis {
             value,
-            last_transition_nanos,
+            last_transition_ticks,
         } => {
             writer.byte(0);
             writer.boolean(*value);
-            writer.u64(*last_transition_nanos);
+            writer.u64(*last_transition_ticks);
         }
         EvaluatorNodeState::Debounce {
             committed,
             candidate,
-            candidate_since_nanos,
+            candidate_since_ticks,
         } => {
             writer.byte(1);
             writer.value(committed)?;
             writer.optional_value(candidate.as_ref())?;
-            writer.optional_u64(*candidate_since_nanos);
+            writer.optional_u64(*candidate_since_ticks);
         }
         EvaluatorNodeState::Integrator {
             accumulator,
             pending,
             previous_input,
-            last_nanos,
+            last_ticks,
         } => {
             writer.byte(2);
             writer.value(accumulator)?;
             writer.value(pending)?;
             writer.optional_value(previous_input.as_ref())?;
-            writer.optional_u64(*last_nanos);
+            writer.optional_u64(*last_ticks);
         }
         EvaluatorNodeState::LeakyIntegrator {
             accumulator,
             previous_input,
-            last_nanos,
+            last_ticks,
         } => {
             writer.byte(3);
             writer.value(accumulator)?;
             writer.optional_value(previous_input.as_ref())?;
-            writer.optional_u64(*last_nanos);
+            writer.optional_u64(*last_ticks);
         }
         EvaluatorNodeState::FiniteStateMachine { state, timers } => {
             writer.byte(4);
@@ -82,12 +82,12 @@ pub(super) fn encode_node_state(
         EvaluatorNodeState::QueueModel {
             backlog,
             service_remainder,
-            last_nanos,
+            last_ticks,
         } => {
             writer.byte(8);
             writer.u32(*backlog);
             writer.u64(*service_remainder);
-            writer.optional_u64(*last_nanos);
+            writer.optional_u64(*last_ticks);
         }
     }
     Ok(writer.bytes)
@@ -189,9 +189,9 @@ impl EvaluatorWriter {
         coordinate: &SignalCoordinate,
     ) -> Result<(), SignalEvaluationError> {
         match coordinate {
-            SignalCoordinate::VirtualTime { nanos } => {
+            SignalCoordinate::VirtualTime { ticks } => {
                 self.byte(0);
-                self.u64(*nanos);
+                self.u64(*ticks);
             }
             SignalCoordinate::NodeCounter {
                 node,
@@ -390,7 +390,7 @@ impl<'a> EvaluatorReader<'a> {
             return Err(SignalEvaluationError::MalformedCheckpoint);
         }
         match self.byte()? {
-            0 => Ok(SignalCoordinate::VirtualTime { nanos: self.u64()? }),
+            0 => Ok(SignalCoordinate::VirtualTime { ticks: self.u64()? }),
             1 => Ok(SignalCoordinate::NodeCounter {
                 node: self.id()?,
                 retired_instructions: self.u64()?,
@@ -433,24 +433,24 @@ pub(super) fn decode_node_state(
     let state = match (reader.byte()?, specification) {
         (0, StatefulSignalSpecification::Hysteresis { .. }) => EvaluatorNodeState::Hysteresis {
             value: reader.boolean()?,
-            last_transition_nanos: reader.u64()?,
+            last_transition_ticks: reader.u64()?,
         },
         (1, StatefulSignalSpecification::Debounce { .. }) => EvaluatorNodeState::Debounce {
             committed: reader.value()?,
             candidate: reader.optional_value()?,
-            candidate_since_nanos: reader.optional_u64()?,
+            candidate_since_ticks: reader.optional_u64()?,
         },
         (2, StatefulSignalSpecification::Integrator { .. }) => EvaluatorNodeState::Integrator {
             accumulator: reader.value()?,
             pending: reader.value()?,
             previous_input: reader.optional_value()?,
-            last_nanos: reader.optional_u64()?,
+            last_ticks: reader.optional_u64()?,
         },
         (3, StatefulSignalSpecification::LeakyIntegrator { .. }) => {
             EvaluatorNodeState::LeakyIntegrator {
                 accumulator: reader.value()?,
                 previous_input: reader.optional_value()?,
-                last_nanos: reader.optional_u64()?,
+                last_ticks: reader.optional_u64()?,
             }
         }
         (4, StatefulSignalSpecification::FiniteStateMachine { states, .. }) => {
@@ -499,7 +499,7 @@ pub(super) fn decode_node_state(
             EvaluatorNodeState::QueueModel {
                 backlog,
                 service_remainder,
-                last_nanos: reader.optional_u64()?,
+                last_ticks: reader.optional_u64()?,
             }
         }
         _ => return Err(SignalEvaluationError::StateVariantMismatch),

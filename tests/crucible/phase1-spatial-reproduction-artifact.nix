@@ -9,6 +9,8 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
+  artifactTest = builtins.readFile ../../crates/crucible/tests/event_log_reproduction_artifact.rs;
+  workloadTest = builtins.readFile ../../crates/crucible/tests/workload_parameterization.rs;
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
@@ -37,10 +39,6 @@
       {
         label = "capture constructor";
         needle = "pub fn capture(scenario: &ScenarioDefForm, schedule: &Schedule) -> Result<Self, EngineError>";
-      }
-      {
-        label = "pinned configuration constructor";
-        needle = "pub fn from_pinned_configuration(pinned: &PinnedConfiguration) -> Result<Self, EngineError>";
       }
       {
         label = "recorded parts constructor";
@@ -104,33 +102,37 @@
         label = "crate exports reproduction replay";
         needle = "ReproductionReplay";
       }
+    ]
+    ++ failuresFor "crates/crucible/tests/event_log_reproduction_artifact.rs" artifactTest [
       {
-        label = "focused artifact test";
-        needle = "fn reproduction_artifact_is_self_contained_and_replay_checked()";
+        label = "focused artifact replay test";
+        needle = "fn reproduction_artifact_replay_reconstructs_byte_identical_causal_log_from_metadata()";
       }
       {
-        label = "test checks seed is scenario seed";
-        needle = "artifact.seed(), artifact.scenario_def().seed()";
+        label = "test captures scenario and schedule";
+        needle = "ReproductionArtifact::capture(&scenario, &schedule)";
       }
       {
-        label = "test decodes artifact bytes";
-        needle = "ReproductionArtifact::from_compact_binary(&artifact_bytes)";
+        label = "test verifies replay";
+        needle = ".verify_event_log_replay_with(&debug_artifact, replay_log_from_artifact)";
       }
       {
-        label = "test decodes schedule bytes";
-        needle = "Schedule::from_compact_binary(&schedule_binary)";
+        label = "test rejects causal log drift";
+        needle = "fn reproduction_artifact_replay_rejects_causal_log_drift_without_original_full_log()";
+      }
+    ]
+    ++ failuresFor "crates/crucible/tests/workload_parameterization.rs" workloadTest [
+      {
+        label = "scenario form TOML round trip precedes capture";
+        needle = "ScenarioDefForm::from_canonical_toml(&form.to_canonical_toml()?)?";
       }
       {
-        label = "test covers pinned genesis capture";
-        needle = "pinned_genesis_artifact.schedule().is_empty()";
+        label = "scenario form binary round trip precedes capture";
+        needle = "ScenarioDefForm::from_compact_binary(&form.to_compact_binary())?";
       }
       {
-        label = "test covers schedule drift rejection";
-        needle = "schedule_drift_artifact.verify_replay(expected_state)";
-      }
-      {
-        label = "test covers state drift rejection";
-        needle = "artifact.verify_replay(wrong_state)";
+        label = "captured artifact replays offline";
+        needle = "let replay = artifact.replay()?;";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -193,8 +195,17 @@ in
               --target-dir "$TMPDIR/crucible-spatial-reproduction-artifact-target" \
               --manifest-path crates/Cargo.toml \
               -p crucible \
-              --lib \
-              reproduction_artifact_is_self_contained_and_replay_checked \
+              --test event_log_reproduction_artifact \
+              reproduction_artifact_replay \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-spatial-reproduction-artifact-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible \
+              --test workload_parameterization \
+              reproduces \
               -- --test-threads=1
           '';
         }

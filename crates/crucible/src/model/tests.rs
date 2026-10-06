@@ -3,6 +3,27 @@
 use super::*;
 
 #[test]
+fn compact_schedule_rejects_collection_reservations_larger_than_remaining_input() {
+    let mut outer = Schedule::empty().to_compact_binary();
+    let outer_count = outer.len() - std::mem::size_of::<u64>();
+    outer[outer_count..].copy_from_slice(&1_000_000_u64.to_le_bytes());
+    let error = Schedule::from_compact_binary(&outer)
+        .expect_err("a schedule count cannot reserve beyond its encoded input");
+    assert!(error.to_string().contains("remaining binary input"));
+
+    let schedule = Schedule::from_decisions([Decision::DeliveryOrder(DeliveryOrderDecision {
+        at: VirtualTime { ticks: 0 },
+        order: Vec::new(),
+    })]);
+    let mut nested = schedule.to_compact_binary();
+    let delivery_count = nested.len() - std::mem::size_of::<u64>();
+    nested[delivery_count..].copy_from_slice(&1_000_000_u64.to_le_bytes());
+    let error = Schedule::from_compact_binary(&nested)
+        .expect_err("a delivery-order count cannot reserve beyond its encoded input");
+    assert!(error.to_string().contains("remaining binary input"));
+}
+
+#[test]
 fn failure_findings_ledger_orders_signed_findings_and_rejects_conflicts() -> Result<(), EngineError>
 {
     let artifact_a = ContentHash::from_bytes(b"signed-finding-artifact-a");
@@ -71,17 +92,13 @@ fn sampled_search_offset_localizes_bisection_sequence() -> Result<(), EngineErro
         },
         white_box: WhiteBoxPolicy::Disabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
     }])?;
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let decision = Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("sampled-offset/decision"),
-        value: 42,
-    });
+    let decision = crate::test_support::typed_search_decision_for_test("sampled-offset/decision")?;
     let baked = baked_genesis_with_search_frontier(&world, vec![decision.clone()])?;
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
     let child = try_step(&genesis, decision)?;
@@ -167,7 +184,8 @@ fn baked_genesis_with_search_frontier(
         },
     )?;
     let mut scheduler = state.scheduler.clone();
-    scheduler.search_frontier = SearchFrontierChoices::from_decisions(decisions);
+    scheduler.search_frontier =
+        SearchFrontierChoices::from_decision_sequences(decisions.into_iter().map(std::iter::once));
     baked.checkpoint.state = Some(MaterializedState::from_components_with_event_log_segments(
         state.vm_snapshots.clone(),
         state.device_overlays.clone(),

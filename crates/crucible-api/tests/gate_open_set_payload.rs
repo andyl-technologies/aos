@@ -111,7 +111,8 @@ fn assert_event_payload_conversion_reuses_event_log_catalog() {
     let event = open_set_event_envelope_from_entry(&entry);
     assert_eq!(event.sequence, entry.sequence());
     assert_eq!(event.at.virtual_time_ticks, 17);
-    assert_eq!(event.at.icount_retired, entry.time().icount.icount.retired);
+    assert_eq!(event.at.stamp_tick, entry.time().stamp.tick.ticks);
+    assert_eq!(event.at.stamp_retired, None);
     assert_eq!(event.level, entry.level());
     assert!(!event.observational);
     assert_eq!(entry.class(), SchedulerEventLogClass::Causal);

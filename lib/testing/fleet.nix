@@ -652,6 +652,14 @@
         })
         (builtins.filter (machine: machine.bootMode == "image") machineBuilds));
 
+      # Expose the exact systems baked into the VM images for identity checks.
+      machineSystems = builtins.listToAttrs (
+        map (machine: {
+          name = machine.name;
+          value = machine.system;
+        })
+        machineBuilds
+      );
       driverInteractive = sshAuthorizedKey:
         if guestArchitecture != "x86_64"
         then

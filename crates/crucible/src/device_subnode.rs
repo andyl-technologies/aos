@@ -40,8 +40,6 @@
 //!                 emit IoCompletion @ delivery_icount ; append its buffered decisions
 //! ```
 
-use std::collections::BTreeMap;
-
 use crate::model::WorldCompletionDurability;
 use crucible_device::block::{BlockCompletionDurability, BlockDurabilityConfig};
 use crucible_device::{
@@ -55,128 +53,19 @@ use crate::{
     WorldDeviceKind, WorldIoNodeKind,
 };
 
+mod arrive;
 mod checkpoint;
+mod world_layout;
 pub use checkpoint::{DeviceSchedulingSubNodeCheckpoint, DeviceSchedulingSubNodeCheckpointError};
+pub use world_layout::{
+    WorldIoInstantiationLayout, WorldIoLayoutError, WorldIoLayoutPolicy, WorldIoRuntimeLayout,
+};
 
 /// Default physical request-ring capacity selected at instantiation time.
 pub const DEFAULT_WORLD_IO_INBOX_CAPACITY: u64 = 256;
 
 /// Default physical response-ring capacity selected at instantiation time.
 pub const DEFAULT_WORLD_IO_OUTBOX_CAPACITY: u64 = 256;
-
-/// Host/transport layout policy for instantiated World I/O nodes.
-///
-/// This value is intentionally not part of [`World`] or [`DeviceId`]. Changing
-/// either capacity changes only physical buffering, never scenario identity
-/// ([SPAT-14], [SPAT-15]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct WorldIoLayoutPolicy {
-    /// Physical inbound request-ring capacity for every instantiated I/O node.
-    pub inbox_capacity: u64,
-    /// Physical outbound response-ring capacity for every instantiated I/O node.
-    pub outbox_capacity: u64,
-}
-
-impl Default for WorldIoLayoutPolicy {
-    fn default() -> Self {
-        Self {
-            inbox_capacity: DEFAULT_WORLD_IO_INBOX_CAPACITY,
-            outbox_capacity: DEFAULT_WORLD_IO_OUTBOX_CAPACITY,
-        }
-    }
-}
-
-/// One deterministic logical-to-physical I/O binding.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct WorldIoRuntimeLayout {
-    /// Numeric producer id derived from the canonical I/O-node order.
-    pub source_node: u32,
-    /// Physical inbound request-ring capacity.
-    pub inbox_capacity: u64,
-    /// Physical outbound response-ring capacity.
-    pub outbox_capacity: u64,
-}
-
-/// Complete instantiation-time layout derived from a logical [`World`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WorldIoInstantiationLayout {
-    bindings: BTreeMap<NodeId, WorldIoRuntimeLayout>,
-}
-
-impl WorldIoInstantiationLayout {
-    /// Derives physical bindings from canonical I/O-node order and `policy`.
-    ///
-    /// The same World and policy always produce identical source numbers, while
-    /// changing the policy leaves the World and every [`DeviceId`] unchanged.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WorldIoLayoutError::InvalidRingCapacity`] when either capacity
-    /// is zero or not a power of two, or [`WorldIoLayoutError::TooManyIoNodes`]
-    /// when a source number cannot be represented as `u32`.
-    pub fn derive(world: &World, policy: WorldIoLayoutPolicy) -> Result<Self, WorldIoLayoutError> {
-        validate_layout_capacity("inbox", policy.inbox_capacity)?;
-        validate_layout_capacity("outbox", policy.outbox_capacity)?;
-        let mut bindings = BTreeMap::new();
-        for (index, node) in world.io_nodes().enumerate() {
-            let source_node = u32::try_from(index)
-                .map_err(|_| WorldIoLayoutError::TooManyIoNodes { count: index })?;
-            bindings.insert(
-                node.id.clone(),
-                WorldIoRuntimeLayout {
-                    source_node,
-                    inbox_capacity: policy.inbox_capacity,
-                    outbox_capacity: policy.outbox_capacity,
-                },
-            );
-        }
-        Ok(Self { bindings })
-    }
-
-    /// Returns the derived physical binding for one I/O node.
-    #[must_use]
-    pub fn get(&self, node: &NodeId) -> Option<WorldIoRuntimeLayout> {
-        self.bindings.get(node).copied()
-    }
-
-    /// Iterates all bindings in canonical node-id order.
-    pub fn iter(&self) -> impl Iterator<Item = (&NodeId, &WorldIoRuntimeLayout)> {
-        self.bindings.iter()
-    }
-}
-
-/// Error returned while deriving a physical I/O layout.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum WorldIoLayoutError {
-    /// A physical ring capacity is zero or not a power of two.
-    #[error("world I/O {ring} ring capacity {capacity} is not a nonzero power of two")]
-    InvalidRingCapacity {
-        /// Stable ring name (`inbox` or `outbox`).
-        ring: &'static str,
-        /// Rejected physical capacity.
-        capacity: u64,
-    },
-    /// Canonical source-number assignment exceeded `u32`.
-    #[error("world has too many I/O nodes for deterministic source numbering")]
-    TooManyIoNodes {
-        /// First node index that did not fit in `u32`.
-        count: usize,
-    },
-    /// A layout derived for another topology lacks the requested I/O node.
-    #[error("instantiation layout contains no binding for I/O node {node:?}")]
-    MissingBinding {
-        /// I/O node absent from the layout.
-        node: NodeId,
-    },
-}
-
-/// Validates one physical ring capacity.
-fn validate_layout_capacity(ring: &'static str, capacity: u64) -> Result<(), WorldIoLayoutError> {
-    if capacity == 0 || !capacity.is_power_of_two() {
-        return Err(WorldIoLayoutError::InvalidRingCapacity { ring, capacity });
-    }
-    Ok(())
-}
 
 type ModeledKey = (u64, u32, u32);
 
@@ -467,7 +356,8 @@ impl DeviceSchedulingSubNode {
     /// # Errors
     ///
     /// Returns the errors documented by [`DeviceSchedulingSubNode::bind_world_block`]
-    /// and rejects a layout that does not contain the selected I/O node.
+    /// and rejects a layout derived from another World or lacking the selected
+    /// I/O node, before constructing the device.
     pub fn bind_world_block_with_layout(
         world: &World,
         layout: &WorldIoInstantiationLayout,
@@ -475,6 +365,13 @@ impl DeviceSchedulingSubNode {
         base: BaseImage,
         seed: Seed,
     ) -> Result<Self, DeviceSubNodeBindingError> {
+        layout
+            .validate_world(world)
+            .map_err(|source| DeviceSubNodeBindingError::Layout {
+                node: node_id.name.clone(),
+                source,
+            })?;
+
         let node =
             world
                 .io_node(node_id)
@@ -517,7 +414,7 @@ impl DeviceSchedulingSubNode {
                         node: node.id.clone(),
                     },
                 })?;
-        let core = world_io_core(node, runtime_layout).map_err(|source| {
+        let core = world_io_core(runtime_layout).map_err(|source| {
             DeviceSubNodeBindingError::RuntimeCore {
                 node: node.id.name.clone(),
                 source,
@@ -621,7 +518,8 @@ impl DeviceSchedulingSubNode {
     /// # Errors
     ///
     /// Returns the errors documented by [`DeviceSchedulingSubNode::bind_world_ninep`]
-    /// and rejects a layout that does not contain the selected I/O node.
+    /// and rejects a layout derived from another World or lacking the selected
+    /// I/O node, before constructing the device.
     pub fn bind_world_ninep_with_layout(
         world: &World,
         layout: &WorldIoInstantiationLayout,
@@ -629,6 +527,13 @@ impl DeviceSchedulingSubNode {
         tree: FsTree,
         seed: Seed,
     ) -> Result<Self, DeviceSubNodeBindingError> {
+        layout
+            .validate_world(world)
+            .map_err(|source| DeviceSubNodeBindingError::Layout {
+                node: node_id.name.clone(),
+                source,
+            })?;
+
         let node =
             world
                 .io_node(node_id)
@@ -665,7 +570,7 @@ impl DeviceSchedulingSubNode {
                         node: node.id.clone(),
                     },
                 })?;
-        let core = world_io_core(node, runtime_layout).map_err(|source| {
+        let core = world_io_core(runtime_layout).map_err(|source| {
             DeviceSubNodeBindingError::RuntimeCore {
                 node: node.id.name.clone(),
                 source,
@@ -755,19 +660,6 @@ impl DeviceSchedulingSubNode {
         }
     }
 
-    /// Returns a shared view of the held block device, when this is a disk sub-node.
-    ///
-    /// This migration accessor is equivalent to
-    /// [`DeviceSchedulingSubNode::block_device`]. It returns `None` for a 9p
-    /// sub-node because [`DeviceSchedulingSubNode`] now owns either concrete
-    /// device kind. New code should use [`DeviceSchedulingSubNode::block_device`]
-    /// or [`DeviceSchedulingSubNode::ninep_device`] so the expected concrete
-    /// device kind is visible at the call site.
-    #[must_use]
-    pub fn device(&self) -> Option<&BlockDevice> {
-        self.block_device()
-    }
-
     /// Returns a shared view of the held 9p device, when this is a filesystem sub-node.
     #[must_use]
     pub fn ninep_device(&self) -> Option<&NinepDevice> {
@@ -777,7 +669,11 @@ impl DeviceSchedulingSubNode {
         }
     }
 
-    /// Submits a block request at `request_icount` and COMPUTEs its completion.
+    /// Submits one block arrival whose FIFO input order is already authoritative.
+    ///
+    /// Immediate COMPUTE assigns the next original response sequence. A complete
+    /// modeled ARRIVE phase with unconstrained host collection order uses
+    /// [`Self::submit_arrivals`] before any request is COMPUTEd.
     ///
     /// Computes the exact `(delivery_icount, payload)` through the device and
     /// records it in delivery-key order. The device's own clock
@@ -790,7 +686,7 @@ impl DeviceSchedulingSubNode {
     /// inbound ring is full ([IO-32]), or when its COMPUTE step fails (a
     /// clock/overflow/past-delivery guard). Returns
     /// [`DeviceError::WrongDeviceKind`] when called on a 9p sub-node.
-    pub fn submit(
+    pub fn submit_fifo(
         &mut self,
         request_icount: u64,
         request: &BlockRequest,
@@ -803,7 +699,7 @@ impl DeviceSchedulingSubNode {
 
     /// Submits a raw 9p request frame at `request_icount` and COMPUTEs its reply.
     ///
-    /// This mirrors [`DeviceSchedulingSubNode::submit`] for the 9p sub-node:
+    /// This mirrors [`DeviceSchedulingSubNode::submit_fifo`] for the 9p sub-node:
     /// COMPUTE pins the exact modeled reply and
     /// [`DeviceSchedulingSubNode::deliver_due`] later makes it visible.
     ///
@@ -921,8 +817,13 @@ impl DeviceSchedulingSubNode {
             let event = completion.payload.as_ref().map(|payload| IoCompletion {
                 sub_node: self.sub_node.clone(),
                 target: self.target.clone(),
-                delivery_icount: crate::Icount {
-                    retired: completion.delivery_icount,
+                delivery_tick: crate::SimInstant {
+                    ticks: completion.delivery_icount,
+                },
+                source_delivery: crucible_device::FrameDeliveryKey {
+                    delivery_icount: completion.delivery_icount,
+                    src_node: completion.src_node,
+                    seq: completion.seq,
                 },
                 payload: payload.clone(),
             });
@@ -940,13 +841,9 @@ impl DeviceSchedulingSubNode {
     }
 }
 
-/// Builds the concrete uniform I/O core from one validated world I/O node.
-fn world_io_core(
-    node: &crate::WorldIoNode,
-    layout: WorldIoRuntimeLayout,
-) -> Result<IoCore, DeviceError> {
+/// Builds the concrete uniform I/O core for one validated world I/O node.
+fn world_io_core(layout: WorldIoRuntimeLayout) -> Result<IoCore, DeviceError> {
     IoCore::new(
-        node.core.shift_bits,
         layout.source_node,
         layout.inbox_capacity,
         layout.outbox_capacity,
@@ -956,8 +853,8 @@ fn world_io_core(
 /// The concrete device a scheduler sub-node owns.
 ///
 /// The scheduler bridge treats block and 9p uniformly after COMPUTE: each
-/// exposes modeled in-flight completions, an active fault table, and a fixed
-/// clock shift. The concrete request submission step remains device-specific.
+/// exposes modeled in-flight completions and an active fault table. The
+/// concrete request submission step remains device-specific.
 #[derive(Clone, Debug)]
 enum ScheduledDevice {
     /// A block device sub-node.
@@ -1044,7 +941,7 @@ mod tests {
 
     /// Builds a fault-free disk sub-node over a small base image.
     fn fresh_disk(seed: Seed) -> DeviceSchedulingSubNode {
-        let core = match IoCore::new(0, 7, 16, 16) {
+        let core = match IoCore::new(7, 16, 16) {
             Ok(core) => core,
             Err(error) => panic!("io core should construct: {error}"),
         };
@@ -1061,7 +958,7 @@ mod tests {
 
     /// Builds a 9p sub-node over a read-only tree.
     fn fresh_ninep(seed: Seed) -> DeviceSchedulingSubNode {
-        let core = match IoCore::new(0, 9, 16, 16) {
+        let core = match IoCore::new(9, 16, 16) {
             Ok(core) => core,
             Err(error) => panic!("io core should construct: {error}"),
         };
@@ -1115,9 +1012,9 @@ mod tests {
     fn next_exact_local_event_is_the_inflight_head_final_icount() {
         let mut disk = fresh_disk(Seed::from_u64(0xd15c));
         // Two reads at different request icounts -> two completions in flight.
-        disk.submit(0, &read_request(1, 0, 8))
+        disk.submit_fifo(0, &read_request(1, 0, 8))
             .unwrap_or_else(|error| panic!("submit should succeed: {error}"));
-        disk.submit(100, &read_request(2, 0, 8))
+        disk.submit_fifo(100, &read_request(2, 0, 8))
             .unwrap_or_else(|error| panic!("submit should succeed: {error}"));
 
         let head = disk
@@ -1135,7 +1032,7 @@ mod tests {
     #[test]
     fn deliver_due_makes_completions_visible_at_exact_icount_in_order() {
         let mut disk = fresh_disk(Seed::from_u64(0xd15c));
-        disk.submit(0, &read_request(1, 0, 8))
+        disk.submit_fifo(0, &read_request(1, 0, 8))
             .unwrap_or_else(|error| panic!("submit should succeed: {error}"));
         let delivery = disk
             .next_exact_local_event()
@@ -1150,7 +1047,7 @@ mod tests {
             .completion
             .as_ref()
             .unwrap_or_else(|| panic!("fault-free delivery should emit a completion"));
-        assert_eq!(event.delivery_icount.retired, delivery);
+        assert_eq!(event.delivery_tick.ticks, delivery);
         assert_eq!(event.target, node_id("vm-a"));
         assert!(disk.next_exact_local_event().is_none());
     }
@@ -1158,7 +1055,7 @@ mod tests {
     #[test]
     fn wrong_request_kind_fails_loudly_without_computing() {
         let mut fs = fresh_ninep(Seed::from_u64(0x9f5));
-        let result = fs.submit(0, &read_request(1, 0, 8));
+        let result = fs.submit_fifo(0, &read_request(1, 0, 8));
         assert!(matches!(
             result,
             Err(DeviceError::WrongDeviceKind {
@@ -1184,7 +1081,7 @@ mod tests {
     fn block_sub_node_checkpoint_round_trips_pending_completion() {
         let seed = Seed::from_u64(0xd15c);
         let mut disk = fresh_disk(seed);
-        disk.submit(41, &read_request(7, 0, 8))
+        disk.submit_fifo(41, &read_request(7, 0, 8))
             .unwrap_or_else(|error| panic!("submit should succeed: {error}"));
         let checkpoint = disk.checkpoint();
         let bytes = checkpoint

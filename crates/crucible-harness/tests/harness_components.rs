@@ -14,8 +14,7 @@ use crucible_harness::adversarial::{
 };
 use crucible_harness::divergence::{bisect_first_different_icount, locate_first_divergence};
 use crucible_harness::fingerprint::{
-    FingerprintMismatchKind, FingerprintSample, FingerprintSampleTrigger, FingerprintStream,
-    compare_fingerprint_streams,
+    FingerprintMismatchKind, FingerprintSample, FingerprintStream, compare_fingerprint_streams,
 };
 use crucible_harness::replay_oracle::{ReplayOracleCase, check_replay_oracle};
 use crucible_harness::{find_gate, harness_components};
@@ -345,7 +344,6 @@ fn sample(seq: u64, node: &str, icount: u64, rolling_fingerprint: &[u8]) -> Fing
         seq,
         node: node.to_string(),
         icount,
-        trigger: FingerprintSampleTrigger::Periodic,
         rolling_fingerprint: rolling_fingerprint.to_vec(),
     }
 }

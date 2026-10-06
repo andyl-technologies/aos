@@ -21,16 +21,14 @@ pub(super) fn advanced_standard_failures(
 
         failures.extend(target_standard_failures(standard, target));
 
-        if !target.placeholder {
-            match source_overrides.get(&(target.package, target.test_target)) {
-                Some(content) => {
-                    failures.extend(body_marker_failures(standard, target, content.as_str()));
-                }
-                None => failures.push(format!(
-                    "{}:{} implemented advanced test target source is missing",
-                    target.package, target.test_target
-                )),
+        match source_overrides.get(&(target.package, target.test_target)) {
+            Some(content) => {
+                failures.extend(body_marker_failures(standard, target, content.as_str()));
             }
+            None => failures.push(format!(
+                "{}:{} implemented advanced test target source is missing",
+                target.package, target.test_target
+            )),
         }
     }
 
@@ -107,75 +105,6 @@ pub(super) fn boundary_abi_owner_failures(targets: &[GateTargetSpec]) -> Vec<Str
     }
 }
 
-pub(super) fn spsc_ring_unsafe_without_model_failures(
-    root: &Path,
-    targets: &[GateTargetSpec],
-) -> Result<Vec<String>, Box<dyn Error>> {
-    let spsc_target_is_placeholder = targets
-        .iter()
-        .find(|target| {
-            target.package == "crucible-shmem" && target.test_target == "gate_layer1_injection"
-        })
-        .is_some_and(|target| target.placeholder);
-
-    let mut sources = Vec::new();
-    collect_rust_sources(
-        &workspace_crates_dir(root).join("crucible-shmem/src"),
-        &mut sources,
-    )?;
-
-    let mut failures = Vec::new();
-    for source in sources {
-        let Some(file_name) = source.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        let content = fs::read_to_string(&source)?;
-        failures.extend(concurrent_primitive_before_model_failures(
-            &display_repo_path(&source, root),
-            file_name,
-            &content,
-            spsc_target_is_placeholder,
-        ));
-    }
-
-    Ok(failures)
-}
-
-pub(super) fn concurrent_primitive_before_model_failures(
-    source_label: &str,
-    file_name: &str,
-    content: &str,
-    spsc_target_is_placeholder: bool,
-) -> Vec<String> {
-    if !spsc_target_is_placeholder {
-        return Vec::new();
-    }
-
-    let code = scrub_comments_and_strings(content);
-    let lower_name = file_name.to_ascii_lowercase();
-    let lower_code = code.to_ascii_lowercase();
-    let has_context = CONCURRENT_SOURCE_CONTEXT_MARKERS
-        .iter()
-        .any(|marker| lower_name.contains(marker) || lower_code.contains(marker));
-    let has_atomic = ATOMIC_PRIMITIVE_MARKERS
-        .iter()
-        .any(|marker| code.contains(marker));
-    let has_contextual_atomic = CONTEXTUAL_ATOMIC_MARKERS
-        .iter()
-        .any(|marker| code.contains(marker));
-    let has_unsafe = UNSAFE_PRIMITIVE_MARKERS
-        .iter()
-        .any(|marker| code.contains(marker));
-
-    if has_atomic || (has_context && (has_contextual_atomic || has_unsafe)) {
-        vec![format!(
-            "{source_label}: concurrent shmem primitive cannot land before the exhaustive-ordering gate body"
-        )]
-    } else {
-        Vec::new()
-    }
-}
-
 pub(super) fn advanced_standard_regression_failures() -> Vec<String> {
     let mut failures = Vec::new();
     let broken_targets = [
@@ -184,21 +113,18 @@ pub(super) fn advanced_standard_regression_failures() -> Vec<String> {
             package: "crucible-shmem",
             test_target: "gate_layer1_injection",
             required_features: &[],
-            placeholder: false,
         },
         GateTargetSpec {
             gate: "gate:abi-conformance",
             package: "crucible-protocol",
             test_target: "gate_abi_conformance",
             required_features: &[],
-            placeholder: true,
         },
         GateTargetSpec {
             gate: "gate:replay-oracle",
             package: "crucible",
             test_target: "gate_replay_oracle",
             required_features: &[],
-            placeholder: true,
         },
     ];
     let source_overrides = BTreeMap::from([(
@@ -243,28 +169,6 @@ pub(super) fn advanced_standard_regression_failures() -> Vec<String> {
     {
         failures.push("advanced-test regression failed to reject ABI owner drift".to_string());
     }
-    let primitive_findings = concurrent_primitive_before_model_failures(
-        "crates/crucible-shmem/src/ring.rs",
-        "ring.rs",
-        r#"
-            use core::sync::atomic::{AtomicUsize, Ordering};
-
-            fn publish(head: &AtomicUsize) {
-                head.store(1, Ordering::Release);
-            }
-        "#,
-        true,
-    );
-    if !primitive_findings
-        .iter()
-        .any(|finding| finding.contains("concurrent shmem primitive"))
-    {
-        failures.push(
-            "advanced-test regression failed to reject atomics before SPSC model coverage"
-                .to_string(),
-        );
-    }
-
     failures
 }
 
@@ -339,12 +243,6 @@ pub(super) fn collect_rust_sources(
     }
 
     Ok(())
-}
-
-pub(super) fn display_repo_path(path: &Path, root: &Path) -> String {
-    path.strip_prefix(root)
-        .map(|relative| relative.display().to_string())
-        .unwrap_or_else(|_| path.display().to_string())
 }
 
 pub(super) fn scrub_comments_and_strings(content: &str) -> String {

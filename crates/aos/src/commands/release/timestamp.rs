@@ -249,8 +249,9 @@ async fn refresh(args: &ReleaseTimestampRefreshArgs, printer: &Printer) -> Resul
         &snapshot,
     )?;
     let signing_keys = timestamp_signing_keys(&root.signed, &plan, &args.signing_keys)?;
-    let signer = ExternalSigner::new(
-        args.signer_executable.clone(),
+    let signer = ExternalSigner::resolve(
+        args.signer_executable.as_deref(),
+        args.signer_config.as_deref(),
         Duration::from_secs(args.signer_timeout_seconds),
     )?;
     let payload = canonical::to_vec(&signed)?;

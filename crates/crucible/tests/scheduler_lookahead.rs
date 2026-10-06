@@ -122,7 +122,7 @@ fn node_id(name: &str) -> NodeId {
 }
 
 fn duration(nanos: u64) -> SimDuration {
-    SimDuration { nanos }
+    SimDuration::from_nanoseconds(nanos).expect("small test duration must fit")
 }
 
 fn world_node(name: &str) -> WorldNode {
@@ -136,7 +136,6 @@ fn world_node(name: &str) -> WorldNode {
         },
         white_box: WhiteBoxPolicy::Disabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,

@@ -14,7 +14,7 @@ pub(super) async fn actor_publishes_backend_coverage_from_the_canonical_event_lo
         4,
     );
     let quantum_loop = crucible::BackendQuantumLoop::new(
-        CoverageAppendingLoop::default(),
+        coverage_scheduler(&scenario),
         CoverageBackend::new(event),
     );
     let mut engine = Engine::new(config, graph, quantum_loop);
@@ -33,16 +33,40 @@ pub(super) async fn actor_publishes_backend_coverage_from_the_canonical_event_lo
         .await
         .expect("coverage quantum should reach the actor boundary");
 
-    let frame = stream
-        .try_recv()
-        .expect("coverage stream should remain readable")
-        .expect("coverage stream should receive one canonical entry");
-    assert_eq!(frame.entry.class(), SchedulerEventLogClass::Observational);
-    let projection = crucible::event_log_coverage_projection(&[frame.entry]);
+    let entries = std::iter::from_fn(|| {
+        stream
+            .try_recv()
+            .expect("coverage stream should remain readable")
+            .map(|frame| frame.entry)
+    })
+    .collect::<Vec<_>>();
+    for (sequence, entry) in entries.iter().enumerate() {
+        assert_eq!(entry.sequence(), sequence as u64);
+    }
+    let projection = crucible::event_log_coverage_projection(&entries);
     assert_eq!(projection.len(), 1);
-    assert_eq!(projection.entries()[0].at.icount.retired, 17);
-    assert_eq!(actor.event_log().len(), 2);
-    assert_eq!(actor.engine().event_log_len(), 2);
+    assert_eq!(
+        entries[projection.entries()[0].raw_index].class(),
+        SchedulerEventLogClass::Observational
+    );
+    assert_eq!(
+        projection.entries()[0].observation,
+        crucible::EventLogCoverageObservation::BasicBlock {
+            node: node_id("vm-a"),
+            guest_pc: 0x4010,
+            block_len: 4,
+        }
+    );
+    assert_eq!(
+        projection.entries()[0].at.retired,
+        Some(crucible::Icount { retired: 17 })
+    );
+    assert!(
+        entries.len() > 2,
+        "scheduler decisions must also be published"
+    );
+    assert_eq!(actor.event_log().len(), entries.len() as u64);
+    assert_eq!(actor.engine().event_log_len(), entries.len());
 }
 
 #[tokio::test]
@@ -57,7 +81,7 @@ pub(super) async fn actor_publishes_final_backend_coverage_before_shutdown_compl
         8,
     );
     let quantum_loop = crucible::BackendQuantumLoop::new(
-        CoverageAppendingLoop::default(),
+        coverage_scheduler(&scenario),
         CoverageBackend::new(event),
     );
     let mut engine = Engine::new(config, graph, quantum_loop);
@@ -88,7 +112,10 @@ pub(super) async fn actor_publishes_final_backend_coverage_before_shutdown_compl
     assert_eq!(frame.entry.class(), SchedulerEventLogClass::Observational);
     let projection = crucible::event_log_coverage_projection(&[frame.entry]);
     assert_eq!(projection.len(), 1);
-    assert_eq!(projection.entries()[0].at.icount.retired, 0);
+    assert_eq!(
+        projection.entries()[0].at.retired,
+        Some(crucible::Icount { retired: 0 })
+    );
     assert_eq!(actor.event_log().len(), 2);
     assert_eq!(actor.engine().event_log_len(), 2);
     assert!(matches!(

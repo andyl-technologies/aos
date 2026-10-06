@@ -13,13 +13,9 @@
     then ""
     else ''
         /*
-         * The live gate observes COM1 as an output-only stream. The rendezvous
-         * below emits A^(N-1) B P^(N-1) R. After every AP is actively
-         * contending on a held lock, the BSP releases it, executes PAUSE, and
-         * immediately attempts to reacquire it. Success emits F and parks the
-         * BSP forever. A passing stream therefore proves a waiter ran in the
-         * zero-instruction interval between PAUSE and the BSP's next guest
-         * instruction; an ordinary 4096-instruction quantum handoff is too late.
+         * The rendezvous emits A^(N-1) B P^(N-1) R. Each AP spins with
+         * PAUSE on the BSP-held lock. After releasing it, the BSP also spins
+         * with PAUSE until an AP acquires it on a bounded RR turn.
          */
         movw $0, 0x7000
         movw $1, 0x7002
@@ -65,6 +61,8 @@
         call wait_for_icr
         movl $0x00008500, 0xfee00300
         call wait_for_icr
+        /* Timestamp the first SIPI sent to the target AP. */
+        movw $1, 0x700c
         movl $0x00000608, 0xfee00300
         call wait_for_icr
         movl $0x00000608, 0xfee00300
@@ -82,31 +80,23 @@
         movb $'B', %al
         call serial_byte
 
-        /*
-         * This otherwise inert POST-port write arms only the test-only QEMU
-         * negative at the release-site PAUSE. Every AP has emitted A and the
-         * BSP has emitted B before the marker, so observing the trap proves
-         * the runtime console prefix reached AAAB and excludes startup PAUSEs.
-         */
-        movw $0x80, %dx
-        movb $0xa7, %al
-        outb %al, %dx
-        xorw %ax, %ax
-        movw $1, %cx
         movw $0, 0x7002
+      wait_for_first_ap_lock:
+        cmpw $0, 0x7004
+        jne first_ap_acquired_lock
         pause
-
-        /* The very next guest instruction must observe a waiter's lock. */
-        lock cmpxchgw %cx, 0x7002
-        jne pause_handoff_proven
+        jmp wait_for_first_ap_lock
+      first_ap_acquired_lock:
+        cmpw $1, 0x7002
+        je pause_progress_proven
         movb $'F', %al
         call serial_byte
-      pause_handoff_failed:
+      pause_progress_failed:
         cli
         hlt
-        jmp pause_handoff_failed
+        jmp pause_progress_failed
 
-      pause_handoff_proven:
+      pause_progress_proven:
         movw $1, 0x7006
 
       wait_for_all_aps_past_pause:
@@ -116,7 +106,7 @@
         jmp wait_for_all_aps_past_pause
       all_aps_past_pause:
         cmpw ${"$"}${toString (guestVcpus - 1)}, 0x7004
-        jne pause_handoff_failed
+        jne pause_progress_failed
         movb $'R', %al
         call serial_byte
     '';
@@ -303,6 +293,7 @@ in
             .code16
             ap_start:
               cli
+              movw $1, 0x7010
               /* Publish online only after the byte reached the UART. */
               movb $'A', %bl
             ap_online_serial_wait:
@@ -392,7 +383,7 @@ in
             guest_deadline=${guestDeadline}
             guest_ap_trampoline=high-load-copy-to-sipi-vector
             guest_load_segments=compact-high-only
-            guest_smp_rendezvous=release-pause-immediate-reacquire-fails-before-ap-lock-chain
+            guest_smp_rendezvous=release-pause-bounded-rr-ap-lock-chain
             EVIDENCE
           '';
         }

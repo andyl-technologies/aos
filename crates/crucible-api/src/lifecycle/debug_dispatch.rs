@@ -118,6 +118,50 @@ impl DebugRepositionDispatch {
     }
 }
 impl GuestIntrospectionDispatch {
+    async fn current_boundary(&self) -> Result<(Configuration, VirtualTime), LifecycleApiError> {
+        let (query_reply, query_receiver) = CommandReply::channel();
+        self.sender
+            .send(SessionCommand::Query {
+                kind: QueryKind::Snapshot,
+                reply: query_reply,
+            })
+            .await
+            .map_err(|_| LifecycleApiError::CommandChannelClosed {
+                session_id: self.session_id,
+            })?;
+        let snapshot = query_receiver
+            .await
+            .map_err(|error| LifecycleApiError::ActorFailed {
+                message: format!("debug fork snapshot reply closed: {error}"),
+            })?
+            .map_err(session_command_rejection)?;
+        let QueryResult::Snapshot(snapshot) = snapshot else {
+            return Err(LifecycleApiError::ActorFailed {
+                message: String::from("debug fork snapshot query returned an unexpected result"),
+            });
+        };
+        Ok((snapshot.configuration.clone(), snapshot.frontier))
+    }
+
+    async fn fork_request(
+        &self,
+        request: crucible::DebugNonCanonicalBranchRequest,
+    ) -> Result<crucible::DebugNonCanonicalBranchReport, LifecycleApiError> {
+        let (reply, receiver) = CommandReply::channel();
+        self.sender
+            .send(SessionCommand::DebugForkNonCanonical { request, reply })
+            .await
+            .map_err(|_| LifecycleApiError::CommandChannelClosed {
+                session_id: self.session_id,
+            })?;
+        receiver
+            .await
+            .map_err(|error| LifecycleApiError::ActorFailed {
+                message: format!("debug fork reply closed: {error}"),
+            })?
+            .map_err(session_command_rejection)
+    }
+
     /// Exchanges one channel-addressed record with the session actor.
     ///
     /// # Errors
@@ -163,46 +207,57 @@ impl GuestIntrospectionDispatch {
         &self,
         node: NodeId,
     ) -> Result<crucible::DebugNonCanonicalBranchReport, LifecycleApiError> {
-        let (query_reply, query_receiver) = CommandReply::channel();
-        self.sender
-            .send(SessionCommand::Query {
-                kind: QueryKind::Snapshot,
-                reply: query_reply,
-            })
-            .await
-            .map_err(|_| LifecycleApiError::CommandChannelClosed {
-                session_id: self.session_id,
-            })?;
-        let snapshot = query_receiver
-            .await
-            .map_err(|error| LifecycleApiError::ActorFailed {
-                message: format!("debug fork snapshot reply closed: {error}"),
-            })?
-            .map_err(session_command_rejection)?;
-        let QueryResult::Snapshot(snapshot) = snapshot else {
-            return Err(LifecycleApiError::ActorFailed {
-                message: String::from("debug fork snapshot query returned an unexpected result"),
-            });
-        };
+        let (configuration, frontier) = self.current_boundary().await?;
         let request = crucible::DebugNonCanonicalBranchRequest::new(
-            snapshot.configuration.clone(),
-            snapshot.frontier,
+            configuration,
+            frontier,
             crucible::DebugNonCanonicalBranchTrigger::GuestIntrospection,
         )
         .with_action(crucible::DebugNonCanonicalBranchAction::guest_introspection(node));
-        let (reply, receiver) = CommandReply::channel();
-        self.sender
-            .send(SessionCommand::DebugForkNonCanonical { request, reply })
-            .await
-            .map_err(|_| LifecycleApiError::CommandChannelClosed {
-                session_id: self.session_id,
-            })?;
-        receiver
-            .await
-            .map_err(|error| LifecycleApiError::ActorFailed {
-                message: format!("debug guest fork reply closed: {error}"),
-            })?
-            .map_err(session_command_rejection)
+        self.fork_request(request).await
+    }
+
+    /// Records an explicit non-canonical fork for an imminent GDB guest edit.
+    ///
+    /// The caller must perform the indicated write on this same private
+    /// session and verify readback before reporting a successful edit. A failed
+    /// write leaves only a disposable non-canonical session, never a canonical
+    /// mutation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when actor communication, attachment, or
+    /// branch admission fails.
+    pub async fn fork_guest_edit(
+        &self,
+        node: NodeId,
+        kind: crucible::DebugGuestEditKind,
+        target: String,
+        bytes: Vec<u8>,
+    ) -> Result<crucible::DebugNonCanonicalBranchReport, LifecycleApiError> {
+        let (configuration, frontier) = self.current_boundary().await?;
+        let trigger = match kind {
+            crucible::DebugGuestEditKind::RegisterWrite => {
+                crucible::DebugNonCanonicalBranchTrigger::GuestRegisterWrite
+            }
+            crucible::DebugGuestEditKind::MemoryWrite => {
+                crucible::DebugNonCanonicalBranchTrigger::GuestMemoryWrite
+            }
+            crucible::DebugGuestEditKind::MemoryPatchBreakpoint => {
+                crucible::DebugNonCanonicalBranchTrigger::MemoryPatchBreakpoint
+            }
+        };
+        let edit = crucible::DebugGuestEdit::new(
+            node,
+            kind,
+            crucible::DebugCoordinate::virtual_time(frontier),
+            target,
+            bytes,
+        );
+        let request =
+            crucible::DebugNonCanonicalBranchRequest::new(configuration, frontier, trigger)
+                .with_action(crucible::DebugNonCanonicalBranchAction::guest_edit(edit));
+        self.fork_request(request).await
     }
 }
 

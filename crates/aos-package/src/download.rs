@@ -22,7 +22,7 @@
 //!
 //! Downloaded files land in the cache as `<canonical-nar-hash>.nar.zst`; the
 //! resulting [`DownloadResult`]s carry everything [`crate::store::import_nar`]
-//! needs to synthesize the import trailer.
+//! needs to preserve cache signatures at the store trust boundary.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -90,6 +90,8 @@ pub struct ResolvedDownload {
 /// Result of a successful download.
 #[derive(Debug, Clone)]
 pub struct DownloadResult {
+    /// Complete accepted narinfo, including NAR size and cache signatures.
+    pub narinfo: NarInfo,
     /// Store path the downloaded NAR materializes when imported.
     pub store_path: String,
     /// Path to the downloaded `.nar.zst` in the cache directory.
@@ -100,8 +102,7 @@ pub struct DownloadResult {
     pub nar_hash: String,
     /// Narinfo transport encoding (`zstd` or `none`).
     pub compression: String,
-    /// Runtime references (from narinfo `References`). Needed to build the
-    /// export trailer at import time.
+    /// Runtime references (from narinfo `References`).
     pub references: Vec<String>,
     /// Deriver (from narinfo `Deriver`), if any.
     pub deriver: Option<String>,
@@ -554,6 +555,14 @@ async fn download_one(
     dest: &Path,
     printer: &Printer,
 ) -> Result<DownloadResult> {
+    if resolved.narinfo.store_path != resolved.req.store_path {
+        bail!(
+            "narinfo StorePath {} does not match requested path {}",
+            resolved.narinfo.store_path,
+            resolved.req.store_path,
+        );
+    }
+
     // FileHash is authoritative for the compressed stream when the cache
     // emits a compressed NAR. AOS-server populates it unconditionally;
     // a missing FileHash on a compressed NAR is a server bug we want to
@@ -592,6 +601,7 @@ async fn download_one(
     .await?;
 
     Ok(DownloadResult {
+        narinfo: resolved.narinfo.clone(),
         store_path: resolved.req.store_path.clone(),
         local_path: dest.to_path_buf(),
         download_hash: file_hash,
@@ -701,6 +711,7 @@ async fn cached_download_result(
     }
 
     Ok(Some(DownloadResult {
+        narinfo: resolved.narinfo.clone(),
         store_path: resolved.req.store_path.clone(),
         local_path: dest.to_path_buf(),
         download_hash: file_hash.to_string(),
@@ -1107,6 +1118,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn download_rejects_narinfo_for_another_store_path() {
+        let cache = tempfile::TempDir::new().unwrap();
+        let dest = cache.path().join("unused.nar");
+        let resolved = ResolvedDownload {
+            req: DownloadRequest {
+                store_path: "/nix/store/expected-package".to_string(),
+                mirror_url: "http://127.0.0.1:9".to_string(),
+                fallback_mirrors: Vec::new(),
+            },
+            narinfo: narinfo::parse(
+                "StorePath: /nix/store/other-package\nURL: nar/other.nar\nNarHash: sha256:other\nNarSize: 5\n",
+            )
+            .unwrap(),
+        };
+
+        let error = download_one(
+            &default_engine(),
+            &resolved,
+            &dest,
+            &Printer::new(0, true, false),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("does not match requested path"));
+        assert!(!dest.exists());
+    }
+
+    #[tokio::test]
     async fn download_nars_reuses_valid_cached_file_without_network() {
         let printer = Printer::new(0, true, false);
         let cache_dir = tempfile::TempDir::new().unwrap();
@@ -1134,7 +1174,7 @@ mod tests {
                 nar_size: 5,
                 references: Vec::new(),
                 deriver: None,
-                signatures: Vec::new(),
+                signatures: vec!["cache.test:signed-metadata".to_string()],
             },
         };
 
@@ -1145,6 +1185,11 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].download_hash, file_hash);
         assert_eq!(results[0].local_path, local_path);
+        assert_eq!(results[0].narinfo.nar_size, 5);
+        assert_eq!(
+            results[0].narinfo.signatures,
+            ["cache.test:signed-metadata"],
+        );
         assert_eq!(std::fs::read(&results[0].local_path).unwrap(), nar_bytes);
     }
 
@@ -1181,7 +1226,7 @@ mod tests {
                 nar_size: 5,
                 references: Vec::new(),
                 deriver: None,
-                signatures: Vec::new(),
+                signatures: vec!["cache.test:fresh-signature".to_string()],
             },
         };
 
@@ -1192,6 +1237,11 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].download_hash, file_hash);
         assert_eq!(results[0].local_path, local_path);
+        assert_eq!(results[0].narinfo.nar_size, 5);
+        assert_eq!(
+            results[0].narinfo.signatures,
+            ["cache.test:fresh-signature"]
+        );
         assert_eq!(std::fs::read(&results[0].local_path).unwrap(), nar_bytes);
     }
 

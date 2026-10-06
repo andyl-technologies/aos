@@ -2,6 +2,10 @@
 
 use super::*;
 
+mod instances;
+
+pub use instances::*;
+
 /// Reusable node settings for code-first scenario authoring.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct NodeTemplate {
@@ -11,7 +15,6 @@ pub struct NodeTemplate {
     pub(super) ready_point: ReadyPoint,
     pub(super) white_box: WhiteBoxPolicy,
     pub(super) smp_vcpus: u16,
-    pub(super) icount_shift: u8,
     pub(super) kernel: Option<ContentAddressedBlobRef>,
     pub(super) root_image: Option<ContentAddressedBlobRef>,
     pub(super) initrd: Option<ContentAddressedBlobRef>,
@@ -24,8 +27,6 @@ impl NodeTemplate {
     pub const DEFAULT_MEMORY_MIB: u32 = 512;
     /// The default fixed vCPU count for a world node.
     pub const DEFAULT_SMP_VCPUS: u16 = 1;
-    /// The default fixed icount shift for a world node.
-    pub const DEFAULT_ICOUNT_SHIFT: u8 = 0;
 
     /// Builds a node template with the supplied ready point and white-box disabled.
     #[must_use]
@@ -37,7 +38,6 @@ impl NodeTemplate {
             ready_point,
             white_box: WhiteBoxPolicy::Disabled,
             smp_vcpus: Self::DEFAULT_SMP_VCPUS,
-            icount_shift: Self::DEFAULT_ICOUNT_SHIFT,
             kernel: None,
             root_image: None,
             initrd: None,
@@ -74,7 +74,6 @@ impl NodeTemplate {
             ready_point: ReadyPoint::AgentSignal,
             white_box: WhiteBoxPolicy::Enabled,
             smp_vcpus: Self::DEFAULT_SMP_VCPUS,
-            icount_shift: Self::DEFAULT_ICOUNT_SHIFT,
             kernel: None,
             root_image: None,
             initrd: None,
@@ -91,7 +90,6 @@ impl NodeTemplate {
             ready_point: node.ready_point.clone(),
             white_box: node.white_box,
             smp_vcpus: node.smp_vcpus,
-            icount_shift: node.icount_shift,
             kernel: node.kernel,
             root_image: node.root_image,
             initrd: node.initrd,
@@ -156,20 +154,6 @@ impl NodeTemplate {
         self
     }
 
-    /// Delivers a scalar workload parameter through black-box scenario config.
-    ///
-    /// The parameter is encoded as a stable `key=value` token in the guest
-    /// command line, which is already part of the content-addressed world and
-    /// scenario identity.
-    #[must_use]
-    pub fn guest_workload_scalar_parameter(
-        mut self,
-        parameter: &GuestWorkloadScalarParameter,
-    ) -> Self {
-        self.cmdline = parameter.selected_cmdline(&self.cmdline);
-        self
-    }
-
     /// Delivers a structured workload config tree through immutable scenario config.
     ///
     /// The tree reference is encoded as `wcfg=...` in the guest command line. A
@@ -223,13 +207,6 @@ impl NodeTemplate {
         self
     }
 
-    /// Replaces the fixed icount shift.
-    #[must_use]
-    pub fn icount_shift(mut self, icount_shift: u8) -> Self {
-        self.icount_shift = icount_shift;
-        self
-    }
-
     /// Replaces the template kernel blob reference.
     #[must_use]
     pub fn kernel(mut self, kernel: ContentAddressedBlobRef) -> Self {
@@ -260,7 +237,6 @@ impl NodeTemplate {
             ready_point: self.ready_point.clone(),
             white_box: self.white_box,
             smp_vcpus: self.smp_vcpus,
-            icount_shift: self.icount_shift,
             kernel: self.kernel,
             root_image: self.root_image,
             initrd: self.initrd,
@@ -293,18 +269,7 @@ pub(super) enum PendingScenarioNode {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) enum PendingScenarioLink {
-    Default {
-        left: NodeId,
-        right: NodeId,
-    },
-    Transport {
-        left: NodeId,
-        right: NodeId,
-        latency: SimDuration,
-        jitter: SimDuration,
-        loss: LinkLossProbability,
-        bandwidth_bps: Option<u64>,
-    },
+    Default { left: NodeId, right: NodeId },
     Concrete(LinkDef),
 }
 
@@ -363,35 +328,6 @@ impl ScenarioBuilder {
             left: NodeId { name: left.into() },
             right: NodeId { name: right.into() },
         });
-        self
-    }
-
-    /// Adds a logical world link with explicit transport characteristics.
-    #[must_use]
-    pub fn link_with_transport(
-        mut self,
-        left: impl Into<String>,
-        right: impl Into<String>,
-        latency: SimDuration,
-        jitter: SimDuration,
-        loss: LinkLossProbability,
-        bandwidth_bps: Option<u64>,
-    ) -> Self {
-        self.links.push(PendingScenarioLink::Transport {
-            left: NodeId { name: left.into() },
-            right: NodeId { name: right.into() },
-            latency,
-            jitter,
-            loss,
-            bandwidth_bps,
-        });
-        self
-    }
-
-    /// Adds an already-constructed logical world link.
-    #[must_use]
-    pub fn link_def(mut self, link: LinkDef) -> Self {
-        self.links.push(PendingScenarioLink::Concrete(link));
         self
     }
 
@@ -475,21 +411,6 @@ impl ScenarioBuilder {
                 PendingScenarioLink::Default { left, right } => {
                     LinkDef::new(left.clone(), right.clone())
                 }
-                PendingScenarioLink::Transport {
-                    left,
-                    right,
-                    latency,
-                    jitter,
-                    loss,
-                    bandwidth_bps,
-                } => LinkDef::with_transport(
-                    left.clone(),
-                    right.clone(),
-                    *latency,
-                    *jitter,
-                    *loss,
-                    *bandwidth_bps,
-                ),
                 PendingScenarioLink::Concrete(link) => Ok(link.clone()),
             })
             .collect()
@@ -713,6 +634,7 @@ pub struct FamilySpace {
     pub(super) seeds: SeedSpace,
     pub(super) topology_size: TopologySizeRange,
     pub(super) topology_shapes: Vec<TopologyShape>,
+    pub(super) fault_densities: Vec<u32>,
 }
 
 impl FamilySpace {
@@ -744,7 +666,34 @@ impl FamilySpace {
             seeds,
             topology_size,
             topology_shapes,
+            fault_densities: vec![0],
         })
+    }
+
+    /// Sets the finite number of fault bindings retained from a family plan.
+    ///
+    /// Density zero pins an empty fault layer. Nonzero densities require a
+    /// [`ScenarioFamily::with_fault_plan`] template with enough bindings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioFamilyInvalidSpace`] for an empty axis or
+    /// a density beyond the admitted fault-binding limit.
+    pub fn with_fault_densities(mut self, mut densities: Vec<u32>) -> Result<Self, EngineError> {
+        if densities.is_empty()
+            || densities.iter().any(|density| {
+                usize::try_from(*density).map_or(true, |value| value > HARD_FAULT_BINDING_LIMIT)
+            })
+        {
+            return Err(EngineError::ScenarioFamilyInvalidSpace {
+                reason: "fault-density axis is empty or exceeds the fault-binding limit",
+            });
+        }
+        densities.sort_unstable();
+        densities.dedup();
+        self.fault_densities = densities;
+        self.cardinality()?;
+        Ok(self)
     }
 
     /// Returns this space's seed axis.
@@ -765,6 +714,12 @@ impl FamilySpace {
         &self.topology_shapes
     }
 
+    /// Returns the canonical fault-density axis.
+    #[must_use]
+    pub fn fault_densities(&self) -> &[u32] {
+        &self.fault_densities
+    }
+
     /// Returns whether `params` lies inside this space.
     #[must_use]
     pub fn contains(&self, params: FamilyParams) -> bool {
@@ -773,6 +728,10 @@ impl FamilySpace {
             && self
                 .topology_shapes
                 .binary_search(&params.topology_shape)
+                .is_ok()
+            && self
+                .fault_densities
+                .binary_search(&params.fault_density)
                 .is_ok()
     }
 
@@ -789,6 +748,7 @@ impl FamilySpace {
         let total = seed_count
             .checked_mul(shape_count)
             .and_then(|count| count.checked_mul(size_count))
+            .and_then(|count| count.checked_mul(self.fault_densities.len() as u64))
             .ok_or(EngineError::ScenarioFamilyInvalidSpace {
                 reason: "family space cardinality overflows u64",
             })?;
@@ -803,7 +763,7 @@ impl FamilySpace {
 
     /// Deterministically samples one parameter point by cartesian index.
     ///
-    /// The finite axes are traversed in seed, shape, then size order.
+    /// The finite axes are traversed in seed, shape, size, then fault-density order.
     /// Callers that want an unbounded fuzz counter should explicitly wrap by
     /// [`Self::cardinality`] so exhaustive enumeration can still reject an
     /// out-of-space index.
@@ -829,11 +789,14 @@ impl FamilySpace {
         let topology_shape = self.topology_shapes[(index % shape_count) as usize];
         index /= shape_count;
         let topology_size = self.topology_size.at(index % size_count)?;
+        index /= size_count;
+        let fault_density = self.fault_densities[index as usize];
 
         Ok(FamilyParams {
             seed,
             topology_size,
             topology_shape,
+            fault_density,
         })
     }
 
@@ -855,6 +818,15 @@ impl FamilySpace {
                 parameter: "topology_shape",
             });
         }
+        if self
+            .fault_densities
+            .binary_search(&params.fault_density)
+            .is_err()
+        {
+            return Err(EngineError::ScenarioFamilyParameterOutOfSpace {
+                parameter: "fault_density",
+            });
+        }
 
         Ok(())
     }
@@ -869,431 +841,6 @@ pub struct FamilyParams {
     pub topology_size: u32,
     /// Concrete generated topology shape.
     pub topology_shape: TopologyShape,
-}
-
-/// Parametric generator over concrete, validated scenario definitions.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ScenarioFamily {
-    pub(super) space: FamilySpace,
-    pub(super) node_template: NodeTemplate,
-    pub(super) assertions: Vec<AssertionDef>,
-}
-
-impl ScenarioFamily {
-    /// Builds a scenario family from a parameter space and reusable node template.
-    #[must_use]
-    pub fn new(space: FamilySpace, node_template: NodeTemplate) -> Self {
-        Self {
-            space,
-            node_template,
-            assertions: Vec::new(),
-        }
-    }
-
-    /// Returns the parameter space this family ranges over.
-    #[must_use]
-    pub fn space(&self) -> &FamilySpace {
-        &self.space
-    }
-
-    /// Adds one assertion to every generated scenario's properties layer.
-    #[must_use]
-    pub fn property(mut self, assertion: AssertionDef) -> Self {
-        self.assertions.push(assertion);
-        self
-    }
-
-    /// Instantiates a concrete validated scenario at `params`.
-    ///
-    /// The returned [`PinnedScenario`] contains the concrete [`ScenarioDefForm`]
-    /// used by execution and reproduction. It carries no reference back to this
-    /// family, so callers can only run the pinned scenario definition.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::ScenarioFamilyParameterOutOfSpace`] when `params`
-    /// does not lie in the family space, or the usual world/plan/properties
-    /// validation errors if the generated scenario is invalid.
-    pub fn instantiate(&self, params: FamilyParams) -> Result<PinnedScenario, EngineError> {
-        self.space.validate_params(params)?;
-        let world = self.build_world(params)?;
-        let plan = self.build_plan(&world, params)?;
-        let properties = Properties::from_assertions_for_world(&world, self.assertions.clone())?;
-        let form = ScenarioDefForm::from_components(&world, &plan, &properties, params.seed)?;
-        Ok(PinnedScenario { params, form })
-    }
-
-    /// Samples and instantiates one deterministic parameter point.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same errors as [`FamilySpace::sample`] or [`Self::instantiate`].
-    pub fn instantiate_sample(&self, index: u64) -> Result<PinnedScenario, EngineError> {
-        let params = self.space.sample(index)?;
-        self.instantiate(params)
-    }
-
-    /// Samples and mutates concrete scenarios using event-log coverage feedback.
-    ///
-    /// Each iteration chooses one family parameter point, pins that point to a
-    /// concrete [`ScenarioDef`], and appends a schedule mutation encoded as
-    /// [`Decision::Override`]. Coverage influences only which deterministic
-    /// samples are explored and how the returned candidates are ordered; it never
-    /// changes the reduced execution semantics of a candidate.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::ScenarioFamilyInvalidSpace`] when the family space
-    /// cannot be counted, [`EngineError::ScenarioFamilyParameterOutOfSpace`] when
-    /// a sampled point is invalid, or any validation error from
-    /// [`Self::instantiate`] or [`try_step`].
-    pub fn fuzz_coverage_guided(
-        &self,
-        config: CoverageGuidedFuzzConfig,
-        feedback: &[EventLogCoverageFeedback],
-    ) -> Result<CoverageGuidedFuzzRun, EngineError> {
-        run_coverage_guided_fuzz(self, config, feedback)
-    }
-
-    /// Runs coverage-guided fuzzing with a durable content-addressed corpus.
-    ///
-    /// The corpus stores every retained input as a self-contained
-    /// [`ReproductionArtifact`] in `store`. Admission is coverage-driven: a
-    /// candidate is retained only when its coverage fingerprint has no existing
-    /// corpus owner. Rejected duplicate coverage is reported as deterministic
-    /// subsumption pruning rather than stored as a corpus entry.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CoverageGuidedCorpusError::Engine`] when sampling, mutation,
-    /// artifact capture, or replay validation fails. Returns
-    /// [`CoverageGuidedCorpusError::Store`] when `store` cannot persist an
-    /// admitted reproduction artifact.
-    pub fn fuzz_coverage_guided_corpus<S>(
-        &self,
-        store: &S,
-        config: CoverageGuidedFuzzConfig,
-        corpus_config: CoverageGuidedCorpusConfig,
-        feedback: &[EventLogCoverageFeedback],
-    ) -> Result<CoverageGuidedCorpusRun, CoverageGuidedCorpusError>
-    where
-        S: DagStore + ?Sized,
-    {
-        run_coverage_guided_fuzz_corpus(self, store, config, corpus_config, feedback)
-    }
-
-    fn build_world(&self, params: FamilyParams) -> Result<World, EngineError> {
-        let nodes = (0..params.topology_size)
-            .map(|index| self.node_template.instantiate(family_node_id(index)))
-            .collect::<Vec<_>>();
-        let links = family_links(params)?;
-        World::from_nodes_and_links(nodes, links)
-    }
-
-    fn build_plan(&self, _world: &World, _params: FamilyParams) -> Result<Plan, EngineError> {
-        Ok(Plan::empty())
-    }
-}
-
-/// A concrete scenario pinned from a [`ScenarioFamily`] parameter point.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct PinnedScenario {
-    pub(super) params: FamilyParams,
-    pub(super) form: ScenarioDefForm,
-}
-
-impl PinnedScenario {
-    /// Returns the family parameters that produced this pinned instance.
-    #[must_use]
-    pub fn params(&self) -> FamilyParams {
-        self.params
-    }
-
-    /// Returns the materialized concrete scenario form.
-    #[must_use]
-    pub fn form(&self) -> &ScenarioDefForm {
-        &self.form
-    }
-
-    /// Consumes this pinned instance and returns its concrete scenario form.
-    #[must_use]
-    pub fn into_form(self) -> ScenarioDefForm {
-        self.form
-    }
-
-    /// Reconstructs the concrete scenario definition used by execution.
-    #[must_use]
-    pub fn scenario_def(&self) -> ScenarioDef {
-        self.form.scenario_def()
-    }
-
-    /// Builds the genesis execution configuration while retaining the concrete form.
-    #[must_use]
-    pub fn genesis_configuration(&self) -> PinnedConfiguration {
-        PinnedConfiguration {
-            scenario: self.form.clone(),
-            configuration: Configuration::genesis(self.scenario_def()),
-        }
-    }
-
-    /// Returns the concrete scenario id.
-    #[must_use]
-    pub fn id(&self) -> ContentHash {
-        self.form.id()
-    }
-}
-
-/// A run configuration pinned to a concrete materialized scenario form.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct PinnedConfiguration {
-    pub(super) scenario: ScenarioDefForm,
-    pub(super) configuration: Configuration,
-}
-
-impl PinnedConfiguration {
-    /// Returns the concrete materialized scenario form for reproduction.
-    #[must_use]
-    pub fn scenario_form(&self) -> &ScenarioDefForm {
-        &self.scenario
-    }
-
-    /// Returns the executable configuration handle for the pinned scenario.
-    #[must_use]
-    pub fn configuration(&self) -> &Configuration {
-        &self.configuration
-    }
-
-    /// Consumes this pinned configuration into its concrete parts.
-    #[must_use]
-    pub fn into_parts(self) -> (ScenarioDefForm, Configuration) {
-        (self.scenario, self.configuration)
-    }
-}
-
-/// A self-contained `(seed, scenario, schedule)` reproduction bundle.
-///
-/// The seed is not stored as a drifting side channel: it is the embedded
-/// [`ScenarioDefForm`]'s own seed. The artifact carries only the complete
-/// validated scenario form and recorded schedule, so its identity is exactly the
-/// RFC tuple `(seed, scenario, schedule)` without a parent family or host path.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ReproductionArtifact {
-    pub(super) id: ContentHash,
-    pub(super) scenario: ScenarioDefForm,
-    pub(super) schedule: Schedule,
-}
-
-impl ReproductionArtifact {
-    /// Captures an artifact by reducing `schedule` from `scenario`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError`] if the reduction function rejects the supplied
-    /// scenario/schedule pair.
-    pub fn capture(scenario: &ScenarioDefForm, schedule: &Schedule) -> Result<Self, EngineError> {
-        let artifact = Self::from_recorded_parts(scenario.clone(), schedule.clone());
-        let _ = artifact.replay()?;
-        Ok(artifact)
-    }
-
-    /// Captures an artifact from an executable pinned configuration.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError`] if replaying the pinned configuration's scenario
-    /// and schedule cannot derive a reduced state.
-    pub fn from_pinned_configuration(pinned: &PinnedConfiguration) -> Result<Self, EngineError> {
-        Self::capture(pinned.scenario_form(), &pinned.configuration().schedule)
-    }
-
-    /// Rebuilds an artifact from already-recorded self-contained parts.
-    #[must_use]
-    pub fn from_recorded_parts(scenario: ScenarioDefForm, schedule: Schedule) -> Self {
-        let id =
-            ContentHash::from_bytes(&reproduction_artifact_canonical_bytes(&scenario, &schedule));
-        Self {
-            id,
-            scenario,
-            schedule,
-        }
-    }
-
-    /// Parses a compact canonical artifact representation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::ScenarioSerialization`] for malformed artifact,
-    /// scenario, or schedule bytes.
-    pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
-        let mut reader = ScenarioBinaryReader::new(bytes, REPRODUCTION_ARTIFACT_BINARY_MAGIC_V5)?;
-        let scenario_bytes = reader.read_binary_blob_bounded(
-            "reproduction-artifact.scenario",
-            MAX_REPRODUCTION_SCENARIO_BLOB_BYTES,
-        )?;
-        let schedule_bytes = reader.read_binary_blob("reproduction-artifact.schedule")?;
-        reader.finish()?;
-
-        let scenario = ScenarioDefForm::from_compact_binary(scenario_bytes)?;
-        let schedule = Schedule::from_compact_binary(schedule_bytes)?;
-        Ok(Self::from_recorded_parts(scenario, schedule))
-    }
-
-    /// Returns the BLAKE3 content address over this artifact's canonical bytes.
-    #[must_use]
-    pub fn id(&self) -> ContentHash {
-        self.id
-    }
-
-    /// Returns the concrete serialized scenario form carried by this artifact.
-    #[must_use]
-    pub fn scenario_form(&self) -> &ScenarioDefForm {
-        &self.scenario
-    }
-
-    /// Reconstructs the immutable scenario definition carried by this artifact.
-    #[must_use]
-    pub fn scenario_def(&self) -> ScenarioDef {
-        self.scenario.scenario_def()
-    }
-
-    /// Returns the scenario definition's root seed.
-    #[must_use]
-    pub fn seed(&self) -> Seed {
-        self.scenario.seed()
-    }
-
-    /// Returns the recorded schedule carried by this artifact.
-    #[must_use]
-    pub fn schedule(&self) -> &Schedule {
-        &self.schedule
-    }
-
-    /// Returns the canonical byte serialization hashed by [`Self::id`].
-    #[must_use]
-    pub fn canonical_bytes(&self) -> Vec<u8> {
-        reproduction_artifact_canonical_bytes(&self.scenario, &self.schedule)
-    }
-
-    /// Serializes this artifact as compact canonical bytes.
-    #[must_use]
-    pub fn to_compact_binary(&self) -> Vec<u8> {
-        self.canonical_bytes()
-    }
-
-    /// Replays the artifact through the reduction oracle.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError`] if the reduction function rejects the embedded
-    /// scenario/schedule pair.
-    pub fn replay(&self) -> Result<ReproductionReplay, EngineError> {
-        let state = reduce(&self.scenario_def(), &self.schedule)?;
-        Ok(ReproductionReplay {
-            artifact: self.id,
-            scenario: self.scenario.id(),
-            schedule: self.schedule.content_hash(),
-            state: state.id,
-        })
-    }
-
-    /// Replays the artifact and compares the result with an external target state.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::ReproductionArtifactReplayMismatch`] when the
-    /// embedded scenario and schedule reduce to a state other than `expected`.
-    /// Returns other [`EngineError`] variants if the reduction itself fails.
-    pub fn verify_replay(&self, expected: ContentHash) -> Result<ReproductionReplay, EngineError> {
-        let replay = self.replay()?;
-        if replay.state != expected {
-            return Err(EngineError::ReproductionArtifactReplayMismatch {
-                artifact: self.id,
-                expected,
-                actual: replay.state,
-            });
-        }
-        Ok(replay)
-    }
-
-    /// Captures the event-log debug/fork metadata for this reproduction artifact.
-    ///
-    /// The returned value records the causal-subsequence digest and fork-point
-    /// index, not the full event log. Replaying the artifact can therefore
-    /// recompute the log and compare against this compact record.
-    #[must_use]
-    pub fn event_log_debug_artifact(
-        &self,
-        fork_point: EventLogOffset,
-        entries: &[crate::scheduler::SchedulerEventLogEntry],
-    ) -> ReproductionEventLogArtifact {
-        self.event_log_debug_artifact_with_segments(fork_point, entries, Vec::new())
-    }
-
-    /// Captures event-log debug/fork metadata with shared-store segment keys.
-    ///
-    /// `shared_store_segments` are optional content-addressed event-log segment
-    /// keys. They let a shared store fetch retained log bytes, but replay
-    /// correctness still comes from recomputing the log from the embedded
-    /// scenario and schedule.
-    #[must_use]
-    pub fn event_log_debug_artifact_with_segments<I>(
-        &self,
-        fork_point: EventLogOffset,
-        entries: &[crate::scheduler::SchedulerEventLogEntry],
-        shared_store_segments: I,
-    ) -> ReproductionEventLogArtifact
-    where
-        I: IntoIterator<Item = ContentHash>,
-    {
-        let projection = crate::scheduler::event_log_causal_projection(entries);
-        let coverage_fingerprint = coverage_fingerprint_from_event_log(entries);
-        ReproductionEventLogArtifact::from_causal_projection(
-            self.id,
-            fork_point,
-            projection.content_hash(),
-            projection.canonical_bytes().len(),
-            projection.len(),
-            coverage_fingerprint,
-            shared_store_segments,
-        )
-    }
-
-    /// Replays the artifact and checks a reconstructed event log against metadata.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError`] if replaying this artifact's scenario/schedule or
-    /// reconstructing the replay log fails before comparison.
-    pub fn verify_event_log_replay_with<F>(
-        &self,
-        event_log: &ReproductionEventLogArtifact,
-        replay_log: F,
-    ) -> Result<ReproductionEventLogReplay, EngineError>
-    where
-        F: FnOnce(
-            &ReproductionArtifact,
-            &ReproductionReplay,
-        ) -> Result<Vec<crate::scheduler::SchedulerEventLogEntry>, EngineError>,
-    {
-        let reduction = self.replay()?;
-        let reproduced_entries = replay_log(self, &reduction)?;
-        let reproduced = crate::scheduler::event_log_causal_projection(&reproduced_entries);
-        let reproduced_coverage_fingerprint =
-            coverage_fingerprint_from_event_log(&reproduced_entries);
-        Ok(ReproductionEventLogReplay {
-            reduction,
-            event_log_artifact: event_log.id(),
-            artifact_matches: event_log.reproduction_artifact == self.id,
-            fork_point: event_log.fork_point,
-            expected_causal_subsequence: event_log.causal_subsequence,
-            reproduced_causal_subsequence: reproduced.content_hash(),
-            expected_causal_bytes: event_log.causal_subsequence_bytes,
-            reproduced_causal_bytes: reproduced.canonical_bytes().len(),
-            expected_causal_events: event_log.causal_subsequence_events,
-            reproduced_causal_events: reproduced.len(),
-            expected_coverage_fingerprint: event_log.coverage_fingerprint,
-            reproduced_coverage_fingerprint,
-            shared_store_segments: event_log.shared_store_segments.clone(),
-        })
-    }
+    /// Number of admitted fault bindings selected from the family plan.
+    pub fault_density: u32,
 }

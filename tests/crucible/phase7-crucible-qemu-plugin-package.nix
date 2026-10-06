@@ -39,6 +39,10 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
+  suiteDeclaration = builtins.concatStringsSep " " (
+    builtins.filter builtins.isString (builtins.split "[[:space:]]+" cruciblePackageNix)
+  );
+
   failures =
     failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
       {
@@ -77,7 +81,7 @@
       }
       {
         label = "patched qemu plugin header probe";
-        needle = "header=\"" + "$" + "{qemu-crucible}/include/qemu-plugin.h\"";
+        needle = "header=\"" + "$" + "{qemu-crucible}/include/qemu/qemu-plugin.h\"";
       }
       {
         label = "QEMU plugin API version probe";
@@ -133,7 +137,7 @@
     ++ failuresFor "pkgs/emulation/qemu.nix" qemuPackageNix [
       {
         label = "QEMU plugin header installed";
-        needle = "install -m 644 include/plugins/qemu-plugin.h \"$out/include/qemu-plugin.h\"";
+        needle = "plugin_header=include/plugins/qemu-plugin.h";
       }
       {
         label = "QEMU output retains GPL-2.0-or-later text for its plugin header";
@@ -152,10 +156,14 @@
         needle = "standalone_release=false";
       }
     ]
-    ++ failuresFor "pkgs/tools/crucible/crucible.nix" cruciblePackageNix [
+    ++ failuresFor "pkgs/tools/crucible/crucible.nix" suiteDeclaration [
       {
         label = "suite carries the separate controller and matched QEMU/plugin runtime deps";
-        needle = "[controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux]";
+        needle = "runtimeDeps = [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux]";
+      }
+      {
+        label = "cross Linux suite retains its target wrapper shell";
+        needle = "++ lib.optionals (stdenv.isCross && stdenv.hostPlatform.isLinux) [bash]";
       }
       {
         label = "suite wrapper configures QEMU at runtime";
