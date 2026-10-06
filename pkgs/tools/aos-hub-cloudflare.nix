@@ -25,6 +25,7 @@
   aos-hub-worker-dist,
   miniflare,
   nodejs,
+  python3,
   bash,
 }:
 mkDerivation {
@@ -35,7 +36,7 @@ mkDerivation {
   # at runtime, so they must survive the scrub phase (which nukes any store ref
   # not reachable from a declared output / runtime / propagated dep). The wasm
   # dist is copied into `$out` itself, so it needs no runtime ref.
-  runtimeDeps = [aos-hub miniflare nodejs bash];
+  runtimeDeps = [aos-hub miniflare nodejs python3 bash];
 
   phases = [
     {
@@ -48,6 +49,14 @@ mkDerivation {
           "$out/share/aos-hub/direct-sdk-conformance.mjs"
         cp ${./aos-hub-direct-qualification.mjs} \
           "$out/share/aos-hub/direct-qualification.mjs"
+        cp ${./aos-hub-hosted-workload.py} "$out/share/aos-hub/hosted-workload.py"
+        mkdir -p "$out/share/aos-hub/hosted-measurements"
+        cp ${../../tests/fleet/_hub-direct-publisher.py} \
+          ${../../tests/fleet/_hub-direct-sparse-publisher.py} \
+          ${../../tests/fleet/_hub-perf.py} \
+          ${../../tests/fleet/_hub-direct-runtime-observations.py} \
+          ${../../tests/fleet/_hub-direct-observations.py} \
+          "$out/share/aos-hub/hosted-measurements/"
         # The static-asset bundle Cloudflare serves from its CDN edge (the
         # `[assets]` directory the generated wrangler.toml points at). Copied
         # writable so `wrangler deploy`'s asset manifest pass can stat it.
@@ -78,11 +87,27 @@ mkDerivation {
         exec ${nodejs}/bin/node "$out/share/aos-hub/direct-qualification.mjs" "\$@"
         EOF
         chmod +x "$out/bin/aos-hub-direct-qualification"
+        cat > "$out/bin/aos-hub-hosted-workload" <<EOF
+        #!${bash}/bin/bash
+        exec ${python3}/bin/python3 "$out/share/aos-hub/hosted-workload.py" "\$@" \
+          --library-dir "$out/share/aos-hub/hosted-measurements"
+        EOF
+        chmod +x "$out/bin/aos-hub-hosted-workload"
       '';
     }
   ];
 
-  passthru.evidenceSources = [./aos-hub-cloudflare.nix ./aos-hub-direct-sdk-conformance.mjs ./aos-hub-direct-qualification.mjs];
+  passthru.evidenceSources = [
+    ./aos-hub-cloudflare.nix
+    ./aos-hub-direct-sdk-conformance.mjs
+    ./aos-hub-direct-qualification.mjs
+    ./aos-hub-hosted-workload.py
+    ../../tests/fleet/_hub-direct-publisher.py
+    ../../tests/fleet/_hub-direct-sparse-publisher.py
+    ../../tests/fleet/_hub-perf.py
+    ../../tests/fleet/_hub-direct-runtime-observations.py
+    ../../tests/fleet/_hub-direct-observations.py
+  ];
 
   meta = {
     description = "aos-hub packaged with wrangler + the Worker wasm dist as a Cloudflare installer";
