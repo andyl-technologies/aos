@@ -22,6 +22,7 @@
     cryptsetup = artifactFor "cryptsetup";
     e2fsprogs = artifactFor "e2fsprogs";
     erofs-utils = artifactFor "erofs-utils";
+    image-hardlink-tree = artifactFor "image-hardlink-tree";
     fakeroot = artifactFor "fakeroot";
     findutils = artifactFor "findutils";
     gawk = artifactFor "gawk";
@@ -90,6 +91,7 @@
       dosfstools = artifactFor "dosfstools";
       e2fsprogs = artifactFor "e2fsprogs";
       erofs-utils = artifactFor "erofs-utils";
+      image-hardlink-tree = artifactFor "image-hardlink-tree";
       fakeroot = artifactFor "fakeroot";
       findutils = artifactFor "findutils";
       gcc-libs = artifactFor "gcc-libs";
