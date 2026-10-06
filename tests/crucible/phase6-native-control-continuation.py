@@ -598,7 +598,7 @@ def main():
     network = support["SUPPORT"]
     prelude = network["PRELUDE"]
     prelude = prelude.replace("bool running, stop, stopped, unplug, exit_request;",
-        "bool running, stop, stopped, unplug, exit_request;\n    bool created, in_list, halted;\n    unsigned interrupt_request;")
+        "bool running, stop, stopped, unplug, exit_request;\n    bool created, in_list;\n    unsigned interrupt_request;")
     # Match the selected native per-thread callback scope during unlocked waits.
     for name in ("qemu_plugin_crucible_exact_boundary_depth",
                  "qemu_plugin_crucible_control_boundary_depth"):

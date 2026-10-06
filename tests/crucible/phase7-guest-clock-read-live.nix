@@ -10,7 +10,7 @@
 # The zero-offset TSC proof is source-bound to the audited reset, SVM and
 # VMState writers. A native selection change requires re-auditing this profile.
 assert (import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix).commit
-== "fd035241eba9fe8fe4b58c50b86492a731ffdd96";
+== "49ad6bdc2083e445df2c5e56062b2c14a7b890fa";
   testing.mkVMTest {
     name =
       if runtimeAnchor

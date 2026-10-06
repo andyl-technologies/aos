@@ -1705,6 +1705,17 @@ in
               if len(api_commands) != 1:
                   raise SystemExit("expected exactly one configured system API compile command")
 
+              # Retain genuine native actions separately from extracted-body
+              # fixture commands, including the actual system CPU object.
+              cpu_commands = [
+                  entry for entry in commands
+                  if entry["file"].endswith("/system/cpus.c")
+              ]
+              if len(cpu_commands) != 1:
+                  raise SystemExit("expected exactly one configured system CPU compile command")
+              (source_root / "native-control.compile-commands.json").write_text(
+                  json.dumps(api_commands + cpu_commands, indent=2) + "\n")
+
               entry = api_commands[0]
               command = shlex.split(entry["command"])
               flags = []
@@ -4296,6 +4307,8 @@ in
                 "$out/share/aos/crucible/procfd-flags.result"
               install -m 644 procfd-flags-proof/compile-command.json \
                 "$out/share/aos/crucible/procfd-flags.compile-command.json"
+              install -m 644 native-control.compile-commands.json \
+                "$out/share/aos/crucible/native-control.compile-commands.json"
               for name in net-output-stop lifecycle-projection control-deferred \
                 control-observer control-delivery stopped-control-rearm \
                 template-control-drain net-stop-chain aio-fork-custody stop-context \
