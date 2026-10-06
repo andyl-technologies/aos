@@ -130,9 +130,11 @@
       -kernel "$kernel" \
       -append "console=ttyS0 reboot=k panic=1 root=/dev/vda rw init=/init net.ifnames=0" \
       -drive file=rootfs.img,format=raw,if=virtio \
-      > "$out/serial.log" 2>&1
+      > "$out/serial.raw.log" 2>&1
     status=$?
     set -e
+    # Keep UART bytes and normalize only the evidence copy for exact markers.
+    ${pkgs.coreutils}/bin/tr -d '\r' < "$out/serial.raw.log" > "$out/serial.log"
     cat "$out/serial.log"
     test "$status" -eq 0
     ${pkgs.grep}/bin/grep -Fq TEST_RESULT:PASS "$out/serial.log"

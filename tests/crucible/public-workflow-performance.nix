@@ -215,7 +215,8 @@ in
                 -nodefaults -display none -serial stdio -monitor none -no-reboot \
                 -kernel "$kernel" \
                 -append "console=ttyS0 reboot=k panic=1 root=/dev/vda rw init=/init net.ifnames=0" \
-                -drive file=rootfs.img,format=raw,if=virtio > "$out/serial.log" 2>&1
+                -drive file=rootfs.img,format=raw,if=virtio > "$out/serial.raw.log" 2>&1
+            ${pkgs.coreutils}/bin/tr -d '\r' < "$out/serial.raw.log" > "$out/serial.log"
             cat "$out/serial.log"
             ${pkgs.gawk}/bin/gawk '
               /^PUBLIC_WORKFLOW_REPORT_BEGIN$/ { begin++; copying=1; next }
