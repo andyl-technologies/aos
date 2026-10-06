@@ -658,6 +658,14 @@ selectors total. The public fork case measures preparation through final
 publication. Missing selectors fail explicitly until the isolated production
 draft and shared preparation hook are qualified. Source-preserving collection
 and the full `algebra-fork` gate remain separate obligations.
+The isolated cold-fork candidate compiles and discovers all twelve required
+cases. Its first runtime witness initially refuses in configuration snapshot
+comparison; a finite test-only trace separates this from setup and later profile
+checks. The corrected source uses the actual held Guard's independently retained
+Original state, including disclosure roles and public trust, while preserving
+protected snapshot, lineage, source, Original and full-profile checks. The original
+first case passes in 9.33 seconds after removing the diagnostic instrumentation.
+The remaining cases and complete gate are still being qualified.
 
 The test-only bucket observer records actual typed Node/Commit get and put
 attempts before catalog lookup, admission or deduplication. The same per-bucket
@@ -3175,6 +3183,15 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   now distinguishes those actual boundaries in one private hermetic case;
   source checks and natural restoration timestamps remain explicit. Session,
   timers, assertions and qualification predicates remain unchanged.
+  That phase observation reaches durable cancellation, real renewal and fresh
+  restore qualification before final restoration refuses without acknowledgment;
+  the current refusal predicate remains unknown. A reviewed correction records
+  actual completed writes and synchronizes exact restoration outputs, the serving
+  maintenance index and all consumed Original controls with unique directories.
+  Every retained input and current/pair callback remains checked at each native
+  handoff. The unchanged cancellation case now passes with zero ignored in
+  183.78 seconds; all 4,848 actual hermetic input files independently match the
+  frozen source. Restore regressions and the complete deletion gate remain pending.
   The reviewed pure journal, marking, proof-context, checkpoint, retention and
   grace-window bodies now replace their trunk declarations. All 27 adopted
   paths, including 16 independent hexadecimal witnesses, match the qualified
