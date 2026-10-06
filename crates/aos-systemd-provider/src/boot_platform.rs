@@ -12,6 +12,7 @@ use anyhow::{Context, Result, bail, ensure};
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
+use crate::boot_storage::with_writable_boot;
 use crate::image_profile::{BOOT_ROOT, IMAGE_PROFILE, PayloadSource, private_directory};
 
 const RETENTION_ROOT: &str = "rollout-retention";
@@ -260,7 +261,7 @@ pub(crate) fn run_from_process() -> Result<()> {
         }
         "select-fallback" => {
             let entry = stable_entry(&installed_entry(&request.rollout.predecessor)?)?;
-            with_writable_boot(&tools, || {
+            with_writable_boot(&tools.mount, || {
                 run(
                     &tools.bootctl,
                     &["set-preferred", &entry],
@@ -327,7 +328,7 @@ fn apply(
                 now_millis()? >= rollout.retention_expires_at_millis,
                 "boot payload retention lease has not expired"
             );
-            with_writable_boot(tools, || release_payloads(rollout))?;
+            with_writable_boot(&tools.mount, || release_payloads(rollout))?;
             storage_observation(observation_schema, rollout)
         }
         (BootPlatformRole::ArtifactStorage, "observe") => {
@@ -342,7 +343,7 @@ fn apply(
                 entry == resolve_candidate_entry(rollout)?,
                 "resolved boot entry changed before selection"
             );
-            with_writable_boot(tools, || {
+            with_writable_boot(&tools.mount, || {
                 promote_candidate(
                     &rollout.candidate,
                     selected_entry()?.as_deref() != Some(entry),
@@ -371,7 +372,7 @@ fn apply(
         }
         (BootPlatformRole::Success, "mark") => {
             let stable = running_entry(rollout)?;
-            with_writable_boot(tools, || {
+            with_writable_boot(&tools.mount, || {
                 run(
                     &tools.bless_boot,
                     &["--path", BOOT_ROOT, "good"],
@@ -1435,31 +1436,6 @@ fn parse_efi_entry(bytes: &[u8]) -> Result<String> {
     } else {
         format!("{entry}.efi")
     })
-}
-
-fn with_writable_boot<T>(
-    tools: &BootPlatformTools,
-    effect: impl FnOnce() -> Result<T>,
-) -> Result<T> {
-    run(
-        &tools.mount,
-        &["-o", "remount,rw", BOOT_ROOT],
-        "remounting boot storage writable",
-    )?;
-    let result = effect();
-    let read_only = run(
-        &tools.mount,
-        &["-o", "remount,ro", BOOT_ROOT],
-        "remounting boot storage read-only",
-    );
-    match (result, read_only) {
-        (Ok(value), Ok(())) => Ok(value),
-        (Err(error), Ok(())) => Err(error),
-        (Ok(_), Err(error)) => Err(error),
-        (Err(effect), Err(remount)) => {
-            Err(effect.context(format!("also failed to restore boot storage: {remount:#}")))
-        }
-    }
 }
 
 fn run(executable: &Path, arguments: &[&str], action: &str) -> Result<()> {

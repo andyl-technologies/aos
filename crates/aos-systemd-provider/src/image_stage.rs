@@ -18,6 +18,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+use crate::boot_storage::with_writable_boot;
 use crate::executable::validate_store_executable;
 use crate::image_profile::{BOOT_ROOT, IMAGE_PROFILE, candidate_path, private_directory};
 
@@ -354,13 +355,18 @@ fn stage(request: &Request, tools: &Tools) -> Result<Value> {
         &request.initrd_storage_root,
         Path::new(BOOT_ROOT),
     )?;
-    crate::initrd_store::preserve(
-        &tools.nix_store,
-        &journal,
-        &request.retained_initrd_store_roots,
-        &running_inventory,
-        &candidate_inventory,
-    )?;
+    // Boot commit restores the ESP read-only. Publish the capsule through its
+    // checked /boot view without changing the sealed journal mount's access.
+    with_writable_boot(&tools.mount, || {
+        crate::initrd_store::preserve(
+            &tools.nix_store,
+            &journal,
+            &request.retained_initrd_store_roots,
+            &running_inventory,
+            &candidate_inventory,
+        )
+        .context("publishing retained initrd store capsule")
+    })?;
     copy_up::persist(&tools.nix_store, request)?;
     write_block(
         &root_path,

@@ -2,6 +2,8 @@
 
 #[path = "../boot_platform.rs"]
 mod boot_platform;
+#[path = "../boot_storage.rs"]
+mod boot_storage;
 #[path = "../image_profile.rs"]
 mod image_profile;
 

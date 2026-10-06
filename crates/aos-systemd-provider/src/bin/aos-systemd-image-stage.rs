@@ -1,5 +1,7 @@
 //! Runs the retained systemd image staging primitive without boot selection.
 
+#[path = "../boot_storage.rs"]
+mod boot_storage;
 #[path = "../executable.rs"]
 mod executable;
 #[path = "../image_profile.rs"]
