@@ -150,6 +150,7 @@ use crate::{
 };
 
 use super::cbor::{CanonicalCborError, DecodeLimits, Decoder, Encoder};
+use super::spec::encode_resource_profile;
 use super::tree::{
     decode_descriptor, decode_descriptor_for_role, decode_feature, encode_descriptor,
     encode_feature, exact_bytes, semantics,
@@ -713,40 +714,11 @@ fn decode_resource_sublimit(
     Ok(sublimit)
 }
 
-fn encode_resource_profile(encoder: &mut Encoder, profile: &ResourceProfile) {
-    encoder.array(profile.limits().len());
-    for limit in profile.limits() {
-        encoder.array(3);
-        encoder.unsigned(limit.dimension() as u64);
-        encode_parent_limit_value(encoder, limit.value());
-        encode_feature(encoder, limit.enforcement());
-    }
-}
-
 fn decode_resource_profile(
     decoder: &mut Decoder<'_>,
 ) -> Result<ResourceProfile, CanonicalCborError> {
     let limits = decoder.bounded_vec(MAX_EXECUTION_RESOURCE_SETTINGS, decode_parent_limit)?;
     ResourceProfile::new(limits).map_err(|error| semantics("parent resource profile", error))
-}
-
-fn encode_parent_limit_value(encoder: &mut Encoder, value: LimitValue) {
-    match value {
-        LimitValue::Inherited => {
-            encoder.array(1);
-            encoder.unsigned(0);
-        }
-        LimitValue::Bounded(maximum) => {
-            encoder.array(2);
-            encoder.unsigned(1);
-            encoder.unsigned(maximum);
-        }
-        LimitValue::Unlimited(grant) => {
-            encoder.array(2);
-            encoder.unsigned(2);
-            encoder.bytes(grant.as_bytes());
-        }
-    }
 }
 
 fn decode_parent_limit(decoder: &mut Decoder<'_>) -> Result<Limit, CanonicalCborError> {
