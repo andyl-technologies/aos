@@ -179,7 +179,8 @@ use aos_sandbox_broker_session_security::policy_signer_credential::{
     PinnedPolicySignerV1, PolicySignerRoleV1,
 };
 use aos_sandbox_broker_session_security::source_genesis_flight::{
-    RootFirstSourceSuccessorAttemptV2, RootFirstSourceSuccessorRouteV2,
+    RootFirstSourceSuccessorAttemptV2, RootFirstSourceSuccessorRouteV2, RootProjectGenesisAttemptV3,
+    RootProjectSuccessorAttemptV3,
     serve_root_source_genesis_flight_v1, serve_root_source_genesis_recovery_v1,
 };
 use aos_sandbox_broker_session_security::source_signer_exchange::{
@@ -218,6 +219,8 @@ enum HeadRequestMode {
     Lease,
     SourceGenesis,
     SourceFirstSuccessor,
+    SourceProjectGenesis,
+    SourceProjectSuccessor,
     CreateQ04,
     ConsumerReadPreRoot,
     ClosedBinding,
@@ -881,6 +884,24 @@ fn serve_project_admission_recovery_request(
         }
         return Ok(());
     }
+    if matches!(mode, HeadRequestMode::SourceProjectGenesis) {
+        let mut attempt = RootProjectGenesisAttemptV3::new(
+            stream, startup, request, RootFirstSourceSuccessorRouteV2::Historical,
+            controller_uid, controller_gid, controller_uid, source_signer_uid,
+        );
+        let returned = attempt.serve_once();
+        if returned.is_err() { let _first_cause = attempt.first_cause(); std::process::exit(1); }
+        return Ok(());
+    }
+    if matches!(mode, HeadRequestMode::SourceProjectSuccessor) {
+        let mut attempt = RootProjectSuccessorAttemptV3::new(
+            stream, startup, request, RootFirstSourceSuccessorRouteV2::Historical,
+            controller_uid, controller_gid, controller_uid, source_signer_uid,
+        );
+        let returned = attempt.serve_once();
+        if returned.is_err() { let _first_cause = attempt.first_cause(); std::process::exit(1); }
+        return Ok(());
+    }
     if !project_recovery_mode_allowed(mode) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -952,6 +973,8 @@ fn project_recovery_mode_allowed(mode: HeadRequestMode) -> bool {
         mode,
         HeadRequestMode::SourceGenesis
             | HeadRequestMode::SourceFirstSuccessor
+            | HeadRequestMode::SourceProjectGenesis
+            | HeadRequestMode::SourceProjectSuccessor
             | HeadRequestMode::ProjectNegativeIntent
             | HeadRequestMode::ProjectHistoryFloorReplay
             | HeadRequestMode::ProjectHistoryRetirement
@@ -1221,6 +1244,16 @@ fn read_head_request(
         // Complete inert discrimination only. The same accepted original is
         // parked before nonce, startup, Root hold, or new-purpose validation.
         return Ok((request, HeadRequestMode::SourceFirstSuccessor));
+    }
+    if &request[..8] == aos_sandbox::policy_compiler::ROOT_SOURCE_PROJECT_GENESIS_QUERY_MAGIC_V3 {
+        // Complete inert recognition only; the same original is parked before
+        // new-purpose admission, fixed Root opening or Source signer work.
+        return Ok((request, HeadRequestMode::SourceProjectGenesis));
+    }
+    if &request[..8] == aos_sandbox::policy_compiler::ROOT_PROJECT_SOURCE_SUCCESSOR_QUERY_MAGIC_V3 {
+        // Only complete inert discrimination precedes parking the same accepted
+        // stream; this packet selects no detached Root or admission authority.
+        return Ok((request, HeadRequestMode::SourceProjectSuccessor));
     }
     if &request[..8] == aos_sandbox::policy_compiler::GIT_COVERAGE_ROOT_BOOTSTRAP_MAGIC_V1 {
         // Inert complete recognition only. The selected owner parks this same
@@ -1551,6 +1584,24 @@ fn serve_current_head(
             let _first_cause = attempt.first_cause();
             std::process::exit(1);
         }
+        return Ok(());
+    }
+    if matches!(mode, HeadRequestMode::SourceProjectGenesis) {
+        let mut attempt = RootProjectGenesisAttemptV3::new(
+            stream, startup, request, RootFirstSourceSuccessorRouteV2::Current,
+            controller_uid, controller_gid, controller_uid, source_signer_uid,
+        );
+        let returned = attempt.serve_once();
+        if returned.is_err() { let _first_cause = attempt.first_cause(); std::process::exit(1); }
+        return Ok(());
+    }
+    if matches!(mode, HeadRequestMode::SourceProjectSuccessor) {
+        let mut attempt = RootProjectSuccessorAttemptV3::new(
+            stream, startup, request, RootFirstSourceSuccessorRouteV2::Current,
+            controller_uid, controller_gid, controller_uid, source_signer_uid,
+        );
+        let returned = attempt.serve_once();
+        if returned.is_err() { let _first_cause = attempt.first_cause(); std::process::exit(1); }
         return Ok(());
     }
     if matches!(mode, HeadRequestMode::GitEvidenceView) {

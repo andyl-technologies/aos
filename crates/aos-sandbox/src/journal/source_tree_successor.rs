@@ -59,6 +59,9 @@ pub(crate) enum FirstSourceSuccessorNativePhaseV2 {
     MixedSourceAck,
     MixedRootPrepared,
     MixedRootAnchor,
+    MixedControllerBegin,
+    MixedControllerAnchored,
+    MixedControllerComplete,
 }
 
 impl FirstSourceSuccessorNativePhaseV2 {
@@ -70,12 +73,15 @@ impl FirstSourceSuccessorNativePhaseV2 {
             Self::MixedSourceAck => Self::SourceAck,
             Self::MixedRootPrepared => Self::RootPrepared,
             Self::MixedRootAnchor => Self::RootAnchor,
+            Self::MixedControllerBegin => Self::ControllerBegin,
+            Self::MixedControllerAnchored => Self::ControllerAnchored,
+            Self::MixedControllerComplete => Self::ControllerComplete,
             ordinary => ordinary,
         }
     }
 
     pub(super) const fn has_capacity_records(self) -> bool {
-        !matches!(self, Self::ControllerAnchored)
+        !matches!(self.canonical(), Self::ControllerAnchored)
     }
 
     pub(super) const fn source_genesis_transition(
@@ -99,6 +105,19 @@ impl FirstSourceSuccessorNativePhaseV2 {
             Self::ControllerComplete => Some(Transition::Complete),
             _ => None,
         }
+    }
+
+    pub(super) fn controller_transition_for(
+        self, transaction: &JournalTransaction,
+    ) -> Result<Option<super::controller_source_successor_issuance::Transition>, JournalError> {
+        if matches!(self, Self::MixedControllerBegin | Self::MixedControllerAnchored | Self::MixedControllerComplete) {
+            let actual = super::controller_source_successor_issuance::recognize_replayed_transition(transaction)?
+                .ok_or(JournalError::ProtectedBoundary)?;
+            if Some(actual.canonical()) != self.controller_transition()
+            { return Err(JournalError::ProtectedBoundary); }
+            return Ok(Some(actual));
+        }
+        Ok(self.controller_transition())
     }
 }
 
@@ -144,11 +163,113 @@ pub(crate) enum SourceSuccessorFamilyRecipeV3 {
     MixedProjectsV3 { selected: Option<ProjectId> },
 }
 
+/// Selects an initial-project comparison without changing any durable phase byte.
+#[derive(Clone, Copy)]
+pub(super) enum ProjectGenesisNativePhaseV3 {
+    SourceAppend(ProjectId),
+    SourceAck(ProjectId),
+    RootPrepared(ProjectId),
+    RootAnchor(ProjectId),
+    ControllerFloorAck(ProjectId),
+    ControllerComplete(ProjectId),
+}
+
+impl ProjectGenesisNativePhaseV3 {
+    pub(super) const fn project(self) -> ProjectId {
+        match self {
+            Self::SourceAppend(project) | Self::SourceAck(project)
+            | Self::RootPrepared(project) | Self::RootAnchor(project)
+            | Self::ControllerFloorAck(project) | Self::ControllerComplete(project) => project,
+        }
+    }
+}
+
+pub(super) enum ProjectGenesisNativeCutV3<'cut> {
+    #[cfg(target_os = "linux")]
+    SourcePrepared(&'cut crate::policy_compiler::HeldRootSourceProjectGenesisIntentV3<'cut>),
+    #[cfg(target_os = "linux")]
+    SourceAnchored(&'cut crate::policy_compiler::RootSourceProjectGenesisFloorProofV3<'cut>),
+    RootServer { original: &'cut aos_sandbox_core::RawPairedClockSample, deadline: std::time::Instant },
+}
+
+// Only actual selected owners supply these loans. No replay, preview, scalar
+// project or decoded archive can construct a positive original crossing.
+#[cfg(target_os = "linux")]
+pub(crate) enum FirstSuccessorNativeCutV3<'loan, 'owner> {
+    ControllerBegin(&'loan crate::policy_compiler::HeldControllerFirstSourceSuccessorV2<'owner>),
+    SourcePrepared(crate::policy_compiler::RootSuccessorIntentViewV3<'loan, 'owner>),
+    Settled(crate::policy_compiler::RootSuccessorFloorViewV3<'loan, 'owner>),
+    RootServer(crate::policy_compiler::RootSuccessorNativeServerCutV3<'loan>),
+}
+
+#[cfg(target_os = "linux")]
+impl FirstSuccessorNativeCutV3<'_, '_> {
+    pub(super) fn final_crossing(
+        &self, journal: &mut Journal, transaction: &JournalTransaction,
+        phase: FirstSourceSuccessorNativePhaseV2,
+    ) -> Result<(), crate::hierarchy::genesis_profile::SourceGenesisErrorV1> {
+        use FirstSourceSuccessorNativePhaseV2 as Phase;
+        use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
+
+        match (self, phase) {
+            (Self::ControllerBegin(controller), Phase::MixedControllerBegin) => {
+                controller.native_begin_crossing_v3(journal)
+            }
+            (Self::SourcePrepared(root), Phase::MixedSourceAppend) => {
+                root.recheck()?;
+                root.current_admission_clock().map(|_| ())
+            }
+            (Self::Settled(root), Phase::MixedSourceAck | Phase::MixedControllerAnchored | Phase::MixedControllerComplete) => {
+                root.recheck()?;
+                root.observe_original_clock().map(|_| ())
+            }
+            (Self::RootServer(root), Phase::MixedRootPrepared | Phase::MixedRootAnchor) => {
+                root.final_crossing(journal, transaction, phase)
+            }
+            _ => Err(SourceGenesisErrorV1::Conflict),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl ProjectGenesisNativeCutV3<'_> {
+    pub(super) fn final_crossing(&self, admission_expiry: Option<i64>) -> Result<(), crate::hierarchy::genesis_profile::SourceGenesisErrorV1> {
+        match self {
+            Self::SourcePrepared(root) => root.native_crossing_clock_v3(),
+            Self::SourceAnchored(root) => root.native_crossing_clock_v3(),
+            Self::RootServer { original, deadline } => {
+                let current = crate::policy_compiler::observe_root_first_source_successor_clock_v2(Some(**original))?;
+                if admission_expiry.is_some_and(|expiry| current.wall_seconds() >= expiry) {
+                    return Err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::AdmissionClosed);
+                }
+                if std::time::Instant::now() >= *deadline {
+                    return Err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::Stale);
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 pub(crate) fn current_project_rows_v3(
     state: &State,
     selected: Option<ProjectId>,
 ) -> Result<SourceFirstSuccessorRowsV2, JournalError> {
     current_rows_with_recipe(state, SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected })
+}
+
+pub(crate) fn current_project_genesis_rows_v3(
+    state: &State,
+    selected: ProjectId,
+) -> Result<SourceFirstSuccessorRowsV2, JournalError> {
+    if selected.as_bytes() == &[0; 16] {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    current_rows_with_genesis_selection(
+        state,
+        SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected: None },
+        Some(selected),
+    )
 }
 
 // Cold replay selects only comparison DATA from the actual canonical pending
@@ -164,12 +285,26 @@ fn replay_rows(state: &State) -> Result<SourceFirstSuccessorRowsV2, JournalError
         .map(|bytes| SourceFirstSuccessorPendingV2::decode(bytes)
             .map(|pending| pending.project()).map_err(|_| JournalError::ProtectedBoundary))
         .transpose()?;
+    if let Some(pending) = super::source_tree_genesis::current_rows(state)?.pending {
+        if selected.is_some() {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        return current_project_genesis_rows_v3(state, pending.project);
+    }
     current_project_rows_v3(state, selected)
 }
 
 fn current_rows_with_recipe(
     state: &State,
     recipe: SourceSuccessorFamilyRecipeV3,
+) -> Result<SourceFirstSuccessorRowsV2, JournalError> {
+    current_rows_with_genesis_selection(state, recipe, None)
+}
+
+fn current_rows_with_genesis_selection(
+    state: &State,
+    recipe: SourceSuccessorFamilyRecipeV3,
+    genesis_selection: Option<ProjectId>,
 ) -> Result<SourceFirstSuccessorRowsV2, JournalError> {
     let mut rows = SourceFirstSuccessorRowsV2 {
         receipts: BTreeMap::new(),
@@ -286,9 +421,14 @@ fn current_rows_with_recipe(
         }) {
             return Err(JournalError::ProtectedBoundary);
         }
-        crate::hierarchy::validate_source_project_continuation_members_v3(
-            state, &rows.receipts, None,
-        )?;
+        match genesis_selection {
+            Some(project) => crate::hierarchy::validate_source_project_genesis_members_v3(
+                state, &rows.receipts, project,
+            )?,
+            None => crate::hierarchy::validate_source_project_continuation_members_v3(
+                state, &rows.receipts, None,
+            )?,
+        }
     }
     Ok(rows)
 }
@@ -411,7 +551,25 @@ fn require_replayed_transition(
     )?;
     #[cfg(not(target_os = "linux"))]
     let root_settling = validate_root_transition(state, transaction, phase)?;
-    let source_settling = if matches!(phase, Some(FirstSourceSuccessorNativePhaseV2::MixedSourceAppend
+    let genesis_selection = if phase.is_none()
+        && state.keys().any(|(_, key)| key.starts_with(RECEIPT_PREFIX))
+    {
+        match super::source_tree_genesis::recognize_replayed_transition(transaction)? {
+            super::source_tree_genesis::SourceGenesisTransitionV1::Append => {
+                let receipt = crate::hierarchy::SourceTreeGenesisReceiptV1::decode(
+                    required_value(transaction.records().get(2).ok_or(JournalError::ProtectedBoundary)?)?,
+                ).map_err(|_| JournalError::ProtectedBoundary)?;
+                Some(receipt.project())
+            }
+            _ => super::source_tree_genesis::current_rows(state)?.pending.map(|pending| pending.project),
+        }
+    } else {
+        None
+    };
+    let source_settling = if let Some(project) = genesis_selection {
+        require_project_genesis_transition_v3(state, transaction, project)?;
+        None
+    } else if matches!(phase, Some(FirstSourceSuccessorNativePhaseV2::MixedSourceAppend
         | FirstSourceSuccessorNativePhaseV2::MixedSourceAck))
     {
         require_source_transition(state, transaction, phase)?
@@ -432,6 +590,124 @@ fn require_replayed_transition(
     Ok(root_settling.or(source_settling).or(controller_settling))
 }
 
+// The canonical genesis reducer still owns the exact four/two-record shape.
+// This comparison adds all settled foreign successor members and preserves
+// their bytes before and after the selected initial-project transition.
+pub(super) fn require_project_genesis_transition_v3(
+    state: &State,
+    transaction: &JournalTransaction,
+    project: ProjectId,
+) -> Result<(), JournalError> {
+    let before = current_project_genesis_rows_v3(state, project)?;
+    if before.pending.is_some() {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    let transition = super::source_tree_genesis::recognize_replayed_transition(transaction)?;
+    match transition {
+        super::source_tree_genesis::SourceGenesisTransitionV1::Append => {
+            let receipt = crate::hierarchy::SourceTreeGenesisReceiptV1::decode(
+                required_value(transaction.records().get(2).ok_or(JournalError::ProtectedBoundary)?)?,
+            ).map_err(|_| JournalError::ProtectedBoundary)?;
+            if receipt.project() != project {
+                return Err(JournalError::ProtectedBoundary);
+            }
+        }
+        super::source_tree_genesis::SourceGenesisTransitionV1::Anchor => {
+            if super::source_tree_genesis::current_rows(state)?.pending
+                .is_none_or(|pending| pending.project != project)
+            {
+                return Err(JournalError::ProtectedBoundary);
+            }
+        }
+        _ => return Err(JournalError::ProtectedBoundary),
+    }
+    super::source_tree_genesis::require_no_mutation(state, transaction, transition)?;
+    let after = super::root_original_inventory::materialize(state, transaction);
+    let next = current_project_genesis_rows_v3(&after, project)?;
+    if next != before {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    Ok(())
+}
+
+pub(super) fn require_project_genesis_family_v3(
+    state: &State,
+    transaction: &JournalTransaction,
+    phase: ProjectGenesisNativePhaseV3,
+) -> Result<(), JournalError> {
+    let project = phase.project();
+    match phase {
+        ProjectGenesisNativePhaseV3::SourceAppend(_) | ProjectGenesisNativePhaseV3::SourceAck(_) => {
+            require_project_genesis_transition_v3(state, transaction, project)?;
+        }
+        ProjectGenesisNativePhaseV3::RootPrepared(_) | ProjectGenesisNativePhaseV3::RootAnchor(_) => {
+            #[cfg(target_os = "linux")]
+            crate::policy_compiler::RootSourceGenesisAuthorityV1::validate_project_successor_transition_v3(
+                state, transaction, None,
+            )?;
+            #[cfg(not(target_os = "linux"))]
+            return Err(JournalError::ProtectedBoundary);
+            let expected_prefix = match phase {
+                ProjectGenesisNativePhaseV3::RootPrepared(_) => b"\0aos-source-genesis-intent-v1\0".as_slice(),
+                _ => b"\0aos-source-hierarchy-floor-v1\0".as_slice(),
+            };
+            let first = transaction.records().first().ok_or(JournalError::ProtectedBoundary)?;
+            if first.namespace() != RecordNamespace::DesiredState
+                || first.key() != [expected_prefix, project.as_bytes()].concat()
+                || first.value().is_none()
+            {
+                return Err(JournalError::ProtectedBoundary);
+            }
+        }
+        ProjectGenesisNativePhaseV3::ControllerFloorAck(_) | ProjectGenesisNativePhaseV3::ControllerComplete(_) => {
+            use super::controller_source_genesis::ControllerSourceGenesisTransition as Transition;
+            let transition = match phase {
+                ProjectGenesisNativePhaseV3::ControllerFloorAck(_) => Transition::FloorAck,
+                _ => Transition::Complete,
+            };
+            super::controller_source_genesis::require_no_mutation(state, transaction, transition)?;
+            let rows = super::controller_source_genesis::all_rows(state)?
+                .remove(&project).ok_or(JournalError::ProtectedBoundary)?;
+            let expected = match phase {
+                ProjectGenesisNativePhaseV3::ControllerFloorAck(_) => {
+                    let record = transaction.records().first().ok_or(JournalError::ProtectedBoundary)?;
+                    let value: &[u8; 144] = required_value(record)?.try_into().map_err(|_| JournalError::ProtectedBoundary)?;
+                    if digest_at(value, 16)? != rows.acceptance.digest() { return Err(JournalError::ProtectedBoundary); }
+                    super::controller_source_genesis::ack_transaction(project, value)?
+                }
+                _ => {
+                    let record = transaction.records().first().ok_or(JournalError::ProtectedBoundary)?;
+                    let value: &[u8; 144] = required_value(record)?.try_into().map_err(|_| JournalError::ProtectedBoundary)?;
+                    super::controller_source_genesis::complete_transaction(project, value)?
+                }
+            };
+            if transaction != &expected { return Err(JournalError::ProtectedBoundary); }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn require_project_genesis_native_owner_v3(
+    journal: &Journal,
+    phase: ProjectGenesisNativePhaseV3,
+) -> Result<(), JournalError> {
+    match phase {
+        ProjectGenesisNativePhaseV3::SourceAppend(_) | ProjectGenesisNativePhaseV3::SourceAck(_) => {
+            require_capacity_owner(journal, GlobalCapacityReservationPurposeV1::SourceFirstSourceSuccessorAck)
+        }
+        ProjectGenesisNativePhaseV3::RootPrepared(_) | ProjectGenesisNativePhaseV3::RootAnchor(_) => {
+            #[cfg(target_os = "linux")]
+            { crate::policy_compiler::require_root_source_genesis_capacity_owner_v1(journal) }
+            #[cfg(not(target_os = "linux"))]
+            { Err(JournalError::ProtectedBoundary) }
+        }
+        ProjectGenesisNativePhaseV3::ControllerFloorAck(_) | ProjectGenesisNativePhaseV3::ControllerComplete(_) => {
+            crate::hierarchy::controller_genesis::require_controller(journal, journal.protected_owner_uid()?)
+                .map_err(|_| JournalError::ProtectedBoundary)
+        }
+    }
+}
+
 fn require_source_transition(
     state: &State,
     transaction: &JournalTransaction,
@@ -450,6 +726,11 @@ fn require_source_transition(
                     .ok_or(JournalError::ProtectedBoundary)?,
             ).map_err(|_| JournalError::ProtectedBoundary)?;
             SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected: Some(pending.project()) }
+        }
+        Some(FirstSourceSuccessorNativePhaseV2::MixedControllerBegin
+            | FirstSourceSuccessorNativePhaseV2::MixedControllerAnchored
+            | FirstSourceSuccessorNativePhaseV2::MixedControllerComplete) => {
+            SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected: None }
         }
         _ => SourceSuccessorFamilyRecipeV3::SingleProjectV2,
     };
@@ -785,6 +1066,9 @@ pub(super) fn recognize_replayed_phase(
             super::controller_source_successor_issuance::Transition::Begin => Some(FirstSourceSuccessorNativePhaseV2::ControllerBegin),
             super::controller_source_successor_issuance::Transition::Anchored => Some(FirstSourceSuccessorNativePhaseV2::ControllerAnchored),
             super::controller_source_successor_issuance::Transition::Complete => Some(FirstSourceSuccessorNativePhaseV2::ControllerComplete),
+            super::controller_source_successor_issuance::Transition::ProjectBegin(_) => Some(FirstSourceSuccessorNativePhaseV2::MixedControllerBegin),
+            super::controller_source_successor_issuance::Transition::ProjectAnchored(_) => Some(FirstSourceSuccessorNativePhaseV2::MixedControllerAnchored),
+            super::controller_source_successor_issuance::Transition::ProjectComplete(_) => Some(FirstSourceSuccessorNativePhaseV2::MixedControllerComplete),
             _ => None,
         };
         if phase.is_some() && selected.is_some() { return Err(JournalError::ProtectedBoundary); }
@@ -1098,6 +1382,14 @@ impl Journal {
         current_project_rows_v3(&self.state, selected)
     }
 
+    pub(crate) fn source_project_genesis_rows_v3(
+        &self,
+        selected: ProjectId,
+    ) -> Result<SourceFirstSuccessorRowsV2, JournalError> {
+        self.ensure_healthy()?;
+        current_project_genesis_rows_v3(&self.state, selected)
+    }
+
     /// Appends one exact native phase under its fixed genuine writer.
     ///
     /// # Errors
@@ -1126,6 +1418,28 @@ impl Journal {
             #[cfg(target_os = "linux")]
             None,
             Some(phase),
+        )
+    }
+
+    /// Appends a selected phase with its genuine original final crossing loan.
+    ///
+    /// # Errors
+    /// Rejects mismatched owner/phase, failed original cut or native bounds.
+    /// The ordinary phase-only entry and all DATA previews remain unchanged.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn commit_selected_source_successor_v3(
+        &mut self, transaction: &JournalTransaction,
+        phase: FirstSourceSuccessorNativePhaseV2,
+        original: FirstSuccessorNativeCutV3<'_, '_>,
+    ) -> Result<CommitResult, JournalError> {
+        self.commit_with_project_genesis_transition_v3(
+            transaction, None, phase.has_capacity_records(), false, false, false, false,
+            super::SourceProjectAdmissionTransition::None,
+            super::controller_source_genesis::ControllerSourceGenesisTransition::None,
+            super::source_tree_genesis::SourceGenesisTransitionV1::None,
+            super::RootSourceGenesisTransitionV1::None, None,
+            CacheMutationGateV1::Ordinary, None, None, Some(phase),
+            Some(super::ProjectNativeTransitionV3::FirstSuccessor(original)),
         )
     }
 

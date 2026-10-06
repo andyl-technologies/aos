@@ -347,6 +347,19 @@ pub struct NodeController<C, E> {
     reconciler: Reconciler<E>,
 }
 
+/// Selects only an installed configured-project comparison recipe.
+///
+/// The actual pair and complete retained Controller histories select this
+/// routing DATA; neither variant creates a Source owner or Root admission.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConfiguredProjectStartupSelectionV3 {
+    /// Preserves the same-global or absent ordinary startup recipe.
+    Ordinary,
+    /// Selects genuine configured B beside a different global predecessor.
+    MixedProject,
+}
+
 /// Composes real injected controller and public-client dependencies without activation.
 ///
 /// Construction registers no RPC service, opens no socket, and grants no
@@ -3073,6 +3086,93 @@ where
             .coordinate_provisioned_source_genesis_v1(input, profile)
     }
 
+    /// Completes approval-free configured initial B genesis through genuine owners.
+    ///
+    /// This internal selector produces no public Create/Delete admission.
+    ///
+    /// # Errors
+    /// Returns the whole failed original loan, retained until worker termination.
+    #[cfg(target_os = "linux")]
+    pub fn coordinate_configured_project_genesis_v3<'writers, 'profile>(
+        &'writers mut self,
+        input: &'writers crate::hierarchy::controller_genesis_input::ProvisionedControllerSourceGenesisInputV1,
+        profile: &'profile crate::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<ObjectDigest, crate::policy_compiler::FailedConfiguredProjectGenesisInvocationV3<'writers, 'profile>> {
+        self.reconciler.coordinate_configured_project_genesis_v3(input, profile)
+    }
+
+    /// Compares the genuine configured pair with all retained issuance families.
+    ///
+    /// # Errors
+    /// Rejects changed actual pair custody, malformed complete histories or an
+    /// unjoined configured acceptance. This method admits no native mutation.
+    #[cfg(target_os = "linux")]
+    pub fn configured_project_startup_selection_v3(
+        &mut self, input: &crate::hierarchy::controller_genesis_input::ProvisionedControllerSourceGenesisInputV1,
+    ) -> Result<ConfiguredProjectStartupSelectionV3, crate::hierarchy::controller_genesis_input::ControllerSourceGenesisInputErrorV1> {
+        let journal = self.reconciler.journal_mut();
+        input.recheck()?;
+        let selected = crate::journal::controller_source_successor_issuance::retained_project_v3(journal, input.project())
+            .map_err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::from)?;
+        let global = crate::journal::controller_source_successor_issuance::retained(journal)
+            .map_err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::from)?;
+        let different_global = global.as_ref().map(|saved| saved.packet.intent())
+            .transpose()?.is_some_and(|intent| intent.project() != input.project());
+        if selected.is_some() || different_global {
+            input.has_retained_attempt(journal)?;
+            input.recheck()?;
+            Ok(ConfiguredProjectStartupSelectionV3::MixedProject)
+        } else {
+            Ok(ConfiguredProjectStartupSelectionV3::Ordinary)
+        }
+    }
+
+    /// Selects actual project history DATA after authentic configured-pair checks.
+    ///
+    /// # Errors
+    /// Rejects changed pair custody, malformed whole histories or foreign rows.
+    #[cfg(target_os = "linux")]
+    pub fn retained_project_successor_selection_v3(
+        &mut self, input: &crate::hierarchy::controller_genesis_input::ProvisionedControllerSourceGenesisInputV1,
+    ) -> Result<crate::policy_compiler::FirstSourceSuccessorSelectionV2, crate::hierarchy::controller_genesis_input::ControllerSourceGenesisInputErrorV1> {
+        input.recheck()?;
+        let journal = self.reconciler.journal_mut();
+        input.has_retained_attempt(journal)?;
+        let selected = crate::journal::controller_source_successor_issuance::retained_project_v3(journal, input.project())
+            .map_err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::from)?;
+        input.recheck()?;
+        Ok(if selected.is_some() {
+            crate::policy_compiler::FirstSourceSuccessorSelectionV2::Selected
+        } else {
+            crate::policy_compiler::FirstSourceSuccessorSelectionV2::Absent
+        })
+    }
+
+    /// Coordinates actual selected B history using independently held originals.
+    ///
+    /// # Errors
+    /// Returns the whole failed original writer loan for deliberate termination.
+    #[cfg(target_os = "linux")]
+    pub fn coordinate_project_successor_v3<'writers, 'profile>(
+        &'writers mut self, profile: &'profile crate::normal_root::ProductionControllerNormalRootProfileV1,
+        project: aos_sandbox_core::ProjectId,
+    ) -> Result<Option<ObjectDigest>, crate::policy_compiler::FailedProjectSuccessorInvocationV3<'writers, 'profile>> {
+        self.reconciler.coordinate_project_successor_v3(profile, project)
+    }
+
+    /// Finishes global A with its exact keys before parking the configured B loan.
+    ///
+    /// # Errors
+    /// Returns the resident failure; the genuine pair never substitutes A's floor.
+    #[cfg(target_os = "linux")]
+    pub fn coordinate_predecessor_successor_v3<'writers, 'profile>(
+        &'writers mut self,
+        input: &'writers crate::hierarchy::controller_genesis_input::ProvisionedControllerSourceGenesisInputV1,
+        profile: &'profile crate::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<Option<ObjectDigest>, crate::policy_compiler::FailedProjectSuccessorInvocationV3<'writers, 'profile>> {
+        self.reconciler.coordinate_predecessor_successor_v3(input, profile)
+    }
+
     /// Selects only the project of the actual retained singleton obligation.
     ///
     /// This read-only projection supplies no currentness or mutation permit.
@@ -3135,6 +3235,18 @@ where
         crate::policy_compiler::FailedOriginalSourceSuccessorInvocationV2<'writers, 'profile, 'credentials>,
     > {
         self.reconciler.issue_source_successor_v2(profile, credentials)
+    }
+
+    /// Issues a configured project's approval over fresh genuine originals.
+    ///
+    /// # Errors
+    /// Retains an incomplete original issuer through deliberate termination.
+    #[cfg(target_os = "linux")]
+    pub fn issue_project_source_successor_v3<'writers, 'profile, 'credentials>(
+        &'writers mut self, profile: &'profile crate::normal_root::ProductionControllerNormalRootProfileV1,
+        credentials: &'credentials mut crate::normal_root::SourceSuccessorCredentialCustodyV2<'profile>,
+    ) -> Result<crate::hierarchy::source_successor::SourceSuccessorApprovalDataV2, crate::policy_compiler::FailedSourceProjectSuccessorInvocationV3<'writers, 'profile, 'credentials>> {
+        self.reconciler.issue_project_source_successor_v3(profile, credentials)
     }
 
     /// Borrows partition-local project Cache quantities from the actual executor.

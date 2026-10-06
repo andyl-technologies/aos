@@ -84,6 +84,29 @@ pub(in crate::policy_compiler) fn consume_completed_gen1_ancestry_v1(
     .consume()
 }
 
+pub(in crate::policy_compiler) fn consume_completed_project_genesis_ancestry_v3(
+    controller: &HeldControllerSourceGenesisV1<'_>,
+    source: &crate::hierarchy::source_genesis::HeldSourceProjectGenesisObservationV3<'_>,
+    inventory: &RetainedTreeInventoryDataV1<'_>,
+    root: &crate::policy_compiler::source_genesis_root::CompletedRootSourceProjectGenesisFloorV3<'_, '_>,
+) -> Result<(), SourceGenesisErrorV1> {
+    root.recheck()?;
+    source.require_retained_inventory_v3(inventory)?;
+    controller.recheck_completed_project_genesis_v3(source)?;
+    let floor = root.floor();
+    if floor.semantic_revision() != 1 || floor.predecessor().is_some()
+        || source.source_uid() != root.source_uid() || source.project() != floor.project()
+        || controller.acceptance().project() != floor.project()
+        || source.receipt() != Some(floor.receipt()) || source.ack_floor_digest() != Some(floor.digest())
+    { return Err(SourceGenesisErrorV1::Conflict); }
+    let (tree, tree_head, lineage_head) = inventory.trees()?
+        .find(|(tree, _, _)| tree.project() == floor.project()).ok_or(SourceGenesisErrorV1::Conflict)?;
+    require_empty_gen1_tree(tree, tree_head, lineage_head, floor.project(), floor.tree_head(), floor.lineage_head())?;
+    controller.recheck_completed_project_genesis_v3(source)?;
+    source.require_retained_inventory_v3(inventory)?;
+    root.recheck()
+}
+
 // DATA shape checks are shared with the unrun vectors; success alone cannot
 // construct the owner-borrowing loan or substitute for the completion join.
 fn require_empty_gen1_tree(

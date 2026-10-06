@@ -149,6 +149,84 @@ pub fn sign_fixed_source_tree_genesis_readback_v2(
     })
 }
 
+/// Signs the selected approval-free genesis purpose from the same fixed reader.
+///
+/// # Errors
+/// Rejects substituted UID/context, malformed challenge, incomplete foreign
+/// families, a foreign pending project, changed names or watermark, and signing.
+/// The context is comparison DATA; genuine Root and Controller admission is separate.
+#[cfg(target_os = "linux")]
+pub fn sign_fixed_source_project_genesis_readback_v3(
+    expected_controller_uid: u32,
+    challenge: super::source_genesis_readback::SourceProjectGenesisChallengeV3,
+    context: &SourceTreeGenesisIntentContextV1,
+    signer_generation: u64,
+    signing_key: &SigningKey,
+) -> Result<[u8; super::source_genesis_readback::SOURCE_PROJECT_GENESIS_READBACK_BYTES_V3], SourceSignerReadbackErrorV1> {
+    if expected_controller_uid == 0 || context.source_uid() != expected_controller_uid
+        || context.project() != challenge.project()
+        || signer_generation == 0
+    {
+        return Err(SourceHoldReadbackErrorV1::NonCanonical.into());
+    }
+    with_source_signer_journal_view(expected_controller_uid, |readback| {
+        let names = readback.physical_names_v1();
+        let sequence = readback.journal_mut().snapshot_sequence();
+        let returned = sign_project_genesis_from_view_v3(
+            readback, challenge, context, signer_generation, signing_key,
+        );
+        let name_post = readback.check_named_currentness().map_err(SourceSignerReadbackErrorV1::from);
+        let watermark_post = if readback.physical_names_v1() == names
+            && readback.journal_mut().snapshot_sequence() == sequence
+        { Ok(()) } else { Err(SourceSignerReadbackErrorV1::Stale) };
+        // Original signing/native failure remains resident while both independent
+        // posts run. The inherited outer view-helper prefix boundary is unchanged.
+        match returned {
+            Err(error) => Err(error),
+            Ok(packet) => { name_post?; watermark_post.map(|()| packet) }
+        }
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn sign_project_genesis_from_view_v3(
+    readback: &mut ReadOnlyProtectedJournal,
+    challenge: super::source_genesis_readback::SourceProjectGenesisChallengeV3,
+    context: &SourceTreeGenesisIntentContextV1,
+    signer_generation: u64,
+    signing_key: &SigningKey,
+) -> Result<[u8; super::source_genesis_readback::SOURCE_PROJECT_GENESIS_READBACK_BYTES_V3], SourceSignerReadbackErrorV1> {
+    let project = challenge.project();
+    let journal = readback.journal_mut();
+    journal.source_project_genesis_rows_v3(project)?;
+    let rows = journal.source_tree_genesis_rows_v1()?;
+    let receipt = rows.receipts.get(&project);
+    if rows.receipts.is_empty()
+        || receipt.map(|receipt| receipt.intent_digest()) != challenge.intent()
+        || rows.pending.as_ref().is_some_and(|pending| pending.project != project)
+    {
+        return Err(SourceSignerReadbackErrorV1::Stale);
+    }
+    let instance = rows.receipts.values().next().ok_or(SourceSignerReadbackErrorV1::Stale)?.instance();
+    let names = readback.physical_names_v1();
+    if rows.pending.as_ref().is_some_and(|pending| pending.names != names) {
+        return Err(SourceSignerReadbackErrorV1::Stale);
+    }
+    if let Some(receipt) = receipt {
+        context.require_actual_receipt(receipt, rows.pending.as_ref())
+            .map_err(|_| SourceSignerReadbackErrorV1::Stale)?;
+        if let Some(ack) = rows.acks.get(&project) {
+            context.require_actual_ack(receipt, ack.root_floor)
+                .map_err(|_| SourceSignerReadbackErrorV1::Stale)?;
+        }
+    }
+    let ack = rows.acks.get(&project).map(|ack| (ack.root_floor, ack.digest()));
+    super::source_genesis_readback::sign_source_project_genesis_fields_v3(
+        challenge, names, readback.journal_mut().snapshot_sequence(), receipt, ack,
+        instance, signer_generation, signing_key,
+    ).map_err(Into::into)
+}
+
 /// Reuses actual read-only replay; no fixture or supplied receipt can mint it.
 pub(super) fn sign_genesis_readback_from_view(
     readback: &mut ReadOnlyProtectedJournal,

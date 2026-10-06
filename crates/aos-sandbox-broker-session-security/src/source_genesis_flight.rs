@@ -49,10 +49,90 @@ struct RootFirstSourceSuccessorIoV2 {
     incoming: Vec<u8>,
     outgoing: Vec<u8>,
     native: Option<Result<usize, io::Error>>,
+    terminal_native: Option<io::Error>,
     timeouts: Vec<Result<(), io::Error>>,
     posts: Vec<Result<(), SourceGenesisErrorV1>>,
     clock_posts: Vec<Option<Result<aos_sandbox_core::RawPairedClockSample, SourceGenesisErrorV1>>>,
     decoded: Option<Result<(), SourceGenesisErrorV1>>,
+    selected_failure: Option<SelectedRootIoFailureV3>,
+}
+
+#[derive(Clone, Copy)]
+enum SelectedRootIoFailureV3 { Native, Zero, Timeout(usize), Decode, Owner(usize), Clock(usize) }
+
+enum RootPostSiteV3<'site> {
+    Io(&'site mut Option<SelectedRootIoFailureV3>),
+    Project(&'site mut Option<RootProjectGenesisAttemptSiteV3>),
+    Successor(&'site mut Option<RootProjectSuccessorSiteV3>),
+}
+
+impl RootPostSiteV3<'_> {
+    fn owner(&mut self, index: usize, failed: bool) {
+        if !failed { return; }
+        match self {
+            Self::Io(site) => { site.get_or_insert(SelectedRootIoFailureV3::Owner(index)); }
+            Self::Project(site) => { site.get_or_insert(RootProjectGenesisAttemptSiteV3::Owner(index)); }
+            Self::Successor(site) => { site.get_or_insert(RootProjectSuccessorSiteV3::Owner(index)); }
+        }
+    }
+
+    fn clock(&mut self, index: usize, failed: bool) {
+        if !failed { return; }
+        match self {
+            Self::Io(site) => { site.get_or_insert(SelectedRootIoFailureV3::Clock(index)); }
+            Self::Project(site) => { site.get_or_insert(RootProjectGenesisAttemptSiteV3::PostClock(index)); }
+            Self::Successor(site) => { site.get_or_insert(RootProjectSuccessorSiteV3::PostClock(index)); }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RootFrameRecipeV3 {
+    FirstSuccessor(RootFirstSourceSuccessorFrameKindV2),
+    ProjectSuccessor(RootFirstSourceSuccessorFrameKindV2),
+    ProjectGenesis(RootSourceGenesisFrameKindV1),
+}
+
+impl RootFrameRecipeV3 {
+    fn payload_bytes(self) -> usize {
+        match self { Self::FirstSuccessor(phase) | Self::ProjectSuccessor(phase) => phase.payload_bytes(), Self::ProjectGenesis(phase) => phase.payload_bytes() }
+    }
+
+    fn selected(self) -> bool { !matches!(self, Self::FirstSuccessor(_)) }
+}
+
+#[derive(Clone, Copy)]
+enum RootSuccessorRecipeV3 { StrictV2, MixedV3 }
+
+#[derive(Clone, Copy)]
+enum RootProjectSuccessorSiteV3 {
+    Clock, Opening, Context, Source(usize), Prepared, Anchored, Io(usize),
+    Owner(usize), PostClock(usize), Returned,
+}
+
+fn latch_project_successor_v3(
+    recipe: RootSuccessorRecipeV3, first: &mut Option<RootProjectSuccessorSiteV3>,
+    site: RootProjectSuccessorSiteV3, failed: bool,
+) {
+    if matches!(recipe, RootSuccessorRecipeV3::MixedV3) && failed { first.get_or_insert(site); }
+}
+
+fn successor_bookend_v3(
+    recipe: RootSuccessorRecipeV3, held: &RootFirstSourceSuccessorBookendV2<'_, '_>, stream: &UnixStream,
+    posts: &mut Vec<Result<(), SourceGenesisErrorV1>>,
+    clocks: &mut Vec<Option<Result<aos_sandbox_core::RawPairedClockSample, SourceGenesisErrorV1>>>,
+    first: &mut Option<RootProjectSuccessorSiteV3>,
+) -> Result<(), ()> {
+    match recipe {
+        RootSuccessorRecipeV3::StrictV2 => held.post(stream, posts, clocks),
+        RootSuccessorRecipeV3::MixedV3 => held.post_with_site(stream, posts, clocks, Some(RootPostSiteV3::Successor(first))),
+    }
+}
+
+impl RootSuccessorRecipeV3 {
+    fn frame(self, phase: RootFirstSourceSuccessorFrameKindV2) -> RootFrameRecipeV3 {
+        match self { Self::StrictV2 => RootFrameRecipeV3::FirstSuccessor(phase), Self::MixedV3 => RootFrameRecipeV3::ProjectSuccessor(phase) }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -70,15 +150,26 @@ impl RootFirstSourceSuccessorBookendV2<'_, '_> {
         &self, stream: &UnixStream, posts: &mut Vec<Result<(), SourceGenesisErrorV1>>,
         clock_posts: &mut Vec<Option<Result<aos_sandbox_core::RawPairedClockSample, SourceGenesisErrorV1>>>,
     ) -> Result<(), ()> {
+        self.post_with_site(stream, posts, clock_posts, None)
+    }
+
+    fn post_with_site(
+        &self, stream: &UnixStream, posts: &mut Vec<Result<(), SourceGenesisErrorV1>>,
+        clock_posts: &mut Vec<Option<Result<aos_sandbox_core::RawPairedClockSample, SourceGenesisErrorV1>>>,
+        mut site: Option<RootPostSiteV3<'_>>,
+    ) -> Result<(), ()> {
         // Obtain residency before slow checks and the final genuine sample.
         // None is an empty slot, never a successful clock/currentness Result.
+        let clock_index = clock_posts.len();
         clock_posts.push(None);
         let clock_slot = clock_posts.last_mut().ok_or(())?;
         // Attempt every independent supplier after the original action Result
         // is resident; none replaces the action's first cause.
         posts.push(crate::production_normal_root::recheck_optional(self.startup)
             .map_err(|_| SourceGenesisErrorV1::Stale));
+        if let Some(site) = &mut site { site.owner(posts.len() - 1, posts.last().is_some_and(Result::is_err)); }
         posts.push(self.owner.map_or(Ok(()), RootSourceGenesisAuthorityV1::recheck));
+        if let Some(site) = &mut site { site.owner(posts.len() - 1, posts.last().is_some_and(Result::is_err)); }
         posts.push((|| {
             let peer = rustix::net::sockopt::socket_peercred(stream).map_err(io::Error::from)?;
             if peer.uid.as_raw() != self.controller_uid || peer.gid.as_raw() != self.controller_gid
@@ -86,11 +177,13 @@ impl RootFirstSourceSuccessorBookendV2<'_, '_> {
             { return Err(SourceGenesisErrorV1::Stale); }
             Ok(())
         })());
+        if let Some(site) = &mut site { site.owner(posts.len() - 1, posts.last().is_some_and(Result::is_err)); }
         // Peer/owner failure cannot suppress this independent actual sample.
         *clock_slot = Some(observe_root_first_source_successor_clock_v2(Some(self.clock)).and_then(|current| {
             if Instant::now() >= self.deadline { return Err(SourceGenesisErrorV1::Stale); }
             Ok(current)
         }));
+        if let Some(site) = &mut site { site.clock(clock_index, clock_slot.as_ref().is_some_and(Result::is_err)); }
         if posts.iter().any(Result::is_err) || clock_posts.iter().flatten().any(Result::is_err) { Err(()) } else { Ok(()) }
     }
 
@@ -105,17 +198,26 @@ impl RootFirstSourceSuccessorIoV2 {
         &mut self, stream: &UnixStream, bookend: &RootFirstSourceSuccessorBookendV2<'_, '_>,
         phase: RootFirstSourceSuccessorFrameKindV2, nonce: [u8; 16],
     ) -> Result<(), ()> {
+        self.read_with_recipe(stream, bookend, RootFrameRecipeV3::FirstSuccessor(phase), nonce)
+    }
+
+    fn read_with_recipe(
+        &mut self, stream: &UnixStream, bookend: &RootFirstSourceSuccessorBookendV2<'_, '_>,
+        recipe: RootFrameRecipeV3, nonce: [u8; 16],
+    ) -> Result<(), ()> {
         if !self.incoming.is_empty() || self.decoded.is_some() { return Err(()); }
-        self.incoming.resize(32 + phase.payload_bytes(), 0);
+        self.incoming.resize(32 + recipe.payload_bytes(), 0);
         let mut received = 0;
         let mut original = stream;
         while received < self.incoming.len() {
-            bookend.post(stream, &mut self.posts, &mut self.clock_posts)?;
+            self.recipe_post(stream, bookend, recipe)?;
             self.timeouts.push(stream.set_read_timeout(Some(bookend.remaining()?)));
-            bookend.post(stream, &mut self.posts, &mut self.clock_posts)?;
+            self.latch_selected_timeout(recipe);
+            self.recipe_post(stream, bookend, recipe)?;
             if self.timeouts.last().is_some_and(Result::is_err) { return Err(()); }
             self.native = Some(original.read(&mut self.incoming[received..]));
-            let post = bookend.post(stream, &mut self.posts, &mut self.clock_posts);
+            self.latch_selected_native(recipe);
+            let post = self.recipe_post(stream, bookend, recipe);
             match &self.native {
                 Some(Ok(count)) if *count > 0 => { received += *count; post?; }
                 Some(Err(error)) if error.kind() == io::ErrorKind::Interrupted => { post?; }
@@ -125,8 +227,15 @@ impl RootFirstSourceSuccessorIoV2 {
             // interrupt may release its count. A fatal actual Result remains.
             self.native = None;
         }
-        self.decoded = Some(decode_root_first_source_successor_frame_v2(&self.incoming, phase, nonce).map(|_| ()));
-        bookend.post(stream, &mut self.posts, &mut self.clock_posts)?;
+        self.decoded = Some(match recipe {
+            RootFrameRecipeV3::FirstSuccessor(phase) => decode_root_first_source_successor_frame_v2(&self.incoming, phase, nonce).map(|_| ()),
+            RootFrameRecipeV3::ProjectSuccessor(phase) => aos_sandbox::policy_compiler::decode_root_project_source_successor_frame_v3(&self.incoming, phase, nonce).map(|_| ()),
+            RootFrameRecipeV3::ProjectGenesis(phase) => aos_sandbox::policy_compiler::decode_root_source_project_genesis_frame_v3(&self.incoming, phase, nonce).map(|_| ()),
+        });
+        if recipe.selected() && self.decoded.as_ref().is_some_and(Result::is_err) && self.selected_failure.is_none() {
+            self.selected_failure = Some(SelectedRootIoFailureV3::Decode);
+        }
+        self.recipe_post(stream, bookend, recipe)?;
         if matches!(self.decoded, Some(Ok(()))) { Ok(()) } else { Err(()) }
     }
 
@@ -141,15 +250,21 @@ impl RootFirstSourceSuccessorIoV2 {
     }
 
     fn write(&mut self, stream: &UnixStream, bookend: &RootFirstSourceSuccessorBookendV2<'_, '_>) -> Result<(), ()> {
+        self.write_with_recipe(stream, bookend, RootFrameRecipeV3::FirstSuccessor(RootFirstSourceSuccessorFrameKindV2::Finish))
+    }
+
+    fn write_with_recipe(&mut self, stream: &UnixStream, bookend: &RootFirstSourceSuccessorBookendV2<'_, '_>, recipe: RootFrameRecipeV3) -> Result<(), ()> {
         let mut written = 0;
         let mut original = stream;
         while written < self.outgoing.len() {
-            bookend.post(stream, &mut self.posts, &mut self.clock_posts)?;
+            self.recipe_post(stream, bookend, recipe)?;
             self.timeouts.push(stream.set_write_timeout(Some(bookend.remaining()?)));
-            bookend.post(stream, &mut self.posts, &mut self.clock_posts)?;
+            self.latch_selected_timeout(recipe);
+            self.recipe_post(stream, bookend, recipe)?;
             if self.timeouts.last().is_some_and(Result::is_err) { return Err(()); }
             self.native = Some(original.write(&self.outgoing[written..]));
-            let post = bookend.post(stream, &mut self.posts, &mut self.clock_posts);
+            self.latch_selected_native(recipe);
+            let post = self.recipe_post(stream, bookend, recipe);
             match &self.native {
                 Some(Ok(count)) if *count > 0 => { written += *count; post?; }
                 Some(Err(error)) if error.kind() == io::ErrorKind::Interrupted => { post?; }
@@ -158,6 +273,76 @@ impl RootFirstSourceSuccessorIoV2 {
             self.native = None;
         }
         Ok(())
+    }
+
+    fn recipe_post(&mut self, stream: &UnixStream, bookend: &RootFirstSourceSuccessorBookendV2<'_, '_>, recipe: RootFrameRecipeV3) -> Result<(), ()> {
+        if recipe.selected() {
+            return bookend.post_with_site(stream, &mut self.posts, &mut self.clock_posts, Some(RootPostSiteV3::Io(&mut self.selected_failure)));
+        }
+        bookend.post(stream, &mut self.posts, &mut self.clock_posts)
+    }
+
+    fn latch_selected_native(&mut self, recipe: RootFrameRecipeV3) {
+        if recipe.selected() && self.selected_failure.is_none()
+            && self.native.as_ref().is_some_and(|result| match result {
+                Ok(count) => *count == 0,
+                Err(error) => error.kind() != io::ErrorKind::Interrupted,
+            })
+        {
+            if matches!(self.native, Some(Ok(0))) {
+                self.terminal_native = Some(io::Error::new(io::ErrorKind::UnexpectedEof, "original selected Root stream returned zero"));
+                self.selected_failure = Some(SelectedRootIoFailureV3::Zero);
+            } else {
+                self.selected_failure = Some(SelectedRootIoFailureV3::Native);
+            }
+        }
+    }
+
+    fn latch_selected_timeout(&mut self, recipe: RootFrameRecipeV3) {
+        if recipe.selected() && self.selected_failure.is_none()
+            && self.timeouts.last().is_some_and(Result::is_err)
+        { self.selected_failure = Some(SelectedRootIoFailureV3::Timeout(self.timeouts.len() - 1)); }
+    }
+
+    fn selected_error(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self.selected_failure? {
+            SelectedRootIoFailureV3::Native => self.native.as_ref()?.as_ref().err().map(|e| e as _),
+            SelectedRootIoFailureV3::Zero => self.terminal_native.as_ref().map(|e| e as _),
+            SelectedRootIoFailureV3::Timeout(index) => self.timeouts.get(index)?.as_ref().err().map(|e| e as _),
+            SelectedRootIoFailureV3::Decode => self.decoded.as_ref()?.as_ref().err().map(|e| e as _),
+            SelectedRootIoFailureV3::Owner(index) => self.posts.get(index)?.as_ref().err().map(|e| e as _),
+            SelectedRootIoFailureV3::Clock(index) => self.clock_posts.get(index)?.as_ref()?.as_ref().err().map(|e| e as _),
+        }
+    }
+
+    fn send_project_genesis_v3(
+        &mut self, stream: &UnixStream, bookend: &RootFirstSourceSuccessorBookendV2<'_, '_>,
+        phase: RootSourceGenesisFrameKindV1, nonce: [u8; 16], payload: &[u8],
+    ) -> Result<(), ()> {
+        let recipe = RootFrameRecipeV3::ProjectGenesis(phase);
+        self.decoded = Some(aos_sandbox::policy_compiler::encode_root_source_project_genesis_frame_v3(&mut self.outgoing, phase, nonce, payload));
+        if self.decoded.as_ref().is_some_and(Result::is_err) { self.selected_failure = Some(SelectedRootIoFailureV3::Decode); }
+        let post = self.recipe_post(stream, bookend, recipe);
+        if self.selected_failure.is_some() { return Err(()); }
+        post?;
+        self.write_with_recipe(stream, bookend, recipe)
+    }
+
+    fn send_successor_with_recipe_v3(
+        &mut self, stream: &UnixStream, bookend: &RootFirstSourceSuccessorBookendV2<'_, '_>,
+        phase: RootFirstSourceSuccessorFrameKindV2, nonce: [u8; 16], payload: &[u8], recipe: RootSuccessorRecipeV3,
+    ) -> Result<(), ()> {
+        match recipe {
+            RootSuccessorRecipeV3::StrictV2 => self.send(stream, bookend, phase, nonce, payload),
+            RootSuccessorRecipeV3::MixedV3 => {
+                self.decoded = Some(aos_sandbox::policy_compiler::encode_root_project_source_successor_frame_v3(&mut self.outgoing, phase, nonce, payload));
+                if self.decoded.as_ref().is_some_and(Result::is_err) { self.selected_failure.get_or_insert(SelectedRootIoFailureV3::Decode); }
+                let post = self.recipe_post(stream, bookend, recipe.frame(phase));
+                if self.selected_failure.is_some() { return Err(()); }
+                post?;
+                self.write_with_recipe(stream, bookend, recipe.frame(phase))
+            }
+        }
     }
 }
 
@@ -197,6 +382,8 @@ pub struct RootFirstSourceSuccessorAttemptV2<'stream, 'startup> {
     cleanup: Option<Result<(), io::Error>>,
     started: bool,
     armed: bool,
+    recipe: RootSuccessorRecipeV3,
+    selected_first: Option<RootProjectSuccessorSiteV3>,
 }
 
 impl<'stream, 'startup> RootFirstSourceSuccessorAttemptV2<'stream, 'startup> {
@@ -217,6 +404,8 @@ impl<'stream, 'startup> RootFirstSourceSuccessorAttemptV2<'stream, 'startup> {
             complete_io: Default::default(), finish_io: Default::default(), posts: Vec::new(),
             clock_posts: Vec::new(),
             cause: None, cleanup: None, started: false, armed: true,
+            recipe: RootSuccessorRecipeV3::StrictV2,
+            selected_first: None,
         }
     }
 
@@ -228,7 +417,10 @@ impl<'stream, 'startup> RootFirstSourceSuccessorAttemptV2<'stream, 'startup> {
         if self.started { return Err(()); }
         self.started = true;
         let returned = serve_first_successor(self);
-        if let Err(error) = returned { self.cause.get_or_insert(error); }
+        if let Err(error) = returned {
+            self.cause.get_or_insert(error);
+            latch_project_successor_v3(self.recipe, &mut self.selected_first, RootProjectSuccessorSiteV3::Returned, true);
+        }
         if self.cause.is_some() {
             self.cleanup = Some(self.stream.shutdown(Shutdown::Both));
             return Err(());
@@ -272,6 +464,55 @@ impl<'stream, 'startup> RootFirstSourceSuccessorAttemptV2<'stream, 'startup> {
     }
 }
 
+/// Retains the selected mixed successor on the same installed Root endpoint.
+#[must_use = "retain the actual accepted mixed Root attempt until terminal settlement"]
+pub struct RootProjectSuccessorAttemptV3<'stream, 'startup> {
+    common: RootFirstSourceSuccessorAttemptV2<'stream, 'startup>,
+}
+
+impl<'stream, 'startup> RootProjectSuccessorAttemptV3<'stream, 'startup> {
+    /// Parks the actual accepted stream before any selected-purpose admission.
+    pub fn new(
+        stream: &'stream mut UnixStream,
+        startup: Option<&'startup crate::production_normal_root::ProductionNormalRootStartupV1>,
+        request: [u8; 32], route: RootFirstSourceSuccessorRouteV2,
+        controller_uid: u32, controller_gid: u32, source_uid: u32, source_signer_uid: u32,
+    ) -> Self {
+        let mut common = RootFirstSourceSuccessorAttemptV2::new(stream, startup, request, route,
+            controller_uid, controller_gid, source_uid, source_signer_uid);
+        common.recipe = RootSuccessorRecipeV3::MixedV3;
+        Self { common }
+    }
+
+    /// Runs the same original producer without retrying ambiguous mutation.
+    ///
+    /// # Errors
+    /// Retains the accepted stream, actual Root writer and all failed Results.
+    pub fn serve_once(&mut self) -> Result<(), ()> { self.common.serve_once() }
+    /// Borrows actual retained failure without creating new observations.
+    pub fn first_cause(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        let original = &self.common;
+        match original.selected_first? {
+            RootProjectSuccessorSiteV3::Clock => original.clock.as_ref()?.as_ref().err().map(|error| error as _),
+            RootProjectSuccessorSiteV3::Opening => original.opening.error(),
+            RootProjectSuccessorSiteV3::Context => original.context.as_ref()?.as_ref().err().map(|error| error as _),
+            RootProjectSuccessorSiteV3::Source(index) => original.source.get(index)?.as_ref()?.as_ref().err().map(|error| error as _),
+            RootProjectSuccessorSiteV3::Prepared => original.prepare.error(),
+            RootProjectSuccessorSiteV3::Anchored => original.anchor.error(),
+            RootProjectSuccessorSiteV3::Io(index) => match index {
+                0 => original.hello_io.selected_error(), 1 => original.prepare_io.selected_error(),
+                2 => original.anchor_io.selected_error(), 3 => original.complete_io.selected_error(),
+                4 => original.finish_io.selected_error(), _ => None,
+            },
+            RootProjectSuccessorSiteV3::Owner(index) => original.posts.get(index)?.as_ref().err().map(|error| error as _),
+            RootProjectSuccessorSiteV3::PostClock(index) => original.clock_posts.get(index)?.as_ref()?.as_ref().err().map(|error| error as _),
+            RootProjectSuccessorSiteV3::Returned => original.cause.as_ref().map(|error| error as _),
+        }
+    }
+    /// Borrows independent original-clock debt without clearing transport poison.
+    pub fn clock_post_failures(&self) -> impl Iterator<Item = &SourceGenesisErrorV1> { self.common.clock_post_failures() }
+}
+
 impl Drop for RootFirstSourceSuccessorAttemptV2<'_, '_> {
     fn drop(&mut self) {
         if self.armed {
@@ -283,17 +524,48 @@ impl Drop for RootFirstSourceSuccessorAttemptV2<'_, '_> {
     }
 }
 
+enum CurrentSuccessorOwnerV3<'root> {
+    Strict(aos_sandbox::policy_compiler::CurrentRootFirstSourceSuccessorFloorV2<'root>),
+    Mixed(aos_sandbox::policy_compiler::CurrentRootProjectSuccessorFloorV3<'root>),
+}
+
+impl CurrentSuccessorOwnerV3<'_> {
+    fn completion(&self) -> &[u8; 96] {
+        match self { Self::Strict(owner) => owner.completion(), Self::Mixed(owner) => owner.completion() }
+    }
+
+    fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
+        match self { Self::Strict(owner) => owner.recheck(), Self::Mixed(owner) => owner.recheck() }
+    }
+}
+
+fn request_successor_source_with_recipe_v3(
+    recipe: RootSuccessorRecipeV3, nonce: [u8; 16], context: &RootFirstSourceSuccessorIntentV2,
+    signer: &aos_sandbox::policy_compiler::PinnedSourceHoldReadbackSignerV1,
+    signer_uid: u32, socket_gid: u32,
+) -> io::Result<[u8; SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2]> {
+    match recipe {
+        RootSuccessorRecipeV3::StrictV2 => request_root_source_first_successor_readback_v2(nonce, context, signer, signer_uid, socket_gid),
+        RootSuccessorRecipeV3::MixedV3 => crate::source_signer_exchange::request_root_source_project_continuation_readback_v3(nonce, context, signer, signer_uid, socket_gid),
+    }
+}
+
 fn serve_first_successor(attempt: &mut RootFirstSourceSuccessorAttemptV2<'_, '_>) -> Result<(), SourceGenesisErrorV1> {
     use RootFirstSourceSuccessorFrameKindV2 as Phase;
     let RootFirstSourceSuccessorAttemptV2 {
         stream, startup, request, route, controller_uid, controller_gid, source_uid, source_signer_uid,
         deadline, clock, opening, owner, context, prepared, floor, prepare, anchor, source,
-        hello_io, prepare_io, anchor_io, complete_io, finish_io, posts, clock_posts, cleanup, armed, ..
+        hello_io, prepare_io, anchor_io, complete_io, finish_io, posts, clock_posts, cleanup, armed, recipe, selected_first, ..
     } = attempt;
 
     *clock = Some(observe_root_first_source_successor_clock_v2(None));
+    latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Clock, matches!(clock, Some(Err(_))));
     let original_clock = *clock.as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
-    if request[..8] != *ROOT_FIRST_SOURCE_SUCCESSOR_QUERY_MAGIC_V2 || request[8..24] == [0; 16]
+    let query_magic = match recipe {
+        RootSuccessorRecipeV3::StrictV2 => ROOT_FIRST_SOURCE_SUCCESSOR_QUERY_MAGIC_V2,
+        RootSuccessorRecipeV3::MixedV3 => aos_sandbox::policy_compiler::ROOT_PROJECT_SOURCE_SUCCESSOR_QUERY_MAGIC_V3,
+    };
+    if request[..8] != *query_magic || request[8..24] == [0; 16]
         || request[24..] != [0; 8] || startup.is_none() || *controller_uid == 0
         || *controller_gid == 0 || *source_uid == 0 || *source_signer_uid == 0
     { return Err(SourceGenesisErrorV1::AdmissionClosed); }
@@ -301,106 +573,136 @@ fn serve_first_successor(attempt: &mut RootFirstSourceSuccessorAttemptV2<'_, '_>
         owner: None, startup: *startup, controller_uid: *controller_uid, controller_gid: *controller_gid,
         deadline: *deadline, clock: original_clock,
     };
-    before.post(stream, posts, clock_posts).map_err(|_| SourceGenesisErrorV1::Stale)?;
+    successor_bookend_v3(*recipe, &before, stream, posts, clock_posts, selected_first).map_err(|_| SourceGenesisErrorV1::Stale)?;
     posts.push(aos_sandbox::policy_compiler::require_no_fixed_closed_policy_binding_hold_v1()
         .map_err(|_| SourceGenesisErrorV1::AdmissionClosed));
-    before.post(stream, posts, clock_posts).map_err(|_| SourceGenesisErrorV1::Stale)?;
-    let opened = opening.open_into(owner, *controller_uid, *source_uid);
+    latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Owner(posts.len() - 1), posts.last().is_some_and(Result::is_err));
+    successor_bookend_v3(*recipe, &before, stream, posts, clock_posts, selected_first).map_err(|_| SourceGenesisErrorV1::Stale)?;
+    let opened = match recipe {
+        RootSuccessorRecipeV3::StrictV2 => opening.open_into(owner, *controller_uid, *source_uid),
+        RootSuccessorRecipeV3::MixedV3 => opening.open_project_successor_into_v3(owner, *controller_uid, *source_uid),
+    };
+    latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Opening, opened.is_err());
     // Startup/peer/clock remain independent even if protected opening failed.
-    let opening_post = before.post(stream, posts, clock_posts);
+    let opening_post = successor_bookend_v3(*recipe, &before, stream, posts, clock_posts, selected_first);
     if opened.is_err() || opening_post.is_err() { return Err(SourceGenesisErrorV1::AdmissionClosed); }
     let owner = owner.as_mut().ok_or(SourceGenesisErrorV1::AdmissionClosed)?;
     let nonce = owner.nonce();
     hello_io.outgoing.resize(56, 0);
-    hello_io.outgoing[..8].copy_from_slice(ROOT_FIRST_SOURCE_SUCCESSOR_HELLO_MAGIC_V2);
-    hello_io.outgoing[8..10].copy_from_slice(&2_u16.to_be_bytes());
+    let (hello_magic, version) = match recipe {
+        RootSuccessorRecipeV3::StrictV2 => (ROOT_FIRST_SOURCE_SUCCESSOR_HELLO_MAGIC_V2, 2_u16),
+        RootSuccessorRecipeV3::MixedV3 => (aos_sandbox::policy_compiler::ROOT_PROJECT_SOURCE_SUCCESSOR_HELLO_MAGIC_V3, 3_u16),
+    };
+    hello_io.outgoing[..8].copy_from_slice(hello_magic);
+    hello_io.outgoing[8..10].copy_from_slice(&version.to_be_bytes());
     hello_io.outgoing[16..32].copy_from_slice(&request[8..24]);
     hello_io.outgoing[32..48].copy_from_slice(&nonce);
     hello_io.outgoing[48..52].copy_from_slice(&source_uid.to_be_bytes());
     hello_io.outgoing[52..56].copy_from_slice(&controller_uid.to_be_bytes());
     {
         let held = RootFirstSourceSuccessorBookendV2 { owner: Some(&*owner), ..before };
-        hello_io.write(stream, &held).map_err(|_| SourceGenesisErrorV1::Stale)?;
-        prepare_io.read(stream, &held, Phase::Prepare, nonce).map_err(|_| SourceGenesisErrorV1::Stale)?;
+        let sent = hello_io.write_with_recipe(stream, &held, recipe.frame(Phase::Prepare));
+        latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Io(0), sent.is_err());
+        sent.map_err(|_| SourceGenesisErrorV1::Stale)?;
+        let received = prepare_io.read_with_recipe(stream, &held, recipe.frame(Phase::Prepare), nonce);
+        latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Io(1), received.is_err());
+        received.map_err(|_| SourceGenesisErrorV1::Stale)?;
     }
-    *context = Some(match route {
-        RootFirstSourceSuccessorRouteV2::Current => owner.first_source_successor_context_v2(&prepare_io.incoming[32..]),
-        RootFirstSourceSuccessorRouteV2::Historical => owner.historical_first_source_successor_context_v2(&prepare_io.incoming[32..]),
+    *context = Some(match (*recipe, *route) {
+        (RootSuccessorRecipeV3::StrictV2, RootFirstSourceSuccessorRouteV2::Current) => owner.first_source_successor_context_v2(&prepare_io.incoming[32..]),
+        (RootSuccessorRecipeV3::StrictV2, RootFirstSourceSuccessorRouteV2::Historical) => owner.historical_first_source_successor_context_v2(&prepare_io.incoming[32..]),
+        (RootSuccessorRecipeV3::MixedV3, RootFirstSourceSuccessorRouteV2::Current) => owner.project_successor_context_v3(&prepare_io.incoming[32..]),
+        (RootSuccessorRecipeV3::MixedV3, RootFirstSourceSuccessorRouteV2::Historical) => owner.historical_project_successor_context_v3(&prepare_io.incoming[32..]),
     });
+    latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Context, matches!(context, Some(Err(_))));
     let held = RootFirstSourceSuccessorBookendV2 { owner: Some(&*owner), ..before };
-    let context_post = held.post(stream, posts, clock_posts);
+    let context_post = successor_bookend_v3(*recipe, &held, stream, posts, clock_posts, selected_first);
     let original = context.as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Conflict)?;
     context_post.map_err(|_| SourceGenesisErrorV1::Stale)?;
-    source[0] = Some(request_root_source_first_successor_readback_v2(
-        nonce, original, owner.source_readback_pin(), *source_signer_uid, *controller_gid,
-    ));
-    let source_post = held.post(stream, posts, clock_posts);
+    source[0] = Some(request_successor_source_with_recipe_v3(*recipe, nonce, original, owner.source_readback_pin(), *source_signer_uid, *controller_gid));
+    latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Source(0), matches!(source[0], Some(Err(_))));
+    let source_post = successor_bookend_v3(*recipe, &held, stream, posts, clock_posts, selected_first);
     let source_before = source[0].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
     source_post.map_err(|_| SourceGenesisErrorV1::Stale)?;
     if matches!(route, RootFirstSourceSuccessorRouteV2::Historical) {
-        posts.push(aos_sandbox::policy_compiler::verify_source_first_successor_readback_v2(
-            source_before, owner.source_readback_pin(), nonce, original,
-        ).and_then(|observed| {
-            if observed.phase() == aos_sandbox::policy_compiler::SourceFirstSuccessorReadbackPhaseV2::Before {
-                Err(SourceGenesisErrorV1::AdmissionClosed)
-            } else { Ok(()) }
-        }));
-        held.post(stream, posts, clock_posts).map_err(|_| SourceGenesisErrorV1::Stale)?;
+        posts.push(match recipe {
+            RootSuccessorRecipeV3::StrictV2 => aos_sandbox::policy_compiler::verify_source_first_successor_readback_v2(source_before, owner.source_readback_pin(), nonce, original).map(|observed| observed.phase()),
+            RootSuccessorRecipeV3::MixedV3 => aos_sandbox::policy_compiler::verify_source_project_continuation_readback_v3(source_before, owner.source_readback_pin(), nonce, original).map(|observed| observed.phase()),
+        }.and_then(|phase| if phase == aos_sandbox::policy_compiler::SourceFirstSuccessorReadbackPhaseV2::Before { Err(SourceGenesisErrorV1::AdmissionClosed) } else { Ok(()) }));
+        latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Owner(posts.len() - 1), posts.last().is_some_and(Result::is_err));
+        successor_bookend_v3(*recipe, &held, stream, posts, clock_posts, selected_first).map_err(|_| SourceGenesisErrorV1::Stale)?;
     }
-    *prepared = Some(owner.prepare_first_successor_v2(
-        original, &prepare_io.incoming[32..], source_before, &before.clock, &before.deadline, prepare,
-    ));
+    *prepared = Some(match recipe {
+        RootSuccessorRecipeV3::StrictV2 => owner.prepare_first_successor_v2(original, &prepare_io.incoming[32..], source_before, &before.clock, &before.deadline, prepare),
+        RootSuccessorRecipeV3::MixedV3 => owner.prepare_project_successor_v3(original, &prepare_io.incoming[32..], source_before, &before.clock, &before.deadline, prepare),
+    });
+    latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Prepared, matches!(prepared, Some(Err(_))));
     let held = RootFirstSourceSuccessorBookendV2 { owner: Some(&*owner), ..before };
-    let prepared_post = held.post(stream, posts, clock_posts);
+    let prepared_post = successor_bookend_v3(*recipe, &held, stream, posts, clock_posts, selected_first);
     let original = prepared.as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Conflict)?;
     prepared_post.map_err(|_| SourceGenesisErrorV1::Stale)?;
-    prepare_io.send(stream, &held, Phase::Prepared, nonce, original.as_bytes()).map_err(|_| SourceGenesisErrorV1::Stale)?;
-    anchor_io.read(stream, &held, Phase::Anchor, nonce).map_err(|_| SourceGenesisErrorV1::Stale)?;
-    source[1] = Some(request_root_source_first_successor_readback_v2(
-        nonce, original, owner.source_readback_pin(), *source_signer_uid, *controller_gid,
-    ));
-    let source_post = held.post(stream, posts, clock_posts);
+    let sent = prepare_io.send_successor_with_recipe_v3(stream, &held, Phase::Prepared, nonce, original.as_bytes(), *recipe);
+    latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Io(1), sent.is_err());
+    sent.map_err(|_| SourceGenesisErrorV1::Stale)?;
+    let received = anchor_io.read_with_recipe(stream, &held, recipe.frame(Phase::Anchor), nonce);
+    latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Io(2), received.is_err());
+    received.map_err(|_| SourceGenesisErrorV1::Stale)?;
+    source[1] = Some(request_successor_source_with_recipe_v3(*recipe, nonce, original, owner.source_readback_pin(), *source_signer_uid, *controller_gid));
+    latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Source(1), matches!(source[1], Some(Err(_))));
+    let source_post = successor_bookend_v3(*recipe, &held, stream, posts, clock_posts, selected_first);
     let source_after = source[1].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
     source_post.map_err(|_| SourceGenesisErrorV1::Stale)?;
-    *floor = Some(owner.anchor_first_successor_v2(
-        original, &anchor_io.incoming[32..], source_after, &before.clock, &before.deadline, anchor,
-    ));
+    *floor = Some(match recipe {
+        RootSuccessorRecipeV3::StrictV2 => owner.anchor_first_successor_v2(original, &anchor_io.incoming[32..], source_after, &before.clock, &before.deadline, anchor),
+        RootSuccessorRecipeV3::MixedV3 => owner.anchor_project_successor_v3(original, &anchor_io.incoming[32..], source_after, &before.clock, &before.deadline, anchor),
+    });
+    latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Anchored, matches!(floor, Some(Err(_))));
     let held = RootFirstSourceSuccessorBookendV2 { owner: Some(&*owner), ..before };
-    let floor_post = held.post(stream, posts, clock_posts);
+    let floor_post = successor_bookend_v3(*recipe, &held, stream, posts, clock_posts, selected_first);
     let floor = floor.as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Conflict)?;
     floor_post.map_err(|_| SourceGenesisErrorV1::Stale)?;
-    anchor_io.send(stream, &held, Phase::Anchored, nonce, floor.as_bytes()).map_err(|_| SourceGenesisErrorV1::Stale)?;
-    complete_io.read(stream, &held, Phase::Complete, nonce).map_err(|_| SourceGenesisErrorV1::Stale)?;
-    source[2] = Some(request_root_source_first_successor_readback_v2(
-        nonce, original, owner.source_readback_pin(), *source_signer_uid, *controller_gid,
-    ));
-    let source_post = held.post(stream, posts, clock_posts);
+    let sent = anchor_io.send_successor_with_recipe_v3(stream, &held, Phase::Anchored, nonce, floor.as_bytes(), *recipe);
+    latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Io(2), sent.is_err());
+    sent.map_err(|_| SourceGenesisErrorV1::Stale)?;
+    let received = complete_io.read_with_recipe(stream, &held, recipe.frame(Phase::Complete), nonce);
+    latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Io(3), received.is_err());
+    received.map_err(|_| SourceGenesisErrorV1::Stale)?;
+    source[2] = Some(request_successor_source_with_recipe_v3(*recipe, nonce, original, owner.source_readback_pin(), *source_signer_uid, *controller_gid));
+    latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Source(2), matches!(source[2], Some(Err(_))));
+    let source_post = successor_bookend_v3(*recipe, &held, stream, posts, clock_posts, selected_first);
     let acknowledged = source[2].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
     source_post.map_err(|_| SourceGenesisErrorV1::Stale)?;
 
     // This short actual current-floor Result cannot be stored inside its own
     // writer. Keep it named locally through Finish, including every failure.
-    let current_result = owner.current_anchored_first_successor_floor_v2(
-        original, &complete_io.incoming[32..], acknowledged, floor,
-    );
-    let current_post = held.post(stream, posts, clock_posts);
+    let current_result = match recipe {
+        RootSuccessorRecipeV3::StrictV2 => owner.current_anchored_first_successor_floor_v2(original, &complete_io.incoming[32..], acknowledged, floor).map(CurrentSuccessorOwnerV3::Strict),
+        RootSuccessorRecipeV3::MixedV3 => owner.current_project_successor_floor_v3(original, &complete_io.incoming[32..], acknowledged, floor).map(CurrentSuccessorOwnerV3::Mixed),
+    };
+    let current_post = successor_bookend_v3(*recipe, &held, stream, posts, clock_posts, selected_first);
     let Ok(current) = &current_result else { terminate_first_successor_root(); };
     if current_post.is_err() { terminate_first_successor_root(); }
     let completion = current.completion();
-    let sent = complete_io.send(stream, &held, Phase::Completed, nonce, completion);
+    let sent = complete_io.send_successor_with_recipe_v3(stream, &held, Phase::Completed, nonce, completion, *recipe);
+    latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Io(3), sent.is_err());
     let current_after_send = current.recheck();
     posts.push(current_after_send);
-    let independent = held.post(stream, posts, clock_posts);
+    latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Owner(posts.len() - 1), posts.last().is_some_and(Result::is_err));
+    let independent = successor_bookend_v3(*recipe, &held, stream, posts, clock_posts, selected_first);
     if sent.is_err() || independent.is_err() { terminate_first_successor_root(); }
-    let received = finish_io.read(stream, &held, Phase::Finish, nonce);
+    let received = finish_io.read_with_recipe(stream, &held, recipe.frame(Phase::Finish), nonce);
+    latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Io(4), received.is_err());
     posts.push(current.recheck());
-    let independent = held.post(stream, posts, clock_posts);
+    latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Owner(posts.len() - 1), posts.last().is_some_and(Result::is_err));
+    let independent = successor_bookend_v3(*recipe, &held, stream, posts, clock_posts, selected_first);
     if received.is_err() || independent.is_err() || &finish_io.incoming[32..] != completion {
         terminate_first_successor_root();
     }
-    let sent = finish_io.send(stream, &held, Phase::Finish, nonce, completion);
+    let sent = finish_io.send_successor_with_recipe_v3(stream, &held, Phase::Finish, nonce, completion, *recipe);
+    latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Io(4), sent.is_err());
     posts.push(current.recheck());
-    let independent = held.post(stream, posts, clock_posts);
+    latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Owner(posts.len() - 1), posts.last().is_some_and(Result::is_err));
+    let independent = successor_bookend_v3(*recipe, &held, stream, posts, clock_posts, selected_first);
     if sent.is_err() || independent.is_err() { terminate_first_successor_root(); }
     *cleanup = Some(stream.shutdown(Shutdown::Both));
     // Shutdown does not renew admission or dispose Root on a negative result.
@@ -413,6 +715,277 @@ fn terminate_first_successor_root() -> ! {
     // Called only while the same whole attempt and named current-floor Result
     // are resident. Fallible diagnostics never choose an ordinary error return.
     std::process::exit(1)
+}
+
+/// Retains the actual Root03 initial-project producer through final consumption.
+///
+/// Construction parks the same accepted stream/startup before any selected
+/// opening or signer RPC. No scalar project/instance is an owner constructor.
+#[must_use = "retain the failed whole selected Root producer until termination"]
+pub struct RootProjectGenesisAttemptV3<'stream, 'startup> {
+    stream: &'stream mut UnixStream,
+    startup: Option<&'startup crate::production_normal_root::ProductionNormalRootStartupV1>,
+    request: [u8; 32],
+    route: RootFirstSourceSuccessorRouteV2,
+    controller_uid: u32,
+    controller_gid: u32,
+    source_uid: u32,
+    source_signer_uid: u32,
+    deadline: Instant,
+    clock: Option<Result<aos_sandbox_core::RawPairedClockSample, SourceGenesisErrorV1>>,
+    opening: RootFirstSourceSuccessorOpeningV2,
+    owner: Option<RootSourceGenesisAuthorityV1>,
+    contexts: [Option<Result<(aos_sandbox::policy_compiler::SourceProjectGenesisChallengeV3, aos_sandbox::policy_compiler::SourceTreeGenesisIntentContextV1), SourceGenesisErrorV1>>; 3],
+    source: [Option<Result<[u8; aos_sandbox::policy_compiler::SOURCE_PROJECT_GENESIS_READBACK_BYTES_V3], io::Error>>; 3],
+    prepared: Option<Result<aos_sandbox::policy_compiler::RootSourceGenesisIntentRecordV1, ()>>,
+    floor_selection: Option<Result<bool, SourceGenesisErrorV1>>,
+    anchored: Option<Result<SourceHierarchyFloorRecordV1, ()>>,
+    prepare: aos_sandbox::policy_compiler::RootProjectGenesisMutationResultsV3,
+    anchor: aos_sandbox::policy_compiler::RootProjectGenesisMutationResultsV3,
+    io: [RootFirstSourceSuccessorIoV2; 5],
+    posts: Vec<Result<(), SourceGenesisErrorV1>>,
+    clock_posts: Vec<Option<Result<aos_sandbox_core::RawPairedClockSample, SourceGenesisErrorV1>>>,
+    returned: Option<Result<(), SourceGenesisErrorV1>>,
+    first_failure: Option<RootProjectGenesisAttemptSiteV3>,
+    cleanup: Option<Result<(), io::Error>>,
+    armed: bool,
+}
+
+#[derive(Clone, Copy)]
+enum RootProjectGenesisAttemptSiteV3 { Clock, Opening, Context(usize), Source(usize), FloorSelection, Prepare, Anchor, Io(usize), Owner(usize), PostClock(usize), Returned }
+
+impl<'stream, 'startup> RootProjectGenesisAttemptV3<'stream, 'startup> {
+    /// Parks only actual originals; it performs no protected open or issuance.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        stream: &'stream mut UnixStream,
+        startup: Option<&'startup crate::production_normal_root::ProductionNormalRootStartupV1>,
+        request: [u8; 32], route: RootFirstSourceSuccessorRouteV2,
+        controller_uid: u32, controller_gid: u32, source_uid: u32, source_signer_uid: u32,
+    ) -> Self {
+        Self {
+            stream, startup, request, route, controller_uid, controller_gid, source_uid, source_signer_uid,
+            deadline: Instant::now() + ROOT_HOLD_LIMIT, clock: None, opening: RootFirstSourceSuccessorOpeningV2::new(), owner: None,
+            contexts: std::array::from_fn(|_| None), source: std::array::from_fn(|_| None), prepared: None, floor_selection: None, anchored: None,
+            prepare: aos_sandbox::policy_compiler::RootProjectGenesisMutationResultsV3::new(),
+            anchor: aos_sandbox::policy_compiler::RootProjectGenesisMutationResultsV3::new(),
+            io: std::array::from_fn(|_| RootFirstSourceSuccessorIoV2::default()), posts: Vec::new(), clock_posts: Vec::new(),
+            returned: None, first_failure: None, cleanup: None, armed: true,
+        }
+    }
+
+    /// Runs the actual selected original producer once without redispatch.
+    ///
+    /// # Errors
+    /// Returns a marker with every actual Result and genuine owner resident.
+    pub fn serve_once(&mut self) -> Result<(), ()> {
+        if self.returned.is_some() { return Err(()); }
+        self.returned = Some(serve_project_genesis_v3(self));
+        if self.returned.as_ref().is_some_and(Result::is_err) {
+            if self.first_failure.is_none() { self.first_failure = Some(RootProjectGenesisAttemptSiteV3::Returned); }
+            self.cleanup = Some(self.stream.shutdown(Shutdown::Both));
+            return Err(());
+        }
+        Ok(())
+    }
+
+    /// Borrows the same chronologically selected cause without new observations.
+    pub fn first_cause(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self.first_failure? {
+            RootProjectGenesisAttemptSiteV3::Clock => self.clock.as_ref()?.as_ref().err().map(|e| e as _),
+            RootProjectGenesisAttemptSiteV3::Opening => self.opening.error(),
+            RootProjectGenesisAttemptSiteV3::Context(index) => self.contexts.get(index)?.as_ref()?.as_ref().err().map(|e| e as _),
+            RootProjectGenesisAttemptSiteV3::Source(index) => self.source.get(index)?.as_ref()?.as_ref().err().map(|e| e as _),
+            RootProjectGenesisAttemptSiteV3::FloorSelection => self.floor_selection.as_ref()?.as_ref().err().map(|e| e as _),
+            RootProjectGenesisAttemptSiteV3::Prepare => self.prepare.error(),
+            RootProjectGenesisAttemptSiteV3::Anchor => self.anchor.error(),
+            RootProjectGenesisAttemptSiteV3::Io(index) => self.io.get(index)?.selected_error(),
+            RootProjectGenesisAttemptSiteV3::Owner(index) => self.posts.get(index)?.as_ref().err().map(|e| e as _),
+            RootProjectGenesisAttemptSiteV3::PostClock(index) => self.clock_posts.get(index)?.as_ref()?.as_ref().err().map(|e| e as _),
+            RootProjectGenesisAttemptSiteV3::Returned => self.returned.as_ref()?.as_ref().err().map(|e| e as _),
+        }
+    }
+}
+
+impl Drop for RootProjectGenesisAttemptV3<'_, '_> {
+    fn drop(&mut self) { if self.armed { std::process::abort(); } }
+}
+
+fn project_genesis_bookend_v3(
+    held: &RootFirstSourceSuccessorBookendV2<'_, '_>, stream: &UnixStream,
+    posts: &mut Vec<Result<(), SourceGenesisErrorV1>>,
+    clocks: &mut Vec<Option<Result<aos_sandbox_core::RawPairedClockSample, SourceGenesisErrorV1>>>,
+    first: &mut Option<RootProjectGenesisAttemptSiteV3>,
+) -> Result<(), SourceGenesisErrorV1> {
+    let returned = held.post_with_site(stream, posts, clocks, Some(RootPostSiteV3::Project(first)));
+    returned.map_err(|_| SourceGenesisErrorV1::Stale)
+}
+
+fn serve_project_genesis_v3(attempt: &mut RootProjectGenesisAttemptV3<'_, '_>) -> Result<(), SourceGenesisErrorV1> {
+    use RootSourceGenesisFrameKindV1 as Phase;
+    let RootProjectGenesisAttemptV3 {
+        stream, startup, request, route, controller_uid, controller_gid, source_uid, source_signer_uid, deadline,
+        clock, opening, owner, contexts, source, prepared, floor_selection, anchored, prepare, anchor, io, posts, clock_posts, first_failure, cleanup, armed, ..
+    } = attempt;
+    *clock = Some(observe_root_first_source_successor_clock_v2(None));
+    if clock.as_ref().is_some_and(Result::is_err) { *first_failure = Some(RootProjectGenesisAttemptSiteV3::Clock); }
+    let actual_clock = *clock.as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
+    if request[..8] != *aos_sandbox::policy_compiler::ROOT_SOURCE_PROJECT_GENESIS_QUERY_MAGIC_V3
+        || request[8..24] == [0; 16] || request[24..] != [0; 8]
+        || matches!(route, RootFirstSourceSuccessorRouteV2::Current) && startup.is_none()
+        || *controller_uid == 0 || *controller_gid == 0 || *source_uid == 0 || *source_signer_uid == 0
+    { return Err(SourceGenesisErrorV1::AdmissionClosed); }
+    let before = RootFirstSourceSuccessorBookendV2 {
+        owner: None, startup: *startup, controller_uid: *controller_uid, controller_gid: *controller_gid,
+        deadline: *deadline, clock: actual_clock,
+    };
+    project_genesis_bookend_v3(&before, stream, posts, clock_posts, first_failure)?;
+    let boundary = posts.len();
+    posts.push(aos_sandbox::policy_compiler::require_no_fixed_closed_policy_binding_hold_v1()
+        .map_err(|_| SourceGenesisErrorV1::AdmissionClosed));
+    if posts[boundary].is_err() && first_failure.is_none() {
+        *first_failure = Some(RootProjectGenesisAttemptSiteV3::Owner(boundary));
+    }
+    let independent = project_genesis_bookend_v3(&before, stream, posts, clock_posts, first_failure);
+    if posts[boundary].is_err() { return Err(SourceGenesisErrorV1::AdmissionClosed); }
+    independent?;
+    let open_result = opening.open_project_genesis_into_v3(owner, *controller_uid, *source_uid);
+    if open_result.is_err() { *first_failure = Some(RootProjectGenesisAttemptSiteV3::Opening); }
+    let independent = project_genesis_bookend_v3(&before, stream, posts, clock_posts, first_failure);
+    if open_result.is_err() { return Err(SourceGenesisErrorV1::AdmissionClosed); }
+    independent?;
+    let owner = owner.as_mut().ok_or(SourceGenesisErrorV1::Stale)?;
+    let nonce = owner.nonce();
+    io[0].outgoing.resize(56, 0);
+    io[0].outgoing[..8].copy_from_slice(aos_sandbox::policy_compiler::ROOT_SOURCE_PROJECT_GENESIS_HELLO_MAGIC_V3);
+    io[0].outgoing[8..10].copy_from_slice(&3_u16.to_be_bytes());
+    io[0].outgoing[16..32].copy_from_slice(&request[8..24]);
+    io[0].outgoing[32..48].copy_from_slice(&nonce);
+    io[0].outgoing[48..52].copy_from_slice(&source_uid.to_be_bytes());
+    io[0].outgoing[52..56].copy_from_slice(&controller_uid.to_be_bytes());
+    {
+        let held = RootFirstSourceSuccessorBookendV2 { owner: Some(owner), ..before };
+        if io[0].write_with_recipe(stream, &held, RootFrameRecipeV3::ProjectGenesis(Phase::Prepare)).is_err() {
+            *first_failure = Some(RootProjectGenesisAttemptSiteV3::Io(0)); return Err(SourceGenesisErrorV1::Stale);
+        }
+        if io[1].read_with_recipe(stream, &held, RootFrameRecipeV3::ProjectGenesis(Phase::Prepare), nonce).is_err() {
+            *first_failure = Some(RootProjectGenesisAttemptSiteV3::Io(1)); return Err(SourceGenesisErrorV1::Stale);
+        }
+    }
+    contexts[0] = Some(owner.accept_controller_project_genesis_v3(&io[1].incoming[32..]));
+    if contexts[0].as_ref().is_some_and(Result::is_err) { *first_failure = Some(RootProjectGenesisAttemptSiteV3::Context(0)); }
+    let held = RootFirstSourceSuccessorBookendV2 { owner: Some(owner), ..before };
+    let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
+    let (challenge, context) = contexts[0].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
+    independent?;
+    if matches!(route, RootFirstSourceSuccessorRouteV2::Historical) && challenge.intent().is_none() { return Err(SourceGenesisErrorV1::AdmissionClosed); }
+    source[0] = Some(crate::source_signer_exchange::request_root_source_project_genesis_readback_v3(*challenge, context, owner.source_readback_pin(), *source_signer_uid, *controller_gid));
+    if source[0].as_ref().is_some_and(Result::is_err) { *first_failure = Some(RootProjectGenesisAttemptSiteV3::Source(0)); }
+    let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
+    let packet = source[0].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
+    independent?;
+    *floor_selection = Some(owner.project_genesis_floor_present_v3());
+    if floor_selection.as_ref().is_some_and(Result::is_err) && first_failure.is_none() {
+        *first_failure = Some(RootProjectGenesisAttemptSiteV3::FloorSelection);
+    }
+    let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
+    let has_floor = *floor_selection.as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
+    independent?;
+    // Only an actual settled floor skips Prepared. A historical challenge may
+    // instead name an unanchored intent and cannot choose that shortcut.
+    let floor = if has_floor {
+        *anchored = Some(owner.anchor_project_genesis_v3(packet, &actual_clock, *deadline, anchor));
+        if anchored.as_ref().is_some_and(Result::is_err) { *first_failure = Some(RootProjectGenesisAttemptSiteV3::Anchor); }
+        let held = RootFirstSourceSuccessorBookendV2 { owner: Some(owner), ..before };
+        let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
+        let floor = anchored.as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
+        independent?;
+        floor
+    } else {
+        *prepared = Some(owner.prepare_project_genesis_v3(packet, &actual_clock, *deadline, prepare));
+        if prepared.as_ref().is_some_and(Result::is_err) { *first_failure = Some(RootProjectGenesisAttemptSiteV3::Prepare); }
+        let held = RootFirstSourceSuccessorBookendV2 { owner: Some(owner), ..before };
+        let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
+        let intent = prepared.as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
+        independent?;
+        let mut payload = [0; 800];
+        payload[..8].copy_from_slice(&owner.current_admission_expiry()?.to_be_bytes());
+        payload[8..].copy_from_slice(intent.record_bytes());
+        if io[1].send_project_genesis_v3(stream, &held, Phase::Prepared, nonce, &payload).is_err() {
+            *first_failure = Some(RootProjectGenesisAttemptSiteV3::Io(1)); return Err(SourceGenesisErrorV1::Stale);
+        }
+        if io[2].read_with_recipe(stream, &held, RootFrameRecipeV3::ProjectGenesis(Phase::Anchor), nonce).is_err() {
+            *first_failure = Some(RootProjectGenesisAttemptSiteV3::Io(2)); return Err(SourceGenesisErrorV1::Stale);
+        }
+        contexts[1] = Some(owner.accept_controller_project_genesis_v3(&io[2].incoming[32..]));
+        if contexts[1].as_ref().is_some_and(Result::is_err) { *first_failure = Some(RootProjectGenesisAttemptSiteV3::Context(1)); }
+        let held = RootFirstSourceSuccessorBookendV2 { owner: Some(owner), ..before };
+        let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
+        let (challenge, context) = contexts[1].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
+        independent?;
+        source[1] = Some(crate::source_signer_exchange::request_root_source_project_genesis_readback_v3(*challenge, context, owner.source_readback_pin(), *source_signer_uid, *controller_gid));
+        if source[1].as_ref().is_some_and(Result::is_err) { *first_failure = Some(RootProjectGenesisAttemptSiteV3::Source(1)); }
+        let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
+        let packet = source[1].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
+        independent?;
+        *anchored = Some(owner.anchor_project_genesis_v3(packet, &actual_clock, *deadline, anchor));
+        if anchored.as_ref().is_some_and(Result::is_err) { *first_failure = Some(RootProjectGenesisAttemptSiteV3::Anchor); }
+        let held = RootFirstSourceSuccessorBookendV2 { owner: Some(owner), ..before };
+        let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
+        let floor = anchored.as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
+        independent?;
+        floor
+    };
+    let held = RootFirstSourceSuccessorBookendV2 { owner: Some(owner), ..before };
+    // Either branch owns this exact floor in the resident Anchor Result.
+    let outgoing_index = if io[2].incoming.is_empty() { 1 } else { 2 };
+    let outgoing = &mut io[outgoing_index];
+    if outgoing.send_project_genesis_v3(stream, &held, Phase::Anchored, nonce, floor.record_bytes()).is_err() {
+        *first_failure = Some(RootProjectGenesisAttemptSiteV3::Io(outgoing_index)); return Err(SourceGenesisErrorV1::Stale);
+    }
+    if io[3].read_with_recipe(stream, &held, RootFrameRecipeV3::ProjectGenesis(Phase::Complete), nonce).is_err() {
+        *first_failure = Some(RootProjectGenesisAttemptSiteV3::Io(3)); return Err(SourceGenesisErrorV1::Stale);
+    }
+    contexts[2] = Some(owner.accept_controller_project_genesis_v3(&io[3].incoming[32..]));
+    if contexts[2].as_ref().is_some_and(Result::is_err) { *first_failure = Some(RootProjectGenesisAttemptSiteV3::Context(2)); }
+    let held = RootFirstSourceSuccessorBookendV2 { owner: Some(owner), ..before };
+    let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
+    let (challenge, context) = contexts[2].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
+    independent?;
+    source[2] = Some(crate::source_signer_exchange::request_root_source_project_genesis_readback_v3(*challenge, context, owner.source_readback_pin(), *source_signer_uid, *controller_gid));
+    if source[2].as_ref().is_some_and(Result::is_err) { *first_failure = Some(RootProjectGenesisAttemptSiteV3::Source(2)); }
+    let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
+    let packet = source[2].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
+    independent?;
+    // The genuine current-floor Result borrows this owner and stays a named
+    // local through terminal failure and Finish, avoiding any self-borrow.
+    let current_result = owner.current_project_genesis_floor_v3(packet);
+    let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
+    let Ok(current) = &current_result else { terminate_first_successor_root(); };
+    if independent.is_err() || current.floor() != floor { terminate_first_successor_root(); }
+    let sent = io[3].send_project_genesis_v3(stream, &held, Phase::Completed, nonce, current.floor().digest().as_bytes());
+    if sent.is_err() { first_failure.get_or_insert(RootProjectGenesisAttemptSiteV3::Io(3)); }
+    posts.push(current.recheck());
+    if posts.last().is_some_and(Result::is_err) { first_failure.get_or_insert(RootProjectGenesisAttemptSiteV3::Owner(posts.len() - 1)); }
+    let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
+    if sent.is_err() || posts.iter().any(Result::is_err) || independent.is_err() { terminate_first_successor_root(); }
+    let received = io[4].read_with_recipe(stream, &held, RootFrameRecipeV3::ProjectGenesis(Phase::Finish), nonce);
+    if received.is_err() { first_failure.get_or_insert(RootProjectGenesisAttemptSiteV3::Io(4)); }
+    posts.push(current.recheck());
+    if posts.last().is_some_and(Result::is_err) { first_failure.get_or_insert(RootProjectGenesisAttemptSiteV3::Owner(posts.len() - 1)); }
+    let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
+    if received.is_err() || posts.iter().any(Result::is_err) || independent.is_err()
+        || &io[4].incoming[32..] != current.floor().digest().as_bytes() { terminate_first_successor_root(); }
+    let sent = io[4].send_project_genesis_v3(stream, &held, Phase::Finish, nonce, current.floor().digest().as_bytes());
+    if sent.is_err() { first_failure.get_or_insert(RootProjectGenesisAttemptSiteV3::Io(4)); }
+    posts.push(current.recheck());
+    if posts.last().is_some_and(Result::is_err) { first_failure.get_or_insert(RootProjectGenesisAttemptSiteV3::Owner(posts.len() - 1)); }
+    let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
+    if sent.is_err() || posts.iter().any(Result::is_err) || independent.is_err() { terminate_first_successor_root(); }
+    *cleanup = Some(stream.shutdown(Shutdown::Both));
+    if !matches!(cleanup, Some(Ok(()))) { terminate_first_successor_root(); }
+    *armed = false;
+    Ok(())
 }
 
 /// Joins actual existing gen1 observations inside the original Q04 Root owner.

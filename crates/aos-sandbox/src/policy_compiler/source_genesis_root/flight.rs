@@ -45,6 +45,48 @@ enum FirstSuccessorReceivePositionV2 { Open, Finished }
 #[derive(Clone, Copy)]
 enum OriginalWriteModeV2 { Ordinary, FirstSuccessor }
 
+#[derive(Default)]
+pub(super) struct ProjectGenesisFlightIoV3 {
+    pub(super) outgoing: Vec<u8>,
+    pub(super) header: Vec<u8>,
+    pub(super) payload: Vec<u8>,
+    pub(super) received: Option<Result<UnixStreamSubjectChunk, aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1>>,
+    action: Option<Result<Phase, SourceGenesisErrorV1>>,
+    posts: [Option<Result<(), SourceGenesisErrorV1>>; 2],
+    first_failure: Option<ProjectGenesisIoSiteV3>,
+}
+
+#[derive(Clone, Copy)]
+enum ProjectGenesisIoSiteV3 { Action, NativeReceive, Post(usize) }
+
+impl ProjectGenesisFlightIoV3 {
+    pub(super) fn error(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self.first_failure? {
+            ProjectGenesisIoSiteV3::Action => self.action.as_ref()?.as_ref().err().map(|e| e as _),
+            ProjectGenesisIoSiteV3::NativeReceive => self.received.as_ref()?.as_ref().err().map(|e| e as _),
+            ProjectGenesisIoSiteV3::Post(index) => self.posts.get(index)?.as_ref()?.as_ref().err().map(|e| e as _),
+        }
+    }
+
+    fn posts(&mut self, original: &OriginalRootGenesisFlightV1<'_>) {
+        if self.action.as_ref().is_some_and(Result::is_err) {
+            self.first_failure = Some(if self.received.as_ref().is_some_and(Result::is_err) {
+                ProjectGenesisIoSiteV3::NativeReceive
+            } else { ProjectGenesisIoSiteV3::Action });
+        }
+        self.posts[0] = Some(if self.action.as_ref().is_some_and(|result| matches!(result, Ok(Phase::Finish))) {
+            original.original_terminal_clock().map(|_| ())
+        } else { original.first_successor_clock().map(|_| ()) });
+        if self.first_failure.is_none() && self.posts[0].as_ref().is_some_and(Result::is_err) {
+            self.first_failure = Some(ProjectGenesisIoSiteV3::Post(0));
+        }
+        self.posts[1] = Some(original.observe_first_successor_clock().map(|_| ()));
+        if self.first_failure.is_none() && self.posts[1].as_ref().is_some_and(Result::is_err) {
+            self.first_failure = Some(ProjectGenesisIoSiteV3::Post(1));
+        }
+    }
+}
+
 /// Borrows one actual Root prepare flight; decoding an intent cannot create it.
 pub struct HeldRootSourceGenesisIntentV1<'flight> {
     origin: &'flight OriginalRootGenesisFlightV1<'flight>,
@@ -96,6 +138,83 @@ impl HeldRootSourceGenesisIntentV1<'_> {
 pub struct RootSourceGenesisFloorProofV1<'flight> {
     origin: &'flight OriginalRootGenesisFlightV1<'flight>,
     floor: SourceHierarchyFloorRecordV1,
+}
+
+/// Borrows a genuine fresh selected-project intent on its version-three flight.
+///
+/// The common storage is private. No decoded record, historical observation or
+/// public strict V1 loan can be converted into this selected append boundary.
+pub struct HeldRootSourceProjectGenesisIntentV3<'flight> {
+    original: HeldRootSourceGenesisIntentV1<'flight>,
+}
+
+impl HeldRootSourceProjectGenesisIntentV3<'_> {
+    /// Borrows the unchanged canonical original Intent792 as DATA.
+    pub const fn record(&self) -> &RootSourceGenesisIntentRecordV1 { &self.original.record }
+
+    /// Rechecks the genuine original profile, stream and nonrenewable admission.
+    ///
+    /// # Errors
+    /// Rejects changed original custody, expiry, boot/clock discontinuity or poison.
+    pub fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
+        self.original.origin.first_successor_clock().map(|_| ())
+    }
+
+    pub(crate) fn independent_clock_v3(&self) -> Result<(), SourceGenesisErrorV1> {
+        self.original.origin.observe_first_successor_clock().map(|_| ())
+    }
+
+    pub(crate) fn native_crossing_clock_v3(&self) -> Result<(), SourceGenesisErrorV1> {
+        let current = self.original.origin.first_successor_clock()?;
+        if current.wall_seconds() >= self.original.expires
+            || current.boottime_nanoseconds() >= self.original.deadline
+        {
+            return Err(SourceGenesisErrorV1::AdmissionClosed);
+        }
+        Ok(())
+    }
+}
+
+/// Borrows an actual selected semantic floor from the same authenticated flight.
+pub struct RootSourceProjectGenesisFloorProofV3<'flight> {
+    original: RootSourceGenesisFloorProofV1<'flight>,
+}
+
+impl RootSourceProjectGenesisFloorProofV3<'_> {
+    /// Borrows only the logical original floor DATA.
+    pub const fn floor(&self) -> &SourceHierarchyFloorRecordV1 { &self.original.floor }
+
+    /// Returns Source UID from the actual independently authenticated Root hello.
+    pub const fn source_uid(&self) -> u32 { self.original.origin.source_uid }
+
+    /// Rechecks the same original stream, peer, profile and finite custody cut.
+    ///
+    /// # Errors
+    /// Rejects changed real custody, poison or the original deadline.
+    pub fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
+        self.original.origin.first_successor_clock().map(|_| ())
+    }
+
+    pub(crate) fn native_crossing_clock_v3(&self) -> Result<(), SourceGenesisErrorV1> {
+        self.original.origin.first_successor_clock().map(|_| ())
+    }
+
+    pub(crate) fn independent_clock_v3(&self) -> Result<(), SourceGenesisErrorV1> {
+        self.original.origin.observe_first_successor_clock().map(|_| ())
+    }
+}
+
+pub(crate) struct CompletedRootSourceProjectGenesisFloorV3<'completed, 'flight> {
+    proof: &'completed RootSourceProjectGenesisFloorProofV3<'flight>,
+}
+
+impl CompletedRootSourceProjectGenesisFloorV3<'_, '_> {
+    pub(crate) fn floor(&self) -> &SourceHierarchyFloorRecordV1 { self.proof.floor() }
+    pub(crate) fn source_uid(&self) -> u32 { self.proof.source_uid() }
+    pub(crate) fn recheck(&self) -> Result<(), SourceGenesisErrorV1> { self.proof.recheck() }
+    pub(crate) fn signing_boundary_clock(&self) -> Result<RawPairedClockSample, SourceGenesisErrorV1> {
+        self.proof.original.origin.first_successor_clock()
+    }
 }
 
 impl RootSourceGenesisFloorProofV1<'_> {
@@ -168,6 +287,11 @@ pub(in crate::policy_compiler) struct OriginalRootGenesisFlightV1<'profile> {
 pub(super) enum OriginalRootGenesisReplyV1<'flight> {
     Prepared(HeldRootSourceGenesisIntentV1<'flight>),
     Anchored(RootSourceGenesisFloorProofV1<'flight>),
+}
+
+pub(super) enum OriginalRootProjectGenesisReplyV3<'flight> {
+    Prepared(HeldRootSourceProjectGenesisIntentV3<'flight>),
+    Anchored(RootSourceProjectGenesisFloorProofV3<'flight>),
 }
 
 impl<'profile> OriginalRootGenesisFlightV1<'profile> {
@@ -274,15 +398,44 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
         received: &mut Option<Result<UnixStreamSubjectChunk, aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1>>,
         controller_uid: u32,
     ) -> Result<(), SourceGenesisErrorV1> {
+        Self::connect_successor_with_recipe_v3(profile, raw, adopted, parked, hello, received,
+            controller_uid, super::wire::FirstSuccessorWireRecipeV3::StrictV2)
+    }
+
+    pub(super) fn connect_project_successor_parked_v3(
+        profile: &'profile ProductionControllerNormalRootProfileV1,
+        raw: &mut Option<OwnedFd>, adopted: &mut Option<RetainedUnixStream>,
+        parked: &mut Option<Self>, hello: &mut Vec<u8>,
+        received: &mut Option<Result<UnixStreamSubjectChunk, aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1>>,
+        controller_uid: u32,
+    ) -> Result<(), SourceGenesisErrorV1> {
+        Self::connect_successor_with_recipe_v3(profile, raw, adopted, parked, hello, received,
+            controller_uid, super::wire::FirstSuccessorWireRecipeV3::MixedV3)
+    }
+
+    fn connect_successor_with_recipe_v3(
+        profile: &'profile ProductionControllerNormalRootProfileV1,
+        raw: &mut Option<OwnedFd>, adopted: &mut Option<RetainedUnixStream>,
+        parked: &mut Option<Self>, hello: &mut Vec<u8>,
+        received: &mut Option<Result<UnixStreamSubjectChunk, aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1>>,
+        controller_uid: u32, recipe: super::wire::FirstSuccessorWireRecipeV3,
+    ) -> Result<(), SourceGenesisErrorV1> {
         let client_nonce = Self::park_connection(profile, raw, adopted, parked)?;
         let origin = parked.as_mut().ok_or(SourceGenesisErrorV1::Stale)?;
         let mut request = [0; 32];
-        request[..8].copy_from_slice(super::wire::ROOT_FIRST_SOURCE_SUCCESSOR_QUERY_MAGIC_V2);
+        request[..8].copy_from_slice(match recipe {
+            super::wire::FirstSuccessorWireRecipeV3::StrictV2 => super::wire::ROOT_FIRST_SOURCE_SUCCESSOR_QUERY_MAGIC_V2,
+            super::wire::FirstSuccessorWireRecipeV3::MixedV3 => super::wire::ROOT_PROJECT_SOURCE_SUCCESSOR_QUERY_MAGIC_V3,
+        });
         request[8..24].copy_from_slice(&client_nonce);
         origin.write_first_successor(&request)?;
         origin.receive_first_successor_exact(56, hello, received)?;
-        if hello.get(..8) != Some(super::wire::ROOT_FIRST_SOURCE_SUCCESSOR_HELLO_MAGIC_V2.as_slice())
-            || hello[8..16] != [0, 2, 0, 0, 0, 0, 0, 0]
+        let magic = match recipe {
+            super::wire::FirstSuccessorWireRecipeV3::StrictV2 => super::wire::ROOT_FIRST_SOURCE_SUCCESSOR_HELLO_MAGIC_V2,
+            super::wire::FirstSuccessorWireRecipeV3::MixedV3 => super::wire::ROOT_PROJECT_SOURCE_SUCCESSOR_HELLO_MAGIC_V3,
+        };
+        if hello.get(..8) != Some(magic.as_slice())
+            || hello[8..16] != [0, recipe.version() as u8, 0, 0, 0, 0, 0, 0]
             || take::<16>(hello, 16)? != client_nonce || take::<16>(hello, 32)? == [0; 16]
             || u32::from_be_bytes(take(hello, 48)?) != origin.source_uid
             || u32::from_be_bytes(take(hello, 52)?) != controller_uid
@@ -291,6 +444,112 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
         }
         origin.nonce = take(hello, 32)?;
         origin.recheck()
+    }
+
+    pub(super) fn connect_project_genesis_parked_v3(
+        profile: &'profile ProductionControllerNormalRootProfileV1,
+        raw: &mut Option<OwnedFd>, adopted: &mut Option<RetainedUnixStream>,
+        parked: &mut Option<Self>, hello: &mut Vec<u8>,
+        received: &mut Option<Result<UnixStreamSubjectChunk, aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1>>,
+        controller_uid: u32,
+    ) -> Result<(), SourceGenesisErrorV1> {
+        let client_nonce = Self::park_connection(profile, raw, adopted, parked)?;
+        let origin = parked.as_mut().ok_or(SourceGenesisErrorV1::Stale)?;
+        let mut request = [0; 32];
+        request[..8].copy_from_slice(super::wire::ROOT_SOURCE_PROJECT_GENESIS_QUERY_MAGIC_V3);
+        request[8..24].copy_from_slice(&client_nonce);
+        origin.write_first_successor(&request)?;
+        origin.receive_first_successor_exact(56, hello, received)?;
+        if hello.get(..8) != Some(super::wire::ROOT_SOURCE_PROJECT_GENESIS_HELLO_MAGIC_V3.as_slice())
+            || hello[8..16] != [0, 3, 0, 0, 0, 0, 0, 0]
+            || take::<16>(hello, 16)? != client_nonce || take::<16>(hello, 32)? == [0; 16]
+            || u32::from_be_bytes(take(hello, 48)?) != origin.source_uid
+            || u32::from_be_bytes(take(hello, 52)?) != controller_uid
+        { return Err(SourceGenesisErrorV1::NonCanonical); }
+        origin.nonce = take(hello, 32)?;
+        origin.first_successor_clock().map(|_| ())
+    }
+
+    pub(super) fn send_project_genesis_phase_v3(
+        &self, phase: Phase, payload: &[u8], io: &mut ProjectGenesisFlightIoV3,
+    ) -> Result<(), ()> {
+        if io.action.is_some() { return Err(()); }
+        io.action = Some((|| {
+            super::wire::encode_root_source_project_genesis_frame_v3(&mut io.outgoing, phase, self.nonce, payload)?;
+            self.write_first_successor(&io.outgoing)?;
+            Ok(phase)
+        })());
+        io.posts(self);
+        if io.error().is_some() { Err(()) } else { Ok(()) }
+    }
+
+    pub(super) fn receive_project_genesis_phase_v3(
+        &self, allowed: &[Phase], io: &mut ProjectGenesisFlightIoV3,
+    ) -> Result<Phase, ()> {
+        if io.action.is_some() { return Err(()); }
+        io.action = Some((|| {
+            let position = if allowed == [Phase::Finish] { FirstSuccessorReceivePositionV2::Finished } else { FirstSuccessorReceivePositionV2::Open };
+            self.receive_first_successor_at_position(32, &mut io.header, &mut io.received, position)?;
+            let phase = allowed.iter().copied().find(|phase| io.header.get(..8) == Some(phase.project_magic_v3().as_slice()))
+                .ok_or(SourceGenesisErrorV1::NonCanonical)?;
+            if io.header[8..16] != [0, 3, 0, 0, 0, 0, 0, 0]
+                || take::<16>(&io.header, 16)? != self.nonce
+            { return Err(SourceGenesisErrorV1::NonCanonical); }
+            self.receive_first_successor_at_position(phase.payload_bytes(), &mut io.payload, &mut io.received, position)?;
+            Ok(phase)
+        })());
+        io.posts(self);
+        if io.error().is_some() { Err(()) } else {
+            io.action.as_ref().and_then(|result| result.as_ref().ok()).copied().ok_or(())
+        }
+    }
+
+    pub(super) fn project_genesis_reply_from_received_v3<'flight>(
+        &'flight self, controller: &HeldControllerSourceGenesisV1<'_>,
+        phase: Phase, payload: &[u8],
+    ) -> Result<OriginalRootProjectGenesisReplyV3<'flight>, SourceGenesisErrorV1> {
+        if phase == Phase::Anchored {
+            return self.project_genesis_floor_from_received_v3(controller, payload)
+                .map(OriginalRootProjectGenesisReplyV3::Anchored);
+        }
+        if phase != Phase::Prepared || payload.len() != phase.payload_bytes() { return Err(SourceGenesisErrorV1::NonCanonical); }
+        let expires = i64::from_be_bytes(take(payload, 0)?);
+        let record = RootSourceGenesisIntentRecordV1::from_record_bytes(&payload[8..])?;
+        if record.accepted_input() != controller.acceptance() || record.source_uid() != self.source_uid {
+            return Err(SourceGenesisErrorV1::Conflict);
+        }
+        let deadline = self.clock.boottime_nanoseconds().checked_add(
+            MAXIMUM_FLIGHT.as_nanos().try_into().map_err(|_| SourceGenesisErrorV1::NonCanonical)?,
+        ).ok_or(SourceGenesisErrorV1::NonCanonical)?;
+        self.first_successor_clock()?;
+        controller.recheck()?;
+        Ok(OriginalRootProjectGenesisReplyV3::Prepared(HeldRootSourceProjectGenesisIntentV3 {
+            original: HeldRootSourceGenesisIntentV1 { origin: self, record, deadline, expires },
+        }))
+    }
+
+    pub(super) fn project_genesis_floor_from_received_v3<'flight>(
+        &'flight self, controller: &HeldControllerSourceGenesisV1<'_>, payload: &[u8],
+    ) -> Result<RootSourceProjectGenesisFloorProofV3<'flight>, SourceGenesisErrorV1> {
+        let floor = SourceHierarchyFloorRecordV1::from_record_bytes(payload)?;
+        let receipt = floor.receipt();
+        let accepted = controller.acceptance();
+        if floor.project() != accepted.project() || receipt.acceptance_digest() != accepted.digest()
+            || &receipt.seed_packet() != accepted.seed_packet() || &receipt.auth_packet() != accepted.auth_packet()
+        { return Err(SourceGenesisErrorV1::Conflict); }
+        self.first_successor_clock()?;
+        controller.recheck()?;
+        Ok(RootSourceProjectGenesisFloorProofV3 { original: RootSourceGenesisFloorProofV1 { origin: self, floor } })
+    }
+
+    pub(super) fn completed_project_genesis_from_received_v3<'completed, 'flight>(
+        &self, floor: &'completed RootSourceProjectGenesisFloorProofV3<'flight>, payload: &[u8],
+    ) -> Result<CompletedRootSourceProjectGenesisFloorV3<'completed, 'flight>, SourceGenesisErrorV1> {
+        if !std::ptr::eq(self, floor.original.origin) || payload != floor.floor().digest().as_bytes() {
+            return Err(SourceGenesisErrorV1::Conflict);
+        }
+        floor.recheck()?;
+        Ok(CompletedRootSourceProjectGenesisFloorV3 { proof: floor })
     }
 
     pub(super) fn first_successor_source_uid(&self) -> Result<u32, SourceGenesisErrorV1> {
@@ -645,7 +904,7 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
         self.original_terminal_clock()
     }
 
-    fn original_terminal_clock(&self) -> Result<RawPairedClockSample, SourceGenesisErrorV1> {
+    pub(super) fn original_terminal_clock(&self) -> Result<RawPairedClockSample, SourceGenesisErrorV1> {
         if self.poisoned.get() || self.started.elapsed() >= MAXIMUM_FLIGHT {
             return Err(SourceGenesisErrorV1::Stale);
         }

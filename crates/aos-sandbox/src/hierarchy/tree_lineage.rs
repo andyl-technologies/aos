@@ -435,6 +435,19 @@ pub(crate) fn validate_source_project_continuation_members_v3(
     )
 }
 
+/// Compares the whole family while only the selected initial project may await ACK.
+pub(crate) fn validate_source_project_genesis_members_v3(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    receipts: &BTreeMap<ProjectId, crate::policy_compiler::SourceFirstSuccessorReceiptV2>,
+    selected: ProjectId,
+) -> Result<(), JournalError> {
+    validate_source_successor_members(
+        state,
+        SourceSuccessorMemberRecipe::MixedGenesisV3 { receipts, selected },
+        None,
+    )
+}
+
 // Recipes select a complete DATA comparison, never a writer or currentness
 // permit. Prospective members borrow the real before-map and actual pair.
 enum SourceSuccessorMemberRecipe<'receipt> {
@@ -443,6 +456,10 @@ enum SourceSuccessorMemberRecipe<'receipt> {
         receipts: &'receipt BTreeMap<ProjectId, crate::policy_compiler::SourceFirstSuccessorReceiptV2>,
         proposed: Option<&'receipt crate::policy_compiler::SourceFirstSuccessorReceiptV2>,
     },
+    MixedGenesisV3 {
+        receipts: &'receipt BTreeMap<ProjectId, crate::policy_compiler::SourceFirstSuccessorReceiptV2>,
+        selected: ProjectId,
+    },
 }
 
 impl SourceSuccessorMemberRecipe<'_> {
@@ -450,6 +467,7 @@ impl SourceSuccessorMemberRecipe<'_> {
         match self {
             Self::SingleProjectV2(receipt) => Some(receipt),
             Self::MixedProjectsV3 { proposed, .. } => *proposed,
+            Self::MixedGenesisV3 { .. } => None,
         }
     }
 
@@ -459,6 +477,7 @@ impl SourceSuccessorMemberRecipe<'_> {
             Self::MixedProjectsV3 { receipts, proposed } => proposed
                 .filter(|receipt| receipt.project() == project)
                 .or_else(|| receipts.get(&project)),
+            Self::MixedGenesisV3 { receipts, .. } => receipts.get(&project),
         }
     }
 }
@@ -514,13 +533,25 @@ fn validate_source_successor_members(
         replay_closed_tree_lineage_state_v2(state).map_err(|_| invalid())?
     };
     let genesis = crate::journal::source_tree_genesis::current_rows(state)?;
-    if genesis.pending.is_some() || genesis.receipts.len() != heads.len() {
+    let selected_genesis = match &recipe {
+        SourceSuccessorMemberRecipe::MixedGenesisV3 { selected, .. } => Some(*selected),
+        _ => None,
+    };
+    if genesis.pending.as_ref().is_some_and(|pending| selected_genesis != Some(pending.project))
+        || genesis.receipts.len() != heads.len()
+    {
         return Err(invalid());
     }
 
     for (project, head) in &heads {
         let original = genesis.receipts.get(project).ok_or_else(invalid)?;
-        let original_ack = genesis.acks.get(project).ok_or_else(invalid)?;
+        let original_ack = if selected_genesis == Some(*project)
+            && genesis.pending.as_ref().is_some_and(|pending| pending.project == *project)
+        {
+            None
+        } else {
+            Some(genesis.acks.get(project).ok_or_else(invalid)?)
+        };
         let (tree_head, lineage_head, tree_member, lineage_member) =
             reconstructed_genesis_members_v2(state, *project, &original.seed_packet())
                 .map_err(|_| invalid())?;
@@ -538,6 +569,8 @@ fn validate_source_successor_members(
             }
             continue;
         }
+
+        let original_ack = original_ack.ok_or_else(invalid)?;
 
         let mut records = head.tree.records();
         let record = records.next().ok_or_else(invalid)?;
@@ -568,6 +601,13 @@ fn validate_source_successor_members(
         SourceSuccessorMemberRecipe::MixedProjectsV3 { receipts, proposed } => {
             if receipts.keys().any(|project| !heads.contains_key(project))
                 || proposed.is_some_and(|receipt| !heads.contains_key(&receipt.project()))
+            {
+                return Err(invalid());
+            }
+        }
+        SourceSuccessorMemberRecipe::MixedGenesisV3 { receipts, selected } => {
+            if receipts.contains_key(&selected)
+                || receipts.keys().any(|project| !heads.contains_key(project))
             {
                 return Err(invalid());
             }

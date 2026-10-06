@@ -24,6 +24,32 @@ pub const ROOT_FIRST_SOURCE_SUCCESSOR_QUERY_MAGIC_V2: &[u8; 8] = b"AOSSSQ02";
 
 /// Identifies the first-successor configuration hello on the original flight.
 pub const ROOT_FIRST_SOURCE_SUCCESSOR_HELLO_MAGIC_V2: &[u8; 8] = b"AOSSSH02";
+/// Selects only the explicit mixed-family successor endpoint recipe.
+pub const ROOT_PROJECT_SOURCE_SUCCESSOR_QUERY_MAGIC_V3: &[u8; 8] = b"AOSSSQ03";
+/// Identifies the mixed successor hello on the same original endpoint.
+pub const ROOT_PROJECT_SOURCE_SUCCESSOR_HELLO_MAGIC_V3: &[u8; 8] = b"AOSSSH03";
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum FirstSuccessorWireRecipeV3 { StrictV2, MixedV3 }
+
+impl FirstSuccessorWireRecipeV3 {
+    pub(super) const fn version(self) -> u16 {
+        match self { Self::StrictV2 => 2, Self::MixedV3 => 3 }
+    }
+
+    pub(super) const fn magic(self, phase: RootFirstSourceSuccessorFrameKindV2) -> &'static [u8; 8] {
+        if matches!(self, Self::StrictV2) { return phase.magic(); }
+        match phase {
+            RootFirstSourceSuccessorFrameKindV2::Prepare => b"AOSCFP03",
+            RootFirstSourceSuccessorFrameKindV2::Prepared => b"AOSCFI03",
+            RootFirstSourceSuccessorFrameKindV2::Anchor => b"AOSCFA03",
+            RootFirstSourceSuccessorFrameKindV2::Anchored => b"AOSCFR03",
+            RootFirstSourceSuccessorFrameKindV2::Complete => b"AOSCFC03",
+            RootFirstSourceSuccessorFrameKindV2::Completed => b"AOSCFD03",
+            RootFirstSourceSuccessorFrameKindV2::Finish => b"AOSCFE03",
+        }
+    }
+}
 
 /// Selects one exact first-successor frame, never a genesis or Q04 frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -78,6 +104,24 @@ pub fn encode_root_first_source_successor_frame_v2(
     nonce: [u8; 16],
     payload: &[u8],
 ) -> Result<(), SourceGenesisErrorV1> {
+    encode_first_successor_with_recipe(output, phase, nonce, payload, FirstSuccessorWireRecipeV3::StrictV2)
+}
+
+/// Encodes only the reserved version-three mixed successor purpose.
+///
+/// # Errors
+/// Rejects sentinel nonce, wrong exact width, growth or an occupied output.
+pub fn encode_root_project_source_successor_frame_v3(
+    output: &mut Vec<u8>, phase: RootFirstSourceSuccessorFrameKindV2,
+    nonce: [u8; 16], payload: &[u8],
+) -> Result<(), SourceGenesisErrorV1> {
+    encode_first_successor_with_recipe(output, phase, nonce, payload, FirstSuccessorWireRecipeV3::MixedV3)
+}
+
+pub(super) fn encode_first_successor_with_recipe(
+    output: &mut Vec<u8>, phase: RootFirstSourceSuccessorFrameKindV2,
+    nonce: [u8; 16], payload: &[u8], recipe: FirstSuccessorWireRecipeV3,
+) -> Result<(), SourceGenesisErrorV1> {
     if !output.is_empty() || nonce == [0; 16] || payload.len() != phase.payload_bytes() {
         return Err(SourceGenesisErrorV1::NonCanonical);
     }
@@ -87,7 +131,7 @@ pub fn encode_root_first_source_successor_frame_v2(
     }
     output.try_reserve_exact(length).map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
     output.resize(length, 0);
-    write_frame_header(output, phase.magic(), 2, nonce);
+    write_frame_header(output, recipe.magic(phase), recipe.version(), nonce);
     output[ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1..].copy_from_slice(payload);
     Ok(())
 }
@@ -101,9 +145,25 @@ pub fn decode_root_first_source_successor_frame_v2(
     phase: RootFirstSourceSuccessorFrameKindV2,
     nonce: [u8; 16],
 ) -> Result<&[u8], SourceGenesisErrorV1> {
+    decode_first_successor_with_recipe(frame, phase, nonce, FirstSuccessorWireRecipeV3::StrictV2)
+}
+
+/// Borrows the exact reserved version-three mixed successor payload.
+///
+/// # Errors
+/// Rejects strict/foreign purpose, version, nonce, padding or exact width.
+pub fn decode_root_project_source_successor_frame_v3(
+    frame: &[u8], phase: RootFirstSourceSuccessorFrameKindV2, nonce: [u8; 16],
+) -> Result<&[u8], SourceGenesisErrorV1> {
+    decode_first_successor_with_recipe(frame, phase, nonce, FirstSuccessorWireRecipeV3::MixedV3)
+}
+
+pub(super) fn decode_first_successor_with_recipe(
+    frame: &[u8], phase: RootFirstSourceSuccessorFrameKindV2, nonce: [u8; 16], recipe: FirstSuccessorWireRecipeV3,
+) -> Result<&[u8], SourceGenesisErrorV1> {
     if frame.len() != ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1 + phase.payload_bytes()
         || frame.len() > 4096
-        || !has_frame_header(frame, phase.magic(), 2, nonce)
+        || !has_frame_header(frame, recipe.magic(phase), recipe.version(), nonce)
     {
         return Err(SourceGenesisErrorV1::NonCanonical);
     }
@@ -154,6 +214,57 @@ impl RootSourceGenesisFrameKindV1 {
             Self::Finish => b"AOSSGE01",
         }
     }
+
+    pub(super) const fn project_magic_v3(self) -> &'static [u8; 8] {
+        match self {
+            Self::Prepare => b"AOSSGP03",
+            Self::Prepared => b"AOSSGI03",
+            Self::Anchor => b"AOSSGF03",
+            Self::Anchored => b"AOSSGA03",
+            Self::Complete => b"AOSSGC03",
+            Self::Completed => b"AOSSGD03",
+            Self::Finish => b"AOSSGE03",
+        }
+    }
+}
+
+/// Selects only the same endpoint's approval-free mixed initial-project purpose.
+pub const ROOT_SOURCE_PROJECT_GENESIS_QUERY_MAGIC_V3: &[u8; 8] = b"AOSSGQ03";
+/// Identifies only the selected original mixed initial-project hello.
+pub const ROOT_SOURCE_PROJECT_GENESIS_HELLO_MAGIC_V3: &[u8; 8] = b"AOSSGH03";
+
+/// Encodes selected comparison DATA into an already resident bounded frame.
+///
+/// # Errors
+/// Rejects foreign width, sentinel nonce or an occupied output slot.
+pub fn encode_root_source_project_genesis_frame_v3(
+    output: &mut Vec<u8>, kind: RootSourceGenesisFrameKindV1,
+    nonce: [u8; 16], payload: &[u8],
+) -> Result<(), SourceGenesisErrorV1> {
+    if !output.is_empty() || nonce == [0; 16] || payload.len() != kind.payload_bytes() {
+        return Err(SourceGenesisErrorV1::NonCanonical);
+    }
+    let length = ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1 + payload.len();
+    output.try_reserve_exact(length).map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
+    output.resize(length, 0);
+    write_frame_header(output, kind.project_magic_v3(), 3, nonce);
+    output[ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1..].copy_from_slice(payload);
+    Ok(())
+}
+
+/// Borrows only the exact selected phase under its distinct version-three header.
+///
+/// # Errors
+/// Rejects old-purpose frames, changed nonce, reserved bytes or fixed width.
+pub fn decode_root_source_project_genesis_frame_v3(
+    frame: &[u8], kind: RootSourceGenesisFrameKindV1, nonce: [u8; 16],
+) -> Result<&[u8], SourceGenesisErrorV1> {
+    if frame.len() != ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1 + kind.payload_bytes()
+        || !has_frame_header(frame, kind.project_magic_v3(), 3, nonce)
+    {
+        return Err(SourceGenesisErrorV1::NonCanonical);
+    }
+    Ok(&frame[ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1..])
 }
 
 /// Encodes one exact phase payload without creating live Root authority.

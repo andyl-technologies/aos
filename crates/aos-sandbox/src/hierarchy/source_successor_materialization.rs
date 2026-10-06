@@ -28,6 +28,9 @@ use crate::policy_compiler::{
     SourceFirstSuccessorAckFieldsV2, SourceFirstSuccessorAckV2,
     SourceFirstSuccessorPendingFieldsV2, SourceFirstSuccessorPendingV2,
     SourceFirstSuccessorReceiptFieldsV2, SourceFirstSuccessorReceiptV2,
+    HeldControllerProjectSuccessorV3, HeldRootProjectSuccessorIntentV3,
+    RootProjectSuccessorFloorProofV3, ControllerSuccessorOwnerViewV3,
+    RootSuccessorIntentViewV3, RootSuccessorFloorViewV3,
 };
 
 use super::codec::tree_commitment_v1;
@@ -204,7 +207,88 @@ pub struct SourceProjectContinuationObservationV3<'source> {
     posts: [Result<(), SourceGenesisErrorV1>; 3],
 }
 
+// This terminal evidence owns every decoded field, but no Journal reference.
+// There is deliberately no conversion from it back into a live observation.
+pub(crate) struct SourceProjectContinuationEvidenceV3 {
+    action: Result<SourceProjectContinuationDataV3, SourceGenesisErrorV1>,
+    posts: [Result<(), SourceGenesisErrorV1>; 3],
+}
+
+struct SourceProjectContinuationDataV3 {
+    uid: u32,
+    project: ProjectId,
+    names: ProtectedJournalNamesV1,
+    sequence: u64,
+    state: SourceFirstSuccessorStateV2,
+    genesis: crate::journal::source_tree_genesis::SourceGenesisRowsV1,
+    successor: SourceFirstSuccessorRowsV2,
+    tree_head: ObjectDigest,
+    lineage_head: ObjectDigest,
+    tree_commit: ObjectDigest,
+    generation: u64,
+    recipe: SourceSuccessorFamilyRecipeV3,
+}
+
+impl SourceProjectContinuationEvidenceV3 {
+    pub(crate) fn error(&self) -> Option<&SourceGenesisErrorV1> {
+        self.action.as_ref().err()
+            .or_else(|| self.posts.iter().find_map(|post| post.as_ref().err()))
+    }
+
+    pub(crate) fn post_failures(&self) -> impl Iterator<Item = &SourceGenesisErrorV1> {
+        self.posts.iter().filter_map(|post| post.as_ref().err())
+    }
+}
+
+// A short private comparison view preserves the public purpose boundary.
+// The mixed variant never exposes the shared strict-typed storage to callers.
+#[derive(Clone, Copy)]
+pub(crate) enum SourceSuccessorObservationViewV3<'loan, 'source> {
+    Strict(&'loan HeldSourceFirstSuccessorObservationV2<'source>),
+    Mixed(&'loan SourceProjectContinuationObservationV3<'source>),
+}
+
+impl<'loan, 'source> SourceSuccessorObservationViewV3<'loan, 'source> {
+    fn data(&self) -> Result<&HeldSourceFirstSuccessorObservationV2<'source>, SourceGenesisErrorV1> {
+        match self {
+            Self::Strict(data) => Ok(data),
+            Self::Mixed(data) => {
+                if data.error().is_some() { return Err(SourceGenesisErrorV1::Stale); }
+                data.action.as_ref().map_err(|_| SourceGenesisErrorV1::Stale)
+            }
+        }
+    }
+
+    pub(crate) fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
+        match self { Self::Strict(data) => data.recheck(), Self::Mixed(data) => data.recheck() }
+    }
+
+    pub(crate) fn state(&self) -> Result<SourceFirstSuccessorStateV2, SourceGenesisErrorV1> { Ok(self.data()?.state()) }
+    pub(crate) fn project(&self) -> Result<ProjectId, SourceGenesisErrorV1> { Ok(self.data()?.project()) }
+    pub(crate) fn source_uid(&self) -> Result<u32, SourceGenesisErrorV1> { Ok(self.data()?.source_uid()) }
+    pub(crate) fn names(&self) -> Result<ProtectedJournalNamesV1, SourceGenesisErrorV1> { Ok(self.data()?.names()) }
+    pub(crate) fn snapshot_sequence(&self) -> Result<u64, SourceGenesisErrorV1> { Ok(self.data()?.snapshot_sequence()) }
+    pub(crate) fn genesis_receipt(&self) -> Option<&SourceTreeGenesisReceiptV1> { self.data().ok()?.genesis_receipt() }
+    pub(crate) fn genesis_root_floor(&self) -> Option<ObjectDigest> { self.data().ok()?.genesis_root_floor() }
+    pub(crate) fn receipt(&self) -> Option<&SourceFirstSuccessorReceiptV2> { self.data().ok()?.receipt() }
+    pub(crate) fn ack(&self) -> Option<&SourceFirstSuccessorAckV2> { self.data().ok()?.ack() }
+}
+
 impl SourceProjectContinuationObservationV3<'_> {
+    pub(crate) fn into_evidence_v3(self) -> SourceProjectContinuationEvidenceV3 {
+        let action = self.action.map(|observed| {
+            let HeldSourceFirstSuccessorObservationV2 {
+                journal: _, uid, project, names, sequence, state, genesis,
+                successor, tree_head, lineage_head, tree_commit, generation, recipe,
+            } = observed;
+            SourceProjectContinuationDataV3 {
+                uid, project, names, sequence, state, genesis, successor,
+                tree_head, lineage_head, tree_commit, generation, recipe,
+            }
+        });
+        SourceProjectContinuationEvidenceV3 { action, posts: self.posts }
+    }
+
     /// Borrows the earliest actual action or independent bookend failure.
     pub fn error(&self) -> Option<&SourceGenesisErrorV1> {
         self.action.as_ref().err().or_else(|| self.posts.iter().find_map(|post| post.as_ref().err()))
@@ -491,7 +575,8 @@ pub fn append_source_first_successor_v2(
     results: &mut SourceFirstSuccessorMutationResultsV2,
 ) -> Result<SourceFirstSuccessorReceiptV2, ()> {
     append_source_successor_with_recipe(
-        source, controller, root, results, SourceSuccessorFamilyRecipeV3::SingleProjectV2,
+        source, ControllerSuccessorOwnerViewV3::Strict(controller), RootSuccessorIntentViewV3::Strict(root),
+        results, SourceSuccessorFamilyRecipeV3::SingleProjectV2,
     )
 }
 
@@ -506,18 +591,18 @@ pub fn append_source_first_successor_v2(
 /// changed original admission, native ambiguity or independent post debt.
 pub(crate) fn append_source_project_continuation_v3(
     source: &mut ProtectedSourceDomainJournalOwnerV1,
-    controller: &HeldControllerFirstSourceSuccessorV2<'_>,
-    root: &HeldRootFirstSourceSuccessorIntentV2<'_>,
+    controller: &HeldControllerProjectSuccessorV3<'_>,
+    root: &HeldRootProjectSuccessorIntentV3<'_>,
     results: &mut SourceFirstSuccessorMutationResultsV2,
 ) -> Result<SourceFirstSuccessorReceiptV2, ()> {
-    append_source_successor_with_recipe(source, controller, root, results,
+    append_source_successor_with_recipe(source, ControllerSuccessorOwnerViewV3::Mixed(controller), RootSuccessorIntentViewV3::Mixed(root), results,
         SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected: Some(root.record().project()) })
 }
 
 fn append_source_successor_with_recipe(
     source: &mut ProtectedSourceDomainJournalOwnerV1,
-    controller: &HeldControllerFirstSourceSuccessorV2<'_>,
-    root: &HeldRootFirstSourceSuccessorIntentV2<'_>,
+    controller: ControllerSuccessorOwnerViewV3<'_, '_>,
+    root: RootSuccessorIntentViewV3<'_, '_>,
     results: &mut SourceFirstSuccessorMutationResultsV2,
     recipe: SourceSuccessorFamilyRecipeV3,
 ) -> Result<SourceFirstSuccessorReceiptV2, ()> {
@@ -551,9 +636,15 @@ fn append_source_successor_with_recipe(
                 results.crossing_clock = Some(root.current_admission_clock());
             }
             if matches!(results.crossing_clock, Some(Ok(_))) {
-                results.native = Some(journal.commit_first_source_successor_v2(
-                    &results.transactions[0], selected_native_phase(recipe, FirstSourceSuccessorNativePhaseV2::SourceAppend),
-                ));
+                results.native = Some(match recipe {
+                    SourceSuccessorFamilyRecipeV3::SingleProjectV2 => journal.commit_first_source_successor_v2(
+                        &results.transactions[0], selected_native_phase(recipe, FirstSourceSuccessorNativePhaseV2::SourceAppend),
+                    ),
+                    SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { .. } => journal.commit_selected_source_successor_v3(
+                        &results.transactions[0], selected_native_phase(recipe, FirstSourceSuccessorNativePhaseV2::SourceAppend),
+                        crate::journal::source_tree_successor::FirstSuccessorNativeCutV3::SourcePrepared(root),
+                    ),
+                });
             }
         }
     }
@@ -584,8 +675,8 @@ fn append_source_successor_with_recipe(
 
 fn prepare_append(
     journal: &mut Journal,
-    controller: &HeldControllerFirstSourceSuccessorV2<'_>,
-    root: &HeldRootFirstSourceSuccessorIntentV2<'_>,
+    controller: ControllerSuccessorOwnerViewV3<'_, '_>,
+    root: RootSuccessorIntentViewV3<'_, '_>,
     results: &mut SourceFirstSuccessorMutationResultsV2,
 ) -> Result<(), SourceGenesisErrorV1> {
     prepare_append_with_recipe(journal, controller, root, results,
@@ -594,8 +685,8 @@ fn prepare_append(
 
 fn prepare_append_with_recipe(
     journal: &mut Journal,
-    controller: &HeldControllerFirstSourceSuccessorV2<'_>,
-    root: &HeldRootFirstSourceSuccessorIntentV2<'_>,
+    controller: ControllerSuccessorOwnerViewV3<'_, '_>,
+    root: RootSuccessorIntentViewV3<'_, '_>,
     results: &mut SourceFirstSuccessorMutationResultsV2,
     recipe: SourceSuccessorFamilyRecipeV3,
 ) -> Result<(), SourceGenesisErrorV1> {
@@ -721,7 +812,7 @@ pub fn acknowledge_source_first_successor_v2(
     root: &RootFirstSourceSuccessorFloorProofV2<'_>,
     results: &mut SourceFirstSuccessorMutationResultsV2,
 ) -> Result<SourceFirstSuccessorAckV2, ()> {
-    acknowledge_source_successor_with_recipe(source, controller, root, results,
+    acknowledge_source_successor_with_recipe(source, ControllerSuccessorOwnerViewV3::Strict(controller), RootSuccessorFloorViewV3::Strict(root), results,
         SourceSuccessorFamilyRecipeV3::SingleProjectV2)
 }
 
@@ -732,18 +823,18 @@ pub fn acknowledge_source_first_successor_v2(
 /// unjoined foreign members, ambiguity or independent owner/clock debt.
 pub(crate) fn acknowledge_source_project_continuation_v3(
     source: &mut ProtectedSourceDomainJournalOwnerV1,
-    controller: &HeldControllerFirstSourceSuccessorV2<'_>,
-    root: &RootFirstSourceSuccessorFloorProofV2<'_>,
+    controller: &HeldControllerProjectSuccessorV3<'_>,
+    root: &RootProjectSuccessorFloorProofV3<'_>,
     results: &mut SourceFirstSuccessorMutationResultsV2,
 ) -> Result<SourceFirstSuccessorAckV2, ()> {
-    acknowledge_source_successor_with_recipe(source, controller, root, results,
+    acknowledge_source_successor_with_recipe(source, ControllerSuccessorOwnerViewV3::Mixed(controller), RootSuccessorFloorViewV3::Mixed(root), results,
         SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected: Some(root.floor().receipt().project()) })
 }
 
 fn acknowledge_source_successor_with_recipe(
     source: &mut ProtectedSourceDomainJournalOwnerV1,
-    controller: &HeldControllerFirstSourceSuccessorV2<'_>,
-    root: &RootFirstSourceSuccessorFloorProofV2<'_>,
+    controller: ControllerSuccessorOwnerViewV3<'_, '_>,
+    root: RootSuccessorFloorViewV3<'_, '_>,
     results: &mut SourceFirstSuccessorMutationResultsV2,
     recipe: SourceSuccessorFamilyRecipeV3,
 ) -> Result<SourceFirstSuccessorAckV2, ()> {
@@ -773,9 +864,15 @@ fn acknowledge_source_successor_with_recipe(
                 results.crossing_clock = Some(root.observe_original_clock());
             }
             if matches!(results.crossing_clock, Some(Ok(_))) {
-                results.native = Some(journal.commit_first_source_successor_v2(
-                    &results.transactions[0], selected_native_phase(recipe, FirstSourceSuccessorNativePhaseV2::SourceAck),
-                ));
+                results.native = Some(match recipe {
+                    SourceSuccessorFamilyRecipeV3::SingleProjectV2 => journal.commit_first_source_successor_v2(
+                        &results.transactions[0], selected_native_phase(recipe, FirstSourceSuccessorNativePhaseV2::SourceAck),
+                    ),
+                    SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { .. } => journal.commit_selected_source_successor_v3(
+                        &results.transactions[0], selected_native_phase(recipe, FirstSourceSuccessorNativePhaseV2::SourceAck),
+                        crate::journal::source_tree_successor::FirstSuccessorNativeCutV3::Settled(root),
+                    ),
+                });
             }
         }
     }
@@ -801,8 +898,8 @@ fn acknowledge_source_successor_with_recipe(
 
 fn prepare_ack(
     journal: &mut Journal,
-    controller: &HeldControllerFirstSourceSuccessorV2<'_>,
-    root: &RootFirstSourceSuccessorFloorProofV2<'_>,
+    controller: ControllerSuccessorOwnerViewV3<'_, '_>,
+    root: RootSuccessorFloorViewV3<'_, '_>,
     results: &mut SourceFirstSuccessorMutationResultsV2,
 ) -> Result<(), SourceGenesisErrorV1> {
     prepare_ack_with_recipe(journal, controller, root, results,
@@ -811,8 +908,8 @@ fn prepare_ack(
 
 fn prepare_ack_with_recipe(
     journal: &mut Journal,
-    controller: &HeldControllerFirstSourceSuccessorV2<'_>,
-    root: &RootFirstSourceSuccessorFloorProofV2<'_>,
+    controller: ControllerSuccessorOwnerViewV3<'_, '_>,
+    root: RootSuccessorFloorViewV3<'_, '_>,
     results: &mut SourceFirstSuccessorMutationResultsV2,
     recipe: SourceSuccessorFamilyRecipeV3,
 ) -> Result<(), SourceGenesisErrorV1> {
