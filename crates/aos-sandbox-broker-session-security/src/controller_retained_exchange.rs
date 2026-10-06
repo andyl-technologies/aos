@@ -58,10 +58,12 @@ struct PendingExchangeV1<C> {
 enum ExchangeDispositionV1 {
     Legacy,
     Generation,
+    ExecutionPublication,
 }
 
 enum GenerationExchangeCauseV1 {
     Session(crate::BrokerSessionSecurityError),
+    Transport(crate::DormantBrokerSessionHandshakeErrorV1),
     Wait(crate::DormantBrokerSessionHandshakeErrorV1),
     Response,
 }
@@ -73,7 +75,13 @@ pub(crate) struct RetainedBrokerExchangeV1<C> {
     original_context: Option<C>,
     original_outcome: Option<AuthenticatedBrokerMethodOutcomeV1>,
     original_cause: Option<GenerationExchangeCauseV1>,
-    original_response: Option<Result<DormantBrokerResponseProgressV1, crate::BrokerSessionSecurityError>>,
+    original_response: Option<Result<DormantBrokerResponseProgressV1, crate::DormantBrokerSessionHandshakeErrorV1>>,
+    execution_currentness: Option<crate::ProtectedBrokerOutcomeCurrentnessOwnerV1>,
+    execution_send: Option<Result<DormantBrokerRequestSendProgressV1,
+        (DormantPreparedBrokerRequestV1, crate::DormantBrokerSessionHandshakeErrorV1)>>,
+    execution_receive: Option<Result<DormantBrokerResponseProgressV1,
+        (DormantOutstandingBrokerRequestV1, crate::DormantBrokerSessionHandshakeErrorV1)>>,
+    execution_response_data: crate::dormant_handshake::ExecutionPublicationReceiveCustodyV1,
 }
 
 impl<C> Default for RetainedBrokerExchangeV1<C> {
@@ -85,6 +93,10 @@ impl<C> Default for RetainedBrokerExchangeV1<C> {
             original_outcome: None,
             original_cause: None,
             original_response: None,
+            execution_currentness: None,
+            execution_send: None,
+            execution_receive: None,
+            execution_response_data: Default::default(),
         }
     }
 }
@@ -174,6 +186,38 @@ impl<C> RetainedBrokerExchangeV1<C> {
             .map(|_| ())
     }
 
+    /// Transfers the genuinely committed terminal to its execution consumer.
+    ///
+    /// The consumer must retain this owner through projection and postcheck;
+    /// this seam performs no additional admission and never recovers ambiguity.
+    ///
+    /// # Errors
+    ///
+    /// Retains original request, response and actual cause on failed delivery.
+    pub(crate) fn drive_execution_publication(
+        &mut self,
+        session: &mut DormantAuthenticatedBrokerSessionV1,
+        errors: &RetainedExchangeErrorsV1,
+    ) -> Result<
+        (C, AuthenticatedBrokerMethodOutcomeV1, crate::ProtectedBrokerOutcomeCurrentnessOwnerV1),
+        EffectFailure,
+    > {
+        if self.failed { return self.fail(errors); }
+        // A preceding healthy delivery has released its DATA, not authority.
+        // Failed attempts cannot enter here and cannot overwrite this archive.
+        self.execution_response_data = Default::default();
+        self.drive_with_disposition(session, errors, ExchangeDispositionV1::ExecutionPublication)?;
+        match (self.original_context.take(), self.original_outcome.take(), self.execution_currentness.take()) {
+            (Some(context), Some(outcome), Some(currentness)) => Ok((context, outcome, currentness)),
+            (context, outcome, currentness) => {
+                self.original_context = context;
+                self.original_outcome = outcome;
+                self.execution_currentness = currentness;
+                self.fail(errors)
+            }
+        }
+    }
+
     pub(crate) fn generation_outcome(&self) -> Option<&AuthenticatedBrokerMethodOutcomeV1> {
         if self.failed { return None; }
         self.original_outcome.as_ref()
@@ -182,6 +226,7 @@ impl<C> RetainedBrokerExchangeV1<C> {
     pub(crate) fn generation_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self.original_cause.as_ref()? {
             GenerationExchangeCauseV1::Session(error) => Some(error),
+            GenerationExchangeCauseV1::Transport(error) => Some(error),
             GenerationExchangeCauseV1::Wait(error) => Some(error),
             GenerationExchangeCauseV1::Response => match self.original_response.as_ref()? {
                 Err(error) => Some(error),
@@ -190,6 +235,22 @@ impl<C> RetainedBrokerExchangeV1<C> {
                 )) => Some(error),
                 _ => None,
             },
+        }
+    }
+
+    /// Borrows an execution transport refusal without taking its resident cause.
+    pub(crate) fn execution_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        if let Some(Err(error)) = &self.execution_response_data.decoded { return Some(error); }
+        if let Some(error) = &self.execution_response_data.native_error { return Some(error); }
+        if let Some(Err((_, error))) = &self.execution_send { return Some(error); }
+        if let Some(Err((_, error))) = &self.execution_receive { return Some(error); }
+        if let Some(Ok(DormantBrokerResponseProgressV1::Committed(
+            ProtectedBrokerOutcomeCommitResultV1::RecoveryRequired { error, .. }))) = &self.execution_receive
+        { return Some(error); }
+        if let Some(error) = self.generation_failure() { return Some(error); }
+        match &self.pending.as_ref()?.stage {
+            ExchangeStageV1::DescriptorSendRecovery(recovery) => Some(recovery.error()),
+            _ => None,
         }
     }
 
@@ -217,8 +278,15 @@ impl<C> RetainedBrokerExchangeV1<C> {
                 self.pending = Some(pending);
                 return self.fail(errors);
             }
+            if matches!(disposition, ExchangeDispositionV1::ExecutionPublication)
+                && !matches!(&pending.stage,
+                    ExchangeStageV1::Send(_) | ExchangeStageV1::DescriptorSend(_) | ExchangeStageV1::Receive(_))
+            {
+                self.pending = Some(pending);
+                return self.fail(errors);
+            }
             let mut context = pending.context;
-            if matches!(disposition, ExchangeDispositionV1::Generation) {
+            if !matches!(disposition, ExchangeDispositionV1::Legacy) {
                 if let Some(context) = context.take() {
                     self.original_context = Some(context);
                 }
@@ -274,7 +342,12 @@ impl<C> RetainedBrokerExchangeV1<C> {
                 }
                 ExchangeStageV1::Send(prepared) => {
                     let deadline = prepared.deadline_boottime_nanoseconds();
-                    match session.send_authenticated_request(prepared) {
+                    let sent = if matches!(disposition, ExchangeDispositionV1::ExecutionPublication) {
+                        Ok(self.send_execution_publication(session, prepared, errors)?)
+                    } else {
+                        session.send_authenticated_request(prepared)
+                    };
+                    match sent {
                         Ok(DormantBrokerRequestSendProgressV1::Sent(outstanding)) => {
                             ExchangeStageV1::Receive(outstanding)
                         }
@@ -289,7 +362,7 @@ impl<C> RetainedBrokerExchangeV1<C> {
                             ExchangeStageV1::Send(prepared)
                         }
                         Err(error) => {
-                            self.retain_generation_session_error(error, disposition);
+                            self.retain_generation_transport_error(error, disposition);
                             return self.fail(errors);
                         }
                     }
@@ -312,7 +385,16 @@ impl<C> RetainedBrokerExchangeV1<C> {
                         }
                         DormantBrokerDescriptorRequestSendProgressV1::RecoveryRequired(
                             recovery,
-                        ) => ExchangeStageV1::DescriptorSendRecovery(recovery),
+                        ) => {
+                            if matches!(disposition, ExchangeDispositionV1::ExecutionPublication) {
+                                self.pending = Some(PendingExchangeV1 {
+                                    context,
+                                    stage: ExchangeStageV1::DescriptorSendRecovery(recovery),
+                                });
+                                return self.fail(errors);
+                            }
+                            ExchangeStageV1::DescriptorSendRecovery(recovery)
+                        }
                     }
                 }
                 ExchangeStageV1::DescriptorSendRecovery(recovery) => {
@@ -338,7 +420,9 @@ impl<C> RetainedBrokerExchangeV1<C> {
                 }
                 ExchangeStageV1::Receive(outstanding) => {
                     let deadline = outstanding.deadline_boottime_nanoseconds();
-                    let received = if matches!(disposition, ExchangeDispositionV1::Generation) {
+                    let received = if matches!(disposition, ExchangeDispositionV1::ExecutionPublication) {
+                        Ok(self.receive_execution_publication(session, outstanding, errors)?)
+                    } else if matches!(disposition, ExchangeDispositionV1::Generation) {
                         Ok(self.receive_generation(session, outstanding, errors)?)
                     } else {
                         session.receive_authenticated_response(outstanding)
@@ -363,7 +447,7 @@ impl<C> RetainedBrokerExchangeV1<C> {
                             },
                         )) => ExchangeStageV1::Commit(recovery),
                         Err(error) => {
-                            self.retain_generation_session_error(error, disposition);
+                            self.retain_generation_transport_error(error, disposition);
                             return self.fail(errors);
                         }
                     }
@@ -411,6 +495,11 @@ impl<C> RetainedBrokerExchangeV1<C> {
         disposition: ExchangeDispositionV1,
     ) -> Result<Option<(C, AuthenticatedBrokerMethodOutcomeV1)>, EffectFailure> {
         let (outcome, currentness) = committed.into_outcome_and_currentness();
+        if matches!(disposition, ExchangeDispositionV1::ExecutionPublication) {
+            self.original_outcome = Some(outcome);
+            self.execution_currentness = Some(currentness);
+            return Ok(None);
+        }
         if matches!(disposition, ExchangeDispositionV1::Generation) {
             self.original_outcome = Some(outcome);
             let checked = (|| {
@@ -444,6 +533,60 @@ impl<C> RetainedBrokerExchangeV1<C> {
         if matches!(disposition, ExchangeDispositionV1::Generation) {
             self.original_cause.get_or_insert(GenerationExchangeCauseV1::Session(error));
             self.failed = true;
+        }
+    }
+
+    fn retain_generation_transport_error(
+        &mut self,
+        error: crate::DormantBrokerSessionHandshakeErrorV1,
+        disposition: ExchangeDispositionV1,
+    ) {
+        if !matches!(disposition, ExchangeDispositionV1::Legacy) {
+            self.original_cause.get_or_insert(GenerationExchangeCauseV1::Transport(error));
+            self.failed = true;
+        }
+    }
+
+    fn send_execution_publication(
+        &mut self,
+        session: &mut DormantAuthenticatedBrokerSessionV1,
+        prepared: DormantPreparedBrokerRequestV1,
+        errors: &RetainedExchangeErrorsV1,
+    ) -> Result<DormantBrokerRequestSendProgressV1, EffectFailure> {
+        self.execution_send = Some(session.send_execution_publication_request(prepared));
+        if matches!(&self.execution_send, Some(Err(_))) {
+            return self.fail(errors);
+        }
+        match self.execution_send.take() {
+            Some(Ok(progress)) => Ok(progress),
+            retained => {
+                self.execution_send = retained;
+                self.fail(errors)
+            }
+        }
+    }
+
+    fn receive_execution_publication(
+        &mut self,
+        session: &mut DormantAuthenticatedBrokerSessionV1,
+        outstanding: DormantOutstandingBrokerRequestV1,
+        errors: &RetainedExchangeErrorsV1,
+    ) -> Result<DormantBrokerResponseProgressV1, EffectFailure> {
+        self.execution_receive = Some(session.receive_execution_publication_response(
+            outstanding, &mut self.execution_response_data,
+        ));
+        if matches!(&self.execution_receive, Some(Err(_))
+            | Some(Ok(DormantBrokerResponseProgressV1::Committed(
+                ProtectedBrokerOutcomeCommitResultV1::RecoveryRequired { .. }))))
+        {
+            return self.fail(errors);
+        }
+        match self.execution_receive.take() {
+            Some(Ok(progress)) => Ok(progress),
+            retained => {
+                self.execution_receive = retained;
+                self.fail(errors)
+            }
         }
     }
 

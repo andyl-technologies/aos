@@ -333,14 +333,42 @@ impl ControllerHostPublication {
         self.authority_effects.query_host(session, effect)
     }
 
-    /// Queries Host's protected record for one exact admitted execution effect.
+    /// Reports actual occupied execution custody, never admission readiness.
+    pub(crate) const fn has_execution_publication_debt(&self) -> bool {
+        self.execution_effects.has_publication_debt()
+    }
+
+    /// Borrows this channel's retained execution publication cause.
+    pub(crate) fn execution_publication_failure(
+        &self,
+    ) -> Option<crate::controller_service::execution::ExecutionPublicationCauseV1<'_>> {
+        self.execution_effects.publication_failure()
+    }
+
+    /// Borrows every entered execution publication post without another read.
+    pub(crate) fn execution_publication_debts(
+        &self,
+    ) -> Option<crate::controller_service::execution::ExecutionPublicationDebtsV1<'_>> {
+        self.execution_effects.publication_debts()
+    }
+
+    /// Queries Host and publishes its result under the same currentness loan.
+    ///
+    /// # Errors
+    ///
+    /// Retains the original attempt on any preparation, transport, projection,
+    /// or postcheck failure, without granting another Host exchange.
     pub(crate) fn query_execution(
         &mut self,
         intent: &ControllerExecutionIntentV1,
         authorization: Option<&BrokerAuthorizationArtifactsV1>,
+        project: aos_sandbox_core::ProjectId,
+        journal: &mut Journal,
     ) -> Result<ControllerExecutionObservationV1, EffectFailure> {
         let (exchange, session) = self.execution_exchange()?;
-        exchange.query(session, intent, authorization)
+        exchange.publish_current_control(session, intent,
+            crate::controller_service::execution::ExecutionAuthorizationKindV1::Query,
+            authorization, project, journal)
     }
 
     /// Sends only the original protected provisional Host output reserve.
@@ -536,14 +564,29 @@ impl ControllerHostPublication {
         Ok((&mut self.output_reserve, session))
     }
 
-    /// Applies or resumes one exact source-bound execution effect through Host.
+    /// Applies and publishes one original execution effect through held Host.
+    ///
+    /// # Errors
+    ///
+    /// Retains failed original custody without reconnecting or repeating the
+    /// effect. A terminal Cancel still requires the separate signed Observe.
     pub(crate) fn apply_execution(
         &mut self,
         intent: &ControllerExecutionIntentV1,
         authorization: Option<&BrokerAuthorizationArtifactsV1>,
+        project: aos_sandbox_core::ProjectId,
+        journal: &mut Journal,
     ) -> Result<ControllerExecutionCompletionV1, EffectFailure> {
         let (exchange, session) = self.execution_exchange()?;
-        exchange.apply(session, intent, authorization)
+        match exchange.publish_current_control(session, intent,
+            crate::controller_service::execution::ExecutionAuthorizationKindV1::Apply,
+            authorization, project, journal)?
+        {
+            ControllerExecutionObservationV1::Applied(completion) => Ok(completion),
+            ControllerExecutionObservationV1::Absent => Err(EffectFailure::Retryable(
+                "Host execution effect has not completed".to_owned(),
+            )),
+        }
     }
 
     fn execution_exchange(
