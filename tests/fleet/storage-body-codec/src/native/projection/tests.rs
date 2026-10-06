@@ -244,7 +244,10 @@ fn actual_direct_admission_binds_public_body_actor_source_and_placements() {
     refuses(&missing);
 
     let mut extra = response.clone();
-    extra.reply.sessions.push(record.status("deployment").unwrap());
+    extra
+        .reply
+        .sessions
+        .push(record.status("deployment").unwrap());
     refuses(&extra);
 
     let mut foreign_session = response.clone();
@@ -256,17 +259,20 @@ fn actual_direct_admission_binds_public_body_actor_source_and_placements() {
     refuses(&foreign_intent);
 
     let mut foreign_placement = response.clone();
-    foreign_placement.reply.sessions[0].placements[0].binding_resource_version = WireInteger::new(8);
+    foreign_placement.reply.sessions[0].placements[0].binding_resource_version =
+        WireInteger::new(8);
     refuses(&foreign_placement);
 
     let mut part_progress = response.clone();
-    part_progress.reply.sessions[0].parts.push(DirectPartStatus {
-        placement: record.status("deployment").unwrap().placements[0].clone(),
-        part_number: 1,
-        observed: None,
-        pending_operation_id: None,
-        unknown: false,
-    });
+    part_progress.reply.sessions[0]
+        .parts
+        .push(DirectPartStatus {
+            placement: record.status("deployment").unwrap().placements[0].clone(),
+            part_number: 1,
+            observed: None,
+            pending_operation_id: None,
+            unknown: false,
+        });
     refuses(&part_progress);
 
     let mut cursor = response.clone();

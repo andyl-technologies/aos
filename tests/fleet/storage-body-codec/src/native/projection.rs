@@ -255,7 +255,12 @@ fn admission(
             "duplicate original intent"
         );
     }
-    for (admission, status) in response.reply.admissions.iter().zip(&response.reply.sessions) {
+    for (admission, status) in response
+        .reply
+        .admissions
+        .iter()
+        .zip(&response.reply.sessions)
+    {
         admission.validate(&original.context.deployment_id)?;
         let placements = admission
             .placements
