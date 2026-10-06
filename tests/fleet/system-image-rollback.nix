@@ -189,6 +189,10 @@
   rolloutClosureInfo = lib.build.closureInfo {inherit pkgs;} {
     rootPaths = rolloutFixtureRoots;
   };
+  enrollmentFixtureRoots = [pkgs.efitools pkgs.secure-boot-test-keys];
+  enrollmentClosureInfo = lib.build.closureInfo {inherit pkgs;} {
+    rootPaths = enrollmentFixtureRoots;
+  };
 
   # Image-mode machines boot the system image directly. Keep only the exact
   # byte-comparison tool needed by the slot assertions in that image; APM's
@@ -325,39 +329,51 @@ in {
       IMAGE_ACCEPTANCE.__dict__.update(globals())
       exec(compile(${builtins.toJSON (builtins.readFile ./native-image-acceptance.py)},
           "native-image-acceptance.py", "exec"), IMAGE_ACCEPTANCE.__dict__)
-      # Image-mode extraClosures are publication inputs, not production image
-      # payloads. Copy their exact store objects into the durable writable upper
-      # so tools and candidate paths remain available across real reboots.
+
+      def install_fixture_closure(closure_name, roots):
+          """Copies and verifies exact fixture objects through a read-only export."""
+          runtime.succeed(textwrap.dedent(f"""
+              set -eu
+              export NIX_REMOTE=""
+              export NIX_CONF_DIR=/tmp/native-image-nix-conf
+              ${pkgs.coreutils}/bin/mkdir -p "$NIX_CONF_DIR" /run/aos-host-store
+              printf 'experimental-features = nix-command\\nsandbox = false\\nbuild-users-group =\\n' > "$NIX_CONF_DIR/nix.conf"
+              ${pkgs.util-linux}/bin/mount -t 9p \
+                -o trans=virtio,version=9p2000.L,msize=1048576,ro \
+                aos-host-store /run/aos-host-store
+              closure=/run/aos-host-store/{shlex.quote(closure_name)}
+              test -r "$closure/registration"
+              while IFS= read -r store_path; do
+                if test ! -e "$store_path" && test ! -L "$store_path"; then
+                  source_path="/run/aos-host-store/$(${pkgs.coreutils}/bin/basename "$store_path")"
+                  ${pkgs.coreutils}/bin/cp --archive --no-target-directory --no-clobber \
+                    "$source_path" "$store_path"
+                fi
+              done < "$closure/store-paths"
+              ${pkgs.nix}/bin/nix-store --load-db < "$closure/registration"
+              while IFS= read -r store_path; do
+                ${pkgs.nix}/bin/nix-store --verify-path "$store_path"
+              done < "$closure/store-paths"
+              ${pkgs.nix}/bin/nix-store --check-validity {shlex.join(roots)}
+              options=$(${pkgs.util-linux}/bin/findmnt --first-only --direction backward \
+                --noheadings --raw --output OPTIONS --target /run/aos-host-store)
+              case ",$options," in *,ro,*) ;; *) exit 1 ;; esac
+              case ",$options," in *,rw,*) exit 1 ;; esac
+              ${pkgs.util-linux}/bin/umount /run/aos-host-store
+          """), timeout=1800)
+
       runtime.wait_until_succeeds(f"{SYSTEMCTL} is-active --quiet aos-image-boot-commit.service", timeout=600)
-      runtime.succeed(textwrap.dedent("""
-          set -eu
-          export NIX_REMOTE=""
-          export NIX_CONF_DIR=/tmp/native-image-nix-conf
-          ${pkgs.coreutils}/bin/mkdir -p "$NIX_CONF_DIR" /run/aos-host-store
-          printf 'experimental-features = nix-command\\nsandbox = false\\nbuild-users-group =\\n' > "$NIX_CONF_DIR/nix.conf"
-          ${pkgs.util-linux}/bin/mount -t 9p \
-            -o trans=virtio,version=9p2000.L,msize=1048576,ro \
-            aos-host-store /run/aos-host-store
-          closure=/run/aos-host-store/${baseNameOf rolloutClosureInfo}
-          test -r "$closure/registration"
-          while IFS= read -r store_path; do
-            if test ! -e "$store_path" && test ! -L "$store_path"; then
-              source_path="/run/aos-host-store/$(${pkgs.coreutils}/bin/basename "$store_path")"
-              ${pkgs.coreutils}/bin/cp --archive --no-target-directory --no-clobber \
-                "$source_path" "$store_path"
-            fi
-          done < "$closure/store-paths"
-          ${pkgs.nix}/bin/nix-store --load-db < "$closure/registration"
-          while IFS= read -r store_path; do
-            ${pkgs.nix}/bin/nix-store --verify-path "$store_path"
-          done < "$closure/store-paths"
-          ${pkgs.nix}/bin/nix-store --check-validity ${lib.escapeShellArgs (map builtins.toString rolloutFixtureRoots)}
-          options=$(${pkgs.util-linux}/bin/findmnt --first-only --direction backward \
-            --noheadings --raw --output OPTIONS --target /run/aos-host-store)
-          case ",$options," in *,ro,*) ;; *) exit 1 ;; esac
-          case ",$options," in *,rw,*) exit 1 ;; esac
-          ${pkgs.util-linux}/bin/umount /run/aos-host-store
-      """), timeout=1800)
+      # The first enforcing boot replaces the disposable Setup Mode /var.
+      # Import enrollment tools first, then stage the rollout in the sealed upper.
+      install_fixture_closure(
+          ${builtins.toJSON (baseNameOf enrollmentClosureInfo)},
+          ${builtins.toJSON (map builtins.toString enrollmentFixtureRoots)},
+      )
+      IMAGE_ACCEPTANCE.secure_boot()
+      install_fixture_closure(
+          ${builtins.toJSON (baseNameOf rolloutClosureInfo)},
+          ${builtins.toJSON (map builtins.toString rolloutFixtureRoots)},
+      )
       IMAGE_ACCEPTANCE.run()
     '';
 }
