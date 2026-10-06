@@ -14,6 +14,9 @@ use crate::journal::RecordNamespace;
 #[doc(hidden)]
 pub mod credential;
 
+#[doc(hidden)]
+pub mod entropy;
+
 mod role_binding;
 mod root;
 
