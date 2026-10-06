@@ -48,6 +48,7 @@ pub(super) fn run_transfer_flight(mode: ArchiveTransferMode) -> Result<(), Box<d
 
     let genesis = json_string(&compiled, "genesis_artifact")?;
     let (discovery, explanation) = wait_for_initial_discovery(&source, &mut service, &genesis)?;
+    diagnostics::report_maintenance_stage("transfer-initial-discovery-completed");
     let recovery_parent = json_string(&explanation["observation"], "child_artifact")?;
     let recovery_configuration = json_string(&explanation["observation"], "child")?;
     let recovery = wait_for_choice(
@@ -72,6 +73,7 @@ pub(super) fn run_transfer_flight(mode: ArchiveTransferMode) -> Result<(), Box<d
     let fast_attempt =
         wait_for_new_completed_attempt(&source, &mut service, &known_attempts, &fast_request)?;
     known_attempts.insert(fast_attempt);
+    diagnostics::report_maintenance_stage("transfer-fast-recovery-completed");
     let fast_explanation = wait_for_attempt_observation(&source, fast_attempt)?;
     let fast_parent = json_string(&fast_explanation["observation"], "child_artifact")?;
     let fast_configuration = json_string(&fast_explanation["observation"], "child")?;
@@ -85,19 +87,23 @@ pub(super) fn run_transfer_flight(mode: ArchiveTransferMode) -> Result<(), Box<d
     let terminal_request = accepted_branch_request(&terminal)?;
     let active =
         wait_for_new_running_attempt(&source, &mut service, &known_attempts, &terminal_request)?;
+    diagnostics::report_maintenance_stage("transfer-selected-attempt-running");
     let checkpoint =
         capture_checkpoint_after_progress(&source, &service, active, &mut 0x83_u64, None)?;
     let paused_snapshot = json_string(&campaign_status(&source)?, "snapshot")?;
+    diagnostics::report_maintenance_stage("transfer-source-exact-checkpoint-captured");
     service.stop()?;
 
     assert_no_nested_qemu_processes("source-after-exact-pause")?;
     require_empty_guest_choice_run_root("source-after-exact-pause")?;
+    diagnostics::report_maintenance_stage("transfer-source-owner-stopped");
     let mut restarted = start_packaged_service(&source, &authority)?;
     assert_eq!(campaign_status(&source)?["snapshot"], paused_snapshot);
     resume_campaign(&source, &"84".repeat(32))?;
     let (resumed, execution) = wait_for_resumed_attempt(&source, active, checkpoint)?;
     assert_eq!(resumed, checkpoint);
     wait_for_resumed_guest_progress(&restarted, active, execution)?;
+    diagnostics::report_maintenance_stage("transfer-source-execution-guest-marker-observed");
     let advanced = capture_checkpoint_after_progress(
         &source,
         &restarted,
@@ -106,6 +112,7 @@ pub(super) fn run_transfer_flight(mode: ArchiveTransferMode) -> Result<(), Box<d
         Some(checkpoint),
     )?;
     assert_ne!(advanced, checkpoint);
+    diagnostics::report_maintenance_stage("transfer-source-distinct-checkpoint-authenticated");
 
     let before_pin = campaign_status(&source)?;
     run_json(
@@ -153,6 +160,7 @@ pub(super) fn run_transfer_flight(mode: ArchiveTransferMode) -> Result<(), Box<d
             .is_some_and(|classes| !classes.is_empty())
     );
     assert_eq!(transfer["authenticated"], true);
+    diagnostics::report_maintenance_stage("transfer-public-copy-authenticated");
     assert_eq!(transfer["campaign"], CAMPAIGN);
     if mode == ArchiveTransferMode::Uninterrupted {
         assert!(
@@ -183,8 +191,10 @@ pub(super) fn run_transfer_flight(mode: ArchiveTransferMode) -> Result<(), Box<d
     let (recipient_origin, recipient_execution) =
         wait_for_resumed_attempt(&destination, active, advanced)?;
     assert_eq!(recipient_origin, advanced);
+    diagnostics::report_maintenance_stage("transfer-recipient-origin-bound");
     attest_fingerprint_enabled_qemu_descendants(&recipient, "recipient-exact-resume")?;
     wait_for_resumed_guest_progress(&recipient, active, recipient_execution)?;
+    diagnostics::report_maintenance_stage("transfer-recipient-execution-guest-marker-observed");
     let recipient_checkpoint = capture_checkpoint_after_progress(
         &destination,
         &recipient,
@@ -193,6 +203,7 @@ pub(super) fn run_transfer_flight(mode: ArchiveTransferMode) -> Result<(), Box<d
         Some(advanced),
     )?;
     assert_ne!(recipient_checkpoint, advanced);
+    diagnostics::report_maintenance_stage("transfer-recipient-distinct-checkpoint-authenticated");
     if mode == ArchiveTransferMode::Interrupted {
         let explanation = wait_for_attempt_explanation(&destination, active)?;
         assert_eq!(explanation["selection"]["value"], "u64:7");
@@ -228,6 +239,7 @@ pub(super) fn run_transfer_flight(mode: ArchiveTransferMode) -> Result<(), Box<d
     }
     assert_no_nested_qemu_processes("incompatible-recipient-rejection")?;
     require_empty_guest_choice_run_root("incompatible-recipient-rejection")?;
+    diagnostics::report_maintenance_stage("transfer-final-owner-cleanup");
     assert_eq!(selected_pin_checkpoint(&source, configuration)?, source_pin);
     assert_eq!(
         selected_pin_checkpoint(&destination, configuration)?,

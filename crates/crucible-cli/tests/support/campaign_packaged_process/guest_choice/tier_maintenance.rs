@@ -190,6 +190,7 @@ fn public_exact_paused_guest_survives_tier_cache_eviction_and_promotion()
         &checkpoints,
     )?;
     let restore_basis = authenticate_restore_basis(&checkpoints, checkpoint)?;
+    diagnostics::report_maintenance_stage("tier-authenticated-exact-checkpoint");
     let paused = campaign_status(fixture)?;
     assert_eq!(paused["state"], "paused");
     let paused_snapshot = json_string(&paused, "snapshot")?;
@@ -212,12 +213,14 @@ fn public_exact_paused_guest_survives_tier_cache_eviction_and_promotion()
     }
     service.stop()?;
     require_no_guest("tier-maintenance-paused")?;
+    diagnostics::report_maintenance_stage("tier-source-owner-stopped");
 
     let original_refs = read_authoritative_refs(fixture)?;
     let content = checkpoint.content_id();
     tier.ensure(content)?;
     assert!(tier.cache.contains(content)? && tier.source.contains(content)?);
     tier.refuse_stale_apply(&fixture._temporary.path().join("stale-tier-gc"), content)?;
+    diagnostics::report_maintenance_stage("tier-stale-gc-refused");
     tier.evict(&fixture.journal, content)?;
     assert_eq!(
         authenticate_restore_basis(&checkpoints, checkpoint)?,
@@ -227,6 +230,7 @@ fn public_exact_paused_guest_survives_tier_cache_eviction_and_promotion()
     // Keep every tiered repository/status read after explicit repromotion.
     assert_eq!(read_authoritative_refs(fixture)?, original_refs);
     assert!(!tier.cache.contains(content)?);
+    diagnostics::report_maintenance_stage("tier-cache-placement-evicted");
     tier.ensure(content)?;
     assert!(tier.cache.contains(content)? && tier.source.contains(content)?);
     assert_eq!(read_authoritative_refs(fixture)?, original_refs);
@@ -236,6 +240,7 @@ fn public_exact_paused_guest_survives_tier_cache_eviction_and_promotion()
     let required_bytes = authenticate_object(tier.source.as_ref(), content)?;
     assert!(cached_bytes > 0);
     assert_eq!(cached_bytes, required_bytes);
+    diagnostics::report_maintenance_stage("tier-cache-placement-authenticated");
     assert_eq!(
         authenticate_restore_basis(&checkpoints, checkpoint)?,
         restore_basis
@@ -256,8 +261,10 @@ fn public_exact_paused_guest_survives_tier_cache_eviction_and_promotion()
     resume_campaign(fixture, &next_command_identity(&mut sequence)?)?;
     let (origin, execution) = wait_for_resumed_attempt(fixture, active, checkpoint)?;
     assert_eq!(origin, checkpoint);
+    diagnostics::report_maintenance_stage("tier-restored-origin-bound");
     attest_fingerprint_enabled_qemu_descendants(&restored, "tier-maintenance-exact-resume")?;
     wait_for_resumed_guest_progress(&restored, active, execution)?;
+    diagnostics::report_maintenance_stage("tier-execution-guest-marker-observed");
     let advanced = capture_checkpoint_after_progress_with_store(
         fixture,
         &restored,
@@ -267,12 +274,14 @@ fn public_exact_paused_guest_survives_tier_cache_eviction_and_promotion()
         &checkpoints,
     )?;
     assert_ne!(advanced, checkpoint);
+    diagnostics::report_maintenance_stage("tier-distinct-checkpoint-authenticated");
     let resumed = wait_for_attempt_explanation(fixture, active)?;
     assert_eq!(resumed["selection"]["value"], "u64:7");
     assert_eq!(resumed["proposal"]["request"], terminal_request);
     require_retained_refs(fixture, &retained)?;
     restored.stop()?;
     require_no_guest("tier-maintenance-finished")?;
+    diagnostics::report_maintenance_stage("tier-final-owner-cleanup");
 
     println!("tier_maintenance_original_checkpoint={checkpoint}");
     println!("tier_maintenance_advanced_checkpoint={advanced}");

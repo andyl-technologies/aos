@@ -45,6 +45,7 @@ fn public_exact_paused_guest_survives_packed_repack_corruption_and_gc() -> Resul
         &checkpoints,
     )?;
     let authenticated_basis = authenticate_checkpoint(&checkpoints, checkpoint)?;
+    diagnostics::report_maintenance_stage("packed-authenticated-exact-checkpoint");
     let paused = campaign_status(&fixture)?;
     assert_eq!(paused["state"], "paused");
     let paused_snapshot = json_string(&paused, "snapshot")?;
@@ -68,8 +69,10 @@ fn public_exact_paused_guest_survives_packed_repack_corruption_and_gc() -> Resul
     storage_recovery::require_live_owner_gc_refusal(&fixture)?;
     service.stop()?;
     require_no_guest("packed-maintenance-paused")?;
+    diagnostics::report_maintenance_stage("packed-source-owner-stopped");
 
     repack(&fixture, "packed-maintenance-repack")?;
+    diagnostics::report_maintenance_stage("packed-public-repack-completed");
     assert_eq!(
         authenticate_checkpoint(&checkpoints, checkpoint)?,
         authenticated_basis
@@ -89,9 +92,11 @@ fn public_exact_paused_guest_survives_packed_repack_corruption_and_gc() -> Resul
         "corrupt index lacked its original storage incompatibility: {refused}"
     );
     require_no_guest("packed-maintenance-corruption-refused")?;
+    diagnostics::report_maintenance_stage("packed-corrupt-index-refused");
     fs::write(&index, &original_index)?;
     assert_eq!(fs::read(&index)?, original_index);
     fixture.verify_store()?;
+    diagnostics::report_maintenance_stage("packed-original-index-verified");
     assert_eq!(
         authenticate_checkpoint(&checkpoints, checkpoint)?,
         authenticated_basis
@@ -106,6 +111,7 @@ fn public_exact_paused_guest_survives_packed_repack_corruption_and_gc() -> Resul
     let orphan = ContentId::for_bytes(ObjectKind::Trace, 1, orphan_bytes);
     backend.put_if_absent(orphan, &BlobHandle::from_bytes(orphan_bytes.to_vec()))?;
     reclaim_orphan(&fixture, &backend, orphan)?;
+    diagnostics::report_maintenance_stage("packed-orphan-reclaimed");
     assert_eq!(
         authenticate_checkpoint(&checkpoints, checkpoint)?,
         authenticated_basis
@@ -128,8 +134,10 @@ fn public_exact_paused_guest_survives_packed_repack_corruption_and_gc() -> Resul
     resume_campaign(&fixture, &next_command_identity(&mut command_sequence)?)?;
     let (origin, execution) = wait_for_resumed_attempt(&fixture, active, checkpoint)?;
     assert_eq!(origin, checkpoint);
+    diagnostics::report_maintenance_stage("packed-restored-origin-bound");
     attest_fingerprint_enabled_qemu_descendants(&restored, "packed-maintenance-exact-resume")?;
     wait_for_resumed_guest_progress(&restored, active, execution)?;
+    diagnostics::report_maintenance_stage("packed-execution-guest-marker-observed");
     let advanced = capture_checkpoint_after_progress_with_store(
         &fixture,
         &restored,
@@ -139,12 +147,14 @@ fn public_exact_paused_guest_survives_packed_repack_corruption_and_gc() -> Resul
         &checkpoints,
     )?;
     assert_ne!(advanced, checkpoint);
+    diagnostics::report_maintenance_stage("packed-distinct-checkpoint-authenticated");
     let resumed = wait_for_attempt_explanation(&fixture, active)?;
     assert_eq!(resumed["selection"]["value"], "u64:7");
     assert_eq!(resumed["proposal"]["request"], terminal_request);
     require_retained_refs(&fixture, &retained_refs)?;
     restored.stop()?;
     require_no_guest("packed-maintenance-finished")?;
+    diagnostics::report_maintenance_stage("packed-final-owner-cleanup");
 
     println!("packed_maintenance_original_checkpoint={checkpoint}");
     println!("packed_maintenance_advanced_checkpoint={advanced}");

@@ -295,6 +295,15 @@ assert !interruptedTransfer
     text = builtins.readFile ./_campaign-storage-recovery-garage.sh;
     destination = "/share/crucible/campaign-storage-recovery-garage.sh";
   };
+  maintenanceStageRunner = pkgs.writeTextFile {
+    name = "packaged-maintenance-stage-runner";
+    text =
+      builtins.replaceStrings
+      ["@bash@" "@coreutils@" "@gawk@"]
+      [(toString pkgs.bash) (toString pkgs.coreutils) (toString pkgs.gawk)]
+      (builtins.readFile ./_packaged-maintenance-stage-runner.sh);
+    destination = "/share/crucible/packaged-maintenance-stage-runner.sh";
+  };
   testing = import ../../lib/testing {inherit pkgs lib;};
   vmTest = testing.mkVMTest {
     name =
@@ -357,6 +366,7 @@ assert !interruptedTransfer
       ++ (lib.optional envoyProduct envoyNetworkRootImage)
       ++ (lib.optional twoNodeHttp httpRootImage)
       ++ (lib.optionals storageRecovery [storageRecoveryRunner pkgs.garage pkgs.bash pkgs.gawk])
+      ++ (lib.optionals (tierMaintenance || packedMaintenance || maintenanceTransfer || interruptedTransfer) [maintenanceStageRunner pkgs.bash pkgs.gawk])
       ++ (lib.optional (findingExactBundle || findingSignalBundle || findingForkWrite || envoyKnownFinding) pkgs.crucible)
       ++ (lib.optional (guestChoice || hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || singleGuest != null) selectedChoiceInitramfs);
     testScript = ''
@@ -557,9 +567,11 @@ assert !interruptedTransfer
           ${pkgs.grep}/bin/grep -Fqx \
             "$tier_selector: test" /tmp/campaign-tier-maintenance-list.log
 
-          if ! ${pkgs.coreutils}/bin/timeout -k 5 7200 \
+          if ! ${pkgs.bash}/bin/bash \
+            ${maintenanceStageRunner}/share/crucible/packaged-maintenance-stage-runner.sh \
+            "$tier_log" ${pkgs.coreutils}/bin/timeout -k 5 7200 \
             ${flight}/bin/campaign-store-process-flight --ignored --exact \
-            "$tier_selector" --nocapture > "$tier_log" 2>&1; then
+            "$tier_selector" --nocapture; then
             cat "$tier_log"
             exit 1
           fi
@@ -596,9 +608,11 @@ assert !interruptedTransfer
           ${pkgs.grep}/bin/grep -Fqx \
             "$packed_selector: test" /tmp/campaign-packed-maintenance-list.log
 
-          if ! ${pkgs.coreutils}/bin/timeout -k 5 7200 \
+          if ! ${pkgs.bash}/bin/bash \
+            ${maintenanceStageRunner}/share/crucible/packaged-maintenance-stage-runner.sh \
+            "$packed_log" ${pkgs.coreutils}/bin/timeout -k 5 7200 \
             ${flight}/bin/campaign-store-process-flight --ignored --exact \
-            "$packed_selector" --nocapture > "$packed_log" 2>&1; then
+            "$packed_selector" --nocapture; then
             cat "$packed_log"
             exit 1
           fi
@@ -692,9 +706,11 @@ assert !interruptedTransfer
           ${pkgs.grep}/bin/grep -Fqx "$interrupted_selector: test" \
             /tmp/campaign-interrupted-transfer-list.log
 
-          if ! ${pkgs.coreutils}/bin/timeout -k 5 900 \
+          if ! ${pkgs.bash}/bin/bash \
+            ${maintenanceStageRunner}/share/crucible/packaged-maintenance-stage-runner.sh \
+            "$interrupted_log" ${pkgs.coreutils}/bin/timeout -k 5 900 \
             ${flight}/bin/campaign-store-process-flight --ignored --exact \
-            "$interrupted_selector" --nocapture > "$interrupted_log" 2>&1; then
+            "$interrupted_selector" --nocapture; then
             cat "$interrupted_log"
             exit 1
           fi
@@ -737,10 +753,11 @@ assert !interruptedTransfer
             "$maintenance_selector: test" \
             /tmp/campaign-maintenance-transfer-list.log
 
-          if ! ${pkgs.coreutils}/bin/timeout -k 5 900 \
+          if ! ${pkgs.bash}/bin/bash \
+            ${maintenanceStageRunner}/share/crucible/packaged-maintenance-stage-runner.sh \
+            /tmp/campaign-maintenance-transfer.log ${pkgs.coreutils}/bin/timeout -k 5 900 \
             ${flight}/bin/campaign-store-process-flight --ignored --exact \
-            "$maintenance_selector" --nocapture \
-            > /tmp/campaign-maintenance-transfer.log 2>&1; then
+            "$maintenance_selector" --nocapture; then
             cat /tmp/campaign-maintenance-transfer.log
             exit 1
           fi

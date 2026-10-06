@@ -2,6 +2,15 @@
 
 use super::*;
 
+// Static fixture stages describe completed operations only. The original
+// authenticated guest/checkpoint assertions remain the qualification oracle.
+pub(super) fn report_maintenance_stage(stage: &'static str) {
+    let _write_result = writeln!(
+        std::io::stderr().lock(),
+        "CRUCIBLE-PACKAGED-STAGE-V1 diagnostic_only=true stage={stage}"
+    );
+}
+
 pub(super) fn report_recent_host_wait_observations(service: &CampaignServiceChild) {
     // Retain before-cancellation polling evidence even if callback records push
     // it outside the ordinary stderr tail: <=64 rows of <=2048 bytes each.
