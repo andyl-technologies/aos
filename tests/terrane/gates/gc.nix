@@ -24,6 +24,23 @@
     "gc::lease::local_tests::native_gc_rc_bindings_acquire_renew_take_over_and_reopen"
   ];
 
+  markTests = [
+    "gc::runner::walk::tests::common_walk_certificates_apply_only_to_direct_entry_objects"
+    "gc::runner::walk::tests::common_walk_context_order_is_fieldwise_and_round_trips_exact_state"
+    "gc::runner::walk::tests::common_walk_cutoffs_remain_per_occurrence_and_broadest"
+    "gc::runner::walk::tests::common_walk_empty_physical_node_keeps_ordinary_and_index_roles_distinct"
+    "gc::runner::walk::tests::common_walk_selects_complete_graft_key_and_refuses_forged_position"
+    "gc::runner::walk::tests::common_walk_witness_and_legacy_rows_do_not_cover_full_present_context"
+    "gc::runner::walk::tests::native::gc_common_walk_native_attributes_retain_versions_without_discovery_roots"
+    "gc::runner::walk::tests::native::gc_common_walk_native_complete_checkpoint_reopens_and_preserves_contextual_marks"
+    "gc::runner::walk::tests::native::gc_common_walk_native_independently_rooted_source_keeps_own_producer_context"
+    "gc::runner::walk::tests::native::gc_common_walk_native_indexes_preserve_exact_auxiliary_roles"
+    "gc::runner::walk::tests::native::gc_common_walk_native_invalid_matching_attribution_keeps_frontier_unchanged"
+    "gc::runner::walk::tests::native::gc_common_walk_native_manifest_dictionary_and_legacy_records_keep_declared_edges"
+    "gc::runner::walk::tests::native::gc_common_walk_native_repeated_occurrences_cut_erased_audit_sources_only"
+    "gc::runner::walk::tests::native::gc_common_walk_native_witness_then_full_keeps_declared_chunks_without_body_reads"
+  ];
+
   # An exact filter with no matching test succeeds in Cargo. Validate the whole
   # required inventory before running each actual case in its own process.
   focusedTests = features: tests: ''
@@ -49,6 +66,13 @@
     done
   '';
 in {
+  gc-mark-reachability = sourceGate "gc-mark-reachability" ''
+    cd crates
+    ${focusedTests "tokio,surface-sdk" markTests}
+    printf 'PASS: contextual metadata marking, independent producers, certified edges and native replay (14 exact cases)\n' \
+      > "$out/result"
+  '';
+
   gc-singleton-lease = sourceGate "gc-singleton-lease" ''
     cd crates
     ${focusedTests "tokio,surface-sdk" nativeTests}

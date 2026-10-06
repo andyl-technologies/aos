@@ -315,6 +315,22 @@ Both original results remain preserved. Retirement, backend grace, restore and
 physical deletion remain unqualified; the full current T1 floor remains red.
 No task checkbox, formal task merge, milestone exit or freeze advances.
 
+The same current-root source passes the hermetic singleton-lease gate's nineteen
+exact cases. Its actual derivation matches all 541 frozen Terrane/core, Cargo and
+gate source images. Separately, the reviewed common-walker candidate
+`8f519d1f94c4` passes all fourteen owning cases out of 488 declared tests; 474
+are outside their filter. All twelve committed source images match the actual
+compiled inventory and runtime. The witnesses retain independently rooted
+producers in their own contexts, preserve certified content cuts alongside
+independent attribute origins, and inspect unrelated metadata catalog claims
+without private producer probes or new roots. Earlier fixture failures remain
+preserved; their corrections retain source directory permissions, use actual
+FastCDC boundaries and assert the genuine independent attribute witness.
+The shared `gc-mark-reachability` producer now requires those fourteen exact
+selectors and refuses missing cases. Registry completeness and static formatting
+pass; composed runtime Nix qualification and strict lint remain pending. Initial
+retirement is under separate implementation; restore and deletion remain open.
+
 The preceding completed full qualification records candidate
 `15540ef204ec`, which combines reviewed source discovery, immutable lookup,
 repeatable I/P/G maintenance, separate verifier/preparation work, common Memo
