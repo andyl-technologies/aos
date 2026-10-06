@@ -12,6 +12,7 @@ use worker::{Env, Headers, Method, Request, RequestInit, Response, State, Storag
 
 use super::{address, fixture, protocol, Closed};
 use crate::direct_upload::{config, journal, provider_capacity, storage, verification};
+use crate::direct_upload::qualification_attempt::{self, Attempt, Commitments, Phase};
 
 const TURN_DOMAIN: &[u8] = b"aos.direct-upload.qualification-queue-turn.v1\0";
 const TURN_HEADER: &str = "x-aos-direct-qualification-queue-turn";
@@ -469,6 +470,23 @@ async fn consume(
         },
     )
     .await?;
+
+    // Observation availability cannot change the authenticated queue outcome.
+    // This tracker exists only after the actual Begin nonce has been retained.
+    let diagnostic = journal::digest(&queued.job).ok().and_then(|job_digest| {
+        Attempt::new(
+            Commitments {
+                attempt_nonce: attempt.nonce.clone(),
+                original_digest: queued.original_digest.clone(),
+                job_digest,
+                run_digest: crate::direct_upload::observation::digest(&queued.run_id),
+                object_digest: crate::direct_upload::observation::digest(&queued.object_id),
+                source_digest: crate::direct_upload::observation::digest(&queued.source_digest),
+                script_digest: crate::direct_upload::observation::digest(&queued.script_version),
+            },
+            attempt.started_at_millis.get(),
+        )
+    });
     fixture::installed(env, &original)?;
     let authority = fixture::Fixture {
         original: &original,
@@ -479,6 +497,7 @@ async fn consume(
         &queued.job,
         &authority,
         u32::try_from(original.maximum_parallel_objects.get())?,
+        diagnostic.as_ref(),
     )
     .await?;
     let receipt = QueueReceipt {
@@ -493,6 +512,7 @@ async fn consume(
         proof_digest: journal::digest(&proof)?,
         proof,
     };
+    qualification_attempt::enter(diagnostic.as_ref(), Phase::Finish);
     call(
         env,
         &queued.run_id,
@@ -502,5 +522,8 @@ async fn consume(
         },
     )
     .await?;
+    if let Some(diagnostic) = diagnostic.as_ref() {
+        diagnostic.finished();
+    }
     Ok(())
 }

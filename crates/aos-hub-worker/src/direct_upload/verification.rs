@@ -19,6 +19,7 @@ use worker::{Env, MessageExt as _};
 use super::{
     config::QualifiedConfig,
     journal, managed, observation,
+    qualification_attempt::{self, Attempt, Phase},
     storage::{self, Operation, Reply},
 };
 
@@ -390,7 +391,9 @@ pub(crate) async fn run_fixture(
     job: &VerificationJob,
     authority: &dyn super::authority::StageAuthority,
     maximum_objects: u32,
+    attempt: Option<&Attempt>,
 ) -> Result<(VerifiedPlacement, ObjectObservation, bool)> {
+    qualification_attempt::enter(attempt, Phase::CurrentMaterial);
     let deployment = env.var("HUB_DEPLOYMENT_ID")?.to_string();
     job.admission.validate(&deployment)?;
     let placement = storage::placement(&job.admission, job.placement_id)?;
@@ -410,10 +413,16 @@ pub(crate) async fn run_fixture(
     )?;
     let replayed = Cell::new(true);
     let source_dispatch = || replayed.set(false);
-    let proof = storage::effect(env, &job.admission, operation_id.clone(), job, true, || {
-        verify_observed(env, job, &operation_id, &source_dispatch)
+    qualification_attempt::enter(attempt, Phase::ImmutableIntegrityRead);
+    let proof = storage::effect(env, &job.admission, operation_id.clone(), job, true, || async {
+        let proof = verify_with_attempt(env, job, &operation_id, &source_dispatch, attempt).await?;
+        qualification_attempt::enter(attempt, Phase::RetainedProof);
+        Ok(proof)
     })
     .await?;
+
+    // A retained replay may skip source consumption altogether.
+    qualification_attempt::enter(attempt, Phase::RetainedProof);
     Ok((proof, observed, replayed.get()))
 }
 
@@ -495,6 +504,16 @@ async fn verify_observed(
     operation_id: &str,
     source_dispatch: &dyn Fn(),
 ) -> Result<VerifiedPlacement> {
+    verify_with_attempt(env, job, operation_id, source_dispatch, None).await
+}
+
+async fn verify_with_attempt(
+    env: &Env,
+    job: &VerificationJob,
+    operation_id: &str,
+    source_dispatch: &dyn Fn(),
+    attempt: Option<&Attempt>,
+) -> Result<VerifiedPlacement> {
     let class = if job.admission.intent.dependency_phase == DirectDependencyPhase::Content {
         super::provider_capacity::Class::Bulk
     } else {
@@ -526,6 +545,7 @@ async fn verify_observed(
             .await?;
             let projection = if matches!(&job.admission.intent.target, DirectUploadTarget::CacheObject { path, .. } if path.ends_with(".narinfo"))
             {
+                qualification_attempt::enter(attempt, Phase::SemanticBodyIntegrity);
                 let bytes = managed::read_metadata_class_observed(
                     env,
                     &stage_key,
@@ -535,6 +555,7 @@ async fn verify_observed(
                     Some(observation_object(job)),
                 )
                 .await?;
+                qualification_attempt::enter(attempt, Phase::SemanticProjection);
                 let projection =
                     aos_hub_core::hybrid_ingress::projection::HybridNarinfoProjection::from_bytes(
                         &bytes,
@@ -618,6 +639,7 @@ async fn verify_observed(
             let projection = if matches!(&job.admission.intent.target,
                 DirectUploadTarget::CacheObject { path, .. } if path.ends_with(".narinfo"))
             {
+                qualification_attempt::enter(attempt, Phase::SemanticCapacity);
                 let bytes = {
                     let _capacity = super::provider_capacity::acquire_class(1, class).await?;
                     crate::external_object::read_stage_metadata(
@@ -628,9 +650,11 @@ async fn verify_observed(
                         &verified,
                         512 * 1024,
                         &_capacity,
+                        attempt,
                     )
                     .await?
                 };
+                qualification_attempt::enter(attempt, Phase::SemanticProjection);
                 Some(aos_hub_core::hybrid_ingress::HybridObjectProjection::Narinfo(
                     aos_hub_core::hybrid_ingress::projection::HybridNarinfoProjection::from_bytes(&bytes)?,
                 ))

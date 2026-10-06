@@ -22,6 +22,7 @@ use aos_hub_core::{
 use sha2::{Digest as _, Sha256};
 use worker::{Env, Headers, Method, Request, RequestInit, RequestRedirect};
 
+use crate::direct_upload::qualification_attempt::{self, Attempt, Phase};
 use super::super::config::configured;
 use super::{
     config,
@@ -103,7 +104,9 @@ pub(crate) async fn read_stage_metadata(
     verified: &ExternalStageResult,
     maximum: usize,
     held: &crate::direct_upload::provider_capacity::Permit,
+    attempt: Option<&Attempt>,
 ) -> Result<Vec<u8>> {
+    qualification_attempt::enter(attempt, Phase::SemanticMaterial);
     ensure!(
         matches!(&admission.intent.target, DirectUploadTarget::CacheObject { path, .. } if path.ends_with(".narinfo"))
             && maximum <= 512 * 1024
@@ -142,7 +145,9 @@ pub(crate) async fn read_stage_metadata(
     .await?
     .pop()
     .ok_or_else(|| anyhow::anyhow!("external metadata profile absent"))?;
+    qualification_attempt::enter(attempt, Phase::SemanticLease);
     let lease = prepare_observation_read_lease(env, &object, &profile).await?;
+    qualification_attempt::enter(attempt, Phase::SemanticSourceProof);
     let Reply::SourceProof { proof, part: None } = call(
         env,
         &protocol::Request {
@@ -165,6 +170,7 @@ pub(crate) async fn read_stage_metadata(
         proof.closed.result()? == *closed && proof.verified.result()? == *verified,
         "external metadata original source receipt changed"
     );
+    qualification_attempt::enter(attempt, Phase::SemanticRequestValidation);
     let etag = match &proof.closed.outcome {
         ExternalStageOutcome::Closed { etag, .. }
         | ExternalStageOutcome::EmptyClosed { etag, .. } => etag,
@@ -242,9 +248,10 @@ pub(crate) async fn read_stage_metadata(
         crate::direct_upload::provider_capacity::Class::Metadata,
         Some(held),
         &fresh,
-        &|| {},
+        &|| qualification_attempt::enter(attempt, Phase::SemanticDispatch),
         false,
         |response| async {
+            qualification_attempt::enter(attempt, Phase::SemanticResponseChecks);
             ensure!(
                 response.status_code() == 200,
                 "external metadata GET not positively acknowledged"
@@ -266,6 +273,7 @@ pub(crate) async fn read_stage_metadata(
                 &verified.receipt_digest,
             );
             let mut observed = crate::direct_upload::observation::Read::metadata(original);
+            qualification_attempt::enter(attempt, Phase::SemanticBodyIntegrity);
             let bytes =
                 crate::direct_digest::read_bounded_native_observed(response, maximum, &|bytes| {
                     observed.consumed(bytes)
