@@ -5,6 +5,9 @@ use crucible_cas::content_store::{BackendCapabilities, ByteRange, PutReceipt};
 
 const CAMPAIGN: &str = "issue-basis-vector";
 
+#[path = "issue_basis/merkle_reads.rs"]
+mod merkle_reads;
+
 #[derive(Clone, Copy)]
 enum PublicationFault {
     PartialWrite,

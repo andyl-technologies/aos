@@ -26,6 +26,9 @@ use validation::{
     PlannerIssueProposalBasis,
 };
 
+#[cfg(test)]
+mod read_controls;
+
 impl CampaignRepository {
     pub(super) fn planner_search_candidate(
         &self,
@@ -138,7 +141,13 @@ impl CampaignRepository {
         &self,
         basis: &PlannerIssueBasis<'_>,
     ) -> Result<PlannerIssueProjection, CampaignRepositoryError> {
-        let projected = self.project_planner_issue(basis, IssueProjectionMode::Preflight)?;
+        // This pass owns its reads. Publication must authenticate independently.
+        let mut reads = MerkleValidationReads::default();
+        let projected = self.project_planner_issue_with_validation_reads(
+            basis,
+            IssueProjectionMode::Preflight,
+            Some(&mut reads),
+        )?;
         let proposals = u64::try_from(basis.proposals.len())
             .map_err(|_| integrity("campaign-budget-proposal-count-overflow"))?;
         self.ensure_budget_available(basis.snapshot, proposals, projected.attempts)?;
@@ -150,7 +159,13 @@ impl CampaignRepository {
         basis: &PlannerIssueBasis<'_>,
         prepared: &PlannerIssueProjection,
     ) -> Result<PlannerIssueProjection, CampaignRepositoryError> {
-        let published = self.project_planner_issue(basis, IssueProjectionMode::Publish)?;
+        // Never borrow the preflight reader, even for the same prior roots.
+        let mut reads = MerkleValidationReads::default();
+        let published = self.project_planner_issue_with_validation_reads(
+            basis,
+            IssueProjectionMode::Publish,
+            Some(&mut reads),
+        )?;
         if prepared.branch_requests != published.branch_requests
             || prepared.proposals != published.proposals
             || prepared.attempts != published.attempts
@@ -226,26 +241,13 @@ impl CampaignRepository {
         Ok(())
     }
 
-    fn project_planner_issue(
-        &self,
-        basis: &PlannerIssueBasis<'_>,
-        mode: IssueProjectionMode,
-    ) -> Result<PlannerIssueProjection, CampaignRepositoryError> {
-        self.project_planner_issue_with_validation_reads(basis, mode, None)
-    }
-
     fn project_planner_issue_with_validation_reads(
         &self,
         basis: &PlannerIssueBasis<'_>,
         mode: IssueProjectionMode,
         merkle_reads: Option<&mut MerkleValidationReads>,
     ) -> Result<PlannerIssueProjection, CampaignRepositoryError> {
-        let retained = if matches!(mode, IssueProjectionMode::Validate { .. }) {
-            merkle_reads
-        } else {
-            None
-        };
-        let mut merkle = MerkleReadSession::new(&self.merkle, retained);
+        let mut merkle = MerkleReadSession::new(&self.merkle, merkle_reads);
         let snapshot = basis.snapshot;
         let invocation_id = basis.invocation_id;
         let invocation = basis.invocation;

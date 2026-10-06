@@ -1,4 +1,4 @@
-//! Bounded authenticated node bytes retained for one ancestry validation pass.
+//! Bounded authenticated node bytes retained for one explicit validation pass.
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -12,8 +12,9 @@ mod tests;
 
 /// Retains at most 128 authenticated nodes and 1 MiB of canonical payload.
 ///
-/// Custody is confined to complete-head ancestry Issue validation. It ends
-/// before the mandatory fresh closure pass and on either validation outcome.
+/// Each Issue preflight and publication owns separate custody. Complete-head
+/// ancestry custody ends before the mandatory fresh closure pass. No context
+/// crosses an operation or survives its success or failure.
 pub(crate) struct MerkleValidationReads {
     nodes: BTreeMap<ContentId, Vec<u8>>,
     order: VecDeque<ContentId>,
@@ -101,7 +102,7 @@ impl MerkleValidationReads {
     }
 }
 
-/// Selects an explicit ancestry reader without changing ordinary map methods.
+/// Selects explicit bounded custody without changing ordinary map methods.
 pub(crate) struct MerkleReadSession<'a> {
     map: &'a MerkleMap,
     retained: Option<&'a mut MerkleValidationReads>,
