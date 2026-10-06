@@ -812,6 +812,59 @@ fn object_id(name: &str) -> Result<FaultObjectId, Box<dyn Error>> {
 }
 
 #[test]
+fn single_node_acceptance_workloads_pass_model_validation() {
+    let _scope = crucible::test_support::fixture_decode_scope(128 * 1024 * 1024)
+        .expect("finite original component metadata authority");
+    let fixture =
+        include_str!("../../../../../../tests/crucible/fixtures/e2e-determinism.scenario.toml");
+    let directory = tempfile::tempdir().expect("create component asset directory");
+    let kernel = directory.path().join("kernel");
+    let root_image = directory.path().join("root.ext4");
+    std::fs::write(&kernel, b"component kernel identity").expect("write component kernel");
+    std::fs::write(&root_image, b"component root identity").expect("write component root");
+    let artifacts: Arc<dyn DagStore> = Arc::new(crucible::LocalDagStore::new(
+        directory.path().join("artifacts"),
+    ));
+
+    let (single, _) =
+        build_single_node_equivalence(fixture, artifacts.clone(), &kernel, &root_image)
+            .expect("single-node workload passes model validation");
+    let (sized, _) = build_single_node_equivalence_with_memory(
+        fixture,
+        artifacts.clone(),
+        64,
+        &kernel,
+        &root_image,
+    )
+    .expect("sized single-node workload passes model validation");
+    let (scaling, _) = build_single_node_scaling(fixture, artifacts, &kernel, &root_image)
+        .expect("scaling workload passes model validation");
+
+    for (source, workload) in [
+        (single, "hot-fork-single"),
+        (sized, "hot-fork-single"),
+        (scaling, "hot-fork-scaling"),
+    ] {
+        let node = source.world().vm_nodes().iter().next().expect("one VM");
+        assert_eq!(source.world().vm_nodes().len(), 1);
+        assert_eq!(
+            node.cmdline,
+            format!("console=ttyS0 crucible.native_acceptance_workload={workload}")
+        );
+
+        // The intrinsic workload namespace remains strict. These guest-only
+        // acceptance branches must not widen its supported binary inventory.
+        let mut intrinsic_node = node.clone();
+        intrinsic_node.cmdline = format!("console=ttyS0 crucible.workload={workload}");
+        assert!(matches!(
+            World::from_node_defs_and_links(vec![WorldNodeDef::Vm(intrinsic_node)], Vec::new()),
+            Err(crucible::EngineError::WorldNodeUnsupportedWorkload { value, .. })
+                if value == workload
+        ));
+    }
+}
+
+#[test]
 fn native_world_binds_selected_launch_asset_bytes() {
     let fixture =
         include_str!("../../../../../../tests/crucible/fixtures/e2e-determinism.scenario.toml");
