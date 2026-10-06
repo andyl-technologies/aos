@@ -93,6 +93,14 @@ or changing the selected Guard. Loss or quarantine advances loss generation
 and invalidates every affected lineage; raw mutation cannot certify
 preservation. Verified monotone catalog admission proves complete existing
 placements and exclusions preserved before retaining unaffected evidence.
+GC-29's privately qualified pre-ownership restore is an explicit exception
+for the one exact active exclusion it clears with restored eligible index
+entries. It MUST preserve every existing serving placement, quarantine,
+other exclusion and permanent burn/owner under complete current qualification
+and actual backend exclusion. This availability gain uses proof case 0,
+unchanged loss generation and only already selected unaffected source lineage;
+it creates no new lineage. Public raw mutation cannot certify this exception.
+D-78 cancellation and D-82 irreversible ownership rules remain mandatory.
 Proof case 1 requires the private completed candidate check, exact current
 source dependencies and durable signed graph before installing lineage.
 Proof case 2 requires complete current collection qualification and exact

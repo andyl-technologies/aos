@@ -2193,6 +2193,41 @@ is added rather than editing history.
     and pointer/cache crash witnesses remain required under the existing
     D-79 gates; this correction completes no task or milestone.
 
+- **[D-109] Clarify the exact pre-ownership restore publication exception.**
+  - **Status:** Decided (2026-10-05)
+  - **Decision:** Clarify D-79's catalog-preservation rule with GC-29's exact
+    restore exception. A separately privately qualified pre-ownership restore
+    clears only its actual active pack/cycle/epoch binding in the same selected
+    generation that restores otherwise-unserved eligible index entries.
+    Existing serving placements, quarantine, other exclusions, permanent burns
+    and owners remain preserved. Complete current qualification, actual backend
+    exclusion and real durable publication are still required. This availability
+    gain uses existing proof case 0 with unchanged loss generation and only
+    already selected unaffected source lineage; it creates no new lineage.
+    Public raw mutation cannot certify restoration or clear an exclusion.
+  - **Rationale:** GC-15 and GC-29 require a single restore operation and exact
+    binding clear, while D-79's general monotone-admission wording requires
+    exclusions preserved before retaining unaffected evidence. Reading that
+    general rule as forbidding even a fully qualified restore would make the
+    required availability gain impossible or unnecessarily invalidate unrelated
+    evidence. Explicitly naming the one restore exception resolves the conflict
+    without weakening ordinary admission or granting permission from a tuple.
+  - **Alternatives considered:** Keep the ambiguity (rejected: leaves required
+    restore behavior inconsistent); relax general admission (rejected: permits
+    unrelated exclusion changes); use collection's loss witness for an
+    availability gain (rejected: supplies the wrong operation association);
+    add a wire proof case (rejected: existing case 0 represents this gain).
+  - **Compatibility:** Encodings, identities, keys, profiles, golden bytes,
+    requirement IDs, gate names and draft version remain unchanged. D-78's
+    durable cancellation before local owned restore and D-82's irreversible
+    permanent ownership remain mandatory. Owned old keys never return to
+    service. Missing or unknown age does not authorize deletion or forbid
+    otherwise qualified restore. The clarification grants no native receipt,
+    elapsed age, cancellation or physical deletion authority.
+  - **Affects:** GC-15/24/29, D-78, D-79 and D-82. Actual restore producer,
+    retained current/pair controls, durability, recovery and cancellation
+    witnesses remain required; this clarification completes no task or gate.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**
