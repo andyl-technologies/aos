@@ -1068,7 +1068,8 @@ def run_external_direct_fleet(client, native, worker, s3, database_machine, tool
     expose_direct_review_inputs(worker, tools, artifacts, process, label="runtime-preflight")
     preflight = run_direct_prequalification(worker, tools["python"], tools["node"], tools["qualificationDriver"],
         tools["workerUrl"], worker_controls["keyFiles"]["HUB_DIRECT_UPLOAD_CONFORMANCE_KEY"],
-        identity["identityFile"], authority["exported"]["bootstrap"]["selector"], bulk, metadata)
+        identity["identityFile"], authority["exported"]["bootstrap"]["selector"], bulk, metadata,
+        worker_process=process)
     preflight_sha = retain_direct_flow("actual-runtime-preflight.json", preflight)
     profile = prepare_current_runtime_profile(tools, identity, preflight_measured, {
         **observations, "protectedIdentity": identity["identitySha256"],
@@ -1101,7 +1102,8 @@ def run_external_direct_fleet(client, native, worker, s3, database_machine, tool
     expose_direct_review_inputs(worker, tools, artifacts, process)
     qualification = run_direct_prequalification(worker, tools["python"], tools["node"], tools["qualificationDriver"],
         tools["workerUrl"], worker_controls["keyFiles"]["HUB_DIRECT_UPLOAD_CONFORMANCE_KEY"],
-        identity["identityFile"], authority["exported"]["bootstrap"]["selector"], bulk, metadata)
+        identity["identityFile"], authority["exported"]["bootstrap"]["selector"], bulk, metadata,
+        worker_process=process)
     qualification_sha = retain_direct_flow("actual-prequalification.json", qualification)
     acceptance = install_direct_reviewed_acceptance(native, worker, tools, process, identity, worker_controls, {
         **observations, "protectedIdentity": identity["identitySha256"],

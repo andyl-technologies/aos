@@ -38,7 +38,7 @@ def qualify_external_oci_direct(native, worker, tools, prepared, processes, expo
         qualified = run_direct_prequalification(worker, tools["python"], tools["node"], tools["qualificationDriver"],
             coordinates["publicOrigin"], coordinates["workerRoot"] + "/materials/HUB_DIRECT_UPLOAD_CONFORMANCE_KEY",
             identity["identityFile"], exports["bootstrap"]["selector"], bulk, metadata,
-            operator_root=coordinates["workerRoot"] + "/operator")
+            operator_root=coordinates["workerRoot"] + "/operator", worker_process=processes["worker"])
         digest = retain_direct_flow(label + "-prequalification.json", qualified)
         return observed, qualified, {"protectedIdentity": identity["identitySha256"],
             "installation": observed["installationSha256"], "prequalification": digest,
@@ -201,7 +201,7 @@ def _qualify_paired_external_oci_direct(native, worker, tools, prepared, process
         qualification = run_direct_prequalification(worker, tools["python"], tools["node"], tools["qualificationDriver"],
             coordinates["publicOrigin"], coordinates["workerRoot"] + "/materials/HUB_DIRECT_UPLOAD_CONFORMANCE_KEY",
             identity["identityFile"], bootstraps[0]["selector"], bulk, metadata,
-            operator_root=coordinates["workerRoot"] + "/operator")
+            operator_root=coordinates["workerRoot"] + "/operator", worker_process=processes["worker"])
         hashes = {"protectedIdentity": identity["identitySha256"], "installation": observed["installationSha256"],
             "prequalification": retain_direct_flow(epoch + "-prequalification.json", qualification),
             "bulkConfiguration": observed["queues"]["bulk"]["sha256"],

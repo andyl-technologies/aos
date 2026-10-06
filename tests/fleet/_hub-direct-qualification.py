@@ -485,10 +485,160 @@ def observe_direct_prequalification_phase(worker, tools, origin, control_key_fil
     return report
 
 
+def observe_direct_qualification_worker_log(worker, python, process, operator_root,
+                                             before=None, offset=None, length=None, end=None):
+    """Read only the exact current runner's private log, or retain fixed unknown."""
+    if process is None:
+        return {"state": "unknown", "category": "worker_owner_not_selected"}
+    root = operator_root.removesuffix("/operator")
+    try:
+        owner = {name: process[name] for name in
+                 ("pid", "ownerUid", "startTicks", "logFile", "configurationSha256")}
+        path = Path(owner["logFile"])
+        if (path.parent != Path(root) or re.fullmatch(r"[a-z][a-z0-9-]{0,63}\.log", path.name) is None
+                or type(owner["pid"]) is not int or owner["pid"] < 1
+                or type(owner["ownerUid"]) is not int or owner["ownerUid"] < 0
+                or not re.fullmatch(r"[0-9]{1,20}", owner["startTicks"])
+                or not re.fullmatch(r"[0-9a-f]{64}", owner["configurationSha256"])):
+            return {"state": "unknown", "category": "worker_owner_shape_refused"}
+        return json.loads(direct_guest_python(worker, python, """
+            import base64, hashlib, json, os, stat, time
+            from pathlib import Path
+
+            def observe():
+                owner = selected['owner']
+                proc = Path('/proc') / str(owner['pid'])
+                try:
+                    fields = (proc / 'stat').read_text().rpartition(') ')[2].split()
+                    if (proc.stat().st_uid != owner['ownerUid'] or fields[0] == 'Z'
+                            or fields[19] != owner['startTicks']):
+                        return {'state': 'unknown', 'category': 'worker_lifetime_changed'}
+                except FileNotFoundError:
+                    return {'state': 'unknown', 'category': 'worker_lifetime_missing'}
+                root = Path(selected['root'])
+                if root.resolve() != root:
+                    return {'state': 'unknown', 'category': 'worker_root_refused'}
+                directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    metadata = os.fstat(directory)
+                    if metadata.st_uid != owner['ownerUid'] or stat.S_IMODE(metadata.st_mode) != 0o700:
+                        return {'state': 'unknown', 'category': 'worker_root_refused'}
+                    descriptor = os.open(selected['name'], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                                         dir_fd=directory)
+                    with os.fdopen(descriptor, 'rb') as source:
+                        metadata = os.fstat(source.fileno())
+                        if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != owner['ownerUid']
+                                or stat.S_IMODE(metadata.st_mode) != 0o600 or metadata.st_nlink != 1):
+                            return {'state': 'unknown', 'category': 'worker_log_custody_refused'}
+                        before = selected['before']
+                        position = {'device': str(metadata.st_dev), 'inode': str(metadata.st_ino),
+                                    'byteSize': metadata.st_size, 'observedUnixNs': str(time.time_ns()),
+                                    'observedMonotonicNs': str(time.monotonic_ns()),
+                                    'bootId': Path('/proc/sys/kernel/random/boot_id').read_text().strip()}
+                        if before is not None and (position['device'] != before['device']
+                                or position['inode'] != before['inode'] or position['bootId'] != before['bootId']
+                                or metadata.st_size < before['byteSize']):
+                            return {'state': 'unknown', 'category': 'worker_log_identity_changed'}
+                        result = {'state': 'observed', 'position': position}
+                        if selected['length'] is not None:
+                            offset, length, end = selected['offset'], selected['length'], selected['end']
+                            if (type(offset) is not int or type(length) is not int or type(end) is not int
+                                    or before is None or offset < before['byteSize']
+                                    or not 0 < length <= 1024 * 1024 or offset + length > end
+                                    or end > metadata.st_size or end - before['byteSize'] > 16 * 1024 * 1024):
+                                return {'state': 'unknown', 'category': 'worker_log_bound_refused'}
+                            source.seek(offset)
+                            body = source.read(length)
+                            if len(body) != length:
+                                return {'state': 'unknown', 'category': 'worker_log_prefix_changed'}
+                            after = os.fstat(source.fileno())
+                            if (after.st_nlink != 1 or after.st_uid != owner['ownerUid']
+                                    or stat.S_IMODE(after.st_mode) != 0o600 or after.st_size < end):
+                                return {'state': 'unknown', 'category': 'worker_log_custody_refused'}
+                            result.update(body=base64.b64encode(body).decode(),
+                                          sha256=hashlib.sha256(body).hexdigest())
+                        # An append-only prefix is captured; later bytes remain outside it.
+                        fields = (proc / 'stat').read_text().rpartition(') ')[2].split()
+                        if (fields[0] == 'Z' or fields[19] != owner['startTicks']
+                                or proc.stat().st_uid != owner['ownerUid']):
+                            return {'state': 'unknown', 'category': 'worker_lifetime_changed'}
+                        return result
+                finally:
+                    os.close(directory)
+
+            try:
+                result = observe()
+            except (OSError, ValueError, IndexError):
+                result = {'state': 'unknown', 'category': 'worker_log_observation_unavailable'}
+            print(json.dumps(result))
+        """, {"owner": owner, "root": root, "name": path.name, "before": before,
+              "offset": offset, "length": length, "end": end}, timeout=30))
+    except Exception:
+        # Transport/observation errors must not replace the original child outcome.
+        return {"state": "unknown", "category": "worker_log_observation_unavailable"}
+
+
+def retain_direct_qualification_worker_log(worker, python, process, operator_root,
+                                           before, destination, run_id):
+    """Retain one bounded private interval before propagating the original failure."""
+    summary = {"version": 1, "runId": run_id, "state": "unknown", "before": before,
+               "after": None, "capturedBytes": 0, "sha256": None,
+               "owner": None if before.get("state") != "observed" else {name: process.get(name) for name in
+                   ("pid", "ownerUid", "startTicks", "logFile", "configurationSha256")},
+               "scope": "selected Worker log prefix only; missing/later events and source joins remain unknown"}
+    if before.get("state") != "observed":
+        summary["category"] = before.get("category", "worker_log_observation_unavailable")
+    else:
+        after = observe_direct_qualification_worker_log(worker, python, process, operator_root,
+                                                       before=before["position"])
+        summary["after"] = after
+        if after.get("state") != "observed":
+            summary["category"] = after.get("category", "worker_log_observation_unavailable")
+        else:
+            start, end = before["position"]["byteSize"], after["position"]["byteSize"]
+            if end - start > 16 * 1024 * 1024:
+                summary["category"] = "worker_log_bound_refused"
+            else:
+                digest = hashlib.sha256()
+                try:
+                    descriptor = os.open(Path(destination) / "worker-runtime.log",
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                    with os.fdopen(descriptor, "wb") as output:
+                        offset = start
+                        while offset < end:
+                            length = min(1024 * 1024, end - offset)
+                            chunk = observe_direct_qualification_worker_log(worker, python, process,
+                                operator_root, before=before["position"], offset=offset, length=length, end=end)
+                            if chunk.get("state") != "observed":
+                                raise ValueError("selected private log interval unavailable")
+                            body = base64.b64decode(chunk["body"], validate=True)
+                            if len(body) != length or hashlib.sha256(body).hexdigest() != chunk["sha256"]:
+                                raise ValueError("selected private log transport differs")
+                            output.write(body)
+                            digest.update(body)
+                            summary["capturedBytes"] += len(body)
+                            offset += length
+                        output.flush()
+                        os.fsync(output.fileno())
+                    summary.update(state="retained", category="worker_log_interval_retained",
+                                   sha256=digest.hexdigest(), file="worker-runtime.log")
+                except Exception:
+                    summary.update(category="worker_log_retention_unavailable",
+                                   sha256=digest.hexdigest())
+    descriptor = os.open(Path(destination) / "worker-runtime-observation.json",
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "w") as output:
+        json.dump(summary, output, sort_keys=True, separators=(",", ":"))
+        output.write("\n")
+        output.flush()
+        os.fsync(output.fileno())
+    return summary
+
+
 def run_direct_prequalification(worker, python, node, driver_file, origin,
                                 control_key_file, identity_file, selector,
                                 bulk_originals, metadata_originals, wait_seconds=600, *,
-                                operator_root="/var/lib/hybrid-worker/operator"):
+                                operator_root="/var/lib/hybrid-worker/operator", worker_process=None):
     """Dispatch one fresh protected run and preserve terminal or incomplete facts."""
     if len(bulk_originals) != 3 or len(metadata_originals) != 4:
         raise ValueError("prequalification requires three bulk and four metadata originals")
@@ -511,6 +661,8 @@ def run_direct_prequalification(worker, python, node, driver_file, origin,
                  "--identity-file", identity_file, "--manifest-file", root + "/manifest.json",
                  "--output-dir", root + "/evidence", "--run-id", run_id,
                  "--wait-seconds", str(wait_seconds)]
+    worker_log_before = observe_direct_qualification_worker_log(
+        worker, python, worker_process, operator_root)
     receipt = json.loads(private_guest_command(worker, textwrap.dedent(f"""
         {shlex.quote(python)} - <<'ACTUAL_PROTECTED_QUALIFICATION'
         import base64, hashlib, json, os, subprocess
@@ -562,10 +714,17 @@ def run_direct_prequalification(worker, python, node, driver_file, origin,
     invocation_output = retain_direct_qualification_output(
         worker, python, root, str(destination), receipt, operator_root=operator_root)
     retain_direct_qualification_output_report(destination, invocation_output)
+    worker_log = None
+    if receipt["exitCode"] != 0:
+        try:
+            worker_log = retain_direct_qualification_worker_log(worker, python, worker_process,
+                operator_root, worker_log_before, destination, run_id)
+        except Exception:
+            worker_log = {"state": "unknown", "category": "worker_log_retention_unavailable"}
     retained = retain_direct_qualification_files(worker, python, root + "/evidence", run_id,
         host_directory=destination)
     result = {"process": receipt, "retained": retained, "sourceOriginals": originals,
-              "invocationOutput": invocation_output}
+              "invocationOutput": invocation_output, "workerLogObservation": worker_log}
     descriptor = os.open(Path(retained["directory"]) / "fleet-invocation.json",
                          os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "w") as output:

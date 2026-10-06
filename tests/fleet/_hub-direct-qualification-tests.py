@@ -412,6 +412,12 @@ class EarlyProcessReceipt(unittest.TestCase):
                     raise ValueError("controlled output reader refused")
                 return result.stdout
             def retain(*args, **kwargs):
+                destination = qualification.qualification_retention_directory(run_id)
+                observed = json.loads((destination / "worker-runtime-observation.json").read_bytes())
+                self.assertEqual(observed["state"], "unknown")
+                self.assertEqual(observed["category"], "worker_owner_not_selected")
+                self.assertIsNone(observed["owner"])
+                self.assertFalse((destination / "worker-runtime.log").exists())
                 calls.append("inventory")
                 raise TimeoutError("controlled export interruption")
             try:
@@ -431,6 +437,134 @@ class EarlyProcessReceipt(unittest.TestCase):
                 self.assertEqual((destination / "stdout.log").read_bytes(), b"actual bounded child output")
             finally:
                 os.chdir(previous)
+
+
+class WorkerLogRetention(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.guest = self.root / "guest"
+        self.host = self.root / "host"
+        self.guest.mkdir(mode=0o700)
+        self.host.mkdir(mode=0o700)
+        self.log = self.guest / "observed.log"
+        self.log.write_bytes(b"before the invocation\n")
+        self.log.chmod(0o600)
+        output = self.log.open("ab")
+        self.child = subprocess.Popen([sys.executable, "-B", "-c",
+            "import sys\nfor line in sys.stdin:\n print(line.strip(), flush=True)"],
+            stdin=subprocess.PIPE, stdout=output, stderr=output)
+        output.close()
+        self.addCleanup(self.stop_child)
+        proc = Path("/proc") / str(self.child.pid)
+        fields = (proc / "stat").read_text().rpartition(") ")[2].split()
+        self.owner = {"pid": self.child.pid, "ownerUid": proc.stat().st_uid,
+            "startTicks": fields[19], "logFile": "/var/lib/hybrid-worker/observed.log",
+            "configurationSha256": "a" * 64}
+        self.requests = []
+        self.previous_reader = getattr(qualification, "direct_guest_python", None)
+        qualification.direct_guest_python = self.read_guest
+        self.addCleanup(self.restore_reader)
+
+    def restore_reader(self):
+        qualification.direct_guest_python = self.previous_reader
+
+    def stop_child(self):
+        if self.child.poll() is None:
+            self.child.terminate()
+        self.child.wait(timeout=5)
+        self.child.stdin.close()
+
+    def read_guest(self, _worker, python, body, selected, timeout=30):
+        self.requests.append({"offset": selected["offset"], "length": selected["length"]})
+        inputs = {**selected, "root": str(self.guest)}
+        program = "import json\nselected = json.loads(input())\n" + textwrap.dedent(body)
+        result = subprocess.run([python, "-B", "-c", program], input=json.dumps(inputs),
+            text=True, capture_output=True, timeout=timeout, check=False)
+        if result.returncode:
+            raise ValueError("controlled transport failure")
+        return result.stdout
+
+    def observe(self, **fields):
+        return qualification.observe_direct_qualification_worker_log(None, sys.executable,
+            self.owner, "/var/lib/hybrid-worker/operator", **fields)
+
+    def retain(self, before):
+        return qualification.retain_direct_qualification_worker_log(None, sys.executable,
+            self.owner, "/var/lib/hybrid-worker/operator", before, self.host, "b" * 64)
+
+    def test_actual_owned_child_interval_survives_before_failure(self):
+        import time
+        before = self.observe()
+        self.child.stdin.write(b"direct_qualification_attempt synthetic fixed-phase fixture\n")
+        self.child.stdin.flush()
+        deadline = time.monotonic() + 3
+        while self.log.stat().st_size == before["position"]["byteSize"]:
+            if time.monotonic() >= deadline:
+                self.fail("actual child produced no log")
+            time.sleep(0.01)
+
+        retained = self.retain(before)
+
+        body = (self.host / "worker-runtime.log").read_bytes()
+        self.assertEqual(body, b"direct_qualification_attempt synthetic fixed-phase fixture\n")
+        self.assertEqual(retained["state"], "retained")
+        self.assertEqual(retained["sha256"], hashlib.sha256(body).hexdigest())
+        self.assertEqual(retained["capturedBytes"], len(body))
+        self.assertEqual((self.host / "worker-runtime.log").stat().st_mode & 0o777, 0o600)
+        self.assertEqual(json.loads((self.host / "worker-runtime-observation.json").read_bytes()), retained)
+        self.assertTrue(all(row["length"] is None or row["length"] <= 1024 * 1024
+                            for row in self.requests))
+
+    def test_custody_rotation_and_lifetime_fail_without_reading_foreign_body(self):
+        before = self.observe()
+        selected_path = self.owner["logFile"]
+        self.owner["logFile"] = "/foreign/observed.log"
+        count = len(self.requests)
+        self.assertEqual(self.observe()["category"], "worker_owner_shape_refused")
+        self.assertEqual(len(self.requests), count)
+        self.owner["logFile"] = selected_path
+        self.owner["startTicks"] = str(int(self.owner["startTicks"]) + 1)
+        self.assertEqual(self.observe()["category"], "worker_lifetime_changed")
+        self.owner["startTicks"] = (Path("/proc") / str(self.child.pid) / "stat").read_text().rpartition(") ")[2].split()[19]
+        self.log.chmod(0o644)
+        self.assertNotIn("body", self.observe())
+        self.assertEqual(self.observe()["category"], "worker_log_custody_refused")
+        self.log.chmod(0o600)
+        self.log.rename(self.guest / "prior.log")
+        self.log.write_bytes(b"foreign private bytes never retained")
+        self.log.chmod(0o600)
+        self.assertEqual(self.observe(before=before["position"])["category"], "worker_log_identity_changed")
+        self.stop_child()
+        self.assertEqual(self.observe()["category"], "worker_lifetime_missing")
+
+    def test_bounded_interval_refuses_without_creating_or_overwriting_log(self):
+        before = self.observe()
+        with self.log.open("ab") as output:
+            output.truncate(before["position"]["byteSize"] + 16 * 1024 * 1024 + 1)
+        retained = self.retain(before)
+        self.assertEqual(retained["category"], "worker_log_bound_refused")
+        self.assertFalse((self.host / "worker-runtime.log").exists())
+        self.assertTrue((self.host / "worker-runtime-observation.json").exists())
+
+    def test_transport_unknown_and_destination_collision_never_replace_original_data(self):
+        before = self.observe()
+        target = self.host / "worker-runtime.log"
+        target.write_bytes(b"existing retained bytes")
+        target.chmod(0o600)
+        retained = self.retain(before)
+        self.assertEqual(retained["state"], "unknown")
+        self.assertEqual(target.read_bytes(), b"existing retained bytes")
+        self.assertEqual(retained["category"], "worker_log_retention_unavailable")
+
+        def failed(*unused, **unused_keywords):
+            raise RuntimeError("synthetic private transport text must not escape")
+
+        qualification.direct_guest_python = failed
+        unknown = self.observe()
+        self.assertEqual(unknown, {"state": "unknown", "category": "worker_log_observation_unavailable"})
+        self.assertNotIn("synthetic private", json.dumps(unknown))
 
 
 if __name__ == "__main__":
