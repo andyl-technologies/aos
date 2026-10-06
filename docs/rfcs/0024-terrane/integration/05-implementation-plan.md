@@ -273,6 +273,33 @@ interfaces awaiting actual collection consumers; none are suppressed. The
 common traversal and current-root retirement qualification remain in progress,
 with no task merge, checkbox, milestone exit or freeze advanced.
 
+The private native container candidate `d314e3c0bc` opens and retains the actual
+pack, detached-index and protected Committed-journal descriptors through a
+closed executor result. Six native mechanics cases pass, covering fourteen
+journal classifications, twenty descriptor/read handoffs, four final-sync
+replacements and actual cancellation exclusion. Pack bodies remain unread.
+The follow-up `235b07464e` refreshes genuine producer checks after the final
+bounded reads and completed effect, before acknowledgment. Its seven focused
+cases pass out of 467 declared tests; a separate genuine creator regression
+executes all nine selected cases successfully. Native, standard and no-default
+builds, strict private rustdoc, both mandatory formatters and the diff check
+pass. The hermetic singleton gate executes all nineteen required cases and
+matches all thirty-five frozen source images. Strict Clippy still reports
+thirty-eight library diagnostics and six test diagnostics, including interfaces
+awaiting their production consumers; none are suppressed. These observations
+and mechanics grant no current-root, grace, retirement or deletion authority.
+
+A separate historical traversal diagnostic produces a real selected checkpoint
+through the earlier collector, preserving its actual roots, whole lease, state
+and immutable mark revisions. Its decoded marks omit the four actual I/P/G
+identities and signed side record. A fresh native reopen with the corrected
+walker refuses that incomplete checkpoint and leaves its selected state bytes
+unchanged; lease renewal remains an actual preceding effect. Both original
+executions and their exact source images are retained. Review also identifies
+GC-30's independently rooted producer and manifest/dictionary attribution
+cases for further scoped qualification. The common walker and fresh current-root
+producer remain open, with no task merge, checkbox, milestone exit or freeze.
+
 The preceding completed full qualification records candidate
 `15540ef204ec`, which combines reviewed source discovery, immutable lookup,
 repeatable I/P/G maintenance, separate verifier/preparation work, common Memo
