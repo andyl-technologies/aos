@@ -70,6 +70,28 @@ pub(crate) async fn create_checked<F: Fn() -> Result<()>>(
     .await
 }
 
+/// Attaches an admitted original to one ordinary SDK creation attempt.
+///
+/// # Errors
+/// Returns the unchanged creation validation, capacity or SDK error.
+pub(crate) async fn create_checked_observed<F: Fn() -> Result<()>>(
+    env: &Env,
+    key: &str,
+    empty: bool,
+    original: Option<super::observation::Object>,
+    before_dispatch: F,
+) -> Result<CreateReceipt> {
+    create_class_checked_observed(
+        env,
+        key,
+        empty,
+        super::provider_capacity::Class::Foreground,
+        original,
+        before_dispatch,
+    )
+    .await
+}
+
 /// Creates a source under the selected shared capacity class and fresh cutoff.
 pub(crate) async fn create_class_checked<F: Fn() -> Result<()>>(
     env: &Env,
@@ -78,18 +100,34 @@ pub(crate) async fn create_class_checked<F: Fn() -> Result<()>>(
     class: super::provider_capacity::Class,
     before_dispatch: F,
 ) -> Result<CreateReceipt> {
+    create_class_checked_observed(env, key, empty, class, None, before_dispatch).await
+}
+
+/// Preserves the ordinary SDK operation while attaching an optional original.
+///
+/// # Errors
+/// Returns the unchanged operation validation, capacity or SDK error.
+pub(crate) async fn create_class_checked_observed<F: Fn() -> Result<()>>(
+    env: &Env,
+    key: &str,
+    empty: bool,
+    class: super::provider_capacity::Class,
+    original_observation: Option<super::observation::Object>,
+    before_dispatch: F,
+) -> Result<CreateReceipt> {
     let _capacity =
         super::provider_capacity::acquire_class_checked(1, class, &before_dispatch).await?;
     let bucket = bucket(env)?;
     before_dispatch()?;
     if empty {
-        let acknowledged = invoke_await_unmetered(
+        let acknowledged = invoke_await_unmetered_observed(
             &bucket,
             "put",
             &[
                 JsValue::from_str(key),
                 js_sys::Uint8Array::new_with_length(0).into(),
             ],
+            super::sdk_observation::Context::configured(env, key, original_observation.clone()),
         )
         .await?;
         return Ok(CreateReceipt {
@@ -97,8 +135,13 @@ pub(crate) async fn create_class_checked<F: Fn() -> Result<()>>(
             empty: Some(identity(&acknowledged)?),
         });
     }
-    let upload =
-        invoke_await_unmetered(&bucket, "createMultipartUpload", &[JsValue::from_str(key)]).await?;
+    let upload = invoke_await_unmetered_observed(
+        &bucket,
+        "createMultipartUpload",
+        &[JsValue::from_str(key)],
+        super::sdk_observation::Context::configured(env, key, original_observation),
+    )
+    .await?;
     let upload_id = text(&upload, "uploadId")?;
     ensure!(
         !upload_id.is_empty()
@@ -132,6 +175,21 @@ pub(crate) async fn complete_checked<F: Fn() -> Result<()>>(
     parts: &[DirectManifestPart],
     before_complete: F,
 ) -> Result<ObjectReceipt> {
+    complete_checked_observed(env, key, upload_id, parts, None, before_complete).await
+}
+
+/// Preserves the ordinary SDK operation while attaching an optional original.
+///
+/// # Errors
+/// Returns the unchanged operation validation, capacity or SDK error.
+pub(crate) async fn complete_checked_observed<F: Fn() -> Result<()>>(
+    env: &Env,
+    key: &str,
+    upload_id: &str,
+    parts: &[DirectManifestPart],
+    original_observation: Option<super::observation::Object>,
+    before_complete: F,
+) -> Result<ObjectReceipt> {
     ensure!(
         !parts.is_empty() && parts.len() <= MAX_DIRECT_PARTS as usize,
         "direct SDK completion count invalid"
@@ -152,7 +210,16 @@ pub(crate) async fn complete_checked<F: Fn() -> Result<()>>(
         )?;
         encoded.push(&member);
     }
-    identity(&invoke_await_checked(&upload, "complete", &[encoded.into()], before_complete).await?)
+    identity(
+        &invoke_await_checked_observed(
+            &upload,
+            "complete",
+            &[encoded.into()],
+            super::sdk_observation::Context::configured(env, key, original_observation),
+            before_complete,
+        )
+        .await?,
+    )
 }
 
 pub(crate) async fn abort(env: &Env, key: &str, upload_id: &str) -> Result<()> {
@@ -166,10 +233,25 @@ pub(crate) async fn abort_checked<F: Fn() -> Result<()>>(
     upload_id: &str,
     before_dispatch: F,
 ) -> Result<()> {
-    invoke_await_checked(
+    abort_checked_observed(env, key, upload_id, None, before_dispatch).await
+}
+
+/// Preserves the ordinary SDK operation while attaching an optional original.
+///
+/// # Errors
+/// Returns the unchanged operation validation, capacity or SDK error.
+pub(crate) async fn abort_checked_observed<F: Fn() -> Result<()>>(
+    env: &Env,
+    key: &str,
+    upload_id: &str,
+    original_observation: Option<super::observation::Object>,
+    before_dispatch: F,
+) -> Result<()> {
+    invoke_await_checked_observed(
         &resume(&bucket(env)?, key, upload_id)?,
         "abort",
         &[],
+        super::sdk_observation::Context::configured(env, key, original_observation.clone()),
         before_dispatch,
     )
     .await?;
@@ -183,6 +265,20 @@ pub(crate) async fn abort_empty_checked<F: Fn() -> Result<()>>(
     original: &ObjectReceipt,
     before_dispatch: F,
 ) -> Result<()> {
+    abort_empty_checked_observed(env, key, original, None, before_dispatch).await
+}
+
+/// Preserves the ordinary SDK operation while attaching an optional original.
+///
+/// # Errors
+/// Returns the unchanged operation validation, capacity or SDK error.
+pub(crate) async fn abort_empty_checked_observed<F: Fn() -> Result<()>>(
+    env: &Env,
+    key: &str,
+    original: &ObjectReceipt,
+    original_observation: Option<super::observation::Object>,
+    before_dispatch: F,
+) -> Result<()> {
     ensure!(
         original.byte_size.get() == 0,
         "direct empty Abort source is not empty"
@@ -191,10 +287,11 @@ pub(crate) async fn abort_empty_checked<F: Fn() -> Result<()>>(
         head(env, key).await?.as_ref() == Some(original),
         "direct empty Abort incarnation changed"
     );
-    invoke_await_checked(
+    invoke_await_checked_observed(
         &bucket(env)?,
         "delete",
         &[JsValue::from_str(key)],
+        super::sdk_observation::Context::configured(env, key, original_observation.clone()),
         before_dispatch,
     )
     .await?;
@@ -241,7 +338,7 @@ pub(crate) async fn get_class_checked<F: Fn() -> Result<()>>(
     let capacity =
         super::provider_capacity::acquire_class_checked(1, class, &before_dispatch).await?;
     before_dispatch()?;
-    let (identity, stream) = get_unmetered(env, key, range).await?;
+    let (identity, stream) = get_unmetered(env, key, range, None).await?;
     Ok((identity, stream, capacity))
 }
 
@@ -254,13 +351,14 @@ pub(crate) async fn get_reserved(
     capacity: &super::provider_capacity::Permit,
 ) -> Result<(ObjectReceipt, worker::web_sys::ReadableStream)> {
     let _retained = capacity;
-    get_unmetered(env, key, None).await
+    get_unmetered(env, key, None, None).await
 }
 
 async fn get_unmetered(
     env: &Env,
     key: &str,
     range: Option<(u64, u64)>,
+    original: Option<super::observation::Object>,
 ) -> Result<(ObjectReceipt, worker::web_sys::ReadableStream)> {
     let bucket = bucket(env)?;
     let mut arguments = vec![JsValue::from_str(key)];
@@ -276,7 +374,13 @@ async fn get_unmetered(
         set(&options, "range", &range)?;
         arguments.push(options.into());
     }
-    let object = invoke_await_unmetered(&bucket, "get", &arguments).await?;
+    let object = invoke_await_unmetered_observed(
+        &bucket,
+        "get",
+        &arguments,
+        super::sdk_observation::Context::configured(env, key, original),
+    )
+    .await?;
     ensure!(
         !object.is_null() && !object.is_undefined(),
         "direct SDK closed source absent"
@@ -290,7 +394,14 @@ async fn get_unmetered(
 }
 
 pub(crate) async fn head(env: &Env, key: &str) -> Result<Option<ObjectReceipt>> {
-    let object = invoke_await(&bucket(env)?, "head", &[JsValue::from_str(key)]).await?;
+    let object = invoke_await_checked_observed(
+        &bucket(env)?,
+        "head",
+        &[JsValue::from_str(key)],
+        super::sdk_observation::Context::configured(env, key, None),
+        || Ok(()),
+    )
+    .await?;
     if object.is_null() || object.is_undefined() {
         return Ok(None);
     }
@@ -336,7 +447,8 @@ pub(crate) async fn verify_class_observed(
     class: super::provider_capacity::Class,
     original: Option<super::observation::Object>,
 ) -> Result<()> {
-    let (snapshot, stream, _capacity) = get_class(env, key, None, class).await?;
+    let _capacity = super::provider_capacity::acquire_class_checked(1, class, &|| Ok(())).await?;
+    let (snapshot, stream) = get_unmetered(env, key, None, original.clone()).await?;
     ensure!(
         &snapshot == closed && snapshot.byte_size == intent.byte_size,
         "direct SDK source incarnation changed"
@@ -397,12 +509,42 @@ pub(crate) async fn copy_part_checked<F: Fn() -> Result<()>>(
     part: &DirectPart,
     before_upload: F,
 ) -> Result<DirectManifestPart> {
+    copy_part_checked_observed(
+        env,
+        source_key,
+        closed,
+        destination_key,
+        upload_id,
+        intent,
+        part,
+        None,
+        before_upload,
+    )
+    .await
+}
+
+/// Preserves the ordinary SDK operation while attaching an optional original.
+///
+/// # Errors
+/// Returns the unchanged operation validation, capacity or SDK error.
+pub(crate) async fn copy_part_checked_observed<F: Fn() -> Result<()>>(
+    env: &Env,
+    source_key: &str,
+    closed: &ObjectReceipt,
+    destination_key: &str,
+    upload_id: &str,
+    intent: &DirectUploadIntent,
+    part: &DirectPart,
+    original_observation: Option<super::observation::Object>,
+    before_upload: F,
+) -> Result<DirectManifestPart> {
     part.validate(intent)?;
     let _capacity = super::provider_capacity::acquire_checked(2, &before_upload).await?;
     let (identity, stream) = get_unmetered(
         env,
         source_key,
         Some((part.offset.get(), part.byte_size.get())),
+        original_observation.clone(),
     )
     .await?;
     ensure!(
@@ -413,10 +555,11 @@ pub(crate) async fn copy_part_checked<F: Fn() -> Result<()>>(
     let mut fixed = stream::FixedPartStream::new(forwarded, part.byte_size.get())?;
     let destination = resume(&bucket(env)?, destination_key, upload_id)?;
     before_upload()?;
-    let result = invoke_await_unmetered(
+    let result = invoke_await_unmetered_observed(
         &destination,
         "uploadPart",
         &[JsValue::from(part.part_number), fixed.readable().into()],
+        super::sdk_observation::Context::configured(env, destination_key, original_observation),
     )
     .await;
     if result.is_err() {
@@ -482,7 +625,8 @@ pub(crate) async fn read_metadata_class_observed(
         closed.byte_size.get() <= maximum as u64,
         "direct semantic source exceeds bound"
     );
-    let (identity, stream, _capacity) = get_class(env, key, None, class).await?;
+    let _capacity = super::provider_capacity::acquire_class_checked(1, class, &|| Ok(())).await?;
+    let (identity, stream) = get_unmetered(env, key, None, original.clone()).await?;
     ensure!(
         &identity == closed,
         "direct semantic source incarnation changed"
@@ -664,11 +808,44 @@ async fn invoke_await_unmetered(
     method: &str,
     arguments: &[JsValue],
 ) -> Result<JsValue> {
-    super::provider_capacity::record_dispatch();
-    let promise = invoke(object, method, arguments)?
-        .dyn_into::<Promise>()
-        .map_err(|_| refused())?;
-    JsFuture::from(promise).await.map_err(|_| refused())
+    invoke_await_unmetered_observed(object, method, arguments, None).await
+}
+
+async fn invoke_await_unmetered_observed(
+    object: &JsValue,
+    method: &str,
+    arguments: &[JsValue],
+    context: Option<super::sdk_observation::Context>,
+) -> Result<JsValue> {
+    super::sdk_observation::observe(
+        context,
+        super::sdk_observation::Operation::method(method),
+        async {
+            super::provider_capacity::record_dispatch();
+            let promise = invoke(object, method, arguments)?
+                .dyn_into::<Promise>()
+                .map_err(|_| refused())?;
+            JsFuture::from(promise).await.map_err(|_| refused())
+        },
+    )
+    .await
+}
+
+async fn invoke_await_checked_observed<F: Fn() -> Result<()>>(
+    object: &JsValue,
+    method: &str,
+    arguments: &[JsValue],
+    context: Option<super::sdk_observation::Context>,
+    before_dispatch: F,
+) -> Result<JsValue> {
+    let _capacity = super::provider_capacity::acquire_class_checked(
+        1,
+        super::provider_capacity::Class::Foreground,
+        &before_dispatch,
+    )
+    .await?;
+    before_dispatch()?;
+    invoke_await_unmetered_observed(object, method, arguments, context).await
 }
 
 fn invoke(object: &JsValue, method: &str, arguments: &[JsValue]) -> Result<JsValue> {

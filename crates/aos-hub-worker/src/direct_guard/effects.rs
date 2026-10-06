@@ -232,7 +232,23 @@ pub(super) async fn managed_promote(
         Some(&owner.selected.manifest),
     )
     .await?;
-    managed::verify(env, &source_key, closed, &turn.admission.intent, &parts).await?;
+    let observed = crate::direct_upload::observation::Object::new(
+        &turn.admission.session_id,
+        &turn.admission.logical_fingerprint,
+        &turn.admission.intent,
+        turn.placement_id,
+        &turn.complete.operation_id,
+    );
+    managed::verify_class_observed(
+        env,
+        &source_key,
+        closed,
+        &turn.admission.intent,
+        &parts,
+        crate::direct_upload::provider_capacity::Class::Foreground,
+        Some(observed.clone()),
+    )
+    .await?;
 
     let operation = |step: &str| {
         verification::step_id(
@@ -248,10 +264,11 @@ pub(super) async fn managed_promote(
         &(&owner.binding, &owner.source),
         || async {
             dispatch_time(qualified, turn, permission)?;
-            managed::create_checked(
+            managed::create_checked_observed(
                 env,
                 &placement.final_key,
                 turn.admission.intent.byte_size.get() == 0,
+                Some(observed.clone()),
                 || dispatch_time(qualified, turn, permission),
             )
             .await
@@ -273,7 +290,7 @@ pub(super) async fn managed_promote(
                 &(&owner.binding, &owner.source, &upload_id, part),
                 || async {
                     dispatch_time(qualified, turn, permission)?;
-                    managed::copy_part_checked(
+                    managed::copy_part_checked_observed(
                         env,
                         &source_key,
                         closed,
@@ -281,6 +298,7 @@ pub(super) async fn managed_promote(
                         &upload_id,
                         &turn.admission.intent,
                         part,
+                        Some(observed.clone()),
                         || dispatch_time(qualified, turn, permission),
                     )
                     .await
@@ -299,9 +317,14 @@ pub(super) async fn managed_promote(
             &(&owner.binding, &owner.source, &upload_id, &copied),
             || async {
                 dispatch_time(qualified, turn, permission)?;
-                managed::complete_checked(env, &placement.final_key, &upload_id, &copied, || {
-                    dispatch_time(qualified, turn, permission)
-                })
+                managed::complete_checked_observed(
+                    env,
+                    &placement.final_key,
+                    &upload_id,
+                    &copied,
+                    Some(observed.clone()),
+                    || dispatch_time(qualified, turn, permission),
+                )
                 .await
             },
         )

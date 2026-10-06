@@ -105,10 +105,17 @@ pub(super) async fn begin_with_signal(
                     DirectPhysicalContext::DeploymentR2 { .. } => {
                         let key = direct_staging_key(&admission.session_id, placement)?;
                         Ok(CreatedStage::Managed {
-                            receipt: managed::create_checked(
+                            receipt: managed::create_checked_observed(
                                 env,
                                 &key,
                                 admission.intent.byte_size.get() == 0,
+                                Some(super::observation::Object::new(
+                                    &admission.session_id,
+                                    &admission.logical_fingerprint,
+                                    &admission.intent,
+                                    placement.placement_id,
+                                    &operation_id,
+                                )),
                                 || current(authority, context, admission),
                             )
                             .await?,
@@ -398,9 +405,19 @@ pub(super) async fn abort_one_with_signal(
                         let key = direct_staging_key(&admission.session_id, placement)?;
                         match (receipt.upload_id, receipt.empty) {
                             (Some(upload_id), None) => {
-                                managed::abort_checked(env, &key, &upload_id, || {
-                                    current(qualified, context, admission)
-                                })
+                                managed::abort_checked_observed(
+                                    env,
+                                    &key,
+                                    &upload_id,
+                                    Some(super::observation::Object::new(
+                                        &admission.session_id,
+                                        &admission.logical_fingerprint,
+                                        &admission.intent,
+                                        placement.placement_id,
+                                        &operation_id,
+                                    )),
+                                    || current(qualified, context, admission),
+                                )
                                 .await?;
                                 Ok(AbortPlacementReceipt::Multipart {
                                     placement_id: placement.placement_id,
@@ -413,9 +430,19 @@ pub(super) async fn abort_one_with_signal(
                                     admission.intent.byte_size.get() == 0,
                                     "direct empty stage original size differs"
                                 );
-                                managed::abort_empty_checked(env, &key, &original, || {
-                                    current(qualified, context, admission)
-                                })
+                                managed::abort_empty_checked_observed(
+                                    env,
+                                    &key,
+                                    &original,
+                                    Some(super::observation::Object::new(
+                                        &admission.session_id,
+                                        &admission.logical_fingerprint,
+                                        &admission.intent,
+                                        placement.placement_id,
+                                        &operation_id,
+                                    )),
+                                    || current(qualified, context, admission),
+                                )
                                 .await?;
                                 Ok(AbortPlacementReceipt::EmptyObject {
                                     placement_id: placement.placement_id,

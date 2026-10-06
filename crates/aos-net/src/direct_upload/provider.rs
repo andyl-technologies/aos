@@ -309,6 +309,7 @@ impl ProviderTransport {
         // DNS/pool establishment can consume grant lifetime. Recheck it at the
         // actual dispatch rather than relying on batch issuance time.
         self.check_grant(context, &part, grant)?;
+        let mut ledger = super::provider_observation::Attempt::configured(context, &part, &url);
         let budget = Arc::clone(&self.byte_budget);
         let body = source.stream().then(move |chunk| {
             let budget = Arc::clone(&budget);
@@ -319,6 +320,12 @@ impl ProviderTransport {
                 chunk
             }
         });
+        let body: std::pin::Pin<
+            Box<dyn futures_util::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Send>,
+        > = match &ledger {
+            Some(ledger) => Box::pin(ledger.offered(body)),
+            None => Box::pin(body),
+        };
         let mut request = client
             .put(&grant.url)
             .body(reqwest::Body::wrap_stream(body));
@@ -330,10 +337,16 @@ impl ProviderTransport {
             request = request.header(name, value);
         }
         let attempt = self.metrics.provider_attempt();
+        if let Some(ledger) = &mut ledger {
+            ledger.dispatch();
+        }
         let mut response = request
             .send()
             .await
             .map_err(|_| ProviderError::Unavailable)?;
+        if let Some(ledger) = &mut ledger {
+            ledger.status(response.status().as_u16());
+        }
         match response.status().as_u16() {
             200 => {}
             401 | 403 => return Err(ProviderError::Denied),
@@ -347,6 +360,9 @@ impl ProviderTransport {
             .filter(|value| valid_direct_etag(value))
             .ok_or(ProviderError::Rejected)?
             .to_owned();
+        if let Some(ledger) = &mut ledger {
+            ledger.etag(&etag);
+        }
         if response
             .content_length()
             .is_some_and(|length| length > MAX_PROVIDER_RESPONSE_BYTES)
@@ -354,15 +370,23 @@ impl ProviderTransport {
             return Err(ProviderError::Rejected);
         }
         let mut received = 0_u64;
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|_| ProviderError::Unavailable)?
-        {
+        while let Some(chunk) = response.chunk().await.map_err(|_| {
+            if let Some(ledger) = &mut ledger {
+                ledger.reply_failed();
+            }
+            ProviderError::Unavailable
+        })? {
+            if let Some(ledger) = &mut ledger {
+                ledger.reply_chunk(&chunk);
+            }
             received = received
                 .checked_add(chunk.len() as u64)
                 .filter(|bytes| *bytes <= MAX_PROVIDER_RESPONSE_BYTES)
                 .ok_or(ProviderError::Rejected)?;
+        }
+        if let Some(ledger) = &mut ledger {
+            ledger.reply_eof();
+            ledger.accepted();
         }
         attempt.acknowledge(part.byte_size.get());
         Ok(DirectManifestPart { part, etag })

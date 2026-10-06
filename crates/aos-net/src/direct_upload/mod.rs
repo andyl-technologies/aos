@@ -11,6 +11,7 @@ mod network;
 #[cfg(unix)]
 mod policy;
 mod provider;
+mod provider_observation;
 mod source;
 
 #[cfg(unix)]

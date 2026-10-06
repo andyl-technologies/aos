@@ -12,6 +12,9 @@ pub(crate) mod journal;
 pub(crate) mod observation;
 
 #[cfg(any(test, target_arch = "wasm32"))]
+pub(crate) mod sdk_observation;
+
+#[cfg(any(test, target_arch = "wasm32"))]
 pub(crate) mod acceptance_window;
 
 #[cfg(any(target_arch = "wasm32", test))]

@@ -241,10 +241,25 @@ pub(crate) async fn close_checked_with_signal<F: Fn() -> Result<()>>(
             let object = storage::effect(
                 env,
                 admission,
-                operation_id,
+                operation_id.clone(),
                 &(complete, placement_id, upload_id),
                 false,
-                || managed::complete_checked(env, &key, upload_id, &parts, &before_dispatch),
+                || {
+                    managed::complete_checked_observed(
+                        env,
+                        &key,
+                        upload_id,
+                        &parts,
+                        Some(observation::Object::new(
+                            &admission.session_id,
+                            &admission.logical_fingerprint,
+                            &admission.intent,
+                            placement_id,
+                            &operation_id,
+                        )),
+                        &before_dispatch,
+                    )
+                },
             )
             .await?;
             Ok(ClosedStage::Managed { object })
