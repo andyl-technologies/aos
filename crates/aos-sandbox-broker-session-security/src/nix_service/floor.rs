@@ -17,6 +17,7 @@ use aos_sandbox::normal_root::{
     ControllerNixSessionFloorOriginV2, NixOwnerPublicSessionFloorOriginV2,
 };
 use aos_sandbox::production_operation_compiler::NixStartAdmissionErrorV2;
+use aos_sandbox_broker::{BrokerAdmissionError, BrokerAuthority};
 use aos_sandbox_linux::pidfd::PidFd;
 use aos_sandbox_broker_session_protocol::manifest::BrokerSessionManifestBindingV1;
 use ed25519_dalek::{Signature, VerifyingKey};
@@ -31,6 +32,7 @@ use crate::tpm_nv_custody::{
     FloorCutV1, FloorErrorV1, OnlineFloorCheckpointV1, OnlineFloorProfileV1,
     OnlineFloorRoleV1, online_cut_from_records_v1,
 };
+use crate::tpm_nv_custody::physical::OriginalOnlinePhysicalAuthDestinationV1;
 
 const INITIALIZATION_BYTES: usize = 904;
 const SEED_BYTES: usize = 640;
@@ -273,7 +275,7 @@ pub(crate) struct OnlineProvisionV1 {
         aos_sandbox_core::OwnershipLeaseTrustAnchor,
         aos_sandbox_core::NodeId,
     )>,
-    pub(crate) authority: Option<aos_sandbox_broker::BrokerAuthority>,
+    authority_result: Option<Result<BrokerAuthority, BrokerAdmissionError>>,
     first_failure: Option<OnlineProvisionFailureV1>,
     attempted: bool,
 }
@@ -294,7 +296,7 @@ impl OnlineProvisionV1 {
             profile: None,
             manifest_binding: None,
             anchors: None,
-            authority: None,
+            authority_result: None,
             first_failure: None,
             attempted: false,
         }
@@ -348,14 +350,48 @@ impl OnlineProvisionV1 {
             profile.genesis_id(),
             **auth,
         );
-        match result {
-            Ok(authority) => self.authority = Some(authority),
-            Err(cause) => {
-                self.first_failure.get_or_insert(OnlineProvisionFailureV1::Admission(cause));
-                return Err(FloorErrorV1::Provisioning);
-            }
+        // Park the actual constructor result before projecting its coarse
+        // diagnostic. The payload-free error copy carries no authority.
+        self.authority_result = Some(result);
+        if let Some(Err(cause)) = self.authority_result.as_ref() {
+            self.first_failure.get_or_insert(OnlineProvisionFailureV1::Admission(*cause));
+            return Err(FloorErrorV1::Provisioning);
         }
         self.revalidate()
+    }
+
+    /// Describes successful occupancy without lending or deriving authority.
+    pub(crate) fn has_original_authority(&self) -> bool {
+        matches!(self.authority_result.as_ref(), Some(Ok(_)))
+    }
+
+    /// Moves only the original successful authority at the final Journal gate.
+    pub(crate) fn take_original_authority(&mut self) -> Option<BrokerAuthority> {
+        match self.authority_result.take() {
+            Some(Ok(authority)) => Some(authority),
+            result => {
+                self.authority_result = result;
+                None
+            }
+        }
+    }
+
+    /// Retains the old transient AUTH copy through the entire physical attempt.
+    ///
+    /// # Errors
+    /// Returns the existing unavailable projection when original AUTH is absent.
+    pub(crate) fn prepare_original_physical_input<'provision>(
+        &'provision mut self,
+        profile: OnlineFloorProfileV1,
+    ) -> Result<OnlinePhysicalInputPreparationV1<'provision>, FloorErrorV1> {
+        let transient_auth = Zeroizing::new(*self.auth()?);
+
+        Ok(OnlinePhysicalInputPreparationV1 {
+            provision: self,
+            transient_auth,
+            profile,
+            phase: OnlinePhysicalInputPhaseV1::Fresh,
+        })
     }
 
     fn credential_result(&mut self, result: Result<Vec<u8>, FixedRoleCredentialErrorV1>)
@@ -433,6 +469,63 @@ impl OnlineProvisionV1 {
             origin.recheck()?;
         }
         Ok(())
+    }
+}
+
+/// Keeps the original provision borrowed until the old admission scope ends.
+///
+/// This stack borrower never owns the physical carrier or exposes AUTH. The
+/// original initialized AUTH remains in provision for later revalidation;
+/// its transient copy and the physical owner's copy have distinct lifetimes.
+pub(crate) struct OnlinePhysicalInputPreparationV1<'provision> {
+    provision: &'provision mut OnlineProvisionV1,
+    transient_auth: Zeroizing<[u8; 32]>,
+    profile: OnlineFloorProfileV1,
+    phase: OnlinePhysicalInputPhaseV1,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum OnlinePhysicalInputPhaseV1 {
+    Fresh,
+    OriginTaken,
+    Transferred,
+    Failed,
+}
+
+impl OnlinePhysicalInputPreparationV1<'_> {
+    /// Supplies only the earlier initialized profile's comparison DATA.
+    pub(crate) fn profile(&self) -> OnlineFloorProfileV1 {
+        self.profile
+    }
+
+    /// Takes the same original only at the third durable tuple operand.
+    pub(crate) fn take_original_origin(&mut self) -> Option<OnlineOriginV1> {
+        if self.phase != OnlinePhysicalInputPhaseV1::Fresh {
+            self.phase = OnlinePhysicalInputPhaseV1::Failed;
+            return None;
+        }
+
+        self.phase = OnlinePhysicalInputPhaseV1::OriginTaken;
+        self.provision.origin.take()
+    }
+
+    /// Restores the same missing-tuple original after both locks are restored.
+    pub(crate) fn restore_original_origin(&mut self, origin: Option<OnlineOriginV1>) {
+        self.provision.origin = origin;
+        self.phase = OnlinePhysicalInputPhaseV1::Failed;
+    }
+
+    /// Records local completion only after the actual physical owner is parked.
+    pub(crate) fn finish_original_transfer(&mut self) {
+        self.phase = OnlinePhysicalInputPhaseV1::Transferred;
+    }
+
+    /// Fills only the write-only final slot made by the private physical owner.
+    pub(crate) fn copy_original_auth_into(
+        &self,
+        mut destination: OriginalOnlinePhysicalAuthDestinationV1<'_>,
+    ) {
+        destination.copy_original(&self.transient_auth);
     }
 }
 

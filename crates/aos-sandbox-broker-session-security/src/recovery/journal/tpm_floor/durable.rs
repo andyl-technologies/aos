@@ -62,6 +62,8 @@ pub(super) struct BrokerAttachmentAttemptV1 {
     cold_failure: Option<crate::DormantBrokerSessionHandshakeErrorV1>,
     native_failure: Option<aos_sandbox::JournalError>,
     #[cfg(feature = "online-nix")]
+    online_admission_result: Option<Result<(), FloorErrorV1>>,
+    #[cfg(feature = "online-nix")]
     postflights: [Option<(Result<(), aos_sandbox::JournalError>, Result<(), FloorErrorV1>)>;
         crate::handshake::ONLINE_POSTFLIGHT_PASSES_V1],
 }
@@ -149,6 +151,8 @@ impl BrokerAttachmentAttemptV1 {
             cold_deadline: None,
             cold_failure: None,
             native_failure: None,
+            #[cfg(feature = "online-nix")]
+            online_admission_result: None,
             #[cfg(feature = "online-nix")]
             postflights: [const { None }; crate::handshake::ONLINE_POSTFLIGHT_PASSES_V1],
         }
@@ -369,24 +373,38 @@ impl BrokerAttachmentAttemptV1 {
         self.sidecar_lock = Some(self.store.as_ref().ok_or(FloorErrorV1::Unavailable)?
             .loan_lock_custody()?);
         let deadline = self.cold_deadline.ok_or(FloorErrorV1::Unavailable)?;
-        let auth = zeroize::Zeroizing::new(*provision.auth()?);
+        let mut preparation = provision.prepare_original_physical_input(profile)?;
         // The origin stays on provision until both genuine locks are ready.
         // The closed physical constructor then parks all three without gates.
-        match (self.main_lock.take(), self.sidecar_lock.take(), provision.origin.take()) {
+        match (
+            self.main_lock.take(),
+            self.sidecar_lock.take(),
+            preparation.take_original_origin(),
+        ) {
             (Some(main), Some(sidecar), Some(origin)) => {
                 self.physical = Some(PhysicalTpmNvIoV1::retain_online(
-                    profile, &auth, [main, sidecar], origin, deadline,
+                    &preparation, [main, sidecar], origin, deadline,
                 ));
+                preparation.finish_original_transfer();
             }
             (main, sidecar, origin) => {
                 self.main_lock = main;
                 self.sidecar_lock = sidecar;
-                provision.origin = origin;
+                preparation.restore_original_origin(origin);
                 return Err(FloorErrorV1::Unavailable);
             }
         }
         self.check_cold_deadline()?;
-        self.physical.as_mut().ok_or(FloorErrorV1::Unavailable)?.admit_online()?;
+
+        if self.online_admission_result.is_some() {
+            return Err(FloorErrorV1::Unavailable);
+        }
+        let result = self.physical.as_mut().ok_or(FloorErrorV1::Unavailable)?.admit_online();
+        self.online_admission_result = Some(result);
+        if let Some(Err(cause)) = self.online_admission_result {
+            return Err(cause);
+        }
+
         self.check_cold_deadline()?;
         if let Some(physical) = self.physical.take() {
             self.backend = Some(TpmNvExtendFloorBackendV1::retain_online(profile, physical));

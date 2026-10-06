@@ -620,16 +620,46 @@ macro_rules! broker_admission_recipe {
     }};
 }
 
+/// Borrows only the final AUTH slot constructed by the shared physical owner.
+///
+/// Its private field prevents other callers from making a destination or
+/// reading AUTH; the preparation can only fill that owner's final slot.
+#[cfg(feature = "online-nix")]
+pub(crate) struct OriginalOnlinePhysicalAuthDestinationV1<'slot> {
+    slot: &'slot mut Zeroizing<[u8; 32]>,
+}
+
+#[cfg(feature = "online-nix")]
+impl OriginalOnlinePhysicalAuthDestinationV1<'_> {
+    /// Copies the retained original into the privately selected final slot.
+    pub(crate) fn copy_original(&mut self, source: &[u8; 32]) {
+        self.slot.copy_from_slice(source);
+    }
+}
+
+/// Constructs only the existing Online attempt's final AUTH value.
+#[cfg(feature = "online-nix")]
+fn original_online_auth(
+    preparation: &crate::nix_service::floor::OnlinePhysicalInputPreparationV1<'_>,
+) -> Zeroizing<[u8; 32]> {
+    let mut auth = Zeroizing::new([0; 32]);
+    preparation.copy_original_auth_into(OriginalOnlinePhysicalAuthDestinationV1 {
+        slot: &mut auth,
+    });
+    auth
+}
+
 impl RetainedPhysicalTpmOwnerV1<'static, 'static, 'static> {
     /// Parks a genuine online origin and the same two original lock loans.
     #[cfg(feature = "online-nix")]
     pub(crate) fn retain_online(
-        profile: super::OnlineFloorProfileV1,
-        auth: &[u8; 32],
+        preparation: &crate::nix_service::floor::OnlinePhysicalInputPreparationV1<'_>,
         locks: [ProtectedJournalLockCustodyV1; 2],
         original: crate::nix_service::floor::OnlineOriginV1,
         deadline: crate::handshake::OriginalBrokerColdDeadlineV1,
     ) -> Self {
+        let profile = preparation.profile();
+
         Self {
             child: None,
             channel: None,
@@ -641,7 +671,7 @@ impl RetainedPhysicalTpmOwnerV1<'static, 'static, 'static> {
                 profile,
                 attempt: BrokerPhysicalAttemptV1 {
                     salt_name: profile.salt_name(),
-                    auth: Zeroizing::new(*auth),
+                    auth: original_online_auth(preparation),
                     locks,
                     launch_image: None,
                     observations: None,
