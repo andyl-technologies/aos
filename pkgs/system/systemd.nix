@@ -712,9 +712,9 @@ in
           exec "${aos-systemd-provider}/bin/aos-systemd-image-stage" \\
             --mount "${util-linux}/bin/mount" \\
             --umount "${util-linux}/bin/umount" \\
-            --blkid "${util-linux}/bin/blkid" \\
+            --blkid "${util-linux}/sbin/blkid" \\
             --objcopy "${pe-tools}/bin/objcopy" \\
-            --veritysetup "${cryptsetup}/bin/veritysetup" \\
+            --veritysetup "${cryptsetup}/sbin/veritysetup" \\
             --nix-store "${nix}/bin/nix-store" \\
             "\$@"
           EOF
@@ -819,6 +819,16 @@ in
               echo "skipping target systemd path execution while cross-compiling"
             ''
             else ''
+              # Reaching request parsing proves every pinned staging tool
+              # exists and resolves inside its retained package output.
+              if printf '%s' '{}' | "$handlers/bin/aos-systemd-image-stage" \
+                > stage-probe.out 2> stage-probe.err; then
+                echo "image staging accepted an incomplete request" >&2
+                exit 1
+              fi
+              test ! -s stage-probe.out
+              grep -F 'missing field `schema`' stage-probe.err >/dev/null
+
               test "$($out/bin/systemd-path system-configuration)" = /etc
 
               unitPaths="$($out/bin/systemd-analyze unit-paths)"
