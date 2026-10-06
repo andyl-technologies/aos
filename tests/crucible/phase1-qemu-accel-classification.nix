@@ -47,7 +47,9 @@ in
           # Each mutation must compile and then fail a lifecycle or hot-path
           # assertion. A parser error or missing provider is not a causal proof.
           for negative in publication-order callback-order shared-classification \
-            stale-retry superclass-match repeated-name-query predicate-order; do
+            stale-retry superclass-match repeated-name-query predicate-order \
+            tick-name-query tick-icount-order tick-observation-order \
+            tick-error-result tick-signed-result; do
             if ${pkgs.python3}/bin/python3 tests/unit/test-crucible-accel-classification.py \
               --output-dir "$out/negative-$negative" \
               --negative-control "$negative" > "$out/negative-$negative.log" 2>&1; then
@@ -67,7 +69,8 @@ in
           audited_reset_restore_identity_and_real_fork_continuity=true
           hot_mode_predicates_avoid_repeated_class_and_name_queries=true
           icount_short_circuit_and_timer_side_effect_order_preserved=true
-          seven_compiled_causal_negative_controls_rejected=true
+          twelve_compiled_causal_negative_controls_rejected=true
+          tick_api_mode_icount_observation_order_and_signed_result_preserved=true
           bounded_provider_fixture_without_guest_execution=true
           RESULT
         '';

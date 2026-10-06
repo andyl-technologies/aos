@@ -1712,6 +1712,7 @@ in
                   "lazy-memory-identity",
                   "accel-classification",
                   "fault-rule-presence",
+                  "rr-sim-barriers",
               ):
                   with (source_root / f"{name}.result").open("w") as result:
                       subprocess.run([
@@ -1741,6 +1742,8 @@ in
               grep -q '^PASS production accel classification:' accel-classification.result
               cat fault-rule-presence.result
               grep -q '^PASS production-body differential rule-presence fixture' fault-rule-presence.result
+              cat rr-sim-barriers.result
+              grep -q '^PASS healthy ordinary 8->3 cycles per CPU' rr-sim-barriers.result
               grep -Fxq 'PASS production TX/stop/clock/RR: batches, race, completion settlement, paused ack, explicit retry' \
                 net-output-stop.result
               grep -Fxq 'PASS lifecycle production encode/rebind: full save retained, canonical custody independence, guest frontier sensitivity, invalid rebind refusal' \
@@ -4300,7 +4303,7 @@ in
                 template-control-drain net-stop-chain aio-fork-custody stop-context \
                 tcg-fast-paths mutex-owner-cache snapshot-fast-path settle-prepark \
                 cold-fault-predicates lazy-memory-identity accel-classification \
-                fault-rule-presence; do
+                fault-rule-presence rr-sim-barriers; do
                 install -m 644 "$name.result" \
                   "$out/share/aos/crucible/$name.result"
                 install -m 644 "$name-proof/compile-command.json" \
