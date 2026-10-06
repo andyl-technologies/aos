@@ -26,6 +26,9 @@ use crate::{
 
 use super::*;
 
+#[path = "node/tests/boundary_observation.rs"]
+mod boundary_observation;
+
 #[path = "node/tests/completed_boundary.rs"]
 mod completed_boundary;
 

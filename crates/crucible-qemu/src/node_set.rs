@@ -1349,7 +1349,7 @@ impl QemuNodeSet {
         physical_icount: Icount,
     ) -> Result<bool, BackendError> {
         let backend = self.node_mut(node)?;
-        let calibration = backend.logical_time_calibration()?;
+        let calibration = backend.boundary_logical_time_calibration()?;
         let events = backend.drain_observable_events()?;
         let matched = campaign_marker_parked_at(node, physical_icount, calibration, &events)?;
         self.retained_observable_events.extend(events);

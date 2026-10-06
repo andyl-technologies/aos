@@ -295,14 +295,21 @@ impl QemuMappedQuantumShmemHotPath {
         } = self;
         let view =
             mapped_view(region, config).map_err(|source| source.into_channel_error(operation))?;
-        let mut hot_path = QemuQuantumShmemHotPath::new_with_inbound_delivery_ledger(
+        QemuQuantumShmemHotPath::new_with_inbound_delivery_ledger(
             config.clone(),
             view,
             inbound_delivery_ledger,
             send_authorizer.as_ref(),
         )
-        .map_err(QemuNodeChannelError::from)?;
-        run(&mut hot_path)
+        .map_err(QemuNodeChannelError::from)
+        .and_then(|mut hot_path| run(&mut hot_path))
+        .map_err(|mut source| {
+            // Preserve the typed cause while identifying this mapped acquisition.
+            if source.is_publication_unavailable() {
+                source.operation = operation;
+            }
+            source
+        })
     }
 
     fn next_router_inbound_sequence(&self) -> Result<u32, QemuNodeChannelError> {

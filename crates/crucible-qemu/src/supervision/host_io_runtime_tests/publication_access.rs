@@ -161,6 +161,7 @@ fn both_publication_sequences_refuse_getters_and_start_without_effects()
             .err()
             .ok_or("incomplete report cannot supply a clock")?;
         assert!(error.is_publication_unavailable() && error.retryable);
+        assert_eq!(error.operation, "current_icount");
         let error = mapped
             .channel
             .start_quantum(

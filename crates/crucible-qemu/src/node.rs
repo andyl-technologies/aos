@@ -41,6 +41,7 @@ use crucible_shmem::{
     SchedulerPreemptionCommand, SchedulerPreemptionKind as ShmemSchedulerPreemptionKind,
 };
 
+mod boundary_observation;
 mod channels;
 pub(crate) use channels::QemuQmpMachineControlChannel;
 pub use channels::{QemuNodePendingQuantum, QemuPluginIpcControlChannel, QemuShmemHotPathChannel};
@@ -1221,11 +1222,8 @@ impl QemuNode {
 
     fn drain_scheduler_observable_events(&mut self) -> Result<Vec<ObservableEvent>, QemuNodeError> {
         let mut boundary_events = self
-            .channels
-            .shmem_hot_path
-            .drain_observable_events()
-            .map_err(|source| {
-                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
+            .read_boundary_observation("drain observable events", |channel| {
+                channel.drain_observable_events()
             })?;
         let mut events = std::mem::take(&mut self.pending_priming_observations);
         events.append(&mut boundary_events);
@@ -1700,12 +1698,9 @@ impl QemuNode {
         Vec<crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest>,
         QemuNodeError,
     > {
-        self.channels
-            .shmem_hot_path
-            .drain_pending_selectable_requests()
-            .map_err(|source| {
-                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
-            })
+        self.read_boundary_observation("drain pending selectable requests", |channel| {
+            channel.drain_pending_selectable_requests()
+        })
     }
 
     /// Enqueues one exact host-authorized selectable reply for the next quantum.
@@ -2611,12 +2606,8 @@ impl SimulationBackend for QemuNode {
 
     // crucible-lint: allow host-nondeterminism-state -- the scheduler validates every returned conjecture before append.
     fn drain_rng_evidence(&mut self) -> Result<Vec<BackendRngEvidence>, BackendError> {
-        self.channels
-            .shmem_hot_path
-            .drain_rng_evidence()
-            .map_err(|source| {
-                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source).into()
-            })
+        self.read_boundary_observation("drain RNG evidence", |channel| channel.drain_rng_evidence())
+            .map_err(BackendError::from)
     }
 
     fn drain_network_outputs(&mut self) -> Result<Vec<BackendNetworkOutput>, BackendError> {
