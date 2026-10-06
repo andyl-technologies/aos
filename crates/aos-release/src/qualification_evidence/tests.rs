@@ -314,6 +314,33 @@ fn qualification_classifies_eligible_and_blocked_packages() -> anyhow::Result<()
 }
 
 #[test]
+fn case_expansion_skips_unclassified_not_applicable_manifest_packages() -> anyhow::Result<()> {
+    let (plan, mut manifest) = qualification_fixture()?;
+    let mut build_input = manifest.packages[0].clone();
+    build_input.name = "unclassified-build-input".into();
+    for cell in &mut build_input.platforms {
+        cell.decision = MatrixCell::NotApplicable {
+            rule: "package-build-input-only/v1".into(),
+            reason: "This derivation is a build or test input, not a public package root.".into(),
+        };
+    }
+    manifest.packages.push(build_input);
+
+    cases(&plan, &manifest, Some(STABLE), QualificationPhase::Staging)?;
+
+    let artifact_cell = manifest.packages[0].platforms[0].decision.clone();
+    let published = manifest.packages.last_mut().unwrap();
+    published.platforms[0].decision = artifact_cell;
+    assert!(
+        cases(&plan, &manifest, Some(STABLE), QualificationPhase::Staging)
+            .unwrap_err()
+            .to_string()
+            .contains("criticality classification")
+    );
+    Ok(())
+}
+
+#[test]
 fn qualification_binds_private_plan_without_requesting_it_as_a_public_object() -> anyhow::Result<()>
 {
     let (plan, manifest) = qualification_fixture()?;
