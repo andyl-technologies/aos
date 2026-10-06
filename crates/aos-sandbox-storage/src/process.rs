@@ -98,7 +98,6 @@ const CONTROL_SLICE_CGROUP: &str = "aos.slice/aos-control.slice";
 const STORAGED_CGROUP: &str = "aos.slice/aos-control.slice/aos-storaged.service";
 const WORKER_CGROUP_PREFIX: &str = "aos.slice/aos-control.slice/aos-sandbox-zfs-worker@";
 const WORKER_CGROUP_SUFFIX: &str = ".service";
-const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 
 /// Reports a fixed-worker setup, authentication, protocol, or execution error.
 #[derive(Debug, thiserror::Error)]
@@ -1688,15 +1687,12 @@ fn boottime_now() -> Duration {
 }
 
 pub(crate) fn open_cgroup_root() -> Result<CgroupV2Root, ZfsWorkerError> {
-    let descriptor: OwnedFd = rustix::fs::open(
-        CGROUP_ROOT,
-        rustix::fs::OFlags::PATH
-            | rustix::fs::OFlags::DIRECTORY
-            | rustix::fs::OFlags::NOFOLLOW
-            | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::empty(),
-    )?;
-    Ok(CgroupV2Root::from_owned(descriptor)?)
+    aos_sandbox::normal_root::open_storage_cgroup_root_v3().map_err(|error| match error {
+        aos_sandbox::normal_root::StorageCgroupRootErrorV3::Kernel(error) => {
+            ZfsWorkerError::Kernel(error)
+        }
+        aos_sandbox::normal_root::StorageCgroupRootErrorV3::Linux(error) => ZfsWorkerError::Linux(error),
+    })
 }
 
 #[cfg(test)]

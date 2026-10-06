@@ -20,6 +20,7 @@ pub(crate) mod images;
 mod nix_startup;
 pub(crate) mod profile;
 mod service;
+mod storage_worker_origin;
 pub(crate) mod startup;
 #[cfg(test)]
 mod tests;
@@ -71,6 +72,13 @@ pub use nix_offline_provision::{
     nix_offline_job_has_original_label_v5,
     OfflineNixHardwareOriginV5, OfflineNixPrepareOriginV3,
     OfflineNixPrepareStartupErrorV3, OfflineNixPrepareStartupV3,
+};
+
+pub use storage_worker_origin::{
+    CapturedStorageLaunchV3, PID1_LAUNCH_IMAGE_FD_NAME, RejectedStorageWorkerOriginV3,
+    StorageCgroupRootErrorV3, StorageLaunchCaptureErrorV3, StorageLaunchListenersV3,
+    StorageWorkerOriginAdmissionErrorV3, StorageWorkerOriginCauseV3, StorageWorkerOriginV3,
+    capture_storage_launch_v3, open_storage_cgroup_root_v3,
 };
 
 pub(super) const PID1_FD_NAME: &str = "aos-normal-root-pid1-image";
