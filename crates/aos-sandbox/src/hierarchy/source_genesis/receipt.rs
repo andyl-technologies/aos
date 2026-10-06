@@ -45,6 +45,13 @@ impl SourceTreeGenesisReceiptV1 {
     /// Rejects another width/version, reserved bytes, sentinel commitments,
     /// malformed administrative packets, or a different seed project.
     pub fn decode(bytes: &[u8]) -> Result<Self, SourceGenesisErrorV1> {
+        Self::validate_bytes(bytes)?;
+        Ok(Self { bytes: bytes.to_vec() })
+    }
+
+    // Both borrowed decoding and owner construction use the same canonical
+    // predicates; validation never grants ancestry or mutation authority.
+    fn validate_bytes(bytes: &[u8]) -> Result<(), SourceGenesisErrorV1> {
         let resource_version = bytes.len() == SOURCE_TREE_GENESIS_RECEIPT_BYTES_V2
             && bytes.get(..8) == Some(b"AOSSGR02".as_slice())
             && bytes.get(8..10) == Some(2_u16.to_be_bytes().as_slice());
@@ -88,7 +95,7 @@ impl SourceTreeGenesisReceiptV1 {
         {
             return Err(SourceGenesisErrorV1::NonCanonical);
         }
-        Ok(Self { bytes: bytes.to_vec() })
+        Ok(())
     }
 
     /// Returns the exact canonical immutable receipt bytes.
@@ -198,7 +205,8 @@ impl SourceTreeGenesisReceiptV1 {
         bytes[joins + 32..joins + 64].copy_from_slice(lineage_head.as_bytes());
         let materialization = materialization(tree_member, lineage_member, &bytes[..joins + 64]);
         bytes[joins + 64..].copy_from_slice(materialization.as_bytes());
-        Self::decode(&bytes)
+        Self::validate_bytes(&bytes)?;
+        Ok(Self { bytes })
     }
 
     pub(crate) fn matches_members(&self, tree: &[u8], lineage: &[u8]) -> bool {
