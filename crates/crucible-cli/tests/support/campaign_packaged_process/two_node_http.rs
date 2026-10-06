@@ -125,6 +125,7 @@ fn run_http_exchange(server: HttpServer) -> Result<(), Box<dyn Error>> {
         &compiled,
         "qemu-11.1.1-crucible",
         Some(HTTP_VIRTUAL_BUDGET_TICKS),
+        &["scenario-complete"],
     )?;
     let authority = guest_choice::write_component_authority(&fixture)?;
     println!("{prefix}_stage=start-runtime");

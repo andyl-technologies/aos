@@ -25,7 +25,7 @@ pub(crate) const FAST_ALTERNATIVE: &str =
     "0101010101010101010101010101010101010101010101010101010101010101";
 const SAFE_ALTERNATIVE: &str = "0202020202020202020202020202020202020202020202020202020202020202";
 const GUEST_CHOICE_RENDEZVOUS_TICKS: &str = "250000000";
-const GUEST_CHOICE_ATTEMPT_WAIT: Duration = Duration::from_secs(600);
+pub(crate) const GUEST_CHOICE_ATTEMPT_WAIT: Duration = Duration::from_secs(600);
 const GUEST_CHOICE_PROGRESS_CAPTURE_WAIT: Duration = Duration::from_secs(2600);
 const MAX_GUEST_CHOICE_ATTEMPT_RECORDS: usize = 65_536;
 const MAX_DIAGNOSTIC_ATTEMPTS: usize = 16;
@@ -521,7 +521,13 @@ fn create_guest_choice_campaign(
     compiled: &Value,
     qemu_build: &str,
 ) -> Result<(), Box<dyn Error>> {
-    create_guest_choice_campaign_with_timeout(fixture, compiled, qemu_build, None)
+    create_guest_choice_campaign_with_timeout(
+        fixture,
+        compiled,
+        qemu_build,
+        None,
+        &["scenario-complete"],
+    )
 }
 
 pub(super) fn create_guest_choice_campaign_with_timeout(
@@ -529,6 +535,7 @@ pub(super) fn create_guest_choice_campaign_with_timeout(
     compiled: &Value,
     qemu_build: &str,
     virtual_timeout_picoseconds: Option<u64>,
+    required_stop_conditions: &[&str],
 ) -> Result<(), Box<dyn Error>> {
     let manifest = json_path(compiled, "manifest")?;
     create_guest_choice_campaign_with_policy_choices(
@@ -538,6 +545,7 @@ pub(super) fn create_guest_choice_campaign_with_timeout(
         virtual_timeout_picoseconds,
         &manifest,
         "",
+        required_stop_conditions,
     )
 }
 
@@ -548,6 +556,7 @@ fn create_guest_choice_campaign_with_policy_choices(
     virtual_timeout_picoseconds: Option<u64>,
     manifest: &Path,
     policy_choices: &str,
+    required_stop_conditions: &[&str],
 ) -> Result<(), Box<dyn Error>> {
     let root = fixture._temporary.path();
     let lineage_input = root.join("guest-choice-lineage.toml");
@@ -582,7 +591,7 @@ fn create_guest_choice_campaign_with_policy_choices(
 scenario = {:?}
 campaign_seed = "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f"
 mode = "strict"
-stop_conditions = ["scenario-complete"]
+stop_conditions = {}
 admit_scenario_defaults = false
 [explorer]
 kind = "exhaustive"
@@ -597,6 +606,7 @@ exact_findings = true
 exact_user_pins = true{}{}
 "#,
             json_string(compiled, "scenario")?,
+            serde_json::to_string(required_stop_conditions)?,
             virtual_timeout_picoseconds
                 .map(|ticks| format!("\n[attempt_timeout]\nvirtual_time_picoseconds = {ticks}"))
                 .unwrap_or_default(),

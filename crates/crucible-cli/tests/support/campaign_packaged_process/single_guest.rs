@@ -17,6 +17,10 @@ const VIRTUAL_BUDGET_PS: u64 = 2_000_000_000_000;
 const HOST_WATCHDOG: Duration = Duration::from_secs(180);
 const SELECTED_MARKER: &str = "selected-fast-q7";
 const COMPLETION_MARKER: &str = "selected-fast-q7-progress-000003";
+const MATERIALIZATION_STOP_CONDITIONS: [&str; 2] = ["scenario-complete", COMPLETION_MARKER];
+
+#[path = "single_guest/policy.rs"]
+mod policy;
 
 #[test]
 #[ignore = "requires packaged QEMU, cgroup v2, and project quotas in the dedicated VM"]
@@ -72,6 +76,11 @@ fn run_single_guest(materialization: bool) -> Result<(), Box<dyn Error>> {
         &compiled,
         packaged.qemu_build_id(),
         Some(VIRTUAL_BUDGET_PS),
+        if materialization {
+            &MATERIALIZATION_STOP_CONDITIONS
+        } else {
+            &["scenario-complete"]
+        },
     )?;
     let authority = guest_choice::write_component_authority(&fixture)?;
     let hot_fork = materialization

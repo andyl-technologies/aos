@@ -329,6 +329,7 @@ fn create_lifecycle_campaign(
         None,
         &manifest,
         &choices,
+        &["scenario-complete"],
     )
 }
 

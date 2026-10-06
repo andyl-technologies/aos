@@ -27,7 +27,35 @@ fn reached_named_stop() -> StopOutcome {
 }
 
 fn completed_source(outcome: StopOutcome) -> (CampaignRepository, CampaignLineage, AttemptId) {
+    completed_source_with_stops(outcome, &[])
+}
+
+fn completed_source_with_stops(
+    outcome: StopOutcome,
+    stop_conditions: &[&str],
+) -> (CampaignRepository, CampaignLineage, AttemptId) {
     let (repository, lineage, policy) = fixture();
+    let policy = CampaignPolicy::new(
+        CampaignPolicy::identity(
+            policy.scenario(),
+            policy.campaign_seed(),
+            policy.mode(),
+            policy.explorer().clone(),
+        ),
+        CampaignPolicy::rules(
+            policy.choice_policies().clone(),
+            policy.objectives().clone(),
+            policy.guidance().clone(),
+            stop_conditions
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
+            policy.fairness(),
+            policy.retention(),
+            policy.admits_scenario_defaults(),
+        ),
+    )
+    .expect("explicit source policy stops");
     let policy = policy
         .with_attempt_timeout_policy(
             crate::CampaignAttemptTimeoutPolicy::new(Some(1_000), Some(10), None)
@@ -487,5 +515,64 @@ fn mismatched_named_stop_and_invalid_bounded_proof_cannot_supply_capture_evidenc
             invalid.is_err(),
             "deadline proof must fail before repository publication"
         );
+    }
+}
+
+#[test]
+fn public_selected_continuation_requires_its_named_stop_in_the_active_policy() {
+    let completion = "selected-fast-q7-progress-000003";
+    for declared_stops in [
+        vec!["scenario-complete"],
+        vec!["scenario-complete", completion],
+    ] {
+        let (repository, lineage, attempt) =
+            completed_source_with_stops(reached_named_stop(), &declared_stops);
+        let capture = exact_capture(&repository, &lineage, attempt);
+        let paused = resolve_capture(&repository, &lineage, &capture);
+        let request = public_request(
+            paused.snapshot,
+            CampaignSavepointAction::Select {
+                command: CampaignCommandId::from_hash(CampaignHash::derive(
+                    "test",
+                    b"public-materialization-select",
+                )),
+                request: capture.request,
+                stop: StopCondition::NamedBoundary(completion.to_owned()),
+            },
+        );
+
+        let selected = RepositoryCampaignService::new(&repository, AllowCampaignQueries)
+            .with_operational_status(&paused)
+            .campaign_savepoint(&request);
+        if declared_stops.contains(&completion) {
+            let selected = selected.expect("declared captured continuation admitted");
+            assert!(matches!(
+                selected.result(),
+                CampaignSavepointResult::Selected { .. }
+            ));
+            assert_ne!(
+                repository
+                    .head(CAMPAIGN)
+                    .expect("selected head")
+                    .snapshot_id(),
+                paused.snapshot
+            );
+        } else {
+            assert!(matches!(
+                selected,
+                Err(RepositoryCampaignServiceError::Repository(
+                    CampaignRepositoryError::InvalidRequest {
+                        reason: "savepoint-continuation-stop-boundary-is-not-in-active-policy",
+                    }
+                ))
+            ));
+            assert_eq!(
+                repository
+                    .head(CAMPAIGN)
+                    .expect("refusal is atomic")
+                    .snapshot_id(),
+                paused.snapshot
+            );
+        }
     }
 }

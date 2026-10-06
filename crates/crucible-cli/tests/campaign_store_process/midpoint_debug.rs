@@ -593,11 +593,12 @@ fn drive_fast_q7_failure(
         0x63,
     )?;
     let fast_request = guest_choice::accepted_branch_request(&fast_submission)?;
-    let fast_attempt = guest_choice::wait_for_new_completed_attempt(
+    let fast_attempt = guest_choice::wait_for_new_completed_attempt_with_timeout(
         fixture,
         service,
         &known_attempts,
         &fast_request,
+        guest_choice::GUEST_CHOICE_ATTEMPT_WAIT,
     )?;
     known_attempts.insert(fast_attempt);
     let fast = guest_choice::wait_for_attempt_observation(fixture, fast_attempt)?;
