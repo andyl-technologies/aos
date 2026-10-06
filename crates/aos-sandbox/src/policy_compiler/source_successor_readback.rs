@@ -15,6 +15,8 @@
 //! These bytes authenticate comparison DATA only. The fresh challenge
 //! does not replace the archived Root nonce/deadline or mint Root authority.
 
+use std::borrow::Cow;
+
 use aos_sandbox_core::ObjectDigest;
 use ed25519_dalek::{Signature, Signer as _, SigningKey};
 
@@ -117,6 +119,35 @@ pub struct VerifiedSourceFirstSuccessorReadbackV2 {
     ack: Option<SourceFirstSuccessorAckV2>,
     names: ProtectedJournalNamesV1,
     approval: ObjectDigest,
+}
+
+// The sole decoder lends validated DATA fields without copying the complete
+// packet. Signing may reuse its already validated journal genesis receipt;
+// verification owns its decoded receipt and materializes the retained packet.
+struct ValidatedSourceReadbackFields<'data> {
+    bytes: &'data [u8],
+    phase: SourceFirstSuccessorReadbackPhaseV2,
+    genesis: Cow<'data, SourceTreeGenesisReceiptV1>,
+    genesis_ack_digest: ObjectDigest,
+    receipt: Option<SourceFirstSuccessorReceiptV2>,
+    ack: Option<SourceFirstSuccessorAckV2>,
+    names: ProtectedJournalNamesV1,
+    approval: ObjectDigest,
+}
+
+impl ValidatedSourceReadbackFields<'_> {
+    fn into_verified_data(self) -> VerifiedSourceFirstSuccessorReadbackV2 {
+        VerifiedSourceFirstSuccessorReadbackV2 {
+            bytes: self.bytes.to_vec(),
+            phase: self.phase,
+            genesis: self.genesis.into_owned(),
+            genesis_ack_digest: self.genesis_ack_digest,
+            receipt: self.receipt,
+            ack: self.ack,
+            names: self.names,
+            approval: self.approval,
+        }
+    }
 }
 
 impl VerifiedSourceFirstSuccessorReadbackV2 {
@@ -313,7 +344,7 @@ fn verify_with_recipe(
     fresh_nonce: [u8; 16], context: &RootFirstSourceSuccessorIntentV2,
     recipe: SourceReadbackRecipe,
 ) -> Result<VerifiedSourceFirstSuccessorReadbackV2, SourceGenesisErrorV1> {
-    let data = decode_with_recipe(packet, fresh_nonce, context, recipe)?;
+    let data = decode_with_recipe(packet, fresh_nonce, context, recipe, None)?.into_verified_data();
     if data.signer_generation() != signer.generation() {
         return Err(SourceGenesisErrorV1::Conflict);
     }
@@ -448,7 +479,7 @@ fn sign_source_successor_from_view(
     packet[tail + 1080..tail + 1088].copy_from_slice(&generation.to_be_bytes());
     // Pure DATA shape/bindings precede real signing. Only the public verifier
     // authenticates the complete signature against the independent pinned key.
-    decode_with_recipe(&packet, fresh_nonce, context, recipe)?;
+    decode_with_recipe(&packet, fresh_nonce, context, recipe, Some(original))?;
     let signature = signing_key.sign(&signature_message_with_recipe(&packet[..tail + 1088], recipe)).to_bytes();
     packet[tail + 1088..].copy_from_slice(&signature);
     if journal.snapshot_sequence() != sequence {
@@ -457,10 +488,11 @@ fn sign_source_successor_from_view(
     Ok(packet)
 }
 
-fn decode_with_recipe(
-    packet: &[u8], fresh_nonce: [u8; 16], context: &RootFirstSourceSuccessorIntentV2,
+fn decode_with_recipe<'data>(
+    packet: &'data [u8], fresh_nonce: [u8; 16], context: &RootFirstSourceSuccessorIntentV2,
     recipe: SourceReadbackRecipe,
-) -> Result<VerifiedSourceFirstSuccessorReadbackV2, SourceGenesisErrorV1> {
+    journal_genesis: Option<&'data SourceTreeGenesisReceiptV1>,
+) -> Result<ValidatedSourceReadbackFields<'data>, SourceGenesisErrorV1> {
     let permitted_length = if recipe.is_resource() {
         matches!(packet.len(), SOURCE_RESOURCE_SUCCESSOR_LEGACY_GENESIS_BYTES_V4 | SOURCE_RESOURCE_SUCCESSOR_READBACK_BYTES_V4)
     } else {
@@ -487,7 +519,17 @@ fn decode_with_recipe(
         2 => SourceFirstSuccessorReadbackPhaseV2::Anchored,
         _ => return Err(SourceGenesisErrorV1::NonCanonical),
     };
-    let genesis = SourceTreeGenesisReceiptV1::decode(&packet[genesis_offset..tail])?;
+    let genesis = match journal_genesis {
+        Some(receipt) => {
+            // This private signing handoff borrows only the constructor-validated
+            // journal receipt copied above, never a caller's unvalidated bytes.
+            if receipt.as_bytes() != &packet[genesis_offset..tail] {
+                return Err(SourceGenesisErrorV1::NonCanonical);
+            }
+            Cow::Borrowed(receipt)
+        }
+        None => Cow::Owned(SourceTreeGenesisReceiptV1::decode(&packet[genesis_offset..tail])?),
+    };
     let genesis_ack = crate::journal::source_tree_genesis::SourceGenesisAckV1::decode(&packet[tail..tail + 192])?;
     let names = ProtectedJournalNamesV1::from_bytes(&packet[tail + 920..tail + 968])?;
     if genesis.instance() != context.instance() || genesis.project() != context.project()
@@ -543,8 +585,8 @@ fn decode_with_recipe(
         }
         None
     };
-    Ok(VerifiedSourceFirstSuccessorReadbackV2 {
-        bytes: packet.to_vec(), phase, genesis, genesis_ack_digest: genesis_ack.digest(),
+    Ok(ValidatedSourceReadbackFields {
+        bytes: packet, phase, genesis, genesis_ack_digest: genesis_ack.digest(),
         receipt, ack, names, approval: context.approval(),
     })
 }
