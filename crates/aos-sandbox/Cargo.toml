@@ -31,6 +31,7 @@ buffa.workspace = true
 connectrpc.workspace = true
 ed25519-dalek = { workspace = true, features = ["zeroize"] }
 futures.workspace = true
+hmac.workspace = true
 rustix = { workspace = true, features = ["event", "fs", "net", "process", "rand", "time"] }
 serde.workspace = true
 serde_json.workspace = true
@@ -38,6 +39,7 @@ sha2.workspace = true
 ssh-key.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+zeroize.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 aos-sandbox-linux.workspace = true
@@ -50,9 +52,9 @@ rand.workspace = true
 rustls.workspace = true
 rustls-pemfile.workspace = true
 tokio-rustls.workspace = true
-zeroize.workspace = true
 
 [dev-dependencies]
+hex.workspace = true
 rcgen.workspace = true
 tempfile.workspace = true
 

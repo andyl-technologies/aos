@@ -5,6 +5,9 @@
 //! intersects them with protected local time and fencing state, and emits
 //! location-authenticated durable records that remain non-authorizing until
 //! committed by the caller.
+//!
+//! The admission, record and protected configuration types reexport the sole
+//! private Core engine and loader without exposing their private MAC machinery.
 
 mod admission;
 mod config;

@@ -22,8 +22,9 @@
 //! mapping bounds without granting execution authority.
 //! [`controller_execution_observe_reservation`] shares the non-authorizing
 //! Create-to-Observe reservation codec with the Controller execution owner.
-//! Raw Linux syscalls and
-//! privileged broker implementations deliberately live outside this crate.
+//! The private broker-authority engine shares signed admission and authenticated
+//! journal records through the privileged-broker facade. Raw Linux syscalls and
+//! audience-specific privileged broker effects deliberately live outside this crate.
 
 #[cfg(all(feature = "test-fixtures", not(debug_assertions)))]
 compile_error!("the protected-journal test fixture is unavailable in release builds");
@@ -49,6 +50,7 @@ pub mod attachment_state;
 #[cfg(target_os = "linux")]
 pub mod attachment_verification;
 pub mod authority;
+mod broker_authority;
 pub mod cache_residency;
 pub mod cli_model;
 pub mod client_state;
@@ -228,6 +230,14 @@ pub use authority::{
     AuthorizationPreparationError, BrokerPlanPreparation, PreparedSigningRequest,
     PublisherPlanPreparation, ReturnedSignature, SignedBrokerPlan, SignedPublisherPlan,
     SigningAuthority,
+};
+pub use broker_authority::{
+    AdmissionRequest, AuthorizationRecordError, BrokerAdmissionError, BrokerAuthority,
+    BrokerAuthorityConfigError,
+    BrokerAuthorizationFenceV1, BrokerDomain, BrokerEffectClockDispositionV1, BrokerEffectIntentV1,
+    BrokerEffectStatusV1, BrokerLocalRecordDomain, ProtectedBrokerAuthorityConfiguration,
+    ProtectedBrokerPublicCredentialRole, ProtectedBrokerPublicCredentialSnapshot,
+    ProtectedBrokerPublicCredentials, VerifiedBrokerAdmission,
 };
 pub use controller::{
     ActivatedOperationCompiler, ControllerQuantumReport, ControllerReconciliationStep,
