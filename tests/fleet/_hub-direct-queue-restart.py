@@ -5,7 +5,9 @@ claim that the read was active, that bytes had reached the provider, or that a
 local ACK was settled. The ordinary mixed/pure qualification is a separate run.
 """
 
+import base64
 import hashlib
+import stat
 import json
 import os
 from pathlib import Path
@@ -241,11 +243,128 @@ def observe_direct_restart_readiness(worker, tools, driver):
         return unknown
 
 
+def retain_direct_restart_outputs(worker, tools, driver, observation):
+    """Retain bounded original-child outputs without resolving unknown custody.
+
+    This copies only the recorded restart directory's two private files. File
+    custody never supplies a missing process exit status or authorizes a replay.
+    """
+    pin = {name: driver[name] for name in ("runId", "root", "pid", "ownerUid", "startTicks")}
+    if (not re.fullmatch(r"[0-9a-f]{64}", pin["runId"])
+            or pin["root"] != "/var/lib/hybrid-worker/operator/restart-" + pin["runId"]
+            or type(pin["pid"]) is not int or pin["pid"] <= 0
+            or type(pin["ownerUid"]) is not int or pin["ownerUid"] < 0
+            or not re.fullmatch(r"[1-9][0-9]{0,19}", pin["startTicks"])
+            or any(observation.get(name) != pin[name]
+                   for name in ("runId", "pid", "ownerUid", "startTicks"))):
+        raise ValueError("restart outputs require the recorded original child")
+
+    parent = Path("external-direct-flow")
+    parent.mkdir(mode=0o700, exist_ok=True)
+    facts = parent.lstat()
+    if (not stat.S_ISDIR(facts.st_mode) or facts.st_uid != os.geteuid()
+            or facts.st_mode & 0o077):
+        raise ValueError("restart output parent custody refused")
+    destination = parent / ("restart-" + pin["runId"] + "-outputs")
+    destination.mkdir(mode=0o700, exist_ok=False)
+    records = []
+    for name in ("stdout.log", "stderr.log"):
+        record = {"name": name, "state": "refused_or_unknown"}
+        expected = observation.get("outputs", {}).get(name)
+        try:
+            if (not isinstance(expected, dict) or expected.get("present") is not True
+                    or expected.get("custody") is not True
+                    or not isinstance(expected.get("byteSize"), str)
+                    or not re.fullmatch(r"(?:0|[1-9][0-9]{0,19})", expected["byteSize"])):
+                raise ValueError("restart observed output custody unavailable")
+            encoded = direct_guest_python(worker, tools["python"], """
+                import base64, hashlib, os, stat
+
+                pin = selected['pin']
+                if (pin['ownerUid'] != os.getuid()
+                        or pin['root'] != '/var/lib/hybrid-worker/operator/restart-' + pin['runId']
+                        or selected['name'] not in ('stdout.log', 'stderr.log')):
+                    raise ValueError('restart output identity refused')
+                parent = os.open('/var/lib/hybrid-worker/operator',
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                root = None
+                try:
+                    root = os.open('restart-' + pin['runId'],
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+                    custody = os.fstat(root)
+                    if (custody.st_uid != pin['ownerUid']
+                            or stat.S_IMODE(custody.st_mode) != 0o700):
+                        raise ValueError('restart output directory custody refused')
+                    prior = os.stat(selected['name'], dir_fd=root, follow_symlinks=False)
+                    descriptor = os.open(selected['name'],
+                        os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=root)
+                    with os.fdopen(descriptor, 'rb') as source:
+                        before = os.fstat(source.fileno())
+                        if (not stat.S_ISREG(before.st_mode) or before.st_uid != pin['ownerUid']
+                                or stat.S_IMODE(before.st_mode) != 0o600 or before.st_nlink != 1
+                                or (before.st_dev, before.st_ino) != (prior.st_dev, prior.st_ino)
+                                or str(before.st_size) != selected['expected']['byteSize']):
+                            raise ValueError('restart output file custody changed')
+                        raw = source.read(65537)
+                        after = os.fstat(source.fileno())
+                    if (any(getattr(before, field) != getattr(after, field)
+                            for field in ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns'))
+                            or len(raw) != min(before.st_size, 65537)):
+                        raise ValueError('restart output changed during bounded read')
+                    body = raw[:65536]
+                    print(json.dumps({'body': base64.b64encode(body).decode(),
+                        'sha256': hashlib.sha256(body).hexdigest(),
+                        'observedByteSize': str(before.st_size), 'byteSize': len(body),
+                        'eof': before.st_size <= 65536, 'truncated': before.st_size > 65536}))
+                finally:
+                    if root is not None:
+                        os.close(root)
+                    os.close(parent)
+            """, {"pin": pin, "name": name, "expected": expected}, timeout=10)
+            if len(encoded.encode()) > 90000:
+                raise ValueError("restart output transport exceeds bound")
+            captured = json.loads(encoded)
+            if set(captured) != {"body", "sha256", "observedByteSize", "byteSize", "eof", "truncated"}:
+                raise ValueError("restart output transport schema differs")
+            body = base64.b64decode(captured["body"], validate=True)
+            digest = hashlib.sha256(body).hexdigest()
+            size = int(expected["byteSize"])
+            if (len(body) != min(size, 65536) or type(captured["byteSize"]) is not int
+                    or captured["byteSize"] != len(body) or captured["sha256"] != digest
+                    or captured["observedByteSize"] != expected["byteSize"]
+                    or captured["eof"] is not (size <= 65536)
+                    or captured["truncated"] is not (size > 65536)):
+                raise ValueError("restart output differs from the observed private file")
+            descriptor = os.open(destination / name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(descriptor, "wb") as output:
+                output.write(body)
+                output.flush()
+                os.fsync(output.fileno())
+            record = {"name": name, "state": "retained_prefix" if size > 65536 else "retained",
+                "file": str(destination / name), "byteSize": len(body), "sha256": digest,
+                "observedByteSize": expected["byteSize"], "eof": size <= 65536,
+                "truncated": size > 65536}
+        except Exception:
+            # Missing, changing and inaccessible streams are independently
+            # unknown; a partial retention must not erase the original refusal.
+            pass
+        records.append(record)
+    return {"version": 1, "runId": pin["runId"], "pid": pin["pid"],
+        "ownerUid": pin["ownerUid"], "startTicks": pin["startTicks"],
+        "processCustody": observation.get("custody"), "exitCode": observation.get("exitCode"),
+        "maximumFileBytes": 65536, "files": records}
+
+
 def direct_restart_readiness(worker, tools, driver):
     """Retain safe failure facts before stopping the original readiness wait."""
     observation = observe_direct_restart_readiness(worker, tools, driver)
     if observation["category"] not in ("waiting_for_original", "original_ready"):
-        retain_direct_flow("queue-restart-readiness-failure.json", observation)
+        try:
+            outputs = retain_direct_restart_outputs(worker, tools, driver, observation)
+        except Exception:
+            outputs = {"version": 1, "maximumFileBytes": 65536, "state": "refused_or_unknown"}
+        retain_direct_flow("queue-restart-readiness-failure.json", {**observation, "childOutputs": outputs})
         raise AssertionError("queue restart child readiness observation refused")
     return observation["ready"]
 
