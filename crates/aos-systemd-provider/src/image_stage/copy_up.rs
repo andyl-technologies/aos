@@ -16,11 +16,15 @@ use sha2::{Digest, Sha256};
 
 use super::{Request, string};
 
-const CLOSURE_BYTES: u64 = 32 * 1024 * 1024;
+use crate::store_closure::closure_paths;
 
 pub(super) fn persist(nix_store: &Path, request: &Request) -> Result<()> {
     let mut roots = BTreeSet::new();
-    for root in &request.retained_store_roots {
+    for root in request
+        .retained_store_roots
+        .iter()
+        .chain(&request.retained_initrd_store_roots)
+    {
         ensure!(
             store_root(root)? == Path::new(root),
             "retained input is not an exact store root"
@@ -84,46 +88,6 @@ pub(super) fn store_root(value: &str) -> Result<PathBuf> {
         "store path spelling is not canonical"
     );
     Ok(Path::new("/nix/store").join(name))
-}
-
-fn closure_paths(command: &mut Command, roots: &BTreeSet<PathBuf>) -> Result<BTreeSet<PathBuf>> {
-    let mut child = command
-        .args(["--query", "--requisites"])
-        .args(roots)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()?;
-    let mut bytes = Vec::new();
-    let read = child
-        .stdout
-        .take()
-        .context("closure query has no stdout")?
-        .take(CLOSURE_BYTES + 1)
-        .read_to_end(&mut bytes);
-    if read.is_err() || bytes.len() as u64 > CLOSURE_BYTES {
-        let _ = child.kill();
-        let _ = child.wait();
-        read?;
-        anyhow::bail!("store closure exceeds its bounded inventory");
-    }
-    ensure!(
-        child.wait()?.success(),
-        "selected store closure query failed"
-    );
-    let mut paths = BTreeSet::new();
-    for line in std::str::from_utf8(&bytes)?.lines() {
-        let root = store_root(line)?;
-        ensure!(
-            root == Path::new(line),
-            "closure query returned a store member instead of a root"
-        );
-        paths.insert(root);
-    }
-    ensure!(
-        roots.is_subset(&paths),
-        "closure query omitted an admitted root"
-    );
-    Ok(paths)
 }
 
 fn nar_identity(nix_store: &Path, path: &Path) -> Result<(u64, [u8; 32])> {

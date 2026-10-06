@@ -71,6 +71,117 @@ def assert_identity(record: dict[str, Any]) -> None:
         raise RuntimeError("actual boot is outside the retained physical slot")
 
 
+def initrd_journal_snapshot() -> dict[str, Any]:
+    """Captures retained authority without decoding or repairing private frames."""
+    state = runtime.succeed(
+        f"{COREUTILS}/head --bytes=4097 /run/current-system/meta/initrd-state-directory"
+    )
+    if (
+        len(state.encode()) > 4096
+        or not state.startswith("/")
+        or any(part in ("", ".", "..") for part in state.split("/")[1:])
+        or any(character in state for character in "\x00\n\r")
+    ):
+        raise RuntimeError("invalid selected initrd state directory")
+
+    quoted_state = shlex.quote(state)
+    runtime.succeed(f"test -d {quoted_state} && test ! -L {quoted_state}")
+
+    journals = {}
+    for name in ("generations.journal", "effects.journal"):
+        path = state + "/" + name
+        quoted = shlex.quote(path)
+        runtime.succeed(f"test -f {quoted} && test ! -L {quoted}")
+        size = int(runtime.succeed(f"{COREUTILS}/stat -c %s {quoted}").strip())
+        if not 0 < size <= 134217728:
+            raise RuntimeError("initrd journal exceeds its acceptance boundary")
+        digest = runtime.succeed(f"{COREUTILS}/sha256sum {quoted}").split()[0]
+        journals[name] = {"size": size, "sha256": digest}
+
+    def entries(directory: str, pattern: str) -> list[str]:
+        quoted_directory = shlex.quote(state + "/" + directory)
+        runtime.succeed(f"test -d {quoted_directory} && test ! -L {quoted_directory}")
+        listing = runtime.succeed(
+            f"for path in {shlex.quote(state + '/' + directory)}/*; do "
+            f"test -e \"$path\" || test -L \"$path\" || continue; "
+            f"printf '%s\\n' \"${{path##*/}}\"; done | {COREUTILS}/head --bytes=1048577"
+        )
+        names = listing.splitlines()
+        if len(listing.encode()) > 1048576 or len(names) > 4096:
+            raise RuntimeError("initrd retained authority inventory exceeds its boundary")
+        if not names or any(re.fullmatch(pattern, name) is None for name in names):
+            raise RuntimeError("unexpected initrd retained authority entry")
+        return sorted(names)
+
+    admissions = {}
+    for name in entries("admissions", r"[0-9a-f]{64}\.json"):
+        path = state + "/admissions/" + name
+        runtime.succeed(f"test -f {shlex.quote(path)} && test ! -L {shlex.quote(path)}")
+        size = int(runtime.succeed(f"{COREUTILS}/stat -c %s {shlex.quote(path)}").strip())
+        if not 0 < size <= 4096:
+            raise RuntimeError("initrd admission metadata exceeds its acceptance boundary")
+        receipt = read_json(path)
+        if set(receipt) != {"path", "digest"}:
+            raise RuntimeError("unexpected retained initrd admission metadata")
+        digest = runtime.succeed(f"{COREUTILS}/sha256sum {shlex.quote(path)}").split()[0]
+        admissions[name] = {"receipt": receipt, "sha256": digest}
+
+    names = entries("roots", r"[0-9a-f]{64}")
+    chunks = []
+    total_bytes = 0
+    for offset in range(0, len(names), 64):
+        commands = []
+        for name in names[offset:offset + 64]:
+            path = shlex.quote(state + "/roots/" + name)
+            commands.append(f"test -L {path} && printf '%s\\t' {name} && {COREUTILS}/readlink {path}")
+        chunk = runtime.succeed(
+            "set -eu; { " + "; ".join(commands) + f"; }} | {COREUTILS}/head --bytes=65537"
+        )
+        chunk_bytes = len(chunk.encode())
+        total_bytes += chunk_bytes
+        if chunk_bytes > 65536 or total_bytes > 1048576:
+            raise RuntimeError("initrd retention targets exceed their boundary")
+        chunks.append(chunk)
+    listing = "".join(chunks)
+    roots = {}
+    for line in listing.splitlines():
+        name, root = line.split("\t", 1)
+        if name not in names or name in roots:
+            raise RuntimeError("initrd retention link inventory changed")
+        if re.fullmatch(r"/nix/store/[0-9a-z]{32}-[^/\x00\n]+", root) is None:
+            raise RuntimeError("initrd retention root is not an exact store member")
+        roots[name] = root
+    if set(roots) != set(names):
+        raise RuntimeError("initrd retention link inventory is incomplete")
+    targets = sorted(set(roots.values()))
+    for offset in range(0, len(targets), 64):
+        arguments = " ".join(shlex.quote(root) for root in targets[offset:offset + 64])
+        runtime.succeed(f"NIX_REMOTE= {NIX_BIN}/nix-store --check-validity {arguments}")
+    return {"state": state, "journals": journals, "admissions": admissions, "roots": roots}
+
+
+def assert_initrd_journal_continuity(original: dict[str, Any]) -> None:
+    """Requires original generation history, admission metadata and custody roots."""
+    current = initrd_journal_snapshot()
+    if current["state"] != original["state"]:
+        raise RuntimeError("selected initrd journal namespace changed")
+    # Exact frame prefixes preserve original generation IDs without a second
+    # parser for the runtime-owned journal format. New records may append.
+    for name, before in original["journals"].items():
+        if current["journals"][name]["size"] < before["size"]:
+            raise RuntimeError("retained initrd journal was truncated")
+        path = shlex.quote(current["state"] + "/" + name)
+        digest = runtime.succeed(
+            f"{COREUTILS}/head --bytes={before['size']} {path} | {COREUTILS}/sha256sum"
+        ).split()[0]
+        if digest != before["sha256"]:
+            raise RuntimeError("retained initrd journal prefix changed")
+    for kind in ("admissions", "roots"):
+        for name, value in original[kind].items():
+            if current[kind].get(name) != value:
+                raise RuntimeError(f"original initrd {kind} identity disappeared or changed")
+
+
 def secure_boot() -> None:
     """Enrolls explicit fixture keys and proves firmware enforcement after boot."""
     def variable(name: str) -> int:
@@ -208,7 +319,7 @@ def invoke_reboot(arguments: str, label: str) -> None:
     runtime.wait_until_succeeds(f"{JQ} -e '.pending == null and .active_rollout == null' {IMAGE_STATE}", timeout=900)
 
 
-def counted_boot_fallback(original: dict[str, Any]) -> None:
+def counted_boot_fallback(original: dict[str, Any], initrd_before: dict[str, Any]) -> None:
     """Exhausts three real candidate boots before native activation or health."""
     runtime.succeed(f"printf '%s\\n' {shlex.quote(CANDIDATE_TOP)} > /var/lib/aos-test/blocked-image-toplevel")
     runtime.succeed(f"{SYSTEMD_RUN} --quiet --unit=native-image-counted-failure --property=Type=exec {APM} upgrade --system --yes --drain --reboot")
@@ -220,6 +331,7 @@ def counted_boot_fallback(original: dict[str, Any]) -> None:
         else:
             runtime.wait_until_succeeds(candidate_selected, timeout=1800)
         runtime.wait_until_succeeds(f"{SYSTEMCTL} is-failed --quiet aos-activate.service", timeout=900)
+        assert_initrd_journal_continuity(initrd_before)
         state = image_state()
         candidate = generation(state, state["pending"])
         stem = candidate["boot_provider_state"]["evidence"]["installed-entry"].rsplit("/", 1)[1].split("+", 1)[0]
@@ -237,6 +349,7 @@ def counted_boot_fallback(original: dict[str, Any]) -> None:
     runtime.wait_until_succeeds(f"{SYSTEMCTL} is-active --quiet aos-image-boot-commit.service", timeout=900)
     runtime.wait_until_succeeds(f"{JQ} -e '.running == {original['number']} and .pending == null and .active_rollout == null and .last_rollout.status == \"boot_failed\"' {IMAGE_STATE}", timeout=900)
     assert_identity(original)
+    assert_initrd_journal_continuity(initrd_before)
     runtime.succeed(f"{COREUTILS}/rm /var/lib/aos-test/blocked-image-toplevel")
 
 
@@ -286,7 +399,8 @@ def run() -> None:
     original = generation(image_state(), image_state()["running"])
     assert_identity(original)
     publish_candidate()
-    counted_boot_fallback(original)
+    initrd_before = initrd_journal_snapshot()
+    counted_boot_fallback(original, initrd_before)
 
     invoke_reboot("upgrade --system --yes --drain --reboot", "native-image-upgrade")
     selected = image_state()

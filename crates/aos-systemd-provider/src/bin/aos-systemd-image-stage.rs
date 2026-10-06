@@ -6,6 +6,13 @@ mod executable;
 mod image_profile;
 #[path = "../image_stage.rs"]
 mod image_stage;
+#[path = "../initrd_archive.rs"]
+mod initrd_archive;
+#[path = "../initrd_store.rs"]
+mod initrd_store;
+
+#[path = "../store_closure.rs"]
+mod store_closure;
 
 fn main() {
     if let Err(error) = image_stage::run_from_process() {

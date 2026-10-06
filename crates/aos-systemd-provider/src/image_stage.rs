@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::executable::validate_store_executable;
-use crate::image_profile::{IMAGE_PROFILE, candidate_path, private_directory};
+use crate::image_profile::{BOOT_ROOT, IMAGE_PROFILE, candidate_path, private_directory};
 
 #[path = "image_stage/copy_up.rs"]
 mod copy_up;
@@ -45,6 +45,9 @@ struct Request {
     running: Value,
     retained_generations: Vec<Value>,
     retained_store_roots: Vec<String>,
+    initrd_state_directory: PathBuf,
+    initrd_storage_root: PathBuf,
+    retained_initrd_store_roots: Vec<String>,
 }
 
 struct Tools {
@@ -328,6 +331,36 @@ fn stage(request: &Request, tools: &Tools) -> Result<Value> {
             "retirement_required":retirement_required,
         }));
     }
+    let running_top = Path::new(string(&request.running, "toplevel")?);
+    ensure!(
+        fs::read_link("/run/current-system")? == running_top,
+        "staging running image differs from the immutable boot identity"
+    );
+    // The fixed-point image build wires the same immutable initrd into its
+    // toplevel and UKI. Read that retained source, independent of EFI names
+    // consumed by boot counting or optional bootstrap measurement fields.
+    let running_initrd = fs::canonicalize(running_top.join("initrd"))?;
+    aos_release::artifact::require_store_path(
+        running_initrd
+            .to_str()
+            .context("running initrd is not UTF-8")?,
+        false,
+    )?;
+    let running_inventory =
+        crate::initrd_archive::registered_initrd_roots(&running_initrd.join("initrd.img"))?;
+    let candidate_inventory = crate::initrd_archive::registered_roots(&uki_path)?;
+    let journal = crate::initrd_store::writable_journal(
+        &request.initrd_state_directory,
+        &request.initrd_storage_root,
+        Path::new(BOOT_ROOT),
+    )?;
+    crate::initrd_store::preserve(
+        &tools.nix_store,
+        &journal,
+        &request.retained_initrd_store_roots,
+        &running_inventory,
+        &candidate_inventory,
+    )?;
     copy_up::persist(&tools.nix_store, request)?;
     write_block(
         &root_path,
