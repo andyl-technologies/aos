@@ -89,17 +89,24 @@
         default = null;
         description = "Full once-only FirstGlobal prefix subdivision of Controller, not another Node grant.";
       };
+      nixOriginalStartIntake = lib.mkOption {
+        type = lib.types.nullOr vectorType;
+        default = null;
+        description = "Full once-only original Nix Start intake subdivision; never an operation-effect payment.";
+      };
     };
   };
 
   policy = pkgs.runCommand "aos-controller-resource-bootstrap-policy-v1" {
     nativeBuildInputs = [pkgs.python3 pkgs.coreutils];
     policyJson = builtins.toJSON (
-      if cfg.policy.firstGlobalPrefix != null
+      if cfg.policy.nixOriginalStartIntake != null
       then cfg.policy
+      else if cfg.policy.firstGlobalPrefix != null
+      then builtins.removeAttrs cfg.policy ["nixOriginalStartIntake"]
       else if cfg.policy.hostService == null && cfg.policy.hostControl == null
-      then builtins.removeAttrs cfg.policy ["hostService" "hostControl" "firstGlobalPrefix"]
-      else builtins.removeAttrs cfg.policy ["firstGlobalPrefix"]
+      then builtins.removeAttrs cfg.policy ["hostService" "hostControl" "firstGlobalPrefix" "nixOriginalStartIntake"]
+      else builtins.removeAttrs cfg.policy ["firstGlobalPrefix" "nixOriginalStartIntake"]
     );
     dimensionJson = builtins.toJSON dimensions;
     controllerMinimumJson = builtins.toJSON controllerMinimum;
@@ -124,9 +131,11 @@
     legacy_fields = {"node", "epoch", "capacity", "baseline", "controller", "components"}
     host_fields = legacy_fields | {"hostService", "hostControl"}
     prefix_fields = host_fields | {"firstGlobalPrefix"}
-    prefix_selected = set(policy) == prefix_fields
-    host_selected = set(policy) in (host_fields, prefix_fields)
-    if set(policy) not in (legacy_fields, host_fields, prefix_fields):
+    intake_fields = prefix_fields | {"nixOriginalStartIntake"}
+    intake_selected = set(policy) == intake_fields
+    prefix_selected = set(policy) in (prefix_fields, intake_fields)
+    host_selected = set(policy) in (host_fields, prefix_fields, intake_fields)
+    if set(policy) not in (legacy_fields, host_fields, prefix_fields, intake_fields):
         raise ValueError("resource policy must contain its complete fixed schema")
 
     def identity(name):
@@ -199,7 +208,22 @@
             raise ValueError("the selected 100ms CPU quota must convert exactly to integral percent")
         prefix_vectors = (prefix,)
 
-    magic = b"AOSRSB03" if prefix_selected else (b"AOSRSB02" if host_selected else b"AOSRSB01")
+    intake_vectors = ()
+    if intake_selected:
+        intake = vector("nixOriginalStartIntake")
+        if any(prefix[index] + intake[index] > controller[index] for index in range(22)):
+            raise ValueError("the disjoint FirstGlobal and Nix intake subdivisions exceed Controller")
+        for name, minimum in controller_minimum.items():
+            index = dimensions.index(name)
+            if controller[index] - prefix[index] - intake[index] < minimum:
+                raise ValueError("the retained Controller service envelope is below its existing producer bound")
+        if any(intake[dimensions.index(name)] == 0 for name in (
+            "cpu-micros-per-period", "memory-bytes", "pids", "open-files", "concurrent-operations"
+        )):
+            raise ValueError("the original Nix intake provision is incomplete")
+        intake_vectors = (intake,)
+
+    magic = b"AOSRSB04" if intake_selected else (b"AOSRSB03" if prefix_selected else (b"AOSRSB02" if host_selected else b"AOSRSB01"))
     body = magic + identity("node") + identity("epoch")
     for values in (capacity, baseline, controller, components):
         body += struct.pack(">22Q", *values)
@@ -207,8 +231,10 @@
         body += struct.pack(">22Q", *values)
     for values in prefix_vectors:
         body += struct.pack(">22Q", *values)
+    for values in intake_vectors:
+        body += struct.pack(">22Q", *values)
     encoded = body + hashlib.sha256(body).digest()
-    if len(encoded) != (1304 if prefix_selected else (1128 if host_selected else 776)):
+    if len(encoded) != (1480 if intake_selected else (1304 if prefix_selected else (1128 if host_selected else 776))):
         raise ValueError("native bootstrap policy width changed")
     Path(sys.argv[1]).write_bytes(encoded)
     PY
@@ -261,6 +287,11 @@ in {
         assertion = cfg.policy.firstGlobalPrefix == null
           || (cfg.policy.hostService != null && cfg.policy.hostControl != null);
         message = "V3 FirstGlobal policy extends the complete selected Host image family.";
+      }
+      {
+        assertion = cfg.policy.nixOriginalStartIntake == null
+          || (cfg.policy.firstGlobalPrefix != null && onlineNix);
+        message = "V4 original Nix intake requires its separate full subdivision and selected Nix Controller.";
       }
     ];
     aos.sandbox.resourceBank._imagePolicy = policy;

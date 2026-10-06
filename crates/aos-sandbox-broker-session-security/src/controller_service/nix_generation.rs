@@ -1,9 +1,11 @@
-//! Drives one original pending Start to a non-authorizing Storage Prepared result.
+//! Retains one image-paid original Start intake in the actual Storage Session.
 //!
 //! The attempt is a subslot of the actual Storage inventory Session owner. The
-//! same worker retains the signed origin, draft, signing and transport results;
-//! short loans keep the actual Controller writer and every local input pinned.
-//! No physical Clone, completed Start, public readiness or Drain is implied.
+//! selected caller commits I before current-Start growth, then archives every
+//! acquisition and independent closure result before projecting Retryable.
+//! The original generation tail remains private and uncalled until genuine
+//! current-policy operation payment exists. Intake pays neither Storage57 nor
+//! physical Clone, completed Start, public readiness or Drain.
 
 use std::sync::Arc;
 
@@ -38,6 +40,8 @@ enum GenerationFailureV1 {
     ExchangeResult,
     #[error("actual Prepared projection error remains resident")]
     ResponseResult,
+    #[error("actual original intake result remains resident")]
+    IntakeResult,
     #[error("selected Prepared response failed: {0}")]
     Response(#[from] aos_sandbox_protocol::ProtocolValidationError),
     #[error("original generation attempt is closed")]
@@ -58,6 +62,10 @@ pub(crate) struct NixGenerationAttemptV1 {
     first: Option<GenerationFailureV1>,
     postcheck_debt: Option<GenerationFailureV1>,
     clock_debt: Option<NixStartContinuationErrorV2>,
+    intake: Option<aos_sandbox::NixOriginalStartIntakeAttemptV1>,
+    intake_preparation: Option<Result<(), aos_sandbox::ResourceReservationErrorV1>>,
+    intake_entry: Option<Result<(), aos_sandbox::ResourceReservationErrorV1>>,
+    intake_closure: Option<Result<(), aos_sandbox::ResourceReservationErrorV1>>,
 }
 
 impl NixGenerationAttemptV1 {
@@ -73,6 +81,10 @@ impl NixGenerationAttemptV1 {
             first: None,
             postcheck_debt: None,
             clock_debt: None,
+            intake: None,
+            intake_preparation: None,
+            intake_entry: None,
+            intake_closure: None,
         }
     }
 
@@ -151,6 +163,91 @@ pub(super) fn observe(
 }
 
 pub(super) fn prepare(
+    executor: &mut ProductionEffectExecutor,
+    operation: OperationId,
+    step: u32,
+    plan: &EffectPlan,
+    journal: &mut aos_sandbox::journal::Journal,
+) -> Result<EffectReceipt, EffectFailure> {
+    let selector = executor.nix_start.as_ref().map(Arc::clone).ok_or_else(|| {
+        EffectFailure::Permanent("genuine Nix startup is absent".to_owned())
+    })?;
+    let bank = executor.resource_bank.as_ref().map(Arc::clone).ok_or_else(|| {
+        EffectFailure::Permanent("original Nix intake enrollment is absent".to_owned())
+    })?;
+    let profile = executor.nix_generation_profile.as_ref().map(Arc::clone).ok_or_else(|| {
+        EffectFailure::Permanent("original Nix intake profile is absent".to_owned())
+    })?;
+    let shared = Arc::clone(&executor.sessions);
+    let mut sessions = shared.lock().map_err(|_| {
+        EffectFailure::Permanent("original Session owner lock is poisoned".to_owned())
+    })?;
+    if sessions.nix_resolve.is_some() || sessions.nix_input_source.is_some() {
+        return Err(EffectFailure::Permanent(
+            "the original Nix input owner is already occupied".to_owned(),
+        ));
+    }
+    let storage = sessions.storage.as_mut().ok_or_else(|| {
+        EffectFailure::Permanent("original Storage inventory Session is absent".to_owned())
+    })?;
+    let (slot, _session) = storage.nix_generation_loan()?;
+    if slot.is_some() {
+        return Err(EffectFailure::Permanent(
+            "original generation cannot be replaced or resent".to_owned(),
+        ));
+    }
+    *slot = Some(NixGenerationAttemptV1::new(operation, step));
+    let Some(attempt) = slot.as_mut() else {
+        return Err(EffectFailure::Permanent("original generation slot is unavailable".to_owned()));
+    };
+    attempt.intake = Some(aos_sandbox::NixOriginalStartIntakeAttemptV1::begin(Arc::clone(&bank)));
+    let NixGenerationAttemptV1 {
+        intake, intake_preparation, intake_entry, intake_closure, first, ..
+    } = attempt;
+    let Some(intake) = intake.as_mut() else {
+        return Err(EffectFailure::Permanent("original intake destination is unavailable".to_owned()));
+    };
+    *intake_preparation = Some(intake.prepare_once(journal, &mut executor.source_domains, &profile));
+    if matches!(intake_preparation, Some(Err(_))) {
+        *first = Some(GenerationFailureV1::IntakeResult);
+        return Err(EffectFailure::Retryable(
+            "original Nix intake failure and independent posts remain resident".to_owned(),
+        ));
+    }
+
+    // The sole loan and the complete acquisition live outside I. The actual
+    // Session retains I; no self-reference, copy or second evaluator is used.
+    let loan = match intake.borrow_original_start(
+        &bank, journal, &mut executor.source_domains, &profile, operation, step, plan,
+    ) {
+        Ok(loan) => {
+            *intake_entry = Some(Ok(()));
+            loan
+        }
+        Err(error) => {
+            *intake_entry = Some(Err(error));
+            *first = Some(GenerationFailureV1::IntakeResult);
+            return Err(EffectFailure::Retryable(
+                "original Nix intake entry failure remains resident".to_owned(),
+            ));
+        }
+    };
+    let acquisition = selector.borrow_paid_current_retained_start_v2(journal, loan);
+    // Future current Root/Source preflight must reborrow this SAME assembled
+    // Current before closure. Intake is not an operation10 or Required47 loan.
+    *intake_closure = Some(acquisition.close_into_intake(&mut executor.source_domains));
+    if matches!(intake_closure, Some(Err(_))) {
+        *first = Some(GenerationFailureV1::IntakeResult);
+    }
+    Err(EffectFailure::Retryable(
+        "paid original Nix intake is retained; current-policy operation reservation remains required".to_owned(),
+    ))
+}
+
+// Preserves the original generation tail while its genuine operation lender
+// is unavailable. It has no installed caller and may not run on intake alone.
+#[allow(dead_code)]
+fn prepare_unpaid_generation_tail(
     executor: &mut ProductionEffectExecutor,
     operation: OperationId,
     step: u32,

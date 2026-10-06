@@ -632,9 +632,60 @@ pub struct ProductionControllerNormalRootProfileV1 {
         crate::controller_resource_reservation::service_interval::ObserverLifetime,
         service::FirstGlobalPropertyArchive,
     )>>,
+    nix_intake_observers: std::sync::Mutex<Option<(
+        crate::controller_resource_reservation::service_interval::ObserverLifetime,
+        service::FirstGlobalPropertyArchive,
+    )>>,
 }
 
 impl ProductionControllerNormalRootProfileV1 {
+    pub(crate) fn attach_nix_intake_observers(
+        &self,
+        admission: &crate::controller_resource_reservation::service_interval::ObserverAdmission<'_>,
+    ) -> Result<(), NormalRootStartupErrorV1> {
+        {
+            let prefix = self.first_global_observers.try_lock()
+                .map_err(|_| NormalRootStartupErrorV1::Service)?;
+            let (lifetime, _) = prefix.as_ref().ok_or(NormalRootStartupErrorV1::Service)?;
+            if lifetime.is_open() {
+                return Err(NormalRootStartupErrorV1::Service);
+            }
+        }
+        let mut slot = self.nix_intake_observers.try_lock()
+            .map_err(|_| NormalRootStartupErrorV1::Service)?;
+        if slot.is_some() || !admission.belongs_to_nix_intake(self) {
+            return Err(NormalRootStartupErrorV1::Service);
+        }
+        let lifetime = admission.lifetime();
+        *slot = Some((lifetime.clone(),
+            service::FirstGlobalPropertyArchive::new(admission.capacity(), lifetime)));
+        slot.as_mut().ok_or(NormalRootStartupErrorV1::Service)?.1.prepare()
+    }
+
+    pub(crate) fn require_nix_intake_original(
+        &self,
+        lifetime: &crate::controller_resource_reservation::service_interval::ObserverLifetime,
+    ) -> Result<(), NormalRootStartupErrorV1> {
+        let slot = self.nix_intake_observers.try_lock()
+            .map_err(|_| NormalRootStartupErrorV1::Service)?;
+        let (actual, _) = slot.as_ref().ok_or(NormalRootStartupErrorV1::Service)?;
+        if !actual.is_open() || !actual.same_original(lifetime) {
+            return Err(NormalRootStartupErrorV1::Service);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn recheck_nix_intake_profile(&self) -> Result<(), NormalRootStartupErrorV1> {
+        {
+            let slot = self.nix_intake_observers.try_lock()
+                .map_err(|_| NormalRootStartupErrorV1::Service)?;
+            if slot.is_none() {
+                return Err(NormalRootStartupErrorV1::Service);
+            }
+        }
+        self.recheck()
+    }
+
     pub(crate) fn first_global_observer_demand(
     ) -> Result<aos_sandbox_core::ResourceVector, NormalRootStartupErrorV1> {
         let observers = service::first_global_observer_demand_v1()?;
@@ -737,6 +788,14 @@ impl ProductionControllerNormalRootProfileV1 {
         pid: u32,
         properties: &'static [&'static str],
     ) -> Result<(Vec<OwnedValue>, Vec<OwnedValue>), NormalRootStartupErrorV1> {
+        let mut intake = self.nix_intake_observers.try_lock()
+            .map_err(|_| NormalRootStartupErrorV1::Service)?;
+        if let Some((_, original)) = intake.as_mut() {
+            // This separately admitted archive does not reopen or replace P.
+            // Once I closes, its refusal also cannot select the ordinary path.
+            return original.read(unit_name, pid, properties);
+        }
+        drop(intake);
         let mut selected = self.first_global_observers.try_lock()
             .map_err(|_| NormalRootStartupErrorV1::Service)?;
         match selected.as_mut() {

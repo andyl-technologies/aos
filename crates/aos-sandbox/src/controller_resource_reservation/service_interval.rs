@@ -81,18 +81,18 @@ pub(crate) struct GlobalShape {
 
 // These private identities supplement the live opening/profile conjunction;
 // they never escape as a receiving token or construct a writer from DATA.
-struct OriginalReceiver {
+pub(super) struct OriginalReceiver {
     controller_object: usize,
     source_object: usize,
     profile_object: usize,
     controller_names: crate::journal::ProtectedJournalNamesV1,
     source_names: crate::journal::ProtectedJournalNamesV1,
-    controller_sequence: u64,
+    pub(super) controller_sequence: u64,
     source_sequence: u64,
 }
 
 impl OriginalReceiver {
-    fn capture(
+    pub(super) fn capture(
         controller: &Journal,
         source: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
         profile: &ProductionControllerNormalRootProfileV1,
@@ -108,7 +108,7 @@ impl OriginalReceiver {
         })
     }
 
-    fn require_same(
+    pub(super) fn require_same(
         &self,
         controller: &Journal,
         source: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
@@ -135,6 +135,13 @@ pub(crate) struct ObserverAdmission<'original> {
     original: &'original bootstrap::OriginalEnrollment,
     capacity: usize,
     lifetime: &'original ObserverLifetime,
+    purpose: ObserverPurpose,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum ObserverPurpose {
+    FirstGlobal,
+    NixIntake,
 }
 
 // Only the genuine entered prefix creates this private, shared closure state.
@@ -143,6 +150,10 @@ pub(crate) struct ObserverAdmission<'original> {
 pub(crate) struct ObserverLifetime(Arc<std::sync::atomic::AtomicBool>);
 
 impl ObserverLifetime {
+    pub(super) fn begin() -> Self {
+        Self(Arc::new(std::sync::atomic::AtomicBool::new(false)))
+    }
+
     pub(crate) fn is_open(&self) -> bool {
         !self.0.load(std::sync::atomic::Ordering::Acquire)
     }
@@ -158,7 +169,24 @@ impl ObserverLifetime {
 
 impl ObserverAdmission<'_> {
     pub(crate) fn belongs_to(&self, profile: &ProductionControllerNormalRootProfileV1) -> bool {
-        std::ptr::eq(self.profile, profile) && self.original.policy.first_global_prefix.is_some()
+        self.purpose == ObserverPurpose::FirstGlobal
+            && std::ptr::eq(self.profile, profile)
+            && self.original.policy.first_global_prefix.is_some()
+    }
+
+    pub(crate) fn belongs_to_nix_intake(&self, profile: &ProductionControllerNormalRootProfileV1) -> bool {
+        self.purpose == ObserverPurpose::NixIntake
+            && std::ptr::eq(self.profile, profile)
+            && self.original.policy.nix_original_start_intake.is_some()
+    }
+
+    pub(super) fn for_nix_intake<'original>(
+        profile: &'original ProductionControllerNormalRootProfileV1,
+        original: &'original bootstrap::OriginalEnrollment,
+        capacity: usize,
+        lifetime: &'original ObserverLifetime,
+    ) -> ObserverAdmission<'original> {
+        ObserverAdmission { profile, original, capacity, lifetime, purpose: ObserverPurpose::NixIntake }
     }
 
     pub(crate) const fn capacity(&self) -> usize {
@@ -378,6 +406,7 @@ impl ControllerFirstGlobalPrefixAttemptV1 {
             capacity: self.observer_capacity,
             lifetime: self.observer_lifetime.as_ref()
                 .ok_or(ResourceReservationErrorV1::Conflict)?,
+            purpose: ObserverPurpose::FirstGlobal,
         };
         profile.attach_first_global_observers(&admission)?;
         profile.observe_first_global_cpu(&mut self.cpu)?;
@@ -471,7 +500,7 @@ impl ControllerFirstGlobalPrefixAttemptV1 {
     }
 }
 
-fn capacity_for(
+pub(super) fn capacity_for(
     remaining: ResourceVector,
     per_slot: ResourceVector,
 ) -> Result<usize, ResourceReservationErrorV1> {
@@ -487,7 +516,7 @@ fn capacity_for(
         .map_err(|_| ResourceReservationErrorV1::Conflict)
 }
 
-fn multiply(
+pub(super) fn multiply(
     vector: ResourceVector,
     count: usize,
 ) -> Result<ResourceVector, ResourceReservationErrorV1> {

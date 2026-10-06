@@ -16,9 +16,13 @@ mod preparation;
 mod q04;
 mod settlement;
 pub(crate) mod service_interval;
+mod nix_intake;
 
 pub(crate) use grant::ProjectResourceGrantAttemptV1;
 pub use service_interval::ControllerFirstGlobalPrefixAttemptV1;
+pub use nix_intake::NixOriginalStartIntakeAttemptV1;
+pub use nix_intake::NixOriginalStartIntakeLoanV1;
+pub(crate) use nix_intake::{AcquisitionFailureV1, PaidNixStartOriginalsV1};
 pub use preparation::ProjectPreparationReservationAttemptV1;
 pub(crate) use preparation::OriginalPreparationData;
 pub(crate) use q04::Q04ResourceTransferV1;
@@ -134,6 +138,7 @@ struct ImageBootstrapPolicy {
     components: ResourceVector,
     host: Option<HostComponentPolicy>,
     first_global_prefix: Option<ResourceVector>,
+    nix_original_start_intake: Option<ResourceVector>,
 }
 
 // Both image-owned vectors are subdivisions of Components, not Node issuers.
@@ -200,6 +205,22 @@ impl ImageBootstrapPolicy {
                 }
             }
         }
+        if let Some(intake) = self.nix_original_start_intake {
+            let prefix = self.first_global_prefix
+                .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
+            self.controller.checked_sub(prefix)?.checked_sub(intake)?;
+            for dimension in [
+                aos_sandbox_core::ResourceDimension::CpuMicrosPerPeriod,
+                aos_sandbox_core::ResourceDimension::MemoryBytes,
+                aos_sandbox_core::ResourceDimension::Pids,
+                aos_sandbox_core::ResourceDimension::OpenFiles,
+                aos_sandbox_core::ResourceDimension::ConcurrentOperations,
+            ] {
+                if intake.get(dimension) == 0 {
+                    return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -246,6 +267,7 @@ enum ClaimPurpose {
     HostComponentBootstrap,
     HostControlInterval,
     ControllerFirstGlobalPrefix,
+    NixOriginalStartIntake,
 }
 
 /// Compares the original fixed Host policy and PID1 delivery as borrowed DATA.
@@ -365,7 +387,8 @@ impl Transition<'_> {
         let resident = crossing.result.get_or_init(|| {
             let first_global = matches!(self.original,
                 TransitionOriginal::Account(original)
-                    if original.claim.purpose == ClaimPurpose::ControllerFirstGlobalPrefix);
+                    if matches!(original.claim.purpose,
+                        ClaimPurpose::ControllerFirstGlobalPrefix | ClaimPurpose::NixOriginalStartIntake));
             let observed = if first_global {
                 // This closed boot-lifetime subdivision has no inherited
                 // operation's 65-second recipe. Its boot-lifetime first use
@@ -460,7 +483,10 @@ impl AccountTransition {
         {
             return Err(ResourceReservationErrorV1::Conflict);
         }
-        if previous_claim.purpose == ClaimPurpose::ControllerFirstGlobalPrefix && !committed {
+        if matches!(previous_claim.purpose,
+            ClaimPurpose::ControllerFirstGlobalPrefix | ClaimPurpose::NixOriginalStartIntake)
+            && !committed
+        {
             return Err(ResourceReservationErrorV1::Conflict);
         }
         let generation = before.generation.checked_add(1)
@@ -637,7 +663,8 @@ impl AccountTransition {
         }
         let head_bytes = codec::encode_head(self.after)?;
         let claim_bytes = codec::encode_claim(self.claim)?;
-        if self.claim.purpose == ClaimPurpose::ControllerFirstGlobalPrefix
+        if matches!(self.claim.purpose,
+            ClaimPurpose::ControllerFirstGlobalPrefix | ClaimPurpose::NixOriginalStartIntake)
             && crate::journal::encoded_transaction_append_bytes(transaction)?
                 != crate::Journal::first_global_prefix_append_bytes_v1()?
         {
@@ -752,7 +779,8 @@ impl ReturnedAppend {
                         original: TransitionOriginal::Account(original),
                         crossing: match (original.original_clock, original.claim.cut) {
                             (Some(clock), ClaimCut::BootLifetime)
-                                if original.claim.purpose == ClaimPurpose::ControllerFirstGlobalPrefix =>
+                                if matches!(original.claim.purpose,
+                                    ClaimPurpose::ControllerFirstGlobalPrefix | ClaimPurpose::NixOriginalStartIntake) =>
                                 Some(NativeCrossing {
                                         original: clock,
                                         deadline: clock.boottime_nanoseconds(),
