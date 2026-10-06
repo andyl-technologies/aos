@@ -1768,8 +1768,10 @@ in
                   entries = [entry for entry in commands
                              if entry["file"].endswith(source_file)]
                   if name == "tcg-page-collection":
+                      # This target-neutral unit is compiled for both shared
+                      # libraries; its system definition owns PageDesc locks.
                       entries = [entry for entry in entries
-                                 if "x86_64-softmmu" in entry["command"]]
+                                 if "-DCONFIG_SOFTMMU" in shlex.split(entry["command"])]
                   if len(entries) != 1:
                       raise SystemExit(f"expected one configured {name} compile command")
 
@@ -1806,8 +1808,9 @@ in
               # Select exactly one bare-metal system guest. This exercises real
               # TB invalidation, including physical page order and current-TB
               # writes; the extracted page-table provider cannot establish it.
-              make -C build/tests/tcg/x86_64-softmmu V=1 TIMEOUT=60 \
-                QEMU="$PWD/build/qemu-system-x86_64 -accel tcg,thread=single -smp 1" \
+              make -rR -C build/tests/tcg/x86_64-softmmu \
+                -f "$PWD/tests/tcg/Makefile.target" SRC_PATH="$PWD" V=1 TIMEOUT=60 \
+                QEMU="$PWD/build/qemu-system-x86_64 -L $PWD/pc-bios -accel tcg,thread=single -smp 1" \
                 run-self-modifying-code > self-modifying-code.build-run.log 2>&1
               cat self-modifying-code.build-run.log
               cp build/tests/tcg/x86_64-softmmu/self-modifying-code.out \
