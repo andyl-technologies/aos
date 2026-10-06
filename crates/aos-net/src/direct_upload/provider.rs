@@ -336,7 +336,9 @@ impl ProviderTransport {
                 HeaderValue::from_str(&header.value).map_err(|_| ProviderError::InvalidGrant)?;
             request = request.header(name, value);
         }
-        let attempt = self.metrics.provider_attempt();
+        // Telemetry encoding failure cannot refuse provider dispatch.
+        let (file, kind) = super::metrics::provider_file(&context.intent);
+        let attempt = self.metrics.provider_attempt(file.as_deref(), kind);
         if let Some(ledger) = &mut ledger {
             ledger.dispatch();
         }

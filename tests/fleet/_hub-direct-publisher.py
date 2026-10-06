@@ -24,6 +24,11 @@ DIRECT_CLIENT_COUNTERS = (
     "acknowledged_bytes", "max_provider_active",
 )
 
+DIRECT_CLIENT_FANOUT_COUNTERS = (
+    "max_active_bulk_files", "max_bulk_part_requests_per_file",
+    "max_active_metadata_files", "max_active_metadata_requests",
+)
+
 
 def assert_direct_fifo_checkpoint(client, tools, registry, signed, token):
     """Exercise the real publisher's admission checkpoint refusal on the client VM."""
@@ -335,14 +340,20 @@ def prepare_direct_publication_corpus(client, python, surface_root):
 
 
 def direct_client_observations(stderr):
-    """Retain complete numeric summaries emitted by the actual publisher."""
+    """Retain invocation peaks; legacy or lost fanout observations remain unknown.
+
+    The original 17 counters keep their aggregation contract. The four new
+    lifetime peaks remain per invocation, never a global peak across processes.
+    """
     observations = []
     for line in stderr.splitlines():
         if not line.startswith("Direct upload client: "):
             continue
         payload = line.removeprefix("Direct upload client: ")
         fields = payload.split()
-        if len(fields) != len(DIRECT_CLIENT_COUNTERS):
+        if len(fields) not in {
+                len(DIRECT_CLIENT_COUNTERS),
+                len(DIRECT_CLIENT_COUNTERS) + len(DIRECT_CLIENT_FANOUT_COUNTERS)}:
             raise ValueError("the direct client observation is incomplete")
         observation = {}
         for expected, field in zip(DIRECT_CLIENT_COUNTERS, fields):
@@ -350,6 +361,20 @@ def direct_client_observations(stderr):
             if not match or match.group(1) != expected:
                 raise ValueError("the direct client observation changed shape")
             observation[expected] = int(match.group(2))
+        fanout_fields = fields[len(DIRECT_CLIENT_COUNTERS):]
+        observation.update({name: None for name in DIRECT_CLIENT_FANOUT_COUNTERS})
+        for expected, field in zip(DIRECT_CLIENT_FANOUT_COUNTERS, fanout_fields):
+            match = re.fullmatch(r"([a-z_]+)=(0|[1-9][0-9]*|unavailable)", field)
+            if not match or match.group(1) != expected:
+                raise ValueError("the direct client fanout observation changed shape")
+            value = match.group(2)
+            if value != "unavailable":
+                if len(value) > 20 or int(value) > 2 ** 64 - 1:
+                    raise ValueError("the direct client fanout observation exceeds its bound")
+                observation[expected] = int(value)
+        known = [observation[name] is not None for name in DIRECT_CLIENT_FANOUT_COUNTERS]
+        if any(known) and not all(known):
+            raise ValueError("the direct client fanout observation is partial")
         if observation["provider_successes"] > observation["provider_attempts"]:
             raise ValueError("the direct client success count exceeds attempts")
         observations.append(observation)
