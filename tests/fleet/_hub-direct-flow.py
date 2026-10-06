@@ -1043,7 +1043,8 @@ def run_external_direct_fleet(client, native, worker, s3, database_machine, tool
         authority["exported"], tools["workerUrl"], tools["storageWorkKeyFile"],
         credentials["operatorVersions"]["manifestFile"])
     synchronized = reconcile_external_authority(native, tools["hub"], tools["nativeDatabaseUrlFile"],
-        tools["nativeStorageWorkKeyFile"], authority["exported"], tools["workerUrl"])
+        tools["nativeStorageWorkKeyFile"], authority["exported"], tools["workerUrl"],
+        python=tools["python"])
     identity = inspect_direct_external_deployment(worker, tools["python"], tools["hub"],
         authority["exported"], tools["workerUrl"], tools["nativeOriginUrl"], "hub-hybrid-fleet",
         "hybrid-fleet-r2", worker_controls["keyFiles"]["HUB_DIRECT_UPLOAD_GUARD_KEY"])

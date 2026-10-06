@@ -276,6 +276,29 @@ def install_direct_worker_consumers(worker, python, previous_configuration,
         identity = {{name: configuration.get(name) for name in (
             'name', 'scriptPath', 'resourcePersistencePath', 'durableObjects',
             'kvNamespaces', 'queueProducers', 'queueConsumers')}}
+        object_consumer = update['consumerBindings']['HUB_EXTERNAL_OBJECT_CONSUMER']
+        namespace = object_consumer['guard_namespace_id']
+        executor = object_consumer['executor_identity']
+        if not all(isinstance(value, str) and value for value in (namespace, executor)):
+            raise ValueError('reviewed authority domain is absent')
+        domains = update['consumerBindings']['HUB_EXTERNAL_STAGING_CONSUMER']['domains']
+        if not domains or any(
+                domain['issuer_installation']['authority']['guard_namespace_id'] != namespace
+                or domain['issuer_installation']['executor_identity'] != executor
+                for domain in domains):
+            raise ValueError('reviewed consumer authority domains differ')
+        ledger = configuration.get('durableObjects', {{}}).get('HYBRID_AUTHORITY_STATE')
+        if (not isinstance(ledger, dict) or ledger.get('className') != 'HybridAuthorityState'
+                or ledger.get('useSQLite') is not True):
+            raise ValueError('authority ledger binding is absent')
+        # The control ledger uses these explicit domain pins; consumer JSON is
+        # not a fallback. Existing pins may be preserved but never retargeted.
+        for name, value in (
+                ('HUB_EXTERNAL_GUARD_NAMESPACE_ID', namespace),
+                ('HUB_EXTERNAL_STORAGE_EXECUTOR_ID', executor)):
+            if name in configuration['bindings'] and configuration['bindings'][name] != value:
+                raise ValueError('installed authority domain changed')
+            configuration['bindings'][name] = value
         for name, value in update['consumerBindings'].items():
             configuration['bindings'][name] = json.dumps(value, sort_keys=True, separators=(',', ':'))
         configuration.setdefault('serviceBindings', {{}})['HUB_AUTHORITY_ISSUER'] = update['issuerBinding']

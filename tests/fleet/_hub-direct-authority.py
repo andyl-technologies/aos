@@ -429,8 +429,131 @@ def hydrate_external_authority(worker, python, bootstrap_executable, exported,
     return {"receipt": receipt, "receiptSha256": hashlib.sha256(body).hexdigest()}
 
 
+def _run_authority_control_sync(native, python, arguments, expected_receipt, *,
+                                diagnostics_root="/var/lib/hybrid-authority/control-sync",
+                                timeout_seconds=120):
+    """Collect bounded private command output without exporting failure text."""
+    if type(timeout_seconds) not in (int, float) or not 0 < timeout_seconds <= 120:
+        raise ValueError("authority synchronization collection deadline differs")
+    result = json.loads(private_guest_command(native, textwrap.dedent(f"""
+        {shlex.quote(python)} - <<'NATIVE_AUTHORITY_CONTROL_SYNC'
+        import base64, json, os, selectors, subprocess, time
+        from pathlib import Path
+
+        root = Path({diagnostics_root!r})
+        root.mkdir(mode=0o700, exist_ok=False)
+        descriptors = {{name: os.open(root / (name + '.private'),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600) for name in ('stdout', 'stderr')}}
+        buffers = {{name: bytearray() for name in descriptors}}
+        limits = {{'stdout': 262144, 'stderr': 65536}}
+        eof = {{name: False for name in descriptors}}
+        overflow = {{name: False for name in descriptors}}
+        process = None
+        exit_code = None
+        timed_out = False
+        category = 'launch_failure'
+        deadline = time.monotonic() + {timeout_seconds!r}
+        try:
+            process = subprocess.Popen({arguments!r}, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except OSError:
+            # Launch exceptions may contain sensitive paths; retain only a category.
+            pass
+        if process is not None:
+            category = 'other_failure'
+            with selectors.DefaultSelector() as selector:
+                for name in descriptors:
+                    selector.register(getattr(process, name), selectors.EVENT_READ, name)
+                while selector.get_map():
+                    if time.monotonic() >= deadline:
+                        timed_out = True
+                        break
+                    for selected, _ in selector.select(timeout=0.1):
+                        name = selected.data
+                        chunk = os.read(selected.fd, 8192)
+                        if not chunk:
+                            eof[name] = True
+                            selector.unregister(selected.fileobj)
+                            continue
+                        remaining = limits[name] - len(buffers[name])
+                        buffers[name].extend(chunk[:remaining])
+                        if len(chunk) > remaining:
+                            overflow[name] = True
+                    if any(overflow.values()):
+                        break
+            if timed_out or any(overflow.values()):
+                process.kill()
+            try:
+                exit_code = process.wait(timeout=max(0.1, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                process.kill()
+                exit_code = process.wait(timeout=5)
+            finally:
+                process.stdout.close()
+                process.stderr.close()
+        for name, descriptor in descriptors.items():
+            with os.fdopen(descriptor, 'wb') as private_output:
+                private_output.write(buffers[name])
+                private_output.flush()
+                os.fsync(private_output.fileno())
+
+        receipt_body = None
+        if any(overflow.values()):
+            category = 'output_bound_exceeded'
+        elif timed_out:
+            category = 'synchronization_timeout'
+        elif process is not None and exit_code != 0:
+            for message, known in (
+                    (b'authority control returned status 503', 'authority_control_unavailable'),
+                    (b'authority control returned status 401', 'authority_control_authentication'),
+                    (b'authority control returned status 400', 'authority_control_domain'),
+                    (b'authority control returned status 409', 'authority_control_reconciliation'),
+                    (b'authority remote watermark differs from desired state or exact predecessor', 'authority_history'),
+                    (b'authority latest remote watermark differs from reviewed desired generation', 'authority_watermark'),
+                    (b'authority facts changed during control preflight', 'authority_changed'),
+                    (b'authority response signature is missing', 'authority_response_authentication'),
+                    (b'requesting fresh authority control evidence', 'authority_transport'),
+                    (b'reading native database URL credential file', 'database_input'),
+                    (b'grants group/other permissions', 'permissions')):
+                if message in buffers['stderr']:
+                    category = known
+                    break
+        elif exit_code == 0 and all(eof.values()):
+            try:
+                receipt = json.loads(buffers['stdout'])
+                if receipt == {expected_receipt!r}:
+                    category = 'success'
+                    receipt_body = base64.b64encode(buffers['stdout']).decode()
+                else:
+                    category = 'receipt_mismatch'
+            except (ValueError, UnicodeError):
+                category = 'receipt_encoding'
+        elif process is not None:
+            category = 'incomplete_output'
+        summary = {{'version': 1, 'phase': 'authority_control_sync',
+            'category': category, 'exitCode': exit_code, 'timedOut': timed_out,
+            'stdoutBytes': len(buffers['stdout']), 'stderrBytes': len(buffers['stderr']),
+            'stdoutComplete': eof['stdout'], 'stderrComplete': eof['stderr'],
+            'stdoutOverflow': overflow['stdout'], 'stderrOverflow': overflow['stderr']}}
+        descriptor = os.open(root / 'result.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, 'w') as output:
+            json.dump(summary, output, separators=(',', ':'))
+            output.flush()
+            os.fsync(output.fileno())
+        print(json.dumps({{'summary': summary, 'receiptBody': receipt_body}}))
+        NATIVE_AUTHORITY_CONTROL_SYNC
+    """), timeout=150))
+    label = "authority-control-sync-" + hashlib.sha256(os.fsencode(diagnostics_root)).hexdigest()[:16]
+    retain_direct_flow(label + ".json", result["summary"])
+    if result["summary"]["category"] != "success":
+        raise RuntimeError("authority synchronization failed: " + result["summary"]["category"]
+                           + " (exit " + str(result["summary"]["exitCode"]) + ")")
+    return base64.b64decode(result["receiptBody"], validate=True)
+
+
 def reconcile_external_authority(native, hub_executable, database_url_file,
-                                 storage_work_key_file, exported, worker_url):
+                                 storage_work_key_file, exported, worker_url, *, python):
     """Reconcile current SQL with fresh signed Worker watermarks on Native."""
     bootstrap = exported["bootstrap"]
     publication = bootstrap["publication"]
@@ -443,7 +566,12 @@ def reconcile_external_authority(native, hub_executable, database_url_file,
         "--worker-url", worker_url, "--deployment-id", bootstrap["deployment_id"],
         "--storage-work-key-file", storage_work_key_file,
     ]
-    body = private_guest_command(native, shlex.join(arguments), timeout=120).encode()
+    expected_receipt = {
+        "authority_id": authority["authority_id"], "desired_generation": publication["generation"],
+        "desired_digest": publication["digest"], "control_synchronized": True,
+        "provider_readiness_evaluated": False,
+    }
+    body = _run_authority_control_sync(native, python, arguments, expected_receipt)
     if len(body) > 262144:
         raise ValueError("actual authority reconciliation exceeds the control bound")
     receipt = json.loads(body)

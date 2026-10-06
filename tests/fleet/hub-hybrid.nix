@@ -492,6 +492,10 @@
           };
         }
         // lib.optionalAttrs externalDirect {
+          HYBRID_AUTHORITY_STATE = {
+            className = "HybridAuthorityState";
+            useSQLite = true;
+          };
           EXTERNAL_OBJECT_GUARD = {
             className = "ExternalObjectGuard";
             useSQLite = true;
