@@ -5,6 +5,9 @@
 //! tasks that forward `JobRemoved` / `Reloading` events into shared state.
 //! Method callers `await` on a per-job oneshot; the stream task owns the
 //! signal stream continuously, dodging the "stream not polled" hang.
+//!
+//! The selected Controller property owner retains one readonly, unsubscribed
+//! attempt. Its bounded transport and whole Results are DATA, not paid authority.
 
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
@@ -34,6 +37,204 @@ pub use source_launcher_image::{
     CompletedOwnUnitPid1ImageV1, OwnUnitPid1ImageAttemptV1,
     OwnUnitPid1ImageEndedV1, OwnUnitPid1ImageFailureV1,
 };
+
+/// Retains one readonly Controller/PID-1 property observation and its originals.
+///
+/// The caller creates this DATA owner before spawning or entering a prepaid
+/// observation. Whole constructor/property Results and the original bounded
+/// transport survive returned errors and cancellation; this type issues no
+/// resource payment, peer authority, currentness or permission.
+#[cfg(target_os = "linux")]
+pub struct ControllerPropertyObserverAttemptV1 {
+    transport: zbus::connection::ControllerPropertyReceiveAttemptV1,
+    constructor: Option<Result<SystemdClient>>,
+    properties: Option<Result<(Vec<OwnedValue>, Vec<OwnedValue>)>>,
+    connect_attempted: bool,
+    observe_attempted: bool,
+}
+
+#[cfg(target_os = "linux")]
+impl ControllerPropertyObserverAttemptV1 {
+    /// Maximum bytes in one retained message, checked before frame growth.
+    pub const MESSAGE_BYTES: usize =
+        zbus::connection::ControllerPropertyReceiveAttemptV1::MESSAGE_BYTES;
+    /// Maximum aggregate raw AUTH receive bytes.
+    pub const AUTH_BYTES: usize =
+        zbus::connection::ControllerPropertyReceiveAttemptV1::AUTH_BYTES;
+    /// Maximum incoming frames retained by one original.
+    pub const INCOMING_MESSAGES: usize =
+        zbus::connection::ControllerPropertyReceiveAttemptV1::INCOMING_MESSAGES;
+    /// Maximum outgoing messages, including the one Hello.
+    pub const OUTGOING_MESSAGES: usize =
+        zbus::connection::ControllerPropertyReceiveAttemptV1::OUTGOING_MESSAGES;
+    /// Aggregate raw receive-prefix byte capacity, separate from framed messages.
+    pub const RAW_PREFIX_BYTES: usize =
+        zbus::connection::ControllerPropertyReceiveAttemptV1::RAW_PREFIX_BYTES;
+
+    /// Returns this owner's inline representation size, not its heap/peak demand.
+    #[must_use]
+    pub fn inline_bytes() -> usize {
+        std::mem::size_of::<Self>()
+    }
+
+    /// Prearms one fixed DATA attempt without opening a socket or spawning a task.
+    ///
+    /// The bounded transport storage is real resident allocation, not a payment
+    /// proof. A genuine caller-owned resource interval must precede this call.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            transport: zbus::connection::ControllerPropertyReceiveAttemptV1::empty(),
+            constructor: None,
+            properties: None,
+            connect_attempted: false,
+            observe_attempted: false,
+        }
+    }
+
+    /// Constructs one readonly client on the fixed system bus without Subscribe.
+    ///
+    /// # Errors
+    /// Refuses repeated/fenced entry. The actual constructor Result stays in
+    /// this owner; the returned refusal does not replace its native cause.
+    ///
+    /// # Panics
+    /// Panics if polled outside a Tokio runtime with its I/O driver enabled.
+    pub async fn connect(&mut self) -> Result<()> {
+        let mut cancellation = self.transport.cancellation_fence();
+        if self.connect_attempted || self.transport.has_ended() {
+            self.transport.end();
+            return Err(Error::Zbus(zbus::Error::InvalidReply));
+        }
+        self.connect_attempted = true;
+
+        self.constructor = Some(self.connect_inner().await);
+        if matches!(self.constructor.as_ref(), Some(Err(_))) {
+            self.transport.end();
+            return Err(Error::Zbus(zbus::Error::InvalidReply));
+        }
+        cancellation.complete();
+        Ok(())
+    }
+
+    async fn connect_inner(&mut self) -> Result<SystemdClient> {
+        let conn = self.transport.connect().await.map_err(Error::SystemdUnavailable)?;
+        let manager = ManagerProxy::builder(&conn)
+            .cache_properties(CacheProperties::No)
+            .build()
+            .await?;
+        let (_, event_rx) = mpsc::unbounded_channel::<()>();
+
+        Ok(SystemdClient {
+            conn,
+            manager,
+            jobs: Arc::new(Mutex::new(JobRegistry {
+                closed: true,
+                ..JobRegistry::default()
+            })),
+            reloading: Arc::new(AtomicBool::new(false)),
+            job_event_rx: AsyncMutex::new(event_rx),
+            tasks: Vec::new(),
+            readonly_controller: true,
+        })
+    }
+
+    /// Performs one shared startup-property kernel with authentic PID-1 bookends.
+    ///
+    /// No proxy cache, subscription, listener or background job task is entered.
+    /// Each separate profile requires its own prepaid attempt; this flight
+    /// retains the fixed 30-property-RPC-plus-Hello ceiling.
+    ///
+    /// # Errors
+    /// Refuses a repeated, unconnected, malformed or fenced observation. The
+    /// complete actual property Result remains resident before this projection.
+    pub async fn observe_pid1_service_startup_properties(
+        &mut self,
+        name: &str,
+        expected_main_pid: u32,
+        service_properties: &[&str],
+        unit_properties: &[&str],
+    ) -> Result<()> {
+        let mut cancellation = self.transport.cancellation_fence();
+        if self.observe_attempted || self.transport.has_ended() {
+            self.transport.end();
+            return Err(Error::Zbus(zbus::Error::InvalidReply));
+        }
+        self.observe_attempted = true;
+
+        let result = match self.constructor.as_ref() {
+            Some(Ok(client)) => client.observe_pid1_service_startup_properties(
+                name, expected_main_pid, service_properties, unit_properties,
+            ).await,
+            _ => Err(Error::Zbus(zbus::Error::InvalidReply)),
+        };
+        self.properties = Some(result);
+        if matches!(self.properties.as_ref(), Some(Err(_))) {
+            self.transport.end();
+            return Err(Error::Zbus(zbus::Error::InvalidReply));
+        }
+        cancellation.complete();
+        Ok(())
+    }
+
+    /// Borrows the constructor's actual error, or reports its parked success.
+    ///
+    /// This does not expose the retained client or an extracted Connection.
+    pub fn constructor_result(&self) -> Option<std::result::Result<(), &Error>> {
+        self.constructor.as_ref().map(|result| result.as_ref().map(|_| ()))
+    }
+
+    /// Borrows the complete original decoded property Result as diagnostic DATA.
+    pub fn property_result(&self) -> Option<&Result<(Vec<OwnedValue>, Vec<OwnedValue>)>> {
+        self.properties.as_ref()
+    }
+
+    /// Arms the same original transport fence for an outer timeout or cancellation.
+    ///
+    /// The caller completes this fence only after parking the whole attempt and
+    /// its returned Result. Dropping an unfinished fence permanently ends it.
+    #[must_use]
+    pub fn cancellation_fence(&self) -> zbus::connection::FixedLauncherImageCancellationV1 {
+        self.transport.cancellation_fence()
+    }
+
+    /// Borrows the actual native/parser cause without reconnecting or extracting it.
+    ///
+    /// # Errors
+    /// Reports a borrowed or poisoned native slot without healing that slot.
+    pub fn transport_failure(&self) -> std::result::Result<
+        Option<zbus::connection::socket::LauncherImageFailureLoanV1<'_>>,
+        zbus::connection::socket::LauncherImageFailureUnavailableV1,
+    > {
+        self.transport.failure()
+    }
+
+    /// Borrows the original one-shot shutdown Results, separately from first cause.
+    pub fn shutdown_outcomes(&self) -> (
+        Option<&std::io::Result<()>>,
+        Option<&std::io::Result<()>>,
+    ) {
+        self.transport.shutdown_outcomes()
+    }
+
+    /// Reports permanent cancellation/failure fencing without I/O.
+    #[must_use]
+    pub fn has_ended(&self) -> bool {
+        self.transport.has_ended()
+    }
+
+    /// Ends the same original transport without releasing any retained Result.
+    pub fn end(&self) {
+        self.transport.end();
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for ControllerPropertyObserverAttemptV1 {
+    fn drop(&mut self) {
+        self.transport.end();
+    }
+}
 
 /// Classification of a systemd job's terminal `result`, per the `job_result`
 /// table in systemd's `src/core/job.h`. We name only the four cases
@@ -278,6 +479,8 @@ pub struct SystemdClient {
     job_event_rx: AsyncMutex<mpsc::UnboundedReceiver<()>>,
     /// Background signal-listener tasks; aborted on drop.
     tasks: Vec<JoinHandle<()>>,
+    // Selected readonly clients never subscribe or enter unsubscribe-on-drop.
+    readonly_controller: bool,
 }
 
 impl SystemdClient {
@@ -437,6 +640,7 @@ impl SystemdClient {
             reloading,
             job_event_rx: AsyncMutex::new(event_rx),
             tasks,
+            readonly_controller: false,
         })
     }
 
@@ -1036,6 +1240,10 @@ impl SystemdClient {
 
 impl Drop for SystemdClient {
     fn drop(&mut self) {
+        if self.readonly_controller {
+            return;
+        }
+
         // Stop the background listeners.
         for task in &self.tasks {
             task.abort();

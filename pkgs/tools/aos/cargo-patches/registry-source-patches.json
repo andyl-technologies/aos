@@ -65,27 +65,27 @@
     "version": "5.15.0",
     "archiveSha256": "c3bcbf15c8708d7fc1be0c993622e0a5cbd5e8b52bfa40afa4c3e0cd8d724ac1",
     "patch": "pkgs/tools/aos/cargo-patches/zbus-5.15.0-zero-incoming-fds.patch",
-    "patchSha256": "80c7c08d2972cfc3cfa0572805814734eb5331f273c97a2734cba8672d805e3e",
+    "patchSha256": "d16333a153dafc20b79a245d644f90838a6e142da44aa412e1947486c851147c",
     "files": [
       {
         "path": "src/connection/builder.rs",
         "beforeSha256": "57b4875499c6543d528bcc6badc3dc40736fcdff28fd07d7ec3da106ba46a0b0",
-        "afterSha256": "103a35e3cfa3e230aecb167b826cf715856937dcebdf3324fee7bbb95d03378d"
+        "afterSha256": "e16f26a76717d9f21601ce2de584e513857de88fdd09e41a119310f8f8700ed9"
       },
       {
         "path": "src/connection/mod.rs",
         "beforeSha256": "906dfb7f93c08577ef6a669585c85b060bedd6748f8e2d624435c40333b41929",
-        "afterSha256": "2ebc5cb9a11f1b8d727c904d01121737144cf63685dca81b5ae4b7ec5c4ada53"
+        "afterSha256": "9465bae5264dfb967dc69653ca9df895370598a613989521513dfa5b5f99f8a3"
       },
       {
         "path": "src/connection/socket/mod.rs",
         "beforeSha256": "68894b3e46d5635eababd236e412247964717d662628801bf1f1297bdd512388",
-        "afterSha256": "7840a8f6b7bbed5930bbc5fc3c0cd2c43992c4d7d376c6c1d76e5dfce5d5443c"
+        "afterSha256": "3100f1e42e5e378fdca4c4c00546ddbf0371966c5be98044174e6df7eccecfe5"
       },
       {
         "path": "src/connection/socket/unix.rs",
         "beforeSha256": "2874cd10639951c02322d0ce544039332146ad945c707cebeb1e2ff7a59dfdb7",
-        "afterSha256": "fc8857431a8d12f4170e6c98bc1b503cd31b64b7ecf1289f117fe215ac5a55fc"
+        "afterSha256": "8609110e68154b49cb599e844331baa297aa226d6704c1618cb37863dcd3ce17"
       },
       {
         "path": "src/connection/handshake/common.rs",

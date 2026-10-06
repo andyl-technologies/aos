@@ -1,8 +1,8 @@
 diff --git a/src/connection/builder.rs b/src/connection/builder.rs
-index fe36fa990f0618ba069a617fd295bb6ed3ec2e32..ab4d79cf0e9b85bccaa9dcac92ff8204edcd04df 100644
+index fe36fa990f0618ba069a617fd295bb6ed3ec2e32..9938ebd0422ee2793317b478b5acdb352667185c 100644
 --- a/src/connection/builder.rs
 +++ b/src/connection/builder.rs
-@@ -42,6 +42,313 @@ use super::{
+@@ -42,7 +42,421 @@ use super::{
  
  const DEFAULT_MAX_QUEUED: usize = 64;
  
@@ -99,33 +99,7 @@ index fe36fa990f0618ba069a617fd295bb6ed3ec2e32..ab4d79cf0e9b85bccaa9dcac92ff8204
 +    /// Refuses a repeated or ended attempt. Native, AUTH or parser failure closes
 +    /// the original queue and retains its owning cause; it never reconnects.
 +    pub async fn connect(&mut self) -> Result<()> {
-+        self.custody.require_open()?;
-+        if self.attempted {
-+            self.custody.end();
-+            return Err(Error::InvalidReply);
-+        }
-+        self.attempted = true;
-+        let custody = self.custody.clone();
-+        let mut boundary = super::socket::LauncherReceiveBoundary::new(&custody);
-+        let mut builder = match Builder::address("unix:path=/run/dbus/system_bus_socket") {
-+            Ok(builder) => builder,
-+            Err(cause) => {
-+                custody.retain_failure(cause);
-+                return Err(Error::InvalidReply);
-+            }
-+        };
-+        builder.launcher_image = Some(custody.clone());
-+        let result = builder.build().await;
-+        match result {
-+            Ok(connection) => self.connection = Some(connection),
-+            Err(cause) => {
-+                custody.retain_failure(cause);
-+                return Err(Error::InvalidReply);
-+            }
-+        }
-+        boundary.complete();
-+
-+        Ok(())
++        connect_fixed_manager(&self.custody, &mut self.attempted, &mut self.connection).await
 +    }
 +
 +    /// Advances the sole fixed 24-request recipe, returning its resident reply.
@@ -287,6 +261,139 @@ index fe36fa990f0618ba069a617fd295bb6ed3ec2e32..ab4d79cf0e9b85bccaa9dcac92ff8204
 +    }
 +}
 +
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++async fn connect_fixed_manager(
++    owner: &std::sync::Arc<super::socket::LauncherImageReceiveCustodyV1>,
++    attempted: &mut bool,
++    destination: &mut Option<Connection>,
++) -> Result<()> {
++    owner.require_open()?;
++    if *attempted {
++        owner.end();
++        return Err(Error::InvalidReply);
++    }
++    *attempted = true;
++    let custody = owner.clone();
++    let mut boundary = super::socket::LauncherReceiveBoundary::new(&custody);
++    let mut builder = match Builder::address("unix:path=/run/dbus/system_bus_socket") {
++        Ok(builder) => builder,
++        Err(cause) => {
++            custody.retain_failure(cause);
++            return Err(Error::InvalidReply);
++        }
++    };
++    builder.launcher_image = Some(custody.clone());
++    let result = builder.build().await;
++    match result {
++        Ok(connection) => *destination = Some(connection),
++        Err(cause) => {
++            custody.retain_failure(cause);
++            return Err(Error::InvalidReply);
++        }
++    }
++    boundary.complete();
++
++    Ok(())
++}
++
++/// Retains one fixed Controller-property transport attempt as nonauthorizing DATA.
++///
++/// Empty construction opens no socket. The same bounded AUTH, message, native
++/// receive and cancellation custody serves this disposition and launcher reads.
++#[cfg(all(target_os = "linux", feature = "tokio"))]
+ #[derive(Debug)]
++pub struct ControllerPropertyReceiveAttemptV1 {
++    custody: std::sync::Arc<super::socket::LauncherImageReceiveCustodyV1>,
++    connection: Option<Connection>,
++    attempted: bool,
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++impl ControllerPropertyReceiveAttemptV1 {
++    /// The same shared per-message byte ceiling used by the native reader.
++    pub const MESSAGE_BYTES: usize = super::socket::LAUNCHER_MESSAGE_BYTES;
++    /// The same shared aggregate AUTH receive ceiling.
++    pub const AUTH_BYTES: usize = super::socket::LAUNCHER_AUTH_BYTES;
++    /// The same shared incoming frame count.
++    pub const INCOMING_MESSAGES: usize = super::socket::LAUNCHER_MESSAGE_COUNT;
++    /// The fixed Controller outgoing count, including Hello.
++    pub const OUTGOING_MESSAGES: usize = 31;
++    /// The shared aggregate raw receive-prefix capacity.
++    pub const RAW_PREFIX_BYTES: usize = super::socket::LAUNCHER_CAPTURE_BYTES;
++
++    /// Prearms the fixed 31-outgoing/33-incoming DATA flight without connecting.
++    pub fn empty() -> Self {
++        Self {
++            custody: std::sync::Arc::new(
++                super::socket::LauncherImageReceiveCustodyV1::controller_properties(),
++            ),
++            connection: None,
++            attempted: false,
++        }
++    }
++
++    /// Constructs the one fixed system-bus connection under retained custody.
++    ///
++    /// The returned shared connection cannot bypass the disposition's readonly
++    /// member, byte, descriptor or request-count checks in Connection::send.
++    ///
++    /// # Errors
++    /// Refuses repeated or ended entry. Actual connect/AUTH failures remain in
++    /// the original custody; no failure resets or reconnects this attempt.
++    pub async fn connect(&mut self) -> Result<Connection> {
++        connect_fixed_manager(&self.custody, &mut self.attempted, &mut self.connection).await?;
++        let Some(connection) = self.connection.as_ref() else {
++            self.custody.retain_failure(Error::InvalidReply);
++            return Err(Error::InvalidReply);
++        };
++
++        Ok(connection.clone())
++    }
++
++    /// Arms a cancellation fence before entering a constructor or property read.
++    #[must_use]
++    pub fn cancellation_fence(&self) -> FixedLauncherImageCancellationV1 {
++        FixedLauncherImageCancellationV1 { custody: self.custody.clone(), completed: false }
++    }
++
++    /// Borrows actual retained transport failure custody without retrying.
++    ///
++    /// # Errors
++    /// Reports an unavailable native lock rather than healing or replacing it.
++    pub fn failure(&self) -> std::result::Result<
++        Option<super::socket::LauncherImageFailureLoanV1<'_>>,
++        super::socket::LauncherImageFailureUnavailableV1,
++    > {
++        self.custody.failure()
++    }
++
++    /// Borrows the actual one-shot original and rejected-socket shutdown Results.
++    pub fn shutdown_outcomes(&self) -> (
++        Option<&std::io::Result<()>>,
++        Option<&std::io::Result<()>>,
++    ) {
++        self.custody.shutdown_outcomes()
++    }
++
++    /// Reports permanent fencing without an observation or socket effect.
++    pub fn has_ended(&self) -> bool {
++        self.custody.require_open().is_err()
++    }
++
++    /// Permanently ends this original transport without releasing its custody.
++    pub fn end(&self) {
++        self.custody.end();
++    }
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++impl Drop for ControllerPropertyReceiveAttemptV1 {
++    fn drop(&mut self) {
++        self.custody.end();
++    }
++}
++
 +#[cfg(all(test, target_os = "linux", feature = "tokio"))]
 +mod launcher_negative_tests {
 +    #[test]
@@ -313,10 +420,11 @@ index fe36fa990f0618ba069a617fd295bb6ed3ec2e32..ab4d79cf0e9b85bccaa9dcac92ff8204
 +    }
 +}
 +
- #[derive(Debug)]
++#[derive(Debug)]
  enum Target {
      #[cfg(any(unix, not(feature = "tokio")))]
-@@ -89,6 +396,10 @@ pub struct Builder<'a> {
+     UnixStream(UnixStream),
+@@ -89,6 +503,10 @@ pub struct Builder<'a> {
      request_name_flags: BitFlags<RequestNameFlags>,
      method_timeout: Option<std::time::Duration>,
      user_id: Option<u32>,
@@ -327,7 +435,7 @@ index fe36fa990f0618ba069a617fd295bb6ed3ec2e32..ab4d79cf0e9b85bccaa9dcac92ff8204
  }
  
  impl<'a> Builder<'a> {
-@@ -102,6 +413,23 @@ impl<'a> Builder<'a> {
+@@ -102,6 +520,23 @@ impl<'a> Builder<'a> {
          Ok(Self::new(Target::Address(Address::system()?)))
      }
  
@@ -351,7 +459,7 @@ index fe36fa990f0618ba069a617fd295bb6ed3ec2e32..ab4d79cf0e9b85bccaa9dcac92ff8204
      /// Create a builder for an IBus connection.
      ///
      /// IBus (Intelligent Input Bus) is an input method framework. This method creates a builder
-@@ -542,7 +870,15 @@ impl<'a> Builder<'a> {
+@@ -542,7 +977,15 @@ impl<'a> Builder<'a> {
          #[cfg(unix)]
          let already_received_fds = auth.already_received_fds.drain(..).collect();
  
@@ -368,7 +476,7 @@ index fe36fa990f0618ba069a617fd295bb6ed3ec2e32..ab4d79cf0e9b85bccaa9dcac92ff8204
          conn.set_max_queued(self.max_queued.unwrap_or(DEFAULT_MAX_QUEUED));
  
          if !self.interfaces.is_empty() {
-@@ -601,6 +937,10 @@ impl<'a> Builder<'a> {
+@@ -601,6 +1044,10 @@ impl<'a> Builder<'a> {
              request_name_flags: BitFlags::default(),
              method_timeout: None,
              user_id: None,
@@ -379,7 +487,7 @@ index fe36fa990f0618ba069a617fd295bb6ed3ec2e32..ab4d79cf0e9b85bccaa9dcac92ff8204
          }
      }
  
-@@ -612,6 +952,13 @@ impl<'a> Builder<'a> {
+@@ -612,6 +1059,13 @@ impl<'a> Builder<'a> {
  
          #[allow(unused_mut)]
          let (mut stream, server_guid, authenticated) = self.target_connect().await?;
@@ -393,7 +501,7 @@ index fe36fa990f0618ba069a617fd295bb6ed3ec2e32..ab4d79cf0e9b85bccaa9dcac92ff8204
          if authenticated {
              let (socket_read, socket_write) = stream.take();
              Ok(Authenticated {
-@@ -678,6 +1025,13 @@ impl<'a> Builder<'a> {
+@@ -678,6 +1132,13 @@ impl<'a> Builder<'a> {
      }
  
      async fn target_connect(&mut self) -> Result<(BoxedSplit, Option<OwnedGuid>, bool)> {
@@ -407,7 +515,7 @@ index fe36fa990f0618ba069a617fd295bb6ed3ec2e32..ab4d79cf0e9b85bccaa9dcac92ff8204
          let mut authenticated = false;
          let mut guid = None;
          // SAFETY: `self.target` is always `Some` from the beginning and this method is only called
-@@ -686,7 +1040,7 @@ impl<'a> Builder<'a> {
+@@ -686,7 +1147,7 @@ impl<'a> Builder<'a> {
              #[cfg(not(feature = "tokio"))]
              Target::UnixStream(stream) => Async::new(stream)?.into(),
              #[cfg(all(unix, feature = "tokio"))]
@@ -416,7 +524,7 @@ index fe36fa990f0618ba069a617fd295bb6ed3ec2e32..ab4d79cf0e9b85bccaa9dcac92ff8204
              #[cfg(not(feature = "tokio"))]
              Target::TcpStream(stream) => Async::new(stream)?.into(),
              #[cfg(feature = "tokio")]
-@@ -698,8 +1052,10 @@ impl<'a> Builder<'a> {
+@@ -698,8 +1159,10 @@ impl<'a> Builder<'a> {
              Target::Address(address) => {
                  guid = address.guid().map(|g| g.to_owned().into());
                  match address.connect().await? {
@@ -428,7 +536,7 @@ index fe36fa990f0618ba069a617fd295bb6ed3ec2e32..ab4d79cf0e9b85bccaa9dcac92ff8204
                      #[cfg(unix)]
                      address::transport::Stream::Unixexec(stream) => stream.into(),
                      address::transport::Stream::Tcp(stream) => stream.into(),
-@@ -720,6 +1076,117 @@ impl<'a> Builder<'a> {
+@@ -720,8 +1183,119 @@ impl<'a> Builder<'a> {
  
          Ok((split, guid, authenticated))
      }
@@ -466,8 +574,8 @@ index fe36fa990f0618ba069a617fd295bb6ed3ec2e32..ab4d79cf0e9b85bccaa9dcac92ff8204
 +
 +        Ok(stream.into())
 +    }
-+}
-+
+ }
+ 
 +#[cfg(all(test, target_os = "linux", feature = "tokio"))]
 +mod incoming_fd_tests {
 +    use super::*;
@@ -543,23 +651,28 @@ index fe36fa990f0618ba069a617fd295bb6ed3ec2e32..ab4d79cf0e9b85bccaa9dcac92ff8204
 +            Err(Error::Unsupported)
 +        ));
 +    }
- }
- 
++}
++
  /// Start the internal executor thread.
+ ///
+ /// Returns a dummy task that keep the executor ticking thread from exiting due to absence of any
 diff --git a/src/connection/mod.rs b/src/connection/mod.rs
-index 1ef2b75ba83bfb64988ef4e864d8e34457f6f99a..33217e13687d119795806e7184708d7168c91df4 100644
+index 1ef2b75ba83bfb64988ef4e864d8e34457f6f99a..99ccbb26e8007f9b84f5fcfdb81d26b47080ffd8 100644
 --- a/src/connection/mod.rs
 +++ b/src/connection/mod.rs
-@@ -31,6 +31,8 @@ use crate::{
+@@ -31,6 +31,11 @@ use crate::{
  
  mod builder;
  pub use builder::Builder;
 +#[cfg(all(target_os = "linux", feature = "tokio"))]
-+pub use builder::{FixedLauncherImageAttemptV1, FixedLauncherImageCancellationV1};
++pub use builder::{
++    ControllerPropertyReceiveAttemptV1, FixedLauncherImageAttemptV1,
++    FixedLauncherImageCancellationV1,
++};
  
  pub mod socket;
  pub use socket::Socket;
-@@ -80,6 +82,8 @@ pub(crate) struct ConnectionInner {
+@@ -80,6 +85,8 @@ pub(crate) struct ConnectionInner {
      method_timeout: Option<Duration>,
      // Cache the credentials.
      credentials: OnceLock<Arc<ConnectionCredentials>>,
@@ -568,19 +681,31 @@ index 1ef2b75ba83bfb64988ef4e864d8e34457f6f99a..33217e13687d119795806e7184708d71
  }
  
  impl Drop for ConnectionInner {
-@@ -393,6 +397,11 @@ impl Connection {
+@@ -291,6 +298,11 @@
+ impl Connection {
+     /// Send `msg` to the peer.
+     pub async fn send(&self, msg: &Message) -> Result<()> {
++        #[cfg(all(target_os = "linux", feature = "tokio"))]
++        if let Some(custody) = self.inner.launcher_image.as_ref().filter(|owner| owner.is_controller_properties()) {
++            custody.retain_request(msg)?;
++        }
++
+         #[cfg(unix)]
+         if !msg.data().fds().is_empty() && !self.inner.cap_unix_fd {
+             return Err(Error::Unsupported);
+@@ -393,6 +405,11 @@ impl Connection {
          }
          let msg = builder.build(body)?;
  
 +        #[cfg(all(target_os = "linux", feature = "tokio"))]
-+        if let Some(custody) = self.inner.launcher_image.as_ref() {
++        if let Some(custody) = self.inner.launcher_image.as_ref().filter(|owner| !owner.is_controller_properties()) {
 +            custody.retain_request(&msg)?;
 +        }
 +
          let msg_receiver = self.inner.method_return_receiver.activate_cloned();
          let stream = Some(MessageStream::for_subscription_channel(
              msg_receiver,
-@@ -1150,6 +1159,8 @@ impl Connection {
+@@ -1150,6 +1167,8 @@ impl Connection {
          #[allow(unused)] bus_connection: bool,
          executor: Executor<'static>,
          method_timeout: Option<Duration>,
@@ -589,7 +714,7 @@ index 1ef2b75ba83bfb64988ef4e864d8e34457f6f99a..33217e13687d119795806e7184708d71
      ) -> Result<Self> {
          #[cfg(unix)]
          let cap_unix_fd = auth.cap_unix_fd;
-@@ -1203,6 +1214,8 @@ impl Connection {
+@@ -1203,6 +1222,8 @@ impl Connection {
                  drop_event: Event::new(),
                  method_timeout,
                  credentials: OnceLock::new(),
@@ -599,17 +724,20 @@ index 1ef2b75ba83bfb64988ef4e864d8e34457f6f99a..33217e13687d119795806e7184708d71
          };
  
 diff --git a/src/connection/socket/mod.rs b/src/connection/socket/mod.rs
-index d313103752e59bc391ace89fd429e0096575980d..5b5bf7bb22174008905d6ee7fcd3f2033e6d5ebe 100644
+index d313103752e59bc391ace89fd429e0096575980d..affc15a5e5bbfd4db8c9df7471c8bfb33a1d9322 100644
 --- a/src/connection/socket/mod.rs
 +++ b/src/connection/socket/mod.rs
-@@ -12,6 +12,14 @@ pub(crate) mod command;
+@@ -12,6 +12,17 @@ pub(crate) mod command;
  pub(crate) use command::Command;
  mod tcp;
  mod unix;
 +#[cfg(all(target_os = "linux", feature = "tokio"))]
 +pub(super) use unix::split_reject_incoming_unix_fds;
 +#[cfg(all(target_os = "linux", feature = "tokio"))]
-+pub(crate) use unix::LauncherImageReceiveCustodyV1;
++pub(crate) use unix::{
++    LauncherImageReceiveCustodyV1, LAUNCHER_AUTH_BYTES, LAUNCHER_CAPTURE_BYTES,
++    LAUNCHER_MESSAGE_BYTES, LAUNCHER_MESSAGE_COUNT,
++};
 +#[cfg(all(target_os = "linux", feature = "tokio"))]
 +pub use unix::{LauncherImageFailureLoanV1, LauncherImageFailureRefV1, LauncherImageFailureUnavailableV1};
 +#[cfg(all(target_os = "linux", feature = "tokio"))]
@@ -617,7 +745,7 @@ index d313103752e59bc391ace89fd429e0096575980d..5b5bf7bb22174008905d6ee7fcd3f203
  mod vsock;
  
  #[cfg(not(feature = "tokio"))]
-@@ -44,6 +52,195 @@ type RecvmsgResult = io::Result<(usize, Vec<OwnedFd>)>;
+@@ -44,6 +55,195 @@ type RecvmsgResult = io::Result<(usize, Vec<OwnedFd>)>;
  #[cfg(not(unix))]
  type RecvmsgResult = io::Result<usize>;
  
@@ -813,7 +941,7 @@ index d313103752e59bc391ace89fd429e0096575980d..5b5bf7bb22174008905d6ee7fcd3f203
  /// Trait representing some transport layer over which the DBus protocol can be used.
  ///
  /// In order to allow simultaneous reading and writing, this trait requires you to split the socket
-@@ -96,129 +293,16 @@ pub trait ReadHalf: std::fmt::Debug + Send + Sync + 'static {
+@@ -96,129 +296,16 @@ pub trait ReadHalf: std::fmt::Debug + Send + Sync + 'static {
          already_received_bytes: &mut Vec<u8>,
          #[cfg(unix)] already_received_fds: &mut Vec<OwnedFd>,
      ) -> crate::Result<Message> {
@@ -954,23 +1082,23 @@ index d313103752e59bc391ace89fd429e0096575980d..5b5bf7bb22174008905d6ee7fcd3f203
  
      /// Attempt to receive bytes from the socket.
 diff --git a/src/connection/socket/unix.rs b/src/connection/socket/unix.rs
-index 1875ce0a5113b3918bef098de25b767086b56dd4..408dd5b1399816245f9eddfdce6acbac0b341f62 100644
+index 1875ce0a5113b3918bef098de25b767086b56dd4..d9bc24c2489615c70e891e5500219220474a9248 100644
 --- a/src/connection/socket/unix.rs
 +++ b/src/connection/socket/unix.rs
-@@ -27,6 +27,663 @@ use rustix::net::{
+@@ -27,6 +27,731 @@ use rustix::net::{
  #[cfg(unix)]
  use crate::utils::FDS_MAX;
  
 +// The selected observer shares the ordinary readiness, recvmsg and control
 +// decoder. Only storage and its closed admission limits differ.
 +#[cfg(all(target_os = "linux", feature = "tokio"))]
-+const LAUNCHER_MESSAGE_BYTES: usize = 64 * 1024;
++pub(crate) const LAUNCHER_MESSAGE_BYTES: usize = 64 * 1024;
 +#[cfg(all(target_os = "linux", feature = "tokio"))]
-+const LAUNCHER_AUTH_BYTES: usize = 4 * 1024;
++pub(crate) const LAUNCHER_AUTH_BYTES: usize = 4 * 1024;
 +#[cfg(all(target_os = "linux", feature = "tokio"))]
-+const LAUNCHER_MESSAGE_COUNT: usize = 33;
++pub(crate) const LAUNCHER_MESSAGE_COUNT: usize = 33;
 +#[cfg(all(target_os = "linux", feature = "tokio"))]
-+const LAUNCHER_CAPTURE_BYTES: usize =
++pub(crate) const LAUNCHER_CAPTURE_BYTES: usize =
 +    LAUNCHER_AUTH_BYTES + LAUNCHER_MESSAGE_COUNT * LAUNCHER_MESSAGE_BYTES;
 +
 +#[cfg(unix)]
@@ -1036,6 +1164,13 @@ index 1875ce0a5113b3918bef098de25b767086b56dd4..408dd5b1399816245f9eddfdce6acbac
 +    messages: Vec<crate::Message>,
 +}
 +
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++#[derive(Clone, Copy, Debug)]
++enum FixedReceiveDispositionV1 {
++    LauncherImage,
++    ControllerProperties,
++}
++
 +/// Retains the original fixed-manager transport and its consumed receive state.
 +///
 +/// This opaque storage is created only by the two fixed launcher observers. It
@@ -1043,6 +1178,7 @@ index 1875ce0a5113b3918bef098de25b767086b56dd4..408dd5b1399816245f9eddfdce6acbac
 +/// Failed reads never expose raw control bytes or revive disposed descriptors.
 +#[cfg(all(target_os = "linux", feature = "tokio"))]
 +pub(crate) struct LauncherImageReceiveCustodyV1 {
++    disposition: FixedReceiveDispositionV1,
 +    socket: std::sync::OnceLock<std::sync::Arc<tokio::net::UnixStream>>,
 +    shutdown_result: std::sync::OnceLock<std::io::Result<()>>,
 +    rejected_socket: std::sync::OnceLock<std::sync::Arc<tokio::net::UnixStream>>,
@@ -1167,10 +1303,31 @@ index 1875ce0a5113b3918bef098de25b767086b56dd4..408dd5b1399816245f9eddfdce6acbac
 +#[cfg(all(target_os = "linux", feature = "tokio"))]
 +impl LauncherImageReceiveCustodyV1 {
 +    pub(crate) fn empty() -> Self {
++        Self::empty_for(FixedReceiveDispositionV1::LauncherImage)
++    }
++
++    pub(crate) fn controller_properties() -> Self {
++        Self::empty_for(FixedReceiveDispositionV1::ControllerProperties)
++    }
++
++    pub(crate) fn is_controller_properties(&self) -> bool {
++        matches!(self.disposition, FixedReceiveDispositionV1::ControllerProperties)
++    }
++
++    fn outgoing_limit(&self) -> usize {
++        if self.is_controller_properties() {
++            super::super::ControllerPropertyReceiveAttemptV1::OUTGOING_MESSAGES
++        } else {
++            25
++        }
++    }
++
++    fn empty_for(disposition: FixedReceiveDispositionV1) -> Self {
 +        // These are pre-effect allocations, not an allocator/funding proof.
 +        // Empty-control successful chunks share exact bounded byte storage;
 +        // two successful image controls and one terminal control remain separate.
 +        Self {
++            disposition,
 +            socket: std::sync::OnceLock::new(),
 +            shutdown_result: std::sync::OnceLock::new(),
 +            rejected_socket: std::sync::OnceLock::new(),
@@ -1200,7 +1357,13 @@ index 1875ce0a5113b3918bef098de25b767086b56dd4..408dd5b1399816245f9eddfdce6acbac
 +                messages: Vec::with_capacity(LAUNCHER_MESSAGE_COUNT),
 +            }),
 +            first_failure: std::sync::OnceLock::new(),
-+            requests: std::sync::Mutex::new(Vec::with_capacity(25)),
++            requests: std::sync::Mutex::new(Vec::with_capacity(
++                if matches!(disposition, FixedReceiveDispositionV1::ControllerProperties) {
++                    super::super::ControllerPropertyReceiveAttemptV1::OUTGOING_MESSAGES
++                } else {
++                    25
++                },
++            )),
 +            auth_sends: tokio::sync::Mutex::new(Vec::with_capacity(4)),
 +            auth_lines: std::sync::Mutex::new(Vec::with_capacity(4)),
 +        }
@@ -1256,12 +1419,44 @@ index 1875ce0a5113b3918bef098de25b767086b56dd4..408dd5b1399816245f9eddfdce6acbac
 +    pub(crate) fn retain_request(&self, message: &crate::Message) -> crate::Result<()> {
 +        self.require_open()?;
 +        let mut requests = self.requests.try_lock().map_err(|_| crate::Error::InvalidReply)?;
-+        if requests.len() == 25 || message.data().len() > LAUNCHER_MESSAGE_BYTES {
++        if requests.len() == self.outgoing_limit() || message.data().len() > LAUNCHER_MESSAGE_BYTES {
 +            self.end();
 +            return Err(crate::Error::ExcessData);
 +        }
++        if self.is_controller_properties() {
++            let header = message.header();
++            let member = header.member().map(|member| member.as_str());
++            let interface = header.interface().map(|interface| interface.as_str());
++            let path = header.path().map(|path| path.as_str());
++            let readonly = match (member, interface, path) {
++                (
++                    Some("Hello" | "GetNameOwner" | "GetConnectionUnixProcessID"),
++                    Some("org.freedesktop.DBus"),
++                    Some("/org/freedesktop/DBus"),
++                ) => true,
++                (
++                    Some("GetUnit"),
++                    Some("org.freedesktop.systemd1.Manager"),
++                    Some("/org/freedesktop/systemd1"),
++                ) => true,
++                (Some("Get"), Some("org.freedesktop.DBus.Properties"), Some(path)) => {
++                    path.starts_with("/org/freedesktop/systemd1/unit/")
++                }
++                _ => false,
++            };
++            let hello_once = member != Some("Hello")
++                || (self.in_auth.load(std::sync::atomic::Ordering::Acquire) && requests.is_empty());
++            if !readonly || !hello_once
++                || message.message_type() != crate::message::Type::MethodCall
++                || !message.data().fds().is_empty()
++            {
++                self.retain_failure(crate::Error::InvalidReply);
++                return Err(crate::Error::InvalidReply);
++            }
++        }
 +        requests.push(message.clone());
-+        if message.header().member().is_some_and(|member| member.as_str() == "GetAosOwnLauncherImageV1") {
++        if !self.is_controller_properties()
++            && message.header().member().is_some_and(|member| member.as_str() == "GetAosOwnLauncherImageV1") {
 +            self.expected_image_serial.store(
 +                message.primary_header().serial_num().get(),
 +                std::sync::atomic::Ordering::Release,
@@ -1482,7 +1677,7 @@ index 1875ce0a5113b3918bef098de25b767086b56dd4..408dd5b1399816245f9eddfdce6acbac
 +    }
 +
 +    fn can_pass_unix_fd(&self) -> bool {
-+        true
++        !self.custody.is_controller_properties()
 +    }
 +
 +    async fn peer_credentials(&mut self) -> std::io::Result<crate::fdo::ConnectionCredentials> {
@@ -1523,7 +1718,7 @@ index 1875ce0a5113b3918bef098de25b767086b56dd4..408dd5b1399816245f9eddfdce6acbac
 +    }
 +
 +    fn can_pass_unix_fd(&self) -> bool {
-+        true
++        !self.custody.is_controller_properties()
 +    }
 +
 +    async fn peer_credentials(&mut self) -> std::io::Result<crate::fdo::ConnectionCredentials> {
@@ -1559,7 +1754,8 @@ index 1875ce0a5113b3918bef098de25b767086b56dd4..408dd5b1399816245f9eddfdce6acbac
 +        return Err(IncomingControlError::Fenced.into_io());
 +    }
 +
-+    let accepts_image_fd = !custody.in_auth.load(Ordering::Acquire)
++    let accepts_image_fd = !custody.is_controller_properties()
++        && !custody.in_auth.load(Ordering::Acquire)
 +        && custody.expected_image_serial.load(Ordering::Acquire) != 0
 +        && custody.frame_fds.load(Ordering::Acquire) == 0;
 +    if accepts_image_fd && native.current >= 2 {
@@ -1621,7 +1817,7 @@ index 1875ce0a5113b3918bef098de25b767086b56dd4..408dd5b1399816245f9eddfdce6acbac
  #[cfg(all(unix, not(feature = "tokio")))]
  #[async_trait::async_trait]
  impl super::ReadHalf for Arc<Async<UnixStream>> {
-@@ -129,26 +786,7 @@ impl super::Socket for tokio::net::UnixStream {
+@@ -129,26 +854,7 @@ impl super::Socket for tokio::net::UnixStream {
  #[async_trait::async_trait]
  impl super::ReadHalf for tokio::net::unix::OwnedReadHalf {
      async fn recvmsg(&mut self, buf: &mut [u8]) -> super::RecvmsgResult {
@@ -1649,11 +1845,10 @@ index 1875ce0a5113b3918bef098de25b767086b56dd4..408dd5b1399816245f9eddfdce6acbac
      }
  
      /// Supports passing file descriptors.
-@@ -161,6 +799,159 @@ impl super::ReadHalf for tokio::net::unix::OwnedReadHalf {
-     }
+@@ -162,36 +868,179 @@
  }
  
-+#[cfg(all(unix, feature = "tokio"))]
+ #[cfg(all(unix, feature = "tokio"))]
 +struct TokioReceiveDisposition<'a> {
 +    control: IncomingControl,
 +    failed: Option<&'a mut bool>,
@@ -1751,7 +1946,19 @@ index 1875ce0a5113b3918bef098de25b767086b56dd4..408dd5b1399816245f9eddfdce6acbac
 +                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
 +                    match stream.poll_read_ready(cx) {
 +                        Poll::Pending => return Poll::Pending,
-+                        Poll::Ready(res) => res?,
++                        Poll::Ready(res) => {
++                            #[cfg(target_os = "linux")]
++                            if let Some(custody) = disposition.launcher.filter(|owner| owner.is_controller_properties()) {
++                                if let Err(cause) = res {
++                                    custody.retain_failure(cause.into());
++                                    return Poll::Ready(Err(IncomingControlError::Fenced.into_io()));
++                                }
++                            } else {
++                                res?;
++                            }
++                            #[cfg(not(target_os = "linux"))]
++                            res?;
++                        }
 +                    }
 +                }
 +                v => {
@@ -1773,7 +1980,7 @@ index 1875ce0a5113b3918bef098de25b767086b56dd4..408dd5b1399816245f9eddfdce6acbac
 +}
 +
 +#[cfg(all(target_os = "linux", feature = "tokio"))]
-+#[async_trait::async_trait]
+ #[async_trait::async_trait]
 +impl super::ReadHalf for RejectIncomingUnixReadHalf {
 +    async fn recvmsg(&mut self, buf: &mut [u8]) -> super::RecvmsgResult {
 +        tokio_recvmsg(
@@ -1806,10 +2013,11 @@ index 1875ce0a5113b3918bef098de25b767086b56dd4..408dd5b1399816245f9eddfdce6acbac
 +    split
 +}
 +
- #[cfg(all(unix, feature = "tokio"))]
- #[async_trait::async_trait]
++#[cfg(all(unix, feature = "tokio"))]
++#[async_trait::async_trait]
  impl super::WriteHalf for tokio::net::unix::OwnedWriteHalf {
-@@ -169,29 +960,7 @@ impl super::WriteHalf for tokio::net::unix::OwnedWriteHalf {
+     async fn sendmsg(
+         &mut self,
          buffer: &[u8],
          #[cfg(unix)] fds: &[BorrowedFd<'_>],
      ) -> std::io::Result<usize> {
@@ -1840,7 +2048,7 @@ index 1875ce0a5113b3918bef098de25b767086b56dd4..408dd5b1399816245f9eddfdce6acbac
      }
  
      async fn close(&mut self) -> std::io::Result<()> {
-@@ -275,27 +1044,234 @@ impl super::WriteHalf for Arc<Async<UnixStream>> {
+@@ -275,27 +1124,234 @@ impl super::WriteHalf for Arc<Async<UnixStream>> {
  
  #[cfg(unix)]
  fn fd_recvmsg(fd: BorrowedFd<'_>, buffer: &mut [u8]) -> std::io::Result<(usize, Vec<OwnedFd>)> {
@@ -1913,7 +2121,8 @@ index 1875ce0a5113b3918bef098de25b767086b56dd4..408dd5b1399816245f9eddfdce6acbac
      let mut cmsg_buffer = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(FDS_MAX))];
 -    let mut ancillary = RecvAncillaryBuffer::new(&mut cmsg_buffer);
 +    let control_storage = &mut cmsg_buffer[..control.capacity()];
-+
+ 
+-    let msg = recvmsg(fd, &mut iov, &mut ancillary, RecvFlags::empty())?;
 +    fd_recvmsg_in_storage(fd, buffer, control, control_storage, None, None)
 +}
 +
@@ -1965,8 +2174,7 @@ index 1875ce0a5113b3918bef098de25b767086b56dd4..408dd5b1399816245f9eddfdce6acbac
 +    } else {
 +        None
 +    };
- 
--    let msg = recvmsg(fd, &mut iov, &mut ancillary, RecvFlags::empty())?;
++
      if msg.bytes == 0 {
          return Err(std::io::Error::new(
              std::io::ErrorKind::BrokenPipe,
@@ -2078,7 +2286,7 @@ index 1875ce0a5113b3918bef098de25b767086b56dd4..408dd5b1399816245f9eddfdce6acbac
                  // On Linux, credentials might be received. This shouldn't normally happen
                  // in our use case since we don't request them, but ignore if present.
                  continue;
-@@ -308,7 +1284,41 @@ fn fd_recvmsg(fd: BorrowedFd<'_>, buffer: &mut [u8]) -> std::io::Result<(usize,
+@@ -308,9 +1364,43 @@ fn fd_recvmsg(fd: BorrowedFd<'_>, buffer: &mut [u8]) -> std::io::Result<(usize,
              }
          }
      }
@@ -2088,8 +2296,8 @@ index 1875ce0a5113b3918bef098de25b767086b56dd4..408dd5b1399816245f9eddfdce6acbac
 +        return Ok(fds);
 +    }
 +    Ok(fds)
-+}
-+
+ }
+ 
 +#[cfg(all(unix, feature = "tokio"))]
 +async fn tokio_sendmsg(
 +    stream: &tokio::net::UnixStream,
@@ -2118,10 +2326,12 @@ index 1875ce0a5113b3918bef098de25b767086b56dd4..408dd5b1399816245f9eddfdce6acbac
 +            }
 +        })
 +        .await
- }
- 
++}
++
  #[cfg(unix)]
-@@ -528,3 +1538,97 @@ fn send_zero_byte_blocking(fd: RawFd) -> std::io::Result<usize> {
+ fn fd_sendmsg(fd: BorrowedFd<'_>, buffer: &[u8], fds: &[BorrowedFd<'_>]) -> std::io::Result<usize> {
+     use std::mem::MaybeUninit;
+@@ -528,3 +1618,97 @@ fn send_zero_byte_blocking(fd: RawFd) -> std::io::Result<usize> {
          Ok(ret as usize)
      }
  }
