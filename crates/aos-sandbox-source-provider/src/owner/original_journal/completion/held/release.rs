@@ -185,6 +185,7 @@ pub(super) struct OriginalSourceReleaseV1 {
     owner_post: Option<Result<(), OriginalProducerErrorV5>>,
     clock_post: Option<Result<(), ProviderLedgerError>>,
     pub(super) status: Option<OriginalPendingReleaseStatusV1>,
+    cleanup: Option<super::retirement::OriginalSourceCleanupPreparationV1>,
 }
 
 impl OriginalSourceReleaseV1 {
@@ -210,6 +211,7 @@ impl OriginalSourceReleaseV1 {
             owner_post: None,
             clock_post: None,
             status: None,
+            cleanup: None,
         }
     }
 
@@ -273,8 +275,121 @@ impl FixedProviderOwnerV1 {
             original: OriginalProducerClosureGuardV5 { owner: self, completed: false },
         };
         let progress = guard.original.owner.advance_original_release_status_inner_v1(publication, rows);
+        let progress = if progress == Progress::ReleaseStatusSent {
+            guard.original.owner.prepare_original_cleanup_after_pending_v1()
+        } else {
+            progress
+        };
         guard.original.completed = progress != Progress::Closed;
         progress
+    }
+
+    // Only the genuine once-sent Pending owner can install this destination.
+    // It remains nonpositive until independent current admissions, a complete
+    // owner-derived census and a real paid cleanup loan are available.
+    fn prepare_original_cleanup_after_pending_v1(&mut self) -> Progress {
+        let _crossing = OriginalCompletionCrossingV5;
+        let Ok(release) = self.original_release_mut_v1() else {
+            return Progress::Closed;
+        };
+        let Some(status) = release.status.as_ref() else {
+            return Progress::Closed;
+        };
+        if release.first.is_some()
+            || status.first.is_some()
+            || status.stage != PendingStatusStageV1::Sent
+            || !matches!(status.send, Some(Ok(())))
+        {
+            return Progress::Closed;
+        }
+        if release.cleanup.is_none() {
+            release.cleanup = Some(super::retirement::OriginalSourceCleanupPreparationV1::pending());
+        }
+        let Some(cleanup) = release.cleanup.as_mut() else {
+            return Progress::Closed;
+        };
+        if cleanup.awaiting_current_admission() {
+            return Progress::ReleaseStatusSent;
+        }
+        if !cleanup.begin_native_comparison() {
+            return Progress::Closed;
+        }
+
+        // This destination is inline in the original owner. No allocation,
+        // stored loan or new resource owner is needed to retain these Results.
+        let native = self.compare_original_cleanup_native_v1();
+        let Ok(release) = self.original_release_mut_v1() else {
+            std::process::abort();
+        };
+        let Some(cleanup) = release.cleanup.as_mut() else {
+            std::process::abort();
+        };
+        cleanup.park_native_comparison(native);
+
+        // End the writer loan and retain its whole Result before independent
+        // physical/Session observations; the original clock is always LAST.
+        let owner_post = self.require_original_cleanup_physical_owner_v1();
+        let Ok(release) = self.original_release_mut_v1() else {
+            std::process::abort();
+        };
+        let Some(cleanup) = release.cleanup.as_mut() else {
+            std::process::abort();
+        };
+        cleanup.park_owner_post(owner_post);
+
+        let clock_post = self.original_release_v1().and_then(OriginalSourceReleaseV1::require_clock);
+        let Ok(release) = self.original_release_mut_v1() else {
+            std::process::abort();
+        };
+        let Some(cleanup) = release.cleanup.as_mut() else {
+            std::process::abort();
+        };
+        cleanup.park_clock_post(clock_post);
+
+        if cleanup.finish_preparation() {
+            // Existing progress still means only Pending delivery. No new
+            // cleanup completion or effect eligibility is returned here.
+            Progress::ReleaseStatusSent
+        } else {
+            Progress::Closed
+        }
+    }
+
+    fn compare_original_cleanup_native_v1(&mut self) -> Result<(), OriginalProducerErrorV5> {
+        let Some(FixedProviderOwnerStateV1::HeldReadOnly(held)) = self.state.as_mut() else {
+            return Err(ProviderLedgerError::Unavailable.into());
+        };
+        let release = held.original.as_ref().and_then(|original| original.producer.as_ref())
+            .and_then(|producer| producer.original_completion.as_ref())
+            .and_then(|completion| completion.held.as_ref())
+            .and_then(|held| held.release.as_ref())
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        let retained = release.status.as_ref().and_then(|status| status.append.as_ref())
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        if retained.failed || !retained.attempted {
+            return Err(ProviderLedgerError::RuntimePoisoned.into());
+        }
+        let readback = retained.readback.as_ref().ok_or(ProviderLedgerError::Unavailable)?;
+        let challenges = self.hold_challenges.original_history_v5()?;
+        let writer = self.journal.as_mut().ok_or(ProviderLedgerError::RuntimePoisoned)?
+            .claim_source_original_native_v5(&challenges)?;
+        writer.validate_readback(readback)?;
+        Ok(())
+    }
+
+    // The native comparison has its own retained Result. Do not repeat it as
+    // a prerequisite that could suppress the independent Session/mount post.
+    fn require_original_cleanup_physical_owner_v1(&mut self) -> Result<(), OriginalProducerErrorV5> {
+        let Some(FixedProviderOwnerStateV1::HeldReadOnly(held)) = self.state.as_mut() else {
+            return Err(ProviderLedgerError::Unavailable.into());
+        };
+        let physical = held.original.as_ref().and_then(|original| original.producer.as_ref())
+            .and_then(|producer| producer.original_completion.as_ref())
+            .and_then(|completion| completion.handoff.as_ref())
+            .and_then(|returned| returned.as_ref().ok())
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        held.session.revalidate_original_held_mount_v5(physical)?;
+        Ok(())
     }
 
     fn advance_original_release_status_inner_v1(&mut self, publication: &[u8], rows: &[u8]) -> Progress {
@@ -640,6 +755,9 @@ impl FixedProviderOwnerV1 {
             if let Some(cause) = child.failure() {
                 return Some(cause);
             }
+            if let Some(cause) = child.cleanup.as_ref().and_then(|cleanup| cleanup.failure()) {
+                return Some(cause);
+            }
         }
         self.original_terminal_receipt_failure_v5()
     }
@@ -657,10 +775,13 @@ impl FixedProviderOwnerV1 {
                 return Some(cause);
             }
         }
-        child.owner_post.as_ref().and_then(|result| result.as_ref().err())
-            .map(|cause| cause as &(dyn std::error::Error + 'static))
-            .or_else(|| child.clock_post.as_ref().and_then(|result| result.as_ref().err())
-                .map(|cause| cause as _))
+        child.cleanup.as_ref().and_then(|cleanup| cleanup.postcheck_debt())
+            .or_else(|| {
+                child.owner_post.as_ref().and_then(|result| result.as_ref().err())
+                    .map(|cause| cause as &(dyn std::error::Error + 'static))
+                    .or_else(|| child.clock_post.as_ref().and_then(|result| result.as_ref().err())
+                        .map(|cause| cause as _))
+            })
     }
 
     /// Lends the fixed selected receive/Release cutoff, never authorization.

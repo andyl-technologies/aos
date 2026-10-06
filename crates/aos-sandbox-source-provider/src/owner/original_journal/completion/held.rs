@@ -21,6 +21,7 @@ mod relay;
 mod settlement;
 mod root_terminal;
 mod release;
+mod retirement;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum HeldStageV5 {
