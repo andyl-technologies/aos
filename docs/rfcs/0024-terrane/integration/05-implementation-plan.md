@@ -3097,6 +3097,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   The same checkpointed isolated source separately passes the original genuine
   retirement/readmission/exact-restore Nextest case. It exercises the actual
   collector producer and does not cover the mixed-live fresh-admission gap.
+  The focused `checks.terrane.integration.native-local-deletion` check is
+  registered before implementation. Its ten exact cases require genuine
+  ordinary local-v1 unlink, directory synchronization, protected progress,
+  fresh-collector recovery, current reconciliation and durable restore
+  cancellation. The existing first-ownership result ends at Invalidated and
+  cannot substitute for these cases. Remote-v2 permanent ownership remains
+  separate. Missing selectors fail explicitly; the full two-phase gate stays
+  pending until its actual requirements and runtime inventory are qualified.
   Narrowed
   to trunk scope: compaction is T-GC-2 on
   B-jobs. — satisfies GC-1, GC-3 to GC-7, GC-9 to GC-17, GC-22 to GC-24,

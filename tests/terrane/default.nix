@@ -225,6 +225,7 @@ in {
   integration.native-written-mutation-sync = import ./native-written-mutation-sync.nix {inherit sourceGate;};
   integration.native-retained-request-checks = import ./native-retained-request-checks.nix {inherit sourceGate;};
   integration.native-local-first-ownership = import ./native-local-first-ownership.nix {inherit sourceGate;};
+  integration.native-local-deletion = import ./native-local-deletion.nix {inherit sourceGate;};
   integration.native-collector-clock = import ./native-collector-clock.nix {inherit sourceGate;};
   integration.native-cold-fork-source = import ./native-cold-fork-source.nix {inherit sourceGate;};
   integration.native-content-observation = import ./native-content-observation.nix {inherit sourceGate;};
