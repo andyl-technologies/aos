@@ -20,6 +20,7 @@ use super::{
     config::QualifiedConfig,
     journal, managed, observation,
     qualification_attempt::{self, Attempt, Phase},
+    qualification_failure::{self, Diagnostics, EnqueuePhase},
     storage::{self, Operation, Reply},
 };
 
@@ -351,7 +352,23 @@ pub(crate) async fn enqueue(env: &Env, job: &VerificationJob) -> Result<()> {
 
 /// Admits the exact original immutable read before either accepted or fixture enqueue.
 pub(crate) async fn admit_read(env: &Env, job: &VerificationJob) -> Result<()> {
+    admit_read_observed(env, job, None).await
+}
+
+/// Preserves the original admission decision while observing fixture failure boundaries.
+///
+/// # Errors
+///
+/// Returns the existing original, recovery or fresh-admission error unchanged.
+pub(crate) async fn admit_read_observed(
+    env: &Env,
+    job: &VerificationJob,
+    diagnostics: Option<&Diagnostics>,
+) -> Result<()> {
     if let ClosedStage::External { result } = &job.closed {
+        if let Some(diagnostics) = diagnostics {
+            diagnostics.begin_recovery();
+        }
         let operation_id = step_id(
             &job.admission,
             job.placement_id,
@@ -359,16 +376,19 @@ pub(crate) async fn admit_read(env: &Env, job: &VerificationJob) -> Result<()> {
             "verify-stage",
         )?;
         let operation = external_verification_operation(result)?;
-        if crate::external_object::prepare_stage_read_recovery(
+        let recovery = crate::external_object::prepare_stage_read_recovery(
             env,
             &job.admission,
             job.placement_id,
             operation_id.clone(),
             operation.clone(),
+            diagnostics,
         )
-        .await
-        .is_err()
-        {
+        .await;
+        let needs_fresh = qualification_failure::needs_fresh(diagnostics, &recovery);
+        drop(recovery);
+        if needs_fresh {
+            qualification_failure::enter(diagnostics, EnqueuePhase::FallbackPreparation);
             let work = crate::external_object::prepare_stage_request(
                 env,
                 &job.admission,
@@ -379,6 +399,7 @@ pub(crate) async fn admit_read(env: &Env, job: &VerificationJob) -> Result<()> {
             .await?;
             // Queue delay never creates a new post-expiry read admission. Only
             // the exact read admitted under the original guard can be resumed.
+            qualification_failure::enter(diagnostics, EnqueuePhase::FallbackBegin);
             crate::external_object::admit_stage_read(env, &work).await?;
         }
     }
@@ -585,6 +606,7 @@ async fn verify_with_attempt(
                 job.placement_id,
                 operation_id.into(),
                 operation,
+                None,
             )
             .await?;
             #[cfg(feature = "do-e2e")]

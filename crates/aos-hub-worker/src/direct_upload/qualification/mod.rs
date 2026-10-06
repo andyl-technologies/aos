@@ -16,7 +16,9 @@ use wasm_bindgen::JsValue;
 use worker::{Env, Headers, Method, Request, RequestInit, Response, State};
 
 use super::{
-    config, effects, journal, storage,
+    config, effects, journal,
+    qualification_failure::{self, Diagnostics, EnqueuePhase},
+    storage,
     verification::{self, VerificationJob},
 };
 use protocol::{Action, Control, Original, HEADER, REPLY_DOMAIN, REQUEST_DOMAIN};
@@ -117,11 +119,15 @@ pub(crate) async fn physical(
         Ok(value) => value,
         Err(_) => return Response::error("qualification authentication refused", 409),
     };
-    let outcome = execute(&control, env, state).await;
+    let diagnostics = matches!(&control.action, Action::Enqueue { .. }).then(Diagnostics::new);
+    let outcome = execute(&control, env, state, diagnostics.as_ref()).await;
     let (status, result) = match outcome {
         Ok(result) => (200, result),
         // No provider exception or bearer capability is persisted as a cause.
-        Err(_) => (409, serde_json::json!({"state":"refused_or_unknown"})),
+        Err(_) => (
+            409,
+            serde_json::json!(qualification_failure::refused(diagnostics.as_ref())),
+        ),
     };
     let reply = serde_json::json!({"version":1,"requestSha256":hex::encode(sha2::Sha256::digest(&body)),
         "nonce":control.nonce,"sourceDigest":fixture::source().map_err(runtime_error)?,
@@ -150,7 +156,12 @@ fn runtime_error(_: impl std::fmt::Display) -> worker::Error {
     worker::Error::RustError("isolated qualification bounded runtime refused".into())
 }
 
-async fn execute(control: &Control, env: &Env, state: &State) -> Result<serde_json::Value> {
+async fn execute(
+    control: &Control,
+    env: &Env,
+    state: &State,
+    diagnostics: Option<&Diagnostics>,
+) -> Result<serde_json::Value> {
     ensure!(
         env.durable_object(storage::BINDING)?
             .id_from_name(&address(env, &control.run_id)?)?
@@ -279,19 +290,24 @@ async fn execute(control: &Control, env: &Env, state: &State) -> Result<serde_js
             "inspectionOnly":original.source_digest != current_source || original.script_version != current_script}));
     }
     if let Action::Enqueue { object_ids } = &control.action {
+        qualification_failure::enter(diagnostics, EnqueuePhase::InstalledConfiguration);
         fixture::installed(env, &original)?;
         let mut closed = Vec::new();
         for object_id in object_ids {
+            if let Some(diagnostics) = diagnostics {
+                diagnostics.begin_recovery();
+            }
+            qualification_failure::enter(diagnostics, EnqueuePhase::ClosedRecord);
             let record: Closed =
                 storage::read(&storage, &format!("qualification/closed/{object_id}"))
                     .await?
                     .ok_or_else(|| {
                         anyhow::anyhow!("qualification positive close absent before enqueue")
                     })?;
-            verification::admit_read(env, &record.job).await?;
+            verification::admit_read_observed(env, &record.job, diagnostics).await?;
             closed.push(record);
         }
-        queue::enqueue_many(env, &original, &closed).await?;
+        queue::enqueue_many_observed(env, &original, &closed, diagnostics).await?;
         return Ok(
             serde_json::json!({"state":"immutable_originals_enqueued","objects":object_ids}),
         );

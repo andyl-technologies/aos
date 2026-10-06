@@ -44,6 +44,8 @@ pub(crate) mod qualification;
 mod qualification_actor;
 #[cfg(any(test, target_arch = "wasm32"))]
 pub(crate) mod qualification_attempt;
+#[cfg(any(test, target_arch = "wasm32"))]
+pub(crate) mod qualification_failure;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "qualification/protocol.rs"]
 mod qualification_protocol;

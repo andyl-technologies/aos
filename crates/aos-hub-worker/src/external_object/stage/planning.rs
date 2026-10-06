@@ -39,6 +39,7 @@ use super::{
     protocol::{self, Intent, Operation, Reply},
     renewal::{coordination_key, validate_roles, Renewals, VerifiedLease, Window, POLL_MILLIS},
 };
+use crate::direct_upload::qualification_failure::{Diagnostics, RecoveryPhase};
 
 const MAX_ISSUER_REPLY: usize = 64 * 1024;
 
@@ -110,6 +111,7 @@ pub(crate) async fn prepare_stage_request(
         operation_id,
         operation,
         ExternalStageAdmissionMode::Fresh,
+        None,
     )
     .await
 }
@@ -153,6 +155,7 @@ pub(crate) async fn prepare_stage_read_recovery(
     placement_id: WireInteger,
     operation_id: String,
     operation: ExternalStageOperation,
+    diagnostics: Option<&Diagnostics>,
 ) -> Result<ExternalStageRequest> {
     ensure!(
         operation.immutable_read(),
@@ -165,6 +168,7 @@ pub(crate) async fn prepare_stage_read_recovery(
         operation_id,
         operation,
         ExternalStageAdmissionMode::ResumeImmutableRead,
+        diagnostics,
     )
     .await
 }
@@ -176,7 +180,11 @@ async fn prepare_stage_with_mode(
     operation_id: String,
     operation: ExternalStageOperation,
     admission_mode: ExternalStageAdmissionMode,
+    diagnostics: Option<&Diagnostics>,
 ) -> Result<ExternalStageRequest> {
+    if let Some(diagnostics) = diagnostics {
+        diagnostics.recovery(RecoveryPhase::Preparation);
+    }
     executor_key(env)?;
     let deployment = env.var("HUB_DEPLOYMENT_ID")?.to_string();
     admission.validate(&deployment)?;
@@ -194,6 +202,9 @@ async fn prepare_stage_with_mode(
                 context: context.clone(),
                 operation: operation.clone(),
             };
+            if let Some(diagnostics) = diagnostics {
+                diagnostics.recovery(RecoveryPhase::Lookup);
+            }
             let retained = call(
                 env,
                 &protocol::Request {
@@ -207,6 +218,9 @@ async fn prepare_stage_with_mode(
             .await?;
             let read_lease = match retained {
                 Reply::Terminal { receipt } => {
+                    if let Some(diagnostics) = diagnostics {
+                        diagnostics.recovery(RecoveryPhase::TerminalValidation);
+                    }
                     receipt.validate()?;
                     ensure!(
                         receipt.turn.intent == intent,
@@ -217,7 +231,13 @@ async fn prepare_stage_with_mode(
                     String::new()
                 }
                 Reply::Unsettled => {
+                    if let Some(diagnostics) = diagnostics {
+                        diagnostics.recovery(RecoveryPhase::RecoveryRead);
+                    }
                     recovery_read(env, &intent).await?;
+                    if let Some(diagnostics) = diagnostics {
+                        diagnostics.recovery(RecoveryPhase::ReadLease);
+                    }
                     acquire_lease(env, &object, domain, &domain.read_cohort).await?
                 }
                 _ => anyhow::bail!("immutable read original lookup differs"),
@@ -233,6 +253,9 @@ async fn prepare_stage_with_mode(
             // original eligibility. Empty leases cannot authorize any new Begin.
             (String::new(), String::new())
         };
+    if let Some(diagnostics) = diagnostics {
+        diagnostics.recovery(RecoveryPhase::Authentication);
+    }
     let now = object.clock().observed_at;
     let expires = now
         .checked_add(30)

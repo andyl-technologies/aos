@@ -11,8 +11,9 @@ use wasm_bindgen::JsValue;
 use worker::{Env, Headers, Method, Request, RequestInit, Response, State, Storage};
 
 use super::{address, fixture, protocol, Closed};
-use crate::direct_upload::{config, journal, provider_capacity, storage, verification};
 use crate::direct_upload::qualification_attempt::{self, Attempt, Commitments, Phase};
+use crate::direct_upload::qualification_failure::{self, Diagnostics, EnqueuePhase};
+use crate::direct_upload::{config, journal, provider_capacity, storage, verification};
 
 const TURN_DOMAIN: &[u8] = b"aos.direct-upload.qualification-queue-turn.v1\0";
 const TURN_HEADER: &str = "x-aos-direct-qualification-queue-turn";
@@ -117,6 +118,21 @@ pub(crate) async fn enqueue_many(
     original: &protocol::Original,
     closed: &[Closed],
 ) -> Result<()> {
+    enqueue_many_observed(env, original, closed, None).await
+}
+
+/// Enqueues the unchanged signed jobs while recording optional failure boundaries.
+///
+/// # Errors
+///
+/// Returns the existing signing, job-bound, queue-binding or send error unchanged.
+pub(crate) async fn enqueue_many_observed(
+    env: &Env,
+    original: &protocol::Original,
+    closed: &[Closed],
+    diagnostics: Option<&Diagnostics>,
+) -> Result<()> {
+    qualification_failure::enter(diagnostics, EnqueuePhase::QueuePreparation);
     let mut bulk = Vec::new();
     let mut metadata = Vec::new();
     for closed in closed {
@@ -156,16 +172,20 @@ pub(crate) async fn enqueue_many(
         for job in jobs {
             let size = encode_direct_control(&job)?.len();
             if bytes + size > 240 * 1024 && !chunk.is_empty() {
-                env.queue(binding)?
-                    .send_batch(std::mem::take(&mut chunk))
-                    .await?;
+                qualification_failure::enter(diagnostics, EnqueuePhase::QueueBinding);
+                let queue = env.queue(binding)?;
+                qualification_failure::enter(diagnostics, EnqueuePhase::QueueSend);
+                queue.send_batch(std::mem::take(&mut chunk)).await?;
                 bytes = 0;
             }
             bytes += size;
             chunk.push(job);
         }
         if !chunk.is_empty() {
-            env.queue(binding)?.send_batch(chunk).await?;
+            qualification_failure::enter(diagnostics, EnqueuePhase::QueueBinding);
+            let queue = env.queue(binding)?;
+            qualification_failure::enter(diagnostics, EnqueuePhase::QueueSend);
+            queue.send_batch(chunk).await?;
         }
     }
     Ok(())
