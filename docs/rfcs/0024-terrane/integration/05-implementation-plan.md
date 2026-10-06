@@ -495,6 +495,27 @@ recorded. Genuine elapsed-D qualification, durable local deletion ownership,
 owned absence recovery and cancellation remain production prerequisites.
 Codec-valid claimed-owner refusal cases do not establish those producers.
 
+The corrected CLI candidate `d24fa88f06` passes its actual three-case Nix
+prerequisite, strict Clippy/private rustdoc and both mandatory formatters.
+All 785 scoped images match the actual immutable input. An unchanged-source
+native confirmation passes three of three cases in 96.490 seconds (run
+`f1bd3aee-0ad2-4772-a9a1-8fa83bf9fe1b`), with the original 120-second limit.
+The preceding two-pass/one-timeout run remains recorded; these outcomes do
+not establish its cause. The private combined candidate `704e51146dee`
+passes both mandatory formatters with all 5,845 tracked images unchanged.
+Its actual current-trunk aggregate exits 1 at the named `algebra-fork`
+pending requirement, ALG-32. No task merge or checkbox follows.
+
+Full-D local ownership needs renewal while retaining the genuine namespace
+and control holder: D is at least G and G exceeds C. Ordinary renewal would
+reacquire its retained locks, and a final check captured before renewal still
+uses the old expiry. `checks.terrane.integration.native-held-lease-renewal`
+requires six exact positive/refusal/durability/clock/refresh/cancellation cases
+for this prerequisite. Registration does not implement it. The forthcoming
+ownership slice ends at genuine durable Invalidated after all three journals
+become DeleteOwned; unlink, recovery, cancellation and owned restore remain
+separate producers. No duration, clock contract or local-v1 bytes change.
+
 The reviewed concrete ext4 VM harness is now adopted as a shared prerequisite.
 It uses the checked release package in the existing source-built headless VM
 framework, verifies the actual ext4 filesystem, and checks separate-process
