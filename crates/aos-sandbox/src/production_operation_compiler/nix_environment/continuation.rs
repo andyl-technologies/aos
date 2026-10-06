@@ -4,6 +4,9 @@
 //! authorization, request, idempotency, Effect and Desired bytes. Those originals
 //! select the inputs to the existing protected capability evaluator and genuine
 //! assignment owner. Historical carrier data alone cannot construct this owner.
+//! The selected paid intake captures partial or assembled custody externally
+//! and archives it once after independent posts and original D clock LAST.
+//! That prerequisite neither issues an operation reservation nor runs Storage57.
 //! No TLS evidence, broker session, physical floor or Resolve permission is
 //! created here. Future effect boundaries must join their own concrete owners.
 
@@ -18,6 +21,7 @@ use super::*;
 use crate::cli_model::authorization_adapter::{
     CliAuthorizationAdapterError, CurrentCapabilityDecisionV1,
     evaluate_current_protected_capability,
+    evaluate_current_protected_capability_retained, RetainedAuthorizationTimeFloorV1,
 };
 use crate::cli_model::provenance::OriginalPublicMutationCoordinatesV2;
 use crate::controller::ControllerProtectedClockV1;
@@ -26,6 +30,7 @@ use crate::publisher_authority::PublisherAuthorityLimits;
 use crate::publisher_policy::PublisherPolicyLimits;
 use crate::reconciler::EffectPlan;
 use crate::runtime_scope::CurrentAssignmentTarget;
+use crate::controller_resource_reservation::{AcquisitionFailureV1, PaidNixStartOriginalsV1};
 
 const CONTROLLER_DIRECTORY: &str = "/var/lib/aos/sandboxd";
 const CONTROLLER_JOURNAL: &str = "controller.journal";
@@ -69,6 +74,8 @@ enum ContinuationFailureV2 {
     BrokerPlan(#[from] aos_sandbox_core::InvalidBrokerAuthorizationPlan),
     #[error("original Nix generation input failed: {0}")]
     Generation(#[from] NixGenerationOriginalErrorV1),
+    #[error("original Nix intake payment failed: {0}")]
+    Intake(#[from] crate::controller_resource_reservation::ResourceReservationErrorV1),
 }
 
 impl From<ContinuationFailureV2> for NixStartContinuationErrorV2 {
@@ -88,6 +95,9 @@ impl From<ContinuationFailureV2> for NixStartContinuationErrorV2 {
 /// This owner does not grant broker endpoint, floor, build or publication access.
 /// Its public projections are data, not transferable authorization evidence.
 pub struct CurrentRetainedNixStartV2<'current> {
+    // Denial-only Drop closes selected observations before owning originals.
+    // The ordinary None route leaves the existing field Drop order unchanged.
+    intake: Option<crate::NixOriginalStartIntakeLoanV1<'current>>,
     selector: &'current ControllerNixStartRecipeSelectorV2,
     journal: &'current mut Journal,
     expected_plan: &'current EffectPlan,
@@ -99,6 +109,144 @@ pub struct CurrentRetainedNixStartV2<'current> {
     acquisition_clock: Option<RawPairedClockSample>,
     failed: bool,
     successor: Option<OriginalNixSuccessorV2>,
+}
+
+impl PaidNixStartOriginalsV1 {
+    fn failure(&self, site: AcquisitionFailureV1) -> Option<&NixStartContinuationErrorV2> {
+        match site {
+            AcquisitionFailureV1::Intake => self.intake.as_ref()?.as_ref().err(),
+            AcquisitionFailureV1::FixedWriter => self.fixed_writer.as_ref()?.as_ref().err(),
+            AcquisitionFailureV1::Carrier => self.carrier.as_ref()?.as_ref().err(),
+            AcquisitionFailureV1::CurrentEffect => self.current_effect.as_ref()?.as_ref().err(),
+            AcquisitionFailureV1::BoundWriter => self.bound_writer.as_ref()?.as_ref().err(),
+            AcquisitionFailureV1::Recipe => self.recipe.as_ref()?.as_ref().err(),
+            AcquisitionFailureV1::Binding => self.binding.as_ref()?.as_ref().err(),
+            AcquisitionFailureV1::Assignment => self.assignment.as_ref()?.as_ref().err(),
+            AcquisitionFailureV1::Clock => self.clock.as_ref()?.as_ref().err(),
+            AcquisitionFailureV1::Decision => self.decision.as_ref()?.as_ref().err(),
+            AcquisitionFailureV1::Target => self.target.as_ref()?.as_ref().err(),
+            AcquisitionFailureV1::TargetBinding => self.target_binding.as_ref()?.as_ref().err(),
+            AcquisitionFailureV1::Promotion => self.promotion.as_ref()?.as_ref().err(),
+            AcquisitionFailureV1::InitialRecheck => self.initial_recheck.as_ref()?.as_ref().err(),
+        }
+    }
+
+    fn take_failure(&mut self, site: AcquisitionFailureV1) -> Option<NixStartContinuationErrorV2> {
+        match site {
+            AcquisitionFailureV1::Intake => self.intake.take()?.err(),
+            AcquisitionFailureV1::FixedWriter => self.fixed_writer.take()?.err(),
+            AcquisitionFailureV1::Carrier => self.carrier.take()?.err(),
+            AcquisitionFailureV1::CurrentEffect => self.current_effect.take()?.err(),
+            AcquisitionFailureV1::BoundWriter => self.bound_writer.take()?.err(),
+            AcquisitionFailureV1::Recipe => self.recipe.take()?.err(),
+            AcquisitionFailureV1::Binding => self.binding.take()?.err(),
+            AcquisitionFailureV1::Assignment => self.assignment.take()?.err(),
+            AcquisitionFailureV1::Clock => self.clock.take()?.err(),
+            AcquisitionFailureV1::Decision => self.decision.take()?.err(),
+            AcquisitionFailureV1::Target => self.target.take()?.err(),
+            AcquisitionFailureV1::TargetBinding => self.target_binding.take()?.err(),
+            AcquisitionFailureV1::Promotion => self.promotion.take()?.err(),
+            AcquisitionFailureV1::InitialRecheck => self.initial_recheck.take()?.err(),
+        }
+    }
+
+    pub(crate) fn first_failure(&self) -> Option<&NixStartContinuationErrorV2> {
+        self.failure(self.first?)
+    }
+
+    pub(crate) fn final_clock_failure(&self) -> Option<&NixStartContinuationErrorV2> {
+        self.final_sample.as_ref().and_then(|result| result.as_ref().err())
+            .or_else(|| self.final_clock.as_ref().and_then(|result| result.as_ref().err()))
+    }
+}
+
+/// Keeps a complete selected acquisition outside its borrowed intake and writer.
+///
+/// Partial acquisition and assembled initial-recheck failure both keep their
+/// actual originals. Only one successful linear promotion constructs Current;
+/// neither the diagnostic nor this owner grants a paid operation or effect.
+#[doc(hidden)]
+#[must_use]
+pub struct PaidNixStartAcquisitionV1<'current> {
+    // Partial acquisition also closes its loan before disposing any originals.
+    intake: Option<crate::NixOriginalStartIntakeLoanV1<'current>>,
+    current: Option<CurrentRetainedNixStartV2<'current>>,
+    originals: PaidNixStartOriginalsV1,
+    journal: Option<&'current mut Journal>,
+}
+
+impl<'current> PaidNixStartAcquisitionV1<'current> {
+    /// Borrows the actual first failed acquisition or initial recheck Result.
+    #[must_use]
+    pub fn failure(&self) -> Option<&NixStartContinuationErrorV2> {
+        self.originals.first_failure()
+    }
+
+    /// Borrows Current only after the full original acquisition and recheck.
+    #[must_use]
+    pub fn current_mut(&mut self) -> Option<&mut CurrentRetainedNixStartV2<'current>> {
+        if self.originals.first.is_some() { None } else { self.current.as_mut() }
+    }
+
+    /// Consumes the acquisition into its original intake's negative archive.
+    ///
+    /// Independent original posts run before the original Start clock LAST,
+    /// even after acquisition or recheck failure. Reached owning payloads move
+    /// once into the intake; no borrowed Current or writer escapes settlement.
+    /// This closes only intake and never completes the generation Effect.
+    ///
+    /// # Errors
+    /// Reports retained acquisition, post or original-clock failure, or a
+    /// missing original intake. Every actual reached original remains owned
+    /// by the same intake on the selected path before this projection returns.
+    pub fn close_into_intake(
+        self,
+        source: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+    ) -> Result<(), crate::ResourceReservationErrorV1> {
+        let Self { current, mut originals, journal, intake } = self;
+        let (journal, intake) = match current {
+            Some(current) => {
+                let CurrentRetainedNixStartV2 {
+                    journal, carrier, target, clock, decision, acquisition_clock,
+                    intake, selector: _, expected_plan: _, recipe: _, failed: _, successor: _,
+                } = current;
+                originals.carrier = Some(Ok(carrier));
+                originals.target = Some(Ok(target));
+                originals.clock = Some(Ok(clock));
+                originals.decision = Some(Ok(decision));
+                originals.acquisition_clock = acquisition_clock;
+                (Some(journal), intake)
+            }
+            None => (journal, intake),
+        };
+        let (Some(journal), Some(intake)) = (journal, intake) else {
+            // The ordinary-only internal constructor immediately consumes its
+            // outcome; no public factory can manufacture a paid missing loan.
+            return Err(crate::ResourceReservationErrorV1::Conflict);
+        };
+        let mut closing = intake.begin_closing(journal, source);
+        match (originals.clock.as_mut(), originals.decision.as_ref(), originals.target.as_ref()) {
+            (Some(Ok(clock)), Some(Ok(decision)), Some(Ok(target))) => {
+                originals.final_sample = Some(clock.sample()
+                    .map_err(ContinuationFailureV2::from).map_err(Into::into));
+                originals.final_clock = match originals.final_sample.as_ref() {
+                    Some(Ok(later)) => Some(require_original_clock_sample(decision, target, *later)),
+                    _ => None,
+                };
+            }
+            _ => closing.park_unavailable_start_clock(),
+        }
+        closing.finish(originals)
+    }
+
+    fn into_ordinary(mut self) -> Result<CurrentRetainedNixStartV2<'current>, NixStartContinuationErrorV2> {
+        if let Some(site) = self.originals.first {
+            return Err(self.originals.take_failure(site)
+                .ok_or(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid))?);
+        }
+        self.current.take()
+            .ok_or_else(|| ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid).into())
+    }
 }
 
 // These are comparison DATA derived from the same actual Resolve response.
@@ -173,48 +321,223 @@ impl ControllerNixStartRecipeSelectorV2 {
         step: u32,
         expected_plan: &'current EffectPlan,
     ) -> Result<CurrentRetainedNixStartV2<'current>, NixStartContinuationErrorV2> {
-        self.require_fixed_writer(journal).map_err(ContinuationFailureV2::from)?;
-        let carrier = crate::reconciler::accepted_nix_start_admission_v2(journal, operation)
-            .map_err(ContinuationFailureV2::from)?
-            .ok_or(NixStartAdmissionErrorV2::Invalid).map_err(ContinuationFailureV2::from)?;
-        carrier.require_current_effect_v2(journal, operation, step, expected_plan)
-            .map_err(ContinuationFailureV2::from)?;
-        // Accepted originals make the empty-journal identity bootstrap branch
-        // unreachable. This checks the existing node, never creates a new one.
-        self.require_bound_writer(journal)?;
-        let recipe = self.original_recipe(&carrier).map_err(ContinuationFailureV2::from)?;
-        let binding = current_binding(journal, recipe.recipe().sandbox)
-            .map_err(ContinuationFailureV2::from)?;
-        self.require_original_assignment(journal, &carrier, recipe, &binding)
-            .map_err(ContinuationFailureV2::from)?;
+        self.capture_current_retained_start(journal, operation, step, expected_plan, None)
+            .into_ordinary()
+    }
 
-        let mut clock = ControllerProtectedClockV1::open_fixed()
-            .map_err(ContinuationFailureV2::from)?;
-        let decision = evaluate_original_grant(journal, &carrier, &mut clock)?;
-        let mut acquisition_clock = None;
-        let target = crate::runtime_scope::acquire_current_assignment(
-            journal,
-            RuntimeScopeHolder { sandbox: recipe.recipe().sandbox, holder: carrier.authority.holder },
-            self.assignment_policy().map_err(ContinuationFailureV2::from)?,
-            &mut || {
-                let result = clock.sample();
-                if let Ok(sample) = &result {
-                    acquisition_clock.get_or_insert(*sample);
+    /// Consumes the separate original-paid intake into the same Start engine.
+    ///
+    /// This keeps the actual intake and its retained authorization-floor
+    /// crossings borrowed for the whole current owner. It grants no Storage
+    /// or compiled-policy operation permission and never renews original D.
+    ///
+    /// Every failed step stays in the returned external outcome before its
+    /// diagnostic is borrowed. This is not a bare Err that drops prior inputs.
+    pub fn borrow_paid_current_retained_start_v2<'current>(
+        &'current self,
+        journal: &'current mut Journal,
+        intake: crate::NixOriginalStartIntakeLoanV1<'current>,
+    ) -> PaidNixStartAcquisitionV1<'current> {
+        let operation = intake.operation;
+        let step = intake.step;
+        let plan = intake.plan;
+        self.capture_current_retained_start(journal, operation, step, plan, Some(intake))
+    }
+
+    fn capture_current_retained_start<'current>(
+        &'current self,
+        journal: &'current mut Journal,
+        operation: OperationId,
+        step: u32,
+        expected_plan: &'current EffectPlan,
+        mut intake: Option<crate::NixOriginalStartIntakeLoanV1<'current>>,
+    ) -> PaidNixStartAcquisitionV1<'current> {
+        let mut originals = PaidNixStartOriginalsV1::default();
+        let mut selected_recipe = None;
+        macro_rules! park {
+            ($field:ident, $site:ident, $value:expr) => {{
+                originals.$field = Some($value);
+                match originals.$field.as_mut() {
+                    Some(Ok(value)) => value,
+                    _ => return Err(AcquisitionFailureV1::$site),
                 }
-                result
-            },
-        ).map_err(ContinuationFailureV2::from)?;
-        if target.binding() != &binding {
-            return Err(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid).into());
+            }};
+        }
+        let acquisition = (|| -> Result<(), AcquisitionFailureV1> {
+            if let Some(intake) = intake.as_ref() {
+                park!(intake, Intake, intake.require_open()
+                    .map_err(ContinuationFailureV2::from).map_err(Into::into));
+            }
+            park!(fixed_writer, FixedWriter, self.require_fixed_writer(journal)
+                .map_err(ContinuationFailureV2::from).map_err(Into::into));
+            let carrier = park!(carrier, Carrier,
+                crate::reconciler::accepted_nix_start_admission_v2(journal, operation)
+                    .map_err(ContinuationFailureV2::from)
+                    .and_then(|carrier| carrier.ok_or(NixStartAdmissionErrorV2::Invalid)
+                        .map_err(ContinuationFailureV2::from)).map_err(Into::into));
+            park!(current_effect, CurrentEffect,
+                carrier.require_current_effect_v2(journal, operation, step, expected_plan)
+                    .map_err(ContinuationFailureV2::from).map_err(Into::into));
+            park!(bound_writer, BoundWriter, self.require_bound_writer(journal));
+            originals.recipe = Some(self.original_recipe(carrier)
+                .map(|recipe| selected_recipe = Some(recipe))
+                .map_err(ContinuationFailureV2::from).map_err(Into::into));
+            if !matches!(originals.recipe, Some(Ok(()))) {
+                return Err(AcquisitionFailureV1::Recipe);
+            }
+            let Some(recipe) = selected_recipe else { return Err(AcquisitionFailureV1::Recipe) };
+            let binding = park!(binding, Binding, current_binding(journal, recipe.recipe().sandbox)
+                .map_err(Into::into));
+            park!(assignment, Assignment,
+                self.require_original_assignment(journal, carrier, recipe, binding)
+                    .map_err(ContinuationFailureV2::from).map_err(Into::into));
+            let clock = park!(clock, Clock, ControllerProtectedClockV1::open_fixed()
+                .map_err(ContinuationFailureV2::from).map_err(Into::into));
+            let decision = match intake.as_mut() {
+                Some(intake) => intake.authorization_crossing()
+                    .map_err(ContinuationFailureV2::from).map_err(Into::into)
+                    .and_then(|crossing| evaluate_original_grant_inner(journal, carrier, clock, Some(crossing))),
+                None => evaluate_original_grant(journal, carrier, clock),
+            };
+            park!(decision, Decision, decision);
+            let target = park!(target, Target, (|| {
+                let policy = self.assignment_policy().map_err(ContinuationFailureV2::from)?;
+                crate::runtime_scope::acquire_current_assignment(
+                    journal,
+                    RuntimeScopeHolder { sandbox: recipe.recipe().sandbox, holder: carrier.authority.holder },
+                    policy, &mut || {
+                        let result = clock.sample();
+                        if let Ok(sample) = &result { originals.acquisition_clock.get_or_insert(*sample); }
+                        result
+                    },
+                ).map_err(ContinuationFailureV2::from).map_err(Into::into)
+            })());
+            park!(target_binding, TargetBinding, if target.binding() == &*binding { Ok(()) }
+                else { Err(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid).into()) });
+            Ok(())
+        })();
+        if let Err(site) = acquisition {
+            originals.first = Some(site);
+            return PaidNixStartAcquisitionV1 {
+                current: None, originals, journal: Some(journal), intake,
+            };
         }
 
-        let mut owner = CurrentRetainedNixStartV2 {
+        // One exhaustive linear promotion. Even an impossible incomplete
+        // success shape returns its reached originals as a refusing outcome.
+        let PaidNixStartOriginalsV1 {
+            first,
+            carrier, clock, decision, target, acquisition_clock,
+            binding, fixed_writer, current_effect, bound_writer, recipe,
+            assignment, target_binding, intake: intake_check,
+            promotion, initial_recheck, final_sample, final_clock,
+        } = originals;
+        let mut originals = PaidNixStartOriginalsV1 {
+            first,
+            binding, fixed_writer, current_effect, bound_writer, recipe,
+            assignment, target_binding, intake: intake_check,
+            promotion, initial_recheck, final_sample, final_clock, ..Default::default()
+        };
+        let (carrier, clock, decision, target, recipe) = match
+            (carrier, clock, decision, target, selected_recipe)
+        {
+            (Some(Ok(carrier)), Some(Ok(clock)), Some(Ok(decision)), Some(Ok(target)), Some(recipe)) =>
+                (carrier, clock, decision, target, recipe),
+            (carrier, clock, decision, target, _) => {
+                originals.carrier = carrier;
+                originals.clock = clock;
+                originals.decision = decision;
+                originals.target = target;
+                originals.acquisition_clock = acquisition_clock;
+                originals.promotion = Some(Err(ContinuationFailureV2::Admission(
+                    NixStartAdmissionErrorV2::Invalid).into()));
+                originals.first = Some(AcquisitionFailureV1::Promotion);
+                return PaidNixStartAcquisitionV1 {
+                    current: None, originals, journal: Some(journal), intake,
+                };
+            }
+        };
+        let owner = CurrentRetainedNixStartV2 {
             selector: self, journal, expected_plan, carrier, recipe, target, clock, decision,
             acquisition_clock,
-            failed: false, successor: None,
+            failed: false, successor: None, intake,
         };
-        owner.recheck()?;
-        Ok(owner)
+        let mut outcome = PaidNixStartAcquisitionV1 {
+            current: Some(owner), originals, journal: None, intake: None,
+        };
+        // Park the assembled owner before the fallible initial recheck.
+        outcome.originals.initial_recheck = Some(match outcome.current.as_mut() {
+            Some(owner) => owner.recheck(),
+            None => Err(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid).into()),
+        });
+        if matches!(outcome.originals.initial_recheck, Some(Err(_))) {
+            outcome.originals.first = Some(AcquisitionFailureV1::InitialRecheck);
+        }
+        outcome
+    }
+
+    pub(crate) fn original_start_intake_demand(
+        controller: &crate::controller_resource_reservation::service_interval::JournalShape,
+        source: &crate::controller_resource_reservation::service_interval::JournalShape,
+        provision: aos_sandbox_core::ResourceVector,
+        intake_owner_bytes: usize,
+    ) -> Result<aos_sandbox_core::ResourceVector, crate::ResourceReservationErrorV1> {
+        use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+        let refused = || crate::ResourceReservationErrorV1::Conflict;
+        // The existing two-member bank framer bounds each smaller time-floor
+        // TX (revision128/head48 and fixed keys), as well as I's own TX. It
+        // does not substitute a transaction ceiling for measured framing.
+        let one_append = Journal::first_global_prefix_append_bytes_v1()?;
+        let append = one_append.checked_mul(7).ok_or_else(refused)?;
+        if one_append > u64::try_from(controller.maximum_transaction_bytes).map_err(|_| refused())?
+            || controller.maximum_record_bytes < 945
+        {
+            return Err(refused());
+        }
+        let map_cells = controller.cells.checked_add(source.cells)
+            .and_then(|cells| cells.checked_mul(8)).ok_or_else(refused)?;
+        // Bound retained writer state, publisher registry/policy material,
+        // assignment comparisons and decoder-facing copies together. Include
+        // map/container words separately from the known Vec capacities.
+        let map_cell_bytes = std::mem::size_of::<(
+            crate::RecordNamespace, Vec<u8>, Vec<u8>, [usize; 4],
+        )>();
+        let caller_slots = std::mem::size_of::<Option<Result<(), crate::ResourceReservationErrorV1>>>()
+            .checked_mul(3).and_then(|bytes| bytes.checked_add(std::mem::size_of::<Option<
+                std::sync::Arc<crate::normal_root::ProductionControllerNormalRootProfileV1>,
+            >>())).ok_or_else(refused)?;
+        let bytes = controller.retained_bytes.checked_add(source.retained_bytes)
+            .and_then(|bytes| bytes.checked_mul(8))
+            .and_then(|bytes| bytes.checked_add(map_cells.checked_mul(map_cell_bytes)?))
+            .and_then(|bytes| bytes.checked_add(intake_owner_bytes))
+            .and_then(|bytes| bytes.checked_add(caller_slots))
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<CurrentRetainedNixStartV2<'_>>()))
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<PaidNixStartAcquisitionV1<'_>>()))
+            // Native bytes are charged once below. Their proposal/expected,
+            // unsigned and framing-facing buffers coexist in retained slots.
+            .and_then(|bytes| bytes.checked_add(usize::try_from(append).ok()?.checked_mul(4)?))
+            // Canonical carrier decoding and its roundtrip coexist. Charge
+            // element/container overhead, not only the maximum encoded bytes.
+            .and_then(|bytes| bytes.checked_add(super::carrier::MAXIMUM_BYTES.checked_mul(
+                4 + 2 * std::mem::size_of::<(Vec<u8>, Vec<u8>, usize)>(),
+            )?))
+            .ok_or_else(refused)?;
+        let cells = map_cells.checked_add(super::carrier::MAXIMUM_BYTES)
+            .ok_or_else(refused)?;
+        let native = controller.native_bytes.checked_add(source.native_bytes)
+            .and_then(|bytes| bytes.checked_add(append)).ok_or_else(refused)?;
+        let bytes = u64::try_from(bytes).map_err(|_| refused())?;
+        Ok(ResourceVector::ZERO
+            .with(D::CpuMicrosPerPeriod, provision.get(D::CpuMicrosPerPeriod))
+            .with(D::MemoryBytes, bytes.checked_add(native).ok_or_else(refused)?)
+            .with(D::Pids, 1)
+            .with(D::OpenFiles, 3 + 3 + 2)
+            .with(D::StorageBytes, native)
+            .with(D::MetadataEntries, u64::try_from(cells).map_err(|_| refused())?)
+            .with(D::PublicationStagingBytes, bytes)
+            .with(D::LogBytes, bytes)
+            .with(D::OutputBytes, bytes)
+            .with(D::ConcurrentOperations, 1))
     }
 
     fn require_fixed_writer(&self, journal: &Journal) -> Result<(), NixStartAdmissionErrorV2> {
@@ -944,14 +1267,7 @@ impl CurrentRetainedNixStartV2<'_> {
     /// Rejects clock acquisition/noncontinuity, another boot or elapsed D.
     pub fn observe_original_clock_after_failure(&mut self) -> Result<(), NixStartContinuationErrorV2> {
         let later = self.clock.sample().map_err(ContinuationFailureV2::from)?;
-        self.decision.clock().validate_later_sample(later)
-            .map_err(ContinuationFailureV2::from)?;
-        if later.host_boot_id() != self.decision.clock().host_boot_id()
-            || later.boottime_nanoseconds() >= self.target.deadline_boottime_nanoseconds()
-        {
-            return Err(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid).into());
-        }
-        Ok(())
+        require_original_clock_sample(&self.decision, &self.target, later)
     }
 
     fn require_original_ledger(&mut self) -> Result<(), NixStartContinuationErrorV2> {
@@ -966,7 +1282,11 @@ impl CurrentRetainedNixStartV2<'_> {
 
     fn recheck_inner(&mut self) -> Result<(), NixStartContinuationErrorV2> {
         self.require_original_ledger()?;
-        let decision = evaluate_original_grant(self.journal, &self.carrier, &mut self.clock)?;
+        let decision = match self.intake.as_mut() {
+            Some(intake) => evaluate_original_grant_inner(self.journal, &self.carrier, &mut self.clock,
+                Some(intake.authorization_crossing().map_err(ContinuationFailureV2::from)?))?,
+            None => evaluate_original_grant(self.journal, &self.carrier, &mut self.clock)?,
+        };
         self.decision.clock().validate_later_sample(decision.clock())
             .map_err(ContinuationFailureV2::from)?;
         let binding = current_binding(self.journal, self.recipe.recipe().sandbox)
@@ -1013,10 +1333,36 @@ impl CurrentRetainedNixStartV2<'_> {
     }
 }
 
+// Both ordinary negative bookends and selected retained closure compare the
+// same original clock and exclusive assignment D without granting currentness.
+fn require_original_clock_sample(
+    decision: &CurrentCapabilityDecisionV1,
+    target: &CurrentAssignmentTarget,
+    later: RawPairedClockSample,
+) -> Result<(), NixStartContinuationErrorV2> {
+    decision.clock().validate_later_sample(later)
+        .map_err(ContinuationFailureV2::from)?;
+    if later.host_boot_id() != decision.clock().host_boot_id()
+        || later.boottime_nanoseconds() >= target.deadline_boottime_nanoseconds()
+    {
+        return Err(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid).into());
+    }
+    Ok(())
+}
+
 fn evaluate_original_grant(
     journal: &mut Journal,
     carrier: &NixStartAdmissionCarrierV2,
     clock: &mut ControllerProtectedClockV1,
+) -> Result<CurrentCapabilityDecisionV1, NixStartContinuationErrorV2> {
+    evaluate_original_grant_inner(journal, carrier, clock, None)
+}
+
+fn evaluate_original_grant_inner(
+    journal: &mut Journal,
+    carrier: &NixStartAdmissionCarrierV2,
+    clock: &mut ControllerProtectedClockV1,
+    crossing: Option<&mut RetainedAuthorizationTimeFloorV1>,
 ) -> Result<CurrentCapabilityDecisionV1, NixStartContinuationErrorV2> {
     let original = &carrier.authority;
     let request = crate::public_mutation_compiler::ResolvedPublicMutationRequestV1::decode(
@@ -1025,11 +1371,18 @@ fn evaluate_original_grant(
     let selector = request.selector()
         .ok_or(NixStartAdmissionErrorV2::Invalid).map_err(ContinuationFailureV2::from)?;
     let claims = original.capability.claims();
-    let decision = evaluate_current_protected_capability(
-        journal, PublisherAuthorityLimits::default(), PublisherPolicyLimits::default(),
-        claims.id, original.project, original.holder, claims.channel_binding, clock,
-        request.resource_kind(), request.operation(), selector,
-    ).map_err(ContinuationFailureV2::from)?;
+    let decision = match crossing {
+        Some(crossing) => evaluate_current_protected_capability_retained(
+            journal, PublisherAuthorityLimits::default(), PublisherPolicyLimits::default(),
+            claims.id, original.project, original.holder, claims.channel_binding, clock,
+            request.resource_kind(), request.operation(), selector, crossing,
+        ),
+        None => evaluate_current_protected_capability(
+            journal, PublisherAuthorityLimits::default(), PublisherPolicyLimits::default(),
+            claims.id, original.project, original.holder, claims.channel_binding, clock,
+            request.resource_kind(), request.operation(), selector,
+        ),
+    }.map_err(ContinuationFailureV2::from)?;
     let current = decision.original_coordinates(original.coordinates.session_commitment);
     require_coordinate_identity(original.coordinates, current)
         .map_err(ContinuationFailureV2::from)?;

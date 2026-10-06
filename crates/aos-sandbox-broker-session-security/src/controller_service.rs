@@ -1010,6 +1010,11 @@ fn run_retained_controller(
         #[cfg(feature = "online-nix")]
         {
             executor.nix_generation_enabled = configuration.nix_storage_generation_prepare;
+            if executor.nix_generation_enabled {
+                executor.nix_generation_profile = Some(Arc::clone(
+                    required!(required!(originals.profile.as_ref()).as_ref()),
+                ));
+            }
             if let Some(selector) = nix_start.as_ref() {
                 executor.nix_start = Some(Arc::clone(selector));
             }
@@ -4060,6 +4065,8 @@ struct ProductionEffectExecutor {
     nix_start: Option<Arc<ControllerNixStartRecipeSelectorV2>>,
     #[cfg(feature = "online-nix")]
     nix_generation_enabled: bool,
+    #[cfg(feature = "online-nix")]
+    nix_generation_profile: Option<Arc<aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1>>,
     sessions: SharedControllerBrokerSessions,
     request_scope: ControllerRequestScopeV1,
     broker_plan_signer: Option<ControllerBrokerPlanSignerV1>,
@@ -4187,6 +4194,8 @@ impl ProductionEffectExecutor {
             nix_start: None,
             #[cfg(feature = "online-nix")]
             nix_generation_enabled: false,
+            #[cfg(feature = "online-nix")]
+            nix_generation_profile: None,
             sessions,
             request_scope,
             broker_plan_signer,

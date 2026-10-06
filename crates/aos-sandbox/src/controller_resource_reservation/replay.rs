@@ -136,7 +136,8 @@ pub(super) fn validate(state: &State) -> Result<Option<EnrollmentIdentity>, Reso
                         parent.kind == AccountKind::Components && child.kind == AccountKind::Operation,
                     ClaimPurpose::Snapshot | ClaimPurpose::ProjectPreparation
                         | ClaimPurpose::Q04Preparation | ClaimPurpose::HostControlInterval
-                        | ClaimPurpose::ControllerFirstGlobalPrefix => false,
+                        | ClaimPurpose::ControllerFirstGlobalPrefix
+                        | ClaimPurpose::NixOriginalStartIntake => false,
                 };
                 if !purpose_matches {
                     return Err(ResourceReservationErrorV1::CorruptLedger);
@@ -175,7 +176,24 @@ pub(super) fn validate(state: &State) -> Result<Option<EnrollmentIdentity>, Reso
                 require_host_component(state, claim)?;
             }
             if claim.purpose == ClaimPurpose::ControllerFirstGlobalPrefix {
-                require_first_global_prefix(parent, claim)?;
+                require_first_global_prefix(state, parent, claim)?;
+            }
+            if claim.purpose == ClaimPurpose::NixOriginalStartIntake {
+                let intake_id = super::bootstrap::account_id(claim.enrollment,
+                    b"controller-nix-original-start-intake-v1");
+                let expected = codec::decode_claim(record_bytes(state, CLAIM_PREFIX, intake_id)
+                    .ok_or(ResourceReservationErrorV1::CorruptLedger)?)?;
+                if claim.id != intake_id || claim != expected
+                    || claim.account != super::bootstrap::account_id(claim.enrollment, b"controller")
+                    || parent.enrollment != claim.enrollment
+                {
+                    return Err(ResourceReservationErrorV1::CorruptLedger);
+                }
+                let prefix_id = super::bootstrap::account_id(claim.enrollment,
+                    b"controller-first-global-prefix-v1");
+                let prefix = codec::decode_claim(record_bytes(state, CLAIM_PREFIX, prefix_id)
+                    .ok_or(ResourceReservationErrorV1::CorruptLedger)?)?;
+                require_first_global_prefix(state, parent, prefix)?;
             }
         }
     }
@@ -186,6 +204,7 @@ pub(super) fn validate(state: &State) -> Result<Option<EnrollmentIdentity>, Reso
 // Replay independently enforces the closed native identity and accounting;
 // a correctly decoded row alone is never a receiving or spending constructor.
 fn require_first_global_prefix(
+    state: &State,
     controller: AccountHead,
     claim: super::Claim,
 ) -> Result<(), ResourceReservationErrorV1> {
@@ -193,6 +212,40 @@ fn require_first_global_prefix(
     let controller_id = super::bootstrap::account_id(identity, b"controller");
     let claim_id = super::bootstrap::account_id(identity, b"controller-first-global-prefix-v1");
     let ceiling = finite_ceilings(controller)?;
+    let intake_id = super::bootstrap::account_id(identity,
+        b"controller-nix-original-start-intake-v1");
+    if let Some(bytes) = record_bytes(state, CLAIM_PREFIX, intake_id) {
+        let intake = codec::decode_claim(bytes)?;
+        let retained = ceiling.checked_sub(claim.amount)?.checked_sub(intake.amount)?;
+        let mut committed = retained;
+        let mut reserved = ResourceVector::ZERO;
+        let mut generation = 1;
+        for part in [claim, intake] {
+            match part.state {
+                ClaimState::Reserved => reserved = reserved.checked_add(part.amount)?,
+                ClaimState::Committed => {
+                    committed = committed.checked_add(part.amount)?;
+                    generation += 1;
+                }
+                ClaimState::Released => return Err(ResourceReservationErrorV1::CorruptLedger),
+            }
+        }
+        let expected = ResourceAccount::from_usage(
+            aos_sandbox_core::ResourceCeilings::bounded(ceiling), committed, reserved,
+        )?;
+        if claim.purpose != ClaimPurpose::ControllerFirstGlobalPrefix
+            || intake.purpose != ClaimPurpose::NixOriginalStartIntake
+            || intake.enrollment != identity || intake.id != intake_id
+            || intake.account != controller_id
+            || controller.kind != AccountKind::Controller || controller.id != controller_id
+            || claim.account != controller_id || claim.id != claim_id
+            || controller.baseline != retained || controller.account != expected
+            || controller.generation != generation
+        {
+            return Err(ResourceReservationErrorV1::CorruptLedger);
+        }
+        return Ok(());
+    }
     let retained = ceiling.checked_sub(claim.amount)?;
     let expected = match claim.state {
         ClaimState::Reserved => ResourceAccount::from_usage(

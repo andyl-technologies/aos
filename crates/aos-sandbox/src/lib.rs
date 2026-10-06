@@ -177,6 +177,7 @@ pub mod tpm_nv_custody;
 pub use controller_resource_reservation::{
     ControllerResourceBankOpeningV1, ControllerResourceEnrollmentCaptureV1,
     ControllerFirstGlobalPrefixAttemptV1,
+    NixOriginalStartIntakeAttemptV1, NixOriginalStartIntakeLoanV1,
     ProjectPreparationReservationAttemptV1, StorageComponentEnvelopeLoanV1,
     StorageComponentEnvelopeOriginalV1, StorageComponentPostV1,
 };

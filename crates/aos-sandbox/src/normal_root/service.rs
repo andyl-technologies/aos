@@ -425,8 +425,9 @@ impl FirstGlobalPropertyArchive {
         }
     }
 
-    // Called under the genuine image-owned prefix after its complete demand
-    // has passed. A partial allocation remains parked in the original archive.
+    // The closed FirstGlobal or Nix-intake admission pays this same archive
+    // engine. Each retains its own lifetime and partial allocation; neither
+    // replaces or rearms the other purpose's resident original.
     pub(super) fn prepare(&mut self) -> Result<(), NormalRootStartupErrorV1> {
         if self.preparation.is_some() || self.maximum == 0 {
             return Err(NormalRootStartupErrorV1::Service);

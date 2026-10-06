@@ -21,7 +21,7 @@ diff --git a/src/core/aos-resource-enrollment.c b/src/core/aos-resource-enrollme
 new file mode 100644
 --- /dev/null
 +++ b/src/core/aos-resource-enrollment.c
-@@ -0,0 +1,422 @@
+@@ -0,0 +1,429 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +
 +#include <fcntl.h>
@@ -45,6 +45,8 @@ new file mode 100644
 +#define AOS_RESOURCE_HOST_POLICY_BODY 1096U
 +#define AOS_RESOURCE_FIRST_GLOBAL_POLICY_BYTES 1304U
 +#define AOS_RESOURCE_FIRST_GLOBAL_POLICY_BODY 1272U
++#define AOS_RESOURCE_NIX_INTAKE_POLICY_BYTES 1480U
++#define AOS_RESOURCE_NIX_INTAKE_POLICY_BODY 1448U
 +#define AOS_RESOURCE_VECTOR_BYTES (22U * 8U)
 +#define AOS_RESOURCE_COMPONENTS_OFFSET (40U + 3U * AOS_RESOURCE_VECTOR_BYTES)
 +#define AOS_RESOURCE_CONCURRENT_OPERATIONS 21U
@@ -75,7 +77,7 @@ new file mode 100644
 +        bool admitted;
 +        sd_id128_t boot;
 +        sd_id128_t invocation;
-+        uint8_t policy[AOS_RESOURCE_FIRST_GLOBAL_POLICY_BYTES];
++        uint8_t policy[AOS_RESOURCE_NIX_INTAKE_POLICY_BYTES];
 +        size_t policy_bytes;
 +        uint64_t job_limit;
 +        uint64_t jobs;
@@ -135,7 +137,8 @@ new file mode 100644
 +                return -errno;
 +        if (!S_ISREG(st.st_mode) ||
 +            (st.st_size != AOS_RESOURCE_POLICY_BYTES && st.st_size != AOS_RESOURCE_HOST_POLICY_BYTES &&
-+             st.st_size != AOS_RESOURCE_FIRST_GLOBAL_POLICY_BYTES) ||
++             st.st_size != AOS_RESOURCE_FIRST_GLOBAL_POLICY_BYTES &&
++             st.st_size != AOS_RESOURCE_NIX_INTAKE_POLICY_BYTES) ||
 +            st.st_uid != 0 || st.st_gid != 0 || (st.st_mode & 0222) != 0 ||
 +            fs.f_type != AOS_RESOURCE_EROFS_MAGIC)
 +                return -EPERM;
@@ -153,11 +156,14 @@ new file mode 100644
 +                        return -EBADMSG;
 +                used += returned;
 +        }
++        bool nix_intake = enrollment.policy_bytes == AOS_RESOURCE_NIX_INTAKE_POLICY_BYTES;
 +        bool first_global = enrollment.policy_bytes == AOS_RESOURCE_FIRST_GLOBAL_POLICY_BYTES;
 +        bool host_policy = enrollment.policy_bytes == AOS_RESOURCE_HOST_POLICY_BYTES;
-+        size_t body_bytes = first_global ? AOS_RESOURCE_FIRST_GLOBAL_POLICY_BODY :
++        size_t body_bytes = nix_intake ? AOS_RESOURCE_NIX_INTAKE_POLICY_BODY :
++                            first_global ? AOS_RESOURCE_FIRST_GLOBAL_POLICY_BODY :
 +                            (host_policy ? AOS_RESOURCE_HOST_POLICY_BODY : AOS_RESOURCE_POLICY_BODY);
-+        const char *magic = first_global ? "AOSRSB03" : (host_policy ? "AOSRSB02" : "AOSRSB01");
++        const char *magic = nix_intake ? "AOSRSB04" :
++                            first_global ? "AOSRSB03" : (host_policy ? "AOSRSB02" : "AOSRSB01");
 +        if (memcmp(enrollment.policy, magic, 8) != 0)
 +                return -EBADMSG;
 +        sha256_direct(enrollment.policy, body_bytes, digest);
@@ -223,7 +229,8 @@ new file mode 100644
 +
 +static bool host_policy_family(void) {
 +        return enrollment.policy_bytes == AOS_RESOURCE_HOST_POLICY_BYTES ||
-+               enrollment.policy_bytes == AOS_RESOURCE_FIRST_GLOBAL_POLICY_BYTES;
++               enrollment.policy_bytes == AOS_RESOURCE_FIRST_GLOBAL_POLICY_BYTES ||
++               enrollment.policy_bytes == AOS_RESOURCE_NIX_INTAKE_POLICY_BYTES;
 +}
 +
 +bool aos_resource_host_selected_name(const char *name) {
