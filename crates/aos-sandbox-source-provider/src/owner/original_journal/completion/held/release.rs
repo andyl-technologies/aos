@@ -359,21 +359,21 @@ impl FixedProviderOwnerV1 {
         let Some(FixedProviderOwnerStateV1::HeldReadOnly(held)) = self.state.as_mut() else {
             return Err(ProviderLedgerError::Unavailable.into());
         };
-        let release = held.original.as_ref().and_then(|original| original.producer.as_ref())
-            .and_then(|producer| producer.original_completion.as_ref())
-            .and_then(|completion| completion.held.as_ref())
-            .and_then(|held| held.release.as_ref())
+        let release = held.original.as_mut().and_then(|original| original.producer.as_mut())
+            .and_then(|producer| producer.original_completion.as_mut())
+            .and_then(|completion| completion.held.as_mut())
+            .and_then(|held| held.release.as_mut())
             .ok_or(ProviderLedgerError::Unavailable)?;
-        let retained = release.status.as_ref().and_then(|status| status.append.as_ref())
+        let retained = release.status.as_mut().and_then(|status| status.append.as_mut())
             .ok_or(ProviderLedgerError::Unavailable)?;
         if retained.failed || !retained.attempted {
             return Err(ProviderLedgerError::RuntimePoisoned.into());
         }
-        let readback = retained.readback.as_ref().ok_or(ProviderLedgerError::Unavailable)?;
+        let readback = retained.readback.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
         let challenges = self.hold_challenges.original_history_v5()?;
         let writer = self.journal.as_mut().ok_or(ProviderLedgerError::RuntimePoisoned)?
             .claim_source_original_native_v5(&challenges)?;
-        writer.validate_readback(readback)?;
+        writer.observe_original_release_native_cut_v1(readback)?;
         Ok(())
     }
 
@@ -772,6 +772,12 @@ impl FixedProviderOwnerV1 {
                 return Some(cause);
             }
             if let Some(cause) = status.clock_post.as_ref().and_then(|result| result.as_ref().err()) {
+                return Some(cause);
+            }
+            if let Some(cause) = status.append.as_ref()
+                .and_then(|append| append.readback.as_ref())
+                .and_then(|readback| readback.original_release_native_postcheck_debt_v1())
+            {
                 return Some(cause);
             }
         }

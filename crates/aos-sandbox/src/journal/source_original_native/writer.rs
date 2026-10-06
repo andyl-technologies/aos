@@ -80,6 +80,20 @@ pub struct OriginalSourceProtectedReadbackV5 {
     original_held_signing_attempted: std::cell::Cell<bool>,
     original_relay_signing_attempted: std::cell::Cell<bool>,
     original_settlement_signing_attempted: std::cell::Cell<bool>,
+    #[cfg(target_os = "linux")]
+    original_release_native_attempted: std::cell::Cell<bool>,
+    #[cfg(target_os = "linux")]
+    original_release_native: Option<super::super::OriginalReleaseSourceCutCaptureV1>,
+}
+
+impl OriginalSourceProtectedReadbackV5 {
+    /// Borrows retained native Release name/challenge debt without reobserving.
+    #[cfg(target_os = "linux")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn original_release_native_postcheck_debt_v1(&self) -> Option<&JournalError> {
+        self.original_release_native.as_ref().and_then(|captured| captured.postcheck_debt())
+    }
 }
 
 enum OriginalHeldBasisPurposeV5<'control> {
@@ -1436,6 +1450,10 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
                 original_held_signing_attempted: std::cell::Cell::new(false),
                 original_relay_signing_attempted: std::cell::Cell::new(false),
                 original_settlement_signing_attempted: std::cell::Cell::new(false),
+                #[cfg(target_os = "linux")]
+                original_release_native_attempted: std::cell::Cell::new(false),
+                #[cfg(target_os = "linux")]
+                original_release_native: None,
             });
 
             self.authority.journal.complete_source_original_replay_v5(self.challenges)?;
@@ -1486,6 +1504,83 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
         }
         self.validate_actual_rows(actual)
     }
+
+    /// Retains one same-file native Release observation without lending authority.
+    ///
+    /// The complete native replay/error and independent name/challenge posts
+    /// remain in the original readback. No cache or challenge witness is
+    /// installed, and the append description's offset is not changed.
+    ///
+    /// # Errors
+    ///
+    /// Rejects repeated attempts, substituted readback, changed original
+    /// custody, copy headroom, malformed native history or whole replay mismatch.
+    /// A failed attempt cannot be retried; its first native cause stays owned.
+    #[cfg(target_os = "linux")]
+    #[doc(hidden)]
+    pub fn observe_original_release_native_cut_v1(
+        &self,
+        actual: &mut OriginalSourceProtectedReadbackV5,
+    ) -> Result<(), JournalError> {
+        if actual.original_release_native_attempted.replace(true)
+            || actual.original_release_native.is_some()
+        {
+            return Err(JournalError::InvalidTransaction);
+        }
+        let readback = self.validate_readback(actual);
+        self.authority.journal.observe_original_release_source_cut_into_v1(
+            self.challenges, readback, &mut actual.original_release_native,
+        )
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(in crate::journal) fn require_original_release_source_replay_v1(
+    journal: &Journal,
+    replayed: &super::super::ReplayState,
+    challenges: &SourceOriginalChallengeHistoryViewV5<'_>,
+) -> Result<(), JournalError> {
+    require_fixed(journal)?;
+    journal.source_original_replay.validate_challenges(challenges)?;
+    let before = &journal.source_original_replay;
+    let actual = &replayed.source_original_replay;
+    if actual.needs_closure() || !actual.has_dependencies()
+        || !journal.source_challenge_history.is_empty()
+        || !replayed.source_challenge_history.is_empty()
+        || before.origins().len() != actual.origins().len()
+        || before.cuts().len() != actual.cuts().len()
+    {
+        return Err(JournalError::StaleAuthoritySnapshot);
+    }
+
+    // Compare complete retained canonical origins and physical cuts. A digest,
+    // current after-map or count alone cannot establish the original history.
+    for (before, actual) in before.origins().iter().zip(actual.origins()) {
+        if before.original_before() != actual.original_before()
+            || before.applying_after() != actual.applying_after()
+            || before.applying_transaction() != actual.applying_transaction()
+            || before.initial_floor() != actual.initial_floor()
+            || before.admission_comparison() != actual.admission_comparison()
+            || before.retained_retirement() != actual.retained_retirement()
+        {
+            return Err(JournalError::StaleAuthoritySnapshot);
+        }
+    }
+    for (before, actual) in before.cuts().iter().zip(actual.cuts()) {
+        if before.file_identity() != actual.file_identity()
+            || before.transaction_id() != actual.transaction_id()
+            || before.transaction_digest() != actual.transaction_digest()
+            || before.frame_sequences() != actual.frame_sequences()
+            || before.file_offsets() != actual.file_offsets()
+            || before.challenge_checkpoint() != actual.challenge_checkpoint()
+            || before.before_rows() != actual.before_rows()
+            || before.after_rows() != actual.after_rows()
+        {
+            return Err(JournalError::StaleAuthoritySnapshot);
+        }
+    }
+    actual.compare(&replayed.state, None, challenges, journal.limits)?;
+    Ok(())
 }
 
 pub(in crate::journal) fn require_fixed(journal: &Journal) -> Result<(), JournalError> {

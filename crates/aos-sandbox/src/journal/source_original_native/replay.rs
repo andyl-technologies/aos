@@ -99,6 +99,43 @@ pub(in crate::journal) struct SourceOriginalReplayCacheV5 {
 }
 
 impl SourceOriginalReplayCacheV5 {
+    // This reuses the unique-map payload accumulator. It is logical resident
+    // representation accounting, not measured allocator RAM or a paid loan.
+    pub(in crate::journal) fn original_release_resident_copy_bytes_v1(
+        &self,
+    ) -> Result<usize, JournalError> {
+        let limit = || JournalError::LimitExceeded("Source original Release resident copy");
+        let vacant_origins = self.origins.capacity().checked_sub(self.origins.len())
+            .and_then(|count| count.checked_mul(std::mem::size_of::<SourceOriginalAdmissionDataV5>()))
+            .ok_or_else(limit)?;
+        let vacant_cuts = self.cuts.capacity().checked_sub(self.cuts.len())
+            .and_then(|count| count.checked_mul(std::mem::size_of::<SourceOriginalPhysicalCutV5>()))
+            .ok_or_else(limit)?;
+        let vacant_history = self.historical.capacity().checked_sub(self.historical.len())
+            .and_then(|count| count.checked_mul(std::mem::size_of::<SourceHistoricalRetirementReferenceV5>()))
+            .ok_or_else(limit)?;
+
+        let mut bytes = self.retained_bytes.checked_add(vacant_origins)
+            .and_then(|bytes| bytes.checked_add(vacant_cuts))
+            .and_then(|bytes| bytes.checked_add(vacant_history))
+            .and_then(|bytes| bytes.checked_add(self.current_retirement_bytes.len()
+                .checked_mul(std::mem::size_of::<(ObjectDigest, usize)>())?))
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>()))
+            .ok_or_else(limit)?;
+        if let Some(history) = self.challenges.as_ref() {
+            bytes = bytes.checked_add(history.rows().len()
+                .checked_mul(std::mem::size_of::<SourceOriginalChallengeCheckpointV5>())
+                .ok_or_else(limit)?)
+                .ok_or_else(limit)?;
+            for row in history.rows() {
+                bytes = bytes.checked_add(row.key().len())
+                    .and_then(|bytes| bytes.checked_add(row.value().len()))
+                    .ok_or_else(limit)?;
+            }
+        }
+        Ok(bytes)
+    }
+
     pub(in crate::journal) fn needs_closure(&self) -> bool {
         self.pending
     }
