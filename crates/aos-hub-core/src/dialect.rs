@@ -598,7 +598,7 @@ fn replace_word(sql: &str, word: &str, repl: &str) -> String {
 /// vary between tokens, but comments and punctuation break the sequence. This
 /// is used for composite DDL types such as `INTEGER PRIMARY KEY`, where a raw
 /// substring replacement could corrupt operator-owned defaults or comments.
-fn replace_word_sequence(sql: &str, words: &[&str], repl: &str) -> String {
+pub(crate) fn replace_word_sequence(sql: &str, words: &[&str], repl: &str) -> String {
     if words.is_empty() {
         return sql.to_string();
     }
