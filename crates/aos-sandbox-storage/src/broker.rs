@@ -3345,9 +3345,8 @@ impl StorageAdmissionCoordinator {
                         .ok_or(crate::StorageStateError::MissingAuthorityLink)?,
                 )
                 .map_err(|_| StorageBrokerError::Authority)?;
-            let transport_digest = ObjectDigest::from_bytes(Sha256::digest(request_body).into());
             if persisted_fence.assignment() != assignment
-                || persisted_intent.transport_request_digest() != transport_digest
+                || persisted_intent.transport_request_digest() != request_digest
                 || persisted_intent.request_digest() != semantics.argument_commitment().digest()
                 || persisted_intent.verb() != semantics.broker_verb()
                 || persisted_intent.target() != semantics.grant_target()
