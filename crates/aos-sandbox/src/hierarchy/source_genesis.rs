@@ -291,7 +291,7 @@ fn prepare_project_genesis_append_v3(
         receipt: receipt.digest(), nonce: intent.nonce(), names: journal.protected_writer_physical_names_v1()?,
     };
     let mut records = pair.records;
-    records.push(JournalRecord::put(RecordNamespace::DesiredState, receipt_key(intent.project()), receipt.encode().to_vec()));
+    records.push(JournalRecord::put(RecordNamespace::DesiredState, receipt_key(intent.project()), receipt.encode()));
     records.push(JournalRecord::put(RecordNamespace::DesiredState, PENDING_KEY.to_vec(), pending.encode().to_vec()));
     let append = JournalTransaction::new(id, records)?;
     let suffix = ack_transaction(&SourceGenesisAckV1 {
@@ -626,7 +626,7 @@ pub fn append_source_tree_genesis_v1<'source>(
         records.push(JournalRecord::put(
             RecordNamespace::DesiredState,
             receipt_key(project),
-            receipt.encode().to_vec(),
+            receipt.encode(),
         ));
         records.push(JournalRecord::put(
             RecordNamespace::DesiredState,
