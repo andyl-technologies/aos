@@ -331,6 +331,19 @@ selectors and refuses missing cases. Registry completeness and static formatting
 pass; composed runtime Nix qualification and strict lint remain pending. Initial
 retirement is under separate implementation; restore and deletion remain open.
 
+The initial-retirement composition `760b2cd126fa` passes native production
+compilation and declares all ten required owning cases. Its serial runtime
+executes ten of 498 declared tests: two pass and eight fail in 67.841 seconds;
+488 are outside the filter. All frozen source images remain unchanged. The
+eligible path fails before the intended durability checks while capturing an
+absent generation whose parent directory is also absent. The reviewed fix
+uses the existing exact-absence capture and retains backend I/O diagnostics.
+A separate genuine creator handoff adds a distinct pack/index timestamp
+witness without rewriting timestamps. Both changes await runtime qualification.
+The original compile lifetime failure and runtime failures remain preserved.
+Strict native Clippy remains red; no retirement, grace, restore, deletion,
+task merge, milestone exit or freeze is qualified by this composition.
+
 The preceding completed full qualification records candidate
 `15540ef204ec`, which combines reviewed source discovery, immutable lookup,
 repeatable I/P/G maintenance, separate verifier/preparation work, common Memo
