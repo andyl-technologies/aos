@@ -47,6 +47,7 @@ mod scenario {
     pub(super) const REACTIVATION_NANOS: u64 = 81_000_000_000;
 }
 
+mod asset_projection_tests;
 mod atomic;
 mod dma;
 pub(crate) use dma::run as run_dma_borrowers_native;
@@ -168,8 +169,10 @@ pub(crate) fn run(
             case_project + u32::try_from(depth).expect("bounded semantic depth") * 100,
             catalog,
             |root, storage| native_repository(&source, root, storage),
-            |config| resources(config, &source, &lifecycle, case),
+            |config| resources(config, &source, case),
             |prepared, config, repository| {
+                install_lifecycle_assets(config, &lifecycle)
+                    .expect("admitted catalog owns native lifecycle assets");
                 run_accepted(
                     prepared,
                     config,
@@ -193,7 +196,6 @@ pub(crate) fn run(
 fn resources(
     mut config: PackagedQemuExecutorConfig,
     source: &ScenarioDefForm,
-    lifecycle: &ProductionVmLifecycleConfig,
     case: NativeEquivalenceCase,
 ) -> PackagedQemuExecutorConfig {
     let nodes = u64::try_from(source.world().vm_nodes().len()).expect("native node count");
@@ -240,24 +242,6 @@ fn resources(
         2 << 30,
     )
     .expect("explicit native metadata and staging envelopes");
-    // Native fixture assets are borrowed operator inputs. Their mutable copy
-    // uses the installed catalog's original authority and retains child credit.
-    let admitted_base = config
-        .admitted_lifecycle_config()
-        .expect("installed native catalog admits lifecycle metadata");
-    let _input_scope = admitted_base.enter_input_custody();
-    let provider = config
-        .lifecycle
-        .ram_catalog_provider()
-        .expect("actual installed catalog provider")
-        .clone();
-    config.lifecycle = Arc::new(
-        lifecycle
-            .try_clone_admitted()
-            .expect("original catalog authority admits native fixture assets")
-            .with_run_state_root(config.lifecycle.run_state_root().join("equivalence"))
-            .with_ram_catalog_provider(provider),
-    );
     config
         .with_assignment_resources(
             world,
@@ -267,6 +251,33 @@ fn resources(
         .expect("genuine assignment vector")
         .with_retained_template_resources(world)
         .expect("independent retained-template vector")
+}
+
+/// Installs guest assets only after the original catalog account is entered.
+///
+/// The callback mutates only the lifecycle projection; the actor has already
+/// admitted the unchanged assignment, template and operational vectors.
+fn install_lifecycle_assets(
+    config: &mut PackagedQemuExecutorConfig,
+    lifecycle: &ProductionVmLifecycleConfig,
+) -> Result<(), PackagedQemuExecutorError> {
+    if crucible::owned_decode::current_budget().is_none() {
+        return Err(
+            crucible_api::vm_lifecycle::ProductionVmLifecycleConfigCloneError::MissingAdmission
+                .into(),
+        );
+    }
+    let provider = config
+        .lifecycle
+        .ram_catalog_provider()
+        .expect("actual installed catalog provider")
+        .clone();
+    let projected = lifecycle
+        .try_clone_admitted()?
+        .with_run_state_root(config.lifecycle.run_state_root().join("equivalence"))
+        .with_ram_catalog_provider(provider);
+    config.lifecycle = Arc::new(projected);
+    Ok(())
 }
 
 fn world_overlap(case: NativeEquivalenceCase) -> u64 {

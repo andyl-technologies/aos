@@ -109,8 +109,10 @@ pub(crate) fn run(
                 refs,
             ))
         },
-        |config| resources(config, &source, &lifecycle, NativeEquivalenceCase::Depth),
+        |config| resources(config, &source, NativeEquivalenceCase::Depth),
         |prepared, config, repository| {
+            install_lifecycle_assets(config, &lifecycle)
+                .expect("admitted catalog owns native lifecycle assets");
             run_accepted_failure(prepared, config, repository, &source, case, &publication)
         },
     );

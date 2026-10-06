@@ -94,7 +94,11 @@ pub(in crate::packaged_qemu_executor::tests) fn with_native_repository_environme
     project: u32,
     repository: impl FnOnce(&std::path::Path, NativeCampaignStorage) -> Arc<CampaignRepository>,
     configure: impl FnOnce(PackagedQemuExecutorConfig) -> PackagedQemuExecutorConfig,
-    run: impl FnOnce(&PackagedPreparation, &PackagedQemuExecutorConfig, Arc<CampaignRepository>) -> T,
+    run: impl FnOnce(
+        &PackagedPreparation,
+        &mut PackagedQemuExecutorConfig,
+        Arc<CampaignRepository>,
+    ) -> T,
 ) -> T {
     with_native_repository_environment_with_catalog(
         lane,
@@ -145,7 +149,11 @@ pub(in crate::packaged_qemu_executor::tests) fn with_native_repository_environme
     catalog: NativeCatalogBudget,
     repository: impl FnOnce(&std::path::Path, NativeCampaignStorage) -> Arc<CampaignRepository>,
     configure: impl FnOnce(PackagedQemuExecutorConfig) -> PackagedQemuExecutorConfig,
-    run: impl FnOnce(&PackagedPreparation, &PackagedQemuExecutorConfig, Arc<CampaignRepository>) -> T,
+    run: impl FnOnce(
+        &PackagedPreparation,
+        &mut PackagedQemuExecutorConfig,
+        Arc<CampaignRepository>,
+    ) -> T,
 ) -> T {
     with_native_repository_storage(
         lane,
@@ -173,7 +181,11 @@ pub(in crate::packaged_qemu_executor::tests) fn with_native_repository_storage<T
         &mut dyn FnMut() -> Arc<dyn ImmutableBlobBackend>,
     ) -> Arc<dyn ImmutableBlobBackend>,
     configure: impl FnOnce(PackagedQemuExecutorConfig) -> PackagedQemuExecutorConfig,
-    run: impl FnOnce(&PackagedPreparation, &PackagedQemuExecutorConfig, Arc<CampaignRepository>) -> T,
+    run: impl FnOnce(
+        &PackagedPreparation,
+        &mut PackagedQemuExecutorConfig,
+        Arc<CampaignRepository>,
+    ) -> T,
 ) -> T {
     let directory = tempfile::Builder::new()
         .prefix("paging-service-")
@@ -391,7 +403,7 @@ pub(in crate::packaged_qemu_executor::tests) fn with_native_repository_storage<T
     )
     .expect("original catalog metadata account");
     let _metadata_scope = decoding.enter();
-    let result = run(&prepared, &config, repository);
+    let result = run(&prepared, &mut config, repository);
     decoding.check().expect("native driver metadata admission");
     registry_quota
         .verify_usage()

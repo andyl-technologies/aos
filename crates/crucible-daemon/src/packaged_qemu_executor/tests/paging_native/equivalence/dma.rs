@@ -193,8 +193,10 @@ pub(crate) fn run(source: ScenarioDefForm, lifecycle: ProductionVmLifecycleConfi
             62_000 + u32::try_from(ordinal).expect("two lanes") * 100,
             catalog,
             |root, storage| native_repository(&source, root, storage),
-            |config| resources(config, &source, &lifecycle, NativeEquivalenceCase::Origins),
+            |config| resources(config, &source, NativeEquivalenceCase::Origins),
             |prepared, config, repository| {
+                install_lifecycle_assets(config, &lifecycle)
+                    .expect("admitted catalog owns native lifecycle assets");
                 let before = available_resources(prepared);
                 let result = run_capture(prepared, config, &source, |context| {
                     extend_native_operations(context);
