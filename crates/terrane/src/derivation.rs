@@ -5,3 +5,8 @@
 //! that service without changing recipe inputs or inferring current authority.
 //! These shared declarations do not qualify runtime replay; the owning check
 //! requires actual loading, failure, divergence and mandatory-input witnesses.
+
+mod persistence;
+
+#[cfg(test)]
+mod tests;

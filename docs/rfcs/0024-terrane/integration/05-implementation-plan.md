@@ -1980,6 +1980,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   their explicitly pre-alias scope; the complete trunk floor remains pending.
   These local prerequisites do not close a task or
   qualify the full current trunk gate set.
+  Shared module registrations now reserve independent native indexed-read and
+  common Memo persistence leaves. Their owning integration checks require six
+  and four exact, nonignored cases respectively; absent implementations fail
+  discovery explicitly. Registry completeness and both formatters pass on the
+  registration-only source. This supplies no indexed-answer, persisted Memo,
+  root-associated GC or full trunk qualification.
   T-DRV-2, ALG-32, task merges and T1 remain open.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
