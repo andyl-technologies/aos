@@ -705,6 +705,19 @@ mod tests {
         };
         verify()?;
 
+        let evaluation = host_store.join(host_bundle).join("evaluation.json");
+        let shared_evaluation = host_store.join("22222222222222222222222222222222-native-input");
+        fs::hard_link(&evaluation, &shared_evaluation)?;
+        verify()?;
+
+        let original_evaluation = fs::read(&evaluation)?;
+        fs::write(&shared_evaluation, b"changed embedded evaluation")?;
+        assert!(
+            verify().is_err(),
+            "shared inodes must still bind exact bytes"
+        );
+        fs::write(&shared_evaluation, original_evaluation)?;
+
         let transaction = host_store.join(host_bundle).join("transaction.json");
         let original = fs::read(&transaction)?;
         fs::write(&transaction, b"changed embedded transaction")?;
