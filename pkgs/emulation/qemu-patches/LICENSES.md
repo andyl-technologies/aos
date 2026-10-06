@@ -157,6 +157,21 @@ it is not an Apache host component. This build-only addition does not change
 the selected atomic patch inventory or install a patched emulator. The matching
 complete corresponding-source artifact retains the fixture and its builder.
 
+## Test-only plugin failed-exit unit
+
+`tests/crucible/native/plugin-failed-exit.c` and
+`tests/crucible/native/plugin-failed-exit-bodies.py` declare GPL-2.0-only.
+The private builder copies the C fixture to
+`tests/unit/test-crucible-plugin-failed-exit.c` and generates
+`tests/unit/plugin-failed-exit-bodies.inc` from verbatim selected plugin and
+runstate definitions, preserving their original QEMU file licenses. The
+extractor reuses `block-wait-completion-bodies.py`, whose license is declared
+below. These temporary test additions are absent from the atomic created-file
+inventory. The builder retains evidence, not an emulator or Apache host library;
+its complete matching corresponding-source artifact retains the fixtures,
+extractor and recipe. External services are labeled, and subprocess exit checks
+do not qualify a physical VM or the complete native runstate topology.
+
 ## Test-only joined block-wait unit
 
 The private joined block-wait unit overlays these test-only files in its

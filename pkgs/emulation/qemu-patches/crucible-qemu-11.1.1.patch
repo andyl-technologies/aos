@@ -1,6 +1,6 @@
-From 39a0e603dd25905ada9f87276485375f9836b70c Mon Sep 17 00:00:00 2001
+From 4f3db5e70c9d0a166d4f966e8838872c2e279304 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Sat, 3 Oct 2026 07:08:17 +0000
+Date: Tue, 6 Oct 2026 00:36:41 +0000
 Subject: [PATCH] Integrate deterministic execution and private fork I/O
  custody
 
@@ -30,6 +30,9 @@ publication to the existing paused owner. Preserve the original request
 counters, stop-clearing rearm, flush and callback ownership checks.
 Exercise reader-before-publication and reader-after-publication ordering,
 no-request behavior, and nested next-generation exactly-once completion.
+
+Preserve plugin fatal shutdown as a failed process exit through the normal
+runstate path, while retaining clean quit and the original vCPU kick.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -75174,7 +75177,7 @@ index 9e9941fe73e77a7b3bcc3ca1ab7ad4bec58f0151..66e2d8cd64d01e2304aa51675bfe4959
  
  static int net_slirp_init(NetClientState *peer, const char *model,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index fbf905cd63e4cc109748b379f4209f6ad6547c2c..ad6391e3dc586dd5f5e65516db26dfb43e82c512 100644
+index fbf905cd63e4cc109748b379f4209f6ad6547c2c..a23e1ec661b9cd7cba80a380320b905ec9bc5112 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -11,12 +11,40 @@
@@ -76139,7 +76142,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..ad6391e3dc586dd5f5e65516db26dfb4
          return &has_control;
      }
      return NULL;
-@@ -123,9 +1054,1908 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
+@@ -123,9 +1054,1912 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
  void qemu_plugin_update_ns(const void *handle, int64_t new_time)
  {
      if (handle == &has_control) {
@@ -77441,8 +77444,12 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..ad6391e3dc586dd5f5e65516db26dfb4
 +
 +void qemu_plugin_request_shutdown(int failure)
 +{
-+    qemu_system_shutdown_request(failure ? SHUTDOWN_CAUSE_HOST_ERROR :
-+                                           SHUTDOWN_CAUSE_HOST_QMP_QUIT);
++    if (failure) {
++        qemu_system_shutdown_request_with_code(SHUTDOWN_CAUSE_HOST_ERROR,
++                                              EXIT_FAILURE);
++    } else {
++        qemu_system_shutdown_request(SHUTDOWN_CAUSE_HOST_QMP_QUIT);
++    }
 +    if (first_cpu) {
 +        qemu_cpu_kick(first_cpu);
 +    }

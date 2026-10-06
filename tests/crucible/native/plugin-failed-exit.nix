@@ -1,10 +1,11 @@
-# GPL-side actual UART bodies with controlled external transport providers.
+# Actual GPL-side shutdown bodies; external services never choose exit status.
 {pkgs}: let
-  fixture = ./uart-origin-baseline.c;
-  validator = ./uart-origin-baseline.py;
-  unitName = "test-crucible-uart-origin-baseline";
+  fixture = ./plugin-failed-exit.c;
+  validator = ./plugin-failed-exit-bodies.py;
+  extractor = ./block-wait-completion-bodies.py;
+  unitName = "test-crucible-plugin-failed-exit";
   nativeProfile = pkgs.callPackage ../../../pkgs/emulation/qemu.nix {
-    pname = "qemu-crucible-uart-origin-baseline";
+    pname = "qemu-crucible-plugin-failed-exit";
     enablePlugins = true;
     applyCruciblePatch = true;
     enableLinuxUser = false;
@@ -18,70 +19,63 @@
     in [
       (original "unpack")
       {
-        name = "add-uart-baseline-unit";
+        name = "add-plugin-failed-exit-unit";
         script = ''
           cp ${fixture} tests/unit/${unitName}.c
-          cat >> tests/unit/meson.build <<'UART_UNIT'
-          # Test-only external providers; actual UART bodies and native libraries.
-          uart_origin_baseline = executable(
-            '${unitName}', '${unitName}.c',
-            '../../hw/core/clock.c', '../../hw/core/clock-vmstate.c', genh,
-            dependencies: [qemuutil, qom, migration, io],
+          ${pkgs.python3}/bin/python3 ${validator} extract . \
+            tests/unit/plugin-failed-exit-bodies.inc ${extractor}
+          cat >> tests/unit/meson.build <<'SHUTDOWN_UNIT'
+          plugin_failed_exit = executable(
+            '${unitName}', '${unitName}.c', genh,
+            dependencies: [qemuutil],
             include_directories: include_directories('../..'),
-            c_args: ['-ffunction-sections', '-fdata-sections'],
-            link_args: ['-Wl,--gc-sections'],
           )
-          test('${unitName}', uart_origin_baseline,
+          test('${unitName}', plugin_failed_exit,
                env: test_env, args: ['--tap', '-k'], protocol: 'tap',
                suite: 'unit', timeout: 30)
-          UART_UNIT
+          SHUTDOWN_UNIT
         '';
       }
       (original "configure")
       {
-        name = "build-uart-baseline-unit";
+        name = "build-plugin-failed-exit-unit";
         script = ''
-          export PYTHONHASHSEED=0
           ${pkgs.python3}/bin/python3 ${validator} configured build
           ${pkgs.ninja}/bin/ninja -C build -j$NIX_BUILD_CORES tests/unit/${unitName}
         '';
       }
       {
-        name = "execute-uart-baseline-unit";
+        name = "execute-plugin-failed-exit-unit";
         script = ''
           if ! build/pyvenv/bin/meson test -C build --no-rebuild \
-            --num-processes 1 --print-errorlogs --logbase uart-origin \
-            ${unitName} > uart-origin.result 2>&1; then
-            cat uart-origin.result
-            exit 1
+            --num-processes 1 --print-errorlogs --logbase plugin-failed-exit \
+            ${unitName} > plugin-failed-exit.result 2>&1; then
+              cat plugin-failed-exit.result
+              exit 1
           fi
-          cat uart-origin.result
-          ${pkgs.python3}/bin/python3 ${validator} executed \
-            build/meson-logs/uart-origin.json build/compile_commands.json
+          cat plugin-failed-exit.result
+          ${pkgs.python3}/bin/python3 ${validator} executed build
         '';
       }
       {
-        name = "retain-uart-baseline-evidence";
+        name = "retain-plugin-failed-exit-evidence";
         script = ''
-          # The test-only output retains evidence, never a linked unit/emulator.
           evidence="$out/share/aos/crucible"
           mkdir -p "$evidence"
-          cp uart-origin.result "$evidence/"
-          cp build/meson-logs/uart-origin.{json,txt} "$evidence/"
-          cp uart-origin-compile.json "$evidence/"
+          cp plugin-failed-exit.result plugin-failed-exit-compile.json "$evidence/"
+          cp build/meson-logs/plugin-failed-exit.{json,txt} "$evidence/"
+          cp tests/unit/plugin-failed-exit-bodies.{inc,json} "$evidence/"
           cp build/config-host.h "$evidence/"
-          sha256sum hw/char/serial.c hw/char/pl011.c include/hw/char/serial.h \
-            tests/unit/${unitName}.c > "$evidence/uart-source.sha256"
-          cat > "$evidence/qemu-build-identity.env" <<'UART_IDENTITY'
+          sha256sum plugins/api-system.c system/runstate.c \
+            tests/unit/${unitName}.c > "$evidence/plugin-failed-exit-source.sha256"
+          cat > "$evidence/qemu-build-identity.env" <<'SHUTDOWN_IDENTITY'
           qemu_build_id=${unitProfile.passthru.qemuBuildIdentity}
           qemu_configure_flags_hash=${unitProfile.passthru.qemuConfigureFlagsHash}
           native_commit=${selected.commit}
           native_tree=${selected.tree}
           test_only_non_distributable=true
-          qualification_scope=actual-uart-bodies-external-providers
-          fixture_sha256=${builtins.hashFile "sha256" fixture}
-          validator_sha256=${builtins.hashFile "sha256" validator}
-          UART_IDENTITY
+          scope=actual-shutdown-bodies-external-services-real-subprocess-status
+          SHUTDOWN_IDENTITY
         '';
       }
     ];
@@ -91,9 +85,8 @@
   };
 in
   assert !pkgs.stdenv.isCross && pkgs.stdenv.hostPlatform.isLinux;
-  assert selected.commit == "4f3db5e70c9d0a166d4f966e8838872c2e279304";
     pkgs.mkDerivation {
-      pname = "crucible-uart-origin-baseline";
+      pname = "crucible-plugin-failed-exit";
       version = "0";
       src = null;
       buildDeps = [pkgs.coreutils pkgs.grep unitProfile];
@@ -110,8 +103,8 @@ in
             mkdir -p "$out"
             cp -R ${unitProfile}/share/aos/crucible/. "$out/"
             printf '%s\n' 'corresponding_source=${sourcePackage}' \
-              'scope=actual-uart-bodies-external-providers' \
-              'native_origin_authority_qualified=false' > "$out/corresponding-source.env"
+              'scope=actual-shutdown-bodies-external-services-real-subprocess-status' \
+              'physical_vm_qualified=false' > "$out/corresponding-source.env"
           '';
         }
       ];
