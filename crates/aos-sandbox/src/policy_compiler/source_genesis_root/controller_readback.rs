@@ -32,8 +32,88 @@ use super::super::PinnedControllerHoldSignerV1;
 const MAGIC: &[u8; 8] = b"AOSSGR01";
 const DOMAIN: &[u8] = b"aos.sandbox.source-genesis.controller-held-readback.v1\0/var/lib/aos/sandboxd/controller.journal\0";
 const BODY_BYTES: usize = 800;
+const PROJECT_MAGIC_V3: &[u8; 8] = b"AOSSGR03";
+const PROJECT_DOMAIN_V3: &[u8] = b"aos.sandbox.source-genesis.controller-mixed-readback.v3\0/var/lib/aos/sandboxd/controller.journal\0";
+
+#[derive(Clone, Copy)]
+enum ControllerGenesisReadbackRecipeV3 { StrictV1, ProjectV3 }
 /// Bounds the existing Controller-purpose genesis readback signature packet.
 pub const CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1: usize = BODY_BYTES + 64;
+
+#[derive(Clone, Copy)]
+pub(super) enum ProjectGenesisSignatureFailureV3 { Signature, Post(usize), Refused }
+
+// The source loan and original flight stay in the enclosing invocation; this
+// signature Result is parked there before any independent post can fail.
+#[cfg(target_os = "linux")]
+#[allow(clippy::too_many_arguments)]
+pub(super) fn capture_project_genesis_readback_v3(
+    controller: &HeldControllerSourceGenesisV1<'_>,
+    source: &crate::hierarchy::source_genesis::HeldSourceProjectGenesisObservationV3<'_>,
+    generation: u64,
+    key: &SigningKey,
+    original: &super::flight::OriginalRootGenesisFlightV1<'_>,
+    complete: bool,
+    resident: &mut Option<Result<[u8; CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1], SourceGenesisErrorV1>>,
+    posts: &mut Vec<Result<(), SourceGenesisErrorV1>>,
+) -> Result<(), ProjectGenesisSignatureFailureV3> {
+    if resident.is_some() { return Err(ProjectGenesisSignatureFailureV3::Refused); }
+    *resident = Some((|| {
+        controller.recheck()?;
+        source.recheck()?;
+        if generation == 0 || source.project() != controller.acceptance().project()
+            || source.source_uid() != original.first_successor_source_uid()?
+        { return Err(SourceGenesisErrorV1::Stale); }
+        let kind = if complete {
+            controller.recheck_completed_project_genesis_v3(source)?;
+            3
+        } else if let Some(receipt) = source.receipt() {
+            if receipt.acceptance_digest() != controller.acceptance().digest()
+                || &receipt.seed_packet() != controller.acceptance().seed_packet()
+                || &receipt.auth_packet() != controller.acceptance().auth_packet()
+            { return Err(SourceGenesisErrorV1::Stale); }
+            1
+        } else {
+            if source.state() != SourceTreeGenesisStateV1::VacantProject || source.instance().is_none() {
+                return Err(SourceGenesisErrorV1::Conflict);
+            }
+            controller.recheck_current_admission()?;
+            2
+        };
+        let mut packet = [0; CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1];
+        packet[..8].copy_from_slice(PROJECT_MAGIC_V3);
+        packet[8..10].copy_from_slice(&3_u16.to_be_bytes());
+        packet[10] = kind;
+        packet[16..24].copy_from_slice(&generation.to_be_bytes());
+        packet[24..28].copy_from_slice(&controller.uid().to_be_bytes());
+        packet[28..32].copy_from_slice(&source.source_uid().to_be_bytes());
+        packet[32..40].copy_from_slice(&controller.snapshot_sequence()?.to_be_bytes());
+        packet[40..48].copy_from_slice(&source.snapshot_sequence().to_be_bytes());
+        packet[48..64].copy_from_slice(&original.nonce());
+        packet[64..672].copy_from_slice(controller.acceptance().record_bytes());
+        packet[672..720].copy_from_slice(&controller.names().to_bytes());
+        packet[720..768].copy_from_slice(&source.names().to_bytes());
+        packet[768..800].copy_from_slice(&source.instance().ok_or(SourceGenesisErrorV1::Stale)?);
+        let preimage = [PROJECT_DOMAIN_V3, &packet[..BODY_BYTES]].concat();
+        // Slow owner work follows preparation, then this final genuine pair is
+        // sampled immediately before the existing real-key crypto operation.
+        controller.recheck()?;
+        source.recheck()?;
+        if kind == 2 { controller.recheck_current_admission()?; }
+        original.first_successor_clock()?;
+        Ok(finish_readback(packet, preimage, key))
+    })());
+    let mut first = resident.as_ref().is_some_and(Result::is_err).then_some(ProjectGenesisSignatureFailureV3::Signature);
+    posts.push(controller.recheck());
+    if first.is_none() && posts.last().is_some_and(Result::is_err) { first = Some(ProjectGenesisSignatureFailureV3::Post(posts.len() - 1)); }
+    posts.push(source.recheck());
+    if first.is_none() && posts.last().is_some_and(Result::is_err) { first = Some(ProjectGenesisSignatureFailureV3::Post(posts.len() - 1)); }
+    posts.push(original.first_successor_clock().map(|_| ()));
+    if first.is_none() && posts.last().is_some_and(Result::is_err) { first = Some(ProjectGenesisSignatureFailureV3::Post(posts.len() - 1)); }
+    posts.push(original.observe_first_successor_clock().map(|_| ()));
+    if first.is_none() && posts.last().is_some_and(Result::is_err) { first = Some(ProjectGenesisSignatureFailureV3::Post(posts.len() - 1)); }
+    match first { Some(site) => Err(site), None => Ok(()) }
+}
 
 /// Signs the exact actual Controller and Source cuts for one live Root nonce.
 ///
@@ -309,10 +389,29 @@ pub(super) fn verify(
     controller_uid: u32,
     source_uid: u32,
 ) -> Result<VerifiedControllerSourceGenesisReadbackV1, SourceGenesisErrorV1> {
+    verify_with_recipe(packet, pin, nonce, controller_uid, source_uid, ControllerGenesisReadbackRecipeV3::StrictV1)
+}
+
+pub(super) fn verify_project_genesis_v3(
+    packet: &[u8], pin: &PinnedControllerHoldSignerV1, nonce: [u8; 16],
+    controller_uid: u32, source_uid: u32,
+) -> Result<VerifiedControllerSourceGenesisReadbackV1, SourceGenesisErrorV1> {
+    verify_with_recipe(packet, pin, nonce, controller_uid, source_uid, ControllerGenesisReadbackRecipeV3::ProjectV3)
+}
+
+fn verify_with_recipe(
+    packet: &[u8], pin: &PinnedControllerHoldSignerV1, nonce: [u8; 16],
+    controller_uid: u32, source_uid: u32, recipe: ControllerGenesisReadbackRecipeV3,
+) -> Result<VerifiedControllerSourceGenesisReadbackV1, SourceGenesisErrorV1> {
+    let (magic, version, domain) = match recipe {
+        ControllerGenesisReadbackRecipeV3::StrictV1 => (MAGIC, 1_u16, DOMAIN),
+        ControllerGenesisReadbackRecipeV3::ProjectV3 => (PROJECT_MAGIC_V3, 3_u16, PROJECT_DOMAIN_V3),
+    };
     if packet.len() != CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1
-        || packet.get(..8) != Some(MAGIC.as_slice())
-        || packet[8..10] != 1_u16.to_be_bytes()
+        || packet.get(..8) != Some(magic.as_slice())
+        || packet[8..10] != version.to_be_bytes()
         || packet[10] > 3
+        || matches!(recipe, ControllerGenesisReadbackRecipeV3::ProjectV3) && packet[10] == 0
         || packet[11..16] != [0; 5]
         || nonce == [0; 16]
         || controller_uid == 0
@@ -336,7 +435,7 @@ pub(super) fn verify(
     }
     pin.verifying_key()
         .verify_strict(
-            &[DOMAIN, &packet[..BODY_BYTES]].concat(),
+            &[domain, &packet[..BODY_BYTES]].concat(),
             &Signature::from_bytes(&take(packet, BODY_BYTES)?),
         )
         .map_err(|_| SourceGenesisErrorV1::NonCanonical)?;

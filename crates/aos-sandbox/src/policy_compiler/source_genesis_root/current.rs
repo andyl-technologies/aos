@@ -72,6 +72,46 @@ pub struct CurrentRootSourceGenesisFloorV1<'root> {
     source_packet: [u8; SOURCE_TREE_GENESIS_READBACK_BYTES_V1],
 }
 
+/// Retains the actual selected populated floor and complete mixed Root family.
+///
+/// This loan is constructed only by the held Root after its fresh independent
+/// Controller and Source completion join; it has no strict-v2 conversion.
+#[must_use = "retain the real mixed Root owner through Finish"]
+pub struct CurrentRootProjectSuccessorFloorV3<'root> {
+    owner: &'root RootSourceGenesisAuthorityV1,
+    archive: super::successor_owner::RootFirstSourceSuccessorArchiveV2,
+    completion: [u8; 96],
+}
+
+impl<'root> CurrentRootProjectSuccessorFloorV3<'root> {
+    pub(super) fn from_completed_owner(
+        owner: &'root RootSourceGenesisAuthorityV1,
+        archive: super::successor_owner::RootFirstSourceSuccessorArchiveV2,
+        completion: [u8; 96],
+    ) -> Result<Self, SourceGenesisErrorV1> {
+        let current = Self { owner, archive, completion };
+        current.recheck()?;
+        Ok(current)
+    }
+
+    /// Borrows the selected logical floor DATA without releasing its owner.
+    pub fn floor(&self) -> &super::RootFirstSourceSuccessorFloorV2 { &self.archive.floor }
+
+    /// Borrows the persisted admission DATA without renewing its original D.
+    pub fn original_intent(&self) -> &super::RootFirstSourceSuccessorIntentV2 { &self.archive.original }
+
+    /// Borrows the exact final floor, Controller Complete and Source ACK tuple.
+    pub const fn completion(&self) -> &[u8; 96] { &self.completion }
+
+    /// Rechecks the same owner and every retained mixed-family archive.
+    ///
+    /// # Errors
+    /// Rejects changed protected names, original custody or family joins.
+    pub fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
+        self.owner.require_current_project_successor_archive_v3(&self.archive)
+    }
+}
+
 impl CurrentRootSourceGenesisFloorV1<'_> {
     /// Borrows the exact semantic floor read from the retained Root writer.
     ///
@@ -95,6 +135,24 @@ impl CurrentRootSourceGenesisFloorV1<'_> {
 }
 
 impl RootSourceGenesisAuthorityV1 {
+    /// Borrows a completed initial-project floor under the distinct mixed owner.
+    ///
+    /// # Errors
+    /// Rejects missing actual Complete/ACK, changed role/cut or selected floor.
+    pub fn current_project_genesis_floor_v3(
+        &self, source_packet: &[u8],
+    ) -> Result<CurrentRootSourceProjectGenesisFloorV3<'_>, SourceGenesisErrorV1> {
+        self.recheck()?;
+        let accepted = self.accepted.as_ref().ok_or(SourceGenesisErrorV1::Stale)?;
+        let floor = self.floor(accepted.acceptance.project())?.ok_or(SourceGenesisErrorV1::Conflict)?;
+        self.confirm_project_genesis_ack_v3(source_packet, &floor)?;
+        let current = CurrentRootSourceProjectGenesisFloorV3 {
+            owner: self, floor,
+            source_packet: source_packet.try_into().map_err(|_| SourceGenesisErrorV1::NonCanonical)?,
+        };
+        current.recheck()?;
+        Ok(current)
+    }
     /// Borrows its actual current floor after the original settled owner join.
     ///
     /// Selection comes from the verified completed Controller input under this
@@ -130,6 +188,28 @@ impl RootSourceGenesisAuthorityV1 {
         };
         current.recheck()?;
         Ok(current)
+    }
+}
+
+/// Borrows the actual completed mixed initial-project Root owner and fixed cut.
+///
+/// This purpose cannot be exported as a strict V1 proof or public Create loan.
+pub struct CurrentRootSourceProjectGenesisFloorV3<'root> {
+    owner: &'root RootSourceGenesisAuthorityV1,
+    floor: SourceHierarchyFloorRecordV1,
+    source_packet: [u8; crate::policy_compiler::SOURCE_PROJECT_GENESIS_READBACK_BYTES_V3],
+}
+
+impl CurrentRootSourceProjectGenesisFloorV3<'_> {
+    /// Borrows logical floor DATA while the genuine Root owner remains held.
+    pub const fn floor(&self) -> &SourceHierarchyFloorRecordV1 { &self.floor }
+
+    /// Rechecks the same named Root, final Controller cut and Source ACK.
+    ///
+    /// # Errors
+    /// Rejects changed owner state or independent Source signature/current cut.
+    pub fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
+        self.owner.confirm_project_genesis_ack_v3(&self.source_packet, &self.floor)
     }
 }
 

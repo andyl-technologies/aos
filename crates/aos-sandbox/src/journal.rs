@@ -241,6 +241,23 @@ impl Default for JournalLimits {
     }
 }
 
+// Closed live crossings; neither the canonical transaction nor project DATA
+// can construct the genuine original Root borrower in the issuer arm.
+enum ProjectNativeTransitionV3<'cut, 'owner> {
+    Genesis(source_tree_successor::ProjectGenesisNativePhaseV3, source_tree_successor::ProjectGenesisNativeCutV3<'cut>),
+    #[cfg(target_os = "linux")]
+    Issuance {
+        transition: controller_source_successor_issuance::Transition,
+        completed: &'cut crate::policy_compiler::CompletedRootSourceProjectGenesisFloorV3<'cut, 'cut>,
+    },
+    #[cfg(target_os = "linux")]
+    FirstSuccessor(source_tree_successor::FirstSuccessorNativeCutV3<'cut, 'owner>),
+    // Selected producers are Linux-only; this uninhabited arm retains the
+    // owner's lifetime in the portable ordinary engine without issuing a cut.
+    #[cfg(not(target_os = "linux"))]
+    Unsupported(std::convert::Infallible, std::marker::PhantomData<&'owner ()>),
+}
+
 /// Selects the independently materialized keyspace changed by a record.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(u8)]
@@ -638,6 +655,10 @@ pub struct CommitResult {
 /// Reports journal validation, durability, and ownership failures.
 #[derive(Debug, thiserror::Error)]
 pub enum JournalError {
+    /// The selected genesis or successor original cut failed before append.
+    #[cfg(target_os = "linux")]
+    #[error(transparent)]
+    ProjectGenesisOriginal(Box<crate::hierarchy::genesis_profile::SourceGenesisErrorV1>),
     /// The same original Root flight failed its final physical/clock check.
     #[cfg(target_os = "linux")]
     #[error(transparent)]
@@ -3651,11 +3672,235 @@ impl Journal {
         source_genesis_transition: source_tree_genesis::SourceGenesisTransitionV1,
         root_genesis_transition: RootSourceGenesisTransitionV1,
         root_local_edge: Option<RootOwnerEdge>,
+        cache_gate: CacheMutationGateV1<'_>,
+        successor_issuance_transition: Option<controller_source_successor_issuance::Transition>,
+        #[cfg(target_os = "linux")]
+        q04_transition: Option<Q04JournalTransitionV1<'_>>,
+        first_successor: Option<FirstSourceSuccessorNativePhaseV2>,
+    ) -> Result<CommitResult, JournalError> {
+        self.commit_with_project_genesis_transition_v3(
+            transaction, settling_reservation, allow_capacity_records,
+            allow_policy_hold_transition, allow_host_fence_acquisition,
+            allow_host_currentness_fence_acquisition, allow_host_settlement_admission_append,
+            project_admission_transition, controller_genesis_transition,
+            source_genesis_transition, root_genesis_transition, root_local_edge, cache_gate,
+            successor_issuance_transition,
+            #[cfg(target_os = "linux")]
+            q04_transition,
+            first_successor, None,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn preflight_project_source_genesis_v3(
+        &self,
+        transactions: &[JournalTransaction],
+        transitions: &[source_tree_genesis::SourceGenesisTransitionV1],
+        project: aos_sandbox_core::ProjectId,
+    ) -> Result<(), JournalError> {
+        use source_tree_genesis::SourceGenesisTransitionV1 as Genesis;
+        use source_tree_successor::ProjectGenesisNativePhaseV3 as Phase;
+
+        let phases = [Phase::SourceAppend(project), Phase::SourceAck(project)];
+        let selected = match transitions {
+            [Genesis::Append, Genesis::Anchor] if transactions.len() == 2 => phases.as_slice(),
+            [Genesis::Anchor] if transactions.len() == 1 => &phases[1..],
+            _ => return Err(JournalError::ProtectedBoundary),
+        };
+        self.preflight_with_project_genesis_v3(
+            PreflightTransactionViewV1::Ordinary(transactions), None, false, false,
+            None, None, Some(transitions), None, CacheMutationGateV1::Ordinary,
+            None, None, Some(selected),
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn commit_project_genesis_append_v3(
+        &mut self,
+        transaction: &JournalTransaction,
+        root: &crate::policy_compiler::HeldRootSourceProjectGenesisIntentV3<'_>,
+    ) -> Result<CommitResult, JournalError> {
+        use source_tree_successor::{ProjectGenesisNativeCutV3 as Cut, ProjectGenesisNativePhaseV3 as Phase};
+        if self.protected_owner_uid()? != root.record().source_uid() {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        self.commit_with_project_genesis_transition_v3(
+            transaction, None, false, false, false, false, false,
+            SourceProjectAdmissionTransition::None,
+            controller_source_genesis::ControllerSourceGenesisTransition::None,
+            source_tree_genesis::SourceGenesisTransitionV1::Append,
+            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
+            None, None, None,
+            Some(ProjectNativeTransitionV3::Genesis(Phase::SourceAppend(root.record().project()), Cut::SourcePrepared(root))),
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn commit_project_genesis_ack_v3(
+        &mut self,
+        transaction: &JournalTransaction,
+        root: &crate::policy_compiler::RootSourceProjectGenesisFloorProofV3<'_>,
+    ) -> Result<CommitResult, JournalError> {
+        use source_tree_successor::{ProjectGenesisNativeCutV3 as Cut, ProjectGenesisNativePhaseV3 as Phase};
+        if self.protected_owner_uid()? != root.source_uid() {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        self.commit_with_project_genesis_transition_v3(
+            transaction, None, false, false, false, false, false,
+            SourceProjectAdmissionTransition::None,
+            controller_source_genesis::ControllerSourceGenesisTransition::None,
+            source_tree_genesis::SourceGenesisTransitionV1::Anchor,
+            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
+            None, None, None,
+            Some(ProjectNativeTransitionV3::Genesis(Phase::SourceAck(root.floor().project()), Cut::SourceAnchored(root))),
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn commit_controller_project_genesis_v3(
+        &mut self,
+        transaction: &JournalTransaction,
+        transition: controller_source_genesis::ControllerSourceGenesisTransition,
+        root: &crate::policy_compiler::RootSourceProjectGenesisFloorProofV3<'_>,
+    ) -> Result<CommitResult, JournalError> {
+        use controller_source_genesis::ControllerSourceGenesisTransition as Transition;
+        use source_tree_successor::{ProjectGenesisNativeCutV3 as Cut, ProjectGenesisNativePhaseV3 as Phase};
+        let phase = match transition {
+            Transition::FloorAck => Phase::ControllerFloorAck(root.floor().project()),
+            Transition::Complete => Phase::ControllerComplete(root.floor().project()),
+            _ => return Err(JournalError::ProtectedBoundary),
+        };
+        self.commit_with_project_genesis_transition_v3(
+            transaction, None, false, false, false, false, false,
+            SourceProjectAdmissionTransition::None, transition,
+            source_tree_genesis::SourceGenesisTransitionV1::None,
+            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
+            None, None, None, Some(ProjectNativeTransitionV3::Genesis(phase, Cut::SourceAnchored(root))),
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn commit_project_successor_issuance_v3(
+        &mut self, transaction: &JournalTransaction,
+        transition: controller_source_successor_issuance::Transition,
+        completed: &crate::policy_compiler::CompletedRootSourceProjectGenesisFloorV3<'_, '_>,
+    ) -> Result<CommitResult, JournalError> {
+        self.commit_with_project_genesis_transition_v3(
+            transaction, None, false, false, false, false, false,
+            SourceProjectAdmissionTransition::None,
+            controller_source_genesis::ControllerSourceGenesisTransition::None,
+            source_tree_genesis::SourceGenesisTransitionV1::None,
+            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
+            Some(transition), None, None,
+            Some(ProjectNativeTransitionV3::Issuance { transition, completed }),
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn preflight_root_project_genesis_prepared_v3(
+        &self,
+        prepared: &PreparedGlobalCapacityReservationV1,
+        transaction: &JournalTransaction,
+        project: aos_sandbox_core::ProjectId,
+    ) -> Result<(), JournalError> {
+        crate::policy_compiler::validate_root_source_genesis_capacity_admission_v1(self, transaction, &prepared.request)?;
+        if prepared.request.purpose != GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor
+            || transaction.id() != &prepared.admission_transaction_id
+            || transaction.records().iter().filter(|record| record.namespace() == RecordNamespace::GlobalCapacityReservation).ne([prepared.record()])
+        { return Err(JournalError::AuthorityPreflightMismatch); }
+        self.preflight_with_project_genesis_v3(
+            PreflightTransactionViewV1::Ordinary(std::slice::from_ref(transaction)), None, true, false,
+            None, None, None, None, CacheMutationGateV1::Ordinary, None, None,
+            Some(&[source_tree_successor::ProjectGenesisNativePhaseV3::RootPrepared(project)]),
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn commit_root_project_genesis_prepared_v3(
+        &mut self,
+        prepared: PreparedGlobalCapacityReservationV1,
+        transaction: &JournalTransaction,
+        project: aos_sandbox_core::ProjectId,
+        original: &aos_sandbox_core::RawPairedClockSample,
+        deadline: std::time::Instant,
+    ) -> Result<(CommitResult, GlobalCapacityReservationV1), JournalError> {
+        self.preflight_root_project_genesis_prepared_v3(&prepared, transaction, project)?;
+        let record_digest = Sha256::digest(prepared.record.value().ok_or(JournalError::InvalidTransaction)?).into();
+        let result = self.commit_with_project_genesis_transition_v3(
+            transaction, None, true, false, false, false, false,
+            SourceProjectAdmissionTransition::None,
+            controller_source_genesis::ControllerSourceGenesisTransition::None,
+            source_tree_genesis::SourceGenesisTransitionV1::None,
+            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
+            None, None, None, Some(ProjectNativeTransitionV3::Genesis(source_tree_successor::ProjectGenesisNativePhaseV3::RootPrepared(project),
+                source_tree_successor::ProjectGenesisNativeCutV3::RootServer { original, deadline })),
+        )?;
+        Ok((result, GlobalCapacityReservationV1 {
+            request: prepared.request, admission_transaction_id: prepared.admission_transaction_id,
+            reservation_id: prepared.reservation_id, record_digest,
+        }))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn preflight_root_project_genesis_anchor_v3(
+        &self,
+        reservation: &GlobalCapacityReservationV1,
+        transaction: &JournalTransaction,
+        project: aos_sandbox_core::ProjectId,
+    ) -> Result<(), JournalError> {
+        if reservation.request.purpose != GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        capacity_reservation::validate_settlement_shape(self, reservation, transaction)?;
+        self.preflight_with_project_genesis_v3(
+            PreflightTransactionViewV1::Ordinary(std::slice::from_ref(transaction)), Some(reservation.reservation_id), true, false,
+            None, None, None, None, CacheMutationGateV1::Ordinary, None, None,
+            Some(&[source_tree_successor::ProjectGenesisNativePhaseV3::RootAnchor(project)]),
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn commit_root_project_genesis_anchor_v3(
+        &mut self,
+        reservation: GlobalCapacityReservationV1,
+        transaction: &JournalTransaction,
+        project: aos_sandbox_core::ProjectId,
+        original: &aos_sandbox_core::RawPairedClockSample,
+        deadline: std::time::Instant,
+    ) -> Result<CommitResult, JournalError> {
+        self.preflight_root_project_genesis_anchor_v3(&reservation, transaction, project)?;
+        self.commit_with_project_genesis_transition_v3(
+            transaction, Some(reservation.reservation_id), true, false, false, false, false,
+            SourceProjectAdmissionTransition::None,
+            controller_source_genesis::ControllerSourceGenesisTransition::None,
+            source_tree_genesis::SourceGenesisTransitionV1::None,
+            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
+            None, None, None, Some(ProjectNativeTransitionV3::Genesis(source_tree_successor::ProjectGenesisNativePhaseV3::RootAnchor(project),
+                source_tree_successor::ProjectGenesisNativeCutV3::RootServer { original, deadline })),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_with_project_genesis_transition_v3(
+        &mut self,
+        transaction: &JournalTransaction,
+        settling_reservation: Option<[u8; 32]>,
+        allow_capacity_records: bool,
+        allow_policy_hold_transition: bool,
+        allow_host_fence_acquisition: bool,
+        allow_host_currentness_fence_acquisition: bool,
+        allow_host_settlement_admission_append: bool,
+        project_admission_transition: SourceProjectAdmissionTransition,
+        controller_genesis_transition: controller_source_genesis::ControllerSourceGenesisTransition,
+        source_genesis_transition: source_tree_genesis::SourceGenesisTransitionV1,
+        root_genesis_transition: RootSourceGenesisTransitionV1,
+        root_local_edge: Option<RootOwnerEdge>,
         mut cache_gate: CacheMutationGateV1<'_>,
         successor_issuance_transition: Option<controller_source_successor_issuance::Transition>,
         #[cfg(target_os = "linux")]
         q04_transition: Option<Q04JournalTransitionV1<'_>>,
         first_successor: Option<FirstSourceSuccessorNativePhaseV2>,
+        project_genesis: Option<ProjectNativeTransitionV3<'_, '_>>,
     ) -> Result<CommitResult, JournalError> {
         #[cfg(target_os = "linux")]
         if matches!(root_local_edge, Some(RootOwnerEdge::NixOfflineClosureData)) {
@@ -3663,9 +3908,25 @@ impl Journal {
             return Err(JournalError::ProtectedBoundary);
         }
         self.ensure_healthy()?;
-        let first_successor_settling = source_tree_successor::require_transition(
-            &self.state, transaction, first_successor,
-        )?;
+        let selected_successor = first_successor.is_some_and(|phase| phase != phase.canonical());
+        #[cfg(target_os = "linux")]
+        if selected_successor != matches!(&project_genesis, Some(ProjectNativeTransitionV3::FirstSuccessor(_))) {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        #[cfg(not(target_os = "linux"))]
+        if selected_successor {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        let first_successor_settling = if let Some(ProjectNativeTransitionV3::Genesis(phase, _)) = &project_genesis {
+            if first_successor.is_some() {
+                return Err(JournalError::ProtectedBoundary);
+            }
+            source_tree_successor::require_project_genesis_native_owner_v3(self, *phase)?;
+            source_tree_successor::require_project_genesis_family_v3(&self.state, transaction, *phase)?;
+            None
+        } else {
+            source_tree_successor::require_transition(&self.state, transaction, first_successor)?
+        };
         let settling_reservation = first_successor_settling.or(settling_reservation);
         if let Some(phase) = first_successor {
             source_tree_successor::require_live_custody(self, &self.state, transaction, phase)?;
@@ -3728,7 +3989,7 @@ impl Journal {
         controller_source_successor_issuance::require_no_mutation(
             &self.state,
             transaction,
-            first_successor.and_then(|phase| phase.controller_transition()).or(successor_issuance_transition),
+            first_successor.map(|phase| phase.controller_transition_for(transaction)).transpose()?.flatten().or(successor_issuance_transition),
         )?;
         source_tree_genesis::require_no_mutation(
             &self.state,
@@ -3916,6 +4177,48 @@ impl Journal {
 
         if let Some(phase) = first_successor {
             source_tree_successor::require_live_custody(self, &self.state, transaction, phase)?;
+        }
+
+        if let Some(ProjectNativeTransitionV3::Genesis(phase, original)) = &project_genesis {
+            source_tree_successor::require_project_genesis_native_owner_v3(self, *phase)?;
+            #[cfg(target_os = "linux")]
+            {
+                let admission_expiry = if matches!(phase, source_tree_successor::ProjectGenesisNativePhaseV3::RootPrepared(_)) {
+                    Some(crate::policy_compiler::RootSourceGenesisAuthorityV1::require_project_genesis_current_deployment_v3(self)
+                        .map_err(|error| JournalError::ProjectGenesisOriginal(Box::new(error)))?)
+                } else { None };
+                original.final_crossing(admission_expiry)
+                    .map_err(|cause| JournalError::ProjectGenesisOriginal(Box::new(cause)))?;
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = original;
+                return Err(JournalError::ProtectedBoundary);
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        if let Some(ProjectNativeTransitionV3::Issuance { transition, completed }) = &project_genesis {
+            let project = match transition {
+                controller_source_successor_issuance::Transition::ProjectSave(project)
+                | controller_source_successor_issuance::Transition::ProjectDelivered(project) => *project,
+                _ => return Err(JournalError::ProtectedBoundary),
+            };
+            if successor_issuance_transition != Some(*transition) || completed.floor().project() != project
+                || first_successor.is_some()
+            { return Err(JournalError::ProtectedBoundary); }
+            crate::hierarchy::controller_genesis::require_controller(self, self.protected_owner_uid()?)
+                .map_err(|cause| JournalError::ProjectGenesisOriginal(Box::new(cause)))?;
+            controller_source_successor_issuance::require_no_mutation(&self.state, transaction, Some(*transition))?;
+            completed.recheck().map_err(|cause| JournalError::ProjectGenesisOriginal(Box::new(cause)))?;
+            completed.signing_boundary_clock().map_err(|cause| JournalError::ProjectGenesisOriginal(Box::new(cause)))?;
+        }
+
+        #[cfg(target_os = "linux")]
+        if let Some(ProjectNativeTransitionV3::FirstSuccessor(original)) = &project_genesis {
+            let phase = first_successor.ok_or(JournalError::ProtectedBoundary)?;
+            original.final_crossing(self, transaction, phase)
+                .map_err(|cause| JournalError::ProjectGenesisOriginal(Box::new(cause)))?;
         }
 
         let durable_bytes = match append_and_sync(&mut self.file, &frames) {
@@ -4182,6 +4485,29 @@ impl Journal {
         allow_capacity_records: bool,
         allow_policy_hold_transition: bool,
         project_transitions: Option<&[SourceProjectAdmissionTransition]>,
+        controller_genesis_transitions: Option<&[controller_source_genesis::ControllerSourceGenesisTransition]>,
+        genesis_transitions: Option<&[source_tree_genesis::SourceGenesisTransitionV1]>,
+        root_local_edge: Option<RootOwnerEdge>,
+        cache_gate: CacheMutationGateV1<'_>,
+        successor_issuance_transitions: Option<&[controller_source_successor_issuance::Transition]>,
+        first_successors: Option<&[FirstSourceSuccessorNativePhaseV2]>,
+    ) -> Result<(), JournalError> {
+        self.preflight_with_project_genesis_v3(
+            transactions, settling_reservation, allow_capacity_records,
+            allow_policy_hold_transition, project_transitions, controller_genesis_transitions,
+            genesis_transitions, root_local_edge, cache_gate, successor_issuance_transitions,
+            first_successors, None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn preflight_with_project_genesis_v3(
+        &self,
+        transactions: PreflightTransactionViewV1<'_>,
+        settling_reservation: Option<[u8; 32]>,
+        allow_capacity_records: bool,
+        allow_policy_hold_transition: bool,
+        project_transitions: Option<&[SourceProjectAdmissionTransition]>,
         controller_genesis_transitions: Option<
             &[controller_source_genesis::ControllerSourceGenesisTransition],
         >,
@@ -4190,9 +4516,15 @@ impl Journal {
         mut cache_gate: CacheMutationGateV1<'_>,
         successor_issuance_transitions: Option<&[controller_source_successor_issuance::Transition]>,
         first_successors: Option<&[FirstSourceSuccessorNativePhaseV2]>,
+        project_genesis: Option<&[source_tree_successor::ProjectGenesisNativePhaseV3]>,
     ) -> Result<(), JournalError> {
         self.ensure_healthy()?;
         if first_successors.is_some_and(|phases| phases.len() != transactions.len()) {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        if project_genesis.is_some_and(|phases| phases.len() != transactions.len())
+            || project_genesis.is_some() && first_successors.is_some()
+        {
             return Err(JournalError::ProtectedBoundary);
         }
         #[cfg(target_os = "linux")]
@@ -4245,9 +4577,13 @@ impl Journal {
         for index in 0..transactions.len() {
             let transaction = transactions.transaction(index);
             let first_successor = first_successors.map(|phases| phases[index]);
-            let first_successor_settling = source_tree_successor::require_transition(
-                &state, transaction, first_successor,
-            )?;
+            let first_successor_settling = if let Some(phases) = project_genesis {
+                source_tree_successor::require_project_genesis_native_owner_v3(self, phases[index])?;
+                source_tree_successor::require_project_genesis_family_v3(&state, transaction, phases[index])?;
+                None
+            } else {
+                source_tree_successor::require_transition(&state, transaction, first_successor)?
+            };
             let allow_capacity_records = first_successor
                 .map_or(allow_capacity_records, |phase| phase.has_capacity_records());
             let settling_reservation = first_successor_settling.or(settling_reservation);
@@ -4295,7 +4631,7 @@ impl Journal {
             controller_source_successor_issuance::require_no_mutation(
                 &state,
                 transaction,
-                first_successor.and_then(|phase| phase.controller_transition())
+                first_successor.map(|phase| phase.controller_transition_for(transaction)).transpose()?.flatten()
                     .or_else(|| successor_issuance_transitions.map(|transitions| transitions[index])),
             )?;
             source_tree_genesis::require_no_mutation(

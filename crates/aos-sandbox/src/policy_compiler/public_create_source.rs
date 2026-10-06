@@ -75,8 +75,10 @@ mod gen1_ancestry;
 mod first_successor_ancestry;
 #[cfg(target_os = "linux")]
 pub(in crate::policy_compiler) use first_successor_ancestry::consume_completed_first_successor_ancestry_v2;
+pub(in crate::policy_compiler) use first_successor_ancestry::consume_completed_project_successor_ancestry_v3;
 #[cfg(target_os = "linux")]
 pub(in crate::policy_compiler) use gen1_ancestry::consume_completed_gen1_ancestry_v1;
+pub(in crate::policy_compiler) use gen1_ancestry::consume_completed_project_genesis_ancestry_v3;
 
 /// Reports a failed protected public-Create source join.
 #[derive(Debug, thiserror::Error)]

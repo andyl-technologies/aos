@@ -83,6 +83,324 @@ enum SourceGenesisLocationV1 {
     Test(PathBuf),
 }
 
+/// Borrows selected initial-project DATA under the real complete Source inventory.
+///
+/// The observation cannot outlive the resident inventory window. Its private
+/// storage does not export a strict V1 loan or independently grant an append.
+#[must_use = "retain the original inventory through the selected Root handoff"]
+pub struct HeldSourceProjectGenesisObservationV3<'loan> {
+    observed: HeldSourceTreeGenesisObservationV1<'loan>,
+    project: ProjectId,
+}
+
+impl HeldSourceProjectGenesisObservationV3<'_> {
+    /// Returns the actual selected initial-project phase as DATA.
+    pub fn state(&self) -> SourceTreeGenesisStateV1 { self.observed.state() }
+
+    /// Returns the project selected under the original inventory loan.
+    pub const fn project(&self) -> ProjectId { self.project }
+
+    /// Borrows the immutable initial receipt, absent only for genuine vacancy.
+    pub fn receipt(&self) -> Option<&SourceTreeGenesisReceiptV1> { self.observed.receipt() }
+
+    /// Returns the existing instance observed from all joined original receipts.
+    pub fn instance(&self) -> Option<[u8; 32]> { self.observed.instance() }
+
+    /// Returns the independently compared fixed writer UID.
+    pub const fn source_uid(&self) -> u32 { self.observed.uid }
+
+    /// Returns physical names for the independent signed readback comparison.
+    pub const fn names(&self) -> ProtectedJournalNamesV1 { self.observed.names }
+
+    /// Returns the unchanged original native watermark.
+    pub const fn snapshot_sequence(&self) -> u64 { self.observed.sequence }
+
+    /// Returns the selected actual original floor ACK commitment.
+    pub fn ack_floor_digest(&self) -> Option<ObjectDigest> { self.observed.ack_floor_digest() }
+
+    /// Returns the canonical local ACK record commitment.
+    pub fn ack_record_digest(&self) -> Option<ObjectDigest> { self.observed.ack_record_digest() }
+
+    /// Rechecks the same writer, watermark and complete selected family.
+    ///
+    /// # Errors
+    /// Rejects lost named custody, changed rows or any unsettled foreign member.
+    pub fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
+        self.observed.recheck()?;
+        self.observed.journal.source_project_genesis_rows_v3(self.project)?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn require_retained_inventory_v3(
+        &self,
+        inventory: &super::protected_journal::RetainedTreeInventoryDataV1<'_>,
+    ) -> Result<(), SourceGenesisErrorV1> {
+        self.recheck()?;
+        self.observed.require_retained_inventory_v1(inventory)
+    }
+}
+
+/// Parks one selected genesis action and every independent post-observation.
+///
+/// A failed append is never redispatched through this single-use reservoir.
+/// The preparation owns the actual canonical buffers and the native Result
+/// remains resident even when a later owner or clock check also fails.
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+pub(crate) struct SourceProjectGenesisMutationV3 {
+    preparation: Option<Result<(Option<JournalTransaction>, SourceTreeGenesisReceiptV1), SourceGenesisErrorV1>>,
+    native: Option<Result<crate::journal::CommitResult, crate::JournalError>>,
+    readback: Option<Result<(), SourceGenesisErrorV1>>,
+    controller_post: Option<Result<(), SourceGenesisErrorV1>>,
+    root_post: Option<Result<(), SourceGenesisErrorV1>>,
+    clock_post: Option<Result<(), SourceGenesisErrorV1>>,
+    source_post: Option<Result<(), SourceGenesisErrorV1>>,
+    first_failure: Option<ProjectGenesisMutationSiteV3>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+enum ProjectGenesisMutationSiteV3 { Preparation, Native, Readback, Controller, Root, Clock, Source }
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+enum ProjectGenesisRootPostsV3<'borrow, 'flight> {
+    Prepared(&'borrow crate::policy_compiler::HeldRootSourceProjectGenesisIntentV3<'flight>),
+    Anchored(&'borrow crate::policy_compiler::RootSourceProjectGenesisFloorProofV3<'flight>),
+}
+
+#[cfg(target_os = "linux")]
+impl SourceProjectGenesisMutationV3 {
+    pub(crate) fn new() -> Self { Self::default() }
+
+    pub(crate) fn error(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self.first_failure? {
+            ProjectGenesisMutationSiteV3::Preparation => self.preparation.as_ref()?.as_ref().err().map(|e| e as _),
+            ProjectGenesisMutationSiteV3::Native => self.native.as_ref()?.as_ref().err().map(|e| e as _),
+            ProjectGenesisMutationSiteV3::Readback => self.readback.as_ref()?.as_ref().err().map(|e| e as _),
+            ProjectGenesisMutationSiteV3::Controller => self.controller_post.as_ref()?.as_ref().err().map(|e| e as _),
+            ProjectGenesisMutationSiteV3::Root => self.root_post.as_ref()?.as_ref().err().map(|e| e as _),
+            ProjectGenesisMutationSiteV3::Clock => self.clock_post.as_ref()?.as_ref().err().map(|e| e as _),
+            ProjectGenesisMutationSiteV3::Source => self.source_post.as_ref()?.as_ref().err().map(|e| e as _),
+        }
+    }
+
+    fn latch(&mut self, site: ProjectGenesisMutationSiteV3, failed: bool) {
+        if failed && self.first_failure.is_none() { self.first_failure = Some(site); }
+    }
+
+    fn posts(
+        &mut self,
+        source: &ProtectedSourceDomainJournalOwnerV1,
+        controller: &HeldControllerSourceGenesisV1<'_>,
+        root: ProjectGenesisRootPostsV3<'_, '_>,
+    ) {
+        self.controller_post = Some(controller.recheck());
+        self.latch(ProjectGenesisMutationSiteV3::Controller, self.controller_post.as_ref().is_some_and(Result::is_err));
+        self.root_post = Some(match root {
+            ProjectGenesisRootPostsV3::Prepared(root) => root.recheck(),
+            ProjectGenesisRootPostsV3::Anchored(root) => root.recheck(),
+        });
+        self.latch(ProjectGenesisMutationSiteV3::Root, self.root_post.as_ref().is_some_and(Result::is_err));
+        self.clock_post = Some(match root {
+            ProjectGenesisRootPostsV3::Prepared(root) => root.independent_clock_v3(),
+            ProjectGenesisRootPostsV3::Anchored(root) => root.independent_clock_v3(),
+        });
+        self.latch(ProjectGenesisMutationSiteV3::Clock, self.clock_post.as_ref().is_some_and(Result::is_err));
+        self.source_post = Some(source.require_fixed_named_writer_v1().map_err(SourceGenesisErrorV1::from));
+        self.latch(ProjectGenesisMutationSiteV3::Source, self.source_post.as_ref().is_some_and(Result::is_err));
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn append_source_project_genesis_v3(
+    source: &mut ProtectedSourceDomainJournalOwnerV1,
+    controller: &HeldControllerSourceGenesisV1<'_>,
+    root: &crate::policy_compiler::HeldRootSourceProjectGenesisIntentV3<'_>,
+    resident: &mut SourceProjectGenesisMutationV3,
+) -> Result<(), ()> {
+    if resident.preparation.is_some() { return Err(()); }
+    resident.preparation = Some(prepare_project_genesis_append_v3(source, controller, root));
+    resident.latch(ProjectGenesisMutationSiteV3::Preparation, resident.preparation.as_ref().is_some_and(Result::is_err));
+    if let Some(Ok((Some(transaction), _))) = &resident.preparation {
+        resident.native = Some(source.journal().commit_project_genesis_append_v3(transaction, root));
+        resident.latch(ProjectGenesisMutationSiteV3::Native, resident.native.as_ref().is_some_and(Result::is_err));
+    }
+    if resident.first_failure.is_none() {
+        resident.readback = Some((|| {
+            let journal = source.journal();
+            journal.source_project_genesis_rows_v3(root.record().project())?;
+            let rows = journal.source_tree_genesis_rows_v1()?;
+            let (_, expected) = resident.preparation.as_ref().and_then(|r| r.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
+            if rows.receipts.get(&root.record().project()) != Some(expected) {
+                return Err(SourceGenesisErrorV1::Stale);
+            }
+            Ok(())
+        })());
+        resident.latch(ProjectGenesisMutationSiteV3::Readback, resident.readback.as_ref().is_some_and(Result::is_err));
+    }
+    resident.posts(source, controller, ProjectGenesisRootPostsV3::Prepared(root));
+    if resident.error().is_some() { Err(()) } else { Ok(()) }
+}
+
+#[cfg(target_os = "linux")]
+fn prepare_project_genesis_append_v3(
+    source: &mut ProtectedSourceDomainJournalOwnerV1,
+    controller: &HeldControllerSourceGenesisV1<'_>,
+    root: &crate::policy_compiler::HeldRootSourceProjectGenesisIntentV3<'_>,
+) -> Result<(Option<JournalTransaction>, SourceTreeGenesisReceiptV1), SourceGenesisErrorV1> {
+    controller.recheck()?;
+    root.recheck()?;
+    let intent = root.record();
+    let acceptance = controller.acceptance();
+    if intent.project() != acceptance.project() || intent.acceptance() != acceptance.digest() {
+        return Err(SourceGenesisErrorV1::Conflict);
+    }
+    let journal = source.journal();
+    require_location(journal, intent.source_uid())?;
+    journal.source_project_genesis_rows_v3(intent.project())?;
+    let rows = journal.source_tree_genesis_rows_v1()?;
+    if let Some(receipt) = rows.receipts.get(&intent.project()) {
+        if receipt.instance() != intent.instance() || receipt.intent_digest() != intent.digest()
+            || receipt.acceptance_digest() != acceptance.digest()
+            || &receipt.seed_packet() != acceptance.seed_packet()
+            || &receipt.auth_packet() != acceptance.auth_packet()
+            || rows.pending.as_ref().is_some_and(|pending| pending.project != intent.project()
+                || pending.nonce != intent.nonce()
+                || journal.protected_writer_physical_names_v1().ok() != Some(pending.names))
+        { return Err(SourceGenesisErrorV1::Conflict); }
+        return Ok((None, receipt.clone()));
+    }
+    controller.recheck_current_admission()?;
+    if rows.receipts.is_empty() || rows.pending.is_some()
+        || rows.receipts.values().any(|receipt| receipt.instance() != intent.instance())
+    { return Err(SourceGenesisErrorV1::Conflict); }
+    let id = transaction_id(b"append", intent.digest());
+    let pair = prepare_source_tree_genesis_pair_v1(journal, *acceptance.seed_packet(), id)?;
+    let [tree, lineage] = pair.records.as_slice() else { return Err(SourceGenesisErrorV1::NonCanonical); };
+    let receipt = SourceTreeGenesisReceiptV1::from_owner_fields(
+        intent.instance(), intent.digest(), acceptance, pair.tree_head, pair.lineage_head,
+        tree.value().ok_or(SourceGenesisErrorV1::NonCanonical)?,
+        lineage.value().ok_or(SourceGenesisErrorV1::NonCanonical)?,
+    )?;
+    let pending = SourceGenesisPendingV1 {
+        instance: intent.instance(), project: intent.project(), intent: intent.digest(),
+        receipt: receipt.digest(), nonce: intent.nonce(), names: journal.protected_writer_physical_names_v1()?,
+    };
+    let mut records = pair.records;
+    records.push(JournalRecord::put(RecordNamespace::DesiredState, receipt_key(intent.project()), receipt.encode().to_vec()));
+    records.push(JournalRecord::put(RecordNamespace::DesiredState, PENDING_KEY.to_vec(), pending.encode().to_vec()));
+    let append = JournalTransaction::new(id, records)?;
+    let suffix = ack_transaction(&SourceGenesisAckV1 {
+        instance: intent.instance(), project: intent.project(), receipt: receipt.digest(),
+        root_floor: ObjectDigest::from_bytes([1; 32]), controller_floor: ObjectDigest::from_bytes([1; 32]),
+    })?;
+    journal.preflight_project_source_genesis_v3(
+        &[append.clone(), suffix], &[SourceGenesisTransitionV1::Append, SourceGenesisTransitionV1::Anchor], intent.project(),
+    )?;
+    controller.recheck_current_admission()?;
+    require_location(journal, intent.source_uid())?;
+    root.native_crossing_clock_v3()?;
+    Ok((Some(append), receipt))
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn acknowledge_source_project_genesis_v3(
+    source: &mut ProtectedSourceDomainJournalOwnerV1,
+    controller: &HeldControllerSourceGenesisV1<'_>,
+    root: &crate::policy_compiler::RootSourceProjectGenesisFloorProofV3<'_>,
+    resident: &mut SourceProjectGenesisMutationV3,
+) -> Result<(), ()> {
+    if resident.preparation.is_some() { return Err(()); }
+    resident.preparation = Some((|| {
+        controller.recheck()?;
+        root.recheck()?;
+        let journal = source.journal();
+        require_location(journal, root.source_uid())?;
+        journal.source_project_genesis_rows_v3(root.floor().project())?;
+        let rows = journal.source_tree_genesis_rows_v1()?;
+        let receipt = rows.receipts.get(&root.floor().project()).ok_or(SourceGenesisErrorV1::Stale)?;
+        if receipt != root.floor().receipt() { return Err(SourceGenesisErrorV1::Conflict); }
+        controller.validate_source_ack(receipt, root.floor())?;
+        let ack = SourceGenesisAckV1 {
+            instance: receipt.instance(), project: receipt.project(), receipt: receipt.digest(),
+            root_floor: root.floor().digest(), controller_floor: controller.accepted_floor_digest()?,
+        };
+        let transaction = match rows.acks.get(&receipt.project()) {
+            Some(existing) if existing == &ack => None,
+            Some(_) => return Err(SourceGenesisErrorV1::Conflict),
+            None => {
+                let pending = rows.pending.as_ref().ok_or(SourceGenesisErrorV1::Stale)?;
+                if pending.project != receipt.project() || pending.receipt != receipt.digest()
+                    || pending.names != journal.protected_writer_physical_names_v1()?
+                { return Err(SourceGenesisErrorV1::Stale); }
+                let transaction = ack_transaction(&ack)?;
+                journal.preflight_project_source_genesis_v3(std::slice::from_ref(&transaction), &[SourceGenesisTransitionV1::Anchor], receipt.project())?;
+                Some(transaction)
+            }
+        };
+        Ok((transaction, receipt.clone()))
+    })());
+    resident.latch(ProjectGenesisMutationSiteV3::Preparation, resident.preparation.as_ref().is_some_and(Result::is_err));
+    if let Some(Ok((Some(transaction), _))) = &resident.preparation {
+        resident.native = Some(source.journal().commit_project_genesis_ack_v3(transaction, root));
+        resident.latch(ProjectGenesisMutationSiteV3::Native, resident.native.as_ref().is_some_and(Result::is_err));
+    }
+    if resident.first_failure.is_none() {
+        resident.readback = Some((|| {
+            let journal = source.journal();
+            journal.source_project_genesis_rows_v3(root.floor().project())?;
+            let rows = journal.source_tree_genesis_rows_v1()?;
+            let ack = rows.acks.get(&root.floor().project()).ok_or(SourceGenesisErrorV1::Stale)?;
+            if rows.pending.is_some() || ack.root_floor != root.floor().digest()
+                || ack.controller_floor != controller.accepted_floor_digest()?
+            { return Err(SourceGenesisErrorV1::Stale); }
+            Ok(())
+        })());
+        resident.latch(ProjectGenesisMutationSiteV3::Readback, resident.readback.as_ref().is_some_and(Result::is_err));
+    }
+    resident.posts(source, controller, ProjectGenesisRootPostsV3::Anchored(root));
+    if resident.error().is_some() { Err(()) } else { Ok(()) }
+}
+
+/// Observes only a genuine selected target under the owner-created inventory.
+///
+/// The supplied UID is comparison input from the independently retained Root
+/// profile, not an authority constructor. Both short loans end before append.
+///
+/// # Errors
+/// Rejects an unsafe original writer, incomplete foreign family, zero target,
+/// global Empty, or a foreign pending initial-project transaction.
+#[cfg(target_os = "linux")]
+pub(crate) fn observe_project_genesis_v3<'loan>(
+    inventory: &'loan super::protected_journal::RetainedTreeInventoryDataV1<'_>,
+    expected_source_uid: u32,
+    project: ProjectId,
+) -> Result<HeldSourceProjectGenesisObservationV3<'loan>, SourceGenesisErrorV1> {
+    inventory.recheck()?;
+    let journal = inventory.journal();
+    require_location(journal, expected_source_uid)?;
+    journal.source_project_genesis_rows_v3(project)?;
+    let rows = journal.source_tree_genesis_rows_v1()?;
+    if rows.receipts.is_empty()
+        || rows.pending.as_ref().is_some_and(|pending| pending.project != project)
+    {
+        return Err(SourceGenesisErrorV1::Conflict);
+    }
+    let selection = if rows.receipts.contains_key(&project) {
+        SourceGenesisSelectionV1::Present(project)
+    } else {
+        SourceGenesisSelectionV1::Vacant(project)
+    };
+    let observed = capture_validated_observation(
+        journal, expected_source_uid, selection, SourceGenesisLocationV1::Fixed, rows,
+    )?;
+    let selected = HeldSourceProjectGenesisObservationV3 { observed, project };
+    selected.require_retained_inventory_v3(inventory)?;
+    Ok(selected)
+}
+
 impl SourceGenesisLocationV1 {
     fn recheck(&self, journal: &Journal, uid: u32) -> Result<(), SourceGenesisErrorV1> {
         journal.ensure_healthy()?;

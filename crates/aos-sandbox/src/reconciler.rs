@@ -935,6 +935,19 @@ pub trait SingleNodeEffectExecutor {
         ))
     }
 
+    /// Issues selected project DATA using fresh credentials and a new Root flight.
+    ///
+    /// # Errors
+    /// Retains the genuine failed writer/credential loans until termination.
+    #[cfg(target_os = "linux")]
+    fn issue_project_source_successor_v3<'writers, 'profile, 'credentials>(
+        &'writers mut self, journal: &'writers mut Journal,
+        profile: &'profile crate::normal_root::ProductionControllerNormalRootProfileV1,
+        credentials: &'credentials mut crate::normal_root::SourceSuccessorCredentialCustodyV2<'profile>,
+    ) -> Result<crate::hierarchy::source_successor::SourceSuccessorApprovalDataV2, crate::policy_compiler::FailedSourceProjectSuccessorInvocationV3<'writers, 'profile, 'credentials>> {
+        Err(crate::policy_compiler::unavailable_project_issuer_v3(journal, profile, credentials))
+    }
+
     /// Completes only the actual retained first Source successor obligation.
     ///
     /// The default keeps selected failure custody; actual absence is inert.
@@ -972,6 +985,45 @@ pub trait SingleNodeEffectExecutor {
         crate::hierarchy::controller_genesis_input::ControllerSourceGenesisInputErrorV1,
     > {
         Err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::AdmissionClosed.into())
+    }
+
+    /// Coordinates genuine configured mixed genesis under resident originals.
+    ///
+    /// # Errors
+    /// Returns a resident failed writer loan; no ordinary fallback is attempted.
+    #[cfg(target_os = "linux")]
+    fn coordinate_configured_project_genesis_v3<'writers, 'profile>(
+        &'writers mut self, journal: &'writers mut Journal,
+        input: &'writers crate::hierarchy::controller_genesis_input::ProvisionedControllerSourceGenesisInputV1,
+        profile: &'profile crate::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<ObjectDigest, crate::policy_compiler::FailedConfiguredProjectGenesisInvocationV3<'writers, 'profile>> {
+        Err(crate::policy_compiler::unavailable_project_genesis_v3(journal, input, profile))
+    }
+
+    /// Coordinates the selected project history under genuine retained writers.
+    ///
+    /// # Errors
+    /// Returns the whole retaining failure when the actual Source owner is absent.
+    #[cfg(target_os = "linux")]
+    fn coordinate_project_successor_v3<'writers, 'profile>(
+        &'writers mut self, journal: &'writers mut Journal,
+        profile: &'profile crate::normal_root::ProductionControllerNormalRootProfileV1,
+        project: aos_sandbox_core::ProjectId,
+    ) -> Result<Option<ObjectDigest>, crate::policy_compiler::FailedProjectSuccessorInvocationV3<'writers, 'profile>> {
+        crate::policy_compiler::unavailable_project_successor_v3(journal, profile, project)
+    }
+
+    /// Settles the genuine global predecessor using explicitly mixed comparison.
+    ///
+    /// # Errors
+    /// Retains failed originals; no configured pair creates a Source owner.
+    #[cfg(target_os = "linux")]
+    fn coordinate_predecessor_successor_v3<'writers, 'profile>(
+        &'writers mut self, journal: &'writers mut Journal,
+        input: &'writers crate::hierarchy::controller_genesis_input::ProvisionedControllerSourceGenesisInputV1,
+        profile: &'profile crate::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<Option<ObjectDigest>, crate::policy_compiler::FailedProjectSuccessorInvocationV3<'writers, 'profile>> {
+        crate::policy_compiler::unavailable_predecessor_successor_v3(journal, profile, input)
     }
 
     /// Supplies advisory timing for one authority-bound attempt preparation.
@@ -1478,6 +1530,15 @@ where
     }
 
     #[cfg(target_os = "linux")]
+    pub(crate) fn issue_project_source_successor_v3<'writers, 'profile, 'credentials>(
+        &'writers mut self, profile: &'profile crate::normal_root::ProductionControllerNormalRootProfileV1,
+        credentials: &'credentials mut crate::normal_root::SourceSuccessorCredentialCustodyV2<'profile>,
+    ) -> Result<crate::hierarchy::source_successor::SourceSuccessorApprovalDataV2, crate::policy_compiler::FailedSourceProjectSuccessorInvocationV3<'writers, 'profile, 'credentials>> {
+        self.ledger_validated = false;
+        self.executor.issue_project_source_successor_v3(&mut self.journal, profile, credentials)
+    }
+
+    #[cfg(target_os = "linux")]
     pub(crate) fn coordinate_provisioned_source_genesis_v1(
         &mut self,
         input: &crate::hierarchy::controller_genesis_input::ProvisionedControllerSourceGenesisInputV1,
@@ -1492,11 +1553,40 @@ where
     }
 
     #[cfg(target_os = "linux")]
+    pub(crate) fn coordinate_configured_project_genesis_v3<'writers, 'profile>(
+        &'writers mut self,
+        input: &'writers crate::hierarchy::controller_genesis_input::ProvisionedControllerSourceGenesisInputV1,
+        profile: &'profile crate::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<ObjectDigest, crate::policy_compiler::FailedConfiguredProjectGenesisInvocationV3<'writers, 'profile>> {
+        self.ledger_validated = false;
+        self.executor.coordinate_configured_project_genesis_v3(&mut self.journal, input, profile)
+    }
+
+    #[cfg(target_os = "linux")]
     pub(crate) fn coordinate_retained_first_source_successor_v2<'writers, 'profile>(
         &'writers mut self, profile: &'profile crate::normal_root::ProductionControllerNormalRootProfileV1,
     ) -> Result<Option<ObjectDigest>, crate::policy_compiler::FailedOriginalFirstSourceSuccessorV2<'writers, 'profile>> {
         self.ledger_validated = false;
         self.executor.coordinate_retained_first_source_successor_v2(&mut self.journal, profile)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn coordinate_project_successor_v3<'writers, 'profile>(
+        &'writers mut self, profile: &'profile crate::normal_root::ProductionControllerNormalRootProfileV1,
+        project: aos_sandbox_core::ProjectId,
+    ) -> Result<Option<ObjectDigest>, crate::policy_compiler::FailedProjectSuccessorInvocationV3<'writers, 'profile>> {
+        self.ledger_validated = false;
+        self.executor.coordinate_project_successor_v3(&mut self.journal, profile, project)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn coordinate_predecessor_successor_v3<'writers, 'profile>(
+        &'writers mut self,
+        input: &'writers crate::hierarchy::controller_genesis_input::ProvisionedControllerSourceGenesisInputV1,
+        profile: &'profile crate::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<Option<ObjectDigest>, crate::policy_compiler::FailedProjectSuccessorInvocationV3<'writers, 'profile>> {
+        self.ledger_validated = false;
+        self.executor.coordinate_predecessor_successor_v3(&mut self.journal, input, profile)
     }
 
     /// Loads and validates an operation's durable ownership gate, when present.

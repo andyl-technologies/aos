@@ -29,6 +29,67 @@ use crate::publisher_policy::{PublisherPolicyLimits, PublisherPolicyStore};
 const CONTROLLER_ROOT: &str = "/var/lib/aos/sandboxd";
 const CONTROLLER_JOURNAL: &str = "controller.journal";
 
+/// Retains one selected initial-project settlement and its independent debts.
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+pub(crate) struct ControllerProjectGenesisMutationV3 {
+    preparation: Option<Result<Option<crate::journal::JournalTransaction>, SourceGenesisErrorV1>>,
+    native: Option<Result<crate::journal::CommitResult, crate::JournalError>>,
+    readback: Option<Result<(), SourceGenesisErrorV1>>,
+    posts: [Option<Result<(), SourceGenesisErrorV1>>; 4],
+    first_failure: Option<ControllerProjectGenesisSiteV3>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+enum ControllerProjectGenesisSiteV3 { Preparation, Native, Readback, Post(usize) }
+
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+pub(crate) struct ControllerProjectIssuanceMutationV3 {
+    preparation: Option<Result<Option<crate::JournalTransaction>, SourceGenesisErrorV1>>,
+    native: Option<Result<crate::CommitResult, crate::JournalError>>,
+    readback: Option<Result<(), SourceGenesisErrorV1>>,
+    posts: [Option<Result<(), SourceGenesisErrorV1>>; 4],
+    first_failure: Option<ControllerProjectGenesisSiteV3>,
+}
+
+#[cfg(target_os = "linux")]
+impl ControllerProjectIssuanceMutationV3 {
+    pub(crate) fn new() -> Self { Self::default() }
+
+    pub(crate) fn error(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self.first_failure? {
+            ControllerProjectGenesisSiteV3::Preparation => self.preparation.as_ref()?.as_ref().err().map(|e| e as _),
+            ControllerProjectGenesisSiteV3::Native => self.native.as_ref()?.as_ref().err().map(|e| e as _),
+            ControllerProjectGenesisSiteV3::Readback => self.readback.as_ref()?.as_ref().err().map(|e| e as _),
+            ControllerProjectGenesisSiteV3::Post(index) => self.posts.get(index)?.as_ref()?.as_ref().err().map(|e| e as _),
+        }
+    }
+
+    fn latch(&mut self, site: ControllerProjectGenesisSiteV3, failed: bool) {
+        if failed && self.first_failure.is_none() { self.first_failure = Some(site); }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl ControllerProjectGenesisMutationV3 {
+    pub(crate) fn new() -> Self { Self::default() }
+
+    pub(crate) fn error(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self.first_failure? {
+            ControllerProjectGenesisSiteV3::Preparation => self.preparation.as_ref()?.as_ref().err().map(|e| e as _),
+            ControllerProjectGenesisSiteV3::Native => self.native.as_ref()?.as_ref().err().map(|e| e as _),
+            ControllerProjectGenesisSiteV3::Readback => self.readback.as_ref()?.as_ref().err().map(|e| e as _),
+            ControllerProjectGenesisSiteV3::Post(index) => self.posts.get(index)?.as_ref()?.as_ref().err().map(|e| e as _),
+        }
+    }
+
+    fn latch(&mut self, site: ControllerProjectGenesisSiteV3, failed: bool) {
+        if failed && self.first_failure.is_none() { self.first_failure = Some(site); }
+    }
+}
+
 // This issuer path may only reborrow a real already completed predecessor.
 // It never accepts a new seed, runs genesis recovery or appends a bootstrap row.
 #[cfg(target_os = "linux")]
@@ -150,6 +211,183 @@ pub fn hold_controller_source_genesis_v1(
 }
 
 impl HeldControllerSourceGenesisV1<'_> {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn retained_project_successor_approval_v3(
+        &self,
+    ) -> Result<Option<super::source_successor::SourceSuccessorApprovalDataV2>, SourceGenesisErrorV1> {
+        self.recheck()?;
+        let journal = self.journal.try_borrow().map_err(|_| SourceGenesisErrorV1::Stale)?;
+        Ok(crate::journal::controller_source_successor_issuance::retained_project_v3(&journal, self.acceptance.project())?
+            .map(|saved| saved.packet))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn retain_project_successor_issuance_v3(
+        &self,
+        packet: &super::source_successor::SourceSuccessorApprovalDataV2,
+        source: &super::source_genesis::HeldSourceProjectGenesisObservationV3<'_>,
+        completed: &crate::policy_compiler::CompletedRootSourceProjectGenesisFloorV3<'_, '_>,
+        phase: crate::journal::controller_source_successor_issuance::Transition,
+        resident: &mut ControllerProjectIssuanceMutationV3,
+    ) -> Result<(), ()> {
+        use crate::journal::controller_source_successor_issuance::{IssuanceKeyRecipeV3, Transition};
+        if resident.preparation.is_some() { return Err(()); }
+        resident.preparation = Some((|| {
+            self.recheck()?;
+            source.recheck()?;
+            completed.recheck()?;
+            self.recheck_completed_project_genesis_v3(source)?;
+            let project = self.acceptance.project();
+            if phase.recipe() != IssuanceKeyRecipeV3::ProjectV3(project)
+                || !matches!(phase, Transition::ProjectSave(_) | Transition::ProjectDelivered(_))
+                || packet.intent()?.project() != project || completed.floor().project() != project
+                || packet.body()[144..176] != completed.floor().digest().as_bytes()[..]
+                || source.receipt() != Some(completed.floor().receipt())
+            { return Err(SourceGenesisErrorV1::Conflict); }
+            let journal = self.journal.try_borrow().map_err(|_| SourceGenesisErrorV1::Stale)?;
+            journal.preflight_project_successor_issuance_v3(packet)?;
+            journal.prepare_project_successor_issuance_v3(packet, phase).map_err(Into::into)
+        })());
+        resident.latch(ControllerProjectGenesisSiteV3::Preparation, resident.preparation.as_ref().is_some_and(Result::is_err));
+        if let Some(Ok(Some(transaction))) = &resident.preparation {
+            match self.journal.try_borrow_mut() {
+                Ok(mut journal) => resident.native = Some(journal.commit_project_successor_issuance_v3(transaction, phase, completed)),
+                Err(_) => resident.readback = Some(Err(SourceGenesisErrorV1::Stale)),
+            }
+            resident.latch(ControllerProjectGenesisSiteV3::Native, resident.native.as_ref().is_some_and(Result::is_err));
+            resident.latch(ControllerProjectGenesisSiteV3::Readback, resident.readback.as_ref().is_some_and(Result::is_err));
+        }
+        if resident.first_failure.is_none() {
+            resident.readback = Some((|| {
+                let journal = self.journal.try_borrow().map_err(|_| SourceGenesisErrorV1::Stale)?;
+                let actual = crate::journal::controller_source_successor_issuance::retained_project_v3(&journal, self.acceptance.project())?
+                    .ok_or(SourceGenesisErrorV1::Stale)?;
+                if actual.packet != *packet || matches!(phase, Transition::ProjectDelivered(_)) && !actual.delivered {
+                    return Err(SourceGenesisErrorV1::Stale);
+                }
+                Ok(())
+            })());
+            resident.latch(ControllerProjectGenesisSiteV3::Readback, resident.readback.as_ref().is_some_and(Result::is_err));
+        }
+        resident.posts[0] = Some(self.recheck());
+        resident.latch(ControllerProjectGenesisSiteV3::Post(0), resident.posts[0].as_ref().is_some_and(Result::is_err));
+        resident.posts[1] = Some(source.recheck());
+        resident.latch(ControllerProjectGenesisSiteV3::Post(1), resident.posts[1].as_ref().is_some_and(Result::is_err));
+        resident.posts[2] = Some(completed.recheck());
+        resident.latch(ControllerProjectGenesisSiteV3::Post(2), resident.posts[2].as_ref().is_some_and(Result::is_err));
+        resident.posts[3] = Some(completed.signing_boundary_clock().map(|_| ()));
+        resident.latch(ControllerProjectGenesisSiteV3::Post(3), resident.posts[3].as_ref().is_some_and(Result::is_err));
+        if resident.first_failure.is_some() { Err(()) } else { Ok(()) }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn publish_project_successor_issuance_v3(
+        &self, packet: &super::source_successor::SourceSuccessorApprovalDataV2, custody: &mut PublicationCustodyV2,
+    ) -> Result<(), SourceGenesisErrorV1> {
+        self.recheck()?;
+        self.journal.try_borrow().map_err(|_| SourceGenesisErrorV1::Stale)?.publish_project_successor_v3(packet, custody)?;
+        self.recheck()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn recheck_project_successor_publication_v3(
+        &self, packet: &super::source_successor::SourceSuccessorApprovalDataV2, custody: &mut PublicationCustodyV2,
+    ) -> Result<(), SourceGenesisErrorV1> {
+        self.recheck()?;
+        self.journal.try_borrow().map_err(|_| SourceGenesisErrorV1::Stale)?.recheck_project_successor_publication_v3(packet, custody)?;
+        self.recheck()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn settle_project_genesis_v3(
+        &mut self,
+        source: &super::source_genesis::HeldSourceProjectGenesisObservationV3<'_>,
+        root: &crate::policy_compiler::RootSourceProjectGenesisFloorProofV3<'_>,
+        complete: bool,
+        resident: &mut ControllerProjectGenesisMutationV3,
+    ) -> Result<(), ()> {
+        if resident.preparation.is_some() { return Err(()); }
+        let mut expected = None;
+        resident.preparation = Some((|| {
+            self.recheck()?;
+            source.recheck()?;
+            root.recheck()?;
+            require_floor(&self.acceptance, root.floor())?;
+            if source.project() != self.acceptance.project()
+                || source.receipt() != Some(root.floor().receipt())
+            { return Err(SourceGenesisErrorV1::Stale); }
+            let journal = self.journal.try_borrow().map_err(|_| SourceGenesisErrorV1::Stale)?;
+            let rows = records::rows(&journal, self.acceptance.project())?.ok_or(SourceGenesisErrorV1::Stale)?;
+            let (bytes, prior, transaction) = if complete {
+                if source.state() != SourceTreeGenesisStateV1::Anchored
+                    || source.ack_floor_digest() != Some(root.floor().digest())
+                { return Err(SourceGenesisErrorV1::Stale); }
+                let ack = rows.ack.ok_or(SourceGenesisErrorV1::Stale)?;
+                let bytes = records::complete_bytes(&ack, source.ack_record_digest().ok_or(SourceGenesisErrorV1::Stale)?, root.floor().digest())?;
+                let transaction = records::complete_transaction(self.acceptance.project(), &bytes)?;
+                (bytes, rows.complete, transaction)
+            } else {
+                let bytes = records::ack_bytes(self.acceptance.digest(), root.floor().digest(), root.floor().receipt_digest())?;
+                let transaction = records::ack_transaction(self.acceptance.project(), &bytes)?;
+                (bytes, rows.ack, transaction)
+            };
+            expected = Some(bytes);
+            match prior {
+                Some(prior) if prior == bytes => Ok(None),
+                Some(_) => Err(SourceGenesisErrorV1::Conflict),
+                None => Ok(Some(transaction)),
+            }
+        })());
+        resident.latch(ControllerProjectGenesisSiteV3::Preparation, resident.preparation.as_ref().is_some_and(Result::is_err));
+        if let Some(Ok(Some(transaction))) = &resident.preparation {
+            match self.journal.try_borrow_mut() {
+                Ok(mut journal) => resident.native = Some(journal.commit_controller_project_genesis_v3(
+                    transaction, if complete { Transition::Complete } else { Transition::FloorAck }, root,
+                )),
+                Err(_) => resident.readback = Some(Err(SourceGenesisErrorV1::Stale)),
+            }
+            resident.latch(ControllerProjectGenesisSiteV3::Native, resident.native.as_ref().is_some_and(Result::is_err));
+            resident.latch(ControllerProjectGenesisSiteV3::Readback, resident.readback.as_ref().is_some_and(Result::is_err));
+        }
+        if resident.first_failure.is_none() {
+            resident.readback = Some((|| {
+                let journal = self.journal.try_borrow().map_err(|_| SourceGenesisErrorV1::Stale)?;
+                let rows = records::rows(&journal, self.acceptance.project())?.ok_or(SourceGenesisErrorV1::Stale)?;
+                let actual = if complete { rows.complete } else { rows.ack };
+                if actual != expected { return Err(SourceGenesisErrorV1::Stale); }
+                Ok(())
+            })());
+            resident.latch(ControllerProjectGenesisSiteV3::Readback, resident.readback.as_ref().is_some_and(Result::is_err));
+        }
+        resident.posts[0] = Some(self.recheck());
+        resident.latch(ControllerProjectGenesisSiteV3::Post(0), resident.posts[0].as_ref().is_some_and(Result::is_err));
+        resident.posts[1] = Some(source.recheck());
+        resident.latch(ControllerProjectGenesisSiteV3::Post(1), resident.posts[1].as_ref().is_some_and(Result::is_err));
+        resident.posts[2] = Some(root.recheck());
+        resident.latch(ControllerProjectGenesisSiteV3::Post(2), resident.posts[2].as_ref().is_some_and(Result::is_err));
+        resident.posts[3] = Some(root.independent_clock_v3());
+        resident.latch(ControllerProjectGenesisSiteV3::Post(3), resident.posts[3].as_ref().is_some_and(Result::is_err));
+        if resident.error().is_some() { Err(()) } else { Ok(()) }
+    }
+
+    pub(crate) fn recheck_completed_project_genesis_v3(
+        &self,
+        source: &super::source_genesis::HeldSourceProjectGenesisObservationV3<'_>,
+    ) -> Result<(), SourceGenesisErrorV1> {
+        self.recheck()?;
+        source.recheck()?;
+        if source.project() != self.acceptance.project() || source.state() != SourceTreeGenesisStateV1::Anchored {
+            return Err(SourceGenesisErrorV1::Stale);
+        }
+        let journal = self.journal.try_borrow().map_err(|_| SourceGenesisErrorV1::Stale)?;
+        require_completed_source_ack(&journal, &self.acceptance,
+            source.receipt().ok_or(SourceGenesisErrorV1::Stale)?,
+            source.ack_floor_digest().ok_or(SourceGenesisErrorV1::Stale)?,
+            source.ack_record_digest().ok_or(SourceGenesisErrorV1::Stale)?,
+        )?;
+        source.recheck()?;
+        self.recheck()
+    }
     /// Borrows the immutable exact administrative acceptance.
     #[must_use]
     pub const fn acceptance(&self) -> &ControllerSourceGenesisAcceptanceRecordV1 {

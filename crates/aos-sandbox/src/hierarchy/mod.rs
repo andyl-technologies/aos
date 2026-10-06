@@ -40,11 +40,14 @@ pub use source_successor_materialization::{
 };
 #[cfg(target_os = "linux")]
 pub(crate) use source_successor_materialization::{
+    SourceSuccessorObservationViewV3,
+    SourceProjectContinuationEvidenceV3,
     first_source_successor_inventory_uid_v2, require_first_successor_context_v2,
     append_source_project_continuation_v3, acknowledge_source_project_continuation_v3,
 };
 pub(crate) use tree_lineage::validate_source_first_successor_members_v2;
 pub(crate) use tree_lineage::validate_source_project_continuation_members_v3;
+pub(crate) use tree_lineage::validate_source_project_genesis_members_v3;
 pub(crate) use tree_lineage::source_first_successor_tree_readback_v2;
 pub use source_genesis::{
     HeldSourceTreeGenesisObservationV1, SOURCE_TREE_GENESIS_RECEIPT_BYTES_V1,
@@ -53,5 +56,7 @@ pub use source_genesis::{
 };
 #[cfg(target_os = "linux")]
 pub use source_genesis::{acknowledge_source_tree_genesis_v1, append_source_tree_genesis_v1};
+#[cfg(target_os = "linux")]
+pub use source_genesis::HeldSourceProjectGenesisObservationV3;
 pub mod state;
 mod tree_lineage;

@@ -38,6 +38,7 @@ use super::controller_readback::{
 };
 use super::flight::{
     CompletedRootSourceGenesisFloorV1, OriginalRootGenesisFlightV1, OriginalRootGenesisReplyV1,
+    CompletedRootSourceProjectGenesisFloorV3,
 };
 use super::wire::RootSourceGenesisFrameKindV1 as WirePhase;
 
@@ -66,6 +67,334 @@ enum IssuerCause {
     Owner(#[from] SourceGenesisErrorV1),
     #[error(transparent)]
     Credential(#[from] SourceSuccessorCredentialErrorV2),
+}
+
+/// Parks a new project issuer only after the configured genesis flight ended.
+///
+/// Its credentials and Root connection are fresh originals. The completed
+/// genesis DATA returned by that earlier flight is deliberately not an input.
+#[must_use = "retain the project issuer through exact Finish or termination"]
+pub struct OriginalSourceProjectSuccessorInvocationV3<'writers, 'profile, 'credentials> {
+    journal: Option<&'writers mut Journal>,
+    source: Option<&'writers mut ProtectedSourceDomainJournalOwnerV1>,
+    profile: &'profile ProductionControllerNormalRootProfileV1,
+    credentials: &'credentials mut SourceSuccessorCredentialCustodyV2<'profile>,
+    controller: Option<Result<HeldControllerSourceGenesisV1<'writers>, SourceGenesisErrorV1>>,
+    raw: Option<OwnedFd>,
+    adopted: Option<RetainedUnixStream>,
+    flight: Option<OriginalRootGenesisFlightV1<'profile>>,
+    hello: Vec<u8>,
+    hello_received: Option<Result<aos_sandbox_linux::unix_stream::UnixStreamSubjectChunk, aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1>>,
+    connection: Option<Result<(), SourceGenesisErrorV1>>,
+    signatures: [Option<Result<[u8; super::controller_readback::CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1], SourceGenesisErrorV1>>; 2],
+    signature_posts: [Vec<Result<(), SourceGenesisErrorV1>>; 2],
+    io: [super::flight::ProjectGenesisFlightIoV3; 6],
+    signing: Option<Result<SourceSuccessorApprovalDataV2, SourceSuccessorCredentialErrorV2>>,
+    contexts: [Option<Result<(), IssuerCause>>; 4],
+    stages: [Option<Result<(), IssuerCause>>; 4],
+    saved: crate::hierarchy::controller_genesis::ControllerProjectIssuanceMutationV3,
+    delivered: crate::hierarchy::controller_genesis::ControllerProjectIssuanceMutationV3,
+    publication: PublicationCustodyV2,
+    action: Option<Result<SourceSuccessorApprovalDataV2, IssuerCause>>,
+    signer_admission: Option<Result<(), std::io::Error>>,
+    posts: Vec<Result<(), SourceGenesisErrorV1>>,
+    credential_posts: Vec<Result<(), SourceSuccessorCredentialErrorV2>>,
+    first_failure: Option<ProjectIssuerSiteV3>,
+    armed: bool,
+}
+
+#[derive(Clone, Copy)]
+enum ProjectIssuerSiteV3 {
+    Action, Controller, Connection, Signature(usize), SignaturePost(usize, usize), Io(usize),
+    Signing, Context(usize), Stage(usize), Saved, Delivered, OwnerPost(usize), CredentialPost(usize), Signer,
+}
+
+/// Retains every failed project issuer original until deliberate termination.
+#[must_use = "the failed project issuer must terminate without releasing originals"]
+pub struct FailedSourceProjectSuccessorInvocationV3<'writers, 'profile, 'credentials> {
+    original: OriginalSourceProjectSuccessorInvocationV3<'writers, 'profile, 'credentials>,
+}
+
+impl<'writers, 'profile, 'credentials> OriginalSourceProjectSuccessorInvocationV3<'writers, 'profile, 'credentials> {
+    /// Parks the actual executor writers, new credentials and selected profile.
+    pub fn park(
+        journal: &'writers mut Journal, source: &'writers mut ProtectedSourceDomainJournalOwnerV1,
+        profile: &'profile ProductionControllerNormalRootProfileV1,
+        credentials: &'credentials mut SourceSuccessorCredentialCustodyV2<'profile>,
+    ) -> Self {
+        Self::park_inner(journal, Some(source), profile, credentials)
+    }
+
+    fn park_inner(
+        journal: &'writers mut Journal, source: Option<&'writers mut ProtectedSourceDomainJournalOwnerV1>,
+        profile: &'profile ProductionControllerNormalRootProfileV1,
+        credentials: &'credentials mut SourceSuccessorCredentialCustodyV2<'profile>,
+    ) -> Self {
+        Self {
+            journal: Some(journal), source, profile, credentials, controller: None,
+            raw: None, adopted: None, flight: None, hello: Vec::new(), hello_received: None, connection: None,
+            signatures: std::array::from_fn(|_| None), signature_posts: std::array::from_fn(|_| Vec::new()),
+            io: std::array::from_fn(|_| super::flight::ProjectGenesisFlightIoV3::default()),
+            signing: None, contexts: std::array::from_fn(|_| None), stages: std::array::from_fn(|_| None),
+            saved: crate::hierarchy::controller_genesis::ControllerProjectIssuanceMutationV3::new(),
+            delivered: crate::hierarchy::controller_genesis::ControllerProjectIssuanceMutationV3::new(),
+            publication: PublicationCustodyV2::new(), action: None, signer_admission: None,
+            posts: Vec::new(), credential_posts: Vec::new(), first_failure: None, armed: true,
+        }
+    }
+
+    /// Runs once inside the unchanged fixed Controller signer callback.
+    pub fn run_with_controller_signer(&mut self, generation: u64, signer: &SigningKey) {
+        if self.action.is_some() || self.signer_admission.is_some() { return; }
+        self.action = Some(self.run_steps(generation, signer));
+        if self.action.as_ref().is_some_and(Result::is_err) && self.first_failure.is_none() {
+            self.first_failure = Some(ProjectIssuerSiteV3::Action);
+        }
+        self.final_posts();
+    }
+
+    /// Parks the fixed signer's real admission error on the prearmed owner.
+    pub fn fail_controller_signer_admission(&mut self, cause: std::io::Error) {
+        if self.signer_admission.is_some() { return; }
+        self.signer_admission = Some(Err(cause));
+        if self.first_failure.is_none() { self.first_failure = Some(ProjectIssuerSiteV3::Signer); }
+        self.final_posts();
+    }
+
+    fn final_posts(&mut self) {
+        if let Some(source) = self.source.as_deref() {
+            let index = self.posts.len();
+            self.posts.push(source.require_fixed_named_writer_v1().map_err(SourceGenesisErrorV1::from));
+            if self.posts[index].is_err() && self.first_failure.is_none() { self.first_failure = Some(ProjectIssuerSiteV3::OwnerPost(index)); }
+        }
+        if let Some(Ok(controller)) = &self.controller {
+            let index = self.posts.len();
+            self.posts.push(controller.recheck());
+            if self.posts[index].is_err() && self.first_failure.is_none() { self.first_failure = Some(ProjectIssuerSiteV3::OwnerPost(index)); }
+        }
+        let index = self.credential_posts.len();
+        self.credential_posts.push(self.credentials.recheck());
+        if self.credential_posts[index].is_err() && self.first_failure.is_none() { self.first_failure = Some(ProjectIssuerSiteV3::CredentialPost(index)); }
+        if let Some(flight) = &self.flight {
+            let index = self.posts.len();
+            self.posts.push(if self.action.as_ref().is_some_and(Result::is_ok) {
+                flight.original_terminal_clock().map(|_| ())
+            } else { flight.first_successor_clock().map(|_| ()) });
+            if self.posts[index].is_err() && self.first_failure.is_none() { self.first_failure = Some(ProjectIssuerSiteV3::OwnerPost(index)); }
+            let index = self.posts.len();
+            self.posts.push(flight.observe_first_successor_clock().map(|_| ()));
+            if self.posts[index].is_err() && self.first_failure.is_none() { self.first_failure = Some(ProjectIssuerSiteV3::OwnerPost(index)); }
+        }
+    }
+
+    fn run_steps(&mut self, generation: u64, signer: &SigningKey) -> Result<SourceSuccessorApprovalDataV2, IssuerCause> {
+        self.credentials.recheck()?;
+        let intent = self.credentials.intent()?;
+        let project = intent.project();
+        let journal = self.journal.as_deref().ok_or(SourceGenesisErrorV1::Stale)?;
+        let uid = journal.protected_owner_uid().map_err(SourceGenesisErrorV1::from)?;
+        journal.require_git_coverage_new_admission_v1().map_err(SourceGenesisErrorV1::from)?;
+        let journal = self.journal.take().ok_or(SourceGenesisErrorV1::Stale)?;
+        self.controller = Some(hold_existing_completed_source_genesis_v2(journal, project));
+        if self.controller.as_ref().is_some_and(Result::is_err) {
+            self.first_failure = Some(ProjectIssuerSiteV3::Controller); return Err(SourceGenesisErrorV1::Stale.into());
+        }
+        let controller = self.controller.as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
+        let source = self.source.as_deref_mut().ok_or(SourceGenesisErrorV1::AdmissionClosed)?;
+        source.require_fixed_named_writer_v1().map_err(SourceGenesisErrorV1::from)?;
+        {
+            let inventory = retained_tree_inventory_data_v1(source).map_err(SourceGenesisErrorV1::from)?;
+            let source_uid = inventory.journal().protected_owner_uid().map_err(SourceGenesisErrorV1::from)?;
+            let observed = crate::hierarchy::source_genesis::observe_project_genesis_v3(&inventory, source_uid, project)?;
+            controller.recheck_completed_project_genesis_v3(&observed)?;
+        }
+        // This is a NEW Root-last flight after genesis Finish and fresh issuer
+        // credential park. No earlier completed proof or deadline is accepted.
+        self.connection = Some(OriginalRootGenesisFlightV1::connect_project_genesis_parked_v3(
+            self.profile, &mut self.raw, &mut self.adopted, &mut self.flight, &mut self.hello, &mut self.hello_received, uid,
+        ));
+        if self.connection.as_ref().is_some_and(Result::is_err) {
+            self.first_failure = Some(ProjectIssuerSiteV3::Connection); return Err(SourceGenesisErrorV1::Stale.into());
+        }
+        let flight = self.flight.as_ref().ok_or(SourceGenesisErrorV1::Stale)?;
+        let inventory = retained_tree_inventory_data_v1(source).map_err(SourceGenesisErrorV1::from)?;
+        let observed = crate::hierarchy::source_genesis::observe_project_genesis_v3(&inventory, flight.first_successor_source_uid()?, project)?;
+        for (index, complete) in [false, true].into_iter().enumerate() {
+            if let Err(site) = super::controller_readback::capture_project_genesis_readback_v3(controller, &observed, generation, signer, flight, complete, &mut self.signatures[index], &mut self.signature_posts[index]) {
+                self.first_failure = Some(project_issuer_signature_site(index, site));
+                return Err(SourceGenesisErrorV1::Stale.into());
+            }
+            let packet = self.signatures[index].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
+            let phase = if complete { WirePhase::Complete } else { WirePhase::Prepare };
+            if flight.send_project_genesis_phase_v3(phase, packet, &mut self.io[index * 2]).is_err() {
+                self.first_failure = Some(ProjectIssuerSiteV3::Io(index * 2)); return Err(SourceGenesisErrorV1::Stale.into());
+            }
+            let expected = if complete { WirePhase::Completed } else { WirePhase::Anchored };
+            if flight.receive_project_genesis_phase_v3(&[expected], &mut self.io[index * 2 + 1]).is_err() {
+                self.first_failure = Some(ProjectIssuerSiteV3::Io(index * 2 + 1)); return Err(SourceGenesisErrorV1::Stale.into());
+            }
+        }
+        let floor = flight.project_genesis_floor_from_received_v3(controller, &self.io[1].payload)?;
+        let completed = flight.completed_project_genesis_from_received_v3(&floor, &self.io[3].payload)?;
+        super::super::public_create_source::consume_completed_project_genesis_ancestry_v3(controller, &observed, &inventory, &completed)?;
+        let issuer_generation = self.credentials.issuer_generation()?;
+        let clock = completed.signing_boundary_clock()?;
+        let body = derive_body_with_completed(controller, &inventory, CompletedGenesisRecipeV3::ProjectV3(&completed), intent, issuer_generation, clock)?;
+        self.signing = Some(match controller.retained_project_successor_approval_v3()? {
+            Some(packet) => {
+                (|| {
+                    self.credentials.verify_saved(&packet)?;
+                    require_saved_context(&packet, &body, clock)?;
+                    Ok(packet)
+                })()
+            }
+            None => {
+                let cut = SourceSuccessorSigningCutV3 { controller, inventory: &inventory, completed: &completed };
+                self.credentials.sign_project_approval_v3(&body, &cut)
+            }
+        });
+        if self.signing.as_ref().is_some_and(Result::is_err) {
+            self.first_failure.get_or_insert(ProjectIssuerSiteV3::Signing);
+        }
+        // Park the genuine signing/replay Result before observing every still
+        // available owner, original floor and credential independently.
+        project_issuer_posts(controller, &observed, &completed, self.credentials, &mut self.posts, &mut self.credential_posts, &mut self.first_failure);
+        if self.first_failure.is_some() { return Err(SourceGenesisErrorV1::Stale.into()); }
+        let packet = self.signing.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(SourceGenesisErrorV1::Stale)?.clone();
+        for index in 0..4 {
+            self.contexts[index] = Some(recheck_project_issuer_context(controller, &inventory, &completed, self.credentials, &packet));
+            if self.contexts[index].as_ref().is_some_and(Result::is_err) { self.first_failure.get_or_insert(ProjectIssuerSiteV3::Context(index)); }
+            project_issuer_posts(controller, &observed, &completed, self.credentials, &mut self.posts, &mut self.credential_posts, &mut self.first_failure);
+            if self.first_failure.is_some() { return Err(SourceGenesisErrorV1::Stale.into()); }
+            match index {
+                0 => {
+                    if controller.retain_project_successor_issuance_v3(&packet, &observed, &completed, crate::journal::controller_source_successor_issuance::Transition::ProjectSave(project), &mut self.saved).is_err() {
+                        self.first_failure = Some(ProjectIssuerSiteV3::Saved);
+                    }
+                }
+                1 => {
+                    self.stages[index] = Some(controller.publish_project_successor_issuance_v3(&packet, &mut self.publication).map_err(Into::into));
+                    if self.stages[index].as_ref().is_some_and(Result::is_err) { self.first_failure = Some(ProjectIssuerSiteV3::Stage(index)); }
+                }
+                2 => {
+                    if controller.retain_project_successor_issuance_v3(&packet, &observed, &completed, crate::journal::controller_source_successor_issuance::Transition::ProjectDelivered(project), &mut self.delivered).is_err() {
+                        self.first_failure = Some(ProjectIssuerSiteV3::Delivered);
+                    }
+                }
+                _ => {
+                    self.stages[index] = Some(controller.recheck_project_successor_publication_v3(&packet, &mut self.publication).map_err(Into::into));
+                    if self.stages[index].as_ref().is_some_and(Result::is_err) { self.first_failure = Some(ProjectIssuerSiteV3::Stage(index)); }
+                }
+            }
+            project_issuer_posts(controller, &observed, &completed, self.credentials, &mut self.posts, &mut self.credential_posts, &mut self.first_failure);
+            if self.first_failure.is_some() { return Err(SourceGenesisErrorV1::Stale.into()); }
+        }
+        if flight.send_project_genesis_phase_v3(WirePhase::Finish, completed.floor().digest().as_bytes(), &mut self.io[4]).is_err() {
+            self.first_failure = Some(ProjectIssuerSiteV3::Io(4)); return Err(SourceGenesisErrorV1::Stale.into());
+        }
+        if flight.receive_project_genesis_phase_v3(&[WirePhase::Finish], &mut self.io[5]).is_err() {
+            self.first_failure = Some(ProjectIssuerSiteV3::Io(5)); return Err(SourceGenesisErrorV1::Stale.into());
+        }
+        if self.io[5].payload != completed.floor().digest().as_bytes() { return Err(SourceGenesisErrorV1::Conflict.into()); }
+        Ok(packet)
+    }
+
+    /// Returns completed approval DATA or the whole resident failed owner.
+    ///
+    /// # Errors
+    /// Retains every incomplete flight, original writer and negative result.
+    pub fn into_outcome(mut self) -> Result<SourceSuccessorApprovalDataV2, FailedSourceProjectSuccessorInvocationV3<'writers, 'profile, 'credentials>> {
+        if self.first_failure.is_none() {
+            if let Some(Ok(packet)) = &self.action { let packet = packet.clone(); self.armed = false; return Ok(packet); }
+        }
+        Err(FailedSourceProjectSuccessorInvocationV3 { original: self })
+    }
+}
+
+fn recheck_project_issuer_context(
+    controller: &HeldControllerSourceGenesisV1<'_>, inventory: &RetainedTreeInventoryDataV1<'_>,
+    completed: &CompletedRootSourceProjectGenesisFloorV3<'_, '_>, credentials: &mut SourceSuccessorCredentialCustodyV2<'_>,
+    packet: &SourceSuccessorApprovalDataV2,
+) -> Result<(), IssuerCause> {
+    credentials.recheck()?;
+    let clock = completed.signing_boundary_clock()?;
+    let body = derive_body_with_completed(controller, inventory, CompletedGenesisRecipeV3::ProjectV3(completed), credentials.intent()?, credentials.issuer_generation()?, clock)?;
+    require_saved_context(packet, &body, clock)?;
+    credentials.verify_saved(packet)?;
+    completed.recheck().map_err(Into::into)
+}
+
+fn project_issuer_posts(
+    controller: &HeldControllerSourceGenesisV1<'_>, source: &crate::hierarchy::source_genesis::HeldSourceProjectGenesisObservationV3<'_>,
+    completed: &CompletedRootSourceProjectGenesisFloorV3<'_, '_>, credentials: &mut SourceSuccessorCredentialCustodyV2<'_>,
+    posts: &mut Vec<Result<(), SourceGenesisErrorV1>>, credential_posts: &mut Vec<Result<(), SourceSuccessorCredentialErrorV2>>,
+    first: &mut Option<ProjectIssuerSiteV3>,
+) {
+    park_project_issuer_post(posts, first, controller.recheck());
+    park_project_issuer_post(posts, first, source.recheck());
+    park_project_issuer_post(posts, first, completed.recheck());
+    park_project_issuer_post(posts, first, completed.signing_boundary_clock().map(|_| ()));
+    let index = credential_posts.len(); credential_posts.push(credentials.recheck());
+    if credential_posts[index].is_err() && first.is_none() { *first = Some(ProjectIssuerSiteV3::CredentialPost(index)); }
+}
+
+fn park_project_issuer_post(
+    posts: &mut Vec<Result<(), SourceGenesisErrorV1>>, first: &mut Option<ProjectIssuerSiteV3>,
+    result: Result<(), SourceGenesisErrorV1>,
+) {
+    let index = posts.len(); posts.push(result);
+    if posts[index].is_err() && first.is_none() { *first = Some(ProjectIssuerSiteV3::OwnerPost(index)); }
+}
+
+fn project_issuer_signature_site(
+    index: usize, site: super::controller_readback::ProjectGenesisSignatureFailureV3,
+) -> ProjectIssuerSiteV3 {
+    match site {
+        super::controller_readback::ProjectGenesisSignatureFailureV3::Signature => ProjectIssuerSiteV3::Signature(index),
+        super::controller_readback::ProjectGenesisSignatureFailureV3::Post(post) => ProjectIssuerSiteV3::SignaturePost(index, post),
+        super::controller_readback::ProjectGenesisSignatureFailureV3::Refused => ProjectIssuerSiteV3::Action,
+    }
+}
+
+impl FailedSourceProjectSuccessorInvocationV3<'_, '_, '_> {
+    /// Borrows the same resident chronological cause without new observations.
+    pub fn first_cause(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        let original = &self.original;
+        match original.first_failure? {
+            ProjectIssuerSiteV3::Action => original.action.as_ref()?.as_ref().err().map(|e| e as _),
+            ProjectIssuerSiteV3::Controller => original.controller.as_ref()?.as_ref().err().map(|e| e as _),
+            ProjectIssuerSiteV3::Connection => original.hello_received.as_ref().and_then(|r| r.as_ref().err()).map(|e| e as _)
+                .or_else(|| original.connection.as_ref()?.as_ref().err().map(|e| e as _)),
+            ProjectIssuerSiteV3::Signature(index) => original.signatures.get(index)?.as_ref()?.as_ref().err().map(|e| e as _),
+            ProjectIssuerSiteV3::SignaturePost(index, post) => original.signature_posts.get(index)?.get(post)?.as_ref().err().map(|e| e as _),
+            ProjectIssuerSiteV3::Io(index) => original.io.get(index)?.error(),
+            ProjectIssuerSiteV3::Signing => original.signing.as_ref()?.as_ref().err().map(|e| e as _),
+            ProjectIssuerSiteV3::Context(index) => original.contexts.get(index)?.as_ref()?.as_ref().err().map(|e| e as _),
+            ProjectIssuerSiteV3::Stage(index) => original.stages.get(index)?.as_ref()?.as_ref().err().map(|e| e as _),
+            ProjectIssuerSiteV3::Saved => original.saved.error(), ProjectIssuerSiteV3::Delivered => original.delivered.error(),
+            ProjectIssuerSiteV3::OwnerPost(index) => original.posts.get(index)?.as_ref().err().map(|e| e as _),
+            ProjectIssuerSiteV3::CredentialPost(index) => original.credential_posts.get(index)?.as_ref().err().map(|e| e as _),
+            ProjectIssuerSiteV3::Signer => original.signer_admission.as_ref()?.as_ref().err().map(|e| e as _),
+        }
+    }
+
+    /// Terminates while every original borrower and negative result is resident.
+    pub fn terminate_failed(self) -> ! { std::process::exit(1) }
+}
+
+impl Drop for OriginalSourceProjectSuccessorInvocationV3<'_, '_, '_> {
+    fn drop(&mut self) { if self.armed { self.credentials.end_failed(); std::process::abort(); } }
+}
+
+pub(crate) fn unavailable_project_issuer_v3<'writers, 'profile, 'credentials>(
+    journal: &'writers mut Journal, profile: &'profile ProductionControllerNormalRootProfileV1,
+    credentials: &'credentials mut SourceSuccessorCredentialCustodyV2<'profile>,
+) -> FailedSourceProjectSuccessorInvocationV3<'writers, 'profile, 'credentials> {
+    let mut original = OriginalSourceProjectSuccessorInvocationV3::park_inner(journal, None, profile, credentials);
+    original.action = Some(Err(SourceGenesisErrorV1::AdmissionClosed.into()));
+    original.first_failure = Some(ProjectIssuerSiteV3::Action);
+    FailedSourceProjectSuccessorInvocationV3 { original }
 }
 
 /// Parks one original issuer attempt over the SAME genuine resident writers.
@@ -108,6 +437,44 @@ pub(crate) struct SourceSuccessorSigningCutV2<'cut, 'controller, 'source, 'compl
     controller: &'cut HeldControllerSourceGenesisV1<'controller>,
     inventory: &'cut RetainedTreeInventoryDataV1<'source>,
     completed: &'cut CompletedRootSourceGenesisFloorV1<'completed, 'flight>,
+}
+
+pub(crate) struct SourceSuccessorSigningCutV3<'cut, 'controller, 'source, 'completed, 'flight> {
+    controller: &'cut HeldControllerSourceGenesisV1<'controller>,
+    inventory: &'cut RetainedTreeInventoryDataV1<'source>,
+    completed: &'cut CompletedRootSourceProjectGenesisFloorV3<'completed, 'flight>,
+}
+
+#[derive(Clone, Copy)]
+enum CompletedGenesisRecipeV3<'cut, 'completed, 'flight> {
+    StrictV2(&'cut CompletedRootSourceGenesisFloorV1<'completed, 'flight>),
+    ProjectV3(&'cut CompletedRootSourceProjectGenesisFloorV3<'completed, 'flight>),
+}
+
+impl CompletedGenesisRecipeV3<'_, '_, '_> {
+    fn recheck(self) -> Result<(), SourceGenesisErrorV1> {
+        match self { Self::StrictV2(proof) => proof.recheck(), Self::ProjectV3(proof) => proof.recheck() }
+    }
+
+    fn floor(&self) -> &super::records::SourceHierarchyFloorRecordV1 {
+        match self { Self::StrictV2(proof) => proof.floor(), Self::ProjectV3(proof) => proof.floor() }
+    }
+}
+
+impl SourceSuccessorSigningCutV3<'_, '_, '_, '_, '_> {
+    pub(crate) fn recheck_before_signature(
+        &self, prepared: &[u8; BODY_BYTES], intent: SourceSuccessorIntentDataV2, issuer_generation: u64,
+    ) -> Result<(), SourceGenesisErrorV1> {
+        let clock = self.completed.signing_boundary_clock()?;
+        let current = derive_body_with_completed(
+            self.controller, self.inventory, CompletedGenesisRecipeV3::ProjectV3(self.completed),
+            intent, issuer_generation, clock,
+        )?;
+        self.inventory.recheck().map_err(SourceGenesisErrorV1::from)?;
+        self.controller.recheck()?;
+        let clock = self.completed.signing_boundary_clock()?;
+        require_body_context(prepared, &current, clock)
+    }
 }
 
 impl SourceSuccessorSigningCutV2<'_, '_, '_, '_, '_> {
@@ -393,6 +760,14 @@ fn derive_body(
     intent: SourceSuccessorIntentDataV2,
     issuer_generation: u64,
     clock: RawPairedClockSample,
+) -> Result<[u8; BODY_BYTES], SourceGenesisErrorV1> {
+    derive_body_with_completed(controller, inventory, CompletedGenesisRecipeV3::StrictV2(completed), intent, issuer_generation, clock)
+}
+
+fn derive_body_with_completed(
+    controller: &HeldControllerSourceGenesisV1<'_>, inventory: &RetainedTreeInventoryDataV1<'_>,
+    completed: CompletedGenesisRecipeV3<'_, '_, '_>, intent: SourceSuccessorIntentDataV2,
+    issuer_generation: u64, clock: RawPairedClockSample,
 ) -> Result<[u8; BODY_BYTES], SourceGenesisErrorV1> {
     completed.recheck()?;
     let floor = completed.floor();

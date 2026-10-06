@@ -1,14 +1,18 @@
-//! Resident consumer of the one genuinely retained first-successor approval.
+//! Resident consumers of genuinely retained first-successor approvals.
 //!
 //! Controller phase ownership retains its mutable Journal loan. Inventory is
 //! only a short authentic comparison loan and ends before Source mutation.
 //! Returned failure keeps the original writers, selected profile and all action
 //! Results resident until deliberate termination. No approval DATA opens Delete.
+//! Global strict, global mixed comparison and project-scoped recipes share one
+//! ordered flight and mutation loop. Key selection stays independent of wire
+//! comparison purpose. Six mixed evidence slots own complete decoded maps after
+//! each short Source loan ends; none can reconstruct a live observation.
 
 use std::cell::RefCell;
 use std::os::fd::{AsFd as _, OwnedFd};
 
-use aos_sandbox_core::{DesiredGeneration, ObjectDigest};
+use aos_sandbox_core::{DesiredGeneration, ObjectDigest, ProjectId};
 use ed25519_dalek::{Signature, Signer as _, SigningKey};
 use aos_sandbox_linux::unix_stream::{RetainedUnixStream, UnixStreamSubjectChunk};
 use aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1;
@@ -32,6 +36,10 @@ use crate::journal::{CommitResult, Journal, JournalError, JournalRecord, Journal
 use crate::public_api_session::{PinnedSystemdCredential, PublicApiSessionError};
 use crate::publisher_policy::{PinnedPublisherProjectAuthorizationIssuerV2, verify_signed_project_authorization_claims_v2};
 use crate::hierarchy::source_seed::PinnedControllerSourceTreeSeedIssuerV1;
+use crate::hierarchy::{
+    SourceSuccessorObservationViewV3, observe_source_project_continuation_v3,
+};
+use issuance::IssuanceKeyRecipeV3;
 use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use crate::normal_root::ProductionControllerNormalRootProfileV1;
 
@@ -49,6 +57,26 @@ const CONTROLLER_OBSERVATION_BODY: usize = CONTROLLER_OBSERVATION_BYTES - 64;
 const OBSERVATION_MAGIC: &[u8; 8] = b"AOSCSO02";
 const OBSERVATION_DOMAIN: &[u8] =
     b"aos.sandbox.source-first-successor.controller-held-observation.signature.v2\0";
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum ControllerSuccessorSignatureRecipeV3 { StrictV2, MixedV3 }
+
+impl ControllerSuccessorSignatureRecipeV3 {
+    const fn magic(self) -> &'static [u8; 8] {
+        match self { Self::StrictV2 => OBSERVATION_MAGIC, Self::MixedV3 => b"AOSCSO03" }
+    }
+
+    const fn version(self) -> u8 {
+        match self { Self::StrictV2 => 2, Self::MixedV3 => 3 }
+    }
+
+    const fn domain(self) -> &'static [u8] {
+        match self {
+            Self::StrictV2 => OBSERVATION_DOMAIN,
+            Self::MixedV3 => b"aos.sandbox.source-first-successor.controller-held-observation.signature.v3\0",
+        }
+    }
+}
 
 /// Identifies the original first-successor boundary without granting progress.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -86,6 +114,8 @@ pub enum FirstSourceSuccessorSelectionV2 {
 // append-only resident Results; later independent debt cannot replace them.
 #[derive(Clone, Copy)]
 enum ResidentFailureSiteV2 {
+    SourceObservation(usize),
+    ConfiguredInput,
     Selection,
     SeedPin,
     AuthorizationPin,
@@ -216,6 +246,84 @@ pub struct OriginalFirstSourceSuccessorInvocationV2<'writers, 'profile> {
     outcome: Option<Option<ObjectDigest>>,
     started: bool,
     armed: bool,
+    recipe: StartupSuccessorRecipeV3,
+    configured: Option<&'writers crate::hierarchy::controller_genesis_input::ProvisionedControllerSourceGenesisInputV1>,
+    configured_result: Option<Result<(), crate::hierarchy::controller_genesis_input::ControllerSourceGenesisInputErrorV1>>,
+    source_evidence: [Option<crate::hierarchy::SourceProjectContinuationEvidenceV3>; 6],
+}
+
+#[derive(Clone, Copy)]
+enum StartupSuccessorRecipeV3 { GlobalStrictV2, GlobalMixedV3, ProjectMixedV3(ProjectId) }
+
+impl StartupSuccessorRecipeV3 {
+    fn keys(self) -> IssuanceKeyRecipeV3 {
+        match self { Self::GlobalStrictV2 | Self::GlobalMixedV3 => IssuanceKeyRecipeV3::GlobalV2, Self::ProjectMixedV3(project) => IssuanceKeyRecipeV3::ProjectV3(project) }
+    }
+
+    fn comparison(self) -> ControllerSuccessorSignatureRecipeV3 {
+        match self { Self::GlobalStrictV2 => ControllerSuccessorSignatureRecipeV3::StrictV2, Self::GlobalMixedV3 | Self::ProjectMixedV3(_) => ControllerSuccessorSignatureRecipeV3::MixedV3 }
+    }
+}
+
+/// Parks the genuine selected writer pair for the project-scoped consumer.
+#[must_use = "retain the whole selected invocation through Finish or termination"]
+pub struct OriginalProjectSuccessorInvocationV3<'writers, 'profile> {
+    common: OriginalFirstSourceSuccessorInvocationV2<'writers, 'profile>,
+}
+
+/// Retains the selected original writers and chronological failed Results.
+#[must_use = "retain the failed selected owner until deliberate termination"]
+pub struct FailedProjectSuccessorInvocationV3<'writers, 'profile> {
+    common: FailedOriginalFirstSourceSuccessorV2<'writers, 'profile>,
+}
+
+impl<'writers, 'profile> OriginalProjectSuccessorInvocationV3<'writers, 'profile> {
+    /// Parks actual owners before the unchanged fixed signer callback.
+    pub fn park(
+        journal: &'writers mut Journal, source: &'writers mut ProtectedSourceDomainJournalOwnerV1,
+        profile: &'profile ProductionControllerNormalRootProfileV1, project: ProjectId,
+    ) -> Self {
+        let mut common = OriginalFirstSourceSuccessorInvocationV2::park_inner(journal, Some(source), profile);
+        common.recipe = StartupSuccessorRecipeV3::ProjectMixedV3(project);
+        Self { common }
+    }
+
+    /// Parks the actual global predecessor before a genuinely configured B pair.
+    pub fn park_predecessor(
+        journal: &'writers mut Journal, source: &'writers mut ProtectedSourceDomainJournalOwnerV1,
+        profile: &'profile ProductionControllerNormalRootProfileV1,
+        configured: &'writers crate::hierarchy::controller_genesis_input::ProvisionedControllerSourceGenesisInputV1,
+    ) -> Self {
+        let mut common = OriginalFirstSourceSuccessorInvocationV2::park_inner(journal, Some(source), profile);
+        common.recipe = StartupSuccessorRecipeV3::GlobalMixedV3;
+        common.configured = Some(configured);
+        Self { common }
+    }
+
+    /// Selects actual complete retained histories without minting admission.
+    pub fn select_retained_before_signer(&mut self) -> FirstSourceSuccessorSelectionV2 { self.common.select_retained_before_signer() }
+    /// Runs the same ordered producer under the existing signer loan.
+    pub fn run_with_controller_signer(&mut self, generation: u64, signer: &SigningKey) { self.common.run_with_controller_signer(generation, signer); }
+    /// Parks actual fixed signer admission failure on the prearmed owner.
+    pub fn fail_controller_signer_admission(&mut self, error: std::io::Error) { self.common.fail_controller_signer_admission(error); }
+    /// Returns comparison completion DATA or the whole failed selected owner.
+    ///
+    /// # Errors
+    /// Refuses incomplete work while retaining original resources and debt.
+    pub fn into_outcome(self) -> Result<Option<ObjectDigest>, FailedProjectSuccessorInvocationV3<'writers, 'profile>> {
+        self.common.into_outcome().map_err(|common| FailedProjectSuccessorInvocationV3 { common })
+    }
+}
+
+impl FailedProjectSuccessorInvocationV3<'_, '_> {
+    /// Borrows the actual chronological resident cause without observation.
+    pub fn first_cause(&self) -> (FirstSourceSuccessorConsumerPhaseV2, Option<&(dyn std::error::Error + 'static)>) { self.common.first_cause() }
+    /// Borrows all independent original owner failures.
+    pub fn post_failures(&self) -> impl Iterator<Item = &SourceGenesisErrorV1> { self.common.post_failures() }
+    /// Borrows independent original-clock debt without renewing admission.
+    pub fn clock_post_failures(&self) -> impl Iterator<Item = &SourceGenesisErrorV1> { self.common.clock_post_failures() }
+    /// Terminates without releasing the resident original resources.
+    pub fn terminate_failed(self) -> ! { std::process::exit(1) }
 }
 
 /// Retains failed original custody until deliberate termination.
@@ -238,7 +346,10 @@ impl<'writers, 'profile> OriginalFirstSourceSuccessorInvocationV2<'writers, 'pro
             self.first_site.get_or_insert(ResidentFailureSiteV2::ReturnedCause);
             return FirstSourceSuccessorSelectionV2::Failed;
         }
-        self.selection = Some(issuance::retained(self.journal));
+        self.selection = Some(match self.recipe.keys() {
+            IssuanceKeyRecipeV3::GlobalV2 => issuance::retained(self.journal),
+            IssuanceKeyRecipeV3::ProjectV3(project) => issuance::retained_project_v3(self.journal, project),
+        });
         if matches!(self.selection, Some(Err(_))) {
             self.first_site.get_or_insert(ResidentFailureSiteV2::Selection);
         }
@@ -259,6 +370,8 @@ impl<'writers, 'profile> OriginalFirstSourceSuccessorInvocationV2<'writers, 'pro
             prepare_io: Default::default(), anchor_io: Default::default(), complete_io: Default::default(), finish_io: Default::default(),
             owner_posts: Vec::new(), clock_posts: Vec::new(), phase: FirstSourceSuccessorConsumerPhaseV2::Admission,
             first_site: None, first_owner: None, cleanup: None, outcome: None, started: false, armed: true,
+            recipe: StartupSuccessorRecipeV3::GlobalStrictV2, configured: None, configured_result: None,
+            source_evidence: std::array::from_fn(|_| None),
         }
     }
 
@@ -316,6 +429,8 @@ impl FailedOriginalFirstSourceSuccessorV2<'_, '_> {
     pub fn first_cause(&self) -> (FirstSourceSuccessorConsumerPhaseV2, Option<&(dyn std::error::Error + 'static)>) {
         let original = &self.original;
         let cause = match original.first_site {
+            Some(ResidentFailureSiteV2::SourceObservation(index)) => original.source_evidence.get(index).and_then(Option::as_ref).and_then(|evidence| evidence.error()).map(|error| error as &dyn std::error::Error),
+            Some(ResidentFailureSiteV2::ConfiguredInput) => original.configured_result.as_ref().and_then(|result| result.as_ref().err()).map(|error| error as &dyn std::error::Error),
             Some(ResidentFailureSiteV2::Selection) => original.selection.as_ref().and_then(|result| result.as_ref().err()).map(|error| error as &dyn std::error::Error),
             Some(ResidentFailureSiteV2::SeedPin) => original.seed_pin.as_ref().and_then(|result| result.as_ref().err()).map(|error| error as &dyn std::error::Error),
             Some(ResidentFailureSiteV2::AuthorizationPin) => original.authorization_pin.as_ref().and_then(|result| result.as_ref().err()).map(|error| error as &dyn std::error::Error),
@@ -344,6 +459,8 @@ impl FailedOriginalFirstSourceSuccessorV2<'_, '_> {
     /// Borrows independent writer/profile/stream debt without replacing cause.
     pub fn post_failures(&self) -> impl Iterator<Item = &SourceGenesisErrorV1> {
         self.original.owner_posts.iter().filter_map(|result| result.as_ref().err())
+            .chain(self.original.source_evidence.iter().filter_map(Option::as_ref)
+                .flat_map(|evidence| evidence.post_failures()))
     }
 
     /// Borrows independent actual original-clock debt without clearing poison.
@@ -354,6 +471,7 @@ impl FailedOriginalFirstSourceSuccessorV2<'_, '_> {
             .chain(original.anchor_io.clock_posts.iter())
             .chain(original.complete_io.clock_posts.iter())
             .chain(original.finish_io.clock_posts.iter())
+            .chain(original.begin.clock_post.iter())
             .chain(original.anchored.clock_post.iter())
             .chain(original.complete.clock_post.iter())
             .chain(original.append.clock_post_result())
@@ -426,6 +544,234 @@ pub(crate) fn unavailable_first_source_successor_v2<'writers, 'profile>(
     original.into_outcome()
 }
 
+pub(crate) fn unavailable_project_successor_v3<'writers, 'profile>(
+    journal: &'writers mut Journal, profile: &'profile ProductionControllerNormalRootProfileV1,
+    project: ProjectId,
+) -> Result<Option<ObjectDigest>, FailedProjectSuccessorInvocationV3<'writers, 'profile>> {
+    let mut common = OriginalFirstSourceSuccessorInvocationV2::park_inner(journal, None, profile);
+    common.recipe = StartupSuccessorRecipeV3::ProjectMixedV3(project);
+    common.select_retained_before_signer();
+    if matches!(common.selection, Some(Ok(Some(_)))) {
+        common.first_owner = Some(SourceGenesisErrorV1::AdmissionClosed);
+        common.first_site.get_or_insert(ResidentFailureSiteV2::ReturnedCause);
+    }
+    common.into_outcome().map_err(|common| FailedProjectSuccessorInvocationV3 { common })
+}
+
+pub(crate) fn unavailable_predecessor_successor_v3<'writers, 'profile>(
+    journal: &'writers mut Journal, profile: &'profile ProductionControllerNormalRootProfileV1,
+    configured: &'writers crate::hierarchy::controller_genesis_input::ProvisionedControllerSourceGenesisInputV1,
+) -> Result<Option<ObjectDigest>, FailedProjectSuccessorInvocationV3<'writers, 'profile>> {
+    let mut common = OriginalFirstSourceSuccessorInvocationV2::park_inner(journal, None, profile);
+    common.recipe = StartupSuccessorRecipeV3::GlobalMixedV3;
+    common.configured = Some(configured);
+    common.select_retained_before_signer();
+    if matches!(common.selection, Some(Ok(Some(_)))) {
+        common.first_owner = Some(SourceGenesisErrorV1::AdmissionClosed);
+        common.first_site.get_or_insert(ResidentFailureSiteV2::ReturnedCause);
+    }
+    common.into_outcome().map_err(|common| FailedProjectSuccessorInvocationV3 { common })
+}
+
+enum SelectedControllerV3<'controller> {
+    Strict(HeldControllerFirstSourceSuccessorV2<'controller>),
+    Mixed(HeldControllerProjectSuccessorV3<'controller>),
+}
+
+impl<'controller> SelectedControllerV3<'controller> {
+    fn view(&self) -> ControllerSuccessorOwnerViewV3<'_, 'controller> {
+        match self { Self::Strict(owner) => ControllerSuccessorOwnerViewV3::Strict(owner), Self::Mixed(owner) => ControllerSuccessorOwnerViewV3::Mixed(owner) }
+    }
+
+    fn uid(&self) -> u32 { self.view().data().uid() }
+    fn recheck(&self) -> Result<(), SourceGenesisErrorV1> { self.view().recheck() }
+
+    fn packet(&self) -> &SourceSuccessorApprovalDataV2 {
+        match self { Self::Strict(owner) => owner.packet(), Self::Mixed(owner) => owner.packet() }
+    }
+
+    fn append_begin(&mut self, results: &mut ControllerFirstSuccessorMutationResultsV2) -> Result<(), ()> {
+        match self { Self::Strict(owner) => owner.append_begin(results), Self::Mixed(owner) => owner.append_begin(results) }
+    }
+
+    fn append_anchored(&mut self, source: &SelectedSourceV3<'_>, root: &SelectedFloorV3<'_>, results: &mut ControllerFirstSuccessorMutationResultsV2) -> Result<(), ()> {
+        match (self, source, root) {
+            (Self::Strict(owner), SelectedSourceV3::Strict(source), SelectedFloorV3::Strict(root)) => owner.append_anchored(source, root, results),
+            (Self::Mixed(owner), SelectedSourceV3::Mixed(source), SelectedFloorV3::Mixed(root)) => owner.append_anchored(source, root, results),
+            _ => Err(()),
+        }
+    }
+
+    fn append_complete(&mut self, source: &SelectedSourceV3<'_>, root: &SelectedFloorV3<'_>, results: &mut ControllerFirstSuccessorMutationResultsV2) -> Result<(), ()> {
+        match (self, source, root) {
+            (Self::Strict(owner), SelectedSourceV3::Strict(source), SelectedFloorV3::Strict(root)) => owner.append_complete(source, root, results),
+            (Self::Mixed(owner), SelectedSourceV3::Mixed(source), SelectedFloorV3::Mixed(root)) => owner.append_complete(source, root, results),
+            _ => Err(()),
+        }
+    }
+}
+
+enum SelectedSourceV3<'source> {
+    Strict(HeldSourceFirstSuccessorObservationV2<'source>),
+    Mixed(crate::hierarchy::SourceProjectContinuationObservationV3<'source>),
+}
+
+impl<'source> SelectedSourceV3<'source> {
+    fn observe(inventory: &'source RetainedTreeInventoryDataV1<'_>, uid: u32, project: ProjectId, recipe: StartupSuccessorRecipeV3) -> Result<Self, SourceGenesisErrorV1> {
+        match recipe {
+            StartupSuccessorRecipeV3::GlobalStrictV2 => observe_source_first_successor_v2(inventory, uid, project).map(Self::Strict),
+            StartupSuccessorRecipeV3::GlobalMixedV3 | StartupSuccessorRecipeV3::ProjectMixedV3(_) => {
+                if matches!(recipe, StartupSuccessorRecipeV3::ProjectMixedV3(selected) if selected != project) { return Err(SourceGenesisErrorV1::Conflict); }
+                let observed = observe_source_project_continuation_v3(inventory, uid, project);
+                // Keep the whole returned mixed observation, including failure,
+                // resident through every independent original postcheck.
+                Ok(Self::Mixed(observed))
+            }
+        }
+    }
+
+    fn view(&self) -> SourceSuccessorObservationViewV3<'_, 'source> {
+        match self { Self::Strict(source) => SourceSuccessorObservationViewV3::Strict(source), Self::Mixed(source) => SourceSuccessorObservationViewV3::Mixed(source) }
+    }
+
+    fn recheck(&self) -> Result<(), SourceGenesisErrorV1> { self.view().recheck() }
+
+    fn latch_observation(&self, index: usize, first: &mut Option<ResidentFailureSiteV2>) {
+        if matches!(self, Self::Mixed(observed) if observed.error().is_some()) {
+            first.get_or_insert(ResidentFailureSiteV2::SourceObservation(index));
+        }
+    }
+
+    fn retain_evidence(self, slot: &mut Option<crate::hierarchy::SourceProjectContinuationEvidenceV3>) {
+        if let Self::Mixed(observed) = self { *slot = Some(observed.into_evidence_v3()); }
+    }
+}
+
+enum SelectedPurposeV3<'flight> {
+    Strict(super::successor_flight::OriginalRootFirstSourceSuccessorFlightV2<'flight>),
+    Mixed(super::successor_flight::OriginalRootProjectSuccessorFlightV3<'flight>),
+}
+
+impl<'flight> SelectedPurposeV3<'flight> {
+    fn from_original(core: &'flight super::flight::OriginalRootGenesisFlightV1<'flight>, recipe: StartupSuccessorRecipeV3) -> Result<Self, SourceGenesisErrorV1> {
+        match recipe {
+            StartupSuccessorRecipeV3::GlobalStrictV2 => super::successor_flight::OriginalRootFirstSourceSuccessorFlightV2::from_original(core).map(Self::Strict),
+            StartupSuccessorRecipeV3::GlobalMixedV3 | StartupSuccessorRecipeV3::ProjectMixedV3(_) => super::successor_flight::OriginalRootProjectSuccessorFlightV3::from_original(core).map(Self::Mixed),
+        }
+    }
+
+    fn view(&self) -> super::successor_flight::RootSuccessorFlightViewV3<'_, '_> {
+        match self { Self::Strict(flight) => super::successor_flight::RootSuccessorFlightViewV3::Strict(flight), Self::Mixed(flight) => super::successor_flight::RootSuccessorFlightViewV3::Mixed(flight) }
+    }
+
+    fn source_uid(&self) -> Result<u32, SourceGenesisErrorV1> { self.view().source_uid() }
+    fn nonce(&self) -> [u8; 16] { self.view().nonce() }
+    fn observe_original_clock(&self) -> Result<aos_sandbox_core::RawPairedClockSample, SourceGenesisErrorV1> { self.view().observe_original_clock() }
+
+    fn encode(&self, output: &mut Vec<u8>, phase: super::wire::RootFirstSourceSuccessorFrameKindV2, payload: &[u8]) -> Result<(), SourceGenesisErrorV1> {
+        match self {
+            Self::Strict(_) => super::wire::encode_root_first_source_successor_frame_v2(output, phase, self.nonce(), payload),
+            Self::Mixed(_) => super::wire::encode_root_project_source_successor_frame_v3(output, phase, self.nonce(), payload),
+        }
+    }
+
+    fn decode<'frame>(&self, frame: &'frame [u8], phase: super::wire::RootFirstSourceSuccessorFrameKindV2) -> Result<&'frame [u8], SourceGenesisErrorV1> {
+        match self {
+            Self::Strict(_) => super::wire::decode_root_first_source_successor_frame_v2(frame, phase, self.nonce()),
+            Self::Mixed(_) => super::wire::decode_root_project_source_successor_frame_v3(frame, phase, self.nonce()),
+        }
+    }
+
+    fn prepared(&'flight self, frame: &[u8], controller: &SelectedControllerV3<'_>) -> Result<SelectedIntentV3<'flight>, SourceGenesisErrorV1> {
+        match (self, controller) {
+            (Self::Strict(flight), SelectedControllerV3::Strict(controller)) => flight.prepared(frame, controller).map(SelectedIntentV3::Strict),
+            (Self::Mixed(flight), SelectedControllerV3::Mixed(controller)) => flight.prepared(frame, controller).map(SelectedIntentV3::Mixed),
+            _ => Err(SourceGenesisErrorV1::Conflict),
+        }
+    }
+
+    fn anchored(&'flight self, frame: &[u8], prepared: &SelectedIntentV3<'_>) -> Result<SelectedFloorV3<'flight>, SourceGenesisErrorV1> {
+        match (self, prepared) {
+            (Self::Strict(flight), SelectedIntentV3::Strict(intent)) => flight.anchored(frame, intent).map(SelectedFloorV3::Strict),
+            (Self::Mixed(flight), SelectedIntentV3::Mixed(intent)) => flight.anchored(frame, intent).map(SelectedFloorV3::Mixed),
+            _ => Err(SourceGenesisErrorV1::Conflict),
+        }
+    }
+
+    fn completed<'completed>(&self, frame: &[u8], floor: &'completed SelectedFloorV3<'flight>, controller: &SelectedControllerV3<'_>) -> Result<SelectedCompletedV3<'completed, 'flight>, SourceGenesisErrorV1> {
+        match (self, floor, controller) {
+            (Self::Strict(flight), SelectedFloorV3::Strict(floor), SelectedControllerV3::Strict(controller)) => flight.completed(frame, floor, controller).map(SelectedCompletedV3::Strict),
+            (Self::Mixed(flight), SelectedFloorV3::Mixed(floor), SelectedControllerV3::Mixed(controller)) => flight.completed(frame, floor, controller).map(SelectedCompletedV3::Mixed),
+            _ => Err(SourceGenesisErrorV1::Conflict),
+        }
+    }
+}
+
+enum SelectedIntentV3<'flight> {
+    Strict(super::successor_flight::HeldRootFirstSourceSuccessorIntentV2<'flight>),
+    Mixed(super::successor_flight::HeldRootProjectSuccessorIntentV3<'flight>),
+}
+
+impl SelectedIntentV3<'_> {
+    fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
+        match self { Self::Strict(intent) => intent.recheck(), Self::Mixed(intent) => intent.recheck() }
+    }
+
+    fn append(&self, source: &mut ProtectedSourceDomainJournalOwnerV1, controller: &SelectedControllerV3<'_>, results: &mut SourceFirstSuccessorMutationResultsV2) -> Result<SourceFirstSuccessorReceiptV2, ()> {
+        match (self, controller) {
+            (Self::Strict(root), SelectedControllerV3::Strict(controller)) => append_source_first_successor_v2(source, controller, root, results),
+            (Self::Mixed(root), SelectedControllerV3::Mixed(controller)) => crate::hierarchy::append_source_project_continuation_v3(source, controller, root, results),
+            _ => Err(()),
+        }
+    }
+}
+
+enum SelectedFloorV3<'flight> {
+    Strict(super::successor_flight::RootFirstSourceSuccessorFloorProofV2<'flight>),
+    Mixed(super::successor_flight::RootProjectSuccessorFloorProofV3<'flight>),
+}
+
+impl SelectedFloorV3<'_> {
+    fn floor(&self) -> &super::successor_records::RootFirstSourceSuccessorFloorV2 {
+        match self { Self::Strict(floor) => floor.floor(), Self::Mixed(floor) => floor.floor() }
+    }
+
+    fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
+        match self { Self::Strict(floor) => floor.recheck(), Self::Mixed(floor) => floor.recheck() }
+    }
+
+    fn acknowledge(&self, source: &mut ProtectedSourceDomainJournalOwnerV1, controller: &SelectedControllerV3<'_>, results: &mut SourceFirstSuccessorMutationResultsV2) -> Result<SourceFirstSuccessorAckV2, ()> {
+        match (self, controller) {
+            (Self::Strict(root), SelectedControllerV3::Strict(controller)) => acknowledge_source_first_successor_v2(source, controller, root, results),
+            (Self::Mixed(root), SelectedControllerV3::Mixed(controller)) => crate::hierarchy::acknowledge_source_project_continuation_v3(source, controller, root, results),
+            _ => Err(()),
+        }
+    }
+}
+
+enum SelectedCompletedV3<'completed, 'flight> {
+    Strict(super::successor_flight::CompletedRootFirstSourceSuccessorFloorV2<'completed, 'flight>),
+    Mixed(super::successor_flight::CompletedRootProjectSuccessorFloorV3<'completed, 'flight>),
+}
+
+impl SelectedCompletedV3<'_, '_> {
+    fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
+        match self { Self::Strict(completed) => completed.recheck(), Self::Mixed(completed) => completed.recheck() }
+    }
+
+    fn finish_payload(&self) -> [u8; 96] {
+        match self { Self::Strict(completed) => completed.finish_payload(), Self::Mixed(completed) => completed.finish_payload() }
+    }
+
+    fn consume(&self, controller: &SelectedControllerV3<'_>, source: &SelectedSourceV3<'_>, inventory: &RetainedTreeInventoryDataV1<'_>) -> Result<(), SourceGenesisErrorV1> {
+        match (self, controller, source) {
+            (Self::Strict(root), SelectedControllerV3::Strict(controller), SelectedSourceV3::Strict(source)) => super::super::public_create_source::consume_completed_first_successor_ancestry_v2(controller, source, inventory, root),
+            (Self::Mixed(root), SelectedControllerV3::Mixed(controller), SelectedSourceV3::Mixed(source)) => super::super::public_create_source::consume_completed_project_successor_ancestry_v3(controller, source, inventory, root),
+            _ => Err(SourceGenesisErrorV1::Conflict),
+        }
+    }
+}
+
 fn coordinate_retained_successor(
     original: &mut OriginalFirstSourceSuccessorInvocationV2<'_, '_>,
     generation: u64, signer: &SigningKey,
@@ -436,14 +782,38 @@ fn coordinate_retained_successor(
         journal, source, profile, selection, seed_pin, authorization_pin,
         raw, adopted, flight, hello, hello_received, connection,
         begin, anchored, complete, append, ack, prepare_io, anchor_io, complete_io, finish_io,
-        owner_posts, clock_posts, phase, first_site, ..
+        owner_posts, clock_posts, phase, first_site, recipe, configured, configured_result, source_evidence, ..
     } = original;
-    if selection.is_none() { *selection = Some(issuance::retained(journal)); }
+    if selection.is_none() {
+        *selection = Some(match recipe.keys() {
+            IssuanceKeyRecipeV3::GlobalV2 => issuance::retained(journal),
+            IssuanceKeyRecipeV3::ProjectV3(project) => issuance::retained_project_v3(journal, project),
+        });
+    }
     if matches!(selection, Some(Err(_))) { first_site.get_or_insert(ResidentFailureSiteV2::Selection); }
     let selected = selection.as_ref().and_then(|result| result.as_ref().ok())
         .ok_or(SourceGenesisErrorV1::AdmissionClosed)?;
     let Some(selected) = selected else { return Ok(None); };
     if !selected.delivered { return Err(SourceGenesisErrorV1::AdmissionClosed); }
+    if matches!(recipe, StartupSuccessorRecipeV3::GlobalMixedV3) {
+        let input = configured.ok_or(SourceGenesisErrorV1::AdmissionClosed)?;
+        *configured_result = Some((|| {
+            if input.has_retained_attempt(journal)? {
+                // Existing B is compared with its actual retained acceptance.
+                // Historical pair custody does not renew fresh B admission.
+                input.recheck()
+            } else {
+                input.inspect_current(journal)
+            }
+        })());
+        if matches!(configured_result, Some(Err(_))) { first_site.get_or_insert(ResidentFailureSiteV2::ConfiguredInput); }
+        park_owner_post(owner_posts, first_site, None, input.recheck().map_err(|_| SourceGenesisErrorV1::Stale));
+        let uid = journal.protected_owner_uid()?;
+        park_owner_post(owner_posts, first_site, None, require_controller(journal, uid));
+        park_owner_post(owner_posts, first_site, None, profile.recheck().map_err(|_| SourceGenesisErrorV1::Stale));
+        if !matches!(configured_result, Some(Ok(()))) || owner_posts.iter().any(Result::is_err) { return Err(SourceGenesisErrorV1::Stale); }
+        if input.project() == selected.packet.intent()?.project() { return Err(SourceGenesisErrorV1::Conflict); }
+    }
     let source = source.as_deref_mut().ok_or(SourceGenesisErrorV1::AdmissionClosed)?;
     source.require_fixed_named_writer_v1()?;
     profile.recheck().map_err(|_| SourceGenesisErrorV1::Stale)?;
@@ -462,7 +832,20 @@ fn coordinate_retained_successor(
     let authorization_pin = authorization_pin.as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
     let mut controller = {
         let inventory = retained_tree_inventory_data_v1(source)?;
-        hold_retained_first_source_successor_v2(journal, seed_pin, authorization_pin, &inventory)?
+        match recipe {
+            StartupSuccessorRecipeV3::GlobalStrictV2 => SelectedControllerV3::Strict(hold_retained_first_source_successor_v2(journal, seed_pin, authorization_pin, &inventory)?),
+            StartupSuccessorRecipeV3::GlobalMixedV3 | StartupSuccessorRecipeV3::ProjectMixedV3(_) => {
+                let validation = match recipe {
+                    StartupSuccessorRecipeV3::GlobalMixedV3 => hold_retained_global_predecessor_v3(journal, seed_pin, authorization_pin, &inventory, &mut source_evidence[0]),
+                    StartupSuccessorRecipeV3::ProjectMixedV3(project) => hold_retained_project_successor_v3(journal, seed_pin, authorization_pin, &inventory, *project, &mut source_evidence[0]),
+                    StartupSuccessorRecipeV3::GlobalStrictV2 => return Err(SourceGenesisErrorV1::Conflict),
+                };
+                if source_evidence[0].as_ref().is_some_and(|evidence| evidence.error().is_some()) {
+                    first_site.get_or_insert(ResidentFailureSiteV2::SourceObservation(0));
+                }
+                SelectedControllerV3::Mixed(validation?)
+            }
+        }
     };
     let project = controller.packet().intent()?.project();
 
@@ -474,9 +857,14 @@ fn coordinate_retained_successor(
     if returned.is_err() || owner_posts.iter().any(Result::is_err) { return Err(SourceGenesisErrorV1::AdmissionClosed); }
 
     *phase = Step::Prepare;
-    *connection = Some(super::flight::OriginalRootGenesisFlightV1::connect_first_successor_parked(
-        profile, raw, adopted, flight, hello, hello_received, controller.uid(),
-    ));
+    *connection = Some(match recipe {
+        StartupSuccessorRecipeV3::GlobalStrictV2 => super::flight::OriginalRootGenesisFlightV1::connect_first_successor_parked(
+            profile, raw, adopted, flight, hello, hello_received, controller.uid(),
+        ),
+        StartupSuccessorRecipeV3::GlobalMixedV3 | StartupSuccessorRecipeV3::ProjectMixedV3(_) => super::flight::OriginalRootGenesisFlightV1::connect_project_successor_parked_v3(
+            profile, raw, adopted, flight, hello, hello_received, controller.uid(),
+        ),
+    });
     if !matches!(connection, Some(Ok(()))) {
         first_site.get_or_insert(if matches!(hello_received, Some(Err(_))) {
             ResidentFailureSiteV2::HelloReceived
@@ -489,16 +877,19 @@ fn coordinate_retained_successor(
     if !matches!(connection, Some(Ok(()))) || owner_posts.iter().any(Result::is_err) { return Err(SourceGenesisErrorV1::Stale); }
     if clock_posts.iter().any(Result::is_err) { return Err(SourceGenesisErrorV1::Stale); }
     let core = flight.as_ref().ok_or(SourceGenesisErrorV1::Stale)?;
-    let purpose = super::successor_flight::OriginalRootFirstSourceSuccessorFlightV2::from_original(core)?;
+    let purpose = SelectedPurposeV3::from_original(core, *recipe)?;
     {
         let inventory = retained_tree_inventory_data_v1(source)?;
-        let observed = observe_source_first_successor_v2(&inventory, purpose.source_uid()?, project)?;
-        exchange_phase(&controller, &observed, &purpose, core, generation, signer, Wire::Prepare, Wire::Prepared, prepare_io, Step::Prepare, first_site)?;
+        let observed = SelectedSourceV3::observe(&inventory, purpose.source_uid()?, project, *recipe)?;
+        observed.latch_observation(1, first_site);
+        let returned = exchange_phase(&controller, &observed, &purpose, core, generation, signer, Wire::Prepare, Wire::Prepared, prepare_io, Step::Prepare, first_site);
+        observed.retain_evidence(&mut source_evidence[1]);
+        returned?;
     }
     let prepared = purpose.prepared(&prepare_io.reply, &controller)?;
 
     *phase = Step::Source;
-    let returned = append_source_first_successor_v2(source, &controller, &prepared, append);
+    let returned = prepared.append(source, &controller, append);
     if returned.is_err() { first_site.get_or_insert(ResidentFailureSiteV2::SourceAppend); }
     park_owner_post(owner_posts, first_site, None, controller.recheck());
     park_owner_post(owner_posts, first_site, None, source.require_fixed_named_writer_v1().map_err(SourceGenesisErrorV1::from));
@@ -511,25 +902,30 @@ fn coordinate_retained_successor(
     *phase = Step::Anchor;
     {
         let inventory = retained_tree_inventory_data_v1(source)?;
-        let observed = observe_source_first_successor_v2(&inventory, purpose.source_uid()?, project)?;
-        exchange_phase(&controller, &observed, &purpose, core, generation, signer, Wire::Anchor, Wire::Anchored, anchor_io, Step::Anchor, first_site)?;
+        let observed = SelectedSourceV3::observe(&inventory, purpose.source_uid()?, project, *recipe)?;
+        observed.latch_observation(2, first_site);
+        let returned = exchange_phase(&controller, &observed, &purpose, core, generation, signer, Wire::Anchor, Wire::Anchored, anchor_io, Step::Anchor, first_site);
+        observed.retain_evidence(&mut source_evidence[2]);
+        returned?;
     }
     let floor = purpose.anchored(&anchor_io.reply, &prepared)?;
 
     *phase = Step::Acknowledge;
     {
         let inventory = retained_tree_inventory_data_v1(source)?;
-        let observed = observe_source_first_successor_v2(&inventory, purpose.source_uid()?, project)?;
+        let observed = SelectedSourceV3::observe(&inventory, purpose.source_uid()?, project, *recipe)?;
+        observed.latch_observation(3, first_site);
         let returned = controller.append_anchored(&observed, &floor, anchored);
         if returned.is_err() { first_site.get_or_insert(ResidentFailureSiteV2::Anchored); }
         park_owner_post(owner_posts, first_site, None, observed.recheck());
         park_owner_post(owner_posts, first_site, None, floor.recheck());
         park_owner_post(owner_posts, first_site, None, profile.recheck().map_err(|_| SourceGenesisErrorV1::Stale));
         park_clock_post(clock_posts, first_site, None, purpose.observe_original_clock());
+        observed.retain_evidence(&mut source_evidence[3]);
         if returned.is_err() || owner_posts.iter().any(Result::is_err) { return Err(SourceGenesisErrorV1::AdmissionClosed); }
         if clock_posts.iter().any(Result::is_err) { return Err(SourceGenesisErrorV1::Stale); }
     }
-    let returned = acknowledge_source_first_successor_v2(source, &controller, &floor, ack);
+    let returned = floor.acknowledge(source, &controller, ack);
     if returned.is_err() { first_site.get_or_insert(ResidentFailureSiteV2::SourceAck); }
     park_owner_post(owner_posts, first_site, None, controller.recheck());
     park_owner_post(owner_posts, first_site, None, source.require_fixed_named_writer_v1().map_err(SourceGenesisErrorV1::from));
@@ -542,26 +938,34 @@ fn coordinate_retained_successor(
     *phase = Step::Complete;
     {
         let inventory = retained_tree_inventory_data_v1(source)?;
-        let observed = observe_source_first_successor_v2(&inventory, purpose.source_uid()?, project)?;
+        let observed = SelectedSourceV3::observe(&inventory, purpose.source_uid()?, project, *recipe)?;
+        observed.latch_observation(4, first_site);
         let returned = controller.append_complete(&observed, &floor, complete);
         if returned.is_err() { first_site.get_or_insert(ResidentFailureSiteV2::Complete); }
         park_owner_post(owner_posts, first_site, None, observed.recheck());
         park_owner_post(owner_posts, first_site, None, floor.recheck());
         park_owner_post(owner_posts, first_site, None, profile.recheck().map_err(|_| SourceGenesisErrorV1::Stale));
         park_clock_post(clock_posts, first_site, None, purpose.observe_original_clock());
-        if returned.is_err() || owner_posts.iter().any(Result::is_err) { return Err(SourceGenesisErrorV1::AdmissionClosed); }
-        if clock_posts.iter().any(Result::is_err) { return Err(SourceGenesisErrorV1::Stale); }
-        exchange_phase(&controller, &observed, &purpose, core, generation, signer, Wire::Complete, Wire::Completed, complete_io, Step::Complete, first_site)?;
+        let phase_result = if returned.is_err() || owner_posts.iter().any(Result::is_err) {
+            Err(SourceGenesisErrorV1::AdmissionClosed)
+        } else if clock_posts.iter().any(Result::is_err) {
+            Err(SourceGenesisErrorV1::Stale)
+        } else {
+            exchange_phase(&controller, &observed, &purpose, core, generation, signer, Wire::Complete, Wire::Completed, complete_io, Step::Complete, first_site)
+        };
+        observed.retain_evidence(&mut source_evidence[4]);
+        phase_result?;
     }
     let completed = purpose.completed(&complete_io.reply, &floor, &controller)?;
 
     *phase = Step::Finish;
     {
         let inventory = retained_tree_inventory_data_v1(source)?;
-        let observed = observe_source_first_successor_v2(&inventory, purpose.source_uid()?, project)?;
-        super::super::public_create_source::consume_completed_first_successor_ancestry_v2(
-            &controller, &observed, &inventory, &completed,
-        )?;
+        let observed = SelectedSourceV3::observe(&inventory, purpose.source_uid()?, project, *recipe)?;
+        observed.latch_observation(5, first_site);
+        let returned = completed.consume(&controller, &observed, &inventory);
+        observed.retain_evidence(&mut source_evidence[5]);
+        returned?;
     }
     let payload = completed.finish_payload();
     controller.recheck()?;
@@ -569,7 +973,7 @@ fn coordinate_retained_successor(
     profile.recheck().map_err(|_| SourceGenesisErrorV1::Stale)?;
     completed.recheck()?;
     finish_io.sent = Some((|| {
-        super::wire::encode_root_first_source_successor_frame_v2(&mut finish_io.frame, Wire::Finish, purpose.nonce(), &payload)?;
+        purpose.encode(&mut finish_io.frame, Wire::Finish, &payload)?;
         core.write_first_successor(&finish_io.frame)
     })());
     if matches!(finish_io.sent, Some(Err(_))) {
@@ -594,7 +998,7 @@ fn coordinate_retained_successor(
     park_clock_post(clock_posts, first_site, None, purpose.observe_original_clock());
     if !matches!(finish_io.reception, Some(Ok(()))) || owner_posts.iter().any(Result::is_err) { return Err(SourceGenesisErrorV1::Stale); }
     if clock_posts.iter().any(Result::is_err) { return Err(SourceGenesisErrorV1::Stale); }
-    if super::wire::decode_root_first_source_successor_frame_v2(&finish_io.reply, Wire::Finish, purpose.nonce())? != payload {
+    if purpose.decode(&finish_io.reply, Wire::Finish)? != payload {
         return Err(SourceGenesisErrorV1::Conflict);
     }
     Ok(Some(floor.floor().digest()))
@@ -602,26 +1006,30 @@ fn coordinate_retained_successor(
 
 #[allow(clippy::too_many_arguments)]
 fn exchange_phase(
-    controller: &HeldControllerFirstSourceSuccessorV2<'_>, source: &HeldSourceFirstSuccessorObservationV2<'_>,
-    purpose: &super::successor_flight::OriginalRootFirstSourceSuccessorFlightV2<'_>,
+    controller: &SelectedControllerV3<'_>, source: &SelectedSourceV3<'_>,
+    purpose: &SelectedPurposeV3<'_>,
     core: &super::flight::OriginalRootGenesisFlightV1<'_>, generation: u64, signer: &SigningKey,
     send: super::wire::RootFirstSourceSuccessorFrameKindV2,
     receive: super::wire::RootFirstSourceSuccessorFrameKindV2,
     results: &mut OriginalPhaseResultsV2,
     phase: FirstSourceSuccessorConsumerPhaseV2, first_site: &mut Option<ResidentFailureSiteV2>,
 ) -> Result<(), SourceGenesisErrorV1> {
-    results.signature = Some(sign_controller_first_successor_readback_v2(controller, source, purpose, generation, signer));
+    results.signature = Some(match (controller, source, purpose) {
+        (SelectedControllerV3::Strict(controller), SelectedSourceV3::Strict(source), SelectedPurposeV3::Strict(purpose)) => sign_controller_first_successor_readback_v2(controller, source, purpose, generation, signer),
+        (SelectedControllerV3::Mixed(controller), SelectedSourceV3::Mixed(source), SelectedPurposeV3::Mixed(purpose)) => sign_controller_project_successor_readback_v3(controller, source, purpose, generation, signer),
+        _ => Err(SourceGenesisErrorV1::Conflict),
+    });
     if matches!(results.signature, Some(Err(_))) {
         first_site.get_or_insert(ResidentFailureSiteV2::Phase(phase, PhaseFailureSiteV2::Signature));
     }
     park_owner_post(&mut results.posts, first_site, Some(phase), controller.recheck());
     park_owner_post(&mut results.posts, first_site, Some(phase), source.recheck());
-    park_owner_post(&mut results.posts, first_site, Some(phase), purpose.recheck());
+    park_owner_post(&mut results.posts, first_site, Some(phase), purpose.view().recheck());
     park_clock_post(&mut results.clock_posts, first_site, Some(phase), purpose.observe_original_clock());
     if results.error().is_some() { return Err(SourceGenesisErrorV1::Stale); }
     let packet = results.signature.as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
     results.sent = Some((|| {
-        super::wire::encode_root_first_source_successor_frame_v2(&mut results.frame, send, purpose.nonce(), packet)?;
+        purpose.encode(&mut results.frame, send, packet)?;
         core.write_first_successor(&results.frame)
     })());
     if matches!(results.sent, Some(Err(_))) {
@@ -629,7 +1037,7 @@ fn exchange_phase(
     }
     park_owner_post(&mut results.posts, first_site, Some(phase), controller.recheck());
     park_owner_post(&mut results.posts, first_site, Some(phase), source.recheck());
-    park_owner_post(&mut results.posts, first_site, Some(phase), purpose.recheck());
+    park_owner_post(&mut results.posts, first_site, Some(phase), purpose.view().recheck());
     park_clock_post(&mut results.clock_posts, first_site, Some(phase), purpose.observe_original_clock());
     if results.error().is_some() { return Err(SourceGenesisErrorV1::Stale); }
     results.reception = Some(core.receive_first_successor_exact(32 + receive.payload_bytes(), &mut results.reply, &mut results.received));
@@ -640,7 +1048,7 @@ fn exchange_phase(
     }
     park_owner_post(&mut results.posts, first_site, Some(phase), controller.recheck());
     park_owner_post(&mut results.posts, first_site, Some(phase), source.recheck());
-    park_owner_post(&mut results.posts, first_site, Some(phase), purpose.recheck());
+    park_owner_post(&mut results.posts, first_site, Some(phase), purpose.view().recheck());
     park_clock_post(&mut results.clock_posts, first_site, Some(phase), purpose.observe_original_clock());
     if results.error().is_some() { Err(SourceGenesisErrorV1::Stale) } else { Ok(()) }
 }
@@ -660,6 +1068,77 @@ pub struct HeldControllerFirstSourceSuccessorV2<'controller> {
     names: ProtectedJournalNamesV1,
     seed_file: &'controller PinnedSystemdCredential,
     authorization_file: &'controller PinnedSystemdCredential,
+    recipe: IssuanceKeyRecipeV3,
+    comparison: ControllerSuccessorSignatureRecipeV3,
+}
+
+/// Holds the actual project-scoped writer without a strict-v2 conversion.
+pub struct HeldControllerProjectSuccessorV3<'controller> {
+    common: HeldControllerFirstSourceSuccessorV2<'controller>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum ControllerSuccessorOwnerViewV3<'loan, 'controller> {
+    Strict(&'loan HeldControllerFirstSourceSuccessorV2<'controller>),
+    Mixed(&'loan HeldControllerProjectSuccessorV3<'controller>),
+}
+
+impl<'loan, 'controller> ControllerSuccessorOwnerViewV3<'loan, 'controller> {
+    fn data(&self) -> &HeldControllerFirstSourceSuccessorV2<'controller> {
+        match self { Self::Strict(owner) => owner, Self::Mixed(owner) => &owner.common }
+    }
+
+    pub(crate) fn packet(&self) -> &SourceSuccessorApprovalDataV2 { self.data().packet() }
+    pub(crate) fn begin(&self) -> &ControllerFirstSourceSuccessorBeginV2 { self.data().begin() }
+    pub(crate) fn anchored(&self) -> Option<&ControllerFirstSourceSuccessorAnchoredV2> { self.data().anchored() }
+    pub(crate) fn complete(&self) -> Option<&ControllerFirstSourceSuccessorCompleteV2> { self.data().complete() }
+    pub(crate) fn source_uid(&self) -> u32 { self.data().source_uid() }
+    pub(crate) fn recheck(&self) -> Result<(), SourceGenesisErrorV1> { self.data().recheck() }
+    pub(crate) fn recheck_current_admission(&self) -> Result<(), SourceGenesisErrorV1> { self.data().recheck_current_admission() }
+}
+
+impl HeldControllerProjectSuccessorV3<'_> {
+    /// Borrows the genuine independently issued selected approval DATA.
+    pub fn packet(&self) -> &SourceSuccessorApprovalDataV2 { self.common.packet() }
+    /// Borrows the exact selected native Begin DATA.
+    pub fn begin(&self) -> &ControllerFirstSourceSuccessorBeginV2 { self.common.begin() }
+    /// Borrows the settled selected Controller Anchored DATA.
+    pub fn anchored(&self) -> Option<&ControllerFirstSourceSuccessorAnchoredV2> { self.common.anchored() }
+    /// Borrows the settled selected Controller Complete DATA.
+    pub fn complete(&self) -> Option<&ControllerFirstSourceSuccessorCompleteV2> { self.common.complete() }
+    /// Returns the UID compared with the actual Source writer and Root peer.
+    pub fn source_uid(&self) -> u32 { self.common.source_uid() }
+    /// Rechecks the genuine writer, credentials and every retained history.
+    ///
+    /// # Errors
+    /// Rejects stale names, phase, credentials or selected predecessor joins.
+    pub fn recheck(&self) -> Result<(), SourceGenesisErrorV1> { self.common.recheck() }
+    /// Rechecks current policy and the original signed admission bounds.
+    ///
+    /// # Errors
+    /// Rejects changed current policy, boot or original expiry; never renews D.
+    pub fn recheck_current_admission(&self) -> Result<(), SourceGenesisErrorV1> { self.common.recheck_current_admission() }
+
+    pub(super) fn uid(&self) -> u32 { self.common.uid() }
+    pub(super) fn append_begin(&mut self, results: &mut ControllerFirstSuccessorMutationResultsV2) -> Result<(), ()> { self.common.append_begin(results) }
+
+    pub(super) fn append_anchored(
+        &mut self, source: &crate::hierarchy::SourceProjectContinuationObservationV3<'_>,
+        root: &super::successor_flight::RootProjectSuccessorFloorProofV3<'_>,
+        results: &mut ControllerFirstSuccessorMutationResultsV2,
+    ) -> Result<(), ()> {
+        self.common.append_anchored_with_recipe_v3(SourceSuccessorObservationViewV3::Mixed(source),
+            super::successor_flight::RootSuccessorFloorViewV3::Mixed(root), results)
+    }
+
+    pub(super) fn append_complete(
+        &mut self, source: &crate::hierarchy::SourceProjectContinuationObservationV3<'_>,
+        root: &super::successor_flight::RootProjectSuccessorFloorProofV3<'_>,
+        results: &mut ControllerFirstSuccessorMutationResultsV2,
+    ) -> Result<(), ()> {
+        self.common.append_complete_with_recipe_v3(SourceSuccessorObservationViewV3::Mixed(source),
+            super::successor_flight::RootSuccessorFloorViewV3::Mixed(root), results)
+    }
 }
 
 pub(crate) fn hold_retained_first_source_successor_v2<'controller>(
@@ -668,9 +1147,45 @@ pub(crate) fn hold_retained_first_source_successor_v2<'controller>(
     authorization_file: &'controller PinnedSystemdCredential,
     inventory: &RetainedTreeInventoryDataV1<'_>,
 ) -> Result<HeldControllerFirstSourceSuccessorV2<'controller>, SourceGenesisErrorV1> {
+    hold_successor_with_recipe_v3(journal, seed_file, authorization_file, inventory, IssuanceKeyRecipeV3::GlobalV2, ControllerSuccessorSignatureRecipeV3::StrictV2, None)
+}
+
+fn hold_retained_global_predecessor_v3<'controller>(
+    journal: &'controller mut Journal, seed_file: &'controller PinnedSystemdCredential,
+    authorization_file: &'controller PinnedSystemdCredential, inventory: &RetainedTreeInventoryDataV1<'_>,
+    evidence: &mut Option<crate::hierarchy::SourceProjectContinuationEvidenceV3>,
+) -> Result<HeldControllerProjectSuccessorV3<'controller>, SourceGenesisErrorV1> {
+    hold_successor_with_recipe_v3(journal, seed_file, authorization_file, inventory, IssuanceKeyRecipeV3::GlobalV2, ControllerSuccessorSignatureRecipeV3::MixedV3, Some(evidence))
+        .map(|common| HeldControllerProjectSuccessorV3 { common })
+}
+
+pub(crate) fn hold_retained_project_successor_v3<'controller>(
+    journal: &'controller mut Journal,
+    seed_file: &'controller PinnedSystemdCredential,
+    authorization_file: &'controller PinnedSystemdCredential,
+    inventory: &RetainedTreeInventoryDataV1<'_>, project: ProjectId,
+    evidence: &mut Option<crate::hierarchy::SourceProjectContinuationEvidenceV3>,
+) -> Result<HeldControllerProjectSuccessorV3<'controller>, SourceGenesisErrorV1> {
+    hold_successor_with_recipe_v3(journal, seed_file, authorization_file, inventory, IssuanceKeyRecipeV3::ProjectV3(project), ControllerSuccessorSignatureRecipeV3::MixedV3, Some(evidence))
+        .map(|common| HeldControllerProjectSuccessorV3 { common })
+}
+
+fn hold_successor_with_recipe_v3<'controller>(
+    journal: &'controller mut Journal,
+    seed_file: &'controller PinnedSystemdCredential,
+    authorization_file: &'controller PinnedSystemdCredential,
+    inventory: &RetainedTreeInventoryDataV1<'_>, recipe: IssuanceKeyRecipeV3,
+    comparison: ControllerSuccessorSignatureRecipeV3,
+    evidence: Option<&mut Option<crate::hierarchy::SourceProjectContinuationEvidenceV3>>,
+) -> Result<HeldControllerFirstSourceSuccessorV2<'controller>, SourceGenesisErrorV1> {
+    let mut mixed = None;
+    let validation = (|| {
     let uid = journal.protected_owner_uid()?;
     require_controller(journal, uid)?;
-    let saved = issuance::retained(journal)?.ok_or(SourceGenesisErrorV1::AdmissionClosed)?;
+    let saved = match recipe {
+        IssuanceKeyRecipeV3::GlobalV2 => issuance::retained(journal)?,
+        IssuanceKeyRecipeV3::ProjectV3(project) => issuance::retained_project_v3(journal, project)?,
+    }.ok_or(SourceGenesisErrorV1::AdmissionClosed)?;
     if !saved.delivered {
         return Err(SourceGenesisErrorV1::AdmissionClosed);
     }
@@ -678,7 +1193,20 @@ pub(crate) fn hold_retained_first_source_successor_v2<'controller>(
     let body = packet.body();
     let intent = packet.intent()?;
     let source_uid = first_source_successor_inventory_uid_v2(inventory)?;
-    let source = observe_source_first_successor_v2(inventory, source_uid, intent.project())?;
+    let strict;
+    let source = match comparison {
+        ControllerSuccessorSignatureRecipeV3::StrictV2 => {
+            strict = observe_source_first_successor_v2(inventory, source_uid, intent.project())?;
+            SourceSuccessorObservationViewV3::Strict(&strict)
+        }
+        ControllerSuccessorSignatureRecipeV3::MixedV3 => {
+            if matches!(recipe, IssuanceKeyRecipeV3::ProjectV3(project) if project != intent.project()) { return Err(SourceGenesisErrorV1::Conflict); }
+            mixed = Some(observe_source_project_continuation_v3(inventory, source_uid, intent.project()));
+            let observed = mixed.as_ref().ok_or(SourceGenesisErrorV1::Stale)?;
+            observed.recheck()?;
+            SourceSuccessorObservationViewV3::Mixed(observed)
+        }
+    };
     let original = source.genesis_receipt().ok_or(SourceGenesisErrorV1::Conflict)?;
     let predecessor = SourceHierarchyFloorRecordV1::new(original.clone(), digest_at(body, 112))?;
     if source.genesis_root_floor() != Some(predecessor.digest())
@@ -708,15 +1236,15 @@ pub(crate) fn hold_retained_first_source_successor_v2<'controller>(
         None => ControllerFirstSourceSuccessorBeginV2::new(ControllerFirstSourceSuccessorBeginFieldsV2 {
             approval: packet.digest(), predecessor_floor: predecessor.digest(), genesis_complete,
             old_tree_head: original.tree_head(), old_lineage_head: original.lineage_head(),
-            next_tree_commit: digest_at(body, 680), source_uid, source_names: source.names(),
+            next_tree_commit: digest_at(body, 680), source_uid, source_names: source.names()?,
         })?,
     };
     if begin.source_uid() != source_uid || begin.approval() != packet.digest()
-        || (source.state() != SourceFirstSuccessorStateV2::Anchored && begin.source_names() != source.names())
+        || (source.state()? != SourceFirstSuccessorStateV2::Anchored && begin.source_names() != source.names()?)
     {
         return Err(SourceGenesisErrorV1::Conflict);
     }
-    if source.state() == SourceFirstSuccessorStateV2::Before {
+    if source.state()? == SourceFirstSuccessorStateV2::Before {
         let (tree, tree_head, lineage_head) = inventory.trees()?
             .find(|(tree, _, _)| tree.project() == intent.project())
             .ok_or(SourceGenesisErrorV1::Conflict)?;
@@ -744,14 +1272,21 @@ pub(crate) fn hold_retained_first_source_successor_v2<'controller>(
         journal: RefCell::new(journal), packet, begin,
         begin_durable, anchored: saved.anchored, complete: saved.complete,
         uid, names,
-        seed_file, authorization_file,
+        seed_file, authorization_file, recipe, comparison,
     };
     held.recheck()?;
-    if source.state() == SourceFirstSuccessorStateV2::Before {
+    if source.state()? == SourceFirstSuccessorStateV2::Before {
         held.recheck_current_admission()?;
     }
     inventory.recheck()?;
     Ok(held)
+    })();
+    // The returned validation and all Source evidence remain independent. An
+    // Err ends only the short Journal loan; no decoded maps or cause disappear.
+    if let (Some(observed), Some(destination)) = (mixed, evidence) {
+        *destination = Some(observed.into_evidence_v3());
+    }
+    validation
 }
 
 impl HeldControllerFirstSourceSuccessorV2<'_> {
@@ -793,7 +1328,10 @@ impl HeldControllerFirstSourceSuccessorV2<'_> {
         if journal.protected_writer_physical_names_v1()? != self.names {
             return Err(SourceGenesisErrorV1::Stale);
         }
-        let rows = issuance::retained(&journal)?.ok_or(SourceGenesisErrorV1::Stale)?;
+        let rows = match self.recipe {
+            IssuanceKeyRecipeV3::GlobalV2 => issuance::retained(&journal)?,
+            IssuanceKeyRecipeV3::ProjectV3(project) => issuance::retained_project_v3(&journal, project)?,
+        }.ok_or(SourceGenesisErrorV1::Stale)?;
         if !rows.delivered || rows.packet != self.packet
             || rows.begin.as_ref() != self.begin_durable.then_some(&self.begin)
             || rows.anchored != self.anchored || rows.complete != self.complete
@@ -830,6 +1368,49 @@ impl HeldControllerFirstSourceSuccessorV2<'_> {
             }
         }
         self.recheck()?;
+        require_approval_clock(&self.packet, super::flight::kernel_pair()?)
+    }
+
+    // The same writer is already mutably borrowed by the native engine. Do
+    // not recurse through its RefCell or replace the held pins with DATA.
+    pub(crate) fn native_begin_crossing_v3(&self, journal: &mut Journal) -> Result<(), SourceGenesisErrorV1> {
+        if self.comparison != ControllerSuccessorSignatureRecipeV3::MixedV3 || self.begin_durable {
+            return Err(SourceGenesisErrorV1::Conflict);
+        }
+        self.seed_file.recheck().map_err(|_| SourceGenesisErrorV1::Stale)?;
+        self.authorization_file.recheck().map_err(|_| SourceGenesisErrorV1::Stale)?;
+        let seed = PinnedControllerSourceTreeSeedIssuerV1::decode(self.seed_file.bytes())?;
+        let authorization = PinnedPublisherProjectAuthorizationIssuerV2::decode(self.authorization_file.bytes())?;
+        let body = self.packet.body();
+        if seed.generation() != u64::from_be_bytes(take(body, 16)?)
+            || seed.verifying_key() == authorization.verifying_key()
+        { return Err(SourceGenesisErrorV1::Conflict); }
+        self.packet.verify_signature(seed.verifying_key())?;
+        verify_signed_project_authorization_claims_v2(&body[312..536], &authorization)?;
+        require_controller(journal, self.uid)?;
+        if journal.protected_writer_physical_names_v1()? != self.names {
+            return Err(SourceGenesisErrorV1::Stale);
+        }
+        let rows = match self.recipe {
+            IssuanceKeyRecipeV3::GlobalV2 => issuance::retained(journal)?,
+            IssuanceKeyRecipeV3::ProjectV3(project) => issuance::retained_project_v3(journal, project)?,
+        }.ok_or(SourceGenesisErrorV1::Stale)?;
+        if !rows.delivered || rows.packet != self.packet || rows.begin.is_some()
+            || rows.anchored != self.anchored || rows.complete != self.complete
+        { return Err(SourceGenesisErrorV1::Stale); }
+        journal.require_git_coverage_new_admission_v1()?;
+        {
+            let original = hold_existing_completed_source_genesis_v2(journal, self.packet.intent()?.project())?;
+            if original.completed_record_commitment_v2()? != self.begin.genesis_complete() {
+                return Err(SourceGenesisErrorV1::Conflict);
+            }
+            let (generation, head, revision, auth_head, limits, packet) = original.current_successor_authorization_v2()?;
+            let current = crate::publisher_policy::parse_unverified_project_authorization_claims_v2(&body[312..536])?;
+            if generation != u64::from_be_bytes(take(body, 208)?) || head != digest_at(body, 216)
+                || revision != digest_at(body, 248) || auth_head != digest_at(body, 280)
+                || packet.as_slice() != &body[312..536] || limits != current.limits
+            { return Err(SourceGenesisErrorV1::Stale); }
+        }
         require_approval_clock(&self.packet, super::flight::kernel_pair()?)
     }
 
@@ -899,6 +1480,29 @@ impl ControllerFirstSuccessorMutationResultsV2 {
 }
 
 impl HeldControllerFirstSourceSuccessorV2<'_> {
+    fn phase_v3(&self, phase: NativePhase) -> NativePhase {
+        match (self.comparison, phase) {
+            (ControllerSuccessorSignatureRecipeV3::MixedV3, NativePhase::ControllerBegin) => NativePhase::MixedControllerBegin,
+            (ControllerSuccessorSignatureRecipeV3::MixedV3, NativePhase::ControllerAnchored) => NativePhase::MixedControllerAnchored,
+            (ControllerSuccessorSignatureRecipeV3::MixedV3, NativePhase::ControllerComplete) => NativePhase::MixedControllerComplete,
+            _ => phase,
+        }
+    }
+
+    fn key_v3(&self, suffix: &[u8]) -> Result<Vec<u8>, SourceGenesisErrorV1> {
+        match self.recipe {
+            IssuanceKeyRecipeV3::GlobalV2 => Ok(issuance::key(suffix)),
+            IssuanceKeyRecipeV3::ProjectV3(project) => issuance::project_key_v3(project, suffix).map_err(Into::into),
+        }
+    }
+
+    fn capacity_request_v3(&self) -> Result<crate::journal::GlobalCapacityReservationRequestV1, JournalError> {
+        match self.recipe {
+            IssuanceKeyRecipeV3::GlobalV2 => controller_capacity_request(&self.packet, &self.begin),
+            recipe => issuance::controller_capacity_request_with_recipe(&self.packet, &self.begin, recipe),
+        }
+    }
+
     pub(super) fn append_begin(&mut self, results: &mut ControllerFirstSuccessorMutationResultsV2) -> Result<(), ()> {
         if results.attempted { return Err(()); }
         results.attempted = true;
@@ -906,12 +1510,12 @@ impl HeldControllerFirstSourceSuccessorV2<'_> {
             self.recheck()?;
             if self.begin_durable { return Ok(()); }
             self.recheck_current_admission()?;
-            let request = controller_capacity_request(&self.packet, &self.begin)?;
+            let request = self.capacity_request_v3()?;
             let admission = transaction_id(self.packet.digest(), NativePhase::ControllerBegin);
             let reservation = self.journal.try_borrow().map_err(|_| SourceGenesisErrorV1::Stale)?
                 .prepare_first_source_successor_capacity_v2(&request, admission)?;
             results.transactions.push(JournalTransaction::new(admission, vec![
-                JournalRecord::put(RecordNamespace::DesiredState, issuance::key(b"consumer-begin"), self.begin.as_bytes().to_vec()),
+                JournalRecord::put(RecordNamespace::DesiredState, self.key_v3(b"consumer-begin")?, self.begin.as_bytes().to_vec()),
                 reservation,
             ])?);
             // Canonical prospective DATA prices the whole fixed suffix. The
@@ -930,11 +1534,11 @@ impl HeldControllerFirstSourceSuccessorV2<'_> {
                 ack: ack.digest(), begin: self.begin.digest(), anchored: prospective.digest(),
             })?;
             results.transactions.push(JournalTransaction::new(transaction_id(self.packet.digest(), NativePhase::ControllerAnchored), vec![
-                JournalRecord::put(RecordNamespace::DesiredState, issuance::key(b"consumer-anchored"), prospective.as_bytes().to_vec()),
+                JournalRecord::put(RecordNamespace::DesiredState, self.key_v3(b"consumer-anchored")?, prospective.as_bytes().to_vec()),
             ])?);
             let reservation = results.transactions[0].records()[1].clone();
             results.transactions.push(JournalTransaction::new(transaction_id(self.packet.digest(), NativePhase::ControllerComplete), vec![
-                JournalRecord::put(RecordNamespace::DesiredState, issuance::key(b"consumer-complete"), complete.as_bytes().to_vec()),
+                JournalRecord::put(RecordNamespace::DesiredState, self.key_v3(b"consumer-complete")?, complete.as_bytes().to_vec()),
                 JournalRecord::delete(reservation.namespace(), reservation.key().to_vec()),
             ])?);
             Ok(())
@@ -942,25 +1546,46 @@ impl HeldControllerFirstSourceSuccessorV2<'_> {
         if matches!(results.preparation, Some(Ok(()))) && !results.transactions.is_empty() {
             results.preflight = Some(self.journal.try_borrow().map_err(|_| JournalError::ProtectedBoundary)
                 .and_then(|journal| journal.preflight_first_source_successor_v2(&results.transactions, &[
-                    NativePhase::ControllerBegin, NativePhase::ControllerAnchored, NativePhase::ControllerComplete,
+                    self.phase_v3(NativePhase::ControllerBegin), self.phase_v3(NativePhase::ControllerAnchored), self.phase_v3(NativePhase::ControllerComplete),
                 ])));
             if matches!(results.preflight, Some(Ok(()))) {
                 // Current policy/clock follows the potentially slow preview.
                 results.crossing = Some(self.recheck_current_admission());
                 if matches!(results.crossing, Some(Ok(()))) {
                     results.native = Some(self.journal.try_borrow_mut().map_err(|_| JournalError::ProtectedBoundary)
-                        .and_then(|mut journal| journal.commit_first_source_successor_v2(&results.transactions[0], NativePhase::ControllerBegin)));
+                        .and_then(|mut journal| match self.comparison {
+                            ControllerSuccessorSignatureRecipeV3::StrictV2 => journal.commit_first_source_successor_v2(&results.transactions[0], self.phase_v3(NativePhase::ControllerBegin)),
+                            ControllerSuccessorSignatureRecipeV3::MixedV3 => journal.commit_selected_source_successor_v3(
+                                &results.transactions[0], self.phase_v3(NativePhase::ControllerBegin),
+                                crate::journal::source_tree_successor::FirstSuccessorNativeCutV3::ControllerBegin(self),
+                            ),
+                        }));
                 }
                 if matches!(results.native, Some(Ok(_))) { self.begin_durable = true; }
             }
         }
         results.post = Some(self.recheck());
+        if self.comparison == ControllerSuccessorSignatureRecipeV3::MixedV3 {
+            results.clock_post = Some(super::flight::kernel_pair().and_then(|clock| {
+                require_approval_clock(&self.packet, clock)?;
+                Ok(clock)
+            }));
+        }
         if results.failed() { Err(()) } else { Ok(()) }
     }
 
     pub(super) fn append_anchored(
         &mut self, source: &HeldSourceFirstSuccessorObservationV2<'_>,
         root: &super::successor_flight::RootFirstSourceSuccessorFloorProofV2<'_>,
+        results: &mut ControllerFirstSuccessorMutationResultsV2,
+    ) -> Result<(), ()> {
+        self.append_anchored_with_recipe_v3(SourceSuccessorObservationViewV3::Strict(source),
+            super::successor_flight::RootSuccessorFloorViewV3::Strict(root), results)
+    }
+
+    fn append_anchored_with_recipe_v3(
+        &mut self, source: SourceSuccessorObservationViewV3<'_, '_>,
+        root: super::successor_flight::RootSuccessorFloorViewV3<'_, '_>,
         results: &mut ControllerFirstSuccessorMutationResultsV2,
     ) -> Result<(), ()> {
         if results.attempted { return Err(()); }
@@ -972,7 +1597,7 @@ impl HeldControllerFirstSourceSuccessorV2<'_> {
             root.recheck()?;
             let receipt = source.receipt().ok_or(SourceGenesisErrorV1::Conflict)?;
             if root.floor().receipt() != receipt || receipt.begin() != self.begin.digest()
-                || receipt.approval() != self.packet.digest() || source.source_uid() != self.source_uid()
+                || receipt.approval() != self.packet.digest() || source.source_uid()? != self.source_uid()
             {
                 return Err(SourceGenesisErrorV1::Conflict);
             }
@@ -985,7 +1610,7 @@ impl HeldControllerFirstSourceSuccessorV2<'_> {
                 return Ok(());
             }
             results.transactions.push(JournalTransaction::new(transaction_id(self.packet.digest(), NativePhase::ControllerAnchored), vec![
-                JournalRecord::put(RecordNamespace::DesiredState, issuance::key(b"consumer-anchored"), anchored.as_bytes().to_vec()),
+                JournalRecord::put(RecordNamespace::DesiredState, self.key_v3(b"consumer-anchored")?, anchored.as_bytes().to_vec()),
             ])?);
             // Price the entire still-eligible Controller suffix with actual
             // receipt/floor joins. The prospective ACK is canonical sizing
@@ -998,11 +1623,11 @@ impl HeldControllerFirstSourceSuccessorV2<'_> {
                 approval: self.packet.digest(), receipt: receipt.digest(), floor: root.floor().digest(),
                 ack: ack.digest(), begin: self.begin.digest(), anchored: anchored.digest(),
             })?;
-            let request = controller_capacity_request(&self.packet, &self.begin)?;
+            let request = self.capacity_request_v3()?;
             let deletion = self.journal.try_borrow().map_err(|_| SourceGenesisErrorV1::Stale)?
                 .first_source_successor_capacity_deletion_v2(&request, transaction_id(self.packet.digest(), NativePhase::ControllerBegin))?;
             results.transactions.push(JournalTransaction::new(transaction_id(self.packet.digest(), NativePhase::ControllerComplete), vec![
-                JournalRecord::put(RecordNamespace::DesiredState, issuance::key(b"consumer-complete"), complete.as_bytes().to_vec()), deletion,
+                JournalRecord::put(RecordNamespace::DesiredState, self.key_v3(b"consumer-complete")?, complete.as_bytes().to_vec()), deletion,
             ])?);
             Ok(())
         })());
@@ -1018,6 +1643,15 @@ impl HeldControllerFirstSourceSuccessorV2<'_> {
         root: &super::successor_flight::RootFirstSourceSuccessorFloorProofV2<'_>,
         results: &mut ControllerFirstSuccessorMutationResultsV2,
     ) -> Result<(), ()> {
+        self.append_complete_with_recipe_v3(SourceSuccessorObservationViewV3::Strict(source),
+            super::successor_flight::RootSuccessorFloorViewV3::Strict(root), results)
+    }
+
+    fn append_complete_with_recipe_v3(
+        &mut self, source: SourceSuccessorObservationViewV3<'_, '_>,
+        root: super::successor_flight::RootSuccessorFloorViewV3<'_, '_>,
+        results: &mut ControllerFirstSuccessorMutationResultsV2,
+    ) -> Result<(), ()> {
         if results.attempted { return Err(()); }
         results.attempted = true;
         let mut expected = None;
@@ -1028,10 +1662,10 @@ impl HeldControllerFirstSourceSuccessorV2<'_> {
             let anchored = self.anchored.as_ref().ok_or(SourceGenesisErrorV1::Conflict)?;
             let receipt = source.receipt().ok_or(SourceGenesisErrorV1::Conflict)?;
             let ack = source.ack().ok_or(SourceGenesisErrorV1::Conflict)?;
-            if source.state() != SourceFirstSuccessorStateV2::Anchored || root.floor().receipt() != receipt
+            if source.state()? != SourceFirstSuccessorStateV2::Anchored || root.floor().receipt() != receipt
                 || anchored.receipt() != receipt.digest() || anchored.floor() != root.floor().digest()
                 || ack.receipt() != receipt.digest() || ack.root_floor() != root.floor().digest()
-                || ack.controller_anchored() != anchored.digest() || source.source_uid() != self.source_uid()
+                || ack.controller_anchored() != anchored.digest() || source.source_uid()? != self.source_uid()
             {
                 return Err(SourceGenesisErrorV1::Conflict);
             }
@@ -1044,11 +1678,11 @@ impl HeldControllerFirstSourceSuccessorV2<'_> {
                 if existing != &complete { return Err(SourceGenesisErrorV1::Conflict); }
                 return Ok(());
             }
-            let request = controller_capacity_request(&self.packet, &self.begin)?;
+            let request = self.capacity_request_v3()?;
             let deletion = self.journal.try_borrow().map_err(|_| SourceGenesisErrorV1::Stale)?
                 .first_source_successor_capacity_deletion_v2(&request, transaction_id(self.packet.digest(), NativePhase::ControllerBegin))?;
             results.transactions.push(JournalTransaction::new(transaction_id(self.packet.digest(), NativePhase::ControllerComplete), vec![
-                JournalRecord::put(RecordNamespace::DesiredState, issuance::key(b"consumer-complete"), complete.as_bytes().to_vec()), deletion,
+                JournalRecord::put(RecordNamespace::DesiredState, self.key_v3(b"consumer-complete")?, complete.as_bytes().to_vec()), deletion,
             ])?);
             Ok(())
         })());
@@ -1060,14 +1694,16 @@ impl HeldControllerFirstSourceSuccessorV2<'_> {
     }
 
     fn commit_settlement(
-        &self, source: &HeldSourceFirstSuccessorObservationV2<'_>,
-        root: &super::successor_flight::RootFirstSourceSuccessorFloorProofV2<'_>,
+        &self, source: SourceSuccessorObservationViewV3<'_, '_>,
+        root: super::successor_flight::RootSuccessorFloorViewV3<'_, '_>,
         results: &mut ControllerFirstSuccessorMutationResultsV2, phase: NativePhase,
     ) {
         if matches!(results.preparation, Some(Ok(()))) && !results.transactions.is_empty() {
-            let phases: &[NativePhase] = match phase {
-                NativePhase::ControllerAnchored => &[NativePhase::ControllerAnchored, NativePhase::ControllerComplete],
-                NativePhase::ControllerComplete => &[NativePhase::ControllerComplete],
+            let phases: &[NativePhase] = match (self.comparison, phase) {
+                (ControllerSuccessorSignatureRecipeV3::StrictV2, NativePhase::ControllerAnchored) => &[NativePhase::ControllerAnchored, NativePhase::ControllerComplete],
+                (ControllerSuccessorSignatureRecipeV3::StrictV2, NativePhase::ControllerComplete) => &[NativePhase::ControllerComplete],
+                (ControllerSuccessorSignatureRecipeV3::MixedV3, NativePhase::ControllerAnchored) => &[NativePhase::MixedControllerAnchored, NativePhase::MixedControllerComplete],
+                (ControllerSuccessorSignatureRecipeV3::MixedV3, NativePhase::ControllerComplete) => &[NativePhase::MixedControllerComplete],
                 _ => { return; }
             };
             results.preflight = Some(self.journal.try_borrow().map_err(|_| JournalError::ProtectedBoundary)
@@ -1084,7 +1720,13 @@ impl HeldControllerFirstSourceSuccessorV2<'_> {
                 }
                 if matches!(results.crossing_clock, Some(Ok(_))) {
                     results.native = Some(self.journal.try_borrow_mut().map_err(|_| JournalError::ProtectedBoundary)
-                        .and_then(|mut journal| journal.commit_first_source_successor_v2(&results.transactions[0], phase)));
+                        .and_then(|mut journal| match self.comparison {
+                            ControllerSuccessorSignatureRecipeV3::StrictV2 => journal.commit_first_source_successor_v2(&results.transactions[0], self.phase_v3(phase)),
+                            ControllerSuccessorSignatureRecipeV3::MixedV3 => journal.commit_selected_source_successor_v3(
+                                &results.transactions[0], self.phase_v3(phase),
+                                crate::journal::source_tree_successor::FirstSuccessorNativeCutV3::Settled(root),
+                            ),
+                        }));
                 }
             }
         }
@@ -1107,6 +1749,12 @@ pub(super) struct VerifiedControllerFirstSuccessorObservationV2 {
     pub(super) source_sequence: u64,
 }
 
+// Comparison DATA only. The common parser is private; this wrapper does not
+// export a strict-v2 live Controller/Source/Root loan or mutation entrypoint.
+pub(super) struct VerifiedControllerFirstSuccessorObservationV3 {
+    pub(super) data: VerifiedControllerFirstSuccessorObservationV2,
+}
+
 pub(super) fn sign_controller_first_successor_readback_v2(
     controller: &HeldControllerFirstSourceSuccessorV2<'_>,
     source: &HeldSourceFirstSuccessorObservationV2<'_>,
@@ -1114,12 +1762,34 @@ pub(super) fn sign_controller_first_successor_readback_v2(
     generation: u64,
     key: &SigningKey,
 ) -> Result<[u8; CONTROLLER_OBSERVATION_BYTES], SourceGenesisErrorV1> {
+    sign_controller_successor_with_recipe_v3(ControllerSuccessorOwnerViewV3::Strict(controller),
+        SourceSuccessorObservationViewV3::Strict(source), super::successor_flight::RootSuccessorFlightViewV3::Strict(flight),
+        generation, key, ControllerSuccessorSignatureRecipeV3::StrictV2)
+}
+
+pub(super) fn sign_controller_project_successor_readback_v3(
+    controller: &HeldControllerProjectSuccessorV3<'_>,
+    source: &crate::hierarchy::SourceProjectContinuationObservationV3<'_>,
+    flight: &super::successor_flight::OriginalRootProjectSuccessorFlightV3<'_>,
+    generation: u64, key: &SigningKey,
+) -> Result<[u8; CONTROLLER_OBSERVATION_BYTES], SourceGenesisErrorV1> {
+    sign_controller_successor_with_recipe_v3(ControllerSuccessorOwnerViewV3::Mixed(controller),
+        SourceSuccessorObservationViewV3::Mixed(source), super::successor_flight::RootSuccessorFlightViewV3::Mixed(flight),
+        generation, key, ControllerSuccessorSignatureRecipeV3::MixedV3)
+}
+
+fn sign_controller_successor_with_recipe_v3(
+    controller: ControllerSuccessorOwnerViewV3<'_, '_>, source: SourceSuccessorObservationViewV3<'_, '_>,
+    flight: super::successor_flight::RootSuccessorFlightViewV3<'_, '_>,
+    generation: u64, key: &SigningKey, recipe: ControllerSuccessorSignatureRecipeV3,
+) -> Result<[u8; CONTROLLER_OBSERVATION_BYTES], SourceGenesisErrorV1> {
+    let controller = controller.data();
     controller.recheck()?;
     source.recheck()?;
     flight.recheck()?;
-    if !controller.begin_durable || generation == 0 || controller.source_uid() != source.source_uid()
-        || flight.source_uid()? != source.source_uid()
-        || controller.packet.intent()?.project() != source.project()
+    if !controller.begin_durable || generation == 0 || controller.source_uid() != source.source_uid()?
+        || flight.source_uid()? != source.source_uid()?
+        || controller.packet.intent()?.project() != source.project()?
     {
         return Err(SourceGenesisErrorV1::Conflict);
     }
@@ -1127,7 +1797,7 @@ pub(super) fn sign_controller_first_successor_readback_v2(
         let anchored = controller.anchored.as_ref().ok_or(SourceGenesisErrorV1::Conflict)?;
         let receipt = source.receipt().ok_or(SourceGenesisErrorV1::Conflict)?;
         let ack = source.ack().ok_or(SourceGenesisErrorV1::Conflict)?;
-        if source.state() != SourceFirstSuccessorStateV2::Anchored
+        if source.state()? != SourceFirstSuccessorStateV2::Anchored
             || complete.approval() != controller.packet.digest() || complete.begin() != controller.begin.digest()
             || complete.anchored() != anchored.digest() || complete.receipt() != receipt.digest()
             || complete.floor() != anchored.floor() || complete.ack() != ack.digest()
@@ -1137,23 +1807,23 @@ pub(super) fn sign_controller_first_successor_readback_v2(
             return Err(SourceGenesisErrorV1::Conflict);
         }
         3
-    } else if source.state() == SourceFirstSuccessorStateV2::Before {
+    } else if source.state()? == SourceFirstSuccessorStateV2::Before {
         controller.recheck_current_admission()?;
         1
     } else { 2 };
     let mut bytes = [0; CONTROLLER_OBSERVATION_BYTES];
-    bytes[..8].copy_from_slice(OBSERVATION_MAGIC);
-    bytes[8..10].copy_from_slice(&2_u16.to_be_bytes());
+    bytes[..8].copy_from_slice(recipe.magic());
+    bytes[8..10].copy_from_slice(&u16::from(recipe.version()).to_be_bytes());
     bytes[10] = 1;
     bytes[11] = phase;
     bytes[16..32].copy_from_slice(&flight.nonce());
     bytes[32..40].copy_from_slice(&generation.to_be_bytes());
     bytes[40..44].copy_from_slice(&controller.uid.to_be_bytes());
-    bytes[44..48].copy_from_slice(&source.source_uid().to_be_bytes());
+    bytes[44..48].copy_from_slice(&source.source_uid()?.to_be_bytes());
     bytes[48..56].copy_from_slice(&controller.sequence()?.to_be_bytes());
-    bytes[56..64].copy_from_slice(&source.snapshot_sequence().to_be_bytes());
+    bytes[56..64].copy_from_slice(&source.snapshot_sequence()?.to_be_bytes());
     bytes[64..112].copy_from_slice(&controller.names.to_bytes());
-    bytes[112..160].copy_from_slice(&source.names().to_bytes());
+    bytes[112..160].copy_from_slice(&source.names()?.to_bytes());
     bytes[160..1056].copy_from_slice(controller.packet.as_bytes());
     bytes[1056..1352].copy_from_slice(controller.begin.as_bytes());
     if let Some(receipt) = source.receipt() {
@@ -1166,7 +1836,7 @@ pub(super) fn sign_controller_first_successor_readback_v2(
     if let Some(anchored) = controller.anchored.as_ref() { bytes[1920..2064].copy_from_slice(anchored.as_bytes()); }
     if let Some(complete) = controller.complete.as_ref() { bytes[2064..2304].copy_from_slice(complete.as_bytes()); }
     if let Some(ack) = source.ack() { bytes[2304..2496].copy_from_slice(ack.as_bytes()); }
-    let preimage = [OBSERVATION_DOMAIN, &bytes[..CONTROLLER_OBSERVATION_BODY]].concat();
+    let preimage = [recipe.domain(), &bytes[..CONTROLLER_OBSERVATION_BODY]].concat();
     source.recheck()?;
     controller.recheck()?;
     // The final original-flight pair follows all slow owner observations.
@@ -1186,9 +1856,24 @@ pub(super) fn verify_controller_first_successor_readback_v2(
     controller_uid: u32,
     source_uid: u32,
 ) -> Result<VerifiedControllerFirstSuccessorObservationV2, SourceGenesisErrorV1> {
+    verify_controller_successor_with_recipe(bytes, pin, nonce, controller_uid, source_uid, ControllerSuccessorSignatureRecipeV3::StrictV2)
+}
+
+pub(super) fn verify_controller_project_successor_readback_v3(
+    bytes: &[u8], pin: &super::super::PinnedControllerHoldSignerV1, nonce: [u8; 16],
+    controller_uid: u32, source_uid: u32,
+) -> Result<VerifiedControllerFirstSuccessorObservationV3, SourceGenesisErrorV1> {
+    verify_controller_successor_with_recipe(bytes, pin, nonce, controller_uid, source_uid, ControllerSuccessorSignatureRecipeV3::MixedV3)
+        .map(|data| VerifiedControllerFirstSuccessorObservationV3 { data })
+}
+
+fn verify_controller_successor_with_recipe(
+    bytes: &[u8], pin: &super::super::PinnedControllerHoldSignerV1, nonce: [u8; 16],
+    controller_uid: u32, source_uid: u32, recipe: ControllerSuccessorSignatureRecipeV3,
+) -> Result<VerifiedControllerFirstSuccessorObservationV2, SourceGenesisErrorV1> {
     if bytes.len() != CONTROLLER_OBSERVATION_BYTES || nonce == [0; 16]
-        || bytes.get(..8) != Some(OBSERVATION_MAGIC.as_slice())
-        || bytes[8..11] != [0, 2, 1] || bytes[12..16] != [0; 4]
+        || bytes.get(..8) != Some(recipe.magic().as_slice())
+        || bytes[8..11] != [0, recipe.version(), 1] || bytes[12..16] != [0; 4]
         || bytes[16..32] != nonce || u64::from_be_bytes(take(bytes, 32)?) != pin.generation()
         || u32::from_be_bytes(take(bytes, 40)?) != controller_uid
         || u32::from_be_bytes(take(bytes, 44)?) != source_uid
@@ -1196,7 +1881,7 @@ pub(super) fn verify_controller_first_successor_readback_v2(
         return Err(SourceGenesisErrorV1::NonCanonical);
     }
     pin.verifying_key().verify_strict(
-        &[OBSERVATION_DOMAIN, &bytes[..CONTROLLER_OBSERVATION_BODY]].concat(),
+        &[recipe.domain(), &bytes[..CONTROLLER_OBSERVATION_BODY]].concat(),
         &Signature::from_bytes(&take(bytes, CONTROLLER_OBSERVATION_BODY)?),
     ).map_err(|_| SourceGenesisErrorV1::Stale)?;
     let phase = match bytes[11] {

@@ -51,6 +51,8 @@ use aos_sandbox::policy_compiler::{
     sign_fixed_source_first_successor_readback_v2, verify_source_first_successor_readback_v2,
     SOURCE_PROJECT_CONTINUATION_READBACK_BYTES_V3,
     sign_fixed_source_project_continuation_readback_v3, verify_source_project_continuation_readback_v3,
+    SourceProjectGenesisChallengeV3, SOURCE_PROJECT_GENESIS_READBACK_BYTES_V3,
+    sign_fixed_source_project_genesis_readback_v3, verify_source_project_genesis_readback_v3,
 };
 use aos_sandbox_core::{ObjectDigest, ProjectId};
 use rustix::net::sockopt::{socket_acceptconn, socket_peercred};
@@ -79,6 +81,8 @@ const REQUEST_FIRST_SUCCESSOR_MAGIC: &[u8; 8] = b"AOSSSR09";
 const REPLY_FIRST_SUCCESSOR_MAGIC: &[u8; 8] = b"AOSSSP09";
 const REQUEST_PROJECT_CONTINUATION_MAGIC: &[u8; 8] = b"AOSSSR10";
 const REPLY_PROJECT_CONTINUATION_MAGIC: &[u8; 8] = b"AOSSSP10";
+const REQUEST_PROJECT_GENESIS_MAGIC_V3: &[u8; 8] = b"AOSSSR11";
+const REPLY_PROJECT_GENESIS_MAGIC_V3: &[u8; 8] = b"AOSSSP11";
 const REQUEST_FIRST_SUCCESSOR_BYTES: usize = REQUEST_BYTES + 1248;
 const REPLY_FIRST_SUCCESSOR_BYTES: usize = 8 + SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2;
 const REPLY_GENESIS_BYTES: usize = 8 + SOURCE_TREE_GENESIS_READBACK_BYTES_V1;
@@ -91,6 +95,58 @@ const REPLY_PROJECT_BYTES: usize = 8 + SOURCE_PROJECT_ADMISSION_READBACK_BYTES_V
 const REPLY_RESERVATION_BYTES: usize = 8 + SOURCE_PROJECT_RESERVATION_READBACK_BYTES_V1;
 const FLIGHT_TIMEOUT: Duration = Duration::from_secs(5);
 const REPLY_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Requests approval-free selected genesis DATA from the same independent signer.
+///
+/// # Errors
+/// Rejects endpoint custody, incomplete context, exact framing/EOF or the
+/// independently pinned Source03 signature. No response is a writer loan.
+pub fn request_root_source_project_genesis_readback_v3(
+    challenge: SourceProjectGenesisChallengeV3,
+    context: &SourceTreeGenesisIntentContextV1,
+    signer: &PinnedSourceHoldReadbackSignerV1,
+    signer_uid: u32,
+    socket_gid: u32,
+) -> io::Result<[u8; SOURCE_PROJECT_GENESIS_READBACK_BYTES_V3]> {
+    if signer_uid == 0 || socket_gid == 0 { return Err(invalid_data("invalid selected genesis signer identity")); }
+    let request = encode_project_genesis_request_v3(challenge, context)?;
+    let mut stream = connect_source_signer(signer_uid, socket_gid)?;
+    stream.write_all(&request)?;
+    stream.shutdown(std::net::Shutdown::Write)?;
+    let packet = read_framed_reply::<REPLY_GENESIS_BYTES, SOURCE_PROJECT_GENESIS_READBACK_BYTES_V3>(
+        &mut stream, REPLY_PROJECT_GENESIS_MAGIC_V3,
+    )?;
+    verify_source_project_genesis_readback_v3(&packet, signer, challenge).map_err(io::Error::other)?;
+    Ok(packet)
+}
+
+fn encode_project_genesis_request_v3(
+    challenge: SourceProjectGenesisChallengeV3,
+    context: &SourceTreeGenesisIntentContextV1,
+) -> io::Result<[u8; REQUEST_GENESIS_BYTES]> {
+    if context.project() != challenge.project() { return Err(invalid_data("foreign selected genesis context")); }
+    let mut request = [0; REQUEST_GENESIS_BYTES];
+    request[..8].copy_from_slice(REQUEST_PROJECT_GENESIS_MAGIC_V3);
+    request[8..24].copy_from_slice(&challenge.nonce());
+    request[24..56].copy_from_slice(challenge.intent().map_or([0; 32], |digest| *digest.as_bytes()).as_slice());
+    request[56..72].copy_from_slice(challenge.project().as_bytes());
+    request[REQUEST_BYTES..].copy_from_slice(&context.encode());
+    Ok(request)
+}
+
+fn decode_project_genesis_request_v3(
+    request: &[u8; REQUEST_GENESIS_BYTES],
+) -> io::Result<(SourceProjectGenesisChallengeV3, SourceTreeGenesisIntentContextV1)> {
+    if request[..8] != *REQUEST_PROJECT_GENESIS_MAGIC_V3 { return Err(invalid_data("foreign selected genesis request")); }
+    let nonce = request[8..24].try_into().map_err(|_| invalid_data("invalid selected nonce"))?;
+    let intent: [u8; 32] = request[24..56].try_into().map_err(|_| invalid_data("invalid original intent"))?;
+    let project = ProjectId::from_bytes(request[56..72].try_into().map_err(|_| invalid_data("invalid selected project"))?);
+    let challenge = SourceProjectGenesisChallengeV3::new(nonce, project,
+        (intent != [0; 32]).then_some(ObjectDigest::from_bytes(intent))).map_err(io::Error::other)?;
+    let context = SourceTreeGenesisIntentContextV1::decode(&request[REQUEST_BYTES..]).map_err(io::Error::other)?;
+    if encode_project_genesis_request_v3(challenge, &context)? != *request { return Err(invalid_data("noncanonical selected genesis request")); }
+    Ok((challenge, context))
+}
 
 #[derive(Clone, Copy)]
 enum SourceSuccessorRequestRecipe {
@@ -810,6 +866,45 @@ fn serve_request(
         if shutdown.is_err() || credential_after_shutdown.is_err() || peer_after_shutdown.is_err() {
             std::process::exit(1);
         }
+        if let (Ok(key), Ok(later)) = (&credential_after_shutdown, &peer_after_shutdown) {
+            if key.verifying_key() != signing_key.verifying_key()
+                || later.uid != peer.uid || later.gid != peer.gid || later.pid != peer.pid
+            { std::process::exit(1); }
+        }
+        return Ok(());
+    }
+    if request[..8] == *REQUEST_PROJECT_GENESIS_MAGIC_V3 {
+        let mut expanded = [0; REQUEST_GENESIS_BYTES];
+        expanded[..REQUEST_BYTES].copy_from_slice(&request);
+        stream.read_exact(&mut expanded[REQUEST_BYTES..])?;
+        require_request_eof(stream)?;
+        let (challenge, context) = decode_project_genesis_request_v3(&expanded)?;
+        let signing_key_result = credentials.signing_key();
+        let Ok(signing_key) = &signing_key_result else { std::process::exit(1); };
+        let returned = sign_fixed_source_project_genesis_readback_v3(
+            controller_uid, challenge, &context, credentials.generation(), signing_key,
+        );
+        let credential_post = credentials.signing_key();
+        let peer_post = socket_peercred(&*stream);
+        let Ok(packet) = &returned else { std::process::exit(1); };
+        let Ok(later_key) = &credential_post else { std::process::exit(1); };
+        let Ok(later_peer) = &peer_post else { std::process::exit(1); };
+        if later_key.verifying_key() != signing_key.verifying_key()
+            || later_peer.uid != peer.uid || later_peer.gid != peer.gid || later_peer.pid != peer.pid
+        { std::process::exit(1); }
+        let sent = write_framed_reply::<REPLY_GENESIS_BYTES>(stream, REPLY_PROJECT_GENESIS_MAGIC_V3, packet);
+        let credential_after_send = credentials.signing_key();
+        let peer_after_send = socket_peercred(&*stream);
+        if sent.is_err() || credential_after_send.is_err() || peer_after_send.is_err() { std::process::exit(1); }
+        if let (Ok(key), Ok(later)) = (&credential_after_send, &peer_after_send) {
+            if key.verifying_key() != signing_key.verifying_key()
+                || later.uid != peer.uid || later.gid != peer.gid || later.pid != peer.pid
+            { std::process::exit(1); }
+        }
+        let shutdown = stream.shutdown(std::net::Shutdown::Write);
+        let credential_after_shutdown = credentials.signing_key();
+        let peer_after_shutdown = socket_peercred(&*stream);
+        if shutdown.is_err() || credential_after_shutdown.is_err() || peer_after_shutdown.is_err() { std::process::exit(1); }
         if let (Ok(key), Ok(later)) = (&credential_after_shutdown, &peer_after_shutdown) {
             if key.verifying_key() != signing_key.verifying_key()
                 || later.uid != peer.uid || later.gid != peer.gid || later.pid != peer.pid

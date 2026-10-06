@@ -30,6 +30,7 @@ use crate::journal::{
 };
 
 use super::records::{FLOOR_PREFIX, INSTANCE_KEY, PINS_KEY, SourceHierarchyFloorRecordV1, decode_instance};
+use super::wire::FirstSuccessorWireRecipeV3;
 use super::successor_records::{
     RootFirstSourceSuccessorFloorFieldsV2, RootFirstSourceSuccessorFloorV2,
     RootFirstSourceSuccessorIntentFieldsV2, RootFirstSourceSuccessorIntentV2, SourceFirstSuccessorReceiptV2,
@@ -78,6 +79,39 @@ struct Rows {
     archive: Option<RootFirstSourceSuccessorArchiveV2>,
 }
 
+// Both variants are authenticated comparison DATA. Selecting this codec does
+// not construct a writer, Root floor loan or original flight.
+enum SourceSuccessorComparisonV3 {
+    Strict(crate::policy_compiler::VerifiedSourceFirstSuccessorReadbackV2),
+    Mixed(crate::policy_compiler::VerifiedSourceProjectContinuationReadbackV3),
+}
+
+impl SourceSuccessorComparisonV3 {
+    fn phase(&self) -> crate::policy_compiler::SourceFirstSuccessorReadbackPhaseV2 {
+        match self { Self::Strict(data) => data.phase(), Self::Mixed(data) => data.phase() }
+    }
+
+    fn names(&self) -> crate::journal::ProtectedJournalNamesV1 {
+        match self { Self::Strict(data) => data.names(), Self::Mixed(data) => data.names() }
+    }
+
+    fn sequence(&self) -> u64 {
+        match self { Self::Strict(data) => data.sequence(), Self::Mixed(data) => data.sequence() }
+    }
+
+    fn receipt(&self) -> Option<&SourceFirstSuccessorReceiptV2> {
+        match self { Self::Strict(data) => data.receipt(), Self::Mixed(data) => data.receipt() }
+    }
+
+    fn ack(&self) -> Option<&super::successor_records::SourceFirstSuccessorAckV2> {
+        match self { Self::Strict(data) => data.ack(), Self::Mixed(data) => data.ack() }
+    }
+
+    fn genesis_receipt(&self) -> &crate::hierarchy::SourceTreeGenesisReceiptV1 {
+        match self { Self::Strict(data) => data.genesis_receipt(), Self::Mixed(data) => data.genesis_receipt() }
+    }
+}
+
 // All members are historical comparison DATA. A selected active intent is
 // not admitted by archive counts or by this structural fold.
 struct ProjectRowsV3 {
@@ -122,6 +156,29 @@ fn project_rows_v3(state: &State, selected: Option<ProjectId>) -> Result<Project
 }
 
 impl super::store::RootSourceGenesisAuthorityV1 {
+    fn require_successor_recipe_v3(&self, recipe: FirstSuccessorWireRecipeV3) -> Result<(), SourceGenesisErrorV1> {
+        if self.successor_recipe != recipe { return Err(SourceGenesisErrorV1::Conflict); }
+        Ok(())
+    }
+
+    fn successor_rows_for_project_v3(&self, project: ProjectId) -> Result<Rows, SourceGenesisErrorV1> {
+        match self.successor_recipe {
+            FirstSuccessorWireRecipeV3::StrictV2 => rows(&journal_state(&self.journal)).map_err(Into::into),
+            FirstSuccessorWireRecipeV3::MixedV3 => {
+                let mut family = project_rows_v3(&journal_state(&self.journal), Some(project))?;
+                Ok(Rows { intent: family.intent, archive: family.archives.remove(&project) })
+            }
+        }
+    }
+
+    fn retained_successor_for_project_v3(&self, project: ProjectId) -> Result<Option<RootFirstSourceSuccessorIntentV2>, SourceGenesisErrorV1> {
+        if self.successor_recipe == FirstSuccessorWireRecipeV3::StrictV2 {
+            return retained_root_first_successor_v2(&self.journal, project);
+        }
+        let retained = self.successor_rows_for_project_v3(project)?;
+        Ok(retained.intent.or_else(|| retained.archive.map(|archive| archive.original)))
+    }
+
     // An associated DATA fold avoids a new parent-module export or any new
     // authority constructor. Native cold/compaction callers borrow real maps.
     pub(crate) fn validate_project_successor_replay_v3(state: &State) -> Result<(), JournalError> {
@@ -511,6 +568,66 @@ fn original_server_crossing_clock(
     Ok(current)
 }
 
+// Fields stay private to this actual Root owner. The native call borrows the
+// held independent pins separately from its mutable Journal, never a new owner
+// or a context-only clock permit.
+pub(crate) struct RootSuccessorNativeServerCutV3<'owner> {
+    pins: &'owner super::pins::RootGenesisRolePinsV1,
+    names: crate::journal::ProtectedJournalNamesV1,
+    context: &'owner RootFirstSourceSuccessorIntentV2,
+    original: &'owner aos_sandbox_core::RawPairedClockSample,
+    deadline: &'owner std::time::Instant,
+}
+
+impl RootSuccessorNativeServerCutV3<'_> {
+    pub(crate) fn final_crossing(
+        &self, journal: &Journal, transaction: &JournalTransaction, phase: Phase,
+    ) -> Result<(), SourceGenesisErrorV1> {
+        super::capacity::require_owner(journal)?;
+        self.pins.recheck(journal)?;
+        if journal.protected_writer_physical_names_v1()? != self.names
+            || self.context.roles() != self.pins.digest()
+        { return Err(SourceGenesisErrorV1::Stale); }
+        super::store::validate_history(journal, self.pins)?;
+        let state = journal_state(journal);
+        let retained = project_rows_v3(&state, Some(self.context.project()))?;
+        let value = transaction.records().first().and_then(JournalRecord::value)
+            .ok_or(SourceGenesisErrorV1::Conflict)?;
+        let deployment_expiry = match phase {
+            Phase::MixedRootPrepared => {
+                if retained.intent.is_some() || retained.archives.contains_key(&self.context.project())
+                    || RootFirstSourceSuccessorIntentV2::decode(value)? != *self.context
+                { return Err(SourceGenesisErrorV1::Conflict); }
+                Some(super::store::require_current_deployment(journal)?)
+            }
+            Phase::MixedRootAnchor => {
+                if retained.intent.as_ref() != Some(self.context)
+                    || RootFirstSourceSuccessorArchiveV2::decode(value)?.original != *self.context
+                { return Err(SourceGenesisErrorV1::Conflict); }
+                None
+            }
+            _ => return Err(SourceGenesisErrorV1::Conflict),
+        };
+        // Release temporary comparison allocations before the final sample.
+        drop(retained);
+        drop(state);
+        // Everything potentially slow precedes this original pair. Historical
+        // anchoring checks custody only; it never renews signed append D.
+        let clock = original_server_crossing_clock(self.original, self.deadline)?;
+        if deployment_expiry.is_some_and(|expiry| clock.wall_seconds() >= expiry) {
+            return Err(SourceGenesisErrorV1::AdmissionClosed);
+        }
+        if phase == Phase::MixedRootPrepared {
+            super::successor_consumer::require_approval_clock(self.context.approval_packet(), clock)?;
+            if clock.host_boot_id() != self.context.boot()
+                || clock.boottime_nanoseconds() >= self.context.boottime_deadline()
+                || u64::try_from(clock.wall_seconds()).map_err(|_| SourceGenesisErrorV1::AdmissionClosed)? >= self.context.expires_wall()
+            { return Err(SourceGenesisErrorV1::AdmissionClosed); }
+        }
+        Ok(())
+    }
+}
+
 impl super::store::RootSourceGenesisAuthorityV1 {
     /// Compares every retained archive before selecting immutable intent DATA.
     ///
@@ -581,10 +698,28 @@ impl super::store::RootSourceGenesisAuthorityV1 {
     pub fn historical_first_source_successor_context_v2(&self, controller_packet: &[u8])
         -> Result<RootFirstSourceSuccessorIntentV2, SourceGenesisErrorV1>
     {
+        self.require_successor_recipe_v3(FirstSuccessorWireRecipeV3::StrictV2)?;
+        self.historical_successor_context_with_recipe_v3(controller_packet)
+    }
+
+    /// Selects an immutable selected-project admission without renewing it.
+    ///
+    /// # Errors
+    /// Rejects missing historical work, foreign framing or any changed join.
+    pub fn historical_project_successor_context_v3(&self, controller_packet: &[u8])
+        -> Result<RootFirstSourceSuccessorIntentV2, SourceGenesisErrorV1>
+    {
+        self.require_successor_recipe_v3(FirstSuccessorWireRecipeV3::MixedV3)?;
+        self.historical_successor_context_with_recipe_v3(controller_packet)
+    }
+
+    fn historical_successor_context_with_recipe_v3(&self, controller_packet: &[u8])
+        -> Result<RootFirstSourceSuccessorIntentV2, SourceGenesisErrorV1>
+    {
         let controller = self.verify_first_successor_controller(controller_packet)?;
-        let original = retained_root_first_successor_v2(&self.journal, controller.packet.intent()?.project())?
+        let original = self.retained_successor_for_project_v3(controller.packet.intent()?.project())?
             .ok_or(SourceGenesisErrorV1::AdmissionClosed)?;
-        let checked = self.first_source_successor_context_v2(controller_packet)?;
+        let checked = self.successor_context_with_recipe_v3(controller_packet)?;
         if checked != original { return Err(SourceGenesisErrorV1::Conflict); }
         Ok(original)
     }
@@ -598,11 +733,29 @@ impl super::store::RootSourceGenesisAuthorityV1 {
     pub fn first_source_successor_context_v2(&self, controller_packet: &[u8])
         -> Result<RootFirstSourceSuccessorIntentV2, SourceGenesisErrorV1>
     {
+        self.require_successor_recipe_v3(FirstSuccessorWireRecipeV3::StrictV2)?;
+        self.successor_context_with_recipe_v3(controller_packet)
+    }
+
+    /// Derives selected comparison context under the actual mixed Root owner.
+    ///
+    /// # Errors
+    /// Rejects incomplete histories, changed roles, signature or predecessor.
+    pub fn project_successor_context_v3(&self, controller_packet: &[u8])
+        -> Result<RootFirstSourceSuccessorIntentV2, SourceGenesisErrorV1>
+    {
+        self.require_successor_recipe_v3(FirstSuccessorWireRecipeV3::MixedV3)?;
+        self.successor_context_with_recipe_v3(controller_packet)
+    }
+
+    fn successor_context_with_recipe_v3(&self, controller_packet: &[u8])
+        -> Result<RootFirstSourceSuccessorIntentV2, SourceGenesisErrorV1>
+    {
         self.recheck()?;
         let controller = self.verify_first_successor_controller(controller_packet)?;
         self.pins.verify_first_source_successor_v2(&controller.packet)?;
         let project = controller.packet.intent()?.project();
-        if let Some(original) = retained_root_first_successor_v2(&self.journal, project)? {
+        if let Some(original) = self.retained_successor_for_project_v3(project)? {
             if original.approval_packet() != &controller.packet
                 || original.begin() != controller.begin.digest() || original.source_uid() != self.source_uid
                 || controller.root_intent.is_some_and(|digest| digest != original.digest())
@@ -642,9 +795,14 @@ impl super::store::RootSourceGenesisAuthorityV1 {
         -> Result<super::successor_consumer::VerifiedControllerFirstSuccessorObservationV2, SourceGenesisErrorV1>
     {
         self.recheck()?;
-        let controller = super::successor_consumer::verify_controller_first_successor_readback_v2(
-            bytes, &self.pins.controller, self.nonce, self.controller_uid, self.source_uid,
-        )?;
+        let controller = match self.successor_recipe {
+            FirstSuccessorWireRecipeV3::StrictV2 => super::successor_consumer::verify_controller_first_successor_readback_v2(
+                bytes, &self.pins.controller, self.nonce, self.controller_uid, self.source_uid,
+            )?,
+            FirstSuccessorWireRecipeV3::MixedV3 => super::successor_consumer::verify_controller_project_successor_readback_v3(
+                bytes, &self.pins.controller, self.nonce, self.controller_uid, self.source_uid,
+            )?.data,
+        };
         self.pins.verify_first_source_successor_v2(&controller.packet)?;
         self.recheck()?;
         Ok(controller)
@@ -655,16 +813,21 @@ impl super::store::RootSourceGenesisAuthorityV1 {
         context: &RootFirstSourceSuccessorIntentV2,
         controller_packet: &[u8],
         source_packet: &[u8],
-    ) -> Result<crate::policy_compiler::VerifiedSourceFirstSuccessorReadbackV2, SourceGenesisErrorV1> {
+    ) -> Result<SourceSuccessorComparisonV3, SourceGenesisErrorV1> {
         let controller = self.verify_first_successor_controller(controller_packet)?;
         if context.approval_packet() != &controller.packet || context.begin() != controller.begin.digest()
             || context.roles() != self.pins.digest() || context.source_uid() != self.source_uid
         {
             return Err(SourceGenesisErrorV1::Conflict);
         }
-        let source = crate::policy_compiler::verify_source_first_successor_readback_v2(
-            source_packet, &self.pins.source, self.nonce, context,
-        )?;
+        let source = match self.successor_recipe {
+            FirstSuccessorWireRecipeV3::StrictV2 => SourceSuccessorComparisonV3::Strict(
+                crate::policy_compiler::verify_source_first_successor_readback_v2(source_packet, &self.pins.source, self.nonce, context)?,
+            ),
+            FirstSuccessorWireRecipeV3::MixedV3 => SourceSuccessorComparisonV3::Mixed(
+                crate::policy_compiler::verify_source_project_continuation_readback_v3(source_packet, &self.pins.source, self.nonce, context)?,
+            ),
+        };
         if source.names() != controller.source_names || source.sequence() != controller.source_sequence
             || source.receipt() != controller.receipt.as_ref() || source.ack() != controller.ack.as_ref()
             || source.genesis_receipt().instance() != context.instance()
@@ -706,14 +869,42 @@ impl super::store::RootSourceGenesisAuthorityV1 {
         original_server_deadline: &std::time::Instant,
         results: &mut RootFirstSuccessorMutationResultsV2,
     ) -> Result<RootFirstSourceSuccessorIntentV2, ()> {
+        self.prepare_successor_with_recipe_v3(context, controller_packet, source_packet,
+            original_server_clock, original_server_deadline, results, FirstSuccessorWireRecipeV3::StrictV2)
+    }
+
+    /// Prepares the selected project using the same native capacity engine.
+    ///
+    /// # Errors
+    /// Retains the actual failed Result and independent posts in `results`.
+    pub fn prepare_project_successor_v3(
+        &mut self, context: &RootFirstSourceSuccessorIntentV2,
+        controller_packet: &[u8], source_packet: &[u8],
+        original_server_clock: &aos_sandbox_core::RawPairedClockSample,
+        original_server_deadline: &std::time::Instant,
+        results: &mut RootFirstSuccessorMutationResultsV2,
+    ) -> Result<RootFirstSourceSuccessorIntentV2, ()> {
+        self.prepare_successor_with_recipe_v3(context, controller_packet, source_packet,
+            original_server_clock, original_server_deadline, results, FirstSuccessorWireRecipeV3::MixedV3)
+    }
+
+    fn prepare_successor_with_recipe_v3(
+        &mut self, context: &RootFirstSourceSuccessorIntentV2,
+        controller_packet: &[u8], source_packet: &[u8],
+        original_server_clock: &aos_sandbox_core::RawPairedClockSample,
+        original_server_deadline: &std::time::Instant,
+        results: &mut RootFirstSuccessorMutationResultsV2,
+        recipe: FirstSuccessorWireRecipeV3,
+    ) -> Result<RootFirstSourceSuccessorIntentV2, ()> {
         if results.attempted { return Err(()); }
         results.attempted = true;
         let mut before = false;
         results.preparation = Some((|| {
+            self.require_successor_recipe_v3(recipe)?;
             let source = self.observe_first_successor_source(context, controller_packet, source_packet)?;
             before = source.phase() == crate::policy_compiler::SourceFirstSuccessorReadbackPhaseV2::Before;
             if before { self.require_first_successor_admission(context)?; }
-            if let Some(original) = retained_root_first_successor_v2(&self.journal, context.project())? {
+            if let Some(original) = self.retained_successor_for_project_v3(context.project())? {
                 if &original != context { return Err(SourceGenesisErrorV1::Conflict); }
                 return Ok(());
             }
@@ -728,21 +919,38 @@ impl super::store::RootSourceGenesisAuthorityV1 {
         })());
         if matches!(results.preparation, Some(Ok(()))) {
             if let Some(transaction) = &results.transaction {
-                results.preflight = Some(self.journal.preflight_root_first_successor_shape_v2(transaction, context));
+                results.preflight = Some(match recipe {
+                    FirstSuccessorWireRecipeV3::StrictV2 => self.journal.preflight_root_first_successor_shape_v2(transaction, context),
+                    FirstSuccessorWireRecipeV3::MixedV3 => self.journal.preflight_root_project_successor_shape_v3(transaction, context),
+                });
                 if matches!(results.preflight, Some(Ok(()))) {
                     results.crossing = Some(self.require_first_successor_admission(context));
                     if matches!(results.crossing, Some(Ok(()))) {
                         results.crossing_clock = Some(original_server_crossing_clock(original_server_clock, original_server_deadline));
                     }
                     if matches!(results.crossing_clock, Some(Ok(_))) {
-                        results.native = Some(self.journal.commit_first_source_successor_v2(transaction, Phase::RootPrepared));
+                        let phase = match recipe {
+                            FirstSuccessorWireRecipeV3::StrictV2 => Phase::RootPrepared,
+                            FirstSuccessorWireRecipeV3::MixedV3 => Phase::MixedRootPrepared,
+                        };
+                        results.native = Some(match recipe {
+                            FirstSuccessorWireRecipeV3::StrictV2 => self.journal.commit_first_source_successor_v2(transaction, phase),
+                            FirstSuccessorWireRecipeV3::MixedV3 => self.journal.commit_selected_source_successor_v3(
+                                transaction, phase, crate::journal::source_tree_successor::FirstSuccessorNativeCutV3::RootServer(
+                                    RootSuccessorNativeServerCutV3 {
+                                        pins: &self.pins, names: self.names, context,
+                                        original: original_server_clock, deadline: original_server_deadline,
+                                    },
+                                ),
+                            ),
+                        });
                     }
                 }
             }
         }
         results.post = Some((|| {
             self.recheck()?;
-            if retained_root_first_successor_v2(&self.journal, context.project())?.as_ref() != Some(context) {
+            if self.retained_successor_for_project_v3(context.project())?.as_ref() != Some(context) {
                 return Err(SourceGenesisErrorV1::Stale);
             }
             Ok(())
@@ -765,10 +973,38 @@ impl super::store::RootSourceGenesisAuthorityV1 {
         original_server_deadline: &std::time::Instant,
         results: &mut RootFirstSuccessorMutationResultsV2,
     ) -> Result<RootFirstSourceSuccessorFloorV2, ()> {
+        self.anchor_successor_with_recipe_v3(context, controller_packet, source_packet,
+            original_server_clock, original_server_deadline, results, FirstSuccessorWireRecipeV3::StrictV2)
+    }
+
+    /// Anchors the exact selected receipt and full immutable archive.
+    ///
+    /// # Errors
+    /// Retains native failure and original-clock debt without redispatch.
+    pub fn anchor_project_successor_v3(
+        &mut self, context: &RootFirstSourceSuccessorIntentV2,
+        controller_packet: &[u8], source_packet: &[u8],
+        original_server_clock: &aos_sandbox_core::RawPairedClockSample,
+        original_server_deadline: &std::time::Instant,
+        results: &mut RootFirstSuccessorMutationResultsV2,
+    ) -> Result<RootFirstSourceSuccessorFloorV2, ()> {
+        self.anchor_successor_with_recipe_v3(context, controller_packet, source_packet,
+            original_server_clock, original_server_deadline, results, FirstSuccessorWireRecipeV3::MixedV3)
+    }
+
+    fn anchor_successor_with_recipe_v3(
+        &mut self, context: &RootFirstSourceSuccessorIntentV2,
+        controller_packet: &[u8], source_packet: &[u8],
+        original_server_clock: &aos_sandbox_core::RawPairedClockSample,
+        original_server_deadline: &std::time::Instant,
+        results: &mut RootFirstSuccessorMutationResultsV2,
+        recipe: FirstSuccessorWireRecipeV3,
+    ) -> Result<RootFirstSourceSuccessorFloorV2, ()> {
         if results.attempted { return Err(()); }
         results.attempted = true;
         let mut expected = None;
         results.preparation = Some((|| {
+            self.require_successor_recipe_v3(recipe)?;
             let source = self.observe_first_successor_source(context, controller_packet, source_packet)?;
             let receipt = source.receipt().ok_or(SourceGenesisErrorV1::Conflict)?;
             require_receipt_intent(receipt, context)?;
@@ -778,7 +1014,7 @@ impl super::store::RootSourceGenesisAuthorityV1 {
             })?;
             let archive = RootFirstSourceSuccessorArchiveV2 { floor: floor.clone(), original: context.clone() };
             expected = Some(floor);
-            let retained = rows(&journal_state(&self.journal))?;
+            let retained = self.successor_rows_for_project_v3(context.project())?;
             if let Some(existing) = retained.archive {
                 if existing != archive { return Err(SourceGenesisErrorV1::Conflict); }
                 return Ok(());
@@ -797,7 +1033,10 @@ impl super::store::RootSourceGenesisAuthorityV1 {
                 // Actual receipt heads now exist: this is exact semantic preview,
                 // never the earlier conservative shape-only capacity decision.
                 results.preflight = Some(self.journal.preflight_first_source_successor_v2(
-                    std::slice::from_ref(transaction), &[Phase::RootAnchor],
+                    std::slice::from_ref(transaction), &[match recipe {
+                        FirstSuccessorWireRecipeV3::StrictV2 => Phase::RootAnchor,
+                        FirstSuccessorWireRecipeV3::MixedV3 => Phase::MixedRootAnchor,
+                    }],
                 ));
                 if matches!(results.preflight, Some(Ok(()))) {
                     results.crossing = Some(self.recheck());
@@ -805,14 +1044,28 @@ impl super::store::RootSourceGenesisAuthorityV1 {
                         results.crossing_clock = Some(original_server_crossing_clock(original_server_clock, original_server_deadline));
                     }
                     if matches!(results.crossing_clock, Some(Ok(_))) {
-                        results.native = Some(self.journal.commit_first_source_successor_v2(transaction, Phase::RootAnchor));
+                        let phase = match recipe {
+                            FirstSuccessorWireRecipeV3::StrictV2 => Phase::RootAnchor,
+                            FirstSuccessorWireRecipeV3::MixedV3 => Phase::MixedRootAnchor,
+                        };
+                        results.native = Some(match recipe {
+                            FirstSuccessorWireRecipeV3::StrictV2 => self.journal.commit_first_source_successor_v2(transaction, phase),
+                            FirstSuccessorWireRecipeV3::MixedV3 => self.journal.commit_selected_source_successor_v3(
+                                transaction, phase, crate::journal::source_tree_successor::FirstSuccessorNativeCutV3::RootServer(
+                                    RootSuccessorNativeServerCutV3 {
+                                        pins: &self.pins, names: self.names, context,
+                                        original: original_server_clock, deadline: original_server_deadline,
+                                    },
+                                ),
+                            ),
+                        });
                     }
                 }
             }
         }
         results.post = Some((|| {
             self.recheck()?;
-            let archive = rows(&journal_state(&self.journal))?.archive.ok_or(SourceGenesisErrorV1::Stale)?;
+            let archive = self.successor_rows_for_project_v3(context.project())?.archive.ok_or(SourceGenesisErrorV1::Stale)?;
             if Some(&archive.floor) != expected.as_ref() || &archive.original != context {
                 return Err(SourceGenesisErrorV1::Stale);
             }
@@ -830,6 +1083,26 @@ impl super::store::RootSourceGenesisAuthorityV1 {
         &self, context: &RootFirstSourceSuccessorIntentV2,
         controller_packet: &[u8], source_packet: &[u8], floor: &RootFirstSourceSuccessorFloorV2,
     ) -> Result<[u8; 96], SourceGenesisErrorV1> {
+        self.require_successor_recipe_v3(FirstSuccessorWireRecipeV3::StrictV2)?;
+        self.confirm_successor_ack_with_recipe_v3(context, controller_packet, source_packet, floor)
+    }
+
+    /// Rejoins the selected Complete, Source ACK and full current Root archive.
+    ///
+    /// # Errors
+    /// Rejects a foreign codec, project, role, current observation or archive.
+    pub fn confirm_project_successor_ack_v3(
+        &self, context: &RootFirstSourceSuccessorIntentV2,
+        controller_packet: &[u8], source_packet: &[u8], floor: &RootFirstSourceSuccessorFloorV2,
+    ) -> Result<[u8; 96], SourceGenesisErrorV1> {
+        self.require_successor_recipe_v3(FirstSuccessorWireRecipeV3::MixedV3)?;
+        self.confirm_successor_ack_with_recipe_v3(context, controller_packet, source_packet, floor)
+    }
+
+    fn confirm_successor_ack_with_recipe_v3(
+        &self, context: &RootFirstSourceSuccessorIntentV2,
+        controller_packet: &[u8], source_packet: &[u8], floor: &RootFirstSourceSuccessorFloorV2,
+    ) -> Result<[u8; 96], SourceGenesisErrorV1> {
         let source = self.observe_first_successor_source(context, controller_packet, source_packet)?;
         let controller = self.verify_first_successor_controller(controller_packet)?;
         let complete = controller.complete.as_ref().ok_or(SourceGenesisErrorV1::Conflict)?;
@@ -841,7 +1114,7 @@ impl super::store::RootSourceGenesisAuthorityV1 {
         {
             return Err(SourceGenesisErrorV1::Conflict);
         }
-        let archive = rows(&journal_state(&self.journal))?.archive.ok_or(SourceGenesisErrorV1::Conflict)?;
+        let archive = self.successor_rows_for_project_v3(context.project())?.archive.ok_or(SourceGenesisErrorV1::Conflict)?;
         if &archive.floor != floor || &archive.original != context { return Err(SourceGenesisErrorV1::Conflict); }
         let mut payload = [0; 96];
         payload[..32].copy_from_slice(floor.digest().as_bytes());
@@ -867,8 +1140,33 @@ impl super::store::RootSourceGenesisAuthorityV1 {
     pub(super) fn require_current_first_successor_archive_v2(
         &self, archive: &RootFirstSourceSuccessorArchiveV2,
     ) -> Result<(), SourceGenesisErrorV1> {
+        self.require_successor_recipe_v3(FirstSuccessorWireRecipeV3::StrictV2)?;
         self.recheck()?;
         if rows(&journal_state(&self.journal))?.archive.as_ref() != Some(archive) {
+            return Err(SourceGenesisErrorV1::Stale);
+        }
+        self.recheck()
+    }
+
+    /// Borrows the selected populated current floor under the real mixed owner.
+    ///
+    /// # Errors
+    /// Rejects a changed full family, fresh completion join or selected archive.
+    pub fn current_project_successor_floor_v3<'root>(
+        &'root self, context: &RootFirstSourceSuccessorIntentV2,
+        controller_packet: &[u8], source_packet: &[u8], floor: &RootFirstSourceSuccessorFloorV2,
+    ) -> Result<super::current::CurrentRootProjectSuccessorFloorV3<'root>, SourceGenesisErrorV1> {
+        let completion = self.confirm_project_successor_ack_v3(context, controller_packet, source_packet, floor)?;
+        let archive = self.successor_rows_for_project_v3(context.project())?.archive.ok_or(SourceGenesisErrorV1::Conflict)?;
+        super::current::CurrentRootProjectSuccessorFloorV3::from_completed_owner(self, archive, completion)
+    }
+
+    pub(super) fn require_current_project_successor_archive_v3(
+        &self, archive: &RootFirstSourceSuccessorArchiveV2,
+    ) -> Result<(), SourceGenesisErrorV1> {
+        self.require_successor_recipe_v3(FirstSuccessorWireRecipeV3::MixedV3)?;
+        self.recheck()?;
+        if self.successor_rows_for_project_v3(archive.original.project())?.archive.as_ref() != Some(archive) {
             return Err(SourceGenesisErrorV1::Stale);
         }
         self.recheck()

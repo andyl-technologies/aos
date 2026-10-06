@@ -26,6 +26,21 @@ use crate::hierarchy::source_successor::{
 use crate::immutable_image::RetainedImmutableFileV1;
 use crate::normal_root::{NormalRootStartupErrorV1, service};
 use crate::policy_compiler::SourceSuccessorSigningCutV2;
+use crate::policy_compiler::SourceSuccessorSigningCutV3;
+
+enum SourceSuccessorSigningRecipeV3<'cut, 'controller, 'source, 'completed, 'flight> {
+    StrictV2(&'cut SourceSuccessorSigningCutV2<'cut, 'controller, 'source, 'completed, 'flight>),
+    ProjectV3(&'cut SourceSuccessorSigningCutV3<'cut, 'controller, 'source, 'completed, 'flight>),
+}
+
+impl SourceSuccessorSigningRecipeV3<'_, '_, '_, '_, '_> {
+    fn recheck(&self, body: &[u8; BODY_BYTES], intent: SourceSuccessorIntentDataV2, generation: u64) -> Result<(), SourceGenesisErrorV1> {
+        match self {
+            Self::StrictV2(cut) => cut.recheck_before_signature(body, intent, generation),
+            Self::ProjectV3(cut) => cut.recheck_before_signature(body, intent, generation),
+        }
+    }
+}
 use crate::publisher_policy::PinnedPublisherProjectAuthorizationIssuerV2;
 use crate::systemd_property_data;
 
@@ -279,6 +294,17 @@ impl SourceSuccessorCredentialCustodyV2<'_> {
         )
     }
 
+    /// Returns project comparison DATA from the same already-admitted intent.
+    ///
+    /// This getter makes no observation and grants no issuer, writer, floor or
+    /// clock authority. The selected caller separately retains current owners.
+    ///
+    /// # Errors
+    /// Rejects unadmitted, ended or malformed original credential custody.
+    pub fn source_successor_project_data_v3(&self) -> Result<aos_sandbox_core::ProjectId, SourceGenesisErrorV1> {
+        self.intent().map(|intent| intent.project())
+    }
+
     pub(crate) fn issuer_generation(&self) -> Result<u64, SourceGenesisErrorV1> {
         Ok(PinnedControllerSourceTreeSeedIssuerV1::decode(
             self.first_buffers()?[2].as_slice(),
@@ -298,6 +324,18 @@ impl SourceSuccessorCredentialCustodyV2<'_> {
         body: &[u8; BODY_BYTES],
         signing_cut: &SourceSuccessorSigningCutV2<'_, '_, '_, '_, '_>,
     ) -> Result<SourceSuccessorApprovalDataV2, SourceSuccessorCredentialErrorV2> {
+        self.sign_approval_with_recipe(body, SourceSuccessorSigningRecipeV3::StrictV2(signing_cut))
+    }
+
+    pub(crate) fn sign_project_approval_v3(
+        &mut self, body: &[u8; BODY_BYTES], signing_cut: &SourceSuccessorSigningCutV3<'_, '_, '_, '_, '_>,
+    ) -> Result<SourceSuccessorApprovalDataV2, SourceSuccessorCredentialErrorV2> {
+        self.sign_approval_with_recipe(body, SourceSuccessorSigningRecipeV3::ProjectV3(signing_cut))
+    }
+
+    fn sign_approval_with_recipe(
+        &mut self, body: &[u8; BODY_BYTES], signing_cut: SourceSuccessorSigningRecipeV3<'_, '_, '_, '_, '_>,
+    ) -> Result<SourceSuccessorApprovalDataV2, SourceSuccessorCredentialErrorV2> {
         self.recheck()?;
         let intent = self.intent()?;
         let issuer_generation = self.issuer_generation()?;
@@ -312,7 +350,7 @@ impl SourceSuccessorCredentialCustodyV2<'_> {
 
         // No fallible credential/message preparation or live-owner work may
         // intervene between this genuine current cut and the actual signature.
-        signing_cut.recheck_before_signature(body, intent, issuer_generation)?;
+        signing_cut.recheck(body, intent, issuer_generation)?;
         let signature = signer.sign(&message);
         packet[BODY_BYTES..].copy_from_slice(&signature.to_bytes());
         let packet = SourceSuccessorApprovalDataV2::from_record_bytes(&packet)?;

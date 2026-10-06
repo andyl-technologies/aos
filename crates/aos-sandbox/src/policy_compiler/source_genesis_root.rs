@@ -27,13 +27,21 @@ mod wire;
 pub use successor_consumer::{
     FailedOriginalFirstSourceSuccessorV2, FirstSourceSuccessorConsumerPhaseV2,
     FirstSourceSuccessorSelectionV2, HeldControllerFirstSourceSuccessorV2,
-    OriginalFirstSourceSuccessorInvocationV2,
+    OriginalFirstSourceSuccessorInvocationV2, HeldControllerProjectSuccessorV3,
+    OriginalProjectSuccessorInvocationV3, FailedProjectSuccessorInvocationV3,
 };
+pub(crate) use successor_consumer::ControllerSuccessorOwnerViewV3;
 pub(crate) use successor_consumer::unavailable_first_source_successor_v2;
-pub use successor_flight::{HeldRootFirstSourceSuccessorIntentV2, RootFirstSourceSuccessorFloorProofV2};
+pub(crate) use successor_consumer::{unavailable_project_successor_v3, unavailable_predecessor_successor_v3};
+pub use successor_flight::{HeldRootFirstSourceSuccessorIntentV2, RootFirstSourceSuccessorFloorProofV2,
+    HeldRootProjectSuccessorIntentV3, RootProjectSuccessorFloorProofV3};
+pub(crate) use successor_flight::{RootSuccessorIntentViewV3, RootSuccessorFloorViewV3};
 pub(in crate::policy_compiler) use successor_flight::CompletedRootFirstSourceSuccessorFloorV2;
+pub(in crate::policy_compiler) use successor_flight::CompletedRootProjectSuccessorFloorV3;
 pub use successor_owner::RootFirstSuccessorMutationResultsV2;
+pub(crate) use successor_owner::RootSuccessorNativeServerCutV3;
 pub use current::CurrentRootFirstSourceSuccessorFloorV2;
+pub use current::CurrentRootProjectSuccessorFloorV3;
 
 pub use successor_records::{
     ControllerFirstSourceSuccessorAnchoredV2, ControllerFirstSourceSuccessorBeginV2,
@@ -65,20 +73,28 @@ pub use controller_readback::{
     sign_controller_source_genesis_readback_v1,
 };
 pub use coordinator::coordinate_provisioned_source_genesis_v1;
+pub use coordinator::{OriginalConfiguredProjectGenesisInvocationV3, FailedConfiguredProjectGenesisInvocationV3};
+pub(crate) use coordinator::unavailable_project_genesis_v3;
 pub use successor_issuance::{
     FailedOriginalSourceSuccessorInvocationV2, OriginalSourceSuccessorInvocationV2,
+    OriginalSourceProjectSuccessorInvocationV3, FailedSourceProjectSuccessorInvocationV3,
     SourceSuccessorIssuancePhaseV2,
 };
 pub(crate) use successor_issuance::{
-    SourceSuccessorSigningCutV2, unavailable as unavailable_source_successor_issuer_v2,
+    SourceSuccessorSigningCutV2, SourceSuccessorSigningCutV3,
+    unavailable as unavailable_source_successor_issuer_v2,
+    unavailable_project_issuer_v3,
 };
 pub use current::CurrentRootSourceGenesisFloorV1;
+pub use current::CurrentRootSourceProjectGenesisFloorV3;
 pub(in crate::policy_compiler) use flight::CompletedRootSourceGenesisFloorV1;
 pub(in crate::policy_compiler) use flight::OriginalRootGenesisFlightV1;
 pub(in crate::policy_compiler) use flight::{
     kernel_pair as original_root_kernel_pair_v1, require_open_receive_queue,
 };
 pub use flight::{HeldRootSourceGenesisIntentV1, RootSourceGenesisFloorProofV1};
+pub use flight::{HeldRootSourceProjectGenesisIntentV3, RootSourceProjectGenesisFloorProofV3};
+pub(crate) use flight::CompletedRootSourceProjectGenesisFloorV3;
 pub use flight::observe_root_first_source_successor_clock_v2;
 pub use records::{
     ROOT_SOURCE_GENESIS_INTENT_BYTES_V1, RootSourceGenesisIntentRecordV1,
@@ -87,6 +103,7 @@ pub use records::{
 };
 pub use store::{
     RootFirstSourceSuccessorOpeningV2, RootSourceGenesisAuthorityV1,
+    RootProjectGenesisMutationResultsV3,
     fixed_root_source_genesis_recovery_available_v1,
 };
 pub(in crate::policy_compiler) use store::Q04RootGen1CutLoanV1;
@@ -111,7 +128,13 @@ pub use wire::{
     decode_root_source_genesis_frame_v1, encode_root_source_genesis_frame_v1,
 };
 pub use wire::{
+    ROOT_SOURCE_PROJECT_GENESIS_QUERY_MAGIC_V3, ROOT_SOURCE_PROJECT_GENESIS_HELLO_MAGIC_V3,
+    encode_root_source_project_genesis_frame_v3, decode_root_source_project_genesis_frame_v3,
+};
+pub use wire::{
     ROOT_FIRST_SOURCE_SUCCESSOR_HELLO_MAGIC_V2, ROOT_FIRST_SOURCE_SUCCESSOR_QUERY_MAGIC_V2,
+    ROOT_PROJECT_SOURCE_SUCCESSOR_HELLO_MAGIC_V3, ROOT_PROJECT_SOURCE_SUCCESSOR_QUERY_MAGIC_V3,
     RootFirstSourceSuccessorFrameKindV2, decode_root_first_source_successor_frame_v2,
     encode_root_first_source_successor_frame_v2,
+    encode_root_project_source_successor_frame_v3, decode_root_project_source_successor_frame_v3,
 };

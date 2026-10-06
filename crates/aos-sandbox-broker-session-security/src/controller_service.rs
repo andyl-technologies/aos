@@ -928,6 +928,47 @@ fn run_retained_controller(
                 "exclusive Git cohort cannot create or reconstruct Source genesis",
             ));
         }
+        let configured_selection_result = genesis
+            .map(|input| controller.configured_project_startup_selection_v3(input))
+            .transpose();
+        let configured_selection = match &configured_selection_result {
+            Ok(selection) => *selection,
+            Err(_) => worker.terminate(ControllerResidentCauseV1::Closed(
+                "configured project history comparison failed",
+            )),
+        };
+        let (replay_genesis, selected_genesis) = if configured_selection == Some(aos_sandbox::controller::ConfiguredProjectStartupSelectionV3::MixedProject) {
+            let Some(input) = genesis else { worker.terminate(ControllerResidentCauseV1::Closed("configured mixed pair is absent")); };
+            let Some(profile) = profile else { worker.terminate(ControllerResidentCauseV1::Closed("configured mixed startup requires the original Root profile")); };
+            {
+                // The whole predecessor loan ends before B is parked. Global A
+                // keeps its actual global history and independent current floor.
+                let returned = controller.coordinate_predecessor_successor_v3(input, profile);
+                if let Err(failed) = &returned {
+                    let _first_cause = failed.first_cause();
+                    worker.terminate(ControllerResidentCauseV1::Closed("mixed original predecessor flight failed"));
+                }
+            }
+            let selected_result = controller.retained_project_successor_selection_v3(input);
+            let selected = match &selected_result {
+                Ok(selected) => *selected,
+                Err(_) => worker.terminate(ControllerResidentCauseV1::Closed("selected project history comparison failed")),
+            };
+            if selected == aos_sandbox::policy_compiler::FirstSourceSuccessorSelectionV2::Selected {
+                let returned = controller.coordinate_project_successor_v3(profile, input.project());
+                if let Err(failed) = &returned {
+                    let _first_cause = failed.first_cause();
+                    worker.terminate(ControllerResidentCauseV1::Closed("selected original successor flight failed"));
+                }
+            } else {
+                let returned = controller.coordinate_configured_project_genesis_v3(input, profile);
+                if let Err(failed) = &returned {
+                    let _first_cause = failed.first_cause();
+                    worker.terminate(ControllerResidentCauseV1::Closed("configured original project genesis failed"));
+                }
+            }
+            (true, true)
+        } else {
         // Inspect the genuine retained singleton before legacy genesis or any
         // publisher/public startup. Selection DATA is not mutation authority.
         let successor_project_result = controller.retained_first_source_successor_project_v2();
@@ -989,6 +1030,8 @@ fn run_retained_controller(
                     .map_err(ControllerRuntimeError::from)
             );
         }
+            (replay_genesis, selected_genesis)
+        };
         if configuration.git_upload_bootstrap
             && required!(publisher_registration.as_ref()).is_none()
         {
@@ -6000,6 +6043,36 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         original.into_outcome()
     }
 
+    fn coordinate_configured_project_genesis_v3<'writers, 'profile>(
+        &'writers mut self, journal: &'writers mut Journal,
+        input: &'writers ProvisionedControllerSourceGenesisInputV1,
+        profile: &'profile aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<ObjectDigest, aos_sandbox::policy_compiler::FailedConfiguredProjectGenesisInvocationV3<'writers, 'profile>> {
+        let mut original = aos_sandbox::policy_compiler::OriginalConfiguredProjectGenesisInvocationV3::park(
+            journal, &mut self.source_domains, input, profile,
+        );
+        if let Err(error) = with_process_controller_hold_signer_v1(|generation, signer| {
+            original.run_with_signer(generation, signer);
+            Ok(())
+        }) { original.fail_signer_admission(error); }
+        original.into_outcome()
+    }
+
+    fn issue_project_source_successor_v3<'writers, 'profile, 'credentials>(
+        &'writers mut self, journal: &'writers mut Journal,
+        profile: &'profile aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
+        credentials: &'credentials mut aos_sandbox::normal_root::SourceSuccessorCredentialCustodyV2<'profile>,
+    ) -> Result<aos_sandbox::hierarchy::source_successor::SourceSuccessorApprovalDataV2, aos_sandbox::policy_compiler::FailedSourceProjectSuccessorInvocationV3<'writers, 'profile, 'credentials>> {
+        let mut original = aos_sandbox::policy_compiler::OriginalSourceProjectSuccessorInvocationV3::park(
+            journal, &mut self.source_domains, profile, credentials,
+        );
+        if let Err(cause) = with_process_controller_hold_signer_v1(|generation, signer| {
+            original.run_with_controller_signer(generation, signer);
+            Ok(())
+        }) { original.fail_controller_signer_admission(cause); }
+        original.into_outcome()
+    }
+
     fn coordinate_retained_first_source_successor_v2<'writers, 'profile>(
         &'writers mut self, journal: &'writers mut Journal,
         profile: &'profile aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
@@ -6016,6 +6089,40 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             }) {
                 original.fail_controller_signer_admission(error);
             }
+        }
+        original.into_outcome()
+    }
+
+    fn coordinate_project_successor_v3<'writers, 'profile>(
+        &'writers mut self, journal: &'writers mut Journal,
+        profile: &'profile aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
+        project: aos_sandbox_core::ProjectId,
+    ) -> Result<Option<ObjectDigest>, aos_sandbox::policy_compiler::FailedProjectSuccessorInvocationV3<'writers, 'profile>> {
+        let mut original = aos_sandbox::policy_compiler::OriginalProjectSuccessorInvocationV3::park(
+            journal, &mut self.source_domains, profile, project,
+        );
+        if original.select_retained_before_signer() == aos_sandbox::policy_compiler::FirstSourceSuccessorSelectionV2::Selected {
+            if let Err(error) = with_process_controller_hold_signer_v1(|generation, signer| {
+                original.run_with_controller_signer(generation, signer);
+                Ok(())
+            }) { original.fail_controller_signer_admission(error); }
+        }
+        original.into_outcome()
+    }
+
+    fn coordinate_predecessor_successor_v3<'writers, 'profile>(
+        &'writers mut self, journal: &'writers mut Journal,
+        input: &'writers ProvisionedControllerSourceGenesisInputV1,
+        profile: &'profile aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<Option<ObjectDigest>, aos_sandbox::policy_compiler::FailedProjectSuccessorInvocationV3<'writers, 'profile>> {
+        let mut original = aos_sandbox::policy_compiler::OriginalProjectSuccessorInvocationV3::park_predecessor(
+            journal, &mut self.source_domains, profile, input,
+        );
+        if original.select_retained_before_signer() == aos_sandbox::policy_compiler::FirstSourceSuccessorSelectionV2::Selected {
+            if let Err(error) = with_process_controller_hold_signer_v1(|generation, signer| {
+                original.run_with_controller_signer(generation, signer);
+                Ok(())
+            }) { original.fail_controller_signer_admission(error); }
         }
         original.into_outcome()
     }
