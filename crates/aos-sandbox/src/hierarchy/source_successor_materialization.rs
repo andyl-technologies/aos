@@ -765,8 +765,7 @@ fn prepare_append_with_recipe(
         approval: approval.digest(), epoch: context.epoch(), before_generation: 1, after_generation: 2,
         predecessor_floor: context.predecessor_floor(), old_tree_head: context.old_tree_head(),
         old_lineage_head: context.old_lineage_head(),
-        old_tree_commit: ObjectDigest::from_bytes(approval.as_bytes()[600..632].try_into()
-            .map_err(|_| SourceGenesisErrorV1::NonCanonical)?),
+        old_tree_commit: approval.old_tree_commit(),
         next_tree_head: pair.tree_head, next_lineage_head: pair.lineage_head,
         next_tree_commit: context.next_tree_commit(), roles: context.roles(),
         begin: controller.begin().digest(), root_intent: context.digest(), source_names: context.source_names(),
@@ -1024,7 +1023,7 @@ pub(crate) fn require_first_successor_context_v2(
         || receipt.request() != context.request() || receipt.approval() != context.approval()
         || receipt.epoch() != context.epoch() || receipt.predecessor_floor() != context.predecessor_floor()
         || receipt.old_tree_head() != context.old_tree_head() || receipt.old_lineage_head() != context.old_lineage_head()
-        || receipt.old_tree_commit().as_bytes() != &context.approval_packet().as_bytes()[600..632]
+        || receipt.old_tree_commit() != context.approval_packet().old_tree_commit()
         || receipt.next_tree_commit() != context.next_tree_commit() || receipt.roles() != context.roles()
         || receipt.begin() != context.begin() || receipt.root_intent() != context.digest()
         || receipt.source_names() != context.source_names()

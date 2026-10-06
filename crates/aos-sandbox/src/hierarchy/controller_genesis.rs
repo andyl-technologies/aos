@@ -680,7 +680,7 @@ impl<'controller> HeldControllerSourceGenesisV1<'controller> {
     pub(crate) fn current_successor_authorization_v2(
         &self,
     ) -> Result<
-        (u64, ObjectDigest, ObjectDigest, ObjectDigest, super::model::TreeLimitsV1, [u8; 224]),
+        (u64, ObjectDigest, ObjectDigest, ObjectDigest, super::model::TreeLimitsV1, Vec<u8>),
         SourceGenesisErrorV1,
     > {
         self.recheck()?;

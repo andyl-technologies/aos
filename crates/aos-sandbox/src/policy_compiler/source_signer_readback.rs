@@ -57,6 +57,7 @@ pub fn sign_fixed_source_first_successor_readback_v2(
 ) -> Result<[u8; super::source_successor_readback::SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2], SourceSignerReadbackErrorV1> {
     if expected_controller_uid == 0 || expected_controller_uid != context.source_uid()
         || signer_generation == 0 || fresh_nonce == [0; 16]
+        || context.approval_packet().has_resource_authorization()
     {
         return Err(SourceHoldReadbackErrorV1::NonCanonical.into());
     }
@@ -81,6 +82,7 @@ pub fn sign_fixed_source_project_continuation_readback_v3(
 ) -> Result<[u8; super::source_successor_readback::SOURCE_PROJECT_CONTINUATION_READBACK_BYTES_V3], SourceSignerReadbackErrorV1> {
     if expected_controller_uid == 0 || expected_controller_uid != context.source_uid()
         || signer_generation == 0 || fresh_nonce == [0; 16]
+        || context.approval_packet().has_resource_authorization()
     {
         return Err(SourceHoldReadbackErrorV1::NonCanonical.into());
     }
@@ -98,6 +100,47 @@ pub fn sign_fixed_source_project_continuation_readback_v3(
         // Retain the actual signature/native cause across the independent
         // watermark post even on error. The existing outer view helper's
         // pre-return negative-prefix release boundary is not changed here.
+        match returned {
+            Err(error) => Err(error),
+            Ok(packet) => {
+                name_post?;
+                watermark_post.map(|()| packet)
+            }
+        }
+    })
+}
+
+/// Signs a closed full-resource successor recipe through the same Source view.
+///
+/// The `mixed` selector chooses comparison framing only; it supplies no Root,
+/// Controller, currentness or resource-bank authority.
+///
+/// # Errors
+/// Rejects legacy context, unsafe fixed-view custody, foreign UID, malformed
+/// challenge, incomplete full-family replay or independent post debt.
+#[cfg(target_os = "linux")]
+pub fn sign_fixed_source_resource_successor_readback_v4(
+    expected_controller_uid: u32, fresh_nonce: [u8; 16],
+    context: &super::RootFirstSourceSuccessorIntentV2,
+    signer_generation: u64, signing_key: &SigningKey, mixed: bool,
+) -> Result<Vec<u8>, SourceSignerReadbackErrorV1> {
+    if expected_controller_uid == 0 || expected_controller_uid != context.source_uid()
+        || signer_generation == 0 || fresh_nonce == [0; 16]
+        || !context.approval_packet().has_resource_authorization()
+    {
+        return Err(SourceHoldReadbackErrorV1::NonCanonical.into());
+    }
+    with_source_signer_journal_view(expected_controller_uid, |readback| {
+        let sequence = readback.journal_mut().snapshot_sequence();
+        let returned = super::source_successor_readback::sign_source_resource_successor_from_view(
+            readback, fresh_nonce, context, signer_generation, signing_key, mixed,
+        );
+        let name_post = readback.check_named_currentness().map_err(SourceSignerReadbackErrorV1::from);
+        let watermark_post = if readback.journal_mut().snapshot_sequence() == sequence {
+            Ok(())
+        } else {
+            Err(SourceSignerReadbackErrorV1::Stale)
+        };
         match returned {
             Err(error) => Err(error),
             Ok(packet) => {
@@ -684,10 +727,10 @@ fn with_current_source_signer_view<const N: usize>(
     })
 }
 
-pub(super) fn with_source_signer_journal_view<const N: usize>(
+pub(super) fn with_source_signer_journal_view<T>(
     expected_controller_uid: u32,
-    sign: impl FnOnce(&mut ReadOnlyProtectedJournal) -> Result<[u8; N], SourceSignerReadbackErrorV1>,
-) -> Result<[u8; N], SourceSignerReadbackErrorV1> {
+    sign: impl FnOnce(&mut ReadOnlyProtectedJournal) -> Result<T, SourceSignerReadbackErrorV1>,
+) -> Result<T, SourceSignerReadbackErrorV1> {
     let signer_uid = rustix::process::geteuid().as_raw();
     let mount = require_signer_mount(SIGNER_SOURCE_VIEW, PROTECTED_SOURCE_DOMAIN_ROOT, signer_uid)
         .map_err(|_| SourceSignerReadbackErrorV1::View)?;

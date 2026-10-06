@@ -3,8 +3,8 @@
 //! The stored floor is an immutable archive, not merely the wire floor:
 //!
 //! ```text
-//! DesiredState[intent-prefix || project16] = Intent1248
-//! DesiredState[floor-prefix || project16] = Floor688 || original Intent1248
+//! DesiredState[intent-prefix || project16] = legacy Intent1248 or resource Intent1424
+//! DesiredState[floor-prefix || project16] = Floor688 || complete original intent
 //! Prepare = intent PUT | reserve PUT
 //! Anchor = archive PUT | intent DELETE | reserve DELETE
 //! ```
@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 
 use aos_sandbox_core::{ObjectDigest, ProjectId};
 
-use crate::hierarchy::genesis_profile::{SourceGenesisErrorV1, digest_at, take};
+use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
 use crate::journal::source_tree_successor::{
     FirstSourceSuccessorNativePhaseV2 as Phase, capacity_request,
     require_exact_capacity_family, sizing_capacity_delete, touches_capacity_purpose, transaction_id,
@@ -40,6 +40,7 @@ const PREFIX: &[u8] = b"\0aos-root-first-source-successor-v2\0";
 const INTENT_PREFIX: &[u8] = b"\0aos-root-first-source-successor-v2\0intent\0";
 const SUCCESSOR_FLOOR_PREFIX: &[u8] = b"\0aos-root-first-source-successor-v2\0floor\0";
 const ARCHIVE_BYTES: usize = 1936;
+const RESOURCE_ARCHIVE_BYTES: usize = 2112;
 
 type State = BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>;
 
@@ -51,7 +52,7 @@ pub(super) struct RootFirstSourceSuccessorArchiveV2 {
 
 impl RootFirstSourceSuccessorArchiveV2 {
     pub(super) fn decode(bytes: &[u8]) -> Result<Self, SourceGenesisErrorV1> {
-        if bytes.len() != ARCHIVE_BYTES {
+        if !matches!(bytes.len(), ARCHIVE_BYTES | RESOURCE_ARCHIVE_BYTES) {
             return Err(SourceGenesisErrorV1::NonCanonical);
         }
         let archive = Self {
@@ -69,7 +70,7 @@ impl RootFirstSourceSuccessorArchiveV2 {
     }
 
     pub(super) fn bytes(&self) -> Vec<u8> {
-        [self.floor.as_bytes().as_slice(), self.original.as_bytes().as_slice()].concat()
+        [self.floor.as_bytes().as_slice(), self.original.as_bytes()].concat()
     }
 }
 
@@ -408,7 +409,6 @@ pub(super) fn require_receipt_intent(
     receipt: &SourceFirstSuccessorReceiptV2,
     intent: &RootFirstSourceSuccessorIntentV2,
 ) -> Result<(), SourceGenesisErrorV1> {
-    let body = intent.approval_packet().body();
     if receipt.instance() != intent.instance() || receipt.project() != intent.project()
         || receipt.request() != intent.request() || receipt.approval() != intent.approval()
         || receipt.epoch() != intent.epoch() || receipt.root_intent() != intent.digest()
@@ -416,7 +416,7 @@ pub(super) fn require_receipt_intent(
         || receipt.predecessor_floor() != intent.predecessor_floor()
         || receipt.old_tree_head() != intent.old_tree_head()
         || receipt.old_lineage_head() != intent.old_lineage_head()
-        || receipt.old_tree_commit().as_bytes() != &body[600..632]
+        || receipt.old_tree_commit() != intent.approval_packet().old_tree_commit()
         || receipt.next_tree_commit() != intent.next_tree_commit()
         || receipt.source_names() != intent.source_names()
     {
@@ -431,7 +431,7 @@ pub(super) fn root_capacity_request(intent: &RootFirstSourceSuccessorIntentV2)
     // Only shape: successor envelope heads do not exist before Source append.
     // This exact physical archive width includes the preserved original intent.
     let suffix = JournalTransaction::new([1; 16], vec![
-        JournalRecord::put(RecordNamespace::DesiredState, key(SUCCESSOR_FLOOR_PREFIX, intent.project()), vec![0; ARCHIVE_BYTES]),
+        JournalRecord::put(RecordNamespace::DesiredState, key(SUCCESSOR_FLOOR_PREFIX, intent.project()), vec![0; 688 + intent.as_bytes().len()]),
         JournalRecord::delete(RecordNamespace::DesiredState, intent_key(intent)),
         sizing_capacity_delete(),
     ])?;
@@ -770,8 +770,7 @@ impl super::store::RootSourceGenesisAuthorityV1 {
         }
         let clock = super::flight::kernel_pair()?;
         super::successor_consumer::require_approval_clock(&controller.packet, clock)?;
-        let body = controller.packet.body();
-        let signed_deadline = u64::from_be_bytes(take(body, 728)?)
+        let signed_deadline = controller.packet.issued_boottime()?
             .checked_add(u64::from(controller.packet.intent()?.validity_seconds())
                 .checked_mul(1_000_000_000).ok_or(SourceGenesisErrorV1::NonCanonical)?)
             .ok_or(SourceGenesisErrorV1::NonCanonical)?;
@@ -784,7 +783,7 @@ impl super::store::RootSourceGenesisAuthorityV1 {
             old_tree_head: controller.begin.old_tree_head(), old_lineage_head: controller.begin.old_lineage_head(),
             next_tree_commit: controller.begin.next_tree_commit(), roles: self.pins.digest(),
             boot: clock.host_boot_id(), boottime_deadline: signed_deadline.min(custody_bound),
-            expires_wall: u64::from_be_bytes(take(body, 744)?),
+            expires_wall: controller.packet.expires_wall()?,
         })?;
         require_predecessor(&journal_state(&self.journal), &original)?;
         self.recheck()?;
@@ -820,12 +819,19 @@ impl super::store::RootSourceGenesisAuthorityV1 {
         {
             return Err(SourceGenesisErrorV1::Conflict);
         }
-        let source = match self.successor_recipe {
-            FirstSuccessorWireRecipeV3::StrictV2 => SourceSuccessorComparisonV3::Strict(
+        let resource = context.approval_packet().has_resource_authorization();
+        let source = match (self.successor_recipe, resource) {
+            (FirstSuccessorWireRecipeV3::StrictV2, false) => SourceSuccessorComparisonV3::Strict(
                 crate::policy_compiler::verify_source_first_successor_readback_v2(source_packet, &self.pins.source, self.nonce, context)?,
             ),
-            FirstSuccessorWireRecipeV3::MixedV3 => SourceSuccessorComparisonV3::Mixed(
+            (FirstSuccessorWireRecipeV3::MixedV3, false) => SourceSuccessorComparisonV3::Mixed(
                 crate::policy_compiler::verify_source_project_continuation_readback_v3(source_packet, &self.pins.source, self.nonce, context)?,
+            ),
+            (FirstSuccessorWireRecipeV3::StrictV2, true) => SourceSuccessorComparisonV3::Strict(
+                super::super::source_successor_readback::verify_source_resource_first_successor_readback_v4(source_packet, &self.pins.source, self.nonce, context)?,
+            ),
+            (FirstSuccessorWireRecipeV3::MixedV3, true) => SourceSuccessorComparisonV3::Mixed(
+                super::super::source_successor_readback::verify_source_resource_project_continuation_readback_v5(source_packet, &self.pins.source, self.nonce, context)?,
             ),
         };
         if source.names() != controller.source_names || source.sequence() != controller.source_sequence

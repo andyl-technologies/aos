@@ -11,7 +11,7 @@
 //! Controller Begin = Begin PUT | reserve PUT
 //! Controller Anchored = Anchored PUT
 //! Controller Complete = Complete PUT | reserve DELETE
-//! Root stored floor = logical floor688 | original admission intent1248
+//! Root stored floor = logical floor688 | complete original intent1248 or1424
 //! ```
 
 use std::collections::BTreeMap;
@@ -1388,7 +1388,7 @@ impl Journal {
         let [intent_record, reservation] = prepared.records() else {
             return Err(JournalError::ProtectedBoundary);
         };
-        if intent_record.value() != Some(intent.as_bytes().as_slice()) {
+        if intent_record.value() != Some(intent.as_bytes()) {
             return Err(JournalError::AuthorityPreflightMismatch);
         }
         let (_, admission, capacity_id) = super::decode_capacity_reservation_request_v1(reservation)?;
@@ -1401,7 +1401,7 @@ impl Journal {
                 JournalRecord::put(
                     RecordNamespace::DesiredState,
                     [b"\0aos-root-first-source-successor-v2\0floor\0".as_slice(), intent.project().as_bytes()].concat(),
-                    vec![0; 1936],
+                    vec![0; 688 + intent.as_bytes().len()],
                 ),
                 JournalRecord::delete(RecordNamespace::DesiredState, intent_record.key().to_vec()),
                 JournalRecord::delete(RecordNamespace::GlobalCapacityReservation, reservation.key().to_vec()),

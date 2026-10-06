@@ -463,7 +463,7 @@ impl CompletedGenesisRecipeV3<'_, '_, '_> {
 
 impl SourceSuccessorSigningCutV3<'_, '_, '_, '_, '_> {
     pub(crate) fn recheck_before_signature(
-        &self, prepared: &[u8; BODY_BYTES], intent: SourceSuccessorIntentDataV2, issuer_generation: u64,
+        &self, prepared: &[u8], intent: SourceSuccessorIntentDataV2, issuer_generation: u64,
     ) -> Result<(), SourceGenesisErrorV1> {
         let clock = self.completed.signing_boundary_clock()?;
         let current = derive_body_with_completed(
@@ -480,7 +480,7 @@ impl SourceSuccessorSigningCutV3<'_, '_, '_, '_, '_> {
 impl SourceSuccessorSigningCutV2<'_, '_, '_, '_, '_> {
     pub(crate) fn recheck_before_signature(
         &self,
-        prepared: &[u8; BODY_BYTES],
+        prepared: &[u8],
         intent: SourceSuccessorIntentDataV2,
         issuer_generation: u64,
     ) -> Result<(), SourceGenesisErrorV1> {
@@ -760,7 +760,7 @@ fn derive_body(
     intent: SourceSuccessorIntentDataV2,
     issuer_generation: u64,
     clock: RawPairedClockSample,
-) -> Result<[u8; BODY_BYTES], SourceGenesisErrorV1> {
+) -> Result<Vec<u8>, SourceGenesisErrorV1> {
     derive_body_with_completed(controller, inventory, CompletedGenesisRecipeV3::StrictV2(completed), intent, issuer_generation, clock)
 }
 
@@ -768,7 +768,7 @@ fn derive_body_with_completed(
     controller: &HeldControllerSourceGenesisV1<'_>, inventory: &RetainedTreeInventoryDataV1<'_>,
     completed: CompletedGenesisRecipeV3<'_, '_, '_>, intent: SourceSuccessorIntentDataV2,
     issuer_generation: u64, clock: RawPairedClockSample,
-) -> Result<[u8; BODY_BYTES], SourceGenesisErrorV1> {
+) -> Result<Vec<u8>, SourceGenesisErrorV1> {
     completed.recheck()?;
     let floor = completed.floor();
     let (tree, tree_head, lineage_head) = inventory.trees()?
@@ -802,8 +802,13 @@ fn derive_body_with_completed(
     let expires = issued.checked_add(u64::from(intent.validity_seconds()))
         .ok_or(SourceGenesisErrorV1::NonCanonical)?;
 
-    let mut body = [0; BODY_BYTES];
-    body[..16].copy_from_slice(b"AOSCSA02\0\x02\0\0\0\0\0\0");
+    if !matches!(authorization.len(), 224 | 400) {
+        return Err(SourceGenesisErrorV1::NonCanonical);
+    }
+    let resource = authorization.len() == 400;
+    let joins = 312 + authorization.len();
+    let mut body = vec![0; joins + 296];
+    body[..16].copy_from_slice(if resource { b"AOSCSA03\0\x03\0\0\0\0\0\0" } else { b"AOSCSA02\0\x02\0\0\0\0\0\0" });
     body[16..24].copy_from_slice(&issuer_generation.to_be_bytes());
     body[24..32].copy_from_slice(&epoch.to_be_bytes());
     body[32..64].copy_from_slice(&floor.instance());
@@ -817,14 +822,14 @@ fn derive_body_with_completed(
     body[216..248].copy_from_slice(publisher_head.as_bytes());
     body[248..280].copy_from_slice(publisher_revision.as_bytes());
     body[280..312].copy_from_slice(authorization_head.as_bytes());
-    body[312..536].copy_from_slice(&authorization);
-    body[536..568].copy_from_slice(tree_head.as_bytes());
-    body[568..600].copy_from_slice(lineage_head.as_bytes());
-    body[600..632].copy_from_slice(
+    body[312..joins].copy_from_slice(&authorization);
+    body[joins..joins + 32].copy_from_slice(tree_head.as_bytes());
+    body[joins + 32..joins + 64].copy_from_slice(lineage_head.as_bytes());
+    body[joins + 64..joins + 96].copy_from_slice(
         tree_commitment_v1(tree).map_err(|_| SourceGenesisErrorV1::NonCanonical)?.as_bytes(),
     );
-    body[632..640].copy_from_slice(&1_u64.to_be_bytes());
-    body[640..648].copy_from_slice(&next.tree_generation().get().to_be_bytes());
+    body[joins + 96..joins + 104].copy_from_slice(&1_u64.to_be_bytes());
+    body[joins + 104..joins + 112].copy_from_slice(&next.tree_generation().get().to_be_bytes());
     let ceilings = [
         limits.maximum_project_roots(),
         limits.maximum_project_sandboxes(),
@@ -837,16 +842,16 @@ fn derive_body_with_completed(
     for (index, ceiling) in ceilings.into_iter().enumerate() {
         let ceiling = u32::try_from(ceiling)
             .map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
-        body[648 + index * 4..652 + index * 4].copy_from_slice(&ceiling.to_be_bytes());
+        body[joins + 112 + index * 4..joins + 116 + index * 4].copy_from_slice(&ceiling.to_be_bytes());
     }
-    body[680..712].copy_from_slice(
+    body[joins + 144..joins + 176].copy_from_slice(
         tree_commitment_v1(&next).map_err(|_| SourceGenesisErrorV1::NonCanonical)?.as_bytes(),
     );
-    body[712..728].copy_from_slice(&clock.host_boot_id());
-    body[728..736].copy_from_slice(&clock.boottime_nanoseconds().to_be_bytes());
-    body[736..744].copy_from_slice(&issued.to_be_bytes());
-    body[744..752].copy_from_slice(&expires.to_be_bytes());
-    body[752..832].copy_from_slice(intent.as_bytes());
+    body[joins + 176..joins + 192].copy_from_slice(&clock.host_boot_id());
+    body[joins + 192..joins + 200].copy_from_slice(&clock.boottime_nanoseconds().to_be_bytes());
+    body[joins + 200..joins + 208].copy_from_slice(&issued.to_be_bytes());
+    body[joins + 208..joins + 216].copy_from_slice(&expires.to_be_bytes());
+    body[joins + 216..].copy_from_slice(intent.as_bytes());
     crate::hierarchy::source_successor::validate_body(&body)?;
     controller.recheck()?;
     completed.recheck()?;
@@ -868,12 +873,16 @@ fn require_body_context(
 ) -> Result<(), SourceGenesisErrorV1> {
     let current_wall = u64::try_from(clock.wall_seconds())
         .map_err(|_| SourceGenesisErrorV1::AdmissionClosed)?;
-    if saved.len() != BODY_BYTES
-        || current.len() != BODY_BYTES
-        || saved[..712] != current[..712]
-        || saved[752..] != current[752..]
-        || saved[712..728] != clock.host_boot_id()
-        || u64::from_be_bytes(take(saved, 744)?) <= current_wall
+    if !matches!(saved.len(), BODY_BYTES | crate::hierarchy::source_successor::RESOURCE_BODY_BYTES)
+        || current.len() != saved.len()
+    {
+        return Err(SourceGenesisErrorV1::Stale);
+    }
+    let joins = saved.len() - 296;
+    if saved[..joins + 176] != current[..joins + 176]
+        || saved[joins + 216..] != current[joins + 216..]
+        || saved[joins + 176..joins + 192] != clock.host_boot_id()
+        || u64::from_be_bytes(take(saved, joins + 208)?) <= current_wall
     {
         return Err(SourceGenesisErrorV1::Stale);
     }
@@ -881,9 +890,9 @@ fn require_body_context(
     // Only the same original flight supplies the independently obtained later
     // sample; construction here cannot revive an owner or renew its deadline.
     let original = RawPairedClockSample::new_untrusted(
-        clock.provenance(), take(saved, 712)?,
-        i64::try_from(u64::from_be_bytes(take(saved, 736)?)).map_err(|_| SourceGenesisErrorV1::NonCanonical)?,
-        u64::from_be_bytes(take(saved, 728)?),
+        clock.provenance(), take(saved, joins + 176)?,
+        i64::try_from(u64::from_be_bytes(take(saved, joins + 200)?)).map_err(|_| SourceGenesisErrorV1::NonCanonical)?,
+        u64::from_be_bytes(take(saved, joins + 192)?),
     ).map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
     original.validate_later_sample(clock).map_err(|_| SourceGenesisErrorV1::AdmissionClosed)
 }

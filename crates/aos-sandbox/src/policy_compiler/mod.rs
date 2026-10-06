@@ -112,11 +112,15 @@ pub use source_successor_readback::{
     VerifiedSourceFirstSuccessorReadbackV2, verify_source_first_successor_readback_v2,
     SOURCE_PROJECT_CONTINUATION_READBACK_BYTES_V3, VerifiedSourceProjectContinuationReadbackV3,
     verify_source_project_continuation_readback_v3,
+    SOURCE_RESOURCE_SUCCESSOR_LEGACY_GENESIS_BYTES_V4, SOURCE_RESOURCE_SUCCESSOR_READBACK_BYTES_V4,
+    verify_source_resource_first_successor_readback_v4,
+    verify_source_resource_project_continuation_readback_v5,
 };
 #[cfg(target_os = "linux")]
 pub use source_signer_readback::{
     sign_fixed_source_first_successor_readback_v2,
     sign_fixed_source_project_continuation_readback_v3,
+    sign_fixed_source_resource_successor_readback_v4,
 };
 #[cfg(target_os = "linux")]
 pub use source_genesis_root::{
@@ -166,6 +170,7 @@ pub use source_genesis_root::{
     ROOT_SOURCE_PROJECT_GENESIS_QUERY_MAGIC_V3, ROOT_SOURCE_PROJECT_GENESIS_HELLO_MAGIC_V3,
     encode_root_source_project_genesis_frame_v3, decode_root_source_project_genesis_frame_v3,
     root_source_project_genesis_payload_bytes_v3,
+    root_resource_successor_payload_bytes_v4,
     ROOT_FIRST_SOURCE_SUCCESSOR_HELLO_MAGIC_V2, ROOT_FIRST_SOURCE_SUCCESSOR_QUERY_MAGIC_V2,
     ROOT_PROJECT_SOURCE_SUCCESSOR_HELLO_MAGIC_V3, ROOT_PROJECT_SOURCE_SUCCESSOR_QUERY_MAGIC_V3,
     RootFirstSourceSuccessorFrameKindV2, decode_root_first_source_successor_frame_v2,

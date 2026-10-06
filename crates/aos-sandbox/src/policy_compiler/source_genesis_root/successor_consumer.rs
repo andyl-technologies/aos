@@ -53,7 +53,7 @@ use super::successor_records::{
 };
 
 const CONTROLLER_OBSERVATION_BYTES: usize = 2560;
-const CONTROLLER_OBSERVATION_BODY: usize = CONTROLLER_OBSERVATION_BYTES - 64;
+const RESOURCE_CONTROLLER_OBSERVATION_BYTES: usize = 2736;
 const OBSERVATION_MAGIC: &[u8; 8] = b"AOSCSO02";
 const OBSERVATION_DOMAIN: &[u8] =
     b"aos.sandbox.source-first-successor.controller-held-observation.signature.v2\0";
@@ -62,18 +62,28 @@ const OBSERVATION_DOMAIN: &[u8] =
 pub(super) enum ControllerSuccessorSignatureRecipeV3 { StrictV2, MixedV3 }
 
 impl ControllerSuccessorSignatureRecipeV3 {
-    const fn magic(self) -> &'static [u8; 8] {
-        match self { Self::StrictV2 => OBSERVATION_MAGIC, Self::MixedV3 => b"AOSCSO03" }
+    const fn magic(self, resource: bool) -> &'static [u8; 8] {
+        match (self, resource) {
+            (Self::StrictV2, false) => OBSERVATION_MAGIC,
+            (Self::MixedV3, false) => b"AOSCSO03",
+            (Self::StrictV2, true) => b"AOSCSO04",
+            (Self::MixedV3, true) => b"AOSCSO05",
+        }
     }
 
-    const fn version(self) -> u8 {
-        match self { Self::StrictV2 => 2, Self::MixedV3 => 3 }
+    const fn version(self, resource: bool) -> u8 {
+        match (self, resource) {
+            (Self::StrictV2, false) => 2, (Self::MixedV3, false) => 3,
+            (Self::StrictV2, true) => 4, (Self::MixedV3, true) => 5,
+        }
     }
 
-    const fn domain(self) -> &'static [u8] {
-        match self {
-            Self::StrictV2 => OBSERVATION_DOMAIN,
-            Self::MixedV3 => b"aos.sandbox.source-first-successor.controller-held-observation.signature.v3\0",
+    const fn domain(self, resource: bool) -> &'static [u8] {
+        match (self, resource) {
+            (Self::StrictV2, false) => OBSERVATION_DOMAIN,
+            (Self::MixedV3, false) => b"aos.sandbox.source-first-successor.controller-held-observation.signature.v3\0",
+            (Self::StrictV2, true) => b"aos.sandbox.source-first-successor.controller-held-observation.signature.v4\0",
+            (Self::MixedV3, true) => b"aos.sandbox.source-first-successor.controller-held-observation.signature.v5\0",
         }
     }
 }
@@ -176,7 +186,7 @@ fn park_clock_post(
 
 #[derive(Default)]
 struct OriginalPhaseResultsV2 {
-    signature: Option<Result<[u8; CONTROLLER_OBSERVATION_BYTES], SourceGenesisErrorV1>>,
+    signature: Option<Result<Vec<u8>, SourceGenesisErrorV1>>,
     frame: Vec<u8>,
     sent: Option<Result<(), SourceGenesisErrorV1>>,
     reply: Vec<u8>,
@@ -1040,7 +1050,8 @@ fn exchange_phase(
     park_owner_post(&mut results.posts, first_site, Some(phase), purpose.view().recheck());
     park_clock_post(&mut results.clock_posts, first_site, Some(phase), purpose.observe_original_clock());
     if results.error().is_some() { return Err(SourceGenesisErrorV1::Stale); }
-    results.reception = Some(core.receive_first_successor_exact(32 + receive.payload_bytes(), &mut results.reply, &mut results.received));
+    let reply_bytes = receive.payload_bytes_for_resource(controller.packet().has_resource_authorization());
+    results.reception = Some(core.receive_first_successor_exact(32 + reply_bytes, &mut results.reply, &mut results.received));
     if matches!(results.received, Some(Err(_))) {
         first_site.get_or_insert(ResidentFailureSiteV2::Phase(phase, PhaseFailureSiteV2::Received));
     } else if matches!(results.reception, Some(Err(_))) {
@@ -1212,8 +1223,8 @@ fn hold_successor_with_recipe_v3<'controller>(
     if source.genesis_root_floor() != Some(predecessor.digest())
         || predecessor.digest() != digest_at(body, 144)
         || predecessor.instance() != take::<32>(body, 32)?
-        || original.tree_head() != digest_at(body, 536)
-        || original.lineage_head() != digest_at(body, 568)
+        || original.tree_head() != packet.old_tree_head()
+        || original.lineage_head() != packet.old_lineage_head()
     {
         return Err(SourceGenesisErrorV1::Conflict);
     }
@@ -1236,7 +1247,7 @@ fn hold_successor_with_recipe_v3<'controller>(
         None => ControllerFirstSourceSuccessorBeginV2::new(ControllerFirstSourceSuccessorBeginFieldsV2 {
             approval: packet.digest(), predecessor_floor: predecessor.digest(), genesis_complete,
             old_tree_head: original.tree_head(), old_lineage_head: original.lineage_head(),
-            next_tree_commit: digest_at(body, 680), source_uid, source_names: source.names()?,
+            next_tree_commit: packet.next_tree_commit(), source_uid, source_names: source.names()?,
         })?,
     };
     if begin.source_uid() != source_uid || begin.approval() != packet.digest()
@@ -1253,7 +1264,7 @@ fn hold_successor_with_recipe_v3<'controller>(
         ).map_err(|_| SourceGenesisErrorV1::NonCanonical)?, tree.tree_generation(), None)
             .map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
         if tree_head != begin.old_tree_head() || lineage_head != begin.old_lineage_head()
-            || tree_commitment_v1(tree).map_err(|_| SourceGenesisErrorV1::NonCanonical)? != digest_at(body, 600)
+            || tree_commitment_v1(tree).map_err(|_| SourceGenesisErrorV1::NonCanonical)? != packet.old_tree_commit()
             || tree_commitment_v1(&next).map_err(|_| SourceGenesisErrorV1::NonCanonical)? != begin.next_tree_commit()
         {
             return Err(SourceGenesisErrorV1::Conflict);
@@ -1262,7 +1273,7 @@ fn hold_successor_with_recipe_v3<'controller>(
         let receipt = source.receipt().ok_or(SourceGenesisErrorV1::Conflict)?;
         if receipt.approval() != packet.digest() || receipt.begin() != begin.digest()
             || receipt.next_tree_commit() != begin.next_tree_commit()
-            || receipt.old_tree_commit() != digest_at(body, 600)
+            || receipt.old_tree_commit() != packet.old_tree_commit()
         {
             return Err(SourceGenesisErrorV1::Conflict);
         }
@@ -1322,7 +1333,7 @@ impl HeldControllerFirstSourceSuccessorV2<'_> {
             return Err(SourceGenesisErrorV1::Conflict);
         }
         self.packet.verify_signature(seed.verifying_key())?;
-        verify_signed_project_authorization_claims_v2(&self.packet.body()[312..536], &authorization)?;
+        verify_signed_project_authorization_claims_v2(self.packet.authorization_packet(), &authorization)?;
         let mut journal = self.journal.try_borrow_mut().map_err(|_| SourceGenesisErrorV1::Stale)?;
         require_controller(&journal, self.uid)?;
         if journal.protected_writer_physical_names_v1()? != self.names {
@@ -1359,10 +1370,10 @@ impl HeldControllerFirstSourceSuccessorV2<'_> {
             journal.require_git_coverage_new_admission_v1()?;
             let original = hold_existing_completed_source_genesis_v2(&mut journal, self.packet.intent()?.project())?;
             let (generation, head, revision, auth_head, limits, packet) = original.current_successor_authorization_v2()?;
-            let current = crate::publisher_policy::parse_unverified_project_authorization_claims_v2(&body[312..536])?;
+            let current = crate::publisher_policy::parse_unverified_project_authorization_claims_v2(self.packet.authorization_packet())?;
             if generation != u64::from_be_bytes(take(body, 208)?) || head != digest_at(body, 216)
                 || revision != digest_at(body, 248) || auth_head != digest_at(body, 280)
-                || packet.as_slice() != &body[312..536] || limits != current.limits
+                || packet.as_slice() != self.packet.authorization_packet() || limits != current.limits
             {
                 return Err(SourceGenesisErrorV1::Stale);
             }
@@ -1386,7 +1397,7 @@ impl HeldControllerFirstSourceSuccessorV2<'_> {
             || seed.verifying_key() == authorization.verifying_key()
         { return Err(SourceGenesisErrorV1::Conflict); }
         self.packet.verify_signature(seed.verifying_key())?;
-        verify_signed_project_authorization_claims_v2(&body[312..536], &authorization)?;
+        verify_signed_project_authorization_claims_v2(self.packet.authorization_packet(), &authorization)?;
         require_controller(journal, self.uid)?;
         if journal.protected_writer_physical_names_v1()? != self.names {
             return Err(SourceGenesisErrorV1::Stale);
@@ -1405,10 +1416,10 @@ impl HeldControllerFirstSourceSuccessorV2<'_> {
                 return Err(SourceGenesisErrorV1::Conflict);
             }
             let (generation, head, revision, auth_head, limits, packet) = original.current_successor_authorization_v2()?;
-            let current = crate::publisher_policy::parse_unverified_project_authorization_claims_v2(&body[312..536])?;
+            let current = crate::publisher_policy::parse_unverified_project_authorization_claims_v2(self.packet.authorization_packet())?;
             if generation != u64::from_be_bytes(take(body, 208)?) || head != digest_at(body, 216)
                 || revision != digest_at(body, 248) || auth_head != digest_at(body, 280)
-                || packet.as_slice() != &body[312..536] || limits != current.limits
+                || packet.as_slice() != self.packet.authorization_packet() || limits != current.limits
             { return Err(SourceGenesisErrorV1::Stale); }
         }
         require_approval_clock(&self.packet, super::flight::kernel_pair()?)
@@ -1424,22 +1435,21 @@ pub(super) fn require_approval_clock(
     packet: &SourceSuccessorApprovalDataV2,
     clock: aos_sandbox_core::RawPairedClockSample,
 ) -> Result<(), SourceGenesisErrorV1> {
-    let body = packet.body();
-    let issued = u64::from_be_bytes(take(body, 736)?);
-    let expires = u64::from_be_bytes(take(body, 744)?);
-    let issued_boottime = u64::from_be_bytes(take(body, 728)?);
+    let issued = packet.issued_wall()?;
+    let expires = packet.expires_wall()?;
+    let issued_boottime = packet.issued_boottime()?;
     let wall = u64::try_from(clock.wall_seconds()).map_err(|_| SourceGenesisErrorV1::Stale)?;
     let boot_deadline = issued_boottime.checked_add(
         expires.checked_sub(issued).ok_or(SourceGenesisErrorV1::NonCanonical)?
             .checked_mul(1_000_000_000).ok_or(SourceGenesisErrorV1::NonCanonical)?,
     ).ok_or(SourceGenesisErrorV1::NonCanonical)?;
-    if take::<16>(body, 712)? != clock.host_boot_id() || wall < issued || wall >= expires
+    if packet.boot()? != clock.host_boot_id() || wall < issued || wall >= expires
         || clock.boottime_nanoseconds() < issued_boottime || clock.boottime_nanoseconds() >= boot_deadline
     {
         return Err(SourceGenesisErrorV1::AdmissionClosed);
     }
     let original = aos_sandbox_core::RawPairedClockSample::new_untrusted(
-        clock.provenance(), take(body, 712)?, i64::try_from(issued).map_err(|_| SourceGenesisErrorV1::NonCanonical)?, issued_boottime,
+        clock.provenance(), packet.boot()?, i64::try_from(issued).map_err(|_| SourceGenesisErrorV1::NonCanonical)?, issued_boottime,
     ).map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
     original.validate_later_sample(clock).map_err(|_| SourceGenesisErrorV1::Stale)?;
     Ok(())
@@ -1761,7 +1771,7 @@ pub(super) fn sign_controller_first_successor_readback_v2(
     flight: &super::successor_flight::OriginalRootFirstSourceSuccessorFlightV2<'_>,
     generation: u64,
     key: &SigningKey,
-) -> Result<[u8; CONTROLLER_OBSERVATION_BYTES], SourceGenesisErrorV1> {
+) -> Result<Vec<u8>, SourceGenesisErrorV1> {
     sign_controller_successor_with_recipe_v3(ControllerSuccessorOwnerViewV3::Strict(controller),
         SourceSuccessorObservationViewV3::Strict(source), super::successor_flight::RootSuccessorFlightViewV3::Strict(flight),
         generation, key, ControllerSuccessorSignatureRecipeV3::StrictV2)
@@ -1772,7 +1782,7 @@ pub(super) fn sign_controller_project_successor_readback_v3(
     source: &crate::hierarchy::SourceProjectContinuationObservationV3<'_>,
     flight: &super::successor_flight::OriginalRootProjectSuccessorFlightV3<'_>,
     generation: u64, key: &SigningKey,
-) -> Result<[u8; CONTROLLER_OBSERVATION_BYTES], SourceGenesisErrorV1> {
+) -> Result<Vec<u8>, SourceGenesisErrorV1> {
     sign_controller_successor_with_recipe_v3(ControllerSuccessorOwnerViewV3::Mixed(controller),
         SourceSuccessorObservationViewV3::Mixed(source), super::successor_flight::RootSuccessorFlightViewV3::Mixed(flight),
         generation, key, ControllerSuccessorSignatureRecipeV3::MixedV3)
@@ -1782,7 +1792,7 @@ fn sign_controller_successor_with_recipe_v3(
     controller: ControllerSuccessorOwnerViewV3<'_, '_>, source: SourceSuccessorObservationViewV3<'_, '_>,
     flight: super::successor_flight::RootSuccessorFlightViewV3<'_, '_>,
     generation: u64, key: &SigningKey, recipe: ControllerSuccessorSignatureRecipeV3,
-) -> Result<[u8; CONTROLLER_OBSERVATION_BYTES], SourceGenesisErrorV1> {
+) -> Result<Vec<u8>, SourceGenesisErrorV1> {
     let controller = controller.data();
     controller.recheck()?;
     source.recheck()?;
@@ -1811,9 +1821,13 @@ fn sign_controller_successor_with_recipe_v3(
         controller.recheck_current_admission()?;
         1
     } else { 2 };
-    let mut bytes = [0; CONTROLLER_OBSERVATION_BYTES];
-    bytes[..8].copy_from_slice(recipe.magic());
-    bytes[8..10].copy_from_slice(&u16::from(recipe.version()).to_be_bytes());
+    let resource = controller.packet.has_resource_authorization();
+    let begin_offset = 160 + controller.packet.as_bytes().len();
+    let tail = begin_offset + 296;
+    let body_bytes = tail + 1144;
+    let mut bytes = vec![0; body_bytes + 64];
+    bytes[..8].copy_from_slice(recipe.magic(resource));
+    bytes[8..10].copy_from_slice(&u16::from(recipe.version(resource)).to_be_bytes());
     bytes[10] = 1;
     bytes[11] = phase;
     bytes[16..32].copy_from_slice(&flight.nonce());
@@ -1824,25 +1838,25 @@ fn sign_controller_successor_with_recipe_v3(
     bytes[56..64].copy_from_slice(&source.snapshot_sequence()?.to_be_bytes());
     bytes[64..112].copy_from_slice(&controller.names.to_bytes());
     bytes[112..160].copy_from_slice(&source.names()?.to_bytes());
-    bytes[160..1056].copy_from_slice(controller.packet.as_bytes());
-    bytes[1056..1352].copy_from_slice(controller.begin.as_bytes());
+    bytes[160..begin_offset].copy_from_slice(controller.packet.as_bytes());
+    bytes[begin_offset..tail].copy_from_slice(controller.begin.as_bytes());
     if let Some(receipt) = source.receipt() {
         if receipt.approval() != controller.packet.digest() || receipt.begin() != controller.begin.digest() {
             return Err(SourceGenesisErrorV1::Conflict);
         }
-        bytes[1352..1384].copy_from_slice(receipt.root_intent().as_bytes());
-        bytes[1384..1920].copy_from_slice(receipt.as_bytes());
+        bytes[tail..tail + 32].copy_from_slice(receipt.root_intent().as_bytes());
+        bytes[tail + 32..tail + 568].copy_from_slice(receipt.as_bytes());
     }
-    if let Some(anchored) = controller.anchored.as_ref() { bytes[1920..2064].copy_from_slice(anchored.as_bytes()); }
-    if let Some(complete) = controller.complete.as_ref() { bytes[2064..2304].copy_from_slice(complete.as_bytes()); }
-    if let Some(ack) = source.ack() { bytes[2304..2496].copy_from_slice(ack.as_bytes()); }
-    let preimage = [recipe.domain(), &bytes[..CONTROLLER_OBSERVATION_BODY]].concat();
+    if let Some(anchored) = controller.anchored.as_ref() { bytes[tail + 568..tail + 712].copy_from_slice(anchored.as_bytes()); }
+    if let Some(complete) = controller.complete.as_ref() { bytes[tail + 712..tail + 952].copy_from_slice(complete.as_bytes()); }
+    if let Some(ack) = source.ack() { bytes[tail + 952..body_bytes].copy_from_slice(ack.as_bytes()); }
+    let preimage = [recipe.domain(resource), &bytes[..body_bytes]].concat();
     source.recheck()?;
     controller.recheck()?;
     // The final original-flight pair follows all slow owner observations.
     let clock = flight.signing_boundary_clock()?;
     if phase == 1 { require_approval_clock(&controller.packet, clock)?; }
-    bytes[CONTROLLER_OBSERVATION_BODY..].copy_from_slice(&key.sign(&preimage).to_bytes());
+    bytes[body_bytes..].copy_from_slice(&key.sign(&preimage).to_bytes());
     drop(preimage);
     // The caller parks this actual returned signature Result before all later
     // independent owner checks; none can discard the signed packet on failure.
@@ -1871,18 +1885,22 @@ fn verify_controller_successor_with_recipe(
     bytes: &[u8], pin: &super::super::PinnedControllerHoldSignerV1, nonce: [u8; 16],
     controller_uid: u32, source_uid: u32, recipe: ControllerSuccessorSignatureRecipeV3,
 ) -> Result<VerifiedControllerFirstSuccessorObservationV2, SourceGenesisErrorV1> {
-    if bytes.len() != CONTROLLER_OBSERVATION_BYTES || nonce == [0; 16]
-        || bytes.get(..8) != Some(recipe.magic().as_slice())
-        || bytes[8..11] != [0, recipe.version(), 1] || bytes[12..16] != [0; 4]
+    let resource = bytes.len() == RESOURCE_CONTROLLER_OBSERVATION_BYTES;
+    if !matches!(bytes.len(), CONTROLLER_OBSERVATION_BYTES | RESOURCE_CONTROLLER_OBSERVATION_BYTES) || nonce == [0; 16]
+        || bytes.get(..8) != Some(recipe.magic(resource).as_slice())
+        || bytes[8..11] != [0, recipe.version(resource), 1] || bytes[12..16] != [0; 4]
         || bytes[16..32] != nonce || u64::from_be_bytes(take(bytes, 32)?) != pin.generation()
         || u32::from_be_bytes(take(bytes, 40)?) != controller_uid
         || u32::from_be_bytes(take(bytes, 44)?) != source_uid
     {
         return Err(SourceGenesisErrorV1::NonCanonical);
     }
+    let body_bytes = bytes.len() - 64;
+    let tail = body_bytes - 1144;
+    let begin_offset = tail - 296;
     pin.verifying_key().verify_strict(
-        &[recipe.domain(), &bytes[..CONTROLLER_OBSERVATION_BODY]].concat(),
-        &Signature::from_bytes(&take(bytes, CONTROLLER_OBSERVATION_BODY)?),
+        &[recipe.domain(resource), &bytes[..body_bytes]].concat(),
+        &Signature::from_bytes(&take(bytes, body_bytes)?),
     ).map_err(|_| SourceGenesisErrorV1::Stale)?;
     let phase = match bytes[11] {
         1 => ControllerObservationPhaseV2::Before,
@@ -1890,34 +1908,37 @@ fn verify_controller_successor_with_recipe(
         3 => ControllerObservationPhaseV2::Completed,
         _ => return Err(SourceGenesisErrorV1::NonCanonical),
     };
-    let packet = SourceSuccessorApprovalDataV2::from_record_bytes(&bytes[160..1056])?;
-    let begin = ControllerFirstSourceSuccessorBeginV2::decode(&bytes[1056..1352])?;
+    let packet = SourceSuccessorApprovalDataV2::from_record_bytes(&bytes[160..begin_offset])?;
+    if packet.has_resource_authorization() != resource {
+        return Err(SourceGenesisErrorV1::NonCanonical);
+    }
+    let begin = ControllerFirstSourceSuccessorBeginV2::decode(&bytes[begin_offset..tail])?;
     let names = ProtectedJournalNamesV1::from_bytes(&take::<48>(bytes, 64)?)?;
     let source_names = ProtectedJournalNamesV1::from_bytes(&take::<48>(bytes, 112)?)?;
     if names == source_names || begin.approval() != packet.digest() || begin.source_uid() != source_uid
         || begin.predecessor_floor() != digest_at(packet.body(), 144)
         || begin.genesis_complete() != digest_at(packet.body(), 176)
-        || begin.old_tree_head() != digest_at(packet.body(), 536)
-        || begin.old_lineage_head() != digest_at(packet.body(), 568)
-        || begin.next_tree_commit() != digest_at(packet.body(), 680)
+        || begin.old_tree_head() != packet.old_tree_head()
+        || begin.old_lineage_head() != packet.old_lineage_head()
+        || begin.next_tree_commit() != packet.next_tree_commit()
     {
         return Err(SourceGenesisErrorV1::Conflict);
     }
     let (root_intent, receipt, anchored, complete, ack) = if phase == ControllerObservationPhaseV2::Before {
-        if bytes[1352..2496] != [0; 1144] || source_names != begin.source_names() {
+        if bytes[tail..body_bytes] != [0; 1144] || source_names != begin.source_names() {
             return Err(SourceGenesisErrorV1::NonCanonical);
         }
         (None, None, None, None, None)
     } else {
-        let receipt = SourceFirstSuccessorReceiptV2::decode(&bytes[1384..1920])?;
-        let anchored = (bytes[1920..2064] != [0; 144])
-            .then(|| ControllerFirstSourceSuccessorAnchoredV2::decode(&bytes[1920..2064])).transpose()?;
-        let complete = (bytes[2064..2304] != [0; 240])
-            .then(|| ControllerFirstSourceSuccessorCompleteV2::decode(&bytes[2064..2304])).transpose()?;
-        let ack = (bytes[2304..2496] != [0; 192])
-            .then(|| SourceFirstSuccessorAckV2::decode(&bytes[2304..2496])).transpose()?;
+        let receipt = SourceFirstSuccessorReceiptV2::decode(&bytes[tail + 32..tail + 568])?;
+        let anchored = (bytes[tail + 568..tail + 712] != [0; 144])
+            .then(|| ControllerFirstSourceSuccessorAnchoredV2::decode(&bytes[tail + 568..tail + 712])).transpose()?;
+        let complete = (bytes[tail + 712..tail + 952] != [0; 240])
+            .then(|| ControllerFirstSourceSuccessorCompleteV2::decode(&bytes[tail + 712..tail + 952])).transpose()?;
+        let ack = (bytes[tail + 952..body_bytes] != [0; 192])
+            .then(|| SourceFirstSuccessorAckV2::decode(&bytes[tail + 952..body_bytes])).transpose()?;
         if receipt.approval() != packet.digest() || receipt.begin() != begin.digest()
-            || receipt.root_intent() != digest_at(bytes, 1352)
+            || receipt.root_intent() != digest_at(bytes, tail)
             || receipt.source_names() != begin.source_names()
             || (ack.is_none() && source_names != receipt.source_names())
         {

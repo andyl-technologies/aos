@@ -21,7 +21,7 @@ use super::ProductionControllerNormalRootProfileV1;
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
 use crate::hierarchy::source_seed::PinnedControllerSourceTreeSeedIssuerV1;
 use crate::hierarchy::source_successor::{
-    BODY_BYTES, SourceSuccessorApprovalDataV2, SourceSuccessorIntentDataV2, signature_message,
+    SourceSuccessorApprovalDataV2, SourceSuccessorIntentDataV2, signature_message,
 };
 use crate::immutable_image::RetainedImmutableFileV1;
 use crate::normal_root::{NormalRootStartupErrorV1, service};
@@ -34,7 +34,7 @@ enum SourceSuccessorSigningRecipeV3<'cut, 'controller, 'source, 'completed, 'fli
 }
 
 impl SourceSuccessorSigningRecipeV3<'_, '_, '_, '_, '_> {
-    fn recheck(&self, body: &[u8; BODY_BYTES], intent: SourceSuccessorIntentDataV2, generation: u64) -> Result<(), SourceGenesisErrorV1> {
+    fn recheck(&self, body: &[u8], intent: SourceSuccessorIntentDataV2, generation: u64) -> Result<(), SourceGenesisErrorV1> {
         match self {
             Self::StrictV2(cut) => cut.recheck_before_signature(body, intent, generation),
             Self::ProjectV3(cut) => cut.recheck_before_signature(body, intent, generation),
@@ -321,20 +321,20 @@ impl SourceSuccessorCredentialCustodyV2<'_> {
 
     pub(crate) fn sign_approval(
         &mut self,
-        body: &[u8; BODY_BYTES],
+        body: &[u8],
         signing_cut: &SourceSuccessorSigningCutV2<'_, '_, '_, '_, '_>,
     ) -> Result<SourceSuccessorApprovalDataV2, SourceSuccessorCredentialErrorV2> {
         self.sign_approval_with_recipe(body, SourceSuccessorSigningRecipeV3::StrictV2(signing_cut))
     }
 
     pub(crate) fn sign_project_approval_v3(
-        &mut self, body: &[u8; BODY_BYTES], signing_cut: &SourceSuccessorSigningCutV3<'_, '_, '_, '_, '_>,
+        &mut self, body: &[u8], signing_cut: &SourceSuccessorSigningCutV3<'_, '_, '_, '_, '_>,
     ) -> Result<SourceSuccessorApprovalDataV2, SourceSuccessorCredentialErrorV2> {
         self.sign_approval_with_recipe(body, SourceSuccessorSigningRecipeV3::ProjectV3(signing_cut))
     }
 
     fn sign_approval_with_recipe(
-        &mut self, body: &[u8; BODY_BYTES], signing_cut: SourceSuccessorSigningRecipeV3<'_, '_, '_, '_, '_>,
+        &mut self, body: &[u8], signing_cut: SourceSuccessorSigningRecipeV3<'_, '_, '_, '_, '_>,
     ) -> Result<SourceSuccessorApprovalDataV2, SourceSuccessorCredentialErrorV2> {
         self.recheck()?;
         let intent = self.intent()?;
@@ -345,14 +345,14 @@ impl SourceSuccessorCredentialCustodyV2<'_> {
         let signer = SigningKey::from_bytes(&seed);
         let message = signature_message(body)?;
 
-        let mut packet = [0; BODY_BYTES + 64];
-        packet[..BODY_BYTES].copy_from_slice(body);
+        let mut packet = vec![0; body.len() + 64];
+        packet[..body.len()].copy_from_slice(body);
 
         // No fallible credential/message preparation or live-owner work may
         // intervene between this genuine current cut and the actual signature.
         signing_cut.recheck(body, intent, issuer_generation)?;
         let signature = signer.sign(&message);
-        packet[BODY_BYTES..].copy_from_slice(&signature.to_bytes());
+        packet[body.len()..].copy_from_slice(&signature.to_bytes());
         let packet = SourceSuccessorApprovalDataV2::from_record_bytes(&packet)?;
 
         self.recheck()?;

@@ -1,7 +1,7 @@
 //! Exact Controller retention and publication of first-successor approvals.
 //!
 //! ```text
-//! DesiredState[prefix || "packet"] = AOSCSA02[896]
+//! DesiredState[prefix || "packet"] = AOSCSA02[896] or AOSCSA03[1072]
 //! DesiredState[prefix || "epoch"] = administrative-epoch:u64be
 //! DesiredState[prefix || "pending"] = AOSCSI02[80]
 //! DesiredState[prefix || "delivered"] = packet-commitment[32]
@@ -32,7 +32,7 @@ use super::{
 };
 use crate::hierarchy::genesis_profile::{digest_at, hash, take};
 use crate::hierarchy::source_successor::{
-    SOURCE_SUCCESSOR_APPROVAL_BYTES_V2, SourceSuccessorApprovalDataV2,
+    SourceSuccessorApprovalDataV2,
 };
 use crate::policy_compiler::{
     ControllerFirstSourceSuccessorAnchoredV2, ControllerFirstSourceSuccessorBeginV2,
@@ -127,7 +127,7 @@ pub(crate) struct RetainedIssuanceDataV2 {
 pub(crate) struct PublicationCustodyV2 {
     staged: Option<File>,
     original: Option<File>,
-    readbacks: Vec<[u8; SOURCE_SUCCESSOR_APPROVAL_BYTES_V2]>,
+    readbacks: Vec<Vec<u8>>,
 }
 
 impl PublicationCustodyV2 {
@@ -426,9 +426,9 @@ fn validate_consumer_rows_with_recipe(
     if successor_digest_at(bytes, 16)? != rows.packet.digest()
         || bytes[48..80] != body[144..176]
         || bytes[80..112] != body[176..208]
-        || bytes[112..144] != body[536..568]
-        || bytes[144..176] != body[568..600]
-        || bytes[176..208] != body[680..712]
+        || bytes[112..144] != *rows.packet.old_tree_head().as_bytes()
+        || bytes[144..176] != *rows.packet.old_lineage_head().as_bytes()
+        || bytes[176..208] != *rows.packet.next_tree_commit().as_bytes()
     {
         return Err(JournalError::ProtectedBoundary);
     }
@@ -968,7 +968,7 @@ impl Journal {
             || metadata.st_uid != location.expected_uid
             || metadata.st_gid != rustix::process::getegid().as_raw()
             || metadata.st_nlink != 1
-            || metadata.st_size != SOURCE_SUCCESSOR_APPROVAL_BYTES_V2 as i64
+            || metadata.st_size != packet.as_bytes().len() as i64
             || custody.readbacks.len() >= 16
         {
             return Err(JournalError::ProtectedBoundary);
@@ -979,12 +979,12 @@ impl Journal {
             return Err(JournalError::ProtectedBoundary);
         }
 
-        custody.readbacks.push([0; SOURCE_SUCCESSOR_APPROVAL_BYTES_V2]);
+        custody.readbacks.push(vec![0; packet.as_bytes().len()]);
         let readback = custody.readbacks.last_mut().ok_or(JournalError::ProtectedBoundary)?;
         read_exact_positioned(original.as_fd(), readback)
             .map_err(|_| JournalError::ProtectedBoundary)?;
         let after = rustix::fs::fstat(original)?;
-        if readback != packet.as_bytes()
+        if readback.as_slice() != packet.as_bytes()
             || metadata.st_dev != after.st_dev
             || metadata.st_ino != after.st_ino
             || metadata.st_mode != after.st_mode
@@ -1046,7 +1046,7 @@ mod tests {
         }
 
         // The guard checks structural DATA, not this fixture's stale signature.
-        let mut bytes = *packet.as_bytes();
+        let mut bytes = packet.as_bytes().to_vec();
         bytes[24..32].copy_from_slice(&(acceptance.seed_claims().unwrap().epoch() + 1).to_be_bytes());
         bytes[144..176].copy_from_slice(floor.as_bytes());
         bytes[176..208].copy_from_slice(digest_at(&complete, 112).as_bytes());
@@ -1100,7 +1100,7 @@ mod tests {
     fn issuer_guard_requires_actual_completed_checksum_and_next_original_epoch() {
         let (state, packet) = completed_fixture();
         for offset in [24, 144, 176] {
-            let mut bytes = *packet.as_bytes();
+            let mut bytes = packet.as_bytes().to_vec();
             bytes[offset] ^= 1;
             let substituted = SourceSuccessorApprovalDataV2::from_record_bytes(&bytes).unwrap();
             let save = transaction(&substituted, Transition::Save).unwrap();

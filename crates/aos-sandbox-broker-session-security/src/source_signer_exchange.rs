@@ -17,6 +17,8 @@
 //! AOSSSP10 | explicit mixed-project Source observation2784
 //! AOSSSR12 | selected full-resource Project context840; AOSSSP12 | packet1104
 //! AOSSSR13 | strict full-resource genesis context840; AOSSSP13 | packet1104
+//! AOSSSR14 | strict full-resource Intent1424; AOSSSP14 | observation2960/3136
+//! AOSSSR15 | mixed full-resource Intent1424; AOSSSP15 | observation2960/3136
 //! ```
 
 use std::error::Error;
@@ -98,6 +100,11 @@ const REQUEST_RESOURCE_GENESIS_MAGIC: &[u8; 8] = b"AOSSSR13";
 const REPLY_RESOURCE_GENESIS_MAGIC: &[u8; 8] = b"AOSSSP13";
 const REQUEST_FIRST_SUCCESSOR_BYTES: usize = REQUEST_BYTES + 1248;
 const REPLY_FIRST_SUCCESSOR_BYTES: usize = 8 + SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2;
+const REQUEST_RESOURCE_SUCCESSOR_MAGIC_V4: &[u8; 8] = b"AOSSSR14";
+const REPLY_RESOURCE_SUCCESSOR_MAGIC_V4: &[u8; 8] = b"AOSSSP14";
+const REQUEST_RESOURCE_CONTINUATION_MAGIC_V5: &[u8; 8] = b"AOSSSR15";
+const REPLY_RESOURCE_CONTINUATION_MAGIC_V5: &[u8; 8] = b"AOSSSP15";
+const REQUEST_RESOURCE_SUCCESSOR_BYTES: usize = 72 + 1424;
 const REPLY_GENESIS_BYTES: usize = 8 + SOURCE_TREE_GENESIS_READBACK_BYTES_V1;
 const REPLY_COMPLETED_BYTES: usize = 8 + SOURCE_PROJECT_COMPLETED_TERMINAL_READBACK_BYTES_V1;
 const REQUEST_BYTES: usize = 72;
@@ -241,6 +248,8 @@ fn decode_project_genesis_request_v3(
 enum SourceSuccessorRequestRecipe {
     SingleProjectV2,
     MixedProjectsV3,
+    ResourceSingleProjectV4,
+    ResourceMixedProjectsV5,
 }
 
 impl SourceSuccessorRequestRecipe {
@@ -248,6 +257,8 @@ impl SourceSuccessorRequestRecipe {
         match self {
             Self::SingleProjectV2 => REQUEST_FIRST_SUCCESSOR_MAGIC,
             Self::MixedProjectsV3 => REQUEST_PROJECT_CONTINUATION_MAGIC,
+            Self::ResourceSingleProjectV4 => REQUEST_RESOURCE_SUCCESSOR_MAGIC_V4,
+            Self::ResourceMixedProjectsV5 => REQUEST_RESOURCE_CONTINUATION_MAGIC_V5,
         }
     }
 
@@ -255,7 +266,26 @@ impl SourceSuccessorRequestRecipe {
         match self {
             Self::SingleProjectV2 => REPLY_FIRST_SUCCESSOR_MAGIC,
             Self::MixedProjectsV3 => REPLY_PROJECT_CONTINUATION_MAGIC,
+            Self::ResourceSingleProjectV4 => REPLY_RESOURCE_SUCCESSOR_MAGIC_V4,
+            Self::ResourceMixedProjectsV5 => REPLY_RESOURCE_CONTINUATION_MAGIC_V5,
         }
+    }
+
+    const fn resource(self) -> bool {
+        matches!(self, Self::ResourceSingleProjectV4 | Self::ResourceMixedProjectsV5)
+    }
+}
+
+// This bounded transport carrier preserves the legacy owning array. Neither
+// variant can construct a held current consumer or a paid resource grant.
+enum SourceSuccessorReplyData {
+    Legacy([u8; SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2]),
+    Resource(Vec<u8>),
+}
+
+impl SourceSuccessorReplyData {
+    fn bytes(&self) -> &[u8] {
+        match self { Self::Legacy(bytes) => bytes, Self::Resource(bytes) => bytes }
     }
 }
 
@@ -300,9 +330,13 @@ fn request_root_source_successor_readback(
     if signer_uid == 0 || socket_gid == 0 || fresh_nonce == [0; 16] {
         return Err(invalid_data("invalid first-successor signer identity"));
     }
+    if context.as_bytes().len() != 1248 {
+        return Err(invalid_data("legacy successor request requires legacy context"));
+    }
     let request = match recipe {
         SourceSuccessorRequestRecipe::SingleProjectV2 => encode_first_successor_request(fresh_nonce, context),
         SourceSuccessorRequestRecipe::MixedProjectsV3 => encode_source_successor_request(fresh_nonce, context, recipe),
+        _ => return Err(invalid_data("resource successor requires full request recipe")),
     };
     let mut stream = connect_source_signer(signer_uid, socket_gid)?;
     stream.write_all(&request)?;
@@ -317,8 +351,87 @@ fn request_root_source_successor_readback(
         SourceSuccessorRequestRecipe::MixedProjectsV3 => {
             verify_source_project_continuation_readback_v3(&packet, signer, fresh_nonce, context).map_err(io::Error::other)?;
         }
+        _ => return Err(invalid_data("resource successor requires full reply recipe")),
     }
     Ok(packet)
+}
+
+/// Requests a full-resource successor observation on the existing signer role.
+///
+/// The `mixed` selector is closed comparison framing, not a currentness or
+/// resource-bank proof. Complete authentication stays inside this original
+/// signer stream, before its packet Result returns to the held Root caller.
+///
+/// # Errors
+/// Rejects legacy context, foreign signer/socket custody, unknown historical
+/// genesis width, trailing bytes or an invalid complete purpose signature.
+pub fn request_root_source_resource_successor_readback_v4(
+    fresh_nonce: [u8; 16], context: &RootFirstSourceSuccessorIntentV2,
+    signer: &PinnedSourceHoldReadbackSignerV1, signer_uid: u32, socket_gid: u32,
+    mixed: bool,
+) -> io::Result<Vec<u8>> {
+    if signer_uid == 0 || socket_gid == 0 || fresh_nonce == [0; 16]
+        || context.as_bytes().len() != 1424
+    {
+        return Err(invalid_data("invalid resource successor signer context"));
+    }
+    let request = encode_resource_successor_request(fresh_nonce, context, mixed)?;
+    let mut stream = connect_source_signer(signer_uid, socket_gid)?;
+    stream.write_all(&request)?;
+    stream.shutdown(std::net::Shutdown::Write)?;
+    let reply_magic = if mixed { REPLY_RESOURCE_CONTINUATION_MAGIC_V5 } else { REPLY_RESOURCE_SUCCESSOR_MAGIC_V4 };
+    let packet = read_resource_successor_reply(&mut stream, reply_magic)?;
+    if mixed {
+        aos_sandbox::policy_compiler::verify_source_resource_project_continuation_readback_v5(
+            &packet, signer, fresh_nonce, context,
+        ).map_err(io::Error::other)?;
+    } else {
+        aos_sandbox::policy_compiler::verify_source_resource_first_successor_readback_v4(
+            &packet, signer, fresh_nonce, context,
+        ).map_err(io::Error::other)?;
+    }
+    Ok(packet)
+}
+
+fn encode_resource_successor_request(
+    fresh_nonce: [u8; 16], context: &RootFirstSourceSuccessorIntentV2, mixed: bool,
+) -> io::Result<[u8; REQUEST_RESOURCE_SUCCESSOR_BYTES]> {
+    if context.as_bytes().len() != 1424 || fresh_nonce == [0; 16] {
+        return Err(invalid_data("invalid resource successor context width"));
+    }
+    let mut request = [0; REQUEST_RESOURCE_SUCCESSOR_BYTES];
+    request[..8].copy_from_slice(if mixed { REQUEST_RESOURCE_CONTINUATION_MAGIC_V5 } else { REQUEST_RESOURCE_SUCCESSOR_MAGIC_V4 });
+    request[8..24].copy_from_slice(&fresh_nonce);
+    request[24..56].copy_from_slice(context.digest().as_bytes());
+    request[56..72].copy_from_slice(context.project().as_bytes());
+    request[72..].copy_from_slice(context.as_bytes());
+    Ok(request)
+}
+
+fn read_resource_successor_reply(stream: &mut UnixStream, magic: &[u8; 8]) -> io::Result<Vec<u8>> {
+    // Read the smallest closed packet first. The nested historical receipt
+    // header supplies sizing DATA only; the complete signature remains required.
+    let mut reply = vec![0; 8 + aos_sandbox::policy_compiler::SOURCE_RESOURCE_SUCCESSOR_LEGACY_GENESIS_BYTES_V4];
+    stream.read_exact(&mut reply)?;
+    if reply[..8] != *magic {
+        return Err(invalid_data("invalid resource successor reply purpose"));
+    }
+    let genesis = 8 + 64 + 1072;
+    match (&reply[genesis..genesis + 8], &reply[genesis + 8..genesis + 10]) {
+        (b"AOSSGR01", [0, 1]) => {}
+        (b"AOSSGR02", [0, 2]) => {
+            let old_length = reply.len();
+            reply.resize(8 + aos_sandbox::policy_compiler::SOURCE_RESOURCE_SUCCESSOR_READBACK_BYTES_V4, 0);
+            stream.read_exact(&mut reply[old_length..])?;
+        }
+        _ => return Err(invalid_data("unknown successor genesis receipt recipe")),
+    }
+    let mut trailing = [0];
+    if stream.read(&mut trailing)? != 0 {
+        return Err(invalid_data("trailing resource successor reply"));
+    }
+    reply.drain(..8);
+    Ok(reply)
 }
 
 fn encode_first_successor_request(fresh_nonce: [u8; 16], context: &RootFirstSourceSuccessorIntentV2) -> [u8; REQUEST_FIRST_SUCCESSOR_BYTES] {
@@ -966,19 +1079,41 @@ fn serve_request(
     stream.read_exact(&mut request)?;
     if request[..8] == *REQUEST_FIRST_SUCCESSOR_MAGIC
         || request[..8] == *REQUEST_PROJECT_CONTINUATION_MAGIC
+        || request[..8] == *REQUEST_RESOURCE_SUCCESSOR_MAGIC_V4
+        || request[..8] == *REQUEST_RESOURCE_CONTINUATION_MAGIC_V5
     {
         let recipe = if request[..8] == *REQUEST_FIRST_SUCCESSOR_MAGIC {
             SourceSuccessorRequestRecipe::SingleProjectV2
-        } else {
+        } else if request[..8] == *REQUEST_PROJECT_CONTINUATION_MAGIC {
             SourceSuccessorRequestRecipe::MixedProjectsV3
+        } else if request[..8] == *REQUEST_RESOURCE_SUCCESSOR_MAGIC_V4 {
+            SourceSuccessorRequestRecipe::ResourceSingleProjectV4
+        } else {
+            SourceSuccessorRequestRecipe::ResourceMixedProjectsV5
         };
-        let mut expanded = [0; REQUEST_FIRST_SUCCESSOR_BYTES];
-        expanded[..REQUEST_BYTES].copy_from_slice(&request);
-        stream.read_exact(&mut expanded[REQUEST_BYTES..])?;
-        require_request_eof(stream)?;
-        let (nonce, context) = match recipe {
-            SourceSuccessorRequestRecipe::SingleProjectV2 => decode_first_successor_request(&expanded)?,
-            SourceSuccessorRequestRecipe::MixedProjectsV3 => decode_source_successor_request(&expanded, recipe)?,
+        let (nonce, context) = if recipe.resource() {
+            let mut expanded = [0; REQUEST_RESOURCE_SUCCESSOR_BYTES];
+            expanded[..REQUEST_BYTES].copy_from_slice(&request);
+            stream.read_exact(&mut expanded[REQUEST_BYTES..])?;
+            require_request_eof(stream)?;
+            let nonce: [u8; 16] = expanded[8..24].try_into()
+                .map_err(|_| invalid_data("invalid resource successor nonce"))?;
+            let context = RootFirstSourceSuccessorIntentV2::decode(&expanded[72..]).map_err(io::Error::other)?;
+            let mixed = matches!(recipe, SourceSuccessorRequestRecipe::ResourceMixedProjectsV5);
+            if encode_resource_successor_request(nonce, &context, mixed)? != expanded {
+                return Err(invalid_data("noncanonical resource successor request").into());
+            }
+            (nonce, context)
+        } else {
+            let mut expanded = [0; REQUEST_FIRST_SUCCESSOR_BYTES];
+            expanded[..REQUEST_BYTES].copy_from_slice(&request);
+            stream.read_exact(&mut expanded[REQUEST_BYTES..])?;
+            require_request_eof(stream)?;
+            match recipe {
+                SourceSuccessorRequestRecipe::SingleProjectV2 => decode_first_successor_request(&expanded)?,
+                SourceSuccessorRequestRecipe::MixedProjectsV3 => decode_source_successor_request(&expanded, recipe)?,
+                _ => return Err(invalid_data("invalid legacy successor purpose").into()),
+            }
         };
         if context.source_uid() != controller_uid { return Err(invalid_data("foreign successor Source UID").into()); }
         let signing_key_result = credentials.signing_key();
@@ -986,10 +1121,16 @@ fn serve_request(
         let returned = match recipe {
             SourceSuccessorRequestRecipe::SingleProjectV2 => sign_fixed_source_first_successor_readback_v2(
                 controller_uid, nonce, &context, credentials.generation(), signing_key,
-            ),
+            ).map(SourceSuccessorReplyData::Legacy),
             SourceSuccessorRequestRecipe::MixedProjectsV3 => sign_fixed_source_project_continuation_readback_v3(
                 controller_uid, nonce, &context, credentials.generation(), signing_key,
-            ),
+            ).map(SourceSuccessorReplyData::Legacy),
+            SourceSuccessorRequestRecipe::ResourceSingleProjectV4 | SourceSuccessorRequestRecipe::ResourceMixedProjectsV5 => {
+                aos_sandbox::policy_compiler::sign_fixed_source_resource_successor_readback_v4(
+                    controller_uid, nonce, &context, credentials.generation(), signing_key,
+                    matches!(recipe, SourceSuccessorRequestRecipe::ResourceMixedProjectsV5),
+                ).map(SourceSuccessorReplyData::Resource)
+            }
         };
         // Each independent post is attempted after the real signature Result
         // is named. A later failure cannot replace its first returned cause.
@@ -1004,7 +1145,14 @@ fn serve_request(
             || later_peer.uid != peer.uid || later_peer.gid != peer.gid || later_peer.pid != peer.pid
         { std::process::exit(1); }
 
-        let sent = write_framed_reply::<REPLY_FIRST_SUCCESSOR_BYTES>(stream, recipe.reply_magic(), packet);
+        let sent = match packet {
+            SourceSuccessorReplyData::Legacy(_) => write_framed_reply::<REPLY_FIRST_SUCCESSOR_BYTES>(stream, recipe.reply_magic(), packet.bytes()),
+            SourceSuccessorReplyData::Resource(bytes) => match bytes.len() {
+                2960 => write_framed_reply::<2968>(stream, recipe.reply_magic(), bytes),
+                3136 => write_framed_reply::<3144>(stream, recipe.reply_magic(), bytes),
+                _ => Err(invalid_data("unknown resource successor reply width")),
+            }
+        };
         let credential_after_send = credentials.signing_key();
         let peer_after_send = socket_peercred(&*stream);
         if sent.is_err() || credential_after_send.is_err() || peer_after_send.is_err() {

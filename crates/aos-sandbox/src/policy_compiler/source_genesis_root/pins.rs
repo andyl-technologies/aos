@@ -165,7 +165,7 @@ pub(super) fn verify_retained_first_source_successor_v2(
     }
 
     packet.verify_signature(seed.verifying_key())?;
-    verify_signed_project_authorization_claims_v2(&packet.body()[312..536], &authorization)?;
+    verify_signed_project_authorization_claims_v2(packet.authorization_packet(), &authorization)?;
     Ok(())
 }
 

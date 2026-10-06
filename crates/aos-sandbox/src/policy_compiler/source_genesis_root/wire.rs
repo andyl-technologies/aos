@@ -35,6 +35,24 @@ pub const ROOT_PROJECT_SOURCE_SUCCESSOR_HELLO_MAGIC_V3: &[u8; 8] = b"AOSSSH03";
 pub(super) enum FirstSuccessorWireRecipeV3 { StrictV2, MixedV3 }
 
 impl FirstSuccessorWireRecipeV3 {
+    const fn resource_version(self) -> u16 {
+        match self { Self::StrictV2 => 4, Self::MixedV3 => 5 }
+    }
+
+    const fn resource_magic(self, phase: RootFirstSourceSuccessorFrameKindV2) -> &'static [u8; 8] {
+        match (self, phase) {
+            (Self::StrictV2, RootFirstSourceSuccessorFrameKindV2::Prepare) => b"AOSCFP04",
+            (Self::StrictV2, RootFirstSourceSuccessorFrameKindV2::Prepared) => b"AOSCFI04",
+            (Self::StrictV2, RootFirstSourceSuccessorFrameKindV2::Anchor) => b"AOSCFA04",
+            (Self::StrictV2, RootFirstSourceSuccessorFrameKindV2::Complete) => b"AOSCFC04",
+            (Self::MixedV3, RootFirstSourceSuccessorFrameKindV2::Prepare) => b"AOSCFP05",
+            (Self::MixedV3, RootFirstSourceSuccessorFrameKindV2::Prepared) => b"AOSCFI05",
+            (Self::MixedV3, RootFirstSourceSuccessorFrameKindV2::Anchor) => b"AOSCFA05",
+            (Self::MixedV3, RootFirstSourceSuccessorFrameKindV2::Complete) => b"AOSCFC05",
+            _ => self.magic(phase),
+        }
+    }
+
     pub(super) const fn version(self) -> u16 {
         match self { Self::StrictV2 => 2, Self::MixedV3 => 3 }
     }
@@ -83,6 +101,15 @@ impl RootFirstSourceSuccessorFrameKindV2 {
         }
     }
 
+    /// Returns the closed full-resource width without granting admission.
+    pub const fn payload_bytes_for_resource(self, resource: bool) -> usize {
+        if resource && matches!(self, Self::Prepare | Self::Prepared | Self::Anchor | Self::Complete) {
+            self.payload_bytes() + 176
+        } else {
+            self.payload_bytes()
+        }
+    }
+
     pub(super) const fn magic(self) -> &'static [u8; 8] {
         match self {
             Self::Prepare => b"AOSCFP02",
@@ -109,7 +136,7 @@ pub fn encode_root_first_source_successor_frame_v2(
     encode_first_successor_with_recipe(output, phase, nonce, payload, FirstSuccessorWireRecipeV3::StrictV2)
 }
 
-/// Encodes only the reserved version-three mixed successor purpose.
+/// Encodes the closed legacy or full-resource mixed successor recipe.
 ///
 /// # Errors
 /// Rejects sentinel nonce, wrong exact width, growth or an occupied output.
@@ -124,7 +151,10 @@ pub(super) fn encode_first_successor_with_recipe(
     output: &mut Vec<u8>, phase: RootFirstSourceSuccessorFrameKindV2,
     nonce: [u8; 16], payload: &[u8], recipe: FirstSuccessorWireRecipeV3,
 ) -> Result<(), SourceGenesisErrorV1> {
-    if !output.is_empty() || nonce == [0; 16] || payload.len() != phase.payload_bytes() {
+    let resource = phase.payload_bytes_for_resource(true) != phase.payload_bytes()
+        && payload.len() == phase.payload_bytes_for_resource(true);
+    if !output.is_empty() || nonce == [0; 16]
+        || (!resource && payload.len() != phase.payload_bytes()) {
         return Err(SourceGenesisErrorV1::NonCanonical);
     }
     let length = ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1 + payload.len();
@@ -133,12 +163,14 @@ pub(super) fn encode_first_successor_with_recipe(
     }
     output.try_reserve_exact(length).map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
     output.resize(length, 0);
-    write_frame_header(output, recipe.magic(phase), recipe.version(), nonce);
+    write_frame_header(output,
+        if resource { recipe.resource_magic(phase) } else { recipe.magic(phase) },
+        if resource { recipe.resource_version() } else { recipe.version() }, nonce);
     output[ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1..].copy_from_slice(payload);
     Ok(())
 }
 
-/// Borrows one exact version-two first-successor payload as comparison data.
+/// Borrows a closed legacy or full-resource strict payload as comparison data.
 ///
 /// # Errors
 /// Rejects a foreign purpose, phase, nonce, reserved byte or payload width.
@@ -150,7 +182,7 @@ pub fn decode_root_first_source_successor_frame_v2(
     decode_first_successor_with_recipe(frame, phase, nonce, FirstSuccessorWireRecipeV3::StrictV2)
 }
 
-/// Borrows the exact reserved version-three mixed successor payload.
+/// Borrows the closed legacy or full-resource mixed successor payload.
 ///
 /// # Errors
 /// Rejects strict/foreign purpose, version, nonce, padding or exact width.
@@ -163,13 +195,36 @@ pub fn decode_root_project_source_successor_frame_v3(
 pub(super) fn decode_first_successor_with_recipe(
     frame: &[u8], phase: RootFirstSourceSuccessorFrameKindV2, nonce: [u8; 16], recipe: FirstSuccessorWireRecipeV3,
 ) -> Result<&[u8], SourceGenesisErrorV1> {
-    if frame.len() != ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1 + phase.payload_bytes()
-        || frame.len() > 4096
-        || !has_frame_header(frame, recipe.magic(phase), recipe.version(), nonce)
-    {
+    let legacy = frame.len() == ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1 + phase.payload_bytes()
+        && has_frame_header(frame, recipe.magic(phase), recipe.version(), nonce);
+    let resource = phase.payload_bytes_for_resource(true) != phase.payload_bytes()
+        && frame.len() == ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1 + phase.payload_bytes_for_resource(true)
+        && has_frame_header(frame, recipe.resource_magic(phase), recipe.resource_version(), nonce);
+    if frame.len() > 4096 || (!legacy && !resource) {
         return Err(SourceGenesisErrorV1::NonCanonical);
     }
     Ok(&frame[ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1..])
+}
+
+/// Returns a closed full-resource successor body width from framing DATA.
+///
+/// This performs sizing only. Complete signature and held-owner joins remain
+/// mandatory after the complete body arrives on the original stream.
+///
+/// # Errors
+/// Rejects a non-resource purpose, unknown version, nonce or padding.
+pub fn root_resource_successor_payload_bytes_v4(
+    header: &[u8], phase: RootFirstSourceSuccessorFrameKindV2,
+    nonce: [u8; 16], mixed: bool,
+) -> Result<usize, SourceGenesisErrorV1> {
+    let recipe = if mixed { FirstSuccessorWireRecipeV3::MixedV3 } else { FirstSuccessorWireRecipeV3::StrictV2 };
+    if header.len() != ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1
+        || phase.payload_bytes_for_resource(true) == phase.payload_bytes()
+        || !has_frame_header(header, recipe.resource_magic(phase), recipe.resource_version(), nonce)
+    {
+        return Err(SourceGenesisErrorV1::NonCanonical);
+    }
+    Ok(phase.payload_bytes_for_resource(true))
 }
 
 /// Identifies a closed phase and its exact nonauthorizing payload width.
@@ -607,6 +662,35 @@ pub(in crate::policy_compiler) fn q04_genesis_refresh_payload_bytes_from_header(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn successor_resource_frames_keep_closed_widths_and_legacy_terminals() {
+        let phases = [RootFirstSourceSuccessorFrameKindV2::Prepare,
+            RootFirstSourceSuccessorFrameKindV2::Prepared,
+            RootFirstSourceSuccessorFrameKindV2::Anchor,
+            RootFirstSourceSuccessorFrameKindV2::Complete];
+
+        for recipe in [FirstSuccessorWireRecipeV3::StrictV2, FirstSuccessorWireRecipeV3::MixedV3] {
+            for phase in phases {
+                let payload = vec![7; phase.payload_bytes_for_resource(true)];
+                let mut frame = Vec::new();
+                encode_first_successor_with_recipe(&mut frame, phase, [1; 16], &payload, recipe).unwrap();
+
+                assert_eq!(&frame[8..10], &recipe.resource_version().to_be_bytes());
+                assert_eq!(decode_first_successor_with_recipe(&frame, phase, [1; 16], recipe).unwrap(), payload);
+                assert!(decode_first_successor_with_recipe(&frame[..frame.len() - 1], phase, [1; 16], recipe).is_err());
+                assert_eq!(root_resource_successor_payload_bytes_v4(&frame[..32], phase, [1; 16],
+                    recipe == FirstSuccessorWireRecipeV3::MixedV3).unwrap(), payload.len());
+            }
+
+            let phase = RootFirstSourceSuccessorFrameKindV2::Completed;
+            let mut frame = Vec::new();
+            encode_first_successor_with_recipe(&mut frame, phase, [1; 16], &[7; 96], recipe).unwrap();
+            assert_eq!(&frame[8..10], &recipe.version().to_be_bytes());
+            assert!(root_resource_successor_payload_bytes_v4(&frame[..32], phase, [1; 16],
+                recipe == FirstSuccessorWireRecipeV3::MixedV3).is_err());
+        }
+    }
 
     #[test]
     fn every_phase_has_exact_width_nonce_and_domain() {

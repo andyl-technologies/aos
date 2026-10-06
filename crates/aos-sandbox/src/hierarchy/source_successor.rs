@@ -15,6 +15,8 @@
 //! predecessor-generation8 | successor-generation8 | seven-ceilings28 |
 //! reserved4 | successor-tree32 | boot16 | boottime-nanoseconds8 |
 //! issued-wall-seconds8 | expires-wall-seconds8 | AOSCSI02[80] | signature64
+//! AOSCSA03[1072] retains the complete AOSPSC03[400] at the same prefix;
+//! subsequent fields follow that packet, with a distinct v3 signature domain.
 //! ```
 
 use aos_sandbox_core::{ObjectDigest, ProjectId, SandboxId};
@@ -27,9 +29,14 @@ use super::model::TreeLimitsV1;
 pub const SOURCE_SUCCESSOR_INTENT_BYTES_V2: usize = 80;
 /// Bounds the signed first-successor approval, including its exact intent.
 pub const SOURCE_SUCCESSOR_APPROVAL_BYTES_V2: usize = 896;
+/// Bounds the approval retaining every signed Project resource dimension.
+pub const SOURCE_SUCCESSOR_APPROVAL_BYTES_V3: usize = 1072;
 pub(crate) const BODY_BYTES: usize = SOURCE_SUCCESSOR_APPROVAL_BYTES_V2 - 64;
+pub(crate) const RESOURCE_BODY_BYTES: usize = SOURCE_SUCCESSOR_APPROVAL_BYTES_V3 - 64;
 const SIGNATURE_DOMAIN: &[u8] = b"aos.sandbox.source-administration.successor.signature.v2\0/var/lib/aos/sandbox/source-domains/source-domains-v1.journal\0";
 const PACKET_DOMAIN: &[u8] = b"aos.sandbox.source-administration.successor.packet.v2\0";
+const RESOURCE_SIGNATURE_DOMAIN: &[u8] = b"aos.sandbox.source-administration.successor.signature.v3\0/var/lib/aos/sandbox/source-domains/source-domains-v1.journal\0";
+const RESOURCE_PACKET_DOMAIN: &[u8] = b"aos.sandbox.source-administration.successor.packet.v3\0";
 
 /// Selects one fixed operation without supplying current heads or authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -90,7 +97,7 @@ impl SourceSuccessorIntentDataV2 {
 /// Retains canonical approval bytes without a live owner or mutation permit.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceSuccessorApprovalDataV2 {
-    bytes: [u8; SOURCE_SUCCESSOR_APPROVAL_BYTES_V2],
+    bytes: Vec<u8>,
 }
 
 impl SourceSuccessorApprovalDataV2 {
@@ -100,14 +107,15 @@ impl SourceSuccessorApprovalDataV2 {
     /// Rejects unsupported versions/generations, sentinel joins, changed intent,
     /// invalid ceilings, expiry arithmetic or malformed authorization DATA.
     pub fn from_record_bytes(bytes: &[u8]) -> Result<Self, SourceGenesisErrorV1> {
-        if bytes.len() != SOURCE_SUCCESSOR_APPROVAL_BYTES_V2 {
+        if !matches!(bytes.len(), SOURCE_SUCCESSOR_APPROVAL_BYTES_V2 | SOURCE_SUCCESSOR_APPROVAL_BYTES_V3) {
             return Err(SourceGenesisErrorV1::NonCanonical);
         }
-        validate_body(&bytes[..BODY_BYTES])?;
-        if bytes[BODY_BYTES..] == [0; 64] {
+        let body_bytes = bytes.len() - 64;
+        validate_body(&bytes[..body_bytes])?;
+        if bytes[body_bytes..] == [0; 64] {
             return Err(SourceGenesisErrorV1::NonCanonical);
         }
-        Ok(Self { bytes: take(bytes, 0)? })
+        Ok(Self { bytes: bytes.to_vec() })
     }
 
     /// Verifies only the distinct successor signature against a selected key.
@@ -117,24 +125,24 @@ impl SourceSuccessorApprovalDataV2 {
     /// key provisioning nor current Controller/Source/Root ownership.
     pub fn verify_signature(&self, key: &VerifyingKey) -> Result<(), SourceGenesisErrorV1> {
         key.verify_strict(
-            &signature_message(&self.bytes[..BODY_BYTES])?,
-            &Signature::from_bytes(&take(&self.bytes, BODY_BYTES)?),
+            &signature_message(self.body())?,
+            &Signature::from_bytes(&take(&self.bytes, self.bytes.len() - 64)?),
         )
         .map_err(|_| SourceGenesisErrorV1::NonCanonical)
     }
 
     /// Borrows the exact saved public packet.
-    pub const fn as_bytes(&self) -> &[u8; SOURCE_SUCCESSOR_APPROVAL_BYTES_V2] {
+    pub fn as_bytes(&self) -> &[u8] {
         &self.bytes
     }
 
     /// Returns a domain-separated packet commitment, not currentness.
     pub fn digest(&self) -> ObjectDigest {
-        hash(PACKET_DOMAIN, &self.bytes)
+        hash(if self.has_resource_authorization() { RESOURCE_PACKET_DOMAIN } else { PACKET_DOMAIN }, &self.bytes)
     }
 
     pub(crate) fn intent(&self) -> Result<SourceSuccessorIntentDataV2, SourceGenesisErrorV1> {
-        SourceSuccessorIntentDataV2::from_bytes(&self.bytes[752..832])
+        SourceSuccessorIntentDataV2::from_bytes(&self.bytes[self.joins_offset() + 216..self.bytes.len() - 64])
     }
 
     pub(crate) fn epoch(&self) -> Result<u64, SourceGenesisErrorV1> {
@@ -142,59 +150,109 @@ impl SourceSuccessorApprovalDataV2 {
     }
 
     pub(crate) fn body(&self) -> &[u8] {
-        &self.bytes[..BODY_BYTES]
+        &self.bytes[..self.bytes.len() - 64]
+    }
+
+    pub(crate) fn has_resource_authorization(&self) -> bool {
+        self.bytes.len() == SOURCE_SUCCESSOR_APPROVAL_BYTES_V3
+    }
+
+    pub(crate) fn authorization_packet(&self) -> &[u8] {
+        &self.bytes[312..self.joins_offset()]
+    }
+
+    pub(crate) fn joins_offset(&self) -> usize {
+        self.bytes.len() - 360
+    }
+
+    pub(crate) fn old_tree_head(&self) -> ObjectDigest {
+        super::genesis_profile::digest_at(&self.bytes, self.joins_offset())
+    }
+
+    pub(crate) fn old_lineage_head(&self) -> ObjectDigest {
+        super::genesis_profile::digest_at(&self.bytes, self.joins_offset() + 32)
+    }
+
+    pub(crate) fn old_tree_commit(&self) -> ObjectDigest {
+        super::genesis_profile::digest_at(&self.bytes, self.joins_offset() + 64)
+    }
+
+    pub(crate) fn next_tree_commit(&self) -> ObjectDigest {
+        super::genesis_profile::digest_at(&self.bytes, self.joins_offset() + 144)
+    }
+
+    pub(crate) fn boot(&self) -> Result<[u8; 16], SourceGenesisErrorV1> {
+        take(&self.bytes, self.joins_offset() + 176)
+    }
+
+    pub(crate) fn issued_boottime(&self) -> Result<u64, SourceGenesisErrorV1> {
+        Ok(u64::from_be_bytes(take(&self.bytes, self.joins_offset() + 192)?))
+    }
+
+    pub(crate) fn issued_wall(&self) -> Result<u64, SourceGenesisErrorV1> {
+        Ok(u64::from_be_bytes(take(&self.bytes, self.joins_offset() + 200)?))
+    }
+
+    pub(crate) fn expires_wall(&self) -> Result<u64, SourceGenesisErrorV1> {
+        Ok(u64::from_be_bytes(take(&self.bytes, self.joins_offset() + 208)?))
     }
 }
 
 pub(crate) fn signature_message(body: &[u8]) -> Result<Vec<u8>, SourceGenesisErrorV1> {
     validate_body(body)?;
-    let mut message = Vec::with_capacity(SIGNATURE_DOMAIN.len() + BODY_BYTES);
-    message.extend_from_slice(SIGNATURE_DOMAIN);
+    let domain = if body.len() == RESOURCE_BODY_BYTES { RESOURCE_SIGNATURE_DOMAIN } else { SIGNATURE_DOMAIN };
+    let mut message = Vec::with_capacity(domain.len() + body.len());
+    message.extend_from_slice(domain);
     message.extend_from_slice(body);
     Ok(message)
 }
 
 pub(crate) fn validate_body(body: &[u8]) -> Result<(), SourceGenesisErrorV1> {
-    if body.len() != BODY_BYTES
-        || body.get(..16) != Some(b"AOSCSA02\0\x02\0\0\0\0\0\0")
-        || body[632..640] != 1_u64.to_be_bytes()
-        || body[640..648] != 2_u64.to_be_bytes()
-        || body[676..680] != [0; 4]
-        || [16, 24, 208, 728, 736, 744].into_iter().any(|offset| body[offset..offset + 8] == [0; 8])
-        || [32, 112, 144, 176, 216, 248, 280, 536, 568, 600, 680]
+    let resource = body.len() == RESOURCE_BODY_BYTES;
+    let header: &[u8; 16] = if resource { b"AOSCSA03\0\x03\0\0\0\0\0\0" } else { b"AOSCSA02\0\x02\0\0\0\0\0\0" };
+    if (!resource && body.len() != BODY_BYTES) || body.get(..16) != Some(header.as_slice()) {
+        return Err(SourceGenesisErrorV1::NonCanonical);
+    }
+    let joins = body.len() - 296;
+    if body[joins + 96..joins + 104] != 1_u64.to_be_bytes()
+        || body[joins + 104..joins + 112] != 2_u64.to_be_bytes()
+        || body[joins + 140..joins + 144] != [0; 4]
+        || [16, 24, 208, joins + 192, joins + 200, joins + 208].into_iter().any(|offset| body[offset..offset + 8] == [0; 8])
+        || [32, 112, 144, 176, 216, 248, 280, joins, joins + 32, joins + 64, joins + 144]
             .into_iter().any(|offset| body[offset..offset + 32] == [0; 32])
-        || body[712..728] == [0; 16]
+        || body[joins + 176..joins + 192] == [0; 16]
     {
         return Err(SourceGenesisErrorV1::NonCanonical);
     }
-    let intent = SourceSuccessorIntentDataV2::from_bytes(&body[752..832])?;
+    let intent = SourceSuccessorIntentDataV2::from_bytes(&body[joins + 216..])?;
     if body[64..80] != intent.project().as_bytes()[..]
         || body[80..96] != intent.request()
         || body[96..112] != intent.sandbox().as_bytes()[..]
-        || u64::from_be_bytes(take(body, 736)?)
+        || u64::from_be_bytes(take(body, joins + 200)?)
             .checked_add(u64::from(intent.validity_seconds()))
-            != Some(u64::from_be_bytes(take(body, 744)?))
+            != Some(u64::from_be_bytes(take(body, joins + 208)?))
     {
         return Err(SourceGenesisErrorV1::NonCanonical);
     }
     let authorization = crate::publisher_policy::parse_unverified_project_authorization_claims_v2(
-        &body[312..536],
+        &body[312..joins],
     )?;
     if authorization.project != intent.project()
         || authorization.publisher_generation != u64::from_be_bytes(take(body, 208)?)
         || authorization.publisher_head_digest.as_bytes() != &body[216..248]
         || authorization.publisher_revision_digest.as_bytes() != &body[248..280]
-        || authorization.limits != limits(body)?
+        || authorization.limits != limits(body, joins)?
+        || authorization.resource_envelope.is_some() != resource
     {
         return Err(SourceGenesisErrorV1::NonCanonical);
     }
     Ok(())
 }
 
-fn limits(body: &[u8]) -> Result<TreeLimitsV1, SourceGenesisErrorV1> {
+fn limits(body: &[u8], joins: usize) -> Result<TreeLimitsV1, SourceGenesisErrorV1> {
     let mut values = [0_usize; 7];
     for (index, value) in values.iter_mut().enumerate() {
-        *value = usize::try_from(u32::from_be_bytes(take(body, 648 + index * 4)?))
+        *value = usize::try_from(u32::from_be_bytes(take(body, joins + 112 + index * 4)?))
             .map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
     }
     TreeLimitsV1::new(values[0], values[1], values[2], values[3], values[4], values[5], values[6])
@@ -290,7 +348,7 @@ pub(crate) mod tests {
 
         assert!(packet.verify_signature(&key.verifying_key()).is_ok());
         assert!(packet.verify_signature(&SigningKey::from_bytes(&[24; 32]).verifying_key()).is_err());
-        let mut wrong = *packet.as_bytes();
+        let mut wrong = packet.as_bytes().to_vec();
         wrong[BODY_BYTES..].copy_from_slice(&key.sign(packet.body()).to_bytes());
         let wrong = SourceSuccessorApprovalDataV2::from_record_bytes(&wrong).unwrap();
         assert!(wrong.verify_signature(&key.verifying_key()).is_err());
@@ -300,27 +358,27 @@ pub(crate) mod tests {
     fn approval_rejects_version_generation_shape_expiry_and_embedded_crosslinks() {
         let (packet, _) = approval_fixture();
         for offset in [0, 8, 10, 632, 640, 676, 752, 764] {
-            let mut bytes = *packet.as_bytes();
+            let mut bytes = packet.as_bytes().to_vec();
             bytes[offset] ^= 1;
             assert!(SourceSuccessorApprovalDataV2::from_record_bytes(&bytes).is_err(), "offset {offset}");
         }
         for offset in [16, 24, 32, 112, 144, 176, 208, 216, 248, 280, 536, 568, 600, 680, 712, 728, 736] {
-            let mut bytes = *packet.as_bytes();
+            let mut bytes = packet.as_bytes().to_vec();
             let width = if [16, 24, 208, 728, 736].contains(&offset) { 8 } else if offset == 712 { 16 } else { 32 };
             bytes[offset..offset + width].fill(0);
             assert!(SourceSuccessorApprovalDataV2::from_record_bytes(&bytes).is_err(), "offset {offset}");
         }
-        let mut mismatch = *packet.as_bytes();
+        let mut mismatch = packet.as_bytes().to_vec();
         mismatch[216] ^= 1;
         assert!(SourceSuccessorApprovalDataV2::from_record_bytes(&mismatch).is_err());
-        let mut expiry = *packet.as_bytes();
+        let mut expiry = packet.as_bytes().to_vec();
         expiry[744..752].copy_from_slice(&1_301_u64.to_be_bytes());
         assert!(SourceSuccessorApprovalDataV2::from_record_bytes(&expiry).is_err());
-        let mut limits = *packet.as_bytes();
+        let mut limits = packet.as_bytes().to_vec();
         limits[648..652].copy_from_slice(&u32::MAX.to_be_bytes());
         assert!(SourceSuccessorApprovalDataV2::from_record_bytes(&limits).is_err());
         assert!(SourceSuccessorApprovalDataV2::from_record_bytes(&packet.as_bytes()[..895]).is_err());
-        let trailing = [packet.as_bytes().as_slice(), &[0]].concat();
+        let trailing = [packet.as_bytes(), &[0]].concat();
         assert!(SourceSuccessorApprovalDataV2::from_record_bytes(&trailing).is_err());
     }
 }

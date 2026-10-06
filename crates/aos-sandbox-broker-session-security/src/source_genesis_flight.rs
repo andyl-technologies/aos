@@ -227,6 +227,32 @@ impl RootFirstSourceSuccessorIoV2 {
             // Only a checked successful fragment or recognized nonconsuming
             // interrupt may release its count. A fatal actual Result remains.
             self.native = None;
+            if !project_genesis && received == self.incoming.len()
+                && self.incoming.len() == 32 + recipe.payload_bytes()
+                && matches!(self.incoming.get(8..10), Some([0, 4] | [0, 5]))
+            {
+                let (phase, mixed) = match recipe {
+                    RootFrameRecipeV3::FirstSuccessor(phase) => (phase, false),
+                    RootFrameRecipeV3::ProjectSuccessor(phase) => (phase, true),
+                    _ => return Err(()),
+                };
+                // Retain the original fixed legacy receive engine. Only an
+                // explicit resource header sizes an additional bounded body;
+                // complete signed owner joins follow the complete frame.
+                let width = aos_sandbox::policy_compiler::root_resource_successor_payload_bytes_v4(
+                    &self.incoming[..32], phase, nonce, mixed,
+                );
+                let payload_bytes = width.as_ref().ok().copied();
+                self.decoded = Some(width.map(|_| ()));
+                if self.decoded.as_ref().is_some_and(Result::is_err) {
+                    if recipe.selected() { self.selected_failure.get_or_insert(SelectedRootIoFailureV3::Decode); }
+                    self.recipe_post(stream, bookend, recipe)?;
+                    return Err(());
+                }
+                let payload_bytes = payload_bytes.ok_or(())?;
+                self.incoming.resize(32 + payload_bytes, 0);
+                self.decoded = None;
+            }
             if project_genesis && self.incoming.len() == 32 && received == 32 {
                 let RootFrameRecipeV3::ProjectGenesis(phase) = recipe else { return Err(()); };
                 let width = aos_sandbox::policy_compiler::root_source_project_genesis_payload_bytes_v3(
@@ -387,7 +413,7 @@ pub struct RootFirstSourceSuccessorAttemptV2<'stream, 'startup> {
     floor: Option<Result<RootFirstSourceSuccessorFloorV2, ()>>,
     prepare: RootFirstSuccessorMutationResultsV2,
     anchor: RootFirstSuccessorMutationResultsV2,
-    source: [Option<Result<[u8; SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2], io::Error>>; 3],
+    source: [Option<Result<SourceSuccessorObservationPacketV4, io::Error>>; 3],
     hello_io: RootFirstSourceSuccessorIoV2,
     prepare_io: RootFirstSourceSuccessorIoV2,
     anchor_io: RootFirstSourceSuccessorIoV2,
@@ -556,14 +582,31 @@ impl CurrentSuccessorOwnerV3<'_> {
     }
 }
 
+enum SourceSuccessorObservationPacketV4 {
+    Legacy([u8; SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2]),
+    Resource(Vec<u8>),
+}
+
+impl SourceSuccessorObservationPacketV4 {
+    fn bytes(&self) -> &[u8] {
+        match self { Self::Legacy(bytes) => bytes, Self::Resource(bytes) => bytes }
+    }
+}
+
 fn request_successor_source_with_recipe_v3(
     recipe: RootSuccessorRecipeV3, nonce: [u8; 16], context: &RootFirstSourceSuccessorIntentV2,
     signer: &aos_sandbox::policy_compiler::PinnedSourceHoldReadbackSignerV1,
     signer_uid: u32, socket_gid: u32,
-) -> io::Result<[u8; SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2]> {
+) -> io::Result<SourceSuccessorObservationPacketV4> {
+    if context.as_bytes().len() == 1424 {
+        return crate::source_signer_exchange::request_root_source_resource_successor_readback_v4(
+            nonce, context, signer, signer_uid, socket_gid,
+            matches!(recipe, RootSuccessorRecipeV3::MixedV3),
+        ).map(SourceSuccessorObservationPacketV4::Resource);
+    }
     match recipe {
-        RootSuccessorRecipeV3::StrictV2 => request_root_source_first_successor_readback_v2(nonce, context, signer, signer_uid, socket_gid),
-        RootSuccessorRecipeV3::MixedV3 => crate::source_signer_exchange::request_root_source_project_continuation_readback_v3(nonce, context, signer, signer_uid, socket_gid),
+        RootSuccessorRecipeV3::StrictV2 => request_root_source_first_successor_readback_v2(nonce, context, signer, signer_uid, socket_gid).map(SourceSuccessorObservationPacketV4::Legacy),
+        RootSuccessorRecipeV3::MixedV3 => crate::source_signer_exchange::request_root_source_project_continuation_readback_v3(nonce, context, signer, signer_uid, socket_gid).map(SourceSuccessorObservationPacketV4::Legacy),
     }
 }
 
@@ -639,12 +682,15 @@ fn serve_first_successor(attempt: &mut RootFirstSourceSuccessorAttemptV2<'_, '_>
     source[0] = Some(request_successor_source_with_recipe_v3(*recipe, nonce, original, owner.source_readback_pin(), *source_signer_uid, *controller_gid));
     latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Source(0), matches!(source[0], Some(Err(_))));
     let source_post = successor_bookend_v3(*recipe, &held, stream, posts, clock_posts, selected_first);
-    let source_before = source[0].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
+    let source_before = source[0].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?.bytes();
     source_post.map_err(|_| SourceGenesisErrorV1::Stale)?;
     if matches!(route, RootFirstSourceSuccessorRouteV2::Historical) {
-        posts.push(match recipe {
-            RootSuccessorRecipeV3::StrictV2 => aos_sandbox::policy_compiler::verify_source_first_successor_readback_v2(source_before, owner.source_readback_pin(), nonce, original).map(|observed| observed.phase()),
-            RootSuccessorRecipeV3::MixedV3 => aos_sandbox::policy_compiler::verify_source_project_continuation_readback_v3(source_before, owner.source_readback_pin(), nonce, original).map(|observed| observed.phase()),
+        let resource = original.as_bytes().len() == 1424;
+        posts.push(match (*recipe, resource) {
+            (RootSuccessorRecipeV3::StrictV2, false) => aos_sandbox::policy_compiler::verify_source_first_successor_readback_v2(source_before, owner.source_readback_pin(), nonce, original).map(|observed| observed.phase()),
+            (RootSuccessorRecipeV3::MixedV3, false) => aos_sandbox::policy_compiler::verify_source_project_continuation_readback_v3(source_before, owner.source_readback_pin(), nonce, original).map(|observed| observed.phase()),
+            (RootSuccessorRecipeV3::StrictV2, true) => aos_sandbox::policy_compiler::verify_source_resource_first_successor_readback_v4(source_before, owner.source_readback_pin(), nonce, original).map(|observed| observed.phase()),
+            (RootSuccessorRecipeV3::MixedV3, true) => aos_sandbox::policy_compiler::verify_source_resource_project_continuation_readback_v5(source_before, owner.source_readback_pin(), nonce, original).map(|observed| observed.phase()),
         }.and_then(|phase| if phase == aos_sandbox::policy_compiler::SourceFirstSuccessorReadbackPhaseV2::Before { Err(SourceGenesisErrorV1::AdmissionClosed) } else { Ok(()) }));
         latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Owner(posts.len() - 1), posts.last().is_some_and(Result::is_err));
         successor_bookend_v3(*recipe, &held, stream, posts, clock_posts, selected_first).map_err(|_| SourceGenesisErrorV1::Stale)?;
@@ -667,7 +713,7 @@ fn serve_first_successor(attempt: &mut RootFirstSourceSuccessorAttemptV2<'_, '_>
     source[1] = Some(request_successor_source_with_recipe_v3(*recipe, nonce, original, owner.source_readback_pin(), *source_signer_uid, *controller_gid));
     latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Source(1), matches!(source[1], Some(Err(_))));
     let source_post = successor_bookend_v3(*recipe, &held, stream, posts, clock_posts, selected_first);
-    let source_after = source[1].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
+    let source_after = source[1].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?.bytes();
     source_post.map_err(|_| SourceGenesisErrorV1::Stale)?;
     *floor = Some(match recipe {
         RootSuccessorRecipeV3::StrictV2 => owner.anchor_first_successor_v2(original, &anchor_io.incoming[32..], source_after, &before.clock, &before.deadline, anchor),
@@ -687,7 +733,7 @@ fn serve_first_successor(attempt: &mut RootFirstSourceSuccessorAttemptV2<'_, '_>
     source[2] = Some(request_successor_source_with_recipe_v3(*recipe, nonce, original, owner.source_readback_pin(), *source_signer_uid, *controller_gid));
     latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Source(2), matches!(source[2], Some(Err(_))));
     let source_post = successor_bookend_v3(*recipe, &held, stream, posts, clock_posts, selected_first);
-    let acknowledged = source[2].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
+    let acknowledged = source[2].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?.bytes();
     source_post.map_err(|_| SourceGenesisErrorV1::Stale)?;
 
     // This short actual current-floor Result cannot be stored inside its own

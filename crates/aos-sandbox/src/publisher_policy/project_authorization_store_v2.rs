@@ -113,7 +113,7 @@ pub(crate) struct SourceSuccessorAuthorizationDataV2 {
     pub(crate) publisher_revision: ObjectDigest,
     pub(crate) authorization_head: ObjectDigest,
     pub(crate) limits: TreeLimitsV1,
-    pub(crate) packet: [u8; PACKET_BYTES],
+    pub(crate) packet: Vec<u8>,
 }
 
 /// Describes only the durability result, never Source or Create authority.
@@ -378,9 +378,9 @@ impl PublisherPolicyStore<'_> {
             publisher_revision: verified.publisher_revision_digest(),
             authorization_head,
             limits: verified.limits(),
-            // The unversioned successor recipe retains precisely PSC02.
-            // PSC03 must never be shortened into this older signed body.
-            packet: row.packet.try_into().map_err(|_| ProjectAuthorizationSourceErrorV2::NonCanonical)?,
+            // The same authenticated current kernel selected this whole
+            // canonical packet. A successor must retain all signed dimensions.
+            packet: row.packet,
         })
     }
 

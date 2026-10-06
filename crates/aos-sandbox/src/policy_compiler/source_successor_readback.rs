@@ -8,7 +8,11 @@
 //! current-generation8 | Source-purpose-signature64
 //! ```
 //!
-//! The exact 2784 bytes authenticate comparison DATA only. The fresh challenge
+//! Resource purposes AOSSSO04/05 retain approval1072 and independently decoded
+//! historical genesis672/848, yielding exact packets2960/3136. The legacy
+//! purposes retain their exact 2784 bytes and distinct signature domains.
+//!
+//! These bytes authenticate comparison DATA only. The fresh challenge
 //! does not replace the archived Root nonce/deadline or mint Root authority.
 
 use aos_sandbox_core::ObjectDigest;
@@ -29,6 +33,7 @@ use super::source_signer_readback::SourceSignerReadbackErrorV1;
 
 /// Bounds the complete Source-purpose observation including its signature.
 pub const SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2: usize = 2784;
+#[cfg(test)]
 const BODY_BYTES: usize = SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2 - 64;
 const SIGNATURE_DOMAIN: &[u8] = b"aos.sandbox.source-first-successor.source-observation.signature.v2\0";
 
@@ -36,10 +41,21 @@ const SIGNATURE_DOMAIN: &[u8] = b"aos.sandbox.source-first-successor.source-obse
 pub const SOURCE_PROJECT_CONTINUATION_READBACK_BYTES_V3: usize = 2784;
 const MIXED_SIGNATURE_DOMAIN: &[u8] = b"aos.sandbox.source-first-successor.source-observation.signature.v3\0";
 
+/// Bounds a full-resource observation retaining a historical legacy genesis.
+pub const SOURCE_RESOURCE_SUCCESSOR_LEGACY_GENESIS_BYTES_V4: usize = 2960;
+
+/// Bounds a full-resource observation retaining a full-resource genesis.
+pub const SOURCE_RESOURCE_SUCCESSOR_READBACK_BYTES_V4: usize = 3136;
+
+const RESOURCE_SIGNATURE_DOMAIN: &[u8] = b"aos.sandbox.source-first-successor.source-observation.signature.v4\0";
+const RESOURCE_MIXED_SIGNATURE_DOMAIN: &[u8] = b"aos.sandbox.source-first-successor.source-observation.signature.v5\0";
+
 #[derive(Clone, Copy)]
 enum SourceReadbackRecipe {
     SingleProjectV2,
     MixedProjectsV3,
+    ResourceSingleProjectV4,
+    ResourceMixedProjectsV5,
 }
 
 impl SourceReadbackRecipe {
@@ -47,6 +63,8 @@ impl SourceReadbackRecipe {
         match self {
             Self::SingleProjectV2 => b"AOSSSO02",
             Self::MixedProjectsV3 => b"AOSSSO03",
+            Self::ResourceSingleProjectV4 => b"AOSSSO04",
+            Self::ResourceMixedProjectsV5 => b"AOSSSO05",
         }
     }
 
@@ -54,6 +72,8 @@ impl SourceReadbackRecipe {
         match self {
             Self::SingleProjectV2 => 2,
             Self::MixedProjectsV3 => 3,
+            Self::ResourceSingleProjectV4 => 4,
+            Self::ResourceMixedProjectsV5 => 5,
         }
     }
 
@@ -61,7 +81,17 @@ impl SourceReadbackRecipe {
         match self {
             Self::SingleProjectV2 => SIGNATURE_DOMAIN,
             Self::MixedProjectsV3 => MIXED_SIGNATURE_DOMAIN,
+            Self::ResourceSingleProjectV4 => RESOURCE_SIGNATURE_DOMAIN,
+            Self::ResourceMixedProjectsV5 => RESOURCE_MIXED_SIGNATURE_DOMAIN,
         }
+    }
+
+    const fn is_resource(self) -> bool {
+        matches!(self, Self::ResourceSingleProjectV4 | Self::ResourceMixedProjectsV5)
+    }
+
+    const fn is_single_project(self) -> bool {
+        matches!(self, Self::SingleProjectV2 | Self::ResourceSingleProjectV4)
     }
 }
 
@@ -79,7 +109,7 @@ pub enum SourceFirstSuccessorReadbackPhaseV2 {
 
 /// Retains authenticated Source observation DATA, not Root or writer custody.
 pub struct VerifiedSourceFirstSuccessorReadbackV2 {
-    bytes: [u8; SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2],
+    bytes: Vec<u8>,
     phase: SourceFirstSuccessorReadbackPhaseV2,
     genesis: SourceTreeGenesisReceiptV1,
     genesis_ack_digest: ObjectDigest,
@@ -112,7 +142,8 @@ impl VerifiedSourceFirstSuccessorReadbackV2 {
 
     /// Borrows the complete original genesis ACK bytes as nonauthorizing DATA.
     pub fn genesis_ack(&self) -> &[u8] {
-        &self.bytes[1632..1824]
+        let offset = self.tail_offset();
+        &self.bytes[offset..offset + 192]
     }
 
     /// Returns the actual original genesis ACK commitment DATA.
@@ -137,38 +168,43 @@ impl VerifiedSourceFirstSuccessorReadbackV2 {
 
     /// Returns the original native watermark as diagnostic DATA.
     pub fn sequence(&self) -> u64 {
-        u64_at(&self.bytes, 2600)
+        u64_at(&self.bytes, self.tail_offset() + 968)
     }
 
     /// Returns the independently pinned Source-purpose signer generation.
     pub fn signer_generation(&self) -> u64 {
-        u64_at(&self.bytes, 2608)
+        u64_at(&self.bytes, self.tail_offset() + 976)
     }
 
     /// Returns the authenticated current Tree envelope commitment DATA.
     pub fn current_tree_head(&self) -> ObjectDigest {
-        digest_at(&self.bytes, 2616)
+        digest_at(&self.bytes, self.tail_offset() + 984)
     }
 
     /// Returns the authenticated current lineage envelope commitment DATA.
     pub fn current_lineage_head(&self) -> ObjectDigest {
-        digest_at(&self.bytes, 2648)
+        digest_at(&self.bytes, self.tail_offset() + 1016)
     }
 
     /// Returns the authenticated canonical current Tree body commitment DATA.
     pub fn current_tree_commit(&self) -> ObjectDigest {
-        digest_at(&self.bytes, 2680)
+        digest_at(&self.bytes, self.tail_offset() + 1048)
     }
 
     /// Returns the actual generation, fixed at one or two for this purpose.
     pub fn current_generation(&self) -> u64 {
-        u64_at(&self.bytes, 2712)
+        u64_at(&self.bytes, self.tail_offset() + 1080)
+    }
+
+    fn tail_offset(&self) -> usize {
+        self.bytes.len() - 1152
     }
 }
 
 /// Retains explicit mixed-family Source DATA without a strict-v2 conversion.
 ///
-/// The private storage shares only the fixed codec. This type cannot be passed
+/// The private storage shares only the bounded versioned codec. This type
+/// cannot be passed
 /// to a strict-v2 Root mutation or Controller authority verifier.
 pub struct VerifiedSourceProjectContinuationReadbackV3 {
     data: VerifiedSourceFirstSuccessorReadbackV2,
@@ -231,14 +267,7 @@ pub fn verify_source_first_successor_readback_v2(
     packet: &[u8], signer: &PinnedSourceHoldReadbackSignerV1,
     fresh_nonce: [u8; 16], context: &RootFirstSourceSuccessorIntentV2,
 ) -> Result<VerifiedSourceFirstSuccessorReadbackV2, SourceGenesisErrorV1> {
-    let verified = decode(packet, fresh_nonce, context)?;
-    if verified.signer_generation() != signer.generation() {
-        return Err(SourceGenesisErrorV1::Conflict);
-    }
-    signer.verifying_key().verify_strict(&signature_message(&packet[..BODY_BYTES]),
-        &Signature::from_bytes(&array_at(packet, BODY_BYTES)))
-        .map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
-    Ok(verified)
+    verify_with_recipe(packet, signer, fresh_nonce, context, SourceReadbackRecipe::SingleProjectV2)
 }
 
 /// Authenticates only an explicitly framed mixed-project Source observation.
@@ -250,15 +279,50 @@ pub fn verify_source_project_continuation_readback_v3(
     packet: &[u8], signer: &PinnedSourceHoldReadbackSignerV1,
     fresh_nonce: [u8; 16], context: &RootFirstSourceSuccessorIntentV2,
 ) -> Result<VerifiedSourceProjectContinuationReadbackV3, SourceGenesisErrorV1> {
-    let data = decode_with_recipe(packet, fresh_nonce, context, SourceReadbackRecipe::MixedProjectsV3)?;
+    let data = verify_with_recipe(packet, signer, fresh_nonce, context, SourceReadbackRecipe::MixedProjectsV3)?;
+    Ok(VerifiedSourceProjectContinuationReadbackV3 { data })
+}
+
+/// Authenticates a full-resource single-project Source observation.
+///
+/// # Errors
+/// Rejects legacy framing, truncated authorization, malformed historical
+/// genesis joins, changed challenge/context or an invalid pinned signature.
+pub fn verify_source_resource_first_successor_readback_v4(
+    packet: &[u8], signer: &PinnedSourceHoldReadbackSignerV1,
+    fresh_nonce: [u8; 16], context: &RootFirstSourceSuccessorIntentV2,
+) -> Result<VerifiedSourceFirstSuccessorReadbackV2, SourceGenesisErrorV1> {
+    verify_with_recipe(packet, signer, fresh_nonce, context, SourceReadbackRecipe::ResourceSingleProjectV4)
+}
+
+/// Authenticates a full-resource mixed-project Source observation.
+///
+/// # Errors
+/// Rejects legacy or single-project framing, changed challenge/context,
+/// malformed full-family joins or an invalid pinned signature.
+pub fn verify_source_resource_project_continuation_readback_v5(
+    packet: &[u8], signer: &PinnedSourceHoldReadbackSignerV1,
+    fresh_nonce: [u8; 16], context: &RootFirstSourceSuccessorIntentV2,
+) -> Result<VerifiedSourceProjectContinuationReadbackV3, SourceGenesisErrorV1> {
+    let data = verify_with_recipe(packet, signer, fresh_nonce, context, SourceReadbackRecipe::ResourceMixedProjectsV5)?;
+    Ok(VerifiedSourceProjectContinuationReadbackV3 { data })
+}
+
+fn verify_with_recipe(
+    packet: &[u8], signer: &PinnedSourceHoldReadbackSignerV1,
+    fresh_nonce: [u8; 16], context: &RootFirstSourceSuccessorIntentV2,
+    recipe: SourceReadbackRecipe,
+) -> Result<VerifiedSourceFirstSuccessorReadbackV2, SourceGenesisErrorV1> {
+    let data = decode_with_recipe(packet, fresh_nonce, context, recipe)?;
     if data.signer_generation() != signer.generation() {
         return Err(SourceGenesisErrorV1::Conflict);
     }
+    let body_bytes = packet.len() - 64;
     signer.verifying_key().verify_strict(
-        &signature_message_with_recipe(&packet[..BODY_BYTES], SourceReadbackRecipe::MixedProjectsV3),
-        &Signature::from_bytes(&array_at(packet, BODY_BYTES)),
+        &signature_message_with_recipe(&packet[..body_bytes], recipe),
+        &Signature::from_bytes(&array_at(packet, body_bytes)),
     ).map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
-    Ok(VerifiedSourceProjectContinuationReadbackV3 { data })
+    Ok(data)
 }
 
 /// Signs only actual replay from the existing fixed read-only Source view.
@@ -268,10 +332,13 @@ pub(super) fn sign_source_first_successor_from_view_v2(
     context: &RootFirstSourceSuccessorIntentV2, signer_generation: u64,
     signing_key: &SigningKey,
 ) -> Result<[u8; SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2], SourceSignerReadbackErrorV1> {
+    if context.approval_packet().has_resource_authorization() {
+        return Err(SourceGenesisErrorV1::NonCanonical.into());
+    }
     sign_source_successor_from_view(
         readback, fresh_nonce, context, signer_generation, signing_key,
         SourceReadbackRecipe::SingleProjectV2,
-    )
+    )?.try_into().map_err(|_| SourceGenesisErrorV1::NonCanonical.into())
 }
 
 #[cfg(target_os = "linux")]
@@ -280,10 +347,24 @@ pub(super) fn sign_source_project_continuation_from_view_v3(
     context: &RootFirstSourceSuccessorIntentV2, signer_generation: u64,
     signing_key: &SigningKey,
 ) -> Result<[u8; SOURCE_PROJECT_CONTINUATION_READBACK_BYTES_V3], SourceSignerReadbackErrorV1> {
+    if context.approval_packet().has_resource_authorization() {
+        return Err(SourceGenesisErrorV1::NonCanonical.into());
+    }
     sign_source_successor_from_view(
         readback, fresh_nonce, context, signer_generation, signing_key,
         SourceReadbackRecipe::MixedProjectsV3,
-    )
+    )?.try_into().map_err(|_| SourceGenesisErrorV1::NonCanonical.into())
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn sign_source_resource_successor_from_view(
+    readback: &mut ReadOnlyProtectedJournal, fresh_nonce: [u8; 16],
+    context: &RootFirstSourceSuccessorIntentV2, signer_generation: u64,
+    signing_key: &SigningKey, mixed: bool,
+) -> Result<Vec<u8>, SourceSignerReadbackErrorV1> {
+    let recipe = if mixed { SourceReadbackRecipe::ResourceMixedProjectsV5 }
+        else { SourceReadbackRecipe::ResourceSingleProjectV4 };
+    sign_source_successor_from_view(readback, fresh_nonce, context, signer_generation, signing_key, recipe)
 }
 
 #[cfg(target_os = "linux")]
@@ -291,16 +372,19 @@ fn sign_source_successor_from_view(
     readback: &mut ReadOnlyProtectedJournal, fresh_nonce: [u8; 16],
     context: &RootFirstSourceSuccessorIntentV2, signer_generation: u64,
     signing_key: &SigningKey, recipe: SourceReadbackRecipe,
-) -> Result<[u8; SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2], SourceSignerReadbackErrorV1> {
-    if fresh_nonce == [0; 16] || signer_generation == 0 {
+) -> Result<Vec<u8>, SourceSignerReadbackErrorV1> {
+    if fresh_nonce == [0; 16] || signer_generation == 0
+        || recipe.is_resource() != context.approval_packet().has_resource_authorization()
+    {
         return Err(SourceGenesisErrorV1::NonCanonical.into());
     }
     let names = readback.physical_names_v1();
     let journal = readback.journal_mut();
     let sequence = journal.snapshot_sequence();
-    let successor = match recipe {
-        SourceReadbackRecipe::SingleProjectV2 => journal.source_first_successor_rows_v2()?,
-        SourceReadbackRecipe::MixedProjectsV3 => journal.source_project_continuation_rows_v3(Some(context.project()))?,
+    let successor = if recipe.is_single_project() {
+        journal.source_first_successor_rows_v2()?
+    } else {
+        journal.source_project_continuation_rows_v3(Some(context.project()))?
     };
     let genesis = journal.source_tree_genesis_rows_v1()?;
     let (tree_head, lineage_head, tree_commit, generation) =
@@ -309,7 +393,7 @@ fn sign_source_successor_from_view(
     let original = genesis.receipts.get(&context.project()).ok_or(SourceGenesisErrorV1::Conflict)?;
     let original_ack = genesis.acks.get(&context.project()).ok_or(SourceGenesisErrorV1::Conflict)?;
     if genesis.pending.is_some()
-        || (matches!(recipe, SourceReadbackRecipe::SingleProjectV2)
+        || (recipe.is_single_project()
             && successor.receipts.keys().any(|project| *project != context.project()))
     {
         return Err(SourceGenesisErrorV1::Conflict.into());
@@ -318,7 +402,7 @@ fn sign_source_successor_from_view(
     let ack = successor.acks.get(&context.project());
     let phase = match (receipt, ack) {
         (None, None) => {
-            if matches!(recipe, SourceReadbackRecipe::SingleProjectV2) {
+            if recipe.is_single_project() {
                 super::super::hierarchy::source_genesis::validate_actual_rows(journal)?;
             }
             SourceFirstSuccessorReadbackPhaseV2::Before
@@ -331,55 +415,69 @@ fn sign_source_successor_from_view(
         return Err(SourceGenesisErrorV1::Stale.into());
     }
 
-    let mut packet = [0; SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2];
+    let genesis_offset = 64 + context.approval_packet().as_bytes().len();
+    let tail = genesis_offset + original.as_bytes().len();
+    let packet_bytes = tail + 1152;
+    if (!recipe.is_resource() && packet_bytes != SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2)
+        || (recipe.is_resource() && !matches!(packet_bytes,
+            SOURCE_RESOURCE_SUCCESSOR_LEGACY_GENESIS_BYTES_V4 | SOURCE_RESOURCE_SUCCESSOR_READBACK_BYTES_V4))
+    {
+        return Err(SourceGenesisErrorV1::NonCanonical.into());
+    }
+    let mut packet = vec![0; packet_bytes];
     packet[..8].copy_from_slice(recipe.magic());
     packet[8..10].copy_from_slice(&recipe.version().to_be_bytes());
     packet[10] = phase as u8;
     packet[16..32].copy_from_slice(&fresh_nonce);
     packet[32..64].copy_from_slice(context.digest().as_bytes());
-    packet[64..960].copy_from_slice(context.approval_packet().as_bytes());
-    packet[960..1632].copy_from_slice(&original.encode());
-    packet[1632..1824].copy_from_slice(&original_ack.encode());
+    packet[64..genesis_offset].copy_from_slice(context.approval_packet().as_bytes());
+    packet[genesis_offset..tail].copy_from_slice(original.as_bytes());
+    packet[tail..tail + 192].copy_from_slice(&original_ack.encode());
     if let Some(receipt) = receipt {
-        packet[1824..2360].copy_from_slice(receipt.as_bytes());
+        packet[tail + 192..tail + 728].copy_from_slice(receipt.as_bytes());
     }
     if let Some(ack) = ack {
-        packet[2360..2552].copy_from_slice(ack.as_bytes());
+        packet[tail + 728..tail + 920].copy_from_slice(ack.as_bytes());
     }
-    packet[2552..2600].copy_from_slice(&names.to_bytes());
-    packet[2600..2608].copy_from_slice(&sequence.to_be_bytes());
-    packet[2608..2616].copy_from_slice(&signer_generation.to_be_bytes());
-    packet[2616..2648].copy_from_slice(tree_head.as_bytes());
-    packet[2648..2680].copy_from_slice(lineage_head.as_bytes());
-    packet[2680..2712].copy_from_slice(tree_commit.as_bytes());
-    packet[2712..2720].copy_from_slice(&generation.to_be_bytes());
+    packet[tail + 920..tail + 968].copy_from_slice(&names.to_bytes());
+    packet[tail + 968..tail + 976].copy_from_slice(&sequence.to_be_bytes());
+    packet[tail + 976..tail + 984].copy_from_slice(&signer_generation.to_be_bytes());
+    packet[tail + 984..tail + 1016].copy_from_slice(tree_head.as_bytes());
+    packet[tail + 1016..tail + 1048].copy_from_slice(lineage_head.as_bytes());
+    packet[tail + 1048..tail + 1080].copy_from_slice(tree_commit.as_bytes());
+    packet[tail + 1080..tail + 1088].copy_from_slice(&generation.to_be_bytes());
     // Pure DATA shape/bindings precede real signing. Only the public verifier
     // authenticates the complete signature against the independent pinned key.
     decode_with_recipe(&packet, fresh_nonce, context, recipe)?;
-    let signature = signing_key.sign(&signature_message_with_recipe(&packet[..BODY_BYTES], recipe)).to_bytes();
-    packet[BODY_BYTES..].copy_from_slice(&signature);
+    let signature = signing_key.sign(&signature_message_with_recipe(&packet[..tail + 1088], recipe)).to_bytes();
+    packet[tail + 1088..].copy_from_slice(&signature);
     if journal.snapshot_sequence() != sequence {
         return Err(SourceGenesisErrorV1::Stale.into());
     }
     Ok(packet)
 }
 
-fn decode(packet: &[u8], fresh_nonce: [u8; 16], context: &RootFirstSourceSuccessorIntentV2)
-    -> Result<VerifiedSourceFirstSuccessorReadbackV2, SourceGenesisErrorV1>
-{
-    decode_with_recipe(packet, fresh_nonce, context, SourceReadbackRecipe::SingleProjectV2)
-}
-
 fn decode_with_recipe(
     packet: &[u8], fresh_nonce: [u8; 16], context: &RootFirstSourceSuccessorIntentV2,
     recipe: SourceReadbackRecipe,
 ) -> Result<VerifiedSourceFirstSuccessorReadbackV2, SourceGenesisErrorV1> {
-    if packet.len() != SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2
+    let permitted_length = if recipe.is_resource() {
+        matches!(packet.len(), SOURCE_RESOURCE_SUCCESSOR_LEGACY_GENESIS_BYTES_V4 | SOURCE_RESOURCE_SUCCESSOR_READBACK_BYTES_V4)
+    } else {
+        packet.len() == SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2
+    };
+    if !permitted_length
+        || recipe.is_resource() != context.approval_packet().has_resource_authorization()
         || &packet[..8] != recipe.magic() || packet[8..10] != recipe.version().to_be_bytes()
         || packet[11..16] != [0; 5] || fresh_nonce == [0; 16]
         || packet[16..32] != fresh_nonce || packet[32..64] != *context.digest().as_bytes()
-        || packet[64..960] != *context.approval_packet().as_bytes()
-        || u64_at(packet, 2600) == 0 || u64_at(packet, 2608) == 0
+    {
+        return Err(SourceGenesisErrorV1::NonCanonical);
+    }
+    let genesis_offset = 64 + context.approval_packet().as_bytes().len();
+    let tail = packet.len() - 1152;
+    if packet[64..genesis_offset] != *context.approval_packet().as_bytes()
+        || u64_at(packet, tail + 968) == 0 || u64_at(packet, tail + 976) == 0
     {
         return Err(SourceGenesisErrorV1::NonCanonical);
     }
@@ -389,33 +487,33 @@ fn decode_with_recipe(
         2 => SourceFirstSuccessorReadbackPhaseV2::Anchored,
         _ => return Err(SourceGenesisErrorV1::NonCanonical),
     };
-    let genesis = SourceTreeGenesisReceiptV1::decode(&packet[960..1632])?;
-    let genesis_ack = crate::journal::source_tree_genesis::SourceGenesisAckV1::decode(&packet[1632..1824])?;
-    let names = ProtectedJournalNamesV1::from_bytes(&packet[2552..2600])?;
+    let genesis = SourceTreeGenesisReceiptV1::decode(&packet[genesis_offset..tail])?;
+    let genesis_ack = crate::journal::source_tree_genesis::SourceGenesisAckV1::decode(&packet[tail..tail + 192])?;
+    let names = ProtectedJournalNamesV1::from_bytes(&packet[tail + 920..tail + 968])?;
     if genesis.instance() != context.instance() || genesis.project() != context.project()
         || genesis.tree_head() != context.old_tree_head() || genesis.lineage_head() != context.old_lineage_head()
         || genesis_ack.instance != context.instance() || genesis_ack.project != context.project()
         || genesis_ack.receipt != genesis.digest() || genesis_ack.root_floor != context.predecessor_floor()
-        || [2616, 2648, 2680].into_iter().any(|offset| packet[offset..offset + 32] == [0; 32])
+        || [tail + 984, tail + 1016, tail + 1048].into_iter().any(|offset| packet[offset..offset + 32] == [0; 32])
     {
         return Err(SourceGenesisErrorV1::Conflict);
     }
     let receipt = if phase == SourceFirstSuccessorReadbackPhaseV2::Before {
-        if packet[1824..2552] != [0; 728] || names != context.source_names()
-            || digest_at(packet, 2616) != context.old_tree_head()
-            || digest_at(packet, 2648) != context.old_lineage_head()
-            || packet[2680..2712] != context.approval_packet().as_bytes()[600..632]
-            || u64_at(packet, 2712) != 1
+        if packet[tail + 192..tail + 920] != [0; 728] || names != context.source_names()
+            || digest_at(packet, tail + 984) != context.old_tree_head()
+            || digest_at(packet, tail + 1016) != context.old_lineage_head()
+            || digest_at(packet, tail + 1048) != context.approval_packet().old_tree_commit()
+            || u64_at(packet, tail + 1080) != 1
         {
             return Err(SourceGenesisErrorV1::Conflict);
         }
         None
     } else {
-        let receipt = SourceFirstSuccessorReceiptV2::decode(&packet[1824..2360])?;
+        let receipt = SourceFirstSuccessorReceiptV2::decode(&packet[tail + 192..tail + 728])?;
         crate::hierarchy::require_first_successor_context_v2(&receipt, context)?;
-        if digest_at(packet, 2616) != receipt.next_tree_head()
-            || digest_at(packet, 2648) != receipt.next_lineage_head()
-            || digest_at(packet, 2680) != receipt.next_tree_commit() || u64_at(packet, 2712) != 2
+        if digest_at(packet, tail + 984) != receipt.next_tree_head()
+            || digest_at(packet, tail + 1016) != receipt.next_lineage_head()
+            || digest_at(packet, tail + 1048) != receipt.next_tree_commit() || u64_at(packet, tail + 1080) != 2
             || (phase == SourceFirstSuccessorReadbackPhaseV2::Prepared && names != receipt.source_names())
         {
             return Err(SourceGenesisErrorV1::Conflict);
@@ -424,7 +522,7 @@ fn decode_with_recipe(
     };
     let ack = if phase == SourceFirstSuccessorReadbackPhaseV2::Anchored {
         let receipt = receipt.as_ref().ok_or(SourceGenesisErrorV1::NonCanonical)?;
-        let ack = SourceFirstSuccessorAckV2::decode(&packet[2360..2552])?;
+        let ack = SourceFirstSuccessorAckV2::decode(&packet[tail + 728..tail + 920])?;
         let floor = RootFirstSourceSuccessorFloorV2::new(RootFirstSourceSuccessorFloorFieldsV2 {
             predecessor_floor: receipt.predecessor_floor(), approval: receipt.approval(),
             receipt: receipt.clone(), roles: receipt.roles(),
@@ -440,17 +538,18 @@ fn decode_with_recipe(
         }
         Some(ack)
     } else {
-        if packet[2360..2552] != [0; 192] {
+        if packet[tail + 728..tail + 920] != [0; 192] {
             return Err(SourceGenesisErrorV1::NonCanonical);
         }
         None
     };
     Ok(VerifiedSourceFirstSuccessorReadbackV2 {
-        bytes: array_at(packet, 0), phase, genesis, genesis_ack_digest: genesis_ack.digest(),
+        bytes: packet.to_vec(), phase, genesis, genesis_ack_digest: genesis_ack.digest(),
         receipt, ack, names, approval: context.approval(),
     })
 }
 
+#[cfg(test)]
 fn signature_message(body: &[u8]) -> Vec<u8> {
     signature_message_with_recipe(body, SourceReadbackRecipe::SingleProjectV2)
 }

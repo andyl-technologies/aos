@@ -2,13 +2,15 @@
 //!
 //! These fixed-width values are DATA. Decoding, constructing or hashing one
 //! supplies neither a held writer nor a current Root, Controller or Source loan.
-//! All checksums use `aos.sandbox.source-first-successor.<label>.v2\0`.
+//! Native phase checksums use `aos.sandbox.source-first-successor.<label>.v2\0`;
+//! the full-resource Root intent uses its distinct v3 checksum.
 //!
 //! ```text
 //! header16 = magic8 | version:u16be=2 | purpose:u8=1 | native-phase:u8 |
 //!            reserved4=0
 //! Begin296 / Anchored144 / Complete240: Controller immutable phase records
 //! Intent1248 / Floor688: Root admission intent and revision-two semantic floor
+//! Resource Intent1424 retains approval1072 with its distinct v3 checksum.
 //! Receipt536 / Pending256 / Ack192: Source append and exact settlement records
 //! Every record ends in checksum32; nested records retain their own checksum.
 //! ```
@@ -72,11 +74,6 @@ record!(ControllerFirstSourceSuccessorAnchoredV2, 144, b"AOSCSH02", 5,
     b"aos.sandbox.source-first-successor.controller-anchored.v2\0");
 record!(ControllerFirstSourceSuccessorCompleteV2, 240, b"AOSCSC02", 7,
     b"aos.sandbox.source-first-successor.controller-complete.v2\0");
-record!(RootFirstSourceSuccessorIntentV2, 1248, b"AOSRSI02", 2,
-    b"aos.sandbox.source-first-successor.root-intent.v2\0",
-    names: ProtectedJournalNamesV1 => |bytes: &[u8]| names_at(bytes, 968),
-    packet: SourceSuccessorApprovalDataV2 => |bytes: &[u8]|
-        SourceSuccessorApprovalDataV2::from_record_bytes(&bytes[32..928]));
 record!(SourceFirstSuccessorReceiptV2, 536, b"AOSSSR02", 3,
     b"aos.sandbox.source-first-successor.source-receipt.v2\0",
     names: ProtectedJournalNamesV1 => |bytes: &[u8]| names_at(bytes, 456));
@@ -225,49 +222,117 @@ pub(crate) struct RootFirstSourceSuccessorIntentFieldsV2 {
     pub(crate) expires_wall: u64,
 }
 
+const ROOT_INTENT_DOMAIN_V2: &[u8] = b"aos.sandbox.source-first-successor.root-intent.v2\0";
+const ROOT_INTENT_DOMAIN_V3: &[u8] = b"aos.sandbox.source-first-successor.root-intent.v3\0";
+
+/// Retains canonical original admission DATA without constructing a live loan.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RootFirstSourceSuccessorIntentV2 {
+    bytes: Vec<u8>,
+    names: ProtectedJournalNamesV1,
+    packet: SourceSuccessorApprovalDataV2,
+}
+
 impl RootFirstSourceSuccessorIntentV2 {
+    /// Decodes an exact legacy or full-resource original admission record.
+    ///
+    /// # Errors
+    /// Rejects foreign widths, purpose, checksum, approval recipe or bindings.
+    pub fn decode(bytes: &[u8]) -> Result<Self, SourceGenesisErrorV1> {
+        let resource = bytes.len() == 1424;
+        let magic: &[u8; 8] = if resource { b"AOSRSI03" } else { b"AOSRSI02" };
+        let domain = if resource { ROOT_INTENT_DOMAIN_V3 } else { ROOT_INTENT_DOMAIN_V2 };
+        if (!resource && bytes.len() != 1248) || bytes.get(..8) != Some(magic.as_slice())
+            || bytes[8..10] != (if resource { 3_u16 } else { 2 }).to_be_bytes()
+            || bytes[10..16] != [1, 2, 0, 0, 0, 0]
+            || hash(domain, &bytes[..bytes.len() - 32]).as_bytes() != &bytes[bytes.len() - 32..]
+        {
+            return Err(SourceGenesisErrorV1::NonCanonical);
+        }
+        let joins = bytes.len() - 320;
+        let packet = SourceSuccessorApprovalDataV2::from_record_bytes(&bytes[32..joins])?;
+        if packet.has_resource_authorization() != resource {
+            return Err(SourceGenesisErrorV1::NonCanonical);
+        }
+        let record = Self {
+            bytes: bytes.to_vec(), names: names_at(bytes, joins + 40)?, packet,
+        };
+        record.validate()?;
+        Ok(record)
+    }
+
+    /// Decodes canonical DATA using the same sole record decoder.
+    ///
+    /// # Errors
+    /// Returns the framing and binding failures from [`Self::decode`].
+    pub fn from_record_bytes(bytes: &[u8]) -> Result<Self, SourceGenesisErrorV1> {
+        Self::decode(bytes)
+    }
+
+    /// Borrows the complete canonical record, never current admission.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Returns the version-separated commitment of original admission DATA.
+    pub fn digest(&self) -> ObjectDigest {
+        let domain = if self.packet.has_resource_authorization() { ROOT_INTENT_DOMAIN_V3 } else { ROOT_INTENT_DOMAIN_V2 };
+        hash(domain, &self.bytes)
+    }
+
+    fn joins_offset(&self) -> usize {
+        self.bytes.len() - 320
+    }
+
     pub(crate) fn new(fields: RootFirstSourceSuccessorIntentFieldsV2)
         -> Result<Self, SourceGenesisErrorV1>
     {
-        let mut bytes = header::<1248>(b"AOSRSI02", 2);
+        let resource = fields.approval.has_resource_authorization();
+        let joins = 32 + fields.approval.as_bytes().len();
+        let mut bytes = vec![0; joins + 320];
+        bytes[..8].copy_from_slice(if resource { b"AOSRSI03" } else { b"AOSRSI02" });
+        bytes[8..10].copy_from_slice(&(if resource { 3_u16 } else { 2 }).to_be_bytes());
+        bytes[10] = 1;
+        bytes[11] = 2;
         bytes[16..32].copy_from_slice(&fields.nonce);
-        bytes[32..928].copy_from_slice(fields.approval.as_bytes());
-        bytes[928..960].copy_from_slice(fields.begin.as_bytes());
-        bytes[960..964].copy_from_slice(&fields.source_uid.to_be_bytes());
-        bytes[968..1016].copy_from_slice(&fields.source_names.to_bytes());
-        bytes[1016..1048].copy_from_slice(fields.predecessor_floor.as_bytes());
-        bytes[1048..1056].copy_from_slice(&fields.predecessor_revision.to_be_bytes());
-        bytes[1056..1088].copy_from_slice(fields.old_tree_head.as_bytes());
-        bytes[1088..1120].copy_from_slice(fields.old_lineage_head.as_bytes());
-        bytes[1120..1152].copy_from_slice(fields.next_tree_commit.as_bytes());
-        bytes[1152..1184].copy_from_slice(fields.roles.as_bytes());
-        bytes[1184..1200].copy_from_slice(&fields.boot);
-        bytes[1200..1208].copy_from_slice(&fields.boottime_deadline.to_be_bytes());
-        bytes[1208..1216].copy_from_slice(&fields.expires_wall.to_be_bytes());
-        finish(&mut bytes, b"aos.sandbox.source-first-successor.root-intent.v2\0");
+        bytes[32..joins].copy_from_slice(fields.approval.as_bytes());
+        bytes[joins..joins + 32].copy_from_slice(fields.begin.as_bytes());
+        bytes[joins + 32..joins + 36].copy_from_slice(&fields.source_uid.to_be_bytes());
+        bytes[joins + 40..joins + 88].copy_from_slice(&fields.source_names.to_bytes());
+        bytes[joins + 88..joins + 120].copy_from_slice(fields.predecessor_floor.as_bytes());
+        bytes[joins + 120..joins + 128].copy_from_slice(&fields.predecessor_revision.to_be_bytes());
+        bytes[joins + 128..joins + 160].copy_from_slice(fields.old_tree_head.as_bytes());
+        bytes[joins + 160..joins + 192].copy_from_slice(fields.old_lineage_head.as_bytes());
+        bytes[joins + 192..joins + 224].copy_from_slice(fields.next_tree_commit.as_bytes());
+        bytes[joins + 224..joins + 256].copy_from_slice(fields.roles.as_bytes());
+        bytes[joins + 256..joins + 272].copy_from_slice(&fields.boot);
+        bytes[joins + 272..joins + 280].copy_from_slice(&fields.boottime_deadline.to_be_bytes());
+        bytes[joins + 280..joins + 288].copy_from_slice(&fields.expires_wall.to_be_bytes());
+        finish(&mut bytes, if resource { ROOT_INTENT_DOMAIN_V3 } else { ROOT_INTENT_DOMAIN_V2 });
         Self::decode(&bytes)
     }
 
     fn validate(&self) -> Result<(), SourceGenesisErrorV1> {
         let approval = self.approval_packet();
         let packet = approval.as_bytes();
-        let issued_boottime = u64::from_be_bytes(array_at(packet, 728));
+        let issued_boottime = approval.issued_boottime()?;
         let validity_ns = u64::from(approval.intent()?.validity_seconds())
             .checked_mul(1_000_000_000).ok_or(SourceGenesisErrorV1::NonCanonical)?;
         let latest_deadline = issued_boottime.checked_add(validity_ns)
             .ok_or(SourceGenesisErrorV1::NonCanonical)?;
-        require_nonzero(&self.bytes, &[928, 1016, 1056, 1088, 1120, 1152])?;
+        let joins = self.joins_offset();
+        require_nonzero(&self.bytes, &[joins, joins + 88, joins + 128, joins + 160, joins + 192, joins + 224])?;
         if self.nonce() == [0; 16] || self.source_uid() == 0
-            || self.bytes[964..968] != [0; 4] || self.predecessor_revision() != 1
+            || self.bytes[joins + 36..joins + 40] != [0; 4] || self.predecessor_revision() != 1
             || self.predecessor_floor().as_bytes() != &packet[144..176]
-            || self.old_tree_head().as_bytes() != &packet[536..568]
-            || self.old_lineage_head().as_bytes() != &packet[568..600]
-            || self.next_tree_commit().as_bytes() != &packet[680..712]
+            || self.old_tree_head() != approval.old_tree_head()
+            || self.old_lineage_head() != approval.old_lineage_head()
+            || self.next_tree_commit() != approval.next_tree_commit()
             || self.roles().as_bytes() != &packet[112..144]
-            || self.boot() != array_at::<16>(packet, 712)
+            || self.boot() != approval.boot()?
             || self.boottime_deadline() <= issued_boottime
             || self.boottime_deadline() > latest_deadline
-            || self.expires_wall() != u64::from_be_bytes(array_at(packet, 744))
+            || self.expires_wall() != approval.expires_wall()?
         {
             return Err(SourceGenesisErrorV1::NonCanonical);
         }
@@ -299,11 +364,26 @@ impl RootFirstSourceSuccessorIntentV2 {
     /// Returns the immutable administrative epoch DATA.
     pub fn epoch(&self) -> u64 { u64::from_be_bytes(array_at(&self.bytes, 56)) }
 
-    digest_getters!(begin: 928, predecessor_floor: 1016, old_tree_head: 1056,
-        old_lineage_head: 1088, next_tree_commit: 1120, roles: 1152);
+    /// Returns the original native Controller Begin commitment DATA.
+    pub fn begin(&self) -> ObjectDigest { ObjectDigest::from_bytes(array_at(&self.bytes, self.joins_offset())) }
+
+    /// Returns the exact predecessor floor commitment DATA.
+    pub fn predecessor_floor(&self) -> ObjectDigest { ObjectDigest::from_bytes(array_at(&self.bytes, self.joins_offset() + 88)) }
+
+    /// Returns the approved predecessor Tree head commitment DATA.
+    pub fn old_tree_head(&self) -> ObjectDigest { ObjectDigest::from_bytes(array_at(&self.bytes, self.joins_offset() + 128)) }
+
+    /// Returns the approved predecessor lineage head commitment DATA.
+    pub fn old_lineage_head(&self) -> ObjectDigest { ObjectDigest::from_bytes(array_at(&self.bytes, self.joins_offset() + 160)) }
+
+    /// Returns the approved successor Tree body commitment DATA.
+    pub fn next_tree_commit(&self) -> ObjectDigest { ObjectDigest::from_bytes(array_at(&self.bytes, self.joins_offset() + 192)) }
+
+    /// Returns the independently retained administrative roles commitment DATA.
+    pub fn roles(&self) -> ObjectDigest { ObjectDigest::from_bytes(array_at(&self.bytes, self.joins_offset() + 224)) }
 
     /// Returns the selected Source filesystem owner DATA.
-    pub fn source_uid(&self) -> u32 { u32::from_be_bytes(array_at(&self.bytes, 960)) }
+    pub fn source_uid(&self) -> u32 { u32::from_be_bytes(array_at(&self.bytes, self.joins_offset() + 32)) }
 
     /// Returns the original physical name identities.
     pub fn source_names(&self) -> ProtectedJournalNamesV1 {
@@ -311,16 +391,16 @@ impl RootFirstSourceSuccessorIntentV2 {
     }
 
     /// Returns the exact predecessor semantic revision, fixed at one.
-    pub fn predecessor_revision(&self) -> u64 { u64::from_be_bytes(array_at(&self.bytes, 1048)) }
+    pub fn predecessor_revision(&self) -> u64 { u64::from_be_bytes(array_at(&self.bytes, self.joins_offset() + 120)) }
 
     /// Returns the original admission boot identity DATA.
-    pub fn boot(&self) -> [u8; 16] { array_at(&self.bytes, 1184) }
+    pub fn boot(&self) -> [u8; 16] { array_at(&self.bytes, self.joins_offset() + 256) }
 
     /// Returns the original nonrenewable BOOTTIME deadline DATA.
-    pub fn boottime_deadline(&self) -> u64 { u64::from_be_bytes(array_at(&self.bytes, 1200)) }
+    pub fn boottime_deadline(&self) -> u64 { u64::from_be_bytes(array_at(&self.bytes, self.joins_offset() + 272)) }
 
     /// Returns the unchanged signed wall expiry DATA.
-    pub fn expires_wall(&self) -> u64 { u64::from_be_bytes(array_at(&self.bytes, 1208)) }
+    pub fn expires_wall(&self) -> u64 { u64::from_be_bytes(array_at(&self.bytes, self.joins_offset() + 280)) }
 }
 
 pub(crate) struct SourceFirstSuccessorReceiptFieldsV2 {

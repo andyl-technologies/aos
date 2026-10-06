@@ -143,4 +143,5 @@ pub use wire::{
     RootFirstSourceSuccessorFrameKindV2, decode_root_first_source_successor_frame_v2,
     encode_root_first_source_successor_frame_v2,
     encode_root_project_source_successor_frame_v3, decode_root_project_source_successor_frame_v3,
+    root_resource_successor_payload_bytes_v4,
 };
