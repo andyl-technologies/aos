@@ -157,6 +157,177 @@ fn reply_input() -> LiveSelectableReplyShmemConsumer {
     }
 }
 
+/// Keeps mapped reply storage live while a test exercises its sole consumer.
+struct ReplyRing {
+    header: Box<RingHeader>,
+    entries: Vec<WhiteboxMarkerEntry>,
+}
+
+impl ReplyRing {
+    fn new() -> Self {
+        Self {
+            header: Box::new(RingHeader::new()),
+            entries: vec![WhiteboxMarkerEntry::default()],
+        }
+    }
+
+    fn consumer(&mut self) -> LiveSelectableReplyShmemConsumer {
+        // SAFETY: each test retains this ring until its sole consumer is
+        // dropped, without moving or resizing the mapped storage.
+        unsafe {
+            LiveSelectableReplyShmemConsumer::from_raw_parts(
+                std::ptr::from_ref(&*self.header),
+                self.entries.as_mut_ptr(),
+                self.entries.len(),
+            )
+        }
+    }
+
+    fn publish(&mut self, entry: WhiteboxMarkerEntry) -> Result<(), crucible_shmem::SpscRingError> {
+        self.header
+            .enqueue_whitebox_marker(&mut self.entries, entry)
+    }
+}
+
+#[test]
+fn empty_reply_resume_leaves_later_publication_for_exactly_one_delivery()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut ring = ReplyRing::new();
+    let mut state = live_state(&restored_plan()?, ring.consumer())?;
+    state.restore_continuation()?;
+    let mut writer = RecordingWriter::default();
+
+    assert!(state.deliver_reply(1_000_137, 2, &mut writer)?.is_none());
+    assert_eq!(writer.delivery_icount, None);
+    assert!(state.catalog().pending_request().is_some());
+    assert_eq!(state.catalog().total_completed_requests(), 1);
+
+    let reply = SelectionReply::selected(9, [0x11; 32], [0x22; 32], vec![2])?;
+    let entry = WhiteboxMarkerEntry::new(
+        1_000_087,
+        2,
+        WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY,
+        &reply.encode()?,
+    )?;
+    // A separate producer publishes only after the empty resume has returned.
+    // No host timing assumption decides which callback owns the new reply.
+    std::thread::scope(|scope| scope.spawn(|| ring.publish(entry)).join())
+        .map_err(|_| std::io::Error::other("reply producer panicked"))??;
+
+    assert_eq!(state.deliver_reply(1_000_137, 2, &mut writer)?, Some(reply));
+    assert_eq!(writer.delivery_icount, Some(1_000_137));
+    assert!(state.catalog().pending_request().is_none());
+    assert_eq!(state.catalog().total_completed_requests(), 2);
+    writer.delivery_icount = None;
+    assert!(state.deliver_reply(1_000_137, 2, &mut writer)?.is_none());
+    assert_eq!(writer.delivery_icount, None);
+    assert_eq!(ring.header.read_index(), 1);
+    Ok(())
+}
+
+#[test]
+fn available_reply_keeps_kind_and_unsolicited_errors_before_consumption()
+-> Result<(), Box<dyn std::error::Error>> {
+    for (kind, expected) in [
+        (0, "unexpected kind"),
+        (
+            WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY,
+            "without a pending request",
+        ),
+    ] {
+        let mut ring = ReplyRing::new();
+        let mut state = live_state(&cold_plan()?, ring.consumer())?;
+        ring.publish(WhiteboxMarkerEntry::new(50, 0, kind, b"bad reply")?)?;
+        let mut writer = RecordingWriter::default();
+
+        let error = state.deliver_reply(50, 0, &mut writer).err();
+        assert!(error.is_some_and(|error| error.to_string().contains(expected)));
+        assert_eq!(writer.delivery_icount, None);
+        assert_eq!(ring.header.read_index(), 0);
+        assert_eq!(state.catalog().total_completed_requests(), 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn available_reply_rereads_the_ring_after_an_advisory_observation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut ring = ReplyRing::new();
+    let mut state = live_state(&cold_plan()?, ring.consumer())?;
+    ring.publish(WhiteboxMarkerEntry::new(50, 0, 0, b"bad reply")?)?;
+    assert!(state.reply_input.has_reply()?);
+    ring.header.dequeue_whitebox_marker(&ring.entries)?;
+    let mut writer = RecordingWriter::default();
+
+    assert!(state.deliver_available_reply(50, 0, &mut writer)?.is_none());
+    assert_eq!(writer.delivery_icount, None);
+    assert_eq!(state.catalog().total_completed_requests(), 0);
+    Ok(())
+}
+
+#[test]
+fn available_reply_preserves_early_resume_and_post_dequeue_decode_errors()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut ring = ReplyRing::new();
+    let mut state = live_state(&restored_plan()?, ring.consumer())?;
+    state.restore_continuation()?;
+    ring.publish(WhiteboxMarkerEntry::new(
+        1_000_087,
+        2,
+        WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY,
+        b"bad reply",
+    )?)?;
+    let mut writer = RecordingWriter::default();
+
+    assert!(state.deliver_reply(1_000_086, 2, &mut writer).is_err());
+    assert_eq!(ring.header.read_index(), 0);
+    assert!(state.catalog().pending_request().is_some());
+
+    assert!(state.deliver_reply(1_000_137, 2, &mut writer).is_err());
+    assert_eq!(ring.header.read_index(), 1);
+    assert_eq!(writer.delivery_icount, None);
+    assert!(state.catalog().pending_request().is_some());
+    assert_eq!(state.catalog().total_completed_requests(), 1);
+    Ok(())
+}
+
+#[test]
+fn available_reply_keeps_guest_write_failure_after_consumption()
+-> Result<(), Box<dyn std::error::Error>> {
+    struct RejectingWriter;
+
+    impl WhiteboxGuestInputWriter for RejectingWriter {
+        fn write_whitebox_input(
+            &mut self,
+            _delivery_icount: u64,
+            _range: crate::GuestMemoryRange,
+            _payload: &[u8],
+        ) -> Result<(), WhiteboxGuestInputWriteError> {
+            Err(WhiteboxGuestInputWriteError::new("injected write failure"))
+        }
+    }
+
+    let mut ring = ReplyRing::new();
+    let mut state = live_state(&restored_plan()?, ring.consumer())?;
+    state.restore_continuation()?;
+    let reply = SelectionReply::selected(9, [0x11; 32], [0x22; 32], vec![2])?;
+    ring.publish(WhiteboxMarkerEntry::new(
+        1_000_087,
+        2,
+        WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY,
+        &reply.encode()?,
+    )?)?;
+
+    let error = state
+        .deliver_reply(1_000_137, 2, &mut RejectingWriter)
+        .err();
+    assert!(error.is_some_and(|error| error.to_string().contains("injected write failure")));
+    assert_eq!(ring.header.read_index(), 1);
+    assert!(state.catalog().pending_request().is_some());
+    assert_eq!(state.catalog().total_completed_requests(), 1);
+    Ok(())
+}
+
 #[test]
 fn live_catalog_retains_request_before_deferring_stop_to_exact_callback()
 -> Result<(), Box<dyn std::error::Error>> {

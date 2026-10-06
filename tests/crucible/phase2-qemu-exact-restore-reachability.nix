@@ -109,8 +109,8 @@ in
           [ "$daemon_restored_impls" = 1 ] \
             || fail "expected one production daemon launch_restored implementation, found $daemon_restored_impls"
           # Across the workspace, the remaining definitions are one API trait
-          # declaration and six implementations in closed test-only regions.
-          require_count 8 'fn launch_restored('
+          # declaration and seven implementations in closed test-only regions.
+          require_count 9 'fn launch_restored('
           require_file_count 2 \
             crates/crucible-api/src/vm_lifecycle.rs \
             'fn launch_restored('
@@ -121,11 +121,29 @@ in
             crates/crucible-api/src/vm_lifecycle/runtime/tests.rs \
             'fn launch_restored('
           require_file_count 1 \
+            crates/crucible-api/src/vm_lifecycle/runtime/tests/held_stop.rs \
+            'fn launch_restored('
+          require_file_count 1 \
             crates/crucible-api/src/vm_lifecycle.rs \
             'impl ProductionVmNodeLauncher for PackagedProductionVmNodeLauncher'
           require_file_count 1 \
             crates/crucible-api/src/vm_lifecycle/helpers.rs \
             'mod tests {'
+
+          # The held-stop mock is reachable only through the gated runtime tests.
+          require_file_count 1 \
+            crates/crucible-api/src/vm_lifecycle/runtime/tests.rs \
+            '#[path = "tests/held_stop.rs"]'
+          require_file_count 1 \
+            crates/crucible-api/src/vm_lifecycle/runtime/tests.rs \
+            'mod held_stop;'
+          require_file_count 1 \
+            crates/crucible-api/src/vm_lifecycle/runtime.rs \
+            '#[path = "runtime/tests.rs"]'
+          ${pkgs.grep}/bin/grep -F -A2 '#[cfg(test)]' \
+            crates/crucible-api/src/vm_lifecycle/runtime.rs \
+            | ${pkgs.grep}/bin/grep -Fqx 'pub(super) mod tests;' \
+            || fail "runtime launcher mocks are not gated by cfg(test)"
 
           # Exact restore cannot manufacture missing continuation state at
           # launch time. The plan carries both continuations directly, and its
@@ -175,10 +193,10 @@ in
             printf 'request_constructors=1\n'
             printf 'exact_resume_builder_calls=1\n'
             printf 'daemon_atomic_consumers=1\n'
-            printf 'launch_restored_definitions=8\n'
+            printf 'launch_restored_definitions=9\n'
             printf 'launch_restored_production_implementations=1\n'
             printf 'launch_restored_trait_declarations=1\n'
-            printf 'launch_restored_test_implementations=6\n'
+            printf 'launch_restored_test_implementations=7\n'
             printf 'exact_restore_required_continuations=host-io,node\n'
             printf 'exact_restore_checkpoint_fallbacks=0\n'
             printf 'selected_root_mints=%s\n' "$allowed_mints"

@@ -1266,14 +1266,14 @@ impl LiveVcpuTimeCallbackState {
         })
     }
 
-    fn callback_guard(&self) -> Option<LiveCallbackInFlight> {
+    fn callback_guard(&self) -> Option<LiveCallbackInFlight<'_>> {
         self.callback_guard_with_rejection(|_| {})
     }
 
     fn callback_guard_with_rejection(
         &self,
         mut rejected: impl FnMut(control_callback_witness::Rejection),
-    ) -> Option<LiveCallbackInFlight> {
+    ) -> Option<LiveCallbackInFlight<'_>> {
         let in_flight = self.quiescence.enter_with_rejection(|observation| {
             rejected(control_callback_witness::Rejection::Admission(observation));
         })?;
