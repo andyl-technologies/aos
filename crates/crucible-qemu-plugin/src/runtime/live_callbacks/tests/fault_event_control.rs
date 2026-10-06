@@ -174,7 +174,7 @@ fn bound_frontier_rejects_a_late_producer_without_capture_pause_or_ack() {
 
     assert_eq!(transports.command_ring.read_index(), 0);
     assert_eq!(slot.snapshot().control_boundary_ack, control_request);
-    assert_eq!(fingerprint_slot.snapshot(), None);
+    assert_eq!(fingerprint_slot.snapshot(), Ok(None));
     assert_eq!(TEST_REQUEST_VMSTOP_CALLS.get(), 0);
 }
 
@@ -339,7 +339,7 @@ fn post_dispatch_result_backpressure_retries_publication_without_redispatch() {
         .on_control_boundary(7)
         .unwrap_or_else(|error| panic!("backpressured dispatch should remain live: {error}"));
     assert_eq!(slot.snapshot().control_boundary_ack, control_request);
-    assert_eq!(fingerprint_slot.snapshot(), None);
+    assert_eq!(fingerprint_slot.snapshot(), Ok(None));
     assert_eq!(TEST_REQUEST_VMSTOP_CALLS.get(), 0);
     assert!(crate::fault_command::test_support::dispatch_result_is_pending());
 
@@ -410,7 +410,7 @@ fn registered_ceiling_pump_drains_results_without_continuing_pending_control() {
     assert!(!crate::fault_command::test_support::dispatch_result_is_pending());
     assert_eq!(crate::fault_command::test_support::node_dispatch_count(), 1);
     assert_eq!(slot.control_boundary_token(), control_request);
-    assert_eq!(fingerprint_slot.snapshot(), None);
+    assert_eq!(fingerprint_slot.snapshot(), Ok(None));
     assert_eq!(TEST_REQUEST_VMSTOP_CALLS.get(), 0);
     assert_eq!(state.quiescence.snapshot().in_flight, 0);
 

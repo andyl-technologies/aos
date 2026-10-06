@@ -93,14 +93,18 @@ impl QemuMappedQuantumShmemHotPath {
     /// # Errors
     ///
     /// Returns [`QemuMappedQuantumShmemHotPathError`] when the retained mapping
-    /// no longer validates or the configured VM slot has no fingerprint segment.
+    /// no longer validates, the configured VM slot has no fingerprint segment,
+    /// or its sample publication is temporarily unavailable.
     pub fn fingerprint_sample(
         &self,
     ) -> Result<Option<FingerprintSample>, QemuMappedQuantumShmemHotPathError> {
         self.region
             .fingerprint_sample(self.config.vm_slot)
-            .map(|slot| slot.snapshot())
-            .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionAccess { source })
+            .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionAccess { source })?
+            .snapshot()
+            .map_err(|source| {
+                QemuMappedQuantumShmemHotPathError::FingerprintPublicationUnavailable { source }
+            })
     }
 
     /// Returns whether the plugin published terminal `Done` for this VM slot.
@@ -1096,9 +1100,7 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
                 .current_icount)
         })?;
         let sample = QemuMappedQuantumShmemHotPath::fingerprint_sample(self)
-            .map_err(|source| {
-                QemuNodeChannelError::new("execution_fingerprint", source.to_string())
-            })?
+            .map_err(|source| source.into_channel_error("execution_fingerprint"))?
             .ok_or_else(|| {
                 QemuNodeChannelError::retryable(
                     "execution_fingerprint",
@@ -1128,7 +1130,7 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
 
     fn fingerprint_sample(&mut self) -> Result<FingerprintSample, QemuNodeChannelError> {
         QemuMappedQuantumShmemHotPath::fingerprint_sample(self)
-            .map_err(|source| QemuNodeChannelError::new("fingerprint_sample", source.to_string()))?
+            .map_err(|source| source.into_channel_error("fingerprint_sample"))?
             .ok_or_else(|| {
                 QemuNodeChannelError::retryable(
                     "fingerprint_sample",

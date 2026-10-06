@@ -69,6 +69,9 @@ pub(super) fn wait_for_fingerprint_sample(
         if slot.capture_request_generation() == acknowledged {
             return slot
                 .snapshot()
+                .unwrap_or_else(|error| {
+                    panic!("acknowledged fingerprint publication unavailable: {error}")
+                })
                 .unwrap_or_else(|| panic!("acknowledged fingerprint sample must be visible"));
         }
         std::thread::yield_now();

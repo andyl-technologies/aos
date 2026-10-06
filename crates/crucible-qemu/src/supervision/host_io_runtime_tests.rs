@@ -24,6 +24,10 @@ mod network_output;
 pub(crate) mod publication_access;
 
 #[cfg(target_os = "linux")]
+#[path = "host_io_runtime_tests/fingerprint_liveness.rs"]
+mod fingerprint_liveness;
+
+#[cfg(target_os = "linux")]
 #[path = "host_io_runtime_tests/publication_liveness.rs"]
 mod publication_liveness;
 

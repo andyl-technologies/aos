@@ -1923,6 +1923,10 @@ mod fault_event_budget;
 #[path = "node_tests/fingerprint.rs"]
 mod fingerprint;
 
+#[cfg(target_os = "linux")]
+#[path = "node_tests/fingerprint_publication.rs"]
+mod fingerprint_publication;
+
 #[cfg(unix)]
 fn held_hot_fork_ring_image() -> Result<
     (

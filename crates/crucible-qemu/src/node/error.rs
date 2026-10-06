@@ -95,6 +95,18 @@ impl QemuNodeChannelError {
         }
     }
 
+    /// Reports an unavailable fingerprint read without requesting a capture.
+    #[must_use]
+    pub(crate) fn fingerprint_publication_unavailable(operation: &'static str) -> Self {
+        Self {
+            operation,
+            message: String::from("fingerprint publication is temporarily unavailable"),
+            timeout: None,
+            retryable: true,
+            publication_unavailable: true,
+        }
+    }
+
     /// Reports whether acquisition may retry without publishing a request.
     #[must_use]
     pub const fn is_publication_unavailable(&self) -> bool {

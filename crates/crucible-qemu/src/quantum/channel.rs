@@ -283,12 +283,18 @@ impl QemuShmemHotPathChannel for QemuQuantumShmemHotPath<'_> {
 
     fn fingerprint_sample(&mut self) -> Result<FingerprintSample, QemuNodeChannelError> {
         self.record(QemuQuantumOperation::ReadNodeReport);
-        self.view.fingerprint_sample.snapshot().ok_or_else(|| {
-            QemuNodeChannelError::retryable(
-                "fingerprint_sample",
-                "the plugin has not published a black-box fingerprint sample",
-            )
-        })
+        self.view
+            .fingerprint_sample
+            .snapshot()
+            .map_err(|_source| {
+                QemuNodeChannelError::fingerprint_publication_unavailable("fingerprint_sample")
+            })?
+            .ok_or_else(|| {
+                QemuNodeChannelError::retryable(
+                    "fingerprint_sample",
+                    "the plugin has not published a black-box fingerprint sample",
+                )
+            })
     }
 }
 

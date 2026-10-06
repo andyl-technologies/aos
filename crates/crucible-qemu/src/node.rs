@@ -2138,77 +2138,42 @@ impl QemuNode {
     pub fn execution_fingerprint(&mut self) -> Result<ExecutionFingerprint, QemuNodeError> {
         let timeout = self.async_policy.advance_completion_timeout;
         let deadline = HostSupervisionDeadline::start(timeout);
-        match self.channels.shmem_hot_path.execution_fingerprint() {
-            Ok(fingerprint) => return Ok(fingerprint),
-            Err(source) if source.is_retryable() => {
-                let remaining = deadline.remaining().ok_or_else(|| {
-                    QemuNodeError::from_channel(
-                        QemuNodeChannelPlane::ShmemHotPath,
-                        QemuNodeChannelError::bounded_await_timeout(
-                            "execution_fingerprint",
-                            format!(
-                                "plugin did not publish the current black-box fingerprint within {timeout:?}: {}",
-                                source.message
-                            ),
-                            timeout,
-                        ),
-                    )
-                })?;
-                self.host_io_runtime
-                    .publish_current_execution_fingerprint(remaining)
-                    .map_err(|source| {
-                        QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(
-                            source,
-                        ))
-                    })?;
-            }
-            Err(source) => {
-                return Err(QemuNodeError::from_channel(
-                    QemuNodeChannelPlane::ShmemHotPath,
-                    source,
-                ));
-            }
-        }
+        let mut capture_requested = false;
         loop {
             match self.channels.shmem_hot_path.execution_fingerprint() {
+                // Preserve the original coherent first-attempt semantics,
+                // including a completed sample when the budget is zero.
                 Ok(fingerprint) => return Ok(fingerprint),
-                Err(source) if source.is_retryable() && deadline.has_time_remaining() => {
-                    match self.child.try_wait_natural_exit() {
-                        Ok(None) => std::thread::sleep(Duration::from_millis(1)),
-                        Ok(Some(status)) => {
-                            return Err(QemuNodeError::from_channel(
-                                QemuNodeChannelPlane::ShmemHotPath,
-                                QemuNodeChannelError::new(
-                                    "execution_fingerprint",
-                                    format!(
-                                        "QEMU exited with {status} before publishing the current black-box fingerprint"
-                                    ),
-                                ),
-                            ));
-                        }
-                        Err(error) => {
-                            return Err(QemuNodeError::from_channel(
-                                QemuNodeChannelPlane::ShmemHotPath,
-                                QemuNodeChannelError::new(
-                                    "execution_fingerprint",
-                                    format!("poll QEMU while awaiting fingerprint: {error}"),
-                                ),
-                            ));
-                        }
-                    }
-                }
                 Err(source) if source.is_retryable() => {
-                    return Err(QemuNodeError::from_channel(
-                        QemuNodeChannelPlane::ShmemHotPath,
-                        QemuNodeChannelError::bounded_await_timeout(
-                            "execution_fingerprint",
-                            format!(
-                                "plugin did not publish the current black-box fingerprint within {timeout:?}: {}",
-                                source.message
+                    // Check the actual owner even at the timeout boundary.
+                    self.require_live_fingerprint_child()?;
+                    let remaining = deadline.remaining().ok_or_else(|| {
+                        QemuNodeError::from_channel(
+                            QemuNodeChannelPlane::ShmemHotPath,
+                            QemuNodeChannelError::bounded_await_timeout(
+                                "execution_fingerprint",
+                                format!(
+                                    "plugin did not publish the current black-box fingerprint within {timeout:?}: {}",
+                                    source.message
+                                ),
+                                timeout,
                             ),
-                            timeout,
-                        ),
-                    ));
+                        )
+                    })?;
+                    if !source.is_publication_unavailable() && !capture_requested {
+                        // Only coherent absence or a stale sample authorizes
+                        // the existing capture. Busy reads have no effects.
+                        capture_requested = true;
+                        self.host_io_runtime
+                            .publish_current_execution_fingerprint(remaining)
+                            .map_err(|source| {
+                                QemuNodeError::from_async_driver(
+                                    crate::QemuAsyncDriverError::Runtime(source),
+                                )
+                            })?;
+                        continue;
+                    }
+                    std::thread::sleep(Duration::from_millis(1).min(remaining));
                 }
                 Err(source) => {
                     return Err(QemuNodeError::from_channel(
@@ -2217,6 +2182,28 @@ impl QemuNode {
                     ));
                 }
             }
+        }
+    }
+
+    fn require_live_fingerprint_child(&mut self) -> Result<(), QemuNodeError> {
+        match self.child.try_wait_natural_exit() {
+            Ok(None) => Ok(()),
+            Ok(Some(status)) => Err(QemuNodeError::from_channel(
+                QemuNodeChannelPlane::ShmemHotPath,
+                QemuNodeChannelError::new(
+                    "execution_fingerprint",
+                    format!(
+                        "QEMU exited with {status} before publishing the current black-box fingerprint"
+                    ),
+                ),
+            )),
+            Err(error) => Err(QemuNodeError::from_channel(
+                QemuNodeChannelPlane::ShmemHotPath,
+                QemuNodeChannelError::new(
+                    "execution_fingerprint",
+                    format!("poll QEMU while awaiting fingerprint: {error}"),
+                ),
+            )),
         }
     }
 

@@ -35,7 +35,7 @@ fn requested_control_callback_captures_and_acknowledges_each_exact_request() {
     state
         .publish_current_icount(7)
         .unwrap_or_else(|error| panic!("exact quantum should publish: {error}"));
-    assert_eq!(fingerprint_slot.snapshot(), None);
+    assert_eq!(fingerprint_slot.snapshot(), Ok(None));
 
     let ordinary_control_request = node_slot
         .request_control_boundary(0, None)
@@ -44,7 +44,7 @@ fn requested_control_callback_captures_and_acknowledges_each_exact_request() {
         .on_control_boundary(7)
         .unwrap_or_else(|error| panic!("ordinary control request should complete: {error}"));
     assert_eq!(TEST_FINGERPRINT_CAPTURE_COUNT.get(), 0);
-    assert_eq!(fingerprint_slot.snapshot(), None);
+    assert_eq!(fingerprint_slot.snapshot(), Ok(None));
     assert_eq!(
         node_slot.snapshot().control_boundary_ack,
         ordinary_control_request.wrapping_add(1)
@@ -64,7 +64,7 @@ fn requested_control_callback_captures_and_acknowledges_each_exact_request() {
         .on_control_boundary(7)
         .unwrap_or_else(|error| panic!("pause control request should complete: {error}"));
     assert_eq!(TEST_FINGERPRINT_CAPTURE_COUNT.get(), 0);
-    assert_eq!(fingerprint_slot.snapshot(), None);
+    assert_eq!(fingerprint_slot.snapshot(), Ok(None));
     assert_eq!(TEST_REQUEST_VMSTOP_CALLS.get(), 1);
     assert_eq!(
         node_slot.snapshot().control_boundary_ack,
@@ -153,7 +153,7 @@ fn fingerprint_projection_rejects_an_in_flight_device_before_capture() {
 
     assert!(error.to_string().contains("device I/O quiesced"));
     assert_eq!(TEST_FINGERPRINT_CAPTURE_COUNT.get(), 0);
-    assert_eq!(fingerprint_slot.snapshot(), None);
+    assert_eq!(fingerprint_slot.snapshot(), Ok(None));
 }
 
 pub(super) extern "C" fn test_clock_deadline_ps() -> i64 {
