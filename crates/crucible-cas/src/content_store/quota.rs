@@ -7,6 +7,8 @@
 //! the child's administrative capability into this wrapper, so GC cannot
 //! bypass quota reclamation accounting.
 
+use super::{ObjectKind, graph_object_count};
+
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -241,6 +243,18 @@ impl ImmutableBlobBackend for LogicalQuotaStore {
 
     fn capabilities(&self) -> BackendCapabilities {
         self.child.capabilities()
+    }
+
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        let additional = graph_object_count(objects)?;
+        let _lock = self.acquire_state_lock()?;
+        let state = self.load_or_recover_state(false)?;
+        let next = state
+            .objects
+            .checked_add(additional)
+            .ok_or(StoreError::Quota)?;
+        self.validate_usage(next, state.logical_bytes)?;
+        self.child.admit_object_graph(objects)
     }
 
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {

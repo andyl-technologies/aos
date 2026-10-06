@@ -5,6 +5,8 @@
 //! capability separately at construction. The capability remains operational:
 //! its policy and credentials do not enter content or graph identity.
 
+use super::ObjectKind;
+
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 use std::sync::Arc;
@@ -172,6 +174,10 @@ impl ImmutableBlobBackend for NamespacedStore {
 
     fn capabilities(&self) -> BackendCapabilities {
         self.child.capabilities()
+    }
+
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        self.child.admit_object_graph(objects)
     }
 
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {

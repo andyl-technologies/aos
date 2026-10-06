@@ -1353,3 +1353,6 @@ pub use invalidation::*;
 
 pub mod content_envelope;
 pub mod content_store;
+
+/// Bounded authenticated persistent RAM catalogs and page transfer.
+pub mod ram;

@@ -56,6 +56,9 @@ pub mod guest_introspection;
 pub mod guest_introspection_doorbell;
 pub mod plugin_setup_plan;
 mod preemption;
+pub mod ram_control;
+pub mod ram_page;
+pub mod ram_transfer;
 mod selectable;
 pub mod selectable_catalog_plan;
 pub mod selectable_transport;
@@ -1472,10 +1475,27 @@ where
     /// Returns [`ControlLifecycleIoError`] when `Quit` is attempted before the
     /// shared-memory run starts, or when writing the frame fails.
     pub fn host_send_quit(&mut self) -> Result<(), ControlLifecycleIoError> {
+        self.host_send_quit_with_writer(write_control_frame)
+    }
+
+    /// Sends `Quit` through an injected bounded full-frame writer.
+    ///
+    /// The writer receives the existing canonical frame and must retain its
+    /// cursor across partial writes and polling retries. Lifecycle ownership
+    /// commits only after the complete write succeeds. An uncertain write must
+    /// fail and must not be restarted from the beginning of the frame.
+    ///
+    /// # Errors
+    /// Refuses teardown before shared-memory RUN or propagates a writer error
+    /// without advancing lifecycle state.
+    pub fn host_send_quit_with_writer(
+        &mut self,
+        writer: impl FnOnce(&mut S, &[u8]) -> Result<(), FrameIoError>,
+    ) -> Result<(), ControlLifecycleIoError> {
         let mut lifecycle = self.lifecycle.clone();
         lifecycle.observe(ControlLifecycleEvent::HostQuit)?;
         let quit = control_encode_host_msg(&HostMsg::Quit);
-        write_control_frame(&mut self.stream, &quit)?;
+        writer(&mut self.stream, &quit)?;
         self.lifecycle = lifecycle;
         Ok(())
     }

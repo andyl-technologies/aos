@@ -630,6 +630,11 @@ impl ImmutableBlobBackend for EncryptedDirectoryBlobBackend {
         }
     }
 
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        graph_object_count(objects)?;
+        Ok(())
+    }
+
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
         let _inventory_lock = self.directory.acquire_inventory_lock()?;
         self.validate_or_create_key_state_locked()?;

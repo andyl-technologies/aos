@@ -33,6 +33,7 @@ mod namespace;
 mod packed;
 mod physical_quota;
 mod profile;
+mod publication;
 mod quota;
 mod s3;
 mod s3_ref;
@@ -130,6 +131,8 @@ pub enum ObjectKind {
     ExactManifest,
     /// Logical guest RAM page or extent.
     RamExtent,
+    /// Persistent binary RAM catalog node with authenticated children.
+    RamTree,
     /// Logical disk page or extent.
     DiskExtent,
     /// Opaque device or QEMU VMState artifact.
@@ -157,6 +160,7 @@ impl ObjectKind {
             Self::Policy => "policy",
             Self::ExactManifest => "exact-manifest",
             Self::RamExtent => "ram-extent",
+            Self::RamTree => "ram-tree",
             Self::DiskExtent => "disk-extent",
             Self::DeviceState => "device-state",
             Self::Observation => "observation",
@@ -176,6 +180,7 @@ impl ObjectKind {
             "policy" => Some(Self::Policy),
             "exact-manifest" => Some(Self::ExactManifest),
             "ram-extent" => Some(Self::RamExtent),
+            "ram-tree" => Some(Self::RamTree),
             "disk-extent" => Some(Self::DiskExtent),
             "device-state" => Some(Self::DeviceState),
             "observation" => Some(Self::Observation),
@@ -1051,6 +1056,15 @@ impl fmt::Display for GraphViolation {
     }
 }
 
+fn graph_object_count(objects: &[(ObjectKind, u64)]) -> Result<u64, StoreError> {
+    if objects.len() > 256 {
+        return Err(StoreError::Quota);
+    }
+    objects.iter().try_fold(0_u64, |total, (_, count)| {
+        total.checked_add(*count).ok_or(StoreError::Quota)
+    })
+}
+
 /// Streaming immutable logical-object backend.
 pub trait ImmutableBlobBackend: Send + Sync {
     /// Returns the stable operational backend name.
@@ -1058,6 +1072,24 @@ pub trait ImmutableBlobBackend: Send + Sync {
 
     /// Returns capabilities available through this component.
     fn capabilities(&self) -> BackendCapabilities;
+
+    /// Checks conservative additional object headroom before graph publication.
+    ///
+    /// Counts are grouped by logical object kind and assume every additional
+    /// object is unique. Authoritative writable leaves enforce their index or
+    /// quota limits; read caches do not grant durable capacity. This check does
+    /// not reserve space against concurrent writers. Every later publication
+    /// must still enforce its quota and durability contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Quota`] for insufficient headroom or count overflow,
+    /// or [`StoreError::Unsupported`] when capacity has not been admitted.
+    fn admit_object_graph(&self, _objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        Err(StoreError::Unsupported {
+            capability: "object-graph-headroom",
+        })
+    }
 
     /// Returns whether an authenticated logical object is present.
     ///
@@ -1161,7 +1193,7 @@ pub trait MutableRefBackend: Send + Sync {
     /// # Errors
     ///
     /// Returns a backend error when the publication lifecycle cannot be fenced.
-    fn acquire_publication_guard(&self) -> Result<Box<dyn RefPublicationGuard + '_>, StoreError>;
+    fn acquire_publication_guard(&self) -> Result<Box<dyn RefPublicationGuard>, StoreError>;
 
     /// Reads one named ref.
     ///

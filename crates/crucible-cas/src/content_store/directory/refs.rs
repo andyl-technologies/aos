@@ -136,7 +136,7 @@ impl MutableRefBackend for DirectoryRefBackend {
         RefBackendCapabilities { durable: true }
     }
 
-    fn acquire_publication_guard(&self) -> Result<Box<dyn RefPublicationGuard + '_>, StoreError> {
+    fn acquire_publication_guard(&self) -> Result<Box<dyn RefPublicationGuard>, StoreError> {
         let lock = self.acquire_ref_publication_lock(FlockOperation::LockShared)?;
         Ok(Box::new(DirectoryRefPublicationGuard { _lock: lock }))
     }

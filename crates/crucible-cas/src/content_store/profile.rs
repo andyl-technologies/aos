@@ -266,6 +266,10 @@ impl ImmutableBlobBackend for ProfileValidatedStore {
         capabilities
     }
 
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        self.child.admit_object_graph(objects)
+    }
+
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
         match self.child.read(id, None) {
             Ok(source) => {

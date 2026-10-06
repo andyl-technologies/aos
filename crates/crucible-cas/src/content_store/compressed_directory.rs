@@ -267,6 +267,11 @@ impl ImmutableBlobBackend for CompressedDirectoryBlobBackend {
         }
     }
 
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        graph_object_count(objects)?;
+        Ok(())
+    }
+
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
         match self.read_handle(id, None) {
             Ok(handle) => {

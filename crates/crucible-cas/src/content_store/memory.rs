@@ -2,7 +2,9 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Mutex, MutexGuard};
+
+use super::publication::{PublicationLease, PublicationLock};
 
 use super::admin::{
     InventoryCounter, PhysicalRepairAuthority, persistent_inventory_generation,
@@ -268,7 +270,7 @@ fn new_memory_inventory_instance(name: &str) -> [u8; 32] {
 #[derive(Debug)]
 pub struct MemoryRefBackend {
     inventory_instance: [u8; 32],
-    publication: RwLock<()>,
+    publication: PublicationLock,
     state: Mutex<MemoryRefState>,
 }
 
@@ -284,7 +286,7 @@ impl MemoryRefBackend {
     pub fn new() -> Self {
         Self {
             inventory_instance: new_memory_ref_instance(),
-            publication: RwLock::new(()),
+            publication: PublicationLock::default(),
             state: Mutex::new(MemoryRefState {
                 refs: BTreeMap::new(),
                 generation: 1,
@@ -304,7 +306,7 @@ impl MutableRefBackend for MemoryRefBackend {
         RefBackendCapabilities { durable: false }
     }
 
-    fn acquire_publication_guard(&self) -> Result<Box<dyn RefPublicationGuard + '_>, StoreError> {
+    fn acquire_publication_guard(&self) -> Result<Box<dyn RefPublicationGuard>, StoreError> {
         let guard = self.publication.read().map_err(|_| StoreError::Poisoned {
             operation: "memory-ref-publication-guard",
         })?;
@@ -391,15 +393,15 @@ impl RefStoreAdmin for MemoryRefBackend {
     }
 }
 
-struct MemoryRefPublicationGuard<'a> {
-    _guard: RwLockReadGuard<'a, ()>,
+struct MemoryRefPublicationGuard {
+    _guard: PublicationLease,
 }
 
-impl RefPublicationGuard for MemoryRefPublicationGuard<'_> {}
+impl RefPublicationGuard for MemoryRefPublicationGuard {}
 
 struct MemoryRefInventoryFence<'a> {
     instance: [u8; 32],
-    _publication: RwLockWriteGuard<'a, ()>,
+    _publication: PublicationLease,
     state: MutexGuard<'a, MemoryRefState>,
 }
 

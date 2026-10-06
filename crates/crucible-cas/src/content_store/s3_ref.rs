@@ -15,12 +15,12 @@ use std::collections::{BTreeMap, btree_map::Entry};
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
-use std::sync::{
-    Arc, Mutex, MutexGuard, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak,
-};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 
 use super::admin::persistent_ref_inventory_generation;
+use super::publication::{PublicationLease, PublicationLock};
 use super::s3::{StoreS3EndpointId, validate_configuration};
+
 use super::{
     ContentId, MAX_REF_SCAN_VISITS, MutableRefBackend, RefBackendCapabilities, RefCasOutcome,
     RefInventoryFence, RefInventoryRecord, RefInventorySummary, RefName, RefPublicationGuard,
@@ -328,7 +328,7 @@ struct RefNamespaceKey {
 
 #[derive(Default)]
 struct RefNamespaceLifecycle {
-    publication: RwLock<()>,
+    publication: PublicationLock,
     state: Mutex<()>,
 }
 
@@ -630,7 +630,7 @@ impl MutableRefBackend for S3RefBackend {
         RefBackendCapabilities { durable: true }
     }
 
-    fn acquire_publication_guard(&self) -> Result<Box<dyn RefPublicationGuard + '_>, StoreError> {
+    fn acquire_publication_guard(&self) -> Result<Box<dyn RefPublicationGuard>, StoreError> {
         let guard =
             self.capability
                 .lifecycle
@@ -754,7 +754,7 @@ impl RefStoreAdmin for S3RefBackend {
 
 struct S3RefInventoryFence<'a> {
     backend: &'a S3RefBackend,
-    _publication: RwLockWriteGuard<'a, ()>,
+    _publication: PublicationLease,
     _state: MutexGuard<'a, ()>,
     inventory: S3RefInventoryState,
 }
@@ -783,11 +783,11 @@ impl RefInventoryFence for S3RefInventoryFence<'_> {
     }
 }
 
-struct S3RefPublicationGuard<'a> {
-    _guard: RwLockReadGuard<'a, ()>,
+struct S3RefPublicationGuard {
+    _guard: PublicationLease,
 }
 
-impl RefPublicationGuard for S3RefPublicationGuard<'_> {}
+impl RefPublicationGuard for S3RefPublicationGuard {}
 
 fn encode_ref_record(name: &RefName, target: ContentId) -> Result<Vec<u8>, StoreError> {
     let name = name.as_str().as_bytes();

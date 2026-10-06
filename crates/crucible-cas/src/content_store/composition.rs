@@ -36,6 +36,10 @@ impl ImmutableBlobBackend for VerifiedStore {
         self.child.capabilities()
     }
 
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        self.child.admit_object_graph(objects)
+    }
+
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
         self.child.contains(id)
     }
@@ -87,6 +91,11 @@ impl RoutedStore {
     }
 }
 
+struct RoutedObjectAdmission {
+    backend: Arc<dyn ImmutableBlobBackend>,
+    counts: Vec<(ObjectKind, u64)>,
+}
+
 impl ImmutableBlobBackend for RoutedStore {
     fn name(&self) -> &str {
         &self.name
@@ -115,6 +124,34 @@ impl ImmutableBlobBackend for RoutedStore {
             capabilities.planned_delete &= child.planned_delete;
         }
         capabilities
+    }
+
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        graph_object_count(objects)?;
+        let mut routed: Vec<RoutedObjectAdmission> = Vec::new();
+        for &(kind, count) in objects {
+            let child = self
+                .routes
+                .get(&kind)
+                .ok_or(StoreError::InvalidComposition {
+                    reason: "no child route exists for the logical object kind",
+                })?;
+            if let Some(admission) = routed
+                .iter_mut()
+                .find(|admission| Arc::ptr_eq(&admission.backend, child))
+            {
+                admission.counts.push((kind, count));
+            } else {
+                routed.push(RoutedObjectAdmission {
+                    backend: Arc::clone(child),
+                    counts: vec![(kind, count)],
+                });
+            }
+        }
+        for admission in routed {
+            admission.backend.admit_object_graph(&admission.counts)?;
+        }
+        Ok(())
     }
 
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
@@ -174,6 +211,18 @@ impl ImmutableBlobBackend for DurabilityPolicyStore {
 
     fn capabilities(&self) -> BackendCapabilities {
         self.child.capabilities()
+    }
+
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        if objects
+            .iter()
+            .any(|(kind, _)| !self.requirements.contains_key(kind))
+        {
+            return Err(StoreError::InvalidComposition {
+                reason: "durability policy has no requirement for the logical object kind",
+            });
+        }
+        self.child.admit_object_graph(objects)
     }
 
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
@@ -322,6 +371,14 @@ impl ImmutableBlobBackend for TieredStore {
         capabilities
     }
 
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        graph_object_count(objects)?;
+        for tier in self.tiers.iter().filter(|tier| tier.writable) {
+            tier.backend.admit_object_graph(objects)?;
+        }
+        Ok(())
+    }
+
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
         match self.read_full(id) {
             Ok(_) => Ok(true),
@@ -401,6 +458,10 @@ impl ImmutableBlobBackend for ReadThroughStore {
         capabilities.range_read &= cache.range_read;
         capabilities.streaming_read &= cache.streaming_read && cache.streaming_put;
         capabilities
+    }
+
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        self.source.admit_object_graph(objects)
     }
 
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
@@ -629,6 +690,10 @@ impl ImmutableBlobBackend for MetricsStore {
         self.child.capabilities()
     }
 
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        self.child.admit_object_graph(objects)
+    }
+
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
         MetricsState::increment(&self.state.contains_calls, 1);
         let started = metrics_now();
@@ -746,6 +811,14 @@ impl ImmutableBlobBackend for WriteThroughStore {
             capabilities.planned_delete &= child.planned_delete;
         }
         capabilities
+    }
+
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        graph_object_count(objects)?;
+        for child in &self.children {
+            child.admit_object_graph(objects)?;
+        }
+        Ok(())
     }
 
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {

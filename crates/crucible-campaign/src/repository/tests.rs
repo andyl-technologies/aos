@@ -601,7 +601,7 @@ impl MutableRefBackend for ConflictAfterCreateRefBackend {
         self.inner.capabilities()
     }
 
-    fn acquire_publication_guard(&self) -> Result<Box<dyn RefPublicationGuard + '_>, StoreError> {
+    fn acquire_publication_guard(&self) -> Result<Box<dyn RefPublicationGuard>, StoreError> {
         self.inner.acquire_publication_guard()
     }
 

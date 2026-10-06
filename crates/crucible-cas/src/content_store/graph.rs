@@ -1056,6 +1056,14 @@ impl<'a> StoreGraphPhysicalAdmin<'a> {
     pub fn retention(self, kind: ObjectKind) -> Option<StoreGraphPhysicalRetention> {
         self.retention.get(&kind).copied()
     }
+
+    /// Returns whether any admitted object kind is a removable cache placement.
+    #[must_use]
+    pub fn has_cache_retention(self) -> bool {
+        self.retention
+            .values()
+            .any(|role| *role == StoreGraphPhysicalRetention::Cache)
+    }
 }
 
 /// Borrowed cleanup capability for one exact admitted S3 leaf.
@@ -1511,6 +1519,19 @@ impl ImmutableBlobBackend for StoreGraph {
 
     fn capabilities(&self) -> BackendCapabilities {
         self.root.capabilities()
+    }
+
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        if objects
+            .iter()
+            .any(|(kind, _)| !self.admitted_kinds.contains(kind))
+        {
+            return Err(invalid_graph(
+                self.root_id.as_str(),
+                GraphViolation::RouteCoverage,
+            ));
+        }
+        self.root.admit_object_graph(objects)
     }
 
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {

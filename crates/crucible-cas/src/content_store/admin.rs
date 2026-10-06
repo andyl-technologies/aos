@@ -336,7 +336,7 @@ pub trait RefInventoryFence {
 /// the exclusive side of the same backend lifecycle lock. That ordering keeps
 /// a GC apply from deleting newly written children while their publishing
 /// transaction is waiting to make the ref authoritative.
-pub trait RefPublicationGuard {}
+pub trait RefPublicationGuard: Send + Sync {}
 
 /// Separate administrative capability for an authoritative ref backend.
 pub trait RefStoreAdmin: Send + Sync {

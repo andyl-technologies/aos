@@ -7,6 +7,8 @@
 //! facade, rejects physical allocation beyond the admitted byte or inode
 //! ceiling, including staging, compression, encryption, and pack slack.
 
+use super::ObjectKind;
+
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 use std::path::Path;
@@ -192,6 +194,11 @@ impl ImmutableBlobBackend for PhysicalQuotaStore {
 
     fn capabilities(&self) -> BackendCapabilities {
         self.child.capabilities()
+    }
+
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        self.guard.verify()?;
+        self.child.admit_object_graph(objects)
     }
 
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {

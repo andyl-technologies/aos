@@ -2300,6 +2300,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "blake3",
+ "crucible-protocol",
  "crucible-ram",
  "rusqlite",
  "rustix 1.1.4",
@@ -2430,6 +2431,7 @@ name = "crucible-protocol"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "crucible-ram",
  "libc",
  "sha2 0.10.9",
  "thiserror 2.0.18",

@@ -160,7 +160,7 @@ impl MutableRefBackend for LockOrderDirectoryRefs {
         self.inner.capabilities()
     }
 
-    fn acquire_publication_guard(&self) -> Result<Box<dyn RefPublicationGuard + '_>, StoreError> {
+    fn acquire_publication_guard(&self) -> Result<Box<dyn RefPublicationGuard>, StoreError> {
         if let Some(signal) = self
             .publication_requested
             .lock()

@@ -26,6 +26,31 @@ use crucible_protocol::{
 use crucible_protocol::{ReceivedSetup, ReceivedSetupDescriptors, SetupDescriptorFds};
 
 #[test]
+fn bounded_quit_writer_commits_only_after_a_complete_frame() {
+    let mut failed = ControlLifecycleStream::restored_run_via_shared_memory(Vec::new());
+    let result = failed.host_send_quit_with_writer(|stream, frame| {
+        stream.extend_from_slice(&frame[..1]);
+        Err(crucible_protocol::FrameIoError::Io {
+            operation: "test partial writer",
+            kind: std::io::ErrorKind::TimedOut,
+        })
+    });
+    assert!(result.is_err());
+    assert_eq!(
+        failed.state(),
+        ControlLifecycleState::RunningViaSharedMemory
+    );
+
+    let mut complete = ControlLifecycleStream::restored_run_via_shared_memory(Vec::new());
+    complete.host_send_quit().unwrap();
+    assert_eq!(complete.state(), ControlLifecycleState::QuitSent);
+    assert_eq!(
+        complete.into_inner(),
+        control_encode_host_msg(&HostMsg::Quit)
+    );
+}
+
+#[test]
 fn normal_lifecycle_connects_handshakes_runs_via_shmem_and_quits() {
     assert_eq!(
         validate_complete_control_lifecycle(NORMAL_CONTROL_LIFECYCLE),
@@ -48,7 +73,7 @@ fn normal_lifecycle_connects_handshakes_runs_via_shmem_and_quits() {
 fn lifecycle_events_are_derived_from_decoded_control_messages() {
     assert_eq!(
         ControlLifecycleEvent::from_plugin_msg(&PluginMsg::Hello {
-            proto_version: 3,
+            proto_version: 4,
             abi_version: 25,
         }),
         ControlLifecycleEvent::PluginHello
@@ -63,7 +88,7 @@ fn lifecycle_events_are_derived_from_decoded_control_messages() {
     );
     assert_eq!(
         ControlLifecycleEvent::from_host_msg(&HostMsg::HelloAck {
-            proto_version: 3,
+            proto_version: 4,
             abi_version: 25,
             slot_index: 0,
             node_count: 2,
@@ -88,18 +113,18 @@ fn lifecycle_stream_wires_real_frames_setup_descriptors_and_run_silence()
     let mut host = ControlLifecycleStream::connected_unix_stream(host_socket)?;
 
     plugin_socket.write_all(&control_encode_plugin_msg(&PluginMsg::Hello {
-        proto_version: 3,
+        proto_version: 4,
         abi_version: 25,
     }))?;
     assert_eq!(
         host.host_accept_handshake(HostHandshakeConfig {
-            proto_version: 3,
+            proto_version: 4,
             abi_version: 25,
             slot_index: 0,
             node_count: 1,
         })?,
         NegotiatedHandshake {
-            proto_version: 3,
+            proto_version: 4,
             abi_version: 25,
             slot_index: 0,
             node_count: 1,
@@ -139,7 +164,7 @@ fn lifecycle_stream_wires_real_frames_setup_descriptors_and_run_silence()
     assert_eq!(host.state(), ControlLifecycleState::RunningViaSharedMemory);
 
     plugin_socket.write_all(&control_encode_plugin_msg(&PluginMsg::Hello {
-        proto_version: 3,
+        proto_version: 4,
         abi_version: 25,
     }))?;
     assert_eq!(
@@ -170,7 +195,7 @@ fn lifecycle_stream_does_not_advance_after_invalid_hello_ack() -> Result<(), Box
     let mut plugin = ControlLifecycleStream::connected_unix_stream(plugin_socket)?;
 
     host_socket.write_all(&control_encode_host_msg(&HostMsg::HelloAck {
-        proto_version: 3,
+        proto_version: 4,
         abi_version: u32::MAX,
         slot_index: 0,
         node_count: 1,
@@ -178,7 +203,7 @@ fn lifecycle_stream_does_not_advance_after_invalid_hello_ack() -> Result<(), Box
 
     assert_eq!(
         plugin.plugin_start_handshake(PluginHandshakeConfig {
-            proto_version: 3,
+            proto_version: 4,
             abi_version: 25,
         }),
         Err(ControlLifecycleIoError::Handshake {
@@ -472,11 +497,11 @@ fn host_running_lifecycle_stream(
     let mut host = ControlLifecycleStream::connected_unix_stream(stream)?;
 
     peer.write_all(&control_encode_plugin_msg(&PluginMsg::Hello {
-        proto_version: 3,
+        proto_version: 4,
         abi_version: 25,
     }))?;
     host.host_accept_handshake(HostHandshakeConfig {
-        proto_version: 3,
+        proto_version: 4,
         abi_version: 25,
         slot_index: 0,
         node_count: 1,
@@ -526,13 +551,13 @@ fn plugin_setup_lifecycle_stream(
     let mut plugin = ControlLifecycleStream::connected_unix_stream(stream)?;
 
     peer.write_all(&control_encode_host_msg(&HostMsg::HelloAck {
-        proto_version: 3,
+        proto_version: 4,
         abi_version: 25,
         slot_index: 0,
         node_count: 1,
     }))?;
     plugin.plugin_start_handshake(PluginHandshakeConfig {
-        proto_version: 3,
+        proto_version: 4,
         abi_version: 25,
     })?;
     let _ = read_control_frame(peer)?;

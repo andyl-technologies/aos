@@ -17,6 +17,8 @@
 //!   .packed-admin/state.lock
 //! ```
 
+use super::{ObjectKind, graph_object_count};
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, Write};
@@ -804,6 +806,22 @@ impl ImmutableBlobBackend for PackedBlobBackend {
             repair_inventory: true,
             planned_delete: true,
         }
+    }
+
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        let additional = graph_object_count(objects)?;
+        let _state = self.lock_state()?;
+        let index = self.load_index()?;
+        let entries = (index.entries.len() as u64)
+            .checked_add(additional)
+            .ok_or(StoreError::Quota)?;
+        let packs = (index.pack_ids().len() as u64)
+            .checked_add(additional)
+            .ok_or(StoreError::Quota)?;
+        if entries > MAX_LOGICAL_OBJECTS as u64 || packs > MAX_PACKS as u64 {
+            return Err(StoreError::Quota);
+        }
+        Ok(())
     }
 
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
