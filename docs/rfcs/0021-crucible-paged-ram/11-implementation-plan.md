@@ -100,10 +100,10 @@ and dirty-epoch state remain separate from digests. Build sparse zero trees,
 batch dirty updates, reuse equal-content pages, and account for dense/padded
 metadata limits.
 
-Exit evidence includes all positive vectors in
-[format-vectors.json](format-vectors.json), independently produced C/Rust
-results, malformed and overflowing encodings, wrong scope/topology, partial
-pages, reordered pages, padding proofs, and representation-independent roots.
+Exit evidence includes the executable positive vectors specified in chapter 02,
+independently produced C/Rust results, malformed and overflowing encodings,
+wrong scope/topology, partial pages, reordered pages, padding proofs, and
+representation-independent roots.
 Retained nodes must remain valid through concurrent root users and teardown.
 
 Build the GPL-side C hash implementation hermetically from pinned reviewed

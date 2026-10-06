@@ -83,9 +83,9 @@ partially upgraded production combination.
 | [12](12-decisions-and-open-questions.md) | Decisions, alternatives, unresolved deployment choices |
 | [13](13-references.md) | Repository and external reference documents |
 
-The companion [format vectors](format-vectors.json) are machine-readable
-examples of chapter 02's logical encoding. They are documentation fixtures,
-not a claim that a production implementation passes them.
+Chapter 02 defines the canonical logical encoding and reference algorithm.
+Golden values and adversarial encoding cases belong in executable implementation
+tests rather than a separate documentation fixture.
 
 ## Principal conclusions
 

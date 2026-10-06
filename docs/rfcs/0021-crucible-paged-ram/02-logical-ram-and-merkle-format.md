@@ -271,16 +271,16 @@ def region_tree(length, page_digests):
              + U32(height) + nodes[0])
 ```
 
-[format-vectors.json](format-vectors.json) includes exact preimages where small,
-byte-generation descriptions for larger inputs, and expected lowercase digests
-for the empty sentinel, a three-byte page, a full zero page, a one-page region,
-and a three-page region with padding. It also includes a two-region topology
+Executable format tests MUST include exact preimages where small, reproducible
+byte-generation descriptions for larger inputs, and fixed expected digests for
+the empty sentinel, a three-byte page, a full zero page, a one-page region,
+and a three-page region with padding. They MUST also cover a two-region topology
 whose immutable image is absent from the execution selection but present in
 exact and lifecycle roots. These cases catch raw/hex confusion, endianness,
 partial-page length, scope binding, topology binding, and non-power-of-two
 padding. Independent C and Rust production implementations MUST additionally
-share negative vectors and maximum-boundary tests; this document does not
-make exhaustive test coverage claims.
+share negative vectors and maximum-boundary tests; the reference algorithm
+alone does not establish exhaustive implementation coverage.
 
 ## 2.7 Metadata and complexity
 
