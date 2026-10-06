@@ -674,6 +674,13 @@ rustdoc but initially fails native Clippy on two fixture lock panics. Fallible
 fixture error propagation is under final qualification; the twelve-case owning
 check must pass on that final source. Source-preserving collection and the full
 `algebra-fork` gate remain pending.
+The final bounded successor `3df0c2b7c5` passes the twelve-case owning Nix check,
+strict three-configuration Clippy/private rustdoc and both formatters. Independent
+review confirms all twelve positive, nonignored executions and all 4,867 actual
+Nix input files. The public fork retains zero observed TreeNode gets, puts and
+validator decodes through durable publication. This source is composed locally;
+the actual older selected missing-context fallback and source-preserving
+collection witnesses, full trunk gates and formal task merge remain open.
 
 The test-only bucket observer records actual typed Node/Commit get and put
 attempts before catalog lookup, admission or deduplication. The same per-bucket
