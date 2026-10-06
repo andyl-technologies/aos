@@ -1,8 +1,255 @@
 diff --git a/accel/tcg/tb-maint.c b/accel/tcg/tb-maint.c
-index bcab8b991987caece86e5f7db7aa6f7cad1cb332..7b69161e5dcb3925ede6a107b52cbefd76827482 100644
+index bcab8b991987caece86e5f7db7aa6f7cad1cb332..66086b9091d801f51cf55413a3ecc151b9aabc32 100644
 --- a/accel/tcg/tb-maint.c
 +++ b/accel/tcg/tb-maint.c
-@@ -640,9 +640,13 @@ static struct page_collection *page_collection_lock(tb_page_addr_t start,
+@@ -293,29 +293,30 @@ struct page_entry {
+     bool locked;
+ };
+ 
++#define PAGE_COLLECTION_INLINE_CAPACITY 4
++
+ /**
+- * struct page_collection - tracks a set of pages (i.e. &struct page_entry's)
+- * @tree:   Binary search tree (BST) of the pages, with key == page index
+- * @max:    Pointer to the page in @tree with the highest page index
+- *
+- * To avoid deadlock we lock pages in ascending order of page index.
+- * When operating on a set of pages, we need to keep track of them so that
+- * we can lock them in order and also unlock them later. For this we collect
+- * pages (i.e. &struct page_entry's) in a binary search @tree. Given that the
+- * @tree implementation we use does not provide an O(1) operation to obtain the
+- * highest-ranked element, we use @max to keep track of the inserted page
+- * with the highest index. This is valuable because if a page is not in
+- * the tree and its index is higher than @max's, then we can lock it
+- * without breaking the locking order rule.
++ * struct page_collection - caller-owned set of page locks
++ * @tree: Heap entries after the inline capacity is exceeded; NULL otherwise
++ * @max_index: Highest collected index, valid when the collection is nonempty
++ * @inline_count: Number of active inline entries; zero after spilling
++ * @inline_entries: Entries sorted by page index, owned by this collection
+  *
+- * Note on naming: 'struct page_set' would be shorter, but we already have a few
+- * page_set_*() helpers, so page_collection is used instead to avoid confusion.
++ * Initial discovery may trylock lower indexes, but only blocks above the
++ * highest collected index. After a failed trylock, all entries are unlocked
++ * and reacquired in ascending order. Sorting inline storage does not change
++ * the order in which discovery acquires locks.
+  *
+- * See also: page_collection_lock().
++ * Small collections need no allocations. Spilling transfers their lock
++ * ownership to stable heap entries without releasing any page locks. The
++ * collection itself stays in its caller's stack frame, including cleanup
++ * before a precise-SMC nonlocal exit.
+  */
+ struct page_collection {
+     QTree *tree;
+-    struct page_entry *max;
++    tb_page_addr_t max_index;
++    unsigned int inline_count;
++    struct page_entry inline_entries[PAGE_COLLECTION_INLINE_CAPACITY];
+ };
+ 
+ typedef int PageForEachNext;
+@@ -550,17 +551,115 @@ static gboolean page_entry_unlock(gpointer key, gpointer value, gpointer data)
+     return FALSE;
+ }
+ 
+-/*
+- * Trylock a page, and if successful, add the page to a collection.
+- * Returns true ("busy") if the page could not be locked; false otherwise.
+- */
++static gint tb_page_addr_cmp(gconstpointer ap, gconstpointer bp, gpointer udata)
++{
++    tb_page_addr_t a = *(const tb_page_addr_t *)ap;
++    tb_page_addr_t b = *(const tb_page_addr_t *)bp;
++
++    if (a == b) {
++        return 0;
++    } else if (a < b) {
++        return -1;
++    }
++    return 1;
++}
++
++static struct page_entry *page_collection_lookup(struct page_collection *set,
++                                                tb_page_addr_t index)
++{
++    if (set->tree) {
++        return q_tree_lookup(set->tree, &index);
++    }
++
++    for (unsigned int i = 0; i < set->inline_count; i++) {
++        struct page_entry *pe = &set->inline_entries[i];
++
++        if (pe->index == index) {
++            return pe;
++        }
++        if (pe->index > index) {
++            break;
++        }
++    }
++    return NULL;
++}
++
++static void page_collection_spill(struct page_collection *set)
++{
++    QTree *tree;
++
++    g_assert(!set->tree);
++    g_assert(set->inline_count == PAGE_COLLECTION_INLINE_CAPACITY);
++
++    tree = q_tree_new_full(tb_page_addr_cmp, NULL, NULL, page_entry_destroy);
++    for (unsigned int i = 0; i < set->inline_count; i++) {
++        struct page_entry *pe = g_new(struct page_entry, 1);
++
++        /* Preserve held and busy entries; retry still owns their lock state. */
++        *pe = set->inline_entries[i];
++        q_tree_insert(tree, &pe->index, pe);
++    }
++
++    set->tree = tree;
++    set->inline_count = 0;
++}
++
++static struct page_entry *page_collection_insert(struct page_collection *set,
++                                                PageDesc *pd,
++                                                tb_page_addr_t index)
++{
++    struct page_entry *pe;
++    unsigned int position;
++
++    if (!set->tree && set->inline_count == PAGE_COLLECTION_INLINE_CAPACITY) {
++        page_collection_spill(set);
++    }
++    if (set->tree) {
++        pe = page_entry_new(pd, index);
++        q_tree_insert(set->tree, &pe->index, pe);
++        return pe;
++    }
++
++    for (position = 0; position < set->inline_count; position++) {
++        if (set->inline_entries[position].index > index) {
++            break;
++        }
++    }
++    memmove(&set->inline_entries[position + 1],
++            &set->inline_entries[position],
++            (set->inline_count - position) * sizeof(*pe));
++    pe = &set->inline_entries[position];
++    *pe = (struct page_entry) { .pd = pd, .index = index, .locked = false };
++    set->inline_count++;
++    return pe;
++}
++
++static void page_collection_foreach(struct page_collection *set,
++                                    GTraverseFunc callback)
++{
++    if (set->tree) {
++        q_tree_foreach(set->tree, callback, NULL);
++        return;
++    }
++
++    for (unsigned int i = 0; i < set->inline_count; i++) {
++        struct page_entry *pe = &set->inline_entries[i];
++
++        if (callback(&pe->index, pe, NULL)) {
++            break;
++        }
++    }
++}
++
++/* Returns true if the new page is busy; existing entries are already owned. */
+ static bool page_trylock_add(struct page_collection *set, tb_page_addr_t addr)
+ {
+     tb_page_addr_t index = addr >> TARGET_PAGE_BITS;
+     struct page_entry *pe;
+     PageDesc *pd;
++    bool in_order;
+ 
+-    pe = q_tree_lookup(set->tree, &index);
++    pe = page_collection_lookup(set, index);
+     if (pe) {
+         return false;
+     }
+@@ -570,47 +669,24 @@ static bool page_trylock_add(struct page_collection *set, tb_page_addr_t addr)
+         return false;
+     }
+ 
+-    pe = page_entry_new(pd, index);
+-    q_tree_insert(set->tree, &pe->index, pe);
+-
+-    /*
+-     * If this is either (1) the first insertion or (2) a page whose index
+-     * is higher than any other so far, just lock the page and move on.
+-     */
+-    if (set->max == NULL || pe->index > set->max->index) {
+-        set->max = pe;
++    in_order = (!set->tree && !set->inline_count) || index > set->max_index;
++    pe = page_collection_insert(set, pd, index);
++    if (in_order) {
++        set->max_index = index;
+         do_page_entry_lock(pe);
+         return false;
+     }
+-    /*
+-     * Try to acquire out-of-order lock; if busy, return busy so that we acquire
+-     * locks in order.
+-     */
+     return page_entry_trylock(pe);
+ }
+ 
+-static gint tb_page_addr_cmp(gconstpointer ap, gconstpointer bp, gpointer udata)
+-{
+-    tb_page_addr_t a = *(const tb_page_addr_t *)ap;
+-    tb_page_addr_t b = *(const tb_page_addr_t *)bp;
+-
+-    if (a == b) {
+-        return 0;
+-    } else if (a < b) {
+-        return -1;
+-    }
+-    return 1;
+-}
+-
+ /*
+  * Lock a range of pages ([@start,@last]) as well as the pages of all
+  * intersecting TBs.
+  * Locking order: acquire locks in ascending order of page index.
+  */
+-static struct page_collection *page_collection_lock(tb_page_addr_t start,
+-                                                    tb_page_addr_t last)
++static void page_collection_lock(struct page_collection *set,
++                                 tb_page_addr_t start, tb_page_addr_t last)
+ {
+-    struct page_collection *set = g_malloc(sizeof(*set));
+     tb_page_addr_t index;
+     PageDesc *pd;
+ 
+@@ -618,13 +694,13 @@ static struct page_collection *page_collection_lock(tb_page_addr_t start,
+     last >>= TARGET_PAGE_BITS;
+     g_assert(start <= last);
+ 
+-    set->tree = q_tree_new_full(tb_page_addr_cmp, NULL, NULL,
+-                                page_entry_destroy);
+-    set->max = NULL;
++    set->tree = NULL;
++    set->max_index = 0;
++    set->inline_count = 0;
+     assert_no_pages_locked();
+ 
+  retry:
+-    q_tree_foreach(set->tree, page_entry_lock, NULL);
++    page_collection_foreach(set, page_entry_lock);
+ 
+     for (index = start; index <= last; index++) {
+         TranslationBlock *tb;
+@@ -635,28 +711,41 @@ static struct page_collection *page_collection_lock(tb_page_addr_t start,
+             continue;
+         }
+         if (page_trylock_add(set, index << TARGET_PAGE_BITS)) {
+-            q_tree_foreach(set->tree, page_entry_unlock, NULL);
++            page_collection_foreach(set, page_entry_unlock);
+             goto retry;
          }
          assert_page_locked(pd);
          PAGE_FOR_EACH_TB(unused, unused, pd, tb, n) {
@@ -17,8 +264,79 @@ index bcab8b991987caece86e5f7db7aa6f7cad1cb332..7b69161e5dcb3925ede6a107b52cbefd
 +                (other_addr >> TARGET_PAGE_BITS) != index &&
 +                page_trylock_add(set, other_addr)) {
                  /* drop all locks, and reacquire in order */
-                 q_tree_foreach(set->tree, page_entry_unlock, NULL);
+-                q_tree_foreach(set->tree, page_entry_unlock, NULL);
++                page_collection_foreach(set, page_entry_unlock);
                  goto retry;
+             }
+         }
+     }
+-    return set;
+ }
+ 
+ static void page_collection_unlock(struct page_collection *set)
+ {
+-    /* entries are unlocked and freed via page_entry_destroy */
+-    q_tree_destroy(set->tree);
+-    g_free(set);
++    if (set->tree) {
++        /* Heap entries release their page locks before they are freed. */
++        q_tree_destroy(set->tree);
++    } else {
++        for (unsigned int i = 0; i < set->inline_count; i++) {
++            struct page_entry *pe = &set->inline_entries[i];
++
++            g_assert(pe->locked);
++            page_unlock(pe->pd);
++        }
++    }
++    set->tree = NULL;
++    set->inline_count = 0;
+ }
+ 
+ /* Set to NULL all the 'first_tb' fields in all PageDescs. */
+@@ -1180,10 +1269,10 @@ tb_invalidate_phys_page_range__locked(CPUState *cpu,
+ void tb_invalidate_phys_range(CPUState *cpu, tb_page_addr_t start,
+                               tb_page_addr_t last)
+ {
+-    struct page_collection *pages;
++    struct page_collection pages;
+     tb_page_addr_t index, index_last;
+ 
+-    pages = page_collection_lock(start, last);
++    page_collection_lock(&pages, start, last);
+ 
+     index_last = last >> TARGET_PAGE_BITS;
+     for (index = start >> TARGET_PAGE_BITS; index <= index_last; index++) {
+@@ -1197,10 +1286,10 @@ void tb_invalidate_phys_range(CPUState *cpu, tb_page_addr_t start,
+         page_start = index << TARGET_PAGE_BITS;
+         page_last = page_start | ~TARGET_PAGE_MASK;
+         page_last = MIN(page_last, last);
+-        tb_invalidate_phys_page_range__locked(cpu, pages, pd,
++        tb_invalidate_phys_page_range__locked(cpu, &pages, pd,
+                                               page_start, page_last, 0);
+     }
+-    page_collection_unlock(pages);
++    page_collection_unlock(&pages);
+ }
+ 
+ /*
+@@ -1215,11 +1304,13 @@ void tb_invalidate_phys_range_fast(CPUState *cpu, ram_addr_t start,
+ 
+     if (p) {
+         ram_addr_t last = start + len - 1;
+-        struct page_collection *pages = page_collection_lock(start, last);
++        struct page_collection pages;
+ 
+-        tb_invalidate_phys_page_range__locked(cpu, pages, p,
++        page_collection_lock(&pages, start, last);
++
++        tb_invalidate_phys_page_range__locked(cpu, &pages, p,
+                                               start, last, ra);
+-        page_collection_unlock(pages);
++        page_collection_unlock(&pages);
+     }
+ }
+ 
 diff --git a/util/qemu-thread-posix.c b/util/qemu-thread-posix.c
 index 38925e9bf24119bd8f97f61ed3a77f0efe331855..1b59d60925d365c2f3747dad8c06d5df41488ccf 100644
 --- a/util/qemu-thread-posix.c

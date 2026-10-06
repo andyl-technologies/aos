@@ -34,7 +34,10 @@ def reconstruct_baseline(args):
         target = baseline_root / relative_path
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(args.source_root / relative_path, target)
-    shutil.copytree(args.source_root / "include/qemu", baseline_root / "include/qemu")
+    shutil.copytree(
+        args.source_root / "include/qemu", baseline_root / "include/qemu",
+        dirs_exist_ok=True,
+    )
     reconstruction = subprocess.run(
         ["patch", "--batch", "--reverse", "--fuzz=0", "-p1", "-i",
          str(args.baseline_patch.resolve())],
@@ -45,11 +48,10 @@ def reconstruct_baseline(args):
     reconstruction.check_returncode()
     for relative_path, expected_hash in manifest["files"].items():
         checked_reference(baseline_root / relative_path, expected_hash)
-    # Both variants use the same translation-block header, without adaptation.
-    checked_reference(
-        args.source_root / "include/exec/translation-block.h",
-        manifest["files"]["include/exec/translation-block.h"],
-    )
+    # Production declarations and compiler macros stay identical in both variants.
+    for relative_path, expected_hash in manifest["files"].items():
+        if relative_path.endswith(".h"):
+            checked_reference(args.source_root / relative_path, expected_hash)
     (args.output_dir / "baseline-manifest.json").write_text(
         json.dumps(manifest, indent=2) + "\n"
     )
@@ -83,6 +85,10 @@ def run_fixture(command, directory, negative=False):
             if native_status["returncode"] != -signal.SIGABRT:
                 raise AssertionError("negative native child did not abort")
             native_stderr = retained_stderr.read_text()
+        elif (directory / "stderr.txt").is_file():
+            if "SIGABRT" not in completed.stderr:
+                raise AssertionError("negative native page child did not abort")
+            native_stderr = (directory / "stderr.txt").read_text()
         if not re.search(
             r"assertion failed|Assertion .* failed|should (?:not )?be",
             native_stderr,
@@ -148,26 +154,47 @@ def check_pages(args, baseline_root):
         raise AssertionError("native page lock traces differ")
     if positive.stdout.splitlines()[-1] != "page-collection: passed":
         raise AssertionError("native page collection success marker absent")
-    if len(positive.stdout.splitlines()) != 10:
+    expected_labels = [
+        "absent", "first-page-zero", "empty", "single-page", "physical-alias",
+        "tag-zero", "tag-one", "reverse-order", "retry", "dedup-and-range",
+        "below-capacity", "at-capacity", "spill", "missing-at-capacity",
+        "duplicates-at-capacity", "reverse-order-spill", "busy-before-spill",
+        "busy-on-spill", "busy-after-spill", "precise-exit-inline",
+        "precise-exit-spill",
+    ]
+    labels = [line.split(":", 1)[0] for line in positive.stdout.splitlines()[:-1]]
+    if labels != expected_labels:
         raise AssertionError("native page collection case coverage differs")
-    if "single-page: tree-lookups=65" not in baseline.stderr.splitlines():
+    if "single-page: tree-lookups=65 trees=1 entries=1" not in baseline.stderr.splitlines():
         raise AssertionError("baseline redundant page lookup witness differs")
-    if "single-page: tree-lookups=1" not in positive.stderr.splitlines():
-        raise AssertionError("optimized page lookup witness differs")
+    if "single-page: tree-lookups=0 trees=0 entries=0" not in positive.stderr.splitlines():
+        raise AssertionError("inline page allocation and lookup witness differs")
 
-    negative_dir = args.output_dir / "negative-omit-other-page"
-    negative = run_fixture(
-        [sys.executable, str(fixture), "--output-dir", str(negative_dir),
-         "--omit-other-page"], negative_dir, negative=True,
-    )
-    if "page-collection: passed" in negative.stdout:
-        raise AssertionError("causal negative emitted the success marker")
+    negatives = [
+        "omit-other-page", "drop-spill-state", "skip-inline-unlock",
+        "reverse-inline-iteration", "omit-empty-admission", "eager-tree",
+    ]
+    for mutation in negatives:
+        directory = args.output_dir / f"negative-{mutation}"
+        negative = run_fixture(
+            [sys.executable, str(fixture), "--output-dir", str(directory),
+             "--negative", mutation], directory, negative=True,
+        )
+        if "page-collection: passed" in negative.stdout:
+            raise AssertionError("causal negative emitted the success marker")
     return {
         "lock_trace_equal": True,
-        "page_cases": 9,
+        "page_cases": len(labels),
+        "page_case_labels": labels,
         "single_page_baseline_tree_lookups": 65,
-        "single_page_optimized_tree_lookups": 1,
-        "compiled_causal_negatives": ["omit-other-page"],
+        "single_page_optimized_tree_lookups": 0,
+        "single_page_baseline_trees": 1,
+        "single_page_optimized_trees": 0,
+        "single_page_baseline_heap_entries": 1,
+        "single_page_optimized_heap_entries": 0,
+        "inline_capacity": 4,
+        "compiled_causal_negatives": negatives,
+        "precise_smc_cleanup": ["inline", "spill"],
         "scope": "extracted-production-page-collection-with-glib-and-pthreads",
     }
 
