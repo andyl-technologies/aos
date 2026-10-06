@@ -12,7 +12,9 @@ use std::path::Path;
 
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
-use aos_sandbox_linux::inherited_fd::duplicate_initial_activation_table;
+use aos_sandbox_linux::inherited_fd::{
+    StorageInitialActivationTableV1, duplicate_initial_activation_table,
+};
 use aos_sandbox_linux::pidfd::{PidFd, PidFdProcessIdentity};
 use aos_sandbox_linux::seqpacket::{RecordSubjectListener, SeqpacketError};
 use aos_sandbox_protocol::operator_storage_repair_transport_v3::OPERATOR_STORAGE_REPAIR_SOCKET_PATH_V3;
@@ -20,6 +22,10 @@ use aos_sandbox_protocol::operator_storage_repair_transport_v3::OPERATOR_STORAGE
 use crate::immutable_image::{
     ImmutableImageErrorV1, RetainedImmutableFileV1, retain_original_backend_pid1_v1,
 };
+use crate::controller_resource_reservation::{
+    StorageComponentEnvelopeOriginalV1, StorageComponentPostV1,
+};
+use super::client::{RESOURCE_ENROLLMENT_NAME, RESOURCE_POLICY_NAME};
 use super::{
     NormalRootStartupErrorV1, StorageWorkerParentDataV3, observe_fixed_storage_worker_parent_v3,
 };
@@ -260,32 +266,9 @@ pub fn capture_storage_launch_v3() -> Result<CapturedStorageLaunchV3, StorageLau
     let existing_output = existing_output
         .map(RecordSubjectListener::from_owned)
         .transpose()?;
-    controller.require_local_filesystem_path(std::path::Path::new(
-        "/run/aos/sandbox-storage/control.sock",
-    ))?;
-    export.require_local_filesystem_path(std::path::Path::new(
-        "/run/aos/sandbox-storage/root-export.sock",
-    ))?;
-    if let Some(listener) = &live_export {
-        listener.require_local_filesystem_path(std::path::Path::new(
-            "/run/aos/sandbox-storage/live-export-request.sock",
-        ))?;
-    }
-    if let Some(listener) = &zfs_hold {
-        listener.require_local_filesystem_path(std::path::Path::new(
-            "/run/aos/sandbox-storage/zfs-hold-request.sock",
-        ))?;
-    }
-    if let Some(listener) = &operator_repair {
-        listener.require_local_filesystem_path(std::path::Path::new(
-            OPERATOR_STORAGE_REPAIR_SOCKET_PATH_V3,
-        ))?;
-    }
-    if let Some(listener) = &existing_output {
-        listener.require_local_filesystem_path(std::path::Path::new(
-            "/run/aos/sandbox-storage/existing-output.sock",
-        ))?;
-    }
+    require_storage_listener_paths(
+        &controller, &export, &live_export, &zfs_hold, &operator_repair, &existing_output,
+    )?;
     Ok(CapturedStorageLaunchV3 {
         listeners: (
             controller,
@@ -297,6 +280,43 @@ pub fn capture_storage_launch_v3() -> Result<CapturedStorageLaunchV3, StorageLau
         ),
         pid1_image,
     })
+}
+
+fn require_storage_listener_paths(
+    controller: &RecordSubjectListener,
+    export: &RecordSubjectListener,
+    live_export: &Option<RecordSubjectListener>,
+    zfs_hold: &Option<RecordSubjectListener>,
+    operator_repair: &Option<RecordSubjectListener>,
+    existing_output: &Option<RecordSubjectListener>,
+) -> Result<(), SeqpacketError> {
+    controller.require_local_filesystem_path(std::path::Path::new(
+        "/run/aos/sandbox-storage/control.sock",
+    ))?;
+    export.require_local_filesystem_path(std::path::Path::new(
+        "/run/aos/sandbox-storage/root-export.sock",
+    ))?;
+    if let Some(listener) = live_export {
+        listener.require_local_filesystem_path(std::path::Path::new(
+            "/run/aos/sandbox-storage/live-export-request.sock",
+        ))?;
+    }
+    if let Some(listener) = zfs_hold {
+        listener.require_local_filesystem_path(std::path::Path::new(
+            "/run/aos/sandbox-storage/zfs-hold-request.sock",
+        ))?;
+    }
+    if let Some(listener) = operator_repair {
+        listener.require_local_filesystem_path(std::path::Path::new(
+            OPERATOR_STORAGE_REPAIR_SOCKET_PATH_V3,
+        ))?;
+    }
+    if let Some(listener) = existing_output {
+        listener.require_local_filesystem_path(std::path::Path::new(
+            "/run/aos/sandbox-storage/existing-output.sock",
+        ))?;
+    }
+    Ok(())
 }
 
 fn valid_startup_names(names: &[&str], descriptor_count: u32) -> bool {
@@ -370,6 +390,344 @@ fn activation_error(message: impl Into<String>) -> StorageLaunchCaptureErrorV3 {
     StorageLaunchCaptureErrorV3::Activation(message.into())
 }
 
+/// Selects only the additive fixed resource roles as environment DATA.
+///
+/// This reads no descriptor and consumes no capture fence. Either role selects
+/// the strict recipient path; a partial pair must never fall back to V3.
+#[must_use]
+pub fn storage_resource_recipient_selected_v1() -> bool {
+    std::env::var("LISTEN_FDNAMES").is_ok_and(|names| {
+        names.split(':').any(|name| {
+            matches!(name, RESOURCE_POLICY_NAME | RESOURCE_ENROLLMENT_NAME)
+        })
+    })
+}
+
+type StorageWorkerPartsV3 = (
+    StorageLaunchListenersV3,
+    Option<OwnedFd>,
+    Option<StorageWorkerOriginV3>,
+);
+
+#[derive(Clone, Copy)]
+enum RecipientFailure {
+    Names,
+    Table,
+    Capture,
+    Paths,
+    Component,
+    Before,
+    Startup,
+    After,
+    Closed,
+}
+
+/// Retains the selected complete table and all returned pre-open observations.
+///
+/// The resource pair is never exposed. Admission borrows only the genuine
+/// conditional component owner, then uses the same V3 startup engine. This
+/// proves no Project, native-suffix, floor or method-47 authorization.
+#[must_use]
+pub struct StorageResourceRecipientCaptureV1 {
+    table: StorageInitialActivationTableV1,
+    names: Option<Result<(u32, String), StorageLaunchCaptureErrorV3>>,
+    entries: Option<[Option<OwnedFd>; 9]>,
+    listeners: [Option<Result<RecordSubjectListener, SeqpacketError>>; 6],
+    captured: Option<Result<CapturedStorageLaunchV3, StorageLaunchCaptureErrorV3>>,
+    paths: Option<Result<(), SeqpacketError>>,
+    component: Option<StorageComponentEnvelopeOriginalV1>,
+    before: Option<StorageComponentPostV1>,
+    startup: Option<Result<StorageWorkerPartsV3, StorageWorkerOriginAdmissionErrorV3>>,
+    after: Option<StorageComponentPostV1>,
+    first: Option<RecipientFailure>,
+    attempted: bool,
+    admitted: bool,
+}
+
+impl StorageResourceRecipientCaptureV1 {
+    /// Prearms fixed resident destinations without observing startup.
+    pub const fn begin() -> Self {
+        Self {
+            table: StorageInitialActivationTableV1::new(),
+            names: None,
+            entries: None,
+            listeners: [None, None, None, None, None, None],
+            captured: None,
+            paths: None,
+            component: None,
+            before: None,
+            startup: None,
+            after: None,
+            first: None,
+            attempted: false,
+            admitted: false,
+        }
+    }
+
+    /// Captures the strict selected table once, retaining actual returned debt.
+    ///
+    /// Returns only a stopping status; [`Self::failure`] borrows the original
+    /// cause. The lower listener adopter cannot expose an FD it rejects.
+    pub fn capture_once(&mut self) -> bool {
+        if self.attempted {
+            self.first.get_or_insert(RecipientFailure::Closed);
+            return false;
+        }
+        self.attempted = true;
+        self.names = Some(selected_startup_names());
+        let count = match self.names.as_ref() {
+            Some(Ok((count, _))) => *count as usize,
+            _ => {
+                self.first = Some(RecipientFailure::Names);
+                return false;
+            }
+        };
+        if self.table.observe_once(count).is_err() {
+            self.first = Some(RecipientFailure::Table);
+            return false;
+        }
+        self.entries = self.table.take_completed_entries();
+        let Some(entries) = self.entries.as_mut() else {
+            self.first = Some(RecipientFailure::Closed);
+            return false;
+        };
+        let Some(Ok((_, names))) = self.names.as_ref() else {
+            self.first = Some(RecipientFailure::Closed);
+            return false;
+        };
+        self.captured = Some(adopt_selected_roles(
+            names, entries, &mut self.listeners, &mut self.component,
+        ));
+        if self.captured.as_ref().is_some_and(Result::is_err) {
+            self.first = Some(RecipientFailure::Capture);
+            return false;
+        }
+        if let Some(Ok(captured)) = self.captured.as_ref() {
+            let (controller, export, live_export, zfs_hold, operator_repair, existing_output) =
+                &captured.listeners;
+            self.paths = Some(require_storage_listener_paths(
+                controller, export, live_export, zfs_hold, operator_repair, existing_output,
+            ));
+        }
+        if self.paths.as_ref().is_some_and(Result::is_err) {
+            self.first = Some(RecipientFailure::Paths);
+            return false;
+        }
+        true
+    }
+
+    /// Admits the same component before the existing startup custody costs.
+    ///
+    /// The complete Startup Result is parked before the independent after-post,
+    /// even on failure. No loan survives a mutable transfer of its original.
+    pub fn admit_worker_once(&mut self) -> bool {
+        if self.first.is_some() || !self.attempted || self.admitted {
+            self.first.get_or_insert(RecipientFailure::Closed);
+            return false;
+        }
+        self.admitted = true;
+        let Some(component) = self.component.as_mut() else {
+            self.first = Some(RecipientFailure::Closed);
+            return false;
+        };
+        if component.admit_once().is_err() {
+            self.first = Some(RecipientFailure::Component);
+            return false;
+        }
+        let loan = match component.borrow_preopen() {
+            Ok(loan) => loan,
+            Err(_) => {
+                self.first = Some(RecipientFailure::Component);
+                return false;
+            }
+        };
+        self.before = Some(loan.observe_current());
+        if self.before.as_ref().is_some_and(|post| post.failure().is_some()) {
+            self.first = Some(RecipientFailure::Before);
+        } else {
+            match self.captured.take() {
+                Some(Ok(captured)) => {
+                    self.startup = Some(admit_captured(captured));
+                    if self.startup.as_ref().is_some_and(Result::is_err) {
+                        self.first = Some(RecipientFailure::Startup);
+                    }
+                }
+                _ => self.first = Some(RecipientFailure::Closed),
+            }
+        }
+        self.after = Some(loan.observe_current());
+        if self.after.as_ref().is_some_and(|post| post.failure().is_some()) {
+            self.first.get_or_insert(RecipientFailure::After);
+        }
+        self.first.is_none()
+    }
+
+    /// Borrows the actual earliest error without replacing later resident debt.
+    pub fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        let cause: Option<&(dyn std::error::Error + 'static)> = match self.first? {
+            RecipientFailure::Names => self.names.as_ref().and_then(|result| {
+                result.as_ref().err().map(|error| error as &dyn std::error::Error)
+            }),
+            RecipientFailure::Table => self.table.failure().map(|error| error as &dyn std::error::Error),
+            RecipientFailure::Capture => self.listeners.iter().filter_map(Option::as_ref)
+                .find_map(|result| result.as_ref().err().map(|error| error as &dyn std::error::Error))
+                .or_else(|| self.captured.as_ref().and_then(|result| {
+                    result.as_ref().err().map(|error| error as &dyn std::error::Error)
+                })),
+            RecipientFailure::Component => self.component.as_ref()
+                .and_then(|component| component.borrow_preopen().err()),
+            RecipientFailure::Paths => self.paths.as_ref().and_then(|result| {
+                result.as_ref().err().map(|error| error as &dyn std::error::Error)
+            }),
+            RecipientFailure::Before => self.before.as_ref().and_then(StorageComponentPostV1::failure),
+            RecipientFailure::Startup => self.startup.as_ref().and_then(|result| {
+                result.as_ref().err().map(|error| error as &dyn std::error::Error)
+            }),
+            RecipientFailure::After => self.after.as_ref().and_then(StorageComponentPostV1::failure),
+            RecipientFailure::Closed => Some(&StorageWorkerOriginCauseV3::Closed),
+        };
+        cause.or(Some(&StorageWorkerOriginCauseV3::Closed))
+    }
+
+    /// Transfers admitted listeners and startup while keeping the pair opaque.
+    ///
+    /// # Errors
+    ///
+    /// Owns this entire negative attempt, including failed Startup custody.
+    pub fn into_worker_parts(mut self) -> Result<StorageWorkerPartsV3, StorageResourceRecipientErrorV1> {
+        if self.first.is_none() && self.admitted
+            && matches!(self.startup.as_ref(), Some(Ok((_, _, Some(_)))))
+            && self.component.is_some() && self.before.is_some() && self.after.is_some()
+        {
+            if let (Some(Ok((listeners, image, Some(mut startup)))), Some(component), Some(before), Some(after)) = (
+                self.startup.take(), self.component.take(), self.before.take(), self.after.take(),
+            ) {
+                startup.recipient = Some(StorageResourceRecipientCustodyV1 {
+                    component, before, after,
+                });
+                return Ok((listeners, image, Some(startup)));
+            }
+            self.first = Some(RecipientFailure::Closed);
+        }
+        self.first.get_or_insert(RecipientFailure::Closed);
+        Err(StorageResourceRecipientErrorV1 { original: self })
+    }
+}
+
+impl Drop for StorageResourceRecipientCaptureV1 {
+    fn drop(&mut self) {
+        // The returned recipient remains resident through an entered unwind.
+        // Ordinary disposal does not refund or reconstruct PID1 enrollment.
+        if std::thread::panicking() {
+            std::process::abort();
+        }
+    }
+}
+
+/// Owns a failed selected recipient without exporting or reopening its pair.
+pub struct StorageResourceRecipientErrorV1 {
+    original: StorageResourceRecipientCaptureV1,
+}
+
+impl std::fmt::Debug for StorageResourceRecipientErrorV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("StorageResourceRecipientErrorV1")
+            .field("cause", &self.original.failure()).finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for StorageResourceRecipientErrorV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.original.failure() {
+            Some(error) => std::fmt::Display::fmt(error, formatter),
+            None => std::fmt::Display::fmt(&StorageWorkerOriginCauseV3::Closed, formatter),
+        }
+    }
+}
+
+impl std::error::Error for StorageResourceRecipientErrorV1 {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.original.failure()
+    }
+}
+
+struct StorageResourceRecipientCustodyV1 {
+    component: StorageComponentEnvelopeOriginalV1,
+    before: StorageComponentPostV1,
+    after: StorageComponentPostV1,
+}
+
+fn selected_startup_names() -> Result<(u32, String), StorageLaunchCaptureErrorV3> {
+    let listen_pid = environment_u32("LISTEN_PID")?;
+    let current_pid = u32::try_from(rustix::process::getpid().as_raw_nonzero().get())
+        .map_err(|_| activation_error("current PID does not fit u32"))?;
+    let count = environment_u32("LISTEN_FDS")?;
+    let names = std::env::var("LISTEN_FDNAMES")
+        .map_err(|_| activation_error("activated descriptor names are absent"))?;
+    if listen_pid != current_pid || !(5..=9).contains(&count)
+        || names.len() > 9 * 256 || !names.is_ascii()
+        || names.bytes().any(|byte| byte.is_ascii_control())
+    {
+        return Err(activation_error("selected Storage startup table differs"));
+    }
+    let parsed = names.split(':').collect::<Vec<_>>();
+    let ordinary = parsed.iter().copied().filter(|name| {
+        !matches!(*name, RESOURCE_POLICY_NAME | RESOURCE_ENROLLMENT_NAME)
+    }).collect::<Vec<_>>();
+    if parsed.len() != count as usize
+        || parsed.iter().filter(|name| **name == RESOURCE_POLICY_NAME).count() != 1
+        || parsed.iter().filter(|name| **name == RESOURCE_ENROLLMENT_NAME).count() != 1
+        || ordinary.iter().filter(|name| **name == PID1_LAUNCH_IMAGE_FD_NAME).count() != 1
+        || !valid_startup_names(&ordinary, count - 2)
+    {
+        return Err(activation_error("selected Storage startup roles differ"));
+    }
+    Ok((count, names))
+}
+
+fn adopt_selected_roles(
+    names: &str,
+    entries: &mut [Option<OwnedFd>; 9],
+    listeners: &mut [Option<Result<RecordSubjectListener, SeqpacketError>>; 6],
+    component: &mut Option<StorageComponentEnvelopeOriginalV1>,
+) -> Result<CapturedStorageLaunchV3, StorageLaunchCaptureErrorV3> {
+    let position = |role| names.split(':').position(|name| name == role);
+    let mut take_role = |role| position(role).and_then(|index| entries[index].take());
+    let policy = take_role(RESOURCE_POLICY_NAME)
+        .ok_or_else(|| activation_error("original resource policy is absent"))?;
+    let enrollment = take_role(RESOURCE_ENROLLMENT_NAME)
+        .ok_or_else(|| activation_error("original resource enrollment is absent"))?;
+    *component = Some(StorageComponentEnvelopeOriginalV1::from_original_table(policy, enrollment));
+
+    for (slot, role) in listeners.iter_mut().zip([
+        EXPECTED_FD_NAME, EXPORT_FD_NAME, LIVE_EXPORT_FD_NAME, ZFS_HOLD_FD_NAME,
+        OPERATOR_REPAIR_FD_NAME, EXISTING_OUTPUT_FD_NAME,
+    ]) {
+        if let Some(descriptor) = take_role(role) {
+            *slot = Some(RecordSubjectListener::from_owned(descriptor));
+            if slot.as_ref().is_some_and(Result::is_err) {
+                // The whole actual listener error is resident in its slot.
+                return Err(activation_error("selected Storage listener admission failed"));
+            }
+        }
+    }
+    let mut take_listener = |index: usize| match listeners[index].take() {
+        Some(Ok(listener)) => Some(listener),
+        _ => None,
+    };
+    let controller = take_listener(0).ok_or_else(|| activation_error("controller listener is absent"))?;
+    let export = take_listener(1).ok_or_else(|| activation_error("root-export listener is absent"))?;
+    let listeners = (
+        controller, export, take_listener(2), take_listener(3), take_listener(4), take_listener(5),
+    );
+    // The outer capture parks all listeners before their named-path check.
+    let captured = CapturedStorageLaunchV3 {
+        listeners,
+        pid1_image: take_role(PID1_LAUNCH_IMAGE_FD_NAME),
+    };
+    Ok(captured)
+}
+
 // Optional slots park each acquired original before its first postcheck. A
 // failed admission retains this same structure rather than rebuilding a DTO.
 #[derive(Default)]
@@ -393,6 +751,7 @@ struct StartupCustody {
 pub struct StorageWorkerOriginV3 {
     custody: StartupCustody,
     open: bool,
+    recipient: Option<StorageResourceRecipientCustodyV1>,
 }
 
 impl StorageWorkerOriginV3 {
@@ -460,6 +819,7 @@ fn admit_captured(
         Some(StorageWorkerOriginV3 {
             custody: *custody,
             open: true,
+            recipient: None,
         }),
     ))
 }

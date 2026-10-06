@@ -30,24 +30,14 @@ static INITIAL_ACTIVATION_DUPLICATED: AtomicBool = AtomicBool::new(false);
 /// until intentional process termination; armed Drop aborts before field release.
 #[must_use]
 pub struct ControllerInitialActivationTableV1 {
-    descriptors: [Option<OwnedFd>; 6],
-    count: usize,
-    attempted: bool,
-    complete: bool,
-    failure: Option<Error>,
-    armed: bool,
+    original: FixedInitialActivationTable<6>,
 }
 
 impl ControllerInitialActivationTableV1 {
     /// Creates empty fixed storage without reading the descriptor table.
     pub const fn new() -> Self {
         Self {
-            descriptors: [None, None, None, None, None, None],
-            count: 0,
-            attempted: false,
-            complete: false,
-            failure: None,
-            armed: true,
+            original: FixedInitialActivationTable::new(),
         }
     }
 
@@ -57,30 +47,17 @@ impl ControllerInitialActivationTableV1 {
     /// Keeps the first actual duplication, flag or complete-table refusal.
     /// A repeated call ends observation without touching the process table.
     pub fn observe_once(&mut self, count: usize) -> std::result::Result<(), &Error> {
-        if self.attempted {
-            self.complete = false;
-            return Err(self.failure.get_or_insert_with(|| {
-                Error::invalid("Controller initial table", "observation is closed")
-            }));
-        }
-        self.attempted = true;
-
-        let result = {
-            let _unwind = AbortInitialCaptureUnwind;
-            self.observe_prefix(count)
-        };
-        match result {
-            Ok(()) => {
-                self.complete = true;
-                Ok(())
-            }
-            Err(error) => Err(self.failure.get_or_insert(error)),
-        }
+        self.original.observe_once(
+            count,
+            "Controller initial table",
+            "count exceeds six slots",
+            "observation is closed",
+        )
     }
 
     /// Borrows the permanently retained first observation failure.
     pub fn failure(&self) -> Option<&Error> {
-        self.failure.as_ref()
+        self.original.failure()
     }
 
     /// Moves the complete fixed slots once without another observation.
@@ -89,40 +66,7 @@ impl ControllerInitialActivationTableV1 {
     /// No failed or interrupted observation exposes its successful prefix.
     #[must_use]
     pub fn take_completed_entries(&mut self) -> Option<[Option<OwnedFd>; 6]> {
-        if !self.complete
-            || self.count > self.descriptors.len()
-            || self.descriptors[..self.count].iter().any(Option::is_none)
-            || self.descriptors[self.count..].iter().any(Option::is_some)
-        {
-            return None;
-        }
-        let descriptors = std::mem::replace(
-            &mut self.descriptors, [None, None, None, None, None, None],
-        );
-        self.complete = false;
-        self.armed = false;
-        Some(descriptors)
-    }
-
-    fn observe_prefix(&mut self, count: usize) -> Result<()> {
-        begin_initial_activation_observation()?;
-        if count > self.descriptors.len() {
-            return Err(Error::invalid("Controller initial table", "count exceeds six slots"));
-        }
-        self.count = count;
-        let numbers = contiguous_numbers(SYSTEMD_ACTIVATION_FD_BASE, count)?;
-        for (slot, number) in self.descriptors.iter_mut().zip(&numbers) {
-            *slot = Some(duplicate_inherited_descriptor(*number)?);
-        }
-        for number in &numbers {
-            mark_inherited_descriptor_close_on_exec(*number)?;
-        }
-
-        use std::os::fd::AsRawFd as _;
-        let expected = [0, 1, 2].into_iter().chain(numbers)
-            .chain(self.descriptors.iter().flatten().map(|descriptor| descriptor.as_raw_fd()))
-            .collect::<BTreeSet<_>>();
-        require_initial_table_bookends(&expected)
+        self.original.take_completed_entries()
     }
 }
 
@@ -134,6 +78,155 @@ impl Default for ControllerInitialActivationTableV1 {
 
 impl Drop for ControllerInitialActivationTableV1 {
     fn drop(&mut self) {
+        self.original.abort_if_armed();
+    }
+}
+
+struct AbortInitialCaptureUnwind;
+
+/// Retains Storage's fixed listener, image and resource-enrollment prefix.
+///
+/// Construction performs no observation. These nine slots are only descriptor
+/// DATA; the recipient separately validates each fixed name and original role.
+/// Failed or abandoned attempts retain their prefix until process termination.
+#[must_use]
+pub struct StorageInitialActivationTableV1 {
+    original: FixedInitialActivationTable<9>,
+}
+
+impl StorageInitialActivationTableV1 {
+    /// Creates resident slots without observing the inherited table.
+    pub const fn new() -> Self {
+        Self {
+            original: FixedInitialActivationTable::new(),
+        }
+    }
+
+    /// Observes the complete original startup prefix once.
+    ///
+    /// # Errors
+    ///
+    /// Retains the first duplication, flag or complete-table failure. A repeat
+    /// closes the destination without touching the process table again.
+    pub fn observe_once(&mut self, count: usize) -> std::result::Result<(), &Error> {
+        self.original.observe_once(
+            count,
+            "Storage initial table",
+            "count exceeds nine slots",
+            "observation is closed",
+        )
+    }
+
+    /// Borrows the actual first observation failure.
+    pub fn failure(&self) -> Option<&Error> {
+        self.original.failure()
+    }
+
+    /// Transfers only a complete fixed table without another observation.
+    ///
+    /// The caller parks all returned entries before any fallible continuation.
+    #[must_use]
+    pub fn take_completed_entries(&mut self) -> Option<[Option<OwnedFd>; 9]> {
+        self.original.take_completed_entries()
+    }
+}
+
+impl Default for StorageInitialActivationTableV1 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for StorageInitialActivationTableV1 {
+    fn drop(&mut self) {
+        self.original.abort_if_armed();
+    }
+}
+
+// Only the two closed wrappers instantiate this owner. Field order retains
+// descriptor-before-error release after the shared abort fence is disarmed.
+struct FixedInitialActivationTable<const N: usize> {
+    descriptors: [Option<OwnedFd>; N],
+    count: usize,
+    attempted: bool,
+    complete: bool,
+    failure: Option<Error>,
+    armed: bool,
+}
+
+impl<const N: usize> FixedInitialActivationTable<N> {
+    const fn new() -> Self {
+        Self {
+            descriptors: [const { None }; N],
+            count: 0,
+            attempted: false,
+            complete: false,
+            failure: None,
+            armed: true,
+        }
+    }
+
+    fn observe_once(
+        &mut self,
+        count: usize,
+        context: &'static str,
+        size_refusal: &'static str,
+        repeat_refusal: &'static str,
+    ) -> std::result::Result<(), &Error> {
+        if self.attempted {
+            self.complete = false;
+            return Err(self.failure.get_or_insert_with(|| {
+                Error::invalid(context, repeat_refusal)
+            }));
+        }
+        self.attempted = true;
+
+        let result = {
+            let _unwind = AbortInitialCaptureUnwind;
+            observe_initial_prefix(
+                &mut self.descriptors,
+                count,
+                &mut self.count,
+                context,
+                size_refusal,
+            )
+        };
+
+        match result {
+            Ok(()) => {
+                self.complete = true;
+                Ok(())
+            }
+            Err(error) => Err(self.failure.get_or_insert(error)),
+        }
+    }
+
+    fn failure(&self) -> Option<&Error> {
+        self.failure.as_ref()
+    }
+
+    fn take_completed_entries(&mut self) -> Option<[Option<OwnedFd>; N]> {
+        if !self.complete
+            || self.count > self.descriptors.len()
+            || self.descriptors[..self.count].iter().any(Option::is_none)
+            || self.descriptors[self.count..].iter().any(Option::is_some)
+        {
+            return None;
+        }
+
+        let descriptors = std::mem::replace(
+            &mut self.descriptors,
+            [const { None }; N],
+        );
+
+        self.complete = false;
+        self.armed = false;
+        Some(descriptors)
+    }
+
+    fn abort_if_armed(&mut self) {
+        // Public and defensive private Drop share this fence before any field
+        // release, even when observation was never entered.
         if self.armed {
             self.complete = false;
             std::process::abort();
@@ -141,7 +234,40 @@ impl Drop for ControllerInitialActivationTableV1 {
     }
 }
 
-struct AbortInitialCaptureUnwind;
+impl<const N: usize> Drop for FixedInitialActivationTable<N> {
+    fn drop(&mut self) {
+        self.abort_if_armed();
+    }
+}
+
+// Both closed reservoirs use the same duplicate/flag/full-table engine. The
+// ordinary Vec-returning facade remains independent and unchanged.
+fn observe_initial_prefix(
+    descriptors: &mut [Option<OwnedFd>],
+    count: usize,
+    observed_count: &mut usize,
+    context: &'static str,
+    size_refusal: &'static str,
+) -> Result<()> {
+    begin_initial_activation_observation()?;
+    if count > descriptors.len() {
+        return Err(Error::invalid(context, size_refusal));
+    }
+    *observed_count = count;
+    let numbers = contiguous_numbers(SYSTEMD_ACTIVATION_FD_BASE, count)?;
+    for (slot, number) in descriptors.iter_mut().zip(&numbers) {
+        *slot = Some(duplicate_inherited_descriptor(*number)?);
+    }
+    for number in &numbers {
+        mark_inherited_descriptor_close_on_exec(*number)?;
+    }
+
+    use std::os::fd::AsRawFd as _;
+    let expected = [0, 1, 2].into_iter().chain(numbers)
+        .chain(descriptors.iter().flatten().map(|descriptor| descriptor.as_raw_fd()))
+        .collect::<BTreeSet<_>>();
+    require_initial_table_bookends(&expected)
+}
 
 /// Retains Host's fixed three listeners and two original launch-file entries.
 ///

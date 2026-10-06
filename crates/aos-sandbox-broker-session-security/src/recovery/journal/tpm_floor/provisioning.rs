@@ -66,6 +66,23 @@ impl ModePinV1 {
         Self::open(FloorEndpointV1::StorageBroker)
     }
 
+    /// Checks Storage launch presence through this same fixed original mode.
+    ///
+    /// This borrows comparison data; it creates no floor or Required permission.
+    ///
+    /// # Errors
+    /// Rejects another fixed purpose, mismatched presence, changed mode data or
+    /// the unchanged Required owner-confinement failure.
+    pub(crate) fn require_storage_worker_launch_image_presence(
+        &self,
+        supplied: bool,
+    ) -> Result<(), FloorErrorV1> {
+        if self.path != Path::new("/etc/aos/method46-tpm-floor/storage-mode") {
+            return Err(FloorErrorV1::Provisioning);
+        }
+        super::runtime::require_storage_worker_launch_image_presence(self, supplied)
+    }
+
     /// Retains only the immutable mode named by the signed Host contract.
     ///
     /// # Errors
