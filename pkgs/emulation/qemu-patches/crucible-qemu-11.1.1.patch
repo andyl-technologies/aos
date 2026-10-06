@@ -1,112 +1,47 @@
-From f67d9cd50d8902b88d6ae8f0b7c81671478e9e90 Mon Sep 17 00:00:00 2001
+From 1f935d63cef769d115d82467d4b7239649403e61 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Sat, 3 Oct 2026 07:08:17 +0000
-Subject: [PATCH] Integrate deterministic execution and private fork I/O
- custody
+Date: Tue, 6 Oct 2026 09:58:45 -0700
+Subject: [PATCH] Integrate deterministic execution and inline TCG page
+ collections
 
-Retain versioned process control, deterministic virtual coordinates,
-private child resources, and canonical guest-state projection. Drain
-the original registered reader and native callback before admitting
-template barriers. Preserve stopped-owner generation, exact time,
-connection lifetime, and descriptor failure refusal.
+Keep small TCG invalidation page-lock sets in four caller-owned sorted
+entries. Create the tree only on the fifth distinct existing page and
+transfer held and busy state into stable heap entries without releasing
+locks. Retain discovery acquisition order, ascending retry and release,
+opposite-page deduplication, and precise-SMC cleanup before nonlocal exit.
 
-End an admitted current-CPU stop at the TCG chain while retaining the
-asynchronous runstate transition. Reconstruct each child's private
-Linux epoll backend under the original authenticated fork barrier,
-preserving active and standby modes and the parent's kernel object.
-Validate retained handler membership and inherited descriptor identity
-before starting child workers.
+Retain versioned process control, exact virtual coordinates, independent
+child resources, canonical guest-state projection and complete matching
+source integration. Preserve stopped-owner generations, registered reader
+and callback custody, FIFO barriers, fault settlement and descriptor
+failure refusal across snapshot, restore and retained fork operations.
 
-Observe stop admission, publication, rearm refusal, and original wake
-reader outcomes only under the existing delivery trace opt-in. Keep
-unowned architecture and unlocked runstate fields unavailable, retain
-late generations, and preserve native operation and error semantics.
-Carry production-body regressions and explicit causal negatives.
-Declare extracted public entry points with their original types so
-configured prototype diagnostics remain enforced in the fork fixture.
+Preserve accelerator instance classification, cold continuation checks,
+empty fault-queue admission, active instruction-context observation,
+direct register-rule presence, cached tick-mode admission and native
+mutex owner identity. Keep tracked waiter updates under the existing
+registry guard, with unsigned wrap, underflow refusal, condition waiter
+identity and retained fork transaction ordering unchanged.
 
-Transfer an outstanding running-owner control request at genuine stopped
-publication to the existing paused owner. Preserve the original request
-counters, stop-clearing rearm, flush and callback ownership checks.
-Exercise reader-before-publication and reader-after-publication ordering,
-no-request behavior, and nested next-generation exactly-once completion.
+Keep ordinary RR event ordering and Sim flush fixed points. Preserve all
+guest accesses, invalidation ranges, PageDesc and TB membership, dirty
+accounting, callback order, replay clock observations and scheduling.
 
-Avoid empty fault-queue mutex and clock work with an atomically published
-pending count, retaining lifecycle and custom deadlines. Observe instruction
-completion icount only after finding an active execution context. Exercise
-production queue transitions, restored counts, cross-thread publication,
-active completion/exception semantics, and causal negative controls.
+Exercise actual page collection, native fast invalidation, locked range
+handling and native page removal with explicit providers. Compare exact
+baseline lock traces for zero, missing, duplicate, boundary and spilled
+sets, including busy trylocks and precise-SMC nonlocal cleanup. Carry
+causal controls for omitted pages, lost spill state, missing cleanup,
+reversed iteration, absent first-page admission and eager tree creation.
 
-Cache tracked Linux mutex owner thread IDs after their first observation.
-Suspend the cache across fork callback ordering, retain uncached fallback,
-and refresh native child ownership before registry reconstruction. Verify
-real worker/fork IDs, earlier RCU child callbacks, parent stability,
-registration failure, syscall-free steady tracking, and causal negatives.
+Extend the system-mode x86 SMC regression with a shared first physical
+page and five distinct second pages, patches through both memberships,
+spilled current-TB cleanup and restored temporary mappings. Retain the
+strict public prototypes and compiler macros in the native waiter proof.
 
-Check snapshot continuation before consulting the accelerator quantum.
-Avoid accelerator identity lookups on cold TB paths while retaining the
-predicate result, active continuation, RR cursor and TB semantics.
-Exercise production genesis, resume, selection and VMState post-load
-bodies, exhaustive predicate cases, and the reversed-order negative.
-
-Classify the current accelerator instance once before publication and its
-initialization callback. Preserve exact sim display name matching, independent
-failed-init retries, nameless and early startup false results, reset and restore
-identity, fork inheritance, diagnostic names, and predicate operand order.
-Use the instance classification on icount, RR and fault mode predicates without
-changing timer effects, execution counts, scheduling or BQL fences. Exercise
-production init, getter and predicate bodies, all modes, inherited and custom
-class names, call-count and order assertions, and compiled causal negatives.
-
-Query register-rule presence directly while retaining initialization and the
-complete ordered rule scan. Preserve instruction-context and phase-deadline
-conditions and their evaluation order. Exercise production bodies, arbitrary
-kinds, complete comparison reads, modeled vector replacement, native fork
-inheritance and compiled causal negatives. Retain uninstrumented O2 object
-evidence with explicit reduced-translation-unit and runtime limits.
-
-Restrict pre-stop FIFO invalidation barriers to the initialized Sim
-accelerator, retaining every common-event pass and FIFO owner restoration.
-Restore ordinary common stop-before-work ordering and avoid redundant empty
-queue locks on healthy single-threaded TCG turns. Preserve Sim global flush
-fixed points and callback/stop ordering. Exercise production wrapper, drain,
-common, FIFO, wait, kick and pause/resume bodies with causal negatives and a
-Git-free source-archive fixture. Keep bounded-provider and full-process
-qualification limits explicit.
-
-Use the cached accelerator instance classification when observing Sim ticks.
-Retain mode-before-icount admission, precise-only observation, the -1 error
-and signed tick result. Exercise the production API body with early and
-nameless safe-getter contracts, named mode matrices, lifecycle identity
-continuity, exact query order and counts, signed edge values and compiled
-causal negatives. Carry the exact rule-presence lazy-memory test adapter.
-Keep ordinary RR barriers unchanged and qualification limits explicit.
-
-Use the existing registry guard for tracked mutex waiter counter updates
-without redundant atomic read-modify-write operations. Preserve unsigned
-wrap, underflow refusal, condition waiter identity, ownership transitions,
-all inventory windows and retained fork transaction ordering. Exercise real
-pthread mutex and condition operations, contended acquisition, timeout and
-error paths, differential inventory traces and five causal negatives.
-
-Collect the opposite TB page directly from its tagged page-list membership.
-Skip a missing or already held page while preserving transitive discovery,
-sorted lock acquisition, retry and release semantics. Exercise production
-collection bodies, both page tags, reversed physical order, same-page
-membership, lock contention and the omitted-page causal negative.
-
-Carry a system-mode x86 self-modifying-code regression for single-page and
-cross-page instruction writes, including reversed physical mappings. Keep
-production-body fixture coverage and full-system qualification distinct.
-
-Use the real compiler annotation and branch-prediction macros in the
-native waiter and page-collection fixtures. Preserve strict prototype and
-warning diagnostics, active test assertions and all production bodies.
-
-Declare extracted public mutex inventory and condition functions with
-their original header signatures. Retain strict prototype and declaration
-warnings, active assertions and production counter ordering in candidate
-and differential-reference translation units.
+Strict source-built syntax checks pass for the prototype, baseline and
+all six mutations. The inline collection remains a prototype pending
+configured native execution, guest, replay and performance qualification.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -3049,7 +2984,7 @@ index 1ffcb4b2d2d0fc37c80f92ebcd76ed8a85fa7cae..9645e74d829fb2d8fd078305a5907b90
      tcg_gen_ld_i32(cpu_index, tcg_env,
                     offsetof(CPUState, cpu_index) - sizeof(CPUState));
 diff --git a/accel/tcg/tb-maint.c b/accel/tcg/tb-maint.c
-index 4313864d2c5d24e30dc1cfbcdf9a81eb7eb0e323..7b69161e5dcb3925ede6a107b52cbefd76827482 100644
+index 4313864d2c5d24e30dc1cfbcdf9a81eb7eb0e323..66086b9091d801f51cf55413a3ecc151b9aabc32 100644
 --- a/accel/tcg/tb-maint.c
 +++ b/accel/tcg/tb-maint.c
 @@ -20,6 +20,7 @@
@@ -3060,7 +2995,254 @@ index 4313864d2c5d24e30dc1cfbcdf9a81eb7eb0e323..7b69161e5dcb3925ede6a107b52cbefd
  #include "exec/cputlb.h"
  #include "exec/log.h"
  #include "exec/page-protection.h"
-@@ -639,9 +640,13 @@ static struct page_collection *page_collection_lock(tb_page_addr_t start,
+@@ -292,29 +293,30 @@ struct page_entry {
+     bool locked;
+ };
+ 
++#define PAGE_COLLECTION_INLINE_CAPACITY 4
++
+ /**
+- * struct page_collection - tracks a set of pages (i.e. &struct page_entry's)
+- * @tree:   Binary search tree (BST) of the pages, with key == page index
+- * @max:    Pointer to the page in @tree with the highest page index
+- *
+- * To avoid deadlock we lock pages in ascending order of page index.
+- * When operating on a set of pages, we need to keep track of them so that
+- * we can lock them in order and also unlock them later. For this we collect
+- * pages (i.e. &struct page_entry's) in a binary search @tree. Given that the
+- * @tree implementation we use does not provide an O(1) operation to obtain the
+- * highest-ranked element, we use @max to keep track of the inserted page
+- * with the highest index. This is valuable because if a page is not in
+- * the tree and its index is higher than @max's, then we can lock it
+- * without breaking the locking order rule.
++ * struct page_collection - caller-owned set of page locks
++ * @tree: Heap entries after the inline capacity is exceeded; NULL otherwise
++ * @max_index: Highest collected index, valid when the collection is nonempty
++ * @inline_count: Number of active inline entries; zero after spilling
++ * @inline_entries: Entries sorted by page index, owned by this collection
+  *
+- * Note on naming: 'struct page_set' would be shorter, but we already have a few
+- * page_set_*() helpers, so page_collection is used instead to avoid confusion.
++ * Initial discovery may trylock lower indexes, but only blocks above the
++ * highest collected index. After a failed trylock, all entries are unlocked
++ * and reacquired in ascending order. Sorting inline storage does not change
++ * the order in which discovery acquires locks.
+  *
+- * See also: page_collection_lock().
++ * Small collections need no allocations. Spilling transfers their lock
++ * ownership to stable heap entries without releasing any page locks. The
++ * collection itself stays in its caller's stack frame, including cleanup
++ * before a precise-SMC nonlocal exit.
+  */
+ struct page_collection {
+     QTree *tree;
+-    struct page_entry *max;
++    tb_page_addr_t max_index;
++    unsigned int inline_count;
++    struct page_entry inline_entries[PAGE_COLLECTION_INLINE_CAPACITY];
+ };
+ 
+ typedef int PageForEachNext;
+@@ -549,17 +551,115 @@ static gboolean page_entry_unlock(gpointer key, gpointer value, gpointer data)
+     return FALSE;
+ }
+ 
+-/*
+- * Trylock a page, and if successful, add the page to a collection.
+- * Returns true ("busy") if the page could not be locked; false otherwise.
+- */
++static gint tb_page_addr_cmp(gconstpointer ap, gconstpointer bp, gpointer udata)
++{
++    tb_page_addr_t a = *(const tb_page_addr_t *)ap;
++    tb_page_addr_t b = *(const tb_page_addr_t *)bp;
++
++    if (a == b) {
++        return 0;
++    } else if (a < b) {
++        return -1;
++    }
++    return 1;
++}
++
++static struct page_entry *page_collection_lookup(struct page_collection *set,
++                                                tb_page_addr_t index)
++{
++    if (set->tree) {
++        return q_tree_lookup(set->tree, &index);
++    }
++
++    for (unsigned int i = 0; i < set->inline_count; i++) {
++        struct page_entry *pe = &set->inline_entries[i];
++
++        if (pe->index == index) {
++            return pe;
++        }
++        if (pe->index > index) {
++            break;
++        }
++    }
++    return NULL;
++}
++
++static void page_collection_spill(struct page_collection *set)
++{
++    QTree *tree;
++
++    g_assert(!set->tree);
++    g_assert(set->inline_count == PAGE_COLLECTION_INLINE_CAPACITY);
++
++    tree = q_tree_new_full(tb_page_addr_cmp, NULL, NULL, page_entry_destroy);
++    for (unsigned int i = 0; i < set->inline_count; i++) {
++        struct page_entry *pe = g_new(struct page_entry, 1);
++
++        /* Preserve held and busy entries; retry still owns their lock state. */
++        *pe = set->inline_entries[i];
++        q_tree_insert(tree, &pe->index, pe);
++    }
++
++    set->tree = tree;
++    set->inline_count = 0;
++}
++
++static struct page_entry *page_collection_insert(struct page_collection *set,
++                                                PageDesc *pd,
++                                                tb_page_addr_t index)
++{
++    struct page_entry *pe;
++    unsigned int position;
++
++    if (!set->tree && set->inline_count == PAGE_COLLECTION_INLINE_CAPACITY) {
++        page_collection_spill(set);
++    }
++    if (set->tree) {
++        pe = page_entry_new(pd, index);
++        q_tree_insert(set->tree, &pe->index, pe);
++        return pe;
++    }
++
++    for (position = 0; position < set->inline_count; position++) {
++        if (set->inline_entries[position].index > index) {
++            break;
++        }
++    }
++    memmove(&set->inline_entries[position + 1],
++            &set->inline_entries[position],
++            (set->inline_count - position) * sizeof(*pe));
++    pe = &set->inline_entries[position];
++    *pe = (struct page_entry) { .pd = pd, .index = index, .locked = false };
++    set->inline_count++;
++    return pe;
++}
++
++static void page_collection_foreach(struct page_collection *set,
++                                    GTraverseFunc callback)
++{
++    if (set->tree) {
++        q_tree_foreach(set->tree, callback, NULL);
++        return;
++    }
++
++    for (unsigned int i = 0; i < set->inline_count; i++) {
++        struct page_entry *pe = &set->inline_entries[i];
++
++        if (callback(&pe->index, pe, NULL)) {
++            break;
++        }
++    }
++}
++
++/* Returns true if the new page is busy; existing entries are already owned. */
+ static bool page_trylock_add(struct page_collection *set, tb_page_addr_t addr)
+ {
+     tb_page_addr_t index = addr >> TARGET_PAGE_BITS;
+     struct page_entry *pe;
+     PageDesc *pd;
++    bool in_order;
+ 
+-    pe = q_tree_lookup(set->tree, &index);
++    pe = page_collection_lookup(set, index);
+     if (pe) {
+         return false;
+     }
+@@ -569,47 +669,24 @@ static bool page_trylock_add(struct page_collection *set, tb_page_addr_t addr)
+         return false;
+     }
+ 
+-    pe = page_entry_new(pd, index);
+-    q_tree_insert(set->tree, &pe->index, pe);
+-
+-    /*
+-     * If this is either (1) the first insertion or (2) a page whose index
+-     * is higher than any other so far, just lock the page and move on.
+-     */
+-    if (set->max == NULL || pe->index > set->max->index) {
+-        set->max = pe;
++    in_order = (!set->tree && !set->inline_count) || index > set->max_index;
++    pe = page_collection_insert(set, pd, index);
++    if (in_order) {
++        set->max_index = index;
+         do_page_entry_lock(pe);
+         return false;
+     }
+-    /*
+-     * Try to acquire out-of-order lock; if busy, return busy so that we acquire
+-     * locks in order.
+-     */
+     return page_entry_trylock(pe);
+ }
+ 
+-static gint tb_page_addr_cmp(gconstpointer ap, gconstpointer bp, gpointer udata)
+-{
+-    tb_page_addr_t a = *(const tb_page_addr_t *)ap;
+-    tb_page_addr_t b = *(const tb_page_addr_t *)bp;
+-
+-    if (a == b) {
+-        return 0;
+-    } else if (a < b) {
+-        return -1;
+-    }
+-    return 1;
+-}
+-
+ /*
+  * Lock a range of pages ([@start,@last]) as well as the pages of all
+  * intersecting TBs.
+  * Locking order: acquire locks in ascending order of page index.
+  */
+-static struct page_collection *page_collection_lock(tb_page_addr_t start,
+-                                                    tb_page_addr_t last)
++static void page_collection_lock(struct page_collection *set,
++                                 tb_page_addr_t start, tb_page_addr_t last)
+ {
+-    struct page_collection *set = g_malloc(sizeof(*set));
+     tb_page_addr_t index;
+     PageDesc *pd;
+ 
+@@ -617,13 +694,13 @@ static struct page_collection *page_collection_lock(tb_page_addr_t start,
+     last >>= TARGET_PAGE_BITS;
+     g_assert(start <= last);
+ 
+-    set->tree = q_tree_new_full(tb_page_addr_cmp, NULL, NULL,
+-                                page_entry_destroy);
+-    set->max = NULL;
++    set->tree = NULL;
++    set->max_index = 0;
++    set->inline_count = 0;
+     assert_no_pages_locked();
+ 
+  retry:
+-    q_tree_foreach(set->tree, page_entry_lock, NULL);
++    page_collection_foreach(set, page_entry_lock);
+ 
+     for (index = start; index <= last; index++) {
+         TranslationBlock *tb;
+@@ -634,28 +711,41 @@ static struct page_collection *page_collection_lock(tb_page_addr_t start,
+             continue;
+         }
+         if (page_trylock_add(set, index << TARGET_PAGE_BITS)) {
+-            q_tree_foreach(set->tree, page_entry_unlock, NULL);
++            page_collection_foreach(set, page_entry_unlock);
+             goto retry;
          }
          assert_page_locked(pd);
          PAGE_FOR_EACH_TB(unused, unused, pd, tb, n) {
@@ -3075,8 +3257,79 @@ index 4313864d2c5d24e30dc1cfbcdf9a81eb7eb0e323..7b69161e5dcb3925ede6a107b52cbefd
 +                (other_addr >> TARGET_PAGE_BITS) != index &&
 +                page_trylock_add(set, other_addr)) {
                  /* drop all locks, and reacquire in order */
-                 q_tree_foreach(set->tree, page_entry_unlock, NULL);
+-                q_tree_foreach(set->tree, page_entry_unlock, NULL);
++                page_collection_foreach(set, page_entry_unlock);
                  goto retry;
+             }
+         }
+     }
+-    return set;
+ }
+ 
+ static void page_collection_unlock(struct page_collection *set)
+ {
+-    /* entries are unlocked and freed via page_entry_destroy */
+-    q_tree_destroy(set->tree);
+-    g_free(set);
++    if (set->tree) {
++        /* Heap entries release their page locks before they are freed. */
++        q_tree_destroy(set->tree);
++    } else {
++        for (unsigned int i = 0; i < set->inline_count; i++) {
++            struct page_entry *pe = &set->inline_entries[i];
++
++            g_assert(pe->locked);
++            page_unlock(pe->pd);
++        }
++    }
++    set->tree = NULL;
++    set->inline_count = 0;
+ }
+ 
+ /* Set to NULL all the 'first_tb' fields in all PageDescs. */
+@@ -1179,10 +1269,10 @@ tb_invalidate_phys_page_range__locked(CPUState *cpu,
+ void tb_invalidate_phys_range(CPUState *cpu, tb_page_addr_t start,
+                               tb_page_addr_t last)
+ {
+-    struct page_collection *pages;
++    struct page_collection pages;
+     tb_page_addr_t index, index_last;
+ 
+-    pages = page_collection_lock(start, last);
++    page_collection_lock(&pages, start, last);
+ 
+     index_last = last >> TARGET_PAGE_BITS;
+     for (index = start >> TARGET_PAGE_BITS; index <= index_last; index++) {
+@@ -1196,10 +1286,10 @@ void tb_invalidate_phys_range(CPUState *cpu, tb_page_addr_t start,
+         page_start = index << TARGET_PAGE_BITS;
+         page_last = page_start | ~TARGET_PAGE_MASK;
+         page_last = MIN(page_last, last);
+-        tb_invalidate_phys_page_range__locked(cpu, pages, pd,
++        tb_invalidate_phys_page_range__locked(cpu, &pages, pd,
+                                               page_start, page_last, 0);
+     }
+-    page_collection_unlock(pages);
++    page_collection_unlock(&pages);
+ }
+ 
+ /*
+@@ -1214,11 +1304,13 @@ void tb_invalidate_phys_range_fast(CPUState *cpu, ram_addr_t start,
+ 
+     if (p) {
+         ram_addr_t last = start + len - 1;
+-        struct page_collection *pages = page_collection_lock(start, last);
++        struct page_collection pages;
+ 
+-        tb_invalidate_phys_page_range__locked(cpu, pages, p,
++        page_collection_lock(&pages, start, last);
++
++        tb_invalidate_phys_page_range__locked(cpu, &pages, p,
+                                               start, last, ra);
+-        page_collection_unlock(pages);
++        page_collection_unlock(&pages);
+     }
+ }
+ 
 diff --git a/accel/tcg/tcg-accel-ops-icount.c b/accel/tcg/tcg-accel-ops-icount.c
 index d0f7b410fab3186f0359eed2b0c50dcab7d58b3e..ab3d984e1c76c500e35fe8cfd2cf747623a074b0 100644
 --- a/accel/tcg/tcg-accel-ops-icount.c
@@ -148102,10 +148355,10 @@ index d7f8f0ae0ad4ed24f91b1c44ec36fff81c37631e..1e4bc21cff92c508a934a2affb52c19a
    alias_target('test-plugins', t)
 diff --git a/tests/tcg/x86_64/system/self-modifying-code.c b/tests/tcg/x86_64/system/self-modifying-code.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..c5e26756c5abdc84f0be76461e8d61f12391ce3c
+index 0000000000000000000000000000000000000000..7a1f9001f3dcbbbd1f1a4678973b1f791210ff13
 --- /dev/null
 +++ b/tests/tcg/x86_64/system/self-modifying-code.c
-@@ -0,0 +1,150 @@
+@@ -0,0 +1,229 @@
 +/*
 + * SPDX-License-Identifier: GPL-2.0-or-later
 + *
@@ -148121,11 +148374,15 @@ index 0000000000000000000000000000000000000000..c5e26756c5abdc84f0be76461e8d61f1
 +#define PAGE_SIZE 4096
 +#define ADDRESS_MASK UINT64_C(0x000ffffffffff000)
 +#define TEST_MAPPING UINT64_C(0x40000000)
++#define SECOND_PAGE_COUNT 5
 +
 +static uint8_t code_pages[2 * PAGE_SIZE]
 +    __attribute__((aligned(PAGE_SIZE)));
 +
 +static uint64_t test_page_table[512]
++    __attribute__((aligned(PAGE_SIZE)));
++
++static uint8_t spill_pages[(SECOND_PAGE_COUNT + 1) * PAGE_SIZE]
 +    __attribute__((aligned(PAGE_SIZE)));
 +
 +static __attribute__((noinline)) uint32_t execute_code(volatile uint8_t *code)
@@ -148178,10 +148435,13 @@ index 0000000000000000000000000000000000000000..c5e26756c5abdc84f0be76461e8d61f1
 +    return check_value(name, code, UINT32_C(0x44332312));
 +}
 +
-+static void invalidate_mapping(void)
++static void invalidate_mapping(unsigned int pages)
 +{
-+    asm volatile("invlpg (%0)" :: "r"(TEST_MAPPING) : "memory");
-+    asm volatile("invlpg (%0)" :: "r"(TEST_MAPPING + PAGE_SIZE) : "memory");
++    for (unsigned int i = 0; i < pages; i++) {
++        uintptr_t address = TEST_MAPPING + i * PAGE_SIZE;
++
++        asm volatile("invlpg (%0)" :: "r"(address) : "memory");
++    }
 +}
 +
 +static bool check_reverse_mapping(void)
@@ -148201,18 +148461,17 @@ index 0000000000000000000000000000000000000000..c5e26756c5abdc84f0be76461e8d61f1
 +    test_page_table[0] = (uintptr_t)(code_pages + PAGE_SIZE) | 7;
 +    test_page_table[1] = (uintptr_t)code_pages | 7;
 +    directory[0] = (uintptr_t)test_page_table | 7;
-+    invalidate_mapping();
++    invalidate_mapping(2);
 +    passed = check_boundary("reverse physical pages",
 +                            (volatile uint8_t *)(uintptr_t)TEST_MAPPING);
 +
 +    directory[0] = original_entry;
-+    invalidate_mapping();
++    invalidate_mapping(2);
 +    return passed;
 +}
 +
-+static bool check_current_block(void)
++static bool check_current_block(volatile uint8_t *code)
 +{
-+    volatile uint8_t *code = code_pages + 128;
 +    static const uint8_t instructions[] = {
 +        /* movb $42, 1(%rip): patches the following instruction's immediate. */
 +        0xc6, 0x05, 0x01, 0x00, 0x00, 0x00, 0x2a,
@@ -148224,6 +148483,78 @@ index 0000000000000000000000000000000000000000..c5e26756c5abdc84f0be76461e8d61f1
 +        code[i] = instructions[i];
 +    }
 +    return check_value("current block", code, 42);
++}
++
++static bool check_shared_first_page(void)
++{
++    uint64_t root_address;
++    uint64_t *root, *directory_pointer, *directory;
++    uint64_t original_entry;
++    bool passed = false;
++
++    asm volatile("mov %%cr3, %0" : "=r"(root_address));
++    root = (uint64_t *)(uintptr_t)(root_address & ADDRESS_MASK);
++    directory_pointer = (uint64_t *)(uintptr_t)(root[0] & ADDRESS_MASK);
++    directory = (uint64_t *)(uintptr_t)(directory_pointer[1] & ADDRESS_MASK);
++    original_entry = directory[0];
++
++    /* Each boundary instruction shares page zero and has its own page one. */
++    for (unsigned int i = 0; i < SECOND_PAGE_COUNT; i++) {
++        test_page_table[2 * i] = (uintptr_t)spill_pages | 7;
++        test_page_table[2 * i + 1] =
++            (uintptr_t)(spill_pages + (i + 1) * PAGE_SIZE) | 7;
++    }
++    directory[0] = (uintptr_t)test_page_table | 7;
++    invalidate_mapping(SECOND_PAGE_COUNT * 2);
++
++    /* Populate every mapping before execution so all crossing TBs survive. */
++    for (unsigned int i = 0; i < SECOND_PAGE_COUNT; i++) {
++        volatile uint8_t *code = (volatile uint8_t *)(uintptr_t)
++            (TEST_MAPPING + (2 * i + 1) * PAGE_SIZE - 2);
++
++        emit_return(code, UINT32_C(0x44330011) + (i << 8));
++    }
++    for (unsigned int i = 0; i < SECOND_PAGE_COUNT; i++) {
++        volatile uint8_t *code = (volatile uint8_t *)(uintptr_t)
++            (TEST_MAPPING + (2 * i + 1) * PAGE_SIZE - 2);
++
++        if (!check_value("shared first page", code,
++                         UINT32_C(0x44330011) + (i << 8))) {
++            goto out;
++        }
++    }
++
++    /* Invalidation must retain every distinct second-page lock on spill. */
++    ((volatile uint8_t *)spill_pages)[PAGE_SIZE - 1] = 0x12;
++    for (unsigned int i = 0; i < SECOND_PAGE_COUNT; i++) {
++        volatile uint8_t *code = (volatile uint8_t *)(uintptr_t)
++            (TEST_MAPPING + (2 * i + 1) * PAGE_SIZE - 2);
++
++        if (!check_value("patch shared first page", code,
++                         UINT32_C(0x44330012) + (i << 8))) {
++            goto out;
++        }
++    }
++
++    ((volatile uint8_t *)spill_pages)[PAGE_SIZE] = 0x5a;
++    for (unsigned int i = 0; i < SECOND_PAGE_COUNT; i++) {
++        volatile uint8_t *code = (volatile uint8_t *)(uintptr_t)
++            (TEST_MAPPING + (2 * i + 1) * PAGE_SIZE - 2);
++        uint32_t expected = i ? UINT32_C(0x44330012) + (i << 8)
++                              : UINT32_C(0x44335a12);
++
++        if (!check_value("patch one second page", code, expected)) {
++            goto out;
++        }
++    }
++
++    /* The other crossing TBs force spill during a precise-SMC nonlocal exit. */
++    passed = check_current_block(spill_pages + 128);
++
++ out:
++    directory[0] = original_entry;
++    invalidate_mapping(SECOND_PAGE_COUNT * 2);
++    return passed;
 +}
 +
 +int main(void)
@@ -148249,7 +148580,8 @@ index 0000000000000000000000000000000000000000..c5e26756c5abdc84f0be76461e8d61f1
 +    }
 +
 +    if (!check_boundary("consecutive physical pages", code_pages) ||
-+        !check_reverse_mapping() || !check_current_block()) {
++        !check_reverse_mapping() || !check_shared_first_page() ||
++        !check_current_block(code_pages + 128)) {
 +        return 1;
 +    }
 +
@@ -182767,10 +183099,10 @@ index 0000000000000000000000000000000000000000..13ca7573b80183e1f73489c4b268a2e0
 +    main()
 diff --git a/tests/unit/test-crucible-tcg-page-collection.py b/tests/unit/test-crucible-tcg-page-collection.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..a8255fae1727f8c836a7bbf1257b79958fcd556a
+index 0000000000000000000000000000000000000000..0ff87185be3949fc09865db6b137e473a7922cbf
 --- /dev/null
 +++ b/tests/unit/test-crucible-tcg-page-collection.py
-@@ -0,0 +1,398 @@
+@@ -0,0 +1,758 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise native system-mode TB page collection and tagged-list insertion.
 +
@@ -182778,23 +183110,34 @@ index 0000000000000000000000000000000000000000..a8255fae1727f8c836a7bbf1257b7995
 +GLib owns the real tree; pthread mutexes provide page locks. A transient busy
 +trylock is injected explicitly to exercise deterministic retry ordering. The
 +PageDesc table and dirty-code notification are providers, not a guest MMU.
++The native fast invalidation, range body and page removal also execute for
++precise-SMC cleanup. CPU restoration, hash removal and jump unlinking are
++providers; a setjmp/longjmp boundary checks all locks are released before exit.
 +This does not replace system-mode SMC, MTTCG, or replay integration tests.
 +
-+For a differential run, select baseline definitions with --revision REF or
-+--source-root ROOT, then run the working tree into a separate --output-dir.
-+Compare stdout: each case prints its exact L (lock), T (successful trylock),
++For a differential run, use --baseline-revision REF or --baseline-source-root
++ROOT. The same cases execute both native representations and require identical
++stdout: each case prints its exact L (lock), T (successful trylock),
 +B (busy trylock), and U (unlock) page-index trace, followed by the success
-+marker "page-collection: passed". Stderr reports tree-lookup counts separately;
-+those intentionally differ. The 64-TB single-page case uses 65 lookups before
-+the tagged-page optimization and one afterward. --omit-other-page must fail.
++marker "page-collection: passed". Stderr reports explicit production lookup,
++tree-creation and heap-entry calls, not all GLib internal allocations; these
++intentionally differ. Inline collections must
++create no tree or heap entry until the fifth distinct existing page. Standalone
++baseline selection remains available through --revision and --source-root.
++The omission, spill-state, cleanup, ordered-iteration, empty-admission and
++eager-tree negatives must
++fail native ownership, trace or allocation assertions. --emit-only writes the
++selected source fixtures without compiling or executing them.
 +"""
 +
 +import argparse
++import difflib
 +import json
 +import os
 +from pathlib import Path
 +import shlex
 +import subprocess
++import sys
 +
 +
 +ROOT = Path(__file__).resolve().parents[2]
@@ -182813,12 +183156,14 @@ index 0000000000000000000000000000000000000000..a8255fae1727f8c836a7bbf1257b7995
 +
 +
 +PRELUDE = r"""
++/* SPDX-License-Identifier: GPL-2.0-or-later */
 +#include <assert.h>
 +#include <stdbool.h>
 +#include <stdint.h>
 +#include <stdio.h>
 +#include <string.h>
 +#include <pthread.h>
++#include <setjmp.h>
 +#include <glib.h>
 +#include "qemu/compiler.h"
 +#include "qemu/qtree.h"
@@ -182828,6 +183173,7 @@ index 0000000000000000000000000000000000000000..a8255fae1727f8c836a7bbf1257b7995
 +#define PAGE_SIZE UINT64_C(4096)
 +#define MAX_PAGES 16
 +typedef uint64_t tb_page_addr_t;
++typedef uint64_t ram_addr_t;
 +typedef pthread_mutex_t QemuSpin;
 +typedef struct PageDesc PageDesc;
 +typedef int PageForEachNext;
@@ -182835,7 +183181,18 @@ index 0000000000000000000000000000000000000000..a8255fae1727f8c836a7bbf1257b7995
 +    tb_page_addr_t page_addr[2];
 +    uintptr_t page_next[2];
 +    uint16_t size;
++    uint32_t cflags;
 +} TranslationBlock;
++
++typedef struct TCGCPUOps { bool precise_smc; } TCGCPUOps;
++typedef struct CPUClass { TCGCPUOps *tcg_ops; } CPUClass;
++typedef struct CPUState {
++    CPUClass *cc;
++    uint32_t cflags_next_tb;
++} CPUState;
++
++#define tcg_debug_assert assert
++#define FIXTURE_CFLAGS UINT32_C(0x00020000)
 +"""
 +
 +
@@ -182843,7 +183200,13 @@ index 0000000000000000000000000000000000000000..a8255fae1727f8c836a7bbf1257b7995
 +static PageDesc fixture_pages[MAX_PAGES];
 +static bool present[MAX_PAGES], held[MAX_PAGES];
 +static int transient_busy_index = -1;
-+static unsigned int tree_lookups, trace_count;
++static unsigned int tree_lookups, tree_creations, entry_allocations, trace_count;
++static unsigned int restored, exits, invalidated, unprotected;
++static TCGCPUOps fixture_ops = { .precise_smc = true };
++static CPUClass fixture_class = { .tcg_ops = &fixture_ops };
++static CPUState fixture_cpu = { .cc = &fixture_class };
++static TranslationBlock *fixture_current_tb;
++static jmp_buf fixture_exit;
 +static struct {
 +    char operation;
 +    unsigned int index;
@@ -182936,18 +183299,106 @@ index 0000000000000000000000000000000000000000..a8255fae1727f8c836a7bbf1257b7995
 +    assert_page_locked(page_find(addr >> TARGET_PAGE_BITS));
 +}
 +
++static void tlb_unprotect_code(tb_page_addr_t addr)
++{
++    assert_page_locked(page_find(addr >> TARGET_PAGE_BITS));
++    unprotected++;
++}
++
++static uint32_t tb_cflags(const TranslationBlock *tb)
++{
++    return tb->cflags;
++}
++
++static TranslationBlock *tcg_tb_lookup(uintptr_t pc)
++{
++    assert(pc == 0x1234);
++    return fixture_current_tb;
++}
++
++static void cpu_restore_state_from_tb(CPUState *cpu, TranslationBlock *tb,
++                                      uintptr_t pc)
++{
++    assert(cpu == &fixture_cpu && tb == fixture_current_tb && pc == 0x1234);
++    restored++;
++}
++
++static uint32_t curr_cflags(CPUState *cpu)
++{
++    assert(cpu == &fixture_cpu);
++    return FIXTURE_CFLAGS;
++}
++
++static void tb_remove(TranslationBlock *tb);
++
++static void do_tb_phys_invalidate(TranslationBlock *tb, bool remove_from_pages)
++{
++    /* Hash removal and jump unlinking are providers; page removal is native. */
++    assert(remove_from_pages);
++    tb_remove(tb);
++    invalidated++;
++}
++
++static G_NORETURN void cpu_loop_exit_noexc(CPUState *cpu)
++{
++    assert(cpu == &fixture_cpu);
++    assert(cpu->cflags_next_tb == (1 | CF_NOIRQ | FIXTURE_CFLAGS));
++    assert_no_pages_locked();
++    exits++;
++    longjmp(fixture_exit, 1);
++}
++
 +static gpointer counted_tree_lookup(QTree *tree, gconstpointer key)
 +{
 +    tree_lookups++;
 +    return q_tree_lookup(tree, key);
 +}
 +
++static QTree *counted_tree_new_full(GCompareDataFunc compare, gpointer data,
++                                   GDestroyNotify key_destroy,
++                                   GDestroyNotify value_destroy)
++{
++    tree_creations++;
++    return q_tree_new_full(compare, data, key_destroy, value_destroy);
++}
++
++static gpointer counted_malloc(gsize bytes)
++{
++    if (bytes == sizeof(struct page_entry)) {
++        entry_allocations++;
++    }
++    return g_malloc(bytes);
++}
++
++#ifdef FIXTURE_INLINE_COLLECTION
++static gpointer counted_malloc_n(gsize count, gsize bytes)
++{
++    if (count == 1 && bytes == sizeof(struct page_entry)) {
++        entry_allocations++;
++    }
++    return g_malloc_n(count, bytes);
++}
++#endif
++
 +#define q_tree_lookup counted_tree_lookup
++#define q_tree_new_full counted_tree_new_full
++#define g_malloc counted_malloc
++#ifdef FIXTURE_INLINE_COLLECTION
++#define g_malloc_n counted_malloc_n
++#endif
 +"""
 +
 +
 +EXERCISE = r"""
 +#undef q_tree_lookup
++#undef q_tree_new_full
++#undef g_malloc
++#undef g_malloc_n
++
++#ifdef FIXTURE_INLINE_COLLECTION
++_Static_assert(PAGE_COLLECTION_INLINE_CAPACITY == 4,
++               "The boundary cases require four inline entries");
++#endif
 +
 +static void reset_fixture(void)
 +{
@@ -182958,6 +183409,11 @@ index 0000000000000000000000000000000000000000..a8255fae1727f8c836a7bbf1257b7995
 +    }
 +    transient_busy_index = -1;
 +    tree_lookups = 0;
++    tree_creations = 0;
++    entry_allocations = 0;
++    restored = exits = invalidated = unprotected = 0;
++    fixture_current_tb = NULL;
++    fixture_cpu.cflags_next_tb = 0;
 +    trace_count = 0;
 +}
 +
@@ -182987,32 +183443,24 @@ index 0000000000000000000000000000000000000000..a8255fae1727f8c836a7bbf1257b7995
 +    }
 +}
 +
-+static void check_collection(const char *name, unsigned int first,
-+                             unsigned int last, unsigned int expected_mask,
-+                             const char *expected_trace)
++static gboolean check_entry(gpointer key, gpointer value, gpointer data)
 +{
-+    struct page_collection *pages;
-+    unsigned int found_mask = 0;
++    struct page_entry *entry = value;
++    unsigned int *mask = data;
++
++    assert(entry->index < MAX_PAGES);
++    assert(*(tb_page_addr_t *)key == entry->index);
++    assert(!(*mask & (1u << entry->index)));
++    assert(entry->pd == &fixture_pages[entry->index]);
++    assert(entry->locked && held[entry->index]);
++    *mask |= 1u << entry->index;
++    return false;
++}
++
++static void check_trace(const char *name, const char *expected_trace)
++{
 +    char actual_trace[1024];
 +    size_t position = 0;
-+
-+    trace_count = 0;
-+    pages = page_collection_lock(first * PAGE_SIZE, last * PAGE_SIZE + 7);
-+    for (unsigned int i = 0; i < MAX_PAGES; i++) {
-+        tb_page_addr_t index = i;
-+        struct page_entry *entry = q_tree_lookup(pages->tree, &index);
-+
-+        if (entry) {
-+            assert(entry->pd == &fixture_pages[i]);
-+            assert(entry->locked && held[i]);
-+            found_mask |= 1u << i;
-+        } else {
-+            assert(!held[i]);
-+        }
-+    }
-+    assert(found_mask == expected_mask);
-+    page_collection_unlock(pages);
-+    assert_no_pages_locked();
 +
 +    for (unsigned int i = 0; i < trace_count; i++) {
 +        int written = snprintf(actual_trace + position,
@@ -183025,7 +183473,80 @@ index 0000000000000000000000000000000000000000..a8255fae1727f8c836a7bbf1257b7995
 +    actual_trace[position] = 0;
 +    assert(strcmp(actual_trace, expected_trace) == 0);
 +    printf("%s: %s\n", name, actual_trace);
-+    fprintf(stderr, "%s: tree-lookups=%u\n", name, tree_lookups);
++    fprintf(stderr, "%s: tree-lookups=%u trees=%u entries=%u\n", name,
++            tree_lookups, tree_creations, entry_allocations);
++}
++
++static void check_collection(const char *name, unsigned int first,
++                             unsigned int last, unsigned int expected_mask,
++                             const char *expected_trace)
++{
++    struct page_collection *pages;
++#ifdef FIXTURE_INLINE_COLLECTION
++    struct page_collection storage;
++#endif
++    unsigned int found_mask = 0;
++    unsigned int expected_count = __builtin_popcount(expected_mask);
++
++    trace_count = 0;
++#ifdef FIXTURE_INLINE_COLLECTION
++    pages = &storage;
++    page_collection_lock(pages, first * PAGE_SIZE, last * PAGE_SIZE + 7);
++    if (pages->tree) {
++        q_tree_foreach(pages->tree, check_entry, &found_mask);
++    } else {
++        for (unsigned int i = 0; i < pages->inline_count; i++) {
++            struct page_entry *entry = &pages->inline_entries[i];
++
++            if (i) {
++                assert(pages->inline_entries[i - 1].index < entry->index);
++            }
++            check_entry(&entry->index, entry, &found_mask);
++        }
++    }
++    assert(!!pages->tree == (expected_count > PAGE_COLLECTION_INLINE_CAPACITY));
++    assert(tree_creations == !!pages->tree);
++    assert(entry_allocations == (pages->tree ? expected_count : 0));
++#else
++    pages = page_collection_lock(first * PAGE_SIZE, last * PAGE_SIZE + 7);
++    q_tree_foreach(pages->tree, check_entry, &found_mask);
++    assert(tree_creations == 1);
++    assert(entry_allocations == expected_count);
++#endif
++
++    for (unsigned int i = 0; i < MAX_PAGES; i++) {
++        assert(held[i] == !!(expected_mask & (1u << i)));
++    }
++    assert(found_mask == expected_mask);
++    page_collection_unlock(pages);
++    assert_no_pages_locked();
++
++    check_trace(name, expected_trace);
++}
++
++static void check_precise_exit(bool spill)
++{
++    static TranslationBlock blocks[5];
++
++    reset_fixture();
++    if (spill) {
++        add_tb(&blocks[0], 8, 7, 4090);
++        add_tb(&blocks[1], 8, 6, 4090);
++        add_tb(&blocks[2], 8, 4, 4090);
++        add_tb(&blocks[3], 8, 2, 4090);
++    }
++    add_tb(&blocks[4], 8, -1, 64);
++    fixture_current_tb = &blocks[4];
++
++    if (!setjmp(fixture_exit)) {
++        tb_invalidate_phys_range_fast(&fixture_cpu, 8 * PAGE_SIZE + 80, 1, 0x1234);
++        assert(false); /* A precise current-TB write must leave the caller. */
++    }
++    assert(restored == 1 && exits == 1 && invalidated == 1);
++    assert(unprotected == !spill);
++    assert_no_pages_locked();
++    check_trace(spill ? "precise-exit-spill" : "precise-exit-inline",
++                spill ? "L8 T2 T4 T6 T7 U2 U4 U6 U7 U8 " : "L8 U8 ");
 +}
 +
 +int main(void)
@@ -183038,6 +183559,10 @@ index 0000000000000000000000000000000000000000..a8255fae1727f8c836a7bbf1257b7995
 +
 +    reset_fixture();
 +    check_collection("absent", 4, 4, 0, "");
++
++    reset_fixture();
++    present[0] = true;
++    check_collection("first-page-zero", 0, 0, 1, "L0 U0 ");
 +
 +    reset_fixture();
 +    present[4] = true;
@@ -183080,6 +183605,72 @@ index 0000000000000000000000000000000000000000..a8255fae1727f8c836a7bbf1257b7995
 +    check_collection("dedup-and-range", 2, 5, (1u << 2) | (1u << 5),
 +                     "L2 L5 U2 U5 ");
 +
++    reset_fixture();
++    present[2] = present[3] = present[4] = true;
++    check_collection("below-capacity", 2, 4, 0x1c,
++                     "L2 L3 L4 U2 U3 U4 ");
++
++    reset_fixture();
++    present[2] = present[3] = present[4] = present[5] = true;
++    check_collection("at-capacity", 2, 5, 0x3c,
++                     "L2 L3 L4 L5 U2 U3 U4 U5 ");
++
++    reset_fixture();
++    present[2] = present[3] = present[4] = present[5] = present[6] = true;
++    check_collection("spill", 2, 6, 0x7c,
++                     "L2 L3 L4 L5 L6 U2 U3 U4 U5 U6 ");
++
++    reset_fixture();
++    present[2] = present[4] = present[6] = present[8] = true;
++    check_collection("missing-at-capacity", 2, 8, 0x154,
++                     "L2 L4 L6 L8 U2 U4 U6 U8 ");
++
++    reset_fixture();
++    add_tb(&blocks[0], 8, 6, 4090);
++    add_tb(&blocks[1], 8, 6, 4080);
++    add_tb(&blocks[2], 8, 4, 4090);
++    add_tb(&blocks[3], 8, 2, 4090);
++    check_collection("duplicates-at-capacity", 8, 8, 0x154,
++                     "L8 T2 T4 T6 U2 U4 U6 U8 ");
++
++    reset_fixture();
++    add_tb(&blocks[0], 8, 7, 4090);
++    add_tb(&blocks[1], 8, 6, 4090);
++    add_tb(&blocks[2], 8, 4, 4090);
++    add_tb(&blocks[3], 8, 2, 4090);
++    check_collection("reverse-order-spill", 8, 8, 0x1d4,
++                     "L8 T2 T4 T6 T7 U2 U4 U6 U7 U8 ");
++
++    reset_fixture();
++    add_tb(&blocks[0], 8, 6, 4090);
++    add_tb(&blocks[1], 8, 4, 4090);
++    add_tb(&blocks[2], 8, 2, 4090);
++    transient_busy_index = 6;
++    check_collection("busy-before-spill", 8, 8, 0x154,
++                     "L8 T2 T4 B6 U2 U4 U8 L2 L4 L6 L8 U2 U4 U6 U8 ");
++
++    reset_fixture();
++    add_tb(&blocks[0], 8, 7, 4090);
++    add_tb(&blocks[1], 8, 6, 4090);
++    add_tb(&blocks[2], 8, 4, 4090);
++    add_tb(&blocks[3], 8, 2, 4090);
++    transient_busy_index = 7;
++    check_collection("busy-on-spill", 8, 8, 0x1d4,
++                     "L8 T2 T4 T6 B7 U2 U4 U6 U8 "
++                     "L2 L4 L6 L7 L8 U2 U4 U6 U7 U8 ");
++
++    reset_fixture();
++    for (int i = 5; i > 0; i--) {
++        add_tb(&blocks[5 - i], 9, i, 4090);
++    }
++    transient_busy_index = 5;
++    check_collection("busy-after-spill", 9, 9, 0x23e,
++                     "L9 T1 T2 T3 T4 B5 U1 U2 U3 U4 U9 "
++                     "L1 L2 L3 L4 L5 L9 U1 U2 U3 U4 U5 U9 ");
++
++    check_precise_exit(false);
++    check_precise_exit(true);
++
 +    for (unsigned int i = 0; i < MAX_PAGES; i++) {
 +        assert(pthread_mutex_destroy(&fixture_pages[i].lock) == 0);
 +    }
@@ -183089,27 +183680,31 @@ index 0000000000000000000000000000000000000000..a8255fae1727f8c836a7bbf1257b7995
 +"""
 +
 +
-+def main():
-+    parser = argparse.ArgumentParser(description=__doc__)
-+    parser.add_argument("--source-root", type=Path, default=ROOT)
-+    parser.add_argument("--revision",
-+                        help="Read native definitions from a Git revision")
-+    parser.add_argument("--output-dir", type=Path, required=True)
-+    parser.add_argument("--emit-only", action="store_true")
-+    parser.add_argument("--omit-other-page", action="store_true",
-+                        help="Negative control: omit native other-page discovery")
-+    args = parser.parse_args()
-+
++def fixture_source(source_root, revision=None, negative=None):
++    """Extract native definitions and add explicit providers and assertions."""
 +    def read_source(path):
-+        if args.revision:
++        if revision:
 +            return subprocess.check_output(
-+                ["git", "-C", str(args.source_root), "show", "--no-ext-diff",
-+                 "--end-of-options", args.revision + ":" + path], text=True)
-+        return (args.source_root / path).read_text()
++                ["git", "-C", str(source_root), "show", "--no-ext-diff",
++                 "--end-of-options", revision + ":" + path], text=True)
++        return (source_root / path).read_text()
 +
 +    maintenance = read_source("accel/tcg/tb-maint.c")
 +    system_maintenance = maintenance[maintenance.index("struct PageDesc {"):]
++    inline = "#define PAGE_COLLECTION_INLINE_CAPACITY " in system_maintenance
++    configuration = ""
++    if inline:
++        capacity = next(line for line in system_maintenance.splitlines()
++                        if line.startswith("#define PAGE_COLLECTION_INLINE_CAPACITY "))
++        configuration = capacity + "\n#define FIXTURE_INLINE_COLLECTION 1\n"
 +    header = read_source("include/exec/translation-block.h")
++    flags = "\n".join(line for line in header.splitlines()
++                      if line.startswith(("#define CF_COUNT_MASK ",
++                                          "#define CF_NOIRQ ")))
++    internal_header = read_source("accel/tcg/tb-internal.h")
++    prototype_start = internal_header.index("void tb_invalidate_phys_range_fast(")
++    prototype_end = internal_header.index(";", prototype_start) + 1
++    configuration += flags + "\n" + internal_header[prototype_start:prototype_end]
 +    iterator_start = maintenance.index("#define TB_FOR_EACH_TAGGED(")
 +    iterator_end = maintenance.index("\n\n", iterator_start)
 +    declarations = "\n".join(
@@ -183119,7 +183714,7 @@ index 0000000000000000000000000000000000000000..a8255fae1727f8c836a7bbf1257b7995
 +    accessors = "\n".join(definition(header, name) for name in (
 +        "static inline tb_page_addr_t tb_page_addr0(",
 +        "static inline tb_page_addr_t tb_page_addr1("))
-+    functions = "\n".join(definition(system_maintenance, name) for name in (
++    signatures = [
 +        "static void page_lock(PageDesc *pd)",
 +        "static bool page_trylock(PageDesc *pd)",
 +        "static void page_unlock(PageDesc *pd)",
@@ -183129,42 +183724,139 @@ index 0000000000000000000000000000000000000000..a8255fae1727f8c836a7bbf1257b7995
 +        "static void do_page_entry_lock(",
 +        "static gboolean page_entry_lock(",
 +        "static gboolean page_entry_unlock(",
-+        "static bool page_trylock_add(",
 +        "static gint tb_page_addr_cmp(",
++    ]
++    if inline:
++        signatures += [
++            "static struct page_entry *page_collection_lookup(",
++            "static void page_collection_spill(",
++            "static struct page_entry *page_collection_insert(",
++            "static void page_collection_foreach(",
++        ]
++    signatures += [
++        "static bool page_trylock_add(",
++        "static void page_collection_lock(" if inline else
 +        "static struct page_collection *page_collection_lock(",
 +        "static void page_collection_unlock(",
 +        "static void tb_page_add(",
-+        "static void tb_record(TranslationBlock *tb)"))
-+    if args.omit_other_page:
-+        before = "page_trylock_add(set, other_addr)"
-+        if before not in functions:
-+            raise ValueError("Negative control requires the tagged-page change")
-+        functions = functions.replace(before, "false", 1)
++        "static void tb_record(TranslationBlock *tb)",
++        "static void tb_page_remove(",
++        "static void tb_remove(TranslationBlock *tb)",
++        "static void\ntb_invalidate_phys_page_range__locked(",
++        "void tb_invalidate_phys_range_fast(",
++    ]
++    bodies = [definition(system_maintenance, signature)
++              for signature in signatures]
++    mutations = {
++        "omit-other-page": ("page_collection_lock",
++                            "page_trylock_add(set, other_addr)", "false"),
++        "drop-spill-state": ("page_collection_spill",
++                             "*pe = set->inline_entries[i];",
++                             "*pe = set->inline_entries[i]; pe->locked = false;"),
++        "skip-inline-unlock": ("page_collection_unlock",
++                               "page_unlock(pe->pd);", "(void)pe;"),
++        "reverse-inline-iteration": (
++            "page_collection_foreach",
++            "for (unsigned int i = 0; i < set->inline_count; i++)",
++            "for (unsigned int i = set->inline_count; i-- > 0;)"),
++        "omit-empty-admission": (
++            "page_trylock_add",
++            "(!set->tree && !set->inline_count) || index > set->max_index",
++            "index > set->max_index"),
++        "eager-tree": (
++            "page_collection_lock", "set->tree = NULL;",
++            "set->tree = q_tree_new_full(tb_page_addr_cmp, NULL, NULL, "
++            "page_entry_destroy);"),
++    }
++    if negative:
++        name, before, after = mutations[negative]
++        target = next((i for i, signature in enumerate(signatures)
++                       if name + "(" in signature), None)
++        if target is None or before not in bodies[target]:
++            raise ValueError("Negative control requires its native source operation")
++        bodies[target] = bodies[target].replace(before, after, 1)
 +
-+    source_text = "\n".join((
-+        PRELUDE, declarations, accessors,
++    return "\n".join((
++        PRELUDE, configuration, declarations, accessors,
 +        maintenance[iterator_start:iterator_end],
 +        "#define PAGE_FOR_EACH_TB(start, last, pd, tb, n) "
 +        "TB_FOR_EACH_TAGGED((pd)->first_tb, tb, n, page_next)",
-+        PROVIDERS, functions, EXERCISE))
-+    args.output_dir.mkdir(parents=True, exist_ok=True)
-+    source = args.output_dir / "page-collection.c"
-+    executable = args.output_dir / "page-collection"
-+    source.write_text(source_text)
-+    if args.emit_only:
-+        return
++        PROVIDERS, "\n".join(bodies), EXERCISE))
++
++
++def prepare_fixture(output_dir, source_root, revision=None, negative=None):
++    """Write a source fixture and its configured compiler command."""
++    output_dir.mkdir(parents=True, exist_ok=True)
++    source = output_dir / "page-collection.c"
++    executable = output_dir / "page-collection"
++    source.write_text(fixture_source(source_root, revision, negative))
 +
 +    command = shlex.split(os.environ.get("CC", "cc"))
 +    command += shlex.split(os.environ.get("CFLAGS", ""))
 +    # Configured release flags may disable assertions; these are test actions.
 +    command += ["-UNDEBUG", "-std=gnu11", "-Wall", "-Werror", "-pthread",
-+                "-I" + str(args.source_root / "include"),
++                "-I" + str(source_root / "include"),
 +                str(source), "-o", str(executable)]
 +    command += shlex.split(os.environ.get("LDFLAGS", ""))
-+    (args.output_dir / "compile-command.json").write_text(
++    (output_dir / "compile-command.json").write_text(
 +        json.dumps(command, indent=2) + "\n")
++    return command, executable
++
++
++def run_fixture(command, executable):
++    """Compile and run a fixture while preserving its complete diagnostics."""
 +    subprocess.run(command, check=True)
-+    subprocess.run([str(executable)], check=True, timeout=15)
++    result = subprocess.run([str(executable)], capture_output=True, text=True,
++                            timeout=15)
++    (executable.parent / "stdout.txt").write_text(result.stdout)
++    (executable.parent / "stderr.txt").write_text(result.stderr)
++    if result.returncode:
++        print(result.stderr, end="", file=sys.stderr)
++    result.check_returncode()
++    return result
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--source-root", type=Path, default=ROOT)
++    parser.add_argument("--revision",
++                        help="Read native definitions from a Git revision")
++    baseline = parser.add_mutually_exclusive_group()
++    baseline.add_argument("--baseline-revision")
++    baseline.add_argument("--baseline-source-root", type=Path)
++    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--emit-only", action="store_true")
++    negative = parser.add_mutually_exclusive_group()
++    negative.add_argument("--omit-other-page", action="store_true")
++    negative.add_argument("--negative", choices=(
++        "omit-other-page", "drop-spill-state", "skip-inline-unlock",
++        "reverse-inline-iteration", "omit-empty-admission", "eager-tree"))
++    args = parser.parse_args()
++
++    mutation = "omit-other-page" if args.omit_other_page else args.negative
++    candidate = prepare_fixture(args.output_dir, args.source_root,
++                                args.revision, mutation)
++    reference = None
++    if args.baseline_revision or args.baseline_source_root:
++        reference = prepare_fixture(
++            args.output_dir / "baseline",
++            args.baseline_source_root or args.source_root,
++            args.baseline_revision)
++    if args.emit_only:
++        return
++
++    candidate_result = run_fixture(*candidate)
++    if reference:
++        baseline_result = run_fixture(*reference)
++        if candidate_result.stdout != baseline_result.stdout:
++            difference = "".join(difflib.unified_diff(
++                baseline_result.stdout.splitlines(keepends=True),
++                candidate_result.stdout.splitlines(keepends=True),
++                fromfile="baseline", tofile="candidate"))
++            (args.output_dir / "semantic-trace.diff").write_text(difference)
++            raise RuntimeError("Native baseline and candidate lock traces differ")
++    print(candidate_result.stdout, end="")
++    print(candidate_result.stderr, end="", file=sys.stderr)
 +
 +
 +if __name__ == "__main__":
