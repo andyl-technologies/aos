@@ -415,6 +415,15 @@ destination registration, preserved burns, activation recovery at each boundary,
 interrupted source projection and retained cancellation exclusion. Neither check
 qualifies restore, physical deletion or the complete T1 floor.
 
+The opaque native effect and initialization requests expose their existing
+consuming synchronous executors to `LocalFs` adapters. Their private inputs,
+physical checks, result channels and durability/drop order are unchanged; Tokio
+retains its owned blocking-worker dispatch. The two public-API-only examples
+compile as doctests, alongside the existing compile-fail store contract. These
+methods also pass strict private rustdoc. They do not supply exclusion or clock
+constructors, and the full current floor and default strict lint remain
+unqualified.
+
 The preceding completed full qualification records candidate
 `15540ef204ec`, which combines reviewed source discovery, immutable lookup,
 repeatable I/P/G maintenance, separate verifier/preparation work, common Memo

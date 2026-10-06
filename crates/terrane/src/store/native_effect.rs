@@ -726,13 +726,31 @@ impl NativeFsEffect {
         self
     }
 
-    /// Executes this already fixed native operation within one synchronous poll.
+    /// Completes the sealed native operation synchronously through durability.
+    ///
+    /// A [`crate::store::LocalFs`] adapter calls this method on its owned
+    /// physical worker. The call blocks until the fixed operation and required
+    /// synchronization finish, retaining all exclusions, descriptors and final
+    /// checks throughout. It accepts no replacement plan or callback; the
+    /// request's private producer has already fixed its complete inputs.
+    /// Asynchronous adapters must retain that worker after waiter cancellation.
+    ///
+    /// # Examples
+    ///
+    /// A binding's physical worker consumes the request it received:
+    ///
+    /// ```no_run
+    /// # fn complete(effect: terrane::store::NativeFsEffect)
+    /// #     -> Result<(), terrane::store::NativeEffectFailure> {
+    /// effect.execute_inline()
+    /// # }
+    /// ```
     ///
     /// # Errors
     /// Rejects changed preimages, final-check denial and filesystem or sync errors.
     /// Returns `Unsupported` after private directory creation if restrictive
     /// permissions prevent the actual descriptor from opening for mode repair.
-    pub(super) fn execute_inline(self) -> Result<(), NativeEffectFailure> {
+    pub fn execute_inline(self) -> Result<(), NativeEffectFailure> {
         if artifact_seal::owns(&self.plan) {
             return artifact_seal::execute(self);
         }

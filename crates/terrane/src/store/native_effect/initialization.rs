@@ -150,18 +150,33 @@ pub(crate) fn request_for_open(
 
 #[cfg(unix)]
 impl NativePublicationInitialization {
-    /// Runs the same fixed creator synchronously through durable staging.
+    /// Completes the sealed native creator synchronously through durable staging.
     ///
-    /// Inline native bindings finish all physical work before yielding their
-    /// result; Tokio bindings submit this same program in one owned worker.
+    /// A [`crate::store::LocalFs`] adapter calls this method on its owned
+    /// physical worker. The call blocks through fixed creator completion and
+    /// required staging durability. Tokio adapters submit the same program to
+    /// their blocking worker; an asynchronous adapter must retain that worker
+    /// after waiter cancellation. This method accepts no replacement inputs
+    /// and cannot construct a creator receipt from decoded records or an
+    /// existing root.
+    ///
+    /// # Examples
+    ///
+    /// A binding's physical worker consumes its fixed initialization request:
+    ///
+    /// ```no_run
+    /// # fn initialize(request: terrane::store::NativePublicationInitialization)
+    /// #     -> Result<terrane::store::NativePublicationInitializationOutcome,
+    /// #         terrane::store::StoreFailure> {
+    /// request.execute_inline()
+    /// # }
+    /// ```
     ///
     /// # Errors
     /// Preserves rejected physical inputs and genuine staging or durability
-    /// failures. This private method cannot construct authority from decoded
-    /// records or reinterpret an existing root as a successful creator event.
-    pub(in crate::store) fn execute_inline(
-        self,
-    ) -> Result<NativePublicationInitializationOutcome, StoreFailure> {
+    /// failures. Returns `Unsupported` if the fixed inline creator cannot
+    /// complete synchronously.
+    pub fn execute_inline(self) -> Result<NativePublicationInitializationOutcome, StoreFailure> {
         fresh::initialize(self)
     }
 
