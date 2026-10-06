@@ -109,7 +109,8 @@ pub(crate) use tests::run_host_parallel_native;
 #[cfg(test)]
 pub(crate) use tests::{
     NativeAtomicFailureCase, NativeAtomicWorldCase, NativeEquivalenceCase,
-    run_atomic_failure_native, run_atomic_world_native, run_equivalence_native,
+    run_atomic_failure_native, run_atomic_world_native, run_dma_borrowers_native,
+    run_equivalence_native,
 };
 
 pub use exact_pin_materializer::PackagedExactPinMaterializerError;
@@ -1422,6 +1423,7 @@ where
         basis,
         config,
         shared,
+        None,
         move |_store, _checkpoints, _shared, _run_state_root, _worker_count| promotion_workers,
     )
 }
@@ -1432,6 +1434,7 @@ fn compose_packaged_qemu_executor_with_promotion_builder<H, P, B>(
     basis: PackagedCampaignBasis,
     config: PackagedQemuExecutorConfig,
     shared: SharedQemuAttemptHostResourceFactory<H>,
+    preparation: Option<preparation::PackagedPreparation>,
     build_promotions: B,
 ) -> Result<PackagedQemuExecutor, PackagedQemuExecutorError>
 where
@@ -1450,12 +1453,17 @@ where
 {
     // Mock host factories exercise actor composition without asserting that a
     // temporary directory carries an operator-installed project quota.
-    let preparation = preparation::prepare_component_runtime(
-        &storage.repository,
-        Arc::clone(&storage.checkpoint_backend),
-        &basis,
-        &config,
-    )?;
+    // A supplied preparation preserves the original writer and complete
+    // account after an exclusive startup inspection, through pool handoff.
+    let preparation = match preparation {
+        Some(preparation) => preparation,
+        None => preparation::prepare_component_runtime(
+            &storage.repository,
+            Arc::clone(&storage.checkpoint_backend),
+            &basis,
+            &config,
+        )?,
+    };
     compose_packaged_qemu_executor_with_builders(
         storage,
         basis,

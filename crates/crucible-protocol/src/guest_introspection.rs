@@ -345,23 +345,99 @@ impl GuestIntrospectionRecord {
     /// Returns [`GuestIntrospectionError`] if the record is invalid or exceeds
     /// the maximum encoded length.
     pub fn encode(&self) -> Result<Vec<u8>, GuestIntrospectionError> {
+        let mut output = Vec::with_capacity(self.encoded_len()?);
+        self.encode_into(&mut output)?;
+        Ok(output)
+    }
+
+    /// Counts and validates the exact record length without allocating payload scratch.
+    ///
+    /// # Errors
+    /// Refuses invalid message fields or an aggregate record exceeding the wire maximum.
+    pub fn encoded_len(&self) -> Result<usize, GuestIntrospectionError> {
         validate_message(&self.message)?;
-        let (kind, flags, payload) = encode_message(&self.message)?;
-        let total_len = GUEST_INTROSPECTION_HEADER_LEN.saturating_add(payload.len());
-        if total_len > GUEST_INTROSPECTION_MAX_RECORD_BYTES {
-            return Err(GuestIntrospectionError::RecordTooLarge { len: total_len });
+        let argv_len = |argv: &[String]| {
+            2 + argv
+                .iter()
+                .map(|argument| 2 + argument.len())
+                .sum::<usize>()
+        };
+        let payload = match &self.message {
+            GuestIntrospectionMessage::Features(_) => 6,
+            GuestIntrospectionMessage::Exec { argv, .. } => argv_len(argv),
+            GuestIntrospectionMessage::Pty { argv, .. } => 4 + argv_len(argv),
+            GuestIntrospectionMessage::Ssh { .. } | GuestIntrospectionMessage::Close => 0,
+            GuestIntrospectionMessage::Input(bytes)
+            | GuestIntrospectionMessage::Output { bytes, .. } => bytes.len(),
+            GuestIntrospectionMessage::Resize { .. } => 4,
+            GuestIntrospectionMessage::Exit { .. } => 8,
+            GuestIntrospectionMessage::Error { message, .. } => 2 + message.len(),
+        };
+        // Validated argv count and argument limits bound every addition above.
+        let length = GUEST_INTROSPECTION_HEADER_LEN + payload;
+        if length > GUEST_INTROSPECTION_MAX_RECORD_BYTES {
+            return Err(GuestIntrospectionError::RecordTooLarge { len: length });
         }
-        let payload_len = u32::try_from(payload.len())
-            .map_err(|_| GuestIntrospectionError::RecordTooLarge { len: total_len })?;
-        let mut output = Vec::with_capacity(total_len);
+        Ok(length)
+    }
+
+    /// Appends a record to already reserved storage without allocating.
+    ///
+    /// No output bytes change until every field and the available capacity pass
+    /// validation. Callers can admit and fallibly reserve the exact counted
+    /// extent before handing storage to this encoder.
+    ///
+    /// # Errors
+    /// Refuses invalid message fields, oversized records, or insufficient reserved capacity.
+    pub fn encode_into(&self, output: &mut Vec<u8>) -> Result<(), GuestIntrospectionError> {
+        let length = self.encoded_len()?;
+        let available = output.capacity() - output.len();
+        if available < length {
+            return Err(GuestIntrospectionError::OutputCapacity {
+                required: length,
+                available,
+            });
+        }
+        let (kind, flags) = message_header(&self.message);
         output.extend_from_slice(&GUEST_INTROSPECTION_MAGIC);
         output.extend_from_slice(&GUEST_INTROSPECTION_PROTOCOL_VERSION.to_le_bytes());
         output.push(kind);
         output.push(flags);
         output.extend_from_slice(&self.channel_id.to_le_bytes());
-        output.extend_from_slice(&payload_len.to_le_bytes());
-        output.extend_from_slice(&payload);
-        Ok(output)
+        output.extend_from_slice(&((length - GUEST_INTROSPECTION_HEADER_LEN) as u32).to_le_bytes());
+        match &self.message {
+            GuestIntrospectionMessage::Features(features) => {
+                output.extend_from_slice(&features.bits.to_le_bytes());
+                output.extend_from_slice(&features.max_channels.to_le_bytes());
+            }
+            GuestIntrospectionMessage::Exec { argv, .. } => append_argv(output, argv),
+            GuestIntrospectionMessage::Pty {
+                argv,
+                columns,
+                rows,
+                ..
+            } => {
+                output.extend_from_slice(&columns.to_le_bytes());
+                output.extend_from_slice(&rows.to_le_bytes());
+                append_argv(output, argv);
+            }
+            GuestIntrospectionMessage::Input(bytes)
+            | GuestIntrospectionMessage::Output { bytes, .. } => output.extend_from_slice(bytes),
+            GuestIntrospectionMessage::Resize { columns, rows } => {
+                output.extend_from_slice(&columns.to_le_bytes());
+                output.extend_from_slice(&rows.to_le_bytes());
+            }
+            GuestIntrospectionMessage::Exit { status, signal } => {
+                output.extend_from_slice(&status.to_le_bytes());
+                output.extend_from_slice(&signal.unwrap_or(0).to_le_bytes());
+            }
+            GuestIntrospectionMessage::Error { code, message } => {
+                output.extend_from_slice(&code.wire_value().to_le_bytes());
+                output.extend_from_slice(message.as_bytes());
+            }
+            GuestIntrospectionMessage::Ssh { .. } | GuestIntrospectionMessage::Close => {}
+        }
+        Ok(())
     }
 
     /// Decodes and validates one complete protocol record.
@@ -416,68 +492,31 @@ const KIND_OUTPUT: u8 = 8;
 const KIND_EXIT: u8 = 9;
 const KIND_ERROR: u8 = 10;
 
-fn encode_message(
-    message: &GuestIntrospectionMessage,
-) -> Result<(u8, u8, Vec<u8>), GuestIntrospectionError> {
+fn message_header(message: &GuestIntrospectionMessage) -> (u8, u8) {
     match message {
-        GuestIntrospectionMessage::Features(features) => {
-            let mut payload = Vec::with_capacity(6);
-            payload.extend_from_slice(&features.bits.to_le_bytes());
-            payload.extend_from_slice(&features.max_channels.to_le_bytes());
-            Ok((KIND_FEATURES, 0, payload))
-        }
+        GuestIntrospectionMessage::Features(_) => (KIND_FEATURES, 0),
         GuestIntrospectionMessage::Exec {
-            argv,
-            record_transcript,
-        } => Ok((
-            KIND_EXEC,
-            transcript_flag(*record_transcript),
-            encode_argv(argv)?,
-        )),
+            record_transcript, ..
+        } => (KIND_EXEC, transcript_flag(*record_transcript)),
         GuestIntrospectionMessage::Pty {
-            argv,
-            columns,
-            rows,
-            record_transcript,
-        } => {
-            let mut payload = Vec::new();
-            payload.extend_from_slice(&columns.to_le_bytes());
-            payload.extend_from_slice(&rows.to_le_bytes());
-            payload.extend_from_slice(&encode_argv(argv)?);
-            Ok((KIND_PTY, transcript_flag(*record_transcript), payload))
-        }
+            record_transcript, ..
+        } => (KIND_PTY, transcript_flag(*record_transcript)),
         GuestIntrospectionMessage::Ssh { record_transcript } => {
-            Ok((KIND_SSH, transcript_flag(*record_transcript), Vec::new()))
+            (KIND_SSH, transcript_flag(*record_transcript))
         }
-        GuestIntrospectionMessage::Input(bytes) => Ok((KIND_INPUT, 0, bytes.clone())),
-        GuestIntrospectionMessage::Resize { columns, rows } => {
-            let mut payload = Vec::with_capacity(4);
-            payload.extend_from_slice(&columns.to_le_bytes());
-            payload.extend_from_slice(&rows.to_le_bytes());
-            Ok((KIND_RESIZE, 0, payload))
-        }
-        GuestIntrospectionMessage::Close => Ok((KIND_CLOSE, 0, Vec::new())),
-        GuestIntrospectionMessage::Output { stream, bytes } => Ok((
+        GuestIntrospectionMessage::Input(_) => (KIND_INPUT, 0),
+        GuestIntrospectionMessage::Resize { .. } => (KIND_RESIZE, 0),
+        GuestIntrospectionMessage::Close => (KIND_CLOSE, 0),
+        GuestIntrospectionMessage::Output { stream, .. } => (
             KIND_OUTPUT,
             if *stream == GuestOutputStream::Stderr {
                 FLAG_STDERR
             } else {
                 0
             },
-            bytes.clone(),
-        )),
-        GuestIntrospectionMessage::Exit { status, signal } => {
-            let mut payload = Vec::with_capacity(8);
-            payload.extend_from_slice(&status.to_le_bytes());
-            payload.extend_from_slice(&signal.unwrap_or(0).to_le_bytes());
-            Ok((KIND_EXIT, 0, payload))
-        }
-        GuestIntrospectionMessage::Error { code, message } => {
-            let mut payload = Vec::with_capacity(2 + message.len());
-            payload.extend_from_slice(&code.wire_value().to_le_bytes());
-            payload.extend_from_slice(message.as_bytes());
-            Ok((KIND_ERROR, 0, payload))
-        }
+        ),
+        GuestIntrospectionMessage::Exit { .. } => (KIND_EXIT, 0),
+        GuestIntrospectionMessage::Error { .. } => (KIND_ERROR, 0),
     }
 }
 
@@ -644,23 +683,13 @@ fn validate_argv(argv: &[String]) -> Result<(), GuestIntrospectionError> {
     Ok(())
 }
 
-fn encode_argv(argv: &[String]) -> Result<Vec<u8>, GuestIntrospectionError> {
-    validate_argv(argv)?;
-    let count = u16::try_from(argv.len())
-        .map_err(|_| GuestIntrospectionError::InvalidArgvCount { count: argv.len() })?;
-    let mut output = Vec::new();
-    output.extend_from_slice(&count.to_le_bytes());
+fn append_argv(output: &mut Vec<u8>, argv: &[String]) {
+    // The caller validated these integer bounds and reserved the whole record.
+    output.extend_from_slice(&(argv.len() as u16).to_le_bytes());
     for argument in argv {
-        let len = u16::try_from(argument.len()).map_err(|_| {
-            GuestIntrospectionError::InvalidArgumentLength {
-                index: output.len(),
-                len: argument.len(),
-            }
-        })?;
-        output.extend_from_slice(&len.to_le_bytes());
+        output.extend_from_slice(&(argument.len() as u16).to_le_bytes());
         output.extend_from_slice(argument.as_bytes());
     }
-    Ok(output)
 }
 
 fn decode_argv(payload: &[u8]) -> Result<Vec<String>, GuestIntrospectionError> {
@@ -740,6 +769,14 @@ pub enum GuestIntrospectionError {
     RecordTooLarge {
         /// Rejected byte length.
         len: usize,
+    },
+    /// The caller's reserved output cannot hold the complete record.
+    #[error("guest-introspection output requires {required} bytes, available {available}")]
+    OutputCapacity {
+        /// Complete validated record size.
+        required: usize,
+        /// Unused capacity supplied by the caller.
+        available: usize,
     },
     /// The four-byte record magic does not match.
     #[error("guest-introspection record magic is invalid")]
@@ -982,5 +1019,61 @@ mod tests {
             features.validate_host_request(),
             Err(GuestIntrospectionError::FeatureChannelMismatch)
         );
+    }
+
+    #[test]
+    fn reserved_encoding_preserves_exact_bytes_and_refuses_before_mutation()
+    -> Result<(), GuestIntrospectionError> {
+        let record = GuestIntrospectionRecord::new(
+            7,
+            GuestIntrospectionMessage::Pty {
+                argv: vec![String::from("printf"), String::from("héllo")],
+                columns: 80,
+                rows: 24,
+                record_transcript: true,
+            },
+        )?;
+        let length = record.encoded_len()?;
+        let mut output = Vec::with_capacity(length + 1);
+        output.push(42);
+        record.encode_into(&mut output)?;
+        assert_eq!(&output[1..], record.encode()?);
+        assert_eq!(output.len(), length + 1);
+        assert_eq!(GuestIntrospectionRecord::decode(&output[1..])?, record);
+
+        let mut insufficient = vec![42];
+        let available = insufficient.capacity() - insufficient.len();
+        assert_eq!(
+            record.encode_into(&mut insufficient),
+            Err(GuestIntrospectionError::OutputCapacity {
+                required: length,
+                available,
+            })
+        );
+        assert_eq!(insufficient, [42]);
+        Ok(())
+    }
+
+    #[test]
+    fn aggregate_argv_refusal_precedes_payload_allocation() -> Result<(), GuestIntrospectionError> {
+        let record = GuestIntrospectionRecord::new(
+            1,
+            GuestIntrospectionMessage::Exec {
+                argv: vec!["x".repeat(GUEST_INTROSPECTION_MAX_ARG_BYTES); 2],
+                record_transcript: false,
+            },
+        )?;
+        assert!(matches!(
+            record.encoded_len(),
+            Err(GuestIntrospectionError::RecordTooLarge { .. })
+        ));
+        let mut output = Vec::new();
+        assert!(matches!(
+            record.encode_into(&mut output),
+            Err(GuestIntrospectionError::RecordTooLarge { .. })
+        ));
+        assert!(output.is_empty());
+        assert_eq!(output.capacity(), 0);
+        Ok(())
     }
 }

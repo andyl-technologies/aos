@@ -56,6 +56,7 @@ struct PackagedExecutorDeployment {
     child_group_id: u32,
     maximum_tasks: u32,
     maximum_file_descriptors: u64,
+    maximum_locked_bytes: u64,
     maximum_node_host_service_tasks: u64,
     maximum_node_host_service_file_descriptors: u64,
     maximum_node_host_service_resident_bytes: u64,
@@ -98,7 +99,7 @@ struct PackagedExecutorDeployment {
 }
 
 #[path = "host_operation_budgets.rs"]
-mod host_operation_budgets;
+pub(super) mod host_operation_budgets;
 
 /// Independently authored modeled request limits, separate from physical backing.
 #[derive(Debug, Deserialize)]
@@ -429,6 +430,41 @@ pub(super) fn prepare_cli_packaged_executor(
 
 /// Local execution binds the complete deployed policy before admission.
 impl GuardedCampaignRunDeployment {
+    /// Admits the deployed namespace for input and remote-control metadata.
+    ///
+    /// No guest process is created. The existing project quota and independent
+    /// service vector retain every decoder loan under the original supervisor.
+    ///
+    /// # Errors
+    /// Refuses invalid supervision, unavailable service credit, a busy namespace,
+    /// or an operator quota that differs from the authored physical bounds.
+    pub(crate) fn input_metadata_resources(
+        &self,
+    ) -> Result<
+        std::sync::Arc<dyn crucible_daemon::campaign_store_composition::StorePhysicalQuotaGuard>,
+        CliError,
+    > {
+        use crucible_daemon::campaign_store_composition::StorePhysicalQuotaBinder;
+
+        let resources = self.policy.ram_catalog_resources.resources();
+        let service = crucible_daemon::CampaignQuotaServiceConfig::from_authored_budgets(
+            host_operation_budgets::deployed_budgets(&self.policy.host_operation_budgets)?,
+            None,
+            resources,
+        )
+        .map_err(|source| CliError::InputAuthority(Box::new(source)))?;
+        let binder = crucible_daemon::LinuxProjectQuotaBinder::new(service)
+            .map_err(|source| CliError::InputAuthority(Box::new(source)))?;
+        binder
+            .bind(
+                &self.policy.ram_catalog_root,
+                self.policy.ram_catalog_project_id,
+                resources.backing_peak_bytes,
+                self.policy.maximum_ram_catalog_inodes,
+            )
+            .map_err(|source| CliError::InputAuthority(Box::new(source)))
+    }
+
     /// Projects the deployed physical policy and an admitted semantic subset.
     ///
     /// # Errors
@@ -906,6 +942,7 @@ fn deployment_host(
         deployment.maximum_inodes,
         finish_timeout,
     )
+    .and_then(|host| host.with_maximum_locked_bytes(deployment.maximum_locked_bytes))
     .map_err(|error| serve_error(format!("campaign executor host policy error: {error}")))
 }
 
@@ -1075,6 +1112,7 @@ child_user_id = 2000
 child_group_id = 2000
 maximum_tasks = 64
 maximum_file_descriptors = 1024
+maximum_locked_bytes = 0
 maximum_node_host_service_tasks = 4
 maximum_node_host_service_file_descriptors = 32
 maximum_node_host_service_resident_bytes = 8388608

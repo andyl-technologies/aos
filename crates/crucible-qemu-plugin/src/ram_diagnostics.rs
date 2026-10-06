@@ -15,6 +15,7 @@ pub(crate) enum RamDiagnostic<'a> {
     /// A lifecycle ownership handoff failed.
     LifecycleFailed(&'a RamError),
     /// The expressly selected native test observer could not initialize.
+    #[cfg(feature = "native-conformance")]
     ConformanceInstallFailed(&'a RamError),
     /// An ordinary coherent test root matched the independent C full oracle.
     OraclePassed { scope: u32 },
@@ -39,6 +40,7 @@ fn write_diagnostic(writer: &mut impl Write, diagnostic: RamDiagnostic<'_>) -> i
             writeln!(writer, "native RAM restore failed: {error}")
         }
         RamDiagnostic::LifecycleFailed(error) => writeln!(writer, "RAM lifecycle failed: {error}"),
+        #[cfg(feature = "native-conformance")]
         RamDiagnostic::ConformanceInstallFailed(error) => {
             writeln!(
                 writer,

@@ -49,6 +49,13 @@ pub(crate) trait PagerControl: SourceOperationFactory + 'static {
 
     fn status(&self) -> RamControlReply;
 
+    fn test_fault_actor(
+        &self,
+        entitlement: [u8; 32],
+        worker_generation: u64,
+        action: crucible_protocol::ram_control::RamControlFaultActorAction,
+    ) -> RamControlReply;
+
     fn inventory_region(&self, topology_generation: u64, ordinal: u32) -> RamControlReply;
 
     fn grant_inventory(
@@ -137,6 +144,11 @@ impl PagerControlWorker {
                 let result = (|| {
                     let mut dispatch = |request| match request {
                         RamControlRequest::Hello | RamControlRequest::Status => controller.status(),
+                        RamControlRequest::TestFaultActor {
+                            entitlement,
+                            worker_generation,
+                            action,
+                        } => controller.test_fault_actor(entitlement, worker_generation, action),
                         RamControlRequest::Apply {
                             expected_revision,
                             policy_revision,

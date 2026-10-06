@@ -3,7 +3,7 @@
 //! A hot-fork child inherits guest memory from each paused source QEMU, but it
 //! does not inherit the host scheduler, network, trigger, assertion, selectable,
 //! or fault owners. This module captures that complete host continuation at one
-//! exact world boundary. The opaque token is the semantic half of a future
+//! exact world boundary. The opaque token is the semantic half of the
 //! atomic world-fork transaction; it grants no process launch, child admission,
 //! mutable run-directory, or source-template recovery authority.
 
@@ -708,7 +708,9 @@ impl ProductionVmHotForkWorldContinuation {
             event_log_objects: self.event_log_objects.clone(),
             signal_artifact_objects: self.signal_artifact_objects.clone(),
             trigger_state: self.trigger_state.clone(),
-            assertion_state: self.assertion_state.clone(),
+            assertion_state: HostAssertionEvaluatorCheckpoint::from_canonical_bytes(
+                &self.assertion_state.canonical_bytes()?,
+            )?,
             terminal_verdict: self.terminal_verdict.clone(),
             terminal_cause: self.terminal_cause.clone(),
             initial_lifecycle_observations_pending: self.initial_lifecycle_observations_pending,
@@ -1631,7 +1633,7 @@ impl ProductionVmLifecycleLoop {
             event_log_objects: Arc::new(event_log_objects),
             signal_artifact_objects: Arc::clone(&self.signal_artifact_objects),
             trigger_state: self.trigger_state.clone(),
-            assertion_state: self.assertion_evaluator.checkpoint(),
+            assertion_state: self.assertion_evaluator.checkpoint()?,
             terminal_verdict: self.terminal_verdict.clone(),
             terminal_cause: self.checkpoint_terminal_cause.clone(),
             initial_lifecycle_observations_pending: self.initial_lifecycle_observations_pending,

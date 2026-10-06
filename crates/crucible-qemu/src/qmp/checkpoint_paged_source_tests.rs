@@ -21,8 +21,7 @@ use crucible_protocol::ram_page::{
 };
 use crucible_ram::PageProof;
 
-#[path = "checkpoint_paged_source_support.rs"]
-mod support;
+use super::checkpoint_paged_source_support as support;
 use support::ImmutableBacking;
 
 fn binding(backing: &dyn QemuRamBacking, owner: u8) -> RamPageBinding {

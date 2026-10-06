@@ -29,7 +29,17 @@ pub(crate) fn run_serve_invocation(cli: &Cli, args: &ServeArgs) -> Result<(), Cl
         let _runtime = runtime.enter();
         serve_shutdown_signal()?
     };
-    runtime.block_on(run_serve_invocation_until_shutdown(cli, args, shutdown))
+    if args.production_qemu {
+        runtime.block_on(run_serve_invocation_until_shutdown(cli, args, shutdown))
+    } else {
+        let decoding = crate::cli_input_resources::original_budget()?;
+        let admitted = crucible_api::admit_future(
+            run_serve_invocation_until_shutdown(cli, args, shutdown),
+            decoding,
+        )
+        .map_err(|source| CliError::LifecycleAdmission(Box::new(source)))?;
+        runtime.block_on(admitted)
+    }
 }
 
 pub(crate) async fn run_serve_invocation_until_shutdown<S>(
@@ -134,7 +144,8 @@ where
                 })?
                 .resume_loop(request, configuration, context)
         })
-        .with_resume_replay_closure_validator(validate_remote_resume_replay_closure);
+        .with_resume_replay_closure_validator(validate_remote_resume_replay_closure)
+    .with_decode_budget(crate::cli_input_resources::original_budget()?);
         if let Some(max_sessions) = args.max_sessions {
             control_plane = control_plane.with_max_sessions(max_sessions);
         }

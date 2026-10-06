@@ -766,7 +766,9 @@ fn exercise_public_exact_pin_gc_flow(
     )?;
     assert_eq!(planned["operation"], "plan");
     {
-        let journal = DirectoryCampaignGcJournal::open(&fixture.journal)?;
+        let mut inspection = gc_quota::inspection(&fixture.store, "inspect-exact-pinned-gc")?;
+        let operation = inspection.context()?;
+        let journal = DirectoryCampaignGcJournal::open(&fixture.journal, &operation)?;
         assert!(
             journal
                 .roots()
@@ -820,7 +822,9 @@ fn exercise_public_exact_pin_gc_flow(
         "replan GC after public unpin",
     )?;
     assert_eq!(replanned["operation"], "plan");
-    let journal = DirectoryCampaignGcJournal::open(after_unpin_journal)?;
+    let mut inspection = gc_quota::inspection(&fixture.store, "inspect-unpinned-gc")?;
+    let operation = inspection.context()?;
+    let journal = DirectoryCampaignGcJournal::open(after_unpin_journal, &operation)?;
     assert!(
         !journal
             .roots()

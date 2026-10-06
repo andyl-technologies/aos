@@ -35,7 +35,7 @@ pub mod engine {
         DebugCheckpointStride, DebugCliSurfaceContract, DebugCoordinate, DebugGdbEndpoint,
         DebugReverseStepGrain, Decision, DeliveryOrderDecision, EngineError, EventAttributeValue,
         EventDiagnosticPayload, EventGraph, EventId, EventKey, EventLevel, EventLog,
-        EventLogCoverageFeedback, EventLogCoverageObservation, EventLogOffset, EventLogTickStamp,
+        EventLogCoverageFeedback, EventLogCoverageObservation, EventLogOffset, EventLogOutputCustody, EventLogTickStamp,
         EventLogTime, EventPayload, EventSource, ExampleCorpusError, ExampleScenarioVerifyReport,
         ExecutionFingerprint, FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION,
         FAULT_CAMPAIGN_FAMILY_NAME, FailureCluster, FailureClusterFinding, FailureClusterReport,
@@ -49,12 +49,12 @@ pub mod engine {
         FailureTriageStoredArtifact, FamilySpace, FaultSignalPlan, FindingDiscoveryPath,
         FindingReproductionArtifact, FingerprintSample, GenesisCheckpoint, GuestMeasurementEvent,
         GuestMeasurementValue, GuestSemanticMarkerDetail, HAPPY_PATH_SCENARIO_NAME,
-        HostAssertionEvaluator, HostAssertionOutcomeKind, HostAssertionViolation, Icount,
-        IrqVector, LinkDef, LinkLossProbability, LocalDagStore, LogLevel, MarkerId,
-        MaterializationPolicy, MaterializationTrigger, MaterializedSearchMutation,
-        MaterializedSearchPlan, MaterializedState, MemPlace, MemoryCmp, MemoryDagStore,
-        MemoryWidth, MinimizationConfig, MinimizationRun, NetworkFaultSelectable, NodeId,
-        NodeTemplate, ObservableEvent, ObservableEventPayload, OverrideDecision,
+        HostAssertionEvaluator, HostAssertionOutcomeKind, HostAssertionViolation,
+        HostAssertionViolationFields, Icount, IrqVector, LinkDef, LinkLossProbability,
+        LocalDagStore, LogLevel, MarkerId, MaterializationPolicy, MaterializationTrigger,
+        MaterializedSearchMutation, MaterializedSearchPlan, MaterializedState, MemPlace, MemoryCmp,
+        MemoryDagStore, MemoryWidth, MinimizationConfig, MinimizationRun, NetworkFaultSelectable,
+        NodeId, NodeTemplate, ObservableEvent, ObservableEventPayload, OverrideDecision,
         PARTITION_RECOVERY_SCENARIO_NAME, Plan, Predicate, PreemptionDecision, PreemptionKind,
         Properties, Property, QuantumLoop, QuantumOutcome, QuantumRequest, ReadyPoint,
         RecordedAssertionLog, ReplayOracleCheck, ReproductionArtifact, ResolvedCodePoint,
@@ -127,6 +127,9 @@ mod session_core;
 mod session_debug_coordinator;
 #[path = "session/engine.rs"]
 mod session_engine;
+#[path = "session/event_entries.rs"]
+mod session_event_entries;
+use session_event_entries::{AdmittedEventEntries, LoanedVec};
 #[path = "session/exploration.rs"]
 mod session_exploration;
 #[path = "session/exploration/support.rs"]

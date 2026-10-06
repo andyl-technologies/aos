@@ -29,6 +29,7 @@ use crate::PluginArgs;
 
 mod admission;
 mod aliases;
+mod fault_actor;
 mod fork;
 pub(crate) use admission::{
     admit_native_inventory, admitted_spill_quota, complete_native_admission,
@@ -55,6 +56,7 @@ type NativeWorker = extern "C" fn(u32, u64, u64, u32) -> c_int;
 type NativeOwnerInventory = extern "C" fn(*mut u64, *mut u64, *mut u64) -> c_int;
 
 type NativeGrant = extern "C" fn(u64, u64, *mut u64) -> c_int;
+type ChildRuntimeReady = extern "C" fn() -> c_int;
 
 struct Inventory {
     report: RamControlInventoryReport,
@@ -79,17 +81,20 @@ struct State {
     failed: bool,
     fork_preparing: bool,
     policy_applying: bool,
+    child_bootstrap: bool,
 }
 
 /// Retains real control, budget and arena authority until process disposition.
 struct LivePagerController {
     target: RamControlTarget,
     session: [u8; 32],
+    fault_actor_test_entitlement: Option<[u8; 32]>,
     state: Arc<Mutex<State>>,
     canceled: Arc<AtomicBool>,
     operations: Arc<AtomicUsize>,
     native_worker: NativeWorker,
     native_grant: NativeGrant,
+    child_runtime_ready: ChildRuntimeReady,
     spill: Mutex<Option<File>>,
     spill_quota: u64,
     worker: Mutex<Option<PagerControlWorker>>,
@@ -175,9 +180,16 @@ pub(crate) fn install(args: &PluginArgs) -> Result<(), RamError> {
             b"qemu_plugin_crucible_ram_admission_grant_v1\0",
         )?)
     };
+    // SAFETY: readiness is a lock-free scalar from the paired native runtime.
+    let child_runtime_ready = unsafe {
+        std::mem::transmute::<*mut c_void, ChildRuntimeReady>(symbol(
+            b"qemu_plugin_crucible_ram_child_runtime_ready_v1\0",
+        )?)
+    };
     let controller = Arc::new(LivePagerController {
         target: control.target,
         session: control.session,
+        fault_actor_test_entitlement: control.fault_actor_test_entitlement,
         state: Arc::new(Mutex::new(State {
             resources,
             budgets,
@@ -194,11 +206,13 @@ pub(crate) fn install(args: &PluginArgs) -> Result<(), RamError> {
             failed: false,
             fork_preparing: false,
             policy_applying: false,
+            child_bootstrap: false,
         })),
         canceled: Arc::new(AtomicBool::new(false)),
         operations: Arc::new(AtomicUsize::new(0)),
         native_worker,
         native_grant,
+        child_runtime_ready,
         spill: Mutex::new(Some(spill)),
         spill_quota,
         worker: Mutex::new(None),
@@ -266,14 +280,34 @@ impl LivePagerController {
     }
 
     fn reply(&self, state: &mut State, disposition: RamControlDisposition) -> RamControlReply {
-        state.observation_sequence = state.observation_sequence.saturating_add(1);
-        let report = state.inventory.as_ref().map(|inventory| inventory.report);
-        let logical = report.map_or(0, |report| report.logical_bytes);
+        if state.outer.is_some_and(|cap| outer_remaining(cap).is_err()) {
+            state.outer_expired = true;
+        }
+        let completed = state
+            .owner
+            .as_ref()
+            .and_then(|owner| owner.placement_receipt());
         let authority = state
             .owner
             .as_ref()
             .and_then(|owner| owner.authority_snapshot().ok());
         let failed = state.failed || authority.as_ref().is_some_and(|snapshot| snapshot.failed);
+        if !failed
+            && !state.policy_applying
+            && !state.outer_expired
+            && !self.canceled.load(Ordering::Acquire)
+            && completed.is_some_and(|receipt| {
+                receipt.policy_revision == state.requested_revision
+                    && state
+                        .policy
+                        .is_some_and(|policy| policy.mode == receipt.mode)
+            })
+        {
+            state.applied_revision = state.requested_revision;
+        }
+        state.observation_sequence = state.observation_sequence.saturating_add(1);
+        let report = state.inventory.as_ref().map(|inventory| inventory.report);
+        let logical = report.map_or(0, |report| report.logical_bytes);
         let floor = authority
             .as_ref()
             .map_or(logical, |snapshot| snapshot.permanent_resident_bytes);
@@ -302,6 +336,16 @@ impl LivePagerController {
             }
         });
         RamControlReply {
+            operation_failure: state
+                .owner
+                .as_ref()
+                .and_then(|owner| owner.operational_failure().map(|failure| failure.to_wire())),
+            placement_receipt: completed
+                .filter(|receipt| receipt.policy_revision == state.applied_revision),
+            fault_actor: state
+                .owner
+                .as_ref()
+                .and_then(|owner| owner.fault_actor_report().ok().flatten()),
             kernel_probe: state.owner.as_ref().and_then(|owner| owner.kernel_probe()),
             activity,
             disposition,
@@ -321,8 +365,10 @@ impl LivePagerController {
             preserved_backing_bytes: 0,
             private_dirty_bytes: 0,
             writeback_pending_bytes: 0,
-            convergence: if failed {
+            convergence: if failed || state.outer_expired {
                 RamControlConvergence::Failed
+            } else if state.requested_revision != state.applied_revision {
+                RamControlConvergence::Applying
             } else {
                 RamControlConvergence::Blocked
             },
@@ -331,6 +377,9 @@ impl LivePagerController {
 
     fn unavailable(&self) -> RamControlReply {
         RamControlReply {
+            placement_receipt: None,
+            operation_failure: None,
+            fault_actor: None,
             kernel_probe: None,
             activity: None,
             disposition: RamControlDisposition::Unavailable,
@@ -400,6 +449,15 @@ impl PagerControl for LivePagerController {
         {
             return self.reply(&mut state, RamControlDisposition::Accepted);
         }
+        // A staged child can acknowledge its already installed configuration,
+        // but arbitrary operational placement must wait for actual native
+        // coordinator and descriptor reconstruction. Polling never advances it.
+        if state.child_bootstrap {
+            if (self.child_runtime_ready)() != 1 {
+                return self.reply(&mut state, RamControlDisposition::Unavailable);
+            }
+            state.child_bootstrap = false;
+        }
         if state.applied_revision != expected
             || state.requested_revision != expected
             || expected.checked_add(1) != Some(revision)
@@ -434,7 +492,7 @@ impl PagerControl for LivePagerController {
         state.policy = Some(policy);
         state.requested_revision = revision;
         drop(state);
-        let applied = owner.apply_resource_policy(&policy, &resources);
+        let applied = owner.apply_resource_policy(&policy, &resources, revision);
 
         // Scheduling enters the same live budget factory. Holding state across
         // that call would deadlock; publication instead checks retained authority
@@ -455,7 +513,9 @@ impl PagerControl for LivePagerController {
             return self.reply(&mut state, RamControlDisposition::Unavailable);
         }
         state.resources = resources;
-        state.applied_revision = revision;
+        if policy.mode == RamControlMode::Managed {
+            state.applied_revision = revision;
+        }
         state.reservation_revision = reservation;
         self.reply(&mut state, RamControlDisposition::Accepted)
     }
@@ -608,6 +668,15 @@ impl PagerControl for LivePagerController {
             state.outer_expired = true;
         }
         self.reply(&mut state, RamControlDisposition::Accepted)
+    }
+
+    fn test_fault_actor(
+        &self,
+        entitlement: [u8; 32],
+        worker_generation: u64,
+        action: RamControlFaultActorAction,
+    ) -> RamControlReply {
+        self.dispatch_fault_actor_test(entitlement, worker_generation, action)
     }
 
     fn cancel(&self, generation: u64) -> RamControlReply {

@@ -337,6 +337,14 @@ fn engineering_hygiene_rules_reject_shape_and_boundary_drift() {
     assert_eq!(cfg_expression_counts.implementation, 2);
     assert_eq!(cfg_expression_counts.tests, 6);
 
+    let cfg_nested_expression_counts = source_role_line_counts(
+        Path::new("crates/crucible-example"),
+        Path::new("crates/crucible-example/src/synthetic.rs"),
+        "//! synthetic\n#[cfg(test)]\nif matches!(\n    input,\n    Some(Value {\n        field: 1,\n    })\n) && let Some(output) = input\n{\n    consume(output);\n}\nfn production() {}\n",
+    );
+    assert_eq!(cfg_nested_expression_counts.implementation, 2);
+    assert_eq!(cfg_nested_expression_counts.tests, 10);
+
     let fake_crate_cfg = "//! synthetic\nconst TEXT: &str = r###\"\n#![cfg(test)]\n\"quoted raw content\"\n\"###;\n/* #![cfg(test)] */\nfn production() {}\n";
     assert!(!is_test_support_only_source(fake_crate_cfg));
 

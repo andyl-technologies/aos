@@ -68,6 +68,37 @@ pub trait RamControlRetirementAuthority: Send + Sync {
 /// independently supplied by the executor; an open socket proves transport
 /// authority, never eviction safety or a lower execution peak.
 pub trait RamControlRegistrar: Send + Sync {
+    /// Observes native actor and physical-operation failures in one bounded RPC.
+    ///
+    /// # Errors
+    /// Returns original controller transport, supervision or ownership failures.
+    fn native_paging_health(
+        &self,
+        target: HostRamTarget,
+    ) -> Result<
+        (
+            Option<RamControlFaultActorReport>,
+            Option<RamControlOperationFailure>,
+        ),
+        RamControlError,
+    > {
+        self.fault_actor_status(target).map(|actor| (actor, None))
+    }
+
+    /// Observes the exact admitted native fault actor through independent control.
+    ///
+    /// Absence supplies no actor-lifetime evidence. The observation never
+    /// renews a cap, changes policy, or releases any retained physical owner.
+    ///
+    /// # Errors
+    /// Returns original controller transport or exact-ownership failures.
+    fn fault_actor_status(
+        &self,
+        _target: HostRamTarget,
+    ) -> Result<Option<RamControlFaultActorReport>, RamControlError> {
+        Ok(None)
+    }
+
     /// Issues independent final-close authority for an existing published owner.
     ///
     /// The returned capability must survive this registrar's destruction and
@@ -365,6 +396,63 @@ impl RamControlClient {
     /// Returns a bounded transport or authority failure; never infers convergence.
     pub fn status(&mut self) -> Result<RamControlReply, RamControlError> {
         self.exchange(RamControlRequest::Status)
+    }
+
+    /// Observes the actual actor under the caller's original lock-and-I/O guard.
+    ///
+    /// # Errors
+    /// Returns original deadline, transport or exact-ownership failures. It
+    /// never completes or renews the caller's encompassing operation.
+    pub fn status_under(
+        &mut self,
+        guard: &HostOperationGuard,
+    ) -> Result<RamControlReply, RamControlError> {
+        let deadline = self.exchange_deadline(Some(guard))?;
+        self.exchange_under(RamControlRequest::Status, Some(guard), deadline)
+    }
+
+    /// Exercises an exact isolated actor only under a separate launch entitlement.
+    ///
+    /// # Errors
+    /// Returns bounded transport or authentication errors; a returned acceptance
+    /// never proves the actor returned or released its native membership.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_fault_actor(
+        &mut self,
+        entitlement: [u8; 32],
+        worker_generation: u64,
+        action: RamControlFaultActorAction,
+    ) -> Result<RamControlReply, RamControlError> {
+        self.exchange(RamControlRequest::TestFaultActor {
+            entitlement,
+            worker_generation,
+            action,
+        })
+    }
+
+    /// Exercises the entitled actor under one original lock-and-I/O operation.
+    ///
+    /// # Errors
+    /// Returns bounded transport or authentication failures. It does not complete
+    /// the shared guard or infer native termination from request acceptance.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_fault_actor_under(
+        &mut self,
+        entitlement: [u8; 32],
+        worker_generation: u64,
+        action: RamControlFaultActorAction,
+        guard: &HostOperationGuard,
+    ) -> Result<RamControlReply, RamControlError> {
+        let deadline = self.exchange_deadline(Some(guard))?;
+        self.exchange_under(
+            RamControlRequest::TestFaultActor {
+                entitlement,
+                worker_generation,
+                action,
+            },
+            Some(guard),
+            deadline,
+        )
     }
 
     /// Requests cancellation of one exact nonzero operation generation.

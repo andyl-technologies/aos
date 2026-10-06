@@ -615,7 +615,11 @@ fn build_production_checkpoint_codec_fixture(
         event_log_objects: Arc::new(BTreeMap::new()),
         signal_artifact_objects: Arc::new(BTreeMap::new()),
         trigger_state: EventGraphState::default(),
-        assertion_state: HostAssertionEvaluator::new(source.properties()).checkpoint(),
+        assertion_state: crate::vm_lifecycle::admitted_clone::component_assertion_evaluator(
+            &source,
+        )
+        .checkpoint()
+        .unwrap_or_else(|error| panic!("component assertion checkpoint: {error}")),
         terminal_verdict: None,
         terminal_cause: None,
         initial_lifecycle_observations_pending: true,

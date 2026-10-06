@@ -1,5 +1,8 @@
 //! Golden and adversarial executable checks for host operational encoding.
 
+// crucible-lint: allow panic-shortcut -- executable format fixtures use panic shortcuts for precise refusal localization.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use super::*;
 use crucible_linux_resource::host_supervision::{HostEffectiveDeadline, HostOperationState};
 
@@ -16,6 +19,8 @@ fn target() -> HostRamTarget {
 
 #[test]
 fn target_discovery_binds_owner_cursor_order_and_bounded_page() {
+    let _scope = crucible::test_support::fixture_decode_scope(32 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite operational codec fixture: {error}"));
     let target = target();
     let owner = HostRamOwnerTarget {
         daemon_epoch: target.daemon_epoch,
@@ -111,8 +116,10 @@ fn update() -> HostOperationalRequest {
 
 #[test]
 fn status_request_has_frozen_explicit_width_big_endian_bytes() {
+    let _scope = crucible::test_support::fixture_decode_scope(32 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite operational codec fixture: {error}"));
     let bytes = encode_request(&HostOperationalRequest::Status { target: target() }).unwrap();
-    let mut expected = vec![0, 0, 0, 1, 1];
+    let mut expected = vec![0, 0, 0, 2, 1];
     expected.extend_from_slice(&[0x11; 32]);
     expected.extend_from_slice(&[0x22; 32]);
     expected.extend_from_slice(&[0x33; 32]);
@@ -130,6 +137,8 @@ fn status_request_has_frozen_explicit_width_big_endian_bytes() {
 
 #[test]
 fn policy_request_roundtrip_binds_independent_reservation_and_budget_roster() {
+    let _scope = crucible::test_support::fixture_decode_scope(32 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite operational codec fixture: {error}"));
     let request = update();
     let bytes = encode_request(&request).unwrap();
 
@@ -145,9 +154,11 @@ fn policy_request_roundtrip_binds_independent_reservation_and_budget_roster() {
 
 #[test]
 fn operational_codec_refuses_unknown_tags_trailing_and_oversized_data() {
+    let _scope = crucible::test_support::fixture_decode_scope(32 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite operational codec fixture: {error}"));
     let bytes = encode_request(&update()).unwrap();
     let mut invalid = bytes.clone();
-    invalid[3] = 2;
+    invalid[3] = 1;
     assert!(decode_request(&invalid).is_err());
     invalid = bytes.clone();
     invalid[4] = 4;
@@ -163,6 +174,8 @@ fn operational_codec_refuses_unknown_tags_trailing_and_oversized_data() {
 
 #[test]
 fn configured_durations_are_exact_nonzero_milliseconds() {
+    let _scope = crucible::test_support::fixture_decode_scope(32 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite operational codec fixture: {error}"));
     let mut request = update();
     let HostOperationalRequest::UpdatePolicy { policy, .. } = &mut request else {
         panic!("fixture");
@@ -187,6 +200,8 @@ fn configured_durations_are_exact_nonzero_milliseconds() {
 
 #[test]
 fn request_digest_binds_authenticated_principal_every_incarnation_and_payload() {
+    let _scope = crucible::test_support::fixture_decode_scope(32 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite operational codec fixture: {error}"));
     let original = update();
     let digest = host_operational_request_digest("operator-a", &original).unwrap();
     assert_eq!(
@@ -231,9 +246,11 @@ fn status() -> HostRamStatus {
         target: target(),
         observation_sequence: 11,
         policy_revision: 2,
+        applied_policy_revision: 2,
         reservation_revision: 3,
         requested_policy: policy(),
         applied_policy: policy(),
+        placement_receipt: None,
         effective_resident_target_bytes: 4096,
         effective_floor_bytes: 4096,
         limitation_reasons: vec!["compulsory fault buffer".into()],
@@ -299,6 +316,8 @@ fn status() -> HostRamStatus {
 
 #[test]
 fn status_roundtrip_keeps_acceptance_convergence_reservation_and_deadline_sources_separate() {
+    let _scope = crucible::test_support::fixture_decode_scope(32 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite operational codec fixture: {error}"));
     let response = HostOperationalResponse::Status(Box::new(status()));
     let bytes = encode_response(&response).unwrap();
 
@@ -314,10 +333,12 @@ fn status_roundtrip_keeps_acceptance_convergence_reservation_and_deadline_source
 
 #[test]
 fn status_refuses_unbounded_or_ambiguous_rosters_before_publication() {
+    let _scope = crucible::test_support::fixture_decode_scope(32 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite operational codec fixture: {error}"));
     let mut fixture = status();
     fixture
         .outstanding_operations
-        .push(fixture.outstanding_operations[0].clone());
+        .push(status().outstanding_operations.remove(0));
     assert!(encode_response(&HostOperationalResponse::Status(Box::new(fixture))).is_err());
 
     let mut fixture = status();
@@ -340,6 +361,8 @@ fn status_refuses_unbounded_or_ambiguous_rosters_before_publication() {
 
 #[test]
 fn policy_acceptance_roundtrip_does_not_claim_physical_convergence() {
+    let _scope = crucible::test_support::fixture_decode_scope(32 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite operational codec fixture: {error}"));
     let response = HostOperationalResponse::PolicyUpdate {
         request_digest: [0x55; 32],
         target: target(),
@@ -357,6 +380,8 @@ fn policy_acceptance_roundtrip_does_not_claim_physical_convergence() {
 
 #[test]
 fn policy_receipt_rejects_invented_or_missing_acceptance() {
+    let _scope = crucible::test_support::fixture_decode_scope(32 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite operational codec fixture: {error}"));
     let receipt =
         |disposition, accepted_policy, transition| HostOperationalResponse::PolicyUpdate {
             request_digest: [0x55; 32],
@@ -397,6 +422,8 @@ fn policy_receipt_rejects_invented_or_missing_acceptance() {
 
 #[test]
 fn backend_preferences_do_not_imply_low_peak_or_lifecycle_qualification() {
+    let _scope = crucible::test_support::fixture_decode_scope(32 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite operational codec fixture: {error}"));
     let capabilities = HostRamCapabilities {
         logical_ram_bytes: 8192,
         compulsory_resident_bytes: 4096,
@@ -448,6 +475,8 @@ fn backend_preferences_do_not_imply_low_peak_or_lifecycle_qualification() {
 
 #[test]
 fn positive_submillisecond_remaining_time_never_appears_expired() {
+    let _scope = crucible::test_support::fixture_decode_scope(32 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite operational codec fixture: {error}"));
     let mut fixture = status();
     fixture.outer_caps[0].status.remaining = Some(Duration::from_nanos(1));
     fixture.outstanding_operations[0]
@@ -459,7 +488,7 @@ fn positive_submillisecond_remaining_time_never_appears_expired() {
         &encode_response(&HostOperationalResponse::Status(Box::new(fixture))).unwrap(),
     )
     .unwrap();
-    let HostOperationalResponse::Status(decoded) = decoded else {
+    let HostOperationalResponse::Status(decoded) = decoded.value() else {
         panic!("fixture");
     };
     assert_eq!(
@@ -478,6 +507,8 @@ fn positive_submillisecond_remaining_time_never_appears_expired() {
 
 #[test]
 fn outer_cap_acceptance_is_original_receipt_and_service_namespace_is_distinct() {
+    let _scope = crucible::test_support::fixture_decode_scope(32 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite operational codec fixture: {error}"));
     let target = HostOuterCapTarget {
         daemon_epoch: [0x11; 32],
         owner: HostOuterCapOwner::Service([0x22; 32]),
@@ -528,6 +559,8 @@ fn outer_cap_acceptance_is_original_receipt_and_service_namespace_is_distinct() 
 
 #[test]
 fn admitted_status_topology_fits_the_canonical_envelope_at_all_field_ceilings() {
+    let _scope = crucible::test_support::fixture_decode_scope(32 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite operational codec fixture: {error}"));
     let mut fixture = status();
     fixture.limitation_reasons = vec!["r".repeat(128); HOST_OPERATIONAL_MAX_REASONS];
     for budget in &mut fixture.requested_policy.latency.classes {
@@ -543,19 +576,19 @@ fn admitted_status_topology_fits_the_canonical_envelope_at_all_field_ceilings() 
             cap
         })
         .collect();
-    let mut operation = fixture.outstanding_operations[0].clone();
-    operation.effective_deadline.as_mut().unwrap().sources = vec![
-        HostDeadlineSource::Progress(2),
-        HostDeadlineSource::Total(2),
-        HostDeadlineSource::Outer {
-            cap_id: [0x77; 32],
-            revision: 5,
-        },
-    ];
     fixture.outstanding_operations = (1..=HOST_OPERATIONAL_MAX_OPERATIONS)
         .map(|index| {
-            let mut operation = operation.clone();
+            let mut rows = status().outstanding_operations;
+            let mut operation = rows.remove(0);
             operation.operation_id = index as u64;
+            operation.effective_deadline.as_mut().unwrap().sources = vec![
+                HostDeadlineSource::Progress(2),
+                HostDeadlineSource::Total(2),
+                HostDeadlineSource::Outer {
+                    cap_id: [0x77; 32],
+                    revision: 5,
+                },
+            ];
             operation
         })
         .collect();
@@ -568,9 +601,13 @@ fn admitted_status_topology_fits_the_canonical_envelope_at_all_field_ceilings() 
 
 #[test]
 fn unavailable_measurements_do_not_present_physical_zero_as_observed_residency() {
+    let _scope = crucible::test_support::fixture_decode_scope(32 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite operational codec fixture: {error}"));
     let mut fixture = status();
     fixture.measurements_available = false;
-    assert!(encode_response(&HostOperationalResponse::Status(Box::new(fixture.clone()))).is_err());
+    let mut invalid_fixture = status();
+    invalid_fixture.measurements_available = false;
+    assert!(encode_response(&HostOperationalResponse::Status(Box::new(invalid_fixture))).is_err());
     fixture.private_resident_bytes = 0;
     fixture.preserved_backing_bytes = 0;
     assert!(fixture.activity.is_some());
@@ -583,9 +620,13 @@ fn unavailable_measurements_do_not_present_physical_zero_as_observed_residency()
 
 #[test]
 fn unavailable_activity_is_distinct_from_measured_zero_activity() {
+    let _scope = crucible::test_support::fixture_decode_scope(32 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite operational codec fixture: {error}"));
     let mut fixture = status();
     fixture.activity = None;
-    let unavailable = HostOperationalResponse::Status(Box::new(fixture.clone()));
+    let mut unavailable_fixture = status();
+    unavailable_fixture.activity = None;
+    let unavailable = HostOperationalResponse::Status(Box::new(unavailable_fixture));
     let unavailable_bytes = encode_response(&unavailable).unwrap();
     assert_eq!(decode_response(&unavailable_bytes).unwrap(), unavailable);
 
@@ -603,4 +644,180 @@ fn unavailable_activity_is_distinct_from_measured_zero_activity() {
     let measured_bytes = encode_response(&measured).unwrap();
     assert_ne!(measured_bytes, unavailable_bytes);
     assert_eq!(decode_response(&measured_bytes).unwrap(), measured);
+}
+
+#[test]
+fn strict_placement_roundtrips_completed_and_pending_revisions() {
+    let _scope = crucible::test_support::fixture_decode_scope(32 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite operational codec fixture: {error}"));
+    for mode in [HostRamMode::ResidentRequired, HostRamMode::DiskOriented] {
+        let mut fixture = status();
+        fixture.applied_policy.mode = mode;
+        fixture.requested_policy.mode = mode;
+        fixture.placement_receipt = Some(HostRamPlacementReceipt {
+            mode,
+            policy_revision: 2,
+            topology_generation: 17,
+            placement_epoch: 9,
+            locked_bytes: if mode == HostRamMode::ResidentRequired {
+                8192
+            } else {
+                0
+            },
+            disk_preserved_logical_pages: if mode == HostRamMode::DiskOriented {
+                2
+            } else {
+                0
+            },
+            disk_preserved_logical_bytes: if mode == HostRamMode::DiskOriented {
+                6000
+            } else {
+                0
+            },
+            ram_write_generation_at_cut: if mode == HostRamMode::DiskOriented {
+                47
+            } else {
+                0
+            },
+        });
+        // A newer accepted request does not silently relabel earlier evidence.
+        fixture.policy_revision = 3;
+        let response = HostOperationalResponse::Status(Box::new(fixture));
+
+        assert_eq!(
+            decode_response(&encode_response(&response).unwrap()).unwrap(),
+            response
+        );
+    }
+}
+
+#[test]
+fn strict_placement_refuses_mismatched_receipts_and_predecessor_schema() {
+    let _scope = crucible::test_support::fixture_decode_scope(32 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite operational codec fixture: {error}"));
+    let strict_fixture = || {
+        let mut fixture = status();
+        fixture.applied_policy.mode = HostRamMode::ResidentRequired;
+        fixture.placement_receipt = Some(HostRamPlacementReceipt {
+            mode: HostRamMode::ResidentRequired,
+            policy_revision: 2,
+            topology_generation: 17,
+            placement_epoch: 9,
+            locked_bytes: 8192,
+            disk_preserved_logical_pages: 0,
+            disk_preserved_logical_bytes: 0,
+            ram_write_generation_at_cut: 0,
+        });
+        fixture
+    };
+    let encoded =
+        encode_response(&HostOperationalResponse::Status(Box::new(strict_fixture()))).unwrap();
+    let (mut predecessor, _credit) = encoded.into_parts();
+    predecessor[..4].copy_from_slice(&1_u32.to_be_bytes());
+    assert!(decode_response(&predecessor).is_err());
+
+    for invalid in 0..5 {
+        let mut candidate = strict_fixture();
+        let receipt = candidate.placement_receipt.as_mut().unwrap();
+        match invalid {
+            0 => receipt.policy_revision = 3,
+            1 => receipt.topology_generation = 0,
+            2 => receipt.placement_epoch = 0,
+            3 => receipt.locked_bytes = 8193,
+            4 => receipt.disk_preserved_logical_pages = 1,
+            _ => unreachable!(),
+        }
+        assert!(encode_response(&HostOperationalResponse::Status(Box::new(candidate))).is_err());
+    }
+}
+
+#[test]
+fn decoded_status_retains_all_owned_field_credit_until_final_output_drop() {
+    use std::sync::atomic::Ordering;
+
+    let response = HostOperationalResponse::Status(Box::new(status()));
+    let bytes = {
+        let budget = crate::admitted_output::tests::fixture_budget().unwrap();
+        let _scope = budget.enter();
+        encode_response(&response).unwrap()
+    };
+    let (budget, used) = crate::admitted_output::tests::tracked_fixture_budget(32 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite response authority: {error}"));
+    let baseline = used.load(Ordering::SeqCst);
+    let decoded = {
+        let _scope = budget.enter();
+        decode_response(&bytes).unwrap_or_else(|error| panic!("admitted coherent status: {error}"))
+    };
+
+    assert_eq!(decoded.value(), &response);
+    let retained = used.load(Ordering::SeqCst);
+    assert!(
+        retained > baseline,
+        "decoded fields retain their original child account"
+    );
+    // Transient canonical encoding is released before the returned DTO escapes.
+    assert!(retained - baseline < HOST_OPERATIONAL_MAX_BYTES as u64);
+    drop(decoded);
+    assert_eq!(used.load(Ordering::SeqCst), baseline);
+    drop(budget);
+    assert_eq!(used.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn decoded_response_refuses_missing_or_exhausted_original_authority() {
+    let response = HostOperationalResponse::Status(Box::new(status()));
+    let bytes = {
+        let budget = crate::admitted_output::tests::fixture_budget().unwrap();
+        let _scope = budget.enter();
+        encode_response(&response).unwrap()
+    };
+    assert!(matches!(
+        decode_response(&bytes),
+        Err(HostOperationalError::Admission { .. })
+    ));
+
+    let (budget, _) = crate::admitted_output::tests::tracked_fixture_budget(1024)
+        .unwrap_or_else(|error| panic!("finite exhausted-response fixture: {error}"));
+    let _scope = budget.enter();
+    assert!(matches!(
+        decode_response(&bytes),
+        Err(HostOperationalError::Admission { .. })
+    ));
+}
+
+#[test]
+fn decoded_policy_keeps_original_credit_after_wire_and_budget_close() {
+    use std::sync::atomic::Ordering;
+
+    let request = update();
+    let wire = {
+        let budget = crate::admitted_output::tests::fixture_budget().unwrap();
+        let _scope = budget.enter();
+        encode_request(&request).unwrap()
+    };
+    assert!(validate_request(&wire).is_ok());
+    assert!(matches!(
+        decode_request(&wire),
+        Err(HostOperationalError::Admission { .. })
+    ));
+    let (budget, used) = crate::admitted_output::tests::tracked_fixture_budget(1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite request authority: {error}"));
+    let decoded = {
+        let _scope = budget.enter();
+        decode_request(&wire).unwrap()
+    };
+    assert_eq!(decoded.value(), &request);
+
+    drop(wire);
+    drop(budget);
+    let retained = used.load(Ordering::SeqCst);
+    assert!(retained >= std::mem::size_of::<HostRamPolicy>() as u64);
+    let policy = decoded.map(|request| match request {
+        HostOperationalRequest::UpdatePolicy { policy, .. } => policy,
+        _ => panic!("fixture policy request"),
+    });
+    assert_eq!(used.load(Ordering::SeqCst), retained);
+    assert_eq!(policy.maximum_paging_io_in_flight, 2);
+    drop(policy);
+    assert_eq!(used.load(Ordering::SeqCst), 0);
 }

@@ -13,6 +13,8 @@ use crucible_session::{EventLogCursor, SessionEventLog};
 
 /// Builds a deterministic condition-boundary event-log entry for a sequence.
 fn test_event_log_entry(sequence: u64) -> crucible::SchedulerEventLogEntry {
+    let _scope = crucible::test_support::fixture_decode_scope(1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite fixture identity scope: {error}"));
     crucible::test_support::condition_boundary_entry_for_test(
         sequence,
         crucible::VirtualTime {
@@ -20,6 +22,7 @@ fn test_event_log_entry(sequence: u64) -> crucible::SchedulerEventLogEntry {
         },
         crucible::SchedulerEvaluationBoundaryKind::Quantum,
     )
+    .unwrap_or_else(|error| panic!("finite fixture identity: {error}"))
 }
 
 #[tokio::test]
@@ -38,7 +41,7 @@ async fn event_log_stream_does_not_duplicate_replayed_live_frame() {
         .expect("event-log stream should not lag")
         .expect("appended entry should be visible");
 
-    assert_eq!(frame.entry, entry);
+    assert_eq!(&**frame.entry, &entry);
     assert_eq!(stream.cursor(), EventLogCursor::new(1));
     assert_eq!(
         stream
@@ -62,7 +65,7 @@ async fn event_log_generation_reset_preserves_retained_prefix_for_lagging_stream
             .expect("event-log stream should not lag")
             .expect("retained prefix entry should be visible before truncation");
         assert_eq!(frame.generation, 0);
-        assert_eq!(&frame.entry, expected);
+        assert_eq!(&**frame.entry, expected);
     }
     assert_eq!(stream.cursor(), EventLogCursor::new(2));
 
@@ -80,7 +83,7 @@ async fn event_log_generation_reset_preserves_retained_prefix_for_lagging_stream
             .expect("lagging stream should not lag")
             .expect("lagging stream should receive retained prefix after truncation");
         assert!(frame.generation > 0);
-        assert_eq!(&frame.entry, expected);
+        assert_eq!(&**frame.entry, expected);
     }
     assert_eq!(stream.cursor(), EventLogCursor::new(6));
     assert_eq!(

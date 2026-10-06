@@ -1140,6 +1140,9 @@ mod tests {
 
     #[test]
     fn duplicate_replays_charge_each_raw_signature_but_deduplicate_records() {
+        let _original_fixture_scope =
+            crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
         let (_finding, replay, signature_bytes) = replay_fixture();
         let mut records = ReplayRecordAccumulator::new();
 
@@ -1156,6 +1159,9 @@ mod tests {
 
     #[test]
     fn failed_byte_admission_is_atomic_and_the_same_replay_can_retry() {
+        let _original_fixture_scope =
+            crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
         let (_finding, replay, _signature_bytes) = replay_fixture();
         let mut records = ReplayRecordAccumulator::new();
         records.canonical_bytes = MAX_CRUCIBLE_FINDING_REPLAY_BYTES;
@@ -1180,7 +1186,21 @@ mod tests {
 
     #[test]
     fn duplicate_evidence_cannot_bypass_the_per_pass_entry_limit() {
+        let original_fixture_scope =
+            crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+                .expect("finite original replay component account");
+
         let (finding, replay, _signature_bytes) = replay_fixture();
+        let original_used = original_fixture_scope.retained_bytes();
+        for _ in 0..MAX_CRUCIBLE_FINDING_REPLAYS_PER_PASS {
+            validate_replay_configuration(&finding, &replay)
+                .expect("temporary replay authentication");
+            assert_eq!(original_fixture_scope.retained_bytes(), original_used);
+        }
+
+        let transcript_bank = crucible::owned_decode::require_current_child_budget()
+            .expect("same-origin transcript output bank");
+        let transcript_scope = transcript_bank.enter();
         let mut transcript = CrucibleFindingReplayTranscript::new();
         for _ in 0..MAX_CRUCIBLE_FINDING_REPLAYS_PER_PASS {
             transcript
@@ -1190,7 +1210,7 @@ mod tests {
         let records_before = transcript.records.clone();
 
         assert!(matches!(
-            transcript.record_minimization(&finding, replay),
+            transcript.record_minimization(&finding, replay.clone()),
             Err(CrucibleArtifactError::Campaign(
                 CampaignCodecError::LimitExceeded {
                     limit: "finding-minimization-replay-count"
@@ -1202,10 +1222,19 @@ mod tests {
             transcript.minimization_pass.len(),
             MAX_CRUCIBLE_FINDING_REPLAYS_PER_PASS
         );
+
+        drop(records_before);
+        drop(transcript);
+        drop(transcript_scope);
+        drop(transcript_bank);
+        assert_eq!(original_fixture_scope.retained_bytes(), original_used);
     }
 
     #[test]
     fn starting_app_random_selection_is_retained_in_exact_replay_closure() {
+        let _original_fixture_scope =
+            crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
         let scenario = crucible::happy_path_scenario()
             .expect("happy-path scenario")
             .scenario;
@@ -1243,6 +1272,9 @@ mod tests {
 
     #[test]
     fn starting_signal_fault_selection_is_retained_in_exact_replay_closure() {
+        let _original_fixture_scope =
+            crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
         let scenario = crucible::happy_path_scenario()
             .expect("happy-path scenario")
             .scenario;

@@ -188,10 +188,26 @@ fn classify_repository_failure(error: &CampaignRepositoryError) -> PromotionFail
     }
 }
 
+fn classify_event_identity_failure(error: &crucible::EngineError) -> PromotionFailureClass {
+    match error {
+        crucible::EngineError::ArtifactDecodeAdmission { .. } => PromotionFailureClass::Retryable,
+        _ => PromotionFailureClass::Terminal,
+    }
+}
+
 fn classify_preparation_failure(
     error: &PausedCheckpointPromotionPreparationError,
 ) -> PromotionFailureClass {
     match error {
+        PausedCheckpointPromotionPreparationError::EventIdentity(error) => {
+            classify_event_identity_failure(error)
+        }
+        PausedCheckpointPromotionPreparationError::ReplayProof(error) => match error {
+            crate::QemuFreshModeledDriverError::Configuration(error) => {
+                classify_event_identity_failure(error)
+            }
+            _ => PromotionFailureClass::Terminal,
+        },
         PausedCheckpointPromotionPreparationError::ProductionRestore(error) => {
             classify_restore_failure(error)
         }

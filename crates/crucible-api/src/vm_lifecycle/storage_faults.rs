@@ -86,6 +86,8 @@ struct EvaluatedStoragePhase {
 
 /// Coordinates one live block servicer with the authoritative signal runtime.
 pub(super) struct ProductionBlockFaultCoordinator {
+    #[cfg(any(test, feature = "test-support"))]
+    completion_observer: Option<Arc<dyn crucible_qemu::QemuTestBlockCompletionObserver>>,
     runtime: Arc<Mutex<ProductionFaultRuntime>>,
     cursor: SharedProductionFaultEvaluationCursor,
     observations: ProductionStorageObservations,
@@ -143,6 +145,8 @@ impl ProductionBlockFaultCoordinator {
             .find(|array| storage_array_attaches_device(&world, array, &target))
             .map(|array| array.id.as_str().to_owned());
         Self {
+            #[cfg(any(test, feature = "test-support"))]
+            completion_observer: None,
             runtime,
             cursor,
             observations,
@@ -155,6 +159,15 @@ impl ProductionBlockFaultCoordinator {
             context: StorageFaultResolutionContext::new(scenario_seed),
             resource_limits: signal_plan.resource_limits(),
         }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) fn with_completion_observer(
+        mut self,
+        observer: Option<Arc<dyn crucible_qemu::QemuTestBlockCompletionObserver>>,
+    ) -> Self {
+        self.completion_observer = observer;
+        self
     }
 
     fn active_array_policy(
@@ -1110,6 +1123,10 @@ impl ProductionBlockFaultCoordinator {
             "install block admission directive",
             servicer.install_storage_fault_directive(request.identity(), directive),
         )?;
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(observer) = &self.completion_observer {
+            observer.before_completion(&self.target, request.identity(), request_ticks)?;
+        }
         Ok(true)
     }
 

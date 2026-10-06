@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// Mutable and namespace-inventory capabilities sharing one original quota.
+pub type DirectoryRefAuthorities = (Arc<dyn MutableRefBackend>, Arc<dyn RefStoreAdmin>);
+
 /// Durable authoritative ref backend using flock and atomic replacement.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DirectoryRefBackend {
@@ -17,6 +20,20 @@ impl DirectoryRefBackend {
         root: impl Into<PathBuf>,
         guard: Arc<dyn StorePhysicalQuotaGuard>,
     ) -> Result<Arc<dyn MutableRefBackend>, StoreError> {
+        Self::new_with_physical_quota_and_admin(root, guard).map(|(backend, _)| backend)
+    }
+
+    /// Opens ordinary and inventory views sharing the same quota authority.
+    ///
+    /// Inventory fences and directory recursion retain and charge that same
+    /// authority until the final fence closes.
+    ///
+    /// # Errors
+    /// Refuses unavailable authority or insufficient original resources.
+    pub fn new_with_physical_quota_and_admin(
+        root: impl Into<PathBuf>,
+        guard: Arc<dyn StorePhysicalQuotaGuard>,
+    ) -> Result<DirectoryRefAuthorities, StoreError> {
         let root = root.into();
         guard.verify()?;
         let resources = guard.reserve_resources(
@@ -25,11 +42,12 @@ impl DirectoryRefBackend {
                 + 2 * std::mem::size_of::<usize>() as u64
                 + root.capacity() as u64,
         )?;
-        Ok(Arc::new(QuotaDirectoryRefs {
+        let backend = Arc::new(QuotaDirectoryRefs {
             child: Self::new(root),
             guard,
             _resources: resources,
-        }))
+        });
+        Ok((backend.clone(), backend))
     }
 
     /// Creates a ref backend rooted at `root`.
@@ -341,6 +359,37 @@ impl MutableRefBackend for QuotaDirectoryRefs {
     ) -> Result<RefCasOutcome, StoreError> {
         let _resources = self.operation_resources()?;
         self.child.compare_exchange(name, expected, next)
+    }
+}
+
+impl RefStoreAdmin for QuotaDirectoryRefs {
+    fn acquire_ref_inventory_fence(&self) -> Result<Box<dyn RefInventoryFence + '_>, StoreError> {
+        let resources = self.operation_resources()?;
+        Ok(Box::new(QuotaRefInventoryFence {
+            child: self
+                .child
+                .acquire_ref_inventory_fence_with_quota(Some(self.guard.as_ref()))?,
+            guard: self.guard.as_ref(),
+            _resources: resources,
+        }))
+    }
+}
+
+struct QuotaRefInventoryFence<'a> {
+    child: Box<dyn RefInventoryFence + 'a>,
+    guard: &'a dyn StorePhysicalQuotaGuard,
+    _resources: Arc<dyn Send + Sync>,
+}
+
+impl RefInventoryFence for QuotaRefInventoryFence<'_> {
+    fn visit_refs(
+        &mut self,
+        visitor: &mut dyn FnMut(RefInventoryRecord) -> Result<(), StoreError>,
+    ) -> Result<RefInventorySummary, StoreError> {
+        self.guard.verify()?;
+        let summary = self.child.visit_refs(visitor)?;
+        self.guard.verify()?;
+        Ok(summary)
     }
 }
 

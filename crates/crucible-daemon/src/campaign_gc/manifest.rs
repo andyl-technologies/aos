@@ -30,16 +30,16 @@
 //! ```
 
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
 use std::io::{self, Read, Write};
+use std::sync::Arc;
 
 use crucible_campaign::CampaignHash;
-use crucible_cas::content_store::ContentId;
+use crucible_cas::content_store::{ContentId, StoreError};
 use thiserror::Error;
 
 use super::{
-    CampaignGcCandidateSetId, CampaignGcCandidateSetSummary, CampaignGcRootSetId,
-    MAX_CAMPAIGN_GC_BACKEND_ID_BYTES, validate_backend_id,
+    CampaignGcCandidateSetId, CampaignGcCandidateSetSummary, CampaignGcOperationContext,
+    CampaignGcRootSetId, MAX_CAMPAIGN_GC_BACKEND_ID_BYTES, validate_backend_id,
 };
 
 const ROOT_MANIFEST_MAGIC: &[u8] = b"crucible.campaign.gc-root-manifest.v1\0";
@@ -54,10 +54,82 @@ const MAX_CONTENT_ID_BYTES: usize = 128;
 /// proceeds in batches so retained planning memory does not scale with RAM.
 pub const MAX_CAMPAIGN_GC_MANIFEST_ENTRIES: usize = 65_536;
 
+/// Clone-shared custody for one admitted immutable metadata allocation.
+///
+/// Equality deliberately compares semantic records rather than account identity.
+#[derive(Clone)]
+pub(super) struct MetadataCredit(Arc<dyn Send + Sync>);
+
+impl std::fmt::Debug for MetadataCredit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let _ = &self.0;
+        formatter.write_str("MetadataCredit")
+    }
+}
+
+impl PartialEq for MetadataCredit {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for MetadataCredit {}
+
+impl MetadataCredit {
+    pub(super) fn new(credit: Arc<dyn Send + Sync>) -> Self {
+        Self(credit)
+    }
+}
+
+/// Holds optional constructor custody without changing semantic record equality.
+#[derive(Clone, Debug, Default)]
+pub(super) struct OptionalMetadataCredit(Option<MetadataCredit>);
+
+impl OptionalMetadataCredit {
+    pub(super) fn new(credit: MetadataCredit) -> Self {
+        Self(Some(credit))
+    }
+}
+
+impl PartialEq for OptionalMetadataCredit {
+    fn eq(&self, other: &Self) -> bool {
+        let _ = (&self.0, &other.0);
+        true
+    }
+}
+
+impl Eq for OptionalMetadataCredit {}
+
+fn reserve_vector<T>(
+    operation: &CampaignGcOperationContext<'_>,
+    count: usize,
+) -> Result<MetadataCredit, CampaignGcManifestError> {
+    let bytes = count
+        .checked_mul(std::mem::size_of::<T>())
+        .and_then(|bytes| {
+            bytes.checked_add(std::mem::size_of::<Vec<T>>() + 2 * std::mem::size_of::<usize>())
+        })
+        .ok_or(CampaignGcManifestError::CountOverflow)?;
+    Ok(MetadataCredit::new(operation.reserve_bytes(
+        u64::try_from(bytes).map_err(|_| CampaignGcManifestError::CountOverflow)?,
+    )?))
+}
+
+fn allocate_vector<T>(count: usize) -> Result<Vec<T>, CampaignGcManifestError> {
+    let mut entries = Vec::new();
+    entries.try_reserve_exact(count).map_err(|source| {
+        CampaignGcManifestError::Resources(StoreError::Supervision {
+            source: Box::new(source),
+        })
+    })?;
+    Ok(entries)
+}
+
 /// Exact sorted set of logical roots used for reachability planning.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CampaignGcRootManifest {
-    roots: Vec<ContentId>,
+    roots: Arc<Vec<ContentId>>,
+    _credit: MetadataCredit,
 }
 
 impl CampaignGcRootManifest {
@@ -67,23 +139,33 @@ impl CampaignGcRootManifest {
     ///
     /// Returns [`CampaignGcManifestError::EntryLimit`] if more than the fixed
     /// v1 root bound is supplied.
-    pub fn new(
-        roots: impl IntoIterator<Item = ContentId>,
-    ) -> Result<Self, CampaignGcManifestError> {
-        let mut canonical = BTreeSet::new();
-        let mut observed = 0_usize;
+    pub fn new<I>(
+        roots: I,
+        operation: &CampaignGcOperationContext<'_>,
+    ) -> Result<Self, CampaignGcManifestError>
+    where
+        I: IntoIterator<Item = ContentId>,
+        I::IntoIter: ExactSizeIterator,
+    {
+        let roots = roots.into_iter();
+        let count = roots.len();
+        if count > MAX_CAMPAIGN_GC_MANIFEST_ENTRIES {
+            return Err(CampaignGcManifestError::EntryLimit);
+        }
+        let credit = reserve_vector::<ContentId>(operation, count)?;
+        let mut canonical = allocate_vector(count)?;
         for root in roots {
-            observed = observed
-                .checked_add(1)
-                .ok_or(CampaignGcManifestError::EntryLimit)?;
-            if observed > MAX_CAMPAIGN_GC_MANIFEST_ENTRIES {
+            if canonical.len() == count {
                 return Err(CampaignGcManifestError::EntryLimit);
             }
-            canonical.insert(root);
+            canonical.push(root);
         }
-        let mut roots = canonical.into_iter().collect::<Vec<_>>();
-        roots.sort_unstable_by(|left, right| compare_content_id(*left, *right));
-        Ok(Self { roots })
+        canonical.sort_unstable_by(|left, right| compare_content_id(*left, *right));
+        canonical.dedup();
+        Ok(Self {
+            roots: Arc::new(canonical),
+            _credit: credit,
+        })
     }
 
     /// Strictly reads one canonical v1 root manifest.
@@ -92,10 +174,16 @@ impl CampaignGcRootManifest {
     ///
     /// Returns [`CampaignGcManifestError`] for I/O failure, unsupported magic,
     /// excessive count, malformed IDs, noncanonical order, or trailing bytes.
-    pub fn from_canonical_reader(reader: &mut dyn Read) -> Result<Self, CampaignGcManifestError> {
+    pub fn from_canonical_reader(
+        reader: &mut dyn Read,
+        operation: &CampaignGcOperationContext<'_>,
+    ) -> Result<Self, CampaignGcManifestError> {
         require_magic(reader, ROOT_MANIFEST_MAGIC)?;
         let count = read_count(reader)?;
-        let mut roots = Vec::with_capacity(count.min(4_096));
+        let _codec = operation
+            .reserve_bytes((MAX_CONTENT_ID_BYTES + std::mem::size_of::<String>()) as u64)?;
+        let credit = reserve_vector::<ContentId>(operation, count)?;
+        let mut roots = allocate_vector(count)?;
         let mut previous = None;
         for _ in 0..count {
             let root = read_content_id(reader)?;
@@ -106,7 +194,10 @@ impl CampaignGcRootManifest {
             previous = Some(root);
         }
         require_eof(reader)?;
-        Ok(Self { roots })
+        Ok(Self {
+            roots: Arc::new(roots),
+            _credit: credit,
+        })
     }
 
     /// Streams the exact canonical v1 representation.
@@ -118,8 +209,8 @@ impl CampaignGcRootManifest {
     pub fn write_canonical(&self, writer: &mut dyn Write) -> Result<(), CampaignGcManifestError> {
         writer.write_all(ROOT_MANIFEST_MAGIC)?;
         writer.write_all(&entry_count(self.roots.len())?.to_be_bytes())?;
-        for root in &self.roots {
-            write_bounded_string(writer, &root.encode(), MAX_CONTENT_ID_BYTES)?;
+        for root in self.roots.iter() {
+            write_content_id(writer, *root)?;
         }
         Ok(())
     }
@@ -130,8 +221,8 @@ impl CampaignGcRootManifest {
         let mut hasher = manifest_hasher(ROOT_MANIFEST_HASH_DOMAIN);
         hasher.update(ROOT_MANIFEST_MAGIC);
         hasher.update(&(self.roots.len() as u64).to_be_bytes());
-        for root in &self.roots {
-            hash_bounded_string(&mut hasher, &root.encode());
+        for root in self.roots.iter() {
+            hash_content_id(&mut hasher, *root);
         }
         CampaignGcRootSetId::from_hash(CampaignHash::from_bytes(*hasher.finalize().as_bytes()))
     }
@@ -258,8 +349,9 @@ impl CampaignGcCandidate {
 /// Canonical ordered physical-deletion candidate manifest.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CampaignGcCandidateManifest {
-    candidates: Vec<CampaignGcCandidate>,
+    candidates: Arc<Vec<CampaignGcCandidate>>,
     logical_bytes: u64,
+    _credit: OptionalMetadataCredit,
 }
 
 impl CampaignGcCandidateManifest {
@@ -275,7 +367,7 @@ impl CampaignGcCandidateManifest {
         if candidates.len() > MAX_CAMPAIGN_GC_MANIFEST_ENTRIES {
             return Err(CampaignGcManifestError::EntryLimit);
         }
-        candidates.sort_by(compare_candidate);
+        candidates.sort_unstable_by(compare_candidate);
         if candidates
             .windows(2)
             .any(|pair| pair[0].backend == pair[1].backend && pair[0].id == pair[1].id)
@@ -288,9 +380,15 @@ impl CampaignGcCandidateManifest {
                 .ok_or(CampaignGcManifestError::CountOverflow)
         })?;
         Ok(Self {
-            candidates,
+            candidates: Arc::new(candidates),
             logical_bytes,
+            _credit: OptionalMetadataCredit::default(),
         })
+    }
+
+    pub(super) fn with_credit(mut self, credit: MetadataCredit) -> Self {
+        self._credit = OptionalMetadataCredit::new(credit);
+        self
     }
 
     /// Strictly reads one supported canonical candidate manifest.
@@ -300,10 +398,27 @@ impl CampaignGcCandidateManifest {
     /// Returns [`CampaignGcManifestError`] for I/O failure, unsupported magic,
     /// excessive count, malformed fields, noncanonical order, duplicate
     /// placements, accounting overflow, or trailing bytes.
-    pub fn from_canonical_reader(reader: &mut dyn Read) -> Result<Self, CampaignGcManifestError> {
+    pub fn from_canonical_reader(
+        reader: &mut dyn Read,
+        operation: &CampaignGcOperationContext<'_>,
+    ) -> Result<Self, CampaignGcManifestError> {
         require_magic(reader, CANDIDATE_MANIFEST_MAGIC)?;
         let count = read_count(reader)?;
-        let mut candidates = Vec::with_capacity(count.min(4_096));
+        let _codec = operation
+            .reserve_bytes((MAX_CONTENT_ID_BYTES + std::mem::size_of::<String>()) as u64)?;
+        let bodies = reserve_vector::<CampaignGcCandidate>(operation, count)?;
+        let labels = count
+            .checked_mul(2 * MAX_CAMPAIGN_GC_BACKEND_ID_BYTES)
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    std::mem::size_of::<(MetadataCredit, MetadataCredit)>()
+                        + 2 * std::mem::size_of::<usize>(),
+                )
+            })
+            .ok_or(CampaignGcManifestError::CountOverflow)?;
+        let labels = MetadataCredit::new(operation.reserve_bytes(labels as u64)?);
+        let credit = MetadataCredit::new(Arc::new((bodies, labels)));
+        let mut candidates = allocate_vector(count)?;
         for _ in 0..count {
             let backend = read_bounded_string(reader, MAX_CAMPAIGN_GC_BACKEND_ID_BYTES)?;
             let id = read_content_id(reader)?;
@@ -327,7 +442,7 @@ impl CampaignGcCandidateManifest {
         {
             return Err(CampaignGcManifestError::Noncanonical);
         }
-        let manifest = Self::new(candidates)?;
+        let manifest = Self::new(candidates)?.with_credit(credit);
         Ok(manifest)
     }
 
@@ -340,13 +455,13 @@ impl CampaignGcCandidateManifest {
     pub fn write_canonical(&self, writer: &mut dyn Write) -> Result<(), CampaignGcManifestError> {
         writer.write_all(CANDIDATE_MANIFEST_MAGIC)?;
         writer.write_all(&entry_count(self.candidates.len())?.to_be_bytes())?;
-        for candidate in &self.candidates {
+        for candidate in self.candidates.iter() {
             write_bounded_string(
                 writer,
                 candidate.backend(),
                 MAX_CAMPAIGN_GC_BACKEND_ID_BYTES,
             )?;
-            write_bounded_string(writer, &candidate.id().encode(), MAX_CONTENT_ID_BYTES)?;
+            write_content_id(writer, candidate.id())?;
             writer.write_all(&candidate.logical_length().to_be_bytes())?;
             match candidate.reason() {
                 CampaignGcCandidateReason::Unreachable => writer.write_all(&[0])?,
@@ -369,9 +484,9 @@ impl CampaignGcCandidateManifest {
         let mut hasher = manifest_hasher(CANDIDATE_MANIFEST_HASH_DOMAIN);
         hasher.update(CANDIDATE_MANIFEST_MAGIC);
         hasher.update(&(self.candidates.len() as u64).to_be_bytes());
-        for candidate in &self.candidates {
+        for candidate in self.candidates.iter() {
             hash_bounded_string(&mut hasher, candidate.backend());
-            hash_bounded_string(&mut hasher, &candidate.id().encode());
+            hash_content_id(&mut hasher, candidate.id());
             hasher.update(&candidate.logical_length().to_be_bytes());
             match candidate.reason() {
                 CampaignGcCandidateReason::Unreachable => {
@@ -451,6 +566,9 @@ impl CampaignGcCandidateManifest {
 /// Failure to construct, encode, or decode a canonical GC manifest.
 #[derive(Debug, Error)]
 pub enum CampaignGcManifestError {
+    /// The original operation refused metadata credit or allocation failed.
+    #[error("campaign GC manifest resource admission failed")]
+    Resources(#[from] StoreError),
     /// A manifest contains more entries than the fixed work bound.
     #[error("campaign GC manifest entry limit exceeded")]
     EntryLimit,
@@ -517,8 +635,11 @@ fn read_count(reader: &mut dyn Read) -> Result<usize, CampaignGcManifestError> {
 }
 
 fn require_magic(reader: &mut dyn Read, expected: &[u8]) -> Result<(), CampaignGcManifestError> {
-    let mut actual = vec![0_u8; expected.len()];
-    reader.read_exact(&mut actual)?;
+    let mut actual = [0_u8; 64];
+    let actual = actual
+        .get_mut(..expected.len())
+        .ok_or(CampaignGcManifestError::UnsupportedSchema)?;
+    reader.read_exact(actual)?;
     if actual == expected {
         Ok(())
     } else {
@@ -552,14 +673,68 @@ fn read_bounded_string(
     if length == 0 || length > maximum {
         return Err(CampaignGcManifestError::InvalidField);
     }
-    let mut bytes = vec![0_u8; length];
+    let mut bytes = allocate_vector(length)?;
+    bytes.resize(length, 0);
     reader.read_exact(&mut bytes)?;
     String::from_utf8(bytes).map_err(|_| CampaignGcManifestError::InvalidField)
 }
 
 fn read_content_id(reader: &mut dyn Read) -> Result<ContentId, CampaignGcManifestError> {
-    let encoded = read_bounded_string(reader, MAX_CONTENT_ID_BYTES)?;
-    ContentId::parse(&encoded).map_err(|_| CampaignGcManifestError::InvalidField)
+    let length = usize::from(read_u16(reader)?);
+    if length == 0 || length > MAX_CONTENT_ID_BYTES {
+        return Err(CampaignGcManifestError::InvalidField);
+    }
+    let mut bytes = [0_u8; MAX_CONTENT_ID_BYTES];
+    reader.read_exact(&mut bytes[..length])?;
+    let encoded =
+        std::str::from_utf8(&bytes[..length]).map_err(|_| CampaignGcManifestError::InvalidField)?;
+    let id = ContentId::parse(encoded).map_err(|_| CampaignGcManifestError::InvalidField)?;
+    Ok(id)
+}
+
+fn content_id_bytes(id: ContentId) -> ([u8; MAX_CONTENT_ID_BYTES], usize) {
+    let mut bytes = [0_u8; MAX_CONTENT_ID_BYTES];
+    let kind = id.kind().as_str().as_bytes();
+    bytes[..kind.len()].copy_from_slice(kind);
+    let mut length = kind.len();
+    bytes[length] = b'.';
+    length += 1;
+    let mut digits = [0_u8; 10];
+    let mut cursor = digits.len();
+    let mut version = id.schema_version();
+    loop {
+        cursor -= 1;
+        digits[cursor] = b'0' + (version % 10) as u8;
+        version /= 10;
+        if version == 0 {
+            break;
+        }
+    }
+    let digits = &digits[cursor..];
+    bytes[length..length + digits.len()].copy_from_slice(digits);
+    length += digits.len();
+    bytes[length] = b'.';
+    length += 1;
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for byte in id.digest() {
+        bytes[length] = HEX[(byte >> 4) as usize];
+        bytes[length + 1] = HEX[(byte & 15) as usize];
+        length += 2;
+    }
+    (bytes, length)
+}
+
+fn write_content_id(writer: &mut dyn Write, id: ContentId) -> Result<(), CampaignGcManifestError> {
+    let (bytes, length) = content_id_bytes(id);
+    writer.write_all(&(length as u16).to_be_bytes())?;
+    writer.write_all(&bytes[..length])?;
+    Ok(())
+}
+
+fn hash_content_id(hasher: &mut blake3::Hasher, id: ContentId) {
+    let (bytes, length) = content_id_bytes(id);
+    hasher.update(&(length as u16).to_be_bytes());
+    hasher.update(&bytes[..length]);
 }
 
 fn write_bounded_string(

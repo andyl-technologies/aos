@@ -22,6 +22,9 @@ impl SimDoubleQuantumLoop {
 
 impl QuantumLoop for SimDoubleQuantumLoop {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        let _quantum_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+            .unwrap_or_else(|error| panic!("finite quantum fixture scope: {error}"));
+
         self.quanta = self.quanta.saturating_add(1);
         self.apply_backend_control(&request.control)?;
         let observation =
@@ -43,6 +46,7 @@ impl QuantumLoop for SimDoubleQuantumLoop {
             advanced_node: None,
             resolved_events,
             decisions: vec![decision],
+            discovered_choices: Vec::new(),
             event_log_entries,
             event_log_segment_bytes: vec![b'x'],
             event_log_segment_text: String::from("x"),
@@ -53,6 +57,8 @@ impl QuantumLoop for SimDoubleQuantumLoop {
                 self.event_log_events,
             ),
             scheduler_quiescence: None,
+            event_log_custody: crucible::EventLogOutputCustody::retain_current()
+                .unwrap_or_else(|error| panic!("finite fixture output custody: {error}")),
         })
     }
 
@@ -93,6 +99,9 @@ impl SimDoubleQuantumLoop {
     }
 
     fn event_log_entries(&mut self, control: &[ControlOperation]) -> Vec<SchedulerEventLogEntry> {
+        let _fixture_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+            .unwrap_or_else(|error| panic!("finite event fixture scope: {error}"));
+
         let base = self.event_log_events;
         let mut entries = Vec::new();
         for operation in control {
@@ -102,20 +111,26 @@ impl SimDoubleQuantumLoop {
                 entries.push(entry);
             }
         }
-        entries.push(crucible::test_support::condition_payload_entry_for_test(
-            base + entries.len() as u64,
-            VirtualTime { ticks: self.quanta },
-            SchedulerEventLogPayload::Diagnostic(EventDiagnosticPayload::new(
-                "session.event-log.stream",
-                EventLevel::Debug,
-                BTreeMap::new(),
-            )),
-        ));
-        entries.push(crucible::test_support::condition_boundary_entry_for_test(
-            base + entries.len() as u64,
-            VirtualTime { ticks: self.quanta },
-            crucible::SchedulerEvaluationBoundaryKind::Quantum,
-        ));
+        entries.push(
+            crucible::test_support::condition_payload_entry_for_test(
+                base + entries.len() as u64,
+                VirtualTime { ticks: self.quanta },
+                SchedulerEventLogPayload::Diagnostic(EventDiagnosticPayload::new(
+                    "session.event-log.stream",
+                    EventLevel::Debug,
+                    BTreeMap::new(),
+                )),
+            )
+            .unwrap_or_else(|error| panic!("finite fixture event identity: {error}")),
+        );
+        entries.push(
+            crucible::test_support::condition_boundary_entry_for_test(
+                base + entries.len() as u64,
+                VirtualTime { ticks: self.quanta },
+                crucible::SchedulerEvaluationBoundaryKind::Quantum,
+            )
+            .unwrap_or_else(|error| panic!("finite fixture event identity: {error}")),
+        );
         self.event_log_events = self
             .event_log_events
             .saturating_add(u64::try_from(entries.len()).unwrap_or(u64::MAX));
@@ -156,6 +171,9 @@ fn control_operation_log_entry(
     ticks: u64,
     operation: &ControlOperation,
 ) -> Option<SchedulerEventLogEntry> {
+    let _fixture_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite event fixture scope: {error}"));
+
     let mut event = resolved_control_operation(sequence, operation.clone());
     event.key = ScheduledEventKey::from_parts(
         VirtualTime { ticks },
@@ -163,11 +181,14 @@ fn control_operation_log_entry(
         control_node(),
         operation.sequence,
     );
-    Some(crucible::test_support::condition_payload_entry_for_test(
-        sequence,
-        VirtualTime { ticks },
-        SchedulerEventLogPayload::ResolvedHappening(event),
-    ))
+    Some(
+        crucible::test_support::condition_payload_entry_for_test(
+            sequence,
+            VirtualTime { ticks },
+            SchedulerEventLogPayload::ResolvedHappening(event),
+        )
+        .unwrap_or_else(|error| panic!("finite fixture event identity: {error}")),
+    )
 }
 
 fn record_control_operations(

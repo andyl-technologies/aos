@@ -47,6 +47,7 @@ pub struct LinuxQemuAttemptProcessConfig {
     child_group_id: u32,
     maximum_tasks: u32,
     maximum_file_descriptors: u64,
+    maximum_locked_bytes: u64,
     finish_timeout: Duration,
 }
 
@@ -116,6 +117,7 @@ impl LinuxQemuAttemptProcessConfig {
             child_group_id,
             maximum_tasks,
             maximum_file_descriptors,
+            maximum_locked_bytes: 0,
             finish_timeout,
         })
     }
@@ -154,6 +156,32 @@ impl LinuxQemuAttemptProcessConfig {
     #[must_use]
     pub const fn maximum_file_descriptors(&self) -> u64 {
         self.maximum_file_descriptors
+    }
+
+    /// Sets the independently authored hard and soft child memory-lock limit.
+    ///
+    /// Zero permits ordinary pageable execution. Strict placement must separately
+    /// prove that the realized rounded RAM spans fit this entitlement.
+    ///
+    /// # Errors
+    /// Refuses the kernel infinity sentinel; an entitlement is always finite.
+    pub fn with_maximum_locked_bytes(
+        mut self,
+        maximum_locked_bytes: u64,
+    ) -> Result<Self, QemuVmRealizationError> {
+        if maximum_locked_bytes == libc::RLIM_INFINITY {
+            return Err(invalid_config(
+                "child memory-lock entitlement must be finite",
+            ));
+        }
+        self.maximum_locked_bytes = maximum_locked_bytes;
+        Ok(self)
+    }
+
+    /// Returns the exact child memory-lock entitlement installed before execution.
+    #[must_use]
+    pub const fn maximum_locked_bytes(&self) -> u64 {
+        self.maximum_locked_bytes
     }
 
     /// Returns the bounded normal-finish wait.
@@ -263,6 +291,7 @@ impl LinuxQemuAttemptProcessFactory {
             group,
             maximum_writable_bytes,
             self.config.maximum_file_descriptors,
+            self.config.maximum_locked_bytes,
             self.config.child_user_id,
             self.config.child_group_id,
             exact_checkpoint_root,
@@ -702,6 +731,22 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn locked_entitlement_is_explicit_finite_and_independent() -> Result<(), QemuVmRealizationError>
+    {
+        let ordinary = config("/does/not/exist", "attempt")?;
+        assert_eq!(ordinary.maximum_locked_bytes(), 0);
+        let strict = ordinary.clone().with_maximum_locked_bytes(4096)?;
+        assert_eq!(strict.maximum_locked_bytes(), 4096);
+        assert_eq!(strict.maximum_tasks(), ordinary.maximum_tasks());
+        assert!(
+            ordinary
+                .with_maximum_locked_bytes(libc::RLIM_INFINITY)
+                .is_err()
+        );
+        Ok(())
     }
 
     #[test]

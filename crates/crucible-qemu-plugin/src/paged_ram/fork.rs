@@ -46,6 +46,7 @@ struct Stage {
     topology_generation: u64,
     logical_bytes: u64,
     captured: bool,
+    rebound: bool,
     child: Option<ChildPagingCustody>,
     retained: [RawFd; MAX_DESCRIPTORS],
     closed: [RawFd; MAX_DESCRIPTORS],
@@ -234,14 +235,15 @@ extern "C" fn prepare(
         let spill = File::from(duplicate(spill_fd)?);
         let (cold, spill) = if geometry.activated {
             (
-                Some(owner.prepare_child(
+                Some(owner.prepare_child(super::engine::ChildArenaConfiguration {
                     generation,
-                    plan.resources,
-                    child_control.operations(),
+                    resources: plan.resources,
+                    operations: child_control.operations(),
                     source,
-                    spill,
-                    plan.spill_quota_bytes,
-                )?),
+                    spill_file: spill,
+                    spill_quota: plan.spill_quota_bytes,
+                    policy,
+                })?),
                 None,
             )
         } else {
@@ -264,6 +266,7 @@ extern "C" fn prepare(
             topology_generation: geometry.topology_generation,
             logical_bytes: geometry.logical_bytes,
             captured: false,
+            rebound: false,
             child: None,
             retained: [-1; MAX_DESCRIPTORS],
             closed: [-1; MAX_DESCRIPTORS],
@@ -302,47 +305,25 @@ extern "C" fn resources(
         {
             return Err(RamError::Invariant("RAM child descriptor outputs invalid"));
         }
-        let mut stage = {
-            let mut current = STAGE
-                .try_lock()
-                .map_err(|_| RamError::Invariant("RAM fork stage active"))?;
-            let stage = current.as_ref().ok_or("RAM child stage absent")?;
-            if stage.generation != generation
-                || stage.source_process == std::process::id()
-                || !stage.captured
-                || stage.child.is_some()
-                || stage.control.is_none()
-            {
-                return Err(RamError::Invariant(
-                    "RAM child lacks immediate captured stage custody",
-                ));
-            }
-            let needed = if stage.cold.is_some() { 5 } else { 2 };
-            if capacity < needed || close_capacity < 8 {
-                return Err(RamError::Invariant(
-                    "RAM child descriptor capacity insufficient",
-                ));
-            }
-            current.take().ok_or("RAM child stage disappeared")?
-        };
-        let result = activate_child(&mut stage);
-        {
-            let mut current = STAGE
-                .try_lock()
-                .map_err(|_| RamError::Invariant("RAM child stage publication active"))?;
-            if current.is_some() {
-                std::mem::forget(stage);
-                return Err(RamError::Invariant("RAM child stage publication changed"));
-            }
-            // Every activation failure retains new and inherited resources until
-            // containment/reap. Native cannot retry a partially destructive handoff.
-            *current = Some(stage);
-        }
-        result?;
         let current = STAGE
             .try_lock()
             .map_err(|_| RamError::Invariant("RAM child FD custody active"))?;
         let stage = current.as_ref().ok_or("RAM child FD custody absent")?;
+        if stage.generation != generation
+            || stage.source_process == std::process::id()
+            || !stage.captured
+            || !stage.rebound
+            || stage.control.is_some()
+            || stage.cold.is_some()
+        {
+            return Err(RamError::Invariant("RAM child authority was not rebound"));
+        }
+        if stage.retained_count > capacity as usize || stage.closed_count > close_capacity as usize
+        {
+            return Err(RamError::Invariant(
+                "RAM child descriptor capacity insufficient",
+            ));
+        }
         // SAFETY: native lends distinct checked output arrays with advertised
         // capacities; all counts were admitted before any child activation.
         unsafe {
@@ -353,6 +334,76 @@ extern "C" fn resources(
         }
         Ok(())
     })
+}
+
+/// Arms fresh child paging and control before native reconstruction can read RAM.
+///
+/// The native caller has already applied the independently authored kernel
+/// contract. Proof-source replacement remains inside the frozen root-cache
+/// interval; the later resource callback only exposes this completed custody.
+///
+/// # Errors
+/// Refuses stale lineage, a repeated rebind, or failed child activation. A
+/// partially consumed stage remains retained until process containment/reap.
+pub(crate) fn rebind_child(template_generation: u64) -> Result<(), RamError> {
+    let mut stage = {
+        let mut current = STAGE
+            .try_lock()
+            .map_err(|_| RamError::Invariant("RAM child rebind custody active"))?;
+        let stage = current.as_ref().ok_or("RAM child stage absent")?;
+        RebindIdentity {
+            template_generation: stage.template_generation,
+            source_process: stage.source_process,
+            captured: stage.captured,
+            rebound: stage.rebound,
+        }
+        .validate(template_generation, std::process::id())?;
+        if stage.control.is_none() {
+            return Err(RamError::Invariant(
+                "RAM child control custody already consumed",
+            ));
+        }
+        current.take().ok_or("RAM child stage disappeared")?
+    };
+    let result = activate_child(&mut stage);
+    if result.is_ok() {
+        stage.rebound = true;
+    }
+    let mut current = STAGE
+        .try_lock()
+        .map_err(|_| RamError::Invariant("RAM child stage publication active"))?;
+    if current.is_some() {
+        std::mem::forget(stage);
+        return Err(RamError::Invariant("RAM child stage publication changed"));
+    }
+    // Successful activation owns every ready descriptor. Failed activation
+    // retains partial registrations and endpoints; neither path drops custody.
+    *current = Some(stage);
+    result
+}
+
+#[derive(Clone, Copy)]
+struct RebindIdentity {
+    template_generation: u64,
+    source_process: u32,
+    captured: bool,
+    rebound: bool,
+}
+
+impl RebindIdentity {
+    fn validate(self, template_generation: u64, process: u32) -> Result<(), RamError> {
+        if template_generation == 0
+            || self.template_generation != template_generation
+            || self.source_process == process
+            || !self.captured
+            || self.rebound
+        {
+            return Err(RamError::Invariant(
+                "RAM child lacks captured rebind lineage",
+            ));
+        }
+        Ok(())
+    }
 }
 
 fn activate_child(stage: &mut Stage) -> Result<(), RamError> {
@@ -416,6 +467,7 @@ extern "C" fn release(generation: u64, _context: *mut c_void) -> c_int {
         let parent_release = stage.source_process == std::process::id() && !stage.captured;
         let child_release = stage.source_process != std::process::id()
             && stage.captured
+            && stage.rebound
             && stage.control.is_none()
             && stage.cold.is_none()
             && stage.retained_count > 0;
@@ -448,5 +500,40 @@ fn callback(operation: impl FnOnce() -> Result<(), RamError>) -> c_int {
             -libc::EIO
         }
         Err(_) => -libc::EIO,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RebindIdentity;
+
+    #[test]
+    fn child_rebind_requires_exact_captured_lineage_and_single_consumption() {
+        let ready = RebindIdentity {
+            template_generation: 7,
+            source_process: 11,
+            captured: true,
+            rebound: false,
+        };
+        assert!(ready.validate(7, 12).is_ok());
+        assert!(ready.validate(7, 11).is_err());
+        assert!(ready.validate(8, 12).is_err());
+        assert!(ready.validate(0, 12).is_err());
+        assert!(
+            RebindIdentity {
+                captured: false,
+                ..ready
+            }
+            .validate(7, 12)
+            .is_err()
+        );
+        assert!(
+            RebindIdentity {
+                rebound: true,
+                ..ready
+            }
+            .validate(7, 12)
+            .is_err()
+        );
     }
 }

@@ -6,11 +6,11 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "9054c482323ced96102388555257edcf258bfe6ae09767ab12cc333718a8fcb3";
+  sha256 = "73f9867da16e855de4d61b943cb415f1d023c05a158cdcb80a79c4737dc36690";
   subject = "Integrate deterministic execution and authenticated paged RAM";
   body = "Retain deterministic execution, private fork resources, device state,\nand versioned public process protocols. Replace RAM stream projections\nwith scoped persistent identities and independent writer epochs.\n\nCarry sealed inventory admission, transactional memory fault updates,\npaged checkpoint source protocols, and staged restore ownership.\nRefuse unavailable paging capability before guest execution.";
-  commit = "cabcbee46478327234ab41441f729434acec7a63";
-  tree = "f41f79e5f00fe304be978372317befbe5f9a8b20";
+  commit = "0bc0488b5f2aae1a7404a8b42eedfadd97eba10d";
+  tree = "a78600c77d0b2d5a63aa25eeeb9c3f9575662f86";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -19,7 +19,7 @@
   branchRef = "dplecki/native-paged-ram";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "ba913bfc1585216ca2c9976fddf620f44ed1fc666d0347546776765740620432";
+  bundleSha256 = "bb0e6c5a1110154a55a29b0a6d54b3a3180c3fbb4569dfb2fe92161fc57d58af";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";

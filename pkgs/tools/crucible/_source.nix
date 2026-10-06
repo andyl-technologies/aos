@@ -13,6 +13,7 @@ in
       != ".git"
       && base != ".crucible"
       && base != "target"
+      && base != "run-state"
       && base != "__pycache__"
       && !lib.hasSuffix ".pyc" base
       && pathString != "${repoRootString}/result"

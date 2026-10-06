@@ -155,6 +155,25 @@ pub(crate) fn confinement_regression_failures() -> Result<Vec<String>, Box<dyn E
         );
     }
 
+    let publication_clock_findings = package_source_confinement_findings(
+        "crucible-daemon",
+        Path::new("crucible-daemon"),
+        &source_pairs(&[(
+            "crucible-daemon/src/supervision.rs",
+            r#"
+                pub(crate) fn guard() -> std::time::Instant {
+                    std::time::Instant::now()
+                }
+            "#,
+        )]),
+    );
+    if !finding_contains(
+        &publication_clock_findings,
+        "raw host clock in public operational signature",
+    ) {
+        failures.push("publication supervision must not export its raw clock".to_string());
+    }
+
     let public_export_findings = package_source_confinement_findings(
         "crucible-daemon",
         Path::new("crucible-daemon"),
@@ -423,6 +442,17 @@ fn operational_boundary_regression_failures() -> Vec<String> {
             "reviewed pure bootstrap entitlement type rejected: {findings:?}"
         ));
     }
+    let admitted_response = "fn execute() -> crucible_api::AdmittedOutput<HostOperationalResponse> { consume(std::time::Instant::now()); todo!() }";
+    let findings = package_source_confinement_findings(
+        "crucible-daemon",
+        Path::new("crucible-daemon"),
+        &source_pairs(&[(registry_path, admitted_response)]),
+    );
+    if !findings.is_empty() {
+        failures.push(format!(
+            "reviewed operational response custody rejected: {findings:?}"
+        ));
+    }
     for (path, source) in [
         (
             registry_path,
@@ -437,6 +467,21 @@ fn operational_boundary_regression_failures() -> Vec<String> {
             "fn boundary(value: crucible_api::vm_lifecycle::Scenario) { consume(std::time::Instant::now()); }",
         ),
         ("crucible-daemon/src/guest_execution.rs", bootstrap),
+        ("crucible-daemon/src/supervision.rs", bootstrap),
+        (
+            registry_path,
+            "use crucible_api::AdmittedOutput; fn boundary() { consume(std::time::Instant::now()); }",
+        ),
+        (
+            registry_path,
+            "fn boundary(value: crucible_api::AdmittedOutput<RuntimeState>) { consume(std::time::Instant::now()); }",
+        ),
+        (
+            registry_path,
+            "fn boundary(value: crucible_api::AdmittedOutput<NativeControl>) { consume(std::time::Instant::now()); }",
+        ),
+        ("crucible-daemon/src/supervision.rs", admitted_response),
+        ("crucible-daemon/src/guest_execution.rs", admitted_response),
     ] {
         let findings = package_source_confinement_findings(
             "crucible-daemon",
@@ -445,7 +490,7 @@ fn operational_boundary_regression_failures() -> Vec<String> {
         );
         if !finding_contains(&findings, "host nondeterminism reaches API/session route") {
             failures.push(format!(
-                "bootstrap entitlement exception admits lifecycle route: {path}: {source}: {findings:?}"
+                "exact operational type exception admits another API route: {path}: {source}: {findings:?}"
             ));
         }
     }
@@ -553,6 +598,7 @@ fn operational_boundary_regression_failures() -> Vec<String> {
 
     for source in [
         "pub fn new() -> std::time::Instant { std::time::Instant::now() }",
+        "pub fn status_snapshot_bounded() -> std::time::Instant { std::time::Instant::now() }",
         "pub struct HostOperationSupervisor { pub clock: std::time::Instant }",
         "pub fn outer_cap_binding() -> std::time::Instant { std::time::Instant::now() }",
         "pub struct HostOuterCapBinding { pub clock: std::time::Instant }",

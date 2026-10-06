@@ -10,12 +10,13 @@ use crate::lifecycle::{
     CreateSessionRequest, CreateSessionResponse, CreateSessionSource, DestroySessionRequest,
     DestroySessionResponse, GetReproductionRequest, GetReproductionResponse, LifecycleApiError,
     ListScenariosResponse, ListSessionsResponse, ReproductionCommandPayload,
-    ReproductionCommandRecord, ReproductionCommandResult, ResumeSessionRequest,
-    ResumeSessionResponse, ScenarioSummary, SessionId, SessionRef, SessionSummary,
+    ReproductionCommandRecord, ReproductionCommandRecordFields, ReproductionCommandResult,
+    ResumeSessionRequest, ResumeSessionResponse, ScenarioSummary, SessionId, SessionRef,
+    SessionSummary,
 };
 use crate::open_set::{
     OpenSetAttributeValue, OpenSetEventEnvelope, OpenSetEventSource, OpenSetEventTime,
-    OpenSetPayload, open_set_command_kind, session_command_for_open_set_command_kind,
+    OpenSetPayload, session_command_for_open_set_command_kind,
 };
 use crate::rpc_abi::{
     ProtocolVersion, RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION, RpcAbiError, RpcStatusCode,
@@ -52,7 +53,12 @@ use thiserror::Error;
 use tokio::sync::mpsc;
 
 mod host_operational;
+mod request_storage;
+mod requests;
 mod resource_limit;
+mod wire_storage;
+use requests::*;
+use wire_storage::WireBytes;
 const HELLO_RPC_PATH: &str = "/crucible.rpc/hello";
 const LIST_SCENARIOS_RPC_PATH: &str = "/crucible.rpc/list-scenarios";
 const CREATE_SESSION_RPC_PATH: &str = "/crucible.rpc/create-session";
@@ -172,7 +178,10 @@ pub trait ControlClient {
     fn host_operational(
         &self,
         _request: crate::host_operational::HostOperationalRequest,
-    ) -> ControlClientFuture<'_, crate::host_operational::HostOperationalResponse> {
+    ) -> ControlClientFuture<
+        '_,
+        crate::AdmittedOutput<crate::host_operational::HostOperationalResponse>,
+    > {
         Box::pin(async move {
             Err(ControlClientError::UnsupportedLifecycleMethod {
                 method: "HostOperational",
@@ -539,6 +548,7 @@ pub struct RpcControlClient {
     wire_model: ControlWireModel,
     host_operational_negotiation: Arc<tokio::sync::OnceCell<()>>,
     host_operational_principal: Option<String>,
+    decode_budget: Option<crucible::owned_decode::DecodeBudget>,
 }
 
 impl RpcControlClient {
@@ -561,7 +571,36 @@ impl RpcControlClient {
             wire_model: ControlWireModel::current(),
             host_operational_negotiation: Arc::new(tokio::sync::OnceCell::new()),
             host_operational_principal: None,
+            decode_budget: None,
         })
+    }
+
+    /// Retains the original resource authority used to decode owning outputs.
+    ///
+    /// Each response conversion reenters this account after its transport wait;
+    /// the returned immutable body retains a fresh child account until final drop.
+    #[must_use]
+    pub fn with_decode_budget(mut self, budget: crucible::owned_decode::DecodeBudget) -> Self {
+        self.decode_budget = Some(budget);
+        self
+    }
+
+    /// Returns the retained original resource authority used by RPC buffers and outputs.
+    #[must_use]
+    pub fn decode_budget(&self) -> Option<&crucible::owned_decode::DecodeBudget> {
+        self.decode_budget.as_ref()
+    }
+
+    fn output_budget(&self) -> Result<crucible::owned_decode::DecodeBudget, ControlClientError> {
+        let budget = self.decode_budget.as_ref().ok_or_else(|| {
+            client_output_admission(crate::admitted_output::admission(
+                crucible::owned_decode::DecodeAdmissionError::new(MissingClientOutputAuthority),
+            ))
+        })?;
+        budget
+            .check()
+            .map_err(|source| client_output_admission(crate::admitted_output::admission(source)))?;
+        Ok(budget.clone())
     }
 
     /// Builds an authenticated HTTPS/2 RPC client.
@@ -615,6 +654,7 @@ impl RpcControlClient {
             wire_model: ControlWireModel::current(),
             host_operational_negotiation: Arc::new(tokio::sync::OnceCell::new()),
             host_operational_principal: Some(principal.certificate_sha256().to_owned()),
+            decode_budget: None,
         })
     }
 
@@ -624,11 +664,27 @@ impl RpcControlClient {
         &self.endpoint
     }
 
+    fn encode_request(
+        &self,
+        prepare: impl FnOnce() -> Result<Bytes, ControlClientError>,
+    ) -> Result<Bytes, ControlClientError> {
+        let budget = self
+            .output_budget()?
+            .child()
+            .map_err(|source| client_output_admission(crate::admitted_output::admission(source)))?;
+        let _scope = budget.enter();
+        prepare()
+    }
+
     async fn post_rpc_body(
         &self,
         path: &str,
-        body: Vec<u8>,
-    ) -> Result<Vec<u8>, ControlClientError> {
+        body: Bytes,
+    ) -> Result<WireBytes, ControlClientError> {
+        let budget = self
+            .output_budget()?
+            .child()
+            .map_err(|source| client_output_admission(crate::admitted_output::admission(source)))?;
         let response = self
             .http
             .post(self.endpoint.rpc_url(path))
@@ -639,68 +695,28 @@ impl RpcControlClient {
             .map_err(|error| ControlClientError::HttpRequest {
                 message: error.to_string(),
             })?;
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
-            let body = response
-                .bytes()
-                .await
-                .map(|body| body.to_vec())
-                .map_err(|error| ControlClientError::HttpRequest {
-                    message: error.to_string(),
-                })?;
-            if let Ok(error) = decode_error_response(&body) {
-                return Err(error);
-            }
-            return Err(ControlClientError::HttpStatus { status });
+        let status = response.status();
+        let body = wire_storage::read_response(response, budget.clone(), None).await?;
+        if !status.is_success() {
+            let _scope = budget.enter();
+            return Err(decode_http_failure(&body, status.as_u16(), &budget));
         }
-        response
-            .bytes()
-            .await
-            .map(|body| body.to_vec())
-            .map_err(|error| ControlClientError::HttpRequest {
-                message: error.to_string(),
-            })
+        Ok(body)
     }
 
-    async fn post_hello_rpc_body(&self, body: Vec<u8>) -> Result<Vec<u8>, ControlClientError> {
-        let response = self
-            .http
-            .post(self.endpoint.rpc_url(HELLO_RPC_PATH))
-            .header(reqwest::header::CONTENT_TYPE, RPC_CONTENT_TYPE)
-            .body(body)
-            .send()
-            .await
-            .map_err(|error| ControlClientError::HttpRequest {
-                message: error.to_string(),
-            })?;
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
-            let body = response
-                .bytes()
-                .await
-                .map(|body| body.to_vec())
-                .map_err(|error| ControlClientError::HttpRequest {
-                    message: error.to_string(),
-                })?;
-            if let Ok(error) = decode_error_response(&body) {
-                return Err(error);
-            }
-            return Err(ControlClientError::HttpStatus { status });
-        }
-        response
-            .bytes()
-            .await
-            .map(|body| body.to_vec())
-            .map_err(|error| ControlClientError::HttpRequest {
-                message: error.to_string(),
-            })
+    async fn post_hello_rpc_body(&self, body: Bytes) -> Result<WireBytes, ControlClientError> {
+        self.post_rpc_body(HELLO_RPC_PATH, body).await
     }
 
     async fn post_rpc_stream(
         &self,
         path: &str,
-        body: Vec<u8>,
+        body: Bytes,
     ) -> Result<reqwest::Response, ControlClientError> {
+        let budget = self
+            .output_budget()?
+            .child()
+            .map_err(|source| client_output_admission(crate::admitted_output::admission(source)))?;
         let response = self
             .http
             .post(self.endpoint.rpc_url(path))
@@ -713,17 +729,9 @@ impl RpcControlClient {
             })?;
         if !response.status().is_success() {
             let status = response.status().as_u16();
-            let body = response
-                .bytes()
-                .await
-                .map(|body| body.to_vec())
-                .map_err(|error| ControlClientError::HttpRequest {
-                    message: error.to_string(),
-                })?;
-            if let Ok(error) = decode_error_response(&body) {
-                return Err(error);
-            }
-            return Err(ControlClientError::HttpStatus { status });
+            let body = wire_storage::read_response(response, budget.clone(), None).await?;
+            let _scope = budget.enter();
+            return Err(decode_http_failure(&body, status, &budget));
         }
         Ok(response)
     }
@@ -733,7 +741,10 @@ impl ControlClient for RpcControlClient {
     fn host_operational(
         &self,
         request: crate::host_operational::HostOperationalRequest,
-    ) -> ControlClientFuture<'_, crate::host_operational::HostOperationalResponse> {
+    ) -> ControlClientFuture<
+        '_,
+        crate::AdmittedOutput<crate::host_operational::HostOperationalResponse>,
+    > {
         Box::pin(self.send_host_operational(request))
     }
 
@@ -749,7 +760,7 @@ impl ControlClient for RpcControlClient {
         Box::pin(async move {
             let _version = negotiate_rpc_protocol(request.version)?;
             let body = self
-                .post_hello_rpc_body(self.wire_model.encode_hello_request(&request))
+                .post_hello_rpc_body(self.encode_request(|| encode_hello_request(&request))?)
                 .await?;
             decode_hello_response(&body, self.transport())
         })
@@ -760,7 +771,11 @@ impl ControlClient for RpcControlClient {
             let body = self
                 .post_rpc_body(
                     LIST_SCENARIOS_RPC_PATH,
-                    b"crucible.rpc/list-scenarios-request\n".to_vec(),
+                    self.encode_request(|| {
+                        request_storage::encode(|output| {
+                            output.write_str("crucible.rpc/list-scenarios-request\n")
+                        })
+                    })?,
                 )
                 .await?;
             decode_list_scenarios_response(&body)
@@ -775,7 +790,7 @@ impl ControlClient for RpcControlClient {
             let body = self
                 .post_rpc_body(
                     CREATE_SESSION_RPC_PATH,
-                    encode_create_session_request(&request),
+                    self.encode_request(|| encode_create_session_request(&request))?,
                 )
                 .await?;
             decode_create_session_response(&body)
@@ -790,7 +805,7 @@ impl ControlClient for RpcControlClient {
             let body = self
                 .post_rpc_body(
                     RESUME_SESSION_RPC_PATH,
-                    encode_resume_session_request(&request),
+                    self.encode_request(|| encode_resume_session_request(&request))?,
                 )
                 .await?;
             decode_resume_session_response(&body)
@@ -802,7 +817,11 @@ impl ControlClient for RpcControlClient {
             let body = self
                 .post_rpc_body(
                     LIST_SESSIONS_RPC_PATH,
-                    b"crucible.rpc/list-sessions-request\n".to_vec(),
+                    self.encode_request(|| {
+                        request_storage::encode(|output| {
+                            output.write_str("crucible.rpc/list-sessions-request\n")
+                        })
+                    })?,
                 )
                 .await?;
             decode_list_sessions_response(&body)
@@ -817,7 +836,7 @@ impl ControlClient for RpcControlClient {
             let body = self
                 .post_rpc_body(
                     DESTROY_SESSION_RPC_PATH,
-                    encode_destroy_session_request(&request),
+                    self.encode_request(|| encode_destroy_session_request(&request))?,
                 )
                 .await?;
             decode_destroy_session_response(&body)
@@ -829,12 +848,14 @@ impl ControlClient for RpcControlClient {
         request: GetReproductionRequest,
     ) -> ControlClientFuture<'_, GetReproductionResponse> {
         Box::pin(async move {
+            let budget = self.output_budget()?;
             let body = self
                 .post_rpc_body(
                     GET_REPRODUCTION_RPC_PATH,
-                    encode_get_reproduction_request(&request),
+                    self.encode_request(|| encode_get_reproduction_request(&request))?,
                 )
                 .await?;
+            let _scope = budget.enter();
             decode_get_reproduction_response(&body)
         })
     }
@@ -844,10 +865,14 @@ impl ControlClient for RpcControlClient {
         request: AttachRequest,
     ) -> ControlClientFuture<'_, ClientControlStream> {
         Box::pin(async move {
+            let budget = self.output_budget()?;
             let response = self
-                .post_rpc_stream(CONTROL_ATTACH_RPC_PATH, encode_attach_request(&request))
+                .post_rpc_stream(
+                    CONTROL_ATTACH_RPC_PATH,
+                    self.encode_request(|| encode_attach_request(&request))?,
+                )
                 .await?;
-            let (attached, events) = decode_attached_stream_response(response).await?;
+            let (attached, events) = decode_attached_stream_response(response, budget).await?;
             Ok(ClientControlStream::Rpc(RpcControlStream::new(
                 attached,
                 events,
@@ -860,7 +885,10 @@ impl ControlClient for RpcControlClient {
         Box::pin(async move {
             validate_rpc_send_request(&request)?;
             let body = self
-                .post_rpc_body(CONTROL_SEND_RPC_PATH, encode_send_request(&request))
+                .post_rpc_body(
+                    CONTROL_SEND_RPC_PATH,
+                    self.encode_request(|| encode_send_request(&request))?,
+                )
                 .await?;
             decode_send_response(&body)
         })
@@ -868,10 +896,14 @@ impl ControlClient for RpcControlClient {
 
     fn watch_attach(&self, request: AttachRequest) -> ControlClientFuture<'_, ClientWatchStream> {
         Box::pin(async move {
+            let budget = self.output_budget()?;
             let response = self
-                .post_rpc_stream(WATCH_ATTACH_RPC_PATH, encode_attach_request(&request))
+                .post_rpc_stream(
+                    WATCH_ATTACH_RPC_PATH,
+                    self.encode_request(|| encode_attach_request(&request))?,
+                )
                 .await?;
-            let (attached, events) = decode_attached_stream_response(response).await?;
+            let (attached, events) = decode_attached_stream_response(response, budget).await?;
             Ok(ClientWatchStream::Rpc(RpcWatchStream::new(
                 attached, events,
             )))
@@ -882,7 +914,10 @@ impl ControlClient for RpcControlClient {
         Box::pin(async move {
             validate_rpc_send_request(&request)?;
             let body = self
-                .post_rpc_body(SEND_COMMAND_RPC_PATH, encode_send_request(&request))
+                .post_rpc_body(
+                    SEND_COMMAND_RPC_PATH,
+                    self.encode_request(|| encode_send_request(&request))?,
+                )
                 .await?;
             decode_send_response(&body)
         })
@@ -891,24 +926,33 @@ impl ControlClient for RpcControlClient {
 
 async fn decode_attached_stream_response(
     response: reqwest::Response,
+    budget: crucible::owned_decode::DecodeBudget,
 ) -> Result<(Attached, RpcStreamingEventReceiver), ControlClientError> {
+    let wire_budget = budget
+        .child()
+        .map_err(|source| client_output_admission(crate::admitted_output::admission(source)))?;
     let mut stream = response.bytes_stream().boxed();
-    let mut buffer = Vec::new();
+    let mut buffer = WireBytes::new(wire_budget);
     let attached_message = read_next_framed_rpc_message(&mut stream, &mut buffer)
         .await?
         .ok_or_else(|| rpc_decode("empty RPC stream attach response"))?;
-    let attached = decode_attached_response(&attached_message)?;
+    let attached = {
+        let _scope = budget.enter();
+        decode_attached_response(&attached_message)?
+    };
     let (frame_sender, frame_receiver) = mpsc::channel(RPC_STREAM_EVENT_CHANNEL_CAPACITY);
+    let events = RpcStreamingEventReceiver::new(frame_receiver, &budget)?;
     tokio::spawn(async move {
-        pump_rpc_stream_frames(stream, buffer, frame_sender).await;
+        pump_rpc_stream_frames(stream, buffer, frame_sender, budget).await;
     });
-    Ok((attached, RpcStreamingEventReceiver::new(frame_receiver)))
+    Ok((attached, events))
 }
 
 async fn pump_rpc_stream_frames(
     mut stream: BoxStream<'static, Result<Bytes, reqwest::Error>>,
-    mut buffer: Vec<u8>,
+    mut buffer: WireBytes,
     frame_sender: mpsc::Sender<Result<RpcStreamingFrame, ControlClientError>>,
+    budget: crucible::owned_decode::DecodeBudget,
 ) {
     loop {
         let message = match read_next_framed_rpc_message(&mut stream, &mut buffer).await {
@@ -919,11 +963,11 @@ async fn pump_rpc_stream_frames(
                 return;
             }
         };
-        if frame_sender
-            .send(decode_streaming_frame(&message))
-            .await
-            .is_err()
-        {
+        let frame = {
+            let _scope = budget.enter();
+            decode_streaming_frame(&message)
+        };
+        if frame_sender.send(frame).await.is_err() {
             return;
         }
     }
@@ -936,12 +980,11 @@ enum RpcStreamingFrame {
 
 async fn read_next_framed_rpc_message(
     stream: &mut BoxStream<'static, Result<Bytes, reqwest::Error>>,
-    buffer: &mut Vec<u8>,
-) -> Result<Option<Vec<u8>>, ControlClientError> {
+    buffer: &mut WireBytes,
+) -> Result<Option<WireBytes>, ControlClientError> {
     loop {
         if let Some(position) = rpc_message_separator(buffer) {
-            let message = buffer[..position].to_vec();
-            buffer.drain(..position.saturating_add(2));
+            let message = buffer.take_prefix(position)?;
             if message.is_empty() {
                 continue;
             }
@@ -952,12 +995,12 @@ async fn read_next_framed_rpc_message(
             if buffer.is_empty() {
                 return Ok(None);
             }
-            return Ok(Some(std::mem::take(buffer)));
+            return Ok(Some(buffer.take_tail()));
         };
         let chunk = chunk.map_err(|error| ControlClientError::HttpRequest {
             message: error.to_string(),
         })?;
-        buffer.extend_from_slice(&chunk);
+        buffer.append(&chunk)?;
     }
 }
 
@@ -1004,246 +1047,8 @@ fn decode_hello_response(
     ))
 }
 
-fn encode_create_session_request(request: &CreateSessionRequest) -> Vec<u8> {
-    let mut output = String::new();
-    output.push_str("crucible.rpc/create-session-request\n");
-    match &request.source {
-        CreateSessionSource::ScenarioRef { name } => {
-            push_line(&mut output, "source", "scenario-ref");
-            push_line(&mut output, "name", name);
-        }
-        CreateSessionSource::Inline { scenario } => {
-            let scenario_def = scenario.scenario_def();
-            push_line(&mut output, "source", "inline");
-            push_line(&mut output, "scenario-id", &scenario_def.id().to_hex());
-            push_line(&mut output, "scenario-seed", &scenario_def.seed().to_hex());
-            push_line(
-                &mut output,
-                "app-random-draw-cap",
-                &scenario_def.app_random_draw_cap().to_string(),
-            );
-            push_line(
-                &mut output,
-                "scenario-payload",
-                &hex_encode(&scenario.to_compact_binary()),
-            );
-        }
-    }
-    push_line(&mut output, "seed", &request.seed.to_hex());
-    push_line(
-        &mut output,
-        "start-paused",
-        if request.start_paused {
-            "true"
-        } else {
-            "false"
-        },
-    );
-    output.into_bytes()
-}
-
-fn encode_resume_session_request(request: &ResumeSessionRequest) -> Vec<u8> {
-    let mut output = String::new();
-    output.push_str("crucible.rpc/resume-session-request\n");
-    push_line(&mut output, "scenario-id", &request.scenario.id().to_hex());
-    push_line(
-        &mut output,
-        "scenario-seed",
-        &request.scenario.seed().to_hex(),
-    );
-    push_line(
-        &mut output,
-        "app-random-draw-cap",
-        &request.scenario.app_random_draw_cap().to_string(),
-    );
-    push_line(
-        &mut output,
-        "scenario-payload",
-        &hex_encode(&request.scenario.to_compact_binary()),
-    );
-    push_line(&mut output, "seed", &request.seed.to_hex());
-    push_line(
-        &mut output,
-        "schedule",
-        &hex_encode(&request.schedule.to_compact_binary()),
-    );
-    push_line(
-        &mut output,
-        "checkpoint",
-        &hex_encode(&request.checkpoint.to_compact_binary()),
-    );
-    if let Some(closure) = &request.replay_closure {
-        push_line(
-            &mut output,
-            "campaign-replay-closure-version",
-            &closure.schema_version().to_string(),
-        );
-        push_line(
-            &mut output,
-            "campaign-replay-closure-identity",
-            &closure.identity().to_hex(),
-        );
-        push_line(
-            &mut output,
-            "campaign-replay-closure-size",
-            &closure.payload_len().to_string(),
-        );
-        push_line(
-            &mut output,
-            "campaign-replay-closure-payload",
-            &hex_encode(closure.payload()),
-        );
-    }
-    let source = &request.observation_source;
-    push_line(
-        &mut output,
-        "campaign-observation-source-version",
-        &source.schema_version().to_string(),
-    );
-    push_line(
-        &mut output,
-        "campaign-observation-source-identity",
-        &source.identity().to_hex(),
-    );
-    push_line(
-        &mut output,
-        "campaign-observation-source-proof-size",
-        &source.proof().len().to_string(),
-    );
-    push_line(
-        &mut output,
-        "campaign-observation-source-proof",
-        &hex_encode(source.proof()),
-    );
-    push_line(
-        &mut output,
-        "campaign-observation-source-evidence-size",
-        &source.evidence().len().to_string(),
-    );
-    push_line(
-        &mut output,
-        "campaign-observation-source-evidence",
-        &hex_encode(source.evidence()),
-    );
-    output.into_bytes()
-}
-
-fn encode_destroy_session_request(request: &DestroySessionRequest) -> Vec<u8> {
-    let mut output = String::new();
-    output.push_str("crucible.rpc/destroy-session-request\n");
-    push_session_ref(&mut output, request.session);
-    match request.expected_epoch {
-        Some(epoch) => push_line(&mut output, "expected-epoch", &epoch.to_string()),
-        None => push_line(&mut output, "expected-epoch", "none"),
-    }
-    output.into_bytes()
-}
-
-fn encode_get_reproduction_request(request: &GetReproductionRequest) -> Vec<u8> {
-    let mut output = String::new();
-    output.push_str("crucible.rpc/get-reproduction-request\n");
-    push_session_ref(&mut output, request.session);
-    match request.expected_epoch {
-        Some(epoch) => push_line(&mut output, "expected-epoch", &epoch.to_string()),
-        None => push_line(&mut output, "expected-epoch", "none"),
-    }
-    output.into_bytes()
-}
-
-fn encode_attach_request(request: &AttachRequest) -> Vec<u8> {
-    let mut output = String::new();
-    output.push_str("crucible.rpc/attach-request\n");
-    push_session_ref(&mut output, request.session);
-    match request.expected_epoch {
-        Some(epoch) => push_line(&mut output, "expected-epoch", &epoch.to_string()),
-        None => push_line(&mut output, "expected-epoch", "none"),
-    }
-    push_line(
-        &mut output,
-        "from-seq",
-        &request.from.next_sequence.to_string(),
-    );
-    push_line(&mut output, "client-name", &request.client_name);
-    output.into_bytes()
-}
-
-fn encode_send_request(request: &SendRequest) -> Vec<u8> {
-    let mut output = String::new();
-    output.push_str("crucible.rpc/send-request\n");
-    push_session_ref(&mut output, request.session);
-    match request.expected_epoch {
-        Some(epoch) => push_line(&mut output, "expected-epoch", &epoch.to_string()),
-        None => push_line(&mut output, "expected-epoch", "none"),
-    }
-    push_line(&mut output, "command-id", &request.command_id.to_string());
-    let command_kind = SessionCommandKind::from(&request.command);
-    let command_kind = open_set_command_kind(command_kind)
-        .unwrap_or_else(|| format!("crucible.cmd.{}", command_kind_name(command_kind)));
-    push_line(&mut output, "command", &command_kind);
-    if let SessionCommand::Query { kind, .. } = &request.command {
-        push_line(&mut output, "query", &query_kind_request_wire(kind));
-    } else if let SessionCommand::SetBreakpoint { spec, .. } = &request.command {
-        push_line(
-            &mut output,
-            "breakpoint-predicate",
-            &hex_encode(&spec.predicate.to_compact_binary()),
-        );
-        push_line(
-            &mut output,
-            "breakpoint-disposition",
-            &breakpoint_disposition_request_wire(&spec.disposition),
-        );
-        push_line(
-            &mut output,
-            "breakpoint-policy",
-            breakpoint_policy_request_wire(spec.policy),
-        );
-    } else if let SessionCommand::CreateSavepoint { label, .. } = &request.command {
-        push_line(
-            &mut output,
-            "savepoint-label",
-            &hex_encode(label.as_bytes()),
-        );
-    } else if let SessionCommand::Step {
-        mode: StepMode::Duration(duration),
-    } = &request.command
-    {
-        push_line(
-            &mut output,
-            "step-duration-ticks",
-            &duration.ticks.to_string(),
-        );
-    }
-    output.into_bytes()
-}
-
 fn validate_rpc_send_request(_request: &SendRequest) -> Result<(), ControlClientError> {
     Ok(())
-}
-
-fn query_kind_request_wire(kind: &QueryKind) -> String {
-    match kind {
-        QueryKind::Snapshot => String::from("snapshot"),
-        QueryKind::BreakpointFirings => String::from("breakpoint-firings"),
-        QueryKind::State => String::from("state"),
-        QueryKind::EventLogLength => String::from("event-log-length"),
-        QueryKind::SearchFrontier => String::from("search-frontier"),
-        QueryKind::ResolvedEffectTrace => String::from("resolved-effect-trace"),
-        QueryKind::ExecutionFingerprint { node } => {
-            format!("execution-fingerprint|{}", hex_encode(node.name.as_bytes()))
-        }
-        QueryKind::DebugOperatorEndpoint => String::from("debug-operator-endpoint"),
-    }
-}
-
-fn breakpoint_disposition_request_wire(disposition: &BreakpointDisposition) -> String {
-    match disposition {
-        BreakpointDisposition::Suspend => String::from("suspend"),
-        BreakpointDisposition::Trace => String::from("trace"),
-        BreakpointDisposition::Action(action) => {
-            format!("action:{}", hex_encode(&action.to_compact_binary()))
-        }
-    }
 }
 
 fn breakpoint_policy_request_wire(policy: BreakpointPolicy) -> &'static str {
@@ -1402,12 +1207,16 @@ fn decode_destroy_session_response(
 fn decode_get_reproduction_response(
     body: &[u8],
 ) -> Result<GetReproductionResponse, ControlClientError> {
+    let budget = crucible::owned_decode::require_current_child_budget()
+        .map_err(crate::admitted_output::admission)
+        .map_err(client_output_admission)?;
+    let _scope = budget.enter();
     let text = response_text(body)?;
     let mut lines = text.lines();
     expect_header(lines.next(), "crucible.rpc/get-reproduction-response")?;
     let session = parse_session_ref(&mut lines)?;
     let commands = parse_reproduction_records(lines)?;
-    Ok(GetReproductionResponse { session, commands })
+    GetReproductionResponse::from_owned_commands(session, commands).map_err(client_output_admission)
 }
 
 fn decode_error_response(body: &[u8]) -> Result<ControlClientError, ControlClientError> {
@@ -1595,6 +1404,10 @@ fn require_rpc_error_status(
 }
 
 fn decode_attached_response(body: &[u8]) -> Result<Attached, ControlClientError> {
+    let budget = crucible::owned_decode::require_current_child_budget()
+        .map_err(crate::admitted_output::admission)
+        .map_err(client_output_admission)?;
+    let _scope = budget.enter();
     let text = response_text(body)?;
     let mut lines = text.lines();
     expect_header(lines.next(), "crucible.rpc/attached-response")?;
@@ -1615,21 +1428,32 @@ fn decode_attached_response(body: &[u8]) -> Result<Attached, ControlClientError>
         None => Vec::new(),
     };
     if let Some(snapshot) = &mut snapshot {
-        snapshot.reproduction = reproduction;
+        *snapshot = AttachSnapshot::from_event_log_admitted(
+            crate::event_log_stream::SessionEventLogSnapshot {
+                through: snapshot.through,
+                event_count: snapshot.event_count,
+                causal_count: snapshot.causal_event_count,
+                observational_count: snapshot.observational_event_count,
+                last_sequence: snapshot.last_sequence,
+            },
+            reproduction,
+        )
+        .map_err(client_output_admission)?;
     } else if !reproduction.is_empty() {
         return Err(rpc_decode(
             "attached response carried reproduction without snapshot",
         ));
     }
     reject_trailing(lines.next())?;
-    Ok(Attached {
+    Attached::from_owned_fields(
         session,
         event_log_len,
         state,
         version,
         capabilities,
         snapshot,
-    })
+    )
+    .map_err(client_output_admission)
 }
 
 fn decode_send_response(body: &[u8]) -> Result<SendResponse, ControlClientError> {
@@ -1686,6 +1510,10 @@ fn decode_streaming_frame(body: &[u8]) -> Result<RpcStreamingFrame, ControlClien
 }
 
 fn decode_streaming_event_frame(body: &[u8]) -> Result<StreamingEventFrame, ControlClientError> {
+    let budget = crucible::owned_decode::require_current_child_budget()
+        .map_err(crate::admitted_output::admission)
+        .map_err(client_output_admission)?;
+    let _scope = budget.enter();
     let text = response_text(body)?;
     let mut lines = text.lines();
     expect_header(lines.next(), "crucible.rpc/event-frame")?;
@@ -1700,13 +1528,14 @@ fn decode_streaming_event_frame(body: &[u8]) -> Result<StreamingEventFrame, Cont
     let source = parse_event_source_line(lines.next())?;
     let level = parse_event_level_line(lines.next())?;
     let observational = parse_bool_line(lines.next(), "observational=")?;
-    let kind = parse_prefixed_line(lines.next(), "kind=")?.to_owned();
+    let kind = crate::admitted_output::text(parse_prefixed_line(lines.next(), "kind=")?)
+        .map_err(client_output_admission)?;
     let attributes = parse_event_attributes(lines)?;
-    Ok(StreamingEventFrame {
+    StreamingEventFrame::from_owned_fields(
         generation,
         cursor,
         next_cursor,
-        event: OpenSetEventEnvelope {
+        OpenSetEventEnvelope {
             sequence,
             at: OpenSetEventTime {
                 virtual_time_ticks,
@@ -1719,7 +1548,8 @@ fn decode_streaming_event_frame(body: &[u8]) -> Result<StreamingEventFrame, Cont
             observational,
             payload: OpenSetPayload::new(kind, attributes),
         },
-    })
+    )
+    .map_err(client_output_admission)
 }
 
 fn decode_streaming_state_update_frame(
@@ -1899,6 +1729,9 @@ where
     for line in lines {
         let value = parse_prefixed_line(Some(line), "attribute=")?;
         let (name, attribute) = parse_event_attribute(value)?;
+        crucible::owned_decode::charge_btree_entry::<String, OpenSetAttributeValue>()
+            .map_err(crate::admitted_output::admission)
+            .map_err(client_output_admission)?;
         attributes.insert(name, attribute);
     }
     Ok(attributes)
@@ -2045,6 +1878,9 @@ fn parse_capabilities_line(
     }
 
     let mut commands = Vec::new();
+    crucible::owned_decode::reserve_vec(&mut commands, value.split(',').count())
+        .map_err(crate::admitted_output::admission)
+        .map_err(client_output_admission)?;
     for command_kind_wire in value.split(',') {
         let command_kind = session_command_for_open_set_command_kind(command_kind_wire)
             .ok_or_else(|| {
@@ -2086,14 +1922,18 @@ fn parse_attach_snapshot_line(
     if fields.next().is_some() {
         return Err(rpc_decode("trailing snapshot fields"));
     }
-    Ok(Some(AttachSnapshot {
-        through: EventLogCursor::new(through),
-        event_count,
-        causal_event_count,
-        observational_event_count,
-        last_sequence,
-        reproduction: Vec::new(),
-    }))
+    AttachSnapshot::from_event_log_admitted(
+        crate::event_log_stream::SessionEventLogSnapshot {
+            through: EventLogCursor::new(through),
+            event_count,
+            causal_count: causal_event_count,
+            observational_count: observational_event_count,
+            last_sequence,
+        },
+        Vec::new(),
+    )
+    .map(Some)
+    .map_err(client_output_admission)
 }
 
 fn parse_reproduction_records_line(
@@ -2103,10 +1943,14 @@ fn parse_reproduction_records_line(
     if value == "none" || value.is_empty() {
         return Ok(Vec::new());
     }
-    value
-        .split(';')
-        .map(parse_reproduction_record)
-        .collect::<Result<Vec<_>, _>>()
+    let mut records = Vec::new();
+    crucible::owned_decode::reserve_vec(&mut records, value.split(';').count())
+        .map_err(crate::admitted_output::admission)
+        .map_err(client_output_admission)?;
+    for value in value.split(';') {
+        records.push(parse_reproduction_record(value)?);
+    }
+    Ok(records)
 }
 
 fn parse_reproduction_records<'a, I>(
@@ -2118,6 +1962,9 @@ where
     let mut records = Vec::new();
     for line in lines {
         let value = parse_prefixed_line(Some(line), "command=")?;
+        crucible::owned_decode::reserve_vec(&mut records, 1)
+            .map_err(crate::admitted_output::admission)
+            .map_err(client_output_admission)?;
         records.push(parse_reproduction_record(value)?);
     }
     Ok(records)
@@ -2138,7 +1985,7 @@ fn parse_reproduction_record(value: &str) -> Result<ReproductionCommandRecord, C
     if fields.next().is_some() {
         return Err(rpc_decode("unexpected extra reproduction command fields"));
     }
-    Ok(ReproductionCommandRecord {
+    ReproductionCommandRecord::from_owned_fields(ReproductionCommandRecordFields {
         sequence,
         payload: ReproductionCommandPayload {
             command,
@@ -2154,6 +2001,7 @@ fn parse_reproduction_record(value: &str) -> Result<ReproductionCommandRecord, C
         result,
         observational_order,
     })
+    .map_err(client_output_admission)
 }
 
 fn parse_command_kind_field(
@@ -2599,20 +2447,53 @@ fn parse_hex_string(value: &str) -> Result<String, ControlClientError> {
 
 fn parse_hex_bytes(value: &str) -> Result<Vec<u8>, ControlClientError> {
     if !value.len().is_multiple_of(2) {
-        return Err(rpc_decode(format!(
-            "hex string has odd length {}",
-            value.len()
-        )));
+        return Err(rpc_decode("hex string has odd length"));
     }
-    let mut bytes = Vec::with_capacity(value.len() / 2);
-    for index in (0..value.len()).step_by(2) {
-        let pair = &value[index..index + 2];
-        bytes.push(
-            u8::from_str_radix(pair, 16)
-                .map_err(|error| rpc_decode(format!("invalid hex byte `{pair}`: {error}")))?,
-        );
+    let mut bytes = Vec::new();
+    crucible::owned_decode::reserve_vec(&mut bytes, value.len() / 2)
+        .map_err(crate::admitted_output::admission)
+        .map_err(client_output_admission)?;
+    for pair in value.as_bytes().as_chunks::<2>().0 {
+        let high = hex_digit(pair[0]).ok_or_else(|| rpc_decode("invalid hex byte"))?;
+        let low = hex_digit(pair[1]).ok_or_else(|| rpc_decode("invalid hex byte"))?;
+        bytes.push(high * 16 + low);
     }
     Ok(bytes)
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn decode_http_failure(
+    body: &[u8],
+    status: u16,
+    budget: &crucible::owned_decode::DecodeBudget,
+) -> ControlClientError {
+    let decoded = decode_error_response(body);
+    if let Err(source) = budget.check() {
+        return client_output_admission(crate::admitted_output::admission(source));
+    }
+    match decoded {
+        Ok(error) => error,
+        Err(
+            error @ ControlClientError::Streaming {
+                source: StreamingApiError::OutputAdmission { .. },
+            },
+        ) => error,
+        Err(_) => ControlClientError::HttpStatus { status },
+    }
+}
+
+fn client_output_admission(source: crucible::EngineError) -> ControlClientError {
+    ControlClientError::Streaming {
+        source: StreamingApiError::OutputAdmission { source },
+    }
 }
 
 mod debug;
@@ -2620,6 +2501,18 @@ pub use debug::{DebugControllerAccess, DebugControllerAcquisition, WritableDebug
 mod query_result;
 
 use query_result::*;
+
+#[derive(Debug)]
+struct MissingClientOutputAuthority;
+
+impl std::fmt::Display for MissingClientOutputAuthority {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .write_str("RPC owning output requires an explicitly retained original decode budget")
+    }
+}
+
+impl std::error::Error for MissingClientOutputAuthority {}
 
 #[cfg(test)]
 mod exact_tick_wire_tests {

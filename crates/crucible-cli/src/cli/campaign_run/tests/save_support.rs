@@ -299,7 +299,8 @@ pub(super) fn recomputed_observation_proof_forgeries(
             },
             crucible::AssertionId::from_name(witness.assertion()),
             crucible::AssertionPhase::Satisfied,
-        );
+        )
+        .or_panic("construct wrong-state assertion evidence");
         let wrong_state_witness = AssertionViolationWitness::new(
             witness.assertion(),
             witness.sequence(),

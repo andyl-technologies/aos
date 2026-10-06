@@ -23,8 +23,8 @@ pub use crucible_cas::content_store::{
     StoreGraphObjectProfilers, StoreGraphPackedRepackAdmin, StoreGraphPhysicalQuotaBinders,
     StoreGraphS3Clients, StoreGraphVerificationLimits, StoreGraphVerificationLimitsError,
     StoreNamespaceAuthorizer, StoreNamespaceId, StoreNamespaceOperation, StoreNodeId,
-    StoreNodeKind, StoreNodeSpec, StoreObjectProfilePolicyId, StorePhysicalQuotaPolicyId,
-    StorePhysicalRepairDisposition, StorePhysicalRepairReceipt, StoreS3EndpointId,
-    StoreS3RefCapability, StoreTierPolicy,
+    StoreNodeKind, StoreNodeSpec, StoreObjectProfilePolicyId, StorePhysicalQuotaBinder,
+    StorePhysicalQuotaGuard, StorePhysicalQuotaPolicyId, StorePhysicalRepairDisposition,
+    StorePhysicalRepairReceipt, StoreS3EndpointId, StoreS3RefCapability, StoreTierPolicy,
 };
 pub use crucible_s3_store::{AwsSdkS3Client, AwsSdkS3ClientConfig, AwsSdkS3StrongCasClient};

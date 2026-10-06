@@ -286,6 +286,27 @@ impl ScopedRegistrar {
 }
 
 impl RamControlRegistrar for ScopedRegistrar {
+    fn fault_actor_status(
+        &self,
+        target: HostRamTarget,
+    ) -> Result<Option<crucible_protocol::ram_control::RamControlFaultActorReport>, RamControlError>
+    {
+        self.registry.fault_actor_status(target)
+    }
+
+    fn native_paging_health(
+        &self,
+        target: HostRamTarget,
+    ) -> Result<
+        (
+            Option<crucible_protocol::ram_control::RamControlFaultActorReport>,
+            Option<crucible_protocol::ram_control::RamControlOperationFailure>,
+        ),
+        RamControlError,
+    > {
+        self.registry.native_paging_health(target)
+    }
+
     fn retirement_authority(
         &self,
         target: HostRamTarget,

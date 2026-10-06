@@ -400,35 +400,77 @@ pub(super) fn no_named_trigger_leaf(_leaf: ConditionLeaf<'_>) -> bool {
     false
 }
 
+pub(super) fn copy_event_log_appends(
+    appends: &[SchedulerEventLogAppend],
+) -> Result<Vec<SchedulerEventLogAppend>, SchedulerError> {
+    if appends.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let _original = appends[0].event_log_custody.enter_decode_scope();
+    let budget = crucible::owned_decode::require_current_child_budget()
+        .map_err(|source| crucible::EngineError::ArtifactDecodeAdmission { source })?;
+    let _scope = budget.enter();
+    let mut copies = Vec::new();
+    crucible::owned_decode::reserve_vec(&mut copies, appends.len())
+        .map_err(|source| crucible::EngineError::ArtifactDecodeAdmission { source })?;
+    let table_custody = crucible::EventLogOutputCustody::retain_current()?;
+    for append in appends {
+        let mut copy = append.try_clone_admitted()?;
+        copy.event_log_custody = copy.event_log_custody.combine(&table_custody)?;
+        copies.push(copy);
+    }
+    Ok(copies)
+}
+
 pub(super) fn merge_event_log_append(
     outcome: &mut QuantumOutcome,
     append: SchedulerEventLogAppend,
-) {
-    outcome.event_log_entries.extend(append.entries);
-    outcome.event_log_segment_bytes = append.segment_bytes;
-    outcome.event_log_segment_text = append.segment_text;
-    outcome.event_log_segment_hash = append.segment_hash;
-    outcome.event_log_offset = append.offset;
+) -> Result<(), SchedulerError> {
+    outcome
+        .merge_event_log_append(append)
+        .map_err(SchedulerError::from)
 }
 
 pub(super) fn prepend_event_log_appends(
     outcome: &mut QuantumOutcome,
     appends: Vec<SchedulerEventLogAppend>,
-) {
-    let mut entries = appends
-        .iter()
-        .flat_map(|append| append.entries.iter().cloned())
-        .collect::<Vec<_>>();
+) -> Result<(), SchedulerError> {
+    if appends.is_empty() {
+        return Ok(());
+    }
+
+    let mut custody = outcome.event_log_custody.clone();
+    let mut entry_count = outcome.event_log_entries.len();
+    for append in &appends {
+        custody = custody.combine(&append.event_log_custody)?;
+        entry_count = entry_count
+            .checked_add(append.entries.len())
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("event-log prefix entry count overflows"),
+            })?;
+    }
+
+    // Keep all original loans before reserving a new table. Entry and segment
+    // bodies move without copying and their source credits remain attached.
+    outcome.event_log_custody = custody;
+    let _scope = outcome.event_log_custody.enter_decode_scope();
+    let mut entries = Vec::new();
+    crucible::owned_decode::reserve_vec(&mut entries, entry_count)
+        .map_err(|source| crucible::EngineError::ArtifactDecodeAdmission { source })?;
+    let use_prefix_segment = outcome.event_log_segment_hash.is_none();
+    for append in appends {
+        entries.extend(append.entries);
+        if use_prefix_segment {
+            outcome.event_log_segment_bytes = append.segment_bytes;
+            outcome.event_log_segment_text = append.segment_text;
+            outcome.event_log_segment_hash = append.segment_hash;
+            outcome.event_log_offset = append.offset;
+        }
+    }
     entries.append(&mut outcome.event_log_entries);
     outcome.event_log_entries = entries;
-    if outcome.event_log_segment_hash.is_none()
-        && let Some(append) = appends.last()
-    {
-        outcome.event_log_segment_bytes = append.segment_bytes.clone();
-        outcome.event_log_segment_text = append.segment_text.clone();
-        outcome.event_log_segment_hash = append.segment_hash;
-        outcome.event_log_offset = append.offset;
-    }
+    Ok(())
 }
 
 pub(super) fn merge_terminal_verdict(
@@ -506,6 +548,9 @@ pub(super) fn loop_factory_error(message: impl Into<String>) -> LifecycleApiErro
         message: message.into(),
     }
 }
+
+#[cfg(test)]
+mod event_output_tests;
 
 #[cfg(test)]
 mod tests {
@@ -699,6 +744,9 @@ mod tests {
 
     #[test]
     fn typed_app_random_checkpoint_restores_node_stream_cursors() {
+        let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+            .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
         let scenario = ScenarioDef::from_canonical_material_with_seed_and_app_random_draw_cap(
             "crucible.test.production-app-random-checkpoint",
             "scenario=typed-app-random-checkpoint",
@@ -802,6 +850,9 @@ mod tests {
 
     #[test]
     fn app_random_restart_between_reseeds_keeps_global_boundary_and_active_seed_cursors() {
+        let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+            .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
         let scenario = ScenarioDef::from_canonical_material_with_seed_and_app_random_draw_cap(
             "crucible.test.production-app-random-reseed-restart",
             "scenario=typed-app-random-reseed-restart",

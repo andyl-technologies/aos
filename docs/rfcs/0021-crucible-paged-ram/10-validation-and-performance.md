@@ -374,6 +374,12 @@ the actual paths used. This is offline performance evidence, not a retained
 production SHA-256 RAM path. Large-buffer hash throughput alone MUST NOT justify
 claims about page or small-node performance.
 
+The archived [host hashing measurements](measurements/host-hashing/README.md)
+cover these canonical preimages and changed-page batches in 130 release samples.
+The receipt records the actual workspace-selected pure Rust BLAKE3 SIMD path and
+accelerated SHA-256 path. Preallocated batch storage excludes allocation, COW,
+tracking and paging costs; the native C fingerprint implementation was not timed.
+
 For `D` changed pages the obvious path-update upper bound is proportional to
 `D * (1 + log2(P))`, capped by the whole tree's nodes, with byte hashing
 proportional to changed page contents. Shared ancestors reduce that count.
@@ -408,6 +414,16 @@ zeroes and shared templates. Neither case can stand in for the other.
   workloads, repeated samples and uncertainty. Regression thresholds MUST be
   based on measured reviewed baselines, never invented values or a result
   copied from a different host/storage configuration.
+
+Acceptance also requires no measured performance regression against a reviewed,
+comparable baseline. The managed TCG comparison records actual repeated samples,
+content hashes of guest inputs and producer artifacts, and a declared
+host/storage/CPU-affinity profile. Its baseline must use the same timing interval,
+workloads, inputs and repeat counts; candidate median and maximum latency must
+not increase. Missing or incompatible receipts block regression acceptance.
+Historical socket-receipt timings cannot replace measurements from native spawn
+through the authenticated stopped boundary. Passing deterministic identity checks
+alone does not satisfy this acceptance condition.
 
 The existing campaign performance gate has no reviewed measured baseline pinned
 in source and explicitly reports `BLOCKED` in that case. This is a known evidence

@@ -183,7 +183,9 @@ fn side_event(sequence: u64, kind: &str) -> SchedulerEventLogEntry {
     )
     .expect("fixture event");
     assert!(
-        event.has_valid_content_hash(),
+        event
+            .has_valid_content_hash()
+            .unwrap_or_else(|source| panic!("fixture identity admission: {source}")),
         "fixture event must authenticate"
     );
     event
@@ -210,6 +212,8 @@ fn side(kind: &str) -> FindingProductionReplayExecutionSide {
 
 #[test]
 fn continuation_event_parts_require_dense_nonoverlapping_sequences() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let prefix = side_event(0, "prefix");
     let suffix = side_event(1, "suffix");
 
@@ -231,6 +235,8 @@ fn continuation_event_parts_require_dense_nonoverlapping_sequences() {
 
 #[test]
 fn terminal_fingerprint_may_precede_but_not_exceed_shared_frontier() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let finding = finding();
     let limits = FindingProductionReplayCaptureLimits::for_finding(&finding);
     let recipe = FindingProductionReplayRecipe::new(10_000, 64, true).expect("valid recipe");
@@ -249,6 +255,8 @@ fn terminal_fingerprint_may_precede_but_not_exceed_shared_frontier() {
 
 #[test]
 fn network_only_finding_accepts_canonical_effect_trace() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let world = World::from_nodes(vec![vm_node()]).expect("network-only world");
     let base = ScenarioDefForm::from_components(
         &world,
@@ -284,6 +292,8 @@ fn network_only_finding_accepts_canonical_effect_trace() {
 
 #[test]
 fn decoder_rejects_hostile_declared_container_length_before_deserialization() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let finding = finding();
     let mut limits = FindingProductionReplayCaptureLimits::for_finding(&finding);
     limits.max_encoded_bytes = 64;
@@ -303,6 +313,8 @@ fn timeout_side() -> FindingProductionReplayExecutionSide {
 
 #[test]
 fn canonical_capture_round_trips_and_selects_expected_divergence_side() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let finding = finding();
     let (reproduction, signature) = campaign_binding(&finding, FindingKind::Divergence);
     let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
@@ -374,6 +386,8 @@ fn canonical_capture_round_trips_and_selects_expected_divergence_side() {
 
 #[test]
 fn capture_rejects_missing_or_extraneous_lifecycle_objects() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let finding = finding();
     let (reproduction, signature) = campaign_binding(&finding, FindingKind::Timeout);
     let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
@@ -404,6 +418,8 @@ fn capture_rejects_missing_or_extraneous_lifecycle_objects() {
 
 #[test]
 fn paired_capture_rejects_equal_executions() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let finding = finding();
     let (reproduction, signature) = campaign_binding(&finding, FindingKind::Divergence);
     let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
@@ -432,6 +448,8 @@ fn paired_capture_rejects_equal_executions() {
 
 #[test]
 fn referenced_world_object_must_exist_and_match_its_hash() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let base = b"world-block-base".to_vec();
     let identity = ContentHash::from_bytes(&base);
     let io = WorldIoNode::block(
@@ -486,6 +504,8 @@ fn referenced_world_object_must_exist_and_match_its_hash() {
 
 #[test]
 fn signal_lifecycle_capture_requires_authenticates_and_bounds_its_store() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let (finding, store, identity) = finding_with_signal_artifact();
     assert!(matches!(
         capture_finding_replay_lifecycle_objects(&finding, None, None),
@@ -544,6 +564,8 @@ fn signal_lifecycle_capture_requires_authenticates_and_bounds_its_store() {
 
 #[test]
 fn capture_enforces_small_asset_and_encoded_byte_caps() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let finding = finding();
     let (reproduction, signature) = campaign_binding(&finding, FindingKind::Timeout);
     let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
@@ -612,6 +634,8 @@ fn capture_enforces_small_asset_and_encoded_byte_caps() {
 
 #[test]
 fn deployment_capture_survives_removal_of_source_paths() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let directory = tempfile::tempdir().expect("asset directory");
     let kernel = directory.path().join("kernel");
     let root_image = directory.path().join("root.img");
@@ -681,6 +705,8 @@ fn deployment_capture_survives_removal_of_source_paths() {
 
 #[test]
 fn deployment_static_limit_counts_duplicate_content_once() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let directory = tempfile::tempdir().expect("asset directory");
     let kernel = directory.path().join("kernel");
     let root_image = directory.path().join("root.img");
@@ -722,6 +748,8 @@ fn deployment_static_limit_counts_duplicate_content_once() {
 
 #[test]
 fn deployment_rejects_streamed_asset_before_bounded_copy() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let directory = tempfile::tempdir().expect("asset directory");
     let kernel = directory.path().join("kernel");
     let root_image = directory.path().join("root.img");
@@ -765,6 +793,8 @@ fn deployment_rejects_streamed_asset_before_bounded_copy() {
 
 #[test]
 fn static_limit_counts_guest_and_world_roles_by_content_identity() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let directory = tempfile::tempdir().expect("asset directory");
     let kernel = directory.path().join("kernel");
     let root_image = directory.path().join("root.img");
@@ -839,6 +869,8 @@ fn static_limit_counts_guest_and_world_roles_by_content_identity() {
 
 #[test]
 fn capture_rejects_progress_beyond_recipe_or_terminal_frontier() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let finding = finding();
     let (reproduction, signature) = campaign_binding(&finding, FindingKind::Timeout);
     let closure = GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")

@@ -9,7 +9,7 @@ use super::*;
 mod records;
 use records::{Reader, Writer};
 
-const SCHEMA: u32 = 1;
+const SCHEMA: u32 = 2;
 type Result<T> = std::result::Result<T, HostOperationalError>;
 
 fn invalid(message: &str) -> HostOperationalError {
@@ -23,9 +23,23 @@ fn invalid(message: &str) -> HostOperationalError {
 /// # Errors
 ///
 /// Returns an error for zero generations, invalid policy fields, inexact or
-/// overflowing durations, or a message exceeding the canonical size limit.
-pub fn encode_request(request: &HostOperationalRequest) -> Result<Vec<u8>> {
-    let mut writer = Writer::new();
+/// overflowing durations, a message exceeding the canonical size limit, or
+/// missing or exhausted original allocation authority. The returned buffer
+/// retains its original credit through its final owner.
+pub fn encode_request(request: &HostOperationalRequest) -> Result<crate::AdmittedOutput<Vec<u8>>> {
+    crate::AdmittedOutput::try_build(
+        || {
+            admit_bytes(HOST_OPERATIONAL_MAX_BYTES as u64)?;
+            encode_request_with_writer(request, Writer::bounded()?)
+        },
+        |source| HostOperationalError::Admission { source },
+    )
+}
+
+fn encode_request_with_writer(
+    request: &HostOperationalRequest,
+    mut writer: Writer,
+) -> Result<Vec<u8>> {
     let tag = match request {
         HostOperationalRequest::Capabilities { .. } => 0,
         HostOperationalRequest::Status { .. } => 1,
@@ -97,22 +111,49 @@ pub fn encode_request(request: &HostOperationalRequest) -> Result<Vec<u8>> {
 /// # Errors
 ///
 /// Returns an error for unsupported schemas, oversized or truncated messages,
-/// unknown tags, invalid fields, and trailing bytes.
-pub fn decode_request(bytes: &[u8]) -> Result<HostOperationalRequest> {
+/// unknown tags, invalid fields, trailing bytes, or missing or exhausted
+/// original allocation authority. Owned decoded fields retain their credits.
+pub fn decode_request(bytes: &[u8]) -> Result<crate::AdmittedOutput<HostOperationalRequest>> {
+    crate::AdmittedOutput::try_build(
+        || {
+            read_request(bytes, RequestPolicyStorage::Retained)?
+                .ok_or_else(|| invalid("request policy was not retained"))
+        },
+        |source| HostOperationalError::Admission { source },
+    )
+}
+
+/// Validates canonical request fields without allocating a decoded policy body.
+///
+/// # Errors
+/// Rejects unsupported schemas, invalid fields, truncation or trailing bytes.
+pub fn validate_request(bytes: &[u8]) -> Result<()> {
+    read_request(bytes, RequestPolicyStorage::ValidationOnly).map(|_| ())
+}
+
+enum RequestPolicyStorage {
+    Retained,
+    ValidationOnly,
+}
+
+fn read_request(
+    bytes: &[u8],
+    policy_storage: RequestPolicyStorage,
+) -> Result<Option<HostOperationalRequest>> {
     let mut reader = Reader::new(bytes)?;
     let tag = reader.u8()?;
     let request = match tag {
-        0 => HostOperationalRequest::Capabilities {
+        0 => Some(HostOperationalRequest::Capabilities {
             target: reader.target()?,
-        },
-        1 => HostOperationalRequest::Status {
+        }),
+        1 => Some(HostOperationalRequest::Status {
             target: reader.target()?,
-        },
+        }),
         2 => {
             let target = reader.target()?;
             let expected_policy_revision = reader.u64()?;
             let idempotency_key = reader.fixed()?;
-            let policy = Box::new(reader.policy()?);
+            let policy = reader.policy()?;
             let reservation_amendment = if reader.boolean()? {
                 Some(HostReservationAmendment {
                     expected_reservation_revision: reader.u64()?,
@@ -122,21 +163,27 @@ pub fn decode_request(bytes: &[u8]) -> Result<HostOperationalRequest> {
             } else {
                 None
             };
-            HostOperationalRequest::UpdatePolicy {
-                target,
-                expected_policy_revision,
-                idempotency_key,
-                policy,
-                reservation_amendment,
+            match policy_storage {
+                RequestPolicyStorage::Retained => {
+                    admit_bytes(std::mem::size_of::<HostRamPolicy>() as u64)?;
+                    Some(HostOperationalRequest::UpdatePolicy {
+                        target,
+                        expected_policy_revision,
+                        idempotency_key,
+                        policy: Box::new(policy),
+                        reservation_amendment,
+                    })
+                }
+                RequestPolicyStorage::ValidationOnly => None,
             }
         }
-        3 => HostOperationalRequest::AmendOuterCap {
+        3 => Some(HostOperationalRequest::AmendOuterCap {
             target: reader.outer_cap_target()?,
             expected_cap_revision: reader.u64()?,
             idempotency_key: reader.fixed()?,
             allowance: reader.optional_duration(false)?,
-        },
-        4 => HostOperationalRequest::ListTargets {
+        }),
+        4 => Some(HostOperationalRequest::ListTargets {
             target: HostRamOwnerTarget {
                 daemon_epoch: reader.fixed()?,
                 owner_id: reader.fixed()?,
@@ -147,12 +194,14 @@ pub fn decode_request(bytes: &[u8]) -> Result<HostOperationalRequest> {
                 None
             },
             limit: reader.u8()?,
-        },
+        }),
         _ => return Err(invalid("unknown request tag")),
     };
     reader.finish()?;
-    if encode_request(&request)?.as_slice() != bytes {
-        return Err(invalid("noncanonical request"));
+    // Every scalar reader accepts one fixed-width representation. The shared
+    // validation writer checks cross-field rules without creating another body.
+    if let Some(request) = &request {
+        encode_request_with_writer(request, Writer::validation())?;
     }
     Ok(request)
 }
@@ -162,9 +211,55 @@ pub fn decode_request(bytes: &[u8]) -> Result<HostOperationalRequest> {
 /// # Errors
 ///
 /// Returns an error for invalid targets or policies, unordered operation/cap
-/// identities, oversized rosters or reasons, and aggregate encoding overflow.
-pub fn encode_response(response: &HostOperationalResponse) -> Result<Vec<u8>> {
-    let mut writer = Writer::new();
+/// identities, oversized rosters or reasons, aggregate encoding overflow, or
+/// missing or exhausted original allocation authority. The returned wire buffer
+/// retains its credits through its final owner.
+pub fn encode_response(
+    response: &HostOperationalResponse,
+) -> Result<crate::AdmittedOutput<Vec<u8>>> {
+    crate::AdmittedOutput::try_build(
+        || {
+            admit_bytes(HOST_OPERATIONAL_MAX_BYTES as u64)?;
+            encode_response_bounded(response)
+        },
+        |source| HostOperationalError::Admission { source },
+    )
+}
+
+/// Validates canonical response fields and size without allocating a wire buffer.
+///
+/// # Errors
+/// Rejects malformed targets, policies, ordered rosters or aggregate size.
+pub fn validate_response(response: &HostOperationalResponse) -> Result<()> {
+    encode_response_with_writer(response, Writer::validation()).map(|_| ())
+}
+
+/// Encodes a retained response without releasing its original wire-buffer credit.
+///
+/// # Errors
+/// Refuses exhausted original authority or invalid canonical response fields.
+pub fn encode_owned_response(
+    response: &crate::AdmittedOutput<HostOperationalResponse>,
+) -> Result<crate::AdmittedOutput<Vec<u8>>> {
+    let _original =
+        response
+            .enter_original_scope()
+            .ok_or_else(|| HostOperationalError::Admission {
+                source: crucible::owned_decode::DecodeAdmissionError::new(std::io::Error::other(
+                    "operational response has no original custody",
+                )),
+            })?;
+    encode_response(response.value())
+}
+
+fn encode_response_bounded(response: &HostOperationalResponse) -> Result<Vec<u8>> {
+    encode_response_with_writer(response, Writer::bounded()?)
+}
+
+fn encode_response_with_writer(
+    response: &HostOperationalResponse,
+    mut writer: Writer,
+) -> Result<Vec<u8>> {
     match response {
         HostOperationalResponse::Targets {
             target,
@@ -293,12 +388,24 @@ pub fn encode_response(response: &HostOperationalResponse) -> Result<Vec<u8>> {
     writer.finish()
 }
 
-/// Decodes one complete bounded operational response.
+/// Decodes one complete bounded response under original metadata authority.
+///
+/// The returned owner retains every decoded field's allocation credit. Consumers
+/// borrow its value while presenting or inspecting the response; moving its
+/// parts requires retaining the transferred custody through the fields' drop.
 ///
 /// # Errors
 ///
-/// Returns an error for malformed, oversized, noncanonical or trailing data.
-pub fn decode_response(bytes: &[u8]) -> Result<HostOperationalResponse> {
+/// Returns an error for missing or exhausted original authority, malformed,
+/// oversized, noncanonical or trailing data.
+pub fn decode_response(bytes: &[u8]) -> Result<crate::AdmittedOutput<HostOperationalResponse>> {
+    crate::AdmittedOutput::try_build(
+        || decode_response_fields(bytes),
+        |source| HostOperationalError::Admission { source },
+    )
+}
+
+fn decode_response_fields(bytes: &[u8]) -> Result<HostOperationalResponse> {
     let mut reader = Reader::new(bytes)?;
     let response = match reader.u8()? {
         0 => HostOperationalResponse::Capabilities {
@@ -314,7 +421,10 @@ pub fn decode_response(bytes: &[u8]) -> Result<HostOperationalResponse> {
             },
             qualification: reader.qualification()?,
         },
-        1 => HostOperationalResponse::Status(Box::new(reader.status()?)),
+        1 => {
+            admit_bytes(std::mem::size_of::<HostRamStatus>() as u64)?;
+            HostOperationalResponse::Status(Box::new(reader.status()?))
+        }
         2 => HostOperationalResponse::PolicyUpdate {
             target: reader.target()?,
             request_digest: reader.fixed()?,
@@ -323,7 +433,10 @@ pub fn decode_response(bytes: &[u8]) -> Result<HostOperationalResponse> {
             reservation_revision: reader.u64()?,
             transition: reader.optional_u64()?,
             accepted_policy: if reader.boolean()? {
-                Some(Box::new(reader.policy()?))
+                {
+                    admit_bytes(std::mem::size_of::<HostRamPolicy>() as u64)?;
+                    Some(Box::new(reader.policy()?))
+                }
             } else {
                 None
             },
@@ -348,7 +461,7 @@ pub fn decode_response(bytes: &[u8]) -> Result<HostOperationalResponse> {
             if count > HOST_OPERATIONAL_MAX_TARGETS {
                 return Err(invalid("target discovery page exceeds bound"));
             }
-            let mut targets = Vec::with_capacity(count);
+            let mut targets = admitted_vec(count)?;
             for _ in 0..count {
                 targets.push(reader.target()?);
             }
@@ -368,10 +481,33 @@ pub fn decode_response(bytes: &[u8]) -> Result<HostOperationalResponse> {
     reader.finish()?;
     // Re-encoding independently applies ordered-roster validation to received
     // status before it can be presented as a coherent authenticated observation.
-    if encode_response(&response)?.as_slice() != bytes {
+    let budget = crucible::owned_decode::current_budget().ok_or_else(|| {
+        HostOperationalError::Admission {
+            source: crucible::owned_decode::DecodeAdmissionError::new(std::io::Error::other(
+                "missing original operational response budget",
+            )),
+        }
+    })?;
+    // The writer is pre-sized to the bounded wire ceiling during this check.
+    let _canonical_credit = budget
+        .reserve_scratch_bytes(HOST_OPERATIONAL_MAX_BYTES as u64)
+        .map_err(|source| HostOperationalError::Admission { source })?;
+    if encode_response_bounded(&response)?.as_slice() != bytes {
         return Err(invalid("noncanonical response"));
     }
     Ok(response)
+}
+
+fn admit_bytes(bytes: u64) -> Result<()> {
+    crucible::owned_decode::charge_bytes(bytes)
+        .map_err(|source| HostOperationalError::Admission { source })
+}
+
+fn admitted_vec<T>(count: usize) -> Result<Vec<T>> {
+    let mut values = Vec::new();
+    crucible::owned_decode::reserve_vec(&mut values, count)
+        .map_err(|source| HostOperationalError::Admission { source })?;
+    Ok(values)
 }
 
 #[cfg(test)]

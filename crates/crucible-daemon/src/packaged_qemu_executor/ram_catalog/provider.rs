@@ -9,8 +9,8 @@ use crucible_api::vm_lifecycle::{
     ProductionRamCatalogProvider, ProductionRamCatalogRetirement, ProductionRamCatalogStorage,
 };
 use crucible_cas::content_store::{
-    SqliteBlobBackend, SqliteCatalogOperation, SqliteCatalogOperationKind, SqliteCatalogSupervisor,
-    StoreError, StorePhysicalQuotaGuard,
+    DirectoryBlobBackend, ImmutableBlobBackend, SqliteBlobBackend, SqliteCatalogOperation,
+    SqliteCatalogOperationKind, SqliteCatalogSupervisor, StoreError, StorePhysicalQuotaGuard,
 };
 use crucible_linux_resource::host_services::{HostServiceAllocator, HostServiceLease};
 use crucible_linux_resource::host_supervision::{
@@ -365,11 +365,14 @@ impl ProductionRamCatalogProvider for CatalogService {
         &self,
         directory: &Path,
     ) -> Result<Arc<dyn StorePhysicalQuotaGuard>, StoreError> {
-        let resources = CatalogSqliteSupervisor(self.authority.clone())
-            .reserve_resident_bytes(std::mem::size_of::<NamespaceGuard>() as u64)?;
+        let resources = CatalogSqliteSupervisor(self.authority.clone()).reserve_resident_bytes(
+            std::mem::size_of::<NamespaceGuard>() as u64
+                + u64::try_from(directory.as_os_str().len()).map_err(|_| StoreError::Quota)?,
+        )?;
         self.authority.prepare(directory)?;
         Ok(Arc::new(NamespaceGuard {
             authority: self.authority.clone(),
+            directory: directory.to_path_buf(),
             _resources: resources,
         }))
     }
@@ -685,10 +688,38 @@ fn sqlite_supervision_error(source: HostSupervisionError) -> StoreError {
 
 struct NamespaceGuard {
     authority: Arc<CatalogAuthority>,
+    directory: PathBuf,
     _resources: Arc<dyn Send + Sync>,
 }
 
 impl StorePhysicalQuotaGuard for NamespaceGuard {
+    fn gc_mark_backend(
+        self: Arc<Self>,
+        scope: &str,
+    ) -> Result<Arc<dyn ImmutableBlobBackend>, StoreError> {
+        if scope.is_empty() || scope.len() > 256 || scope.chars().any(char::is_control) {
+            return Err(StoreError::InvalidComposition {
+                reason: "GC mark scope must be bounded nonempty text",
+            });
+        }
+        self.verify()?;
+        let path_bytes = self
+            .directory
+            .as_os_str()
+            .len()
+            .checked_add(80)
+            .ok_or(StoreError::Quota)?;
+        let _paths = self.reserve_resources(
+            0,
+            u64::try_from(path_bytes.checked_mul(3).ok_or(StoreError::Quota)?)
+                .map_err(|_| StoreError::Quota)?,
+        )?;
+        let digest = blake3::hash(scope.as_bytes()).to_hex();
+        let directory = self.directory.join(".gc-marks").join(digest.as_str());
+        self.authority.prepare(&directory)?;
+        DirectoryBlobBackend::new_with_physical_quota("campaign-gc-marks", directory, self)
+    }
+
     fn decoded_metadata_limit(&self) -> Result<u64, StoreError> {
         self.verify()?;
         Ok(self.authority.metadata_allocator.maximum_resident_bytes())

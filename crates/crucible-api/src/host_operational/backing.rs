@@ -22,6 +22,8 @@ pub enum HostRamBackingError {
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- fixed backing-geometry fixtures intentionally panic when setup is invalid.
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::host_operational::{

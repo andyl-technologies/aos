@@ -31,7 +31,10 @@ pub(crate) fn prepare_fork() -> Result<(), RamError> {
             .state
             .lock()
             .map_err(|_| RamError::Invariant("RAM fork admission poisoned"))?;
-        if state.fork_preparing || state.policy_applying {
+        if state.fork_preparing
+            || state.policy_applying
+            || state.requested_revision != state.applied_revision
+        {
             return Err(RamError::Invariant("RAM fork admission already closed"));
         }
         state.fork_preparing = true;
@@ -156,6 +159,7 @@ pub(crate) fn resume_parent() -> Result<(), RamError> {
 pub(crate) struct PreparedChildControl {
     controller: Arc<LivePagerController>,
     stream: UnixStream,
+    initial_policy: RamControlPolicy,
 }
 
 impl PreparedChildControl {
@@ -193,6 +197,11 @@ pub(crate) fn prepare_child(
     {
         return Err(RamError::Invariant("child RAM control namespace invalid"));
     }
+    if policy.mode == RamControlMode::DiskOriented {
+        return Err(RamError::Invariant(
+            "initial child disk cut requires a reconstructed boundary",
+        ));
+    }
     outer.validate()?;
     validate_infrastructure(&policy.budgets, Some(outer))?;
     // SAFETY: native stage custody lends this checked imported role for duplication.
@@ -202,6 +211,7 @@ pub(crate) fn prepare_child(
     let controller = Arc::new(LivePagerController {
         target,
         session,
+        fault_actor_test_entitlement: None,
         state: Arc::new(Mutex::new(State {
             resources,
             budgets: policy.budgets,
@@ -218,18 +228,24 @@ pub(crate) fn prepare_child(
             failed: false,
             fork_preparing: false,
             policy_applying: false,
+            child_bootstrap: true,
         })),
         canceled: Arc::new(AtomicBool::new(false)),
         operations: Arc::new(AtomicUsize::new(0)),
         native_worker: parent.native_worker,
         native_grant: parent.native_grant,
+        child_runtime_ready: parent.child_runtime_ready,
         spill: Mutex::new(None),
         spill_quota,
         worker: Mutex::new(None),
         paused: Mutex::new(None),
         joining: Mutex::new(None),
     });
-    Ok(PreparedChildControl { controller, stream })
+    Ok(PreparedChildControl {
+        controller,
+        stream,
+        initial_policy: policy,
+    })
 }
 
 /// Publishes a fresh child controller after actual child arena custody is ready.
@@ -273,13 +289,26 @@ pub(crate) fn rebind_child(
         .as_ref()
         .map(|inventory| inventory.report)
         .ok_or("RAM parent inventory missing")?;
-    let PreparedChildControl { controller, stream } = prepared;
+    let PreparedChildControl {
+        controller,
+        stream,
+        initial_policy,
+    } = prepared;
+    let resources = controller
+        .state
+        .lock()
+        .map_err(|_| RamError::Invariant("RAM child controller poisoned"))?
+        .resources;
+    owner.install_staged_child_policy(&initial_policy, &resources)?;
     {
         let mut state = controller
             .state
             .lock()
             .map_err(|_| RamError::Invariant("RAM child controller poisoned"))?;
         state.owner = Some(owner.clone());
+        state.policy = Some(initial_policy);
+        state.requested_revision = 1;
+        state.applied_revision = 1;
         state.inventory = Some(Inventory {
             report: RamControlInventoryReport {
                 topology_generation: snapshot.topology_generation,

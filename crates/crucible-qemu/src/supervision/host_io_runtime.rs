@@ -584,6 +584,10 @@ fn reader_probe_error(message: impl Into<String>) -> crate::QemuNodeChannelError
 }
 
 impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
+    fn ram_control_registration(&self) -> Option<&crate::ram_control::RamControlRegistration> {
+        self.ram_control_registration.as_ref()
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     fn host_service_allocator_for_test(
         &self,

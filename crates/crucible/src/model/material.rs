@@ -1183,6 +1183,10 @@ pub(super) fn property_material(property: &Property) -> String {
     }
 }
 
+pub(super) fn predicate_display(predicate: &Predicate) -> impl std::fmt::Display + '_ {
+    predicate_stream::PredicateMaterial(predicate)
+}
+
 pub(super) fn canonical_predicate_material(predicate: &Predicate) -> Result<String, EngineError> {
     canonical::material_string(&predicate_stream::PredicateMaterial(predicate))
 }

@@ -90,6 +90,7 @@ struct RejectingPromotionBackend {
 struct TransientExecutorReadBackend {
     memory: MemoryBlobBackend,
     fail_executor_read: AtomicBool,
+    retain_executor_read_failure: AtomicBool,
     fail_content_read: Mutex<Option<ContentId>>,
     injected_failures: AtomicUsize,
 }
@@ -99,6 +100,7 @@ impl TransientExecutorReadBackend {
         Self {
             memory: MemoryBlobBackend::new(name, maximum_bytes),
             fail_executor_read: AtomicBool::new(false),
+            retain_executor_read_failure: AtomicBool::new(false),
             fail_content_read: Mutex::new(None),
             injected_failures: AtomicUsize::new(0),
         }
@@ -128,7 +130,10 @@ impl TransientExecutorReadBackend {
         let executor_thread = current
             .name()
             .is_some_and(|name| name.starts_with("crucible-executor-"));
-        if executor_thread && self.fail_executor_read.swap(false, Ordering::AcqRel) {
+        if executor_thread
+            && (self.retain_executor_read_failure.load(Ordering::Acquire)
+                || self.fail_executor_read.swap(false, Ordering::AcqRel))
+        {
             self.injected_failures.fetch_add(1, Ordering::AcqRel);
             true
         } else {
@@ -1696,13 +1701,19 @@ fn campaign_driver_pool_flight_incorporates_one_execution_without_submit_polling
 
 #[test]
 fn complete_prepared_journal_recovers_without_rerunning_guest_work() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     for prepublish_trace_leaf in [false, true] {
-        recover_complete_prepared_journal(prepublish_trace_leaf, false, false);
+        recover_complete_prepared_journal(prepublish_trace_leaf, false, false, false);
     }
 }
 
 #[test]
 fn retained_measurement_trace_publishes_the_named_beam_objective() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let blobs = Arc::new(TransientExecutorReadBackend::new(
         "beam-objective-publication",
         64 * 1024 * 1024,
@@ -1919,25 +1930,49 @@ fn retained_measurement_trace_publishes_the_named_beam_objective() {
 
 #[test]
 fn transient_recovery_input_unavailability_retries_without_guest_work() {
-    recover_complete_prepared_journal(false, true, false);
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
+    recover_complete_prepared_journal(false, true, false, false);
 }
 
 #[test]
 fn hidden_journal_recovery_commits_only_the_ledger_authorized_publication() {
-    recover_complete_prepared_journal(false, false, true);
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
+    recover_complete_prepared_journal(false, false, true, false);
+}
+
+#[test]
+fn repeated_recovery_refusal_expires_under_the_original_preparation_budget() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
+    recover_complete_prepared_journal(false, false, false, true);
 }
 
 fn recover_complete_prepared_journal(
     prepublish_trace_leaf: bool,
     transient_recovery_input: bool,
     seed_hidden_journal: bool,
+    expire_recovery: bool,
 ) {
     let blobs = Arc::new(TransientExecutorReadBackend::new(
         "prepared-recovery",
         64 * 1024 * 1024,
     ));
     let refs = Arc::new(MemoryRefBackend::new());
-    let repository = Arc::new(CampaignRepository::new(blobs.clone(), refs));
+    let metadata = crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+        .expect("authored recovery metadata resources");
+    let original_metadata = crucible::owned_decode::DecodeBudget::for_store(Arc::clone(&metadata))
+        .expect("original recovery namespace account");
+    let _metadata_scope = original_metadata.enter();
+    let backend = crate::exact_checkpoint_store::test_support::fixture_metadata_backend(
+        blobs.clone(),
+        metadata,
+    );
+    let repository = Arc::new(CampaignRepository::new(backend, refs));
     let (lineage, _, _, admitted, candidate) =
         campaign_attempt_fixture(&repository, "prepared-recovery");
     let scenario = minimal_campaign_scenario();
@@ -2103,10 +2138,20 @@ fn recover_complete_prepared_journal(
     )
     .expect("capabilities");
     let description = ExecutorDescription::new(epoch, capabilities).expect("description");
-    let capability = crate::executor_capability::test_support::capability_service(
+    let mut budgets = crucible_api::host_operational::HostOperationBudgets {
+        classes: [crucible_api::host_operational::HostOperationBudget::finite(Duration::from_secs(
+            300,
+        )); crucible_api::host_operational::HostOperationClass::ALL.len()],
+    };
+    if expire_recovery {
+        budgets.classes[crucible_api::host_operational::HostOperationClass::Preparation as usize] =
+            crucible_api::host_operational::HostOperationBudget::finite(Duration::from_millis(80));
+    }
+    let capability = crate::executor_capability::test_support::capability_service_with_budgets(
         supervisor,
         description,
         1024 * 1024,
+        budgets,
     )
     .expect("capability service");
     let pool = LocalExecutorWorkerPool::start_with_checkpoint_observer(
@@ -2125,12 +2170,48 @@ fn recover_complete_prepared_journal(
     if transient_recovery_input {
         blobs.fail_next_executor_read();
     }
+    if expire_recovery {
+        blobs
+            .retain_executor_read_failure
+            .store(true, Ordering::Release);
+    }
     let accepted = service.submit_attempt(&request).expect("submit recovery");
     let SubmitAttemptDisposition::Accepted { execution } = accepted.disposition() else {
         panic!("recovery should receive a fresh supervisor execution")
     };
     assert_ne!(execution, producer_execution);
     let status_request = GetAttemptExecutionRequest::new(&request, execution).expect("status");
+    if expire_recovery {
+        wait_until(Duration::from_secs(2), || {
+            service
+                .get_attempt_execution(&status_request)
+                .is_ok_and(|status| {
+                    // The watcher may latch cancellation before the recovery
+                    // thread observes the same original operation's expiry.
+                    matches!(
+                        status.disposition(),
+                        GetAttemptExecutionDisposition::TerminalFailure
+                            | GetAttemptExecutionDisposition::Canceled
+                    )
+                })
+        });
+        let report = service.report().expect("expired recovery report");
+        assert_eq!(report.executions(), 0);
+        assert_eq!(report.reconciled(), 0);
+        assert_eq!(report.terminal_stops() + report.discarded(), 1);
+        assert!(report.publication_retries() > 1);
+        assert!(blobs.injected_failures.load(Ordering::Acquire) > 1);
+        assert!(
+            journal_root.exists(),
+            "unpublished durable result remains retained"
+        );
+        pool.request_shutdown();
+        assert_eq!(
+            pool.shutdown_and_join().expect("expired recovery shutdown"),
+            report
+        );
+        return;
+    }
     wait_until(Duration::from_secs(2), || {
         let completed = service
             .get_attempt_execution(&status_request)
@@ -2344,11 +2425,20 @@ fn incomplete_prepared_journal_fails_closed_without_guest_execution() {
 
 #[test]
 fn stable_journal_creation_failure_is_terminal_not_canceled() {
-    let repository = Arc::new(CampaignRepository::new(
+    let resources = crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+        .expect("finite original journal fixture metadata");
+    let metadata = crucible::owned_decode::DecodeBudget::for_store(Arc::clone(&resources))
+        .expect("original journal fixture account");
+    let _metadata_scope = metadata.enter();
+    let backend = crate::exact_checkpoint_store::test_support::fixture_metadata_backend(
         Arc::new(MemoryBlobBackend::new(
             "stable-prepared-journal-failure",
             64 * 1024 * 1024,
         )),
+        resources,
+    );
+    let repository = Arc::new(CampaignRepository::new(
+        backend,
         Arc::new(MemoryRefBackend::new()),
     ));
     let (lineage, _, _, admitted, candidate) =
@@ -2736,6 +2826,9 @@ fn raw_pause_restart_rejects_an_inconsistent_execution_basis_before_repository_r
 
 #[test]
 fn production_restart_dispatch_replays_raw_roots_and_rejects_invalid_sources() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let temporary = tempfile::tempdir().expect("production promotion fixture root");
     let run_state_root = temporary.path().join("native-checkpoint");
     let raw_fixture = build_authenticated_production_checkpoint_codec_fixture(&run_state_root)

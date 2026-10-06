@@ -34,6 +34,9 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, TestConcurrentBackend>
 
 #[test]
 fn unexpected_topology_change_rejects_residual_run_before_any_new_physical_work() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "network-output-changed-held-authorization",
         16,
@@ -80,6 +83,9 @@ fn unexpected_topology_change_rejects_residual_run_before_any_new_physical_work(
 
 #[test]
 fn declared_topology_activation_fences_every_physical_run_before_later_tx() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let source = scheduler_node("a-source", SchedulingNodeKind::Vm);
     let peer = scheduler_node("z-peer", SchedulingNodeKind::Vm);
     let edge = |latency| {

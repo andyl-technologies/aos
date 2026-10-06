@@ -942,6 +942,7 @@ impl LinuxQemuCgroup {
         &self,
         maximum_writable_bytes: u64,
         maximum_file_descriptors: u64,
+        maximum_locked_bytes: u64,
         child_user_id: libc::uid_t,
         child_group_id: libc::gid_t,
         exact_checkpoint_root: Option<crucible::ContentHash>,
@@ -988,6 +989,7 @@ impl LinuxQemuCgroup {
             crate::spawn::QemuChildFileLimits {
                 writable_bytes: maximum_writable_bytes,
                 descriptors: maximum_file_descriptors,
+                locked_bytes: maximum_locked_bytes,
             },
             credentials,
             exact_checkpoint_root,
@@ -2012,7 +2014,7 @@ mod tests {
         };
 
         assert!(matches!(
-            group.child_process_contract(4096, 1024, 65_533, 65_532, None),
+            group.child_process_contract(4096, 1024, 0, 65_533, 65_532, None),
             Err(LinuxQemuCgroupError::WatcherNotRunning { .. })
         ));
         let watcher = group.start_watcher()?;
@@ -2065,7 +2067,7 @@ mod tests {
         };
 
         assert!(matches!(
-            group.child_process_contract(4096, 1024, 65_533, 65_532, None),
+            group.child_process_contract(4096, 1024, 0, 65_533, 65_532, None),
             Err(LinuxQemuCgroupError::WatcherNotRunning { .. })
         ));
         Ok(())

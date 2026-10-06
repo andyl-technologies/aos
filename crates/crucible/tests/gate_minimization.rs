@@ -21,6 +21,9 @@ use crucible::{
 #[test]
 fn gate_minimization_shrinks_schedule_and_rng_decisions_deterministically()
 -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = scenario_form()?;
     let original_schedule = Schedule::from_decisions([
         override_decision("guard-left", "enabled"),
@@ -79,6 +82,9 @@ fn gate_minimization_shrinks_schedule_and_rng_decisions_deterministically()
 
 #[test]
 fn gate_minimization_rejects_non_reproducing_start() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = scenario_form()?;
     let target = finding_fingerprint("missing-start-failure");
     let original = finding_artifact(
@@ -100,6 +106,9 @@ fn gate_minimization_rejects_non_reproducing_start() -> Result<(), Box<dyn Error
 
 #[test]
 fn gate_minimization_validates_public_artifact_before_oracle() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = scenario_form()?;
     let target = finding_fingerprint("stale-replay");
     let original = finding_artifact(
@@ -130,6 +139,9 @@ fn gate_minimization_validates_public_artifact_before_oracle() -> Result<(), Box
 
 #[test]
 fn gate_minimization_caps_exponential_candidate_enumeration() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = scenario_form()?;
     let schedule = Schedule::from_decisions(
         (0..16).map(|index| override_decision(&format!("bounded-noise-{index:02}"), "enabled")),
@@ -157,6 +169,9 @@ fn gate_minimization_caps_exponential_candidate_enumeration() -> Result<(), Box<
 #[test]
 fn gate_minimization_preserves_campaign_branch_prefixes_and_reduces_suffixes()
 -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = scenario_form()?;
     let scenario_def = scenario.scenario_def();
     let prefix = (0..12)
@@ -232,6 +247,9 @@ fn gate_minimization_preserves_campaign_branch_prefixes_and_reduces_suffixes()
 #[test]
 fn automatic_minimization_selects_and_authenticates_the_latest_interesting_window()
 -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = scenario_form()?;
     let scenario_def = scenario.scenario_def();
     let fixed_prefix_len = MAX_AUTOMATIC_INTERESTING_WINDOW_DECISIONS + 8;
@@ -309,6 +327,9 @@ fn automatic_minimization_selects_and_authenticates_the_latest_interesting_windo
 #[test]
 fn automatic_minimization_uses_the_bounded_terminal_suffix_without_a_campaign_branch()
 -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = scenario_form()?;
     let schedule = Schedule::from_decisions(
         (0..MAX_AUTOMATIC_INTERESTING_WINDOW_DECISIONS + 9)
@@ -416,6 +437,7 @@ fn retained_event_log(schedule: &Schedule) -> Result<RecordedAssertionLog, Engin
                 time(sequence as u64),
                 SchedulerEventLogPayload::Decision(decision.clone()),
             )
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
         })
         .collect::<Vec<_>>();
     let mut sequence = entries.len() as u64;
@@ -428,15 +450,19 @@ fn retained_event_log(schedule: &Schedule) -> Result<RecordedAssertionLog, Engin
                     node("minimize-node"),
                     marker_id("forbidden"),
                 ),
-            ),
+            )
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         );
         sequence += 1;
     }
-    entries.push(crucible::test_support::condition_boundary_entry_for_test(
-        sequence,
-        time(7),
-        SchedulerEvaluationBoundaryKind::Quantum,
-    ));
+    entries.push(
+        crucible::test_support::condition_boundary_entry_for_test(
+            sequence,
+            time(7),
+            SchedulerEvaluationBoundaryKind::Quantum,
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+    );
     RecordedAssertionLog::from_segments(vec![entries]).map_err(|source| {
         EngineError::ScenarioSerialization {
             reason: format!("retained minimization assertion log failed: {source}"),

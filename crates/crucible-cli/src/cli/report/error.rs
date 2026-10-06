@@ -11,6 +11,17 @@ pub(in super::super) enum CliError {
     Serve(String),
     Backend(String),
     Identity(String),
+    EventEvidence {
+        context: &'static str,
+        source: Box<crucible::EngineError>,
+    },
+    MetadataAdmission(crucible_session::engine::owned_decode::DecodeAdmissionError),
+    LifecycleAdmission(Box<crucible_api::LifecycleApiError>),
+    InputAuthority(Box<crucible_daemon::campaign_store_composition::StoreError>),
+    ExecutionAdmission {
+        context: &'static str,
+        source: NativeExecutionAdmissionError,
+    },
     SaveWorkflowTrace {
         source: Box<CliError>,
         trace: SaveWorkflowFailureTrace,
@@ -33,6 +44,10 @@ impl CliError {
             Self::Serve(_) => 3,
             Self::Backend(_) => 4,
             Self::Identity(_) => 3,
+            Self::EventEvidence { .. } => 4,
+            Self::MetadataAdmission(_) => 4,
+            Self::InputAuthority(_) | Self::LifecycleAdmission(_) => 4,
+            Self::ExecutionAdmission { .. } => 4,
             Self::SaveWorkflowTrace { source, .. } => source.exit_code(),
             Self::Outcome(BackendCommandStatus::Passed) => 0,
             Self::Outcome(BackendCommandStatus::Failed) => 1,
@@ -57,6 +72,15 @@ impl fmt::Display for CliError {
             Self::Serve(error) => write!(formatter, "{error}"),
             Self::Backend(error) => write!(formatter, "{error}"),
             Self::Identity(error) => write!(formatter, "{error}"),
+            Self::EventEvidence { context, source } => write!(formatter, "{context}: {source}"),
+            Self::MetadataAdmission(source) => {
+                write!(formatter, "input metadata admission: {source}")
+            }
+            Self::LifecycleAdmission(source) => write!(formatter, "lifecycle admission: {source}"),
+            Self::InputAuthority(source) => write!(formatter, "input resource authority: {source}"),
+            Self::ExecutionAdmission { context, source } => {
+                write!(formatter, "{context}: {source}")
+            }
             Self::SaveWorkflowTrace { source, .. } => write!(formatter, "{source}"),
             Self::Outcome(status) => write!(formatter, "run ended with {status:?}"),
             Self::ReplayCheck(error) => write!(formatter, "{error}"),
@@ -78,6 +102,11 @@ impl Error for CliError {
             Self::Serve(_) => None,
             Self::Backend(_) => None,
             Self::Identity(_) => None,
+            Self::EventEvidence { source, .. } => Some(source.as_ref()),
+            Self::MetadataAdmission(source) => Some(source),
+            Self::LifecycleAdmission(source) => Some(source.as_ref()),
+            Self::InputAuthority(source) => Some(source.as_ref()),
+            Self::ExecutionAdmission { source, .. } => Some(source),
             Self::SaveWorkflowTrace { source, .. } => Some(source.as_ref()),
             Self::Outcome(_) => None,
             Self::ReplayCheck(_) => None,

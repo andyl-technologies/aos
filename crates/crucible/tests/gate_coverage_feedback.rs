@@ -20,6 +20,9 @@ use crucible::{
 #[test]
 fn gate_coverage_feedback_flows_from_event_log_projection_to_search() -> Result<(), Box<dyn Error>>
 {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut fixture = coverage_feedback_fixture()?;
     let expected = fixture
         .children
@@ -58,6 +61,9 @@ fn gate_coverage_feedback_flows_from_event_log_projection_to_search() -> Result<
 
 #[test]
 fn gate_coverage_feedback_never_affects_reduce() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = feedback_world("read-only-reduce")?;
     let scenario = world.scenario_def();
     let root = Configuration::genesis(scenario.clone());
@@ -111,7 +117,11 @@ fn gate_coverage_feedback_never_affects_reduce() -> Result<(), Box<dyn Error>> {
         ),
         boundary_entry(2, 2),
     ];
-    assert!(compare_event_log_determinism(&baseline, &with_coverage).passes());
+    assert!(
+        compare_event_log_determinism(&baseline, &with_coverage)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
+            .passes()
+    );
 
     Ok(())
 }
@@ -200,6 +210,7 @@ fn coverage_log(node_name: &str, guest_pc: u64, marker_name: &str) -> Vec<Schedu
 
 fn observation_entry(sequence: u64, event: &ObservableEvent) -> SchedulerEventLogEntry {
     crucible::test_support::condition_observation_entry_for_test(sequence, event)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn rng_entry(sequence: u64, ticks: u64, value: u64) -> SchedulerEventLogEntry {
@@ -211,6 +222,7 @@ fn rng_entry(sequence: u64, ticks: u64, value: u64) -> SchedulerEventLogEntry {
             value,
         })),
     )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn boundary_entry(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
@@ -219,6 +231,7 @@ fn boundary_entry(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
         time(ticks),
         SchedulerEvaluationBoundaryKind::Quantum,
     )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn feedback_world(label: &str) -> Result<World, EngineError> {

@@ -19,7 +19,6 @@ use std::io::Write as _;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::executor_worker::ResolvedAttemptOrigins;
 use crate::{
     AttemptExecutionContext, AttemptExecutionDisposition, AttemptExecutionInput,
     AttemptExecutionModel, AttemptExecutionProduct, AttemptExecutionReconciliationStep,

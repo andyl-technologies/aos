@@ -338,6 +338,8 @@ impl ExecutorBootstrapResources {
                 daemon_epoch,
                 capacity: configuration.capacity,
                 next_execution_ordinal: 0,
+                #[cfg(test)]
+                native_completed_transitions: 0,
                 active: BTreeMap::new(),
                 queued: VecDeque::new(),
                 pending_completions: BTreeMap::new(),

@@ -1653,6 +1653,37 @@ where
     let Some(config) = &shared.prepared_results else {
         return RecoveryDisposition::Runnable(Box::new(queued));
     };
+    let metadata = match store
+        .metadata_resources()
+        .map_err(crucible::owned_decode::DecodeAdmissionError::new)
+        .and_then(crucible::owned_decode::DecodeBudget::for_store)
+    {
+        Ok(metadata) => metadata,
+        Err(source) => {
+            reconcile_worker_failure(shared, queued, AttemptWorkerFailure::Terminal(source));
+            return RecoveryDisposition::Stopped;
+        }
+    };
+    let _metadata_scope = metadata.enter();
+    let (watchdog, _) = match crate::executor_worker::start_original_assignment(&queued, store) {
+        Ok(watchdog) => watchdog,
+        Err(source) => {
+            reconcile_worker_failure(shared, queued, AttemptWorkerFailure::Terminal(source));
+            return RecoveryDisposition::Stopped;
+        }
+    };
+    let preparation = match watchdog
+        .supervisor()
+        .begin(crucible_linux_resource::host_supervision::HostOperationClass::Preparation)
+    {
+        Ok(preparation) => preparation,
+        Err(source) => {
+            reconcile_worker_failure(shared, queued, AttemptWorkerFailure::Terminal(source));
+            return RecoveryDisposition::Stopped;
+        }
+    };
+    // Journal retries share this one operation and the first assignment cap.
+    // A successful recovery retains the metadata bank through publication.
     loop {
         if queued.cancellation().is_canceled()
             || shared.state.load(Ordering::Acquire) != POOL_RUNNING
@@ -1660,7 +1691,11 @@ where
             reconcile_worker_failure(shared, queued, AttemptWorkerFailure::Canceled(()));
             return RecoveryDisposition::Stopped;
         }
-        match recover_or_remove_staged_journal(shared, config, &queued) {
+        if let Err(source) = preparation.wait_slice() {
+            reconcile_worker_failure(shared, queued, AttemptWorkerFailure::Terminal(source));
+            return RecoveryDisposition::Stopped;
+        }
+        match recover_or_remove_staged_journal(shared, config, &queued, &preparation) {
             Ok(true) => {}
             Ok(false) => return RecoveryDisposition::Stopped,
             Err(source) => {
@@ -1675,9 +1710,25 @@ where
             queued,
         ) {
             Ok(PreparedAttemptRecoveryOutcome::Missing(queued)) => {
+                if let Err(source) = preparation.complete() {
+                    reconcile_worker_failure(
+                        shared,
+                        *queued,
+                        AttemptWorkerFailure::Terminal(source),
+                    );
+                    return RecoveryDisposition::Stopped;
+                }
                 return RecoveryDisposition::Runnable(queued);
             }
-            Ok(PreparedAttemptRecoveryOutcome::Prepared(prepared)) => {
+            Ok(PreparedAttemptRecoveryOutcome::Prepared(mut prepared)) => {
+                prepared.retain_recovery_metadata(metadata.custody());
+                if let Err(source) = preparation
+                    .complete()
+                    .map_err(std::io::Error::other)
+                    .and_then(|_| prepared.queued().begin_publication())
+                {
+                    retain_forever(shared, (prepared, source));
+                }
                 return RecoveryDisposition::Prepared(prepared);
             }
             Err(error) if recovery_failure_is_retryable(&error.source) => {
@@ -1701,13 +1752,15 @@ fn recover_or_remove_staged_journal<L, V>(
     shared: &SharedExecutor<L, V>,
     config: &PreparedResultJournalConfig,
     queued: &QueuedAttempt,
-) -> Result<bool, PreparedResultJournalError>
+    preparation: &crucible_linux_resource::host_supervision::HostOperationGuard,
+) -> Result<bool, RecoveryPreparationError>
 where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
     let key = AttemptExecutionKey::for_request(queued.request());
     loop {
+        preparation.wait_slice()?;
         let state = {
             let executor = match shared.executor.lock() {
                 Ok(executor) => executor,
@@ -1738,7 +1791,7 @@ where
                 thread::sleep(WORKER_RETRY_INTERVAL);
                 continue;
             }
-            Err(source) => return Err(source),
+            Err(source) => return Err(source.into()),
         };
         let Some(mut staged) = staged else {
             return Ok(true);
@@ -1761,7 +1814,7 @@ where
                     thread::sleep(WORKER_RETRY_INTERVAL);
                     continue;
                 }
-                Err(source) => return Err(source),
+                Err(source) => return Err(source.into()),
             }
         };
         let journal_observation = staged.result().observation().observation().id();
@@ -1780,9 +1833,17 @@ where
                 increment(&shared.counters.publication_retries);
                 thread::sleep(WORKER_RETRY_INTERVAL);
             }
-            Err(source) => return Err(source),
+            Err(source) => return Err(source.into()),
         }
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum RecoveryPreparationError {
+    #[error(transparent)]
+    Journal(#[from] PreparedResultJournalError),
+    #[error(transparent)]
+    Supervision(#[from] crucible_linux_resource::host_supervision::HostSupervisionError),
 }
 
 fn recovery_failure_is_retryable(source: &AttemptResultRecoveryFailure) -> bool {
@@ -1848,6 +1909,13 @@ where
     V: AttemptAdmissionValidator,
 {
     let (queued, result) = work.into_parts();
+    let _metadata_scope = match queued.enter_publication_metadata() {
+        Ok(scope) => scope,
+        Err(source) => {
+            reconcile_worker_failure(shared, queued, AttemptWorkerFailure::Terminal(source));
+            return Some(AttemptExecutionDisposition::Failed);
+        }
+    };
     let cancellation = queued.cancellation().clone();
     let execution = queued.execution();
     let work = crate::AttemptWorkResult::new(queued, result);
@@ -2249,6 +2317,7 @@ where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
+    let _metadata_scope = prepared.enter_recovery_metadata();
     let execution = prepared.queued().execution();
     let cancellation = prepared.queued().cancellation().clone();
     record_phase("stage-begin", execution, &cancellation);

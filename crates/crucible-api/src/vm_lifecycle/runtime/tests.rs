@@ -731,6 +731,7 @@ fn production_lifecycle_lends_generation_preparation_before_path_access() {
         root_image,
         root.path(),
     );
+    let config = crate::vm_lifecycle::admitted_clone::copy_component_configuration(&config);
     let observations = Arc::new(std::sync::Mutex::new(Vec::new()));
     let error = build_production_vm_lifecycle_loop_with_launcher(
         &scenario,
@@ -800,6 +801,7 @@ fn production_lifecycle_derives_node_local_selectable_catalog_from_scenario() {
         root_image,
         root.path(),
     );
+    let config = crate::vm_lifecycle::admitted_clone::copy_component_configuration(&config);
     let plans = Arc::new(std::sync::Mutex::new(Vec::new()));
     let error = build_production_vm_lifecycle_loop_with_launcher(
         &scenario,
@@ -1008,8 +1010,9 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
         trigger_graph,
         trigger_state: EventGraphState::default(),
         trigger_world: source.world().clone(),
-        assertion_evaluator: HostAssertionEvaluator::new(source.properties())
-            .with_world_white_box_policies(source.world()),
+        assertion_evaluator: crate::vm_lifecycle::admitted_clone::component_assertion_evaluator(
+            source,
+        ),
         assertion_oracle: BlackBoxHostOracle,
         terminal_verdict: None,
         checkpoint_terminal_cause: None,
@@ -1085,6 +1088,9 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
 
 #[test]
 fn empty_branch_override_retains_its_scheduler_event_and_quantum() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let source = nonterminal_signal_replay_scenario();
     let mut lifecycle = production_loop_without_backends(&source);
     lifecycle.initial_lifecycle_observations_pending = false;
@@ -1116,6 +1122,9 @@ fn empty_branch_override_retains_its_scheduler_event_and_quantum() {
 
 #[test]
 fn branch_reseed_changes_the_live_scheduler_seed_at_its_source_boundary() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let source = nonterminal_signal_replay_scenario();
     let mut lifecycle = production_loop_without_backends(&source);
     lifecycle.initial_lifecycle_observations_pending = false;
@@ -1147,6 +1156,9 @@ fn branch_reseed_changes_the_live_scheduler_seed_at_its_source_boundary() {
 
 #[test]
 fn ordered_branch_reseeds_advance_without_dropping_a_generation() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let source = nonterminal_signal_replay_scenario();
     let mut lifecycle = production_loop_without_backends(&source);
     lifecycle.initial_lifecycle_observations_pending = false;
@@ -1509,6 +1521,9 @@ fn production_queued_broadcast_lifecycle() -> ProductionVmLifecycleLoop {
 
 #[test]
 fn production_queued_broadcast_reserves_before_a_backend_run() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let mut lifecycle = production_queued_broadcast_lifecycle();
     let parent = lifecycle.inner.loop_impl().configuration().clone();
     let outcome = lifecycle
@@ -1575,6 +1590,9 @@ fn production_queued_broadcast_reserves_before_a_backend_run() {
 
 #[test]
 fn production_selected_preselection_returns_only_its_new_event_append() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let mut lifecycle = production_queued_broadcast_lifecycle();
     let parent = lifecycle.inner.loop_impl().configuration().clone();
     let reserved = lifecycle
@@ -1609,6 +1627,9 @@ fn production_selected_preselection_returns_only_its_new_event_append() {
 
 #[test]
 fn production_failed_boundary_cannot_publish_a_queued_reservation() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let mut lifecycle = production_queued_broadcast_lifecycle();
     lifecycle.node_launcher = Box::new(FailingFinishLauncher {
         finish_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -1642,6 +1663,9 @@ fn production_failed_boundary_cannot_publish_a_queued_reservation() {
 
 #[test]
 fn choice_free_boot_rejects_a_due_queued_choice_before_any_run() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let mut lifecycle = production_queued_broadcast_lifecycle();
     lifecycle.set_choice_free_parallel_boot(true);
     let parent = lifecycle.inner.loop_impl().configuration().clone();
@@ -1668,6 +1692,9 @@ fn choice_free_boot_rejects_a_due_queued_choice_before_any_run() {
 
 #[test]
 fn production_lifecycle_pauses_on_a_new_live_signal_fault_frontier() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let source = finite_signal_replay_scenario();
     let mut lifecycle = production_loop_without_backends(&source);
     lifecycle.enable_signal_fault_campaign_promotion();
@@ -1701,6 +1728,9 @@ fn production_lifecycle_pauses_on_a_new_live_signal_fault_frontier() {
 
 #[test]
 fn production_lifecycle_does_not_export_live_frontiers_without_promotion_opt_in() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let source = finite_signal_replay_scenario();
     let mut lifecycle = production_loop_without_backends(&source);
     lifecycle.initial_lifecycle_observations_pending = false;
@@ -1719,6 +1749,9 @@ fn production_lifecycle_does_not_export_live_frontiers_without_promotion_opt_in(
 
 #[test]
 fn production_lifecycle_authenticates_typed_signal_branch_before_checkpointing() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let source = finite_signal_replay_scenario();
     let mut discovery = production_loop_without_backends(&source);
     discovery.initial_lifecycle_observations_pending = false;
@@ -1776,6 +1809,9 @@ fn production_lifecycle_authenticates_typed_signal_branch_before_checkpointing()
 
 #[test]
 fn production_lifecycle_rejects_typed_signal_branch_without_producer_choice() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let source = nonterminal_signal_replay_scenario();
     let mut lifecycle = production_loop_without_backends(&source);
     lifecycle.initial_lifecycle_observations_pending = false;
@@ -2169,6 +2205,9 @@ mod initial_terminal_boundary {
     #[test]
     fn genesis_entrypoint_pass_returns_without_advancing_a_backend()
     -> Result<(), Box<dyn std::error::Error>> {
+        let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+            .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
         let base = initially_violated_scenario();
         let world = base.world();
         let graph = crucible::EventGraph::builder()
@@ -2210,6 +2249,9 @@ mod initial_terminal_boundary {
     #[test]
     fn genesis_entrypoint_unblocks_conditional_event_after_initial_observations()
     -> Result<(), Box<dyn std::error::Error>> {
+        let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+            .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
         let base = initially_violated_scenario();
         let world = base.world();
         let graph = crucible::EventGraph::builder()
@@ -2267,6 +2309,9 @@ mod initial_terminal_boundary {
 
     #[test]
     fn initial_terminal_assertion_returns_without_advancing_a_backend() {
+        let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+            .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
         let source = initially_violated_scenario();
         let mut lifecycle = production_loop_without_backends(&source);
         let configuration = lifecycle.inner.loop_impl().configuration().clone();

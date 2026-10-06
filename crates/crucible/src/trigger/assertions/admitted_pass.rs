@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::owned_decode::DecodeBudget;
-use serde::{Serialize, de::DeserializeOwned};
+use super::owned_storage::copy_json;
 
 pub(super) fn condition_result(
     result: Result<bool, EngineError>,
@@ -41,11 +41,11 @@ impl HostAssertionEvaluator {
         O: HostAssertionOracle + ?Sized,
     {
         let _original = self._definition_custody.enter();
-        let budget = crate::owned_decode::current_child_budget().map_err(admission)?;
-        let _scope = budget.as_ref().map(DecodeBudget::enter);
-        let mut staged = self.stage_mutable(budget.as_ref())?;
-        let outcomes = staged.observe_prefix_inner(prefix, oracle);
-        staged.check_pass(budget.as_ref())?;
+        let budget = crate::owned_decode::require_current_child_budget().map_err(admission)?;
+        let _scope = budget.enter();
+        let mut staged = self.stage_mutable(&budget)?;
+        let outcomes = staged.observe_prefix_inner(prefix, oracle)?;
+        staged.check_pass(&budget)?;
         *self = staged;
         Ok(outcomes)
     }
@@ -64,26 +64,24 @@ impl HostAssertionEvaluator {
         O: HostAssertionOracle + ?Sized,
     {
         let _original = self._definition_custody.enter();
-        let budget = crate::owned_decode::current_child_budget().map_err(admission)?;
-        let _scope = budget.as_ref().map(DecodeBudget::enter);
-        let mut staged = self.stage_mutable(budget.as_ref())?;
-        let report = staged.finalize_prefix_inner(prefix, oracle);
-        staged.check_pass(budget.as_ref())?;
+        let budget = crate::owned_decode::require_current_child_budget().map_err(admission)?;
+        let _scope = budget.enter();
+        let mut staged = self.stage_mutable(&budget)?;
+        let report = staged.finalize_prefix_inner(prefix, oracle)?;
+        staged.check_pass(&budget)?;
         *self = staged;
         Ok(report)
     }
 
-    fn check_pass(&mut self, budget: Option<&DecodeBudget>) -> Result<(), EngineError> {
+    fn check_pass(&mut self, budget: &DecodeBudget) -> Result<(), EngineError> {
         if let Some(error) = self.evaluation_failure.take() {
             return Err(error);
         }
-        if let Some(budget) = budget {
-            budget.check().map_err(admission)?;
-        }
+        budget.check().map_err(admission)?;
         Ok(())
     }
 
-    fn stage_mutable(&self, budget: Option<&DecodeBudget>) -> Result<Self, EngineError> {
+    fn stage_mutable(&self, budget: &DecodeBudget) -> Result<Self, EngineError> {
         crate::owned_decode::charge_array::<HostAssertionState>(self.states.len())
             .map_err(admission)?;
         let mut states = Vec::new();
@@ -122,17 +120,10 @@ impl HostAssertionEvaluator {
             terminal_quiescence: self.terminal_quiescence.clone(),
             last_position: self.last_position,
             _definition_custody: self._definition_custody.clone(),
-            _mutable_custody: budget.map(DecodeBudget::custody).unwrap_or_default(),
+            _mutable_custody: budget.custody(),
             evaluation_failure: None,
         })
     }
-}
-
-fn copy_json<T: Serialize + DeserializeOwned>(value: &T) -> Result<T, EngineError> {
-    let bytes = crate::owned_decode::to_json_vec(value)
-        .map_err(|source| admission(crate::owned_decode::DecodeAdmissionError::new(source)))?;
-    crate::owned_decode::from_json_slice(&bytes)
-        .map_err(|source| admission(crate::owned_decode::DecodeAdmissionError::new(source)))
 }
 
 fn admission(source: crate::owned_decode::DecodeAdmissionError) -> EngineError {

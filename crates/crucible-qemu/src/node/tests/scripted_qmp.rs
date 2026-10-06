@@ -681,7 +681,7 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
                 ),
             );
         }
-        let identity = crate::QmpHotForkChildProcessContractIdentity::new(1, 2, 9, 3, 4)
+        let identity = crate::QmpHotForkChildProcessContractIdentity::new(1, 2, 9, 3, 4, 0)
             .map_err(QemuNodeChannelError::from)?;
         Ok(
             crate::QmpHotForkChildProcessContractState::one_template_staged(

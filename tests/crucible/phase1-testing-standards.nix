@@ -10,12 +10,16 @@
   testingStandardsSupport = builtins.readFile ../../crates/crucible-harness/tests/support/testing_standards.rs;
   testingStandardsSourceInventory =
     builtins.readFile ../../crates/crucible-harness/tests/support/testing_standards/source_inventory.rs;
+  testingStandardsOperationalWaits =
+    builtins.readFile ../../crates/crucible-harness/tests/support/testing_standards/operational_waits.rs;
   testingStandardsCode =
     testingStandardsRust
     + "\n"
     + testingStandardsSupport
     + "\n"
-    + testingStandardsSourceInventory;
+    + testingStandardsSourceInventory
+    + "\n"
+    + testingStandardsOperationalWaits;
   testingStandardsBaseline = builtins.readFile ./testing-standards-baseline.txt;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
@@ -539,7 +543,7 @@
   packageLayer = package:
     if builtins.elem package ["crucible-sim" "crucible-assert"]
     then "L0"
-    else if builtins.elem package ["crucible-shmem" "crucible-protocol" "crucible-device"]
+    else if builtins.elem package ["crucible-shmem" "crucible-protocol" "crucible-device" "crucible-ram"]
     then "L1"
     else if builtins.elem package ["crucible-qemu" "crucible-qemu-plugin" "crucible-guest"]
     then "L2"
@@ -755,6 +759,8 @@
       "source_shape_failures"
       "assert_twice_reduce_canonical_digest("
       "testing_standard_regression_failures"
+      "mask_operational_waits"
+      "reviewed_waits_keep_deadlines_and_reject_additional_delays"
     ];
   in
     lib.concatMap (

@@ -4,6 +4,9 @@ use super::*;
 
 #[test]
 fn larger_inventory_keeps_live_root_and_continues_in_a_fresh_batch() {
+    let mut gc_fixture = crate::campaign_gc::ComponentGcOperation::new();
+    let gc_operation = gc_fixture.context();
+
     let node = StoreNodeId::new("batch-primary").expect("physical node");
     let (graph, admin) = StoreGraph::build_with_admin(StoreGraphConfig {
         root: node.clone(),
@@ -51,7 +54,7 @@ fn larger_inventory_keeps_live_root_and_continues_in_a_fresh_batch() {
         &mut ledger,
         None,
         None,
-        &admin,
+        crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
     )
     .expect("bounded first batch");
     assert_eq!(first.candidates().len(), MAX_CAMPAIGN_GC_MANIFEST_ENTRIES);
@@ -78,7 +81,7 @@ fn larger_inventory_keeps_live_root_and_continues_in_a_fresh_batch() {
         &mut ledger,
         None,
         None,
-        &admin,
+        crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
     )
     .expect("fresh continuation batch");
     assert_eq!(second.candidates().len(), 1);

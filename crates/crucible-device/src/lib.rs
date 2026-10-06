@@ -53,7 +53,7 @@
 //!   T-IO-13 / T-IO-14) — a uniform [`HarnessDevice`] adapter over all three
 //!   sub-nodes, the [`Script`]/[`run_script`] driver, the run-twice determinism
 //!   and divergence-localization helpers, and the idle-vs-busy-poll equivalence
-//!   proof plus the documented §15.8 spike conclusion ([IO-27]..[IO-30]).
+//!   proof plus the documented exact-delivery tradeoff for busy polling.
 //!
 //! # Determinism
 //!

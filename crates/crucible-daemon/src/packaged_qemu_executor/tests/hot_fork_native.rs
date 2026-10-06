@@ -21,7 +21,7 @@ use crate::{
 };
 use crucible_api::host_operational::{
     HostOperationalControl, HostOperationalRequest, HostOperationalResponse, HostRamActivity,
-    HostRamOwnerTarget, HostRamStatus, HostResourceVector,
+    HostRamMode, HostRamOwnerTarget, HostRamStatus, HostResourceVector,
 };
 use crucible_campaign::{
     AttemptRetentionPolicyDisposition, CampaignExecutorStore, ExecutorResumeService,
@@ -83,11 +83,50 @@ pub(super) fn fork_resources(mut config: PackagedQemuExecutorConfig) -> Packaged
         .expect("complete independently authored retained-template entitlement")
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ForkProfile {
+    Managed,
+    ResidentRequired,
+}
+
+/// Runs strict child locking and refusal through actual accepted native owners.
+///
+/// # Panics
+/// Panics when a native observation, ownership transition or cleanup invariant fails.
+pub(super) fn run_strict_child_flight(
+    prepared: &PackagedPreparation,
+    config: &PackagedQemuExecutorConfig,
+    repository: Arc<CampaignRepository>,
+    source: ScenarioDefForm,
+) {
+    let evidence = run_flight_profile(
+        prepared,
+        config,
+        repository,
+        source,
+        ForkProfile::ResidentRequired,
+    );
+    assert!(evidence.activity.successful_missing_installs > 0);
+    assert!(evidence.activity.physical_discards > 0);
+    println!("strict_child_parent_root_preserved=true");
+    println!("strict_child_full_vector_cleanup=true");
+}
+
 fn run_flight(
     prepared: &PackagedPreparation,
     config: &PackagedQemuExecutorConfig,
     repository: Arc<CampaignRepository>,
     source: ScenarioDefForm,
+) -> NativeForkEvidence {
+    run_flight_profile(prepared, config, repository, source, ForkProfile::Managed)
+}
+
+fn run_flight_profile(
+    prepared: &PackagedPreparation,
+    config: &PackagedQemuExecutorConfig,
+    repository: Arc<CampaignRepository>,
+    source: ScenarioDefForm,
+    profile: ForkProfile,
 ) -> NativeForkEvidence {
     let available_before = available_resources(prepared);
     let promoted = super::paging_native::accepted_promotion::promote_accepted_checkpoint(
@@ -118,6 +157,7 @@ fn run_flight(
             config: config.clone(),
             prepared,
             checkpoint: promoted.checkpoint,
+            profile,
             completed: false,
             evidence: None,
         },
@@ -201,6 +241,7 @@ struct NativeForkModel<'a> {
     config: PackagedQemuExecutorConfig,
     prepared: &'a PackagedPreparation,
     checkpoint: ExactCheckpointId,
+    profile: ForkProfile,
     completed: bool,
     evidence: Option<NativeForkEvidence>,
 }
@@ -265,6 +306,27 @@ impl AttemptExecutionModel for NativeForkModel<'_> {
                 service.context(),
             )
             .expect("actual lazy native restore from the promoted CAS-backed root");
+        if self.profile == ForkProfile::ResidentRequired {
+            let target = owner_status(self.prepared, service.context()).target;
+            let capabilities = self
+                .prepared
+                .host_operational_registry
+                .execute(OPERATOR, HostOperationalRequest::Capabilities { target })
+                .expect("actual sealed parent geometry");
+            let logical = match capabilities.value() {
+                HostOperationalResponse::Capabilities { capabilities, .. } => {
+                    capabilities.logical_ram_bytes
+                }
+                other => panic!("unexpected parent capabilities: {other:?}"),
+            };
+            self.prepared
+                .host_operational_registry
+                .apply_native_qualification_mode(target, HostRamMode::ResidentRequired, logical)
+                .expect("strict parent under the original independent memlock entitlement");
+            let receipt = wait_for_parent_locks(self.prepared, service.context());
+            assert!(receipt.locked_bytes >= logical);
+            println!("strict_child_actual_parent_locks=true");
+        }
         let before = parent
             .capture_portable_exact_checkpoint_with_boundary(&mut || Ok(()))
             .expect("actual immutable restored parent RAM capture");
@@ -283,36 +345,83 @@ impl AttemptExecutionModel for NativeForkModel<'_> {
         let parent_status = owner_status(self.prepared, service.context());
         assert!(parent_status.target.retained_template);
 
-        let key = QemuHotForkSourceWorldKey::for_execution(
-            &input,
-            context,
-            context
-                .runtime_basis()
-                .expect("actual accepted Execution incarnation"),
-        )
-        .expect("exact source lookup binding");
-        let provider = QemuSingleHotForkSourceWorldProvider::new(key, world);
-        let child_config = child_config(&self.config);
-        let host = LinuxQemuAttemptHostResourceFactory::open(child_config.host.clone())
-            .expect("actual child containment");
-        let mut factory = QemuProductionHotForkWorldLifecycleFactory::new(
-            provider,
-            ComposedQemuAttemptResourceGuardFactory::new(host),
-            self.config.lifecycle.run_state_root().join("fork-child"),
-            QemuShutdownPolicy {
-                control_quit_wait: Duration::from_secs(30),
-                qmp_quit_wait: Duration::from_secs(30),
-                sigterm_wait: Duration::from_secs(30),
-                sigkill_wait: Duration::from_secs(30),
-                reap_wait: Duration::from_secs(30),
-            },
-            QemuAsyncDriverPolicy::new(
-                Duration::from_secs(300),
-                Duration::from_secs(300),
-                Duration::from_secs(300),
-                Duration::from_secs(300),
-            ),
-        );
+        let make_factory = |world, child_config: &PackagedQemuExecutorConfig, role: &str| {
+            let key = QemuHotForkSourceWorldKey::for_execution(
+                &input,
+                context,
+                context
+                    .runtime_basis()
+                    .expect("actual accepted Execution incarnation"),
+            )
+            .expect("exact source lookup binding");
+            let provider = QemuSingleHotForkSourceWorldProvider::new(key, world);
+            let host = LinuxQemuAttemptHostResourceFactory::open(child_config.host.clone())
+                .expect("actual independent child containment");
+            let factory = QemuProductionHotForkWorldLifecycleFactory::new(
+                provider,
+                ComposedQemuAttemptResourceGuardFactory::new(host),
+                self.config.lifecycle.run_state_root().join(role),
+                QemuShutdownPolicy {
+                    control_quit_wait: Duration::from_secs(30),
+                    qmp_quit_wait: Duration::from_secs(30),
+                    sigterm_wait: Duration::from_secs(30),
+                    sigkill_wait: Duration::from_secs(30),
+                    reap_wait: Duration::from_secs(30),
+                },
+                QemuAsyncDriverPolicy::new(
+                    Duration::from_secs(300),
+                    Duration::from_secs(300),
+                    Duration::from_secs(300),
+                    Duration::from_secs(300),
+                ),
+            );
+            if self.profile == ForkProfile::ResidentRequired {
+                factory.with_native_qualification_ram_mode(HostRamMode::ResidentRequired)
+            } else {
+                factory
+            }
+        };
+        let mut world = world;
+        if self.profile == ForkProfile::ResidentRequired {
+            let lower = child_config_for_role(&self.config, "strict-refused", 58_010, 4096);
+            let mut refused = make_factory(world, &lower, "strict-refused");
+            let capacity = available_resources(self.prepared);
+            match refused.try_start(&input, context) {
+                Err(AttemptWorkerFailure::Retryable(_)) => {}
+                Err(other) => {
+                    panic!("lower independent memlock failed outside recoverable launch: {other}")
+                }
+                Ok(_) => panic!("insufficient child memlock reached readiness"),
+            }
+            assert_eq!(available_resources(self.prepared), capacity);
+            let after_refusal = owner_status(self.prepared, service.context());
+            assert_eq!(after_refusal.target, parent_status.target);
+            assert_eq!(
+                after_refusal.placement_receipt,
+                parent_status.placement_receipt
+            );
+            assert_eq!(
+                after_refusal.admitted_resources,
+                parent_status.admitted_resources
+            );
+            world = refused
+                .source_provider_mut_for_test()
+                .take_available()
+                .expect("actual child reap and complete parent rollback before retry");
+            println!("strict_child_lower_kernel_entitlement_refused=true");
+            println!("strict_child_refusal_preserves_parent_locks=true");
+        }
+        let child_config = if self.profile == ForkProfile::ResidentRequired {
+            child_config_for_role(
+                &self.config,
+                "strict-child",
+                58_011,
+                self.config.host.maximum_locked_bytes(),
+            )
+        } else {
+            child_config(&self.config)
+        };
+        let mut factory = make_factory(world, &child_config, "fork-child");
         let mut child = match factory
             .try_start(&input, context)
             .expect("actual native child fork")
@@ -346,6 +455,23 @@ impl AttemptExecutionModel for NativeForkModel<'_> {
             initial_status.target.owner_id,
             context.host_ram_owner_id().expect("child owner")
         );
+        if self.profile == ForkProfile::ResidentRequired {
+            let receipt = wait_for_parent_locks(self.prepared, context);
+            assert!(receipt.locked_bytes > 4096);
+            assert_eq!(
+                receipt.locked_bytes,
+                parent_status
+                    .placement_receipt
+                    .expect("actual retained parent locks")
+                    .locked_bytes
+            );
+            assert_eq!(
+                initial_status.applied_policy.mode,
+                HostRamMode::ResidentRequired
+            );
+            println!("strict_child_fresh_verified_locks=true");
+            println!("strict_child_independent_kernel_entitlement=true");
+        }
         self.prepared
             .host_operational_registry
             .apply_native_qualification_policy(initial_status.target, 0)
@@ -548,15 +674,15 @@ pub(super) fn assert_resource_charge(
 fn owner_status(
     prepared: &PackagedPreparation,
     context: &AttemptExecutionContext,
-) -> HostRamStatus {
+) -> crucible_api::AdmittedOutput<HostRamStatus> {
     registered_owner_status(&prepared.host_operational_registry, context)
 }
 
 fn registered_owner_status(
     registry: &crate::HostOperationalRegistry,
     context: &AttemptExecutionContext,
-) -> HostRamStatus {
-    let target = match registry
+) -> crucible_api::AdmittedOutput<HostRamStatus> {
+    let discovery = registry
         .execute(
             OPERATOR,
             HostOperationalRequest::ListTargets {
@@ -568,8 +694,8 @@ fn registered_owner_status(
                 limit: 2,
             },
         )
-        .expect("actual native owner discovery")
-    {
+        .expect("actual native owner discovery");
+    let target = match discovery.value() {
         HostOperationalResponse::Targets { targets, next, .. } => {
             assert_eq!(targets.len(), 1);
             assert!(next.is_none());
@@ -577,25 +703,70 @@ fn registered_owner_status(
         }
         other => panic!("unexpected target discovery {other:?}"),
     };
-    match registry
+    registry
         .execute(OPERATOR, HostOperationalRequest::Status { target })
         .expect("actual native controller status")
-    {
-        HostOperationalResponse::Status(status) => *status,
-        other => panic!("unexpected status {other:?}"),
+        .try_map(|response| {
+            Ok::<_, std::convert::Infallible>(match response {
+                HostOperationalResponse::Status(status) => *status,
+                other => panic!("unexpected status {other:?}"),
+            })
+        })
+        .expect("move status with its original allocation custody")
+}
+
+fn wait_for_parent_locks(
+    prepared: &PackagedPreparation,
+    context: &AttemptExecutionContext,
+) -> crucible_api::host_operational::HostRamPlacementReceipt {
+    let operation = context
+        .host_operation_supervisor()
+        .expect("original Service or execution supervisor")
+        .begin(HostOperationClass::Quiescence)
+        .expect("finite verified locking wait");
+    loop {
+        let status = owner_status(prepared, context);
+        if let Some(receipt) = status.placement_receipt
+            && receipt.mode == HostRamMode::ResidentRequired
+            && receipt.policy_revision == status.policy_revision
+            && status.applied_policy_revision == status.policy_revision
+        {
+            operation
+                .complete()
+                .expect("actual completed kernel lock proof");
+            return receipt;
+        }
+        std::thread::sleep(
+            operation
+                .wait_slice()
+                .expect("original lock wait cap")
+                .min(Duration::from_millis(25)),
+        );
     }
 }
 
 fn child_config(config: &PackagedQemuExecutorConfig) -> PackagedQemuExecutorConfig {
+    child_config_for_role(
+        config,
+        "fork-child",
+        32_010,
+        config.host.maximum_locked_bytes(),
+    )
+}
+
+fn child_config_for_role(
+    config: &PackagedQemuExecutorConfig,
+    role: &str,
+    project: u32,
+    maximum_locked_bytes: u64,
+) -> PackagedQemuExecutorConfig {
     let mut child = config.clone();
     let host = &config.host;
     child.host = LinuxQemuAttemptHostConfig::new(
-        super::paging_native::environment::environment_path("CRUCIBLE_PAGING_CGROUP")
-            .join("fork-child"),
-        super::paging_native::environment::environment_path("CRUCIBLE_PAGING_STORAGE")
-            .join("fork-child"),
-        "paging-fork-child",
-        32_010,
+        super::paging_native::environment::environment_path("CRUCIBLE_PAGING_CGROUP").join(role),
+        super::paging_native::environment::environment_path("CRUCIBLE_PAGING_STORAGE").join(role),
+        role,
+        project,
         1,
         host.child_user_id(),
         host.child_group_id(),
@@ -608,7 +779,9 @@ fn child_config(config: &PackagedQemuExecutorConfig) -> PackagedQemuExecutorConf
         host.maximum_inodes(),
         Duration::from_secs(30),
     )
-    .expect("independent child project-ID and cgroup namespace");
+    .expect("independent child project-ID and cgroup namespace")
+    .with_maximum_locked_bytes(maximum_locked_bytes)
+    .expect("independently authored exact child memlock entitlement");
     child
 }
 

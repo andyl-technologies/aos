@@ -799,7 +799,7 @@ impl DeviceSchedulingSubNode {
     /// seq)` total order ([IO-10], [SCHED-15]), independent of host or transport
     /// timing (Contract B). Each delivered completion contributes its buffered
     /// fault [`Decision`]s, in delivery order, so the recorded schedule is
-    /// appended in the §8.6 total order ([SCHED-30]). Future completions stay in
+    /// appended in the same delivery order. Future completions stay in
     /// flight at their exact icounts.
     ///
     /// Returns the `(event, decisions)` pairs in delivery order.

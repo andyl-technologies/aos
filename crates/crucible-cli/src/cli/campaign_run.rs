@@ -6,6 +6,8 @@
 
 use super::*;
 
+use crucible_session::engine::owned_decode::{self, DecodeBudget};
+
 use std::sync::Arc;
 
 use super::packaged_executor::{
@@ -123,8 +125,10 @@ fn run_local_qemu_campaign_continuation_workflow(
     } else {
         request
     };
+    let decoding = campaign_request_metadata_budget(&request)?;
     let campaign = run_guarded_default_campaign(request)
         .map_err(|error| campaign_run_error("resume through shared campaign owner", error))?;
+    let _scope = decoding.enter();
     campaign_resume_workflow_report(resume_plan, evidence, &campaign)
 }
 
@@ -201,6 +205,7 @@ pub(super) fn run_local_qemu_campaign_replay(
     lifecycle: crucible_api::ProductionVmLifecycleConfig,
     schedule: crucible::Schedule,
     replay_closure: GuardedCampaignReplayClosure,
+    owner: crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignOwner,
 ) -> Result<RunWorkflowReport, CliError> {
     let deployment_path =
         resolve_guarded_campaign_deployment_path(run_plan.campaign_deployment.as_deref())?;
@@ -220,23 +225,24 @@ pub(super) fn run_local_qemu_campaign_replay(
     let seed = run_plan
         .request_seed
         .unwrap_or_else(|| scenario.scenario_def().seed());
-    let request = crate::cli_verify_serve::configured_guarded_campaign_request(
-        &deployment,
-        scenario,
-        seed,
-        qemu_build_id,
-        resources,
-    )?
-    .with_discovery_stop(guarded_discovery_stop(run_plan)?)
-    .with_initial_replay(schedule, Some(replay_closure));
+    let request =
+        crate::cli_verify_serve::guarded_campaign_request(owner, scenario, seed, qemu_build_id)?
+            .with_execution_limits(resources)
+            .map_err(|error| campaign_run_error("narrow replay execution limits", error))?
+            .with_guarded_lifecycle(lifecycle)
+            .map_err(|error| campaign_run_error("bind replay lifecycle to original owner", error))?
+            .with_discovery_stop(guarded_discovery_stop(run_plan)?)
+            .with_initial_replay(schedule, Some(replay_closure));
     let request = apply_guarded_campaign_determinism_policy(request, verify_determinism_findings);
     let request = if run_plan.watch_streams_live_status {
         request.with_watch_frames()
     } else {
         request
     };
+    let decoding = campaign_request_metadata_budget(&request)?;
     let campaign = run_guarded_default_campaign(request)
         .map_err(|error| campaign_run_error("replay through shared campaign owner", error))?;
+    let _scope = decoding.enter();
     let (status, terminal_outcome) = campaign_terminal_status(run_plan, &campaign)?;
     campaign_run_report(run_plan, &campaign, terminal_outcome, status)
 }
@@ -309,11 +315,12 @@ pub(super) fn run_local_qemu_campaign_save_workflow(
             .with_discovery_stop(stop.clone())
             .with_reached_stop_savepoint_capture(checkpoints);
     let request = apply_guarded_campaign_determinism_policy(request, verify_determinism_findings);
-    let report = run_guarded_default_campaign(request)
-        .map_err(|error| {
-            campaign_run_error("capture savepoint through shared campaign owner", error)
-        })
-        .and_then(|campaign| campaign_save_workflow_report(save_plan, &campaign, &stop))?;
+    let decoding = campaign_request_metadata_budget(&request)?;
+    let campaign = run_guarded_default_campaign(request).map_err(|error| {
+        campaign_run_error("capture savepoint through shared campaign owner", error)
+    })?;
+    let _scope = decoding.enter();
+    let report = campaign_save_workflow_report(save_plan, &campaign, &stop)?;
 
     let mut outcome =
         finish_save_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, save_plan, report)?;
@@ -739,7 +746,13 @@ fn campaign_save_boundary_proof(
     // The campaign owner stops directly on NamedBoundary and does not register
     // a session breakpoint. Preserve the scheduler-owned marker identity so
     // the v6 handle cannot claim an actor-assigned breakpoint that never fired.
-    if !entry.has_valid_content_hash() {
+    if !entry
+        .has_valid_content_hash()
+        .map_err(|source| CliError::EventEvidence {
+            context: "authenticate retained campaign marker identity",
+            source: Box::new(source),
+        })?
+    {
         return Err(campaign_run_error_message(
             "campaign marker proof has an invalid retained event content hash",
         ));
@@ -796,8 +809,11 @@ pub(super) fn run_local_qemu_campaign_workflow(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     run_plan: &RunInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
+    let input_decoding = crate::cli_input_resources::original_budget()?;
+    let _input_scope = input_decoding.enter();
     let lifecycle = production_qemu_lifecycle_config(backend)?;
-    let campaign = execute_local_qemu_campaign(backend, run_plan, lifecycle)?;
+    let (campaign, decoding) = execute_local_qemu_campaign(backend, run_plan, lifecycle)?;
+    let _scope = decoding.enter();
 
     campaign_run_outcome(
         CampaignRunOutcomeContext {
@@ -825,6 +841,9 @@ pub(super) fn run_local_qemu_interactive_workflow(
         ));
     }
 
+    let input_decoding = crate::cli_input_resources::original_budget()?;
+    let input_scope = input_decoding.enter();
+
     let deployment_path =
         resolve_guarded_campaign_deployment_path(run_plan.campaign_deployment.as_deref())?;
     let deployment = load_campaign_run_deployment(&deployment_path)?;
@@ -839,6 +858,15 @@ pub(super) fn run_local_qemu_interactive_workflow(
         seed,
         resources,
     )?;
+    let authority = owner.repository_metadata_resources().map_err(|error| {
+        backend_error(format!(
+            "interactive metadata authority is unavailable: {error}"
+        ))
+    })?;
+    let decoding = crucible_session::engine::owned_decode::DecodeBudget::for_store(authority)
+        .map_err(|error| {
+            backend_error(format!("interactive metadata admission failed: {error}"))
+        })?;
     let control_plane = LifecycleControlPlane::new_with_fallible_source_factory(
         "crucible-cli-interactive-qemu",
         Vec::new(),
@@ -849,24 +877,30 @@ pub(super) fn run_local_qemu_interactive_workflow(
                 ),
             })?;
             owner
-                .begin_interactive_session(
+                .begin_interactive_session_with_limits(
                     scenario,
                     source,
                     crucible_daemon::ExecutionCancellation::default(),
+                    resources,
                 )
                 .map_err(|error| crucible_api::LifecycleApiError::LoopFactory {
                     message: error.to_string(),
                 })
         },
     )
+    .with_decode_budget(decoding.clone())
     .with_terminal_session_retention(true);
     let client = InProcessLifecycleClient::new(control_plane);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let report = runtime.block_on(run_control_client_workflow_stdin_async(
-        &client, run_plan, false, true,
-    ))?;
+    let workflow = crucible_api::admit_future(
+        run_control_client_workflow_stdin_async(&client, run_plan, false, true),
+        decoding,
+    )
+    .map_err(|error| backend_error(format!("admit interactive client workflow: {error}")))?;
+    drop(input_scope);
+    let report = runtime.block_on(workflow)?;
     let mut outcome =
         finish_run_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, run_plan, report)?;
     append_qemu_control_plane_execution_proof(
@@ -883,7 +917,8 @@ pub(crate) fn run_local_qemu_campaign_report(
     run_plan: &RunInvocationPlan,
     lifecycle: crucible_api::ProductionVmLifecycleConfig,
 ) -> Result<RunWorkflowReport, CliError> {
-    let campaign = execute_local_qemu_campaign(backend, run_plan, lifecycle)?;
+    let (campaign, decoding) = execute_local_qemu_campaign(backend, run_plan, lifecycle)?;
+    let _scope = decoding.enter();
     let (status, terminal_outcome) = campaign_terminal_status(run_plan, &campaign)?;
     campaign_run_report(run_plan, &campaign, terminal_outcome, status)
 }
@@ -1106,6 +1141,32 @@ fn campaign_run_primary_boundary_matches(
     }
 }
 
+pub(crate) fn campaign_request_metadata_budget(
+    request: &GuardedDefaultCampaignRunRequest,
+) -> Result<DecodeBudget, CliError> {
+    #[cfg(test)]
+    if matches!(
+        request.repository_metadata_resources(),
+        Err(
+            crucible_daemon::campaign_store_composition::StoreError::Unsupported {
+                capability: "guarded-campaign-metadata-resources"
+            }
+        )
+    ) && let Some(resources) = crate::tests::component_input_resources()
+    {
+        resources
+            .decoding
+            .check()
+            .map_err(CliError::MetadataAdmission)?;
+        return Ok(resources.decoding);
+    }
+    let authority = request.repository_metadata_resources().map_err(|error| {
+        campaign_run_error("retain original campaign metadata authority", error)
+    })?;
+    DecodeBudget::for_store(authority)
+        .map_err(|error| campaign_run_error("admit campaign output metadata", error))
+}
+
 pub(crate) fn campaign_run_report(
     run_plan: &RunInvocationPlan,
     campaign: &GuardedDefaultCampaignRun,
@@ -1134,26 +1195,35 @@ fn campaign_run_report_with_state(
         evidence.execution_fingerprints(),
         evidence.terminal_fingerprints(),
     )?;
-    let streamed_events = evidence
-        .event_log_entries()
-        .iter()
-        .map(serde_json::to_string)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| campaign_run_error("encode scheduler event evidence", error))?;
-    let streamed_event_frames = evidence
-        .event_log_entries()
-        .iter()
-        .map(|entry| {
-            canonical_streaming_event_frame_bytes(&campaign_output_api::StreamingEventFrame {
-                generation: 0,
-                cursor: campaign_output_api::EventLogCursor::new(entry.sequence()),
-                next_cursor: campaign_output_api::EventLogCursor::new(
-                    entry.sequence().saturating_add(1),
-                ),
-                event: campaign_output_api::open_set_event_envelope_from_entry(entry),
-            })
-        })
-        .collect();
+    let decoding = owned_decode::current_budget()
+        .ok_or_else(|| backend_error("campaign report requires its original metadata authority"))?;
+    let mut streamed_events = Vec::new();
+    owned_decode::reserve_vec(&mut streamed_events, evidence.event_log_entries().len())
+        .map_err(|error| campaign_run_error("admit JSON event vector", error))?;
+    for entry in evidence.event_log_entries() {
+        streamed_events.push(admitted_scheduler_event_json(entry, &decoding)?);
+    }
+    let mut streamed_event_frames = Vec::new();
+    owned_decode::reserve_vec(
+        &mut streamed_event_frames,
+        evidence.event_log_entries().len(),
+    )
+    .map_err(|error| campaign_run_error("admit event-frame vector", error))?;
+    for entry in evidence.event_log_entries() {
+        let frame = campaign_output_api::StreamingEventFrame::from_entry_admitted(
+            0,
+            campaign_output_api::EventLogCursor::new(entry.sequence()),
+            campaign_output_api::EventLogCursor::new(entry.sequence().saturating_add(1)),
+            entry,
+        )
+        .map_err(|error| campaign_run_error("admit scheduler event frame", error))?;
+        streamed_event_frames.push(
+            crate::cli_verify_serve::admitted_streaming_event_frame_bytes(
+                frame.value(),
+                &decoding,
+            )?,
+        );
+    }
     let watch_statuses = if watch_streams_live_status {
         campaign
             .watch_frames()
@@ -1163,20 +1233,27 @@ fn campaign_run_report_with_state(
     } else {
         Vec::new()
     };
+    let (replay_closure, closure_custody) = campaign
+        .replay_closure()
+        .to_canonical_bytes_admitted()
+        .map_err(|error| campaign_run_error("encode admitted replay closure", error))?;
+    let mut output_custody = Vec::new();
+    owned_decode::reserve_vec(&mut output_custody, 1)
+        .map_err(|error| campaign_run_error("admit output custody vector", error))?;
+    output_custody.push(closure_custody);
     Ok(RunWorkflowReport {
         status,
         execution_owner: RunExecutionOwner::Campaign,
-        campaign_replay_closure: Some(
-            campaign
-                .replay_closure()
-                .to_canonical_bytes()
-                .map_err(|error| campaign_run_error("encode replay closure", error))?,
-        ),
+        campaign_replay_closure: Some(replay_closure),
         created_state: String::from("created"),
         final_state,
         outcome: Some(terminal_outcome),
         terminal_savepoint: None,
-        terminal_configuration: Some(configuration.clone()),
+        terminal_configuration: Some(
+            configuration
+                .try_clone_admitted()
+                .map_err(|error| campaign_run_error("copy terminal configuration", error))?,
+        ),
         final_snapshot: None,
         final_frontier_ticks: evidence.frontier().ticks,
         final_quanta: evidence.quanta(),
@@ -1197,7 +1274,47 @@ fn campaign_run_report_with_state(
         acknowledged_commands: Vec::new(),
         reproduction_commands: Vec::new(),
         watch_statuses,
+        input_custody: crucible_session::engine::owned_decode::current_custody(),
+        output_custody,
     })
+}
+
+/// Counts JSON bytes without allocating a second event representation.
+#[derive(Default)]
+struct JsonByteCount(usize);
+
+impl std::io::Write for JsonByteCount {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = self
+            .0
+            .checked_add(bytes.len())
+            .ok_or_else(|| std::io::Error::other("scheduler event JSON length overflow"))?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn admitted_scheduler_event_json(
+    entry: &crucible::SchedulerEventLogEntry,
+    decoding: &DecodeBudget,
+) -> Result<String, CliError> {
+    let mut length = JsonByteCount::default();
+    serde_json::to_writer(&mut length, entry)
+        .map_err(|error| campaign_run_error("count scheduler event JSON", error))?;
+    decoding
+        .charge_bytes(length.0 as u64)
+        .map_err(|error| campaign_run_error("admit scheduler event JSON", error))?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(length.0)
+        .map_err(|error| campaign_run_error("allocate scheduler event JSON", error))?;
+    serde_json::to_writer(&mut bytes, entry)
+        .map_err(|error| campaign_run_error("encode scheduler event JSON", error))?;
+    String::from_utf8(bytes)
+        .map_err(|error| campaign_run_error("validate scheduler event JSON", error))
 }
 
 fn campaign_execution_fingerprints(
@@ -1207,8 +1324,18 @@ fn campaign_execution_fingerprints(
     let terminal = terminal.ok_or_else(|| {
         backend_error("campaign default run completed without terminal fingerprint evidence")
     })?;
-    let mut execution_fingerprints = diagnostics.to_vec();
-    execution_fingerprints.extend_from_slice(terminal);
+    let count = diagnostics
+        .len()
+        .checked_add(terminal.len())
+        .ok_or_else(|| backend_error("campaign fingerprint count overflow"))?;
+    let mut execution_fingerprints = Vec::new();
+    owned_decode::reserve_vec(&mut execution_fingerprints, count)
+        .map_err(|error| campaign_run_error("admit fingerprint vector", error))?;
+    for sample in diagnostics.iter().chain(terminal) {
+        owned_decode::charge_bytes(sample.node.name.len() as u64)
+            .map_err(|error| campaign_run_error("admit fingerprint node name", error))?;
+        execution_fingerprints.push(sample.clone());
+    }
     Ok(execution_fingerprints)
 }
 

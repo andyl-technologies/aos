@@ -1123,7 +1123,7 @@ fn wire_encoding_is_bounded_and_empty_encoding_is_canonical() {
     assert_eq!(
         empty.wire_bytes(),
         serde_json::to_vec(&wire::borrowed::PlanWireRef(&empty))
-            .expect("borrowed canonical empty wire")
+            .unwrap_or_else(|error| panic!("borrowed canonical empty wire: {error}"))
     );
     let old_material = format!(
         "{}programs=0\nbindings=0",
@@ -1329,33 +1329,43 @@ fn borrowed_selector_checks_match_authoring_projection() {
         segment: test_segment_id(),
         direction: FaultDirection::BToA,
     };
-    let set = |targets| ResolvedTargetSet::new(targets, false).expect("admitted fixture targets");
+    let set = |targets| {
+        ResolvedTargetSet::new(targets, false)
+            .unwrap_or_else(|error| panic!("admitted fixture targets: {error}"))
+    };
     let selectors = [
         TargetSelector::Exact(set(vec![forward.clone()])),
         TargetSelector::TargetSet(set(vec![forward.clone(), reverse.clone()])),
         TargetSelector::TargetSet(set(vec![forward.clone()])),
         TargetSelector::FaultDomain {
-            domain: FaultObjectId::parse("campus-uplink").expect("fixture domain"),
+            domain: FaultObjectId::parse("campus-uplink")
+                .unwrap_or_else(|error| panic!("fixture domain: {error}")),
             resolved: set(vec![forward.clone()]),
         },
         TargetSelector::FaultDomain {
-            domain: FaultObjectId::parse("campus-uplink").expect("fixture domain"),
+            domain: FaultObjectId::parse("campus-uplink")
+                .unwrap_or_else(|error| panic!("fixture domain: {error}")),
             resolved: set(vec![reverse]),
         },
         TargetSelector::DynamicPath {
-            path: FaultObjectId::parse("active-uplink").expect("fixture path"),
+            path: FaultObjectId::parse("active-uplink")
+                .unwrap_or_else(|error| panic!("fixture path: {error}")),
             initial: set(vec![forward]),
             membership_semantic_version: 1,
         },
         TargetSelector::Exact(set(vec![ResolvedFaultTarget::NetworkInterface {
-            endpoint: FaultObjectId::parse("left").expect("fixture endpoint"),
-            interface: FaultObjectId::parse("right-interface").expect("fixture interface"),
+            endpoint: FaultObjectId::parse("left")
+                .unwrap_or_else(|error| panic!("fixture endpoint: {error}")),
+            interface: FaultObjectId::parse("right-interface")
+                .unwrap_or_else(|error| panic!("fixture interface: {error}")),
         }])),
         TargetSelector::Exact(set(vec![ResolvedFaultTarget::Node {
-            node: FaultObjectId::parse("left").expect("fixture node"),
+            node: FaultObjectId::parse("left")
+                .unwrap_or_else(|error| panic!("fixture node: {error}")),
         }])),
         TargetSelector::Exact(set(vec![ResolvedFaultTarget::Node {
-            node: FaultObjectId::parse("absent").expect("fixture node"),
+            node: FaultObjectId::parse("absent")
+                .unwrap_or_else(|error| panic!("fixture node: {error}")),
         }])),
     ];
     struct NoProjectionCredit(std::sync::atomic::AtomicBool);
@@ -1373,10 +1383,14 @@ fn borrowed_selector_checks_match_authoring_projection() {
         }
     }
     let budget = crate::owned_decode::DecodeBudget::new(
-        std::sync::Arc::new(NoProjectionCredit(std::sync::atomic::AtomicBool::new(false))),
+        std::sync::Arc::new(NoProjectionCredit(std::sync::atomic::AtomicBool::new(
+            false,
+        ))),
         256,
     )
-    .expect("original account with only its initial control credit");
+    .unwrap_or_else(|error| {
+        panic!("original account with only its initial control credit: {error}")
+    });
     for selector in selectors {
         let expected = authoring::selector_projection_matches_world(&selector, &world);
         let _scope = budget.enter();

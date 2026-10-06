@@ -693,6 +693,21 @@ impl Deref for EventFirings {
 }
 
 impl EventFiring {
+    /// Copies its owned fields into the enclosing original admission account.
+    pub(crate) fn try_clone_admitted(&self) -> Result<Self, EngineError> {
+        Ok(Self {
+            event: EventId {
+                name: crate::owned_decode::display_string(&self.event.name)
+                    .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?,
+            },
+            at: self.at,
+            condition_summary: crate::owned_decode::display_string(&self.condition_summary)
+                .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?,
+            action: self.action.try_clone_admitted()?,
+        })
+    }
+
+
     /// Returns the event that fired.
     #[must_use]
     pub fn event(&self) -> &EventId {
@@ -954,37 +969,6 @@ fn check_evaluation_admission() -> Result<(), EngineError> {
     Ok(())
 }
 
-#[cfg(test)]
-mod event_graph_state_codec_tests {
-    use super::*;
-
-    #[test]
-    fn event_graph_state_codec_round_trips_complete_state() {
-        let consumed = EventId::from_name("consumed");
-        let repeatable = EventId::from_name("repeatable");
-        let condition = Predicate::once(Predicate::named("latched"));
-        let state = EventGraphState {
-            consumed_once: BTreeSet::from([consumed]),
-            previous_truth: BTreeMap::from([(repeatable.clone(), true)]),
-            last_firing: BTreeMap::from([(repeatable, VirtualTime { ticks: 91 })]),
-            once_latches: vec![condition],
-            _decode_custody: crate::owned_decode::DecodeCustody::default(),
-        };
-        let bytes = state.to_compact_binary();
-        let restored = EventGraphState::from_compact_binary(&bytes)
-            .unwrap_or_else(|error| panic!("event graph state should decode: {error}"));
-        assert_eq!(restored, state);
-        assert_eq!(restored.to_compact_binary(), bytes);
-    }
-
-    #[test]
-    fn event_graph_state_codec_rejects_trailing_bytes() {
-        let mut bytes = EventGraphState::new().to_compact_binary();
-        bytes.push(0);
-        assert!(EventGraphState::from_compact_binary(&bytes).is_err());
-    }
-}
-
 const EVENT_GRAPH_STATE_MAX_ENTRIES: usize = 1 << 20;
 
 fn write_event_graph_state_count(bytes: &mut Vec<u8>, count: usize) {
@@ -1058,5 +1042,36 @@ impl<'a> EventGraphStateReader<'a> {
         String::from_utf8(copied).map_err(|source| EngineError::ArtifactDecodeAdmission {
             source: crate::owned_decode::DecodeAdmissionError::new(source),
         })
+    }
+}
+
+#[cfg(test)]
+mod event_graph_state_codec_tests {
+    use super::*;
+
+    #[test]
+    fn event_graph_state_codec_round_trips_complete_state() {
+        let consumed = EventId::from_name("consumed");
+        let repeatable = EventId::from_name("repeatable");
+        let condition = Predicate::once(Predicate::named("latched"));
+        let state = EventGraphState {
+            consumed_once: BTreeSet::from([consumed]),
+            previous_truth: BTreeMap::from([(repeatable.clone(), true)]),
+            last_firing: BTreeMap::from([(repeatable, VirtualTime { ticks: 91 })]),
+            once_latches: vec![condition],
+            _decode_custody: crate::owned_decode::DecodeCustody::default(),
+        };
+        let bytes = state.to_compact_binary();
+        let restored = EventGraphState::from_compact_binary(&bytes)
+            .unwrap_or_else(|error| panic!("event graph state should decode: {error}"));
+        assert_eq!(restored, state);
+        assert_eq!(restored.to_compact_binary(), bytes);
+    }
+
+    #[test]
+    fn event_graph_state_codec_rejects_trailing_bytes() {
+        let mut bytes = EventGraphState::new().to_compact_binary();
+        bytes.push(0);
+        assert!(EventGraphState::from_compact_binary(&bytes).is_err());
     }
 }

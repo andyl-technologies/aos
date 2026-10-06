@@ -9,21 +9,28 @@ pub(in super::super) fn run_local_double_workflow(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     run_plan: &RunInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
+    let decoding = crate::cli_input_resources::original_budget()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     let report = if matches!(run_plan.execution_mode, RunExecutionMode::Interactive) {
-        runtime.block_on(run_local_double_workflow_stdin_async(
-            run_plan,
-            ergonomics_plan,
-        ))?
+        runtime.block_on(
+            crucible_api::admit_future(
+                run_local_double_workflow_stdin_async(run_plan, ergonomics_plan),
+                decoding.clone(),
+            )
+            .map_err(|source| CliError::LifecycleAdmission(Box::new(source)))?,
+        )?
     } else {
-        runtime.block_on(run_local_double_workflow_async(
-            run_plan,
-            ergonomics_plan,
-            &[],
-        ))?
+        runtime.block_on(
+            crucible_api::admit_future(
+                run_local_double_workflow_async(run_plan, ergonomics_plan, &[]),
+                decoding.clone(),
+            )
+            .map_err(|source| CliError::LifecycleAdmission(Box::new(source)))?,
+        )?
     };
+    let _scope = decoding.enter();
     finish_run_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, run_plan, report)
 }
 
@@ -82,8 +89,8 @@ impl ResumeRecordingLifecycleLoop {
     fn selector_fixture_entry(
         &self,
         frontier: crucible::VirtualTime,
-    ) -> Option<crucible::SchedulerEventLogEntry> {
-        match &self.fixture {
+    ) -> Result<Option<crucible::SchedulerEventLogEntry>, crucible::EngineError> {
+        Ok(match &self.fixture {
             ResumeRecordingFixture::None => None,
             ResumeRecordingFixture::PropertyViolation { assertion } => Some(
                 crucible::SchedulerEventLogEntry::assertion_state_observation(
@@ -91,22 +98,39 @@ impl ResumeRecordingLifecycleLoop {
                     frontier,
                     assertion.clone(),
                     crucible::AssertionPhase::Violated,
-                ),
+                )?,
             ),
-        }
+        })
     }
 }
 
 #[cfg(any(test, feature = "test-double"))]
 impl crucible::QuantumLoop for ResumeRecordingLifecycleLoop {
     impl_quantum_drive_method!(drive_quantum, QReq, QOut, QErr, |loop_state, request| {
+        let output_custody =
+            crucible::EventLogOutputCustody::retain_current().map_err(|source| {
+                crucible::SchedulerError::Evaluation {
+                    source: Arc::new(source),
+                }
+            })?;
+        let _output_scope = output_custody.enter_decode_scope();
         loop_state.frontier = loop_state.frontier.saturating_add(1);
         let frontier = VirtualTime {
             ticks: loop_state.frontier,
         };
         let mut event_log_entries = Vec::new();
         if !loop_state.fixture_emitted {
-            if let Some(entry) = loop_state.selector_fixture_entry(frontier) {
+            if let Some(entry) = loop_state
+                .selector_fixture_entry(frontier)
+                .map_err(|source| crucible::SchedulerError::Evaluation {
+                    source: Arc::new(source),
+                })?
+            {
+                crucible::owned_decode::reserve_vec(&mut event_log_entries, 1).map_err(
+                    |source| crucible::SchedulerError::Evaluation {
+                        source: Arc::new(crucible::EngineError::ArtifactDecodeAdmission { source }),
+                    },
+                )?;
                 event_log_entries.push(entry);
                 loop_state.event_log_events = loop_state.event_log_events.saturating_add(1);
             }
@@ -141,6 +165,7 @@ impl crucible::QuantumLoop for ResumeRecordingLifecycleLoop {
                 loop_state.event_log_events,
             ),
             scheduler_quiescence: Some(crucible::SchedulerQuiescence::default()),
+            event_log_custody: output_custody,
         })
     });
 
@@ -170,14 +195,20 @@ pub(in super::super) fn run_local_double_verify_workflow(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     verify_plan: &VerifyInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
+    let decoding = crate::cli_input_resources::original_budget()?;
     let scenario = verify_plan.scenario().ok_or_else(|| {
         backend_error("verify compare mode must not enter the local-double workflow")
     })?;
     let request_seed = ergonomics_plan
         .map(|plan| crucible::Seed::from_u64(plan.seed.value))
         .unwrap_or_else(|| scenario.scenario_def().seed());
-    let seeded_scenario = reseed_run_scenario_ref(scenario, request_seed)?;
-    let mut witnesses = Vec::with_capacity(verify_plan.reductions.len());
+    let mut witnesses = {
+        let _scope = decoding.enter();
+        let mut values = Vec::new();
+        crucible::owned_decode::reserve_vec(&mut values, verify_plan.reductions.len())
+            .map_err(CliError::MetadataAdmission)?;
+        values
+    };
     for reduction in &verify_plan.reductions {
         let mut runtime_builder = if reduction.host_profile.logical_cores == 1 {
             tokio::runtime::Builder::new_current_thread()
@@ -192,27 +223,34 @@ pub(in super::super) fn run_local_double_verify_workflow(
             Vec::new(),
             |_scenario: &crucible::ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
         )
-        .with_terminal_session_retention(true);
+        .with_terminal_session_retention(true)
+        .with_decode_budget(decoding.clone());
         let client = InProcessLifecycleClient::new(control_plane);
-        let witness = runtime
-            .block_on(run_control_client_verify_reduction_async(
+        let future = {
+            let _scope = decoding.enter();
+            run_control_client_verify_reduction_async(
                 &client,
-                seeded_scenario.clone(),
+                reseed_run_scenario_ref(scenario, request_seed)?,
                 request_seed,
                 reduction.clone(),
                 backend_plan.resolved_backend.as_ref(),
                 ergonomics_plan,
                 &verify_plan.store_root,
+            )
+        };
+        let admitted = crucible_api::admit_future(future, decoding.clone())
+            .map_err(|source| CliError::LifecycleAdmission(Box::new(source)))?;
+        let witness = runtime.block_on(admitted).map_err(|error| {
+            backend_error(format!(
+                "verify hostile profile `{}` failed: {error}",
+                reduction.host_profile.label()
             ))
-            .map_err(|error| {
-                backend_error(format!(
-                    "verify hostile profile `{}` failed: {error}",
-                    reduction.host_profile.label()
-                ))
-            })?;
+        })?;
         witnesses.push(witness);
     }
+    let _scope = decoding.enter();
     let report = VerifyWorkflowReport {
+        _input_custody: crucible_session::engine::owned_decode::current_custody(),
         divergence: compare_verify_witnesses(&witnesses),
         witnesses,
     };

@@ -25,13 +25,15 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crucible_campaign::CampaignHash;
+use crucible_cas::content_store::StoreError;
 use thiserror::Error;
 
 use crate::owned_advisory_lock::OwnedAdvisoryLock;
 
 use super::{
-    CampaignGcCandidateManifest, CampaignGcManifestError, CampaignGcPlan, CampaignGcPlanError,
-    CampaignGcPlanId, CampaignGcPreparedPlan, CampaignGcRootManifest, MAX_CAMPAIGN_GC_PLAN_BYTES,
+    CampaignGcCandidateManifest, CampaignGcManifestError, CampaignGcOperationContext,
+    CampaignGcPlan, CampaignGcPlanError, CampaignGcPlanId, CampaignGcPreparedPlan,
+    CampaignGcRootManifest, MAX_CAMPAIGN_GC_PLAN_BYTES,
 };
 
 const JOURNAL_LOCK_FILE: &str = "lock";
@@ -105,6 +107,7 @@ pub struct DirectoryCampaignGcJournal {
     roots: CampaignGcRootManifest,
     candidates: CampaignGcCandidateManifest,
     phase: CampaignGcJournalPhase,
+    _resources: super::manifest::MetadataCredit,
 }
 
 impl DirectoryCampaignGcJournal {
@@ -120,15 +123,18 @@ impl DirectoryCampaignGcJournal {
     /// locked, or synced; a record is incomplete or malformed; or an existing
     /// journal names a different plan, root set, or candidate set.
     pub fn create(
-        root: impl Into<PathBuf>,
+        root: impl AsRef<Path>,
         prepared: &CampaignGcPreparedPlan,
+        operation: &CampaignGcOperationContext<'_>,
     ) -> Result<(Self, CampaignGcJournalCreateDisposition), CampaignGcJournalError> {
+        operation.check()?;
+        let resources = reserve_journal_resources(root.as_ref(), operation)?;
         validate_prepared(prepared)?;
-        let root = root.into();
+        let root = root.as_ref().to_path_buf();
         match fs::create_dir(&root) {
             Ok(()) => {
                 let lock = acquire_lock(&root)?;
-                initialize_new(&root, prepared)?;
+                initialize_new(&root, prepared, operation)?;
                 let journal = Self {
                     root,
                     _lock: lock,
@@ -136,11 +142,13 @@ impl DirectoryCampaignGcJournal {
                     roots: prepared.roots().clone(),
                     candidates: prepared.candidates().clone(),
                     phase: CampaignGcJournalPhase::Planned,
+                    _resources: resources,
                 };
                 Ok((journal, CampaignGcJournalCreateDisposition::Created))
             }
             Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
-                let journal = Self::open(root)?;
+                drop(resources);
+                let journal = Self::open(root, operation)?;
                 if journal.plan != *prepared.plan() {
                     return Err(CampaignGcJournalError::PlanMismatch);
                 }
@@ -162,8 +170,13 @@ impl DirectoryCampaignGcJournal {
     ///
     /// Returns [`CampaignGcJournalError`] when locking, durability recovery,
     /// record decoding, manifest binding, or state authentication fails.
-    pub fn open(root: impl Into<PathBuf>) -> Result<Self, CampaignGcJournalError> {
-        let root = root.into();
+    pub fn open(
+        root: impl AsRef<Path>,
+        operation: &CampaignGcOperationContext<'_>,
+    ) -> Result<Self, CampaignGcJournalError> {
+        operation.check()?;
+        let resources = reserve_journal_resources(root.as_ref(), operation)?;
+        let root = root.as_ref().to_path_buf();
         validate_directory(&root)?;
         let lock = acquire_lock(&root)?;
         sync_directory(&root, "sync-journal-directory-on-open")?;
@@ -174,14 +187,15 @@ impl DirectoryCampaignGcJournal {
             MAX_CAMPAIGN_GC_PLAN_BYTES,
             "read-journal-plan",
         )?;
-        let plan = CampaignGcPlan::from_canonical_bytes(&plan_bytes)?;
+        let plan = CampaignGcPlan::from_canonical_bytes(&plan_bytes, operation)?;
         let mut roots_file = open_read(&root.join(JOURNAL_ROOTS_FILE), "open-journal-roots")?;
-        let roots = CampaignGcRootManifest::from_canonical_reader(&mut roots_file)?;
+        let roots = CampaignGcRootManifest::from_canonical_reader(&mut roots_file, operation)?;
         let mut candidates_file = open_read(
             &root.join(JOURNAL_CANDIDATES_FILE),
             "open-journal-candidates",
         )?;
-        let candidates = CampaignGcCandidateManifest::from_canonical_reader(&mut candidates_file)?;
+        let candidates =
+            CampaignGcCandidateManifest::from_canonical_reader(&mut candidates_file, operation)?;
         validate_record_binding(&plan, &roots, &candidates)?;
 
         let state_bytes = read_bounded_file(
@@ -200,6 +214,7 @@ impl DirectoryCampaignGcJournal {
             roots,
             candidates,
             phase,
+            _resources: resources,
         })
     }
 
@@ -312,6 +327,9 @@ impl DirectoryCampaignGcJournal {
 /// Failure to persist, reopen, or advance one campaign GC journal.
 #[derive(Debug, Error)]
 pub enum CampaignGcJournalError {
+    /// The same original operation refused journal resource custody.
+    #[error("campaign GC journal resource admission failed")]
+    Resources(#[from] StoreError),
     /// A filesystem operation failed.
     #[error("campaign GC journal {operation} failed for {path}")]
     Io {
@@ -355,6 +373,33 @@ pub enum CampaignGcJournalError {
     InvalidTransition,
 }
 
+fn reserve_journal_resources(
+    root: &Path,
+    operation: &CampaignGcOperationContext<'_>,
+) -> Result<super::manifest::MetadataCredit, CampaignGcJournalError> {
+    // The retained root, record/lock path, staging path, destination path and
+    // possible error path are the largest simultaneously owned path roster.
+    // The plan buffer and two state buffers cover open and phase replacement.
+    let path_bytes = root
+        .as_os_str()
+        .as_encoded_bytes()
+        .len()
+        .checked_add(JOURNAL_CANDIDATES_FILE.len() + 64)
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<PathBuf>()))
+        .and_then(|bytes| bytes.checked_mul(5))
+        .ok_or(StoreError::Quota)?;
+    let bytes = path_bytes
+        .checked_add(MAX_CAMPAIGN_GC_PLAN_BYTES + 1)
+        .and_then(|bytes| {
+            bytes.checked_add(2 * JOURNAL_STATE_BYTES + 3 * std::mem::size_of::<Vec<u8>>())
+        })
+        .ok_or(StoreError::Quota)?;
+    // Lock, plan, roots, candidates, state and durability-directory handles.
+    let credit =
+        operation.reserve_resources(6, u64::try_from(bytes).map_err(|_| StoreError::Quota)?)?;
+    Ok(super::manifest::MetadataCredit::new(credit))
+}
+
 fn validate_prepared(prepared: &CampaignGcPreparedPlan) -> Result<(), CampaignGcJournalError> {
     validate_record_binding(prepared.plan(), prepared.roots(), prepared.candidates())
 }
@@ -362,10 +407,11 @@ fn validate_prepared(prepared: &CampaignGcPreparedPlan) -> Result<(), CampaignGc
 fn initialize_new(
     root: &Path,
     prepared: &CampaignGcPreparedPlan,
+    operation: &CampaignGcOperationContext<'_>,
 ) -> Result<(), CampaignGcJournalError> {
     write_new_bytes(
         &root.join(JOURNAL_PLAN_FILE),
-        &prepared.plan().canonical_bytes()?,
+        &prepared.plan().canonical_bytes(operation)?,
         "write-journal-plan",
     )?;
     write_new_record(
@@ -515,7 +561,16 @@ fn read_bounded_file(
     let limit = u64::try_from(maximum)
         .map_err(|_| CampaignGcJournalError::InvalidState)?
         .saturating_add(1);
-    let mut bytes = Vec::with_capacity(maximum.min(64 * 1024));
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(
+            maximum
+                .checked_add(1)
+                .ok_or(CampaignGcJournalError::InvalidState)?,
+        )
+        .map_err(|source| StoreError::Supervision {
+            source: Box::new(source),
+        })?;
     file.take(limit)
         .read_to_end(&mut bytes)
         .map_err(|source| io_error(operation, path, source))?;
@@ -539,13 +594,20 @@ fn sync_parent(path: &Path, operation: &'static str) -> Result<(), CampaignGcJou
     sync_directory(parent, operation)
 }
 
-fn encode_state(plan: CampaignGcPlanId, phase: CampaignGcJournalPhase) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(JOURNAL_STATE_BYTES);
-    bytes.extend_from_slice(JOURNAL_STATE_MAGIC);
-    bytes.extend_from_slice(&plan.as_hash().as_bytes());
-    bytes.push(phase.tag());
-    let checksum = CampaignHash::derive(JOURNAL_STATE_HASH_DOMAIN, &bytes);
-    bytes.extend_from_slice(&checksum.as_bytes());
+fn encode_state(
+    plan: CampaignGcPlanId,
+    phase: CampaignGcJournalPhase,
+) -> [u8; JOURNAL_STATE_BYTES] {
+    let mut bytes = [0; JOURNAL_STATE_BYTES];
+    let plan_start = JOURNAL_STATE_MAGIC.len();
+    let phase_index = plan_start + 32;
+    let checksum_start = phase_index + 1;
+
+    bytes[..plan_start].copy_from_slice(JOURNAL_STATE_MAGIC);
+    bytes[plan_start..phase_index].copy_from_slice(&plan.as_hash().as_bytes());
+    bytes[phase_index] = phase.tag();
+    let checksum = CampaignHash::derive(JOURNAL_STATE_HASH_DOMAIN, &bytes[..checksum_start]);
+    bytes[checksum_start..].copy_from_slice(&checksum.as_bytes());
     bytes
 }
 

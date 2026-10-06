@@ -10,8 +10,8 @@ const SOURCES: &[(&str, &str)] = &[
         include_str!("../../../crucible/src/model/store_artifacts.rs"),
     ),
     (
-        "crates/crucible/src/trigger/evidence.rs",
-        include_str!("../../../crucible/src/trigger/evidence.rs"),
+        "crates/crucible/src/trigger/formal_trace.rs",
+        include_str!("../../../crucible/src/trigger/formal_trace.rs"),
     ),
     (
         "tests/crucible/_e2e-determinism-native-runner.sh",
@@ -133,7 +133,7 @@ crucible.execution.event-graph-state|crates/crucible/src/trigger/event_graph.rs|
 crucible.execution.signal-trace-manifest|crates/crucible/src/model/fault_signal/trace.rs|magic|MANIFEST_MAGIC
 crucible.execution.signal-trace-chunk|crates/crucible/src/model/fault_signal/trace.rs|magic|CHUNK_MAGIC
 crucible.execution.failure-triage-replay-evidence|crates/crucible/src/model/failure/replay_evidence.rs|number|FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION
-crucible.execution.host-assertion-continuation|crates/crucible/src/trigger/assertions.rs|magic|HOST_ASSERTION_CHECKPOINT_MAGIC
+crucible.execution.host-assertion-continuation|crates/crucible/src/trigger/assertions/checkpoint.rs|magic|MAGIC
 crucible.execution.single-scheduler-continuation|crates/crucible/src/scheduler/checkpoint.rs|magic|crucible.single-scheduler-continuation.v6
 crucible.execution.device-scheduling-subnode|crates/crucible/src/device_subnode/checkpoint.rs|magic|crucible.device-scheduling-subnode.v1
 crucible.execution.scenario-selectable-component|crates/crucible/src/model/scenario_selectables.rs|number|SCENARIO_SELECTABLE_VERSION
@@ -149,6 +149,7 @@ crucible.device.io-core-snapshot|crates/crucible-device/src/subnode/snapshot.rs|
 crucible.device.link-snapshot|crates/crucible-device/src/netlink/link/snapshot.rs|magic|LINK_SNAPSHOT_MAGIC
 crucible.device.ninep-snapshot|crates/crucible-device/src/ninep/device/snapshot.rs|magic|NINEP_SNAPSHOT_MAGIC
 crucible.qemu.checkpoint-qmp|crates/crucible-qemu/src/qmp/checkpoint.rs|number|QMP_CHECKPOINT_SCHEMA_VERSION
+crucible.ram-control.frame|crates/crucible-protocol/src/ram_control.rs|number|RAM_CONTROL_VERSION
 crucible.qemu.paused-cpu|crates/crucible-qemu/src/qmp/paused_cpu.rs|number|QMP_PAUSED_CPU_SCHEMA_VERSION
 crucible.qemu.host-io-checkpoint|crates/crucible-qemu/src/checkpoint/host_io_codec.rs|magic|crucible.qemu-host-io-checkpoint.v6
 crucible.qemu.production-fault-runtime|crates/crucible-qemu/src/production_fault_runtime/checkpoint_codec.rs|magic|crucible.production-fault-runtime.v7

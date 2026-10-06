@@ -611,11 +611,34 @@ pub struct GetReproductionResponse {
     /// Epoch-guarded session reference whose context was read.
     pub session: SessionRef,
     /// Recorded operator command stream in deterministic replay order.
-    pub commands: Vec<ReproductionCommandRecord>,
+    pub commands: Arc<crate::AdmittedShared<Vec<ReproductionCommandRecord>>>,
+    _decode_custody: crucible::owned_decode::DecodeCustody,
+}
+
+impl GetReproductionResponse {
+    /// Shares already admitted commands under their original output custody.
+    ///
+    /// # Errors
+    /// Refuses missing authority or exhausted allocation credit. The caller must
+    /// admit the owned command vector before constructing it.
+    pub fn from_owned_commands(
+        session: SessionRef,
+        commands: Vec<ReproductionCommandRecord>,
+    ) -> Result<Self, EngineError> {
+        crucible::owned_decode::require_current_custody()
+            .map_err(crate::admitted_output::admission)?;
+        let commands = crate::admitted_output::shared(commands)?;
+        Ok(Self {
+            session,
+            commands,
+            _decode_custody: crucible::owned_decode::require_current_custody()
+                .map_err(crate::admitted_output::admission)?,
+        })
+    }
 }
 
 /// Payload recorded for one command in the reproduction context.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ReproductionCommandPayload {
     /// Payload-free command kind admitted at the boundary.
     pub command: SessionCommandKind,
@@ -645,6 +668,26 @@ impl From<SessionControlResult> for ReproductionCommandResult {
 /// One recorded command in the API reproduction context.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ReproductionCommandRecord {
+    /// Monotone session-local reproduction sequence.
+    pub sequence: u64,
+    /// Command payload admitted at the boundary.
+    pub payload: Arc<crate::AdmittedShared<ReproductionCommandPayload>>,
+    /// Virtual-time boundary where the command took effect.
+    pub virtual_time: VirtualTime,
+    /// Number of scheduler quanta completed before the command took effect.
+    pub quanta: u64,
+    /// Event-log sequence immediately before the command took effect.
+    pub at_sequence: u64,
+    /// Terminal result returned for this recorded command.
+    pub result: ReproductionCommandResult,
+    /// Observational ordering aid for same-boundary commands; not a replay input.
+    pub observational_order: u64,
+    _decode_custody: crucible::owned_decode::DecodeCustody,
+}
+
+/// Already admitted owned fields consumed by a reproduction record constructor.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ReproductionCommandRecordFields {
     /// Monotone session-local reproduction sequence.
     pub sequence: u64,
     /// Command payload admitted at the boundary.
@@ -678,25 +721,74 @@ impl ReproductionCommandDecodeError {
     }
 }
 
-impl From<SessionControlLogEntry> for ReproductionCommandRecord {
-    fn from(value: SessionControlLogEntry) -> Self {
-        Self {
-            sequence: value.sequence,
-            payload: ReproductionCommandPayload {
-                command: value.command,
-                command_payload: session_control_payload_material(&value.payload),
-                scheduler_batch: value.scheduler_batch,
-                scheduler_control: value
-                    .scheduler_control
-                    .as_ref()
-                    .map(control_operation_material),
-            },
-            virtual_time: value.frontier,
-            quanta: value.quanta,
-            at_sequence: value.event_log_sequence_before,
-            result: value.result.into(),
-            observational_order: value.sequence,
-        }
+impl ReproductionCommandRecord {
+    /// Shares already admitted payload fields under their original custody.
+    ///
+    /// # Errors
+    /// Refuses missing authority or exhausted allocation credit. Payload strings
+    /// must be admitted before they are allocated by the caller.
+    pub fn from_owned_fields(fields: ReproductionCommandRecordFields) -> Result<Self, EngineError> {
+        crucible::owned_decode::require_current_custody()
+            .map_err(crate::admitted_output::admission)?;
+        let payload = crate::admitted_output::shared(fields.payload)?;
+        Ok(Self {
+            sequence: fields.sequence,
+            payload,
+            virtual_time: fields.virtual_time,
+            quanta: fields.quanta,
+            at_sequence: fields.at_sequence,
+            result: fields.result,
+            observational_order: fields.observational_order,
+            _decode_custody: crucible::owned_decode::require_current_custody()
+                .map_err(crate::admitted_output::admission)?,
+        })
+    }
+
+    /// Copies one session entry into a returned nominal admitted record.
+    ///
+    /// # Errors
+    /// Refuses missing authority, original exhaustion or allocation failure.
+    pub fn from_entry_admitted(value: &SessionControlLogEntry) -> Result<Self, EngineError> {
+        let (record, custody) = Self::from_admitted(value)?.into_parts();
+        // The nominal record retains the same account through its private field.
+        drop(custody);
+        Ok(record)
+    }
+
+    /// Streams an admitted reproduction record from a borrowed session entry.
+    ///
+    /// # Errors
+    /// Refuses missing authority, original resource exhaustion, allocation
+    /// failure or inconsistent counted output before returning a partial record.
+    pub fn from_admitted(
+        value: &SessionControlLogEntry,
+    ) -> Result<crate::AdmittedOutput<Self>, EngineError> {
+        crate::AdmittedOutput::build(|| {
+            Self::from_owned_fields(ReproductionCommandRecordFields {
+                sequence: value.sequence,
+                payload: ReproductionCommandPayload {
+                    command: value.command,
+                    command_payload: crate::admitted_output::text(
+                        &reproduction_display::payload_display(&value.payload),
+                    )?,
+                    scheduler_batch: value.scheduler_batch,
+                    scheduler_control: value
+                        .scheduler_control
+                        .as_ref()
+                        .map(|control| {
+                            crate::admitted_output::text(reproduction_display::control_display(
+                                control,
+                            ))
+                        })
+                        .transpose()?,
+                },
+                virtual_time: value.frontier,
+                quanta: value.quanta,
+                at_sequence: value.event_log_sequence_before,
+                result: value.result.into(),
+                observational_order: value.sequence,
+            })
+        })
     }
 }
 
@@ -914,57 +1006,7 @@ fn decode_hex_nibble(value: u8) -> Option<u8> {
     }
 }
 
-fn session_control_payload_material(payload: &SessionControlPayload) -> String {
-    match payload {
-        SessionControlPayload::CommandKind { command } => {
-            format!("payload=command-kind\ncommand={command:?}\n")
-        }
-        SessionControlPayload::Fork { from } => {
-            format!("payload=fork\nfrom={}\n", checkpoint_ref_material(*from))
-        }
-        SessionControlPayload::SetBreakpoint { spec } => format!(
-            "payload=set-breakpoint\npredicate={}\ndisposition={}\npolicy={}\n",
-            hex_string(&spec.predicate.canonical_summary()),
-            breakpoint_disposition_material(&spec.disposition),
-            breakpoint_policy_material(spec.policy),
-        ),
-        SessionControlPayload::RemoveBreakpoint { id } => {
-            format!("payload=remove-breakpoint\nid={id}\n")
-        }
-        SessionControlPayload::CreateSavepoint { label } => {
-            format!("payload=create-savepoint\nlabel={}\n", hex_string(label))
-        }
-    }
-}
-
-fn control_operation_material(control: &ControlOperationKind) -> String {
-    match control {
-        ControlOperationKind::Pause => String::from("control=pause\n"),
-        ControlOperationKind::Resume => String::from("control=resume\n"),
-        ControlOperationKind::Step => String::from("control=step\n"),
-        ControlOperationKind::Snapshot => String::from("control=snapshot\n"),
-        ControlOperationKind::Fork => String::from("control=fork\n"),
-        ControlOperationKind::Query => String::from("control=query\n"),
-    }
-}
-
-fn checkpoint_ref_material(from: CheckpointRef) -> String {
-    match from {
-        CheckpointRef::Current => String::from("current"),
-        CheckpointRef::Checkpoint(hash) => format!("checkpoint:{}", hash.to_hex()),
-    }
-}
-
-fn breakpoint_disposition_material(disposition: &BreakpointDisposition) -> String {
-    match disposition {
-        BreakpointDisposition::Suspend => String::from("suspend"),
-        BreakpointDisposition::Trace => String::from("trace"),
-        BreakpointDisposition::Action(action) => {
-            format!("action:{}", hex_string(&action_material(action)))
-        }
-    }
-}
-
+#[cfg(test)]
 fn action_material(action: &Action) -> String {
     match action {
         Action::ArmTimer { name, after } => format!(
@@ -1009,7 +1051,7 @@ fn action_material(action: &Action) -> String {
     }
 }
 
-fn log_level_material(level: LogLevel) -> &'static str {
+pub(super) fn log_level_material(level: LogLevel) -> &'static str {
     match level {
         LogLevel::Debug => "debug",
         LogLevel::Info => "info",
@@ -1018,7 +1060,7 @@ fn log_level_material(level: LogLevel) -> &'static str {
     }
 }
 
-fn breakpoint_policy_material(policy: BreakpointPolicy) -> &'static str {
+pub(super) fn breakpoint_policy_material(policy: BreakpointPolicy) -> &'static str {
     match policy {
         BreakpointPolicy::OneShot => "one-shot",
         BreakpointPolicy::Repeatable => "repeatable",

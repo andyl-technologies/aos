@@ -64,6 +64,17 @@ impl PagerControl for Controller {
         self.status()
     }
 
+    fn test_fault_actor(
+        &self,
+        _: [u8; 32],
+        _: u64,
+        _: crucible_protocol::ram_control::RamControlFaultActorAction,
+    ) -> RamControlReply {
+        let mut report = self.status();
+        report.disposition = RamControlDisposition::Unsupported;
+        report
+    }
+
     fn sync_outer_cap(&self, _: RamControlOuterCap) -> RamControlReply {
         self.status()
     }
@@ -86,6 +97,9 @@ impl PagerControl for Controller {
 
     fn status(&self) -> RamControlReply {
         RamControlReply {
+            placement_receipt: None,
+            operation_failure: None,
+            fault_actor: None,
             kernel_probe: None,
             activity: None,
             disposition: RamControlDisposition::Accepted,

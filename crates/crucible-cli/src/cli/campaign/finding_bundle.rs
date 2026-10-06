@@ -35,7 +35,7 @@ mod exact;
 use exact::{ExactFindingReplayReport, replay_exact_finding};
 #[path = "finding_bundle/source_authentication.rs"]
 mod source_authentication;
-use source_authentication::FindingSourceAuthentication;
+pub(crate) use source_authentication::FindingSourceAuthentication;
 #[path = "finding_bundle/midpoint.rs"]
 mod midpoint;
 pub(crate) use midpoint::run_finding_bundle_midpoint;

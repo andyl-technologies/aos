@@ -88,6 +88,9 @@ impl ConditionLeafOracle for NoNamedLeaves {
 
 #[test]
 fn coverage_point_observes_current_basic_block_execution_event() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let condition = Predicate::coverage_point(node("server"), CodePoint::guest_address(0x4010));
     let matching_block = ObservableEvent::coverage_block(icount(7), node("server"), 0x4000, 0x20);
     let wrong_node = ObservableEvent::coverage_block(icount(7), node("db-0"), 0x4000, 0x20);
@@ -115,6 +118,9 @@ fn coverage_point_observes_current_basic_block_execution_event() {
 
 #[test]
 fn coverage_point_does_not_rematch_after_prior_block_execution() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let condition = Predicate::coverage_point(node("server"), CodePoint::guest_address(0x4010));
     let first_block = ObservableEvent::coverage_block(icount(6), node("server"), 0x4000, 0x20);
     let repeat_block = ObservableEvent::coverage_block(icount(7), node("server"), 0x4000, 0x20);
@@ -128,6 +134,9 @@ fn coverage_point_does_not_rematch_after_prior_block_execution() {
 
 #[test]
 fn coverage_point_resolves_symbols_host_side_without_guest_marker_support() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let point_ref = CodePoint::symbol("cluster_join_complete");
     let condition = Predicate::coverage_point(node("server"), point_ref.clone());
     let block = ObservableEvent::coverage_block(icount(10), node("server"), 0x5000, 0x40);
@@ -150,6 +159,9 @@ fn coverage_point_resolves_symbols_host_side_without_guest_marker_support() {
 
 #[test]
 fn coverage_point_raw_guest_address_ignores_symbol_resolution_table() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let condition = Predicate::coverage_point(node("server"), CodePoint::guest_address(0x4010));
     let block = ObservableEvent::coverage_block(icount(7), node("server"), 0x5000, 0x20);
     let bogus_resolution = (
@@ -166,6 +178,9 @@ fn coverage_point_raw_guest_address_ignores_symbol_resolution_table() {
 
 #[test]
 fn coverage_block_event_point_is_derived_from_execution_icount() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let event = ObservableEvent::coverage_block(icount(42), node("server"), 0x4000, 0x20);
 
     assert_eq!(event.at(), time(42));
@@ -179,6 +194,9 @@ fn coverage_block_event_point_is_derived_from_execution_icount() {
 
 #[test]
 fn event_graph_fires_from_coverage_point_without_named_leaf_fallback() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let graph = EventGraph::new_for_world(
         vec![Event::once(
             crucible::EventId::from_name("pass-on-recovery-path"),
@@ -215,6 +233,9 @@ fn event_graph_fires_from_coverage_point_without_named_leaf_fallback() {
 
 #[test]
 fn coverage_point_properties_validate_referenced_nodes() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let properties = Properties::from_assertions_for_world(
         &coverage_world(),
         vec![assertion(
@@ -233,6 +254,9 @@ fn coverage_point_properties_validate_referenced_nodes() {
 
 #[test]
 fn coverage_point_round_trips_through_properties_serialization() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = coverage_world();
     let predicate = Predicate::all_of(vec![
         Predicate::coverage_point(node("server"), CodePoint::guest_address(0x4010)),
@@ -264,6 +288,9 @@ fn coverage_point_round_trips_through_properties_serialization() {
 
 #[test]
 fn coverage_point_material_distinguishes_addresses_and_symbols() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let address_a = properties_for(Predicate::coverage_point(
         node("server"),
         CodePoint::guest_address(0x4010),

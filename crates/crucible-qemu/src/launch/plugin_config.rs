@@ -179,6 +179,7 @@ pub struct QemuLaunchPluginConfig {
     coverage: QemuLaunchPluginSwitch,
     fingerprint: QemuLaunchPluginSwitch,
     ram_control: Option<QemuRamControlLaunch>,
+    fault_actor_test_entitlement: Option<[u8; 32]>,
     ram_metadata_budget: Option<u64>,
     ram_resources: Option<crucible_linux_resource::ram_policy::HostResourceVector>,
     ram_spill_quota: Option<u64>,
@@ -208,6 +209,7 @@ impl QemuLaunchPluginConfig {
             coverage: QemuLaunchPluginSwitch::Off,
             fingerprint: QemuLaunchPluginSwitch::Off,
             ram_control: None,
+            fault_actor_test_entitlement: None,
             ram_metadata_budget: None,
             ram_resources: None,
             ram_spill_quota: None,
@@ -335,6 +337,14 @@ impl QemuLaunchPluginConfig {
     #[must_use]
     pub fn with_ram_control(mut self, control: QemuRamControlLaunch) -> Self {
         self.ram_control = Some(control);
+        self
+    }
+
+    pub(crate) fn with_fault_actor_test_entitlement(
+        mut self,
+        entitlement: Option<[u8; 32]>,
+    ) -> Self {
+        self.fault_actor_test_entitlement = entitlement;
         self
     }
 
@@ -545,6 +555,12 @@ impl QemuLaunchPluginConfig {
         }
         if let Some(cap) = &self.ram_outer_cap {
             args.push(format!("ram_outer_cap={cap}"));
+        }
+        if let Some(entitlement) = self.fault_actor_test_entitlement {
+            args.push(format!(
+                "ram_test_fault_actor={}",
+                lowercase_hex(&entitlement)
+            ));
         }
         if let Some(control) = self.ram_control {
             args.extend([

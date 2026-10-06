@@ -9,6 +9,10 @@ extern "C" fn unused_grant(_: u64, _: u64, _: *mut u64) -> c_int {
     -libc::ENOSYS
 }
 
+extern "C" fn runtime_not_ready() -> c_int {
+    0
+}
+
 fn controller() -> LivePagerController {
     LivePagerController {
         target: RamControlTarget {
@@ -20,6 +24,7 @@ fn controller() -> LivePagerController {
             retained_template: false,
         },
         session: [4; 32],
+        fault_actor_test_entitlement: None,
         state: Arc::new(Mutex::new(State {
             resources: RamControlResources::default(),
             budgets: [RamControlBudget {
@@ -40,11 +45,13 @@ fn controller() -> LivePagerController {
             failed: false,
             fork_preparing: false,
             policy_applying: false,
+            child_bootstrap: false,
         })),
         canceled: Arc::new(AtomicBool::new(false)),
         operations: Arc::new(AtomicUsize::new(0)),
         native_worker: unused_worker,
         native_grant: unused_grant,
+        child_runtime_ready: runtime_not_ready,
         spill: Mutex::new(None),
         spill_quota: 0,
         worker: Mutex::new(None),
@@ -623,4 +630,64 @@ fn cleanup_keeps_finite_allowance_even_when_outer_supplies_other_infrastructure(
         )
         .is_err()
     );
+}
+
+#[test]
+fn fault_actor_exit_without_startup_entitlement_has_no_effect() {
+    let controller = controller();
+    let before = {
+        let state = controller
+            .state
+            .lock()
+            .unwrap_or_else(|_| panic!("controller state"));
+        (
+            state.requested_revision,
+            state.applied_revision,
+            state.reservation_revision,
+            state.failed,
+        )
+    };
+    let refusal = controller.test_fault_actor([7; 32], 1, RamControlFaultActorAction::RequestExit);
+    assert_eq!(refusal.disposition, RamControlDisposition::Unsupported);
+    assert!(refusal.fault_actor.is_none());
+    let state = controller
+        .state
+        .lock()
+        .unwrap_or_else(|_| panic!("controller state"));
+    assert_eq!(
+        (
+            state.requested_revision,
+            state.applied_revision,
+            state.reservation_revision,
+            state.failed
+        ),
+        before
+    );
+    assert!(!controller.canceled.load(Ordering::Acquire));
+}
+
+#[test]
+fn early_child_accepts_only_recorded_initial_retry_before_native_runtime_ready() {
+    let (controller, policy, resources) = applied_controller();
+    controller
+        .state
+        .lock()
+        .unwrap_or_else(|_| panic!("controller state"))
+        .child_bootstrap = true;
+
+    let retry = controller.apply(0, 1, 0, policy, resources);
+    assert_eq!(retry.disposition, RamControlDisposition::Accepted);
+    let update = controller.apply(1, 2, 0, policy, resources);
+    assert_eq!(update.disposition, RamControlDisposition::Unavailable);
+
+    let state = controller
+        .state
+        .lock()
+        .unwrap_or_else(|_| panic!("controller state"));
+    assert!(state.child_bootstrap);
+    assert_eq!(state.requested_revision, 1);
+    assert_eq!(state.applied_revision, 1);
+    assert_eq!(state.policy, Some(policy));
+    assert_eq!(state.resources, resources);
+    assert_eq!(controller.operations.load(Ordering::Acquire), 0);
 }

@@ -29,6 +29,7 @@ impl QuantumLoop for RejectingGuestWriteGatewayLoop {
 
 #[test]
 fn failed_guest_write_unlock_leaves_a_paused_noncanonical_branch() {
+    let _scope = fixture_metadata_scope();
     let (_, _, configuration, graph) = debug_time_travel_fixture();
     let mut engine = Engine::new(configuration.clone(), graph, RejectingGuestWriteGatewayLoop);
     engine
@@ -201,6 +202,7 @@ fn engine_step_modes_complete_from_quantum_outcomes() {
 
 #[test]
 fn duration_step_uses_global_frontier_instead_of_event_timestamp() {
+    let _scope = fixture_metadata_scope();
     let scenario = generated_scenario(225);
     let configuration = Configuration::genesis(scenario);
     let target = VirtualTime { ticks: 8 };
@@ -208,7 +210,8 @@ fn duration_step_uses_global_frontier_instead_of_event_timestamp() {
         0,
         target,
         crucible::SchedulerEvaluationBoundaryKind::Quantum,
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite fixture event identity: {error}"));
     let outcome = QuantumOutcome {
         configuration,
         frontier: VirtualTime { ticks: 4 },
@@ -222,6 +225,8 @@ fn duration_step_uses_global_frontier_instead_of_event_timestamp() {
         event_log_segment_hash: None,
         event_log_offset: crucible::EventLogOffset::new(Default::default(), 0, 1),
         scheduler_quiescence: None,
+        event_log_custody: crucible::EventLogOutputCustody::retain_current()
+            .unwrap_or_else(|error| panic!("finite fixture output custody: {error}")),
     };
     let step = ActiveStep::new(
         StepMode::Duration(SimDuration { ticks: 8 }),
@@ -598,156 +603,131 @@ async fn rfc_command_payloads_return_replies_through_engine_boundary() {
 
 #[tokio::test]
 async fn debug_time_travel_commands_reposition_without_scheduler_control_log() {
-    let (root, first, second, graph) = debug_time_travel_fixture();
-    let mut engine = Engine::new(second.clone(), graph, DebugGdbLoop).with_white_box_policies([
-        (node_id("guest-a"), WhiteBoxPolicy::Enabled),
-        (node_id("node-a"), WhiteBoxPolicy::Enabled),
-    ]);
+    admitted_fixture(async {
+        let (root, first, second, graph) = debug_time_travel_fixture();
+        let mut engine =
+            Engine::new(second.clone(), graph, DebugGdbLoop).with_white_box_policies([
+                (node_id("guest-a"), WhiteBoxPolicy::Enabled),
+                (node_id("node-a"), WhiteBoxPolicy::Enabled),
+            ]);
 
-    if let Err(error) = engine.apply_command(SessionCommand::Start) {
-        panic!("debug fixture should instantiate: {error}");
-    }
-    let (attach_reply, attach_receiver) = CommandReply::channel();
-    if let Err(error) = engine.apply_command(SessionCommand::AttachGdb {
-        node: node_id("guest-a"),
-        listen: gdb_listen("127.0.0.1:9000"),
-        debug_genesis: None,
-        reply: attach_reply,
-    }) {
-        panic!("attach-gdb should use the loop gdbstub capability: {error}");
-    }
-    let attach = receive_reply(attach_receiver).await;
-    assert_eq!(attach.configuration, second.id());
-    assert!(attach.has_four_channel_debug_boundary());
-    assert!(engine.boundary_control_log().is_empty());
-
-    let (reverse_continue_reply, reverse_continue_receiver) = CommandReply::channel();
-    if let Err(error) = engine.apply_command(SessionCommand::DebugReverseContinue {
-        request: DebugReverseContinueRequest::new(
-            second.clone(),
-            Condition::At {
-                at: VirtualTime { ticks: 1 },
-            },
-            Vec::new(),
-        ),
-        reply: reverse_continue_reply,
-    }) {
-        panic!("reverse-continue with no matching prefix should complete: {error}");
-    }
-    assert!(
-        receive_reply(reverse_continue_receiver)
-            .await
-            .matched
-            .is_none()
-    );
-    assert!(!engine.debug_branch_required());
-
-    let (goto_reply, goto_receiver) = CommandReply::channel();
-    if let Err(error) = engine.apply_command(SessionCommand::DebugGoto {
-        request: DebugGotoRequest::at_configuration(second.clone(), first.clone()),
-        reply: goto_reply,
-    }) {
-        panic!("debug goto should delegate to restore-plus-replay: {error}");
-    }
-    let goto = receive_reply(goto_receiver).await;
-    assert_eq!(goto.target_configuration, first.id());
-    assert_eq!(engine.configuration().id(), first.id());
-    assert_eq!(
-        engine.debug_attach().map(|active| active.configuration),
-        Some(first.id())
-    );
-    assert!(engine.debug_branch_required());
-    assert!(engine.boundary_control_log().is_empty());
-
-    let blocked = engine
-        .apply_command(SessionCommand::Continue)
-        .expect_err("continuing after debug reposition must require branch metadata");
-    assert!(matches!(
-        blocked,
-        SessionError::DebugNonCanonicalBranchRequired {
-            operation: "continue"
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("debug fixture should instantiate: {error}");
         }
-    ));
-    let canonical_guest = match GuestIntrospectionRecord::new(
-        1,
-        crucible_protocol::guest_introspection::GuestIntrospectionMessage::Close,
-    ) {
-        Ok(record) => record,
-        Err(error) => panic!("guest-introspection fixture must be valid: {error}"),
-    };
-    let canonical_guest_error = engine
-        .apply_command(SessionCommand::GuestIntrospection {
-            node: NodeId {
-                name: String::from("node-a"),
-            },
-            channel_id: 1,
-            request: Some(canonical_guest),
-            reply: CommandReply::discard(),
-        })
-        .expect_err("canonical guest introspection must require an explicit debug fork");
-    assert!(matches!(
-        canonical_guest_error,
-        SessionError::DebugNonCanonicalBranchRequired {
-            operation: "guest-introspection"
+        let (attach_reply, attach_receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::AttachGdb {
+            node: node_id("guest-a"),
+            listen: gdb_listen("127.0.0.1:9000"),
+            debug_genesis: None,
+            reply: attach_reply,
+        }) {
+            panic!("attach-gdb should use the loop gdbstub capability: {error}");
         }
-    ));
+        let attach = receive_reply(attach_receiver).await;
+        assert_eq!(attach.configuration, second.id());
+        assert!(attach.has_four_channel_debug_boundary());
+        assert!(engine.boundary_control_log().is_empty());
 
-    let branch_request = DebugNonCanonicalBranchRequest::new(
-        first.clone(),
-        engine.frontier(),
-        DebugNonCanonicalBranchTrigger::GuestIntrospection,
-    )
-    .with_action(DebugNonCanonicalBranchAction::guest_introspection(node_id(
-        "node-a",
-    )));
-    let (branch_reply, branch_receiver) = CommandReply::channel();
-    if let Err(error) = engine.apply_command(SessionCommand::DebugForkNonCanonical {
-        request: branch_request,
-        reply: branch_reply,
-    }) {
-        panic!("non-canonical debug branch should clear forward guard: {error}");
-    }
-    let branch = receive_reply(branch_receiver).await;
-    assert!(branch.proves_non_canonical_debug_branch());
-    assert!(
-        branch
-            .guest_introspection_features
-            .is_some_and(GuestIntrospectionFeatures::ssh_bridge)
-    );
-    assert!(!engine.debug_branch_required());
-    let branch_entries = engine.drain_event_log_entries();
-    assert_eq!(branch_entries.len(), 1);
-    assert_eq!(branch_entries[0].sequence(), 0);
-    let branch_count = engine.graph.debug_non_canonical_branch_count();
-    let stale_prefix_error = engine
-        .apply_command(SessionCommand::DebugForkNonCanonical {
-            request: DebugNonCanonicalBranchRequest::new(
-                first.clone(),
-                engine.frontier(),
-                DebugNonCanonicalBranchTrigger::OperatorContinue,
-            )
-            .with_action(DebugNonCanonicalBranchAction::operator_control(
-                DebugOperatorControlKind::Continue,
-            )),
-            reply: CommandReply::discard(),
-        })
-        .expect_err("direct branch without a nonzero event-log prefix must fail first");
-    assert!(matches!(
-        stale_prefix_error,
-        SessionError::EventLogOffsetMismatch {
-            current: 1,
-            emitted: 0,
-            next: 0,
+        let (reverse_continue_reply, reverse_continue_receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::DebugReverseContinue {
+            request: DebugReverseContinueRequest::new(
+                second.clone(),
+                Condition::At {
+                    at: VirtualTime { ticks: 1 },
+                },
+                Vec::new(),
+            ),
+            reply: reverse_continue_reply,
+        }) {
+            panic!("reverse-continue with no matching prefix should complete: {error}");
         }
-    ));
-    assert_eq!(
-        engine.graph.debug_non_canonical_branch_count(),
-        branch_count,
-        "prefix mismatch must not mutate graph branch metadata"
-    );
-    let malformed_prefix_error = engine
-        .apply_command_with_event_log(
-            SessionCommand::DebugForkNonCanonical {
+        assert!(
+            receive_reply(reverse_continue_receiver)
+                .await
+                .matched
+                .is_none()
+        );
+        assert!(!engine.debug_branch_required());
+
+        let (goto_reply, goto_receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::DebugGoto {
+            request: DebugGotoRequest::at_configuration(second.clone(), first.clone()),
+            reply: goto_reply,
+        }) {
+            panic!("debug goto should delegate to restore-plus-replay: {error}");
+        }
+        let goto = receive_reply(goto_receiver).await;
+        assert_eq!(goto.target_configuration, first.id());
+        assert_eq!(engine.configuration().id(), first.id());
+        assert_eq!(
+            engine.debug_attach().map(|active| active.configuration),
+            Some(first.id())
+        );
+        assert!(engine.debug_branch_required());
+        assert!(engine.boundary_control_log().is_empty());
+
+        let blocked = engine
+            .apply_command(SessionCommand::Continue)
+            .expect_err("continuing after debug reposition must require branch metadata");
+        assert!(matches!(
+            blocked,
+            SessionError::DebugNonCanonicalBranchRequired {
+                operation: "continue"
+            }
+        ));
+        let canonical_guest = match GuestIntrospectionRecord::new(
+            1,
+            crucible_protocol::guest_introspection::GuestIntrospectionMessage::Close,
+        ) {
+            Ok(record) => record,
+            Err(error) => panic!("guest-introspection fixture must be valid: {error}"),
+        };
+        let canonical_guest_error = engine
+            .apply_command(SessionCommand::GuestIntrospection {
+                node: NodeId {
+                    name: String::from("node-a"),
+                },
+                channel_id: 1,
+                request: Some(canonical_guest),
+                reply: CommandReply::discard(),
+            })
+            .expect_err("canonical guest introspection must require an explicit debug fork");
+        assert!(matches!(
+            canonical_guest_error,
+            SessionError::DebugNonCanonicalBranchRequired {
+                operation: "guest-introspection"
+            }
+        ));
+
+        let branch_request = DebugNonCanonicalBranchRequest::new(
+            first.clone(),
+            engine.frontier(),
+            DebugNonCanonicalBranchTrigger::GuestIntrospection,
+        )
+        .with_action(DebugNonCanonicalBranchAction::guest_introspection(node_id(
+            "node-a",
+        )));
+        let (branch_reply, branch_receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::DebugForkNonCanonical {
+            request: branch_request,
+            reply: branch_reply,
+        }) {
+            panic!("non-canonical debug branch should clear forward guard: {error}");
+        }
+        let branch = receive_reply(branch_receiver).await;
+        assert!(branch.proves_non_canonical_debug_branch());
+        assert!(
+            branch
+                .guest_introspection_features
+                .is_some_and(GuestIntrospectionFeatures::ssh_bridge)
+        );
+        assert!(!engine.debug_branch_required());
+        let branch_entries = engine.drain_event_log_entries();
+        assert_eq!(branch_entries.len(), 1);
+        assert_eq!(branch_entries[0].sequence(), 0);
+        let branch_count = engine.graph.debug_non_canonical_branch_count();
+        let stale_prefix_error = engine
+            .apply_command(SessionCommand::DebugForkNonCanonical {
                 request: DebugNonCanonicalBranchRequest::new(
                     first.clone(),
                     engine.frontier(),
@@ -757,101 +737,132 @@ async fn debug_time_travel_commands_reposition_without_scheduler_control_log() {
                     DebugOperatorControlKind::Continue,
                 )),
                 reply: CommandReply::discard(),
-            },
-            &[test_event_log_entry(7)],
-        )
-        .expect_err("same-length malformed branch prefix must fail before graph mutation");
-    assert!(matches!(
-        malformed_prefix_error,
-        SessionError::EventLogOffsetMismatch {
-            current: 1,
-            emitted: 0,
-            next: 7,
-        }
-    ));
-    assert_eq!(
-        engine.graph.debug_non_canonical_branch_count(),
-        branch_count,
-        "malformed same-length prefix must not mutate graph branch metadata"
-    );
-    let unauthorized_record = GuestIntrospectionRecord::new(
-        1,
-        crucible_protocol::guest_introspection::GuestIntrospectionMessage::Close,
-    )
-    .unwrap_or_else(|error| panic!("guest-introspection fixture must be valid: {error}"));
-    let unauthorized_error = engine
-        .apply_command_with_event_log(
-            SessionCommand::GuestIntrospection {
-                node: node_id("guest-disabled"),
-                channel_id: 1,
-                request: Some(unauthorized_record),
-                reply: CommandReply::discard(),
-            },
-            &branch_entries,
-        )
-        .expect_err("guest introspection must require explicit white-box authorization");
-    assert!(matches!(
-        unauthorized_error,
-        SessionError::GuestIntrospectionNotAuthorized { node }
-            if node == "guest-disabled"
-    ));
-    let guest_record = match GuestIntrospectionRecord::new(
-        1,
-        crucible_protocol::guest_introspection::GuestIntrospectionMessage::Close,
-    ) {
-        Ok(record) => record,
-        Err(error) => panic!("guest-introspection fixture must be valid: {error}"),
-    };
-    let guest_error = engine
-        .apply_command_with_event_log(
-            SessionCommand::GuestIntrospection {
-                node: NodeId {
-                    name: String::from("node-a"),
+            })
+            .expect_err("direct branch without a nonzero event-log prefix must fail first");
+        assert!(matches!(
+            stale_prefix_error,
+            SessionError::EventLogOffsetMismatch {
+                current: 1,
+                emitted: 0,
+                next: 0,
+            }
+        ));
+        assert_eq!(
+            engine.graph.debug_non_canonical_branch_count(),
+            branch_count,
+            "prefix mismatch must not mutate graph branch metadata"
+        );
+        let malformed_prefix_error = engine
+            .apply_command_with_event_log(
+                SessionCommand::DebugForkNonCanonical {
+                    request: DebugNonCanonicalBranchRequest::new(
+                        first.clone(),
+                        engine.frontier(),
+                        DebugNonCanonicalBranchTrigger::OperatorContinue,
+                    )
+                    .with_action(
+                        DebugNonCanonicalBranchAction::operator_control(
+                            DebugOperatorControlKind::Continue,
+                        ),
+                    ),
+                    reply: CommandReply::discard(),
                 },
-                channel_id: 1,
-                request: Some(guest_record),
-                reply: CommandReply::discard(),
-            },
-            &branch_entries,
+                &[test_event_log_entry(7)],
+            )
+            .expect_err("same-length malformed branch prefix must fail before graph mutation");
+        assert!(matches!(
+            malformed_prefix_error,
+            SessionError::EventLogOffsetMismatch {
+                current: 1,
+                emitted: 0,
+                next: 7,
+            }
+        ));
+        assert_eq!(
+            engine.graph.debug_non_canonical_branch_count(),
+            branch_count,
+            "malformed same-length prefix must not mutate graph branch metadata"
+        );
+        let unauthorized_record = GuestIntrospectionRecord::new(
+            1,
+            crucible_protocol::guest_introspection::GuestIntrospectionMessage::Close,
         )
-        .expect_err("stub backend must reject guest introspection after the fork gate opens");
-    assert!(matches!(
-        guest_error,
-        SessionError::Scheduler(SchedulerError::Backend(BackendError::Unsupported {
-            capability: "send_guest_introspection"
-        }))
-    ));
-    if let Err(error) = engine.apply_command(SessionCommand::Continue) {
-        panic!("continue after non-canonical branch marker should be accepted: {error}");
-    }
+        .unwrap_or_else(|error| panic!("guest-introspection fixture must be valid: {error}"));
+        let unauthorized_error = engine
+            .apply_command_with_event_log(
+                SessionCommand::GuestIntrospection {
+                    node: node_id("guest-disabled"),
+                    channel_id: 1,
+                    request: Some(unauthorized_record),
+                    reply: CommandReply::discard(),
+                },
+                &branch_entries,
+            )
+            .expect_err("guest introspection must require explicit white-box authorization");
+        assert!(matches!(
+            unauthorized_error,
+            SessionError::GuestIntrospectionNotAuthorized { node }
+                if node == "guest-disabled"
+        ));
+        let guest_record = match GuestIntrospectionRecord::new(
+            1,
+            crucible_protocol::guest_introspection::GuestIntrospectionMessage::Close,
+        ) {
+            Ok(record) => record,
+            Err(error) => panic!("guest-introspection fixture must be valid: {error}"),
+        };
+        let guest_error = engine
+            .apply_command_with_event_log(
+                SessionCommand::GuestIntrospection {
+                    node: NodeId {
+                        name: String::from("node-a"),
+                    },
+                    channel_id: 1,
+                    request: Some(guest_record),
+                    reply: CommandReply::discard(),
+                },
+                &branch_entries,
+            )
+            .expect_err("stub backend must reject guest introspection after the fork gate opens");
+        assert!(matches!(
+            guest_error,
+            SessionError::Scheduler(SchedulerError::Backend(BackendError::Unsupported {
+                capability: "send_guest_introspection"
+            }))
+        ));
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("continue after non-canonical branch marker should be accepted: {error}");
+        }
 
-    let (reverse_step_reply, reverse_step_receiver) = CommandReply::channel();
-    if let Err(error) = engine.apply_command(SessionCommand::DebugReverseStep {
-        request: DebugReverseStepRequest::new(
-            first.clone(),
-            DebugReverseStepGrain::Instruction,
-            Vec::new(),
-        ),
-        reply: reverse_step_reply,
-    }) {
-        panic!("reverse-step should delegate through debug goto: {error}");
-    }
-    let reverse_step = receive_reply(reverse_step_receiver).await;
-    assert_eq!(reverse_step.target_configuration, root.id());
-    assert!(reverse_step.realized_by_goto());
-    assert_eq!(engine.configuration().id(), root.id());
-    assert!(engine.debug_branch_required());
-    assert!(engine.boundary_control_log().is_empty());
-    if let Err(error) = engine.apply_command(SessionCommand::Stop) {
-        panic!("stop after debug reposition should be accepted: {error}");
-    }
-    let terminal_continue = engine
-        .apply_command(SessionCommand::Continue)
-        .expect_err("terminal continue should fail as invalid transition, not debug guard");
-    assert!(matches!(
-        terminal_continue,
-        SessionError::InvalidTransition { .. }
-    ));
+        let (reverse_step_reply, reverse_step_receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::DebugReverseStep {
+            request: DebugReverseStepRequest::new(
+                first.clone(),
+                DebugReverseStepGrain::Instruction,
+                Vec::new(),
+            ),
+            reply: reverse_step_reply,
+        }) {
+            panic!("reverse-step should delegate through debug goto: {error}");
+        }
+        let reverse_step = receive_reply(reverse_step_receiver).await;
+        assert_eq!(reverse_step.target_configuration, root.id());
+        assert!(reverse_step.realized_by_goto());
+        assert_eq!(engine.configuration().id(), root.id());
+        assert!(engine.debug_branch_required());
+        assert!(engine.boundary_control_log().is_empty());
+        if let Err(error) = engine.apply_command(SessionCommand::Stop) {
+            panic!("stop after debug reposition should be accepted: {error}");
+        }
+        let terminal_continue = engine
+            .apply_command(SessionCommand::Continue)
+            .expect_err("terminal continue should fail as invalid transition, not debug guard");
+        assert!(matches!(
+            terminal_continue,
+            SessionError::InvalidTransition { .. }
+        ));
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -959,132 +970,139 @@ async fn mismatched_debug_runtime_evidence_fails_closed_without_committing_model
 
 #[tokio::test]
 async fn actor_debug_noncanonical_branch_appends_visible_event_log_marker() {
-    let (root, first, second, graph) = debug_time_travel_fixture();
-    let engine = Engine::new(second.clone(), graph, DebugGdbLoop);
-    let (_sender, receiver) = mpsc::channel(4);
-    let mut actor = SessionActor::new(engine, receiver);
+    admitted_fixture(async {
+        let (root, first, second, graph) = debug_time_travel_fixture();
+        let engine = Engine::new(second.clone(), graph, DebugGdbLoop);
+        let (_sender, receiver) = mpsc::channel(4);
+        let mut actor = SessionActor::new(engine, receiver);
 
-    if let Err(error) = actor
-        .apply_command_without_spawning_forks(SessionCommand::Start)
-        .await
-    {
-        panic!("debug actor fixture should instantiate: {error}");
-    }
-    let (attach_reply, attach_receiver) = CommandReply::channel();
-    if let Err(error) = actor
-        .apply_command_without_spawning_forks(SessionCommand::AttachGdb {
-            node: node_id("guest-a"),
-            listen: gdb_listen("127.0.0.1:9000"),
-            debug_genesis: None,
-            reply: attach_reply,
-        })
-        .await
-    {
-        panic!("debug actor should attach gdb: {error}");
-    }
-    let attach = receive_reply(attach_receiver).await;
-    assert_eq!(attach.configuration, second.id());
+        if let Err(error) = actor
+            .apply_command_without_spawning_forks(SessionCommand::Start)
+            .await
+        {
+            panic!("debug actor fixture should instantiate: {error}");
+        }
+        let (attach_reply, attach_receiver) = CommandReply::channel();
+        if let Err(error) = actor
+            .apply_command_without_spawning_forks(SessionCommand::AttachGdb {
+                node: node_id("guest-a"),
+                listen: gdb_listen("127.0.0.1:9000"),
+                debug_genesis: None,
+                reply: attach_reply,
+            })
+            .await
+        {
+            panic!("debug actor should attach gdb: {error}");
+        }
+        let attach = receive_reply(attach_receiver).await;
+        assert_eq!(attach.configuration, second.id());
 
-    let mut unread_stream = actor.event_log_stream(EventLogCursor::new(0));
-    let mut past_stream = actor.event_log_stream(EventLogCursor::new(0));
+        let mut unread_stream = actor.event_log_stream(EventLogCursor::new(0));
+        let mut past_stream = actor.event_log_stream(EventLogCursor::new(0));
 
-    actor
-        .append_event_log_entries(&[test_event_log_entry(0), test_event_log_entry(1)])
-        .unwrap_or_else(|error| panic!("debug history fixture must append: {error}"));
-    actor.engine.event_log_len = 2;
-    for expected in [test_event_log_entry(0), test_event_log_entry(1)] {
-        let frame = past_stream
+        actor
+            .append_event_log_entries(&admitted_test_entries(&[
+                test_event_log_entry(0),
+                test_event_log_entry(1),
+            ]))
+            .unwrap_or_else(|error| panic!("debug history fixture must append: {error}"));
+        actor.engine.event_log_len = 2;
+        for expected in [test_event_log_entry(0), test_event_log_entry(1)] {
+            let frame = past_stream
+                .recv()
+                .await
+                .expect("past stream should not lag before rewind")
+                .expect("past stream should receive the stale prefix before rewind");
+            assert_eq!(frame.generation, 0);
+            assert_eq!(&**frame.entry, &expected);
+        }
+        assert_eq!(past_stream.cursor(), EventLogCursor::new(2));
+
+        let (goto_reply, goto_receiver) = CommandReply::channel();
+        if let Err(error) = actor
+            .apply_command_without_spawning_forks(SessionCommand::DebugGoto {
+                // The actor replaces this stale caller-supplied current coordinate
+                // with its authoritative engine configuration before dispatch.
+                request: DebugGotoRequest::at_configuration(root.clone(), first.clone()),
+                reply: goto_reply,
+            })
+            .await
+        {
+            panic!("debug goto should rewind actor to first prefix: {error}");
+        }
+        let goto = receive_reply(goto_receiver).await;
+        assert_eq!(goto.target_configuration, first.id());
+        assert_eq!(actor.engine.event_log_len(), 0);
+
+        let branch_request = DebugNonCanonicalBranchRequest::new(
+            first.clone(),
+            actor.engine.frontier(),
+            DebugNonCanonicalBranchTrigger::OperatorContinue,
+        )
+        .with_action(DebugNonCanonicalBranchAction::operator_control(
+            DebugOperatorControlKind::Continue,
+        ));
+        let (branch_reply, branch_receiver) = CommandReply::channel();
+        if let Err(error) = actor
+            .apply_command_without_spawning_forks(SessionCommand::DebugForkNonCanonical {
+                request: branch_request,
+                reply: branch_reply,
+            })
+            .await
+        {
+            panic!("debug branch should append through actor event log: {error}");
+        }
+        let branch = receive_reply(branch_receiver).await;
+        assert!(branch.proves_non_canonical_debug_branch());
+        let marker = branch.branch.fork_marker.entry.clone();
+        let mut replay = actor.event_log_stream(EventLogCursor::new(0));
+        let frame = replay
             .recv()
             .await
-            .expect("past stream should not lag before rewind")
-            .expect("past stream should receive the stale prefix before rewind");
-        assert_eq!(frame.generation, 0);
-        assert_eq!(frame.entry, expected);
-    }
-    assert_eq!(past_stream.cursor(), EventLogCursor::new(2));
+            .expect("event-log stream should not lag")
+            .expect("debug branch marker should be visible after stale future truncation");
+        assert_eq!(frame.cursor, EventLogCursor::new(0));
+        assert!(frame.generation > 0);
+        assert_eq!(&**frame.entry, &marker);
+        assert_ne!(&**frame.entry, &test_event_log_entry(0));
+        assert_ne!(&**frame.entry, &test_event_log_entry(1));
 
-    let (goto_reply, goto_receiver) = CommandReply::channel();
-    if let Err(error) = actor
-        .apply_command_without_spawning_forks(SessionCommand::DebugGoto {
-            // The actor replaces this stale caller-supplied current coordinate
-            // with its authoritative engine configuration before dispatch.
-            request: DebugGotoRequest::at_configuration(root.clone(), first.clone()),
-            reply: goto_reply,
-        })
-        .await
-    {
-        panic!("debug goto should rewind actor to first prefix: {error}");
-    }
-    let goto = receive_reply(goto_receiver).await;
-    assert_eq!(goto.target_configuration, first.id());
-    assert_eq!(actor.engine.event_log_len(), 0);
+        let unread_frame = unread_stream
+            .recv()
+            .await
+            .expect("unread active stream should not lag")
+            .expect("unread active stream should receive the replacement marker");
+        assert_eq!(unread_frame.cursor, EventLogCursor::new(0));
+        assert!(unread_frame.generation > 0);
+        assert_eq!(&**unread_frame.entry, &marker);
+        assert_ne!(&**unread_frame.entry, &test_event_log_entry(0));
+        assert_ne!(&**unread_frame.entry, &test_event_log_entry(1));
 
-    let branch_request = DebugNonCanonicalBranchRequest::new(
-        first.clone(),
-        actor.engine.frontier(),
-        DebugNonCanonicalBranchTrigger::OperatorContinue,
-    )
-    .with_action(DebugNonCanonicalBranchAction::operator_control(
-        DebugOperatorControlKind::Continue,
-    ));
-    let (branch_reply, branch_receiver) = CommandReply::channel();
-    if let Err(error) = actor
-        .apply_command_without_spawning_forks(SessionCommand::DebugForkNonCanonical {
-            request: branch_request,
-            reply: branch_reply,
-        })
-        .await
-    {
-        panic!("debug branch should append through actor event log: {error}");
-    }
-    let branch = receive_reply(branch_receiver).await;
-    assert!(branch.proves_non_canonical_debug_branch());
-    let marker = branch.branch.fork_marker.entry.clone();
-    let mut replay = actor.event_log_stream(EventLogCursor::new(0));
-    let frame = replay
-        .recv()
-        .await
-        .expect("event-log stream should not lag")
-        .expect("debug branch marker should be visible after stale future truncation");
-    assert_eq!(frame.cursor, EventLogCursor::new(0));
-    assert!(frame.generation > 0);
-    assert_eq!(frame.entry, marker);
-    assert_ne!(frame.entry, test_event_log_entry(0));
-    assert_ne!(frame.entry, test_event_log_entry(1));
+        let past_frame = past_stream
+            .recv()
+            .await
+            .expect("past active stream should not lag")
+            .expect("past active stream should receive the replacement marker");
+        assert_eq!(past_frame.cursor, EventLogCursor::new(0));
+        assert!(past_frame.generation > 0);
+        assert_eq!(&**past_frame.entry, &marker);
+        assert_ne!(&**past_frame.entry, &test_event_log_entry(0));
+        assert_ne!(&**past_frame.entry, &test_event_log_entry(1));
 
-    let unread_frame = unread_stream
-        .recv()
-        .await
-        .expect("unread active stream should not lag")
-        .expect("unread active stream should receive the replacement marker");
-    assert_eq!(unread_frame.cursor, EventLogCursor::new(0));
-    assert!(unread_frame.generation > 0);
-    assert_eq!(unread_frame.entry, marker);
-    assert_ne!(unread_frame.entry, test_event_log_entry(0));
-    assert_ne!(unread_frame.entry, test_event_log_entry(1));
-
-    let past_frame = past_stream
-        .recv()
-        .await
-        .expect("past active stream should not lag")
-        .expect("past active stream should receive the replacement marker");
-    assert_eq!(past_frame.cursor, EventLogCursor::new(0));
-    assert!(past_frame.generation > 0);
-    assert_eq!(past_frame.entry, marker);
-    assert_ne!(past_frame.entry, test_event_log_entry(0));
-    assert_ne!(past_frame.entry, test_event_log_entry(1));
-
-    assert_eq!(actor.event_log.len(), 1);
-    assert_eq!(actor.condition_event_log.len(), 1);
-    assert_eq!(actor.condition_event_log[0], marker);
-    assert_eq!(
-        actor.debug_event_coordinates.get(&marker.sequence()),
-        Some(&actor.engine().snapshot().configuration),
-    );
+        assert_eq!(actor.event_log.len(), 1);
+        assert_eq!(actor.condition_event_log.len(), 1);
+        assert_eq!(actor.condition_event_log[0], marker);
+        assert_eq!(
+            actor.debug_event_coordinates.get(&marker.sequence()),
+            Some(&actor.engine().snapshot().configuration),
+        );
+    })
+    .await;
 }
 
 #[test]
 fn actor_debug_history_indexes_each_emitted_decision_prefix() {
+    let _scope = fixture_metadata_scope();
     let (root, first, second, graph) = debug_time_travel_fixture();
     let engine = Engine::new(second.clone(), graph, DebugGdbLoop);
     let (_sender, receiver) = mpsc::channel(4);
@@ -1096,26 +1114,30 @@ fn actor_debug_history_indexes_each_emitted_decision_prefix() {
             0,
             VirtualTime { ticks: 1 },
             SchedulerEventLogPayload::Decision(decisions[0].clone()),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite fixture event identity: {error}")),
         crucible::test_support::condition_payload_entry_for_test(
             1,
             VirtualTime { ticks: 1 },
             resolved_backend_input_payload(1),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite fixture event identity: {error}")),
         crucible::test_support::condition_payload_entry_for_test(
             2,
             VirtualTime { ticks: 2 },
             SchedulerEventLogPayload::Decision(decisions[1].clone()),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite fixture event identity: {error}")),
         crucible::test_support::condition_boundary_entry_for_test(
             3,
             VirtualTime { ticks: 2 },
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite fixture event identity: {error}")),
     ];
     actor.engine.event_log_len = entries.len();
     actor
-        .append_event_log_entries(&entries)
+        .append_event_log_entries(&admitted_test_entries(&entries))
         .unwrap_or_else(|error| panic!("multi-entry history must append: {error}"));
 
     assert_ne!(root, first);
@@ -1132,12 +1154,13 @@ fn actor_non_advancing_command_preserves_future_coordinate_indexes() {
     let engine = Engine::new(second.clone(), graph, DebugGdbLoop);
     let (_sender, receiver) = mpsc::channel(4);
     let mut actor = SessionActor::new(engine, receiver);
-    actor.condition_event_log = vec![test_event_log_entry(0), test_event_log_entry(1)];
+    actor.condition_event_log =
+        admitted_test_entries(&[test_event_log_entry(0), test_event_log_entry(1)]);
     actor.debug_event_coordinates = BTreeMap::from([(0, second.clone()), (1, second)]);
     actor.engine.event_log_len = 1;
 
     actor
-        .append_event_log_entries(&[])
+        .append_event_log_entries(&AdmittedEventEntries::default())
         .unwrap_or_else(|error| panic!("empty command boundary must preserve history: {error}"));
 
     assert_eq!(actor.condition_event_log.len(), 2);
@@ -1586,7 +1609,16 @@ async fn actor_control_replay_publishes_exact_logs_and_stays_terminal_observable
         actor.event_log().len(),
         u64::try_from(artifact.final_snapshot.event_log_len).unwrap_or(u64::MAX)
     );
-    assert_eq!(actor.reproduction_log().snapshot(), artifact.control_log);
+    {
+        let budget = crate::session_streams::admission_tests::fixture_budget()
+            .unwrap_or_else(|error| panic!("finite snapshot fixture authority: {error}"));
+        let _scope = budget.enter();
+        let reproduction = actor
+            .reproduction_log()
+            .snapshot_admitted()
+            .unwrap_or_else(|error| panic!("admitted actor reproduction snapshot: {error}"));
+        assert_eq!(reproduction.entries(), artifact.control_log);
+    }
 
     let actor_task = tokio::spawn(actor.run());
     let (query_reply, query_receiver) = CommandReply::channel();
@@ -1671,658 +1703,691 @@ async fn pause_and_stop_take_effect_at_boundary_without_extra_quantum() {
 
 #[tokio::test]
 async fn breakpoint_suspend_uses_shared_condition_and_preserves_canonical_log() {
-    let baseline_entries = {
+    admitted_fixture(async {
+        let baseline_entries = {
+            let scenario = generated_scenario(38);
+            let config = Configuration::genesis(scenario.clone());
+            let graph = graph_with_baked_genesis(&scenario);
+            let mut engine = Engine::new(config, graph, ScriptedStepLoop::default());
+            if let Err(error) = engine.apply_command(SessionCommand::Start) {
+                panic!("baseline start should instantiate runtime: {error}");
+            }
+            if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+                panic!("baseline continue should enter running state: {error}");
+            }
+            let (_sender, receiver) = mpsc::channel(1);
+            let mut actor = SessionActor::new(engine, receiver);
+            if let Err(error) = actor.run_once().await {
+                panic!("baseline actor should drive one quantum: {error}");
+            }
+            actor.event_log.lock_entries().clone()
+        };
+
         let scenario = generated_scenario(38);
         let config = Configuration::genesis(scenario.clone());
         let graph = graph_with_baked_genesis(&scenario);
         let mut engine = Engine::new(config, graph, ScriptedStepLoop::default());
         if let Err(error) = engine.apply_command(SessionCommand::Start) {
-            panic!("baseline start should instantiate runtime: {error}");
+            panic!("breakpoint start should instantiate runtime: {error}");
         }
+        let predicate = Predicate::all_of(vec![
+            Predicate::once(Predicate::at(VirtualTime { ticks: 1 })),
+            Predicate::not(Predicate::at(VirtualTime { ticks: 2 })),
+        ]);
+        let breakpoint = BreakpointSpec::suspend_once(predicate.clone());
+        let (reply, receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: breakpoint.clone(),
+            reply,
+        }) {
+            panic!("breakpoint should register before continue: {error}");
+        }
+        let breakpoint_id = receive_reply(receiver).await;
         if let Err(error) = engine.apply_command(SessionCommand::Continue) {
-            panic!("baseline continue should enter running state: {error}");
+            panic!("breakpoint continue should enter running state: {error}");
         }
         let (_sender, receiver) = mpsc::channel(1);
         let mut actor = SessionActor::new(engine, receiver);
+
         if let Err(error) = actor.run_once().await {
-            panic!("baseline actor should drive one quantum: {error}");
+            panic!("breakpoint actor should drive one quantum: {error}");
         }
-        actor.event_log.lock_entries().clone()
-    };
 
-    let scenario = generated_scenario(38);
-    let config = Configuration::genesis(scenario.clone());
-    let graph = graph_with_baked_genesis(&scenario);
-    let mut engine = Engine::new(config, graph, ScriptedStepLoop::default());
-    if let Err(error) = engine.apply_command(SessionCommand::Start) {
-        panic!("breakpoint start should instantiate runtime: {error}");
-    }
-    let predicate = Predicate::all_of(vec![
-        Predicate::once(Predicate::at(VirtualTime { ticks: 1 })),
-        Predicate::not(Predicate::at(VirtualTime { ticks: 2 })),
-    ]);
-    let breakpoint = BreakpointSpec::suspend_once(predicate.clone());
-    let (reply, receiver) = CommandReply::channel();
-    if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
-        spec: breakpoint.clone(),
-        reply,
-    }) {
-        panic!("breakpoint should register before continue: {error}");
-    }
-    let breakpoint_id = receive_reply(receiver).await;
-    if let Err(error) = engine.apply_command(SessionCommand::Continue) {
-        panic!("breakpoint continue should enter running state: {error}");
-    }
-    let (_sender, receiver) = mpsc::channel(1);
-    let mut actor = SessionActor::new(engine, receiver);
-
-    if let Err(error) = actor.run_once().await {
-        panic!("breakpoint actor should drive one quantum: {error}");
-    }
-
-    assert_eq!(
-        actor.engine().state(),
-        &EngineState::Paused {
-            reason: PauseReason::Breakpoint { id: breakpoint_id },
-        }
-    );
-    assert!(actor.engine().breakpoints().is_empty());
-    assert_eq!(
-        &*actor.event_log.lock_entries(),
-        baseline_entries.as_slice()
-    );
-    assert_eq!(
-        actor.engine().breakpoint_firings(),
-        &[BreakpointFiring {
-            sequence: 1,
-            id: breakpoint_id,
-            predicate,
-            disposition: BreakpointDisposition::Suspend,
-            frontier: VirtualTime { ticks: 1 },
-            quanta: 1,
-            scheduler_controls: Vec::new(),
-        }]
-    );
+        assert_eq!(
+            actor.engine().state(),
+            &EngineState::Paused {
+                reason: PauseReason::Breakpoint { id: breakpoint_id },
+            }
+        );
+        assert!(actor.engine().breakpoints().is_empty());
+        assert_eq!(
+            actor.event_log.lock_entries().as_slice(),
+            baseline_entries.as_slice()
+        );
+        assert_eq!(
+            actor.engine().breakpoint_firings(),
+            &[BreakpointFiring {
+                sequence: 1,
+                id: breakpoint_id,
+                predicate,
+                disposition: BreakpointDisposition::Suspend,
+                frontier: VirtualTime { ticks: 1 },
+                quanta: 1,
+                scheduler_controls: Vec::new(),
+            }]
+        );
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn repeatable_trace_breakpoint_fires_on_false_to_true_transitions() {
-    let scenario = generated_scenario(39);
-    let config = Configuration::genesis(scenario.clone());
-    let graph = graph_with_baked_genesis(&scenario);
-    let mut engine = Engine::new(config, graph, ScriptedStepLoop::default());
-    if let Err(error) = engine.apply_command(SessionCommand::Start) {
-        panic!("trace breakpoint start should instantiate runtime: {error}");
-    }
-    let predicate = Predicate::any_of(vec![
-        Predicate::at(VirtualTime { ticks: 1 }),
-        Predicate::at(VirtualTime { ticks: 3 }),
-    ]);
-    let breakpoint = BreakpointSpec {
-        predicate,
-        disposition: BreakpointDisposition::Trace,
-        policy: BreakpointPolicy::Repeatable,
-    };
-    let (reply, receiver) = CommandReply::channel();
-    if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
-        spec: breakpoint,
-        reply,
-    }) {
-        panic!("trace breakpoint should register before continue: {error}");
-    }
-    let breakpoint_id = receive_reply(receiver).await;
-    if let Err(error) = engine.apply_command(SessionCommand::Continue) {
-        panic!("trace breakpoint continue should enter running state: {error}");
-    }
-    let (_sender, receiver) = mpsc::channel(1);
-    let mut actor = SessionActor::new(engine, receiver);
+    admitted_fixture(async {
+        let scenario = generated_scenario(39);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(config, graph, ScriptedStepLoop::default());
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("trace breakpoint start should instantiate runtime: {error}");
+        }
+        let predicate = Predicate::any_of(vec![
+            Predicate::at(VirtualTime { ticks: 1 }),
+            Predicate::at(VirtualTime { ticks: 3 }),
+        ]);
+        let breakpoint = BreakpointSpec {
+            predicate,
+            disposition: BreakpointDisposition::Trace,
+            policy: BreakpointPolicy::Repeatable,
+        };
+        let (reply, receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: breakpoint,
+            reply,
+        }) {
+            panic!("trace breakpoint should register before continue: {error}");
+        }
+        let breakpoint_id = receive_reply(receiver).await;
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("trace breakpoint continue should enter running state: {error}");
+        }
+        let (_sender, receiver) = mpsc::channel(1);
+        let mut actor = SessionActor::new(engine, receiver);
 
-    if let Err(error) = actor.run_once().await {
-        panic!("first trace quantum should run: {error}");
-    }
-    assert_eq!(actor.engine().breakpoint_firings().len(), 1);
-    assert!(matches!(actor.engine().state(), EngineState::Running));
+        if let Err(error) = actor.run_once().await {
+            panic!("first trace quantum should run: {error}");
+        }
+        assert_eq!(actor.engine().breakpoint_firings().len(), 1);
+        assert!(matches!(actor.engine().state(), EngineState::Running));
 
-    if let Err(error) = actor.run_once().await {
-        panic!("second trace quantum should run: {error}");
-    }
-    assert_eq!(actor.engine().breakpoint_firings().len(), 1);
-    assert!(actor.engine().breakpoints().get(breakpoint_id).is_some());
+        if let Err(error) = actor.run_once().await {
+            panic!("second trace quantum should run: {error}");
+        }
+        assert_eq!(actor.engine().breakpoint_firings().len(), 1);
+        assert!(actor.engine().breakpoints().get(breakpoint_id).is_some());
 
-    if let Err(error) = actor.run_once().await {
-        panic!("third trace quantum should run: {error}");
-    }
-    assert_eq!(
-        actor
-            .engine()
-            .breakpoint_firings()
-            .iter()
-            .map(|firing| firing.id)
-            .collect::<Vec<_>>(),
-        vec![breakpoint_id, breakpoint_id]
-    );
-    assert!(matches!(actor.engine().state(), EngineState::Running));
+        if let Err(error) = actor.run_once().await {
+            panic!("third trace quantum should run: {error}");
+        }
+        assert_eq!(
+            actor
+                .engine()
+                .breakpoint_firings()
+                .iter()
+                .map(|firing| firing.id)
+                .collect::<Vec<_>>(),
+            vec![breakpoint_id, breakpoint_id]
+        );
+        assert!(matches!(actor.engine().state(), EngineState::Running));
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn breakpoint_once_combinator_latches_across_boundaries() {
-    let scenario = generated_scenario(40);
-    let config = Configuration::genesis(scenario.clone());
-    let graph = graph_with_baked_genesis(&scenario);
-    let mut engine = Engine::new(config, graph, ScriptedStepLoop::default());
-    if let Err(error) = engine.apply_command(SessionCommand::Start) {
-        panic!("once breakpoint start should instantiate runtime: {error}");
-    }
-    let predicate = Predicate::all_of(vec![
-        Predicate::once(Predicate::at(VirtualTime { ticks: 1 })),
-        Predicate::at(VirtualTime { ticks: 3 }),
-    ]);
-    let breakpoint = BreakpointSpec {
-        predicate,
-        disposition: BreakpointDisposition::Trace,
-        policy: BreakpointPolicy::Repeatable,
-    };
-    let (reply, receiver) = CommandReply::channel();
-    if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
-        spec: breakpoint,
-        reply,
-    }) {
-        panic!("once breakpoint should register before continue: {error}");
-    }
-    let breakpoint_id = receive_reply(receiver).await;
-    if let Err(error) = engine.apply_command(SessionCommand::Continue) {
-        panic!("once breakpoint continue should enter running state: {error}");
-    }
-    let (_sender, receiver) = mpsc::channel(1);
-    let mut actor = SessionActor::new(engine, receiver);
-
-    for quantum in 1..=2 {
-        if let Err(error) = actor.run_once().await {
-            panic!("once breakpoint quantum {quantum} should run: {error}");
+    admitted_fixture(async {
+        let scenario = generated_scenario(40);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(config, graph, ScriptedStepLoop::default());
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("once breakpoint start should instantiate runtime: {error}");
         }
-        assert!(actor.engine().breakpoint_firings().is_empty());
-    }
+        let predicate = Predicate::all_of(vec![
+            Predicate::once(Predicate::at(VirtualTime { ticks: 1 })),
+            Predicate::at(VirtualTime { ticks: 3 }),
+        ]);
+        let breakpoint = BreakpointSpec {
+            predicate,
+            disposition: BreakpointDisposition::Trace,
+            policy: BreakpointPolicy::Repeatable,
+        };
+        let (reply, receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: breakpoint,
+            reply,
+        }) {
+            panic!("once breakpoint should register before continue: {error}");
+        }
+        let breakpoint_id = receive_reply(receiver).await;
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("once breakpoint continue should enter running state: {error}");
+        }
+        let (_sender, receiver) = mpsc::channel(1);
+        let mut actor = SessionActor::new(engine, receiver);
 
-    if let Err(error) = actor.run_once().await {
-        panic!("once breakpoint third quantum should run: {error}");
-    }
+        for quantum in 1..=2 {
+            if let Err(error) = actor.run_once().await {
+                panic!("once breakpoint quantum {quantum} should run: {error}");
+            }
+            assert!(actor.engine().breakpoint_firings().is_empty());
+        }
 
-    assert_eq!(
-        actor
-            .engine()
-            .breakpoint_firings()
-            .iter()
-            .map(|firing| firing.id)
-            .collect::<Vec<_>>(),
-        vec![breakpoint_id]
-    );
-    assert!(matches!(actor.engine().state(), EngineState::Running));
+        if let Err(error) = actor.run_once().await {
+            panic!("once breakpoint third quantum should run: {error}");
+        }
+
+        assert_eq!(
+            actor
+                .engine()
+                .breakpoint_firings()
+                .iter()
+                .map(|firing| firing.id)
+                .collect::<Vec<_>>(),
+            vec![breakpoint_id]
+        );
+        assert!(matches!(actor.engine().state(), EngineState::Running));
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn unsupported_breakpoint_action_fails_loudly() {
-    let scenario = generated_scenario(42);
-    let config = Configuration::genesis(scenario.clone());
-    let graph = graph_with_baked_genesis(&scenario);
-    let mut engine = Engine::new(config, graph, ScriptedStepLoop::default());
-    if let Err(error) = engine.apply_command(SessionCommand::Start) {
-        panic!("unsupported-action breakpoint start should instantiate runtime: {error}");
-    }
-    let breakpoint = BreakpointSpec {
-        predicate: Predicate::at(VirtualTime { ticks: 1 }),
-        disposition: BreakpointDisposition::Action(Action::Log {
-            level: LogLevel::Info,
-            message: String::from("unsupported breakpoint action"),
-        }),
-        policy: BreakpointPolicy::OneShot,
-    };
-    let (reply, receiver) = CommandReply::channel();
-    if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
-        spec: breakpoint,
-        reply,
-    }) {
-        panic!("unsupported-action breakpoint should register: {error}");
-    }
-    let _breakpoint_id = receive_reply(receiver).await;
-    if let Err(error) = engine.apply_command(SessionCommand::Continue) {
-        panic!("unsupported-action breakpoint continue should enter running state: {error}");
-    }
-    let (_sender, receiver) = mpsc::channel(1);
-    let mut actor = SessionActor::new(engine, receiver);
+    admitted_fixture(async {
+        let scenario = generated_scenario(42);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(config, graph, ScriptedStepLoop::default());
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("unsupported-action breakpoint start should instantiate runtime: {error}");
+        }
+        let breakpoint = BreakpointSpec {
+            predicate: Predicate::at(VirtualTime { ticks: 1 }),
+            disposition: BreakpointDisposition::Action(Action::Log {
+                level: LogLevel::Info,
+                message: String::from("unsupported breakpoint action"),
+            }),
+            policy: BreakpointPolicy::OneShot,
+        };
+        let (reply, receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: breakpoint,
+            reply,
+        }) {
+            panic!("unsupported-action breakpoint should register: {error}");
+        }
+        let _breakpoint_id = receive_reply(receiver).await;
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("unsupported-action breakpoint continue should enter running state: {error}");
+        }
+        let (_sender, receiver) = mpsc::channel(1);
+        let mut actor = SessionActor::new(engine, receiver);
 
-    let error = actor
-        .run_once()
-        .await
-        .expect_err("unsupported action breakpoint should fail loudly");
+        let error = actor
+            .run_once()
+            .await
+            .expect_err("unsupported action breakpoint should fail loudly");
 
-    assert_eq!(
-        error,
-        SessionError::UnsupportedBreakpointAction { action: "log" }
-    );
-    assert!(actor.engine().breakpoint_firings().is_empty());
+        assert_eq!(
+            error,
+            SessionError::UnsupportedBreakpointAction { action: "log" }
+        );
+        assert!(actor.engine().breakpoint_firings().is_empty());
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn breakpoint_action_group_is_prevalidated_before_control_application() {
-    let scenario = generated_scenario(44);
-    let config = Configuration::genesis(scenario.clone());
-    let graph = graph_with_baked_genesis(&scenario);
-    let control_batches = Arc::new(Mutex::new(Vec::new()));
-    let mut engine = Engine::new(
-        config,
-        graph,
-        RecordingLoop::new(Arc::clone(&control_batches)),
-    );
-    if let Err(error) = engine.apply_command(SessionCommand::Start) {
-        panic!("group breakpoint start should instantiate runtime: {error}");
-    }
-    let breakpoint = BreakpointSpec {
-        predicate: Predicate::at(VirtualTime { ticks: 1 }),
-        disposition: BreakpointDisposition::Action(Action::Group(vec![
-            Action::Pass,
-            Action::Log {
-                level: LogLevel::Info,
-                message: String::from("unsupported group suffix"),
-            },
-        ])),
-        policy: BreakpointPolicy::OneShot,
-    };
-    let (reply, receiver) = CommandReply::channel();
-    if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
-        spec: breakpoint,
-        reply,
-    }) {
-        panic!("group breakpoint should register: {error}");
-    }
-    let _breakpoint_id = receive_reply(receiver).await;
-    if let Err(error) = engine.apply_command(SessionCommand::Continue) {
-        panic!("group breakpoint continue should enter running state: {error}");
-    }
-    let (_sender, receiver) = mpsc::channel(1);
-    let mut actor = SessionActor::new(engine, receiver);
+    admitted_fixture(async {
+        let scenario = generated_scenario(44);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let control_batches = Arc::new(Mutex::new(Vec::new()));
+        let mut engine = Engine::new(
+            config,
+            graph,
+            RecordingLoop::new(Arc::clone(&control_batches)),
+        );
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("group breakpoint start should instantiate runtime: {error}");
+        }
+        let breakpoint = BreakpointSpec {
+            predicate: Predicate::at(VirtualTime { ticks: 1 }),
+            disposition: BreakpointDisposition::Action(Action::Group(vec![
+                Action::Pass,
+                Action::Log {
+                    level: LogLevel::Info,
+                    message: String::from("unsupported group suffix"),
+                },
+            ])),
+            policy: BreakpointPolicy::OneShot,
+        };
+        let (reply, receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: breakpoint,
+            reply,
+        }) {
+            panic!("group breakpoint should register: {error}");
+        }
+        let _breakpoint_id = receive_reply(receiver).await;
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("group breakpoint continue should enter running state: {error}");
+        }
+        let (_sender, receiver) = mpsc::channel(1);
+        let mut actor = SessionActor::new(engine, receiver);
 
-    let error = actor
-        .run_once()
-        .await
-        .expect_err("unsupported group suffix should fail before control application");
+        let error = actor
+            .run_once()
+            .await
+            .expect_err("unsupported group suffix should fail before control application");
 
-    assert_eq!(
-        error,
-        SessionError::UnsupportedBreakpointAction { action: "log" }
-    );
-    assert!(actor.engine().breakpoint_firings().is_empty());
-    assert!(actor.engine().boundary_control_log().is_empty());
-    assert_eq!(recorded_control_batches(&control_batches), vec![Vec::new()]);
+        assert_eq!(
+            error,
+            SessionError::UnsupportedBreakpointAction { action: "log" }
+        );
+        assert!(actor.engine().breakpoint_firings().is_empty());
+        assert!(actor.engine().boundary_control_log().is_empty());
+        assert_eq!(recorded_control_batches(&control_batches), vec![Vec::new()]);
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn breakpoint_conditions_cover_node_and_assertion_state_leaves() {
-    let scenario = generated_scenario(45);
-    let config = Configuration::genesis(scenario.clone());
-    let graph = graph_with_baked_genesis(&scenario);
-    let node = NodeId {
-        name: String::from("node-a"),
-    };
-    let assertion = AssertionId::from_name("session-step-assertion");
-    let mut engine = Engine::new(
-        config,
-        graph,
-        ScriptedStepLoop::with_payloads(
-            1,
-            vec![
-                SchedulerEventLogPayload::Observable(ObservableEventPayload::NodeState {
-                    node: node.clone(),
-                    state: NodeLifecycle::Exited,
-                }),
-                SchedulerEventLogPayload::Observable(
-                    ObservableEventPayload::AssertionStateChanged {
-                        name: assertion.clone(),
-                        state: AssertionPhase::Satisfied,
-                    },
-                ),
-            ],
-        ),
-    );
-    if let Err(error) = engine.apply_command(SessionCommand::Start) {
-        panic!("leaf breakpoint start should instantiate runtime: {error}");
-    }
+    admitted_fixture(async {
+        let scenario = generated_scenario(45);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let node = NodeId {
+            name: String::from("node-a"),
+        };
+        let assertion = AssertionId::from_name("session-step-assertion");
+        let mut engine = Engine::new(
+            config,
+            graph,
+            ScriptedStepLoop::with_payloads(
+                1,
+                vec![
+                    SchedulerEventLogPayload::Observable(ObservableEventPayload::NodeState {
+                        node: node.clone(),
+                        state: NodeLifecycle::Exited,
+                    }),
+                    SchedulerEventLogPayload::Observable(
+                        ObservableEventPayload::AssertionStateChanged {
+                            name: assertion.clone(),
+                            state: AssertionPhase::Satisfied,
+                        },
+                    ),
+                ],
+            ),
+        );
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("leaf breakpoint start should instantiate runtime: {error}");
+        }
 
-    let node_breakpoint = BreakpointSpec {
-        predicate: Predicate::node_state(node, NodeLifecycle::Exited),
-        disposition: BreakpointDisposition::Trace,
-        policy: BreakpointPolicy::OneShot,
-    };
-    let (node_reply, node_receiver) = CommandReply::channel();
-    if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
-        spec: node_breakpoint,
-        reply: node_reply,
-    }) {
-        panic!("node-state breakpoint should register: {error}");
-    }
-    let node_breakpoint_id = receive_reply(node_receiver).await;
+        let node_breakpoint = BreakpointSpec {
+            predicate: Predicate::node_state(node, NodeLifecycle::Exited),
+            disposition: BreakpointDisposition::Trace,
+            policy: BreakpointPolicy::OneShot,
+        };
+        let (node_reply, node_receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: node_breakpoint,
+            reply: node_reply,
+        }) {
+            panic!("node-state breakpoint should register: {error}");
+        }
+        let node_breakpoint_id = receive_reply(node_receiver).await;
 
-    let assertion_breakpoint = BreakpointSpec {
-        predicate: Predicate::assertion_state(assertion, AssertionPhase::Satisfied),
-        disposition: BreakpointDisposition::Trace,
-        policy: BreakpointPolicy::OneShot,
-    };
-    let (assertion_reply, assertion_receiver) = CommandReply::channel();
-    if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
-        spec: assertion_breakpoint,
-        reply: assertion_reply,
-    }) {
-        panic!("assertion-state breakpoint should register: {error}");
-    }
-    let assertion_breakpoint_id = receive_reply(assertion_receiver).await;
+        let assertion_breakpoint = BreakpointSpec {
+            predicate: Predicate::assertion_state(assertion, AssertionPhase::Satisfied),
+            disposition: BreakpointDisposition::Trace,
+            policy: BreakpointPolicy::OneShot,
+        };
+        let (assertion_reply, assertion_receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: assertion_breakpoint,
+            reply: assertion_reply,
+        }) {
+            panic!("assertion-state breakpoint should register: {error}");
+        }
+        let assertion_breakpoint_id = receive_reply(assertion_receiver).await;
 
-    if let Err(error) = engine.apply_command(SessionCommand::Continue) {
-        panic!("leaf breakpoint continue should enter running state: {error}");
-    }
-    let (_sender, receiver) = mpsc::channel(1);
-    let mut actor = SessionActor::new(engine, receiver);
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("leaf breakpoint continue should enter running state: {error}");
+        }
+        let (_sender, receiver) = mpsc::channel(1);
+        let mut actor = SessionActor::new(engine, receiver);
 
-    if let Err(error) = actor.run_once().await {
-        panic!("leaf breakpoint quantum should run: {error}");
-    }
+        if let Err(error) = actor.run_once().await {
+            panic!("leaf breakpoint quantum should run: {error}");
+        }
 
-    assert_eq!(
-        actor
-            .engine()
-            .breakpoint_firings()
-            .iter()
-            .map(|firing| firing.id)
-            .collect::<Vec<_>>(),
-        vec![node_breakpoint_id, assertion_breakpoint_id]
-    );
-    assert!(actor.engine().breakpoints().is_empty());
-    assert!(matches!(actor.engine().state(), EngineState::Running));
+        assert_eq!(
+            actor
+                .engine()
+                .breakpoint_firings()
+                .iter()
+                .map(|firing| firing.id)
+                .collect::<Vec<_>>(),
+            vec![node_breakpoint_id, assertion_breakpoint_id]
+        );
+        assert!(actor.engine().breakpoints().is_empty());
+        assert!(matches!(actor.engine().state(), EngineState::Running));
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn breakpoint_conditions_cover_guest_marker_white_box_leaves() {
-    let world = single_node_debug_world("guest-marker-breakpoint")
-        .unwrap_or_else(|error| panic!("guest marker world should build: {error}"));
-    let scenario = world.scenario_def();
-    let node = world
-        .vm_nodes()
-        .first()
-        .map(|node| node.id.clone())
-        .unwrap_or_else(|| panic!("guest marker world should contain a node"));
-    let marker = crucible::MarkerId::from_name("session-marker");
+    admitted_fixture(async {
+        let world = single_node_debug_world("guest-marker-breakpoint")
+            .unwrap_or_else(|error| panic!("guest marker world should build: {error}"));
+        let scenario = world.scenario_def();
+        let node = world
+            .vm_nodes()
+            .first()
+            .map(|node| node.id.clone())
+            .unwrap_or_else(|| panic!("guest marker world should contain a node"));
+        let marker = crucible::MarkerId::from_name("session-marker");
 
-    let config = Configuration::genesis(scenario.clone());
-    let graph = graph_with_baked_genesis(&scenario);
-    let mut denied_engine = Engine::new(
-        config,
-        graph,
-        ScriptedStepLoop::with_payloads(
-            1,
-            vec![SchedulerEventLogPayload::Observable(
-                ObservableEventPayload::GuestMarker {
-                    retired_icount: crucible::Icount { retired: 1 },
-                    node: node.clone(),
-                    marker: marker.clone(),
-                },
-            )],
-        ),
-    );
-    if let Err(error) = denied_engine.apply_command(SessionCommand::Start) {
-        panic!("guest-marker denied start should instantiate runtime: {error}");
-    }
-    let (denied_reply, denied_receiver) = CommandReply::channel();
-    if let Err(error) = denied_engine.apply_command(SessionCommand::SetBreakpoint {
-        spec: BreakpointSpec::suspend_once(Predicate::guest_marker(marker.clone())),
-        reply: denied_reply,
-    }) {
-        panic!("guest-marker denied breakpoint should register: {error}");
-    }
-    let denied_breakpoint_id = receive_reply(denied_receiver).await;
-    if let Err(error) = denied_engine.apply_command(SessionCommand::Continue) {
-        panic!("guest-marker denied continue should enter running state: {error}");
-    }
-    let (_sender, receiver) = mpsc::channel(1);
-    let mut denied_actor = SessionActor::new(denied_engine, receiver);
-    if let Err(error) = denied_actor.run_once().await {
-        panic!("guest-marker denied quantum should run: {error}");
-    }
-    assert!(denied_actor.engine().breakpoint_firings().is_empty());
-    assert!(
-        denied_actor
-            .engine()
-            .breakpoints()
-            .get(denied_breakpoint_id)
-            .is_some()
-    );
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut denied_engine = Engine::new(
+            config,
+            graph,
+            ScriptedStepLoop::with_payloads(
+                1,
+                vec![SchedulerEventLogPayload::Observable(
+                    ObservableEventPayload::GuestMarker {
+                        retired_icount: crucible::Icount { retired: 1 },
+                        node: node.clone(),
+                        marker: marker.clone(),
+                    },
+                )],
+            ),
+        );
+        if let Err(error) = denied_engine.apply_command(SessionCommand::Start) {
+            panic!("guest-marker denied start should instantiate runtime: {error}");
+        }
+        let (denied_reply, denied_receiver) = CommandReply::channel();
+        if let Err(error) = denied_engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: BreakpointSpec::suspend_once(Predicate::guest_marker(marker.clone())),
+            reply: denied_reply,
+        }) {
+            panic!("guest-marker denied breakpoint should register: {error}");
+        }
+        let denied_breakpoint_id = receive_reply(denied_receiver).await;
+        if let Err(error) = denied_engine.apply_command(SessionCommand::Continue) {
+            panic!("guest-marker denied continue should enter running state: {error}");
+        }
+        let (_sender, receiver) = mpsc::channel(1);
+        let mut denied_actor = SessionActor::new(denied_engine, receiver);
+        if let Err(error) = denied_actor.run_once().await {
+            panic!("guest-marker denied quantum should run: {error}");
+        }
+        assert!(denied_actor.engine().breakpoint_firings().is_empty());
+        assert!(
+            denied_actor
+                .engine()
+                .breakpoints()
+                .get(denied_breakpoint_id)
+                .is_some()
+        );
 
-    let config = Configuration::genesis(scenario.clone());
-    let graph = graph_with_baked_genesis(&scenario);
-    let mut engine = Engine::new(
-        config,
-        graph,
-        ScriptedStepLoop::with_payloads(
-            1,
-            vec![SchedulerEventLogPayload::Observable(
-                ObservableEventPayload::GuestMarker {
-                    retired_icount: crucible::Icount { retired: 1 },
-                    node,
-                    marker: marker.clone(),
-                },
-            )],
-        ),
-    )
-    .with_world_white_box_policies(&world);
-    if let Err(error) = engine.apply_command(SessionCommand::Start) {
-        panic!("guest-marker breakpoint start should instantiate runtime: {error}");
-    }
-    let (reply, receiver) = CommandReply::channel();
-    if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
-        spec: BreakpointSpec::suspend_once(Predicate::guest_marker(marker)),
-        reply,
-    }) {
-        panic!("guest-marker breakpoint should register: {error}");
-    }
-    let breakpoint_id = receive_reply(receiver).await;
-    if let Err(error) = engine.apply_command(SessionCommand::Continue) {
-        panic!("guest-marker breakpoint continue should enter running state: {error}");
-    }
-    let (_sender, receiver) = mpsc::channel(1);
-    let mut actor = SessionActor::new(engine, receiver);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(
+            config,
+            graph,
+            ScriptedStepLoop::with_payloads(
+                1,
+                vec![SchedulerEventLogPayload::Observable(
+                    ObservableEventPayload::GuestMarker {
+                        retired_icount: crucible::Icount { retired: 1 },
+                        node,
+                        marker: marker.clone(),
+                    },
+                )],
+            ),
+        )
+        .with_world_white_box_policies(&world);
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("guest-marker breakpoint start should instantiate runtime: {error}");
+        }
+        let (reply, receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: BreakpointSpec::suspend_once(Predicate::guest_marker(marker)),
+            reply,
+        }) {
+            panic!("guest-marker breakpoint should register: {error}");
+        }
+        let breakpoint_id = receive_reply(receiver).await;
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("guest-marker breakpoint continue should enter running state: {error}");
+        }
+        let (_sender, receiver) = mpsc::channel(1);
+        let mut actor = SessionActor::new(engine, receiver);
 
-    if let Err(error) = actor.run_once().await {
-        panic!("guest-marker breakpoint quantum should run: {error}");
-    }
+        if let Err(error) = actor.run_once().await {
+            panic!("guest-marker breakpoint quantum should run: {error}");
+        }
 
-    assert_eq!(
-        actor
-            .engine()
-            .breakpoint_firings()
-            .iter()
-            .map(|firing| firing.id)
-            .collect::<Vec<_>>(),
-        vec![breakpoint_id]
-    );
-    assert!(actor.engine().breakpoints().is_empty());
-    assert!(matches!(actor.engine().state(), EngineState::Paused { .. }));
+        assert_eq!(
+            actor
+                .engine()
+                .breakpoint_firings()
+                .iter()
+                .map(|firing| firing.id)
+                .collect::<Vec<_>>(),
+            vec![breakpoint_id]
+        );
+        assert!(actor.engine().breakpoints().is_empty());
+        assert!(matches!(actor.engine().state(), EngineState::Paused { .. }));
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn breakpoint_conditions_cover_after_and_timer_runtime_facts() {
-    let scenario = generated_scenario(46);
-    let config = Configuration::genesis(scenario.clone());
-    let graph = graph_with_baked_genesis(&scenario);
-    let after_event = EventId::from_name("breakpoint-after-source");
-    let timer = TimerId {
-        name: String::from("breakpoint-timer"),
-    };
-    let mut engine = Engine::new(
-        config,
-        graph,
-        ScriptedStepLoop::with_payloads(
-            1,
-            vec![
-                trigger_fired_payload(
-                    1,
-                    after_event.clone(),
-                    Predicate::at(VirtualTime { ticks: 1 }),
-                ),
-                SchedulerEventLogPayload::TriggerActionApplied(TriggerActionApplication {
-                    sequence: 0,
-                    event: EventId::from_name("breakpoint-timer-arm"),
-                    at: VirtualTime { ticks: 1 },
-                    path: Vec::new(),
-                    action: Action::arm_timer(timer.clone(), SimDuration { ticks: 1 }),
-                }),
-            ],
-        ),
-    );
-    if let Err(error) = engine.apply_command(SessionCommand::Start) {
-        panic!("runtime-fact breakpoint start should instantiate runtime: {error}");
-    }
+    admitted_fixture(async {
+        let scenario = generated_scenario(46);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let after_event = EventId::from_name("breakpoint-after-source");
+        let timer = TimerId {
+            name: String::from("breakpoint-timer"),
+        };
+        let mut engine = Engine::new(
+            config,
+            graph,
+            ScriptedStepLoop::with_payloads(
+                1,
+                vec![
+                    trigger_fired_payload(
+                        1,
+                        after_event.clone(),
+                        Predicate::at(VirtualTime { ticks: 1 }),
+                    ),
+                    SchedulerEventLogPayload::TriggerActionApplied(TriggerActionApplication {
+                        sequence: 0,
+                        event: EventId::from_name("breakpoint-timer-arm"),
+                        at: VirtualTime { ticks: 1 },
+                        path: Vec::new(),
+                        action: Action::arm_timer(timer.clone(), SimDuration { ticks: 1 }),
+                    }),
+                ],
+            ),
+        );
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("runtime-fact breakpoint start should instantiate runtime: {error}");
+        }
 
-    let after_breakpoint = BreakpointSpec {
-        predicate: Predicate::after(SimDuration { ticks: 1 }, after_event),
-        disposition: BreakpointDisposition::Trace,
-        policy: BreakpointPolicy::OneShot,
-    };
-    let (after_reply, after_receiver) = CommandReply::channel();
-    if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
-        spec: after_breakpoint,
-        reply: after_reply,
-    }) {
-        panic!("after breakpoint should register: {error}");
-    }
-    let after_breakpoint_id = receive_reply(after_receiver).await;
+        let after_breakpoint = BreakpointSpec {
+            predicate: Predicate::after(SimDuration { ticks: 1 }, after_event),
+            disposition: BreakpointDisposition::Trace,
+            policy: BreakpointPolicy::OneShot,
+        };
+        let (after_reply, after_receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: after_breakpoint,
+            reply: after_reply,
+        }) {
+            panic!("after breakpoint should register: {error}");
+        }
+        let after_breakpoint_id = receive_reply(after_receiver).await;
 
-    let timer_breakpoint = BreakpointSpec {
-        predicate: Predicate::timer(timer),
-        disposition: BreakpointDisposition::Trace,
-        policy: BreakpointPolicy::OneShot,
-    };
-    let (timer_reply, timer_receiver) = CommandReply::channel();
-    if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
-        spec: timer_breakpoint,
-        reply: timer_reply,
-    }) {
-        panic!("timer breakpoint should register: {error}");
-    }
-    let timer_breakpoint_id = receive_reply(timer_receiver).await;
+        let timer_breakpoint = BreakpointSpec {
+            predicate: Predicate::timer(timer),
+            disposition: BreakpointDisposition::Trace,
+            policy: BreakpointPolicy::OneShot,
+        };
+        let (timer_reply, timer_receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: timer_breakpoint,
+            reply: timer_reply,
+        }) {
+            panic!("timer breakpoint should register: {error}");
+        }
+        let timer_breakpoint_id = receive_reply(timer_receiver).await;
 
-    if let Err(error) = engine.apply_command(SessionCommand::Continue) {
-        panic!("runtime-fact breakpoint continue should enter running state: {error}");
-    }
-    let (_sender, receiver) = mpsc::channel(1);
-    let mut actor = SessionActor::new(engine, receiver);
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("runtime-fact breakpoint continue should enter running state: {error}");
+        }
+        let (_sender, receiver) = mpsc::channel(1);
+        let mut actor = SessionActor::new(engine, receiver);
 
-    if let Err(error) = actor.run_once().await {
-        panic!("first runtime-fact quantum should run: {error}");
-    }
-    assert!(actor.engine().breakpoint_firings().is_empty());
+        if let Err(error) = actor.run_once().await {
+            panic!("first runtime-fact quantum should run: {error}");
+        }
+        assert!(actor.engine().breakpoint_firings().is_empty());
 
-    if let Err(error) = actor.run_once().await {
-        panic!("second runtime-fact quantum should run: {error}");
-    }
+        if let Err(error) = actor.run_once().await {
+            panic!("second runtime-fact quantum should run: {error}");
+        }
 
-    assert_eq!(
-        actor
-            .engine()
-            .breakpoint_firings()
-            .iter()
-            .map(|firing| firing.id)
-            .collect::<Vec<_>>(),
-        vec![after_breakpoint_id, timer_breakpoint_id]
-    );
-    assert!(actor.engine().breakpoints().is_empty());
+        assert_eq!(
+            actor
+                .engine()
+                .breakpoint_firings()
+                .iter()
+                .map(|firing| firing.id)
+                .collect::<Vec<_>>(),
+            vec![after_breakpoint_id, timer_breakpoint_id]
+        );
+        assert!(actor.engine().breakpoints().is_empty());
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn quiescent_breakpoint_uses_scheduler_quiescence_evidence() {
-    let scenario = generated_scenario(47);
-    let config = Configuration::genesis(scenario.clone());
-    let graph = graph_with_baked_genesis(&scenario);
-    let mut engine = Engine::new(
-        config,
-        graph,
-        ScriptedStepLoop::with_quiescence(SchedulerQuiescence::default()),
-    );
-    if let Err(error) = engine.apply_command(SessionCommand::Start) {
-        panic!("quiescent breakpoint start should instantiate runtime: {error}");
-    }
-    let breakpoint = BreakpointSpec {
-        predicate: Predicate::quiescent(),
-        disposition: BreakpointDisposition::Trace,
-        policy: BreakpointPolicy::OneShot,
-    };
-    let (reply, receiver) = CommandReply::channel();
-    if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
-        spec: breakpoint,
-        reply,
-    }) {
-        panic!("quiescent breakpoint should register: {error}");
-    }
-    let breakpoint_id = receive_reply(receiver).await;
-    if let Err(error) = engine.apply_command(SessionCommand::Continue) {
-        panic!("quiescent breakpoint continue should enter running state: {error}");
-    }
-    let (_sender, receiver) = mpsc::channel(1);
-    let mut actor = SessionActor::new(engine, receiver);
-
-    if let Err(error) = actor.run_once().await {
-        panic!("quiescent breakpoint quantum should run: {error}");
-    }
-
-    assert_eq!(
-        actor
-            .engine()
-            .breakpoint_firings()
-            .iter()
-            .map(|firing| firing.id)
-            .collect::<Vec<_>>(),
-        vec![breakpoint_id]
-    );
-    assert!(actor.engine().breakpoints().is_empty());
-    assert!(matches!(
-        actor.engine().state(),
-        EngineState::Stopped {
-            outcome: Outcome::Passed
+    admitted_fixture(async {
+        let scenario = generated_scenario(47);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(
+            config,
+            graph,
+            ScriptedStepLoop::with_quiescence(SchedulerQuiescence::default()),
+        );
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("quiescent breakpoint start should instantiate runtime: {error}");
         }
-    ));
+        let breakpoint = BreakpointSpec {
+            predicate: Predicate::quiescent(),
+            disposition: BreakpointDisposition::Trace,
+            policy: BreakpointPolicy::OneShot,
+        };
+        let (reply, receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: breakpoint,
+            reply,
+        }) {
+            panic!("quiescent breakpoint should register: {error}");
+        }
+        let breakpoint_id = receive_reply(receiver).await;
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("quiescent breakpoint continue should enter running state: {error}");
+        }
+        let (_sender, receiver) = mpsc::channel(1);
+        let mut actor = SessionActor::new(engine, receiver);
+
+        if let Err(error) = actor.run_once().await {
+            panic!("quiescent breakpoint quantum should run: {error}");
+        }
+
+        assert_eq!(
+            actor
+                .engine()
+                .breakpoint_firings()
+                .iter()
+                .map(|firing| firing.id)
+                .collect::<Vec<_>>(),
+            vec![breakpoint_id]
+        );
+        assert!(actor.engine().breakpoints().is_empty());
+        assert!(matches!(
+            actor.engine().state(),
+            EngineState::Stopped {
+                outcome: Outcome::Passed
+            }
+        ));
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn property_failure_breakpoint_produces_failed_terminal_outcome() {
-    let scenario = generated_scenario(4_701);
-    let config = Configuration::genesis(scenario.clone());
-    let graph = graph_with_baked_genesis(&scenario);
-    let mut engine = Engine::new(
-        config,
-        graph,
-        ScriptedStepLoop::with_quiescence(SchedulerQuiescence::default()),
-    );
-    if let Err(error) = engine.apply_command(SessionCommand::Start) {
-        panic!("failure-outcome start should instantiate runtime: {error}");
-    }
-    let (reply, receiver) = CommandReply::channel();
-    if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
-        spec: BreakpointSpec::fail_once(Predicate::quiescent(), "replicated invariant violated"),
-        reply,
-    }) {
-        panic!("failure-outcome breakpoint should register: {error}");
-    }
-    let _breakpoint_id = receive_reply(receiver).await;
-    if let Err(error) = engine.apply_command(SessionCommand::Continue) {
-        panic!("failure-outcome continue should enter running state: {error}");
-    }
-    let (_sender, receiver) = mpsc::channel(1);
-    let mut actor = SessionActor::new(engine, receiver);
-    if let Err(error) = actor.run_once().await {
-        panic!("failure-outcome quantum should complete: {error}");
-    }
-    assert!(matches!(
-        actor.engine().state(),
-        EngineState::Stopped {
-            outcome: Outcome::Failed { violations }
-        } if violations == &[String::from("replicated invariant violated")]
-    ));
+    admitted_fixture(async {
+        let scenario = generated_scenario(4_701);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(
+            config,
+            graph,
+            ScriptedStepLoop::with_quiescence(SchedulerQuiescence::default()),
+        );
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("failure-outcome start should instantiate runtime: {error}");
+        }
+        let (reply, receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: BreakpointSpec::fail_once(
+                Predicate::quiescent(),
+                "replicated invariant violated",
+            ),
+            reply,
+        }) {
+            panic!("failure-outcome breakpoint should register: {error}");
+        }
+        let _breakpoint_id = receive_reply(receiver).await;
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("failure-outcome continue should enter running state: {error}");
+        }
+        let (_sender, receiver) = mpsc::channel(1);
+        let mut actor = SessionActor::new(engine, receiver);
+        if let Err(error) = actor.run_once().await {
+            panic!("failure-outcome quantum should complete: {error}");
+        }
+        assert!(matches!(
+            actor.engine().state(),
+            EngineState::Stopped {
+                outcome: Outcome::Failed { violations }
+            } if violations == &[String::from("replicated invariant violated")]
+        ));
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -2412,119 +2477,133 @@ async fn backend_failure_produces_crashed_terminal_outcome() {
 
 #[tokio::test]
 async fn quiescent_breakpoint_fires_without_emitted_entries() {
-    let scenario = generated_scenario(48);
-    let config = Configuration::genesis(scenario.clone());
-    let graph = graph_with_baked_genesis(&scenario);
-    let mut engine = Engine::new(
-        config,
-        graph,
-        NoEventQuiescenceLoop {
-            quiescence: SchedulerQuiescence::default(),
-        },
-    );
-    if let Err(error) = engine.apply_command(SessionCommand::Start) {
-        panic!("no-event quiescent breakpoint start should instantiate runtime: {error}");
-    }
-    let breakpoint = BreakpointSpec {
-        predicate: Predicate::quiescent(),
-        disposition: BreakpointDisposition::Trace,
-        policy: BreakpointPolicy::OneShot,
-    };
-    let (reply, receiver) = CommandReply::channel();
-    if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
-        spec: breakpoint,
-        reply,
-    }) {
-        panic!("no-event quiescent breakpoint should register: {error}");
-    }
-    let breakpoint_id = receive_reply(receiver).await;
-    if let Err(error) = engine.apply_command(SessionCommand::Continue) {
-        panic!("no-event quiescent breakpoint continue should enter running state: {error}");
-    }
-    let (_sender, receiver) = mpsc::channel(1);
-    let mut actor = SessionActor::new(engine, receiver);
+    admitted_fixture(async {
+        let scenario = generated_scenario(48);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(
+            config,
+            graph,
+            NoEventQuiescenceLoop {
+                quiescence: SchedulerQuiescence::default(),
+            },
+        );
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("no-event quiescent breakpoint start should instantiate runtime: {error}");
+        }
+        let breakpoint = BreakpointSpec {
+            predicate: Predicate::quiescent(),
+            disposition: BreakpointDisposition::Trace,
+            policy: BreakpointPolicy::OneShot,
+        };
+        let (reply, receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: breakpoint,
+            reply,
+        }) {
+            panic!("no-event quiescent breakpoint should register: {error}");
+        }
+        let breakpoint_id = receive_reply(receiver).await;
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("no-event quiescent breakpoint continue should enter running state: {error}");
+        }
+        let (_sender, receiver) = mpsc::channel(1);
+        let mut actor = SessionActor::new(engine, receiver);
 
-    if let Err(error) = actor.run_once().await {
-        panic!("no-event quiescent breakpoint quantum should run: {error}");
-    }
+        if let Err(error) = actor.run_once().await {
+            panic!("no-event quiescent breakpoint quantum should run: {error}");
+        }
 
-    assert!(actor.event_log.lock_entries().is_empty());
-    assert_eq!(
-        actor
-            .engine()
-            .breakpoint_firings()
-            .iter()
-            .map(|firing| firing.id)
-            .collect::<Vec<_>>(),
-        vec![breakpoint_id]
-    );
+        assert!(actor.event_log.lock_entries().is_empty());
+        assert_eq!(
+            actor
+                .engine()
+                .breakpoint_firings()
+                .iter()
+                .map(|firing| firing.id)
+                .collect::<Vec<_>>(),
+            vec![breakpoint_id]
+        );
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn no_entry_breakpoint_after_prior_event_uses_current_boundary() {
-    let scenario = generated_scenario(49);
-    let config = Configuration::genesis(scenario.clone());
-    let graph = graph_with_baked_genesis(&scenario);
-    let mut engine = Engine::new(
-        config,
-        graph,
-        PriorEventThenNoEventQuiescenceLoop {
-            quanta: 0,
-            quiescence: SchedulerQuiescence::default(),
-        },
-    );
-    if let Err(error) = engine.apply_command(SessionCommand::Start) {
-        panic!("post-event no-entry breakpoint start should instantiate runtime: {error}");
-    }
-    let predicate = Predicate::all_of(vec![
-        Predicate::at(VirtualTime { ticks: 2 }),
-        Predicate::quiescent(),
-    ]);
-    let breakpoint = BreakpointSpec {
-        predicate: predicate.clone(),
-        disposition: BreakpointDisposition::Trace,
-        policy: BreakpointPolicy::OneShot,
-    };
-    let (reply, receiver) = CommandReply::channel();
-    if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
-        spec: breakpoint,
-        reply,
-    }) {
-        panic!("post-event no-entry breakpoint should register: {error}");
-    }
-    let breakpoint_id = receive_reply(receiver).await;
-    if let Err(error) = engine.apply_command(SessionCommand::Continue) {
-        panic!("post-event no-entry breakpoint continue should enter running state: {error}");
-    }
-    let (_sender, receiver) = mpsc::channel(1);
-    let mut actor = SessionActor::new(engine, receiver);
-
-    if let Err(error) = actor.run_once().await {
-        panic!("first post-event no-entry quantum should run: {error}");
-    }
-    assert!(actor.engine().breakpoint_firings().is_empty());
-    assert_eq!(actor.event_log.lock_entries().len(), 1);
-
-    if let Err(error) = actor.run_once().await {
-        panic!("second post-event no-entry quantum should run: {error}");
-    }
-
-    assert_eq!(actor.event_log.lock_entries().len(), 1);
-    assert_eq!(
-        actor.engine().breakpoint_firings(),
-        &[BreakpointFiring {
-            sequence: 1,
-            id: breakpoint_id,
-            predicate,
+    admitted_fixture(async {
+        let scenario = generated_scenario(49);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(
+            config,
+            graph,
+            PriorEventThenNoEventQuiescenceLoop {
+                quanta: 0,
+                quiescence: SchedulerQuiescence::default(),
+            },
+        );
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("post-event no-entry breakpoint start should instantiate runtime: {error}");
+        }
+        let predicate = Predicate::all_of(vec![
+            Predicate::at(VirtualTime { ticks: 2 }),
+            Predicate::quiescent(),
+        ]);
+        let breakpoint = BreakpointSpec {
+            predicate: predicate.clone(),
             disposition: BreakpointDisposition::Trace,
-            frontier: VirtualTime { ticks: 2 },
-            quanta: 2,
-            scheduler_controls: Vec::new(),
-        }]
-    );
+            policy: BreakpointPolicy::OneShot,
+        };
+        let (reply, receiver) = CommandReply::channel();
+        if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+            spec: breakpoint,
+            reply,
+        }) {
+            panic!("post-event no-entry breakpoint should register: {error}");
+        }
+        let breakpoint_id = receive_reply(receiver).await;
+        if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+            panic!("post-event no-entry breakpoint continue should enter running state: {error}");
+        }
+        let (_sender, receiver) = mpsc::channel(1);
+        let mut actor = SessionActor::new(engine, receiver);
+
+        if let Err(error) = actor.run_once().await {
+            panic!("first post-event no-entry quantum should run: {error}");
+        }
+        assert!(actor.engine().breakpoint_firings().is_empty());
+        assert_eq!(actor.event_log.lock_entries().len(), 1);
+
+        if let Err(error) = actor.run_once().await {
+            panic!("second post-event no-entry quantum should run: {error}");
+        }
+
+        assert_eq!(actor.event_log.lock_entries().len(), 1);
+        assert_eq!(
+            actor.engine().breakpoint_firings(),
+            &[BreakpointFiring {
+                sequence: 1,
+                id: breakpoint_id,
+                predicate,
+                disposition: BreakpointDisposition::Trace,
+                frontier: VirtualTime { ticks: 2 },
+                quanta: 2,
+                scheduler_controls: Vec::new(),
+            }]
+        );
+    })
+    .await;
 }
 
 #[path = "engine_state/budget_exhaustion.rs"]
 mod budget_exhaustion;
 #[path = "engine_state/runtime_smoke.rs"]
 mod runtime_smoke;
+
+fn admitted_test_entries(source: &[SchedulerEventLogEntry]) -> AdmittedEventEntries {
+    let budget = crate::session_streams::admission_tests::fixture_budget()
+        .unwrap_or_else(|error| panic!("finite fixture authority: {error}"));
+    let _scope = budget.enter();
+    AdmittedEventEntries::copied(source)
+        .unwrap_or_else(|error| panic!("admitted fixture history: {error}"))
+}

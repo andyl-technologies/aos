@@ -667,6 +667,30 @@ submeasurement while still returning authenticated cancellation and policy state
 Fork lifecycle coordination must retain this service without relying on inherited
 AIO, RCU, or plugin worker threads that are parked or absent in the child.
 
+Strict placement completion has a bounded, revision-bound receipt on pager
+control schema version 4. Its enclosing authenticated frame identifies the
+owner and arena incarnations. The receipt identifies the applied policy
+revision, immutable topology generation, and nonreused placement epoch. A
+pending transition advances the requested revision without advancing the
+applied revision or replacing an earlier verified receipt. Only completion
+under the same original operation and matching pending generation publishes a
+new applied revision; a superseded completion cannot acknowledge a newer request.
+
+A `ResidentRequired` receipt reports the deduplicated, page-rounded span bytes
+actually verified locked. Aggregate process `VmLck`, successful prefaulting,
+and acceptance of a lock request do not establish this guarantee. The receipt
+remains tied to the retained lock ownership until verified unlock or arena
+teardown. A failed downgrade retains custody of any uncertain remaining locks.
+
+A `DiskOriented` receipt reports the complete authenticated logical page and
+byte totals at a coherent preservation cut, together with the native independent
+writer generation at that cut. This is historical preservation evidence:
+subsequent resident guest writes are allowed, and the receipt does not claim
+continuous write-through or that backing contains every later write. A new
+complete preservation walk under writer exclusion produces a new placement
+epoch. The independent writer generation includes every registered writer;
+fault-service write-protection counters alone cannot substitute for it.
+
 **[TIME-7]** Cancellation MUST stop admission of new pager work, publish sticky
 cancellation to current and future children, and drain or retain outstanding
 operations under owned cleanup authority. Page buffers, backing files, file

@@ -109,6 +109,15 @@ pub trait QemuAsyncNodeStepTarget: QemuAsyncCrashEscalationTarget {
     /// Opaque token returned after publishing a scheduler ceiling.
     type PendingQuantum;
 
+    /// Checks retained operational services without guest or process disposition.
+    ///
+    /// # Errors
+    /// Returns the original owned service failure while keeping pending quantum,
+    /// process, source, and descriptor custody available for ordinary cleanup.
+    fn operational_health(&self) -> Result<(), QemuAsyncDriverHealthError> {
+        Ok(())
+    }
+
     /// Reports an owned QEMU child exit while an advance was pending.
     ///
     /// # Errors
@@ -151,6 +160,10 @@ pub trait QemuAsyncNodeStepTarget: QemuAsyncCrashEscalationTarget {
         pending: &mut Self::PendingQuantum,
     ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError>;
 }
+
+#[path = "async_driver/health.rs"]
+mod health;
+pub use health::QemuAsyncDriverHealthError;
 
 /// Pre-wake generation that must be superseded before a quantum can complete.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

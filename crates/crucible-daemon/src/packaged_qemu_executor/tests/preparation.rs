@@ -330,6 +330,20 @@ fn retained_service_observer_waits_for_node_cleanup_then_discharges_once() {
     drop(interactive);
     assert_eq!(all_available(), complete_before);
 
+    let mut authentication = RetainedTemplateServiceFactory::new(&prepared, &config)
+        .start_for_archive_authentication(
+            &preparation_scenario(),
+            crate::ExecutionCancellation::default(),
+        )
+        .expect("authentication reserves the original full Service vector");
+    let authentication_charge = all_available();
+    assert_finding_binding_preserves_service(&mut authentication);
+    assert_eq!(all_available(), authentication_charge);
+    authentication
+        .release_after_world_cleanup()
+        .expect("component has no native borrowers and joins the actual watcher");
+    assert_eq!(all_available(), complete_before);
+
     let mut missing_watcher_task = service_resources;
     missing_watcher_task.task_slots = 1;
     let mut missing_watcher_memory = service_resources;
@@ -469,4 +483,105 @@ fn retained_service_observer_waits_for_node_cleanup_then_discharges_once() {
         available(),
         available_before - service_resources.resident_peak_bytes
     );
+}
+
+/// Exercises linear finding claims on a genuinely admitted component Service.
+/// The root constructor models authenticated selection; no guest or kernel
+/// restoration is claimed by this actor/cap/capacity regression.
+fn assert_finding_binding_preserves_service(
+    service: &mut super::super::hot_fork::retained_service::RetainedTemplateService,
+) {
+    use crate::executor_supervisor::SelectedExactCheckpointRoot;
+
+    let checkpoint = |byte: u8| {
+        ExactCheckpointId::parse(&format!(
+            "crucible.executor.exact-checkpoint-root@exact-manifest.6.{}",
+            format!("{byte:02x}").repeat(32)
+        ))
+        .expect("component exact checkpoint id")
+    };
+    let requested = checkpoint(0x71);
+    let foreign = checkpoint(0x72);
+    let original_owner = service.context().host_outer_cap_owner();
+    let original_limits = service.native_context().resources();
+    let supervisor = service
+        .context()
+        .host_operation_supervisor()
+        .expect("original admitted authentication supervisor")
+        .clone();
+    let original_cap = supervisor.outer_cap_binding().expect("original live cap");
+
+    let mut absent = None;
+    assert!(
+        service
+            .bind_authenticated_finding_debug(requested, &mut absent)
+            .is_err()
+    );
+    assert!(absent.is_none());
+    let mut substituted = Some(SelectedExactCheckpointRoot::from_test_checkpoint(foreign));
+    assert!(
+        service
+            .bind_authenticated_finding_debug(requested, &mut substituted)
+            .is_err()
+    );
+    assert!(
+        substituted
+            .as_ref()
+            .is_some_and(|root| root.authorizes(foreign))
+    );
+    assert_eq!(service.context().resume_checkpoint(), None);
+    assert_eq!(service.native_context().resume_checkpoint(), None);
+    assert_eq!(
+        supervisor
+            .outer_cap_binding()
+            .expect("unchanged original cap"),
+        original_cap
+    );
+
+    let mut selected = Some(SelectedExactCheckpointRoot::from_test_checkpoint(requested));
+    service
+        .bind_authenticated_finding_debug(requested, &mut selected)
+        .expect("same owner binds the matching linear finding claim");
+    assert!(selected.is_none());
+    assert_eq!(service.context().resume_checkpoint(), Some(requested));
+    assert_eq!(
+        service.native_context().resume_checkpoint(),
+        Some(requested)
+    );
+    assert!(service.context().selected_checkpoint_authorizes(requested));
+    assert!(
+        !service
+            .native_context()
+            .selected_checkpoint_authorizes(requested)
+    );
+    assert_eq!(service.context().host_outer_cap_owner(), original_owner);
+    assert_eq!(service.native_context().resources(), original_limits);
+    assert_eq!(
+        supervisor
+            .outer_cap_binding()
+            .expect("same cap after binding"),
+        original_cap
+    );
+    assert_eq!(
+        service
+            .native_context()
+            .host_operation_supervisor()
+            .expect("same physical cap")
+            .outer_cap_binding()
+            .expect("same original physical start"),
+        original_cap,
+    );
+
+    let mut repeated = Some(SelectedExactCheckpointRoot::from_test_checkpoint(requested));
+    assert!(
+        service
+            .bind_authenticated_finding_debug(requested, &mut repeated)
+            .is_err()
+    );
+    assert!(
+        repeated
+            .as_ref()
+            .is_some_and(|root| root.authorizes(requested))
+    );
+    assert!(service.context().selected_checkpoint_authorizes(requested));
 }

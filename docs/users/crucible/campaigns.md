@@ -80,6 +80,13 @@ campaign-owned artifact carries its authenticated replay closure; a missing
 closure fails closed. Distinct current `verify`, `search`, and `fuzz` producers
 retain their declared execution owner.
 
+Plain artifact replay and remote HTTP control also resolve this deployment
+before reading or decoding input. They acquire the existing catalog project
+quota and its independently authored metadata and descriptor limits without
+starting a VM. Configure a local quota namespace for the CLI; a namespace
+already exclusively held by another service is refused. Native replay instead
+retains its original campaign owner through all replay and bisection runs.
+
 Campaign findings can also enter the shared daemon session lifecycle directly.
 The default command restores the cheapest complete retained checkpoint as an
 exclusive read-only session and opens the mediated GDB relay:
@@ -823,6 +830,7 @@ child_user_id = 2000
 child_group_id = 2000
 maximum_tasks = 64
 maximum_file_descriptors = 1024
+maximum_locked_bytes = 0
 maximum_node_host_service_tasks = 4
 maximum_node_host_service_file_descriptors = 32
 maximum_node_host_service_resident_bytes = 8388608
@@ -1283,7 +1291,10 @@ authorization before it is disclosed.
 Garbage collection is a stopped-owner operation. Stop the campaign daemon and
 packaged executor cleanly, retain the state directory and store deployment
 unchanged, and place the journal outside every configured store leaf. Plan
-first; inspect and preserve its exact plan identity before apply:
+first; inspect and preserve its exact plan identity before apply. Select the
+physical-quota node that owns scratch in the same store namespace, and author
+one finite timeout covering marking and journal publication. An unguarded leaf
+cannot provide scratch authority:
 
 ```sh
 crucible --format json store gc \
@@ -1291,6 +1302,8 @@ crucible --format json store gc \
   --policy "$CAMPAIGN_POLICY" \
   --store "$STORE" \
   --journal "$GC_JOURNAL" \
+  --mark-store-node "$GUARDED_STORE_NODE" \
+  --host-maintenance-timeout-ms 300000 \
   plan
 
 crucible --format json store gc \
@@ -1298,6 +1311,8 @@ crucible --format json store gc \
   --policy "$CAMPAIGN_POLICY" \
   --store "$STORE" \
   --journal "$GC_JOURNAL" \
+  --mark-store-node "$GUARDED_STORE_NODE" \
+  --host-maintenance-timeout-ms 300000 \
   apply
 ```
 
@@ -1310,6 +1325,8 @@ crucible --format json store gc \
   --policy "$CAMPAIGN_POLICY" \
   --store "$STORE" \
   --journal "$GC_JOURNAL" \
+  --mark-store-node "$GUARDED_STORE_NODE" \
+  --host-maintenance-timeout-ms 300000 \
   cancel
 ```
 

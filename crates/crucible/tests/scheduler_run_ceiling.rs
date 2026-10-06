@@ -18,6 +18,9 @@ use crucible_shmem::{
 
 #[test]
 fn run_publishes_one_max_advance_ceiling_for_selected_node() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "run-ceiling-single-publication",
         8,
@@ -51,6 +54,9 @@ fn run_publishes_one_max_advance_ceiling_for_selected_node() {
 
 #[test]
 fn each_run_gets_one_ceiling_and_no_intermediate_publication() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "run-ceiling-one-per-run",
         8,
@@ -97,6 +103,9 @@ fn each_run_gets_one_ceiling_and_no_intermediate_publication() {
 
 #[test]
 fn control_only_quantum_publishes_no_run_ceiling() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "run-ceiling-control-only",
         8,
@@ -125,6 +134,9 @@ fn control_only_quantum_publishes_no_run_ceiling() {
 
 #[test]
 fn run_consumes_the_published_ceiling_as_its_target() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "run-ceiling-consumed-target",
         8,
@@ -156,6 +168,9 @@ fn run_consumes_the_published_ceiling_as_its_target() {
 #[test]
 #[cfg(feature = "test-double")]
 fn published_ceiling_converts_to_and_publishes_through_shmem_abi() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "run-ceiling-shmem-abi",
         8,
@@ -192,6 +207,9 @@ fn published_ceiling_converts_to_and_publishes_through_shmem_abi() {
 #[test]
 #[cfg(feature = "test-double")]
 fn published_ceiling_writes_pending_inputs_before_futex_wake() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "run-ceiling-shmem-input-before-wake",
         8,

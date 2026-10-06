@@ -6,7 +6,7 @@
 //! ownership. [`codec`] uses bounded explicit-width records with no native ABI.
 //!
 //! ```text
-//! u32 schema = 1 | u8 message tag | fixed-width fields in big-endian order
+//! u32 schema = 2 | u8 message tag | fixed-width fields in big-endian order
 //! Optional: u8 0, or u8 1 followed by the value. Maximum message: 4096 bytes.
 //! ```
 
@@ -226,8 +226,34 @@ pub struct HostOuterCapObservation {
     pub status: HostOuterCapStatus,
 }
 
+/// Retains verified placement evidence for one applied policy generation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HostRamPlacementReceipt {
+    /// Strict mode whose genuine placement operation completed.
+    pub mode: HostRamMode,
+    /// Applied policy revision authenticated by the native arena owner.
+    pub policy_revision: u64,
+    /// Immutable realized RAM topology generation at this cut.
+    pub topology_generation: u64,
+    /// Nonreused physical transition epoch within the enclosing target.
+    pub placement_epoch: u64,
+    /// Exact deduplicated page-rounded spans verified locked by the kernel.
+    ///
+    /// Resident-mode evidence stays live until verified unlock or arena teardown.
+    pub locked_bytes: u64,
+    /// Complete logical pages authenticated at a disk-preservation cut.
+    pub disk_preserved_logical_pages: u64,
+    /// Complete logical bytes authenticated at that same historical cut.
+    pub disk_preserved_logical_bytes: u64,
+    /// Independent native RAM writer generation observed at the disk cut.
+    ///
+    /// Later writes do not renew this historical receipt. Resident mode sets
+    /// this scalar and both disk counters to zero.
+    pub ram_write_generation_at_cut: u64,
+}
+
 /// Coherent policy, ownership, measurement, and deadline observation.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct HostRamStatus {
     /// Complete live ownership incarnation.
     pub target: HostRamTarget,
@@ -235,12 +261,18 @@ pub struct HostRamStatus {
     pub observation_sequence: u64,
     /// Accepted desired-policy revision.
     pub policy_revision: u64,
+    /// Revision whose configuration and any strict guarantee actually completed.
+    pub applied_policy_revision: u64,
     /// Independently owned resource reservation revision.
     pub reservation_revision: u64,
     /// Most recently accepted desired policy.
     pub requested_policy: HostRamPolicy,
     /// Policy established by the physical arena manager.
     pub applied_policy: HostRamPolicy,
+    /// Verified strict placement bound to this owner and arena incarnation.
+    ///
+    /// Absence carries no lock or full-disk-cut claim, even after acceptance.
+    pub placement_receipt: Option<HostRamPlacementReceipt>,
     /// Achievable guest-page resident target after compulsory floors.
     pub effective_resident_target_bytes: u64,
     /// Compulsory resident floor included in the target accounting.
@@ -342,7 +374,7 @@ pub struct HostRamQualification {
 }
 
 /// Typed operational result retaining acceptance independently of convergence.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum HostOperationalResponse {
     /// Bounded sorted active arenas observed within one authenticated owner.
     Targets {
@@ -396,9 +428,32 @@ pub enum HostOperationalResponse {
     },
 }
 
+impl HostOperationalResponse {
+    /// Builds a response while retaining the original credits for its owned fields.
+    ///
+    /// The builder runs inside a fresh child of the current finite authority.
+    /// It must admit each concrete allocation before constructing owning fields.
+    ///
+    /// # Errors
+    /// Refuses missing or exhausted original authority, or returns the builder's
+    /// original operational failure without replacing its cause.
+    pub fn admit(
+        build: impl FnOnce() -> Result<Self, HostOperationalError>,
+    ) -> Result<crate::AdmittedOutput<Self>, HostOperationalError> {
+        crate::AdmittedOutput::try_build(build, |source| HostOperationalError::Admission { source })
+    }
+}
+
 /// Fail-closed error at the operational control boundary.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum HostOperationalError {
+    /// Response decoding refused its original finite metadata authority.
+    #[error("host operational output admission failed: {source}")]
+    Admission {
+        /// Original typed resource refusal before owning field allocation.
+        #[source]
+        source: crucible::owned_decode::DecodeAdmissionError,
+    },
     /// The transport principal does not own operational authority for this target.
     #[error("host operational principal is denied")]
     PrincipalDenied,
@@ -418,6 +473,18 @@ pub enum HostOperationalError {
 
 /// Executor-owned authority over live operational controllers and durable history.
 pub trait HostOperationalControl: Send + Sync {
+    /// Projects the authenticated executor's original metadata authority.
+    ///
+    /// The transport retains this account through request decoding and dispatch.
+    /// It does not grant access to any target without subsequent ownership checks.
+    ///
+    /// # Errors
+    /// Refuses an unauthorized principal or unavailable admitted executor account.
+    fn metadata_budget(
+        &self,
+        principal: &str,
+    ) -> Result<crucible::owned_decode::DecodeBudget, HostOperationalError>;
+
     /// Authenticates and executes one bounded request against live ownership.
     ///
     /// The principal is supplied by the transport, never by request bytes.
@@ -433,7 +500,7 @@ pub trait HostOperationalControl: Send + Sync {
         &self,
         principal: &str,
         request: HostOperationalRequest,
-    ) -> Result<HostOperationalResponse, HostOperationalError>;
+    ) -> Result<crate::AdmittedOutput<HostOperationalResponse>, HostOperationalError>;
 }
 
 /// Shared live executor operational authority installed on the API control plane.

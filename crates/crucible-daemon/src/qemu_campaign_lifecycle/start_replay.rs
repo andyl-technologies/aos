@@ -512,7 +512,11 @@ pub(super) fn append_start_replay_events<F, D>(
     }
     let added = entries.iter().try_fold(0usize, |total, entry| {
         total
-            .checked_add(entry.canonical_material_len())
+            .checked_add(entry.canonical_material_len().map_err(|source| {
+                AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
+                    QemuFreshStartReplayError::Scheduler(SchedulerError::from(source)),
+                ))
+            })?)
             .ok_or_else(|| start_replay_limit_failure("fresh-campaign-event-log-bytes"))
     })?;
     let bytes = replay
@@ -542,15 +546,7 @@ pub(super) fn start_replay_limit_failure<F, D>(
 pub(super) fn map_start_replay_scheduler_failure<F, D>(
     error: SchedulerError,
 ) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
-    let class = match &error {
-        SchedulerError::OperationalBoundary { class, .. } => Some(*class),
-        SchedulerError::Evaluation { .. } => Some(SchedulerOperationalFailureClass::Retryable),
-        SchedulerError::Backend(_)
-        | SchedulerError::BoundaryViolation { .. }
-        | SchedulerError::ResourceLimit { .. }
-        | SchedulerError::TimeConversion(_)
-        | SchedulerError::TopologyActivationInPast { .. } => None,
-    };
+    let class = error.operational_failure_class();
     let error =
         QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Scheduler(error));
     match class {
@@ -565,15 +561,7 @@ pub(super) fn map_start_replay_scheduler_failure<F, D>(
 pub(super) fn map_checkpoint_capture_failure<F, D>(
     error: SchedulerError,
 ) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
-    let class = match &error {
-        SchedulerError::OperationalBoundary { class, .. } => Some(*class),
-        SchedulerError::Evaluation { .. } => Some(SchedulerOperationalFailureClass::Retryable),
-        SchedulerError::Backend(_)
-        | SchedulerError::BoundaryViolation { .. }
-        | SchedulerError::ResourceLimit { .. }
-        | SchedulerError::TimeConversion(_)
-        | SchedulerError::TopologyActivationInPast { .. } => None,
-    };
+    let class = error.operational_failure_class();
     let error = QemuFreshExecutionRunnerError::CheckpointCapture(error);
     match class {
         Some(SchedulerOperationalFailureClass::Retryable) => AttemptWorkerFailure::Retryable(error),
@@ -587,15 +575,7 @@ pub(super) fn map_checkpoint_capture_failure<F, D>(
 pub(super) fn map_terminal_fingerprint_capture_failure<F, D>(
     error: SchedulerError,
 ) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
-    let class = match &error {
-        SchedulerError::OperationalBoundary { class, .. } => Some(*class),
-        SchedulerError::Evaluation { .. } => Some(SchedulerOperationalFailureClass::Retryable),
-        SchedulerError::Backend(_)
-        | SchedulerError::BoundaryViolation { .. }
-        | SchedulerError::ResourceLimit { .. }
-        | SchedulerError::TimeConversion(_)
-        | SchedulerError::TopologyActivationInPast { .. } => None,
-    };
+    let class = error.operational_failure_class();
     let error = QemuFreshExecutionRunnerError::TerminalFingerprintCapture(error);
     match class {
         Some(SchedulerOperationalFailureClass::Retryable) => AttemptWorkerFailure::Retryable(error),

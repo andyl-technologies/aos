@@ -138,6 +138,7 @@ fn admitted_service_context(
 
 #[test]
 fn genuine_budget_owner_without_component_facts_requires_native_kernel_controller() {
+    let _metadata_scope = component_metadata_scope();
     let registry_context = admitted_service_context(
         AttemptResourceLimits::new(8, 8 << 30, 8 << 30, 64).expect("request limits"),
         execution_basis(&execution_input(), 0xc2),

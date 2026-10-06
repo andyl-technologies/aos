@@ -4,24 +4,46 @@
 //! Writers validate every independently bounded roster before publication.
 
 use super::super::*;
-use super::{Result, SCHEMA, invalid};
+use super::{Result, SCHEMA, admit_bytes, admitted_vec, invalid};
 use crucible_linux_resource::host_supervision::{
     HOST_OPERATION_CLASS_COUNT, HostEffectiveDeadline, HostOperationState,
 };
 
 pub(super) struct Writer {
     bytes: Vec<u8>,
+    overflow: bool,
+    written: usize,
+    validation_only: bool,
 }
 
 impl Writer {
-    pub(super) fn new() -> Self {
+    pub(super) fn validation() -> Self {
         Self {
-            bytes: SCHEMA.to_be_bytes().to_vec(),
+            bytes: Vec::new(),
+            overflow: false,
+            written: std::mem::size_of::<u32>(),
+            validation_only: true,
         }
     }
 
+    pub(super) fn bounded() -> Result<Self> {
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(HOST_OPERATIONAL_MAX_BYTES)
+            .map_err(|source| HostOperationalError::Admission {
+                source: crucible::owned_decode::DecodeAdmissionError::new(source),
+            })?;
+        bytes.extend_from_slice(&SCHEMA.to_be_bytes());
+        Ok(Self {
+            bytes,
+            overflow: false,
+            written: std::mem::size_of::<u32>(),
+            validation_only: false,
+        })
+    }
+
     pub(super) fn u8(&mut self, value: u8) {
-        self.bytes.push(value);
+        self.bytes(&[value]);
     }
 
     pub(super) fn u32(&mut self, value: u32) {
@@ -33,7 +55,14 @@ impl Writer {
     }
 
     pub(super) fn bytes(&mut self, value: &[u8]) {
-        self.bytes.extend_from_slice(value);
+        if self.overflow || value.len() > HOST_OPERATIONAL_MAX_BYTES.saturating_sub(self.written) {
+            self.overflow = true;
+            return;
+        }
+        self.written += value.len();
+        if !self.validation_only {
+            self.bytes.extend_from_slice(value);
+        }
     }
 
     pub(super) fn optional_u64(&mut self, value: Option<u64>) {
@@ -229,12 +258,29 @@ impl Writer {
     }
 
     pub(super) fn status(&mut self, status: &HostRamStatus) -> Result<()> {
+        validate_placement(status)?;
         self.target(status.target)?;
         self.u64(status.observation_sequence);
         self.u64(status.policy_revision);
+        self.u64(status.applied_policy_revision);
         self.u64(status.reservation_revision);
         self.policy(status.requested_policy)?;
         self.policy(status.applied_policy)?;
+        self.u8(u8::from(status.placement_receipt.is_some()));
+        if let Some(receipt) = status.placement_receipt {
+            self.u8(receipt.mode as u8);
+            for value in [
+                receipt.policy_revision,
+                receipt.topology_generation,
+                receipt.placement_epoch,
+                receipt.locked_bytes,
+                receipt.disk_preserved_logical_pages,
+                receipt.disk_preserved_logical_bytes,
+                receipt.ram_write_generation_at_cut,
+            ] {
+                self.u64(value);
+            }
+        }
         self.u64(status.effective_resident_target_bytes);
         self.u64(status.effective_floor_bytes);
         if status.limitation_reasons.len() > HOST_OPERATIONAL_MAX_REASONS {
@@ -327,7 +373,7 @@ impl Writer {
     }
 
     pub(super) fn finish(self) -> Result<Vec<u8>> {
-        if self.bytes.len() > HOST_OPERATIONAL_MAX_BYTES {
+        if self.overflow {
             return Err(invalid("message size limit"));
         }
         Ok(self.bytes)
@@ -584,7 +630,7 @@ impl<'a> Reader<'a> {
             if count == 0 || count > 3 {
                 return Err(invalid("invalid deadline source count"));
             }
-            let mut sources = Vec::with_capacity(count as usize);
+            let mut sources = admitted_vec(count as usize)?;
             for _ in 0..count {
                 let tag = self.u8()?;
                 let cap_id = if tag == 2 { Some(self.fixed()?) } else { None };
@@ -628,13 +674,33 @@ impl<'a> Reader<'a> {
         let target = self.target()?;
         let observation_sequence = self.u64()?;
         let policy_revision = self.u64()?;
+        let applied_policy_revision = self.u64()?;
         let reservation_revision = self.u64()?;
         let requested_policy = self.policy()?;
         let applied_policy = self.policy()?;
+        let placement_receipt = if self.boolean()? {
+            let mode = match self.u8()? {
+                1 => HostRamMode::DiskOriented,
+                2 => HostRamMode::ResidentRequired,
+                _ => return Err(invalid("unknown strict placement mode")),
+            };
+            Some(HostRamPlacementReceipt {
+                mode,
+                policy_revision: self.u64()?,
+                topology_generation: self.u64()?,
+                placement_epoch: self.u64()?,
+                locked_bytes: self.u64()?,
+                disk_preserved_logical_pages: self.u64()?,
+                disk_preserved_logical_bytes: self.u64()?,
+                ram_write_generation_at_cut: self.u64()?,
+            })
+        } else {
+            None
+        };
         let effective_resident_target_bytes = self.u64()?;
         let effective_floor_bytes = self.u64()?;
         let count = self.count(HOST_OPERATIONAL_MAX_REASONS)?;
-        let mut limitation_reasons = Vec::with_capacity(count);
+        let mut limitation_reasons = admitted_vec(count)?;
         for _ in 0..count {
             let length = self.count(128)?;
             let reason = std::str::from_utf8(self.take(length)?)
@@ -642,7 +708,15 @@ impl<'a> Reader<'a> {
             if reason.is_empty() || reason.chars().any(char::is_control) {
                 return Err(invalid("invalid limitation reason"));
             }
-            limitation_reasons.push(reason.to_owned());
+            admit_bytes(length as u64)?;
+            let mut owned = String::new();
+            owned
+                .try_reserve_exact(length)
+                .map_err(|source| HostOperationalError::Admission {
+                    source: crucible::owned_decode::DecodeAdmissionError::new(source),
+                })?;
+            owned.push_str(reason);
+            limitation_reasons.push(owned);
         }
         let measurements_available = self.boolean()?;
         let activity = if self.boolean()? {
@@ -680,7 +754,7 @@ impl<'a> Reader<'a> {
         let transition = self.optional_u64()?;
         let admitted_resources = self.resources()?;
         let count = self.count(HOST_OPERATIONAL_MAX_OUTER_CAPS)?;
-        let mut outer_caps = Vec::with_capacity(count);
+        let mut outer_caps = admitted_vec(count)?;
         for _ in 0..count {
             let target = self.outer_cap_target()?;
             let class = match self.u8()? {
@@ -697,17 +771,19 @@ impl<'a> Reader<'a> {
             });
         }
         let count = self.count(HOST_OPERATIONAL_MAX_OPERATIONS)?;
-        let mut outstanding_operations = Vec::with_capacity(count);
+        let mut outstanding_operations = admitted_vec(count)?;
         for _ in 0..count {
             outstanding_operations.push(self.operation()?);
         }
-        Ok(HostRamStatus {
+        let status = HostRamStatus {
             target,
             observation_sequence,
             policy_revision,
+            applied_policy_revision,
             reservation_revision,
             requested_policy,
             applied_policy,
+            placement_receipt,
             effective_resident_target_bytes,
             effective_floor_bytes,
             limitation_reasons,
@@ -726,7 +802,9 @@ impl<'a> Reader<'a> {
             admitted_resources,
             outer_caps,
             outstanding_operations,
-        })
+        };
+        validate_placement(&status)?;
+        Ok(status)
     }
 
     pub(super) fn finish(self) -> Result<()> {
@@ -735,4 +813,42 @@ impl<'a> Reader<'a> {
         }
         Ok(())
     }
+}
+
+fn validate_placement(status: &HostRamStatus) -> Result<()> {
+    if status.applied_policy_revision > status.policy_revision {
+        return Err(invalid("applied placement exceeds accepted revision"));
+    }
+    let Some(receipt) = status.placement_receipt else {
+        return Ok(());
+    };
+    if receipt.policy_revision == 0
+        || receipt.policy_revision != status.applied_policy_revision
+        || receipt.mode != status.applied_policy.mode
+        || receipt.topology_generation == 0
+        || receipt.placement_epoch == 0
+    {
+        return Err(invalid("strict placement receipt identity mismatch"));
+    }
+    let valid = match receipt.mode {
+        HostRamMode::Managed => false,
+        HostRamMode::ResidentRequired => {
+            receipt.locked_bytes > 0
+                && receipt.locked_bytes.is_multiple_of(4096)
+                && receipt.disk_preserved_logical_pages == 0
+                && receipt.disk_preserved_logical_bytes == 0
+                && receipt.ram_write_generation_at_cut == 0
+        }
+        HostRamMode::DiskOriented => {
+            let minimum = receipt.disk_preserved_logical_bytes.div_ceil(4096);
+            receipt.locked_bytes == 0
+                && receipt.disk_preserved_logical_bytes > 0
+                && receipt.disk_preserved_logical_pages >= minimum
+                && receipt.disk_preserved_logical_pages <= minimum.saturating_add(4095)
+        }
+    };
+    if !valid {
+        return Err(invalid("invalid strict placement guarantee"));
+    }
+    Ok(())
 }

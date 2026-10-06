@@ -28,6 +28,7 @@ mod compressed_directory;
 mod directory;
 mod encrypted_directory;
 mod graph;
+mod identity_render;
 mod memory;
 mod namespace;
 mod packed;
@@ -50,7 +51,9 @@ pub use admin::{
     RefStoreAdmin,
 };
 pub use compressed_directory::CompressedDirectoryBlobBackend;
-pub use directory::{DirectoryBlobBackend, DirectoryRefBackend};
+pub use directory::{
+    DirectoryBlobAuthorities, DirectoryBlobBackend, DirectoryRefAuthorities, DirectoryRefBackend,
+};
 pub use encrypted_directory::{
     EncryptedDirectoryBlobBackend, StoreEncryptionKey, StoreEncryptionKeyId, StoreGraphKeyring,
 };
@@ -297,37 +300,50 @@ impl ContentId {
     /// Returns [`StoreError::InvalidId`] when the kind, version, separators, or
     /// digest are malformed.
     pub fn parse(value: &str) -> Result<Self, StoreError> {
+        // All accepted fields are ASCII and bounded before parsing. Canonical
+        // validation must not allocate an encoded copy of an untrusted ID.
+        if !value.is_ascii() || value.len() > "campaign-snapshot".len() + 1 + 10 + 1 + 64 {
+            return Err(StoreError::InvalidId);
+        }
         let mut fields = value.split('.');
         let kind = fields
             .next()
             .and_then(ObjectKind::parse)
             .ok_or(StoreError::InvalidId)?;
-        let schema_version = fields
-            .next()
-            .and_then(|field| field.parse::<u32>().ok())
-            .ok_or(StoreError::InvalidId)?;
-        let digest = fields
-            .next()
-            .and_then(decode_digest)
-            .ok_or(StoreError::InvalidId)?;
+        let version = fields.next().ok_or(StoreError::InvalidId)?;
+        if version.is_empty()
+            || version.len() > 10
+            || (version.len() > 1 && version.starts_with('0'))
+            || !version.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Err(StoreError::InvalidId);
+        }
+        let schema_version = version.parse::<u32>().map_err(|_| StoreError::InvalidId)?;
+        let digest = fields.next().ok_or(StoreError::InvalidId)?;
+        if !digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        {
+            return Err(StoreError::InvalidId);
+        }
+        let digest = decode_digest(digest).ok_or(StoreError::InvalidId)?;
         if fields.next().is_some() {
             return Err(StoreError::InvalidId);
         }
-        let parsed = Self {
+        Ok(Self {
             kind,
             schema_version,
             digest,
-        };
-        if parsed.encode() != value {
-            return Err(StoreError::InvalidId);
-        }
-        Ok(parsed)
+        })
     }
 }
 
 impl fmt::Display for ContentId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.encode())
+        self.with_encoded_text(|bytes| {
+            let encoded = std::str::from_utf8(bytes).map_err(|_| fmt::Error)?;
+            formatter.write_str(encoded)
+        })
     }
 }
 

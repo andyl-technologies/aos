@@ -23,13 +23,18 @@ pub(crate) struct NativeRamClosureCensus {
 impl NativeRamClosureCensus {
     /// Prints bounded logical verification counters for the actual fixture lane.
     pub(crate) fn print_evidence(&self, lane: &str) {
+        // crucible-lint: allow direct-diagnostic -- the disposable native VM receipt binds these counters to its authenticated lane.
         println!("authenticated_ram_closure_lane={lane}");
+        // crucible-lint: allow direct-diagnostic -- the receipt records complete roots verified under the original live Service.
         println!("authenticated_ram_closure_roots={}", self.roots);
+        // crucible-lint: allow direct-diagnostic -- the receipt records bounded authenticated logical page positions, including repeats.
         println!("authenticated_ram_closure_pages={}", self.pages);
+        // crucible-lint: allow direct-diagnostic -- the receipt records verified logical bytes without claiming physical allocation.
         println!(
             "authenticated_ram_closure_logical_bytes={}",
             self.logical_bytes
         );
+        // crucible-lint: allow direct-diagnostic -- the receipt records bounded verification reads without claiming unique physical objects.
         println!(
             "authenticated_ram_closure_object_reads={}",
             self.object_reads

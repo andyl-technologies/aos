@@ -230,6 +230,25 @@ pub(crate) fn encode<T: Canonical>(value: &T) -> Vec<u8> {
     encoder.finish()
 }
 
+pub(crate) fn encoded_length<T: Canonical>(value: &T) -> Result<usize, CampaignCodecError> {
+    encoded_length_with(|encoder| value.encode(encoder))
+}
+
+pub(crate) fn encoded_length_with(
+    encode: impl FnOnce(&mut Encoder),
+) -> Result<usize, CampaignCodecError> {
+    let mut counter = Encoder::counting(MAX_CANONICAL_BYTES);
+    encode(&mut counter);
+    if counter.exceeded {
+        return Err(CampaignCodecError::LimitExceeded {
+            limit: "canonical-byte-count",
+        });
+    }
+    counter.counted.ok_or(CampaignCodecError::InvalidValue {
+        reason: "canonical length counter lost its counting state",
+    })
+}
+
 /// Reconstructs an owned canonical value under the original allocation account.
 pub(crate) fn admitted_clone<T: Canonical>(value: &T) -> Result<T, CampaignCodecError> {
     let bytes = encode(value);
@@ -254,10 +273,19 @@ pub(crate) fn decode_bounded<T: Canonical>(
     let mut decoder = Decoder::new(bytes);
     let value = T::decode(&mut decoder)?;
     decoder.finish()?;
-    let mut canonical = Encoder::bounded(bytes.len())?;
-    value.encode(&mut canonical);
-    if canonical.exceeded || canonical.finish() != bytes {
-        return Err(CampaignCodecError::NonCanonical);
+    // Authentication bytes close here; the decoded value keeps its original
+    // outer account while the temporary image borrows a child of that account.
+    let canonical_budget = crucible_cas::owned_decode::current_child_budget()?;
+    {
+        let _scope = canonical_budget.as_ref().map(|budget| budget.enter());
+        let mut canonical = Encoder::bounded(bytes.len())?;
+        value.encode(&mut canonical);
+        if let Some(budget) = &canonical_budget {
+            budget.check()?;
+        }
+        if canonical.exceeded || canonical.finish() != bytes {
+            return Err(CampaignCodecError::NonCanonical);
+        }
     }
     if let Some(budget) = crucible_cas::owned_decode::current_budget() {
         budget.check()?;
@@ -797,6 +825,37 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn repeated_scalar_authentication_releases_its_canonical_image()
+    -> Result<(), CampaignCodecError> {
+        let authority = Arc::new(Authority(Arc::new(AtomicU64::new(0))));
+        let budget = DecodeBudget::new(authority.clone(), 4096)?;
+        let _scope = budget.enter();
+        let encoded = 42_u64.to_be_bytes();
+        let retained = authority.0.load(Ordering::SeqCst);
+
+        for _ in 0..2048 {
+            assert_eq!(decode::<u64>(&encoded)?, 42);
+            assert_eq!(authority.0.load(Ordering::SeqCst), retained);
+        }
+
+        // A returned owning value is different from authentication scratch:
+        // its slots stay charged to the enclosing original account.
+        let vector_bytes = [2_u64.to_be_bytes(), encoded, encoded].concat();
+        let decoded = decode::<Vec<u64>>(&vector_bytes)?;
+        assert_eq!(decoded, vec![42, 42]);
+        let owning_charge = authority.0.load(Ordering::SeqCst);
+        assert!(owning_charge > retained);
+        assert_eq!(decode::<u64>(&encoded)?, 42);
+        assert_eq!(authority.0.load(Ordering::SeqCst), owning_charge);
+
+        drop(decoded);
+        drop(_scope);
+        drop(budget);
+        assert_eq!(authority.0.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
 
     #[test]
     fn ascii_strings_preserve_canonical_bytes() {

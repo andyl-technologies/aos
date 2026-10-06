@@ -65,11 +65,29 @@ fn guarded_owner_refuses_uninstalled_physical_quota_before_campaign_publication(
     let directory = tempfile::TempDir::new().expect("directory");
     let config = config(&directory, 1);
     let run_state = config.lifecycle.run_state_root().to_owned();
+    let ledger_root = config.ledger_root().to_owned();
+    let catalog_root = config
+        .ram_catalog()
+        .expect("authored catalog")
+        .root()
+        .to_owned();
     let result = guarded::GuardedCampaignOwner::open(config);
 
-    assert!(matches!(
-        result,
-        Err(PackagedQemuExecutorError::RamCatalog(_))
-    ));
+    let error = result.err().expect("uninstalled ledger quota must refuse");
+    let PackagedQemuExecutorError::RegistryQuota(
+        crucible_linux_resource::LinuxProjectQuotaError::Io {
+            operation,
+            path,
+            source,
+        },
+    ) = error
+    else {
+        panic!("the original registry quota must refuse first: {error:?}");
+    };
+    assert_eq!(operation, "open-physical-quota-root");
+    assert_eq!(path, ledger_root);
+    assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
+    assert!(!ledger_root.exists());
+    assert!(!catalog_root.exists());
     assert!(!run_state.join("guarded-campaign").exists());
 }

@@ -4,6 +4,7 @@ use super::*;
 
 #[test]
 pub(super) fn cli_selftest_runs_builtin_example_corpus() -> Result<(), Box<dyn Error>> {
+    let _component_scope = crate::tests::component_decode_scope();
     let cli = Cli::parse_from(["crucible", "--quiet", "selftest"]);
     let Commands::Selftest(args) = &cli.command else {
         panic!("expected selftest command");

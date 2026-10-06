@@ -34,6 +34,8 @@ pub(crate) struct RepositoryPromotionFixture {
 
 #[test]
 fn promotion_boundary_check_rejects_mismatched_progress_before_store_work() {
+    let _fixture_metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let scenario = ScenarioDef::from_canonical_material(
         "crucible.test.savepoint-promotion-progress",
         "quiet-progress",
@@ -67,6 +69,8 @@ fn promotion_boundary_check_rejects_mismatched_progress_before_store_work() {
 
 #[test]
 fn checkpoint_replay_requires_the_exact_segmented_event_offset() {
+    let _fixture_metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let scenario = ScenarioDef::from_canonical_material(
         "crucible.test.checkpoint-causal-offset",
         "quiet-offset",
@@ -98,6 +102,7 @@ fn checkpoint_replay_requires_the_exact_segmented_event_offset() {
             .with_event_log_offset(offset)
             .expect("matching live offset")
             .matches_checkpoint(&configuration, &checkpoint)
+            .unwrap_or_else(|source| panic!("fixture boundary admission: {source}"))
     );
 
     let changed_prefix = crucible::EventLogOffset {
@@ -109,11 +114,14 @@ fn checkpoint_replay_requires_the_exact_segmented_event_offset() {
             .with_event_log_offset(changed_prefix)
             .expect("well-formed but foreign live offset")
             .matches_checkpoint(&configuration, &checkpoint)
+            .unwrap_or_else(|source| panic!("fixture boundary admission: {source}"))
     );
 }
 
 #[test]
 fn repository_evidence_seals_stages_and_reconciles_after_native_retirement() {
+    let _fixture_metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let ram_retention = crucible_cas::ram::RamRetentionAuthority::new(Arc::new(
         crucible_cas::content_store::MemoryRefBackend::new(),
     ));
@@ -259,6 +267,8 @@ fn repository_evidence_seals_stages_and_reconciles_after_native_retirement() {
 
 #[test]
 fn identical_replay_root_can_reconcile_a_later_pause_execution() {
+    let _fixture_metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let ram_retention = crucible_cas::ram::RamRetentionAuthority::new(Arc::new(
         crucible_cas::content_store::MemoryRefBackend::new(),
     ));
@@ -387,6 +397,8 @@ fn identical_replay_root_can_reconcile_a_later_pause_execution() {
 
 #[test]
 fn staged_promotion_reconstitutes_its_reconcile_claim_after_store_restart() {
+    let _fixture_metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let ram_retention = crucible_cas::ram::RamRetentionAuthority::new(Arc::new(
         crucible_cas::content_store::MemoryRefBackend::new(),
     ));
@@ -486,6 +498,8 @@ fn staged_promotion_reconstitutes_its_reconcile_claim_after_store_restart() {
 
 #[test]
 fn forged_staged_pair_cannot_reconstitute_a_reconcile_claim() {
+    let _fixture_metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let ram_retention = crucible_cas::ram::RamRetentionAuthority::new(Arc::new(
         crucible_cas::content_store::MemoryRefBackend::new(),
     ));

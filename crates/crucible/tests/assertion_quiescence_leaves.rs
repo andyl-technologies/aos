@@ -130,6 +130,9 @@ impl ConditionLeafOracle for NoNamedLeaves {
 
 #[test]
 fn assertion_state_observes_current_causal_entry() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let condition =
         Predicate::assertion_state(assertion_id("leader-elected"), AssertionPhase::Satisfied);
     let matching = ObservableEvent::assertion_state_changed(
@@ -162,6 +165,9 @@ fn assertion_state_observes_current_causal_entry() {
 
 #[test]
 fn assertion_state_rejects_wrong_state_assertion_and_time_in_isolation() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let condition =
         Predicate::assertion_state(assertion_id("leader-elected"), AssertionPhase::Satisfied);
 
@@ -205,6 +211,9 @@ fn assertion_state_rejects_wrong_state_assertion_and_time_in_isolation() {
 
 #[test]
 fn assertion_state_event_carries_virtual_time_name_and_phase() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let event = ObservableEvent::assertion_state_changed(
         time(17),
         assertion_id("split-active"),
@@ -223,6 +232,9 @@ fn assertion_state_event_carries_virtual_time_name_and_phase() {
 
 #[test]
 fn quiescent_uses_scheduler_owned_evidence() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let condition = Predicate::quiescent();
     let quiescent = SchedulerQuiescence::default();
     let non_quiescent = SchedulerQuiescence {
@@ -252,6 +264,9 @@ fn quiescent_uses_scheduler_owned_evidence() {
 
 #[test]
 fn quiescent_leaf_consumes_scheduler_computed_quiescence() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scheduler = quiescent_scheduler();
     let quiescence = scheduler
         .quiescence()
@@ -268,6 +283,9 @@ fn quiescent_leaf_consumes_scheduler_computed_quiescence() {
 
 #[test]
 fn event_graph_fires_from_assertion_state_with_declared_assertion() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let graph = EventGraph::new_with_assertions(
         vec![Event::once(
             EventId::from_name("pass-on-leader"),
@@ -295,6 +313,9 @@ fn event_graph_fires_from_assertion_state_with_declared_assertion() {
 
 #[test]
 fn event_graph_rejects_undeclared_assertion_state_reference() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let result = EventGraph::new(vec![Event::once(
         EventId::from_name("pass-on-leader"),
         Some(Predicate::assertion_state(
@@ -317,6 +338,9 @@ fn event_graph_rejects_undeclared_assertion_state_reference() {
 
 #[test]
 fn event_graph_fires_from_quiescent_scheduler_evidence() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let graph = EventGraph::new(vec![Event::once(
         EventId::from_name("pass-on-quiescence"),
         Some(Predicate::quiescent()),
@@ -335,6 +359,9 @@ fn event_graph_fires_from_quiescent_scheduler_evidence() {
 
 #[test]
 fn properties_validate_assertion_state_references() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let validated = Properties::from_assertions_for_world(
         &world(),
         vec![
@@ -365,6 +392,9 @@ fn properties_validate_assertion_state_references() {
 
 #[test]
 fn assertion_state_and_quiescent_round_trip_through_properties_serialization() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let properties = Properties::from_assertions_for_world(
         &world,
@@ -404,6 +434,9 @@ fn assertion_state_and_quiescent_round_trip_through_properties_serialization() {
 
 #[test]
 fn assertion_state_material_distinguishes_assertion_name_and_phase() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let satisfied = properties_for(
         "leader-elected",
         Predicate::assertion_state(assertion_id("leader-elected"), AssertionPhase::Satisfied),

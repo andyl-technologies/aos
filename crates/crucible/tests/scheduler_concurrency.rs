@@ -14,6 +14,9 @@ use crucible::{
 
 #[test]
 fn concurrent_run_set_is_fixed_by_scheduler_horizons() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let producer = scheduler_node("producer");
     let alpha = scheduler_node("alpha");
     let beta = scheduler_node("beta");
@@ -50,6 +53,9 @@ fn concurrent_run_set_is_fixed_by_scheduler_horizons() {
 
 #[test]
 fn concurrent_run_set_excludes_skewed_peers_from_same_round() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let producer = scheduler_node("producer");
     let alpha = scheduler_node("alpha");
     let beta = scheduler_node("beta");
@@ -76,6 +82,9 @@ fn concurrent_run_set_excludes_skewed_peers_from_same_round() {
 
 #[test]
 fn concurrent_round_serializes_resolve_emit_bit_identically_to_serial() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let producer = scheduler_node("producer");
     let alpha = scheduler_node("alpha");
     let beta = scheduler_node("beta");

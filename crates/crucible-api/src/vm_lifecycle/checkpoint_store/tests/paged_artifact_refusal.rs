@@ -5,6 +5,9 @@ use super::*;
 #[test]
 fn paged_loader_rejects_missing_or_corrupt_device_chunks() -> Result<(), Box<dyn std::error::Error>>
 {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let store = tempfile::tempdir()?;
     let fixture = build_exact_ram_production_checkpoint_codec_fixture(store.path())?;
     let source = fixture.source();
@@ -76,6 +79,9 @@ fn paged_loader_rejects_missing_or_corrupt_device_chunks() -> Result<(), Box<dyn
 #[test]
 fn paged_loader_rejects_corrupt_page_with_retained_root_metadata()
 -> Result<(), Box<dyn std::error::Error>> {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let store = tempfile::tempdir()?;
     let fixture = build_exact_ram_production_checkpoint_codec_fixture(store.path())?;
     let scenario = fixture.source().scenario_def();

@@ -94,6 +94,40 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
     if let Commands::Store(args) = &cli.command {
         return run_store_invocation(cli, args);
     }
+    // Validate transport trust before any input authority or artifact work.
+    let remote_selection = if cli.daemon.is_some() {
+        plan_backend_selection(cli)?
+    } else {
+        None
+    };
+    if let Commands::Debug(args) = &cli.command
+        && let Some(session) = args.session.as_deref()
+    {
+        parse_debug_session_ref(session)?;
+    }
+    let (standalone_input, _native_input_owner) =
+        if command_uses_standalone_input(cli, remote_selection.as_ref()) {
+            (
+                Some(crate::cli_input_resources::StandaloneInputResources::open(
+                    cli.campaign_deployment.as_deref(),
+                )?),
+                None,
+            )
+        } else if cli.daemon.is_none()
+            && matches!(cli.command, Commands::Run(_) | Commands::Fuzz(_))
+        {
+            let (input, owner) = crate::cli_input_resources::admit_native_command_input(cli)?;
+            (Some(input), Some(owner))
+        } else {
+            (None, None)
+        };
+    let _input_owner = standalone_input
+        .as_ref()
+        .map(|input| input.install(cli.campaign_deployment.as_deref()))
+        .transpose()?;
+    let planning_scope = standalone_input
+        .as_ref()
+        .map(|input| input.decoding.enter());
     let mut seed_entropy = OsSeedEntropySource;
     let ergonomics_plan =
         plan_determinism_ergonomics(cli, &ProcessSeedEnvironment, &mut seed_entropy)?;
@@ -177,17 +211,24 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
             println!("{}", plan.seed_announcement());
         }
     }
+    // Asynchronous adapters enter this same budget on each poll.
+    drop(planning_scope);
     if let Commands::Serve(args) = &cli.command {
         return run_serve_invocation(cli, args);
     }
-    if let Some(backend_plan) = plan_backend_selection(cli)? {
+    let backend_selection = match remote_selection {
+        Some(backend) => Some(backend),
+        None => plan_backend_selection(cli)?,
+    };
+    if let Some(backend_plan) = backend_selection {
         execute_backend_selection_plan(&backend_plan, cli.quiet, &mut NullBackendRouteRecorder)?;
         if let Some(plan) = &debug_plan {
             if cli.daemon.is_some() {
                 return run_remote_debug_relay(cli, plan);
             }
             let backend = require_selftest_qemu_backend(cli)?;
-            let lines = run_local_qemu_debug_workflow(&backend, plan)?;
+            let lines =
+                run_local_qemu_debug_workflow(&backend, plan, cli.campaign_deployment.as_deref())?;
             let mut outcome = execute_backend_routed_command(
                 &thin_plan,
                 &backend_plan,
@@ -383,6 +424,9 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     ..
                 })
             ) {
+                let _scope = standalone_input
+                    .as_ref()
+                    .map(|input| input.decoding.enter());
                 mark_mock_failure_outcome(
                     cli,
                     &backend_plan,
@@ -427,6 +471,9 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
         }
         Commands::Run(_) => Ok(()),
         Commands::Selftest(args) => {
+            let _scope = standalone_input
+                .as_ref()
+                .map(|input| input.decoding.enter());
             let report = run_selftest(cli, args)?;
             emit_selftest_report(cli, &report)?;
             Ok(())
@@ -506,3 +553,32 @@ fn emit_selftest_report(cli: &Cli, report: &SelftestReport) -> Result<(), CliErr
 mod support;
 
 pub(super) use support::*;
+
+/// Distinguishes storage-only input ownership from the genuine native owner.
+fn command_uses_standalone_input(cli: &Cli, backend: Option<&BackendSelectionPlan>) -> bool {
+    if matches!(cli.command, Commands::Completions(_)) {
+        return false;
+    }
+    if let Some(backend) = backend {
+        return backend.target == BackendExecutionTarget::RemoteDaemon
+            || !matches!(
+                backend.resolved_backend,
+                Some(ResolvedLocalBackend::Qemu { .. })
+            );
+    }
+    #[cfg(any(test, feature = "test-double"))]
+    if cli.backend == Backend::Double {
+        return true;
+    }
+    #[cfg(any(test, feature = "test-double"))]
+    if cli.backend == Backend::Auto && subcommand_uses_backend_selection(&cli.command) {
+        // Candidate presence selects ownership only; validation remains after
+        // authored family validation, preserving its original error ordering.
+        return !has_native_artifact_candidate(cli);
+    }
+    #[cfg(any(test, feature = "test-double"))]
+    if let Commands::Selftest(args) = &cli.command {
+        return !args.with_qemu;
+    }
+    false
+}

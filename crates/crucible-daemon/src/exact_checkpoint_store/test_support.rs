@@ -6,6 +6,11 @@
 
 use std::sync::Arc;
 
+#[cfg(test)]
+use crucible_cas::content_store::{
+    BackendCapabilities, BlobHandle, ByteRange, ContentId, ImmutableBlobBackend, ObjectKind,
+    PutReceipt,
+};
 use crucible_cas::content_store::{StoreError, StorePhysicalQuotaGuard};
 use crucible_linux_resource::host_services::{HostServiceAllocator, HostServiceError};
 
@@ -26,6 +31,10 @@ pub(crate) fn fixture_ram_root_resources()
 struct FixtureRamRootResources(HostServiceAllocator);
 
 impl StorePhysicalQuotaGuard for FixtureRamRootResources {
+    fn decoded_metadata_limit(&self) -> Result<u64, StoreError> {
+        Ok(FIXTURE_RESIDENT_BYTES)
+    }
+
     fn reserve_resources(
         &self,
         descriptors: u64,
@@ -39,5 +48,75 @@ impl StorePhysicalQuotaGuard for FixtureRamRootResources {
 
     fn verify(&self) -> Result<(), StoreError> {
         Ok(())
+    }
+}
+
+/// Installs one finite original account for a portable component fixture.
+///
+/// Returned values retain their actual shared loans after the scope closes.
+/// This account supplies neither filesystem quota nor native Service admission.
+#[cfg(test)]
+pub(crate) fn fixture_decode_scope() -> crucible::owned_decode::DecodeScope {
+    let resources = fixture_ram_root_resources()
+        .unwrap_or_else(|error| panic!("finite component metadata resources: {error}"));
+    let budget = crucible::owned_decode::DecodeBudget::for_store(resources)
+        .unwrap_or_else(|error| panic!("finite original component decode account: {error}"));
+    budget.enter()
+}
+
+/// Adds finite component metadata credit while retaining the actual backend contract.
+///
+/// Storage capabilities, graph headroom, and durable writes come from the
+/// supplied backend. This wrapper does not certify installed physical quota.
+///
+#[cfg(test)]
+pub(crate) fn fixture_metadata_backend(
+    backend: Arc<dyn ImmutableBlobBackend>,
+    resources: Arc<dyn StorePhysicalQuotaGuard>,
+) -> Arc<dyn ImmutableBlobBackend> {
+    Arc::new(FixtureMetadataBackend { backend, resources })
+}
+
+#[cfg(test)]
+struct FixtureMetadataBackend {
+    backend: Arc<dyn ImmutableBlobBackend>,
+    resources: Arc<dyn StorePhysicalQuotaGuard>,
+}
+
+#[cfg(test)]
+impl ImmutableBlobBackend for FixtureMetadataBackend {
+    fn name(&self) -> &str {
+        self.backend.name()
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        self.backend.capabilities()
+    }
+
+    fn metadata_resources(&self) -> Result<Arc<dyn StorePhysicalQuotaGuard>, StoreError> {
+        Ok(Arc::clone(&self.resources))
+    }
+
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        self.backend.admit_object_graph(objects)
+    }
+
+    fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
+        self.backend.contains(id)
+    }
+
+    fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
+        self.backend.read(id, range)
+    }
+
+    fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
+        self.backend.put_if_absent(id, source)
+    }
+
+    fn put_many_if_absent(
+        &self,
+        objects: &[(ContentId, BlobHandle)],
+    ) -> Result<Vec<PutReceipt>, StoreError> {
+        self.backend.put_many_if_absent(objects)
     }
 }

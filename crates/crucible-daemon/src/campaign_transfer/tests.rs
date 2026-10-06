@@ -640,13 +640,20 @@ fn directory_object_path(root: &Path, id: crucible_cas::content_store::ContentId
 
 #[test]
 fn imported_promoted_checkpoint_survives_fresh_store_and_idempotent_retry() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     use crucible_cas::content_store::RefStoreAdmin;
 
     let temporary = tempfile::tempdir().expect("transfer fixture");
-    let source_backend = Arc::new(DirectoryBlobBackend::new(
-        "source",
-        temporary.path().join("source-objects"),
-    ));
+    let source_backend = crate::exact_checkpoint_store::test_support::fixture_metadata_backend(
+        Arc::new(DirectoryBlobBackend::new(
+            "source",
+            temporary.path().join("source-objects"),
+        )),
+        crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+            .expect("finite source component metadata authority"),
+    );
     let source_refs = Arc::new(DirectoryRefBackend::new(
         temporary.path().join("source-refs"),
     ));
@@ -658,8 +665,9 @@ fn imported_promoted_checkpoint_survives_fresh_store_and_idempotent_retry() {
     )
     .expect("source checkpoints")
     .with_ram_root_resources(
-        crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
-            .expect("finite component RAM-root credit"),
+        source_backend
+            .metadata_resources()
+            .expect("original source component RAM-root credit"),
     );
     let native_root = temporary.path().join("native");
     fs::create_dir(&native_root).expect("native fixture directory");
@@ -870,10 +878,14 @@ fn imported_promoted_checkpoint_survives_fresh_store_and_idempotent_retry() {
     assert_eq!(plan.manifest().checkpoint_selections().len(), 1);
     drop(resolver);
 
-    let destination_backend = Arc::new(DirectoryBlobBackend::new(
-        "destination",
-        temporary.path().join("destination-objects"),
-    ));
+    let destination_backend = crate::exact_checkpoint_store::test_support::fixture_metadata_backend(
+        Arc::new(DirectoryBlobBackend::new(
+            "destination",
+            temporary.path().join("destination-objects"),
+        )),
+        crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+            .expect("finite destination component metadata authority"),
+    );
     let destination = CampaignRepository::new(
         destination_backend.clone(),
         Arc::new(DirectoryRefBackend::new(
@@ -887,8 +899,9 @@ fn imported_promoted_checkpoint_survives_fresh_store_and_idempotent_retry() {
     )
     .expect("fresh destination checkpoints")
     .with_ram_root_resources(
-        crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
-            .expect("finite component RAM-root credit"),
+        destination_backend
+            .metadata_resources()
+            .expect("original destination component RAM-root credit"),
     );
     let selection_root = temporary.path().join("destination-exact-pins");
     let mut destination_pins =
@@ -951,14 +964,15 @@ fn imported_promoted_checkpoint_survives_fresh_store_and_idempotent_retry() {
     drop(destination_checkpoints);
 
     let restarted_checkpoints = ExactCheckpointStore::new(
-        destination_backend,
+        destination_backend.clone(),
         64 * 1024 * 1024,
         destination.ram_retention_authority(),
     )
     .expect("restarted destination checkpoints")
     .with_ram_root_resources(
-        crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
-            .expect("finite component RAM-root credit"),
+        destination_backend
+            .metadata_resources()
+            .expect("same original destination component RAM-root credit"),
     );
     let mut restarted_pins =
         DirectoryExactPinMaterializationStore::open(&selection_root).expect("reopened pins");

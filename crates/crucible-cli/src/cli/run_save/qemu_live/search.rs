@@ -143,48 +143,53 @@ fn search_finding_reproduction_artifact_bytes(
     }
     let status = status_from_outcome(Some(finding.outcome))?;
     let network_choice_indices = replay_choice_indices(model.artifact.schedule());
-    let live =
-        LiveQemuArtifactEvidence {
-            contract: LiveQemuReplayContract {
-                producer: String::from("campaign-search"),
-                execution_owner: RunExecutionOwner::Campaign,
-                execution_mode: RunExecutionMode::ToCompletion,
-                initial_configuration: format_content_hash_ref(
-                    crucible::Configuration::genesis(model.artifact.scenario_def()).id(),
-                ),
-                initial_scenario: scenario.to_compact_binary(),
-                initial_schedule: crucible::Schedule::empty().to_compact_binary(),
-                terminal_condition: String::from("stopped"),
-                terminal_status: status.label().to_string(),
-                terminal_outcome: terminal_outcome_label(Some(finding.outcome)).to_string(),
-                terminal_configuration: format_content_hash_ref(finding.failure.configuration),
-                final_frontier_ticks: finding.frontier.ticks,
-                final_quanta: finding.quanta,
-                final_event_log_len: u64::try_from(finding.event_frames.len()).unwrap_or(u64::MAX),
-                final_schedule: model.artifact.schedule().to_compact_binary(),
-                terminal_savepoint: None,
-                budget_timed_out: finding.outcome == OutcomeKind::Timeout,
-                max_virtual_time_ticks: None,
-                max_quanta: None,
-                run_ceiling_ticks: Some(LIVE_EXPLORATION_RUN_CEILING_TICKS),
-                lifecycle_quantum_budget: Some(LIVE_EXPLORATION_QUANTUM_LIMIT),
-                coverage: plan.engine_strategy == crucible::SearchStrategy::CoverageGuided,
-                fingerprint_scope: LiveQemuFingerprintScope::TerminalAllNodes,
-                branch: LiveQemuReplayBranch::None,
-                network_choice_indices,
-                startup_controls: Vec::new(),
-                initial_controls: Vec::new(),
-                controls: Vec::new(),
-                reproduction_commands: Vec::new(),
-            },
-            event_stream: canonical_verify_log_stream_bytes(&[], &finding.event_frames),
-            fingerprint_stream: verify_fingerprint_stream_bytes(&fingerprints),
-            fingerprint_samples: fingerprints.clone(),
-            resolved_effect_trace: finding.resolved_effect_trace.clone(),
-            campaign_replay_closure: Some(finding.replay_closure.to_canonical_bytes().map_err(
-                |error| artifact_error(format!("encode campaign replay closure: {error}")),
-            )?),
-        };
+    let live = LiveQemuArtifactEvidence {
+        contract: LiveQemuReplayContract {
+            producer: String::from("campaign-search"),
+            execution_owner: RunExecutionOwner::Campaign,
+            execution_mode: RunExecutionMode::ToCompletion,
+            initial_configuration: format_content_hash_ref(
+                crucible::Configuration::genesis(model.artifact.scenario_def()).id(),
+            ),
+            initial_scenario: scenario.to_compact_binary(),
+            initial_schedule: crucible::Schedule::empty().to_compact_binary(),
+            terminal_condition: String::from("stopped"),
+            terminal_status: status.label().to_string(),
+            terminal_outcome: terminal_outcome_label(Some(finding.outcome)).to_string(),
+            terminal_configuration: format_content_hash_ref(finding.failure.configuration),
+            final_frontier_ticks: finding.frontier.ticks,
+            final_quanta: finding.quanta,
+            final_event_log_len: u64::try_from(finding.event_frames.len()).unwrap_or(u64::MAX),
+            final_schedule: model.artifact.schedule().to_compact_binary(),
+            terminal_savepoint: None,
+            budget_timed_out: finding.outcome == OutcomeKind::Timeout,
+            max_virtual_time_ticks: None,
+            max_quanta: None,
+            run_ceiling_ticks: Some(LIVE_EXPLORATION_RUN_CEILING_TICKS),
+            lifecycle_quantum_budget: Some(LIVE_EXPLORATION_QUANTUM_LIMIT),
+            coverage: plan.engine_strategy == crucible::SearchStrategy::CoverageGuided,
+            fingerprint_scope: LiveQemuFingerprintScope::TerminalAllNodes,
+            branch: LiveQemuReplayBranch::None,
+            network_choice_indices,
+            startup_controls: Vec::new(),
+            initial_controls: Vec::new(),
+            controls: Vec::new(),
+            reproduction_commands: Vec::new(),
+        },
+        event_stream: canonical_verify_log_stream_bytes(&[], &finding.event_frames),
+        fingerprint_stream: verify_fingerprint_stream_bytes(&fingerprints),
+        fingerprint_samples: fingerprints.clone(),
+        resolved_effect_trace: finding.resolved_effect_trace.clone(),
+        campaign_replay_closure: Some(
+            finding
+                .replay_closure
+                .to_canonical_bytes_admitted()
+                .map_err(|error| {
+                    artifact_error(format!("encode campaign replay closure: {error}"))
+                })?
+                .0,
+        ),
+    };
     let mut payloads = search_extra_artifact_payloads(plan, &mut canonical_log);
     payloads.extend(model_reproduction_artifact_payloads(
         &model.artifact,
@@ -261,6 +266,7 @@ struct QemuSearchExecution {
     expansions: u64,
     findings: Vec<crate::cli_report::TriageFindingEvidence>,
     reproduction_artifacts: Vec<Vec<u8>>,
+    _input_custody: Option<crucible_session::engine::owned_decode::DecodeCustody>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -360,9 +366,12 @@ fn run_local_qemu_search_scenario(
     if let Some(oracle) = QemuSearchSupplementalOracle::from_plan(plan)? {
         request = request.with_supplemental_finding_oracle(Box::new(oracle));
     }
+    let decoding =
+        crate::cli_verify_serve::campaign_run::campaign_request_metadata_budget(&request)?;
     let campaign = run_guarded_default_campaign(request)
         .map_err(|error| campaign_search_error("execute shared campaign search", error))?;
 
+    let _scope = decoding.enter();
     campaign_search_outcome(
         thin_plan,
         backend_plan,
@@ -515,6 +524,7 @@ fn campaign_search_outcome(
         expansions: campaign.branch_acceptances().len() as u64,
         findings: evidence,
         reproduction_artifacts: reproductions,
+        _input_custody: crucible_session::engine::owned_decode::current_custody(),
     })
 }
 
@@ -742,7 +752,7 @@ fn campaign_search_finding(
         configuration,
     )
     .map_err(|error| backend_error(format!("capture campaign search finding: {error}")))?;
-    let event_frames = accepted_event_frames(accepted);
+    let event_frames = accepted_event_frames(accepted)?;
     let coverage =
         crucible::EventLogCoverageFeedback::from_event_log(accepted.evidence().event_log_entries());
     let evidence = if let Some(timeout) = timeout {
@@ -933,22 +943,32 @@ fn timeout_failure_material(
     )
 }
 
-fn accepted_event_frames(accepted: &GuardedDefaultCampaignObservation) -> Vec<Vec<u8>> {
-    accepted
-        .evidence()
-        .event_log_entries()
-        .iter()
-        .map(|entry| {
-            canonical_streaming_event_frame_bytes(&campaign_output_api::StreamingEventFrame {
-                generation: 0,
-                cursor: campaign_output_api::EventLogCursor::new(entry.sequence()),
-                next_cursor: campaign_output_api::EventLogCursor::new(
-                    entry.sequence().saturating_add(1),
-                ),
-                event: campaign_output_api::open_set_event_envelope_from_entry(entry),
-            })
-        })
-        .collect()
+fn accepted_event_frames(
+    accepted: &GuardedDefaultCampaignObservation,
+) -> Result<Vec<Vec<u8>>, CliError> {
+    let decoding = crucible_session::engine::owned_decode::current_budget().ok_or_else(|| {
+        backend_error("campaign event frames require their original metadata authority")
+    })?;
+    let entries = accepted.evidence().event_log_entries();
+    let mut frames = Vec::new();
+    crucible_session::engine::owned_decode::reserve_vec(&mut frames, entries.len())
+        .map_err(|error| campaign_search_error("admit event-frame vector", error))?;
+    for entry in entries {
+        let frame = campaign_output_api::StreamingEventFrame::from_entry_admitted(
+            0,
+            campaign_output_api::EventLogCursor::new(entry.sequence()),
+            campaign_output_api::EventLogCursor::new(entry.sequence().saturating_add(1)),
+            entry,
+        )
+        .map_err(|error| campaign_search_error("admit event frame", error))?;
+        frames.push(
+            crate::cli_verify_serve::admitted_streaming_event_frame_bytes(
+                frame.value(),
+                &decoding,
+            )?,
+        );
+    }
+    Ok(frames)
 }
 
 fn accepted_stop_label(stop: &StopOutcome) -> String {

@@ -590,6 +590,17 @@ impl ChoiceDomain {
         encoder.finish()
     }
 
+    /// Returns the exact canonical byte length without allocating the body.
+    ///
+    /// # Errors
+    /// Refuses overflow or an encoded body exceeding the canonical format bound.
+    pub fn canonical_encoded_len(&self) -> Result<usize, CampaignCodecError> {
+        codec::encoded_length_with(|encoder| {
+            CHOICE_DOMAIN_SCHEMA_VERSION.encode(encoder);
+            self.encode(encoder);
+        })
+    }
+
     /// Decodes strict canonical bytes and validates all domain invariants.
     ///
     /// # Errors

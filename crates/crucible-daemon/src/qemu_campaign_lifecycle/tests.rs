@@ -104,6 +104,8 @@ impl<E: Error + 'static> Error for OversizedFailure<E> {
 
 #[test]
 fn genesis_start_error_retains_worker_class_and_underlying_cause() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let error = QemuFreshGenesisCheckpointError::Start(AttemptWorkerFailure::Terminal(
         std::io::Error::other("guarded launch rejected"),
     ));
@@ -121,6 +123,8 @@ fn genesis_start_error_retains_worker_class_and_underlying_cause() {
 
 #[test]
 fn selected_start_derives_matching_scheduler_and_plugin_branch_plans() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let scenario = ScenarioDef::from_canonical_material_with_seed(
         "crucible.test.campaign.branch-plan",
         "scenario=branch-plan",
@@ -181,6 +185,8 @@ fn selected_start_derives_matching_scheduler_and_plugin_branch_plans() {
 
 #[test]
 fn promoted_signal_fault_branch_is_admitted_only_by_its_typed_plan() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let scenario = ScenarioDef::from_canonical_material(
         "crucible.test.campaign.signal-fault-branch",
         "signal fault branch",
@@ -224,6 +230,8 @@ fn promoted_signal_fault_branch_is_admitted_only_by_its_typed_plan() {
 
 #[test]
 fn app_random_projection_ignores_a_campaign_selection_outside_its_owned_stream() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let scenario = ScenarioDef::from_canonical_material_with_seed(
         "crucible.test.campaign.branch-plan",
         "scenario=foreign-stream-domain",
@@ -485,6 +493,8 @@ fn factory(
 
 #[test]
 fn exact_guard_is_transferred_to_lifecycle_launcher_hooks() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let limits = resources(2);
     let counters = Arc::new(GuardCounters::default());
     let cancellation = ExecutionCancellation::default();
@@ -514,6 +524,8 @@ fn exact_guard_is_transferred_to_lifecycle_launcher_hooks() {
 
 #[test]
 fn exact_resume_is_rejected_before_resource_installation() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let limits = resources(1);
     let counters = Arc::new(GuardCounters::default());
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
@@ -544,6 +556,8 @@ fn exact_resume_is_rejected_before_resource_installation() {
 
 #[test]
 fn promoted_root_without_matching_durable_selection_is_rejected_at_resume_admission() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let scenario = crucible::crash_restart_scenario()
         .expect("built-in scenario fixture")
         .scenario;
@@ -584,6 +598,8 @@ fn promoted_root_without_matching_durable_selection_is_rejected_at_resume_admiss
 
 #[test]
 fn promoted_portable_resume_preflight_uses_no_native_recovery_catalog() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let directory = tempfile::tempdir().expect("portable resume fixture directory");
     let native_root = directory.path().join("native-source");
     std::fs::create_dir(&native_root).expect("native source directory");
@@ -706,6 +722,8 @@ fn promoted_portable_resume_preflight_uses_no_native_recovery_catalog() {
 
 #[test]
 fn drifted_scenario_identity_fields_are_rejected_before_resource_installation() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let limits = resources(1);
     let counters = Arc::new(GuardCounters::default());
     let context = context(limits, ExecutionCancellation::default());
@@ -734,6 +752,8 @@ fn drifted_scenario_identity_fields_are_rejected_before_resource_installation() 
 
 #[test]
 fn mismatched_guard_contract_is_released_before_rejection() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let requested = resources(1);
     let installed = AttemptResourceLimits::new(
         requested.maximum_vcpus() + 1,
@@ -766,6 +786,8 @@ fn mismatched_guard_contract_is_released_before_rejection() {
 
 #[test]
 fn mismatched_cancellation_incarnation_is_released_before_rejection() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let limits = resources(1);
     let counters = Arc::new(GuardCounters::default());
     let context = context(limits, ExecutionCancellation::default());
@@ -791,6 +813,8 @@ fn mismatched_cancellation_incarnation_is_released_before_rejection() {
 
 #[test]
 fn lifecycle_construction_failure_quarantines_installed_guard() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let limits = resources(1);
     let counters = Arc::new(GuardCounters::default());
     let context = context(limits, ExecutionCancellation::default());
@@ -880,6 +904,8 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
         {
             self.signal_fault_branches.pop_front();
             return self.complete_quantum(crucible::QuantumOutcome {
+                event_log_custody: crucible::EventLogOutputCustody::retain_current()
+                    .unwrap_or_else(|source| panic!("fixture quantum output admission: {source}")),
                 configuration: branch.selected().clone(),
                 frontier: branch.frontier(),
                 advanced_node: None,
@@ -903,6 +929,8 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
         );
         let next_frontier = self.completed_quanta.saturating_add(1);
         self.complete_quantum(crucible::QuantumOutcome {
+            event_log_custody: crucible::EventLogOutputCustody::retain_current()
+                .unwrap_or_else(|source| panic!("fixture quantum output admission: {source}")),
             configuration,
             frontier: VirtualTime {
                 ticks: next_frontier,
@@ -1053,17 +1081,22 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
                 message: String::from("injected fresh lifecycle cleanup failure"),
             })
         } else {
-            Ok(vec![SchedulerEventLogEntry::execution_budget_exhausted(
-                7,
-                VirtualTime { ticks: 11 },
-                "final-drain-test",
-            )])
+            Ok(vec![
+                SchedulerEventLogEntry::execution_budget_exhausted(
+                    7,
+                    VirtualTime { ticks: 11 },
+                    "final-drain-test",
+                )
+                .unwrap_or_else(|source| panic!("fixture event admission: {source}")),
+            ])
         }
     }
 }
 
 #[test]
 fn observed_lifecycle_retains_only_successful_execution_evidence() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let scenario = ScenarioDef::from_canonical_material_with_seed(
         "crucible.test.standalone-campaign-lifecycle",
         "scenario=standalone-campaign-lifecycle",
@@ -1140,6 +1173,8 @@ fn observed_lifecycle_retains_only_successful_execution_evidence() {
 #[test]
 fn observed_production_lifecycle_projects_retained_failed_node_terminal_fingerprints()
 -> Result<(), Box<dyn Error>> {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let (source, mut lifecycle) = production_permanently_failed_loop_for_test()?;
     let nodes = source
         .world()
@@ -1164,6 +1199,8 @@ fn observed_production_lifecycle_projects_retained_failed_node_terminal_fingerpr
 
 #[test]
 fn observed_lifecycle_rejects_a_mismatched_terminal_fingerprint_atomically() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let scenario = ScenarioDef::from_canonical_material_with_seed(
         "crucible.test.terminal-fingerprint-mismatch",
         "scenario=terminal-fingerprint-mismatch",
@@ -1215,6 +1252,8 @@ fn observed_lifecycle_rejects_a_mismatched_terminal_fingerprint_atomically() {
 
 #[test]
 fn observed_lifecycle_does_not_publish_staged_fingerprints_when_cleanup_fails() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let scenario = ScenarioDef::from_canonical_material_with_seed(
         "crucible.test.terminal-fingerprint-cleanup",
         "scenario=terminal-fingerprint-cleanup",
@@ -1338,6 +1377,7 @@ impl QemuFreshAttemptLifecycleOwner for BoundaryCaptureLifecycle {
             configuration = accepted_step(&configuration, decision);
         }
         Ok(crucible::QuantumOutcome {
+            event_log_custody: append.event_log_custody,
             configuration,
             frontier: at,
             advanced_node: None,
@@ -1834,6 +1874,8 @@ impl crate::QemuOrdinaryResumeRunner for AbsentSelectedSourceResume {
 
 #[test]
 fn router_cold_executes_an_initial_selected_origin_when_its_source_is_absent() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let order = Arc::new(Mutex::new(Vec::new()));
     let authentications = Arc::new(AtomicUsize::new(0));
     let fresh = QemuFreshExecutionRunner::new(
@@ -1896,6 +1938,8 @@ fn router_cold_executes_an_initial_selected_origin_when_its_source_is_absent() {
 
 #[test]
 fn router_cold_executes_continuation_control_after_authenticating_exact_source() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let order = Arc::new(Mutex::new(Vec::new()));
     let continuations = Arc::new(Mutex::new(Vec::new()));
     let authentications = Arc::new(AtomicUsize::new(0));
@@ -1970,6 +2014,8 @@ fn router_cold_executes_continuation_control_after_authenticating_exact_source()
 
 #[test]
 fn router_cold_replays_each_control_in_a_two_generation_continuation_chain() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let order = Arc::new(Mutex::new(Vec::new()));
     let continuations = Arc::new(Mutex::new(Vec::new()));
     let authentications = Arc::new(AtomicUsize::new(0));
@@ -2032,6 +2078,8 @@ fn router_cold_replays_each_control_in_a_two_generation_continuation_chain() {
 
 #[test]
 fn private_fresh_replay_can_preserve_descendant_continuation_controls() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let (source, _, _, expected_controls) = selected_after_two_controlled_generations();
     let candidate = source.start().configuration().clone();
     let candidate_artifact =
@@ -2062,6 +2110,8 @@ fn private_fresh_replay_can_preserve_descendant_continuation_controls() {
 
 #[test]
 fn private_fresh_replay_rejects_a_candidate_shorter_than_its_descendant_controls() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let (source, _, _, _) = selected_after_two_controlled_generations();
     let full = source.start().configuration();
     let shortened = Configuration {
@@ -2092,6 +2142,8 @@ fn private_fresh_replay_rejects_a_candidate_shorter_than_its_descendant_controls
 
 #[test]
 fn router_rejects_invalid_exact_source_before_cold_continuation_allocation() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let order = Arc::new(Mutex::new(Vec::new()));
     let authentications = Arc::new(AtomicUsize::new(0));
     let fresh = QemuFreshExecutionRunner::new(
@@ -2150,6 +2202,8 @@ fn router_rejects_invalid_exact_source_before_cold_continuation_allocation() {
 
 #[test]
 fn fresh_runner_opts_only_next_choice_attempts_into_live_signal_promotion() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     for (stop, expected) in [
         (StopCondition::Terminal, false),
         (StopCondition::NextChoice, true),
@@ -2182,6 +2236,8 @@ fn fresh_runner_opts_only_next_choice_attempts_into_live_signal_promotion() {
 
 #[test]
 fn fresh_runner_enables_live_signal_promotion_after_start_materialization() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let order = Arc::new(Mutex::new(Vec::new()));
     let observed = Arc::new(Mutex::new(Vec::new()));
     let mut runner = QemuFreshExecutionRunner::new(
@@ -2218,6 +2274,8 @@ fn fresh_runner_enables_live_signal_promotion_after_start_materialization() {
 
 #[test]
 fn private_checkpoint_replay_reconstructs_a_selected_origin_and_reaps_on_failure() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let (input, _, _) = selected_after_genesis_input();
     let selected = input.start().configuration().clone();
     let proof = QemuSavepointReplayProof::from_reached_boundary(
@@ -2266,6 +2324,8 @@ fn private_checkpoint_replay_reconstructs_a_selected_origin_and_reaps_on_failure
 
 #[test]
 fn fresh_runner_rejects_an_unsolicited_checkpoint_before_capture() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let order = Arc::new(Mutex::new(Vec::new()));
     let mut runner = QemuFreshExecutionRunner::new(
         FakeFreshLifecycleFactory {
@@ -2293,6 +2353,8 @@ fn fresh_runner_rejects_an_unsolicited_checkpoint_before_capture() {
 
 #[test]
 fn fresh_runner_seals_only_after_runner_owned_shutdown() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let order = Arc::new(Mutex::new(Vec::new()));
     let mut runner = QemuFreshExecutionRunner::new(
         FakeFreshLifecycleFactory {
@@ -2327,6 +2389,8 @@ fn fresh_runner_seals_only_after_runner_owned_shutdown() {
 
 #[test]
 fn terminal_evidence_runner_attaches_the_fresh_terminal_world_set_after_shutdown() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let input = modeled_fresh_runner_input_for_stop(StopCondition::ExecutionQuanta(1));
     let factory = BoundaryCaptureLifecycleFactory {
         captured: Arc::new(Mutex::new(Vec::new())),
@@ -2570,7 +2634,8 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
         VirtualTime { ticks: 1 },
         assertion.clone(),
         AssertionPhase::Violated,
-    );
+    )
+    .unwrap_or_else(|source| panic!("fixture event admission: {source}"));
     let decisions = input
         .start()
         .configuration()
@@ -2682,7 +2747,8 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
                     VirtualTime { ticks: 1 },
                     assertion.clone(),
                     AssertionPhase::Violated,
-                );
+                )
+                .unwrap_or_else(|source| panic!("fixture event admission: {source}"));
                 let mut replay_runner = QemuFreshExecutionRunner::new(
                     BoundaryCaptureLifecycleFactory {
                         captured: Arc::new(Mutex::new(Vec::new())),
@@ -2763,6 +2829,8 @@ impl GuardedCampaignFindingOracle for NamedSupplementalFindingOracle {
 
 #[test]
 fn automatic_wrapper_retains_supplemental_violation_when_offline_source_also_fails() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     const PROPERTY: &str = "supplemental-collision";
     const NAMED_PREDICATE: &str = "supplemental-truth";
 
@@ -2913,12 +2981,15 @@ fn automatic_wrapper_retains_supplemental_violation_when_offline_source_also_fai
     let main = QemuFreshExecutionRunner::new(
         BoundaryCaptureLifecycleFactory {
             captured: Arc::new(Mutex::new(Vec::new())),
-            final_events: vec![SchedulerEventLogEntry::assertion_state_observation(
-                1,
-                VirtualTime { ticks: 1 },
-                AssertionId::from_name(PROPERTY),
-                AssertionPhase::Violated,
-            )],
+            final_events: vec![
+                SchedulerEventLogEntry::assertion_state_observation(
+                    1,
+                    VirtualTime { ticks: 1 },
+                    AssertionId::from_name(PROPERTY),
+                    AssertionPhase::Violated,
+                )
+                .unwrap_or_else(|source| panic!("fixture event admission: {source}")),
+            ],
             replay_decisions: replay_decisions.clone(),
             terminal_failure: false,
             terminal_marker: None,
@@ -2930,12 +3001,15 @@ fn automatic_wrapper_retains_supplemental_violation_when_offline_source_also_fai
     let replay_final_events = [1; 4]
         .into_iter()
         .map(|sequence| {
-            vec![SchedulerEventLogEntry::assertion_state_observation(
-                sequence,
-                VirtualTime { ticks: sequence },
-                AssertionId::from_name(PROPERTY),
-                AssertionPhase::Violated,
-            )]
+            vec![
+                SchedulerEventLogEntry::assertion_state_observation(
+                    sequence,
+                    VirtualTime { ticks: sequence },
+                    AssertionId::from_name(PROPERTY),
+                    AssertionPhase::Violated,
+                )
+                .unwrap_or_else(|source| panic!("fixture event admission: {source}")),
+            ]
         })
         .collect::<VecDeque<_>>();
     let replay = QemuFreshExecutionRunner::new(
@@ -3014,9 +3088,12 @@ fn automatic_wrapper_retains_supplemental_violation_when_offline_source_also_fai
     let crucible::FailureClusterReportFailure::Property(actual) = replay.failure() else {
         panic!("supplemental replay must retain a property violation")
     };
-    let mut expected = expected_finding.violation().clone();
+    let mut expected = expected_finding
+        .violation()
+        .try_clone_admitted()
+        .unwrap_or_else(|source| panic!("expected violation fixture admission: {source}"));
     expected.reproduction_artifact = replay.finding().artifact.id();
-    assert_eq!(actual.violation, expected);
+    assert_eq!(actual.violation.as_ref(), &expected);
 }
 
 #[path = "tests/finding_replay.rs"]

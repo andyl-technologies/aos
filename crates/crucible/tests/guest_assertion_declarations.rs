@@ -13,6 +13,9 @@ use crucible::{
 
 #[test]
 fn declared_guest_assertion_uses_marker_truth_without_duplicate_host_outcome() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let assertion_id = assertion_id("curl-receives-http-200");
     let properties = properties(
@@ -22,8 +25,10 @@ fn declared_guest_assertion_uses_marker_truth_without_duplicate_host_outcome() {
             "curl-receives-http-200 message",
         )],
     );
-    let mut evaluator =
-        HostAssertionEvaluator::new(&properties).with_world_white_box_policies(&world);
+    let mut evaluator = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"))
+        .with_world_white_box_policies(&world)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     let mut oracle = BlackBoxHostOracle;
 
     let marker = guest_marker(42, &assertion_id.name);
@@ -57,6 +62,9 @@ fn declared_guest_assertion_uses_marker_truth_without_duplicate_host_outcome() {
 
 #[test]
 fn declared_guest_assertion_rejects_marker_message_drift() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let properties = properties(
         &world,
@@ -65,8 +73,10 @@ fn declared_guest_assertion_rejects_marker_message_drift() {
             "authored scenario message",
         )],
     );
-    let mut evaluator =
-        HostAssertionEvaluator::new(&properties).with_world_white_box_policies(&world);
+    let mut evaluator = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"))
+        .with_world_white_box_policies(&world)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     let mut oracle = BlackBoxHostOracle;
 
     let outcomes = evaluator
@@ -84,6 +94,9 @@ fn declared_guest_assertion_rejects_marker_message_drift() {
 
 #[test]
 fn declared_guest_assertion_helpers_cover_every_guest_flavor() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let properties = properties(
         &world,
@@ -97,8 +110,10 @@ fn declared_guest_assertion_helpers_cover_every_guest_flavor() {
             AssertionDef::guest_unreachable(assertion_id("unreachable"), "unreachable message"),
         ],
     );
-    let mut evaluator =
-        HostAssertionEvaluator::new(&properties).with_world_white_box_policies(&world);
+    let mut evaluator = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"))
+        .with_world_white_box_policies(&world)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     let mut oracle = BlackBoxHostOracle;
 
     let outcomes = evaluator

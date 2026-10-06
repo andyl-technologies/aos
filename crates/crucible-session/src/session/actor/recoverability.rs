@@ -2,29 +2,43 @@
 
 use super::*;
 
+/// Captures rejection policy without copying any command-owned history.
+#[derive(Clone, Copy)]
+pub(in super::super) struct CommandRejectionKind {
+    reverse: bool,
+    debugger: bool,
+}
+
+impl CommandRejectionKind {
+    pub(in super::super) fn from_command(command: &SessionCommand) -> Self {
+        Self {
+            reverse: matches!(
+                command,
+                SessionCommand::DebugReverseStep { .. }
+                    | SessionCommand::DebugReverseContinue { .. }
+            ),
+            debugger: matches!(
+                command,
+                SessionCommand::AttachGdb { .. }
+                    | SessionCommand::DebugGoto { .. }
+                    | SessionCommand::DebugReverseStep { .. }
+                    | SessionCommand::DebugReverseContinue { .. }
+                    | SessionCommand::DebugForkNonCanonical { .. }
+                    | SessionCommand::GuestIntrospection { .. }
+                    | SessionCommand::Acknowledge { .. }
+            ),
+        }
+    }
+}
+
 pub(in super::super) fn is_recoverable_command_rejection(
-    command: &SessionCommand,
+    command: CommandRejectionKind,
     error: &SessionError,
 ) -> bool {
-    if matches!(error, SessionError::DebugHistoryUnavailable { .. })
-        && matches!(
-            command,
-            SessionCommand::DebugReverseStep { .. } | SessionCommand::DebugReverseContinue { .. }
-        )
-    {
+    if matches!(error, SessionError::DebugHistoryUnavailable { .. }) && command.reverse {
         return true;
     }
-    let debugger_command = matches!(
-        command,
-        SessionCommand::AttachGdb { .. }
-            | SessionCommand::DebugGoto { .. }
-            | SessionCommand::DebugReverseStep { .. }
-            | SessionCommand::DebugReverseContinue { .. }
-            | SessionCommand::DebugForkNonCanonical { .. }
-            | SessionCommand::GuestIntrospection { .. }
-            | SessionCommand::Acknowledge { .. }
-    );
-    if !debugger_command {
+    if !command.debugger {
         return false;
     }
     match error {
@@ -103,7 +117,9 @@ pub(in super::super) const fn is_recoverable_scheduler_rejection(error: &Schedul
         SchedulerError::BoundaryViolation { .. }
         | SchedulerError::TimeConversion(_)
         | SchedulerError::TopologyActivationInPast { .. } => true,
-        SchedulerError::ResourceLimit { .. } | SchedulerError::Evaluation { .. } => false,
+        SchedulerError::ResourceLimit { .. }
+        | SchedulerError::Evaluation { .. }
+        | SchedulerError::AssertionCheckpoint { .. } => false,
         SchedulerError::Backend(error) => is_recoverable_backend_rejection(error),
         SchedulerError::OperationalBoundary { .. } => false,
     }
@@ -112,6 +128,8 @@ pub(in super::super) const fn is_recoverable_scheduler_rejection(error: &Schedul
 pub(in super::super) const fn is_recoverable_backend_rejection(error: &BackendError) -> bool {
     match error {
         BackendError::Unsupported { .. } | BackendError::Rejected { .. } => true,
-        BackendError::ResourceLimit { .. } | BackendError::OperationalFailure { .. } => false,
+        BackendError::ResourceLimit { .. }
+        | BackendError::OperationalFailure { .. }
+        | BackendError::RetainedOperationalFailure { .. } => false,
     }
 }

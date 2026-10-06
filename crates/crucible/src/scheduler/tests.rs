@@ -37,6 +37,9 @@ mod run_admission;
 
 #[test]
 fn pending_network_boundary_release_settles_before_a_far_quantum() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     use std::cell::Cell;
     use std::rc::Rc;
 
@@ -60,6 +63,7 @@ fn pending_network_boundary_release_settles_before_a_far_quantum() {
                 event_log_segment_hash: None,
                 event_log_offset: EventLogOffset::default(),
                 scheduler_quiescence: None,
+                event_log_custody: Default::default(),
             })
         }
 
@@ -135,6 +139,9 @@ fn pending_network_boundary_release_settles_before_a_far_quantum() {
 
 #[test]
 fn pending_pre_choice_frame_keeps_its_emission_time_across_counter_rebase() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     use std::cell::Cell;
     use std::rc::Rc;
 
@@ -160,6 +167,7 @@ fn pending_pre_choice_frame_keeps_its_emission_time_across_counter_rebase() {
                 event_log_segment_hash: None,
                 event_log_offset: EventLogOffset::default(),
                 scheduler_quiescence: None,
+                event_log_custody: Default::default(),
             })
         }
 
@@ -244,6 +252,9 @@ fn pending_pre_choice_frame_keeps_its_emission_time_across_counter_rebase() {
 
 #[test]
 fn equal_boundary_custody_releases_settle_in_priority_order() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -267,6 +278,7 @@ fn equal_boundary_custody_releases_settle_in_priority_order() {
                 event_log_segment_hash: None,
                 event_log_offset: EventLogOffset::default(),
                 scheduler_quiescence: None,
+                event_log_custody: Default::default(),
             })
         }
 
@@ -355,6 +367,9 @@ fn equal_boundary_custody_releases_settle_in_priority_order() {
 
 #[test]
 fn failed_exact_boundary_network_append_poison_preserves_pending_frame() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     struct RejectingLoop;
 
     impl QuantumLoop for RejectingLoop {
@@ -420,6 +435,9 @@ fn failed_exact_boundary_network_append_poison_preserves_pending_frame() {
 
 #[test]
 fn scheduled_event_keys_cover_producer_tie_break() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let vm_a = scheduler_node("a", SchedulingNodeKind::Vm);
     let disk_a = scheduler_node("a", SchedulingNodeKind::Disk);
     let network_a = scheduler_node("a", SchedulingNodeKind::Network);
@@ -441,6 +459,9 @@ fn scheduled_event_keys_cover_producer_tie_break() {
 
 #[test]
 fn scheduled_events_resolve_by_key_not_arrival_order() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let vm_a = scheduler_node("a", SchedulingNodeKind::Vm);
     let vm_b = scheduler_node("b", SchedulingNodeKind::Vm);
     let disk_a = scheduler_node("a", SchedulingNodeKind::Disk);
@@ -485,6 +506,9 @@ fn scheduled_events_resolve_by_key_not_arrival_order() {
 
 #[test]
 fn shared_timeline_projects_vm_and_io_counters_uniformly() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let timeline = SharedTimeline::new();
     let vm = scheduler_node("a", SchedulingNodeKind::Vm);
     let disk = scheduler_node("a", SchedulingNodeKind::Disk);
@@ -509,6 +533,9 @@ fn shared_timeline_projects_vm_and_io_counters_uniformly() {
 
 #[test]
 fn shared_timeline_keys_order_by_time_node_and_sequence() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let timeline = SharedTimeline::new();
     let vm_a = scheduler_node("a", SchedulingNodeKind::Vm);
     let vm_b = scheduler_node("b", SchedulingNodeKind::Vm);
@@ -545,6 +572,9 @@ fn shared_timeline_keys_order_by_time_node_and_sequence() {
 
 #[test]
 fn scheduled_event_keys_consume_shared_timeline_and_refine_by_producer() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let timeline = SharedTimeline::new();
     let vm_a = scheduler_node("a", SchedulingNodeKind::Vm);
     let disk_a = scheduler_node("a", SchedulingNodeKind::Disk);
@@ -574,6 +604,9 @@ fn scheduled_event_keys_consume_shared_timeline_and_refine_by_producer() {
 
 #[test]
 fn quantum_outcome_carries_step_decisions() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let config = Configuration::genesis(ScenarioDef::from_canonical_material(
         "crucible.test.scheduler.quantum-outcome",
         "scenario=stub",
@@ -596,6 +629,7 @@ fn quantum_outcome_carries_step_decisions() {
         event_log_segment_hash: None,
         event_log_offset: EventLogOffset::default(),
         scheduler_quiescence: None,
+        event_log_custody: Default::default(),
     };
 
     assert_eq!(outcome.configuration.schedule.decisions(), &[decision]);
@@ -603,6 +637,9 @@ fn quantum_outcome_carries_step_decisions() {
 
 #[test]
 fn coverage_observation_identity_excludes_event_position() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let observation = EventLogCoverageObservation::Named {
         node: NodeId {
             name: String::from("node-a"),
@@ -623,6 +660,9 @@ fn coverage_observation_identity_excludes_event_position() {
 
 #[test]
 fn exact_local_deadline_selects_scheduler_horizon_and_ceiling() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let horizon = horizon_from_exact_local_event(
         SimInstant { ticks: 100 },
         ExactLocalEvent::TimerDeadline {
@@ -644,6 +684,9 @@ fn exact_local_deadline_selects_scheduler_horizon_and_ceiling() {
 
 #[test]
 fn no_armed_timer_uses_network_horizon() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let horizon =
         horizon_from_exact_local_event(SimInstant { ticks: 64 }, ExactLocalEvent::NoArmedTimer);
 
@@ -661,6 +704,9 @@ fn no_armed_timer_uses_network_horizon() {
 
 #[test]
 fn later_exact_deadline_does_not_extend_network_horizon() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let horizon = horizon_from_exact_local_event(
         SimInstant { ticks: 50 },
         ExactLocalEvent::TimerDeadline {
@@ -682,6 +728,9 @@ fn later_exact_deadline_does_not_extend_network_horizon() {
 
 #[test]
 fn finite_lookahead_is_added_to_current_virtual_time() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let horizon = horizon_from_network_lookahead(
         SimInstant { ticks: 20 },
         NetworkLookahead::Finite(SimDuration { ticks: 7 }),
@@ -702,6 +751,9 @@ fn finite_lookahead_is_added_to_current_virtual_time() {
 
 #[test]
 fn infinite_network_lookahead_without_local_event_is_unbounded() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let horizon = horizon_from_network_lookahead(
         SimInstant { ticks: 20 },
         NetworkLookahead::Infinite,
@@ -713,6 +765,9 @@ fn infinite_network_lookahead_without_local_event_is_unbounded() {
 
 #[test]
 fn exact_local_event_bounds_infinite_network_lookahead() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let horizon = horizon_from_network_lookahead(
         SimInstant { ticks: 20 },
         NetworkLookahead::Infinite,
@@ -735,6 +790,9 @@ fn exact_local_event_bounds_infinite_network_lookahead() {
 
 #[test]
 fn exact_deadline_report_maps_to_scheduler_local_event() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     assert_eq!(
         exact_local_event_from_timer_deadline_ns(Some(124_456)),
         Ok(ExactLocalEvent::TimerDeadline {
@@ -749,6 +807,9 @@ fn exact_deadline_report_maps_to_scheduler_local_event() {
 
 #[test]
 fn scheduler_quiescence_detects_all_idle_authoritative_state() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scheduler = test_scheduler(
         vec![test_scenario_node(
             "node-a",
@@ -770,6 +831,9 @@ fn scheduler_quiescence_detects_all_idle_authoritative_state() {
 
 #[test]
 fn scheduler_quiescence_blocks_on_runnable_node_pending_event_and_control() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let consumer = scheduler_node("node-a", SchedulingNodeKind::Vm);
     let producer = scheduler_node("node-b", SchedulingNodeKind::Vm);
     let mut scheduler = test_scheduler(
@@ -814,6 +878,9 @@ fn scheduler_quiescence_blocks_on_runnable_node_pending_event_and_control() {
 
 #[test]
 fn scheduler_quiescence_blocks_idle_nodes_with_exact_local_wakeups() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let node = scheduler_node("node-a", SchedulingNodeKind::Vm);
     let scheduler = test_scheduler(
         vec![test_scenario_node(
@@ -845,6 +912,9 @@ fn scheduler_quiescence_blocks_idle_nodes_with_exact_local_wakeups() {
 
 #[test]
 fn scheduler_quiescence_fast_forwards_idle_exact_wakeup_without_deadlock() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "idle-exact-wakeup",
         8,
@@ -874,6 +944,9 @@ fn scheduler_quiescence_fast_forwards_idle_exact_wakeup_without_deadlock() {
 
 #[test]
 fn scheduler_quiescence_idle_exact_wakeup_after_time_limit_stops_at_limit() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "idle-exact-wakeup-after-limit",
         8,
@@ -903,6 +976,9 @@ fn scheduler_quiescence_idle_exact_wakeup_after_time_limit_stops_at_limit() {
 
 #[test]
 fn scheduler_quiescence_fast_forwards_idle_pending_delivery_without_deadlock() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let consumer = scheduler_node("node-a", SchedulingNodeKind::Vm);
     let producer = scheduler_node("node-b", SchedulingNodeKind::Vm);
     let scenario = SchedulerLivenessScenario::from_canonical_material(
@@ -929,6 +1005,9 @@ fn scheduler_quiescence_fast_forwards_idle_pending_delivery_without_deadlock() {
 
 #[test]
 fn scheduler_quiescence_blocks_future_io_events() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let consumer = scheduler_node("node-a", SchedulingNodeKind::Vm);
     let disk = scheduler_node("node-a", SchedulingNodeKind::Disk);
     let scheduler = test_scheduler(
@@ -979,6 +1058,9 @@ fn scheduler_quiescence_blocks_future_io_events() {
 
 #[test]
 fn scheduler_quiescence_ignores_idle_nodes_when_peer_can_advance() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let runner = scheduler_node("runner", SchedulingNodeKind::Vm);
     let mut scheduler = test_scheduler(
         vec![
@@ -1032,6 +1114,9 @@ fn scheduler_quiescence_ignores_idle_nodes_when_peer_can_advance() {
 
 #[test]
 fn scheduler_errors_render_all_variants_deterministically() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let backend = SchedulerError::from(BackendError::Rejected {
         message: String::from("backend refused"),
     });
@@ -1134,6 +1219,9 @@ fn test_scheduler(
 
 #[test]
 fn attempt_stop_frontier_precedes_branch_and_trigger_horizons() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = test_scheduler(
         vec![test_scenario_node(
             "node-a",
@@ -1180,6 +1268,9 @@ fn attempt_stop_frontier_precedes_branch_and_trigger_horizons() {
 
 #[test]
 fn signal_fault_frontier_preserves_parent_time_and_typed_candidates() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = test_scheduler(Vec::new(), Vec::new());
     let parent = scheduler.configuration().clone();
     let choice = BindingSearchChoice {
@@ -1243,6 +1334,9 @@ fn signal_fault_frontier_preserves_parent_time_and_typed_candidates() {
 
 #[test]
 fn single_scheduler_checkpoint_round_trips_complete_device_and_event_state() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let node = test_scenario_node(
         "a",
         11,
@@ -1298,6 +1392,9 @@ fn single_scheduler_checkpoint_round_trips_complete_device_and_event_state() {
 
 #[test]
 fn scheduler_checkpoint_restores_absolute_quantum_coordinate() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     const CHECKPOINT_QUANTA: u64 = 2;
     const STOP_QUANTA: u64 = 4;
 
@@ -1376,6 +1473,9 @@ fn scheduler_checkpoint_restores_absolute_quantum_coordinate() {
 
 #[test]
 fn live_backend_event_log_suffix_is_adopted_atomically() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = test_scheduler(Vec::new(), Vec::new());
     let before = scheduler.event_log().offset();
     let mut backend_log = scheduler.event_log().clone();
@@ -1388,7 +1488,8 @@ fn live_backend_event_log_suffix_is_adopted_atomically() {
             },
             bytes: b"paused-drain".to_vec(),
         }),
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     let expected = backend_log
         .append_entries(vec![entry.clone()])
         .unwrap_or_else(|error| panic!("backend suffix should append: {error}"));
@@ -1412,7 +1513,8 @@ fn live_backend_event_log_suffix_is_adopted_atomically() {
             },
             bytes: b"foreign-drain".to_vec(),
         }),
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     foreign
         .append_entries(vec![foreign_entry])
         .unwrap_or_else(|error| panic!("foreign suffix should be structurally valid: {error}"));
@@ -1426,6 +1528,9 @@ fn live_backend_event_log_suffix_is_adopted_atomically() {
 
 #[test]
 fn network_transition_drop_clears_inflight_and_authenticates_frames() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let source = NodeId {
         name: String::from("a"),
     };
@@ -1640,6 +1745,9 @@ fn disk_with_reads(
 
 #[test]
 fn resolve_device_completions_keep_non_instruction_aligned_exact_ticks() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     // The integration capstone ([SCHED-29], [IO-2]): two sequential disk reads
     // resolved at a single consumer frontier above the head completion are each
     // made visible at their OWN exact delivery icount, in canonical order — not
@@ -1686,6 +1794,9 @@ fn resolve_device_completions_keep_non_instruction_aligned_exact_ticks() {
 
 #[test]
 fn refresh_device_horizons_folds_the_inflight_head_into_the_node_horizon() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     // [IO-3]/[SCHED-10]: the device sub-node's in-flight head delivery icount
     // becomes the owning node's exact I/O-completion horizon term (a horizon
     // TERM, not a deliverable pending event — delivery stays on the RESOLVE
@@ -1755,6 +1866,9 @@ fn refresh_device_horizons_folds_the_inflight_head_into_the_node_horizon() {
 
 #[test]
 fn device_completion_flows_through_live_drive_quantum_at_exact_icount() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     // ITEM 1 teeth: a device completion submitted to a sub-node is delivered
     // through the LIVE `drive_quantum` (not the building blocks) at EXACTLY its
     // delivery icount ([SCHED-29], [IO-2]). The device horizon caps the
@@ -1825,6 +1939,9 @@ fn device_completion_flows_through_live_drive_quantum_at_exact_icount() {
 
 #[test]
 fn backend_loop_publishes_resolved_device_completion_as_observation() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "test-device-observation",
         1_536_000,
@@ -1907,6 +2024,9 @@ fn backend_loop_publishes_resolved_device_completion_as_observation() {
 
 #[test]
 fn resolved_device_observation_rejects_a_mismatched_owner() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scheduler = test_scheduler(
         vec![
             test_scenario_node(
@@ -1944,6 +2064,9 @@ fn resolved_device_observation_rejects_a_mismatched_owner() {
 
 #[test]
 fn broken_device_delivery_stamp_diverges_proving_gate_falsifiability() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     // The falsifiability proof for the exact-icount property ([IO-2], [DET-19]).
     // Driving PRODUCTION `resolve_device_completions` at a frontier ABOVE the
     // head completion (the one configuration where exact and frontier provably

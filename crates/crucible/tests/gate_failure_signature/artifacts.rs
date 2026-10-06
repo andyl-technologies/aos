@@ -4,6 +4,9 @@ use super::*;
 
 #[test]
 fn triage_result_artifact_dedups_diffs_and_self_checks_offline() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = scenario_form()?;
     let policy = SignaturePolicy::default_policy();
     let decision = override_decision("triage-result-decision", "fail");
@@ -227,6 +230,9 @@ fn triage_result_artifact_dedups_diffs_and_self_checks_offline() -> Result<(), B
 
 #[test]
 fn triage_result_accepts_one_minimization_per_cluster_member() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = scenario_form()?;
     let policy = SignaturePolicy::default_policy();
     let first_decision = override_decision("triage-member-first-decision", "fail");
@@ -397,6 +403,9 @@ fn triage_result_accepts_one_minimization_per_cluster_member() -> Result<(), Box
 
 #[test]
 fn failure_signature_rejects_static_artifact_identity_mismatch() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = scenario_form()?;
     let schedule = Schedule::from_decisions([override_decision("triage-decision", "fail")]);
     let entries = recorded_event_log(schedule.decisions()[0].clone());
@@ -429,6 +438,9 @@ fn failure_signature_rejects_static_artifact_identity_mismatch() -> Result<(), B
 
 #[test]
 fn failure_signature_rejects_unbound_record_inputs() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = scenario_form()?;
     let schedule = Schedule::from_decisions([override_decision("triage-decision", "fail")]);
     let finding = finding_artifact(
@@ -455,7 +467,8 @@ fn failure_signature_rejects_unbound_record_inputs() -> Result<(), Box<dyn Error
     let wrong_entries = recorded_event_log(override_decision("different-decision", "left"));
     let event_log_artifact = finding
         .artifact
-        .event_log_debug_artifact(EventLogOffset::new(ContentHash::default(), 0, 0), &entries);
+        .event_log_debug_artifact(EventLogOffset::new(ContentHash::default(), 0, 0), &entries)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     let wrong_log_error = FailureRecordedEventLog::from_recorded_artifact(
         &finding,
         &event_log_artifact,
@@ -477,7 +490,8 @@ fn failure_signature_rejects_unbound_record_inputs() -> Result<(), Box<dyn Error
                 node("triage-node"),
                 marker("coverage-added-after-recording"),
             ),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     );
     let coverage_tamper_error = FailureRecordedEventLog::from_recorded_artifact(
         &finding,

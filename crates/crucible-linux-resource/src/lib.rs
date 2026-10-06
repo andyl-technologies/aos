@@ -30,6 +30,8 @@ mod linux_project_quota;
 pub mod host_services;
 pub mod host_supervision;
 pub mod ram_policy;
+#[cfg(feature = "test-support")]
+pub mod test_support;
 
 pub use linux_project_quota::{
     LinuxProjectQuotaBinding, LinuxProjectQuotaController, LinuxProjectQuotaError,

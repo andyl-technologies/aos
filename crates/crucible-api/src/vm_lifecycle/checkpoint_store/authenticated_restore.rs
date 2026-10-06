@@ -298,6 +298,8 @@ pub fn decode_authenticated_production_exact_checkpoint(
         scheduler: Arc::clone(&checkpoint.scheduler),
         open,
         ram_sources: retained_ram,
+        #[cfg(any(test, feature = "test-support"))]
+        ram_source_decorator: None,
     });
     Ok(DecodedProductionExactCheckpoint {
         checkpoint,

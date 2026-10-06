@@ -44,6 +44,8 @@ use std::sync::Arc;
 
 use super::DEFAULT_RUN_RECONCILIATION_STEPS;
 mod admitted;
+mod admitted_error;
+use admitted_error::AdmittedCampaignError;
 #[cfg(any(test, feature = "test-support"))]
 mod component;
 
@@ -248,7 +250,7 @@ pub(super) enum ComponentCaptureConfigurationError {
 
 #[derive(Debug)]
 pub(super) enum SynchronousCampaignExecutorError<E> {
-    Admitted(Box<dyn Error + Send + Sync>),
+    Admitted(Box<AdmittedCampaignError<E>>),
     AuthorityUnavailable,
     Protocol(crucible_campaign::CampaignCodecError),
     #[cfg(any(test, feature = "test-support"))]
@@ -453,8 +455,8 @@ where
                 .inner
                 .actor
                 .with_supervisor(|actor| Ok(actor.get_attempt_execution(request)))
-                .map_err(|error| SynchronousCampaignExecutorError::Admitted(Box::new(error)))?
-                .map_err(|error| SynchronousCampaignExecutorError::Admitted(Box::new(error)));
+                .map_err(admitted::admitted_error)?
+                .map_err(admitted::admitted_error);
         }
         #[cfg(any(test, feature = "test-support"))]
         if let Some(component) = self.component.as_mut() {
@@ -477,8 +479,8 @@ where
                 .inner
                 .actor
                 .with_supervisor(|actor| Ok(actor.checkpoint_attempt_execution(request)))
-                .map_err(|error| SynchronousCampaignExecutorError::Admitted(Box::new(error)))?
-                .map_err(|error| SynchronousCampaignExecutorError::Admitted(Box::new(error)));
+                .map_err(admitted::admitted_error)?
+                .map_err(admitted::admitted_error);
         }
         #[cfg(any(test, feature = "test-support"))]
         if let Some(component) = self.component.as_mut() {
@@ -495,8 +497,8 @@ where
                 .inner
                 .actor
                 .with_supervisor(|actor| Ok(actor.cancel_attempt_execution(request)))
-                .map_err(|error| SynchronousCampaignExecutorError::Admitted(Box::new(error)))?
-                .map_err(|error| SynchronousCampaignExecutorError::Admitted(Box::new(error)));
+                .map_err(admitted::admitted_error)?
+                .map_err(admitted::admitted_error);
         }
         #[cfg(any(test, feature = "test-support"))]
         if let Some(component) = self.component.as_mut() {
@@ -519,8 +521,8 @@ where
                 .inner
                 .actor
                 .with_supervisor(|actor| Ok(actor.resume_attempt_execution(request)))
-                .map_err(|error| SynchronousCampaignExecutorError::Admitted(Box::new(error)))?
-                .map_err(|error| SynchronousCampaignExecutorError::Admitted(Box::new(error)));
+                .map_err(admitted::admitted_error)?
+                .map_err(admitted::admitted_error);
         }
         #[cfg(any(test, feature = "test-support"))]
         if let Some(component) = self.component.as_mut() {

@@ -12,6 +12,10 @@ pub(in crate::packaged_qemu_executor::tests) struct NativeCampaignStorage {
     pub(in crate::packaged_qemu_executor::tests) backend: Arc<dyn ImmutableBlobBackend>,
     pub(in crate::packaged_qemu_executor::tests) refs:
         Arc<dyn crucible_cas::content_store::MutableRefBackend>,
+    pub(in crate::packaged_qemu_executor::tests) blob_admin:
+        Arc<dyn crucible_cas::content_store::BlobStoreAdmin>,
+    pub(in crate::packaged_qemu_executor::tests) ref_admin:
+        Arc<dyn crucible_cas::content_store::RefStoreAdmin>,
     _custody: crate::packaged_qemu_executor::ram_catalog::GuardedCampaignStorage,
 }
 
@@ -317,9 +321,10 @@ pub(in crate::packaged_qemu_executor::tests) fn with_native_repository_storage<T
     };
     budgets.classes[HostOperationClass::Quantum as usize] =
         HostOperationBudget::unlimited_quantum();
-    config = configure(config)
+    config = config
         .with_host_operation_budgets(budgets)
         .expect("authored finite native infrastructure roster under original outer cap");
+    config = configure(config);
     // The deferred validator refuses all queues until the actual repository
     // and immutable campaign closure exist under this one admitted account.
     let admission = crate::packaged_qemu_executor::PackagedAttemptAdmission::default();
@@ -338,6 +343,8 @@ pub(in crate::packaged_qemu_executor::tests) fn with_native_repository_storage<T
         NativeCampaignStorage {
             backend: storage.backend.clone(),
             refs: storage.refs.clone(),
+            blob_admin: storage.blob_admin.clone(),
+            ref_admin: storage.ref_admin.clone(),
             _custody: storage,
         },
     );

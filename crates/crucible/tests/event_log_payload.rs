@@ -14,6 +14,9 @@ use crucible::{
 
 #[test]
 fn payload_attributes_are_read_by_name_and_type() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let node = NodeId {
         name: String::from("guest-a"),
     };
@@ -22,7 +25,8 @@ fn payload_attributes_are_read_by_name_and_type() {
         node.clone(),
         MarkerId::from_name("phase-ready"),
     );
-    let entry = crucible::test_support::condition_observation_entry_for_test(0, &marker);
+    let entry = crucible::test_support::condition_observation_entry_for_test(0, &marker)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     let payload = entry.event_payload();
 
     assert_eq!(payload.kind(), "guest_marker");
@@ -42,7 +46,8 @@ fn payload_attributes_are_read_by_name_and_type() {
             stream: RngStreamId::for_link("network.partition"),
             value: 17,
         })),
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     let draw_payload = draw_entry.event_payload();
 
     assert_eq!(draw_payload.kind(), "rng_draw");
@@ -56,6 +61,9 @@ fn payload_attributes_are_read_by_name_and_type() {
 
 #[test]
 fn diagnostic_payload_is_typed_observational_escape_hatch() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut details = BTreeMap::new();
     details.insert(String::from("poll_count"), EventAttributeValue::U64(37));
     details.insert(
@@ -74,7 +82,8 @@ fn diagnostic_payload_is_typed_observational_escape_hatch() {
             EventLevel::Warn,
             details,
         )),
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
 
     let payload = entry.event_payload();
     assert_eq!(payload.kind(), "diagnostic");
@@ -84,7 +93,11 @@ fn diagnostic_payload_is_typed_observational_escape_hatch() {
     assert_eq!(payload.level("severity"), Some(EventLevel::Warn));
     assert_eq!(entry.level(), EventLevel::Warn);
     assert_eq!(entry.class(), SchedulerEventLogClass::Observational);
-    assert!(entry.has_valid_content_hash());
+    assert!(
+        entry
+            .has_valid_content_hash()
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
+    );
 
     let mut log = EventLog::new();
     let append = log
@@ -99,6 +112,9 @@ fn diagnostic_payload_is_typed_observational_escape_hatch() {
 
 #[test]
 fn level_is_orthogonal_to_event_class() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let causal_trace = crucible::test_support::condition_payload_entry_for_test(
         0,
         VirtualTime { ticks: 0 },
@@ -106,7 +122,8 @@ fn level_is_orthogonal_to_event_class() {
             stream: RngStreamId::from_name("orthogonal-level"),
             value: 7,
         })),
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
 
     let diagnostic_error = crucible::test_support::condition_payload_entry_for_test(
         1,
@@ -116,7 +133,8 @@ fn level_is_orthogonal_to_event_class() {
             EventLevel::Error,
             BTreeMap::new(),
         )),
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
 
     assert_eq!(causal_trace.level(), EventLevel::Trace);
     assert_eq!(causal_trace.class(), SchedulerEventLogClass::Causal);

@@ -61,6 +61,7 @@ use explain::{
     validate_campaign_attempt_explain_command, validate_campaign_explain_command,
     validate_campaign_finding_explain_command,
 };
+pub(crate) use finding_bundle::FindingSourceAuthentication;
 use finding_bundle::{
     export_finding_bundle, run_finding_bundle_branch, run_finding_bundle_fork_write,
     run_finding_bundle_midpoint, verify_exported_finding,

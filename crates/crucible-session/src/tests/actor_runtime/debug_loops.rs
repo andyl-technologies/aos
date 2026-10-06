@@ -19,6 +19,7 @@ impl QuantumLoop for DebugGdbLoop {
             event_log_segment_hash: None,
             event_log_offset: crucible::EventLogOffset::default(),
             scheduler_quiescence: None,
+            event_log_custody: Default::default(),
         })
     }
 
@@ -83,6 +84,7 @@ impl QuantumLoop for MismatchingDebugRepositionLoop {
             event_log_segment_hash: None,
             event_log_offset: crucible::EventLogOffset::default(),
             scheduler_quiescence: None,
+            event_log_custody: Default::default(),
         })
     }
 
@@ -127,6 +129,7 @@ impl QuantumLoop for RejectingDebugRepositionLoop {
             event_log_segment_hash: None,
             event_log_offset: crucible::EventLogOffset::default(),
             scheduler_quiescence: None,
+            event_log_custody: Default::default(),
         })
     }
 

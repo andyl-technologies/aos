@@ -158,6 +158,9 @@ impl SimDouble {
 #[test]
 fn gate_replay_oracle_fixed_checkpoint_corpus_matches_thin_reduction() -> Result<(), Box<dyn Error>>
 {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let corpus = assert_replay_oracle_fixed_checkpoint_corpus()?;
 
     check_materialized_replay_oracle(&corpus)?;
@@ -168,6 +171,9 @@ fn gate_replay_oracle_fixed_checkpoint_corpus_matches_thin_reduction() -> Result
 
 #[test]
 fn gate_replay_oracle_rejects_corrupt_materialized_checkpoint() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let corpus = assert_replay_oracle_fixed_checkpoint_corpus()?;
     let configuration_mismatch =
         assert_replay_oracle_rejects_corrupt_configuration_metadata(&corpus)?;
@@ -184,6 +190,9 @@ fn gate_replay_oracle_rejects_corrupt_materialized_checkpoint() -> Result<(), Bo
 #[test]
 fn gate_replay_oracle_materialized_state_captures_exact_resume_components()
 -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let node = oracle_node_id();
     let world = World::from_nodes(vec![WorldNode {
         id: node.clone(),
@@ -233,6 +242,9 @@ fn gate_replay_oracle_materialized_state_captures_exact_resume_components()
 #[test]
 fn gate_replay_oracle_saved_descendant_fat_checkpoint_carries_vm_snapshot_refs()
 -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let node = oracle_node_id();
     let world = World::from_nodes(vec![WorldNode {
         id: node.clone(),
@@ -291,6 +303,9 @@ fn gate_replay_oracle_saved_descendant_fat_checkpoint_carries_vm_snapshot_refs()
 #[test]
 fn gate_replay_oracle_temporal_graph_user_operations_share_instantiate_path()
 -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let node = oracle_node_id();
     let world = World::from_nodes(vec![WorldNode {
         id: node,
@@ -365,6 +380,9 @@ fn gate_replay_oracle_temporal_graph_user_operations_share_instantiate_path()
 
 #[test]
 fn gate_replay_oracle_rejects_incomplete_materialized_state() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let node = oracle_node_id();
     let world = World::from_nodes(vec![WorldNode {
         id: node.clone(),
@@ -476,6 +494,9 @@ fn gate_replay_oracle_rejects_incomplete_materialized_state() -> Result<(), Box<
 #[test]
 fn gate_replay_oracle_samples_materialized_checkpoints_during_search() -> Result<(), Box<dyn Error>>
 {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let corpus = assert_replay_oracle_fixed_checkpoint_corpus()?;
     let report = assert_replay_oracle_in_search_sampling(&corpus)?;
 
@@ -490,6 +511,9 @@ fn gate_replay_oracle_samples_materialized_checkpoints_during_search() -> Result
 #[test]
 fn gate_replay_oracle_samples_temporal_graph_search_fat_materializations()
 -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let node = oracle_node_id();
     let world = World::from_nodes(vec![WorldNode {
         id: node,
@@ -558,6 +582,9 @@ fn gate_replay_oracle_samples_temporal_graph_search_fat_materializations()
 #[test]
 fn gate_replay_oracle_search_sampling_rate_can_skip_materializations() -> Result<(), Box<dyn Error>>
 {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let node = oracle_node_id();
     let world = World::from_nodes(vec![WorldNode {
         id: node,
@@ -611,6 +638,9 @@ fn gate_replay_oracle_search_sampling_rate_can_skip_materializations() -> Result
 
 #[test]
 fn gate_replay_oracle_search_sampling_mismatch_requests_bisection() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let node = oracle_node_id();
     let world = World::from_nodes(vec![WorldNode {
         id: node.clone(),
@@ -687,6 +717,9 @@ fn gate_replay_oracle_search_sampling_mismatch_requests_bisection() -> Result<()
 
 #[test]
 fn gate_replay_oracle_sampled_mismatch_requests_bisection() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let corpus = assert_replay_oracle_fixed_checkpoint_corpus()?;
     let error = assert_replay_oracle_mismatch_bisects(&corpus)?;
 
@@ -707,6 +740,9 @@ fn gate_replay_oracle_sampled_mismatch_requests_bisection() -> Result<(), Box<dy
 
 #[test]
 fn gate_replay_oracle_reproduction_artifact_round_trips() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     assert_reproduction_artifact_roundtrip_coverage()
 }
 
@@ -728,6 +764,9 @@ fn assert_reproduction_artifact_roundtrip_coverage() -> Result<(), Box<dyn Error
 #[test]
 fn gate_replay_oracle_covers_assertion_regrade_and_violation_reproduction()
 -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = assertion_replay_world()?;
     let properties = assertion_replay_properties(&world)?;
     let amended_properties = assertion_replay_amended_properties(&world)?;
@@ -803,6 +842,9 @@ fn gate_replay_oracle_covers_assertion_regrade_and_violation_reproduction()
 #[test]
 fn gate_replay_oracle_reproduction_artifact_rejects_build_identity_drift()
 -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut artifact = representative_replay_oracle_reproduction_artifact()?;
     artifact.build_identity.backend_build_id = String::from("wrong-build");
 
@@ -825,6 +867,9 @@ fn gate_replay_oracle_reproduction_artifact_rejects_build_identity_drift()
 
 #[test]
 fn gate_replay_oracle_reproduction_artifact_detects_schedule_drift() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut artifact = representative_replay_oracle_reproduction_artifact()?;
     artifact.schedule = artifact.schedule.appended(Decision::RngDraw(RngDecision {
         stream: RngStreamId::from_name("artifact/drift"),
@@ -850,6 +895,9 @@ fn gate_replay_oracle_reproduction_artifact_detects_schedule_drift() -> Result<(
 
 #[test]
 fn gate_replay_oracle_reproduction_artifact_detects_seed_drift() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut artifact = representative_replay_oracle_reproduction_artifact()?;
     artifact.seed = 0x0010_0028;
 
@@ -872,6 +920,9 @@ fn gate_replay_oracle_reproduction_artifact_detects_seed_drift() -> Result<(), B
 
 #[test]
 fn gate_replay_oracle_reproduction_artifact_detects_scenario_drift() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut artifact = representative_replay_oracle_reproduction_artifact()?;
     artifact.scenario = ScenarioDef::from_canonical_material(
         "crucible.test.replay-oracle.artifact",
@@ -898,6 +949,9 @@ fn gate_replay_oracle_reproduction_artifact_detects_scenario_drift() -> Result<(
 #[test]
 fn gate_replay_oracle_reproduction_artifact_detects_oracle_case_drift() -> Result<(), Box<dyn Error>>
 {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let artifact = representative_replay_oracle_reproduction_artifact()?;
     let error = match check_replay_oracle_reproduction_artifact_round_trip(
         &artifact,
@@ -1119,13 +1173,16 @@ fn assertion_replay_event_log_from_artifact(
             0,
             VirtualTime { ticks: 0 },
             SchedulerEventLogPayload::Decision(decision),
-        ),
-        crucible::test_support::condition_observation_entry_for_test(1, &observed),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+        crucible::test_support::condition_observation_entry_for_test(1, &observed)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_boundary_entry_for_test(
             2,
             VirtualTime { ticks: 9 },
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ])
 }
 
@@ -1340,12 +1397,14 @@ fn assert_replay_oracle_excludes_observational_entries(
                 stream: RngStreamId::from_name("observation/control"),
                 value: 11,
             })),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_boundary_entry_for_test(
             1,
             VirtualTime { ticks: 1 },
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ];
     let reproduced_log = vec![
         crucible::test_support::condition_payload_entry_for_test(
@@ -1356,7 +1415,8 @@ fn assert_replay_oracle_excludes_observational_entries(
                 EventLevel::Debug,
                 std::collections::BTreeMap::new(),
             )),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_payload_entry_for_test(
             1,
             VirtualTime { ticks: 0 },
@@ -1364,14 +1424,17 @@ fn assert_replay_oracle_excludes_observational_entries(
                 stream: RngStreamId::from_name("observation/control"),
                 value: 11,
             })),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_boundary_entry_for_test(
             2,
             VirtualTime { ticks: 1 },
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ];
-    let comparison = compare_event_log_determinism(&expected_log, &reproduced_log);
+    let comparison = compare_event_log_determinism(&expected_log, &reproduced_log)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
 
     assert!(comparison.passes());
     assert_eq!(
@@ -1584,6 +1647,9 @@ fn hash_hex(hash: ContentHash) -> String {
 
 #[test]
 fn gate_replay_oracle_is_sensitive_to_schedule_order() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario =
         ScenarioDef::from_canonical_material("crucible.test.replay-oracle", "nodes=a,b\nseed=99");
     let draw = Decision::RngDraw(RngDecision {

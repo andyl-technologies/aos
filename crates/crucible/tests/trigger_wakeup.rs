@@ -55,6 +55,9 @@ fn advance_both(scheduler: &mut SingleScheduler, expected: u64) -> TestResult {
 
 #[test]
 fn trigger_and_signal_wakeups_are_independent_between_rendezvous() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     for activity in [SchedulerNodeActivity::Runnable, SchedulerNodeActivity::Idle] {
         let mut scheduler = scheduler(activity)?;
         scheduler.set_signal_fault_wakeup(Some(5))?;
@@ -78,6 +81,9 @@ fn trigger_and_signal_wakeups_are_independent_between_rendezvous() -> TestResult
 
 #[test]
 fn unrepresentable_or_stale_deadlines_leave_the_previous_cap_unchanged() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = scheduler(SchedulerNodeActivity::Idle)?;
     let valid = Some(VirtualTime { ticks: 12 });
     scheduler.set_trigger_wakeup(valid, valid)?;
@@ -94,6 +100,9 @@ fn unrepresentable_or_stale_deadlines_leave_the_previous_cap_unchanged() -> Test
 
 #[test]
 fn bookkeeping_does_not_hide_other_quiescence_blockers() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = scheduler(SchedulerNodeActivity::Idle)?;
     scheduler.set_trigger_wakeup(Some(VirtualTime { ticks: 8 }), None)?;
     assert!(scheduler.quiescence()?.is_quiescent());
@@ -110,6 +119,9 @@ fn bookkeeping_does_not_hide_other_quiescence_blockers() -> TestResult {
 
 #[test]
 fn a_new_global_deadline_cannot_rewind_an_already_advanced_node() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = scheduler(SchedulerNodeActivity::Idle)?;
     scheduler.set_signal_fault_wakeup(Some(15))?;
     scheduler.drive_quantum(QuantumRequest {
@@ -135,6 +147,9 @@ fn a_new_global_deadline_cannot_rewind_an_already_advanced_node() -> TestResult 
 
 #[test]
 fn inactive_nodes_do_not_hold_back_the_live_frontier() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     for activity in [SchedulerNodeActivity::Halted, SchedulerNodeActivity::Done] {
         let mut scheduler = scheduler(SchedulerNodeActivity::Idle)?;
         let inactive = NodeId { name: "b".into() };
@@ -157,6 +172,9 @@ fn inactive_nodes_do_not_hold_back_the_live_frontier() -> TestResult {
 
 #[test]
 fn inactive_world_reaches_an_exact_deadline_without_running_a_backend() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = scheduler(SchedulerNodeActivity::Halted)?;
     let at = Some(VirtualTime { ticks: 7 });
     scheduler.set_trigger_wakeup(at, at)?;
@@ -185,6 +203,9 @@ fn inactive_world_reaches_an_exact_deadline_without_running_a_backend() -> TestR
 
 #[test]
 fn reactivated_node_joins_the_current_frontier_without_retiring_instructions() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = scheduler(SchedulerNodeActivity::Idle)?;
     let node = NodeId { name: "b".into() };
     scheduler.set_vm_node_activity(&node, SchedulerNodeActivity::Halted)?;
@@ -217,6 +238,9 @@ fn reactivated_node_joins_the_current_frontier_without_retiring_instructions() -
 
 #[test]
 fn inactive_clock_is_identical_across_serial_concurrent_and_restored_execution() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut serial = scheduler(SchedulerNodeActivity::Halted)?;
     serial.set_signal_fault_wakeup(Some(5))?;
     serial.set_trigger_wakeup(
@@ -269,6 +293,9 @@ fn inactive_clock_is_identical_across_serial_concurrent_and_restored_execution()
 
 #[test]
 fn inactive_clock_obeys_branch_and_terminal_time_caps() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = scheduler(SchedulerNodeActivity::Done)?;
     scheduler.set_trigger_wakeup(
         Some(VirtualTime { ticks: 150 }),
@@ -298,6 +325,9 @@ fn inactive_clock_obeys_branch_and_terminal_time_caps() -> TestResult {
 
 #[test]
 fn stopped_vcpu_reports_do_not_block_quiescence_and_resume_preserves_timer_delays() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scenario = scenario(SchedulerNodeActivity::Halted)?;
     let node = scenario.nodes[1].id.clone();
     scenario.nodes[1].exact_local_event = ExactLocalEvent::TimerDeadline {
@@ -350,6 +380,9 @@ fn stopped_vcpu_reports_do_not_block_quiescence_and_resume_preserves_timer_delay
 
 #[test]
 fn overflowing_resume_timer_rejects_the_entire_activity_batch() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scenario = scenario(SchedulerNodeActivity::Halted)?;
     let nodes = scenario
         .nodes
@@ -401,6 +434,9 @@ fn overflowing_resume_timer_rejects_the_entire_activity_batch() -> TestResult {
 
 #[test]
 fn initially_inactive_world_preserves_its_supplied_clock_origin() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scenario = scenario(SchedulerNodeActivity::Halted)?;
     for node in &mut scenario.nodes {
         node.counter = NodeCounter { ticks: 5 };
@@ -427,6 +463,9 @@ fn initially_inactive_world_preserves_its_supplied_clock_origin() -> TestResult 
 
 #[test]
 fn inactive_topology_activation_waits_for_its_global_time() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scenario = scenario(SchedulerNodeActivity::Halted)?;
     scenario = scenario.with_topology_change(
         crucible::SchedulerTopologyChange::partition(0, Vec::new())
@@ -452,6 +491,9 @@ fn inactive_topology_activation_waits_for_its_global_time() -> TestResult {
 
 #[test]
 fn stopping_the_lagging_node_publishes_the_already_reached_frontier() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = scheduler(SchedulerNodeActivity::Idle)?;
     scheduler.set_trigger_wakeup(
         Some(VirtualTime { ticks: 7 }),

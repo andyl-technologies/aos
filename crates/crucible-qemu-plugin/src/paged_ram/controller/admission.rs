@@ -56,7 +56,7 @@ pub(crate) fn admit_native_inventory(
         existing_file_descriptors: 0,
         registered_service_tasks: 0,
         prospective_tasks: 1,
-        prospective_file_descriptors: 4,
+        prospective_file_descriptors: 5,
     };
     let status = export(
         &mut owner_resources.existing_tasks,

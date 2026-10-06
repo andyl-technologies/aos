@@ -15,7 +15,7 @@ use crate::{
 use crucible_api::host_operational::{HostOperationalError, HostResourceVector};
 use crucible_campaign::{CampaignExecutorStore, ExecutorService, SubmitAttemptDisposition};
 
-mod admission;
+pub(super) mod admission;
 mod driver;
 
 #[test]

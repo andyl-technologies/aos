@@ -436,7 +436,10 @@ fn token_identifier_findings(
 
             // The registry also retains one pure bootstrap entitlement type.
             // Importing its containing lifecycle module remains forbidden.
-            let bootstrap_type = separator
+            let registry_source =
+                path.ends_with("crucible-daemon/src/host_operational_registry.rs");
+            let bootstrap_type = registry_source
+                && separator
                 && module == Some("vm_lifecycle")
                 && matches!(
                     tokens.get(index + 4).map(|token| &token.kind),
@@ -455,6 +458,27 @@ fn token_identifier_findings(
                     Some(TokenKind::Punct(':'))
                 );
             if bootstrap_type {
+                continue;
+            }
+
+            // This closed operational DTO retains its original output loan.
+            // The generic wrapper and other API routes remain unapproved.
+            let admitted_response = registry_source
+                && separator
+                && module == Some("AdmittedOutput")
+                && matches!(
+                    tokens.get(index + 4).map(|token| &token.kind),
+                    Some(TokenKind::Punct('<'))
+                )
+                && tokens
+                    .get(index + 5)
+                    .and_then(|token| token.kind.as_ident())
+                    == Some("HostOperationalResponse")
+                && matches!(
+                    tokens.get(index + 6).map(|token| &token.kind),
+                    Some(TokenKind::Punct('>'))
+                );
+            if admitted_response {
                 continue;
             }
         }

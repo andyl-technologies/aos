@@ -285,6 +285,7 @@ in
       child_group_id = 65534
       maximum_tasks = 64
       maximum_file_descriptors = 1024
+      maximum_locked_bytes = 0
       maximum_node_host_service_tasks = 4
       maximum_node_host_service_file_descriptors = 32
       maximum_node_host_service_resident_bytes = 8388608

@@ -4,6 +4,14 @@ use super::*;
 
 /// Host-I/O runtime used by the bounded async driver.
 pub trait QemuHostIoRuntime: Send {
+    /// Borrows the exact retained RAM controller registration, when installed.
+    ///
+    /// This supplies independent operational health observation only; it grants
+    /// no new reservation, policy revision, deadline or cleanup disposition.
+    fn ram_control_registration(&self) -> Option<&crate::ram_control::RamControlRegistration> {
+        None
+    }
+
     /// Reserves host-resident storage before retaining authenticated manifest copies.
     ///
     /// The caller keeps the returned lease through every derived object's use.

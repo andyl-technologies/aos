@@ -107,7 +107,7 @@ pub(super) fn prepared_report() -> Value {
             "quiescent": true
         },
         "block-barrier": {
-            "schema-version": 4,
+            "schema-version": 5,
             "generation": 4,
             "owner-thread-id": 44,
             "graph-barrier-generation": 5,
@@ -187,6 +187,13 @@ pub(super) fn prepared_report() -> Value {
         "rollback-complete": false,
         "ready": true
     });
+    report["block-barrier"]["ram-borrow-generation"] = json!(1);
+    report["block-barrier"]["ram-direct-maps"] = json!(0);
+    report["block-barrier"]["ram-bounce-maps"] = json!(0);
+    report["block-barrier"]["ram-caches"] = json!(0);
+    report["block-barrier"]["ram-direct-caches"] = json!(0);
+    report["block-barrier"]["ram-paging-requested"] = json!(false);
+    report["block-barrier"]["ram-borrowers-consistent"] = json!(true);
     report["failure-stage"] = json!("none");
     report["failure-detail"] = json!("");
     report

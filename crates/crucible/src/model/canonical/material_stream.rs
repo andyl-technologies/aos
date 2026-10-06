@@ -9,14 +9,20 @@ use std::fmt::{self, Display, Write};
 use super::{ContentHash, MaterialHasher};
 use crate::model::{EngineError, scenario_serialization_error};
 
-pub(in crate::model) fn hash_material(
+pub(crate) fn hash_material(
     domain: &str,
     material: &impl Display,
 ) -> Result<ContentHash, EngineError> {
-    crate::owned_decode::charge_bytes(
-        (std::mem::size_of::<CountWriter>() + std::mem::size_of::<HashWriter>()) as u64,
-    )
-    .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+    let budget = crate::owned_decode::current_budget();
+    let _scratch = budget
+        .as_ref()
+        .map(|budget| {
+            budget.reserve_scratch_bytes(
+                (std::mem::size_of::<CountWriter>() + std::mem::size_of::<HashWriter>()) as u64,
+            )
+        })
+        .transpose()
+        .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
 
     let mut count = CountWriter(0);
     write!(&mut count, "{material}").map_err(|_| invalid_material())?;
@@ -43,6 +49,22 @@ pub(in crate::model) fn hash_material(
     Ok(ContentHash {
         bytes: writer.hasher.finish(),
     })
+}
+
+/// Counts borrowed canonical UTF-8 material without allocating output.
+///
+/// # Errors
+/// Refuses original admission exhaustion, formatting failure or length overflow.
+pub(crate) fn canonical_display_len(material: &impl Display) -> Result<usize, EngineError> {
+    let budget = crate::owned_decode::current_budget();
+    let _scratch = budget
+        .as_ref()
+        .map(|budget| budget.reserve_scratch_bytes(std::mem::size_of::<CountWriter>() as u64))
+        .transpose()
+        .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+    let mut count = CountWriter(0);
+    write!(&mut count, "{material}").map_err(|_| invalid_material())?;
+    usize::try_from(count.0).map_err(|_| invalid_material())
 }
 
 /// Renders admitted lexical keys with an exact preallocation and no growing scratch.

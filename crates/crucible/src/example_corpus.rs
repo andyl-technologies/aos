@@ -125,7 +125,7 @@ pub struct ExampleScenarioRunReport {
     /// Deterministic fingerprint stream derived from the scenario and log.
     pub fingerprint_stream: Vec<u8>,
     /// Final host-side assertion report produced from the checked log prefix.
-    pub assertion_report: HostAssertionReport,
+    pub assertion_report: std::sync::Arc<HostAssertionReport>,
     /// Self-contained reproduction artifact for the run.
     pub reproduction: ReproductionArtifact,
     /// Canonical event-log bytes re-derived from the reproduction artifact.
@@ -169,7 +169,7 @@ pub struct FaultCampaignExampleReport {
     /// Unified event-log bytes that carry the planted violation observations.
     pub violation_event_log: Vec<u8>,
     /// Host-side assertion report proving the planted violation was evaluated.
-    pub violation_report: HostAssertionReport,
+    pub violation_report: std::sync::Arc<HostAssertionReport>,
     /// Assertion-violation replay report proving the finding reproduces the violation.
     pub violation_replay: AssertionViolationReplayReport,
     /// Self-contained reduced finding artifact for the discovered failure.
@@ -681,7 +681,7 @@ pub fn run_fault_campaign_example(
         discovered_iteration,
         violation_observations: violation.observations,
         violation_event_log: violation.event_log,
-        violation_report: violation_replay.reproduced.clone(),
+        violation_report: std::sync::Arc::clone(&violation_replay.reproduced),
         violation_replay,
         finding,
         fuzz_report,
@@ -736,7 +736,7 @@ pub fn run_example_scenario(
         outcome: ExampleScenarioRunOutcome::Passed,
         canonical_event_log: primary.canonical_event_log,
         fingerprint_stream: primary.fingerprint_stream,
-        assertion_report: primary.assertion_report,
+        assertion_report: primary.assertion_report.into_shared()?,
         reproduction,
         replayed_canonical_event_log: replayed.canonical_event_log,
         replayed_fingerprint_stream: replayed.fingerprint_stream,
@@ -1266,7 +1266,7 @@ fn fault_campaign_coverage_feedback() -> Result<Vec<EventLogCoverageFeedback>, S
     ])
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 struct FaultCampaignViolationEvidence {
     observations: Vec<ObservableEvent>,
     event_log: Vec<u8>,
@@ -1291,8 +1291,8 @@ fn fault_campaign_violation_evidence(
     let recorded_log = RecordedAssertionLog::from_segments(vec![append.entries.clone()])
         .map_err(ExampleCorpusError::FaultCampaignViolationLog)?;
     let mut oracle = BlackBoxHostOracle;
-    let mut evaluator = HostAssertionEvaluator::new(scenario.properties())
-        .with_world_white_box_policies(scenario.world());
+    let mut evaluator = HostAssertionEvaluator::new(scenario.properties())?
+        .with_world_white_box_policies(scenario.world())?;
     let report = evaluator.finalize_prefix(event_log.condition_prefix(), &mut oracle)?;
     let no_split_brain_violated = report.outcomes().iter().any(|outcome| {
         outcome.assertion.name == "no-split-brain"
@@ -1473,7 +1473,7 @@ fn partition_heal_timer() -> TimerId {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 struct ExampleScenarioRunCore {
     canonical_event_log: Vec<u8>,
     fingerprint_stream: Vec<u8>,
@@ -1511,8 +1511,8 @@ fn run_example_scenario_material(
     )?;
     let mut canonical_event_log = Vec::new();
     let mut assertion_oracle = BlackBoxHostOracle;
-    let mut assertion_evaluator = HostAssertionEvaluator::new(scenario.properties())
-        .with_world_white_box_policies(scenario.world());
+    let mut assertion_evaluator = HostAssertionEvaluator::new(scenario.properties())?
+        .with_world_white_box_policies(scenario.world())?;
     let mut state = EventGraphState::new();
     let mut observed_trigger_actions = 0;
     let mut pass_firings = None;
@@ -1695,7 +1695,7 @@ fn evaluate_example_graph(
     let mut pass = ConditionEvaluationPass::from_log_prefix_ref(
         scheduler.condition_event_log_prefix(),
         NoNamedLeaves,
-    )
+    )?
     .with_timer_fires(scheduler.trigger_actions().armed_timers.clone())
     .with_scheduler_quiescence(scheduler.quiescence()?)
     .with_world_white_box_policies(world);

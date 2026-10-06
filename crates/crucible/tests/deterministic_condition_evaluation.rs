@@ -52,18 +52,24 @@ impl ConditionLeafOracle for NoNamedLeaves {
 
 #[test]
 fn evaluation_points_name_deterministic_boundary_sources() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let observed = ObservableEvent::node_state(time(3), node("db-0"), NodeLifecycle::Started);
-    let event_entry = crucible::test_support::condition_observation_entry_for_test(0, &observed);
+    let event_entry = crucible::test_support::condition_observation_entry_for_test(0, &observed)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     let quantum_entry = crucible::test_support::condition_boundary_entry_for_test(
         0,
         time(5),
         SchedulerEvaluationBoundaryKind::Quantum,
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     let rendezvous_entry = crucible::test_support::condition_boundary_entry_for_test(
         0,
         time(8),
         SchedulerEvaluationBoundaryKind::Rendezvous,
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
 
     assert_eq!(
         EventEvaluationPoint::event_log_entry(&event_entry).kind(),
@@ -90,13 +96,17 @@ fn evaluation_points_name_deterministic_boundary_sources() {
 
 #[test]
 fn log_prefix_rejects_invalid_scheduler_prefixes() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let future = ObservableEvent::node_state(time(11), node("db-0"), NodeLifecycle::Started);
     let invalid_hash = crucible::test_support::condition_entry_with_content_hash_for_test(
         crucible::test_support::condition_boundary_entry_for_test(
             0,
             time(10),
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         ContentHash::default(),
     );
 
@@ -111,6 +121,7 @@ fn log_prefix_rejects_invalid_scheduler_prefixes() {
                 time(10),
                 SchedulerEvaluationBoundaryKind::Quantum,
             )
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
         ]),
         Err(ConditionEvaluationError::NonPrefixEventLogSequence {
             expected: 0,
@@ -125,12 +136,14 @@ fn log_prefix_rejects_invalid_scheduler_prefixes() {
     );
     assert_eq!(
         crucible::test_support::condition_prefix_from_scheduler_entries_for_test(vec![
-            crucible::test_support::condition_observation_entry_for_test(0, &future),
+            crucible::test_support::condition_observation_entry_for_test(0, &future)
+                .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
             crucible::test_support::condition_boundary_entry_for_test(
                 1,
                 time(10),
                 SchedulerEvaluationBoundaryKind::Quantum,
-            ),
+            )
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         ]),
         Err(ConditionEvaluationError::FutureEventLogEntry {
             point: time(10),
@@ -142,9 +155,13 @@ fn log_prefix_rejects_invalid_scheduler_prefixes() {
 
 #[test]
 fn shared_pass_evaluates_assertions_and_triggers_over_one_prefix() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let event = ObservableEvent::node_state(time(44), node("db-0"), NodeLifecycle::Started);
     let prefix = crucible::test_support::condition_prefix_from_scheduler_entries_for_test(vec![
-        crucible::test_support::condition_observation_entry_for_test(0, &event),
+        crucible::test_support::condition_observation_entry_for_test(0, &event)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ])
     .expect("observable scheduler entry should form a checked prefix");
     let point = prefix.point();
@@ -179,11 +196,16 @@ fn shared_pass_evaluates_assertions_and_triggers_over_one_prefix() {
 
 #[test]
 fn condition_evaluation_uses_checked_prefix_events_only() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let previous = ObservableEvent::node_state(time(49), node("db-0"), NodeLifecycle::Started);
     let current = ObservableEvent::node_state(time(50), node("db-1"), NodeLifecycle::Started);
     let prefix = crucible::test_support::condition_prefix_from_scheduler_entries_for_test(vec![
-        crucible::test_support::condition_observation_entry_for_test(0, &previous),
-        crucible::test_support::condition_observation_entry_for_test(1, &current),
+        crucible::test_support::condition_observation_entry_for_test(0, &previous)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+        crucible::test_support::condition_observation_entry_for_test(1, &current)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ])
     .expect("past and current entries are part of the prefix");
     let mut evaluation = ConditionEvaluationPass::from_log_prefix(prefix, NoNamedLeaves);

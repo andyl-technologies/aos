@@ -26,6 +26,9 @@ use crucible::{
 #[test]
 fn gate_unifying_view_validates_every_advanced_operation_on_one_graph() -> Result<(), Box<dyn Error>>
 {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = single_node_world("unifying-view")?;
     let scenario = scenario_form(&world)?;
     let root = Configuration::genesis(scenario.scenario_def());
@@ -248,6 +251,9 @@ fn gate_unifying_view_validates_every_advanced_operation_on_one_graph() -> Resul
 
 #[test]
 fn gate_unifying_view_rejects_mismatched_operation_evidence() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = single_node_world("mismatched-evidence")?;
     let scenario = scenario_form(&world)?;
     let root = Configuration::genesis(scenario.scenario_def());
@@ -501,6 +507,7 @@ fn retained_event_log(schedule: &crucible::Schedule) -> Result<RecordedAssertion
                 time(sequence as u64),
                 crucible::SchedulerEventLogPayload::Decision(decision.clone()),
             )
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
         })
         .collect::<Vec<_>>();
     let mut sequence = entries.len() as u64;
@@ -515,15 +522,19 @@ fn retained_event_log(schedule: &crucible::Schedule) -> Result<RecordedAssertion
                     },
                     marker("forbidden"),
                 ),
-            ),
+            )
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         );
         sequence += 1;
     }
-    entries.push(crucible::test_support::condition_boundary_entry_for_test(
-        sequence,
-        time(7),
-        crucible::SchedulerEvaluationBoundaryKind::Quantum,
-    ));
+    entries.push(
+        crucible::test_support::condition_boundary_entry_for_test(
+            sequence,
+            time(7),
+            crucible::SchedulerEvaluationBoundaryKind::Quantum,
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+    );
     RecordedAssertionLog::from_segments(vec![entries]).map_err(|source| {
         EngineError::ScenarioSerialization {
             reason: format!("unifying minimization retained log failed: {source}"),
@@ -702,11 +713,13 @@ fn coverage_feedback(
         crucible::test_support::condition_observation_entry_for_test(
             0,
             &ObservableEvent::coverage_block(icount(10), node.clone(), guest_pc, 0x20),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_observation_entry_for_test(
             1,
             &ObservableEvent::coverage_marker(icount(11), node, marker(marker_name)),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ];
     EventLogCoverageFeedback::from_event_log(&log)
 }

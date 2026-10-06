@@ -461,6 +461,19 @@ pub struct QueuedAttempt {
 }
 
 impl QueuedAttempt {
+    pub(crate) fn retain_publication_metadata(
+        &self,
+        metadata: crucible::owned_decode::DecodeCustody,
+    ) -> std::io::Result<()> {
+        self.publication_supervision.retain_metadata(metadata)
+    }
+
+    pub(crate) fn enter_publication_metadata(
+        &self,
+    ) -> std::io::Result<Option<crucible::owned_decode::DecodeScope>> {
+        self.publication_supervision.enter_metadata()
+    }
+
     pub(crate) fn bind_caller_supervision(
         &self,
         caller: &crucible_linux_resource::host_supervision::HostOperationSupervisor,
@@ -887,6 +900,8 @@ pub struct LocalExecutorSupervisor<L, V> {
     daemon_epoch: DaemonEpoch,
     capacity: ExecutorCapacity,
     next_execution_ordinal: u64,
+    #[cfg(test)]
+    native_completed_transitions: u64,
     active: BTreeMap<ExecutionId, ActiveExecution>,
     queued: VecDeque<ExecutionId>,
     pending_completions: BTreeMap<ExecutionId, PendingCompletion>,
@@ -930,6 +945,8 @@ impl<L, V> LocalExecutorSupervisor<L, V> {
             daemon_epoch,
             capacity,
             next_execution_ordinal: 0,
+            #[cfg(test)]
+            native_completed_transitions: 0,
             active: BTreeMap::new(),
             queued: VecDeque::new(),
             pending_completions: BTreeMap::new(),
@@ -939,6 +956,15 @@ impl<L, V> LocalExecutorSupervisor<L, V> {
             _host_startup_ledger_lease: None,
             _host_startup_ledger_quota: None,
         }
+    }
+
+    /// Reads newly durable completions from this original actor incarnation.
+    ///
+    /// The diagnostic counter changes only after a committed publishing-to-
+    /// completed transition. Cached observations and canceled work do not count.
+    #[cfg(test)]
+    pub(crate) fn native_completed_transitions(&self) -> u64 {
+        self.native_completed_transitions
     }
 
     /// Attaches an operational registry whose full service peak is already charged.
@@ -1100,8 +1126,11 @@ impl<L, V> LocalExecutorSupervisor<L, V> {
     }
 
     /// Supplies a named finite roster for explicitly component-only execution.
+    ///
+    /// This test-support entry grants no native capability or qualification.
+    /// Production startup installs its independently authored deployment roster.
     #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn with_component_operation_budgets(mut self) -> Self {
+    pub fn with_component_operation_budgets(mut self) -> Self {
         self.host_operation_budgets = Some(component_operation_budgets());
         self
     }

@@ -18,6 +18,8 @@ pub(crate) fn run_local_qemu_fuzz_workflow(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     plan: &FuzzDriverPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
+    let input_decoding = crate::cli_input_resources::original_budget()?;
+    let _input_scope = input_decoding.enter();
     let backend = backend_plan
         .resolved_backend
         .as_ref()
@@ -44,12 +46,11 @@ pub(crate) fn run_local_qemu_fuzz_workflow(
     }
     let owner = crate::cli_verify_serve::open_guarded_campaign_owner(
         &deployment,
-        &config,
+        config,
         plan.config.meta_seed,
         deployment.resources,
     )?;
     let execution_context = QemuFuzzExecutionContext {
-        config: &config,
         owner: &owner,
         verify_determinism_findings,
         plan,
@@ -290,7 +291,6 @@ fn qemu_fuzz_campaign_stop_label(stop: &StopOutcome) -> String {
 }
 
 struct QemuFuzzExecutionContext<'a> {
-    config: &'a production_api::ProductionVmLifecycleConfig,
     owner: &'a GuardedCampaignOwner,
     verify_determinism_findings: bool,
     plan: &'a FuzzDriverPlan,
@@ -492,7 +492,6 @@ fn execute_qemu_fuzz_iterations(
             qemu_build_id(context.backend_plan)?,
             context.owner.clone(),
         )
-        .and_then(|request| request.with_guarded_lifecycle(context.config.clone()))
         .map_err(|error| backend_error(format!("configure QEMU fuzz campaign: {error}")))?;
         let request = match parent {
             Some(candidate) => request.with_initial_replay(
@@ -504,11 +503,14 @@ fn execute_qemu_fuzz_iterations(
         .with_exploration(exploration);
         let request =
             apply_guarded_campaign_determinism_policy(request, context.verify_determinism_findings);
+        let decoding =
+            crate::cli_verify_serve::campaign_run::campaign_request_metadata_budget(&request)?;
         let campaign = run_guarded_default_campaign(request).map_err(|error| {
             backend_error(format!(
                 "execute QEMU fuzz iteration {sequence} through campaign owner: {error}",
             ))
         })?;
+        let _scope = decoding.enter();
         let (override_observations, candidates) =
             authenticate_qemu_fuzz_campaign(&form, &campaign, parent_id, sample_index, energy)?;
         let (status, terminal_outcome, campaign_completion) = qemu_fuzz_campaign_status(&campaign)?;

@@ -630,6 +630,12 @@ impl StoreGraphAdmin {
         Arc::ptr_eq(&self.authority_identity, &graph.authority_identity)
     }
 
+    /// Returns the exact physical boundary count without allocating a roster.
+    #[must_use]
+    pub fn physical_count(&self) -> usize {
+        self.physical.len()
+    }
+
     /// Returns physical administration boundaries in canonical node-ID order.
     #[must_use]
     pub fn physical(&self) -> Vec<StoreGraphPhysicalAdmin<'_>> {
@@ -642,6 +648,33 @@ impl StoreGraphAdmin {
                 retention: &authority.retention,
             })
             .collect()
+    }
+
+    /// Opens GC marks under one explicitly selected guarded physical node.
+    ///
+    /// No leaf is inferred from a composed root. The selected node must belong
+    /// to this administration capability and retain its original quota owner.
+    ///
+    /// # Errors
+    /// Refuses an absent node, unavailable metadata authority, or secure
+    /// namespace preparation rejected by the original owner.
+    pub fn gc_mark_backend(
+        &self,
+        node: &str,
+        scope: &str,
+    ) -> Result<Arc<dyn ImmutableBlobBackend>, StoreError> {
+        let authority = self
+            .physical
+            .iter()
+            .find(|(id, _)| id.as_str() == node)
+            .map(|(_, authority)| authority)
+            .ok_or(StoreError::InvalidComposition {
+                reason: "GC mark node is not an admitted physical boundary",
+            })?;
+        authority
+            .backend
+            .metadata_resources()?
+            .gc_mark_backend(scope)
     }
 
     /// Returns packed-leaf repack boundaries in canonical node-ID order.

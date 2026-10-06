@@ -238,7 +238,7 @@ fn parse_request_hex(text: &str) -> Result<CanonicalHostRequest, String> {
         };
         bytes.push((digit(pair[0]) << 4) | digit(pair[1]));
     }
-    crucible_api::host_operational::codec::decode_request(&bytes)
+    crucible_api::host_operational::codec::validate_request(&bytes)
         .map_err(|error| error.to_string())?;
     Ok(CanonicalHostRequest(bytes))
 }
@@ -265,7 +265,7 @@ pub(super) fn run_host_invocation(cli: &Cli, args: &HostArgs) -> Result<(), CliE
         .build()
         .map_err(CliError::Io)?;
     let response = runtime.block_on(execute(&client, &args.target, &args.command))?;
-    let rejected = match &response {
+    let rejected = match response.value() {
         HostOperationalResponse::PolicyUpdate { disposition, .. }
         | HostOperationalResponse::OuterCapAmendment { disposition, .. } => !matches!(
             disposition,
@@ -275,7 +275,7 @@ pub(super) fn run_host_invocation(cli: &Cli, args: &HostArgs) -> Result<(), CliE
     };
     // Preserve the complete returned acceptance and observed convergence. A
     // successful RPC alone never implies that desired pages have already moved.
-    let value = response_json(&response);
+    let value = response_json(response.value());
     let output = if matches!(cli.format, Some(OutputFormat::Jsonl)) {
         serde_json::to_string(&value)
     } else {
@@ -295,7 +295,7 @@ async fn execute(
     client: &RpcControlClient,
     target_args: &HostTargetArgs,
     command: &HostCommand,
-) -> Result<HostOperationalResponse, CliError> {
+) -> Result<crucible_api::AdmittedOutput<HostOperationalResponse>, CliError> {
     if let HostCommand::Targets(args) = command {
         let after = args.after.as_deref().map(parse_target_cursor).transpose()?;
         return send_request(
@@ -356,6 +356,7 @@ async fn execute(
                 "retry bytes must bind the selected owner and an operational mutation",
             ));
         }
+        let (request, _request_custody) = request.into_parts();
         return send_request(client, request).await;
     }
     let target = target(target_args)?;
@@ -370,7 +371,7 @@ async fn execute(
                 .host_operational(HostOperationalRequest::Status { target })
                 .await
                 .map_err(control_client_error)?;
-            let HostOperationalResponse::Status(status) = status else {
+            let HostOperationalResponse::Status(status) = status.value() else {
                 return Err(backend_error(
                     "host controller returned inconsistent policy status",
                 ));
@@ -444,7 +445,7 @@ async fn execute(
 async fn send_request(
     client: &RpcControlClient,
     request: HostOperationalRequest,
-) -> Result<HostOperationalResponse, CliError> {
+) -> Result<crucible_api::AdmittedOutput<HostOperationalResponse>, CliError> {
     if request.is_mutating() {
         let bytes = crucible_api::host_operational::codec::encode_request(&request)
             .map_err(|error| usage_error(error.to_string()))?;
@@ -735,6 +736,8 @@ mod tests {
 
     #[test]
     fn host_retry_reuses_complete_original_request_instead_of_current_policy() {
+        let _scope = crucible_core::test_support::fixture_decode_scope(32 * 1024 * 1024)
+            .unwrap_or_else(|error| panic!("finite host retry component authority: {error}"));
         let request = HostOperationalRequest::AmendOuterCap {
             target: HostOuterCapTarget {
                 daemon_epoch: [0x11; 32],
@@ -757,7 +760,7 @@ mod tests {
             panic!("fixture");
         };
 
-        assert_eq!(args.canonical_request.0, bytes);
+        assert_eq!(&args.canonical_request.0, bytes.value());
         assert_eq!(
             crucible_api::host_operational::codec::decode_request(&args.canonical_request.0)
                 .unwrap(),

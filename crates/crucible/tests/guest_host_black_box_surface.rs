@@ -16,6 +16,9 @@ use crucible::{
 
 #[test]
 fn black_box_surface_catalog_is_closed_and_complete() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let actual = BLACK_BOX_OBSERVATION_KINDS
         .iter()
         .copied()
@@ -37,6 +40,9 @@ fn black_box_surface_catalog_is_closed_and_complete() {
 
 #[test]
 fn black_box_surface_events_have_exact_ticks_and_optional_raw_retirement() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let expected_surface = BTreeSet::from([
         BlackBoxObservationKind::NetworkTraffic,
         BlackBoxObservationKind::DiskOrNinePIo,
@@ -116,7 +122,8 @@ fn black_box_surface_events_have_exact_ticks_and_optional_raw_retirement() {
         assert_eq!(event.black_box_observation_kind(), Some(kind));
 
         let entry =
-            crucible::test_support::condition_observation_entry_for_test(sequence as u64, &event);
+            crucible::test_support::condition_observation_entry_for_test(sequence as u64, &event)
+                .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
         assert_eq!(entry.class(), SchedulerEventLogClass::Observational);
         let expected_retired = matches!(
             kind,
@@ -157,6 +164,9 @@ fn black_box_surface_events_have_exact_ticks_and_optional_raw_retirement() {
 
 #[test]
 fn condition_prefix_enforces_black_box_surface_stamps() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let sample = ObservableEvent::memory_sample(
         time(13),
         icount(13),
@@ -164,46 +174,69 @@ fn condition_prefix_enforces_black_box_surface_stamps() {
         ResolvedMemPlace::register("rax", 8),
         0xfeed,
     );
-    let entry = crucible::test_support::condition_observation_entry_for_test(0, &sample);
+    let entry = crucible::test_support::condition_observation_entry_for_test(0, &sample)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     let corrupt = crucible::test_support::condition_entry_with_retirement_witness_for_test(
         entry,
         Some(node("db-0")),
         icount(12),
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
 
-    assert_eq!(
-        crucible::test_support::condition_prefix_from_scheduler_entries_for_test(vec![corrupt]),
-        Err(ConditionEvaluationError::InvalidBlackBoxObservationStamp {
-            sequence: 0,
-            kind: BlackBoxObservationKind::ArchitecturalStateSample,
-            expected: EventLogTickStamp {
-                node: Some(node("db-0")),
-                tick: crucible::SimInstant { ticks: 13 },
-                retired: Some(icount(13)),
-            },
-            actual: EventLogTickStamp {
-                node: Some(node("db-0")),
-                tick: crucible::SimInstant { ticks: 13 },
-                retired: Some(icount(12)),
-            },
-        })
-    );
+    let error =
+        crucible::test_support::condition_prefix_from_scheduler_entries_for_test(vec![corrupt])
+            .expect_err("corrupt retirement stamp must be refused");
+    match &error {
+        ConditionEvaluationError::InvalidBlackBoxObservationStamp {
+            sequence,
+            kind,
+            expected,
+            actual,
+            ..
+        } => {
+            assert_eq!(*sequence, 0);
+            assert_eq!(*kind, BlackBoxObservationKind::ArchitecturalStateSample);
+            assert_eq!(
+                expected,
+                &EventLogTickStamp {
+                    node: Some(node("db-0")),
+                    tick: crucible::SimInstant { ticks: 13 },
+                    retired: Some(icount(13)),
+                }
+            );
+            assert_eq!(
+                actual,
+                &EventLogTickStamp {
+                    node: Some(node("db-0")),
+                    tick: crucible::SimInstant { ticks: 13 },
+                    retired: Some(icount(12)),
+                }
+            );
+        }
+        other => panic!("unexpected stamp refusal: {other}"),
+    }
 }
 
 #[test]
 fn condition_prefix_rejects_out_of_order_observation_stamps() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let later = ObservableEvent::network_delivered(time(9), None, b"later".to_vec());
     let earlier = ObservableEvent::network_delivered(time(7), None, b"earlier".to_vec());
 
     assert_eq!(
         crucible::test_support::condition_prefix_from_scheduler_entries_for_test(vec![
-            crucible::test_support::condition_observation_entry_for_test(0, &later),
-            crucible::test_support::condition_observation_entry_for_test(1, &earlier),
+            crucible::test_support::condition_observation_entry_for_test(0, &later)
+                .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+            crucible::test_support::condition_observation_entry_for_test(1, &earlier)
+                .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
             crucible::test_support::condition_boundary_entry_for_test(
                 2,
                 time(10),
                 SchedulerEvaluationBoundaryKind::Quantum,
-            ),
+            )
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         ]),
         Err(ConditionEvaluationError::OutOfOrderEventLogEntry {
             previous_sequence: 0,
@@ -216,6 +249,9 @@ fn condition_prefix_rejects_out_of_order_observation_stamps() {
 
 #[test]
 fn white_box_markers_are_not_required_black_box_surface() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let white_box_marker = ObservableEvent::guest_marker(icount(20), node("db-0"), marker("ready"));
     let white_box_assertion = ObservableEvent::guest_assertion_marker(
         icount(21),
@@ -252,6 +288,9 @@ fn white_box_markers_are_not_required_black_box_surface() {
 
 #[test]
 fn io_wildcard_is_not_a_concrete_black_box_surface_category() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let wildcard = ObservableEvent::io_completion(
         time(24),
         node("db-0"),
@@ -264,6 +303,9 @@ fn io_wildcard_is_not_a_concrete_black_box_surface_category() {
 
 #[test]
 fn hung_lifecycle_round_trips_through_property_serialization() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = crucible::World::from_nodes(vec![crucible::WorldNode {
         id: node("db-0"),
         arch: crucible::VmArchitecture::X86_64,

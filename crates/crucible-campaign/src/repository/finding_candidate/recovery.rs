@@ -54,8 +54,10 @@ impl AuthenticatedFindingExactCheckpoint {
 }
 
 /// Stable failure class returned by a production-checkpoint authenticator.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FindingExactCheckpointAuthenticationError {
+    /// The original metadata authority refused canonical evidence verification.
+    DecodeAdmission(crucible_cas::owned_decode::DecodeAdmissionError),
     /// The checkpoint metadata exceeds the caller's remaining byte budget.
     LimitExceeded,
     /// Typed structure, identity, or execution-model validation failed.

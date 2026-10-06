@@ -662,7 +662,8 @@ fn campaign_corpus_reuse_refuses_abi_drift() -> Result<(), Box<dyn Error>> {
         prior_identity.clone(),
     )?;
     let mut run_identity = prior_identity;
-    run_identity.guest_host_protocol_version = String::from("4");
+    assert_ne!(run_identity.guest_host_protocol_version, "3");
+    run_identity.guest_host_protocol_version = String::from("3");
 
     let decision = evaluate_campaign_corpus_reuse(&prior, &run_identity)?;
 

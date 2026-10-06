@@ -46,6 +46,7 @@ pub(super) fn cli_search_fuzz_help_surface_lists_wip_flags() {
 #[test]
 pub(super) fn cli_search_fuzz_workflow_plans_drivers_and_rejects_bad_inputs()
 -> Result<(), Box<dyn Error>> {
+    let _component_scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
     let named_truths = write_search_schedule_named_truths(&temp, true)?;
@@ -583,6 +584,7 @@ quiescent = false
 
 #[test]
 pub(super) fn cli_fuzz_runs_builtin_fault_campaign_family() -> Result<(), Box<dyn Error>> {
+    let _component_scope = crate::tests::component_decode_scope();
     let cli = Cli::parse_from([
         "crucible",
         "--quiet",
@@ -626,6 +628,7 @@ pub(super) fn cli_fuzz_runs_builtin_fault_campaign_family() -> Result<(), Box<dy
 
 #[test]
 pub(super) fn cli_fuzz_rejects_remote_route() -> Result<(), Box<dyn Error>> {
+    let _component_scope = crate::tests::component_decode_scope();
     let cli = Cli::parse_from([
         "crucible",
         "--daemon",
@@ -653,6 +656,7 @@ pub(super) fn cli_fuzz_rejects_remote_route() -> Result<(), Box<dyn Error>> {
 
 #[test]
 pub(super) fn cli_fuzz_validates_family_before_backend_discovery() -> Result<(), Box<dyn Error>> {
+    let _component_scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let family = temp.path().join("malformed.family.toml");
     fs::write(&family, "schema = [")?;
@@ -681,6 +685,7 @@ pub(super) fn cli_fuzz_validates_family_before_backend_discovery() -> Result<(),
 #[test]
 pub(super) fn cli_search_fuzz_workflow_executes_local_double_search() -> Result<(), Box<dyn Error>>
 {
+    let _component_scope = crate::tests::component_decode_scope();
     assert_eq!(
         local_double_search_status(false, false, SearchOnViolationArg::Stop),
         BackendCommandStatus::Timeout
@@ -837,7 +842,10 @@ pub(super) fn cli_search_fuzz_workflow_executes_local_double_search() -> Result<
         .reproduction_artifact
         .as_ref()
         .expect("failed search must attach a counterexample artifact");
-    let decoded_artifact = validate_replayable_reproduction_artifact(&failure_cli, artifact)?;
+    let decoded_artifact =
+        validate_replayable_reproduction_artifact(&failure_cli, artifact, &mut |path| {
+            crate::cli_input_resources::StandaloneInputResources::open(None)?.read(path)
+        })?;
     assert_eq!(
         decoded_artifact
             .fingerprints
@@ -889,7 +897,10 @@ pub(super) fn cli_search_fuzz_workflow_executes_local_double_search() -> Result<
         .reproduction_artifact
         .as_ref()
         .expect("root search failure must attach a counterexample artifact");
-    let root_decoded = validate_replayable_reproduction_artifact(&failure_cli, root_artifact)?;
+    let root_decoded =
+        validate_replayable_reproduction_artifact(&failure_cli, root_artifact, &mut |path| {
+            crate::cli_input_resources::StandaloneInputResources::open(None)?.read(path)
+        })?;
     assert_eq!(root_decoded.decisions.len(), 1);
     assert_eq!(
         root_decoded
@@ -1363,6 +1374,7 @@ pub(super) fn cli_search_fuzz_workflow_executes_local_double_search() -> Result<
 
 #[test]
 pub(super) fn cli_search_fuzz_workflow_executes_local_double_fuzz() -> Result<(), Box<dyn Error>> {
+    let _component_scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let family_path = write_valid_fuzz_family(&temp)?;
     let corpus = temp.path().join("fuzz-corpus");
@@ -1623,6 +1635,7 @@ pub(super) fn cli_search_fuzz_workflow_executes_local_double_fuzz() -> Result<()
 #[test]
 pub(super) fn cli_run_workflow_plans_start_continue_stream_and_budgets()
 -> Result<(), Box<dyn Error>> {
+    let _component_scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
     let cli = Cli::parse_from([
@@ -1661,6 +1674,7 @@ pub(super) fn cli_run_workflow_plans_start_continue_stream_and_budgets()
 
 #[test]
 pub(super) fn cli_run_workflow_supports_virtual_time_budget() -> Result<(), Box<dyn Error>> {
+    let _component_scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
     let cli = Cli::parse_from([
@@ -1691,6 +1705,7 @@ pub(super) fn cli_run_workflow_supports_virtual_time_budget() -> Result<(), Box<
 #[test]
 pub(super) fn cli_run_workflow_interactive_pauses_at_genesis_and_accepts_session_commands()
 -> Result<(), Box<dyn Error>> {
+    let _component_scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
     let cli = Cli::parse_from([
@@ -1744,6 +1759,7 @@ pub(super) fn cli_run_workflow_interactive_pauses_at_genesis_and_accepts_session
 #[test]
 pub(super) fn cli_run_workflow_rejects_bad_scenarios_and_invalid_budgets()
 -> Result<(), Box<dyn Error>> {
+    let _component_scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let error = match plan_run_invocation(
         &RunArgs {
@@ -1908,6 +1924,7 @@ pub(super) fn cli_run_workflow_rejects_bad_scenarios_and_invalid_budgets()
 #[test]
 pub(super) fn cli_run_workflow_uses_uniform_outcome_exit_code_mapping() -> Result<(), Box<dyn Error>>
 {
+    let _component_scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
     let scenario_bytes = fs::read(&scenario)?;
@@ -1943,6 +1960,7 @@ pub(super) fn cli_run_workflow_uses_uniform_outcome_exit_code_mapping() -> Resul
 #[test]
 pub(super) fn cli_run_workflow_executes_remote_daemon_session_against_production_server()
 -> Result<(), Box<dyn Error>> {
+    let _component_scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
     let daemon = spawn_production_lifecycle_server()?;
@@ -2032,296 +2050,356 @@ pub(super) fn cli_run_workflow_parses_interactive_session_commands() -> Result<(
 #[tokio::test(flavor = "current_thread")]
 pub(super) async fn cli_run_workflow_acknowledges_interactive_reader_commands()
 -> Result<(), Box<dyn Error>> {
-    let temp = TempDir::new()?;
-    let scenario = write_valid_run_scenario(&temp)?;
-    let cli = Cli::parse_from([
-        String::from("crucible"),
-        String::from("--backend"),
-        String::from("double"),
-        String::from("--seed"),
-        String::from("5"),
-        String::from("run"),
-        scenario.display().to_string(),
-        String::from("--interactive"),
-    ]);
-    let Commands::Run(args) = &cli.command else {
-        panic!("expected run command");
-    };
-    let run_plan = plan_run_invocation(args, temp.path())?;
-    let control_plane = LifecycleControlPlane::new(
-        "crucible-cli-reader-test",
-        Vec::new(),
-        |_scenario: &crucible::ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
-    );
-    let client = InProcessLifecycleClient::new(control_plane);
-    let request = CreateSessionRequest::inline(
-        run_plan.scenario.scenario_form().clone(),
-        run_plan.scenario.scenario_def().seed(),
-    )
-    .with_start_paused(true);
-    let created = client.create_session(request).await?;
-    let control = client
-        .control_attach(
-            AttachRequest::new(created.session)
-                .with_expected_epoch(created.session.epoch)
-                .with_client_name("crucible-cli-reader-test"),
-        )
-        .await?;
+    let decoding = crate::tests::component_decode_budget();
+    crucible_api::admit_future(
+        async {
+            let temp = TempDir::new()?;
+            let scenario = write_valid_run_scenario(&temp)?;
+            let cli = Cli::parse_from([
+                String::from("crucible"),
+                String::from("--backend"),
+                String::from("double"),
+                String::from("--seed"),
+                String::from("5"),
+                String::from("run"),
+                scenario.display().to_string(),
+                String::from("--interactive"),
+            ]);
+            let Commands::Run(args) = &cli.command else {
+                panic!("expected run command");
+            };
+            let run_plan = plan_run_invocation(args, temp.path())?;
+            let control_plane = LifecycleControlPlane::new(
+                "crucible-cli-reader-test",
+                Vec::new(),
+                |_scenario: &crucible::ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
+            )
+            .with_decode_budget(
+                crucible::owned_decode::current_budget().unwrap_or_else(|| {
+                    panic!("explicit component input scope must cover control plane construction")
+                }),
+            );
+            let client = InProcessLifecycleClient::new(control_plane);
+            let request = CreateSessionRequest::inline(
+                run_plan.scenario.scenario_form().clone(),
+                run_plan.scenario.scenario_def().seed(),
+            )
+            .with_start_paused(true);
+            let created = client.create_session(request).await?;
+            let control = client
+                .control_attach(
+                    AttachRequest::new(created.session)
+                        .with_expected_epoch(created.session.epoch)
+                        .with_client_name("crucible-cli-reader-test"),
+                )
+                .await?;
 
-    let mut command_id = 1;
-    let mut acknowledged = Vec::new();
-    let mut output = Vec::new();
-    let terminal_evidence = drive_interactive_command_reader(
-        &control,
-        &mut command_id,
-        &mut acknowledged,
-        io::Cursor::new("query\nquery\n# ignored\n\nstop\nquery\n"),
-        &mut output,
-        None,
-    )
-    .await?;
+            let mut command_id = 1;
+            let mut acknowledged = Vec::new();
+            let mut output = Vec::new();
+            let terminal_evidence = drive_interactive_command_reader(
+                &control,
+                &mut command_id,
+                &mut acknowledged,
+                io::Cursor::new("query\nquery\n# ignored\n\nstop\nquery\n"),
+                &mut output,
+                None,
+            )
+            .await?;
 
-    assert_eq!(
-        acknowledged,
-        vec![
-            SessionCommandKind::Query,
-            SessionCommandKind::Query,
-            SessionCommandKind::Query,
-            SessionCommandKind::Stop,
-        ]
-    );
-    assert_eq!(command_id, 5);
-    assert!(matches!(
-        terminal_evidence
-            .as_ref()
-            .map(|evidence| &evidence.snapshot.state),
-        Some(EngineState::Stopped { .. })
-    ));
-    assert!(
-        terminal_evidence
-            .as_ref()
-            .is_some_and(|evidence| evidence.resolved_effect_trace.is_none())
-    );
-    assert_eq!(
-        String::from_utf8(output)?,
-        concat!(
-            "interactive-ack\tcommand=query\tstatus=accepted\n",
-            "interactive-query\tstate=paused\n",
-            "interactive-ack\tcommand=query\tstatus=accepted\n",
-            "interactive-query\tstate=paused\n",
-            "interactive-ack\tcommand=stop\tstatus=accepted\n",
-        )
-    );
+            assert_eq!(
+                acknowledged,
+                vec![
+                    SessionCommandKind::Query,
+                    SessionCommandKind::Query,
+                    SessionCommandKind::Query,
+                    SessionCommandKind::Stop,
+                ]
+            );
+            assert_eq!(command_id, 5);
+            assert!(matches!(
+                terminal_evidence
+                    .as_ref()
+                    .map(|evidence| &evidence.snapshot.state),
+                Some(EngineState::Stopped { .. })
+            ));
+            assert!(
+                terminal_evidence
+                    .as_ref()
+                    .is_some_and(|evidence| evidence.resolved_effect_trace.is_none())
+            );
+            assert_eq!(
+                String::from_utf8(output)?,
+                concat!(
+                    "interactive-ack\tcommand=query\tstatus=accepted\n",
+                    "interactive-query\tstate=paused\n",
+                    "interactive-ack\tcommand=query\tstatus=accepted\n",
+                    "interactive-query\tstate=paused\n",
+                    "interactive-ack\tcommand=stop\tstatus=accepted\n",
+                )
+            );
 
-    Ok(())
+            Ok(())
+        },
+        decoding,
+    )?
+    .await
 }
 
 #[tokio::test(flavor = "current_thread")]
 pub(super) async fn cli_interactive_continue_hands_control_back_before_autonomous_run()
 -> Result<(), Box<dyn Error>> {
-    struct CountedQuiescentLoop {
-        inner: QuiescentLifecycleLoop,
-        driven: Arc<std::sync::atomic::AtomicU64>,
-    }
+    let decoding = crate::tests::component_decode_budget();
+    crucible_api::admit_future(
+        async {
+            struct CountedQuiescentLoop {
+                inner: QuiescentLifecycleLoop,
+                driven: Arc<std::sync::atomic::AtomicU64>,
+            }
 
-    impl EngineLoop for CountedQuiescentLoop {
-        fn drive_quantum(&mut self, request: QReq) -> Result<QOut, QErr> {
-            self.driven
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            self.inner.drive_quantum(request)
-        }
-    }
+            impl EngineLoop for CountedQuiescentLoop {
+                fn drive_quantum(&mut self, request: QReq) -> Result<QOut, QErr> {
+                    self.driven
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    self.inner.drive_quantum(request)
+                }
+            }
 
-    let temp = TempDir::new()?;
-    let scenario = write_valid_run_scenario(&temp)?;
-    let cli = Cli::parse_from([
-        "crucible",
-        "run",
-        &scenario.display().to_string(),
-        "--interactive",
-    ]);
-    let Commands::Run(args) = &cli.command else {
-        panic!("expected run command");
-    };
-    let plan = plan_run_invocation(args, temp.path())?;
-    let driven = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let factory_driven = driven.clone();
-    let control_plane = LifecycleControlPlane::new(
-        "crucible-cli-control-handoff-test",
-        Vec::new(),
-        move |_scenario: &crucible::ScenarioDef, _seed| CountedQuiescentLoop {
-            inner: QuiescentLifecycleLoop::new(),
-            driven: factory_driven.clone(),
-        },
-    );
-    let client = InProcessLifecycleClient::new(control_plane);
-    let created = client
-        .create_session(
-            CreateSessionRequest::inline(
-                plan.scenario.scenario_form().clone(),
-                plan.scenario.scenario_def().seed(),
+            let temp = TempDir::new()?;
+            let scenario = write_valid_run_scenario(&temp)?;
+            let cli = Cli::parse_from([
+                "crucible",
+                "run",
+                &scenario.display().to_string(),
+                "--interactive",
+            ]);
+            let Commands::Run(args) = &cli.command else {
+                panic!("expected run command");
+            };
+            let plan = plan_run_invocation(args, temp.path())?;
+            let driven = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let factory_driven = driven.clone();
+            let control_plane = LifecycleControlPlane::new(
+                "crucible-cli-control-handoff-test",
+                Vec::new(),
+                move |_scenario: &crucible::ScenarioDef, _seed| CountedQuiescentLoop {
+                    inner: QuiescentLifecycleLoop::new(),
+                    driven: factory_driven.clone(),
+                },
             )
-            .with_start_paused(true),
-        )
-        .await?;
-    let control = client
-        .control_attach(
-            AttachRequest::new(created.session)
-                .with_expected_epoch(created.session.epoch)
-                .with_client_name("crucible-cli-control-handoff-test"),
-        )
-        .await?;
+            .with_decode_budget(
+                crucible::owned_decode::current_budget().unwrap_or_else(|| {
+                    panic!("explicit component input scope must cover control plane construction")
+                }),
+            );
+            let client = InProcessLifecycleClient::new(control_plane);
+            let created = client
+                .create_session(
+                    CreateSessionRequest::inline(
+                        plan.scenario.scenario_form().clone(),
+                        plan.scenario.scenario_def().seed(),
+                    )
+                    .with_start_paused(true),
+                )
+                .await?;
+            let control = client
+                .control_attach(
+                    AttachRequest::new(created.session)
+                        .with_expected_epoch(created.session.epoch)
+                        .with_client_name("crucible-cli-control-handoff-test"),
+                )
+                .await?;
 
-    // A single autonomous RUN completes this backend. The actual command reader
-    // must receive Continue's outer acknowledgement and enqueue Pause first.
-    let mut acknowledged = Vec::new();
-    let mut output = Vec::new();
-    let result = drive_interactive_command_reader(
-        &control,
-        &mut 1,
-        &mut acknowledged,
-        io::Cursor::new("continue\npause\nquery\nstop\n"),
-        &mut output,
-        None,
-    )
-    .await;
+            // A single autonomous RUN completes this backend. The actual command reader
+            // must receive Continue's outer acknowledgement and enqueue Pause first.
+            let mut acknowledged = Vec::new();
+            let mut output = Vec::new();
+            let result = drive_interactive_command_reader(
+                &control,
+                &mut 1,
+                &mut acknowledged,
+                io::Cursor::new("continue\npause\nquery\nstop\n"),
+                &mut output,
+                None,
+            )
+            .await;
 
-    assert_eq!(
-        driven.load(std::sync::atomic::Ordering::SeqCst),
-        0,
-        "actor entered autonomous RUN before the acknowledged client could pause: {:?}",
-        result.as_ref().err()
-    );
-    let terminal = result?.ok_or("interactive stop did not return terminal evidence")?;
-    assert!(matches!(
-        terminal.snapshot.state,
-        EngineState::Stopped { .. }
-    ));
-    assert_eq!(
-        acknowledged,
-        vec![
-            SessionCommandKind::Continue,
-            SessionCommandKind::Pause,
-            SessionCommandKind::Query,
-            SessionCommandKind::Query,
-            SessionCommandKind::Stop,
-        ]
-    );
-    assert!(String::from_utf8(output)?.contains("interactive-query\tstate=paused\n"));
+            assert_eq!(
+                driven.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "actor entered autonomous RUN before the acknowledged client could pause: {:?}",
+                result.as_ref().err()
+            );
+            let terminal = result?.ok_or("interactive stop did not return terminal evidence")?;
+            assert!(matches!(
+                terminal.snapshot.state,
+                EngineState::Stopped { .. }
+            ));
+            assert_eq!(
+                acknowledged,
+                vec![
+                    SessionCommandKind::Continue,
+                    SessionCommandKind::Pause,
+                    SessionCommandKind::Query,
+                    SessionCommandKind::Query,
+                    SessionCommandKind::Stop,
+                ]
+            );
+            assert!(String::from_utf8(output)?.contains("interactive-query\tstate=paused\n"));
 
-    Ok(())
+            Ok(())
+        },
+        decoding,
+    )?
+    .await
 }
 
 #[tokio::test(flavor = "current_thread")]
 pub(super) async fn cli_interactive_stop_uses_terminal_snapshot_after_registry_cleanup()
 -> Result<(), Box<dyn Error>> {
-    #[derive(Default)]
-    struct InteractiveLoop {
-        quanta: u64,
-    }
+    let decoding = crate::tests::component_decode_budget();
+    crucible_api::admit_future(
+        async {
+            #[derive(Default)]
+            struct InteractiveLoop {
+                quanta: u64,
+            }
 
-    impl EngineLoop for InteractiveLoop {
-        fn drive_quantum(&mut self, request: QReq) -> Result<QOut, QErr> {
-            self.quanta = self.quanta.saturating_add(1);
-            let frontier = VirtualTime { ticks: self.quanta };
-            let decision = crucible::Decision::DeliveryOrder(crucible::DeliveryOrderDecision {
-                at: frontier,
-                order: Vec::new(),
-            });
-            let configuration = crucible::try_step(&request.configuration, decision.clone())
-                .map_err(|error| crucible::SchedulerError::BoundaryViolation {
-                    message: format!("interactive test could not record decision: {error}"),
-                })?;
-            let event = crucible::SchedulerEventLogEntry::diagnostic(
-                self.quanta.saturating_sub(1),
-                frontier,
-                crucible::EventDiagnosticPayload::new(
-                    "crucible.cli.interactive-stop-test",
-                    crucible::EventLevel::Info,
-                    BTreeMap::new(),
-                ),
+            impl EngineLoop for InteractiveLoop {
+                fn drive_quantum(&mut self, request: QReq) -> Result<QOut, QErr> {
+                    self.quanta = self.quanta.saturating_add(1);
+                    let output_custody = crucible::EventLogOutputCustody::retain_current()
+                        .map_err(|source| crucible::SchedulerError::Evaluation {
+                            source: Arc::new(source),
+                        })?;
+                    let _output_scope = output_custody.enter_decode_scope();
+                    crucible::owned_decode::charge_array::<crucible::SchedulerEventLogEntry>(1)
+                        .map_err(|source| crucible::SchedulerError::Evaluation {
+                            source: Arc::new(crucible::EngineError::ArtifactDecodeAdmission {
+                                source,
+                            }),
+                        })?;
+                    let frontier = VirtualTime { ticks: self.quanta };
+                    let decision =
+                        crucible::Decision::DeliveryOrder(crucible::DeliveryOrderDecision {
+                            at: frontier,
+                            order: Vec::new(),
+                        });
+                    let configuration =
+                        crucible::try_step(&request.configuration, decision.clone()).map_err(
+                            |error| crucible::SchedulerError::BoundaryViolation {
+                                message: format!(
+                                    "interactive test could not record decision: {error}"
+                                ),
+                            },
+                        )?;
+                    let event = crucible::SchedulerEventLogEntry::diagnostic(
+                        self.quanta.saturating_sub(1),
+                        frontier,
+                        crucible::EventDiagnosticPayload::new(
+                            "crucible.cli.interactive-stop-test",
+                            crucible::EventLevel::Info,
+                            BTreeMap::new(),
+                        ),
+                    );
+                    Ok(QOut {
+                        configuration,
+                        frontier,
+                        advanced_node: None,
+                        resolved_events: Vec::new(),
+                        decisions: vec![decision],
+                        discovered_choices: Vec::new(),
+                        event_log_entries: vec![event.map_err(|source| {
+                            crucible::SchedulerError::Evaluation {
+                                source: Arc::new(source),
+                            }
+                        })?],
+                        event_log_segment_bytes: Vec::new(),
+                        event_log_segment_text: String::new(),
+                        event_log_segment_hash: None,
+                        event_log_offset: crucible::EventLogOffset::new(
+                            Default::default(),
+                            0,
+                            self.quanta,
+                        ),
+                        scheduler_quiescence: None,
+                        event_log_custody: output_custody,
+                    })
+                }
+            }
+
+            let temp = TempDir::new()?;
+            let scenario = write_valid_run_scenario(&temp)?;
+            let cli = Cli::parse_from([
+                String::from("crucible"),
+                String::from("--backend"),
+                String::from("double"),
+                String::from("--seed"),
+                String::from("17"),
+                String::from("run"),
+                scenario.display().to_string(),
+                String::from("--interactive"),
+                String::from("--until"),
+                String::from("stopped"),
+                String::from("--watch"),
+            ]);
+            let Commands::Run(args) = &cli.command else {
+                panic!("expected run command");
+            };
+            let run_plan = plan_run_invocation(args, temp.path())?;
+            let control_plane = LifecycleControlPlane::new(
+                "crucible-cli-interactive-stop-test",
+                Vec::new(),
+                |_scenario: &crucible::ScenarioDef, _seed| InteractiveLoop::default(),
+            )
+            .with_decode_budget(crucible::owned_decode::current_budget().unwrap_or_else(|| {
+                panic!("explicit component input scope must cover control plane construction")
+            }))
+            .with_terminal_session_retention(true);
+            let client = InProcessLifecycleClient::new(control_plane);
+            let report = run_control_client_workflow_async(
+                &client,
+                &run_plan,
+                &[
+                    SessionCommandKind::StepQuantum,
+                    SessionCommandKind::Stop,
+                    SessionCommandKind::Query,
+                ],
+            )
+            .await?;
+
+            assert_eq!(report.status, BackendCommandStatus::Passed);
+            assert_eq!(report.final_state, "stopped");
+            assert_eq!(report.outcome, Some(OutcomeKind::Stopped));
+            assert_eq!(report.final_frontier_ticks, 1);
+            assert_eq!(report.final_quanta, 1);
+            assert!(report.terminal_savepoint.is_some());
+            assert!(report.terminal_configuration.is_some());
+            assert!(!report.streamed_events.is_empty());
+            assert!(
+                report
+                    .acknowledged_commands
+                    .windows(2)
+                    .any(|commands| commands
+                        == [SessionCommandKind::Stop, SessionCommandKind::Query])
             );
-            Ok(QOut {
-                configuration,
-                frontier,
-                advanced_node: None,
-                resolved_events: Vec::new(),
-                decisions: vec![decision],
-                discovered_choices: Vec::new(),
-                event_log_entries: vec![event],
-                event_log_segment_bytes: Vec::new(),
-                event_log_segment_text: String::new(),
-                event_log_segment_hash: None,
-                event_log_offset: crucible::EventLogOffset::new(Default::default(), 0, self.quanta),
-                scheduler_quiescence: None,
-            })
-        }
-    }
+            assert_eq!(
+                report
+                    .reproduction_commands
+                    .last()
+                    .map(|record| record.payload.command),
+                Some(SessionCommandKind::Stop)
+            );
+            assert!(report.watch_statuses.iter().any(|status| {
+                status.starts_with("state=stopped\tfrontier_ticks=1\tquanta=1\toutcome=stopped")
+            }));
+            assert!(client.list_sessions().await?.sessions.is_empty());
 
-    let temp = TempDir::new()?;
-    let scenario = write_valid_run_scenario(&temp)?;
-    let cli = Cli::parse_from([
-        String::from("crucible"),
-        String::from("--backend"),
-        String::from("double"),
-        String::from("--seed"),
-        String::from("17"),
-        String::from("run"),
-        scenario.display().to_string(),
-        String::from("--interactive"),
-        String::from("--until"),
-        String::from("stopped"),
-        String::from("--watch"),
-    ]);
-    let Commands::Run(args) = &cli.command else {
-        panic!("expected run command");
-    };
-    let run_plan = plan_run_invocation(args, temp.path())?;
-    let control_plane = LifecycleControlPlane::new(
-        "crucible-cli-interactive-stop-test",
-        Vec::new(),
-        |_scenario: &crucible::ScenarioDef, _seed| InteractiveLoop::default(),
-    )
-    .with_terminal_session_retention(true);
-    let client = InProcessLifecycleClient::new(control_plane);
-    let report = run_control_client_workflow_async(
-        &client,
-        &run_plan,
-        &[
-            SessionCommandKind::StepQuantum,
-            SessionCommandKind::Stop,
-            SessionCommandKind::Query,
-        ],
-    )
-    .await?;
-
-    assert_eq!(report.status, BackendCommandStatus::Passed);
-    assert_eq!(report.final_state, "stopped");
-    assert_eq!(report.outcome, Some(OutcomeKind::Stopped));
-    assert_eq!(report.final_frontier_ticks, 1);
-    assert_eq!(report.final_quanta, 1);
-    assert!(report.terminal_savepoint.is_some());
-    assert!(report.terminal_configuration.is_some());
-    assert!(!report.streamed_events.is_empty());
-    assert!(
-        report
-            .acknowledged_commands
-            .windows(2)
-            .any(|commands| commands == [SessionCommandKind::Stop, SessionCommandKind::Query])
-    );
-    assert_eq!(
-        report
-            .reproduction_commands
-            .last()
-            .map(|record| record.payload.command),
-        Some(SessionCommandKind::Stop)
-    );
-    assert!(report.watch_statuses.iter().any(|status| {
-        status.starts_with("state=stopped\tfrontier_ticks=1\tquanta=1\toutcome=stopped")
-    }));
-    assert!(client.list_sessions().await?.sessions.is_empty());
-
-    Ok(())
+            Ok(())
+        },
+        decoding,
+    )?
+    .await
 }
 
 fn terminal_sampling_client(
@@ -2384,6 +2462,9 @@ fn terminal_sampling_client(
                 operations: operations.clone(),
             },
         )
+        .with_decode_budget(crucible::owned_decode::current_budget().unwrap_or_else(|| {
+            panic!("explicit component input scope must cover control plane construction")
+        }))
         .with_terminal_session_retention(true),
     )
 }
@@ -2391,133 +2472,147 @@ fn terminal_sampling_client(
 #[tokio::test(flavor = "current_thread")]
 pub(super) async fn cli_interactive_terminal_sampling_precedes_shutdown_without_initial_run()
 -> Result<(), Box<dyn Error>> {
-    let temp = TempDir::new()?;
-    let scenario = write_valid_run_scenario(&temp)?;
-    let cli = Cli::parse_from([
-        "crucible",
-        "run",
-        &scenario.display().to_string(),
-        "--interactive",
-    ]);
-    let Commands::Run(args) = &cli.command else {
-        panic!("expected run command");
-    };
-    let plan = plan_run_invocation(args, temp.path())?;
-    assert!(!plan.collect_execution_fingerprints);
-    let operations = Arc::new(Mutex::new(Vec::new()));
-    let client = terminal_sampling_client(false, operations.clone());
+    let decoding = crate::tests::component_decode_budget();
+    crucible_api::admit_future(
+        async {
+            let temp = TempDir::new()?;
+            let scenario = write_valid_run_scenario(&temp)?;
+            let cli = Cli::parse_from([
+                "crucible",
+                "run",
+                &scenario.display().to_string(),
+                "--interactive",
+            ]);
+            let Commands::Run(args) = &cli.command else {
+                panic!("expected run command");
+            };
+            let plan = plan_run_invocation(args, temp.path())?;
+            assert!(!plan.collect_execution_fingerprints);
+            let operations = Arc::new(Mutex::new(Vec::new()));
+            let client = terminal_sampling_client(false, operations.clone());
 
-    let report = run_control_client_workflow_with_interactive_driver(
-        &client,
-        &plan,
-        InteractiveCommandDriver::Preparsed(&[
-            SessionCommandKind::Continue,
-            SessionCommandKind::Pause,
-            SessionCommandKind::Query,
-            SessionCommandKind::Stop,
-        ]),
-        false,
-        false,
-        true,
-    )
-    .await?;
+            let report = run_control_client_workflow_with_interactive_driver(
+                &client,
+                &plan,
+                InteractiveCommandDriver::Preparsed(&[
+                    SessionCommandKind::Continue,
+                    SessionCommandKind::Pause,
+                    SessionCommandKind::Query,
+                    SessionCommandKind::Stop,
+                ]),
+                false,
+                false,
+                true,
+            )
+            .await?;
 
-    let nodes = plan.scenario.scenario_form().world().vm_nodes().len();
-    assert_eq!(report.execution_fingerprints.len(), nodes);
-    assert!(
-        report
-            .execution_fingerprints
-            .iter()
-            .all(|sample| sample.at.ticks == 0)
-    );
-    assert_eq!(report.final_quanta, 0);
-    assert!(report.final_snapshot.is_some());
+            let nodes = plan.scenario.scenario_form().world().vm_nodes().len();
+            assert_eq!(report.execution_fingerprints.len(), nodes);
+            assert!(
+                report
+                    .execution_fingerprints
+                    .iter()
+                    .all(|sample| sample.at.ticks == 0)
+            );
+            assert_eq!(report.final_quanta, 0);
+            assert!(report.final_snapshot.is_some());
 
-    let evidence = live_qemu_artifact_evidence_from_run(
-        LiveQemuArtifactRecipe {
-            producer: "run",
-            terminal_condition: plan.terminal_condition,
-            max_virtual_time_ticks: plan.max_virtual_time_ticks,
-            max_quanta: plan.max_quanta,
-            coverage: false,
-            execution_mode: plan.execution_mode,
-            startup_commands: &plan.startup_commands,
-            initial_control_commands: &plan.initial_control_commands,
-            branch: LiveQemuReplayBranch::None,
+            let evidence = live_qemu_artifact_evidence_from_run(
+                LiveQemuArtifactRecipe {
+                    producer: "run",
+                    terminal_condition: plan.terminal_condition,
+                    max_virtual_time_ticks: plan.max_virtual_time_ticks,
+                    max_quanta: plan.max_quanta,
+                    coverage: false,
+                    execution_mode: plan.execution_mode,
+                    startup_commands: &plan.startup_commands,
+                    initial_control_commands: &plan.initial_control_commands,
+                    branch: LiveQemuReplayBranch::None,
+                },
+                plan.scenario.scenario_form(),
+                &report,
+            )?;
+            assert_eq!(
+                evidence.contract.fingerprint_scope,
+                LiveQemuFingerprintScope::TerminalAllNodes
+            );
+            assert_eq!(evidence.contract.final_quanta, 0);
+            assert_eq!(
+                evidence.contract.final_frontier_ticks,
+                report.final_frontier_ticks
+            );
+            assert_eq!(
+                evidence.fingerprint_samples,
+                run_fingerprint_samples(&report)
+            );
+            assert_eq!(
+                evidence.fingerprint_stream,
+                verify_fingerprint_stream_bytes(&evidence.fingerprint_samples)
+            );
+            let mut expected = vec!["sample"; nodes];
+            expected.push("shutdown");
+            assert_eq!(
+                *operations.lock().map_err(|_| "operations lock poisoned")?,
+                expected
+            );
+            assert!(client.list_sessions().await?.sessions.is_empty());
+
+            Ok(())
         },
-        plan.scenario.scenario_form(),
-        &report,
-    )?;
-    assert_eq!(
-        evidence.contract.fingerprint_scope,
-        LiveQemuFingerprintScope::TerminalAllNodes
-    );
-    assert_eq!(evidence.contract.final_quanta, 0);
-    assert_eq!(
-        evidence.contract.final_frontier_ticks,
-        report.final_frontier_ticks
-    );
-    assert_eq!(
-        evidence.fingerprint_samples,
-        run_fingerprint_samples(&report)
-    );
-    assert_eq!(
-        evidence.fingerprint_stream,
-        verify_fingerprint_stream_bytes(&evidence.fingerprint_samples)
-    );
-    let mut expected = vec!["sample"; nodes];
-    expected.push("shutdown");
-    assert_eq!(
-        *operations.lock().map_err(|_| "operations lock poisoned")?,
-        expected
-    );
-    assert!(client.list_sessions().await?.sessions.is_empty());
-
-    Ok(())
+        decoding,
+    )?
+    .await
 }
 
 #[tokio::test(flavor = "current_thread")]
 pub(super) async fn cli_interactive_terminal_sampling_refusal_retires_original_owner()
 -> Result<(), Box<dyn Error>> {
-    let temp = TempDir::new()?;
-    let scenario = write_valid_run_scenario(&temp)?;
-    let cli = Cli::parse_from([
-        "crucible",
-        "run",
-        &scenario.display().to_string(),
-        "--interactive",
-    ]);
-    let Commands::Run(args) = &cli.command else {
-        panic!("expected run command");
-    };
-    let plan = plan_run_invocation(args, temp.path())?;
-    let operations = Arc::new(Mutex::new(Vec::new()));
-    let client = terminal_sampling_client(true, operations.clone());
+    let decoding = crate::tests::component_decode_budget();
+    crucible_api::admit_future(
+        async {
+            let temp = TempDir::new()?;
+            let scenario = write_valid_run_scenario(&temp)?;
+            let cli = Cli::parse_from([
+                "crucible",
+                "run",
+                &scenario.display().to_string(),
+                "--interactive",
+            ]);
+            let Commands::Run(args) = &cli.command else {
+                panic!("expected run command");
+            };
+            let plan = plan_run_invocation(args, temp.path())?;
+            let operations = Arc::new(Mutex::new(Vec::new()));
+            let client = terminal_sampling_client(true, operations.clone());
 
-    let error = run_control_client_workflow_with_interactive_driver(
-        &client,
-        &plan,
-        InteractiveCommandDriver::Preparsed(&[SessionCommandKind::Stop]),
-        false,
-        false,
-        true,
-    )
-    .await
-    .err()
-    .ok_or("refused terminal sample must fail capture")?;
+            let error = run_control_client_workflow_with_interactive_driver(
+                &client,
+                &plan,
+                InteractiveCommandDriver::Preparsed(&[SessionCommandKind::Stop]),
+                false,
+                false,
+                true,
+            )
+            .await
+            .err()
+            .ok_or("refused terminal sample must fail capture")?;
 
-    // The authenticated streaming boundary maps scheduler BoundaryViolation
-    // to Internal; the CLI must preserve that rejection rather than fabricate
-    // a sample or turn capture into a successful Stop.
-    assert!(matches!(error, CliError::Backend(ref message)
+            // The authenticated streaming boundary maps scheduler BoundaryViolation
+            // to Internal; the CLI must preserve that rejection rather than fabricate
+            // a sample or turn capture into a successful Stop.
+            assert!(matches!(error, CliError::Backend(ref message)
         if message == "execution fingerprint query for node `client` was rejected: Internal"));
-    assert_eq!(
-        *operations.lock().map_err(|_| "operations lock poisoned")?,
-        vec!["sample", "shutdown"]
-    );
-    assert!(client.list_sessions().await?.sessions.is_empty());
+            assert_eq!(
+                *operations.lock().map_err(|_| "operations lock poisoned")?,
+                vec!["sample", "shutdown"]
+            );
+            assert!(client.list_sessions().await?.sessions.is_empty());
 
-    Ok(())
+            Ok(())
+        },
+        decoding,
+    )?
+    .await
 }
 
 #[test]
@@ -2708,6 +2803,7 @@ pub(super) fn cli_verify_workflow_plans_runs_adversarial_matrix_and_bisection()
 
 #[test]
 pub(super) fn cli_verify_builtin_corpus_host_profiles() -> Result<(), Box<dyn Error>> {
+    let _component_scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     for scenario_name in [
         crucible::HAPPY_PATH_SCENARIO_NAME,
@@ -2805,89 +2901,98 @@ pub(super) fn cli_verify_builtin_corpus_host_profiles() -> Result<(), Box<dyn Er
 #[tokio::test(flavor = "current_thread")]
 pub(super) async fn cli_verify_coalesced_states_preserve_semantic_divergence()
 -> Result<(), Box<dyn Error>> {
-    let temp = TempDir::new()?;
-    let cli = Cli::parse_from([
-        "crucible",
-        "verify",
-        "builtin:happy-path.scn",
-        "--runs",
-        "2",
-    ]);
-    let Commands::Verify(args) = &cli.command else {
-        panic!("expected verify command");
-    };
-    let verify_plan = plan_verify_invocation(args, temp.path())?;
-    let reduction = verify_plan.reductions[0].clone();
-    let scenario = verify_plan.scenario().expect("scenario verify plan");
-    let run_plan = verify_run_invocation_plan(
-        scenario.clone(),
-        scenario.scenario_def().seed(),
-        reduction.clone(),
-    );
-    let control_plane = LifecycleControlPlane::new(
-        "crucible-cli-verify-state-projection",
-        Vec::new(),
-        |_scenario: &crucible::ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
-    )
-    .with_terminal_session_retention(true);
-    let client = InProcessLifecycleClient::new(control_plane);
-    let mut report = run_control_client_workflow_async(&client, &run_plan, &[]).await?;
-    assert!(!report.streamed_event_frames.is_empty());
-    assert_eq!(report.execution_fingerprints.len(), 4);
-    report.state_updates = vec!["running".into(), "paused".into(), "quiescent".into()];
-    let mut coalesced = report.clone();
-    coalesced.state_updates = vec!["running".into(), "quiescent".into()];
-    assert_ne!(
-        canonical_run_log_entries(&run_plan, &report),
-        canonical_run_log_entries(&run_plan, &coalesced)
-    );
+    let decoding = crate::tests::component_decode_budget();
+    crucible_api::admit_future(
+        async {
+            let temp = TempDir::new()?;
+            let cli = Cli::parse_from([
+                "crucible",
+                "verify",
+                "builtin:happy-path.scn",
+                "--runs",
+                "2",
+            ]);
+            let Commands::Verify(args) = &cli.command else {
+                panic!("expected verify command");
+            };
+            let verify_plan = plan_verify_invocation(args, temp.path())?;
+            let reduction = verify_plan.reductions[0].clone();
+            let scenario = verify_plan.scenario().expect("scenario verify plan");
+            let run_plan = verify_run_invocation_plan(
+                scenario.clone(),
+                scenario.scenario_def().seed(),
+                reduction.clone(),
+            );
+            let control_plane = LifecycleControlPlane::new(
+                "crucible-cli-verify-state-projection",
+                Vec::new(),
+                |_scenario: &crucible::ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
+            )
+            .with_decode_budget(crucible::owned_decode::current_budget().unwrap_or_else(|| {
+                panic!("explicit component input scope must cover control plane construction")
+            }))
+            .with_terminal_session_retention(true);
+            let client = InProcessLifecycleClient::new(control_plane);
+            let mut report = run_control_client_workflow_async(&client, &run_plan, &[]).await?;
+            assert!(!report.streamed_event_frames.is_empty());
+            assert_eq!(report.execution_fingerprints.len(), 4);
+            report.state_updates = vec!["running".into(), "paused".into(), "quiescent".into()];
+            let original_entries = canonical_run_log_entries(&run_plan, &report);
+            let witness = |report: &RunWorkflowReport| {
+                verify_witness_from_run_report(
+                    reduction.clone(),
+                    &run_plan,
+                    report,
+                    None,
+                    None,
+                    temp.path(),
+                )
+            };
+            let baseline = witness(&report)?;
+            report.state_updates = vec!["running".into(), "quiescent".into()];
+            assert_ne!(
+                original_entries,
+                canonical_run_log_entries(&run_plan, &report)
+            );
+            let assert_diverges = |changed: &RunWorkflowReport| -> Result<(), Box<dyn Error>> {
+                assert!(compare_verify_witnesses(&[&baseline, &witness(changed)?]).is_some());
+                Ok(())
+            };
+            assert!(compare_verify_witnesses(&[&baseline, &witness(&report)?]).is_none());
 
-    let witness = |report: &RunWorkflowReport| {
-        verify_witness_from_run_report(
-            reduction.clone(),
-            &run_plan,
-            report,
-            None,
-            None,
-            temp.path(),
-        )
-    };
-    assert!(compare_verify_witnesses(&[witness(&report)?, witness(&coalesced)?]).is_none());
-    let assert_diverges = |changed: &RunWorkflowReport| -> Result<(), Box<dyn Error>> {
-        assert!(compare_verify_witnesses(&[witness(&report)?, witness(changed)?]).is_some());
-        Ok(())
-    };
-
-    let mut changed = coalesced.clone();
-    changed.final_state = String::from("failed");
-    assert_diverges(&changed)?;
-    let mut changed = coalesced.clone();
-    changed.outcome = Some(OutcomeKind::Failed);
-    assert_diverges(&changed)?;
-    let mut changed = coalesced.clone();
-    changed.final_frontier_ticks += 1;
-    assert_diverges(&changed)?;
-    let mut changed = coalesced.clone();
-    changed.final_quanta += 1;
-    assert_diverges(&changed)?;
-    let mut changed = coalesced.clone();
-    changed.terminal_savepoint = Some(crucible::ContentHash::from_bytes(b"different-savepoint"));
-    assert_diverges(&changed)?;
-    let mut changed = coalesced.clone();
-    changed
-        .streamed_event_frames
-        .push(changed.streamed_event_frames[0].clone());
-    assert_diverges(&changed)?;
-    let mut changed = coalesced.clone();
-    changed
-        .acknowledged_commands
-        .push(SessionCommandKind::Pause);
-    assert_diverges(&changed)?;
-    let mut changed = coalesced;
-    changed.execution_fingerprints[0].fingerprint.hash =
-        crucible::ContentHash::from_bytes(b"different-execution");
-    assert_diverges(&changed)?;
-    Ok(())
+            let old_state = std::mem::replace(&mut report.final_state, String::from("failed"));
+            assert_diverges(&report)?;
+            report.final_state = old_state;
+            let old_outcome = report.outcome.replace(OutcomeKind::Failed);
+            assert_diverges(&report)?;
+            report.outcome = old_outcome;
+            report.final_frontier_ticks += 1;
+            assert_diverges(&report)?;
+            report.final_frontier_ticks -= 1;
+            report.final_quanta += 1;
+            assert_diverges(&report)?;
+            report.final_quanta -= 1;
+            let old_savepoint = report
+                .terminal_savepoint
+                .replace(crucible::ContentHash::from_bytes(b"different-savepoint"));
+            assert_diverges(&report)?;
+            report.terminal_savepoint = old_savepoint;
+            report
+                .streamed_event_frames
+                .push(report.streamed_event_frames[0].clone());
+            assert_diverges(&report)?;
+            report.streamed_event_frames.pop();
+            report.acknowledged_commands.push(SessionCommandKind::Pause);
+            assert_diverges(&report)?;
+            report.acknowledged_commands.pop();
+            report.execution_fingerprints[0].fingerprint.hash =
+                crucible::ContentHash::from_bytes(b"different-execution");
+            assert_diverges(&report)?;
+            Ok(())
+        },
+        decoding,
+    )?
+    .await
 }
 
 #[test]
@@ -2923,6 +3028,7 @@ pub(super) fn cli_verify_workflow_rejects_single_fresh_reduction() -> Result<(),
 #[test]
 pub(super) fn cli_verify_sim_backend_loop_fingerprints_backend_state_after_quantum()
 -> Result<(), Box<dyn Error>> {
+    let _component_scope = crate::tests::component_decode_scope();
     let mut loop_impl = SimBackendLifecycleLoop::default();
     let node = crucible::NodeId {
         name: String::from("node-a"),
@@ -2952,6 +3058,7 @@ pub(super) fn cli_verify_sim_backend_loop_fingerprints_backend_state_after_quant
 #[test]
 pub(super) fn cli_verify_workflow_collects_post_step_backend_fingerprint()
 -> Result<(), Box<dyn Error>> {
+    let _component_scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
     let cli = Cli::parse_from([
@@ -2983,6 +3090,9 @@ pub(super) fn cli_verify_workflow_collects_post_step_backend_fingerprint()
         Vec::new(),
         |_scenario: &crucible::ScenarioDef, _seed| SimBackendLifecycleLoop::default(),
     )
+    .with_decode_budget(crucible::owned_decode::current_budget().unwrap_or_else(|| {
+        panic!("explicit component input scope must cover control plane construction")
+    }))
     .with_terminal_session_retention(true);
     let client = InProcessLifecycleClient::new(control_plane);
     let scenario = verify_plan
@@ -3026,6 +3136,7 @@ pub(super) fn cli_verify_workflow_collects_post_step_backend_fingerprint()
 #[test]
 pub(super) fn cli_verify_workflow_runs_fresh_local_double_reductions() -> Result<(), Box<dyn Error>>
 {
+    let _component_scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
     let cli = Cli::parse_from([

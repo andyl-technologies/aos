@@ -77,6 +77,9 @@ fn scheduler() -> SingleScheduler {
 
 #[test]
 fn unclassified_backend_refuses_missing_source_before_dispatch() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scheduler = scheduler();
     let configuration = scheduler.configuration().clone();
     let backend = UnclassifiedBackend(TestConcurrentBackend::new(false));
@@ -108,6 +111,9 @@ fn unclassified_backend_refuses_missing_source_before_dispatch() {
 
 #[test]
 fn control_v3_preserves_bounded_deadlines_and_serial_parallel_canonical_order() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scheduler = scheduler();
     let configuration = scheduler.configuration().clone();
     let mut serial = BackendQuantumLoop::new(scheduler.clone(), control_backend());
@@ -166,6 +172,9 @@ fn control_backend() -> TestConcurrentBackend {
 
 #[test]
 fn control_v3_refuses_horizon_results_outside_the_exact_published_ceiling() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     for wrong_tick in [5, 7] {
         let scheduler = scheduler();
         let configuration = scheduler.configuration().clone();
@@ -227,6 +236,9 @@ fn control_v3_refuses_horizon_results_outside_the_exact_published_ceiling() {
 
 #[test]
 fn control_v3_contract_drift_refuses_another_physical_execution() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut actor = BackendQuantumLoop::new(scheduler(), control_backend());
     let request = QuantumRequest {
         configuration: actor.loop_impl().configuration().clone(),
@@ -272,6 +284,9 @@ fn input_scheduler(at: u64) -> (SingleScheduler, ScheduledEvent) {
 
 #[test]
 fn control_v3_retains_unresolved_current_time_input_before_execution() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (scheduler, input) = input_scheduler(0);
     let configuration = scheduler.configuration().clone();
     let mut actor = BackendQuantumLoop::new(scheduler, control_backend());
@@ -305,6 +320,9 @@ fn control_v3_retains_unresolved_current_time_input_before_execution() {
 
 #[test]
 fn control_v3_future_input_caps_dispatch_and_delivers_original_identity_once() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (scheduler, input) = input_scheduler(5);
     let mut actor = BackendQuantumLoop::new(scheduler, control_backend());
     let mut resolved = Vec::new();
@@ -341,6 +359,9 @@ fn control_v3_future_input_caps_dispatch_and_delivers_original_identity_once() {
 
 #[test]
 fn control_v3_latency_one_cycle_refuses_before_effects_and_retains_inputs() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = scheduler();
     scheduler.effective_topology = SchedulerLookaheadGraph::from_edges(vec![
         SchedulerLookaheadEdge::new(
@@ -389,6 +410,9 @@ fn control_v3_latency_one_cycle_refuses_before_effects_and_retains_inputs() {
 
 #[test]
 fn control_v3_strict_delivery_cap_uses_shared_time_and_rebased_counter_floor() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = scheduler();
     for (node, raw, logical) in [("a", 100, 3), ("b", 200, 3)] {
         let runtime = scheduler

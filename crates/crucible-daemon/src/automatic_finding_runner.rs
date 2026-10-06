@@ -712,7 +712,9 @@ fn authenticate_timeout_capture(
             terminal_entry.sequence(),
             snapshot.frontier(),
             budget_kind,
-        );
+        ).map_err(|error| crate::FindingProductionReplayCaptureError::Model {
+            operation: "terminal-event-identity", error: Box::new(error),
+        })?;
         if *terminal_entry != expected {
             return Err(InvalidEventLog);
         }
@@ -955,10 +957,6 @@ where
         }
 
         let result = *result;
-        #[expect(
-            clippy::result_large_err,
-            reason = "the execution-runner trait fixes the classified failure type for this scoped transaction"
-        )]
         let preparation = (|| {
             let mut probe_originated_divergence = false;
             let signature = automatic_finding_signature(input, result.observation())

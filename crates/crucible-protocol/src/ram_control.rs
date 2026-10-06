@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! u32 body_length (big endian, at most 4096)
-//! u32 schema_version = 3
+//! u32 schema_version = 5
 //! u8 message_tag
 //! bytes[32] session
 //! u64 request_sequence (nonzero, strictly increasing)
@@ -31,8 +31,11 @@ pub use admission::{
     RamControlResources,
 };
 
+mod placement_receipt;
+pub use placement_receipt::RamControlPlacementReceipt;
+
 /// Current independent pager control schema.
-pub const RAM_CONTROL_VERSION: u32 = 3;
+pub const RAM_CONTROL_VERSION: u32 = 5;
 /// Maximum framed message body, checked before reading or allocating a body.
 pub const RAM_CONTROL_MAX_BYTES: usize = 4096;
 /// Fixed operation-class roster in canonical supervision order.
@@ -157,6 +160,15 @@ pub const RAM_LIMIT_KNOWN_MASK: u32 = 63;
 /// Bounded measurement snapshot from the independent worker.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RamControlReply {
+    /// Original failed physical operation, distinct from fault-actor membership.
+    pub operation_failure: Option<RamControlOperationFailure>,
+    /// Actual isolated fault-actor lifetime and terminal cause, when admitted.
+    pub fault_actor: Option<RamControlFaultActorReport>,
+    /// Verified strict-placement completion bound to the applied revision.
+    ///
+    /// A disk-oriented receipt records a historical coherent preservation cut.
+    /// It does not assert that later guest writes have reached backing storage.
+    pub placement_receipt: Option<RamControlPlacementReceipt>,
     /// Actual kernel probe made by the native owner under its child credentials.
     ///
     /// Absence means no authenticated successful probe has been published.
@@ -205,6 +217,77 @@ pub struct RamControlReply {
     pub writeback_pending_bytes: u64,
     /// Actual observed transition state.
     pub convergence: RamControlConvergence,
+}
+
+/// Native operation whose first concrete failure remains retained by its owner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RamControlFailureOperation {
+    /// Independent control setup.
+    ControlSetup = 0,
+    /// Retained cleanup or disposition.
+    Cleanup = 1,
+    /// Physical ownership quiescence.
+    Quiescence = 2,
+    /// Fresh child readiness.
+    ForkRearm = 3,
+    /// Population of a missing page.
+    PageIn = 4,
+    /// Preservation and authentication of private backing.
+    Writeback = 5,
+    /// Coherent RAM fingerprint observation.
+    FingerprintUpdate = 6,
+}
+
+/// Concrete portable cause of a retained failed native operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RamControlFailureCause {
+    /// Original operating-system I/O cause.
+    Io {
+        /// Nonnegative raw errno, or zero when the source supplies none.
+        errno: i32,
+    },
+    /// Original native return status.
+    Native {
+        /// Signed native status without diagnostic reinterpretation.
+        status: i32,
+    },
+    /// Original supervision refusal category.
+    Supervision {
+        /// Closed supervision cause.
+        kind: RamControlSupervisionFailure,
+    },
+    /// Another typed cause remains retained in the native owner.
+    Other,
+}
+
+/// Closed native supervision causes without host or native pointers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RamControlSupervisionFailure {
+    /// The original finite allowance expired.
+    Expired = 0,
+    /// Original cancellation closed admission.
+    Canceled = 1,
+    /// Required authored policy was absent.
+    MissingPolicy = 2,
+    /// Required retained capacity was unavailable.
+    Capacity = 3,
+    /// Ownership or disposition was uncertain.
+    Uncertain = 4,
+}
+
+/// Original physical-operation cause bound to its policy and topology revisions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RamControlOperationFailure {
+    /// Exact operation that observed this first concrete cause.
+    pub operation: RamControlFailureOperation,
+    /// Applied or requested policy of that operation, zero before initial policy.
+    pub policy_revision: u64,
+    /// Native sealed topology of that operation, zero before topology admission.
+    pub topology_generation: u64,
+    /// Portable original cause; the native owner retains its concrete error.
+    pub cause: RamControlFailureCause,
 }
 
 /// Closed kernel fault coverage requested by an actual native probe.
@@ -260,6 +343,15 @@ pub struct RamControlActivity {
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RamControlRequest {
+    /// Exercises only an explicitly entitled isolated native fault actor.
+    TestFaultActor {
+        /// Separate nonzero startup entitlement; never inherited into a child.
+        entitlement: [u8; 32],
+        /// Exact observed actor generation, distinct from the controller arena.
+        worker_generation: u64,
+        /// Closed observation or terminal-return operation.
+        action: RamControlFaultActorAction,
+    },
     /// Authenticate an already descriptor-bound controller session.
     Hello,
     /// Apply a policy after host-side reserve-before-apply admission.
@@ -303,6 +395,48 @@ pub enum RamControlRequest {
         /// Exact operation generation; never a guest address.
         operation_generation: u64,
     },
+}
+
+/// Closed test operation requiring a separate launch entitlement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RamControlFaultActorAction {
+    /// Observes the exact actor without requesting a state change.
+    Observe = 0,
+    /// Requests a typed terminal return at its next bounded actor poll.
+    RequestExit = 1,
+}
+
+/// Original terminal category observed by the actual isolated actor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RamControlFaultActorFailure {
+    /// The entitled test command requested this actor's terminal return.
+    RequestedExit,
+    /// Actual operating-system I/O failure; zero means no raw errno was supplied.
+    Io {
+        /// Original nonnegative operating-system errno, or zero when absent.
+        errno: i32,
+    },
+    /// Another original native failure remains retained inside the pager owner.
+    Other,
+}
+
+/// Physical actor observations bound by the surrounding authenticated frame.
+///
+/// Membership release proves only the isolated actor's role disposition. It does
+/// not authorize closing UFFD, spill, source, arenas, or controller ownership.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RamControlFaultActorReport {
+    /// Exact actual fault-worker incarnation; never zero.
+    pub worker_generation: u64,
+    /// Actual native thread identity established by successful role admission.
+    pub thread_id: u64,
+    /// Whether the separately entitled terminal request was accepted.
+    pub exit_requested: bool,
+    /// Original terminal failure, published before any failed observation.
+    pub failure: Option<RamControlFaultActorFailure>,
+    /// Whether this thread's actual native role-release call completed.
+    pub membership_released: bool,
 }
 
 /// One portable bounded stream message.

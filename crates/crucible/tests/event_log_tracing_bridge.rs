@@ -19,15 +19,20 @@ use tracing::{Event, Metadata, Subscriber};
 
 #[test]
 fn tracing_bridge_is_disabled_by_default() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let bridge = TracingBridge::default();
 
     assert!(!bridge.is_enabled());
     assert_eq!(
-        bridge.mirror_diagnostic(
-            0,
-            time(0),
-            EventDiagnosticPayload::new("default.off", EventLevel::Info, BTreeMap::new()),
-        ),
+        bridge
+            .mirror_diagnostic(
+                0,
+                time(0),
+                EventDiagnosticPayload::new("default.off", EventLevel::Info, BTreeMap::new()),
+            )
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         None
     );
     assert_eq!(
@@ -38,6 +43,9 @@ fn tracing_bridge_is_disabled_by_default() {
 
 #[test]
 fn tracing_bridge_entries_are_observational_diagnostics() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut details = BTreeMap::new();
     details.insert(String::from("polls"), EventAttributeValue::U64(7));
     let entry = TracingBridge::enabled()
@@ -46,6 +54,7 @@ fn tracing_bridge_entries_are_observational_diagnostics() {
             time(3),
             EventDiagnosticPayload::new("tracing.bridge", EventLevel::Warn, details),
         )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
         .unwrap_or_else(|| panic!("enabled bridge should produce a diagnostic entry"));
 
     assert_eq!(entry.class(), SchedulerEventLogClass::Observational);
@@ -54,11 +63,18 @@ fn tracing_bridge_entries_are_observational_diagnostics() {
     assert_eq!(entry.event_payload().kind(), "diagnostic");
     assert_eq!(entry.event_payload().string("name"), Some("tracing.bridge"));
     assert_eq!(entry.event_payload().u64("polls"), Some(7));
-    assert!(entry.has_valid_content_hash());
+    assert!(
+        entry
+            .has_valid_content_hash()
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
+    );
 }
 
 #[test]
 fn tracing_subscriber_modes_do_not_change_causal_subsequence() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let disabled = bridge_run_entries(TracingBridge::disabled());
     let no_subscriber = bridge_run_entries(TracingBridge::enabled());
     let captured_events = Arc::new(Mutex::new(Vec::new()));
@@ -97,22 +113,41 @@ fn tracing_subscriber_modes_do_not_change_causal_subsequence() {
     assert_eq!(capturing, no_subscriber);
     assert_eq!(filtering, no_subscriber);
 
-    let no_subscriber_projection = event_log_causal_projection(&no_subscriber);
+    let no_subscriber_projection = event_log_causal_projection(&no_subscriber)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     assert_eq!(
-        event_log_causal_projection(&disabled).canonical_bytes(),
+        event_log_causal_projection(&disabled)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
+            .canonical_bytes(),
         no_subscriber_projection.canonical_bytes()
     );
     assert_eq!(
-        event_log_causal_projection(&capturing).canonical_bytes(),
+        event_log_causal_projection(&capturing)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
+            .canonical_bytes(),
         no_subscriber_projection.canonical_bytes()
     );
     assert_eq!(
-        event_log_causal_projection(&filtering).canonical_bytes(),
+        event_log_causal_projection(&filtering)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
+            .canonical_bytes(),
         no_subscriber_projection.canonical_bytes()
     );
-    assert!(compare_event_log_determinism(&disabled, &no_subscriber).passes());
-    assert!(compare_event_log_determinism(&no_subscriber, &capturing).passes());
-    assert!(compare_event_log_determinism(&no_subscriber, &filtering).passes());
+    assert!(
+        compare_event_log_determinism(&disabled, &no_subscriber)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
+            .passes()
+    );
+    assert!(
+        compare_event_log_determinism(&no_subscriber, &capturing)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
+            .passes()
+    );
+    assert!(
+        compare_event_log_determinism(&no_subscriber, &filtering)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
+            .passes()
+    );
 
     let mut log = EventLog::new();
     let append = log
@@ -129,6 +164,9 @@ fn tracing_subscriber_modes_do_not_change_causal_subsequence() {
 
 #[test]
 fn tracing_subscriber_panics_do_not_escape_bridge() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let no_subscriber = bridge_run_entries(TracingBridge::enabled());
     let panicking_dispatch = Dispatch::new(PanickingSubscriber);
     let panicking = dispatcher::with_default(&panicking_dispatch, || {
@@ -137,10 +175,18 @@ fn tracing_subscriber_panics_do_not_escape_bridge() {
 
     assert_eq!(panicking, no_subscriber);
     assert_eq!(
-        event_log_causal_projection(&panicking).canonical_bytes(),
-        event_log_causal_projection(&no_subscriber).canonical_bytes()
+        event_log_causal_projection(&panicking)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
+            .canonical_bytes(),
+        event_log_causal_projection(&no_subscriber)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
+            .canonical_bytes()
     );
-    assert!(compare_event_log_determinism(&no_subscriber, &panicking).passes());
+    assert!(
+        compare_event_log_determinism(&no_subscriber, &panicking)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
+            .passes()
+    );
 }
 
 fn bridge_run_entries(bridge: TracingBridge) -> Vec<SchedulerEventLogEntry> {
@@ -155,11 +201,14 @@ fn bridge_run_entries(bridge: TracingBridge) -> Vec<SchedulerEventLogEntry> {
         String::from("worker"),
         EventAttributeValue::String(String::from("bridge")),
     );
-    if let Some(entry) = bridge.mirror_diagnostic(
-        sequence,
-        time(1),
-        EventDiagnosticPayload::new("tracing.bridge", EventLevel::Debug, details),
-    ) {
+    if let Some(entry) = bridge
+        .mirror_diagnostic(
+            sequence,
+            time(1),
+            EventDiagnosticPayload::new("tracing.bridge", EventLevel::Debug, details),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
+    {
         entries.push(entry);
         sequence = sequence.saturating_add(1);
     }
@@ -177,6 +226,7 @@ fn rng_entry(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
             value: 41,
         })),
     )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn boundary_entry(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
@@ -185,6 +235,7 @@ fn boundary_entry(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
         time(ticks),
         SchedulerEvaluationBoundaryKind::Quantum,
     )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn time(ticks: u64) -> VirtualTime {

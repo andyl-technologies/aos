@@ -334,6 +334,14 @@ impl SelectableDeclaration {
         codec::encode(self)
     }
 
+    /// Returns the exact canonical byte length without allocating the body.
+    ///
+    /// # Errors
+    /// Refuses overflow or an encoded body exceeding the canonical format bound.
+    pub fn canonical_encoded_len(&self) -> Result<usize, CampaignCodecError> {
+        codec::encoded_length(self)
+    }
+
     /// Decodes strict canonical declaration bytes.
     ///
     /// # Errors
@@ -517,6 +525,14 @@ impl ChoiceOpportunity {
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         codec::encode(self)
+    }
+
+    /// Returns the exact canonical byte length without allocating the body.
+    ///
+    /// # Errors
+    /// Refuses overflow or an encoded body exceeding the canonical format bound.
+    pub fn canonical_encoded_len(&self) -> Result<usize, CampaignCodecError> {
+        codec::encoded_length(self)
     }
 
     /// Decodes one canonical runtime opportunity body.
@@ -1062,6 +1078,14 @@ impl Selection {
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         codec::encode(self)
+    }
+
+    /// Returns the exact canonical byte length without allocating the body.
+    ///
+    /// # Errors
+    /// Refuses overflow or an encoded body exceeding the canonical format bound.
+    pub fn canonical_encoded_len(&self) -> Result<usize, CampaignCodecError> {
+        codec::encoded_length(self)
     }
 
     /// Decodes one strict canonical selection envelope.

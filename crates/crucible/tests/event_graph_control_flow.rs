@@ -56,6 +56,9 @@ fn firing_records(firings: &[EventFiring]) -> Vec<(EventId, VirtualTime, Action)
 
 #[test]
 fn event_graph_evaluates_entrypoints_named_triggers_and_fire_policies() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let bootstrap = Event::once(event_id("bootstrap"), None, Action::Pass);
     let ready_log = Event::once(
         event_id("log-on-ready"),
@@ -143,6 +146,9 @@ fn event_graph_evaluates_entrypoints_named_triggers_and_fire_policies() {
 
 #[test]
 fn event_graph_rejects_duplicate_event_ids() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let duplicate_id = event_id("duplicate");
     let graph = EventGraph::new(vec![
         Event::once(
@@ -169,6 +175,9 @@ fn event_graph_rejects_duplicate_event_ids() {
 
 #[test]
 fn event_graph_rejects_repeatable_entrypoints() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let invalid_id = event_id("repeatable-entrypoint");
     let graph = EventGraph::new(vec![Event::repeatable(
         invalid_id.clone(),
@@ -184,6 +193,9 @@ fn event_graph_rejects_repeatable_entrypoints() {
 
 #[test]
 fn event_graph_preserves_declared_order_for_simultaneous_triggers() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let graph = EventGraph::new(vec![
         Event::once(
             event_id("third-name-first-declared"),
@@ -231,6 +243,9 @@ fn event_graph_preserves_declared_order_for_simultaneous_triggers() {
 
 #[test]
 fn event_graph_action_spine_names_specified_control_actions() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let actions = vec![
         Action::ArmTimer {
             name: timer("recover-after"),

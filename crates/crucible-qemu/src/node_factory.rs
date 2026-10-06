@@ -51,6 +51,15 @@ impl<S> QemuQmpMachineControlChannel for QemuQmpExactSnapshotControlChannel<S>
 where
     S: QmpTimeoutStream,
 {
+    #[cfg(any(test, feature = "test-support"))]
+    fn performance_observation(
+        &mut self,
+        guard: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        resident: std::sync::Arc<dyn Send + Sync>,
+    ) -> Result<crate::qmp::QemuPerformanceObservation, QemuNodeChannelError> {
+        self.vmstate.performance_observation(guard, resident)
+    }
+
     fn set_host_operation_supervisor(
         &mut self,
         supervisor: crucible_linux_resource::host_supervision::HostOperationSupervisor,
@@ -65,7 +74,8 @@ where
         kind: crate::node::QemuTestNativeAliasKind,
         descriptor: BorrowedFd<'_>,
     ) -> Result<QemuNodeChannelError, QemuNodeChannelError> {
-        self.vmstate.probe_native_source_alias_for_test(kind, descriptor)
+        self.vmstate
+            .probe_native_source_alias_for_test(kind, descriptor)
     }
 
     fn query_paused_cpu(
@@ -153,6 +163,14 @@ where
         &mut self,
     ) -> Result<crate::QmpHotForkPluginBarrierState, QemuNodeChannelError> {
         self.vmstate.query_hot_fork_plugin_barrier()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn query_block_borrowers_for_test(
+        &mut self,
+        guard: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crate::QmpHotForkBlockBarrierState, QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_block_barrier_under(guard)
     }
 
     fn hold_hot_fork_block_barrier(

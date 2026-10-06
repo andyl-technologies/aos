@@ -16,7 +16,7 @@ impl RpcControlClient {
     pub(super) async fn send_host_operational(
         &self,
         request: HostOperationalRequest,
-    ) -> Result<HostOperationalResponse, ControlClientError> {
+    ) -> Result<crate::AdmittedOutput<HostOperationalResponse>, ControlClientError> {
         if !self.endpoint.uri().starts_with("https://") {
             return Err(message_error(
                 "host operational controls require a mutual-TLS endpoint",
@@ -39,7 +39,17 @@ impl RpcControlClient {
                 Ok::<(), ControlClientError>(())
             })
             .await?;
-        let body = codec::encode_request(&request).map_err(message_error)?;
+        let body = {
+            let budget = self.output_budget()?;
+            let _scope = budget.enter();
+            let encoded = codec::encode_request(&request).map_err(|error| match error {
+                crate::host_operational::HostOperationalError::Admission { source } => {
+                    client_output_admission(crate::admitted_output::admission(source))
+                }
+                other => message_error(other),
+            })?;
+            request_storage::from_admitted(encoded)?
+        };
         let response = self
             .http
             .post(self.endpoint.rpc_url("/crucible.rpc/host-operational"))
@@ -67,32 +77,28 @@ impl RpcControlClient {
                 "host operational response exceeds size limit",
             ));
         }
-        let mut stream = response.bytes_stream();
-        let mut bytes = Vec::new();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|error| ControlClientError::HttpRequest {
-                message: error.to_string(),
-            })?;
-            let length = bytes
-                .len()
-                .checked_add(chunk.len())
-                .ok_or_else(|| message_error("response length overflow"))?;
-            if length > HOST_OPERATIONAL_MAX_BYTES {
-                return Err(message_error(
-                    "host operational response exceeds size limit",
-                ));
-            }
-            bytes.extend_from_slice(&chunk);
-        }
+        let bytes = wire_storage::read_response(
+            response,
+            self.output_budget()?.child().map_err(|source| {
+                client_output_admission(crate::admitted_output::admission(source))
+            })?,
+            Some(HOST_OPERATIONAL_MAX_BYTES),
+        )
+        .await?;
         if !status.is_success() {
-            return Err(
-                decode_error_response(&bytes).unwrap_or(ControlClientError::HttpStatus {
-                    status: status.as_u16(),
-                }),
-            );
+            let budget = self.output_budget()?;
+            let _scope = budget.enter();
+            return Err(decode_http_failure(&bytes, status.as_u16(), &budget));
         }
-        let response = codec::decode_response(&bytes).map_err(message_error)?;
-        let response_target = match &response {
+        let budget = self.output_budget()?;
+        let _scope = budget.enter();
+        let response = codec::decode_response(&bytes).map_err(|error| match error {
+            crate::host_operational::HostOperationalError::Admission { source } => {
+                client_output_admission(crate::admitted_output::admission(source))
+            }
+            other => message_error(other),
+        })?;
+        let response_target = match response.value() {
             HostOperationalResponse::Targets { target, .. } => {
                 crate::host_operational::HostOperationalTarget::Owner(*target)
             }
@@ -108,7 +114,7 @@ impl RpcControlClient {
             }
         };
         let expected_kind = matches!(
-            (&request, &response),
+            (&request, response.value()),
             (
                 HostOperationalRequest::ListTargets { .. },
                 HostOperationalResponse::Targets { .. }
@@ -134,7 +140,7 @@ impl RpcControlClient {
         if let (
             HostOperationalRequest::ListTargets { after, limit, .. },
             HostOperationalResponse::Targets { targets, .. },
-        ) = (&request, &response)
+        ) = (&request, response.value())
             && (targets.len() > usize::from(*limit)
                 || after
                     .is_some_and(|cursor| targets.first().is_some_and(|first| *first <= cursor)))
@@ -144,7 +150,7 @@ impl RpcControlClient {
             ));
         }
         if let HostOperationalResponse::PolicyUpdate { request_digest, .. }
-        | HostOperationalResponse::OuterCapAmendment { request_digest, .. } = &response
+        | HostOperationalResponse::OuterCapAmendment { request_digest, .. } = response.value()
         {
             let expected =
                 crate::host_operational::host_operational_request_digest(principal, &request)

@@ -4,6 +4,8 @@ use super::*;
 
 #[test]
 fn fresh_runner_rejects_resume_origin_before_factory_invocation() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let order = Arc::new(Mutex::new(Vec::new()));
     let mut runner = QemuFreshExecutionRunner::new(
         FakeFreshLifecycleFactory {
@@ -40,6 +42,8 @@ fn fresh_runner_rejects_resume_origin_before_factory_invocation() {
 
 #[test]
 fn fresh_runner_rejects_unconsumed_continuation_input_before_factory_invocation() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let order = Arc::new(Mutex::new(Vec::new()));
     let mut runner = QemuFreshExecutionRunner::new(
         FakeFreshLifecycleFactory {
@@ -73,16 +77,22 @@ fn fresh_runner_rejects_unconsumed_continuation_input_before_factory_invocation(
 
 #[test]
 fn fresh_runner_rejects_continuation_without_exact_virtual_time_source() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     assert_invalid_continuation_source(StopCondition::ExecutionQuanta(1));
 }
 
 #[test]
 fn fresh_runner_rejects_continuation_at_a_different_virtual_time() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     assert_invalid_continuation_source(StopCondition::VirtualTimePicoseconds(2));
 }
 
 #[test]
 fn continuation_accepts_an_authenticated_observation_source_frontier() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let condition = ObservationCondition::SchedulerQuiescent;
     let proof = ObservationStopProof::new(
         condition.clone(),
@@ -122,6 +132,8 @@ fn continuation_accepts_an_authenticated_observation_source_frontier() {
 
 #[test]
 fn continuation_rejects_a_terminally_preempted_source_stop() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let continuation = AttemptContinuationInput::scheduler_reseed(
         test_continuation_source_observation(),
         1,
@@ -174,6 +186,8 @@ fn assert_invalid_continuation_source(source_stop: StopCondition) {
 
 #[test]
 fn fresh_runner_replays_supported_non_genesis_start_before_driver() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let order = Arc::new(Mutex::new(Vec::new()));
     let mut runner = QemuFreshExecutionRunner::new(
         FakeFreshLifecycleFactory {
@@ -204,6 +218,8 @@ fn fresh_runner_replays_supported_non_genesis_start_before_driver() {
 
 #[test]
 fn terminal_evidence_runner_rejects_previous_attempt_samples_after_a_factory_reset() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let input = modeled_fresh_runner_input_for_stop(StopCondition::ExecutionQuanta(1));
     let captured = Arc::new(Mutex::new(Vec::new()));
     let factory = BoundaryCaptureLifecycleFactory {

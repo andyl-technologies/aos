@@ -56,6 +56,9 @@ where
 
 #[test]
 fn eventually_evaluates_deadline_point_between_recorded_prefixes() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let properties = properties(vec![assertion(
         "eventually-deadline-point",
         "deadline point is evaluated even without a log entry",
@@ -66,7 +69,8 @@ fn eventually_evaluates_deadline_point_between_recorded_prefixes() {
         },
     )]);
     let trigger = ObservableEvent::network_delivered(time(3), None, b"trigger".to_vec());
-    let mut evaluator = HostAssertionEvaluator::new(&properties);
+    let mut evaluator = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     let evaluated_at = RefCell::new(Vec::new());
     let mut oracle =
         linted_host_oracle(
@@ -103,6 +107,9 @@ fn eventually_evaluates_deadline_point_between_recorded_prefixes() {
 
 #[test]
 fn eventually_can_satisfy_at_exact_deadline_event_inside_later_prefix() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let properties = properties(vec![assertion(
         "eventually-exact-deadline",
         "ack at the exact deadline is still inside the window",
@@ -114,7 +121,8 @@ fn eventually_can_satisfy_at_exact_deadline_event_inside_later_prefix() {
     )]);
     let request = ObservableEvent::network_delivered(time(3), None, b"request".to_vec());
     let ack = ObservableEvent::network_delivered(time(5), None, b"ack".to_vec());
-    let mut evaluator = HostAssertionEvaluator::new(&properties);
+    let mut evaluator = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     let mut oracle = BlackBoxHostOracle;
 
     evaluator
@@ -137,6 +145,9 @@ fn eventually_can_satisfy_at_exact_deadline_event_inside_later_prefix() {
 
 #[test]
 fn offline_checker_observes_relevant_events_before_later_terminal_boundary() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let properties = properties(vec![assertion(
         "sometimes-ack",
         "ack must be observed at its event point",
@@ -146,14 +157,17 @@ fn offline_checker_observes_relevant_events_before_later_terminal_boundary() {
     )]);
     let ack = ObservableEvent::network_delivered(time(5), None, b"ack".to_vec());
     let event_log = vec![
-        crucible::test_support::condition_observation_entry_for_test(0, &ack),
+        crucible::test_support::condition_observation_entry_for_test(0, &ack)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_boundary_entry_for_test(
             1,
             time(10),
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ];
-    let mut evaluator = HostAssertionEvaluator::new(&properties);
+    let mut evaluator = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     let mut oracle = BlackBoxHostOracle;
     let ack_prefix = crucible::test_support::condition_prefix_from_scheduler_entries_for_test(
         event_log[..1].to_vec(),
@@ -183,6 +197,9 @@ fn offline_checker_observes_relevant_events_before_later_terminal_boundary() {
 
 #[test]
 fn synthetic_deadline_prefix_preserves_retained_event_log_offset() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let properties = properties(vec![assertion(
         "eventually-deadline-offset",
         "custom oracle sees the retained offset at synthetic deadlines",
@@ -194,12 +211,14 @@ fn synthetic_deadline_prefix_preserves_retained_event_log_offset() {
     )]);
     let trigger = ObservableEvent::network_delivered(time(3), None, b"trigger".to_vec());
     let event_log = [
-        crucible::test_support::condition_observation_entry_for_test(0, &trigger),
+        crucible::test_support::condition_observation_entry_for_test(0, &trigger)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_boundary_entry_for_test(
             1,
             time(10),
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ];
     let recorded_log =
         RecordedAssertionLog::from_segments(vec![event_log[..1].to_vec(), event_log[1..].to_vec()])
@@ -237,6 +256,9 @@ fn synthetic_deadline_prefix_preserves_retained_event_log_offset() {
 
 #[test]
 fn after_quiescence_evaluates_once_at_terminal_prefix() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let properties = properties(vec![assertion(
         "after-quiescence-terminal-only",
         "terminal predicate is not evaluated while streaming",
@@ -244,7 +266,8 @@ fn after_quiescence_evaluates_once_at_terminal_prefix() {
             predicate: Predicate::named("terminal-only"),
         },
     )]);
-    let mut evaluator = HostAssertionEvaluator::new(&properties);
+    let mut evaluator = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     let evaluated_at = RefCell::new(Vec::new());
     let mut oracle =
         linted_host_oracle(

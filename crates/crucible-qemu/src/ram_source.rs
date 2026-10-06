@@ -57,6 +57,33 @@ pub trait QemuRamBacking: Send + Sync {
         page_index: u64,
         boundary: &mut dyn FnMut() -> Result<(), QemuRamSourceError>,
     ) -> Result<(Vec<u8>, PageProof), QemuRamSourceError>;
+
+    /// Takes one authored transport adversary after normal page authentication.
+    ///
+    /// The test-support worker retains its original page, proof, namespace,
+    /// resource credits, and supervision while sending the damaged completion.
+    /// Ordinary builds have no transport injection surface.
+    #[cfg(any(test, feature = "test-support"))]
+    fn take_response_fault_for_test(&self) -> Option<QemuRamResponseFault> {
+        None
+    }
+}
+
+/// A closed test-support adversary applied to one real authenticated response.
+///
+/// This type never crosses a process boundary. The worker uses the ordinary
+/// versioned page protocol and its existing admitted transport buffer.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QemuRamResponseFault {
+    /// Changes one encoded page byte while retaining its authentic proof.
+    ChangedPageByte,
+    /// Sends the authentic header and part of the body before write-side EOF.
+    TruncatedBody,
+    /// Closes the response direction before writing its header.
+    DisconnectBeforeHeader,
+    /// Changes only the source generation of an otherwise authentic response.
+    StaleSourceGeneration,
 }
 
 /// A typed operational source failure, separate from guest outcomes.
@@ -68,6 +95,15 @@ pub enum QemuRamSourceError {
     /// The immutable content realization was absent, corrupt, or unavailable.
     #[error("RAM backing lookup failed: {0}")]
     Backing(String),
+    /// A concrete backing failure retains its typed cause and resource custody.
+    #[error("RAM backing lookup failed: {source}")]
+    BackingFailure {
+        /// Operational category supplied by the concrete authenticated store.
+        kind: crucible::BackendOperationalFailureKind,
+        /// Original store error without diagnostic conversion or clone loss.
+        #[source]
+        source: crucible::BackendOperationalCause,
+    },
     /// A logical proof failed verification against the admitted root.
     #[error("RAM source proof validation failed: {0}")]
     Proof(String),
@@ -86,6 +122,9 @@ pub enum QemuRamSourceError {
     /// The owned source worker panicked while retaining its backing.
     #[error("RAM source worker panicked")]
     WorkerPanicked,
+    /// The original completed worker failure remains shared by every observer.
+    #[error("RAM source worker failed: {0}")]
+    WorkerFailed(#[source] Arc<QemuRamSourceError>),
     /// Explicit host service task or descriptor admission failed.
     #[error(transparent)]
     Services(#[from] crucible_linux_resource::host_services::HostServiceError),
@@ -98,9 +137,9 @@ pub struct QemuRamSourceService {
     backing: Arc<dyn QemuRamBacking>,
     cancellation: Arc<AtomicBool>,
     wake: UnixStream,
-    worker: Option<JoinHandle<Result<(), QemuRamSourceError>>>,
+    worker: Option<JoinHandle<Result<(), Arc<QemuRamSourceError>>>>,
     supervisor: HostOperationSupervisor,
-    failure: Arc<Mutex<Option<String>>>,
+    failure: Arc<Mutex<Option<Arc<QemuRamSourceError>>>>,
     service_lease: crucible_linux_resource::host_services::HostServiceLease,
     launch_join: Option<crate::launch_cleanup::LaunchSourceJoin>,
 }
@@ -191,11 +230,12 @@ impl QemuRamSourceService {
                     binding,
                     worker_cancellation,
                     worker_supervisor,
-                );
+                )
+                .map_err(Arc::new);
                 if let Err(error) = &result
                     && let Ok(mut failure) = worker_failure.lock()
                 {
-                    *failure = Some(error.to_string());
+                    *failure = Some(Arc::clone(error));
                 }
                 result
             });
@@ -233,21 +273,23 @@ impl QemuRamSourceService {
     ///
     /// # Errors
     ///
-    /// Returns an error for a failed worker, uncertain failure inventory, or an
-    /// unexpected terminal worker. Callers contain the process before retiring
-    /// this source; a source failure is never interpreted as guest behavior.
+    /// Returns an error for a failed or canceled source, uncertain failure
+    /// inventory, or an unexpected terminal worker. Callers contain the process
+    /// before retiring this source; its failure is never guest behavior.
     pub fn check_health(&self) -> Result<(), QemuRamSourceError> {
         let failure = self.failure.lock().map_err(|_| {
             QemuRamSourceError::Backing("source failure inventory unavailable".to_owned())
         })?;
         if let Some(error) = &*failure {
-            return Err(QemuRamSourceError::Backing(error.clone()));
+            return Err(QemuRamSourceError::WorkerFailed(Arc::clone(error)));
         }
-        if !self.cancellation.load(Ordering::Acquire)
-            && self
-                .worker
-                .as_ref()
-                .is_none_or(|worker| worker.is_finished())
+        if self.cancellation.load(Ordering::Acquire) {
+            return Err(QemuRamSourceError::Canceled);
+        }
+        if self
+            .worker
+            .as_ref()
+            .is_none_or(|worker| worker.is_finished())
         {
             return Err(QemuRamSourceError::Backing(
                 "source worker ended unexpectedly".to_owned(),
@@ -324,7 +366,7 @@ impl QemuRamSourceService {
                 Ok(Err(source)) => {
                     return Err(QemuRamSourceStopError {
                         service: Box::new(self),
-                        source,
+                        source: QemuRamSourceError::WorkerFailed(source),
                     });
                 }
                 Err(_) => {
@@ -433,6 +475,24 @@ fn serve_pages(
             .map_err(|error| QemuRamSourceError::Proof(error.to_string()))?;
         boundary()?;
         let proof = proof.encode();
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(fault) = backing.take_response_fault_for_test() {
+            send_faulted_response(
+                &mut socket,
+                &operation,
+                RamPageResponse {
+                    binding,
+                    sequence: request.sequence,
+                    status: RamPageStatus::Page,
+                    page: &page,
+                    proof: &proof,
+                },
+                fault,
+            )?;
+            return Err(
+                io::Error::other("authored test-support response transport failure").into(),
+            );
+        }
         send_response(
             &mut socket,
             &operation,
@@ -468,7 +528,13 @@ fn read_request(
         };
         socket.set_read_timeout(Some(slice))?;
         match socket.read(&mut bytes[offset..]) {
-            Ok(0) => return Err(io::Error::from(io::ErrorKind::UnexpectedEof).into()),
+            Ok(0) => {
+                return Err(if cancellation.load(Ordering::Acquire) {
+                    QemuRamSourceError::Canceled
+                } else {
+                    io::Error::from(io::ErrorKind::UnexpectedEof).into()
+                });
+            }
             Ok(count) => {
                 if operation.is_none() {
                     operation = Some(supervisor.begin(HostOperationClass::PageIn)?);
@@ -495,6 +561,54 @@ fn send_response(
     response: RamPageResponse<'_>,
 ) -> Result<(), QemuRamSourceError> {
     let bytes = response.encode()?;
+    write_response_bytes(socket, operation, &bytes)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn send_faulted_response(
+    socket: &mut UnixStream,
+    operation: &HostOperationGuard,
+    mut response: RamPageResponse<'_>,
+    fault: QemuRamResponseFault,
+) -> Result<(), QemuRamSourceError> {
+    operation.wait_slice()?;
+    if fault == QemuRamResponseFault::DisconnectBeforeHeader {
+        socket.shutdown(Shutdown::Write)?;
+        return Ok(());
+    }
+    if fault == QemuRamResponseFault::StaleSourceGeneration {
+        response.binding.source_generation = response
+            .binding
+            .source_generation
+            .checked_add(1)
+            .ok_or(QemuRamSourceError::Ownership)?;
+    }
+    let mut bytes = response.encode()?;
+    let header = crucible_protocol::ram_page::RAM_PAGE_RESPONSE_HEADER_BYTES;
+    match fault {
+        QemuRamResponseFault::ChangedPageByte => {
+            let first = bytes.get_mut(header).ok_or(QemuRamSourceError::Ownership)?;
+            *first ^= 1;
+        }
+        QemuRamResponseFault::TruncatedBody => {
+            // The original header still advertises the entire page and proof.
+            // A successful prefix write supplies no complete response record.
+            bytes.truncate(header + response.page.len() / 2);
+        }
+        QemuRamResponseFault::DisconnectBeforeHeader => return Err(QemuRamSourceError::Ownership),
+        QemuRamResponseFault::StaleSourceGeneration => {}
+    }
+    write_response_bytes(socket, operation, &bytes)?;
+    operation.wait_slice()?;
+    socket.shutdown(Shutdown::Write)?;
+    Ok(())
+}
+
+fn write_response_bytes(
+    socket: &mut UnixStream,
+    operation: &HostOperationGuard,
+    bytes: &[u8],
+) -> Result<(), QemuRamSourceError> {
     let mut offset = 0;
     while offset < bytes.len() {
         socket.set_write_timeout(Some(operation.wait_slice()?))?;
@@ -513,3 +627,6 @@ fn send_response(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

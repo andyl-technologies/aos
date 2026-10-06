@@ -365,19 +365,51 @@ fn packaged_startup_completes_pending_observation_and_finding_handoff() {
     ));
     let repository = repository_with_campaigns(&[("packaged", b"shared", "qemu-test")]);
     let (key, candidate) = retain_packaged_pending_finding(&repository, config.ledger_root());
+    let storage = PackagedQemuExecutorStorage::new(
+        Arc::clone(&repository),
+        Arc::new(DirectoryBlobBackend::new(
+            "packaged-restart-checkpoints",
+            directory.path().join("checkpoints"),
+        )),
+    );
+    let basis = PackagedCampaignBasis {
+        profile: profile(),
+        scenarios: BTreeSet::from([scenario_artifact()]),
+        sources: BTreeMap::new(),
+    };
+    let preparation = crate::packaged_qemu_executor::preparation::prepare_component_runtime(
+        &repository,
+        Arc::clone(&storage.checkpoint_backend),
+        &basis,
+        &config,
+    )
+    .expect("reconcile through the original component startup owner");
+    let acknowledged = preparation
+        .actor
+        .with_startup_supervisor(|supervisor| {
+            supervisor.ledger().load_attempt(key).map(|state| {
+                matches!(
+                    state,
+                    Some(AttemptRuntimeState::Completed {
+                        finding_candidate: CompletedFindingCandidate::Acknowledged(retained),
+                        ..
+                    }) if retained == candidate
+                )
+            })
+        })
+        .expect("loan the same exclusive startup writer")
+        .expect("read the one reconciled durable acknowledgment");
+    assert!(acknowledged);
 
-    let service = compose_packaged_qemu_executor(
-        PackagedQemuExecutorStorage::new(
-            Arc::clone(&repository),
-            Arc::new(DirectoryBlobBackend::new(
-                "packaged-restart-checkpoints",
-                directory.path().join("checkpoints"),
-            )),
-        ),
-        profile(),
-        scenario_artifact(),
+    let service = compose_packaged_qemu_executor_with_promotion_builder(
+        storage,
+        basis,
         config.clone(),
-        UnusedHostFactory,
+        SharedQemuAttemptHostResourceFactory::new(UnusedHostFactory),
+        Some(preparation),
+        |_store, _checkpoints, _shared, _root, _workers| {
+            Vec::<DisabledPackagedCheckpointPromotionWorker>::new()
+        },
     )
     .expect("packaged startup reconciles pending finding");
     let executor = AttachedPackagedQemuExecutor::start(service).expect("start packaged executor");
@@ -402,15 +434,20 @@ fn packaged_startup_completes_pending_observation_and_finding_handoff() {
         )
         .expect("startup finding remains authenticated");
 
-    let ledger = DirectoryAssignmentLedger::open(config.ledger_root())
-        .expect("reopen reconciled packaged ledger");
-    assert!(matches!(
-        ledger.load_attempt(key).expect("load packaged completion"),
-        Some(AttemptRuntimeState::Completed {
-            finding_candidate: CompletedFindingCandidate::Acknowledged(retained),
-            ..
-        }) if retained == candidate
-    ));
+    let error = DirectoryAssignmentLedger::open(config.ledger_root())
+        .err()
+        .expect("durable registry custody must retain original writer exclusion");
+    let crate::AssignmentLedgerError::Io {
+        operation,
+        path,
+        source,
+    } = error
+    else {
+        panic!("the retained original writer must refuse reopening: {error:?}");
+    };
+    assert_eq!(operation, "lock-file");
+    assert_eq!(path, config.ledger_root().join("writer.lock"));
+    assert_eq!(source.kind(), std::io::ErrorKind::WouldBlock);
 }
 
 #[test]
@@ -1011,6 +1048,9 @@ fn apply_exact_pin_command(
 
 #[test]
 fn materializer_status_rejects_a_selection_for_a_superseded_pin_fact() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let directory = tempfile::tempdir().expect("packaged exact-pin directory");
     let fixture = exact_pin_materializer_fixture(&directory);
     apply_exact_pin(&fixture);
@@ -1871,7 +1911,8 @@ mod paging_native;
 pub(crate) use paging_native::run_host_parallel_native;
 pub(crate) use paging_native::{
     NativeAtomicFailureCase, NativeAtomicWorldCase, NativeEquivalenceCase,
-    run_atomic_failure_native, run_atomic_world_native, run_equivalence_native,
+    run_atomic_failure_native, run_atomic_world_native, run_dma_borrowers_native,
+    run_equivalence_native,
 };
 
 // These are explicit operational test entitlements, independent of guest vCPUs

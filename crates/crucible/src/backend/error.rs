@@ -2,6 +2,46 @@
 
 use std::error::Error;
 use std::fmt;
+use std::sync::Arc;
+
+/// Shares an original operational cause through portable backend error boundaries.
+///
+/// Type erasure is limited to this implementation-independent error boundary;
+/// the original cause remains available through [`Error::source`] and downcast.
+/// Clones share custody, including any native buffers or resource loans owned
+/// by that error, until the final clone closes. Equality identifies the same
+/// cause allocation and is never a guest identity or serialized state input.
+#[derive(Clone, Debug)]
+// crucible-lint: allow erased-error -- the pure backend boundary retains concrete driver causes and shared custody without implementation dependencies.
+pub struct BackendOperationalCause(Arc<dyn Error + Send + Sync>);
+
+impl BackendOperationalCause {
+    /// Retains an original typed cause without replacing it with diagnostics.
+    #[must_use]
+    pub fn new<E: Error + Send + Sync + 'static>(source: E) -> Self {
+        Self(Arc::new(source))
+    }
+}
+
+impl fmt::Display for BackendOperationalCause {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl Error for BackendOperationalCause {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+
+impl PartialEq for BackendOperationalCause {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for BackendOperationalCause {}
 
 /// Classifies an infrastructure failure independently of guest execution.
 ///
@@ -49,6 +89,13 @@ pub enum BackendError {
         /// Concrete adapter diagnostic for the retained original cause.
         message: String,
     },
+    /// An infrastructure failure retains its original concrete cause and custody.
+    RetainedOperationalFailure {
+        /// Actionable failure category independent of the original error text.
+        kind: BackendOperationalFailureKind,
+        /// Shared original cause, including its native resource ownership.
+        source: BackendOperationalCause,
+    },
     /// A backend-owned production resource reservation failed.
     ResourceLimit {
         /// Closed resource field whose reservation failed.
@@ -64,6 +111,18 @@ pub enum BackendError {
     },
 }
 
+impl BackendError {
+    /// Returns an explicit infrastructure category without interpreting its text.
+    #[must_use]
+    pub const fn operational_kind(&self) -> Option<BackendOperationalFailureKind> {
+        match self {
+            Self::OperationalFailure { kind, .. }
+            | Self::RetainedOperationalFailure { kind, .. } => Some(*kind),
+            _ => None,
+        }
+    }
+}
+
 impl fmt::Display for BackendError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -72,6 +131,7 @@ impl fmt::Display for BackendError {
             }
             Self::Rejected { message } => f.write_str(message),
             Self::OperationalFailure { message, .. } => f.write_str(message),
+            Self::RetainedOperationalFailure { source, .. } => source.fmt(f),
             Self::ResourceLimit {
                 field,
                 current,
@@ -86,4 +146,15 @@ impl fmt::Display for BackendError {
     }
 }
 
-impl Error for BackendError {}
+impl Error for BackendError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::RetainedOperationalFailure { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+#[path = "error/tests.rs"]
+mod tests;

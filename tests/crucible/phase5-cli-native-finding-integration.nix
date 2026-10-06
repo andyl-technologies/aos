@@ -49,6 +49,45 @@
       truncate -s 1M "$out/root.raw"
     '';
   };
+  sourceOperationClasses = [
+    "setup"
+    "quantum"
+    "page_in"
+    "writeback"
+    "fingerprint_initialization"
+    "fingerprint_update"
+    "quiescence"
+    "checkpoint_capture"
+    "checkpoint_publication"
+    "restore"
+    "fork_rearm"
+    "transfer"
+    "preparation"
+    "cleanup"
+  ];
+  sourcePolicy = builtins.toFile "cli-native-finding-source-policy.toml" ''
+    root = "@SCRATCH@"
+    project_id = @STORE_PROJECT@
+    maximum_bytes = 2147483648
+    maximum_inodes = 1048576
+
+    [resources]
+    resident_peak_bytes = 134217728
+    backing_peak_bytes = 2147483648
+    metadata_bytes = 67108864
+    staging_bytes = 8388608
+    paging_io_slots = 1
+    cpu_slots = 1
+    task_slots = 1
+    file_descriptors = 256
+
+    ${lib.concatMapStringsSep "\n" (name: ''
+        [host_operation_budgets.${name}]
+        poll_interval_ms = 10
+        total_timeout_ms = 2700000
+      '')
+      sourceOperationClasses}
+  '';
   guest = import ./phase4-packaged-campaign-choice-guest.nix {inherit pkgs;};
   quotaInstaller = import ./_catalog-quota-installer.nix {inherit pkgs lib;};
   gateway = pkgs.crucible.passthru.debugGateway;
@@ -142,6 +181,7 @@
     child_group_id = 65534
     maximum_tasks = 64
     maximum_file_descriptors = 1024
+    maximum_locked_bytes = 0
     maximum_node_host_service_tasks = 4
     maximum_node_host_service_file_descriptors = 32
     maximum_node_host_service_resident_bytes = 8388608
@@ -216,7 +256,7 @@
   rootfs = (import ../../lib/testing/firecracker.nix {inherit pkgs lib;}).mkFirecrackerRootfs {
     pname = "crucible-cli-native-finding-integration";
     extraWritableMiB = 51200;
-    rootfsDeps = [flight deployment guest quotaInstaller gateway nativeQemu nativePlugin pkgs.crucible pkgs.linux pkgs.coreutils pkgs.grep pkgs.sed pkgs.e2fsprogs pkgs.util-linux];
+    rootfsDeps = [flight deployment sourcePolicy guest quotaInstaller gateway nativeQemu nativePlugin pkgs.crucible pkgs.linux pkgs.coreutils pkgs.grep pkgs.sed pkgs.e2fsprogs pkgs.util-linux];
     testScript = ''
       set -eu
       ${setup}
@@ -247,9 +287,15 @@
           store_project=$((42000 + index))
           mkdir -m 700 "$storage/run" "$storage/run-state"
           ${quotaInstaller}/bin/install-catalog-quota \
-            "$storage" "$storage/scratch" "$store_project" 2147483648 262144
+            "$storage" "$storage/scratch" "$store_project" 2147483648 1048576
           export TMPDIR="$storage/scratch"
           export CRUCIBLE_FLIGHT_STORE_PROJECT="$store_project"
+          ${pkgs.sed}/bin/sed \
+            -e "s|@SCRATCH@|$storage/scratch|g" \
+            -e "s|@STORE_PROJECT@|$store_project|g" \
+            ${sourcePolicy} > "$storage/source-policy.toml"
+          chmod 600 "$storage/source-policy.toml"
+          export CRUCIBLE_FLIGHT_SOURCE_POLICY="$storage/source-policy.toml"
           ${quotaInstaller}/bin/install-catalog-quota \
             "$storage" "$storage/ram-catalogs" "$catalog_project" \
             ${toString catalog.backing_peak_bytes} 262144
@@ -309,7 +355,7 @@ in
           set +e
           ${pkgs.coreutils}/bin/timeout -k 30 22200 \
             ${pkgs.qemu}/bin/qemu-system-x86_64 \
-            -machine q35,accel=tcg -cpu max -smp 4 -m 8192 \
+            -machine q35,accel=tcg -cpu max -smp 11 -m 8192 \
             -nodefaults -display none -serial stdio -monitor none -no-reboot \
             -kernel "$kernel_image" \
             -append 'console=ttyS0 reboot=k panic=1 root=/dev/vda rw init=/init net.ifnames=0' \

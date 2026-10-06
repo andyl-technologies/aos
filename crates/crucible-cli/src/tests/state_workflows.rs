@@ -4,6 +4,7 @@ use super::*;
 #[test]
 pub(super) fn cli_save_selector_proof_rejects_invalid_breakpoint_evidence()
 -> Result<(), Box<dyn Error>> {
+    let _component_scope = crate::tests::component_decode_scope();
     let selector = SaveAtSelector::PropertyViolation {
         assertion: String::from(SAVE_DOUBLE_ASSERTION_VIOLATION),
     };
@@ -134,6 +135,7 @@ pub(super) fn save_selector_test_boundary(
 #[test]
 pub(super) fn remote_resume_rejects_final_snapshot_counter_regression() -> Result<(), Box<dyn Error>>
 {
+    let _component_scope = crate::tests::component_decode_scope();
     let scenario_form = valid_run_scenario_form()?;
     let configuration = crucible::Configuration::genesis(scenario_form.scenario_def());
     let boundary = save_selector_test_boundary(5, 7);
@@ -194,6 +196,7 @@ pub(super) fn save_selector_test_firing(
 #[test]
 pub(super) fn cli_resume_workflow_plans_handles_and_rejects_nonportable_inputs()
 -> Result<(), Box<dyn Error>> {
+    let _component_scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let form = valid_run_scenario_form()?;
     let scenario = form.scenario_def();
@@ -347,6 +350,7 @@ pub(super) fn cli_resume_workflow_plans_handles_and_rejects_nonportable_inputs()
 #[test]
 pub(super) fn cli_resume_workflow_rejects_bare_hash_without_authenticated_handle()
 -> Result<(), Box<dyn Error>> {
+    let _component_scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let checkpoint = crucible::ContentHash::from_bytes(b"missing-resume-store-index");
     let cli = Cli::parse_from([
@@ -377,6 +381,7 @@ pub(super) fn cli_resume_workflow_rejects_bare_hash_without_authenticated_handle
 #[test]
 pub(super) fn cli_resume_workflow_rejects_unverified_handle_evidence() -> Result<(), Box<dyn Error>>
 {
+    let _component_scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let fixture = crucible::happy_path_scenario()?;
     let form = fixture.scenario;
@@ -442,6 +447,7 @@ pub(super) fn cli_resume_workflow_rejects_unverified_handle_evidence() -> Result
 
 #[test]
 pub(super) fn cli_resume_workflow_rejects_tampered_handle_frontier() -> Result<(), Box<dyn Error>> {
+    let _component_scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let fixture = crucible::happy_path_scenario()?;
     let form = fixture.scenario;
@@ -498,6 +504,7 @@ pub(super) fn cli_resume_workflow_rejects_tampered_handle_frontier() -> Result<(
 #[test]
 pub(super) fn cli_resume_terminal_oracle_rejects_non_descendant_snapshot()
 -> Result<(), Box<dyn Error>> {
+    let _component_scope = crate::tests::component_decode_scope();
     let fixture = crucible::happy_path_scenario()?;
     let form = fixture.scenario;
     let scenario = form.scenario_def();
@@ -558,6 +565,7 @@ pub(super) fn cli_resume_terminal_oracle_rejects_non_descendant_snapshot()
 
 #[test]
 pub(super) fn cli_resume_workflow_executes_local_double_handle() -> Result<(), Box<dyn Error>> {
+    let _component_scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let form = valid_run_scenario_form()?;
     let scenario = form.scenario_def();
@@ -771,6 +779,7 @@ pub(super) fn cli_resume_workflow_executes_local_double_handle() -> Result<(), B
 #[test]
 pub(super) fn cli_resume_workflow_allows_virtual_time_beyond_ack_yield_bound()
 -> Result<(), Box<dyn Error>> {
+    let _component_scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let fixture = crucible::happy_path_scenario()?;
     let form = fixture.scenario;

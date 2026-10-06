@@ -19,8 +19,12 @@ use crucible_cas::content_store::{
     BackendCapabilities, BlobHandle, BlobInventoryRecord, BlobSource, ByteRange, ContentId,
     DirectoryBlobBackend, DurabilityRequirement, ImmutableBlobBackend, ObjectKind, PutReceipt,
     StoreError, StoreGraph, StoreGraphAdmin, StoreGraphConfig, StoreNodeId, StoreNodeSpec,
+    StorePhysicalQuotaGuard,
 };
 use crucible_daemon::ExactCheckpointStore;
+
+#[path = "gate_exact_closure_streaming/metadata.rs"]
+mod metadata;
 use tempfile::TempDir;
 
 const MAX_CHECKPOINT_BYTES: u64 = 512 * 1024 * 1024;
@@ -32,6 +36,10 @@ const FAIL_AFTER_BYTES: u64 = 96 * 1024;
 
 #[test]
 fn direct_production_closure_streams_across_durable_placements_and_failures() {
+    let resources = metadata::resources();
+    let budget = crucible::owned_decode::DecodeBudget::for_store(Arc::clone(&resources))
+        .expect("finite original decode account before production fixture construction");
+    let _scope = budget.enter();
     let ram_retention = crucible_cas::ram::RamRetentionAuthority::new(Arc::new(
         crucible_cas::content_store::MemoryRefBackend::new(),
     ));
@@ -48,6 +56,7 @@ fn direct_production_closure_streams_across_durable_placements_and_failures() {
     let direct_observer = Arc::new(ObservedBackend::new(
         "direct-observer",
         direct_leaf.clone(),
+        Arc::clone(&resources),
         DIRECT_FRAGMENT_BYTES,
         None,
     ));
@@ -56,7 +65,8 @@ fn direct_production_closure_streams_across_durable_placements_and_failures() {
         MAX_CHECKPOINT_BYTES,
         ram_retention.clone(),
     )
-    .expect("admit observed direct store");
+    .expect("admit observed direct store")
+    .with_ram_root_resources(Arc::clone(&resources));
     let direct_prepared = direct_store
         .prepare_production_closure(fixture.closure().clone())
         .expect("prepare direct production closure");
@@ -94,6 +104,7 @@ fn direct_production_closure_streams_across_durable_placements_and_failures() {
     let graph_observer = Arc::new(ObservedBackend::new(
         "graph-observer",
         Arc::new(graph),
+        Arc::clone(&resources),
         GRAPH_FRAGMENT_BYTES,
         None,
     ));
@@ -102,7 +113,8 @@ fn direct_production_closure_streams_across_durable_placements_and_failures() {
         MAX_CHECKPOINT_BYTES,
         ram_retention.clone(),
     )
-    .expect("admit observed graph store");
+    .expect("admit observed graph store")
+    .with_ram_root_resources(Arc::clone(&resources));
     let graph_prepared = graph_store
         .prepare_production_closure(fixture.closure().clone())
         .expect("prepare graph production closure");
@@ -152,6 +164,7 @@ fn direct_production_closure_streams_across_durable_placements_and_failures() {
     let synchronized_archive = Arc::new(ObservedBackend::new(
         "synchronized-archive",
         direct_leaf,
+        Arc::clone(&resources),
         CAS_COPY_BUFFER_BYTES,
         Some(Arc::clone(&read_synchronization)),
     ));
@@ -160,7 +173,8 @@ fn direct_production_closure_streams_across_durable_placements_and_failures() {
         MAX_CHECKPOINT_BYTES,
         ram_retention,
     )
-    .expect("admit synchronized archive");
+    .expect("admit synchronized archive")
+    .with_ram_root_resources(Arc::clone(&resources));
     let archived = archive_store
         .load_production_closure(direct_publication.root())
         .expect("load production closure from latency archive");
@@ -263,6 +277,7 @@ enum Traffic {
 struct ObservedBackend {
     name: String,
     inner: Arc<dyn ImmutableBlobBackend>,
+    resources: Arc<dyn StorePhysicalQuotaGuard>,
     fragment_bytes: usize,
     read_synchronization: Option<Arc<ReadSynchronization>>,
     observations: Arc<Mutex<ObservationState>>,
@@ -272,12 +287,14 @@ impl ObservedBackend {
     fn new(
         name: impl Into<String>,
         inner: Arc<dyn ImmutableBlobBackend>,
+        resources: Arc<dyn StorePhysicalQuotaGuard>,
         fragment_bytes: usize,
         read_synchronization: Option<Arc<ReadSynchronization>>,
     ) -> Self {
         Self {
             name: name.into(),
             inner,
+            resources,
             fragment_bytes,
             read_synchronization,
             observations: Arc::new(Mutex::new(ObservationState::default())),
@@ -329,6 +346,10 @@ impl ImmutableBlobBackend for ObservedBackend {
 
     fn capabilities(&self) -> BackendCapabilities {
         self.inner.capabilities()
+    }
+
+    fn metadata_resources(&self) -> Result<Arc<dyn StorePhysicalQuotaGuard>, StoreError> {
+        Ok(Arc::clone(&self.resources))
     }
 
     fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {

@@ -6,7 +6,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-struct ScopedFuture<F> {
+pub(super) struct ScopedFuture<F> {
     future: Pin<Box<F>>,
     // Field order keeps input credits through the actor's final destructor,
     // including native cleanup and uncertain-cleanup custody transfer.
@@ -35,12 +35,12 @@ where
     Ok(tokio::spawn(scoped(future, decoding)?))
 }
 
-fn scoped<F>(
+pub(super) fn scoped<F>(
     future: F,
     decoding: Option<DecodeBudget>,
-) -> Result<impl Future<Output = F::Output> + Send, LifecycleApiError>
+) -> Result<ScopedFuture<F>, LifecycleApiError>
 where
-    F: Future + Send,
+    F: Future,
 {
     if let Some(budget) = &decoding {
         budget

@@ -1,6 +1,6 @@
 //! Disk-backed membership for authenticated GC marking.
 //!
-//! A temporary SQLite CAS owns the potentially large RAM graph's mark tree.
+//! The caller's quota-bound scratch CAS owns the RAM graph's mark tree.
 //! A retained Merkle root authenticates every membership lookup. Planning and
 //! apply use the same authenticated traversal under their ref inventory fence;
 //! storage failure aborts the operation before any deletion is admitted.
@@ -12,14 +12,17 @@ use crucible_campaign::{
     CampaignHash, CampaignRepository, MAX_CAMPAIGN_CLOSURE_OBJECTS, MerkleMap, MerkleMapRoot,
 };
 use crucible_cas::content_store::{
-    ContentId, DurabilityRequirement, RefInventoryFence, SqliteBlobBackend, StoreError,
+    ContentId, DurabilityRequirement, ImmutableBlobBackend, RefInventoryFence, StoreError,
 };
-use crucible_cas::ram::{RamStore, RamStoreLimits};
+use crucible_cas::ram::{RamStore, RamStoreError, RamStoreLimits};
+
+use super::CampaignGcOperationContext;
 
 pub(super) struct Reachability {
     map: MerkleMap,
     root: MerkleMapRoot,
-    directory: tempfile::TempDir,
+    #[cfg(test)]
+    directory: Option<tempfile::TempDir>,
 }
 
 impl Reachability {
@@ -28,12 +31,23 @@ impl Reachability {
         roots: impl IntoIterator<Item = ContentId>,
         direct: impl IntoIterator<Item = ContentId>,
         inventory: &dyn RefInventoryFence,
+        operation: &CampaignGcOperationContext<'_>,
     ) -> Result<Self, StoreError> {
-        let mut marks = Self::new()?;
+        operation.check()?;
+        let mut marks = Self::with_backend(operation.marks())?;
         let closure = repository
-            .authenticated_storage_closure(roots, inventory)
-            .map_err(|error| marks.failure("authenticate GC closure", error))?;
+            .authenticated_storage_closure_with_boundary(roots, inventory, &mut || {
+                operation.check().map_err(Into::into)
+            })
+            .map_err(|error| match error {
+                crucible_campaign::CampaignRepositoryError::Store(source)
+                | crucible_campaign::CampaignRepositoryError::Ram(RamStoreError::Store(source)) => {
+                    source
+                }
+                other => marks.failure("authenticate GC closure", other),
+            })?;
         for id in closure.objects().iter().copied().chain(direct) {
+            operation.check()?;
             marks.insert(id)?;
         }
 
@@ -53,31 +67,45 @@ impl Reachability {
         .map_err(|error| marks.failure("open GC RAM inventory", error))?;
         for root in closure.ram_roots() {
             ram.visit_inventory_graph(*root, inventory, &mut |id| {
+                operation.check()?;
                 marks.insert(id).map_err(Into::into)
             })
-            .map_err(|error| marks.failure("authenticate GC RAM graph", error))?;
+            .map_err(|error| match error {
+                RamStoreError::Store(source) => source,
+                other => marks.failure("authenticate GC RAM graph", other),
+            })?;
         }
         Ok(marks)
     }
 
-    fn new() -> Result<Self, StoreError> {
-        let directory = tempfile::tempdir().map_err(|source| StoreError::Io {
-            operation: "create GC mark directory",
-            path: std::env::temp_dir(),
-            source,
-        })?;
-        let backend = Arc::new(SqliteBlobBackend::open("gc-marks", directory.path())?);
+    fn with_backend(backend: Arc<dyn ImmutableBlobBackend>) -> Result<Self, StoreError> {
         let map = MerkleMap::new(backend);
-        let root = map.empty().map_err(|source| StoreError::Io {
+        let root = map.empty().map_err(|source| StoreError::StreamIo {
             operation: "initialize GC mark tree",
-            path: directory.path().to_owned(),
             source: io::Error::other(source),
         })?;
         Ok(Self {
             map,
             root,
-            directory,
+            #[cfg(test)]
+            directory: None,
         })
+    }
+
+    #[cfg(test)]
+    fn new() -> Result<Self, StoreError> {
+        let directory = tempfile::tempdir().map_err(|source| StoreError::Io {
+            operation: "create component GC mark directory",
+            path: std::env::temp_dir(),
+            source,
+        })?;
+        let backend = Arc::new(crucible_cas::content_store::SqliteBlobBackend::open(
+            "component-gc-marks",
+            directory.path(),
+        )?);
+        let mut marks = Self::with_backend(backend)?;
+        marks.directory = Some(directory);
+        Ok(marks)
     }
 
     fn insert(&mut self, id: ContentId) -> Result<(), StoreError> {
@@ -118,16 +146,23 @@ impl Reachability {
         operation: &'static str,
         source: impl std::error::Error + Send + Sync + 'static,
     ) -> StoreError {
-        StoreError::Io {
+        StoreError::StreamIo {
             operation,
-            path: self.directory.path().to_owned(),
             source: io::Error::other(source),
         }
     }
 }
 
 fn mark_key(id: ContentId) -> CampaignHash {
-    CampaignHash::derive("crucible.gc.typed-mark.v1", id.to_string().as_bytes())
+    // Marks are private to one pass. A fixed stack representation avoids an
+    // owning display-string allocation for every physical page in the graph.
+    let kind = id.kind().as_str().as_bytes();
+    let mut fields = [0_u8; 1 + 17 + 4 + 32];
+    fields[0] = kind.len() as u8;
+    fields[1..1 + kind.len()].copy_from_slice(kind);
+    fields[18..22].copy_from_slice(&id.schema_version().to_be_bytes());
+    fields[22..].copy_from_slice(&id.digest());
+    CampaignHash::derive("crucible.gc.typed-mark.v2", &fields)
 }
 
 #[cfg(test)]
@@ -161,7 +196,12 @@ mod tests {
         marks.insert(id).expect("reachable page");
         // Remove the actual database contents independently of the retained
         // root. A missing authenticated path must abort planning or apply.
-        let path = marks.directory.path().join("objects.sqlite3");
+        let path = marks
+            .directory
+            .as_ref()
+            .expect("component directory")
+            .path()
+            .join("objects.sqlite3");
         let connection = rusqlite::Connection::open(path).expect("mutation connection");
         connection
             .execute("DELETE FROM objects", [])

@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::*;
+use crate::ConditionEvaluationError;
 
 const MAGIC: &[u8] = b"crucible.single-scheduler-continuation.v6\0";
 /// Maximum canonical byte length of one complete single-scheduler continuation.
@@ -175,7 +176,7 @@ impl SingleScheduler {
         &self,
     ) -> Result<Vec<(ContentHash, Vec<u8>)>, SingleSchedulerCheckpointError> {
         self.event_log
-            .segment_dependencies
+            .segment_dependencies()
             .iter()
             .map(|identity| {
                 let bytes = self
@@ -213,7 +214,7 @@ impl From<&EventLog> for EventLogWire {
         Self {
             prefix: log.offset.prefix,
             appended_segment: log.offset.appended_segment,
-            segment_dependencies: log.segment_dependencies.clone(),
+            segment_dependencies: log.segment_dependencies().to_vec(),
             bytes: log.offset.bytes,
             events: log.offset.events,
             condition_entries: log.retained_entries().to_vec(),
@@ -685,17 +686,30 @@ fn restore_event_log(
             checkpoint.condition_entries.clone(),
             checkpoint.condition_base_events,
         )
-        .map_err(|_| SingleSchedulerCheckpointError::EventLog)?
+        .map_err(event_log_prefix_failure)?
         .with_event_log_offset(offset)
     };
+    // Publish the scalar continuation only after original allocation admission.
+    log.replace_retained_state(&checkpoint.segment_dependencies, condition_prefix)
+        .map_err(|source| SingleSchedulerCheckpointError::EventLogRestore { source })?;
     log.prefix = scheduler_event_log_prefix_for_resume(offset);
-    log.segment_dependencies = checkpoint.segment_dependencies.clone();
     log.offset = offset;
     log.bytes = offset.bytes;
     log.events = offset.events;
     log.condition_base_events = checkpoint.condition_base_events;
-    log.condition_prefix = condition_prefix;
     Ok(())
+}
+
+fn event_log_prefix_failure(source: ConditionEvaluationError) -> SingleSchedulerCheckpointError {
+    match source {
+        ConditionEvaluationError::OriginalAdmission(source) => {
+            SingleSchedulerCheckpointError::EventLogAdmission { source }
+        }
+        ConditionEvaluationError::CanonicalIdentity { source, custody } => {
+            SingleSchedulerCheckpointError::EventLogIdentity { source, custody }
+        }
+        _ => SingleSchedulerCheckpointError::EventLog,
+    }
 }
 
 fn restore_search_frontiers(
@@ -734,7 +748,7 @@ fn restore_search_frontiers(
 }
 
 /// Failure to encode, decode, validate, or restore an exact scheduler continuation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SingleSchedulerCheckpointError {
     /// The envelope version is unsupported.
     #[error("unsupported single-scheduler checkpoint version")]
@@ -760,6 +774,29 @@ pub enum SingleSchedulerCheckpointError {
     /// The checkpoint's retained event-log state is invalid.
     #[error("invalid scheduler event-log continuation")]
     EventLog,
+    /// The original event-log replacement operation refused its allocation.
+    #[error("scheduler event-log replacement failed: {source}")]
+    EventLogRestore {
+        /// Original scheduler failure, including its admission cause.
+        #[source]
+        source: SchedulerError,
+    },
+    /// Condition-prefix construction refused original allocation authority.
+    #[error("scheduler event-log prefix admission failed: {source}")]
+    EventLogAdmission {
+        /// Original admission error without diagnostic conversion.
+        #[source]
+        source: crate::owned_decode::DecodeAdmissionError,
+    },
+    /// Canonical prefix validation failed under its retained original custody.
+    #[error("scheduler event-log canonical identity failed: {source}")]
+    EventLogIdentity {
+        /// Original rendering or identity failure.
+        #[source]
+        source: std::sync::Arc<crate::EngineError>,
+        /// Retains any admitted error envelope through its final reader.
+        custody: crate::owned_decode::DecodeCustody,
+    },
     /// Capture was attempted while the scheduler held its internal quantum lock.
     #[error("cannot checkpoint a scheduler during a transient quantum phase")]
     Transient,
@@ -847,5 +884,48 @@ mod epoch_ready_point_tests {
             None,
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod event_log_restore_admission_tests {
+    use super::*;
+    use std::error::Error;
+
+    #[test]
+    fn replacement_retains_original_admission_without_publishing_scalars() {
+        let mut log = EventLog::new();
+        let before = log.offset();
+        let wire = EventLogWire {
+            prefix: before.prefix,
+            appended_segment: None,
+            segment_dependencies: Vec::new(),
+            bytes: 17,
+            events: 0,
+            condition_entries: Vec::new(),
+            condition_base_events: 0,
+        };
+
+        // This call has no original decoding authority; it must refuse first.
+        let error = restore_event_log(&mut log, &wire)
+            .err()
+            .unwrap_or_else(|| panic!("unadmitted retained-state replacement must refuse"));
+        assert_eq!(log.offset(), before);
+        assert!(matches!(
+            error,
+            SingleSchedulerCheckpointError::EventLogRestore { .. }
+        ));
+        let mut cause: Option<&(dyn Error + 'static)> = Some(&error);
+        let mut found = false;
+        while let Some(current) = cause {
+            found |= current
+                .downcast_ref::<crate::owned_decode::DecodeAdmissionError>()
+                .is_some();
+            cause = current.source();
+        }
+        assert!(
+            found,
+            "the original typed allocation refusal remains reachable"
+        );
     }
 }

@@ -324,6 +324,8 @@ impl QemuHotForkSchedulerNodeContinuation {
             hot_fork_plugin_endpoint_stage: None,
             hot_fork_ram_stage: None,
             hot_fork_ram_continuation: ram,
+            #[cfg(any(test, feature = "test-support"))]
+            block_completion_observer: None,
             _hot_fork_scheduler_authority: Some(authority),
             lifecycle_state: QemuNodeLifecycleState::Running,
             shutdown_policy,

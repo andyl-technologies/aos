@@ -214,6 +214,10 @@ pub(super) enum QmpCommand<'a> {
         vcpu: u32,
         generation: Option<u64>,
     },
+    #[cfg(any(test, feature = "test-support"))]
+    PerformanceObservation {
+        command: &'static str,
+    },
     QueryJobs,
     JobDismiss {
         job_id: &'a str,
@@ -336,6 +340,8 @@ impl QmpCommand<'_> {
                 QmpCommandKind::QueryFingerprintProjectionManifest
             }
             Self::QueryPausedCpu { .. } => QmpCommandKind::QueryPausedCpu,
+            #[cfg(any(test, feature = "test-support"))]
+            Self::PerformanceObservation { .. } => QmpCommandKind::PerformanceObservation,
             Self::QueryJobs => QmpCommandKind::QueryJobs,
             Self::JobDismiss { .. } => QmpCommandKind::JobDismiss,
             Self::QueryStatus => QmpCommandKind::QueryStatus,
@@ -374,6 +380,10 @@ impl QmpCommand<'_> {
 
     pub(super) fn request(&self) -> Value {
         match self {
+            #[cfg(any(test, feature = "test-support"))]
+            Self::PerformanceObservation { command } => json!({
+                "execute": "human-monitor-command", "arguments": { "command-line": command },
+            }),
             Self::Capabilities => json!({
                 "execute": QMP_CAPABILITIES_COMMAND,
                 "arguments": {
@@ -641,6 +651,10 @@ impl QmpCommand<'_> {
                     arguments.insert(
                         String::from("maximum-file-bytes"),
                         Value::from(identity.maximum_file_bytes()),
+                    );
+                    arguments.insert(
+                        String::from("maximum-locked-bytes"),
+                        Value::from(identity.maximum_locked_bytes()),
                     );
                 }
                 json!({

@@ -115,6 +115,7 @@ impl LinuxQemuAttemptProcessOwner {
         mut group: LinuxQemuCgroup,
         maximum_writable_bytes: u64,
         maximum_file_descriptors: u64,
+        maximum_locked_bytes: u64,
         child_user_id: libc::uid_t,
         child_group_id: libc::gid_t,
         exact_checkpoint_root: Option<crucible::ContentHash>,
@@ -134,6 +135,7 @@ impl LinuxQemuAttemptProcessOwner {
         let process_contract = match group.child_process_contract(
             maximum_writable_bytes,
             maximum_file_descriptors,
+            maximum_locked_bytes,
             child_user_id,
             child_group_id,
             exact_checkpoint_root,
@@ -519,7 +521,7 @@ mod tests {
     fn start_failure_returns_group_and_started_watcher() -> Result<(), Box<dyn std::error::Error>> {
         let (_root, group) = group_fixture()?;
         let mut error =
-            LinuxQemuAttemptProcessOwner::start(group, 4096, 1024, 65_533, 65_532, None)
+            LinuxQemuAttemptProcessOwner::start(group, 4096, 1024, 0, 65_533, 65_532, None)
                 .expect_err("ordinary filesystem must fail cgroup provenance validation");
         assert!(matches!(
             error.source_error(),

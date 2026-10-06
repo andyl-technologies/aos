@@ -115,12 +115,14 @@ fn guest_marker() -> GuestAssertionMarker {
 fn event_log() -> Vec<SchedulerEventLogEntry> {
     let marker = ObservableEvent::guest_assertion_marker(icount(1), node("guest"), guest_marker());
     vec![
-        crucible::test_support::condition_observation_entry_for_test(0, &marker),
+        crucible::test_support::condition_observation_entry_for_test(0, &marker)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_boundary_entry_for_test(
             1,
             time(2),
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ]
 }
 
@@ -131,6 +133,9 @@ fn prefix(entries: Vec<SchedulerEventLogEntry>) -> crucible::ConditionEventLogPr
 
 #[test]
 fn merged_host_and_guest_outcomes_are_bit_identical_online_offline_and_repeated() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let properties = properties(&world);
     let event_log = event_log();
@@ -140,8 +145,11 @@ fn merged_host_and_guest_outcomes_are_bit_identical_online_offline_and_repeated(
 
     let mut online_oracle = linted_host_oracle(DeterministicOracle);
     let mut online_evaluator = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"))
         .with_world_white_box_policies(&world)
-        .with_guest_assertion_catalog(vec![guest_marker()]);
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"))
+        .with_guest_assertion_catalog(&[guest_marker()])
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     online_evaluator
         .observe_prefix(&prefix(event_log[..1].to_vec()), &mut online_oracle)
         .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
@@ -151,7 +159,7 @@ fn merged_host_and_guest_outcomes_are_bit_identical_online_offline_and_repeated(
 
     let checker = OfflineAssertionChecker::new()
         .with_world_white_box_policies(&world)
-        .with_guest_assertion_catalog(vec![guest_marker()]);
+        .with_guest_assertion_catalog([guest_marker()]);
     let mut first_oracle = linted_host_oracle(DeterministicOracle);
     let first_offline = checker
         .check_run_with_oracle(&properties, &recorded_log, &mut first_oracle)
@@ -178,6 +186,9 @@ fn merged_host_and_guest_outcomes_are_bit_identical_online_offline_and_repeated(
 #[cfg(feature = "test-double")]
 #[test]
 fn assertion_evaluation_is_side_effect_free_for_backend_fingerprints() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = World::from_nodes(Vec::new()).expect("empty neutrality world should build");
     let properties = Properties::from_assertions_for_world(
         &world,
@@ -206,7 +217,8 @@ fn assertion_evaluation_is_side_effect_free_for_backend_fingerprints() {
         .fingerprint()
         .expect("fingerprint before assertion evaluation should read");
 
-    let mut evaluator = HostAssertionEvaluator::new(&properties);
+    let mut evaluator = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     let mut oracle = linted_host_oracle(DeterministicOracle);
     let report = evaluator
         .finalize_prefix(&prefix(event_log()), &mut oracle)
@@ -224,6 +236,9 @@ fn assertion_evaluation_is_side_effect_free_for_backend_fingerprints() {
 
 #[test]
 fn host_assertion_harness_lint_rejects_banned_predicate_operations() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let source = r#"
         use std::collections::HashMap;
         fn predicate() -> bool {
@@ -293,6 +308,9 @@ fn host_assertion_harness_lint_rejects_banned_predicate_operations() {
 
 #[test]
 fn host_assertion_harness_lint_accepts_observed_state_only_predicates() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let source = r#"
         fn predicate(state: ObservedState<'_>) -> bool {
             state.observable_events().iter().any(|event| event.at().ticks == state.at().ticks)
@@ -305,6 +323,9 @@ fn host_assertion_harness_lint_accepts_observed_state_only_predicates() {
 
 #[test]
 fn assertion_evaluator_rejects_banned_nondeterminism_and_live_state_access() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let trigger = concat!(
         include_str!("../src/trigger/assertions.rs"),
         include_str!("../src/trigger/evaluation.rs"),

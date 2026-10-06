@@ -8,6 +8,7 @@ pub(super) fn project_boundary(
     project_stop: bool,
     supplemental_oracle: Option<(&dyn GuardedCampaignFindingOracle, ContentId)>,
 ) -> Result<QemuBoundaryProjection, QemuFreshModeledDriverError> {
+    let _original = pending.event_custody.enter();
     validate_live_network_preselection(&pending)?;
     let timeout = retain_modeled_timeout(&mut pending)?;
     if project_stop {
@@ -38,13 +39,20 @@ pub(super) fn project_boundary(
         return Err(QemuFreshModeledDriverError::ScenarioMismatch);
     }
     let properties = property_verdicts(&report, supplemental.as_ref())?;
-    let mut failures: Vec<_> = report
-        .violations()
-        .iter()
-        .cloned()
-        .map(FailurePropertyViolationRecord::new)
-        .map(FailureClusterReportFailure::property)
-        .collect();
+    let mut failures = Vec::new();
+    for violation in report.violations() {
+        crucible::owned_decode::reserve_vec(&mut failures, 1).map_err(|source| {
+            QemuFreshModeledDriverError::Configuration(EngineError::ArtifactDecodeAdmission {
+                source,
+            })
+        })?;
+        let owned = violation
+            .try_clone_admitted()
+            .map_err(QemuFreshModeledDriverError::Configuration)?;
+        let record = FailurePropertyViolationRecord::new(owned)
+            .map_err(QemuFreshModeledDriverError::Configuration)?;
+        failures.push(FailureClusterReportFailure::property(record));
+    }
     if let Some((evaluation, _)) = &supplemental {
         failures.retain(|failure| {
             !matches!(
@@ -53,11 +61,27 @@ pub(super) fn project_boundary(
                     if record.violation.assertion.name == evaluation.property()
             )
         });
+        crucible::owned_decode::reserve_vec(&mut failures, 1).map_err(|source| {
+            QemuFreshModeledDriverError::Configuration(EngineError::ArtifactDecodeAdmission {
+                source,
+            })
+        })?;
         failures.push(FailureClusterReportFailure::property(
-            FailurePropertyViolationRecord::new(evaluation.violation().clone()),
+            FailurePropertyViolationRecord::new(
+                evaluation
+                    .violation()
+                    .try_clone_admitted()
+                    .map_err(QemuFreshModeledDriverError::Configuration)?,
+            )
+            .map_err(QemuFreshModeledDriverError::Configuration)?,
         ));
     }
     if let Some(timeout) = timeout {
+        crucible::owned_decode::reserve_vec(&mut failures, 1).map_err(|source| {
+            QemuFreshModeledDriverError::Configuration(EngineError::ArtifactDecodeAdmission {
+                source,
+            })
+        })?;
         failures.push(FailureClusterReportFailure::timeout(timeout));
     }
 
@@ -87,7 +111,7 @@ pub(super) fn project_boundary(
             format_args!("events={}", pending.event_log.len()),
         );
     }
-    let measurement_publication = campaign_measurements(&pending, child.configuration())?;
+    let measurement_publication = campaign_measurements(&mut pending, child.configuration())?;
     if project_stop {
         crate::crucible_execution::record_execution_phase_diagnostic(
             "seal-measurements-return",
@@ -107,10 +131,10 @@ pub(super) fn project_boundary(
     if project_stop {
         crate::crucible_execution::record_execution_phase_diagnostic(
             "seal-coverage-enter",
-            format_args!("events={}", pending.event_log.len()),
+            format_args!("events={}", measurement_evidence.entries().len()),
         );
     }
-    let coverage = coverage_projection(&pending.event_log)?;
+    let coverage = coverage_projection(measurement_evidence.entries())?;
     if project_stop {
         crate::crucible_execution::record_execution_phase_diagnostic(
             "seal-coverage-return",
@@ -193,20 +217,33 @@ fn record_assertion_seal_input(pending: &QemuFreshPendingObservation) {
 }
 
 pub(super) fn campaign_measurements(
-    pending: &QemuFreshPendingObservation,
+    pending: &mut QemuFreshPendingObservation,
     configuration: crucible_campaign::ConfigurationId,
 ) -> Result<crate::CrucibleMeasurementPublication, QemuFreshModeledDriverError> {
     let definitions = pending.input.scenario().measurements();
-    let mut node_icounts = BTreeMap::new();
+    let mut node_icounts = BTreeMap::<NodeId, crucible::Icount>::new();
     for entry in &pending.event_log {
         if let (Some(node), Some(retired)) = (&entry.time().stamp.node, entry.time().stamp.retired)
         {
-            node_icounts
-                .entry(node.clone())
-                .and_modify(|value: &mut crucible::Icount| {
-                    *value = (*value).max(retired);
-                })
-                .or_insert(retired);
+            if !node_icounts.contains_key(node) {
+                crucible::owned_decode::charge_btree_entry::<NodeId, crucible::Icount>().map_err(
+                    |source| {
+                        QemuFreshModeledDriverError::Configuration(
+                            EngineError::ArtifactDecodeAdmission { source },
+                        )
+                    },
+                )?;
+                crucible::owned_decode::charge_bytes(node.name.len() as u64).map_err(|source| {
+                    QemuFreshModeledDriverError::Configuration(
+                        EngineError::ArtifactDecodeAdmission { source },
+                    )
+                })?;
+            }
+            if let Some(value) = node_icounts.get_mut(node) {
+                *value = (*value).max(retired);
+            } else {
+                node_icounts.insert(node.clone(), retired);
+            }
         }
     }
     let terminal = MeasurementTerminalState {
@@ -233,7 +270,7 @@ pub(super) fn campaign_measurements(
                 pending.input.lineage().scenario(),
                 configuration,
                 definitions,
-                pending.event_log.clone(),
+                std::mem::take(&mut pending.event_log),
                 terminal,
                 *evidence,
                 MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
@@ -243,12 +280,22 @@ pub(super) fn campaign_measurements(
             pending.input.lineage().scenario(),
             configuration,
             definitions,
-            pending.event_log.clone(),
+            std::mem::take(&mut pending.event_log),
             terminal,
             MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
         ),
     };
-    publication.map_err(QemuFreshModeledDriverError::Measurements)
+    let publication = publication.map_err(QemuFreshModeledDriverError::Measurements)?;
+    let custody =
+        pending
+            .event_output_custody
+            .take()
+            .ok_or(QemuFreshModeledDriverError::LimitExceeded {
+                limit: "measurement-event-output-custody",
+            })?;
+    publication
+        .retain_event_outputs(custody)
+        .map_err(QemuFreshModeledDriverError::Measurements)
 }
 
 pub(super) fn property_verdicts(

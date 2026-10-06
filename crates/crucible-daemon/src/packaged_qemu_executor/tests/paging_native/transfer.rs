@@ -477,6 +477,17 @@ fn restore(lane: RestoreLane<'_>) -> ReceiverEvidence {
             .expect("receiver-local planner authority"),
     )
     .expect("operator owner shares the actual prepared actor and backend");
+    let shared_projection = config
+        .admitted_lifecycle_config()
+        .expect("mutable projection uses the original admitted catalog");
+    assert!(matches!(
+        owner.clone().with_imported_lifecycle(shared_projection),
+        Err(
+            crate::qemu_campaign_lifecycle::GuardedFindingMidpointError::Refused(
+                "import owner was already shared"
+            )
+        )
+    ));
     let (mut replay, started) = with_transfer(prepared, config, source, |context, boundary| {
         let imported = AuthenticatedImportedCheckpoint::prepare(
             ImportedCheckpointAdmission {
@@ -563,6 +574,17 @@ fn restore(lane: RestoreLane<'_>) -> ReceiverEvidence {
         .finish()
         .expect("actual receiver reap, source joins and last-close before actor discharge");
     assert_eq!(available(prepared), before);
+    let sealed_projection = config
+        .admitted_lifecycle_config()
+        .expect("final projection uses the same retained catalog authority");
+    assert!(matches!(
+        owner.with_imported_lifecycle(sealed_projection),
+        Err(
+            crate::qemu_campaign_lifecycle::GuardedFindingMidpointError::Refused(
+                "import owner was already used"
+            )
+        )
+    ));
     ReceiverEvidence {
         boundary: observed,
         ram_record,

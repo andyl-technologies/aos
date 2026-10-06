@@ -31,6 +31,9 @@ impl DecodeResourceAuthority for Authority {
 #[test]
 fn late_refusal_rolls_back_lifecycles_once_latches_and_verdict() -> Result<(), Box<dyn Error>> {
     for finalize in [false, true] {
+        let used = Arc::new(AtomicU64::new(0));
+        let budget = DecodeBudget::new(Arc::new(Authority(Arc::clone(&used))), 1024 * 1024)?;
+        let scope = budget.enter();
         let first = AssertionDef {
             id: AssertionId::from_name("a-first"),
             message: "first succeeds provisionally".into(),
@@ -51,12 +54,13 @@ fn late_refusal_rolls_back_lifecycles_once_latches_and_verdict() -> Result<(), B
                 },
             },
         };
-        let mut evaluator = HostAssertionEvaluator::new(&Properties::empty());
+        let mut evaluator = HostAssertionEvaluator::new(&Properties::empty())?;
+        crate::owned_decode::charge_array::<HostAssertionState>(2)?;
         evaluator.states = vec![
-            HostAssertionState::new(&first),
-            HostAssertionState::new(&second),
+            HostAssertionState::new(&first)?,
+            HostAssertionState::new(&second)?,
         ];
-        let before = evaluator.checkpoint().canonical_bytes()?;
+        let before = evaluator.checkpoint()?.canonical_bytes()?;
         let calls = AtomicU64::new(0);
         let mut oracle = crate::test_support::unchecked_host_assertion_oracle_for_test(
             |_: ObservedState<'_>, _: ConditionLeaf<'_>| {
@@ -68,17 +72,14 @@ fn late_refusal_rolls_back_lifecycles_once_latches_and_verdict() -> Result<(), B
                 true
             },
         );
-        let used = Arc::new(AtomicU64::new(0));
-        let budget = DecodeBudget::new(Arc::new(Authority(Arc::clone(&used))), 1024 * 1024)?;
-        let scope = budget.enter();
-        let baseline = used.load(Ordering::SeqCst);
         let prefix = ConditionEventLogPrefix::from_scheduler_event_log_entries(vec![
             SchedulerEventLogEntry::evaluation_boundary(
                 0,
                 VirtualTime { ticks: 1 },
                 SchedulerEvaluationBoundaryKind::Quantum,
-            ),
+            )?,
         ])?;
+        let baseline = used.load(Ordering::SeqCst);
         let result = if finalize {
             evaluator.finalize_prefix(&prefix, &mut oracle).map(|_| ())
         } else {
@@ -89,8 +90,11 @@ fn late_refusal_rolls_back_lifecycles_once_latches_and_verdict() -> Result<(), B
             Err(EngineError::ArtifactDecodeAdmission { .. })
         ));
         assert_eq!(calls.load(Ordering::SeqCst), 2);
-        assert_eq!(evaluator.checkpoint().canonical_bytes()?, before);
+        assert_eq!(evaluator.checkpoint()?.canonical_bytes()?, before);
         assert_eq!(used.load(Ordering::SeqCst), baseline);
+        drop(prefix);
+        drop(before);
+        drop(evaluator);
         drop(scope);
         drop(budget);
         assert_eq!(used.load(Ordering::SeqCst), 0);

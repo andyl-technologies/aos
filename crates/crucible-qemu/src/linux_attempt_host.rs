@@ -159,6 +159,26 @@ impl LinuxQemuAttemptHostConfig {
         self.process.maximum_tasks()
     }
 
+    /// Sets the independently authored child memory-lock entitlement.
+    ///
+    /// # Errors
+    /// Refuses the kernel infinity sentinel rather than grant an unbounded lock.
+    pub fn with_maximum_locked_bytes(
+        mut self,
+        maximum_locked_bytes: u64,
+    ) -> Result<Self, QemuVmRealizationError> {
+        self.process = self
+            .process
+            .with_maximum_locked_bytes(maximum_locked_bytes)?;
+        Ok(self)
+    }
+
+    /// Returns the exact hard and soft child memory-lock limit.
+    #[must_use]
+    pub const fn maximum_locked_bytes(&self) -> u64 {
+        self.process.maximum_locked_bytes()
+    }
+
     /// Returns the hard per-process file-descriptor ceiling.
     #[must_use]
     pub const fn maximum_file_descriptors(&self) -> u64 {

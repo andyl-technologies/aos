@@ -94,7 +94,8 @@ impl History {
         target: [u8; 32],
         key: [u8; 32],
         digest: [u8; 32],
-    ) -> Result<Option<HostOperationalResponse>, HostOperationalError> {
+    ) -> Result<Option<crucible_api::AdmittedOutput<HostOperationalResponse>>, HostOperationalError>
+    {
         self.lock.verify_path_binding().map_err(unavailable)?;
         let directory = self.directory(target);
         let committed = directory.join(format!("{}.committed", hex(key)));
@@ -183,7 +184,8 @@ impl History {
     ) -> Result<(), HostOperationalError> {
         self.lock.verify_path_binding().map_err(unavailable)?;
         let mut payload = digest.to_vec();
-        payload.extend(codec::encode_response(response)?);
+        let encoded = codec::encode_response(response)?;
+        payload.extend_from_slice(encoded.as_ref());
         let bytes = record(&payload);
         if u64::try_from(bytes.len()).map_err(unavailable)? > MAX_RECORD_BYTES {
             return Err(HostOperationalError::Unavailable);

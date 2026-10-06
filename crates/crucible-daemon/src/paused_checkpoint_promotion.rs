@@ -340,6 +340,12 @@ pub(crate) enum PausedCheckpointPromotionPreparationError {
     /// Fat/thin realization, comparison, or mandatory cleanup failed.
     #[error(transparent)]
     Realization(#[from] QemuVmRealizationError),
+    /// Canonical event evidence could not be authenticated under its original metadata authority.
+    #[error("checkpoint event identity failed: {0}")]
+    EventIdentity(#[source] crucible::EngineError),
+    /// The independent replay proof could not be constructed.
+    #[error("checkpoint replay proof failed: {0}")]
+    ReplayProof(#[source] crate::QemuFreshModeledDriverError),
     /// Independent execution did not reproduce the captured checkpoint boundary.
     #[error("checkpoint does not match an independent full-world replay")]
     SavepointReplayMismatch,
@@ -997,7 +1003,10 @@ fn validate_savepoint_replay_boundary(
     configuration: &Configuration,
     scheduler: &crucible::SingleSchedulerCheckpoint,
 ) -> Result<(), PausedCheckpointPromotionPreparationError> {
-    if replay.matches_checkpoint(configuration, scheduler) {
+    if replay
+        .matches_checkpoint(configuration, scheduler)
+        .map_err(PausedCheckpointPromotionPreparationError::EventIdentity)?
+    {
         Ok(())
     } else {
         Err(PausedCheckpointPromotionPreparationError::SavepointReplayMismatch)
@@ -1019,8 +1028,11 @@ fn replay_checkpoint_causal_boundary<F: ProductionPausedCheckpointReplayFactory>
         scheduler.frontier(),
         scheduler.retained_event_log_entries(),
     )
-    .map_err(|_| PausedCheckpointPromotionPreparationError::SavepointReplayMismatch)?;
-    if !source.matches_checkpoint(configuration, scheduler) {
+    .map_err(PausedCheckpointPromotionPreparationError::ReplayProof)?;
+    if !source
+        .matches_checkpoint(configuration, scheduler)
+        .map_err(PausedCheckpointPromotionPreparationError::EventIdentity)?
+    {
         return Err(PausedCheckpointPromotionPreparationError::SavepointReplayMismatch);
     }
     let target =

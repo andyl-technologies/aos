@@ -2,15 +2,37 @@
 
 use super::*;
 
+#[test]
+fn receiver_storage_remains_charged_until_both_pending_queues_drop()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (budget, used) = crate::admitted_output::tests::fixture_budget_with_counter()?;
+    let baseline = used.load(std::sync::atomic::Ordering::SeqCst);
+    let (_sender, frames) = mpsc::channel(1);
+    let receiver = RpcStreamingEventReceiver::new(frames, &budget)?;
+    assert_eq!(
+        used.load(std::sync::atomic::Ordering::SeqCst),
+        baseline
+            + (RPC_STREAM_PENDING_FRAME_CAPACITY * std::mem::size_of::<StreamingEventFrame>())
+                as u64
+            + std::mem::size_of::<StreamingStateUpdateFrame>() as u64,
+    );
+    drop(receiver);
+    assert_eq!(used.load(std::sync::atomic::Ordering::SeqCst), baseline);
+    Ok(())
+}
+
 fn receiver() -> RpcStreamingEventReceiver {
     let (_sender, frames) = mpsc::channel(1);
-    RpcStreamingEventReceiver {
-        frames,
-        pending_events: VecDeque::new(),
-        pending_state_updates: VecDeque::new(),
-        skipped_events: 0,
-        last_state_sequence: None,
-    }
+    receiver_from(frames)
+}
+
+fn receiver_from(
+    frames: mpsc::Receiver<Result<RpcStreamingFrame, ControlClientError>>,
+) -> RpcStreamingEventReceiver {
+    let budget = crate::admitted_output::tests::fixture_budget()
+        .unwrap_or_else(|error| panic!("finite receiver fixture: {error}"));
+    RpcStreamingEventReceiver::new(frames, &budget)
+        .unwrap_or_else(|error| panic!("admitted receiver storage: {error}"))
 }
 
 fn state_update(sequence: u64, state: LiveStateKind) -> StreamingStateUpdateFrame {
@@ -24,11 +46,16 @@ fn state_update(sequence: u64, state: LiveStateKind) -> StreamingStateUpdateFram
 }
 
 fn event(sequence: u64) -> StreamingEventFrame {
-    StreamingEventFrame {
-        generation: 0,
-        cursor: EventLogCursor::new(sequence),
-        next_cursor: EventLogCursor::new(sequence + 1),
-        event: OpenSetEventEnvelope {
+    let budget = crate::admitted_output::tests::fixture_budget()
+        .unwrap_or_else(|error| panic!("finite output fixture: {error}"));
+    let _scope = budget.enter();
+    let kind = crate::admitted_output::text("crucible.event.evaluation_boundary")
+        .unwrap_or_else(|error| panic!("admitted fixture kind: {error}"));
+    StreamingEventFrame::from_owned_fields(
+        0,
+        EventLogCursor::new(sequence),
+        EventLogCursor::new(sequence + 1),
+        OpenSetEventEnvelope {
             sequence,
             at: OpenSetEventTime {
                 virtual_time_ticks: sequence,
@@ -39,13 +66,17 @@ fn event(sequence: u64) -> StreamingEventFrame {
             source: OpenSetEventSource::Engine,
             level: EventLevel::Info,
             observational: false,
-            payload: OpenSetPayload::new("crucible.event.evaluation_boundary", BTreeMap::new()),
+            payload: OpenSetPayload::new(kind, BTreeMap::new()),
         },
-    }
+    )
+    .unwrap_or_else(|error| panic!("admitted output fixture: {error}"))
 }
 
 #[test]
 fn event_frame_preserves_exact_tick_and_optional_raw_witness() {
+    let budget = crate::admitted_output::tests::fixture_budget()
+        .unwrap_or_else(|error| panic!("finite output fixture: {error}"));
+    let _scope = budget.enter();
     let wire = b"crucible.rpc/event-frame\ngeneration=1\ncursor=7\nnext-cursor=8\nsequence=7\nvirtual-time-ticks=100\nstamp-tick=107\nstamp-retired=2\nstamp-node=6e6f64652d61\nsource=engine\nlevel=info\nobservational=false\nkind=crucible.event.evaluation_boundary\n";
     let frame = decode_streaming_event_frame(wire)
         .unwrap_or_else(|error| panic!("exact event frame should decode: {error}"));
@@ -100,13 +131,7 @@ async fn pending_state_updates_coalesce_to_the_latest_monotone_frame() {
 #[tokio::test]
 async fn ready_rpc_frames_coalesce_before_state_delivery() {
     let (sender, frames) = mpsc::channel(64);
-    let mut receiver = RpcStreamingEventReceiver {
-        frames,
-        pending_events: VecDeque::new(),
-        pending_state_updates: VecDeque::new(),
-        skipped_events: 0,
-        last_state_sequence: None,
-    };
+    let mut receiver = receiver_from(frames);
     sender
         .send(Ok(RpcStreamingFrame::Event(event(0))))
         .await
@@ -138,13 +163,7 @@ async fn ready_rpc_frames_coalesce_before_state_delivery() {
 #[tokio::test]
 async fn state_poll_preserves_a_full_scheduler_event_burst() {
     let (sender, frames) = mpsc::channel(64);
-    let mut receiver = RpcStreamingEventReceiver {
-        frames,
-        pending_events: VecDeque::new(),
-        pending_state_updates: VecDeque::new(),
-        skipped_events: 0,
-        last_state_sequence: None,
-    };
+    let mut receiver = receiver_from(frames);
     for sequence in 0..32 {
         sender
             .send(Ok(RpcStreamingFrame::Event(event(sequence))))

@@ -68,8 +68,9 @@ impl HostOperationalRegistry {
             .ok_or(HostOperationalError::Unavailable)?;
         let mut journal = history.lock().map_err(unavailable)?;
         let index = target_digest(target);
-        if let Some(mut original) = journal.lookup(index, key, digest)? {
-            match &mut original {
+        if let Some(original) = journal.lookup(index, key, digest)? {
+            let mut replayed = output::copy_acceptance(original.value())?;
+            match &mut replayed {
                 HostOperationalResponse::PolicyUpdate { disposition, .. }
                 | HostOperationalResponse::OuterCapAmendment { disposition, .. } => {
                     if *disposition == HostOperationalDisposition::Accepted {
@@ -78,7 +79,7 @@ impl HostOperationalRegistry {
                 }
                 _ => return Err(HostOperationalError::Unavailable),
             }
-            return Ok(original);
+            return Ok(replayed);
         }
         if owner.as_ref().is_some_and(|owner| {
             owner
@@ -160,7 +161,12 @@ impl HostOperationalRegistry {
         digest: [u8; 32],
     ) -> Result<HostOperationalResponse, HostOperationalError> {
         let owner = self.node(target)?;
-        let previous = owner.state.lock().map_err(unavailable)?.clone();
+        let previous = {
+            let status = owner.state.lock().map_err(unavailable)?;
+            output::policy_snapshot(&status)
+        };
+        // Reserve the possible accepted-policy body before any transition effect.
+        output::bytes(std::mem::size_of::<HostRamPolicy>() as u64)?;
         let refusal = |disposition| HostOperationalResponse::PolicyUpdate {
             request_digest: digest,
             target,
@@ -321,6 +327,8 @@ impl HostOperationalRegistry {
             // Budget-only application is actual live watchdog application; it
             // neither establishes paging nor invents physical measurements.
             status.applied_policy = policy;
+            status.applied_policy_revision = revision;
+            status.placement_receipt = None;
         }
         Ok(HostOperationalResponse::PolicyUpdate {
             request_digest: digest,
@@ -542,12 +550,61 @@ pub(super) fn observe_reply(
     policy: HostRamPolicy,
     revision: u64,
 ) -> Result<(), HostOperationalError> {
-    if reply.applied_policy_revision > revision {
+    if reply.applied_policy_revision > revision
+        || reply.applied_policy_revision < status.applied_policy_revision
+    {
         return Err(HostOperationalError::Unavailable);
+    }
+    let applied_mode = if reply.applied_policy_revision == revision {
+        policy.mode
+    } else {
+        status.applied_policy.mode
+    };
+    if let Some(receipt) = reply.placement_receipt {
+        let receipt_mode = match receipt.mode {
+            crucible_protocol::ram_control::RamControlMode::Managed => {
+                return Err(HostOperationalError::Unavailable);
+            }
+            crucible_protocol::ram_control::RamControlMode::DiskOriented => {
+                HostRamMode::DiskOriented
+            }
+            crucible_protocol::ram_control::RamControlMode::ResidentRequired => {
+                HostRamMode::ResidentRequired
+            }
+        };
+        if receipt.policy_revision == 0
+            || receipt.policy_revision != reply.applied_policy_revision
+            || receipt_mode != applied_mode
+            || receipt.topology_generation == 0
+            || receipt.placement_epoch == 0
+        {
+            return Err(HostOperationalError::Unavailable);
+        }
     }
     if reply.applied_policy_revision == revision {
         status.applied_policy = policy;
     }
+    status.applied_policy_revision = reply.applied_policy_revision;
+    status.placement_receipt = reply
+        .placement_receipt
+        .map(|receipt| HostRamPlacementReceipt {
+            mode: match receipt.mode {
+                crucible_protocol::ram_control::RamControlMode::Managed => HostRamMode::Managed,
+                crucible_protocol::ram_control::RamControlMode::DiskOriented => {
+                    HostRamMode::DiskOriented
+                }
+                crucible_protocol::ram_control::RamControlMode::ResidentRequired => {
+                    HostRamMode::ResidentRequired
+                }
+            },
+            policy_revision: receipt.policy_revision,
+            topology_generation: receipt.topology_generation,
+            placement_epoch: receipt.placement_epoch,
+            locked_bytes: receipt.locked_bytes,
+            disk_preserved_logical_pages: receipt.disk_preserved_logical_pages,
+            disk_preserved_logical_bytes: receipt.disk_preserved_logical_bytes,
+            ram_write_generation_at_cut: receipt.ram_write_generation_at_cut,
+        });
     status.effective_resident_target_bytes = reply.effective_resident_target_bytes;
     status.effective_floor_bytes = reply.effective_floor_bytes;
     status.measurements_available = reply.measurements_available;

@@ -6,6 +6,7 @@
 
 use super::*;
 
+mod action;
 mod decision;
 pub(super) use decision::{copy_string, copy_vec, reserve_vec};
 
@@ -108,30 +109,45 @@ impl Configuration {
 }
 
 impl Checkpoint {
+    /// Encodes a checkpoint after admitting its exact canonical binary buffer.
+    ///
+    /// # Errors
+    /// Refuses allocation failure, size overflow, or exhausted original authority.
+    pub fn to_compact_binary_admitted(&self) -> Result<Vec<u8>, EngineError> {
+        ScenarioBinaryWriter::encode_admitted(CHECKPOINT_BINARY_MAGIC_V6, |writer| {
+            write_checkpoint_binary(self, writer);
+        })
+    }
+
     /// Copies a checkpoint with admitted canonical scratch and decoded field ownership.
     ///
     /// # Errors
     /// Refuses exhausted original authority, allocation failure, or malformed
     /// canonical checkpoint data before publishing the copied checkpoint.
     pub fn try_clone_admitted(&self) -> Result<Self, EngineError> {
-        let bytes = ScenarioBinaryWriter::encode_admitted(CHECKPOINT_BINARY_MAGIC_V6, |writer| {
-            write_checkpoint_binary(self, writer);
-        })?;
+        let bytes = self.to_compact_binary_admitted()?;
         Self::from_compact_binary(&bytes)
     }
 }
 
 impl Predicate {
-    /// Copies a predicate with admitted canonical scratch and decoded field ownership.
+    /// Copies a predicate with admitted canonical scratch and field ownership.
     ///
     /// # Errors
-    /// Refuses exhausted original authority, allocation failure, or malformed
-    /// predicate fields before publishing the copied predicate.
+    /// Refuses exhausted original authority, allocation failure, or malformed fields.
     pub fn try_clone_admitted(&self) -> Result<Self, EngineError> {
-        let bytes = ScenarioBinaryWriter::encode_admitted(PREDICATE_BINARY_MAGIC, |writer| {
-            write_predicate_binary(self, writer);
-        })?;
+        let bytes = self.to_compact_binary_admitted()?;
         Self::from_compact_binary(&bytes)
+    }
+
+    /// Encodes a borrowed predicate after admitting its exact binary output.
+    ///
+    /// # Errors
+    /// Refuses size overflow, allocation failure, or exhausted original authority.
+    pub fn to_compact_binary_admitted(&self) -> Result<Vec<u8>, EngineError> {
+        ScenarioBinaryWriter::encode_admitted(PREDICATE_BINARY_MAGIC, |writer| {
+            write_predicate_binary(self, writer);
+        })
     }
 }
 
@@ -241,7 +257,7 @@ impl AssertionDef {
                 expectation,
             } => Property::Reachable {
                 predicate: predicate.try_clone_admitted()?,
-                expectation: expectation.clone(),
+                expectation: *expectation,
             },
         };
         Ok(Self {

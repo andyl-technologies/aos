@@ -6,11 +6,17 @@ use super::*;
 
 #[test]
 fn stale_ref_and_blob_generations_fail_before_deletion() {
-    let mut ref_fixture = apply_fixture(1);
+    let mut gc_fixture = crate::campaign_gc::ComponentGcOperation::new();
+    let gc_operation = gc_fixture.context();
+
+    let mut ref_fixture = apply_fixture(1, &gc_operation);
     let temp = tempfile::TempDir::new().expect("temporary journal parent");
-    let (mut ref_journal, _) =
-        DirectoryCampaignGcJournal::create(temp.path().join("ref-journal"), &ref_fixture.prepared)
-            .expect("create ref-stale journal");
+    let (mut ref_journal, _) = DirectoryCampaignGcJournal::create(
+        temp.path().join("ref-journal"),
+        &ref_fixture.prepared,
+        &gc_operation,
+    )
+    .expect("create ref-stale journal");
     let orphan = ref_fixture
         .prepared
         .candidates()
@@ -40,16 +46,18 @@ fn stale_ref_and_blob_generations_fail_before_deletion() {
             ),
             ref_fixture.graph,
             &[physical],
+            &gc_operation,
         ),
         Err(CampaignGcApplyError::RefBasisChanged)
     ));
     assert_eq!(ref_journal.phase(), CampaignGcJournalPhase::Planned);
     assert_eq!(ref_fixture.blobs.object_count().expect("object count"), 1);
 
-    let mut blob_fixture = apply_fixture(1);
+    let mut blob_fixture = apply_fixture(1, &gc_operation);
     let (mut blob_journal, _) = DirectoryCampaignGcJournal::create(
         temp.path().join("blob-journal"),
         &blob_fixture.prepared,
+        &gc_operation,
     )
     .expect("create blob-stale journal");
     let additional_bytes = b"post-plan object";
@@ -72,6 +80,7 @@ fn stale_ref_and_blob_generations_fail_before_deletion() {
             ),
             blob_fixture.graph,
             &[physical],
+            &gc_operation,
         ),
         Err(CampaignGcApplyError::PhysicalBasisChanged { .. })
     ));
@@ -81,6 +90,9 @@ fn stale_ref_and_blob_generations_fail_before_deletion() {
 
 #[test]
 fn stale_ledger_generation_fails_before_deletion() {
+    let mut gc_fixture = crate::campaign_gc::ComponentGcOperation::new();
+    let gc_operation = gc_fixture.context();
+
     let blobs = Arc::new(MemoryBlobBackend::new("ledger-primary", 1024 * 1024));
     let refs = Arc::new(MemoryRefBackend::new());
     let repository = CampaignRepository::new(blobs.clone(), refs.clone());
@@ -100,12 +112,12 @@ fn stale_ledger_generation_fails_before_deletion() {
         None,
         None,
         graph,
-        &[physical],
+        (&[physical], &gc_operation),
     )
     .expect("plan ledger stale GC");
     let temp = tempfile::TempDir::new().expect("temporary journal parent");
     let (mut journal, _) =
-        DirectoryCampaignGcJournal::create(temp.path().join("journal"), &prepared)
+        DirectoryCampaignGcJournal::create(temp.path().join("journal"), &prepared, &gc_operation)
             .expect("create ledger stale journal");
     ledger.generation = 2;
 
@@ -115,6 +127,7 @@ fn stale_ledger_generation_fails_before_deletion() {
             CampaignGcApplySources::new(&repository, refs.as_ref(), &mut ledger, None, None,),
             graph,
             &[physical],
+            &gc_operation,
         ),
         Err(CampaignGcApplyError::LedgerBasisChanged)
     ));
@@ -124,11 +137,17 @@ fn stale_ledger_generation_fails_before_deletion() {
 
 #[test]
 fn interrupted_apply_retains_journal_and_requires_a_fresh_plan() {
-    let mut fixture = apply_fixture(2);
+    let mut gc_fixture = crate::campaign_gc::ComponentGcOperation::new();
+    let gc_operation = gc_fixture.context();
+
+    let mut fixture = apply_fixture(2, &gc_operation);
     let temp = tempfile::TempDir::new().expect("temporary journal parent");
-    let (mut journal, _) =
-        DirectoryCampaignGcJournal::create(temp.path().join("journal"), &fixture.prepared)
-            .expect("create interrupted journal");
+    let (mut journal, _) = DirectoryCampaignGcJournal::create(
+        temp.path().join("journal"),
+        &fixture.prepared,
+        &gc_operation,
+    )
+    .expect("create interrupted journal");
     let failing = FailAfterFirstDeleteAdmin {
         inner: fixture.blobs.as_ref(),
         deletes: AtomicUsize::new(0),
@@ -147,6 +166,7 @@ fn interrupted_apply_retains_journal_and_requires_a_fresh_plan() {
             ),
             fixture.graph,
             &[physical],
+            &gc_operation,
         ),
         Err(CampaignGcApplyError::Blob { .. })
     ));
@@ -164,6 +184,7 @@ fn interrupted_apply_retains_journal_and_requires_a_fresh_plan() {
             ),
             fixture.graph,
             &[physical],
+            &gc_operation,
         ),
         Err(CampaignGcApplyError::InterruptedJournal)
     ));
@@ -172,6 +193,9 @@ fn interrupted_apply_retains_journal_and_requires_a_fresh_plan() {
 
 #[test]
 fn directory_plan_journal_and_apply_survive_full_backend_restart() {
+    let mut gc_fixture = crate::campaign_gc::ComponentGcOperation::new();
+    let gc_operation = gc_fixture.context();
+
     let temp = tempfile::TempDir::new().expect("temporary GC root");
     let blob_root = temp.path().join("blobs");
     let ref_root = temp.path().join("refs");
@@ -214,10 +238,10 @@ fn directory_plan_journal_and_apply_survive_full_backend_restart() {
         None,
         None,
         graph,
-        &[physical],
+        (&[physical], &gc_operation),
     )
     .expect("plan directory GC");
-    let (journal, _) = DirectoryCampaignGcJournal::create(&journal_root, &prepared)
+    let (journal, _) = DirectoryCampaignGcJournal::create(&journal_root, &prepared, &gc_operation)
         .expect("create directory journal");
     drop(journal);
     drop(ledger);
@@ -230,8 +254,8 @@ fn directory_plan_journal_and_apply_survive_full_backend_restart() {
     let repository = CampaignRepository::new(blobs.clone(), refs.clone());
     let mut ledger =
         DirectoryAssignmentLedger::open(&ledger_root).expect("reopen directory ledger");
-    let mut journal =
-        DirectoryCampaignGcJournal::open(&journal_root).expect("reopen directory journal");
+    let mut journal = DirectoryCampaignGcJournal::open(&journal_root, &gc_operation)
+        .expect("reopen directory journal");
     let physical = CampaignGcRawPhysicalStore::new("directory-primary", blobs.as_ref())
         .expect("reopened physical store");
     let report = apply_single_host_campaign_gc(
@@ -239,6 +263,7 @@ fn directory_plan_journal_and_apply_survive_full_backend_restart() {
         CampaignGcApplySources::new(&repository, refs.as_ref(), &mut ledger, None, None),
         graph,
         &[physical],
+        &gc_operation,
     )
     .expect("apply after restart");
     assert_eq!(report.status(), CampaignGcApplyStatus::Applied);
@@ -249,6 +274,9 @@ fn directory_plan_journal_and_apply_survive_full_backend_restart() {
 
 #[test]
 fn compressed_graph_admin_drives_plaintext_accounted_gc_across_restart() {
+    let mut gc_fixture = crate::campaign_gc::ComponentGcOperation::new();
+    let gc_operation = gc_fixture.context();
+
     let temp = tempfile::TempDir::new().expect("temporary compressed GC root");
     let blob_root = temp.path().join("compressed");
     let ref_root = temp.path().join("refs");
@@ -302,7 +330,7 @@ fn compressed_graph_admin_drives_plaintext_accounted_gc_across_restart() {
         &mut ledger,
         None,
         None,
-        &admin,
+        crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
     )
     .expect("plan compressed GC");
     assert_eq!(prepared.plan().physical().len(), 1);
@@ -320,7 +348,7 @@ fn compressed_graph_admin_drives_plaintext_accounted_gc_across_restart() {
         prepared.candidates().iter().next().expect("orphan").id(),
         orphan
     );
-    let (journal, _) = DirectoryCampaignGcJournal::create(&journal_root, &prepared)
+    let (journal, _) = DirectoryCampaignGcJournal::create(&journal_root, &prepared, &gc_operation)
         .expect("create compressed GC journal");
     drop(journal);
     drop(ledger);
@@ -336,8 +364,8 @@ fn compressed_graph_admin_drives_plaintext_accounted_gc_across_restart() {
     let repository = CampaignRepository::new(graph.clone(), refs.clone());
     let mut ledger =
         DirectoryAssignmentLedger::open(&ledger_root).expect("reopen compressed ledger");
-    let mut journal =
-        DirectoryCampaignGcJournal::open(&journal_root).expect("reopen compressed GC journal");
+    let mut journal = DirectoryCampaignGcJournal::open(&journal_root, &gc_operation)
+        .expect("reopen compressed GC journal");
     let report = super::super::apply_single_host_campaign_gc(
         &mut journal,
         &repository,
@@ -345,7 +373,7 @@ fn compressed_graph_admin_drives_plaintext_accounted_gc_across_restart() {
         &mut ledger,
         None,
         None,
-        &admin,
+        crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
     )
     .expect("apply compressed GC after restart");
     assert_eq!(report.status(), CampaignGcApplyStatus::Applied);
@@ -378,6 +406,9 @@ fn compressed_encrypted_graph_admin_drives_plaintext_accounted_gc_across_restart
 }
 
 fn run_encrypted_graph_gc_restart(compressed: bool) {
+    let mut gc_fixture = crate::campaign_gc::ComponentGcOperation::new();
+    let gc_operation = gc_fixture.context();
+
     let temp = tempfile::TempDir::new().expect("temporary encrypted GC root");
     let blob_root = temp.path().join("encrypted");
     let ref_root = temp.path().join("refs");
@@ -452,7 +483,7 @@ fn run_encrypted_graph_gc_restart(compressed: bool) {
         &mut ledger,
         None,
         None,
-        &admin,
+        crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
     )
     .expect("plan encrypted GC");
     assert_eq!(prepared.plan().physical()[0].objects(), 2);
@@ -461,7 +492,7 @@ fn run_encrypted_graph_gc_restart(compressed: bool) {
         u64::try_from(live_bytes.len() + orphan_bytes.len()).expect("logical byte total")
     );
     assert_eq!(prepared.candidates().len(), 1);
-    let (journal, _) = DirectoryCampaignGcJournal::create(&journal_root, &prepared)
+    let (journal, _) = DirectoryCampaignGcJournal::create(&journal_root, &prepared, &gc_operation)
         .expect("create encrypted GC journal");
     drop(journal);
     drop(ledger);
@@ -479,8 +510,8 @@ fn run_encrypted_graph_gc_restart(compressed: bool) {
     let repository = CampaignRepository::new(graph.clone(), refs.clone());
     let mut ledger =
         DirectoryAssignmentLedger::open(&ledger_root).expect("reopen encrypted ledger");
-    let mut journal =
-        DirectoryCampaignGcJournal::open(&journal_root).expect("reopen encrypted GC journal");
+    let mut journal = DirectoryCampaignGcJournal::open(&journal_root, &gc_operation)
+        .expect("reopen encrypted GC journal");
     let report = super::super::apply_single_host_campaign_gc(
         &mut journal,
         &repository,
@@ -488,7 +519,7 @@ fn run_encrypted_graph_gc_restart(compressed: bool) {
         &mut ledger,
         None,
         None,
-        &admin,
+        crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
     )
     .expect("apply encrypted GC after restart");
     assert_eq!(report.status(), CampaignGcApplyStatus::Applied);
@@ -512,6 +543,9 @@ fn run_encrypted_graph_gc_restart(compressed: bool) {
 
 #[test]
 fn logical_quota_graph_gc_reclaims_admission_capacity_across_restart() {
+    let mut gc_fixture = crate::campaign_gc::ComponentGcOperation::new();
+    let gc_operation = gc_fixture.context();
+
     let temp = tempfile::TempDir::new().expect("temporary quota GC root");
     let blob_root = temp.path().join("objects");
     let quota_root = temp.path().join("quota");
@@ -584,7 +618,7 @@ fn logical_quota_graph_gc_reclaims_admission_capacity_across_restart() {
         &mut ledger,
         None,
         None,
-        &admin,
+        crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
     )
     .expect("plan quota GC");
     assert_eq!(prepared.candidates().len(), 1);
@@ -592,7 +626,7 @@ fn logical_quota_graph_gc_reclaims_admission_capacity_across_restart() {
         prepared.candidates().iter().next().expect("orphan").id(),
         orphan
     );
-    let (journal, _) = DirectoryCampaignGcJournal::create(&journal_root, &prepared)
+    let (journal, _) = DirectoryCampaignGcJournal::create(&journal_root, &prepared, &gc_operation)
         .expect("create quota GC journal");
     drop(journal);
     drop(ledger);
@@ -607,8 +641,8 @@ fn logical_quota_graph_gc_reclaims_admission_capacity_across_restart() {
     let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
     let repository = CampaignRepository::new(graph.clone(), refs.clone());
     let mut ledger = DirectoryAssignmentLedger::open(&ledger_root).expect("reopen quota GC ledger");
-    let mut journal =
-        DirectoryCampaignGcJournal::open(&journal_root).expect("reopen quota GC journal");
+    let mut journal = DirectoryCampaignGcJournal::open(&journal_root, &gc_operation)
+        .expect("reopen quota GC journal");
     let report = super::super::apply_single_host_campaign_gc(
         &mut journal,
         &repository,
@@ -616,7 +650,7 @@ fn logical_quota_graph_gc_reclaims_admission_capacity_across_restart() {
         &mut ledger,
         None,
         None,
-        &admin,
+        crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
     )
     .expect("apply quota GC after restart");
     assert_eq!(report.status(), CampaignGcApplyStatus::Applied);
@@ -630,6 +664,9 @@ fn logical_quota_graph_gc_reclaims_admission_capacity_across_restart() {
 
 #[test]
 fn packed_graph_admin_drives_restart_safe_logical_gc_without_deleting_live_pack_bytes() {
+    let mut gc_fixture = crate::campaign_gc::ComponentGcOperation::new();
+    let gc_operation = gc_fixture.context();
+
     let temp = tempfile::TempDir::new().expect("temporary packed GC root");
     let pack_root = temp.path().join("packs");
     let ref_root = temp.path().join("refs");
@@ -692,7 +729,7 @@ fn packed_graph_admin_drives_restart_safe_logical_gc_without_deleting_live_pack_
         &mut ledger,
         None,
         None,
-        &admin,
+        crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
     )
     .expect("plan packed GC");
     assert_eq!(
@@ -704,7 +741,7 @@ fn packed_graph_admin_drives_restart_safe_logical_gc_without_deleting_live_pack_
         prepared.candidates().iter().next().expect("orphan").id(),
         orphan
     );
-    let (journal, _) = DirectoryCampaignGcJournal::create(&journal_root, &prepared)
+    let (journal, _) = DirectoryCampaignGcJournal::create(&journal_root, &prepared, &gc_operation)
         .expect("create packed GC journal");
     drop(journal);
 
@@ -729,8 +766,8 @@ fn packed_graph_admin_drives_restart_safe_logical_gc_without_deleting_live_pack_
         ]),
     })
     .expect("different composition over same packed leaf");
-    let mut journal =
-        DirectoryCampaignGcJournal::open(&journal_root).expect("reopen planned journal");
+    let mut journal = DirectoryCampaignGcJournal::open(&journal_root, &gc_operation)
+        .expect("reopen planned journal");
     assert!(matches!(
         super::super::apply_single_host_campaign_gc(
             &mut journal,
@@ -739,7 +776,7 @@ fn packed_graph_admin_drives_restart_safe_logical_gc_without_deleting_live_pack_
             &mut ledger,
             None,
             None,
-            &different_admin,
+            crate::campaign_gc::CampaignGcMaintenance::new(&different_admin, &gc_operation),
         ),
         Err(CampaignGcApplyError::StoreGraphChanged)
     ));
@@ -761,8 +798,8 @@ fn packed_graph_admin_drives_restart_safe_logical_gc_without_deleting_live_pack_
     let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
     let repository = CampaignRepository::new(graph.clone(), refs.clone());
     let mut ledger = DirectoryAssignmentLedger::open(&ledger_root).expect("reopen packed ledger");
-    let mut journal =
-        DirectoryCampaignGcJournal::open(&journal_root).expect("reopen packed GC journal");
+    let mut journal = DirectoryCampaignGcJournal::open(&journal_root, &gc_operation)
+        .expect("reopen packed GC journal");
     let report = super::super::apply_single_host_campaign_gc(
         &mut journal,
         &repository,
@@ -770,7 +807,7 @@ fn packed_graph_admin_drives_restart_safe_logical_gc_without_deleting_live_pack_
         &mut ledger,
         None,
         None,
-        &admin,
+        crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
     )
     .expect("apply packed GC after restart");
     assert_eq!(report.status(), CampaignGcApplyStatus::Applied);

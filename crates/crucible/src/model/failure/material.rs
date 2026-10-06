@@ -169,11 +169,20 @@ pub(in crate::model) fn validated_property_violation(
     let report = OfflineAssertionChecker::new()
         .with_world_white_box_policies(&scenario.world)
         .check_run(&scenario.properties, &event_log.raw_entries)
-        .map_err(|_| mismatch())?;
+        .map_err(|error| match error {
+            crate::OfflineAssertionCheckError::Engine(source) => *source,
+            _ => mismatch(),
+        })?;
     let matches_expected = |replayed: &HostAssertionViolation| {
-        let mut replayed = replayed.clone();
-        replayed.reproduction_artifact = finding.artifact.id();
-        replayed == violation.violation
+        replayed.assertion == violation.violation.assertion
+            && replayed.message == violation.violation.message
+            && replayed.quantifier == violation.violation.quantifier
+            && replayed.event_kind == violation.violation.event_kind
+            && replayed.at_icount == violation.violation.at_icount
+            && replayed.at_virtual_time == violation.violation.at_virtual_time
+            && replayed.node == violation.violation.node
+            && replayed.detail == violation.violation.detail
+            && finding.artifact.id() == violation.violation.reproduction_artifact
     };
     if !report.violations().iter().any(&matches_expected) {
         return Err(mismatch());

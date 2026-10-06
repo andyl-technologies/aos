@@ -22,10 +22,27 @@ impl HostOperationalRegistry {
         target: HostRamTarget,
         resident_target_bytes: u64,
     ) -> Result<(), HostOperationalError> {
+        self.apply_native_qualification_mode(target, HostRamMode::Managed, resident_target_bytes)
+    }
+
+    /// Exercises a strict mode beneath the public qualification gate.
+    ///
+    /// # Errors
+    /// Refuses missing genuine native custody, changed complete resources or
+    /// supervision, and any mode the real manager cannot accept.
+    pub(crate) fn apply_native_qualification_mode(
+        &self,
+        target: HostRamTarget,
+        mode: HostRamMode,
+        resident_target_bytes: u64,
+    ) -> Result<(), HostOperationalError> {
         let _transaction = self.shared.mutation.try_lock().map_err(unavailable)?;
         let owner = self.node(target)?;
         let _owner_transaction = owner.mutation.try_lock().map_err(unavailable)?;
-        let previous = owner.state.lock().map_err(unavailable)?.clone();
+        let previous = {
+            let state = owner.state.lock().map_err(unavailable)?;
+            output::policy_snapshot(&state)
+        };
         let cap = owner.supervisor.outer_cap_status().map_err(unavailable)?;
         if cap.state != HostOperationState::Running
             || previous.transition.is_some()
@@ -37,7 +54,7 @@ impl HostOperationalRegistry {
         }
 
         let mut policy = previous.requested_policy;
-        policy.mode = HostRamMode::Managed;
+        policy.mode = mode;
         policy.resident_target_bytes = resident_target_bytes;
         policy.eviction_preference = 100;
         let revision = previous

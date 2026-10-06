@@ -108,7 +108,7 @@ pub(crate) fn run(
                 refs,
             ))
         },
-        |config| resources(config, &source, lifecycle, NativeEquivalenceCase::Depth),
+        |config| resources(config, &source, &lifecycle, NativeEquivalenceCase::Depth),
         |prepared, config, repository| {
             run_accepted_failure(prepared, config, repository, &source, case, &publication)
         },

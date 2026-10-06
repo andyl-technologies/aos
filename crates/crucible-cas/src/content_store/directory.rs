@@ -63,6 +63,9 @@ const INVENTORY_STATE_DOMAIN: &str = "crucible.content-store.directory-inventory
 const MAX_INVENTORY_STATE_BYTES: u64 = 256;
 const MAX_REF_RECORD_BYTES: u64 = 256;
 
+/// Ordinary and physical-maintenance capabilities of one quota-bound directory.
+pub type DirectoryBlobAuthorities = (Arc<dyn ImmutableBlobBackend>, Arc<dyn BlobStoreAdmin>);
+
 /// Durable loose-object directory backend.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DirectoryBlobBackend {
@@ -83,6 +86,22 @@ impl DirectoryBlobBackend {
         root: impl Into<PathBuf>,
         guard: Arc<dyn StorePhysicalQuotaGuard>,
     ) -> Result<Arc<dyn ImmutableBlobBackend>, StoreError> {
+        Self::new_with_physical_quota_and_admin(name, root, guard).map(|(backend, _)| backend)
+    }
+
+    /// Opens ordinary and maintenance views of the same quota-bound storage.
+    ///
+    /// Both views retain the original quota and resource authority. The admin
+    /// view cannot bypass that wrapper to reach the underlying directory.
+    ///
+    /// # Errors
+    /// Refuses unavailable physical authority, exhausted original resources,
+    /// or invalid directory resource geometry.
+    pub fn new_with_physical_quota_and_admin(
+        name: impl Into<String>,
+        root: impl Into<PathBuf>,
+        guard: Arc<dyn StorePhysicalQuotaGuard>,
+    ) -> Result<DirectoryBlobAuthorities, StoreError> {
         let name = name.into();
         let root = root.into();
         let costs = Self::quota_resource_costs(&root)?;
@@ -97,7 +116,8 @@ impl DirectoryBlobBackend {
             super::physical_quota::PhysicalQuotaStore::new(name, child.clone(), child, guard)?
                 .with_directory_costs(costs)
                 .with_child_resources(resources);
-        Ok(Arc::new(store))
+        let store = Arc::new(store);
+        Ok((store.clone(), store))
     }
 
     pub(super) fn quota_resource_costs(
@@ -972,6 +992,6 @@ fn invalid_object_data() -> io::Error {
 
 mod refs;
 
-pub use refs::DirectoryRefBackend;
+pub use refs::{DirectoryRefAuthorities, DirectoryRefBackend};
 pub(super) use refs::{create_dir_all_durable, directory_receipt, sync_directory};
 use refs::{encode_digest, open_pinned_object};

@@ -363,6 +363,8 @@ impl RamRootLease for CatalogRootLease {
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- catalog fixture setup and explicit last-reader assertions intentionally panic on failure.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

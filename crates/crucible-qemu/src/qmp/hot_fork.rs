@@ -32,6 +32,7 @@ pub use block_barrier::{
     QMP_HOT_FORK_BLOCK_NODE_NAME_MAX_BYTES, QMP_HOT_FORK_BLOCK_SOURCE_PROOF_SCHEMA_VERSION,
     QmpHotForkBlockBarrierState, QmpHotForkBlockSnapshotBinding,
     QmpHotForkBlockSnapshotBindingError, QmpHotForkBlockSnapshotRoot, QmpHotForkBlockSourceProof,
+    QmpHotForkRamBorrowInventory,
 };
 pub(crate) use block_seal::parse_hot_fork_block_seal_state;
 pub use block_seal::{

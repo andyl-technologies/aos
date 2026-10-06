@@ -399,6 +399,7 @@ pub fn recover_prepared_attempt_result(
             result: PreparedAttemptResultOwner::Journal(Box::new(journal)),
             observation,
             finding_candidate,
+            recovery_metadata: Default::default(),
         },
     )))
 }
@@ -524,6 +525,7 @@ fn prepare_pending_attempt_result<W>(
         result: PreparedAttemptResultOwner::Volatile(Box::new(result)),
         observation,
         finding_candidate,
+        recovery_metadata: Default::default(),
     })
 }
 

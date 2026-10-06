@@ -4,7 +4,10 @@ use super::*;
 
 mod admitted;
 mod operations;
-pub(crate) use admitted::{bind_admitted_semantic_replay_captures, stage_admitted_prepared_result};
+pub(crate) use admitted::{
+    AdmittedPreparedResultFailure, SemanticReplayCaptureBindingError,
+    bind_admitted_semantic_replay_captures, stage_admitted_prepared_result,
+};
 
 pub use operations::*;
 
@@ -68,6 +71,9 @@ pub struct PreparedAttemptResult {
     result: PreparedAttemptResultOwner,
     observation: ObservationId,
     finding_candidate: Option<crucible_campaign::FindingCandidateBundleId>,
+    // Recovery's original metadata account survives every result phase and
+    // closes after the decoded journal body.
+    recovery_metadata: crucible::owned_decode::DecodeCustody,
 }
 
 #[derive(Debug)]
@@ -93,6 +99,17 @@ impl PreparedAttemptResultOwner {
 }
 
 impl PreparedAttemptResult {
+    pub(crate) fn retain_recovery_metadata(
+        &mut self,
+        metadata: crucible::owned_decode::DecodeCustody,
+    ) {
+        self.recovery_metadata = metadata;
+    }
+
+    pub(crate) fn enter_recovery_metadata(&self) -> Option<crucible::owned_decode::DecodeScope> {
+        self.recovery_metadata.enter()
+    }
+
     /// Returns the exact execution token.
     #[must_use]
     pub const fn queued(&self) -> &QueuedAttempt {
@@ -157,6 +174,7 @@ impl PreparedAttemptResult {
             result,
             observation,
             finding_candidate,
+            recovery_metadata,
         } = self;
         match result {
             PreparedAttemptResultOwner::Volatile(_) => Ok(queued),
@@ -165,6 +183,7 @@ impl PreparedAttemptResult {
                 result: PreparedAttemptResultOwner::Journal(journal),
                 observation,
                 finding_candidate,
+                recovery_metadata,
             })),
         }
     }

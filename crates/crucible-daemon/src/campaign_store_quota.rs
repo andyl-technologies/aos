@@ -1,6 +1,6 @@
 //! Admits persistent physical quota authority for a standalone campaign store.
 //!
-//! Operator-authored service capacity and one finite original lifetime cover
+//! Operator-authored service capacity and one original supervisor cover
 //! binding and later verification. Namespace guards retain their descriptor
 //! leases, while one audit lock bounds temporary scan resources across callers.
 //! Retained store handles and readers borrow the remaining descriptor capacity
@@ -13,22 +13,48 @@ use std::time::Duration;
 use crucible_cas::content_store::{StoreError, StorePhysicalQuotaBinder, StorePhysicalQuotaGuard};
 use crucible_linux_resource::host_services::{HostServiceAllocator, HostServiceLease};
 use crucible_linux_resource::host_supervision::{
-    HostOperationBudget, HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
 };
 use crucible_linux_resource::ram_policy::HostResourceVector;
 use crucible_linux_resource::{LinuxProjectQuotaBinding, LinuxProjectQuotaError};
 
 /// Operator-authored standalone service admission, independent of VM resources.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct CampaignQuotaServiceConfig {
-    /// Original finite lifetime covering binding and every later quota check.
-    pub lifetime: Duration,
+    /// Original supervisor with the independently authored operation roster.
+    ///
+    /// Binding and every later check retain this exact cap, start and terminal
+    /// state. Construction does not create or renew any class or outer deadline.
+    pub supervisor: HostOperationSupervisor,
     /// Complete service entitlement, including audit scratch and caller overhead.
     ///
     /// CPU slots are nominal admission capacity; this adapter does not install
-    /// a whole-host CPU bandwidth limit. The backing entitlement excludes the
-    /// separately operator-installed persistent quota being authenticated.
+    /// a whole-host CPU bandwidth limit. The backing entitlement includes all
+    /// distinct operator-installed physical project quotas being authenticated.
     pub resources: HostResourceVector,
+}
+
+impl CampaignQuotaServiceConfig {
+    /// Starts the first original supervisor from an explicitly authored roster.
+    ///
+    /// This constructor is for storage-only callers that do not already own a
+    /// supervisor. A caller with active original work supplies that existing
+    /// supervisor directly instead of renewing its cap through this method.
+    ///
+    /// # Errors
+    /// Refuses invalid or unbounded infrastructure budgets and invalid outer
+    /// allowances. Complete resource capacity is checked by the binder before IO.
+    pub fn from_authored_budgets(
+        budgets: HostOperationBudgets,
+        outer: Option<Duration>,
+        resources: HostResourceVector,
+    ) -> Result<Self, StoreError> {
+        budgets.validate(false).map_err(supervision_error)?;
+        Ok(Self {
+            supervisor: HostOperationSupervisor::new(budgets, outer).map_err(supervision_error)?,
+            resources,
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -37,7 +63,50 @@ struct QuotaService {
     resources: HostServiceAllocator,
     metadata: HostServiceAllocator,
     serial: Mutex<()>,
+    projects: Mutex<ProjectAccounting>,
+    _project_metadata: QuotaMetadataCredit,
     _caller: HostServiceLease,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ProjectCharge {
+    identity: (u64, u32),
+    bytes: u64,
+    inodes: u64,
+}
+
+#[derive(Debug)]
+struct ProjectAccounting {
+    charges: Vec<ProjectCharge>,
+    maximum_projects: usize,
+    maximum_bytes: u64,
+    used_bytes: u64,
+}
+
+impl ProjectAccounting {
+    fn admit(&mut self, charge: ProjectCharge) -> Result<(), StoreError> {
+        if let Some(existing) = self
+            .charges
+            .iter()
+            .find(|existing| existing.identity == charge.identity)
+        {
+            return if existing.bytes == charge.bytes && existing.inodes == charge.inodes {
+                Ok(())
+            } else {
+                Err(StoreError::Quota)
+            };
+        }
+        let used = self
+            .used_bytes
+            .checked_add(charge.bytes)
+            .ok_or(StoreError::Quota)?;
+        if used > self.maximum_bytes || self.charges.len() >= self.maximum_projects {
+            return Err(StoreError::Quota);
+        }
+        self.charges.push(charge);
+        self.used_bytes = used;
+        Ok(())
+    }
 }
 
 /// Binds operator-installed quotas under one admitted standalone service.
@@ -54,6 +123,7 @@ struct BoundLinuxProjectQuota {
 #[derive(Debug)]
 struct QuotaAuthority {
     binding: LinuxProjectQuotaBinding,
+    root: std::path::PathBuf,
     service: Arc<QuotaService>,
     _descriptors: HostServiceLease,
     _metadata: QuotaMetadataCredit,
@@ -81,13 +151,25 @@ impl LinuxProjectQuotaBinder {
     /// Each bound namespace reserves its complete descriptor audit peak,
     /// including two persistent descriptors. Store handle and reader loans
     /// require additional authored descriptor and metadata capacity.
-    /// Clones share capacity and original lifetime. Serialized audit scratch
-    /// comes from the independently authored staging subset.
+    /// Clones share capacity, the authored roster and original outer cap.
+    /// Serialized audit scratch comes from the authored staging subset.
     ///
     /// # Errors
-    /// Refuses invalid lifetime, insufficient complete resource entitlement,
-    /// audit capacity, or unavailable resource/supervision authority.
+    /// Refuses an invalid original roster, insufficient complete resource
+    /// entitlement, audit capacity, or unavailable supervision authority.
     pub fn new(config: CampaignQuotaServiceConfig) -> Result<Self, StoreError> {
+        config
+            .supervisor
+            .budgets()
+            .map_err(supervision_error)?
+            .1
+            .validate(false)
+            .map_err(supervision_error)?;
+        let preparation = config
+            .supervisor
+            .begin(HostOperationClass::Preparation)
+            .map_err(supervision_error)?;
+        preparation.wait_slice().map_err(supervision_error)?;
         let admitted = config.resources;
         let subsets = admitted
             .metadata_bytes
@@ -115,18 +197,41 @@ impl LinuxProjectQuotaBinder {
             .map_err(supervision_error)?;
         let metadata =
             HostServiceAllocator::new(1, 1, admitted.metadata_bytes).map_err(supervision_error)?;
-        let budgets = HostOperationBudgets {
-            classes: [HostOperationBudget::finite(config.lifetime);
-                crucible_linux_resource::host_supervision::HOST_OPERATION_CLASS_COUNT],
+        // Every project retains at least two namespace descriptors. Admit the
+        // entire fixed accounting table before allocation; no bind grows it.
+        let maximum_projects =
+            usize::try_from(admitted.file_descriptors / 2).map_err(|_| StoreError::Quota)?;
+        let table_bytes = maximum_projects
+            .checked_mul(std::mem::size_of::<ProjectCharge>())
+            .and_then(|bytes| bytes.checked_add(2 * HostServiceLease::metadata_bytes() as usize))
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or(StoreError::Quota)?;
+        let project_metadata = QuotaMetadataCredit {
+            _metadata: metadata
+                .reserve_resources(0, 0, table_bytes)
+                .map_err(supervision_error)?,
+            _resident: resources
+                .reserve_resources(0, 0, table_bytes)
+                .map_err(supervision_error)?,
         };
-        let supervisor = HostOperationSupervisor::new(budgets, Some(config.lifetime))
-            .map_err(supervision_error)?;
+        let mut charges = Vec::new();
+        charges
+            .try_reserve_exact(maximum_projects)
+            .map_err(|_| StoreError::Quota)?;
+        preparation.complete().map_err(supervision_error)?;
         Ok(Self {
             service: Arc::new(QuotaService {
-                supervisor,
+                supervisor: config.supervisor,
                 resources,
                 metadata,
                 serial: Mutex::new(()),
+                projects: Mutex::new(ProjectAccounting {
+                    charges,
+                    maximum_projects,
+                    maximum_bytes: admitted.backing_peak_bytes,
+                    used_bytes: 0,
+                }),
+                _project_metadata: project_metadata,
                 _caller: caller,
             }),
         })
@@ -158,6 +263,9 @@ impl StorePhysicalQuotaBinder for LinuxProjectQuotaBinder {
         let metadata_bytes = root
             .as_os_str()
             .len()
+            .checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<std::path::PathBuf>()))
+            .ok_or(StoreError::Quota)?
             .checked_add(std::mem::size_of::<QuotaAuthority>())
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<BoundLinuxProjectQuota>()))
             .and_then(|bytes| bytes.checked_add(4 * std::mem::size_of::<usize>()))
@@ -168,26 +276,115 @@ impl StorePhysicalQuotaBinder for LinuxProjectQuotaBinder {
                 .checked_add(HostServiceLease::metadata_bytes())
                 .ok_or(StoreError::Quota)?,
         )?;
-        let binding = LinuxProjectQuotaBinding::bind_existing_supervised(
+        let mut admitted = false;
+        let binding = LinuxProjectQuotaBinding::bind_existing_admitted(
             root,
             project_id,
             maximum_physical_bytes,
             maximum_inodes,
             self.service.supervisor.clone(),
-        )
-        .map_err(store_error)?;
-        Ok(Arc::new(BoundLinuxProjectQuota {
-            authority: Arc::new(QuotaAuthority {
-                binding,
-                service: self.service.clone(),
-                _descriptors: descriptors,
-                _metadata: metadata,
-            }),
-        }))
+            &mut |identity| {
+                self.service
+                    .projects
+                    .lock()
+                    .map_err(|_| LinuxProjectQuotaError::InvalidLimits)?
+                    .admit(ProjectCharge {
+                        identity,
+                        bytes: maximum_physical_bytes,
+                        inodes: maximum_inodes,
+                    })
+                    .map_err(|_| LinuxProjectQuotaError::InvalidLimits)?;
+                admitted = true;
+                Ok(())
+            },
+        );
+        let binding = match binding {
+            Ok(binding) => binding,
+            Err(error) => {
+                if admitted {
+                    // The lower binder may have created a lease or retained a
+                    // pin. Preserve exactly the receipts admitted before that
+                    // effect; a failed return is not namespace deletion proof.
+                    std::mem::forget((descriptors, metadata, self.service.clone()));
+                }
+                return Err(store_error(error));
+            }
+        };
+        let authority = Arc::new(QuotaAuthority {
+            binding,
+            root: root.to_path_buf(),
+            service: self.service.clone(),
+            _descriptors: descriptors,
+            _metadata: metadata,
+        });
+        // Closing local handles proves no deletion of an existing namespace.
+        // Retain the original pins and complete account until authenticated
+        // operator retirement exists; never recycle a project by integer ID.
+        std::mem::forget(Arc::clone(&authority));
+        Ok(Arc::new(BoundLinuxProjectQuota { authority }))
     }
 }
 
 impl StorePhysicalQuotaGuard for BoundLinuxProjectQuota {
+    fn gc_mark_backend(
+        self: Arc<Self>,
+        scope: &str,
+    ) -> Result<Arc<dyn crucible_cas::content_store::ImmutableBlobBackend>, StoreError> {
+        if scope.is_empty() || scope.len() > 256 || scope.chars().any(char::is_control) {
+            return Err(StoreError::InvalidComposition {
+                reason: "GC mark scope is empty, unbounded or contains control characters",
+            });
+        }
+        let operation = self
+            .authority
+            .service
+            .supervisor
+            .begin(HostOperationClass::Writeback)
+            .map_err(supervision_error)?;
+        self.verify()?;
+        // A digest names one isolated mark namespace without accepting caller
+        // path components. All durable bytes inherit this same physical quota.
+        let path_bytes = self
+            .authority
+            .root
+            .as_os_str()
+            .len()
+            .checked_add(96)
+            .and_then(|bytes| bytes.checked_mul(4))
+            .ok_or(StoreError::Quota)?;
+        let _scratch = self.reserve_resources(0, path_bytes as u64)?;
+        let mut digest = blake3::Hasher::new();
+        digest.update(b"crucible.campaign-gc.mark-namespace.v1\0");
+        digest.update(scope.as_bytes());
+        let directory = self
+            .authority
+            .root
+            .join(".gc-marks")
+            .join(digest.finalize().to_hex().as_str());
+        {
+            // Descendant creation borrows the same bounded audit descriptor
+            // roster as quota verification, so it cannot overlap another scan.
+            let _serial = self
+                .authority
+                .service
+                .serial
+                .try_lock()
+                .map_err(|_| StoreError::Unauthorized)?;
+            self.authority
+                .binding
+                .prepare_descendant_directory(&directory)
+                .map_err(store_error)?;
+        }
+        let guard: Arc<dyn StorePhysicalQuotaGuard> = self.clone();
+        let marks = crucible_cas::content_store::DirectoryBlobBackend::new_with_physical_quota(
+            "campaign-gc-marks",
+            directory,
+            guard,
+        )?;
+        operation.complete().map_err(supervision_error)?;
+        Ok(marks)
+    }
+
     fn decoded_metadata_limit(&self) -> Result<u64, StoreError> {
         self.verify()?;
         Ok(self.authority.service.metadata.maximum_resident_bytes())
@@ -300,10 +497,19 @@ mod tests {
     use super::*;
     use crucible_linux_resource::host_services::HostServiceError;
     use crucible_linux_resource::host_supervision::HostSupervisionError;
+    use crucible_linux_resource::host_supervision::{HostOperationBudget, HostOperationBudgets};
+    use std::time::Duration;
 
     fn config() -> CampaignQuotaServiceConfig {
         CampaignQuotaServiceConfig {
-            lifetime: Duration::from_secs(60),
+            supervisor: HostOperationSupervisor::new(
+                HostOperationBudgets {
+                    classes: [HostOperationBudget::finite(Duration::from_secs(60));
+                        crucible_linux_resource::host_supervision::HOST_OPERATION_CLASS_COUNT],
+                },
+                Some(Duration::from_secs(60)),
+            )
+            .unwrap_or_else(|error| panic!("authored finite fixture roster: {error}")),
             resources: HostResourceVector {
                 resident_peak_bytes: 1024 * 1024,
                 backing_peak_bytes: 1024 * 1024,
@@ -315,6 +521,86 @@ mod tests {
                 file_descriptors: 36,
             },
         }
+    }
+
+    #[test]
+    fn distinct_project_limits_share_only_an_exact_pinned_quota_identity() {
+        let mut accounting = ProjectAccounting {
+            charges: Vec::with_capacity(2),
+            maximum_projects: 2,
+            maximum_bytes: 512,
+            used_bytes: 0,
+        };
+        let first = ProjectCharge {
+            identity: (1, 10),
+            bytes: 256,
+            inodes: 16,
+        };
+        assert!(accounting.admit(first).is_ok());
+        assert!(accounting.admit(first).is_ok());
+        assert_eq!(accounting.used_bytes, 256);
+        assert_eq!(accounting.charges.len(), 1);
+
+        assert!(
+            accounting
+                .admit(ProjectCharge {
+                    inodes: 17,
+                    ..first
+                })
+                .is_err()
+        );
+        assert!(
+            accounting
+                .admit(ProjectCharge {
+                    bytes: 257,
+                    ..first
+                })
+                .is_err()
+        );
+        assert_eq!(accounting.used_bytes, 256);
+
+        // Identical project integers on another pinned filesystem are distinct.
+        assert!(
+            accounting
+                .admit(ProjectCharge {
+                    identity: (2, 10),
+                    ..first
+                })
+                .is_ok()
+        );
+        assert_eq!(accounting.used_bytes, 512);
+        assert!(
+            accounting
+                .admit(ProjectCharge {
+                    identity: (1, 11),
+                    ..first
+                })
+                .is_err()
+        );
+        assert_eq!(accounting.used_bytes, 512);
+        assert_eq!(accounting.charges.len(), 2);
+    }
+
+    #[test]
+    fn supplied_supervisor_keeps_its_original_outer_anchor() {
+        let contract = config();
+        let original = contract
+            .supervisor
+            .outer_cap_binding()
+            .unwrap_or_else(|error| panic!("fixture original cap: {error}"));
+        let binder = LinuxProjectQuotaBinder::new(contract)
+            .unwrap_or_else(|error| panic!("standalone original admission: {error}"));
+        let retained = binder
+            .service
+            .supervisor
+            .outer_cap_binding()
+            .unwrap_or_else(|error| panic!("retained original cap: {error}"));
+        assert_eq!(retained.cap_id, original.cap_id);
+        assert_eq!(
+            retained.original_monotonic_ns,
+            original.original_monotonic_ns
+        );
+        assert_eq!(retained.allowance, original.allowance);
     }
 
     #[test]

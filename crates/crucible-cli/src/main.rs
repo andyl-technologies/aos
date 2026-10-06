@@ -157,10 +157,10 @@ const CANONICAL_GATE_NAMES: &[&str] = &[
     disable_help_subcommand = true
 )]
 struct Cli {
-    /// Root entropy (06 §5.3). Overrides CRUCIBLE_SEED.
+    /// Root entropy. Overrides CRUCIBLE_SEED.
     #[arg(long, value_name = "u64|hex", global = true)]
     seed: Option<String>,
-    /// Local backend (20 §10). Default: auto.
+    /// Local backend. Default: auto.
     #[arg(
         long,
         value_enum,
@@ -169,7 +169,7 @@ struct Cli {
         global = true
     )]
     backend: Backend,
-    /// Talk to a daemon (21) instead of running in-process.
+    /// Talk to a daemon instead of running in-process.
     #[arg(long, value_name = "addr", global = true)]
     daemon: Option<String>,
     /// CA certificate used to authenticate an HTTPS daemon.
@@ -184,16 +184,16 @@ struct Cli {
     /// Permit an unauthenticated daemon endpoint on a trusted network.
     #[arg(long, action = ArgAction::SetTrue, global = true, requires = "daemon")]
     trusted_unauthenticated_daemon: bool,
-    /// Patched QEMU system binary (26). Else discovered.
+    /// Patched QEMU system binary. Else discovered.
     #[arg(long, value_name = "path", global = true)]
     qemu: Option<PathBuf>,
-    /// crucible-qemu-plugin cdylib (12, 26). Else discovered.
+    /// crucible-qemu-plugin cdylib. Else discovered.
     #[arg(long, value_name = "path", global = true)]
     plugin: Option<PathBuf>,
-    /// Content-addressed store root (06, 07). Else default.
+    /// Set the content-addressed store root.
     #[arg(long, value_name = "path", global = true)]
     store: Option<PathBuf>,
-    /// Guarded local campaign-executor deployment capability.
+    /// Load deployed host and storage resource limits.
     #[arg(long, value_name = "PATH", global = true)]
     campaign_deployment: Option<PathBuf>,
     /// Trace/report render format. Default: table on a terminal, otherwise jsonl.
@@ -279,15 +279,15 @@ enum Commands {
     Resume(ResumeArgs),
     /// Replay a reproduction artifact, bit-identically.
     Replay(ReplayArgs),
-    /// Drive state-space search over the schedule space (22).
+    /// Drive state-space search over the schedule space.
     Search(SearchArgs),
-    /// Coverage-guided fuzzing over a scenario family (22).
+    /// Coverage-guided fuzzing over a scenario family.
     Fuzz(FuzzArgs),
     /// Cluster, dedup, and minimize discovered failures.
     Triage(CampaignTriageRouteArgs),
     /// Open the time-travel debugger.
     Debug(DebugArgs),
-    /// Run the daemon hosting the API (21).
+    /// Run the daemon hosting the API.
     Serve(ServeArgs),
     /// Inspect and control a lazy campaign through the local daemon.
     Campaign(CampaignArgs),
@@ -838,6 +838,12 @@ struct StorePlacementRepairArgs {
 
 #[derive(Args, Debug, PartialEq, Eq)]
 struct CampaignStoreGcArgs {
+    /// Select the quota-guarded physical store node that owns GC scratch.
+    #[arg(long, value_name = "NODE")]
+    mark_store_node: String,
+    /// Bound the original host lifetime through marking and journal publication.
+    #[arg(long, value_name = "MILLISECONDS")]
+    host_maintenance_timeout_ms: u64,
     /// Exact durable campaign state directory whose owner lock must be free.
     #[arg(long, value_name = "path")]
     state: PathBuf,
@@ -1623,7 +1629,7 @@ struct CampaignUnpinArgs {
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 struct RunArgs {
-    /// Scenario file (the canonical TOML form, 06 §6.1) or its content hash.
+    /// Scenario file in canonical TOML form or its content hash.
     #[arg(value_name = "SCENARIO", required = true)]
     scenario: Option<String>,
     /// Terminal condition. Default: quiescence.
@@ -1634,7 +1640,7 @@ struct RunArgs {
         default_value_t = RunUntilArg::Quiescence
     )]
     until: RunUntilArg,
-    /// Stop with Timeout past this virtual time (20 §2).
+    /// Stop with Timeout past this virtual time.
     #[arg(long, value_name = "dur", required_if_eq("until", "virtual-time"))]
     max_virtual_time: Option<String>,
     /// Stop with Timeout at this scheduler-quantum boundary.
@@ -1651,7 +1657,7 @@ struct RunArgs {
         default_value_t = RunSaveOnArg::Never
     )]
     save_on: RunSaveOnArg,
-    /// Stream the live status line (20 §9) alongside the trace.
+    /// Stream the live status line alongside the trace.
     #[arg(long, action = ArgAction::SetTrue)]
     watch: bool,
     /// Emit a mock failure artifact for gate testing.
@@ -1692,7 +1698,7 @@ enum RunSaveOnArg {
         .multiple(false)
 ))]
 struct VerifyArgs {
-    /// Scenario file (the canonical TOML form, 06 §6.1) or its content hash.
+    /// Scenario file in canonical TOML form or its content hash.
     #[arg(value_name = "SCENARIO")]
     scenario: Option<String>,
     /// Number of runs to compare. Default: 2.
@@ -1701,7 +1707,7 @@ struct VerifyArgs {
     /// Run the full hostile host scheduling, clock, core, and I/O matrix.
     #[arg(long, action = ArgAction::SetTrue)]
     adversarial: bool,
-    /// On divergence, run divergence-bisection (24 §5) and print the report.
+    /// On divergence, run divergence-bisection and print the report.
     #[arg(long, action = ArgAction::SetTrue)]
     bisect: bool,
     /// Diff two existing reproduction artifacts instead of running.
@@ -1749,7 +1755,7 @@ impl SaveAtArg {
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 struct SaveArgs {
-    /// Scenario file (the canonical TOML form, 06 §6.1) or its content hash.
+    /// Scenario file in canonical TOML form or its content hash.
     #[arg(value_name = "SCENARIO", required = true)]
     scenario: Option<String>,
     /// Where to stop and save. Required.
@@ -1760,7 +1766,7 @@ struct SaveArgs {
         required = true
     )]
     at: Option<SaveAtArg>,
-    /// Human label for the savepoint (07).
+    /// Human label for the savepoint.
     #[arg(long, value_name = "name")]
     label: Option<String>,
     /// Coordinate for --at virtual-time.
@@ -1779,10 +1785,10 @@ struct SaveArgs {
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 struct ResumeArgs {
-    /// A current portable savepoint handle (07).
+    /// A current portable savepoint handle.
     #[arg(value_name = "SAVEPOINT", required = true)]
     savepoint: Option<String>,
-    /// Terminal condition, as in `run` (§6).
+    /// Terminal condition, as in `run`.
     #[arg(
         long,
         value_enum,
@@ -1790,20 +1796,20 @@ struct ResumeArgs {
         default_value_t = RunUntilArg::Quiescence
     )]
     until: RunUntilArg,
-    /// Stop with Timeout past this virtual time (20 §2).
+    /// Stop with Timeout past this virtual time.
     #[arg(long, value_name = "dur", required_if_eq("until", "virtual-time"))]
     max_virtual_time: Option<String>,
     /// Drive the resumed session interactively (as in `run`).
     #[arg(long, action = ArgAction::SetTrue)]
     interactive: bool,
-    /// Stream the live status line (20 §9).
+    /// Stream the live status line.
     #[arg(long, action = ArgAction::SetTrue)]
     watch: bool,
 }
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 struct ReplayArgs {
-    /// A reproduction artifact (06 §7.1) or its content hash.
+    /// A reproduction artifact or its content hash.
     #[arg(value_name = "ARTIFACT")]
     artifact: PathBuf,
     /// Assert the replayed canonical log is byte-identical to this one.
@@ -1812,7 +1818,7 @@ struct ReplayArgs {
     /// Validate a target savepoint handle.
     #[arg(long, value_name = "savepoint")]
     to: Option<String>,
-    /// Bisect this artifact against another (24 §5).
+    /// Bisect this artifact against another.
     #[arg(long, value_name = "other-artifact")]
     bisect: Option<PathBuf>,
     /// Inject and require authenticated bounded host scheduler preemption during live QEMU replay.
@@ -1822,10 +1828,10 @@ struct ReplayArgs {
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 struct SearchArgs {
-    /// Scenario file (the canonical TOML form, 06 §6.1) or its content hash.
+    /// Scenario file in canonical TOML form or its content hash.
     #[arg(value_name = "SCENARIO", required = true)]
     scenario: Option<String>,
-    /// Frontier expansion strategy (22).
+    /// Frontier expansion strategy.
     #[arg(
         long,
         value_enum,
@@ -1861,16 +1867,16 @@ struct SearchArgs {
         .multiple(false)
 ))]
 struct FuzzArgs {
-    /// A ScenarioFamily (06 §7) to sample.
+    /// A ScenarioFamily to sample.
     #[arg(value_name = "FAMILY")]
     family: Option<String>,
-    /// A ScenarioFamily (06 §7) to sample.
+    /// A ScenarioFamily to sample.
     #[arg(long = "family", value_name = "path|hash")]
     family_flag: Option<String>,
     /// Number of family instances to run.
     #[arg(long, value_name = "n", default_value_t = 1)]
     runs: u64,
-    /// Coverage signal guiding sampling (22).
+    /// Coverage signal guiding sampling.
     #[arg(
         long,
         value_enum,
@@ -2125,7 +2131,7 @@ impl DebugStepGrainArg {
 
 #[derive(Args, Debug, PartialEq, Eq)]
 struct ServeArgs {
-    /// Address to bind the API (21) on. Required.
+    /// Address to bind the API on. Required.
     #[arg(long, value_name = "addr", required = true)]
     listen: String,
     /// Concurrency cap on live sessions.
@@ -2808,6 +2814,8 @@ mod cli_dispatch;
 mod cli_exploration;
 #[path = "cli/host.rs"]
 mod cli_host;
+#[path = "cli/input_resources.rs"]
+mod cli_input_resources;
 #[path = "cli/planning.rs"]
 mod cli_planning;
 #[path = "cli/replay.rs"]

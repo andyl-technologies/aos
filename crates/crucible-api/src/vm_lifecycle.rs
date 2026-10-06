@@ -149,11 +149,26 @@ fn selectable_catalog_checkpoint_ready(
 #[cfg(test)]
 mod test_support;
 
+#[cfg(any(test, feature = "test-support"))]
+mod block_completion_observation;
+#[cfg(any(test, feature = "test-support"))]
+pub use crucible_qemu::QemuTestBlockCompletionObserver as ProductionBlockCompletionObserver;
+#[cfg(any(test, feature = "test-support"))]
+mod ram_source_observation;
+#[cfg(any(test, feature = "test-support"))]
+pub use ram_source_observation::ProductionRamSourceDecorator;
+
 /// Immutable artifacts and bounds for local production QEMU execution.
 pub struct ProductionVmLifecycleConfig {
     decode_custody: Option<crucible::owned_decode::DecodeCustody>,
     host_ram_registration_factory: Option<Arc<dyn ProductionHostRamRegistrationFactory>>,
     ram_catalog_provider: Option<Arc<dyn ProductionRamCatalogProvider>>,
+    #[cfg(any(test, feature = "test-support"))]
+    ram_source_decorator: Option<Arc<dyn ProductionRamSourceDecorator>>,
+    #[cfg(any(test, feature = "test-support"))]
+    block_completion_observer: Option<Arc<dyn crucible_qemu::QemuTestBlockCompletionObserver>>,
+    #[cfg(any(test, feature = "test-support"))]
+    fault_actor_test_entitlement: Option<[u8; 32]>,
     executable: PathBuf,
     plugin: PathBuf,
     native_guest_architecture: VmArchitecture,
@@ -738,6 +753,8 @@ struct RepositoryExactRestoreAuthority {
     scheduler: Arc<SingleSchedulerCheckpoint>,
     open: Arc<dyn Fn(ContentHash) -> std::io::Result<Box<dyn std::io::Read + Send>> + Send + Sync>,
     ram_sources: BTreeMap<NodeId, ProductionPagedRamSource>,
+    #[cfg(any(test, feature = "test-support"))]
+    ram_source_decorator: Option<Arc<dyn ProductionRamSourceDecorator>>,
 }
 
 impl std::fmt::Debug for RepositoryExactRestoreAuthority {
@@ -771,6 +788,8 @@ impl RepositoryExactRestoreAuthority {
                 ram_source: self.ram_sources.remove(node).ok_or_else(|| {
                     loop_factory_error("exact restore lost its retained RAM source")
                 })?,
+                #[cfg(any(test, feature = "test-support"))]
+                ram_source_decorator: self.ram_source_decorator.clone(),
             },
         })
     }
@@ -797,6 +816,8 @@ impl RepositoryExactRestoreAuthority {
                 ram_source: self.ram_sources.remove(node).ok_or_else(|| {
                     loop_factory_error("exact replay lost its retained RAM source")
                 })?,
+                #[cfg(any(test, feature = "test-support"))]
+                ram_source_decorator: self.ram_source_decorator.clone(),
             },
             process_generation,
         })
@@ -1269,6 +1290,8 @@ struct ProductionVmExactNodeRestoreBasis {
     paused: bool,
     open: Arc<dyn Fn(ContentHash) -> std::io::Result<Box<dyn std::io::Read + Send>> + Send + Sync>,
     ram_source: ProductionPagedRamSource,
+    #[cfg(any(test, feature = "test-support"))]
+    ram_source_decorator: Option<Arc<dyn ProductionRamSourceDecorator>>,
 }
 
 impl std::fmt::Debug for ProductionVmExactNodeRestoreAdmission {
@@ -1453,6 +1476,13 @@ fn admit_atomic_exact_restore(
             move |identity| (admission.open)(identity),
         )
         .map_err(|error| loop_factory_error(format!("authenticate exact node: {error}")))?;
+    let backing: Arc<dyn crucible_qemu::ram_source::QemuRamBacking> =
+        Arc::new(admission.ram_source);
+    #[cfg(any(test, feature = "test-support"))]
+    let backing = ram_source_observation::decorate_authenticated_backing(
+        backing,
+        admission.ram_source_decorator.as_deref(),
+    )?;
     crucible_qemu::QemuProductionExactRestoreRequest::new(
         crucible_qemu::QemuProductionExactRestoreProfile {
             config: launch,
@@ -1465,7 +1495,7 @@ fn admit_atomic_exact_restore(
         process_contract,
         target,
         streams,
-        crucible_qemu::QemuPagedRamRestoreSource::new(Arc::new(admission.ram_source))
+        crucible_qemu::QemuPagedRamRestoreSource::new(backing)
             .map_err(|error| loop_factory_error(format!("admit leased RAM source: {error}")))?,
     )
     .map_err(|error| loop_factory_error(format!("admit atomic exact restore: {error}")))

@@ -11,6 +11,9 @@ use std::sync::Arc;
 /// A rejected operational RAM action; none of these failures model guest faults.
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum RamError {
+    /// An explicitly entitled test requested only this fault actor's return.
+    #[error("isolated RAM fault actor returned on its admitted test request")]
+    FaultActorTestExit,
     /// Canonical identity, proof, geometry or admitted metadata failed.
     #[error(transparent)]
     Core(#[from] crucible_ram::RamError),
@@ -53,6 +56,11 @@ pub enum RamError {
     /// The authenticated owner did not admit the complete metadata requirement.
     #[error("RAM metadata requires {required} bytes; owner admits {admitted}")]
     MetadataAdmission { required: u64, admitted: u64 },
+    /// The kernel's independent memlock entitlement cannot cover guest mappings.
+    #[error(
+        "guest RAM locking requires {required} bytes; kernel memlock entitlement admits {admitted}"
+    )]
+    LockedMemoryAdmission { required: u64, admitted: u64 },
     /// Live original-start supervision refused an operational action.
     #[error("RAM supervision refused {operation}: {failure}")]
     Supervision {
@@ -86,6 +94,7 @@ pub enum SupervisionFailure {
 impl PartialEq for RamError {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
+            (Self::FaultActorTestExit, Self::FaultActorTestExit) => true,
             (Self::Core(left), Self::Core(right)) => left == right,
             (
                 Self::Native {
@@ -113,6 +122,16 @@ impl PartialEq for RamError {
                     admitted: left_admitted,
                 },
                 Self::MetadataAdmission {
+                    required: right,
+                    admitted: right_admitted,
+                },
+            ) => left == right && left_admitted == right_admitted,
+            (
+                Self::LockedMemoryAdmission {
+                    required: left,
+                    admitted: left_admitted,
+                },
+                Self::LockedMemoryAdmission {
                     required: right,
                     admitted: right_admitted,
                 },

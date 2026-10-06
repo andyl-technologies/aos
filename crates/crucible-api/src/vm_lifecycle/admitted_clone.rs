@@ -11,7 +11,7 @@ use crucible_protocol::app_random_branch_plan::{
     AppRandomBranchPlan, AppRandomBranchPlanEntry, AppRandomBranchPlanError,
 };
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 mod tests;
 
 #[cfg(test)]
@@ -19,6 +19,15 @@ pub(super) fn copy_component_configuration(
     source: &ProductionVmLifecycleConfig,
 ) -> Arc<ProductionVmLifecycleConfig> {
     tests::copy_component_configuration(source)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(super) fn component_assertion_evaluator(source: &ScenarioDefForm) -> HostAssertionEvaluator {
+    let budget = tests::component_decode_budget();
+    let _scope = budget.enter();
+    HostAssertionEvaluator::new(source.properties())
+        .and_then(|evaluator| evaluator.with_world_white_box_policies(source.world()))
+        .unwrap_or_else(|error| panic!("finite component assertion evaluator: {error}"))
 }
 
 /// A refusal to copy lifecycle configuration under its original resource owner.
@@ -102,6 +111,12 @@ impl ProductionVmLifecycleConfig {
                 decode_custody: Some(decode_custody),
                 host_ram_registration_factory: self.host_ram_registration_factory.clone(),
                 ram_catalog_provider: self.ram_catalog_provider.clone(),
+                #[cfg(any(test, feature = "test-support"))]
+                ram_source_decorator: self.ram_source_decorator.clone(),
+                #[cfg(any(test, feature = "test-support"))]
+                block_completion_observer: self.block_completion_observer.clone(),
+                #[cfg(any(test, feature = "test-support"))]
+                fault_actor_test_entitlement: self.fault_actor_test_entitlement,
                 executable: copy_path(&self.executable)?,
                 plugin: copy_path(&self.plugin)?,
                 native_guest_architecture: self.native_guest_architecture,

@@ -37,9 +37,17 @@
 
 mod artifact_identity;
 mod async_driver;
+#[cfg(any(test, feature = "test-support"))]
+mod block_completion_observation;
 #[cfg(target_os = "linux")]
 mod block_realization_gate;
 mod checkpoint;
+#[cfg(any(test, feature = "test-support"))]
+pub use block_completion_observation::QemuTestBlockCompletionObserver;
+/// Authenticated request identity of the genuine admitted test-support block worker.
+#[cfg(any(test, feature = "test-support"))]
+pub use crucible_device::block::BlockRequestIdentity as QemuTestBlockRequestIdentity;
+
 mod console_observation;
 mod coverage;
 mod crash_detection;
@@ -105,12 +113,12 @@ pub use artifact_identity::{
 };
 pub use async_driver::{
     QemuAdvanceCompletionFence, QemuAsyncCrashEscalationTarget, QemuAsyncDriverError,
-    QemuAsyncDriverOperation, QemuAsyncDriverPolicy, QemuAsyncDriverRuntimeError,
-    QemuAsyncDriverTargetError, QemuAsyncLifecycleAwaitOutcome, QemuAsyncLifecycleAwaitReport,
-    QemuAsyncNodeStepOutcome, QemuAsyncNodeStepReport, QemuAsyncNodeStepTarget,
-    QemuAsyncQuantumCompletion, QemuAsyncWait, QemuAsyncWaitOutcome, QemuHostIoRuntime,
-    assert_async_driver_quantum_hot_path_is_shmem_only, await_bounded_lifecycle_event,
-    run_bounded_qemu_node_step,
+    QemuAsyncDriverHealthError, QemuAsyncDriverOperation, QemuAsyncDriverPolicy,
+    QemuAsyncDriverRuntimeError, QemuAsyncDriverTargetError, QemuAsyncLifecycleAwaitOutcome,
+    QemuAsyncLifecycleAwaitReport, QemuAsyncNodeStepOutcome, QemuAsyncNodeStepReport,
+    QemuAsyncNodeStepTarget, QemuAsyncQuantumCompletion, QemuAsyncWait, QemuAsyncWaitOutcome,
+    QemuHostIoRuntime, assert_async_driver_quantum_hot_path_is_shmem_only,
+    await_bounded_lifecycle_event, run_bounded_qemu_node_step,
 };
 #[cfg(target_os = "linux")]
 pub use block_realization_gate::{
@@ -193,6 +201,9 @@ pub use live_plugin_gate::{
 #[cfg(unix)]
 pub use mapped_quantum::{QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError};
 pub(crate) use node::QemuQmpMachineControlChannel;
+pub use node::operational_health::native_actor::{
+    QemuNativeFaultActorFailure, QemuNativeOperationFailure,
+};
 #[cfg(target_os = "linux")]
 pub use node::{
     MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_BYTES, QemuCapturedRamPage,
@@ -231,8 +242,8 @@ pub use node::{QemuHotForkPluginRingImage, QemuVirtualTimerFireWitness};
 pub use node::{QemuProcessIdentity, linux_process_identity, quarantine_orphaned_qemu_process};
 #[cfg(all(target_os = "linux", feature = "test-support"))]
 pub use node::{
-    QemuTestNativeAliasKind, QemuTestNativeAliasProbeError, QemuTestNativeAliasRejection,
     QemuTestHotForkIsolationFault, QemuTestHotForkOutcome, QemuTestHotForkSourceError,
+    QemuTestNativeAliasKind, QemuTestNativeAliasProbeError, QemuTestNativeAliasRejection,
     QemuTestNativeSourceDescriptor, QemuTestNativeSourceDescriptorError,
     QemuTestNativeSourceDescriptorRole, QemuTestQuantumBoundary, scripted_hot_fork_source_for_test,
     scripted_hot_fork_source_with_observations_for_test,
@@ -264,6 +275,8 @@ pub use production_fault_runtime::{
     QemuNodeLifecycleWork,
 };
 pub use production_fault_sink::ProductionFaultActionSink;
+#[cfg(any(test, feature = "test-support"))]
+pub use qmp::QemuPerformanceObservation;
 pub(crate) use qmp::QmpCheckpointRestoreRequest;
 pub use qmp::{
     QMP_CAPABILITIES_COMMAND, QMP_CLOSEFD_COMMAND, QMP_COMMAND_TIMEOUT, QMP_CONT_COMMAND,
@@ -307,9 +320,9 @@ pub use qmp::{
     QmpHotForkPluginBarrierState, QmpHotForkPluginEndpointDescriptorPlan,
     QmpHotForkPluginEndpointIdentity, QmpHotForkPluginEndpointState,
     QmpHotForkPluginResourceInventory, QmpHotForkPrivateRingState, QmpHotForkProof,
-    QmpHotForkRcuBarrierState, QmpHotForkRequest, QmpHotForkRequestError,
-    QmpHotForkSourceGraphMember, QmpHotForkSourceGraphReceipt, QmpHotForkState,
-    QmpHotForkTemplateFailureStage, QmpHotForkTemplateOutcome,
+    QmpHotForkRamBorrowInventory, QmpHotForkRcuBarrierState, QmpHotForkRequest,
+    QmpHotForkRequestError, QmpHotForkSourceGraphMember, QmpHotForkSourceGraphReceipt,
+    QmpHotForkState, QmpHotForkTemplateFailureStage, QmpHotForkTemplateOutcome,
     QmpHotForkTemplateResourceStageState, QmpHotForkTemplateState, QmpIoTimeoutPolicy,
     QmpJobPollPolicy, QmpPausedCpu, QmpRunState, QmpRunStateKind, QmpTimeoutStream,
 };

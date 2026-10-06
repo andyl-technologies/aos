@@ -6,12 +6,8 @@ pub(super) fn normalize_guest_measurements(
     definitions: &MeasurementDefinitions,
     entries: &[SchedulerEventLogEntry],
 ) -> Result<Vec<MeasurementRuntimeSample>, CrucibleMeasurementError> {
-    let definitions_by_id = definitions
-        .definitions()
-        .iter()
-        .map(|definition| (definition.id.clone(), definition))
-        .collect::<BTreeMap<_, _>>();
-    let mut open = BTreeSet::<(NodeId, MeasurementId, MeasurementInstanceKey)>::new();
+    let definitions_by_id = definitions.definitions();
+    let mut open = BTreeSet::<(&NodeId, &MeasurementId, &MeasurementInstanceKey)>::new();
     let mut samples = Vec::new();
     let mut sample_work_bytes = 0usize;
 
@@ -27,7 +23,7 @@ pub(super) fn normalize_guest_measurements(
                     instance,
                 } => {
                     let (measurement, instance, definition) = guest_measurement_basis(
-                        &definitions_by_id,
+                        definitions_by_id,
                         node,
                         measurement,
                         instance,
@@ -39,12 +35,22 @@ pub(super) fn normalize_guest_measurements(
                             "open measurement instance limit exceeded",
                         ));
                     }
-                    if !open.insert((node.clone(), measurement, instance)) {
+                    if open.contains(&(node, measurement, instance)) {
                         return Err(guest_measurement_error(
                             entry.sequence(),
-                            format!("measurement `{}` instance is already open", definition.id),
+                            format_args!(
+                                "measurement `{}` instance is already open",
+                                definition.id
+                            ),
                         ));
                     }
+                    crucible::owned_decode::charge_btree_set_entry::<(
+                        &NodeId,
+                        &MeasurementId,
+                        &MeasurementInstanceKey,
+                    )>()
+                    .map_err(admission)?;
+                    open.insert((node, measurement, instance));
                 }
                 GuestMeasurementEvent::Sample {
                     measurement,
@@ -53,30 +59,27 @@ pub(super) fn normalize_guest_measurements(
                     value,
                 } => {
                     let (measurement, instance, definition) = guest_measurement_basis(
-                        &definitions_by_id,
+                        definitions_by_id,
                         node,
                         measurement,
                         instance,
                         entry.sequence(),
                     )?;
-                    if !open.contains(&(node.clone(), measurement.clone(), instance)) {
+                    if !open.contains(&(node, measurement, instance)) {
                         return Err(guest_measurement_error(
                             entry.sequence(),
-                            format!("measurement `{measurement}` instance is not open"),
+                            format_args!("measurement `{measurement}` instance is not open"),
                         ));
                     }
                     validate_protocol_identifier(metric, entry.sequence(), "metric")?;
-                    let metric = MetricId::parse(metric.clone()).map_err(|error| {
-                        guest_measurement_error(entry.sequence(), error.to_string())
-                    })?;
                     let contract = definition
                         .metrics
                         .iter()
-                        .find(|candidate| candidate.id == metric)
+                        .find(|candidate| candidate.id.as_str() == metric)
                         .ok_or_else(|| {
                             guest_measurement_error(
                                 entry.sequence(),
-                                format!(
+                                format_args!(
                                     "measurement `{measurement}` does not declare metric `{metric}`"
                                 ),
                             )
@@ -84,7 +87,7 @@ pub(super) fn normalize_guest_measurements(
                     if contract.source != MetricSource::Guest {
                         return Err(guest_measurement_error(
                             entry.sequence(),
-                            format!("metric `{metric}` is not guest-sourced"),
+                            format_args!("metric `{metric}` is not guest-sourced"),
                         ));
                     }
                     if samples.len() == MAX_MEASUREMENT_RUNTIME_SAMPLES {
@@ -93,9 +96,8 @@ pub(super) fn normalize_guest_measurements(
                         }
                         .into());
                     }
-                    validate_guest_measurement_value(value, contract).map_err(|error| {
-                        guest_measurement_error(entry.sequence(), error.to_string())
-                    })?;
+                    validate_guest_measurement_value(value, contract)
+                        .map_err(|error| guest_measurement_error(entry.sequence(), error))?;
                     sample_work_bytes = sample_work_bytes
                         .checked_add(guest_sample_normalization_work(
                             measurement.as_str(),
@@ -111,13 +113,26 @@ pub(super) fn normalize_guest_measurements(
                         }
                         .into());
                     }
-                    let value = normalize_guest_measurement_value(value).map_err(|error| {
-                        guest_measurement_error(entry.sequence(), error.to_string())
-                    })?;
+                    let value =
+                        normalize_guest_measurement_value(value).map_err(|error| match error {
+                            GuestMeasurementValueError::OriginalAdmission(source) => {
+                                admission(source)
+                            }
+                            source => guest_measurement_error(entry.sequence(), source),
+                        })?;
+                    crucible::owned_decode::reserve_vec(&mut samples, 1).map_err(admission)?;
                     samples.push(MeasurementRuntimeSample::new(
                         entry.sequence(),
-                        measurement,
-                        metric,
+                        MeasurementId::parse(
+                            crucible::owned_decode::display_string(measurement)
+                                .map_err(admission)?,
+                        )
+                        .map_err(|error| guest_measurement_error(entry.sequence(), error))?,
+                        MetricId::parse(
+                            crucible::owned_decode::display_string(&contract.id)
+                                .map_err(admission)?,
+                        )
+                        .map_err(|error| guest_measurement_error(entry.sequence(), error))?,
                         value,
                     ));
                 }
@@ -126,16 +141,16 @@ pub(super) fn normalize_guest_measurements(
                     instance,
                 } => {
                     let (measurement, instance, _definition) = guest_measurement_basis(
-                        &definitions_by_id,
+                        definitions_by_id,
                         node,
                         measurement,
                         instance,
                         entry.sequence(),
                     )?;
-                    if !open.remove(&(node.clone(), measurement.clone(), instance)) {
+                    if !open.remove(&(node, measurement, instance)) {
                         return Err(guest_measurement_error(
                             entry.sequence(),
-                            format!("measurement `{measurement}` instance is not open"),
+                            format_args!("measurement `{measurement}` instance is not open"),
                         ));
                     }
                 }
@@ -148,18 +163,16 @@ pub(super) fn normalize_guest_measurements(
             }) => {
                 validate_protocol_identifier(marker, entry.sequence(), "semantic marker")?;
                 validate_protocol_identifier(instance, entry.sequence(), "marker instance")?;
-                let instance =
-                    MeasurementInstanceKey::parse(instance.clone()).map_err(|error| {
-                        guest_measurement_error(entry.sequence(), error.to_string())
-                    })?;
                 if !definitions.definitions().iter().any(|definition| {
                     cohort_contains(&definition.cohort, node)
-                        && (boundary_accepts_semantic_marker(&definition.begin, marker, &instance)
-                            || boundary_accepts_semantic_marker(&definition.end, marker, &instance))
+                        && (boundary_accepts_semantic_marker(&definition.begin, marker, instance)
+                            || boundary_accepts_semantic_marker(&definition.end, marker, instance))
                 }) {
                     return Err(guest_measurement_error(
                         entry.sequence(),
-                        format!("semantic marker `{marker}` instance `{instance}` is not declared"),
+                        format_args!(
+                            "semantic marker `{marker}` instance `{instance}` is not declared"
+                        ),
                     ));
                 }
             }
@@ -173,105 +186,105 @@ pub(super) fn normalize_guest_measurements(
                 .last()
                 .map_or(0, SchedulerEventLogEntry::sequence)
                 .saturating_add(1),
-            format!("measurement `{measurement}` instance `{instance}` was not ended"),
+            format_args!("measurement `{measurement}` instance `{instance}` was not ended"),
         ));
     }
     Ok(samples)
 }
 
 fn guest_measurement_basis<'a>(
-    definitions: &'a BTreeMap<MeasurementId, &'a MeasurementDefinition>,
+    definitions: &'a [MeasurementDefinition],
     node: &NodeId,
     measurement: &str,
     instance: &str,
     sequence: u64,
 ) -> Result<
     (
-        MeasurementId,
-        MeasurementInstanceKey,
+        &'a MeasurementId,
+        &'a MeasurementInstanceKey,
         &'a MeasurementDefinition,
     ),
     CrucibleMeasurementError,
 > {
     validate_protocol_identifier(measurement, sequence, "measurement")?;
     validate_protocol_identifier(instance, sequence, "measurement instance")?;
-    let measurement = MeasurementId::parse(measurement.to_owned())
-        .map_err(|error| guest_measurement_error(sequence, error.to_string()))?;
-    let instance = MeasurementInstanceKey::parse(instance.to_owned())
-        .map_err(|error| guest_measurement_error(sequence, error.to_string()))?;
-    let definition = definitions.get(&measurement).copied().ok_or_else(|| {
-        guest_measurement_error(
-            sequence,
-            format!("measurement `{measurement}` is not declared"),
-        )
-    })?;
+    let definition = definitions
+        .binary_search_by(|definition| definition.id.as_str().cmp(measurement))
+        .ok()
+        .and_then(|index| definitions.get(index))
+        .ok_or_else(|| {
+            guest_measurement_error(
+                sequence,
+                format_args!("measurement `{measurement}` is not declared"),
+            )
+        })?;
     if !cohort_contains(&definition.cohort, node) {
         return Err(guest_measurement_error(
             sequence,
-            format!(
+            format_args!(
                 "node `{}` is outside measurement `{measurement}` cohort",
                 node.name
             ),
         ));
     }
     let expected_instance = guest_measurement_instance(definition, sequence)?;
-    if &instance != expected_instance {
+    if instance != expected_instance.as_str() {
         return Err(guest_measurement_error(
             sequence,
-            format!(
+            format_args!(
                 "measurement `{measurement}` requires instance `{expected_instance}`, got `{instance}`"
             ),
         ));
     }
-    Ok((measurement, instance, definition))
+    Ok((&definition.id, expected_instance, definition))
 }
 
 fn guest_measurement_instance(
     definition: &MeasurementDefinition,
     sequence: u64,
 ) -> Result<&MeasurementInstanceKey, CrucibleMeasurementError> {
-    let mut instances = BTreeSet::new();
-    collect_boundary_instances(&definition.begin, &mut instances);
-    collect_boundary_instances(&definition.end, &mut instances);
-    let mut instances = instances.into_iter();
-    let Some(instance) = instances.next() else {
+    let mut candidate = None;
+    if !collect_boundary_instance(&definition.begin, &mut candidate)
+        || !collect_boundary_instance(&definition.end, &mut candidate)
+    {
         return Err(guest_measurement_error(
             sequence,
-            format!(
-                "guest-sourced measurement `{}` does not declare an exact marker instance",
-                definition.id
-            ),
-        ));
-    };
-    if instances.next().is_some() {
-        return Err(guest_measurement_error(
-            sequence,
-            format!(
+            format_args!(
                 "guest-sourced measurement `{}` declares conflicting marker instances",
                 definition.id
             ),
         ));
     }
-    Ok(instance)
+    candidate.ok_or_else(|| {
+        guest_measurement_error(
+            sequence,
+            format_args!(
+                "guest-sourced measurement `{}` does not declare an exact marker instance",
+                definition.id
+            ),
+        )
+    })
 }
 
-fn collect_boundary_instances<'a>(
+fn collect_boundary_instance<'a>(
     selector: &'a BoundarySelector,
-    instances: &mut BTreeSet<&'a MeasurementInstanceKey>,
-) {
+    candidate: &mut Option<&'a MeasurementInstanceKey>,
+) -> bool {
     match selector {
         BoundarySelector::GuestMarker {
             instance: Some(instance),
             ..
         } => {
-            instances.insert(instance);
-        }
-        BoundarySelector::All { selectors } | BoundarySelector::Any { selectors } => {
-            for selector in selectors {
-                collect_boundary_instances(selector, instances);
+            if candidate.is_some_and(|existing| existing != instance) {
+                return false;
             }
+            *candidate = Some(instance);
+            true
         }
-        _ => {}
+        BoundarySelector::All { selectors } | BoundarySelector::Any { selectors } => selectors
+            .iter()
+            .all(|selector| collect_boundary_instance(selector, candidate)),
+        _ => true,
     }
 }
 
@@ -283,18 +296,20 @@ fn cohort_contains(cohort: &CohortPolicy, node: &NodeId) -> bool {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub(super) enum GuestMeasurementValueError {
+pub(super) enum GuestMeasurementValueError<'a> {
+    #[error(transparent)]
+    OriginalAdmission(#[from] crucible::owned_decode::DecodeAdmissionError),
     #[error(transparent)]
     InvalidRational(#[from] crucible::model::MeasurementEvaluationError),
     #[error("rational sample is not canonical reduced form")]
     NonCanonicalRational,
     #[error("metric `{metric}` value violates its declared type or guest protocol bound")]
-    ContractMismatch { metric: MetricId },
+    ContractMismatch { metric: &'a MetricId },
 }
 
 fn normalize_guest_measurement_value(
     value: &GuestMeasurementValue,
-) -> Result<MeasurementSampleValue, GuestMeasurementValueError> {
+) -> Result<MeasurementSampleValue, GuestMeasurementValueError<'static>> {
     match value {
         GuestMeasurementValue::Signed(value) => Ok(MeasurementSampleValue::Signed(*value)),
         GuestMeasurementValue::Unsigned(value) => Ok(MeasurementSampleValue::Unsigned(*value)),
@@ -309,22 +324,31 @@ fn normalize_guest_measurement_value(
             Ok(MeasurementSampleValue::Rational(reduced))
         }
         GuestMeasurementValue::Boolean(value) => Ok(MeasurementSampleValue::Boolean(*value)),
-        GuestMeasurementValue::Enumerated(value) => {
-            Ok(MeasurementSampleValue::Enumerated(value.clone()))
-        }
+        GuestMeasurementValue::Enumerated(value) => Ok(MeasurementSampleValue::Enumerated(
+            crucible::owned_decode::display_string(value)
+                .map_err(GuestMeasurementValueError::OriginalAdmission)?,
+        )),
         GuestMeasurementValue::SignedVector(value) => {
-            Ok(MeasurementSampleValue::SignedVector(value.clone()))
+            let mut copied = Vec::new();
+            crucible::owned_decode::reserve_vec(&mut copied, value.len())
+                .map_err(GuestMeasurementValueError::OriginalAdmission)?;
+            copied.extend_from_slice(value);
+            Ok(MeasurementSampleValue::SignedVector(copied))
         }
         GuestMeasurementValue::UnsignedVector(value) => {
-            Ok(MeasurementSampleValue::UnsignedVector(value.clone()))
+            let mut copied = Vec::new();
+            crucible::owned_decode::reserve_vec(&mut copied, value.len())
+                .map_err(GuestMeasurementValueError::OriginalAdmission)?;
+            copied.extend_from_slice(value);
+            Ok(MeasurementSampleValue::UnsignedVector(copied))
         }
     }
 }
 
-pub(super) fn validate_guest_measurement_value(
+pub(super) fn validate_guest_measurement_value<'a>(
     value: &GuestMeasurementValue,
-    metric: &MetricDefinition,
-) -> Result<(), GuestMeasurementValueError> {
+    metric: &'a MetricDefinition,
+) -> Result<(), GuestMeasurementValueError<'a>> {
     let valid = match (value, &metric.value_type) {
         (GuestMeasurementValue::Signed(_), MetricValueType::SignedInteger)
         | (GuestMeasurementValue::Unsigned(_), MetricValueType::UnsignedInteger)
@@ -357,9 +381,7 @@ pub(super) fn validate_guest_measurement_value(
         _ => false,
     };
     if !valid {
-        return Err(GuestMeasurementValueError::ContractMismatch {
-            metric: metric.id.clone(),
-        });
+        return Err(GuestMeasurementValueError::ContractMismatch { metric: &metric.id });
     }
     Ok(())
 }
@@ -395,10 +417,21 @@ fn validate_protocol_identifier(
     sequence: u64,
     kind: &'static str,
 ) -> Result<(), CrucibleMeasurementError> {
+    if kind != "semantic marker"
+        && (value.is_empty()
+            || !value.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'/' | b':')
+            }))
+    {
+        return Err(guest_measurement_error(
+            sequence,
+            format_args!("invalid {kind} identifier `{value}`"),
+        ));
+    }
     if value.len() > WHITEBOX_MEASUREMENT_IDENTIFIER_MAX_BYTES {
         return Err(guest_measurement_error(
             sequence,
-            format!(
+            format_args!(
                 "{kind} identifier exceeds {} bytes",
                 WHITEBOX_MEASUREMENT_IDENTIFIER_MAX_BYTES
             ),
@@ -410,13 +443,13 @@ fn validate_protocol_identifier(
 fn boundary_accepts_semantic_marker(
     selector: &BoundarySelector,
     marker: &str,
-    instance: &MeasurementInstanceKey,
+    instance: &str,
 ) -> bool {
     match selector {
         BoundarySelector::GuestMarker {
             marker: expected,
             instance: Some(expected_instance),
-        } => expected.name == marker && expected_instance == instance,
+        } => expected.name == marker && expected_instance.as_str() == instance,
         BoundarySelector::All { selectors } | BoundarySelector::Any { selectors } => selectors
             .iter()
             .any(|selector| boundary_accepts_semantic_marker(selector, marker, instance)),
@@ -424,9 +457,20 @@ fn boundary_accepts_semantic_marker(
     }
 }
 
-fn guest_measurement_error(sequence: u64, reason: impl Into<String>) -> CrucibleMeasurementError {
-    CrucibleMeasurementError::GuestMeasurementProtocol {
-        sequence,
-        reason: reason.into(),
+fn guest_measurement_error(
+    sequence: u64,
+    reason: impl std::fmt::Display,
+) -> CrucibleMeasurementError {
+    let custody = match require_current_custody() {
+        Ok(custody) => custody,
+        Err(source) => return admission(source),
+    };
+    match crucible::owned_decode::display_string(&reason) {
+        Ok(reason) => CrucibleMeasurementError::GuestMeasurementProtocol {
+            sequence,
+            reason,
+            custody,
+        },
+        Err(source) => admission(source),
     }
 }

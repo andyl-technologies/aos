@@ -73,6 +73,11 @@ fn crucible_manifest_feature_layout_is_explicit() -> Result<(), Box<dyn Error>> 
             ("test-support", &["crucible/test-double"][..]),
         ],
     );
+    assert_features(
+        &manifests,
+        "crucible-ram",
+        &[("test-support", &["dep:sha2", "dep:serde_json"][..])],
+    );
     assert_features(&manifests, "crucible-device", &[("default", &[][..])]);
 
     Ok(())
@@ -403,6 +408,18 @@ fn feature_cases() -> &'static [FeatureCase] {
         FeatureCase {
             name: "crucible-qemu test support",
             package: "crucible-qemu",
+            no_default_features: true,
+            features: &["test-support"],
+        },
+        FeatureCase {
+            name: "crucible-ram production",
+            package: "crucible-ram",
+            no_default_features: true,
+            features: &[],
+        },
+        FeatureCase {
+            name: "crucible-ram offline measurements",
+            package: "crucible-ram",
             no_default_features: true,
             features: &["test-support"],
         },

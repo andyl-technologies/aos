@@ -4,6 +4,7 @@ use super::*;
 
 /// Optional authenticated resources carried by a live-QEMU replay artifact.
 pub(crate) struct LiveQemuReplayResources {
+    pub(crate) owner: crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignOwner,
     pub(crate) campaign_closure:
         Option<crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure>,
     pub(crate) effect_trace: Option<crucible::ResolvedEffectTrace>,
@@ -62,7 +63,9 @@ pub(crate) fn run_live_qemu_artifact_replay(
         campaign_deployment: campaign_deployment.map(Path::to_path_buf),
         scenario: RunScenarioRef::BuiltInExample {
             name: String::from("artifact-replay"),
-            form: scenario.clone(),
+            form: scenario
+                .try_clone_admitted()
+                .map_err(|error| artifact_error(format!("admit replay scenario copy: {error}")))?,
             scenario: scenario_def.clone(),
         },
         terminal_condition,
@@ -128,6 +131,7 @@ pub(crate) fn run_live_qemu_artifact_replay(
             schedule,
             contract,
             config,
+            resources.owner,
         )?;
         return Ok((run_plan, report));
     }
@@ -173,8 +177,11 @@ pub(crate) fn run_live_qemu_artifact_replay(
         backend,
         &run_plan,
         config,
-        schedule.clone(),
+        schedule
+            .try_clone_admitted()
+            .map_err(|error| artifact_error(format!("admit replay schedule copy: {error}")))?,
         replay_closure,
+        resources.owner,
     )?;
     Ok((run_plan, report))
 }
@@ -186,7 +193,26 @@ fn run_interactive_control_artifact_replay(
     terminal_schedule: &crucible::Schedule,
     contract: &LiveQemuReplayContract,
     config: crucible_api::ProductionVmLifecycleConfig,
+    owner: crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignOwner,
 ) -> Result<RunWorkflowReport, CliError> {
+    let deployment = load_guarded_campaign_deployment(campaign_deployment)?;
+    let resources = crate::cli_verify_serve::campaign_run::guarded_run_resources(
+        deployment.resources,
+        Some(contract.final_quanta),
+    )?;
+    let authority = owner.repository_metadata_resources().map_err(|error| {
+        backend_error(format!(
+            "interactive replay metadata authority is unavailable: {error}"
+        ))
+    })?;
+    let decoding = crucible_session::engine::owned_decode::DecodeBudget::for_store(authority)
+        .map_err(|error| {
+            backend_error(format!(
+                "interactive replay metadata admission failed: {error}"
+            ))
+        })?;
+    let scope = decoding.enter();
+
     let captured_scenario =
         crucible::ScenarioDefForm::from_compact_binary(&contract.initial_scenario)
             .map_err(|error| artifact_error(format!("decode initial scenario: {error}")))?;
@@ -261,35 +287,53 @@ fn run_interactive_control_artifact_replay(
         event_log_len,
         quanta: contract.final_quanta,
     };
-    let control_log = contract
-        .reproduction_commands
-        .iter()
-        .cloned()
-        .map(crucible_session::SessionControlLogEntry::try_from)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| artifact_error(error.to_string()))?;
+    let mut control_log = Vec::new();
+    crucible_session::engine::owned_decode::reserve_vec(
+        &mut control_log,
+        contract.reproduction_commands.len(),
+    )
+    .map_err(|error| artifact_error(format!("admit replay control-log storage: {error}")))?;
+    for command in &contract.reproduction_commands {
+        let bytes = command
+            .payload
+            .command_payload
+            .len()
+            .checked_add(
+                command
+                    .payload
+                    .scheduler_control
+                    .as_ref()
+                    .map_or(0, String::len),
+            )
+            .ok_or_else(|| artifact_error("replay command copy size overflow"))?;
+        decoding
+            .charge_bytes(
+                u64::try_from(bytes)
+                    .map_err(|_| artifact_error("replay command copy size overflow"))?,
+            )
+            .map_err(|error| artifact_error(format!("admit replay command copy: {error}")))?;
+        control_log.push(
+            crucible_session::SessionControlLogEntry::try_from(command.clone())
+                .map_err(|error| artifact_error(error.to_string()))?,
+        );
+    }
     let replay_artifact = crucible_session::SessionControlReplayArtifact {
-        initial_configuration: initial_configuration.clone(),
-        final_snapshot: final_snapshot.clone(),
+        initial_configuration: initial_configuration
+            .try_clone_admitted()
+            .map_err(|error| {
+                artifact_error(format!("admit interactive replay configuration: {error}"))
+            })?,
+        final_snapshot,
         control_log,
     };
 
-    let deployment = load_guarded_campaign_deployment(campaign_deployment)?;
-    let resources = crate::cli_verify_serve::campaign_run::guarded_run_resources(
-        deployment.resources,
-        Some(contract.final_quanta),
-    )?;
-    let owner = crate::cli_verify_serve::open_guarded_campaign_owner(
-        &deployment,
-        config,
-        initial_configuration.def.seed(),
-        resources,
-    )?;
     let quantum_loop = owner
-        .begin_interactive_session(
+        .begin_interactive_session_with_lifecycle(
             &initial_configuration.def,
             &captured_scenario,
             crucible_daemon::ExecutionCancellation::default(),
+            config,
+            resources,
         )
         .map_err(|error| {
             backend_error(format!("build guarded interactive replay session: {error}"))
@@ -311,37 +355,76 @@ fn run_interactive_control_artifact_replay(
         .map_err(|error| artifact_error(format!("build interactive replay graph: {error}")))?;
     let engine = crucible_session::Engine::new(initial_configuration, graph, quantum_loop);
     let (sender, receiver) = tokio::sync::mpsc::channel(64);
-    let nodes = captured_scenario
-        .world()
-        .vm_nodes()
-        .iter()
-        .map(|node| node.id.clone())
-        .collect::<Vec<_>>();
+    let world_nodes = captured_scenario.world().vm_nodes();
+    let mut nodes = Vec::new();
+    crucible_session::engine::owned_decode::reserve_vec(&mut nodes, world_nodes.len())
+        .map_err(|error| artifact_error(format!("admit replay node storage: {error}")))?;
+    for node in world_nodes {
+        decoding
+            .charge_bytes(node.id.name.len() as u64)
+            .map_err(|error| artifact_error(format!("admit replay node identity: {error}")))?;
+        nodes.push(node.id.clone());
+    }
     let (actor, execution_fingerprints) =
         replay_interactive_terminal_actor(engine, receiver, &replay_artifact, &nodes)?;
 
     let event_log = actor.event_log();
     let mut stream = event_log.subscribe(crucible_session::EventLogCursor::default());
-    let mut streamed_event_frames = Vec::with_capacity(event_log_len);
+    let mut streamed_event_frames = Vec::new();
+    crucible_session::engine::owned_decode::reserve_vec(&mut streamed_event_frames, event_log_len)
+        .map_err(|error| artifact_error(format!("admit replay event-frame storage: {error}")))?;
     for _ in 0..event_log_len {
         let frame = stream
             .try_recv()
             .map_err(|error| backend_error(format!("read replayed event log: {error}")))?
             .ok_or_else(|| backend_error("replayed event log ended before its final snapshot"))?;
-        let frame = crucible_api::StreamingEventFrame::from(frame);
-        streamed_event_frames.push(canonical_streaming_event_frame_bytes(&frame));
+        let frame = crucible_api::StreamingEventFrame::from_admitted(frame)
+            .map_err(|error| artifact_error(format!("admit replayed event frame: {error}")))?;
+        streamed_event_frames.push(
+            crate::cli_verify_serve::admitted_streaming_event_frame_bytes(
+                frame.value(),
+                &decoding,
+            )?,
+        );
     }
-    let reproduction_commands = actor
+    let reproduction_snapshot = actor
         .reproduction_log()
-        .snapshot()
-        .into_iter()
-        .map(crucible_api::ReproductionCommandRecord::from)
-        .collect::<Vec<_>>();
+        .snapshot_admitted()
+        .map_err(|error| artifact_error(format!("admit replay command snapshot: {error}")))?;
+    let mut reproduction_commands = Vec::new();
+    let mut output_custody = Vec::new();
+    crucible_session::engine::owned_decode::reserve_vec(
+        &mut reproduction_commands,
+        reproduction_snapshot.entries().len(),
+    )
+    .map_err(|error| artifact_error(format!("admit replay command reports: {error}")))?;
+    crucible_session::engine::owned_decode::reserve_vec(
+        &mut output_custody,
+        reproduction_snapshot.entries().len(),
+    )
+    .map_err(|error| artifact_error(format!("admit replay command custody: {error}")))?;
+    for entry in reproduction_snapshot.entries() {
+        let admitted = crucible_api::ReproductionCommandRecord::from_admitted(entry)
+            .map_err(|error| artifact_error(format!("admit replay command record: {error}")))?;
+        let (record, custody) = admitted.into_parts();
+        reproduction_commands.push(record);
+        output_custody.push(custody);
+    }
+    drop(reproduction_snapshot);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
+    decoding.check().map_err(|error| {
+        backend_error(format!(
+            "interactive replay metadata admission failed: {error}"
+        ))
+    })?;
+    drop(scope);
+    let actor_decoding = decoding.clone();
+
     runtime.block_on(async move {
-        let actor_task = tokio::spawn(async move { actor.run().await });
+        let actor_task = crucible_api::spawn_admitted_session_actor(actor, actor_decoding)
+            .map_err(|error| backend_error(format!("admit replay actor: {error}")))?;
         let (reply, receiver) = crucible_session::CommandReply::channel();
         sender
             .send(crucible_session::SessionCommand::acknowledged(
@@ -361,6 +444,23 @@ fn run_interactive_control_artifact_replay(
         Ok::<_, CliError>(())
     })?;
 
+    let _scope = decoding.enter();
+    decoding.check().map_err(|error| {
+        backend_error(format!(
+            "interactive replay metadata admission failed: {error}"
+        ))
+    })?;
+    let final_snapshot = replay_artifact.final_snapshot;
+    let terminal_configuration = final_snapshot
+        .configuration
+        .try_clone_admitted()
+        .map_err(|error| artifact_error(format!("admit replay report configuration: {error}")))?;
+    let final_frontier_ticks = final_snapshot.frontier.ticks;
+    let final_quanta = final_snapshot.quanta;
+    decoding
+        .charge_array::<String>(1)
+        .and_then(|_| decoding.charge_bytes(("loaded".len() + 2 * "stopped".len()) as u64))
+        .map_err(|error| artifact_error(format!("admit replay report labels: {error}")))?;
     Ok(RunWorkflowReport {
         status: BackendCommandStatus::Passed,
         execution_owner: RunExecutionOwner::Session,
@@ -372,10 +472,10 @@ fn run_interactive_control_artifact_replay(
             .terminal_savepoint
             .as_ref()
             .map(|checkpoint| checkpoint.id),
-        terminal_configuration: Some(final_snapshot.configuration.clone()),
-        final_snapshot: Some(final_snapshot.clone()),
-        final_frontier_ticks: final_snapshot.frontier.ticks,
-        final_quanta: final_snapshot.quanta,
+        terminal_configuration: Some(terminal_configuration),
+        final_snapshot: Some(final_snapshot),
+        final_frontier_ticks,
+        final_quanta,
         budget_timed_out: false,
         state_updates: vec![String::from("stopped")],
         streamed_events: Vec::new(),
@@ -386,6 +486,8 @@ fn run_interactive_control_artifact_replay(
         acknowledged_commands: Vec::new(),
         reproduction_commands,
         watch_statuses: Vec::new(),
+        input_custody: crucible_session::engine::owned_decode::current_custody(),
+        output_custody,
     })
 }
 
@@ -544,7 +646,9 @@ fn replay_indexed_network_choices(
                             && crucible::is_live_world_network_selection(&selection)
                     }) =>
                 {
-                    Ok(decision.clone())
+                    decision.try_clone_admitted().map_err(|error| {
+                        artifact_error(format!("admit replay network choice: {error}"))
+                    })
                 }
                 _ => Err(artifact_error(
                     "network choice index does not identify a typed live-world network selection",

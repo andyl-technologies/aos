@@ -357,6 +357,14 @@ pub struct LinuxProjectQuotaBinding {
     supervisor: HostOperationSupervisor,
 }
 
+type ProjectAdmission<'a> = &'a mut dyn FnMut((u64, u32)) -> Result<(), LinuxProjectQuotaError>;
+
+struct BindingScope<'a> {
+    operation: &'a HostOperationGuard,
+    retain_uncertain_namespace: bool,
+    admission: Option<ProjectAdmission<'a>>,
+}
+
 impl LinuxProjectQuotaBinding {
     /// Audits and exclusively leases an already configured quota namespace.
     ///
@@ -386,8 +394,11 @@ impl LinuxProjectQuotaBinding {
             maximum_physical_bytes,
             maximum_inodes,
             supervisor,
-            &operation,
-            false,
+            BindingScope {
+                operation: &operation,
+                retain_uncertain_namespace: false,
+                admission: None,
+            },
         )?;
         operation.complete()?;
         Ok(binding)
@@ -418,9 +429,51 @@ impl LinuxProjectQuotaBinding {
             maximum_physical_bytes,
             maximum_inodes,
             supervisor,
-            operation,
-            true,
+            BindingScope {
+                operation,
+                retain_uncertain_namespace: true,
+                admission: None,
+            },
         )
+    }
+
+    /// Admits an authenticated physical project before creating its lease file.
+    ///
+    /// The callback receives only a verified, pinned filesystem/project identity.
+    /// It charges cumulative persistent capacity before the first namespace
+    /// effect. On uncertain later failure, the original pin and lease remain
+    /// retained; the caller must retain its exact resource receipts too.
+    ///
+    /// # Errors
+    /// Refuses original supervision, invalid existing quota authority, callback
+    /// admission refusal, or unsafe namespace contents. Failed completion keeps
+    /// the successfully bound namespace pinned for conservative retirement.
+    pub fn bind_existing_admitted(
+        root: &Path,
+        project_id: u32,
+        maximum_physical_bytes: u64,
+        maximum_inodes: u64,
+        supervisor: HostOperationSupervisor,
+        admission: &mut dyn FnMut((u64, u32)) -> Result<(), LinuxProjectQuotaError>,
+    ) -> Result<Self, LinuxProjectQuotaError> {
+        let operation = supervisor.begin_work(HostOperationClass::Preparation, maximum_inodes)?;
+        let binding = Self::bind_existing_internal(
+            root,
+            project_id,
+            maximum_physical_bytes,
+            maximum_inodes,
+            supervisor,
+            BindingScope {
+                operation: &operation,
+                retain_uncertain_namespace: true,
+                admission: Some(admission),
+            },
+        )?;
+        if let Err(error) = operation.complete() {
+            std::mem::forget(binding);
+            return Err(error.into());
+        }
+        Ok(binding)
     }
 
     fn bind_existing_internal(
@@ -429,9 +482,9 @@ impl LinuxProjectQuotaBinding {
         maximum_physical_bytes: u64,
         maximum_inodes: u64,
         supervisor: HostOperationSupervisor,
-        operation: &HostOperationGuard,
-        retain_uncertain_namespace: bool,
+        mut scope: BindingScope<'_>,
     ) -> Result<Self, LinuxProjectQuotaError> {
+        let operation = scope.operation;
         if !project_id_is_supported(project_id) {
             return Err(LinuxProjectQuotaError::InvalidProjectId);
         }
@@ -462,7 +515,18 @@ impl LinuxProjectQuotaBinding {
             path: root.to_owned(),
             source: source.into(),
         })?;
-        let namespace = descendants::NamespaceLease::acquire(&directory, root, project_id)?;
+        if let Some(admission) = scope.admission.as_mut() {
+            admission((identity.st_dev, project_id))?;
+        }
+        let namespace = match descendants::NamespaceLease::acquire(&directory, root, project_id) {
+            Ok(namespace) => namespace,
+            Err(error) => {
+                if scope.retain_uncertain_namespace {
+                    std::mem::forget(directory);
+                }
+                return Err(error);
+            }
+        };
         let checked = (|| {
             descendants::audit(&directory, root, project_id, maximum_inodes, operation)?;
             operation.wait_slice()?;
@@ -472,7 +536,7 @@ impl LinuxProjectQuotaBinding {
             Ok::<_, LinuxProjectQuotaError>(())
         })();
         if let Err(error) = checked {
-            if retain_uncertain_namespace {
+            if scope.retain_uncertain_namespace {
                 // The caller keeps the original resource account. Preserve the
                 // actual lease too, so another owner cannot reopen uncertain
                 // durable bytes while their first charge remains retained.
@@ -1267,6 +1331,40 @@ mod tests {
 
         actual.fsx_projid = 43;
         assert!(!project_attributes_match(actual, expected));
+    }
+
+    #[test]
+    fn canceled_project_admission_never_calls_the_backing_effect_boundary() {
+        let duration = std::time::Duration::from_secs(60);
+        let supervisor = HostOperationSupervisor::new(
+            crate::host_supervision::HostOperationBudgets {
+                classes: [crate::host_supervision::HostOperationBudget::finite(duration);
+                    crate::host_supervision::HOST_OPERATION_CLASS_COUNT],
+            },
+            Some(duration),
+        )
+        .unwrap_or_else(|error| panic!("authored original fixture roster: {error}"));
+        supervisor
+            .cancel()
+            .unwrap_or_else(|error| panic!("cancel original fixture owner: {error}"));
+        let mut admitted = false;
+        let result = LinuxProjectQuotaBinding::bind_existing_admitted(
+            Path::new("/aos-quota-admission-must-remain-unopened"),
+            701,
+            16 << 20,
+            16,
+            supervisor,
+            &mut |_| {
+                admitted = true;
+                Ok(())
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(LinuxProjectQuotaError::Supervision(_))
+        ));
+        assert!(!admitted);
     }
 
     #[test]

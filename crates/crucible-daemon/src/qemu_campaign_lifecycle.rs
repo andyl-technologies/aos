@@ -137,6 +137,8 @@ pub enum QemuAttemptProductionVmLifecycleError {
 }
 
 mod ram_registration;
+#[cfg(test)]
+pub(crate) use ram_registration::create_native_qualification_ram_registration_factory;
 mod resource_admission;
 pub(crate) use ram_registration::{
     create_host_ram_registration_factory, host_ram_launch_requirements,
@@ -658,6 +660,10 @@ pub(crate) use evidence::{
 };
 
 mod campaign_run;
+#[cfg(test)]
+pub(crate) use campaign_run::native_throughput::{
+    NativeCampaignProbe, run as run_native_throughput_campaign,
+};
 pub(crate) use campaign_run::run_admitted_finding_branch;
 mod start_replay;
 #[cfg(test)]
@@ -1388,7 +1394,15 @@ impl<F, D> QemuFreshExecutionRunner<F, D> {
             }
         };
         let evidence = match expected_replay {
-            Some(expected) => evidence.compare_against_expected_replay(expected),
+            Some(expected) => {
+                evidence
+                    .compare_against_expected_replay(expected)
+                    .map_err(|source| {
+                        Box::new(map_fresh_driver_failure(AttemptWorkerFailure::Terminal(
+                            crate::QemuFreshModeledDriverError::Configuration(source),
+                        )))
+                    })?
+            }
             None => evidence,
         };
         Ok(QemuFindingCandidateReplayOutcome::Observed(Box::new(
@@ -1757,7 +1771,11 @@ impl QemuFreshStartMaterialization {
     ) -> Self {
         let event_log_bytes = event_log
             .iter()
-            .map(SchedulerEventLogEntry::canonical_material_len)
+            .map(|entry| {
+                entry
+                    .canonical_material_len()
+                    .unwrap_or_else(|source| panic!("fixture event material admission: {source}"))
+            })
             .sum();
         Self {
             restored_configuration: None,

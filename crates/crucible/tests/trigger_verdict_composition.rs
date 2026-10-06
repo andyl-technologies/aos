@@ -66,6 +66,9 @@ fn apply_entrypoint_action(action: Action) -> (TriggerActionState, Vec<Scheduler
 
 #[test]
 fn explicit_fail_is_sticky_over_later_pass() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (state, _) = apply_entrypoint_action(Action::Group(vec![
         Action::Fail {
             reason: String::from("invariant violated"),
@@ -88,6 +91,9 @@ fn explicit_fail_is_sticky_over_later_pass() {
 
 #[test]
 fn pass_updates_until_a_failure_becomes_sticky() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (state, _) = apply_entrypoint_action(Action::Group(vec![Action::Pass, Action::Pass]));
     assert!(state.termination_requested);
     let verdict = state.compose_run_verdict(AssertionRunVerdict::passed());
@@ -104,6 +110,9 @@ fn pass_updates_until_a_failure_becomes_sticky() {
 
 #[test]
 fn explicit_pass_cannot_mask_assertion_failure() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (state, _) = apply_entrypoint_action(Action::Pass);
     let verdict = state.compose_run_verdict(AssertionRunVerdict::failed(vec![assertion_failure(
         "always-safe",
@@ -126,6 +135,9 @@ fn explicit_pass_cannot_mask_assertion_failure() {
 
 #[test]
 fn trigger_fail_and_assertion_failures_compose_deterministically() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (state, event_log_entries) = apply_entrypoint_action(Action::Fail {
         reason: String::from("explicit fail"),
     });
@@ -159,6 +171,9 @@ fn trigger_fail_and_assertion_failures_compose_deterministically() {
 
 #[test]
 fn passed_assertions_and_trigger_pass_compose_to_pass() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (state, event_log_entries) = apply_entrypoint_action(Action::Pass);
     let verdict = state.compose_run_verdict(AssertionRunVerdict::passed());
     assert_eq!(

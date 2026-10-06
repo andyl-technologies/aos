@@ -14,6 +14,9 @@ use crucible::{
 
 #[test]
 fn actor_control_submitted_before_drive_applies_at_next_boundary() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (handle, mut actor) = scheduler_actor(SchedulerNodeActivity::Runnable);
     let before = actor_snapshot(&handle, &mut actor);
     let first = drive_actor_quantum(&handle, &mut actor, before, Vec::new());
@@ -62,6 +65,9 @@ fn actor_control_submitted_before_drive_applies_at_next_boundary() {
 
 #[test]
 fn request_control_applies_before_pick_in_same_quantum() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (handle, mut actor) = scheduler_actor(SchedulerNodeActivity::Runnable);
     let before = actor_snapshot(&handle, &mut actor);
     let after = drive_actor_quantum(
@@ -87,6 +93,9 @@ fn request_control_applies_before_pick_in_same_quantum() {
 
 #[test]
 fn queued_and_request_controls_apply_together_in_boundary_order() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (handle, mut actor) = scheduler_actor(SchedulerNodeActivity::Runnable);
     handle
         .queue_control(control(9, ControlOperationKind::Snapshot))
@@ -145,6 +154,9 @@ fn queued_and_request_controls_apply_together_in_boundary_order() {
 
 #[test]
 fn actor_drains_submitted_control_before_deferred_drive_messages() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (handle, mut actor) = scheduler_actor(SchedulerNodeActivity::Runnable);
     let before = actor_snapshot(&handle, &mut actor);
     let first_reply = handle
@@ -194,6 +206,9 @@ fn actor_drains_submitted_control_before_deferred_drive_messages() {
 
 #[test]
 fn queued_control_only_boundary_does_not_wait_for_runnable_node() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (handle, mut actor) = scheduler_actor(SchedulerNodeActivity::Done);
     let before = actor_snapshot(&handle, &mut actor);
     handle

@@ -23,6 +23,9 @@ use crucible_qemu::ram_control::RamControlRegistration;
 
 use crate::{AttemptExecutionContext, HostOperationalRegistry};
 
+#[cfg(test)]
+mod native_initial;
+
 static NEXT_ARENA_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 struct PreparedWorld {
@@ -45,6 +48,7 @@ struct PreparedWorld {
 struct AdmittedRamRegistrationFactory {
     #[cfg(test)]
     component_ram_facts: bool,
+    initial_mode: HostRamMode,
     registry: HostOperationalRegistry,
     daemon_epoch: [u8; 32],
     owner_id: [u8; 32],
@@ -64,6 +68,26 @@ struct AdmittedRamRegistrationFactory {
 /// or original-start host supervisor.
 pub(crate) fn create_host_ram_registration_factory(
     context: &AttemptExecutionContext,
+) -> Result<Arc<dyn ProductionHostRamRegistrationFactory>, HostRamAdmissionError> {
+    create_registration_factory(context, HostRamMode::Managed)
+}
+
+#[cfg(test)]
+pub(crate) fn create_native_qualification_ram_registration_factory(
+    context: &AttemptExecutionContext,
+    mode: HostRamMode,
+) -> Result<Arc<dyn ProductionHostRamRegistrationFactory>, HostRamAdmissionError> {
+    if mode != HostRamMode::ResidentRequired || context.uses_component_ram_facts() {
+        return Err(HostRamAdmissionError::contract(
+            "strict child requires genuine native owner",
+        ));
+    }
+    create_registration_factory(context, mode)
+}
+
+fn create_registration_factory(
+    context: &AttemptExecutionContext,
+    initial_mode: HostRamMode,
 ) -> Result<Arc<dyn ProductionHostRamRegistrationFactory>, HostRamAdmissionError> {
     let registry = context
         .host_operational_registry()
@@ -105,6 +129,7 @@ pub(crate) fn create_host_ram_registration_factory(
     Ok(Arc::new(AdmittedRamRegistrationFactory {
         #[cfg(test)]
         component_ram_facts: context.uses_component_ram_facts(),
+        initial_mode,
         registry,
         daemon_epoch: context.host_daemon_epoch(),
         owner_id,
@@ -230,13 +255,7 @@ impl ProductionHostRamRegistrationFactory for AdmittedRamRegistrationFactory {
             _fault_diagnostic_resources: fault_diagnostic_resources,
             registrars: shapes
                 .iter()
-                .map(|shape| {
-                    (
-                        shape.node.clone(),
-                        Arc::new(self.registry.clone())
-                            as Arc<dyn crucible_qemu::ram_control::RamControlRegistrar>,
-                    )
-                })
+                .map(|shape| (shape.node.clone(), self.initial_registrar()))
                 .collect(),
             prepared_nodes: std::collections::BTreeSet::new(),
             shapes,
@@ -475,7 +494,7 @@ impl ProductionHostRamRegistrationFactory for AdmittedRamRegistrationFactory {
             .budgets()
             .map_err(HostRamAdmissionError::Supervision)?;
         let initial_policy = HostRamPolicy {
-            mode: HostRamMode::Managed,
+            mode: self.initial_mode,
             resident_target_bytes: declared_ram_bytes,
             eviction_preference: 0,
             writeback_bytes_per_second:
@@ -505,6 +524,18 @@ impl ProductionHostRamRegistrationFactory for AdmittedRamRegistrationFactory {
             host_services,
             registrar,
         })
+    }
+}
+
+impl AdmittedRamRegistrationFactory {
+    fn initial_registrar(&self) -> Arc<dyn crucible_qemu::ram_control::RamControlRegistrar> {
+        #[cfg(test)]
+        if self.initial_mode == HostRamMode::ResidentRequired {
+            return Arc::new(native_initial::NativeInitialRegistrar::new(
+                self.registry.clone(),
+            ));
+        }
+        Arc::new(self.registry.clone())
     }
 }
 

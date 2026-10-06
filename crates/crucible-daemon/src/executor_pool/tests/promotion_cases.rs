@@ -4,6 +4,9 @@ use super::*;
 
 #[test]
 fn promotion_report_records_terminal_preparation_from_real_process_path() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let checkpoints = checkpoint_store(standalone_ram_retention());
     let (shared, mut work, prepared, _) = promotion_process_fixture(Arc::clone(&checkpoints));
     let mut worker = TerminalPromotionWorker;
@@ -40,6 +43,9 @@ fn promotion_report_records_terminal_preparation_from_real_process_path() {
 
 #[test]
 fn stale_raw_promotion_is_discarded_before_worker_preparation() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let checkpoints = checkpoint_store(standalone_ram_retention());
     let fixture = crate::prepare_repository_promotion_fixture(&checkpoints);
     let crate::RepositoryPromotionFixture {
@@ -159,6 +165,9 @@ fn stale_raw_promotion_is_discarded_before_worker_preparation() {
 
 #[test]
 fn promotion_report_records_terminal_publication_and_raw_reversion() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let backend = Arc::new(RejectingPromotionBackend::new());
     let checkpoints = Arc::new(
         ExactCheckpointStore::new(
@@ -223,6 +232,9 @@ fn promotion_report_records_terminal_publication_and_raw_reversion() {
 
 #[test]
 fn completed_promotion_worker_reclaims_its_live_claim() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let checkpoints = Arc::new(
         ExactCheckpointStore::new(
             Arc::new(TestDurableBackend::new()),

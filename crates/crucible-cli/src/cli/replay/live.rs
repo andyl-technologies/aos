@@ -10,12 +10,48 @@ pub(crate) fn replay_reproduction_artifact(
     cli: &Cli,
     args: &ReplayArgs,
 ) -> Result<ReplayArtifactReport, CliError> {
-    let bytes = fs::read(&args.artifact)?;
-    let artifact = validate_replayable_reproduction_artifact(cli, &bytes)?;
+    let uses_native = replay_uses_live_qemu(cli)?;
+    #[cfg(test)]
+    if uses_native && let Some(input) = crate::tests::component_input_resources() {
+        // Pure negative identity fixtures borrow their explicitly active input
+        // account. A matching artifact still proceeds to genuine native admission.
+        let _scope = input.decoding.enter();
+        let bytes = input.read(&args.artifact)?;
+        let artifact = decode_reproduction_artifact(&bytes)?;
+        verify_replay_identity(&artifact.identity, &expected_replay_identity(cli)?)?;
+    }
+    let authentication = uses_native
+        .then(|| {
+            crate::cli_campaign::FindingSourceAuthentication::open_native_replay(
+                cli,
+                &args.artifact,
+            )
+        })
+        .transpose()?;
+    let standalone = if uses_native {
+        None
+    } else {
+        Some(crate::cli_input_resources::StandaloneInputResources::open(
+            cli.campaign_deployment.as_deref(),
+        )?)
+    };
+    let decoding = authentication
+        .as_ref()
+        .map(|source| source.decoding.clone())
+        .or_else(|| standalone.as_ref().map(|source| source.decoding.clone()))
+        .ok_or_else(|| backend_error("replay lost its admitted input resources"))?;
+    let _scope = decoding.enter();
+    let mut read_input = |path: &Path| match (&authentication, &standalone) {
+        (Some(source), _) => source.read_input(path),
+        (_, Some(source)) => source.read(path),
+        _ => Err(backend_error("replay lost its admitted input resources")),
+    };
+    let bytes = read_input(&args.artifact)?;
+    let artifact = validate_replayable_reproduction_artifact(cli, &bytes, &mut read_input)?;
     let seed = artifact.seed;
     let scenario_digest = artifact.scenario.digest.clone();
     let reduction = replay_embedded_model_artifact(&artifact)?;
-    let live_qemu = if replay_uses_live_qemu(cli)? {
+    let live_qemu = if uses_native {
         if reduction.is_none() {
             return Err(artifact_error(
                 "live-QEMU replay requires an embedded pure model reproduction proof",
@@ -25,6 +61,10 @@ pub(crate) fn replay_reproduction_artifact(
             cli,
             &artifact,
             args.bounded_scheduler_preemption,
+            &authentication
+                .as_ref()
+                .ok_or_else(|| backend_error("native replay lost its original input owner"))?
+                .owner,
         )?)
     } else {
         if args.bounded_scheduler_preemption {
@@ -41,7 +81,7 @@ pub(crate) fn replay_reproduction_artifact(
         .transpose()?;
     let check = if let Some(path) = &args.check {
         let replayed = canonical_log_entry_bytes(&canonical_log_entries_from_artifact(&artifact)?);
-        let original = fs::read(path)?;
+        let original = read_input(path)?;
         let mismatch = (original != replayed).then(|| ReplayCheckMismatchReport {
             original_digest: content_address_bytes(&original),
             replayed_digest: content_address_bytes(&replayed),
@@ -73,6 +113,8 @@ pub(crate) fn replay_reproduction_artifact(
                     &artifact,
                     &bytes,
                     args.bounded_scheduler_preemption,
+                    authentication.as_ref(),
+                    standalone.as_ref(),
                 )
             })
             .transpose()?
@@ -87,6 +129,7 @@ pub(crate) fn replay_reproduction_artifact(
         to_savepoint,
         check,
         bisect,
+        _input_custody: Some(decoding.custody()),
     })
 }
 
@@ -103,6 +146,7 @@ pub(super) fn replay_live_qemu_evidence(
     cli: &Cli,
     artifact: &CliReproductionArtifact,
     bounded_scheduler_preemption: bool,
+    owner: &crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignOwner,
 ) -> Result<ReplayLiveQemuProof, CliError> {
     let contract_bytes = required_single_component_payload(
         artifact,
@@ -176,7 +220,7 @@ pub(super) fn replay_live_qemu_evidence(
         (_, None) => None,
     };
     let top_level_fingerprints =
-        verify_fingerprint_stream_bytes(&artifact_fingerprint_samples(artifact));
+        verify_fingerprint_stream_bytes(&artifact_fingerprint_samples(artifact)?);
     if top_level_fingerprints != expected_fingerprints {
         return Err(artifact_error(
             "live-QEMU fingerprint component does not match top-level artifact samples",
@@ -230,7 +274,10 @@ pub(super) fn replay_live_qemu_evidence(
     }
     let terminal_configuration = crucible::Configuration {
         def: scenario.scenario_def(),
-        schedule: model.schedule().clone(),
+        schedule: model
+            .schedule()
+            .try_clone_admitted()
+            .map_err(|error| artifact_error(format!("admit replay schedule copy: {error}")))?,
     };
     if format_content_hash_ref(terminal_configuration.id()) != contract.terminal_configuration {
         return Err(CliError::Identity(format!(
@@ -271,6 +318,7 @@ pub(super) fn replay_live_qemu_evidence(
         model.schedule(),
         &contract,
         LiveQemuReplayResources {
+            owner: owner.clone(),
             campaign_closure: campaign_replay_closure,
             effect_trace: resolved_effect_trace,
             lifecycle_artifacts,

@@ -5,6 +5,7 @@
   taskIds ? ["T-CLI-15"],
   openTaskIds ? [],
   dependencies ? [],
+  nativeOfflineIntegration,
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -325,6 +326,7 @@ in
 
       buildDeps = [
         pkgs.coreutils
+        pkgs.grep
         pkgs.rust
         pkgs.sed
 
@@ -379,16 +381,13 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-cli-exit-machine-readable-target" \
               -p crucible-cli \
+              --bin crucible \
               cli_exit_machine_readable \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-cli-exit-machine-readable-target" \
-              --features test-double \
-              -p crucible-cli \
-              --test machine_readable \
-              -- --test-threads=1
+            test -f ${nativeOfflineIntegration}/result
+            ${pkgs.grep}/bin/grep -Fxq cli_native_offline_executions=11 ${nativeOfflineIntegration}/result
+            ${pkgs.grep}/bin/grep -Fxq gate=gate:cli-native-offline-integration ${nativeOfflineIntegration}/result
+            test "$(${pkgs.grep}/bin/grep -Fc 'cli_native_offline_selector_pass=machine_readable:' ${nativeOfflineIntegration}/result)" -eq 8
           '';
         }
         {

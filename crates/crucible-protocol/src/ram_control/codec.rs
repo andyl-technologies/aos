@@ -2,6 +2,9 @@
 
 use super::*;
 
+mod fault_actor;
+mod operation_failure;
+
 struct Decoder<'a> {
     bytes: &'a [u8],
     offset: usize,
@@ -309,6 +312,7 @@ pub fn encode_ram_control(frame: &RamControlFrame) -> Result<Vec<u8>, RamControl
         RamControlMessage::Request(RamControlRequest::InventoryRegion { .. }) => 4,
         RamControlMessage::Request(RamControlRequest::GrantInventory { .. }) => 5,
         RamControlMessage::Request(RamControlRequest::SyncOuterCap { .. }) => 6,
+        RamControlMessage::Request(RamControlRequest::TestFaultActor { .. }) => 7,
         RamControlMessage::Reply { .. } => 128,
     };
     let mut out = Vec::with_capacity(1024);
@@ -323,6 +327,18 @@ pub fn encode_ram_control(frame: &RamControlFrame) -> Result<Vec<u8>, RamControl
     out.extend_from_slice(&frame.target.arena_generation.to_be_bytes());
     out.push(u8::from(frame.target.retained_template));
     match frame.message {
+        RamControlMessage::Request(RamControlRequest::TestFaultActor {
+            entitlement,
+            worker_generation,
+            action,
+        }) => {
+            if entitlement == [0; 32] || worker_generation == 0 {
+                return Err(RamControlError::InvalidFrame);
+            }
+            out.extend_from_slice(&entitlement);
+            out.extend_from_slice(&worker_generation.to_be_bytes());
+            out.push(action as u8);
+        }
         RamControlMessage::Request(RamControlRequest::Apply {
             expected_revision,
             policy_revision,
@@ -383,6 +399,9 @@ pub fn encode_ram_control(frame: &RamControlFrame) -> Result<Vec<u8>, RamControl
             request_digest,
             state,
         } => {
+            if let Some(receipt) = state.placement_receipt {
+                receipt.validate(&state)?;
+            }
             if state.applied_policy_revision > state.requested_policy_revision {
                 return Err(RamControlError::InvalidFrame);
             }
@@ -420,6 +439,8 @@ pub fn encode_ram_control(frame: &RamControlFrame) -> Result<Vec<u8>, RamControl
             ] {
                 out.extend_from_slice(&value.to_be_bytes());
             }
+            operation_failure::encode(&mut out, state.operation_failure)?;
+            fault_actor::encode(&mut out, state.fault_actor)?;
             out.push(state.convergence as u8);
             encode_inventory(&mut out, state.inventory, state.inventory_region)?;
             out.push(u8::from(state.activity.is_some()));
@@ -446,6 +467,21 @@ pub fn encode_ram_control(frame: &RamControlFrame) -> Result<Vec<u8>, RamControl
                 out.extend_from_slice(&probe.effective_uid.to_be_bytes());
                 out.extend_from_slice(&probe.effective_gid.to_be_bytes());
                 out.extend_from_slice(&probe.features.to_be_bytes());
+            }
+            out.push(u8::from(state.placement_receipt.is_some()));
+            if let Some(receipt) = state.placement_receipt {
+                out.push(receipt.mode as u8);
+                for value in [
+                    receipt.policy_revision,
+                    receipt.topology_generation,
+                    receipt.placement_epoch,
+                    receipt.locked_bytes,
+                    receipt.disk_preserved_logical_pages,
+                    receipt.disk_preserved_logical_bytes,
+                    receipt.ram_write_generation_at_cut,
+                ] {
+                    out.extend_from_slice(&value.to_be_bytes());
+                }
             }
         }
         _ => {}
@@ -522,6 +558,15 @@ pub fn decode_ram_control(bytes: &[u8]) -> Result<RamControlFrame, RamControlErr
         6 => RamControlMessage::Request(RamControlRequest::SyncOuterCap {
             cap: decode_ram_control_outer(&input.take::<RAM_CONTROL_OUTER_BYTES>()?)?,
         }),
+        7 => RamControlMessage::Request(RamControlRequest::TestFaultActor {
+            entitlement: input.take()?,
+            worker_generation: input.u64()?,
+            action: match input.byte()? {
+                0 => RamControlFaultActorAction::Observe,
+                1 => RamControlFaultActorAction::RequestExit,
+                _ => return Err(RamControlError::InvalidFrame),
+            },
+        }),
         128 => {
             let request_digest = input.take()?;
             let disposition = match input.byte()? {
@@ -537,6 +582,9 @@ pub fn decode_ram_control(bytes: &[u8]) -> Result<RamControlFrame, RamControlErr
             let limitation_reasons = input.u32()?;
             let measurements_available = input.boolean()?;
             let mut state = RamControlReply {
+                placement_receipt: None,
+                operation_failure: None,
+                fault_actor: None,
                 kernel_probe: None,
                 activity: None,
                 inventory: None,
@@ -558,6 +606,8 @@ pub fn decode_ram_control(bytes: &[u8]) -> Result<RamControlFrame, RamControlErr
                 writeback_pending_bytes: input.u64()?,
                 convergence: RamControlConvergence::Stable,
             };
+            state.operation_failure = operation_failure::decode(&mut input)?;
+            state.fault_actor = fault_actor::decode(&mut input)?;
             state.convergence = match input.byte()? {
                 0 => RamControlConvergence::Stable,
                 1 => RamControlConvergence::Applying,
@@ -593,6 +643,24 @@ pub fn decode_ram_control(bytes: &[u8]) -> Result<RamControlFrame, RamControlErr
                     effective_uid: input.u32()?,
                     effective_gid: input.u32()?,
                     features: input.u64()?,
+                }),
+                _ => return Err(RamControlError::InvalidFrame),
+            };
+            state.placement_receipt = match input.byte()? {
+                0 => None,
+                1 => Some(RamControlPlacementReceipt {
+                    mode: match input.byte()? {
+                        1 => RamControlMode::DiskOriented,
+                        2 => RamControlMode::ResidentRequired,
+                        _ => return Err(RamControlError::InvalidFrame),
+                    },
+                    policy_revision: input.u64()?,
+                    topology_generation: input.u64()?,
+                    placement_epoch: input.u64()?,
+                    locked_bytes: input.u64()?,
+                    disk_preserved_logical_pages: input.u64()?,
+                    disk_preserved_logical_bytes: input.u64()?,
+                    ram_write_generation_at_cut: input.u64()?,
                 }),
                 _ => return Err(RamControlError::InvalidFrame),
             };

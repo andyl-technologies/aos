@@ -82,6 +82,7 @@ pub struct QemuChildProcessContract {
     maximum_resident_bytes: u64,
     maximum_writable_bytes: u64,
     maximum_file_descriptors: Option<u64>,
+    maximum_locked_bytes: u64,
     credentials: Option<QemuChildCredentials>,
     attempt_binding: Arc<AttemptResourceBinding>,
     exact_checkpoint_root: Option<crucible::ContentHash>,
@@ -91,6 +92,7 @@ pub struct QemuChildProcessContract {
 pub(crate) struct QemuChildFileLimits {
     pub(crate) writable_bytes: u64,
     pub(crate) descriptors: u64,
+    pub(crate) locked_bytes: u64,
 }
 
 #[derive(Debug)]
@@ -232,6 +234,12 @@ impl QemuChildProcessContract {
             .map(|credentials| (credentials.user_id, credentials.group_id))
     }
 
+    /// Returns the authenticated hard and soft child memory-lock entitlement.
+    #[must_use]
+    pub const fn maximum_locked_bytes(&self) -> u64 {
+        self.maximum_locked_bytes
+    }
+
     /// Duplicates the sticky cancellation event for one bounded QMP operation.
     ///
     /// The returned descriptor observes the same eventfd counter as the child
@@ -296,6 +304,7 @@ impl QemuChildProcessContract {
             maximum_resident_bytes: self.maximum_resident_bytes,
             maximum_writable_bytes: self.maximum_writable_bytes,
             maximum_file_descriptors: self.maximum_file_descriptors,
+            maximum_locked_bytes: self.maximum_locked_bytes,
             credentials: self.credentials,
             attempt_binding: Arc::clone(&self.attempt_binding),
             exact_checkpoint_root: self.exact_checkpoint_root,
@@ -344,6 +353,12 @@ impl QemuChildProcessContract {
         credentials: QemuChildCredentials,
         exact_checkpoint_root: Option<crucible::ContentHash>,
     ) -> Result<Self, QemuSpawnError> {
+        if files.locked_bytes == libc::RLIM_INFINITY {
+            return Err(invalid_input(
+                "seal QEMU memory-lock limit",
+                "memory-lock entitlement must be finite",
+            ));
+        }
         if files.descriptors < 16 {
             return Err(invalid_input(
                 "seal QEMU descriptor limit",
@@ -361,6 +376,7 @@ impl QemuChildProcessContract {
             maximum_resident_bytes: cgroup_limits.maximum_resident_bytes(),
             maximum_writable_bytes: files.writable_bytes,
             maximum_file_descriptors: Some(files.descriptors),
+            maximum_locked_bytes: files.locked_bytes,
             credentials: Some(credentials),
             attempt_binding: Arc::new(AttemptResourceBinding),
             exact_checkpoint_root,
@@ -454,6 +470,7 @@ impl QemuChildProcessContract {
             maximum_resident_bytes,
             maximum_writable_bytes,
             maximum_file_descriptors: None,
+            maximum_locked_bytes: 0,
             credentials: None,
             attempt_binding: Arc::new(AttemptResourceBinding),
             exact_checkpoint_root,
@@ -484,6 +501,7 @@ impl QemuChildProcessContract {
             maximum_resident_bytes,
             maximum_writable_bytes,
             maximum_file_descriptors: None,
+            maximum_locked_bytes: 0,
             credentials: None,
             attempt_binding: Arc::new(AttemptResourceBinding),
             exact_checkpoint_root: None,
@@ -1239,6 +1257,7 @@ fn spawn_process_with_resources(
         cancellation_event: contract.cancellation_event.as_raw_fd(),
         maximum_file_bytes: contract.maximum_writable_bytes,
         maximum_file_descriptors: contract.maximum_file_descriptors,
+        maximum_locked_bytes: contract.maximum_locked_bytes,
         credentials: contract.credentials,
     });
     let pinned_run_directory = PreparedRunDirectoryRaw {
@@ -1583,6 +1602,7 @@ fn install_guarded_helper_authority_with_probe_pin(
         cancellation_event: process_contract.cancellation_event.as_raw_fd(),
         maximum_file_bytes: process_contract.maximum_writable_bytes,
         maximum_file_descriptors: process_contract.maximum_file_descriptors,
+        maximum_locked_bytes: process_contract.maximum_locked_bytes,
         credentials: process_contract.credentials,
     };
     let directory = PreparedRunDirectoryRaw {
@@ -1796,6 +1816,7 @@ struct ChildProcessContractRaw {
     cancellation_event: RawFd,
     maximum_file_bytes: u64,
     maximum_file_descriptors: Option<u64>,
+    maximum_locked_bytes: u64,
     credentials: Option<QemuChildCredentials>,
 }
 
@@ -1936,6 +1957,20 @@ fn install_attempt_process_contract(contract: ChildProcessContractRaw) -> io::Re
         if result != 0 {
             return Err(io::Error::last_os_error());
         }
+    }
+
+    // Install the exact authored limit before credentials are dropped. Kernel
+    // refusal to raise an inherited hard limit aborts launch before placement.
+    let locked_limit = libc::rlimit {
+        rlim_cur: contract.maximum_locked_bytes,
+        rlim_max: contract.maximum_locked_bytes,
+    };
+    let result = unsafe {
+        // SAFETY: The initialized limit is copied by this async-signal-safe syscall.
+        libc::setrlimit(libc::RLIMIT_MEMLOCK, &locked_limit)
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
     }
 
     let no_new_privileges = unsafe {

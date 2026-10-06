@@ -4,6 +4,9 @@ use super::*;
 
 #[test]
 fn production_resolve_availability_suppresses_the_routed_frame() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let (world, segment) = availability_world();
     let scenario = SchedulerLivenessScenario::from_runnable_world(
         "production-resolve-availability",

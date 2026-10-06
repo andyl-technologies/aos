@@ -223,6 +223,9 @@ fn lower_hex(bytes: &[u8]) -> String {
 
 #[test]
 fn capability_projection_preserves_exact_manifest_bytes_and_guest_definition() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     // This codec fixture proves projection only. Native qualification obtains
     // the manifest from an admitted live node and never uses this constructor.
     let manifest = FaultRegisterCapabilityManifestV1 {

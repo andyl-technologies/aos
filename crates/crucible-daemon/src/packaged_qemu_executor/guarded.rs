@@ -12,7 +12,7 @@ pub(crate) use operation_error::RetainedOperationError;
 mod reproduction;
 use crate::executor_pool::{CampaignActorPort, PreparedExecutorActor};
 use crucible_cas::content_store::StorePhysicalQuotaGuard;
-pub(crate) use reproduction::CompletedReproductionBasis;
+pub(crate) use reproduction::{CompletedReproductionBasis, CompletedReproductionError};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 mod continuation;

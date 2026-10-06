@@ -621,12 +621,15 @@ fn world_fork_atomicity_standard_requires_production_transaction_proofs()
     let source = [
         "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance.rs",
         "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/failures.rs",
+        "crates/crucible-daemon/src/packaged_qemu_executor/tests/paging_native/equivalence/atomic.rs",
+        "crates/crucible-daemon/src/packaged_qemu_executor/tests/paging_native/equivalence/failures.rs",
     ]
     .into_iter()
     .map(|path| fs::read_to_string(root.join(path)))
     .collect::<Result<Vec<_>, _>>()?
     .join("\n");
-    assert!(source_shape_failures(target, standard, &source).is_empty());
+    let failures = source_shape_failures(target, standard, &source);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
     assert!(backend_failures(target, standard).is_empty());
 
     for proof in [
@@ -636,6 +639,11 @@ fn world_fork_atomicity_standard_requires_production_transaction_proofs()
         "production_factory_exposes_no_world_when_second_real_adoption_fails",
         "production_factory_keeps_source_private_until_target_cleanup_retries",
         "production_factory_keeps_source_private_across_repository_publication_retry",
+        "run_atomic_failure_native",
+        "assert_eq!(restored.faults, self.boundary.faults);",
+        "assert_eq!(restored.fingerprints, self.boundary.fingerprints);",
+        "assert!(factory.recover(child).is_ok());",
+        "assert_eq!(available_resources(self.prepared), before);",
     ] {
         let without_proof = source.replace(proof, "missing_world_fork_atomicity_proof");
         assert!(

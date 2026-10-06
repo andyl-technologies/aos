@@ -4,6 +4,8 @@ use super::*;
 
 #[test]
 fn finding_candidate_replay_evaluates_the_declared_stop_after_materialization() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let input = modeled_fresh_runner_input_for_stop(StopCondition::ExecutionQuanta(4));
     let candidate = finding_candidate_artifact(&input);
     let context = fresh_runner_context();
@@ -34,6 +36,8 @@ fn finding_candidate_replay_evaluates_the_declared_stop_after_materialization() 
 
 #[test]
 fn finding_candidate_replay_continues_after_reaching_a_nonempty_schedule() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let input = modeled_non_genesis_fresh_runner_input_for_stop(StopCondition::ExecutionQuanta(2));
     let candidate = finding_candidate_artifact(&input);
     let context = fresh_runner_context();
@@ -69,6 +73,8 @@ fn finding_candidate_replay_continues_after_reaching_a_nonempty_schedule() {
 
 #[test]
 fn finding_candidate_replay_retains_authenticated_execution_quanta_timeout() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let input = modeled_non_genesis_fresh_runner_input_for_stop(StopCondition::Observation(
         ObservationCondition::SchedulerQuiescentOrExecutionQuanta {
             execution_quanta: 1,
@@ -126,6 +132,8 @@ fn finding_candidate_replay_retains_authenticated_execution_quanta_timeout() {
 
 #[test]
 fn property_failure_precedes_a_coincident_execution_quanta_timeout() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let assertion = AssertionId::from_name("coincident-timeout-safety");
     let base = modeled_assertion_candidate_input(assertion.clone(), 2);
     let decision = Decision::RngDraw(RngDecision {
@@ -144,7 +152,8 @@ fn property_failure_precedes_a_coincident_execution_quanta_timeout() {
         VirtualTime { ticks: 1 },
         assertion,
         AssertionPhase::Violated,
-    );
+    )
+    .unwrap_or_else(|source| panic!("fixture event admission: {source}"));
     let mut runner = QemuFreshExecutionRunner::new(
         BoundaryCaptureLifecycleFactory {
             captured: Arc::new(Mutex::new(Vec::new())),
@@ -179,6 +188,8 @@ fn property_failure_precedes_a_coincident_execution_quanta_timeout() {
 
 #[test]
 fn composed_candidate_replay_retains_app_random_choice_and_measurement_leaf() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let assertion = AssertionId::from_name("app-random-candidate-safety");
     let base = modeled_assertion_candidate_input(assertion.clone(), 2);
     let selectable = AppRandomSelectable::new(
@@ -209,6 +220,8 @@ fn composed_candidate_replay_retains_app_random_choice_and_measurement_leaf() {
 
 #[test]
 fn composed_candidate_replay_retains_signal_fault_choice_and_measurement_leaf() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let assertion = AssertionId::from_name("signal-fault-candidate-safety");
     let base = modeled_assertion_candidate_input(assertion.clone(), 2);
     let parent = Configuration::genesis(base.scenario().scenario_def());
@@ -245,6 +258,8 @@ fn composed_candidate_replay_retains_signal_fault_choice_and_measurement_leaf() 
 
 #[test]
 fn finding_candidate_replay_reports_preserving_and_nonpreserving_verdicts() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let assertion = AssertionId::from_name("candidate-safety");
 
     for (predicate_at, expected) in [(1, PropertyVerdict::Passed), (2, PropertyVerdict::Failed)] {
@@ -255,7 +270,8 @@ fn finding_candidate_replay_reports_preserving_and_nonpreserving_verdicts() {
             VirtualTime { ticks: 1 },
             assertion.clone(),
             AssertionPhase::Satisfied,
-        );
+        )
+        .unwrap_or_else(|source| panic!("fixture event admission: {source}"));
         let mut runner = QemuFreshExecutionRunner::new(
             BoundaryCaptureLifecycleFactory {
                 captured: Arc::new(Mutex::new(Vec::new())),
@@ -288,6 +304,8 @@ fn finding_candidate_replay_reports_preserving_and_nonpreserving_verdicts() {
 
 #[test]
 fn finding_candidate_replay_reports_prefix_divergence_after_cleanup() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let order = Arc::new(Mutex::new(Vec::new()));
     let input = non_genesis_fresh_runner_input_with_decision(Decision::RngDraw(RngDecision {
         stream: RngStreamId::from_name("fresh-runner-non-genesis"),
@@ -322,6 +340,8 @@ fn finding_candidate_replay_reports_prefix_divergence_after_cleanup() {
 
 #[test]
 fn finding_candidate_replay_reports_terminal_prefix_after_cleanup() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let order = Arc::new(Mutex::new(Vec::new()));
     let decision = Decision::RngDraw(RngDecision {
         stream: RngStreamId::from_name("fresh-runner-non-genesis"),
@@ -357,6 +377,8 @@ fn finding_candidate_replay_reports_terminal_prefix_after_cleanup() {
 
 #[test]
 fn finding_candidate_replay_preserves_cleanup_failure_over_incompatibility() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let order = Arc::new(Mutex::new(Vec::new()));
     let input = non_genesis_fresh_runner_input_with_decision(Decision::RngDraw(RngDecision {
         stream: RngStreamId::from_name("fresh-runner-non-genesis"),
@@ -389,6 +411,8 @@ fn finding_candidate_replay_preserves_cleanup_failure_over_incompatibility() {
 
 #[test]
 fn finding_candidate_replay_shares_cancellation_and_still_cleans_up() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let order = Arc::new(Mutex::new(Vec::new()));
     let input = non_genesis_fresh_runner_input();
     let candidate = finding_candidate_artifact(&input);

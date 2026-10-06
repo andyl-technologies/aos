@@ -32,8 +32,8 @@ const FORMAT_OWNING_SOURCES: &[(&str, &str)] = &[
     ("crucible-protocol/src/lib.rs", "wire protocol"),
     ("crucible-harness/src/abi.rs", "ABI golden-vector records"),
 ];
-const RUSTDOC_FENCE_TAGS: &[&str] = &["text", "rust", "toml", "no_run", "ignore"];
-const DOCTESTED_RUSTDOC_FENCE_TAGS: &[&str] = &["rust", "no_run"];
+const RUSTDOC_FENCE_TAGS: &[&str] = &["text", "rust", "toml", "no_run", "ignore", "compile_fail"];
+const DOCTESTED_RUSTDOC_FENCE_TAGS: &[&str] = &["rust", "no_run", "compile_fail"];
 const NON_DOCTESTED_PACKAGES: &[&str] = &["crucible-cli", "crucible-qemu-plugin"];
 
 #[test]
@@ -301,6 +301,13 @@ pub fn documented() {}
 /// A documented function.
 pub fn documented() {}
 "#;
+    let compile_fail_fence = r#"
+//! synthetic module
+//!
+//! ```compile_fail
+//! let value: u8 = "invalid";
+//! ```
+"#;
     let malformed_closing_fence = r#"
 //! synthetic module
 //!
@@ -485,6 +492,19 @@ struct Cli {}
     assert_contains(
         &rustdoc_bar_failures(unsupported_fence, "synthetic.rs", false, None),
         "unsupported rustdoc fence tag",
+    );
+    assert_not_contains(
+        &rustdoc_bar_failures(
+            compile_fail_fence,
+            "crucible-daemon/src/lib.rs",
+            false,
+            None,
+        ),
+        "rustdoc fence",
+    );
+    assert_contains(
+        &rustdoc_bar_failures(compile_fail_fence, "crucible-cli/src/main.rs", false, None),
+        "is not covered by `cargo test --doc`",
     );
     assert_contains(
         &rustdoc_bar_failures(malformed_closing_fence, "synthetic.rs", false, None),

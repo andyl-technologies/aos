@@ -12,6 +12,9 @@ const CHECKPOINT_BOUNDARY_CHUNK_BYTES: usize = 1024 * 1024;
 #[test]
 fn terminal_v9_restore_rejects_a_stale_precommit_snapshot() -> Result<(), Box<dyn std::error::Error>>
 {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let root = tempfile::tempdir()?;
     let fixture =
         checkpoint_store::build_exact_ram_production_checkpoint_codec_fixture(root.path())?;

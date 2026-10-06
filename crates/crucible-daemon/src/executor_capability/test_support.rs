@@ -17,6 +17,25 @@ pub(crate) fn capability_service<L, V>(
     description: ExecutorDescription,
     watcher_service_resident_bytes: u64,
 ) -> Result<LocalExecutorCapabilityService<L, V>, CampaignCodecError> {
+    capability_service_with_budgets(
+        supervisor,
+        description,
+        watcher_service_resident_bytes,
+        crucible_api::host_operational::HostOperationBudgets {
+            classes: [crucible_api::host_operational::HostOperationBudget::finite(
+                std::time::Duration::from_secs(300),
+            ); crucible_api::host_operational::HostOperationClass::ALL.len()],
+        },
+    )
+}
+
+/// Configures a component actor with the fixture's exact finite operation roster.
+pub(crate) fn capability_service_with_budgets<L, V>(
+    supervisor: LocalExecutorSupervisor<L, V>,
+    description: ExecutorDescription,
+    watcher_service_resident_bytes: u64,
+    budgets: crucible_api::host_operational::HostOperationBudgets,
+) -> Result<LocalExecutorCapabilityService<L, V>, CampaignCodecError> {
     let aggregate = description.capabilities().aggregate_resources();
     let assignment = description.capabilities().assignment_resources();
     let operational = HostOperationalCapacity::new(
@@ -28,11 +47,7 @@ pub(crate) fn capability_service<L, V>(
     )
     .map_err(|_| invalid_fixture_bounds())?;
     let supervisor = supervisor
-        .with_host_operation_budgets(crucible_api::host_operational::HostOperationBudgets {
-            classes: [crucible_api::host_operational::HostOperationBudget::finite(
-                std::time::Duration::from_secs(300),
-            ); crucible_api::host_operational::HostOperationClass::ALL.len()],
-        })
+        .with_host_operation_budgets(budgets)
         .map_err(|_| invalid_fixture_bounds())?
         .with_host_operational_capacity(operational)
         .map_err(|_| invalid_fixture_bounds())?

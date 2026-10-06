@@ -52,6 +52,8 @@ impl ComponentExecutorService {
     }
 
     pub(super) fn complete_queued_attempt(&self) -> ObservationId {
+        let _original_metadata = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+            .expect("finite original component completion metadata");
         let mut service = self.inner.lock().expect("executor service lock");
         let queued = service
             .supervisor_mut()
@@ -59,10 +61,11 @@ impl ComponentExecutorService {
             .expect("semantic execution is queued");
         let semantic = PreparedSemanticAttemptResult::new(self.candidate.clone(), Vec::new(), None)
             .expect("prepare semantic result");
-        let work = AttemptWorkResult::<()>::new(
-            queued,
-            Ok(AttemptExecutionProduct::prepared_semantic(semantic)),
+        let mut worker = crucible_daemon::RepositoryAttemptWorker::new(
+            self.store.clone(),
+            ComponentSemanticModel(semantic),
         );
+        let work = worker.execute(queued);
         let prepared = prepare_attempt_result(&self.store, &self.checkpoints, work)
             .expect("preflight semantic result");
         let PreparedAttemptWorkResult::Observation(prepared) = prepared else {
@@ -83,6 +86,20 @@ impl ComponentExecutorService {
         reconcile_published_attempt_result::<_, _, ()>(service.supervisor_mut(), published)
             .expect("reconcile semantic completion");
         observation
+    }
+}
+
+struct ComponentSemanticModel(PreparedSemanticAttemptResult);
+
+impl crucible_daemon::AttemptExecutionModel for ComponentSemanticModel {
+    type Error = std::convert::Infallible;
+
+    fn execute(
+        &mut self,
+        _input: &crucible_daemon::AttemptExecutionInput,
+        _context: &crucible_daemon::AttemptExecutionContext,
+    ) -> Result<AttemptExecutionProduct, crucible_daemon::AttemptWorkerFailure<Self::Error>> {
+        Ok(AttemptExecutionProduct::prepared_semantic(self.0.clone()))
     }
 }
 
@@ -941,6 +958,7 @@ fn capability_service<L, V>(
     )
     .map_err(|_| invalid_fixture_bounds())?;
     let supervisor = supervisor
+        .with_component_operation_budgets()
         .with_host_operational_capacity(operational)
         .map_err(|_| invalid_fixture_bounds())?
         .with_host_assignment_resources(

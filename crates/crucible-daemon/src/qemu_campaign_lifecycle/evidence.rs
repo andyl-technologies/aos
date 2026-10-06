@@ -628,15 +628,7 @@ fn map_terminal_evidence_inner_failure<E>(
 fn map_terminal_evidence_snapshot_failure<E>(
     error: SchedulerError,
 ) -> AttemptWorkerFailure<QemuTerminalEvidenceExecutionRunnerError<E>> {
-    let class = match &error {
-        SchedulerError::OperationalBoundary { class, .. } => Some(*class),
-        SchedulerError::Evaluation { .. } => Some(SchedulerOperationalFailureClass::Retryable),
-        SchedulerError::Backend(_)
-        | SchedulerError::BoundaryViolation { .. }
-        | SchedulerError::ResourceLimit { .. }
-        | SchedulerError::TimeConversion(_)
-        | SchedulerError::TopologyActivationInPast { .. } => None,
-    };
+    let class = error.operational_failure_class();
     let error = QemuTerminalEvidenceExecutionRunnerError::Evidence(error);
     match class {
         Some(SchedulerOperationalFailureClass::Retryable) => AttemptWorkerFailure::Retryable(error),

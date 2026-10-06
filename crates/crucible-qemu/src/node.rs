@@ -42,6 +42,7 @@ use crucible_shmem::{
 };
 
 mod channels;
+mod paused_observation;
 pub(crate) use channels::QemuQmpMachineControlChannel;
 pub use channels::{QemuNodePendingQuantum, QemuPluginIpcControlChannel, QemuShmemHotPathChannel};
 mod error;
@@ -605,6 +606,8 @@ pub struct QemuNode {
     hot_fork_ram_stage: Option<Box<QemuHotForkRamStage>>,
     #[cfg(target_os = "linux")]
     hot_fork_ram_continuation: Option<Box<QemuHotForkRamContinuation>>,
+    #[cfg(any(test, feature = "test-support"))]
+    block_completion_observer: Option<std::sync::Arc<dyn crate::QemuTestBlockCompletionObserver>>,
     #[cfg(target_os = "linux")]
     _hot_fork_scheduler_authority: Option<QemuHotForkInstalledNodeAuthority>,
     lifecycle_state: QemuNodeLifecycleState,
@@ -745,19 +748,6 @@ impl QemuNode {
             })
     }
 
-    pub(crate) fn paused_cpu(
-        &mut self,
-        vcpu: u32,
-        generation: Option<u64>,
-    ) -> Result<crate::qmp::QmpPausedCpu, QemuNodeError> {
-        self.channels
-            .qmp_machine_control
-            .query_paused_cpu(vcpu, generation)
-            .map_err(|source| {
-                QemuNodeError::from_channel(QemuNodeChannelPlane::QmpMachineControl, source)
-            })
-    }
-
     /// Activates the dormant guest-introspection bootstrap after a non-canonical fork.
     ///
     /// # Errors
@@ -883,6 +873,8 @@ impl QemuNode {
             hot_fork_ram_stage: None,
             #[cfg(target_os = "linux")]
             hot_fork_ram_continuation: None,
+            #[cfg(any(test, feature = "test-support"))]
+            block_completion_observer: None,
             #[cfg(target_os = "linux")]
             _hot_fork_scheduler_authority: None,
             lifecycle_state: QemuNodeLifecycleState::Running,
@@ -1928,12 +1920,6 @@ impl QemuNode {
         ceiling: Icount,
         stop_condition: crate::QemuQuantumStopCondition,
     ) -> Result<crate::QemuAsyncNodeStepReport, QemuNodeError> {
-        #[cfg(target_os = "linux")]
-        if let QemuNodeProcessControl::Direct(child) = &self.child {
-            child.check_ram_source().map_err(|error| {
-                QemuNodeError::checkpoint(format!("retained RAM source failed: {error}"))
-            })?;
-        }
         let Some(evidence) = self.bounded_scheduler_preemption.take() else {
             return self.advance_to_ceiling_report_without_host_preemption(ceiling, stop_condition);
         };
@@ -1963,6 +1949,11 @@ impl QemuNode {
             || self.network_output_resume_pending
             || self.hot_fork_resume_pending;
         let mut target = QemuNodeAsyncStepTarget {
+            #[cfg(any(test, feature = "test-support"))]
+            block_completion_observer: self.block_completion_observer.clone(),
+            ram_registration: self.host_io_runtime.ram_control_registration().cloned(),
+            #[cfg(target_os = "linux")]
+            ram_continuation: self.hot_fork_ram_continuation.as_deref(),
             child: &mut self.child,
             channels: &mut self.channels,
             lifecycle_state: &mut self.lifecycle_state,
@@ -2026,6 +2017,11 @@ impl QemuNode {
         stop_condition: crate::QemuQuantumStopCondition,
     ) -> Result<crate::QemuAsyncNodeStepReport, QemuNodeError> {
         let mut target = QemuNodeAsyncStepTarget {
+            #[cfg(any(test, feature = "test-support"))]
+            block_completion_observer: self.block_completion_observer.clone(),
+            ram_registration: self.host_io_runtime.ram_control_registration().cloned(),
+            #[cfg(target_os = "linux")]
+            ram_continuation: self.hot_fork_ram_continuation.as_deref(),
             child: &mut self.child,
             channels: &mut self.channels,
             lifecycle_state: &mut self.lifecycle_state,
@@ -2602,6 +2598,8 @@ impl QemuNode {
 
 #[path = "node/async_step.rs"]
 mod async_step;
+#[cfg(any(test, feature = "test-support"))]
+mod block_completion_observation;
 
 use async_step::*;
 
@@ -2927,6 +2925,7 @@ struct QemuNodeShutdownTarget<'a> {
     guard: Option<&'a crucible_linux_resource::host_supervision::HostOperationGuard>,
 }
 
+pub(crate) mod operational_health;
 mod shutdown_budget;
 
 impl QemuShutdownTarget for QemuNodeShutdownTarget<'_> {
@@ -2985,16 +2984,16 @@ fn channel_error_to_shutdown_error(error: QemuNodeChannelError) -> QemuShutdownT
 
 #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
 mod test_support;
-#[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
-pub use test_support::native_aliases::{
-    QemuTestNativeAliasKind, QemuTestNativeAliasProbeError, QemuTestNativeAliasRejection,
-};
 #[cfg(all(target_os = "linux", feature = "test-support"))]
 pub use test_support::hot_fork::{
     QemuTestHotForkIsolationFault, QemuTestHotForkOutcome, QemuTestHotForkSourceError,
     QemuTestQuantumBoundary, scripted_hot_fork_source_for_test,
     scripted_hot_fork_source_with_observations_for_test,
     scripted_hot_fork_source_with_script_for_test, scripted_hot_fork_source_with_state_for_test,
+};
+#[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+pub use test_support::native_aliases::{
+    QemuTestNativeAliasKind, QemuTestNativeAliasProbeError, QemuTestNativeAliasRejection,
 };
 #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
 pub use test_support::native_descriptors::{

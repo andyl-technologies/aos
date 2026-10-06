@@ -256,11 +256,11 @@ fn hir_census(node: &hir::Hir) -> (u64, u64, u64) {
         hir::HirKind::Literal(literal) => public_bytes += literal.0.len() as u64,
         hir::HirKind::Class(hir::Class::Unicode(class)) => {
             ranges += class.ranges().len() as u64;
-            public_bytes += (class.ranges().len() * size_of::<hir::ClassUnicodeRange>()) as u64;
+            public_bytes += std::mem::size_of_val(class.ranges()) as u64;
         }
         hir::HirKind::Class(hir::Class::Bytes(class)) => {
             ranges += class.ranges().len() as u64;
-            public_bytes += (class.ranges().len() * size_of::<hir::ClassBytesRange>()) as u64;
+            public_bytes += std::mem::size_of_val(class.ranges()) as u64;
         }
         hir::HirKind::Capture(capture) => {
             public_bytes += size_of::<hir::Hir>() as u64;

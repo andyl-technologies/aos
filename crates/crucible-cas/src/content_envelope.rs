@@ -17,6 +17,8 @@ use thiserror::Error;
 
 use crate::content_store::{ContentId, ObjectKind};
 
+mod canonical;
+
 const MAGIC: &[u8; 8] = b"CRUCOBJE";
 const ENVELOPE_VERSION: u32 = 1;
 const MAX_ENVELOPE_BYTES: usize = 64 * 1024 * 1024;
@@ -170,24 +172,19 @@ impl ContentEnvelope {
             return Vec::new();
         }
         let mut bytes = Vec::with_capacity(length);
-        bytes.extend_from_slice(MAGIC);
-        put_u32(&mut bytes, ENVELOPE_VERSION);
-        put_short_bytes(&mut bytes, self.schema_name.as_bytes());
-        put_u32(&mut bytes, self.schema_version);
-        put_u32(&mut bytes, self.children.len() as u32);
-        for child in &self.children {
-            put_short_bytes(&mut bytes, child.role.as_bytes());
-            put_short_bytes(&mut bytes, child.id.encode().as_bytes());
-        }
-        put_u64(&mut bytes, self.body.len() as u64);
-        bytes.extend_from_slice(&self.body);
+        self.emit_canonical(&mut |chunk| bytes.extend_from_slice(chunk));
         bytes
     }
 
     /// Computes the logical content identity for this exact envelope.
     #[must_use]
     pub fn content_id(&self, kind: ObjectKind) -> ContentId {
-        ContentId::for_bytes(kind, self.schema_version, &self.canonical_bytes())
+        ContentId::for_canonical_chunks(
+            kind,
+            self.schema_version,
+            self.encoded_len().unwrap_or(0) as u64,
+            |emit| self.emit_canonical(emit),
+        )
     }
 
     /// Decodes one strict bounded canonical envelope.
@@ -262,8 +259,7 @@ impl ContentEnvelope {
         decoder.finish()?;
 
         let envelope = Self::new(schema_name, schema_version, children, body)?;
-        crate::owned_decode::charge_array::<u8>(envelope.encoded_len()?)?;
-        if envelope.canonical_bytes() != bytes {
+        if !envelope.matches_canonical_bytes(bytes) {
             return Err(ContentEnvelopeError::NonCanonical);
         }
         Ok(envelope)
@@ -400,14 +396,17 @@ fn validate_identifier(value: &str, maximum: usize) -> Result<(), ContentEnvelop
     }
 }
 
+#[cfg(test)]
 fn put_u32(bytes: &mut Vec<u8>, value: u32) {
     bytes.extend_from_slice(&value.to_be_bytes());
 }
 
+#[cfg(test)]
 fn put_u64(bytes: &mut Vec<u8>, value: u64) {
     bytes.extend_from_slice(&value.to_be_bytes());
 }
 
+#[cfg(test)]
 fn put_short_bytes(bytes: &mut Vec<u8>, value: &[u8]) {
     bytes.extend_from_slice(&(value.len() as u16).to_be_bytes());
     bytes.extend_from_slice(value);

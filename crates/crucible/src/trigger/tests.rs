@@ -1,13 +1,15 @@
 //! Trigger unit tests separated from production condition and event-graph code.
 
 use std::collections::BTreeMap;
+use std::error::Error;
 
 use super::*;
 use crate::model::{NodeTemplate, RngDecision, VmArchitecture, WorldNode};
 use crate::scheduler::EventDiagnosticPayload;
 
 #[test]
-fn ready_point_keeps_raw_retirement_separate_from_exact_time() {
+fn ready_point_keeps_raw_retirement_separate_from_exact_time() -> Result<(), Box<dyn Error>> {
+    let decoding = crate::test_support::fixture_decode_scope(8 * 1024 * 1024)?;
     let node = NodeId {
         name: String::from("vm-a"),
     };
@@ -25,10 +27,14 @@ fn ready_point_keeps_raw_retirement_separate_from_exact_time() {
     assert_eq!(fixed.virtual_time(), VirtualTime { ticks: 1_000 });
     assert_eq!(clock.icount(), None);
     assert_eq!(clock.virtual_time(), VirtualTime { ticks: 1_001 });
+    decoding.check()?;
+    Ok(())
 }
 
 #[test]
-fn backend_poll_boundary_preserves_physical_icount_and_moves_guest_pulses_forward() {
+fn backend_poll_boundary_preserves_physical_icount_and_moves_guest_pulses_forward()
+-> Result<(), Box<dyn Error>> {
+    let decoding = crate::test_support::fixture_decode_scope(8 * 1024 * 1024)?;
     let node = NodeId {
         name: String::from("vm-a"),
     };
@@ -78,10 +84,14 @@ fn backend_poll_boundary_preserves_physical_icount_and_moves_guest_pulses_forwar
             ..
         }
     ));
+    decoding.check()?;
+    Ok(())
 }
 
 #[test]
-fn polled_guest_marker_after_a_later_boundary_reaches_assertion_and_graph() {
+fn polled_guest_marker_after_a_later_boundary_reaches_assertion_and_graph()
+-> Result<(), Box<dyn Error>> {
+    let decoding = crate::test_support::fixture_decode_scope(8 * 1024 * 1024)?;
     let node = NodeId {
         name: String::from("vm-a"),
     };
@@ -99,8 +109,7 @@ fn polled_guest_marker_after_a_later_boundary_reaches_assertion_and_graph() {
         kernel: None,
         root_image: None,
         initrd: None,
-    }])
-    .expect("marker world should build");
+    }])?;
     let properties = Properties::from_assertions_for_world(
         &world,
         vec![AssertionDef {
@@ -110,8 +119,7 @@ fn polled_guest_marker_after_a_later_boundary_reaches_assertion_and_graph() {
                 predicate: Predicate::not(Predicate::guest_marker(marker.clone())),
             },
         }],
-    )
-    .expect("marker property should validate");
+    )?;
     let graph = EventGraph::new_for_world(
         vec![Event::once(
             EventId::from_name("marker-received"),
@@ -119,8 +127,7 @@ fn polled_guest_marker_after_a_later_boundary_reaches_assertion_and_graph() {
             Action::Pass,
         )],
         &world,
-    )
-    .expect("marker graph should validate");
+    )?;
 
     let boundary = VirtualTime { ticks: 100 };
     let physical_marker = ObservableEvent::guest_marker(Icount { retired: 5 }, node, marker);
@@ -130,23 +137,22 @@ fn polled_guest_marker_after_a_later_boundary_reaches_assertion_and_graph() {
             0,
             boundary,
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )?,
         SchedulerEventLogEntry::with_payload_for_test(
             1,
             observed_marker.at(),
             SchedulerEventLogPayload::Observable(observed_marker.payload().clone()),
-        ),
+        )?,
         SchedulerEventLogEntry::evaluation_boundary(
             2,
             boundary,
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )?,
     ];
-    let prefix = ConditionEventLogPrefix::from_scheduler_event_log_entries(entries)
-        .expect("atomic marker batch should form a checked prefix");
+    let prefix = ConditionEventLogPrefix::from_scheduler_event_log_entries(entries)?;
 
     let mut assertions =
-        HostAssertionEvaluator::new(&properties).with_world_white_box_policies(&world);
+        HostAssertionEvaluator::new(&properties)?.with_world_white_box_policies(&world)?;
     let outcomes = assertions
         .observe_prefix(&prefix, &mut BlackBoxHostOracle)
         .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
@@ -155,17 +161,20 @@ fn polled_guest_marker_after_a_later_boundary_reaches_assertion_and_graph() {
             && outcome.kind == HostAssertionOutcomeKind::Violated
     }));
 
-    let mut pass = ConditionEvaluationPass::from_log_prefix(prefix, false_condition_leaf)
+    let mut pass = ConditionEvaluationPass::from_log_prefix(prefix, |_: ConditionLeaf<'_>| false)
         .with_world_white_box_policies(&world);
     let firings = pass
         .evaluate_event_graph(&graph, &mut EventGraphState::new())
         .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"));
     assert_eq!(firings.len(), 1);
     assert_eq!(firings[0].event().name, "marker-received");
+    decoding.check()?;
+    Ok(())
 }
 
 #[test]
-fn causal_projection_comparison_ignores_observational_entries() {
+fn causal_projection_comparison_ignores_observational_entries() -> Result<(), Box<dyn Error>> {
+    let decoding = crate::test_support::fixture_decode_scope(8 * 1024 * 1024)?;
     let causal = SchedulerEventLogEntry::with_payload_for_test(
         0,
         VirtualTime { ticks: 0 },
@@ -173,7 +182,7 @@ fn causal_projection_comparison_ignores_observational_entries() {
             stream: RngStreamId::from_name("causal-projection"),
             value: 11,
         })),
-    );
+    )?;
     let diagnostic = SchedulerEventLogEntry::with_payload_for_test(
         1,
         VirtualTime { ticks: 0 },
@@ -182,17 +191,20 @@ fn causal_projection_comparison_ignores_observational_entries() {
             EventLevel::Warn,
             BTreeMap::new(),
         )),
-    );
+    )?;
 
     let expected = vec![causal.clone()];
     let reproduced = vec![diagnostic, causal];
 
     assert_ne!(expected, reproduced);
     assert!(event_log_causal_projections_match(&expected, &reproduced));
+    decoding.check()?;
+    Ok(())
 }
 
 #[test]
-fn facts_through_point_preserves_resumed_event_log_base_sequence() {
+fn facts_through_point_preserves_resumed_event_log_base_sequence() -> Result<(), Box<dyn Error>> {
+    let decoding = crate::test_support::fixture_decode_scope(8 * 1024 * 1024)?;
     let first = SchedulerEventLogEntry::with_payload_for_test(
         5,
         VirtualTime { ticks: 5 },
@@ -200,7 +212,7 @@ fn facts_through_point_preserves_resumed_event_log_base_sequence() {
             stream: RngStreamId::from_name("resumed-prefix-a"),
             value: 17,
         })),
-    );
+    )?;
     let second = SchedulerEventLogEntry::with_payload_for_test(
         6,
         VirtualTime { ticks: 7 },
@@ -208,19 +220,25 @@ fn facts_through_point_preserves_resumed_event_log_base_sequence() {
             stream: RngStreamId::from_name("resumed-prefix-b"),
             value: 23,
         })),
-    );
+    )?;
     let prefix = ConditionEventLogPrefix::from_scheduler_event_log_entries_with_base(
         vec![first.clone(), second],
         5,
-    )
-    .expect("resumed nonzero event-log sequence should build");
+    )?;
 
     let through_first = prefix
-        .with_facts_through_point(EventEvaluationPoint::event_log_entry(&first))
-        .expect("resumed prefix through first entry should be retained");
+        .observed_state_at(EventEvaluationPoint::event_log_entry(&first))
+        .ok_or("resumed prefix should retain its first entry")?;
 
-    assert_eq!(through_first.scheduler_entries.len(), 1);
-    assert_eq!(through_first.scheduler_entries[0].sequence(), 5);
-    assert_eq!(through_first.base_sequence, 5);
+    assert_eq!(
+        through_first.point(),
+        EventEvaluationPoint::event_log_entry(&first)
+    );
+    assert!(through_first.observable_events().is_empty());
+    assert!(through_first.ordering_facts().is_empty());
+    assert_eq!(prefix.scheduler_entries.len(), 2);
+    assert_eq!(prefix.base_sequence, 5);
     assert_eq!(through_first.event_log_offset().events, 6);
+    decoding.check()?;
+    Ok(())
 }

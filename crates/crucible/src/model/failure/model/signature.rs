@@ -173,7 +173,7 @@ impl FailureRecordedEventLog {
         recorded_frames: &[Vec<u8>],
     ) -> Result<Self, EngineError> {
         validate_finding_static_identity(finding)?;
-        let projection = event_log_causal_projection(causal_entries);
+        let projection = event_log_causal_projection(causal_entries)?;
         let event_log_artifact = ReproductionEventLogArtifact::from_causal_projection(
             finding.artifact.id(),
             EventLogOffset::new(ContentHash::default(), 0, 0),
@@ -222,7 +222,7 @@ impl FailureRecordedEventLog {
             });
         }
 
-        let projection = event_log_causal_projection(event_log);
+        let projection = event_log_causal_projection(event_log)?;
         if projection.content_hash() != event_log_artifact.causal_subsequence {
             return Err(EngineError::ReplayTargetMismatch {
                 expected: event_log_artifact.causal_subsequence,
@@ -328,14 +328,18 @@ impl FailureRecordedEventLog {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct FailurePropertyViolationRecord {
     /// Deterministic assertion violation produced from the retained assertion log.
-    pub violation: HostAssertionViolation,
+    pub violation: std::sync::Arc<HostAssertionViolation>,
 }
 
 impl FailurePropertyViolationRecord {
     /// Builds a signature input record from an assertion violation.
-    #[must_use]
-    pub fn new(violation: HostAssertionViolation) -> Self {
-        Self { violation }
+    ///
+    /// # Errors
+    /// Returns original metadata refusal before allocating shared record storage.
+    pub fn new(violation: HostAssertionViolation) -> Result<Self, EngineError> {
+        Ok(Self {
+            violation: violation.into_shared()?,
+        })
     }
 
     /// Returns the property key read from the violation record.

@@ -94,8 +94,116 @@ struct Fixture {
     _directory: tempfile::TempDir,
 }
 
+fn placement_reply(status: &HostRamStatus) -> RamControlReply {
+    RamControlReply {
+        disposition: crucible_protocol::ram_control::RamControlDisposition::Accepted,
+        requested_policy_revision: status.policy_revision,
+        applied_policy_revision: status.applied_policy_revision,
+        reservation_revision: status.reservation_revision,
+        logical_ram_bytes: 4096,
+        inventory: None,
+        inventory_region: None,
+        observation_sequence: status.observation_sequence,
+        effective_resident_target_bytes: status.effective_resident_target_bytes,
+        effective_floor_bytes: status.effective_floor_bytes,
+        limitation_reasons: 0,
+        measurements_available: false,
+        private_resident_bytes: 0,
+        shared_resident_bytes_observed: 0,
+        preserved_backing_bytes: 0,
+        private_dirty_bytes: 0,
+        writeback_pending_bytes: 0,
+        convergence: crucible_protocol::ram_control::RamControlConvergence::Applying,
+        activity: None,
+        fault_actor: None,
+        operation_failure: None,
+        kernel_probe: None,
+        placement_receipt: None,
+    }
+}
+
+#[test]
+fn placement_projection_keeps_old_applied_cut_while_new_policy_is_pending() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite registry component account: {error}"));
+    let fixture = fixture(1024 * 1024);
+    let owner = fixture.registry.node(fixture.target).unwrap();
+    let mut status = output::copy_status(&owner.state.lock().unwrap()).unwrap();
+    status.policy_revision = 2;
+    status.applied_policy_revision = 1;
+    status.applied_policy.mode = HostRamMode::DiskOriented;
+    let mut requested = status.requested_policy;
+    requested.mode = HostRamMode::ResidentRequired;
+    let mut reply = placement_reply(&status);
+    reply.placement_receipt = Some(crucible_protocol::ram_control::RamControlPlacementReceipt {
+        mode: crucible_protocol::ram_control::RamControlMode::DiskOriented,
+        policy_revision: 1,
+        topology_generation: 7,
+        placement_epoch: 9,
+        locked_bytes: 0,
+        disk_preserved_logical_pages: 1,
+        disk_preserved_logical_bytes: 4096,
+        ram_write_generation_at_cut: 11,
+    });
+
+    mutation::observe_reply(&mut status, reply, requested, 2).unwrap();
+
+    assert_eq!(status.applied_policy_revision, 1);
+    assert_eq!(status.applied_policy.mode, HostRamMode::DiskOriented);
+    let receipt = status.placement_receipt.unwrap();
+    assert_eq!(receipt.policy_revision, 1);
+    assert_eq!(receipt.topology_generation, 7);
+    assert_eq!(receipt.placement_epoch, 9);
+    assert_eq!(receipt.ram_write_generation_at_cut, 11);
+}
+
+#[test]
+fn placement_projection_refuses_inconsistent_receipts_before_status_changes() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite registry component account: {error}"));
+    let fixture = fixture(1024 * 1024);
+    let owner = fixture.registry.node(fixture.target).unwrap();
+    let mut baseline = output::copy_status(&owner.state.lock().unwrap()).unwrap();
+    baseline.policy_revision = 2;
+    baseline.applied_policy_revision = 1;
+    baseline.applied_policy.mode = HostRamMode::DiskOriented;
+    let mut requested = baseline.requested_policy;
+    requested.mode = HostRamMode::ResidentRequired;
+    for case in 0..5 {
+        let mut status = output::copy_status(&baseline).unwrap();
+        let mut reply = placement_reply(&status);
+        let mut receipt = crucible_protocol::ram_control::RamControlPlacementReceipt {
+            mode: crucible_protocol::ram_control::RamControlMode::DiskOriented,
+            policy_revision: 1,
+            topology_generation: 7,
+            placement_epoch: 9,
+            locked_bytes: 0,
+            disk_preserved_logical_pages: 1,
+            disk_preserved_logical_bytes: 4096,
+            ram_write_generation_at_cut: 11,
+        };
+        match case {
+            0 => reply.applied_policy_revision = 0,
+            1 => reply.applied_policy_revision = 3,
+            2 => receipt.policy_revision = 2,
+            3 => receipt.mode = crucible_protocol::ram_control::RamControlMode::ResidentRequired,
+            4 => receipt.topology_generation = 0,
+            _ => unreachable!(),
+        }
+        reply.placement_receipt = Some(receipt);
+
+        assert!(matches!(
+            mutation::observe_reply(&mut status, reply, requested, 2),
+            Err(HostOperationalError::Unavailable)
+        ));
+        assert_eq!(status, baseline);
+    }
+}
+
 #[test]
 fn independent_cap_amendment_does_not_wait_for_a_busy_ram_policy_authority() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite registry component account: {error}"));
     let fixture = fixture(1024 * 1024);
     let owner = fixture.registry.node(fixture.target).unwrap();
     let _busy_policy = owner.mutation.lock().unwrap();
@@ -114,7 +222,7 @@ fn independent_cap_amendment_does_not_wait_for_a_busy_ram_policy_authority() {
         .unwrap();
 
     assert!(matches!(
-        response,
+        response.value(),
         HostOperationalResponse::OuterCapAmendment {
             disposition: HostOperationalDisposition::Accepted,
             accepted_cap_revision: Some(1),
@@ -129,6 +237,8 @@ fn independent_cap_amendment_does_not_wait_for_a_busy_ram_policy_authority() {
 
 #[test]
 fn saturated_control_query_retains_authority_and_authenticated_session() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite registry component account: {error}"));
     use crucible_protocol::ram_control::{
         RamControlConvergence, RamControlDisposition, RamControlMessage,
         ram_control_request_digest, read_ram_control, write_ram_control,
@@ -137,8 +247,9 @@ fn saturated_control_query_retains_authority_and_authenticated_session() {
 
     let fixture = fixture(64 * 1024);
     let owner = fixture.registry.node(fixture.target).unwrap();
-    let initial = owner.state.lock().unwrap().clone();
+    let initial = output::copy_status(&owner.state.lock().unwrap()).unwrap();
     let reply = RamControlReply {
+        placement_receipt: None,
         disposition: RamControlDisposition::Accepted,
         requested_policy_revision: initial.policy_revision,
         applied_policy_revision: initial.policy_revision,
@@ -158,6 +269,8 @@ fn saturated_control_query_retains_authority_and_authenticated_session() {
         writeback_pending_bytes: 0,
         convergence: RamControlConvergence::Stable,
         activity: None,
+        fault_actor: None,
+        operation_failure: None,
         kernel_probe: None,
     };
     let (host, mut peer) = UnixStream::pair().unwrap();
@@ -204,6 +317,8 @@ fn saturated_control_query_retains_authority_and_authenticated_session() {
 
 #[test]
 fn busy_status_transport_refuses_policy_without_canceling_the_owner() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite registry component account: {error}"));
     let fixture = fixture(1024 * 1024);
     let owner = fixture.registry.node(fixture.target).unwrap();
     let _status_borrower = owner.client.lock().unwrap();
@@ -222,7 +337,7 @@ fn busy_status_transport_refuses_policy_without_canceling_the_owner() {
         .unwrap();
 
     assert!(matches!(
-        response,
+        response.value(),
         HostOperationalResponse::PolicyUpdate {
             disposition: HostOperationalDisposition::Unavailable,
             accepted_policy: None,
@@ -238,6 +353,8 @@ fn busy_status_transport_refuses_policy_without_canceling_the_owner() {
 
 #[test]
 fn busy_native_transport_refuses_cap_amendment_without_partial_host_application() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite registry component account: {error}"));
     let fixture = fixture(1024 * 1024);
     let owner = fixture.registry.node(fixture.target).unwrap();
     let borrower = owner.client.lock().unwrap();
@@ -253,7 +370,7 @@ fn busy_native_transport_refuses_cap_amendment_without_partial_host_application(
         .unwrap();
 
     assert!(matches!(
-        response,
+        response.value(),
         HostOperationalResponse::OuterCapAmendment {
             disposition: HostOperationalDisposition::Unavailable,
             accepted_cap_revision: None,
@@ -275,13 +392,18 @@ fn busy_native_transport_refuses_cap_amendment_without_partial_host_application(
 
 #[test]
 fn inventory_requires_live_kernel_authority_and_ledger_subsets_remain_bounded() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite registry component account: {error}"));
     use crucible_api::host_operational::{
         HostRamInventoryLimits as Limits, HostRamInventoryRegion as RegionDescriptor,
         HostRamInventoryRegionClass as RegionClass, HostRamInventoryTopology as Topology,
     };
 
     let directory = tempfile::tempdir().unwrap();
-    let registry = HostOperationalRegistry::open_component(directory.path(), 1024 * 1024).unwrap();
+    let registry = HostOperationalRegistry::open_component(directory.path(), 1024 * 1024)
+        .unwrap()
+        .with_component_metadata_budget(crucible::owned_decode::current_budget().unwrap())
+        .unwrap();
     registry
         .configure_bootstrap_limits(
             crucible_api::vm_lifecycle::HostRamBootstrapLimits::new(4, 10, 1, 1, 8 * 1024 * 1024)
@@ -414,6 +536,8 @@ fn inventory_requires_live_kernel_authority_and_ledger_subsets_remain_bounded() 
 
 #[test]
 fn target_discovery_is_owner_bound_and_excludes_retired_arenas() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite registry component account: {error}"));
     let fixture = fixture(1024 * 1024);
     let target = fixture.target;
     let request = HostOperationalRequest::ListTargets {
@@ -429,8 +553,8 @@ fn target_discovery_is_owner_bound_and_excludes_retired_arenas() {
         Err(HostOperationalError::PrincipalDenied)
     );
     assert!(
-        matches!(fixture.registry.execute(&fixture.principal, request).unwrap(),
-        HostOperationalResponse::Targets { targets, next: None, .. } if targets == vec![target])
+        matches!(fixture.registry.execute(&fixture.principal, request).unwrap().value(),
+        HostOperationalResponse::Targets { targets, next: None, .. } if targets.as_slice() == [target])
     );
 
     assert_eq!(
@@ -477,8 +601,10 @@ fn target_discovery_is_owner_bound_and_excludes_retired_arenas() {
 
 fn fixture(history_bytes: u64) -> Fixture {
     let directory = tempfile::tempdir().unwrap();
-    let registry =
-        HostOperationalRegistry::open_component(directory.path(), history_bytes).unwrap();
+    let registry = HostOperationalRegistry::open_component(directory.path(), history_bytes)
+        .unwrap()
+        .with_component_metadata_budget(crucible::owned_decode::current_budget().unwrap())
+        .unwrap();
     let principal = "a".repeat(64);
     registry.grant_principal(&principal).unwrap();
     let resources = HostResourceVector {
@@ -529,6 +655,7 @@ fn fixture(history_bytes: u64) -> Fixture {
         .unwrap();
     registry
         .register_node(NativeRamRegistration {
+            native_resident_initial: false,
             target,
             policy,
             resources,
@@ -561,6 +688,8 @@ fn fixture(history_bytes: u64) -> Fixture {
 
 #[test]
 fn independent_final_receipt_outlives_registrar_and_releases_original_node_ledger() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite registry component account: {error}"));
     let fixture = fixture(1024 * 1024);
     let target = fixture.target;
     let receipt = fixture.registry.retirement_authority(target).unwrap();
@@ -617,6 +746,8 @@ fn independent_final_receipt_outlives_registrar_and_releases_original_node_ledge
 
 #[test]
 fn refused_retirement_prepare_keeps_lookup_and_original_charge() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite registry component account: {error}"));
     let fixture = fixture(1024 * 1024);
     let receipt = fixture
         .registry
@@ -659,6 +790,8 @@ fn update(fixture: &Fixture, key: u8, revision: u64, seconds: u64) -> HostOperat
 
 #[test]
 fn live_budget_updates_replay_original_receipts_after_later_changes() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite registry component account: {error}"));
     let fixture = fixture(1024 * 1024);
     let request = update(&fixture, 4, 0, 120);
     let original = fixture
@@ -666,7 +799,7 @@ fn live_budget_updates_replay_original_receipts_after_later_changes() {
         .execute(&fixture.principal, request.clone())
         .unwrap();
     assert!(matches!(
-        original,
+        original.value(),
         HostOperationalResponse::PolicyUpdate {
             disposition: HostOperationalDisposition::Accepted,
             policy_revision: 1,
@@ -689,7 +822,7 @@ fn live_budget_updates_replay_original_receipts_after_later_changes() {
         .execute(&fixture.principal, request)
         .unwrap();
     assert!(matches!(
-        replay,
+        replay.value(),
         HostOperationalResponse::PolicyUpdate {
             disposition: HostOperationalDisposition::Replayed,
             policy_revision: 1,
@@ -713,6 +846,8 @@ fn live_budget_updates_replay_original_receipts_after_later_changes() {
 
 #[test]
 fn outer_cap_retries_retain_original_allowances_after_later_amendments() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite registry component account: {error}"));
     let fixture = fixture(1024 * 1024);
     let request = HostOperationalRequest::AmendOuterCap {
         target: fixture.cap,
@@ -742,15 +877,17 @@ fn outer_cap_retries_retain_original_allowances_after_later_amendments() {
         .execute(&fixture.principal, request)
         .unwrap();
     assert!(
-        matches!(replay, HostOperationalResponse::OuterCapAmendment {
+        matches!(replay.value(), HostOperationalResponse::OuterCapAmendment {
         disposition: HostOperationalDisposition::Replayed, accepted_cap_revision: Some(1), accepted_allowance: Some(Some(duration)), ..
-    } if duration == Duration::from_secs(120))
+    } if *duration == Duration::from_secs(120))
     );
     assert_eq!(fixture.supervisor.outer_cap_status().unwrap().revision, 2);
 }
 
 #[test]
 fn exhausted_history_refuses_without_effect_and_does_not_forget_old_keys() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite registry component account: {error}"));
     let fixture = fixture(64 * 1024 + 2 * history::RECORD_CHARGE);
     let original = update(&fixture, 8, 0, 120);
     fixture
@@ -767,7 +904,7 @@ fn exhausted_history_refuses_without_effect_and_does_not_forget_old_keys() {
         .execute(&fixture.principal, update(&fixture, 10, 2, 360))
         .unwrap();
     assert!(matches!(
-        refused,
+        refused.value(),
         HostOperationalResponse::PolicyUpdate {
             disposition: HostOperationalDisposition::HistoryCapacityRefused,
             accepted_policy: None,
@@ -780,7 +917,8 @@ fn exhausted_history_refuses_without_effect_and_does_not_forget_old_keys() {
         fixture
             .registry
             .execute(&fixture.principal, original)
-            .unwrap(),
+            .unwrap()
+            .value(),
         HostOperationalResponse::PolicyUpdate {
             disposition: HostOperationalDisposition::Replayed,
             policy_revision: 1,
@@ -791,6 +929,8 @@ fn exhausted_history_refuses_without_effect_and_does_not_forget_old_keys() {
 
 #[test]
 fn unauthorized_principals_and_stale_generations_have_no_effect() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite registry component account: {error}"));
     let fixture = fixture(1024 * 1024);
     assert_eq!(
         fixture
@@ -812,6 +952,8 @@ fn unauthorized_principals_and_stale_generations_have_no_effect() {
 
 #[test]
 fn interrupted_durable_intent_is_fenced_after_restart() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite registry component account: {error}"));
     let directory = tempfile::tempdir().unwrap();
     let target = [12; 32];
     let key = [13; 32];
@@ -834,6 +976,8 @@ fn interrupted_durable_intent_is_fenced_after_restart() {
 
 #[test]
 fn borrowed_service_retirement_refuses_pending_amendment_and_preserves_caller_cap() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite registry component account: {error}"));
     let registry = HostOperationalRegistry::default();
     let budgets = HostOperationBudgets {
         classes: [crucible_linux_resource::host_supervision::HostOperationBudget::finite(
@@ -886,5 +1030,52 @@ fn borrowed_service_retirement_refuses_pending_amendment_and_preserves_caller_ca
     assert_eq!(
         original.outer_cap_status().unwrap().state,
         HostOperationState::Running
+    );
+}
+
+#[test]
+fn native_actor_control_contention_preserves_the_original_deadline_cause() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite registry component account: {error}"));
+    let fixture = fixture(1024 * 1024);
+    let owner = fixture.registry.node(fixture.target).unwrap();
+    let (_, mut budgets) = fixture.supervisor.budgets().unwrap();
+    budgets.classes[HostOperationClass::Cleanup as usize] =
+        crucible_linux_resource::host_supervision::HostOperationBudget::finite(
+            Duration::from_millis(2),
+        );
+    fixture.supervisor.update_budgets(0, budgets).unwrap();
+    let _held_control = owner.client.lock().unwrap();
+    let original_cap = fixture.supervisor.cap_id();
+
+    let error = fixture
+        .registry
+        .fault_actor_status(fixture.target)
+        .unwrap_err();
+
+    let RamControlError::Io(source) = error else {
+        panic!("control contention lost its original supervision cause: {error}");
+    };
+    assert!(matches!(
+        source
+            .get_ref()
+            .and_then(|cause| cause
+                .downcast_ref::<crucible_linux_resource::host_supervision::HostSupervisionError>()),
+        Some(
+            crucible_linux_resource::host_supervision::HostSupervisionError::DeadlineExpired {
+                class: HostOperationClass::Cleanup,
+                ..
+            }
+        )
+    ));
+    assert_eq!(fixture.supervisor.cap_id(), original_cap);
+    assert!(
+        fixture
+            .admission
+            .0
+            .lock()
+            .unwrap()
+            .owner_reservation(fixture.target)
+            .is_some()
     );
 }

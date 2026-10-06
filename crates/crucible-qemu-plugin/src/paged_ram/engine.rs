@@ -15,6 +15,8 @@ use std::thread::JoinHandle;
 use crate::ram_error::RamError;
 use crucible_ram::MetadataReservation;
 
+mod failure;
+pub(crate) use failure::RetainedOperationalFailure;
 mod admission;
 use admission::{ServiceConfiguration, prepare_service, prepare_service_for_inventory};
 mod mutation;
@@ -23,11 +25,13 @@ mod statistics;
 pub(crate) use statistics::PagingStatistics;
 use statistics::{PagingCounters, count_bulk_completed, count_completed};
 mod fork;
+mod locking;
 mod mixed;
 mod placement;
+mod strict_placement;
 use mixed::{ArenaPlacement, validate_arena};
 mod service;
-pub(crate) use fork::{ChildPagingCustody, PreparedChildArenas};
+pub(crate) use fork::{ChildArenaConfiguration, ChildPagingCustody, PreparedChildArenas};
 use service::{FaultService, operational_read, operational_rearm};
 
 use super::restore::{
@@ -58,6 +62,7 @@ type PhysicalValidate = extern "C" fn(u64, u64) -> c_int;
 type PhysicalEnd = extern "C" fn(u64) -> c_int;
 type PinTopology = extern "C" fn(u64, u64) -> c_int;
 type MarkWrite = extern "C" fn(u64, u32, u64) -> c_int;
+type ReadWriteGeneration = extern "C" fn(u64, u64, *mut u64) -> c_int;
 type AcknowledgeSource = extern "C" fn(u64) -> c_int;
 type OperationalRead = extern "C" fn(u64, *mut u8, u32) -> c_int;
 type Rearm = extern "C" fn(u64) -> c_int;
@@ -80,6 +85,7 @@ struct NativeOperations {
     end: PhysicalEnd,
     pin: PinTopology,
     mark_write: MarkWrite,
+    write_generation: ReadWriteGeneration,
     acknowledge: AcknowledgeSource,
     worker: ServiceWorker,
 }
@@ -109,6 +115,9 @@ impl NativeOperations {
                 )?),
                 mark_write: std::mem::transmute::<*mut c_void, MarkWrite>(symbol(
                     b"qemu_plugin_crucible_ram_mark_write_v1\0",
+                )?),
+                write_generation: std::mem::transmute::<*mut c_void, ReadWriteGeneration>(symbol(
+                    b"qemu_plugin_crucible_ram_write_generation_v1\0",
                 )?),
                 acknowledge: std::mem::transmute::<*mut c_void, AcknowledgeSource>(symbol(
                     b"qemu_plugin_crucible_ram_restore_ack_source_v1\0",
@@ -144,6 +153,7 @@ pub(crate) struct PausedPagingOwner {
     active: Arc<Mutex<Option<Arc<FaultService>>>>,
     preparing: AtomicBool,
     failed: AtomicBool,
+    first_operational_failure: OnceLock<RetainedOperationalFailure>,
     spill: Mutex<Option<Arc<Mutex<super::PreservedPages>>>>,
     logical_bytes: AtomicU64,
     permanent_resident_bytes: AtomicU64,
@@ -151,6 +161,14 @@ pub(crate) struct PausedPagingOwner {
     policy: Mutex<Option<crucible_protocol::ram_control::RamControlPolicy>>,
     queued_operation: Mutex<Option<scheduling::QueuedPlacement>>,
     policy_generation: AtomicU64,
+    requested_policy_revision: AtomicU64,
+    placement_epoch: Arc<AtomicU64>,
+    placement_receipt:
+        Arc<Mutex<Option<crucible_protocol::ram_control::RamControlPlacementReceipt>>>,
+    prepared_placement_receipt:
+        Mutex<Option<crucible_protocol::ram_control::RamControlPlacementReceipt>>,
+    locks: Arc<Mutex<Option<Arc<locking::LockedMemory>>>>,
+    retained_lock_transition: Mutex<Option<strict_placement::LockTransition>>,
     write_preparation: Mutex<Option<mutation::WritePreparation>>,
     write_scratch: Mutex<Option<mutation::WriteScratch>>,
     write_generation: AtomicU64,
@@ -169,6 +187,41 @@ pub(crate) struct PagingAuthoritySnapshot {
 }
 
 impl PausedPagingOwner {
+    /// Observes actual actor membership and retained failure without guest locks.
+    pub(crate) fn fault_actor_report(
+        &self,
+    ) -> Result<Option<crucible_protocol::ram_control::RamControlFaultActorReport>, RamError> {
+        let active = self
+            .active
+            .try_lock()
+            .map_err(|_| "fault actor owner unavailable")?;
+        let Some(service) = active.as_ref() else {
+            return Ok(None);
+        };
+        let lifetime = service
+            .lifetime
+            .try_lock()
+            .map_err(|_| "fault actor report unavailable")?;
+        Ok(lifetime.report(service.worker_generation))
+    }
+
+    /// Requests the exact active actor's terminal return; all other custody stays.
+    pub(crate) fn request_fault_actor_test_exit(&self, generation: u64) -> Result<(), RamError> {
+        let active = self
+            .active
+            .try_lock()
+            .map_err(|_| "fault actor owner unavailable")?;
+        let service = active.as_ref().ok_or("fault actor is not active")?;
+        if service.worker_generation != generation || !service.activated.load(Ordering::Acquire) {
+            return Err(RamError::Invariant("fault actor generation is not active"));
+        }
+        service
+            .lifetime
+            .try_lock()
+            .map_err(|_| "fault actor request unavailable")?
+            .request_exit()
+    }
+
     /// Returns the fixed pager actor stack, guard, and page-scratch peak.
     pub(crate) const fn required_staging_bytes() -> u64 {
         (PAGER_STACK_BYTES + PAGE_BYTES + PAGE_BYTES) as u64
@@ -199,6 +252,7 @@ impl PausedPagingOwner {
             active: Arc::new(Mutex::new(None)),
             preparing: AtomicBool::new(false),
             failed: AtomicBool::new(false),
+            first_operational_failure: OnceLock::new(),
             spill: Mutex::new(None),
             logical_bytes: AtomicU64::new(0),
             permanent_resident_bytes: AtomicU64::new(0),
@@ -206,6 +260,12 @@ impl PausedPagingOwner {
             policy: Mutex::new(None),
             queued_operation: Mutex::new(None),
             policy_generation: AtomicU64::new(0),
+            requested_policy_revision: AtomicU64::new(0),
+            placement_epoch: Arc::new(AtomicU64::new(0)),
+            placement_receipt: Arc::new(Mutex::new(None)),
+            prepared_placement_receipt: Mutex::new(None),
+            locks: Arc::new(Mutex::new(None)),
+            retained_lock_transition: Mutex::new(None),
             write_preparation: Mutex::new(None),
             write_scratch: Mutex::new(None),
             write_generation: AtomicU64::new(0),
@@ -318,7 +378,13 @@ impl PausedPagingOwner {
                     .as_ref()
                     .is_some_and(|service| service.failed.load(Ordering::Acquire)),
             full_peak_bytes,
-            permanent_resident_bytes: self.permanent_resident_bytes.load(Ordering::Acquire),
+            permanent_resident_bytes: self.permanent_resident_bytes.load(Ordering::Acquire).max(
+                self.locks
+                    .try_lock()
+                    .ok()
+                    .and_then(|locks| locks.as_ref().and_then(|locks| locks.verified_bytes()))
+                    .unwrap_or(0),
+            ),
         })
     }
 
@@ -357,10 +423,14 @@ impl PausedPagingOwner {
                 "policy exceeds admitted paging I/O slots",
             ));
         }
-        if policy.mode != RamControlMode::Managed {
-            return Err(RamError::Invariant(
-                "disk-complete preservation or locked residency is not qualified",
-            ));
+        if policy.mode == RamControlMode::ResidentRequired {
+            let admitted = locking::maximum_locked_bytes()?;
+            if admitted < snapshot.logical_bytes {
+                return Err(RamError::LockedMemoryAdmission {
+                    required: snapshot.logical_bytes,
+                    admitted,
+                });
+            }
         }
         Ok(())
     }
@@ -397,9 +467,10 @@ impl PausedPagingOwner {
         &self,
         policy: &crucible_protocol::ram_control::RamControlPolicy,
         resources: &PluginRamResources,
+        revision: u64,
     ) -> Result<(), RamError> {
         self.admit_resource_policy(policy, resources)?;
-        self.apply_policy(policy)
+        self.apply_policy(policy, revision)
     }
 
     /// Applies actual operational configuration without claiming physical convergence.
@@ -409,8 +480,12 @@ impl PausedPagingOwner {
     pub(crate) fn apply_policy(
         &self,
         policy: &crucible_protocol::ram_control::RamControlPolicy,
+        revision: u64,
     ) -> Result<(), RamError> {
         self.admit_policy(policy)?;
+        if revision == 0 {
+            return Err(RamError::Invariant("paging policy revision is zero"));
+        }
         let mut current = self
             .policy
             .try_lock()
@@ -423,12 +498,24 @@ impl PausedPagingOwner {
             .map_err(|_| RamError::Invariant("policy generation exhausted"))?
             + 1;
         *current = Some(*policy);
+        self.requested_policy_revision
+            .store(revision, Ordering::Release);
         drop(current);
         if let Err(error) = self.schedule_reclaim(generation) {
-            self.failed.store(true, Ordering::Release);
+            self.retain_operational_failure(SourceOperationClass::Quiescence, &error);
             return Err(error);
         }
         Ok(())
+    }
+
+    /// Returns only a completed strict transition for this actual arena owner.
+    pub(crate) fn placement_receipt(
+        &self,
+    ) -> Option<crucible_protocol::ram_control::RamControlPlacementReceipt> {
+        self.placement_receipt
+            .try_lock()
+            .ok()
+            .and_then(|receipt| *receipt)
     }
 
     /// Connects cold-safe observation to the actual process-lifetime owner.

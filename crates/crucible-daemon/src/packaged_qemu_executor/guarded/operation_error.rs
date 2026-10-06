@@ -14,12 +14,6 @@ pub(crate) struct RetainedOperationError {
 }
 
 impl RetainedOperationError {
-    pub(crate) fn from_box(source: Box<dyn Error + Send>) -> Self {
-        Self {
-            source: Mutex::new(source),
-        }
-    }
-
     pub(crate) fn new(source: impl Error + Send + 'static) -> Self {
         Self {
             source: Mutex::new(Box::new(source)),

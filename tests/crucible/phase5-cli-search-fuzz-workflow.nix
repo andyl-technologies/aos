@@ -5,6 +5,7 @@
   taskIds ? ["T-CLI-13"],
   openTaskIds ? [],
   dependencies ? [],
+  nativeOfflineIntegration,
 }: let
   catalogInstaller = import ./_catalog-quota-installer.nix {inherit pkgs lib;};
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -1120,6 +1121,7 @@ in
 
       buildDeps = [
         pkgs.coreutils
+        pkgs.grep
         pkgs.rust
         pkgs.sed
         pkgs.pkg-config
@@ -1170,28 +1172,11 @@ in
               -p crucible-cli \
               cli_search_fuzz \
               -- --test-threads=1
-            if ! cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-cli-search-fuzz-workflow-target" \
-              -p crucible-cli \
-              --features test-double \
-              cli_exit_machine_readable_search_fuzz_jsonl_reports_final_outcome \
-              -- --test-threads=1 \
-              > "$TMPDIR/machine-readable-search-fuzz-test.log" 2>&1; then
-              cat "$TMPDIR/machine-readable-search-fuzz-test.log"
-              exit 1
-            fi
-            named_test_count="$(
-              sed -n \
-                '/^test cli_exit_machine_readable_search_fuzz_jsonl_reports_final_outcome \.\.\. ok$/p' \
-                "$TMPDIR/machine-readable-search-fuzz-test.log" \
-                | wc -l
-            )"
-            if [ "$named_test_count" -ne 1 ]; then
-              cat "$TMPDIR/machine-readable-search-fuzz-test.log"
-              exit 1
-            fi
+            test -f ${nativeOfflineIntegration}/result
+            ${pkgs.grep}/bin/grep -Fxq cli_native_offline_executions=11 ${nativeOfflineIntegration}/result
+            ${pkgs.grep}/bin/grep -Fxq \
+              cli_native_offline_selector_pass=machine_readable:cli_exit_machine_readable_search_fuzz_jsonl_reports_final_outcome \
+              ${nativeOfflineIntegration}/result
           '';
         }
         {
@@ -1217,6 +1202,7 @@ in
       child_group_id = 65534
       maximum_tasks = 64
       maximum_file_descriptors = 1024
+      maximum_locked_bytes = 0
       maximum_node_host_service_tasks = 4
       maximum_node_host_service_file_descriptors = 32
       maximum_node_host_service_resident_bytes = 8388608

@@ -608,14 +608,14 @@ pub(crate) fn select_finding_debug_checkpoint_with_boundary(
             boundary()?;
             let loaded = checkpoints
                 .load_production_closure_with_cancellation(*checkpoint, cancellation)
-                .map_err(|_| CampaignServiceFailure::IntegrityFailure)?;
+                .map_err(map_checkpoint_selection_failure)?;
             if loaded.scenario() != source.scenario_def().id() {
                 return Err(CampaignServiceFailure::IntegrityFailure);
             }
             let loaded = Arc::new(loaded);
             let decoded = checkpoints
                 .decode_semantic_checkpoint(&loaded, source, cancellation)
-                .map_err(|_| CampaignServiceFailure::IntegrityFailure)?;
+                .map_err(map_checkpoint_selection_failure)?;
             let configuration = decoded
                 .configuration()
                 .try_clone_admitted()
@@ -733,12 +733,71 @@ fn map_inventory_failure(
     }
 }
 
-fn map_lifecycle_failure(error: LifecycleApiError) -> CampaignServiceFailure {
+/// Keeps host cancellation and capacity refusal outside guest integrity claims.
+fn map_checkpoint_selection_failure(
+    error: crate::ExactCheckpointStoreError,
+) -> CampaignServiceFailure {
+    use crate::ExactCheckpointStoreError;
+    use crucible_cas::content_store::StoreError;
+    use crucible_cas::ram::RamStoreError;
+
     match error {
-        LifecycleApiError::SessionLimitReached { .. } => CampaignServiceFailure::ResourceExhausted,
-        LifecycleApiError::LoopFactory { .. } | LifecycleApiError::AttemptOperational { .. } => {
+        ExactCheckpointStoreError::Canceled
+        | ExactCheckpointStoreError::Supervision(_)
+        | ExactCheckpointStoreError::HostAuthority(_)
+        | ExactCheckpointStoreError::UnsupportedBackend { .. }
+        | ExactCheckpointStoreError::InvalidLimit
+        | ExactCheckpointStoreError::NativeRetirement(_) => CampaignServiceFailure::Unavailable,
+        ExactCheckpointStoreError::Store(source)
+        | ExactCheckpointStoreError::Ram(RamStoreError::Store(source)) => match source {
+            StoreError::Quota => CampaignServiceFailure::ResourceExhausted,
+            StoreError::Supervision { .. }
+            | StoreError::Unavailable
+            | StoreError::Unsupported { .. }
+            | StoreError::Poisoned { .. }
+            | StoreError::Io { .. }
+            | StoreError::StreamIo { .. }
+            | StoreError::Unauthorized
+            | StoreError::InvalidComposition { .. }
+            | StoreError::InvalidGraph { .. }
+            | StoreError::DurabilityUnsatisfied { .. }
+            | StoreError::MultipartCleanupRequired => CampaignServiceFailure::Unavailable,
+            StoreError::NotFound { .. }
+            | StoreError::Corrupt { .. }
+            | StoreError::InvalidId
+            | StoreError::InvalidRefName { .. }
+            | StoreError::InvalidRange { .. }
+            | StoreError::Incompatible
+            | StoreError::InvalidSourceLength { .. } => CampaignServiceFailure::IntegrityFailure,
+        },
+        ExactCheckpointStoreError::Ram(RamStoreError::Canceled | RamStoreError::Retention(_)) => {
             CampaignServiceFailure::Unavailable
         }
+        ExactCheckpointStoreError::Ram(RamStoreError::Limit(_))
+        | ExactCheckpointStoreError::ArtifactLimit { .. } => {
+            CampaignServiceFailure::ResourceExhausted
+        }
+        ExactCheckpointStoreError::Production(source) => map_lifecycle_failure(source),
+        ExactCheckpointStoreError::InvalidRoot { .. }
+        | ExactCheckpointStoreError::InvalidReceipt { .. }
+        | ExactCheckpointStoreError::Envelope(_)
+        | ExactCheckpointStoreError::Ram(
+            RamStoreError::Invalid(_)
+            | RamStoreError::Logical(_)
+            | RamStoreError::Envelope(_)
+            | RamStoreError::Transfer(_),
+        ) => CampaignServiceFailure::IntegrityFailure,
+    }
+}
+
+fn map_lifecycle_failure(error: LifecycleApiError) -> CampaignServiceFailure {
+    match error {
+        LifecycleApiError::SessionLimitReached { .. }
+        | LifecycleApiError::ResourceLimit(_)
+        | LifecycleApiError::ConfigurationCopy(_) => CampaignServiceFailure::ResourceExhausted,
+        LifecycleApiError::LoopFactory { .. }
+        | LifecycleApiError::BackendConstruction { .. }
+        | LifecycleApiError::AttemptOperational { .. } => CampaignServiceFailure::Unavailable,
         _ => CampaignServiceFailure::IntegrityFailure,
     }
 }
@@ -755,6 +814,42 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[test]
+    fn selection_distinguishes_host_refusal_from_checkpoint_corruption() {
+        use crate::ExactCheckpointStoreError;
+        use crucible_cas::content_store::StoreError;
+        use crucible_cas::ram::RamStoreError;
+
+        assert_eq!(
+            map_checkpoint_selection_failure(ExactCheckpointStoreError::Canceled),
+            CampaignServiceFailure::Unavailable,
+        );
+        assert_eq!(
+            map_checkpoint_selection_failure(ExactCheckpointStoreError::Store(StoreError::Quota)),
+            CampaignServiceFailure::ResourceExhausted,
+        );
+        assert_eq!(
+            map_checkpoint_selection_failure(ExactCheckpointStoreError::Ram(RamStoreError::Limit(
+                "metadata",
+            ))),
+            CampaignServiceFailure::ResourceExhausted,
+        );
+        assert_eq!(
+            map_checkpoint_selection_failure(ExactCheckpointStoreError::Store(
+                StoreError::Supervision {
+                    source: Box::new(std::io::Error::other("original host deadline")),
+                },
+            )),
+            CampaignServiceFailure::Unavailable,
+        );
+        assert_eq!(
+            map_checkpoint_selection_failure(ExactCheckpointStoreError::InvalidRoot {
+                reason: "corrupt authenticated region",
+            }),
+            CampaignServiceFailure::IntegrityFailure,
+        );
+    }
 
     #[test]
     fn build_failure_retains_its_original_descriptor_until_final_drop() {

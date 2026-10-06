@@ -14,6 +14,9 @@ use crucible::{
 
 #[test]
 fn effective_horizon_pick_uses_running_idle_halted_done_projection() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "effective-horizon-mixed-states",
         8,
@@ -67,6 +70,9 @@ fn effective_horizon_pick_uses_running_idle_halted_done_projection() {
 
 #[test]
 fn effective_horizon_ties_by_node_id_after_state_projection() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "effective-horizon-node-id-tie",
         8,
@@ -102,6 +108,9 @@ fn effective_horizon_ties_by_node_id_after_state_projection() {
 
 #[test]
 fn halted_and_done_nodes_do_not_block_quiescence_with_empty_queues() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "effective-horizon-all-terminal",
         8,
@@ -137,6 +146,9 @@ fn halted_and_done_nodes_do_not_block_quiescence_with_empty_queues() {
 
 #[test]
 fn all_infinite_effective_horizons_yield_no_advance_when_queues_are_empty() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "effective-horizon-all-infinite",
         8,
@@ -177,6 +189,9 @@ fn all_infinite_effective_horizons_yield_no_advance_when_queues_are_empty() {
 
 #[test]
 fn run_reaches_horizon_and_never_advances_past_it() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "effective-horizon-run-stops-at-horizon",
         8,
@@ -205,6 +220,9 @@ fn run_reaches_horizon_and_never_advances_past_it() {
 
 #[test]
 fn run_stops_at_pending_delivery_before_network_horizon() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let consumer = scheduler_node("runner", SchedulingNodeKind::Vm);
     let producer = scheduler_node("peer", SchedulingNodeKind::Vm);
     let due = backend_event(5, &consumer, &producer, 1, b"frame");

@@ -543,7 +543,9 @@ fn retain_and_cleanup_product_finding(
     )?;
     assert_eq!(planned["operation"], "plan");
     assert!(json_u64(&planned, "unreachable_candidates")? >= 1);
-    let journal = DirectoryCampaignGcJournal::open(&fixture.journal)?;
+    let mut inspection = gc_quota::inspection(&fixture.store, "inspect-envoy-gc")?;
+    let operation = inspection.context()?;
+    let journal = DirectoryCampaignGcJournal::open(&fixture.journal, &operation)?;
     assert!(
         journal
             .candidates()

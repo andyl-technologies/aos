@@ -35,6 +35,10 @@ fn production_lazy_restore_first_cold_quantum_matches_resident_oracle() {
     println!("managed_lazy_restore_first_quantum_identity=true");
     println!("managed_lazy_restore_published_ram_root_identity=true");
     println!(
+        "managed_lazy_restore_resident_launch_to_first_quantum_ns={}",
+        resident.launch_to_first_quantum_ns
+    );
+    println!(
         "managed_lazy_restore_missing_installs={}",
         cold.missing_installs
     );
@@ -43,6 +47,7 @@ fn production_lazy_restore_first_cold_quantum_matches_resident_oracle() {
         cold.launch_to_first_quantum_ns
     );
     println!("managed_lazy_restore_cleanup_before_discharge=true");
+    println!("managed_lazy_restore_host_cache=uncontrolled");
     println!("MANAGED_LAZY_RESTORE_NATIVE_PASS");
 }
 
@@ -280,6 +285,7 @@ pub(super) fn discover_target(
             },
         )
         .expect("actual restored arena discovery")
+        .value()
     {
         HostOperationalResponse::Targets { targets, next, .. } => {
             assert_eq!(targets.len(), 1);

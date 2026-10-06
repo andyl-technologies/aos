@@ -40,6 +40,7 @@ const SUPERVISION_EXPORTS: &[&str] = &[
     "outer_cap_binding",
     "operation_statuses",
     "status_snapshot",
+    "status_snapshot_bounded",
     "budgets",
     "cancel",
     "complete",
@@ -108,7 +109,15 @@ pub(super) fn operational_public_exports(
     match (package, relative.as_str()) {
         ("crucible-linux-resource", "src/host_supervision.rs") => SUPERVISION_EXPORTS,
         ("crucible-daemon", "src/host_operational_registry.rs") => REGISTRY_EXPORTS,
-        ("crucible-daemon", "src/supervision.rs") => &["HOST_WATCHDOG_STACK_BYTES"],
+        ("crucible-daemon", "src/supervision.rs") => &[
+            "HOST_WATCHDOG_STACK_BYTES",
+            "PublicationSupervision",
+            "bind_caller",
+            "start",
+            "begin_publication",
+            "guard",
+            "finish",
+        ],
         ("crucible-qemu", "src/linux_cgroup.rs") => &["LinuxQemuCgroupMemoryControl"],
         _ => &[],
     }
@@ -121,7 +130,9 @@ pub(super) fn operational_api_route(
 ) -> Option<&'static str> {
     let relative = relative_source(package_dir, path)?;
     match (package, relative.as_str()) {
-        ("crucible-daemon", "src/host_operational_registry.rs") => Some("host_operational"),
+        ("crucible-daemon", "src/host_operational_registry.rs" | "src/supervision.rs") => {
+            Some("host_operational")
+        }
         _ => None,
     }
 }

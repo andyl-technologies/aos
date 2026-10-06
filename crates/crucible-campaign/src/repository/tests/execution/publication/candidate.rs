@@ -701,7 +701,7 @@ struct RecordingFindingCheckpointAuthenticator {
     scenario_override: Option<ScenarioDefId>,
     configuration_override: Option<ConfigurationId>,
     event_counts: BTreeMap<ExactCheckpointId, u64>,
-    failure: Option<FindingExactCheckpointAuthenticationError>,
+    reject_authentication: bool,
     object_source: Option<Arc<MemoryBlobBackend>>,
 }
 
@@ -719,8 +719,8 @@ impl FindingExactCheckpointAuthenticator for RecordingFindingCheckpointAuthentic
             .lock()
             .expect("record finding checkpoint authentication")
             .push((checkpoint, maximum_metadata_bytes));
-        if let Some(error) = self.failure {
-            return Err(error);
+        if self.reject_authentication {
+            return Err(FindingExactCheckpointAuthenticationError::AuthenticationFailed);
         }
         Ok(AuthenticatedFindingExactCheckpoint::new(
             self.scenario_override.unwrap_or(scenario),
@@ -756,7 +756,7 @@ fn recording_finding_checkpoint_authenticator(
         scenario_override: None,
         configuration_override: None,
         event_counts,
-        failure: None,
+        reject_authentication: false,
         object_source: None,
     }
 }
@@ -1019,8 +1019,7 @@ fn complete_exact_retention_requires_executor_authentication_and_cold_loads_atte
         17,
         candidate_events.clone(),
     );
-    failed_authenticator.failure =
-        Some(FindingExactCheckpointAuthenticationError::AuthenticationFailed);
+    failed_authenticator.reject_authentication = true;
     let failed_store = CampaignExecutorStore::new(Arc::clone(&repository));
     assert!(matches!(
         failed_store.publish_executor_finding_candidate(&bundle, &failed_authenticator),

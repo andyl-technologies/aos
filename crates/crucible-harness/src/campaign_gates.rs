@@ -755,8 +755,8 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
                 evidence_input: "nativeIsolation",
                 evidence: &[
                     "native_isolation_scopes=network-device,native-9p-device,writable-qcow2-root,serial,pidfile,export-socket,temp-files,native-running-sibling-mutation",
-                    "native_negative_isolation_matrix=private-ring-omitted,qmp-control-aliased,console-diagnostics-aliased,writable-disk-backing-aliased,network-omitted,ninep-aliased,host-continuation-identity-aliased",
-                    "native_negative_isolation_rejected_before=child-readiness,resume,world-publication",
+                    "native_negative_isolation_matrix=private-ring-source-aliased,plugin-control-source-aliased,plugin-wake-source-aliased,console-diagnostic-source-aliased,writable-vmstate-source-aliased,network-reader-ring-scope-aliased,ninep-reader-ring-scope-aliased",
+                    "native_negative_isolation_rejected_before=native-fork,child-readiness,resume,world-publication",
                     "native_negative_isolation_source_unchanged=true",
                 ],
                 ignored: true,
@@ -780,7 +780,7 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
                     evidence: &[
                         "source=two-running-one-permanently-failed",
                         "io=block,ninep",
-                        "native_negative_isolation_matrix=private-ring-omitted,qmp-control-aliased,console-diagnostics-aliased,writable-disk-backing-aliased,network-omitted,ninep-aliased,host-continuation-identity-aliased",
+                        "native_negative_isolation_matrix=private-ring-source-aliased,plugin-control-source-aliased,plugin-wake-source-aliased,console-diagnostic-source-aliased,writable-vmstate-source-aliased,network-reader-ring-scope-aliased,ninep-reader-ring-scope-aliased",
                     ],
                     ignored: true,
                 },

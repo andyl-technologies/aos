@@ -93,7 +93,21 @@ impl CampaignRepository {
         id: CampaignArchiveManifestId,
         _inventory: &dyn crucible_cas::content_store::RefInventoryFence,
     ) -> Result<CampaignArchiveInspection, CampaignRepositoryError> {
-        self.inspect_campaign_archive_owned(id, false, &mut || Ok(()))
+        self.inspect_campaign_archive_for_gc_with_boundary(id, _inventory, &mut || Ok(()))
+    }
+
+    /// Authenticates archive GC metadata under the original inventory operation.
+    ///
+    /// # Errors
+    /// Refuses expired supervision, corrupt or missing metadata, invalid
+    /// inventories, and inconsistent typed RAM roots before marking.
+    pub fn inspect_campaign_archive_for_gc_with_boundary(
+        &self,
+        id: CampaignArchiveManifestId,
+        _inventory: &dyn crucible_cas::content_store::RefInventoryFence,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
+    ) -> Result<CampaignArchiveInspection, CampaignRepositoryError> {
+        self.inspect_campaign_archive_owned(id, false, boundary)
     }
 
     pub(super) fn inspect_campaign_archive_owned(

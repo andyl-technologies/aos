@@ -4,6 +4,9 @@ use super::*;
 
 #[test]
 fn decoded_ram_root_credit_survives_the_last_delayed_reader_clone() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let directory = tempfile::tempdir().expect("RAM-root credit fixture directory");
     let fixture = crucible_api::build_exact_ram_production_checkpoint_codec_fixture(
         &directory.path().join("source"),

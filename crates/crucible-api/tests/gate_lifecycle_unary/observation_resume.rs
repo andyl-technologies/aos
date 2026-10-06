@@ -13,7 +13,8 @@ async fn observation_resume_requires_factory_before_session_allocation() {
             counted.fetch_add(1, Ordering::SeqCst);
             QuiescentLifecycleLoop::new()
         },
-    );
+    )
+    .with_decode_budget(crate::output_support::budget());
     let mut request = resume_request(142);
     request.replay_closure = None;
 
@@ -47,6 +48,7 @@ async fn observation_resume_factory_finishes_before_session_publication() {
             QuiescentLifecycleLoop::new()
         },
     )
+    .with_decode_budget(crate::output_support::budget())
     .with_resume_observation_loop_factory(move |request, configuration, _context| {
         assert_eq!(request.observation_source.proof(), b"proof");
         assert_eq!(configuration.id(), request.checkpoint.configuration);
@@ -79,6 +81,7 @@ async fn failed_observation_preparation_releases_its_in_flight_permit() {
         Vec::new(),
         |_scenario: &ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
     )
+    .with_decode_budget(crate::output_support::budget())
     .with_resume_observation_loop_factory(move |_request, _configuration, _context| {
         let call = counted.fetch_add(1, Ordering::SeqCst);
         if call == 0 {
@@ -126,6 +129,7 @@ async fn http_observation_preparation_releases_registry_lock_and_bounds_in_fligh
         Vec::new(),
         |_scenario: &ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
     )
+    .with_decode_budget(crate::output_support::budget())
     .with_resume_observation_loop_factory(move |_request, _configuration, _context| {
         counted_calls.fetch_add(1, Ordering::SeqCst);
         started_sender
@@ -146,14 +150,18 @@ async fn http_observation_preparation_releases_registry_lock_and_bounds_in_fligh
     .with_max_sessions(2);
     let server = tokio::spawn(async move { serve_lifecycle_http2(listener, control_plane).await });
     let endpoint = format!("http://{address}");
+    let rpc_budget = crate::output_support::budget();
     let rpc = RpcControlClient::new(RpcEndpoint::http2(endpoint.clone()))
-        .expect("observation concurrency client");
+        .expect("observation concurrency client")
+        .with_decode_budget(rpc_budget.clone());
 
     let first_request = observation_resume_request(145);
     let first_endpoint = endpoint.clone();
+    let first_rpc_budget = rpc_budget.clone();
     let first_resume = tokio::spawn(async move {
         RpcControlClient::new(RpcEndpoint::http2(first_endpoint))
             .expect("first observation client")
+            .with_decode_budget(first_rpc_budget)
             .resume_session(first_request)
             .await
     });

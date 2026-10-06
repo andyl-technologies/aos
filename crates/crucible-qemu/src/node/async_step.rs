@@ -3,13 +3,19 @@
 use super::*;
 
 pub(super) struct QemuNodeAsyncStepTarget<'a> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) block_completion_observer:
+        Option<std::sync::Arc<dyn crate::QemuTestBlockCompletionObserver>>,
     pub(super) child: &'a mut QemuNodeProcessControl,
     pub(super) channels: &'a mut QemuNodeChannels,
     pub(super) lifecycle_state: &'a mut QemuNodeLifecycleState,
     pub(super) shutdown_policy: QemuShutdownPolicy,
+    pub(super) ram_registration: Option<crate::ram_control::RamControlRegistration>,
     pub(super) supervisor:
         Option<crucible_linux_resource::host_supervision::HostOperationSupervisor>,
     pub(super) stop_condition: crate::QemuQuantumStopCondition,
+    #[cfg(target_os = "linux")]
+    pub(super) ram_continuation: Option<&'a super::hot_fork_ram_stage::QemuHotForkRamContinuation>,
 }
 
 impl QemuAsyncCrashEscalationTarget for QemuNodeAsyncStepTarget<'_> {
@@ -27,6 +33,21 @@ impl QemuAsyncCrashEscalationTarget for QemuNodeAsyncStepTarget<'_> {
 
 impl QemuAsyncNodeStepTarget for QemuNodeAsyncStepTarget<'_> {
     type PendingQuantum = QemuNodePendingQuantum;
+
+    fn operational_health(&self) -> Result<(), crate::QemuAsyncDriverHealthError> {
+        super::operational_health::check_child_sources(self.child)?;
+        super::operational_health::native_actor::check(self.ram_registration.as_ref())?;
+        #[cfg(target_os = "linux")]
+        if let Some(source) = self
+            .ram_continuation
+            .and_then(|continuation| continuation.source.as_deref())
+        {
+            source
+                .check_health()
+                .map_err(crate::QemuAsyncDriverHealthError::ram_source)?;
+        }
+        Ok(())
+    }
 
     fn child_exit_status(
         &mut self,
@@ -56,6 +77,11 @@ impl QemuAsyncNodeStepTarget for QemuNodeAsyncStepTarget<'_> {
         &mut self,
         pending: &mut Self::PendingQuantum,
     ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError> {
+        #[cfg(any(test, feature = "test-support"))]
+        super::block_completion_observation::observe_pending_completion(
+            self.channels,
+            self.block_completion_observer.as_deref(),
+        )?;
         self.channels.shmem_hot_path.poll_quantum(pending)
     }
 }

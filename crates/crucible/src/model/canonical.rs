@@ -9,13 +9,14 @@ use super::{
 use std::collections::BTreeMap;
 
 mod material_stream;
-pub(super) use material_stream::{hash_material, material_string};
+pub(super) use material_stream::material_string;
+pub(crate) use material_stream::{canonical_display_len, hash_material};
 
 pub(super) fn content_hash_from_canonical_material(domain: &str, material: &str) -> ContentHash {
     content_hash_from_canonical_material_bytes(domain, material.as_bytes())
 }
 
-pub(super) fn content_hash_from_canonical_material_bytes(
+pub(crate) fn content_hash_from_canonical_material_bytes(
     domain: &str,
     material: &[u8],
 ) -> ContentHash {

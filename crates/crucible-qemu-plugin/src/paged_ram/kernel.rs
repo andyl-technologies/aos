@@ -88,6 +88,8 @@ pub(crate) struct FaultEvent {
 pub(crate) struct Registration {
     descriptor: ManuallyDrop<OwnedFd>,
     retain_authority: AtomicBool,
+    inherited_disarmed: AtomicBool,
+    creating_process: u32,
     negotiated_features: u64,
     effective_uid: u32,
     effective_gid: u32,
@@ -96,7 +98,41 @@ pub(crate) struct Registration {
 impl Registration {
     /// Identifies this process-private descriptor for a checked fork custody plan.
     pub(crate) fn raw_descriptor(&self) -> std::os::fd::RawFd {
-        self.descriptor.as_raw_fd()
+        if self.inherited_disarmed.load(Ordering::Acquire) {
+            -1
+        } else {
+            self.descriptor.as_raw_fd()
+        }
+    }
+
+    /// Transfers an inherited descriptor once, after the parent's actor joined.
+    ///
+    /// The immediate child owns the retained native close roster. Poisoning this
+    /// copied wrapper prevents later I/O or Drop from acting on a recycled slot.
+    ///
+    /// # Errors
+    /// Refuses the creating process or an already transferred descriptor.
+    pub(crate) fn disarm_inherited(&self) -> io::Result<std::os::fd::RawFd> {
+        if std::process::id() == self.creating_process {
+            return Err(io::Error::other(
+                "creating process cannot disarm fault registration",
+            ));
+        }
+        self.retain_authority.store(true, Ordering::Release);
+        self.inherited_disarmed
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| io::Error::other("fault registration already transferred"))?;
+        Ok(self.descriptor.as_raw_fd())
+    }
+
+    fn checked_descriptor(&self) -> io::Result<std::os::fd::RawFd> {
+        let descriptor = self.raw_descriptor();
+        if descriptor < 0 {
+            return Err(io::Error::other(
+                "inherited fault registration was disarmed",
+            ));
+        }
+        Ok(descriptor)
     }
 
     /// Returns the feature mask reported by the successful kernel negotiation.
@@ -174,6 +210,8 @@ impl Registration {
         let mut registration = Self {
             descriptor: ManuallyDrop::new(descriptor),
             retain_authority: AtomicBool::new(false),
+            inherited_disarmed: AtomicBool::new(false),
+            creating_process: std::process::id(),
             negotiated_features: 0,
             effective_uid,
             effective_gid,
@@ -198,9 +236,10 @@ impl Registration {
     }
 
     fn command<T>(&self, number: libc::c_ulong, value: &mut T) -> io::Result<()> {
+        let descriptor = self.checked_descriptor()?;
         // SAFETY: callers pair each Linux ioctl number with its repr(C) ABI
         // structure; the mutable reference is valid for the synchronous call.
-        if unsafe { libc::ioctl(self.descriptor.as_raw_fd(), number, value) } < 0 {
+        if unsafe { libc::ioctl(descriptor, number, value) } < 0 {
             return Err(io::Error::last_os_error());
         }
         Ok(())
@@ -255,7 +294,7 @@ impl Registration {
         // SAFETY: message is a writable buffer of the Linux uffd_msg ABI size.
         let count = unsafe {
             libc::read(
-                self.descriptor.as_raw_fd(),
+                self.checked_descriptor()?,
                 message.as_mut_ptr().cast(),
                 message.len(),
             )
@@ -362,7 +401,7 @@ impl Registration {
     /// Returns descriptor failure, hangup, or a poll syscall error.
     pub(crate) fn wait(&self, timeout_ms: i32) -> io::Result<()> {
         let mut descriptor = libc::pollfd {
-            fd: self.descriptor.as_raw_fd(),
+            fd: self.checked_descriptor()?,
             events: libc::POLLIN,
             revents: 0,
         };

@@ -12,6 +12,12 @@ use crucible_cas::content_store::{
 pub(in crate::packaged_qemu_executor) struct GuardedCampaignStorage {
     pub(in crate::packaged_qemu_executor) backend: Arc<dyn ImmutableBlobBackend>,
     pub(in crate::packaged_qemu_executor) refs: Arc<dyn MutableRefBackend>,
+    #[cfg(test)]
+    pub(in crate::packaged_qemu_executor) blob_admin:
+        Arc<dyn crucible_cas::content_store::BlobStoreAdmin>,
+    #[cfg(test)]
+    pub(in crate::packaged_qemu_executor) ref_admin:
+        Arc<dyn crucible_cas::content_store::RefStoreAdmin>,
     pub(in crate::packaged_qemu_executor) quota: Arc<dyn StorePhysicalQuotaGuard>,
     _resources: Arc<dyn Send + Sync>,
 }
@@ -29,16 +35,21 @@ impl CatalogService {
         let object_quota = self.prepare_directory(&objects)?;
         let reference_quota = self.prepare_directory(&authority)?;
 
-        let backend = DirectoryBlobBackend::new_with_physical_quota(
+        let (backend, _blob_admin) = DirectoryBlobBackend::new_with_physical_quota_and_admin(
             "guarded-campaign",
             objects,
             object_quota,
         )?;
-        let refs = DirectoryRefBackend::new_with_physical_quota(authority, reference_quota)?;
+        let (refs, _ref_admin) =
+            DirectoryRefBackend::new_with_physical_quota_and_admin(authority, reference_quota)?;
         quota.verify()?;
         Ok(GuardedCampaignStorage {
             backend,
             refs,
+            #[cfg(test)]
+            blob_admin: _blob_admin,
+            #[cfg(test)]
+            ref_admin: _ref_admin,
             quota,
             _resources: resources,
         })

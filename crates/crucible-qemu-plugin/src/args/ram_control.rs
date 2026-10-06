@@ -3,7 +3,7 @@
 use super::*;
 use crucible_protocol::ram_control::RamControlTarget;
 
-const KEYS: [&str; 8] = [
+const KEYS: [&str; 9] = [
     "ram_control_fd",
     "ram_control_session",
     "ram_control_daemon",
@@ -12,6 +12,7 @@ const KEYS: [&str; 8] = [
     "ram_control_owner_generation",
     "ram_control_arena_generation",
     "ram_control_template",
+    "ram_test_fault_actor",
 ];
 
 /// Authenticated pager-control setup, passed as one complete launch projection.
@@ -23,6 +24,8 @@ pub struct PluginRamControlArgs {
     pub session: [u8; 32],
     /// Exact operational arena authority.
     pub target: RamControlTarget,
+    /// Separate explicit test-only terminal-request entitlement, absent normally.
+    pub fault_actor_test_entitlement: Option<[u8; 32]>,
 }
 
 pub(super) fn is_key(key: &str) -> bool {
@@ -69,9 +72,17 @@ pub(super) fn parse(
     if session == [0; 32] || daemon_epoch == [0; 32] || owner_id == [0; 32] || node_id == [0; 32] {
         return Err(PluginArgsParseError::InvalidRamControl);
     }
+    let fault_actor_test_entitlement = parsed
+        .value(KEYS[8])
+        .map(|_| parse_required_hash(parsed, KEYS[8]))
+        .transpose()?;
+    if fault_actor_test_entitlement == Some([0; 32]) {
+        return Err(PluginArgsParseError::InvalidRamControl);
+    }
     Ok(Some(PluginRamControlArgs {
         descriptor,
         session,
+        fault_actor_test_entitlement,
         target: RamControlTarget {
             daemon_epoch,
             owner_id,

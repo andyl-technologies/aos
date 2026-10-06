@@ -3,7 +3,7 @@
 use std::fmt;
 use std::time::Duration;
 
-use crucible::{BackendError, BackendOperationalFailureKind};
+use crucible::{BackendError, BackendOperationalCause, BackendOperationalFailureKind};
 use crucible_linux_resource::host_supervision::{HostOperationState, HostSupervisionError};
 use thiserror::Error;
 
@@ -320,13 +320,22 @@ impl QemuNodeError {
 impl From<QemuNodeError> for BackendError {
     fn from(error: QemuNodeError) -> Self {
         if let QemuNodeError::AsyncDriver {
+            source: QemuAsyncDriverError::OperationalHealth(source),
+        } = &error
+        {
+            return Self::RetainedOperationalFailure {
+                kind: source.operational_kind(),
+                source: BackendOperationalCause::new(source.clone()),
+            };
+        }
+        if let QemuNodeError::AsyncDriver {
             source: QemuAsyncDriverError::Runtime(runtime),
         } = &error
             && let Some(source) = runtime.operational_supervision_source()
         {
-            return Self::OperationalFailure {
+            return Self::RetainedOperationalFailure {
                 kind: operational_failure_kind(source),
-                message: format!("{} failed: {source}", runtime.operation),
+                source: BackendOperationalCause::new(runtime.clone()),
             };
         }
 

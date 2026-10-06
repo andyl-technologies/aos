@@ -35,6 +35,9 @@ static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn gate_content_address_keeps_fixed_vectors_stable() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = scenario("scenario=alpha\nnodes=a,b\nseed=42");
     let schedule = fixed_schedule();
     let configuration = Configuration {
@@ -80,6 +83,9 @@ fn gate_content_address_keeps_fixed_vectors_stable() {
 
 #[test]
 fn gate_content_address_hashes_equal_content_to_equal_ids() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let first_scenario = scenario("scenario=equal\nnodes=a,b\nseed=7");
     let second_scenario = scenario("scenario=equal\nnodes=a,b\nseed=7");
     let first_schedule = fixed_schedule();
@@ -110,6 +116,9 @@ fn gate_content_address_hashes_equal_content_to_equal_ids() {
 
 #[test]
 fn gate_content_address_changes_on_single_byte_mutations() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     assert_ne!(
         ScenarioDef::from_canonical_material("crucible.test.content-address.scenario", "seed=1")
             .id(),
@@ -155,6 +164,9 @@ fn gate_content_address_changes_on_single_byte_mutations() {
 
 #[test]
 fn gate_content_address_is_sensitive_to_schedule_order() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = scenario("scenario=order\nnodes=a,b\nseed=13");
     let draw = Decision::RngDraw(RngDecision {
         stream: RngStreamId::from_name("scheduler/order"),
@@ -190,6 +202,9 @@ fn gate_content_address_is_sensitive_to_schedule_order() {
 
 #[test]
 fn gate_content_address_excludes_materialization_cache_from_identity() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = scenario("scenario=cache\nnodes=a\nseed=17");
     let configuration = accepted_step!(
         &Configuration::genesis(scenario.clone()),
@@ -214,6 +229,9 @@ fn gate_content_address_excludes_materialization_cache_from_identity() {
 
 #[test]
 fn gate_content_address_checkpoint_identity_matches_configuration_id() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     for seed in 0..64 {
         let scenario = scenario(&format!("scenario=checkpoint\nseed={seed}\n"));
         let parent = Configuration {
@@ -290,6 +308,9 @@ fn gate_content_address_checkpoint_identity_matches_configuration_id() {
 
 #[test]
 fn gate_content_address_materialized_state_hashes_loadvm_components() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let node = NodeId {
         name: String::from("node-a"),
     };
@@ -426,6 +447,9 @@ fn gate_content_address_materialized_state_hashes_loadvm_components() {
 
 #[test]
 fn gate_content_address_cow_sharing_dedups_identical_fork_deltas() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = World::from_recorded_parts(
         ContentHash::from_canonical_material(
             "crucible.test.content-address.world",
@@ -506,6 +530,9 @@ fn gate_content_address_cow_sharing_dedups_identical_fork_deltas() {
 
 #[test]
 fn gate_content_address_dag_store_put_get_exists_dedups_equal_bytes() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let store = MemoryDagStore::new();
     let bytes = b"checkpoint-node\nparent=genesis\ndelta=decision-0\n";
     let first = store
@@ -570,6 +597,9 @@ fn gate_content_address_dag_store_put_get_exists_dedups_equal_bytes() {
 
 #[test]
 fn gate_content_address_local_dag_store_uses_two_level_layout() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let root = unique_temp_dir("local-dag-store");
     let store = LocalDagStore::new(root.clone());
     let bytes = b"vm-delta\npage=7\nbytes=dirty\n";
@@ -627,6 +657,9 @@ fn gate_content_address_local_dag_store_uses_two_level_layout() {
 
 #[test]
 fn gate_content_address_local_dag_store_repairs_corrupt_object_path() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let root = unique_temp_dir("local-dag-store-corrupt");
     let store = LocalDagStore::new(root.clone());
     let bytes = b"vm-delta\npage=9\nbytes=repaired\n";
@@ -671,6 +704,9 @@ fn gate_content_address_local_dag_store_repairs_corrupt_object_path() {
 
 #[test]
 fn gate_content_address_reproduction_artifact_is_store_key_closure() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let store = MemoryDagStore::new();
     let scenario_key = store
         .put(b"scenario-def\nnodes=a,b\nseed=42\n")
@@ -706,6 +742,9 @@ fn gate_content_address_reproduction_artifact_is_store_key_closure() {
 
 #[test]
 fn gate_content_address_temporal_graph_persists_checkpoint_closure_in_dag_store() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = World::from_recorded_parts(
         ContentHash::from_canonical_material(
             "crucible.test.content-address.world",
@@ -792,6 +831,9 @@ fn gate_content_address_temporal_graph_persists_checkpoint_closure_in_dag_store(
 
 #[test]
 fn gate_content_address_gc_refcounts_abandoned_branch_unique_objects() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = World::from_recorded_parts(
         ContentHash::from_canonical_material(
             "crucible.test.content-address.world",
@@ -945,6 +987,9 @@ fn gate_content_address_gc_refcounts_abandoned_branch_unique_objects() {
 
 #[test]
 fn gate_content_address_gc_mark_sweep_roots_live_tips_pins_and_genesis() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = World::from_recorded_parts(
         ContentHash::from_canonical_material(
             "crucible.test.content-address.world",
@@ -1037,6 +1082,9 @@ fn gate_content_address_gc_mark_sweep_roots_live_tips_pins_and_genesis() {
 
 #[test]
 fn gate_content_address_gc_missing_root_errors_without_deleting_store_objects() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = World::from_recorded_parts(
         ContentHash::from_canonical_material(
             "crucible.test.content-address.world",
@@ -1094,6 +1142,9 @@ fn gate_content_address_gc_missing_root_errors_without_deleting_store_objects() 
 
 #[test]
 fn gate_content_address_gc_collects_cache_not_identity() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = World::from_recorded_parts(
         ContentHash::from_canonical_material(
             "crucible.test.content-address.world",
@@ -1156,6 +1207,9 @@ fn gate_content_address_gc_collects_cache_not_identity() {
 
 #[test]
 fn gate_content_address_checkpoint_rejects_malformed_parent_edges() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario_def = scenario("scenario=checkpoint-parent\nseed=89\n");
     let parent = Configuration {
         def: scenario_def.clone(),
@@ -1227,6 +1281,9 @@ fn gate_content_address_checkpoint_rejects_malformed_parent_edges() {
 
 #[test]
 fn gate_content_address_rejects_corrupt_checkpoint_cache_topology() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario_def = scenario("scenario=checkpoint-cache\nseed=144\n");
     let configuration = Configuration {
         def: scenario_def,
@@ -1247,6 +1304,9 @@ fn gate_content_address_rejects_corrupt_checkpoint_cache_topology() {
 
 #[test]
 fn gate_content_address_temporal_graph_records_step_closure_and_parent_chain() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = World::from_recorded_parts(
         ContentHash::from_canonical_material(
             "crucible.test.content-address.world",
@@ -1306,6 +1366,9 @@ fn gate_content_address_temporal_graph_records_step_closure_and_parent_chain() {
 
 #[test]
 fn gate_content_address_temporal_graph_frontier_records_checkpoint_dag_children() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = World::from_recorded_parts(
         ContentHash::from_canonical_material(
             "crucible.test.content-address.world",
@@ -1353,6 +1416,9 @@ fn gate_content_address_temporal_graph_frontier_records_checkpoint_dag_children(
 
 #[test]
 fn gate_content_address_temporal_graph_symmetry_reduction_covers_relabelled_frontier() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = World::from_recorded_parts(
         ContentHash::from_canonical_material(
             "crucible.test.content-address.world",
@@ -1436,6 +1502,9 @@ fn gate_content_address_temporal_graph_symmetry_reduction_covers_relabelled_fron
 
 #[test]
 fn gate_content_address_temporal_graph_symmetry_reduction_explores_without_proof() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = World::from_recorded_parts(
         ContentHash::from_canonical_material(
             "crucible.test.content-address.world",
@@ -1473,6 +1542,9 @@ fn gate_content_address_temporal_graph_symmetry_reduction_explores_without_proof
 
 #[test]
 fn gate_content_address_temporal_graph_symmetry_reduction_explores_when_state_differs() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = World::from_recorded_parts(
         ContentHash::from_canonical_material(
             "crucible.test.content-address.world",
@@ -1559,6 +1631,9 @@ fn gate_content_address_temporal_graph_symmetry_reduction_explores_when_state_di
 
 #[test]
 fn gate_content_address_temporal_graph_partial_order_reduction_skips_noncanonical_interleaving() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = World::from_recorded_parts(
         ContentHash::from_canonical_material(
             "crucible.test.content-address.world",
@@ -1626,6 +1701,9 @@ fn gate_content_address_temporal_graph_partial_order_reduction_skips_noncanonica
 
 #[test]
 fn gate_content_address_temporal_graph_partial_order_reduction_records_missing_representative() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = World::from_recorded_parts(
         ContentHash::from_canonical_material(
             "crucible.test.content-address.world",
@@ -1685,6 +1763,9 @@ fn gate_content_address_temporal_graph_partial_order_reduction_records_missing_r
 
 #[test]
 fn gate_content_address_temporal_graph_partial_order_reduction_explores_when_dependent() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = World::from_recorded_parts(
         ContentHash::from_canonical_material(
             "crucible.test.content-address.world",
@@ -1733,6 +1814,9 @@ fn gate_content_address_temporal_graph_partial_order_reduction_explores_when_dep
 
 #[test]
 fn gate_content_address_temporal_graph_user_operations_share_single_dag() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = World::from_recorded_parts(
         ContentHash::from_canonical_material(
             "crucible.test.content-address.world",
@@ -1848,6 +1932,9 @@ fn gate_content_address_temporal_graph_user_operations_share_single_dag() {
 
 #[test]
 fn gate_content_address_temporal_graph_requires_baked_genesis_root() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = scenario("temporal-graph-missing-root");
     let genesis = Configuration::genesis(scenario.clone());
     let mut graph = TemporalGraph::empty();
@@ -1877,6 +1964,9 @@ fn gate_content_address_temporal_graph_requires_baked_genesis_root() {
 
 #[test]
 fn gate_content_address_collision_corpus_has_unique_ids() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut seen = BTreeSet::new();
 
     for index in 0..512_u64 {

@@ -4,6 +4,18 @@
 //! separately protected key material. Unknown fields, unsupported versions,
 //! duplicate identifiers, volatile roots, and insecure files or directories
 //! fail before the campaign repository or endpoint is opened.
+//!
+//! A physical-quota service supplies an outer lifetime, a full resource vector,
+//! and all fourteen operation classes. The following fragment illustrates one
+//! class; the remaining classes use the same explicit budget fields:
+//!
+//! ```toml
+//! [physical_quota_service]
+//! lifetime_ms = 2700000
+//! [physical_quota_service.host_operation_budgets.preparation]
+//! poll_interval_ms = 10
+//! total_timeout_ms = 300000
+//! ```
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
@@ -90,6 +102,7 @@ struct CampaignStoreDeployment {
 struct AuthoredQuotaService {
     lifetime_ms: u64,
     resources: crate::cli_verify_serve::HostOwnerResourcesDeployment,
+    host_operation_budgets: BTreeMap<String, crate::cli_verify_serve::OperationBudgetDeployment>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -612,10 +625,16 @@ fn load_campaign_repository_graph(
     ) {
         (true, None) => None,
         (false, Some(service)) => Some(Arc::new(
-            LinuxProjectQuotaBinder::new(CampaignQuotaServiceConfig {
-                lifetime: std::time::Duration::from_millis(service.lifetime_ms),
-                resources: service.resources.resources(),
-            })
+            LinuxProjectQuotaBinder::new(
+                CampaignQuotaServiceConfig::from_authored_budgets(
+                    crate::cli_verify_serve::deployed_budgets(&service.host_operation_budgets)?,
+                    Some(std::time::Duration::from_millis(service.lifetime_ms)),
+                    service.resources.resources(),
+                )
+                .map_err(|error| {
+                    campaign_store_error(format!("physical-quota supervision refused: {error}"))
+                })?,
+            )
             .map_err(|error| {
                 campaign_store_error(format!("physical-quota service admission failed: {error}"))
             })?,
@@ -1740,7 +1759,26 @@ cpu_slots = 1
 task_slots = 1
 file_descriptors = 36
 "#;
-        let parsed = toml::from_str::<AuthoredQuotaService>(authored)
+        let mut authored = String::from(authored);
+        for name in [
+            "setup",
+            "quantum",
+            "page_in",
+            "writeback",
+            "fingerprint_initialization",
+            "fingerprint_update",
+            "quiescence",
+            "checkpoint_capture",
+            "checkpoint_publication",
+            "restore",
+            "fork_rearm",
+            "transfer",
+            "preparation",
+            "cleanup",
+        ] {
+            authored.push_str(&format!("\n[host_operation_budgets.{name}]\npoll_interval_ms = 10\ntotal_timeout_ms = 60000\n"));
+        }
+        let parsed = toml::from_str::<AuthoredQuotaService>(&authored)
             .unwrap_or_else(|error| panic!("parse explicit standalone service: {error}"));
         assert_eq!(parsed.lifetime_ms, 60000);
         assert_eq!(parsed.resources.resources().file_descriptors, 36);

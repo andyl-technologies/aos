@@ -1428,6 +1428,7 @@ impl SingleScheduler {
                 event_log_segment_hash: event_log.segment_hash,
                 event_log_offset: event_log.offset,
                 scheduler_quiescence: Some(staged.quiescence()?),
+                event_log_custody: event_log.event_log_custody,
             };
             *self = staged;
             return Ok(SchedulerConcurrentQuantumOutcome {
@@ -1596,6 +1597,7 @@ impl SingleScheduler {
             event_log_segment_hash: event_log.segment_hash,
             event_log_offset: event_log.offset,
             scheduler_quiescence: Some(self.quiescence()?),
+            event_log_custody: event_log.event_log_custody,
         })
     }
 
@@ -1677,6 +1679,7 @@ impl SingleScheduler {
                     event_log_segment_hash: event_log.segment_hash,
                     event_log_offset: event_log.offset,
                     scheduler_quiescence: Some(self.quiescence()?),
+                    event_log_custody: event_log.event_log_custody,
                 });
             }
         };
@@ -1755,6 +1758,7 @@ impl SingleScheduler {
             event_log_segment_hash: event_log.segment_hash,
             event_log_offset: event_log.offset,
             scheduler_quiescence: Some(self.quiescence()?),
+            event_log_custody: event_log.event_log_custody,
         })
     }
 
@@ -1825,9 +1829,9 @@ impl SingleScheduler {
                     Icount {
                         retired: physical_time.ticks,
                     },
-                )
+                )?
             } else {
-                scheduler_event_log_entry(sequence, entry_time, payload)
+                scheduler_event_log_entry(sequence, entry_time, payload)?
             };
             entries.push(entry);
         }
@@ -1839,7 +1843,7 @@ impl SingleScheduler {
                 SchedulerEventLogPayload::EvaluationBoundary(
                     SchedulerEvaluationBoundaryKind::Quantum,
                 ),
-            ));
+            )?);
         }
 
         self.event_log.append_entries(entries)

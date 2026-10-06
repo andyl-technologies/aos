@@ -6,8 +6,16 @@
 //! immutable measurement contracts.
 
 use super::*;
+use std::borrow::Borrow;
 
 mod boundary;
+mod ownership;
+mod validation;
+
+pub use validation::validate_measurement_event_log;
+use validation::{
+    boundary_node_count, event_for_sequence, validate_and_index_samples, validate_terminal_state,
+};
 
 use boundary::evaluate_window;
 
@@ -294,6 +302,12 @@ impl MeasurementRuntimeSample {
     }
 }
 
+impl Borrow<MeasurementSampleValue> for MeasurementRuntimeSample {
+    fn borrow(&self) -> &MeasurementSampleValue {
+        &self.value
+    }
+}
+
 /// Terminal modeled state used to resolve stateful boundaries after the log.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(deny_unknown_fields)]
@@ -309,7 +323,7 @@ pub struct MeasurementTerminalState {
 }
 
 /// One scheduler-ordered event participating in boundary satisfaction.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MeasurementBoundaryEvent {
     sequence: u64,
@@ -331,7 +345,7 @@ impl MeasurementBoundaryEvent {
 }
 
 /// Exact evidence proving one boundary or timeout became satisfied.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MeasurementBoundaryEvidence {
     sequence: Option<u64>,
@@ -368,7 +382,7 @@ impl MeasurementBoundaryEvidence {
 }
 
 /// Final modeled state of one declared measurement window.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MeasurementWindowOutcome {
     /// The begin boundary never became true.
@@ -425,7 +439,7 @@ impl MeasurementWindowOutcome {
 }
 
 /// Exact samples and recomputed aggregate for one metric.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MeasurementMetricOutcome {
     samples: Vec<MeasurementRuntimeSample>,
@@ -454,7 +468,7 @@ impl MeasurementMetricOutcome {
 }
 
 /// Replay result for one declared measurement.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MeasurementOutcome {
     window: MeasurementWindowOutcome,
@@ -478,59 +492,85 @@ impl MeasurementOutcome {
 /// Complete bounded evaluation keyed by canonical measurement identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MeasurementEvaluation {
+    body: std::sync::Arc<OwnedEvaluation>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct OwnedEvaluation {
     definitions: ContentHash,
     outcomes: BTreeMap<MeasurementId, MeasurementOutcome>,
     id: ContentHash,
     canonical: Vec<u8>,
+    input_custody: crate::owned_decode::DecodeCustody,
+    custody: crate::owned_decode::DecodeCustody,
 }
 
 impl MeasurementEvaluation {
     /// Returns the exact scenario measurement-definition component.
     #[must_use]
-    pub const fn definitions(&self) -> ContentHash {
-        self.definitions
+    pub fn definitions(&self) -> ContentHash {
+        self.body.definitions
     }
 
     /// Returns outcomes in canonical measurement-ID order.
     #[must_use]
-    pub const fn outcomes(&self) -> &BTreeMap<MeasurementId, MeasurementOutcome> {
-        &self.outcomes
+    pub fn outcomes(&self) -> &BTreeMap<MeasurementId, MeasurementOutcome> {
+        &self.body.outcomes
     }
 
     /// Returns the content address of this complete canonical evaluation.
     #[must_use]
-    pub const fn content_hash(&self) -> ContentHash {
-        self.id
+    pub fn content_hash(&self) -> ContentHash {
+        self.body.id
     }
 
     /// Returns the exact language-neutral evaluation body.
     #[must_use]
     pub fn canonical_bytes(&self) -> &[u8] {
-        &self.canonical
+        &self.body.canonical
     }
 
     fn new(
         definitions: ContentHash,
         outcomes: BTreeMap<MeasurementId, MeasurementOutcome>,
+        input_custody: crate::owned_decode::DecodeCustody,
     ) -> Result<Self, MeasurementEvaluationError> {
-        preflight_evaluation_bytes(definitions, &outcomes)?;
-        let canonical = canonical_evaluation_json(definitions, &outcomes)?;
+        let length = preflight_evaluation_bytes(definitions, &outcomes)?;
+        let canonical = canonical_evaluation_json(definitions, &outcomes, length)?;
         let id = ContentHash::from_canonical_hex_bytes(
             "crucible.model.measurement-evaluation.v2",
             &canonical,
         );
+        let custody = crate::owned_decode::require_current_custody()
+            .map_err(MeasurementEvaluationError::OriginalAdmission)?;
+        ownership::charge_shared_body::<OwnedEvaluation>()?;
         Ok(Self {
-            definitions,
-            outcomes,
-            id,
-            canonical,
+            body: std::sync::Arc::new(OwnedEvaluation {
+                definitions,
+                outcomes,
+                id,
+                canonical,
+                input_custody,
+                custody,
+            }),
         })
     }
 }
 
 /// Stable failure while replaying or aggregating scenario measurements.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum MeasurementEvaluationError {
+    /// A canonical event identity refused its original rendering or metadata admission.
+    #[error("measurement event identity failed: {source}")]
+    CanonicalIdentity {
+        /// Original typed canonical rendering failure.
+        source: std::sync::Arc<crate::EngineError>,
+        /// Keeps the admitted error envelope alive through its last reader.
+        custody: crate::owned_decode::DecodeCustody,
+    },
+    /// The original metadata account refused event identity verification.
+    #[error(transparent)]
+    OriginalAdmission(crate::owned_decode::DecodeAdmissionError),
     /// Input exceeded one deterministic work or collection bound.
     #[error("measurement evaluation limit `{limit}` exceeded")]
     LimitExceeded {
@@ -564,6 +604,8 @@ pub enum MeasurementEvaluationError {
         kind: &'static str,
         /// Missing ID.
         id: String,
+        /// Keeps the original diagnostic allocation alive.
+        custody: crate::owned_decode::DecodeCustody,
     },
     /// More than one value was supplied for a metric at one event.
     #[error("duplicate sample for measurement `{measurement}` metric `{metric}` at {sequence}")]
@@ -572,6 +614,8 @@ pub enum MeasurementEvaluationError {
         measurement: MeasurementId,
         /// Metric ID.
         metric: MetricId,
+        /// Keeps the original diagnostic allocation alive.
+        custody: crate::owned_decode::DecodeCustody,
         /// Event sequence.
         sequence: u64,
     },
@@ -582,6 +626,8 @@ pub enum MeasurementEvaluationError {
         measurement: MeasurementId,
         /// Metric ID.
         metric: MetricId,
+        /// Keeps the original diagnostic allocation alive.
+        custody: crate::owned_decode::DecodeCustody,
     },
     /// An exact arithmetic operation exceeded its closed representation.
     #[error("measurement exact arithmetic overflowed")]
@@ -600,6 +646,8 @@ pub enum MeasurementEvaluationError {
     CanonicalEncoding {
         /// Stable serialization detail.
         reason: String,
+        /// Keeps the original diagnostic allocation alive.
+        custody: crate::owned_decode::DecodeCustody,
     },
     /// Supplied retained bytes differ from exact replay output.
     #[error("retained measurement evaluation does not match exact replay")]
@@ -615,6 +663,8 @@ pub enum MeasurementEvaluationError {
     TerminalIcountRegression {
         /// Node whose terminal counter regressed.
         node: NodeId,
+        /// Keeps the original diagnostic allocation alive.
+        custody: crate::owned_decode::DecodeCustody,
     },
     /// A model-source event had an invalid authority or required typed field.
     #[error("measurement model source found invalid `{kind}` event at sequence {sequence}")]
@@ -624,6 +674,61 @@ pub enum MeasurementEvaluationError {
         /// Stable scheduler event kind.
         kind: &'static str,
     },
+}
+
+impl From<crate::EngineError> for MeasurementEvaluationError {
+    fn from(source: crate::EngineError) -> Self {
+        match source {
+            crate::EngineError::ArtifactDecodeAdmission { source } => {
+                Self::OriginalAdmission(source)
+            }
+            source => {
+                let custody = match crate::owned_decode::require_current_custody() {
+                    Ok(custody) => custody,
+                    Err(error) => return Self::OriginalAdmission(error),
+                };
+                let bytes = (std::mem::size_of::<crate::EngineError>()
+                    + 2 * std::mem::size_of::<usize>()) as u64;
+                if let Err(error) = crate::owned_decode::charge_bytes(bytes) {
+                    return Self::OriginalAdmission(error);
+                }
+                Self::CanonicalIdentity {
+                    source: std::sync::Arc::new(source),
+                    custody,
+                }
+            }
+        }
+    }
+}
+
+/// Model-owned samples retaining the original producer allocation account.
+#[derive(Debug, PartialEq, Eq)]
+pub struct MeasurementModelSamples {
+    samples: Vec<MeasurementRuntimeSample>,
+    custody: crate::owned_decode::DecodeCustody,
+}
+
+impl std::ops::Deref for MeasurementModelSamples {
+    type Target = [MeasurementRuntimeSample];
+
+    fn deref(&self) -> &Self::Target {
+        &self.samples
+    }
+}
+
+impl MeasurementModelSamples {
+    /// Transfers samples and their original credit into an owning evaluator.
+    ///
+    /// The receiver keeps the custody through the final sample destructor.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        Vec<MeasurementRuntimeSample>,
+        crate::owned_decode::DecodeCustody,
+    ) {
+        (self.samples, self.custody)
+    }
 }
 
 /// Derives model-owned metric samples from an authenticated scheduler log.
@@ -642,17 +747,27 @@ pub enum MeasurementEvaluationError {
 pub fn derive_model_measurement_samples(
     definitions: &MeasurementDefinitions,
     entries: &[SchedulerEventLogEntry],
-) -> Result<Vec<MeasurementRuntimeSample>, MeasurementEvaluationError> {
+) -> Result<MeasurementModelSamples, MeasurementEvaluationError> {
+    let output = crate::owned_decode::require_current_child_budget()
+        .map_err(MeasurementEvaluationError::OriginalAdmission)?;
+    let _scope = output.enter();
     let mut samples = Vec::new();
     append_model_measurement_samples(definitions, entries, &mut samples)?;
-    Ok(samples)
+    output
+        .check()
+        .map_err(MeasurementEvaluationError::OriginalAdmission)?;
+    Ok(MeasurementModelSamples {
+        samples,
+        custody: output.custody(),
+    })
 }
 
 /// Appends model-owned samples to an independently normalized sample stream.
 ///
 /// This is the bounded mixed-source path: the runtime sample-count and byte
 /// limits apply to the existing guest samples plus newly derived model samples,
-/// and no second model-sample vector is allocated.
+/// and no second model-sample vector is allocated. The caller retains the
+/// active original account through the last reader of the appended samples.
 ///
 /// # Errors
 ///
@@ -671,18 +786,13 @@ pub fn append_model_measurement_samples(
         });
     }
 
-    let model_metrics = definitions
+    let model_metric_count = definitions
         .definitions()
         .iter()
-        .flat_map(|definition| {
-            definition
-                .metrics
-                .iter()
-                .filter(|metric| metric.source != MetricSource::Guest)
-                .map(move |metric| (&definition.id, metric))
-        })
-        .collect::<Vec<_>>();
-    let visits = model_metrics.len().checked_mul(entries.len()).ok_or(
+        .flat_map(|definition| &definition.metrics)
+        .filter(|metric| metric.source != MetricSource::Guest)
+        .count();
+    let visits = model_metric_count.checked_mul(entries.len()).ok_or(
         MeasurementEvaluationError::LimitExceeded {
             limit: "model-measurement-event-visits",
         },
@@ -693,14 +803,14 @@ pub fn append_model_measurement_samples(
         });
     }
 
-    let remaining = MAX_MEASUREMENT_RUNTIME_SAMPLES
-        .checked_sub(samples.len())
-        .ok_or(MeasurementEvaluationError::LimitExceeded {
-            limit: "measurement-runtime-samples",
-        })?;
-    samples.reserve(visits.min(remaining).min(4_096));
     let mut sample_bytes = preflight_runtime_sample_bytes(samples)?;
-    for (measurement, metric) in model_metrics {
+    for (measurement, metric) in definitions.definitions().iter().flat_map(|definition| {
+        definition
+            .metrics
+            .iter()
+            .filter(|metric| metric.source != MetricSource::Guest)
+            .map(move |metric| (&definition.id, metric))
+    }) {
         for entry in entries {
             let Some(value) = model_sample_value(metric, entry)? else {
                 continue;
@@ -712,8 +822,8 @@ pub fn append_model_measurement_samples(
             }
             let sample = MeasurementRuntimeSample::new(
                 entry.sequence(),
-                measurement.clone(),
-                metric.id.clone(),
+                ownership::copy_measurement(measurement)?,
+                ownership::copy_metric(&metric.id)?,
                 value,
             );
             let separator = usize::from(!samples.is_empty());
@@ -729,6 +839,7 @@ pub fn append_model_measurement_samples(
                     limit: "measurement-runtime-sample-bytes",
                 });
             }
+            ownership::reserve(samples, 1)?;
             samples.push(sample);
         }
     }
@@ -835,6 +946,11 @@ pub fn evaluate_measurements(
     samples: Vec<MeasurementRuntimeSample>,
     terminal: &MeasurementTerminalState,
 ) -> Result<MeasurementEvaluation, MeasurementEvaluationError> {
+    let input_custody = crate::owned_decode::require_current_custody()
+        .map_err(MeasurementEvaluationError::OriginalAdmission)?;
+    let output = crate::owned_decode::require_current_child_budget()
+        .map_err(MeasurementEvaluationError::OriginalAdmission)?;
+    let _output_scope = output.enter();
     validate_measurement_event_log(entries)?;
     validate_terminal_state(entries, terminal)?;
     if samples.len() > MAX_MEASUREMENT_RUNTIME_SAMPLES {
@@ -867,41 +983,34 @@ pub fn evaluate_measurements(
             limit: "measurement-event-visits",
         });
     }
-    let samples = validate_and_index_samples(definitions, entries, samples)?;
+    let mut samples = validate_and_index_samples(definitions, entries, samples)?;
     let mut outcomes = BTreeMap::new();
     for definition in definitions.definitions() {
         let window = evaluate_window(definition, entries, terminal)?;
         let mut metrics = BTreeMap::new();
         for metric in &definition.metrics {
-            let retained = samples
-                .get(&(definition.id.clone(), metric.id.clone()))
-                .into_iter()
-                .flatten()
-                .filter(|sample| {
-                    event_for_sequence(entries, sample.sequence)
-                        .is_some_and(|entry| window.includes_entry(entry))
-                })
-                .cloned()
-                .collect::<Vec<_>>();
-            let aggregate = aggregate_metric_samples(
-                metric,
-                &retained
-                    .iter()
-                    .map(|sample| sample.value.clone())
-                    .collect::<Vec<_>>(),
-            )?;
-            let evidence = retained
-                .iter()
-                .map(|sample| {
+            let mut retained = samples
+                .remove(&(&definition.id, &metric.id))
+                .unwrap_or_default();
+            retained.retain(|sample| {
+                event_for_sequence(entries, sample.sequence)
+                    .is_some_and(|entry| window.includes_entry(entry))
+            });
+            let aggregate = aggregate_metric_samples(metric, &retained)?;
+            let mut evidence = Vec::new();
+            ownership::reserve(&mut evidence, retained.len())?;
+            for sample in &retained {
+                evidence.push(
                     event_for_sequence(entries, sample.sequence)
                         .map(SchedulerEventLogEntry::content_hash)
                         .ok_or(MeasurementEvaluationError::UnknownSampleSequence {
                             sequence: sample.sequence,
-                        })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+                        })?,
+                );
+            }
+            ownership::tree_entry::<MetricId, MeasurementMetricOutcome>()?;
             metrics.insert(
-                metric.id.clone(),
+                ownership::copy_metric(&metric.id)?,
                 MeasurementMetricOutcome {
                     samples: retained,
                     aggregate,
@@ -909,12 +1018,13 @@ pub fn evaluate_measurements(
                 },
             );
         }
+        ownership::tree_entry::<MeasurementId, MeasurementOutcome>()?;
         outcomes.insert(
-            definition.id.clone(),
+            ownership::copy_measurement(&definition.id)?,
             MeasurementOutcome { window, metrics },
         );
     }
-    MeasurementEvaluation::new(definitions.content_hash(), outcomes)
+    MeasurementEvaluation::new(definitions.content_hash(), outcomes, input_custody)
 }
 
 /// Recomputes and authenticates one retained canonical evaluation body.
@@ -940,9 +1050,9 @@ pub fn verify_measurement_evaluation(
 
 // Recomputes one aggregate only after the full evaluator has authenticated the
 // metric declaration and normalized every sample against its declared type.
-fn aggregate_metric_samples(
+fn aggregate_metric_samples<S: Borrow<MeasurementSampleValue>>(
     definition: &MetricDefinition,
-    samples: &[MeasurementSampleValue],
+    samples: &[S],
 ) -> Result<MeasurementAggregateValue, MeasurementEvaluationError> {
     match &definition.aggregation {
         Aggregation::Count => Ok(MeasurementAggregateValue::Unsigned(
@@ -954,16 +1064,10 @@ fn aggregate_metric_samples(
         Aggregation::Max => aggregate_extreme(samples, std::cmp::Ordering::Greater),
         Aggregation::ExactMean => aggregate_mean(samples),
         Aggregation::Histogram { upper_bounds } => aggregate_histogram(samples, upper_bounds),
-        Aggregation::First => samples.first().cloned().map(Into::into).ok_or(
-            MeasurementEvaluationError::EmptySamples {
-                aggregation: "first",
-            },
-        ),
-        Aggregation::Last => samples.last().cloned().map(Into::into).ok_or(
-            MeasurementEvaluationError::EmptySamples {
-                aggregation: "last",
-            },
-        ),
+        Aggregation::First => {
+            ownership::aggregate_copy(samples.first().map(Borrow::borrow), "first")
+        }
+        Aggregation::Last => ownership::aggregate_copy(samples.last().map(Borrow::borrow), "last"),
         Aggregation::EventDelta => aggregate_delta(samples),
     }
 }
@@ -977,14 +1081,24 @@ struct MeasurementEvaluationBody<'a> {
 fn canonical_evaluation_json(
     definitions: ContentHash,
     outcomes: &BTreeMap<MeasurementId, MeasurementOutcome>,
+    length: usize,
 ) -> Result<Vec<u8>, MeasurementEvaluationError> {
-    serde_json::to_vec(&MeasurementEvaluationBody {
-        definitions,
-        measurement: outcomes,
-    })
-    .map_err(|error| MeasurementEvaluationError::CanonicalEncoding {
-        reason: error.to_string(),
-    })
+    let mut bytes = Vec::new();
+    ownership::reserve(&mut bytes, length)?;
+    bytes.resize(length, 0);
+    let mut output = bytes.as_mut_slice();
+    serde_json::to_writer(
+        &mut output,
+        &MeasurementEvaluationBody {
+            definitions,
+            measurement: outcomes,
+        },
+    )
+    .map_err(|error| ownership::encoding_error(&error))?;
+    if !output.is_empty() {
+        return Err(MeasurementEvaluationError::ReplayMismatch);
+    }
+    Ok(bytes)
 }
 
 fn preflight_runtime_sample_bytes(
@@ -1001,9 +1115,7 @@ fn preflight_runtime_sample_bytes(
             limit: "measurement-runtime-sample-bytes",
         });
     }
-    encoded.map_err(|error| MeasurementEvaluationError::CanonicalEncoding {
-        reason: error.to_string(),
-    })?;
+    encoded.map_err(|error| ownership::encoding_error(&error))?;
     Ok(counter.length)
 }
 
@@ -1021,16 +1133,14 @@ fn encoded_runtime_sample_len(
             limit: "measurement-runtime-sample-bytes",
         });
     }
-    encoded.map_err(|error| MeasurementEvaluationError::CanonicalEncoding {
-        reason: error.to_string(),
-    })?;
+    encoded.map_err(|error| ownership::encoding_error(&error))?;
     Ok(counter.length)
 }
 
 fn preflight_evaluation_bytes(
     definitions: ContentHash,
     outcomes: &BTreeMap<MeasurementId, MeasurementOutcome>,
-) -> Result<(), MeasurementEvaluationError> {
+) -> Result<usize, MeasurementEvaluationError> {
     let mut counter = BoundedJsonByteCounter {
         length: 0,
         maximum: MAX_MEASUREMENT_EVALUATION_BYTES,
@@ -1048,9 +1158,8 @@ fn preflight_evaluation_bytes(
             limit: "measurement-evaluation-bytes",
         });
     }
-    encoded.map_err(|error| MeasurementEvaluationError::CanonicalEncoding {
-        reason: error.to_string(),
-    })
+    encoded.map_err(|error| ownership::encoding_error(&error))?;
+    Ok(counter.length)
 }
 
 struct BoundedJsonByteCounter {
@@ -1093,222 +1202,14 @@ fn greatest_common_divisor(mut left: u128, mut right: u128) -> u128 {
     left
 }
 
-/// Validates the bounded authenticated scheduler log used by measurement replay.
-///
-/// Semantic adapters call this before interpreting or copying typed payloads so
-/// forged and non-dense entries cannot enter producer-specific normalization.
-///
-/// # Errors
-///
-/// Returns [`MeasurementEvaluationError`] when the entry count exceeds its
-/// deterministic bound, an entry hash is invalid, or sequences are not dense.
-pub fn validate_measurement_event_log(
-    entries: &[SchedulerEventLogEntry],
-) -> Result<(), MeasurementEvaluationError> {
-    if entries.len() > MAX_MEASUREMENT_EVENT_ENTRIES {
-        return Err(MeasurementEvaluationError::LimitExceeded {
-            limit: "measurement-event-entries",
-        });
-    }
-    let mut previous: Option<u64> = None;
-    for entry in entries {
-        if !entry.has_valid_content_hash() {
-            return Err(MeasurementEvaluationError::InvalidEventHash {
-                sequence: entry.sequence(),
-            });
-        }
-        if let Some(previous) = previous {
-            let expected =
-                previous
-                    .checked_add(1)
-                    .ok_or(MeasurementEvaluationError::NonDenseEventLog {
-                        previous,
-                        actual: entry.sequence(),
-                    })?;
-            if entry.sequence() != expected {
-                return Err(MeasurementEvaluationError::NonDenseEventLog {
-                    previous,
-                    actual: entry.sequence(),
-                });
-            }
-        }
-        previous = Some(entry.sequence());
-    }
-    Ok(())
-}
-
-fn validate_terminal_state(
-    entries: &[SchedulerEventLogEntry],
-    terminal: &MeasurementTerminalState,
-) -> Result<(), MeasurementEvaluationError> {
-    if terminal.node_icounts.len() > MAX_MEASUREMENT_TERMINAL_NODES {
-        return Err(MeasurementEvaluationError::LimitExceeded {
-            limit: "measurement-terminal-nodes",
-        });
-    }
-    for entry in entries {
-        if entry.at() > terminal.at {
-            return Err(MeasurementEvaluationError::TerminalBeforeEvent {
-                sequence: entry.sequence(),
-            });
-        }
-        if let Some(node) = &entry.time().stamp.node
-            && terminal
-                .node_icounts
-                .get(node)
-                .zip(entry.time().stamp.retired)
-                .is_some_and(|(terminal, observed)| terminal.retired < observed.retired)
-        {
-            return Err(MeasurementEvaluationError::TerminalIcountRegression {
-                node: node.clone(),
-            });
-        }
-    }
-    if terminal
-        .scenario_ready_at
-        .is_some_and(|ready| ready > terminal.at)
-    {
-        return Err(MeasurementEvaluationError::TerminalBeforeEvent {
-            sequence: entries.last().map_or(0, SchedulerEventLogEntry::sequence),
-        });
-    }
-    Ok(())
-}
-
-fn boundary_node_count(selector: &BoundarySelector) -> Result<usize, MeasurementEvaluationError> {
-    let children = match selector {
-        BoundarySelector::All { selectors } | BoundarySelector::Any { selectors } => selectors,
-        _ => return Ok(1),
-    };
-    children.iter().try_fold(1_usize, |total, child| {
-        total.checked_add(boundary_node_count(child)?).ok_or(
-            MeasurementEvaluationError::LimitExceeded {
-                limit: "measurement-event-visits",
-            },
-        )
-    })
-}
-
-type SampleIndex = BTreeMap<(MeasurementId, MetricId), Vec<MeasurementRuntimeSample>>;
-
-fn validate_and_index_samples(
-    definitions: &MeasurementDefinitions,
-    entries: &[SchedulerEventLogEntry],
-    mut samples: Vec<MeasurementRuntimeSample>,
-) -> Result<SampleIndex, MeasurementEvaluationError> {
-    samples.sort_by(|left, right| {
-        (left.sequence, &left.measurement, &left.metric).cmp(&(
-            right.sequence,
-            &right.measurement,
-            &right.metric,
-        ))
-    });
-    let definitions_by_id = definitions
-        .definitions()
-        .iter()
-        .map(|definition| (&definition.id, definition))
-        .collect::<BTreeMap<_, _>>();
-    let mut indexed = BTreeMap::<_, Vec<_>>::new();
-    let mut previous: Option<(u64, &MeasurementId, &MetricId)> = None;
-    for sample in &samples {
-        if event_for_sequence(entries, sample.sequence).is_none() {
-            return Err(MeasurementEvaluationError::UnknownSampleSequence {
-                sequence: sample.sequence,
-            });
-        }
-        if previous
-            .as_ref()
-            .is_some_and(|(sequence, measurement, metric)| {
-                *sequence == sample.sequence
-                    && *measurement == &sample.measurement
-                    && *metric == &sample.metric
-            })
-        {
-            return Err(MeasurementEvaluationError::DuplicateSample {
-                measurement: sample.measurement.clone(),
-                metric: sample.metric.clone(),
-                sequence: sample.sequence,
-            });
-        }
-        let definition = definitions_by_id.get(&sample.measurement).ok_or_else(|| {
-            MeasurementEvaluationError::UnknownSampleTarget {
-                kind: "measurement",
-                id: sample.measurement.as_str().to_owned(),
-            }
-        })?;
-        let metric = definition
-            .metrics
-            .iter()
-            .find(|metric| metric.id == sample.metric)
-            .ok_or_else(|| MeasurementEvaluationError::UnknownSampleTarget {
-                kind: "metric",
-                id: sample.metric.as_str().to_owned(),
-            })?;
-        if !sample_matches_type(&sample.value, &metric.value_type) {
-            return Err(MeasurementEvaluationError::SampleTypeMismatch {
-                measurement: sample.measurement.clone(),
-                metric: sample.metric.clone(),
-            });
-        }
-        previous = Some((sample.sequence, &sample.measurement, &sample.metric));
-    }
-    for sample in samples {
-        indexed
-            .entry((sample.measurement.clone(), sample.metric.clone()))
-            .or_default()
-            .push(sample);
-    }
-    Ok(indexed)
-}
-
-fn sample_matches_type(value: &MeasurementSampleValue, kind: &MetricValueType) -> bool {
-    match (value, kind) {
-        (MeasurementSampleValue::Signed(_), MetricValueType::SignedInteger)
-        | (MeasurementSampleValue::Unsigned(_), MetricValueType::UnsignedInteger)
-        | (MeasurementSampleValue::Rational(_), MetricValueType::ReducedRational)
-        | (MeasurementSampleValue::Boolean(_), MetricValueType::Boolean) => true,
-        (MeasurementSampleValue::Enumerated(value), MetricValueType::Enumerated { variants }) => {
-            variants.binary_search(value).is_ok()
-        }
-        (
-            MeasurementSampleValue::SignedVector(values),
-            MetricValueType::IntegerVector {
-                signed: true,
-                maximum_elements,
-            },
-        ) => usize::try_from(*maximum_elements).is_ok_and(|maximum| values.len() <= maximum),
-        (
-            MeasurementSampleValue::UnsignedVector(values),
-            MetricValueType::IntegerVector {
-                signed: false,
-                maximum_elements,
-            },
-        ) => usize::try_from(*maximum_elements).is_ok_and(|maximum| values.len() <= maximum),
-        _ => false,
-    }
-}
-
-fn event_for_sequence(
-    entries: &[SchedulerEventLogEntry],
-    sequence: u64,
-) -> Option<&SchedulerEventLogEntry> {
-    let first = entries.first()?.sequence();
-    let index = sequence
-        .checked_sub(first)
-        .and_then(|value| usize::try_from(value).ok())?;
-    entries
-        .get(index)
-        .filter(|entry| entry.sequence() == sequence)
-}
-
-fn aggregate_sum(
+fn aggregate_sum<S: Borrow<MeasurementSampleValue>>(
     value_type: &MetricValueType,
-    samples: &[MeasurementSampleValue],
+    samples: &[S],
 ) -> Result<MeasurementAggregateValue, MeasurementEvaluationError> {
     match value_type {
         MetricValueType::SignedInteger => samples
             .iter()
-            .try_fold(0_i64, |total, sample| match sample {
+            .try_fold(0_i64, |total, sample| match sample.borrow() {
                 MeasurementSampleValue::Signed(value) => total
                     .checked_add(*value)
                     .ok_or(MeasurementEvaluationError::ArithmeticOverflow),
@@ -1317,7 +1218,7 @@ fn aggregate_sum(
             .map(MeasurementAggregateValue::Signed),
         MetricValueType::UnsignedInteger => samples
             .iter()
-            .try_fold(0_u64, |total, sample| match sample {
+            .try_fold(0_u64, |total, sample| match sample.borrow() {
                 MeasurementSampleValue::Unsigned(value) => total
                     .checked_add(*value)
                     .ok_or(MeasurementEvaluationError::ArithmeticOverflow),
@@ -1328,7 +1229,7 @@ fn aggregate_sum(
             .iter()
             .try_fold(
                 ReducedRational::from_unsigned(0),
-                |total, sample| match sample {
+                |total, sample| match sample.borrow() {
                     MeasurementSampleValue::Rational(value) => total.checked_add(*value),
                     _ => Err(MeasurementEvaluationError::ArithmeticOverflow),
                 },
@@ -1342,14 +1243,14 @@ fn aggregate_sum(
     }
 }
 
-fn aggregate_extreme(
-    samples: &[MeasurementSampleValue],
+fn aggregate_extreme<S: Borrow<MeasurementSampleValue>>(
+    samples: &[S],
     desired: std::cmp::Ordering,
 ) -> Result<MeasurementAggregateValue, MeasurementEvaluationError> {
     let mut selected =
         samples
             .first()
-            .cloned()
+            .map(Borrow::borrow)
             .ok_or(MeasurementEvaluationError::EmptySamples {
                 aggregation: if desired == std::cmp::Ordering::Less {
                     "min"
@@ -1358,12 +1259,12 @@ fn aggregate_extreme(
                 },
             })?;
     for sample in &samples[1..] {
-        let ordering = compare_samples(sample, &selected)?;
+        let ordering = compare_samples(sample.borrow(), selected)?;
         if ordering == desired {
-            selected = sample.clone();
+            selected = sample.borrow();
         }
     }
-    Ok(selected.into())
+    Ok(ownership::copy_value(selected)?.into())
 }
 
 fn compare_samples(
@@ -1387,8 +1288,8 @@ fn compare_samples(
     }
 }
 
-fn aggregate_mean(
-    samples: &[MeasurementSampleValue],
+fn aggregate_mean<S: Borrow<MeasurementSampleValue>>(
+    samples: &[S],
 ) -> Result<MeasurementAggregateValue, MeasurementEvaluationError> {
     if samples.is_empty() {
         return Err(MeasurementEvaluationError::EmptySamples {
@@ -1398,7 +1299,7 @@ fn aggregate_mean(
     let total = samples
         .iter()
         .try_fold(ReducedRational::from_unsigned(0), |total, sample| {
-            let value = match sample {
+            let value = match sample.borrow() {
                 MeasurementSampleValue::Signed(value) => ReducedRational::from_signed(*value),
                 MeasurementSampleValue::Unsigned(value) => ReducedRational::from_unsigned(*value),
                 MeasurementSampleValue::Rational(value) => *value,
@@ -1414,13 +1315,19 @@ fn aggregate_mean(
         .map(MeasurementAggregateValue::Rational)
 }
 
-fn aggregate_histogram(
-    samples: &[MeasurementSampleValue],
+fn aggregate_histogram<S: Borrow<MeasurementSampleValue>>(
+    samples: &[S],
     upper_bounds: &[i64],
 ) -> Result<MeasurementAggregateValue, MeasurementEvaluationError> {
-    let mut bins = vec![0_u64; upper_bounds.len().saturating_add(1)];
+    let count = upper_bounds
+        .len()
+        .checked_add(1)
+        .ok_or(MeasurementEvaluationError::ArithmeticOverflow)?;
+    let mut bins = Vec::new();
+    ownership::reserve(&mut bins, count)?;
+    bins.resize(count, 0_u64);
     for sample in samples {
-        let bin = match sample {
+        let bin = match sample.borrow() {
             MeasurementSampleValue::Signed(value) => {
                 upper_bounds.partition_point(|bound| *bound < *value)
             }
@@ -1436,8 +1343,8 @@ fn aggregate_histogram(
     Ok(MeasurementAggregateValue::Histogram(bins))
 }
 
-fn aggregate_delta(
-    samples: &[MeasurementSampleValue],
+fn aggregate_delta<S: Borrow<MeasurementSampleValue>>(
+    samples: &[S],
 ) -> Result<MeasurementAggregateValue, MeasurementEvaluationError> {
     let first = samples
         .first()
@@ -1449,7 +1356,7 @@ fn aggregate_delta(
         .ok_or(MeasurementEvaluationError::EmptySamples {
             aggregation: "event_delta",
         })?;
-    match (first, last) {
+    match (first.borrow(), last.borrow()) {
         (MeasurementSampleValue::Signed(first), MeasurementSampleValue::Signed(last)) => last
             .checked_sub(*first)
             .map(MeasurementAggregateValue::Signed)

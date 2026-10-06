@@ -8,16 +8,16 @@ use crucible_ram::{
     RegionDescriptor, RegionTree, RootRecord, Scope, Topology,
 };
 
-pub(super) struct ImmutableBacking {
+pub(crate) struct ImmutableBacking {
     root: RootRecord,
     snapshot: RamSnapshot,
     pages: Vec<Vec<u8>>,
     identity: String,
-    pub(super) corrupt_reads: AtomicBool,
+    pub(crate) corrupt_reads: AtomicBool,
 }
 
 impl ImmutableBacking {
-    pub(super) fn new(changed: u8) -> Result<Self, RamError> {
+    pub(crate) fn new(changed: u8) -> Result<Self, RamError> {
         let budget = MetadataBudget::new(1024 * 1024);
         let topology = Topology::new(
             vec![RegionDescriptor::new(

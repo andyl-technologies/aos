@@ -440,6 +440,9 @@ fn properties_have_guest_marker(properties: &Properties) -> bool {
 
 #[test]
 fn complete_black_box_scenario_runs_deterministically_without_guest_marker() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = black_box_world();
     let properties = properties(&world);
     let plan = plan(&world, false);
@@ -464,6 +467,9 @@ fn complete_black_box_scenario_runs_deterministically_without_guest_marker() {
 
 #[test]
 fn black_box_property_violation_fails_deterministically_without_guest_marker() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = black_box_world();
     let plan = plan(&world, false);
     let graph = plan.event_graph();
@@ -477,6 +483,9 @@ fn black_box_property_violation_fails_deterministically_without_guest_marker() {
 
 #[test]
 fn removing_guest_marker_conditions_leaves_functional_graph() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let enriched_world = white_box_world();
     let enriched_graph = graph(&enriched_world, true);
     assert!(graph_has_guest_marker(&enriched_graph));

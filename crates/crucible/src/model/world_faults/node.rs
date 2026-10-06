@@ -710,7 +710,8 @@ impl WorldNodeFaultCapabilities {
             )?;
         }
         hard_count(&self.hardware_errors, "node hardware-error manifest", 4_096)?;
-        require(!self.clock_sources.is_empty(), "node clock manifest")?;
+        // An empty declaration grants no modeled clock-fault capability.
+        // Every declared source still requires its complete validated contract.
         for source in &self.clock_sources {
             let architecture_matches = match self.architecture {
                 WorldNodeArchitecture::X86_64 => matches!(

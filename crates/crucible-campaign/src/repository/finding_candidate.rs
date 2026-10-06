@@ -496,6 +496,13 @@ impl CampaignRepository {
         bundle: &FindingCandidateBundle,
         validation: FindingCandidateValidation<'_>,
     ) -> Result<(), CampaignRepositoryError> {
+        // These reads reconstruct borrowed validation inputs, including local
+        // choice caches and Merkle paths. Nothing enters the repository's head
+        // or beam caches; the caller's decoded bundle keeps its outer charge.
+        let validation_budget =
+            crucible_cas::owned_decode::current_child_budget().map_err(CampaignCodecError::from)?;
+        let _scope = validation_budget.as_ref().map(|budget| budget.enter());
+
         let observation = self.read_observation(bundle.observation().content_id())?;
         self.validate_finding_candidate_basis(
             bundle.signature(),
@@ -541,6 +548,9 @@ impl CampaignRepository {
                 return Err(integrity("finding-candidate-exact-pin-byte-limit"));
             }
             handle.copy_to(&mut std::io::sink())?;
+        }
+        if let Some(budget) = &validation_budget {
+            budget.check().map_err(CampaignCodecError::from)?;
         }
         Ok(())
     }
@@ -774,8 +784,13 @@ impl CampaignRepository {
                             original.scenario_artifact(),
                             original.configuration(),
                         )
-                        .map_err(|_| {
-                            integrity("finding-assertion-boundary-authentication-failed")
+                        .map_err(|source| match source {
+                            FindingExactCheckpointAuthenticationError::DecodeAdmission(source) => {
+                                CampaignRepositoryError::Codec(CampaignCodecError::DecodeAdmission(
+                                    source,
+                                ))
+                            }
+                            _ => integrity("finding-assertion-boundary-authentication-failed"),
                         })?;
                 }
                 let metadata = authenticator
@@ -787,6 +802,11 @@ impl CampaignRepository {
                         remaining,
                     )
                     .map_err(|error| match error {
+                        FindingExactCheckpointAuthenticationError::DecodeAdmission(source) => {
+                            CampaignRepositoryError::Codec(CampaignCodecError::DecodeAdmission(
+                                source,
+                            ))
+                        }
                         FindingExactCheckpointAuthenticationError::LimitExceeded => {
                             integrity("finding-exact-retention-metadata-byte-limit")
                         }

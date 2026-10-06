@@ -28,19 +28,36 @@ pub(super) fn decode_node_bytes(
     if bytes.len() > MAX_MERKLE_NODE_ENVELOPE_BYTES {
         return Err(invalid("merkle-node-envelope-byte-limit"));
     }
-    let envelope = ObjectEnvelope::from_canonical_bytes_for_owner(bytes)?;
-    if envelope.record_kind() != CampaignRecordKind::MerkleNode
-        || envelope.content_id() != content_id
-    {
-        return Err(invalid("node-envelope-kind-or-identity"));
-    }
+    // Envelope framing and canonical authentication are temporary. Keep their
+    // loans under the same original authority until the envelope closes,
+    // without accumulating them in the returned node's owning account.
+    let envelope_budget =
+        crucible_cas::owned_decode::current_child_budget().map_err(CampaignCodecError::from)?;
+    let envelope = {
+        let _scope = envelope_budget.as_ref().map(|budget| budget.enter());
+        let envelope = ObjectEnvelope::from_canonical_bytes_for_owner(bytes)?;
+        let authenticated_id = envelope.content_id();
+        if let Some(budget) = &envelope_budget {
+            budget.check().map_err(CampaignCodecError::from)?;
+        }
+        if envelope.record_kind() != CampaignRecordKind::MerkleNode
+            || authenticated_id != content_id
+        {
+            return Err(invalid("node-envelope-kind-or-identity"));
+        }
+        envelope
+    };
+    // The returned map entries remain charged to the original outer account.
     let node = codec::decode::<MerkleNode>(envelope.body())?;
     node.validate()?;
     if node.depth != expected_depth {
         return Err(invalid("node-depth-mismatch"));
     }
-    if node.child_references()? != *envelope.children() {
-        return Err(invalid("node-child-table-mismatch"));
+    {
+        let _scope = envelope_budget.as_ref().map(|budget| budget.enter());
+        if node.child_references()? != *envelope.children() {
+            return Err(invalid("node-child-table-mismatch"));
+        }
     }
     Ok(node)
 }
@@ -75,9 +92,17 @@ pub(super) fn validate_proof_nodes(
         if bytes > maximum_bytes || node.len() > MAX_MERKLE_NODE_ENVELOPE_BYTES {
             return Err(invalid(byte_limit_reason));
         }
+        // Each borrowed proof node is authenticated independently; no envelope
+        // or canonical scratch escapes into the caller's retained proof table.
+        let authentication_budget =
+            crucible_cas::owned_decode::current_child_budget().map_err(CampaignCodecError::from)?;
+        let _scope = authentication_budget.as_ref().map(|budget| budget.enter());
         let envelope = ObjectEnvelope::from_canonical_bytes_for_owner(node)?;
-        if envelope.record_kind() != CampaignRecordKind::MerkleNode || envelope.content_id() != *id
-        {
+        let authenticated_id = envelope.content_id();
+        if let Some(budget) = &authentication_budget {
+            budget.check().map_err(CampaignCodecError::from)?;
+        }
+        if envelope.record_kind() != CampaignRecordKind::MerkleNode || authenticated_id != *id {
             return Err(invalid("page-proof-node-identity"));
         }
     }

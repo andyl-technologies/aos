@@ -25,6 +25,9 @@ fn frame(sequence: u64, request: RamControlRequest) -> RamControlFrame {
 
 fn state() -> RamControlReply {
     RamControlReply {
+        placement_receipt: None,
+        operation_failure: None,
+        fault_actor: None,
         kernel_probe: None,
         activity: None,
         disposition: RamControlDisposition::Accepted,
@@ -67,7 +70,7 @@ fn policy() -> RamControlPolicy {
 #[test]
 fn ram_control_golden_hello_and_all_closed_messages_roundtrip() {
     let hello = frame(1, RamControlRequest::Hello);
-    let mut golden = vec![0, 0, 0, 3, 0];
+    let mut golden = vec![0, 0, 0, 5, 0];
     golden.extend_from_slice(&[4; 32]);
     golden.extend_from_slice(&1_u64.to_be_bytes());
     golden.extend_from_slice(&[1; 32]);
@@ -611,7 +614,7 @@ fn operational_activity_is_independent_of_rss_and_rejects_incomplete_or_unknown_
         response
     );
 
-    let tail = encoded.len() - 66;
+    let tail = encoded.len() - 67;
     assert_eq!(encoded[tail], 1);
     for (index, value) in [1_u64, 2, 3, 4, 5, 6, 7, u64::MAX].into_iter().enumerate() {
         let start = tail + 1 + index * 8;
@@ -652,7 +655,7 @@ fn native_probe_has_one_bounded_encoding_and_refuses_user_only_or_empty_features
             .unwrap_or_else(|error| panic!("decode authenticated probe facts: {error}")),
         reply
     );
-    let tail = encoded.len() - 18;
+    let tail = encoded.len() - 19;
     assert_eq!(&encoded[tail..tail + 2], &[1, 1]);
     assert_eq!(
         &encoded[tail + 2..tail + 6],
@@ -662,7 +665,11 @@ fn native_probe_has_one_bounded_encoding_and_refuses_user_only_or_empty_features
         &encoded[tail + 6..tail + 10],
         &probe.effective_gid.to_be_bytes()
     );
-    assert_eq!(&encoded[tail + 10..], &probe.features.to_be_bytes());
+    assert_eq!(
+        &encoded[tail + 10..tail + 18],
+        &probe.features.to_be_bytes()
+    );
+    assert_eq!(encoded[tail + 18], 0);
     for length in tail..encoded.len() {
         assert!(decode_ram_control(&encoded[..length]).is_err());
     }
@@ -672,6 +679,127 @@ fn native_probe_has_one_bounded_encoding_and_refuses_user_only_or_empty_features
         assert!(decode_ram_control(&unsupported).is_err());
     }
     let mut empty = encoded;
-    empty[tail + 10..].fill(0);
+    empty[tail + 10..tail + 18].fill(0);
     assert!(decode_ram_control(&empty).is_err());
+}
+
+fn actor_response(state: RamControlReply) -> RamControlFrame {
+    RamControlFrame {
+        session: [4; 32],
+        sequence: 2,
+        target: target(),
+        message: RamControlMessage::Reply {
+            request_digest: [8; 32],
+            state,
+        },
+    }
+}
+
+#[test]
+fn fault_actor_test_request_is_bounded_and_requires_explicit_identity() {
+    let request = frame(
+        2,
+        RamControlRequest::TestFaultActor {
+            entitlement: [9; 32],
+            worker_generation: 7,
+            action: RamControlFaultActorAction::RequestExit,
+        },
+    );
+    let bytes = encode_ram_control(&request).unwrap_or_else(|error| panic!("test frame: {error}"));
+    assert!(bytes.len() < RAM_CONTROL_MAX_BYTES);
+    assert_eq!(
+        decode_ram_control(&bytes).unwrap_or_else(|error| panic!("test decode: {error}")),
+        request
+    );
+    for (entitlement, worker_generation) in [([0; 32], 7), ([9; 32], 0)] {
+        assert!(
+            encode_ram_control(&frame(
+                2,
+                RamControlRequest::TestFaultActor {
+                    entitlement,
+                    worker_generation,
+                    action: RamControlFaultActorAction::RequestExit,
+                }
+            ))
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn fault_actor_report_distinguishes_request_failure_and_role_release() {
+    let mut reply = state();
+    let mut report = RamControlFaultActorReport {
+        worker_generation: 7,
+        thread_id: 123,
+        exit_requested: true,
+        failure: None,
+        membership_released: false,
+    };
+    for failure in [
+        None,
+        Some(RamControlFaultActorFailure::RequestedExit),
+        Some(RamControlFaultActorFailure::Io { errno: 5 }),
+    ] {
+        report.failure = failure;
+        report.membership_released = failure.is_some();
+        reply.fault_actor = Some(report);
+        let message = actor_response(reply);
+        let bytes =
+            encode_ram_control(&message).unwrap_or_else(|error| panic!("actor report: {error}"));
+        assert_eq!(
+            decode_ram_control(&bytes).unwrap_or_else(|error| panic!("actor decode: {error}")),
+            message
+        );
+    }
+    report.failure = None;
+    report.membership_released = true;
+    reply.fault_actor = Some(report);
+    assert!(encode_ram_control(&actor_response(reply)).is_err());
+    report.membership_released = false;
+    report.thread_id = 0;
+    reply.fault_actor = Some(report);
+    assert!(encode_ram_control(&actor_response(reply)).is_err());
+}
+
+#[test]
+fn original_operation_failure_preserves_the_cut_and_rejects_invalid_scalar_causes() {
+    let failure = RamControlOperationFailure {
+        operation: RamControlFailureOperation::Writeback,
+        policy_revision: 31,
+        topology_generation: 47,
+        cause: RamControlFailureCause::Io { errno: 5 },
+    };
+    for cause in [
+        failure.cause,
+        RamControlFailureCause::Native { status: -5 },
+        RamControlFailureCause::Supervision {
+            kind: RamControlSupervisionFailure::Canceled,
+        },
+        RamControlFailureCause::Other,
+    ] {
+        let message = actor_response(RamControlReply {
+            operation_failure: Some(RamControlOperationFailure { cause, ..failure }),
+            ..state()
+        });
+        let bytes = encode_ram_control(&message)
+            .unwrap_or_else(|error| panic!("original operation report: {error}"));
+        assert!(bytes.len() < RAM_CONTROL_MAX_BYTES);
+        assert_eq!(
+            decode_ram_control(&bytes)
+                .unwrap_or_else(|error| panic!("original operation decode: {error}")),
+            message
+        );
+        assert!(decode_ram_control(&bytes[..bytes.len() - 1]).is_err());
+    }
+    for cause in [
+        RamControlFailureCause::Io { errno: -5 },
+        RamControlFailureCause::Native { status: 0 },
+    ] {
+        let message = actor_response(RamControlReply {
+            operation_failure: Some(RamControlOperationFailure { cause, ..failure }),
+            ..state()
+        });
+        assert!(encode_ram_control(&message).is_err());
+    }
 }

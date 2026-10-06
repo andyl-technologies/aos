@@ -76,15 +76,15 @@ struct RunFingerprint {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct AssertionGateCoverage {
     /// Online assertion report for the passing gate properties.
-    assertion_pass_online: HostAssertionReport,
+    assertion_pass_online: std::sync::Arc<HostAssertionReport>,
     /// Offline re-grade of the retained event log for the passing gate properties.
-    assertion_pass_offline: HostAssertionReport,
+    assertion_pass_offline: std::sync::Arc<HostAssertionReport>,
     /// Final run verdict composed from the passing assertion report and trigger log.
     assertion_pass_composed: ComposedRunVerdict,
     /// Online assertion report for the failing gate properties.
-    assertion_fail_online: HostAssertionReport,
+    assertion_fail_online: std::sync::Arc<HostAssertionReport>,
     /// Offline re-grade of the retained event log for the failing gate properties.
-    assertion_fail_offline: HostAssertionReport,
+    assertion_fail_offline: std::sync::Arc<HostAssertionReport>,
     /// Final run verdict composed from the failing assertion report and trigger log.
     assertion_fail_composed: ComposedRunVerdict,
 }
@@ -336,11 +336,19 @@ fn drive_with_assertions(
         },
         RunStats { quanta, max_batch },
         AssertionGateCoverage {
-            assertion_pass_online,
-            assertion_pass_offline,
+            assertion_pass_online: assertion_pass_online
+                .into_shared()
+                .unwrap_or_else(|error| panic!("finite component shared report: {error}")),
+            assertion_pass_offline: assertion_pass_offline
+                .into_shared()
+                .unwrap_or_else(|error| panic!("finite component shared report: {error}")),
             assertion_pass_composed,
-            assertion_fail_online,
-            assertion_fail_offline,
+            assertion_fail_online: assertion_fail_online
+                .into_shared()
+                .unwrap_or_else(|error| panic!("finite component shared report: {error}")),
+            assertion_fail_offline: assertion_fail_offline
+                .into_shared()
+                .unwrap_or_else(|error| panic!("finite component shared report: {error}")),
             assertion_fail_composed,
         },
         event_log,
@@ -441,7 +449,8 @@ fn assertion_gate_online_report(
     properties: &Properties,
     event_log: &[SchedulerEventLogEntry],
 ) -> HostAssertionReport {
-    let mut evaluator = HostAssertionEvaluator::new(properties);
+    let mut evaluator = HostAssertionEvaluator::new(properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     let mut oracle = scheduler_fact_oracle();
 
     for prefix_len in 1..event_log.len() {
@@ -514,6 +523,9 @@ fn assertion_outcome_signature(
 
 #[test]
 fn gate_e2e_determinism_serial_equals_concurrent_bit_identical() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     // T-SCHED-25 / SCHED-40,41: a serial drive (one RUN at a time) and a
     // full-budget concurrent drive (every independent RUN dispatched at once) are
     // BIT-IDENTICAL in S, the resolved-event log, and the per-delivery ticks.
@@ -557,17 +569,22 @@ fn gate_e2e_determinism_serial_equals_concurrent_bit_identical() {
 
 #[test]
 fn gate_e2e_determinism_uses_causal_event_log_projection() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let expected_log = vec![
         crucible::test_support::condition_boundary_entry_for_test(
             0,
             VirtualTime { ticks: 8 },
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_boundary_entry_for_test(
             1,
             VirtualTime { ticks: 16 },
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ];
     let reproduced_log = vec![
         crucible::test_support::condition_payload_entry_for_test(
@@ -578,19 +595,23 @@ fn gate_e2e_determinism_uses_causal_event_log_projection() {
                 EventLevel::Debug,
                 std::collections::BTreeMap::new(),
             )),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_boundary_entry_for_test(
             1,
             VirtualTime { ticks: 8 },
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_boundary_entry_for_test(
             2,
             VirtualTime { ticks: 16 },
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ];
-    let comparison = compare_event_log_determinism(&expected_log, &reproduced_log);
+    let comparison = compare_event_log_determinism(&expected_log, &reproduced_log)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
 
     assert!(comparison.passes());
     assert_eq!(
@@ -602,9 +623,13 @@ fn gate_e2e_determinism_uses_causal_event_log_projection() {
 
 #[test]
 fn gate_e2e_determinism_compares_actual_causal_event_log_projection() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (_, _, _, first_log) = drive_with_assertions(DriveMode::Authoritative, Vec::new());
     let (_, _, _, second_log) = drive_with_assertions(DriveMode::Authoritative, Vec::new());
-    let comparison = compare_event_log_determinism(&first_log, &second_log);
+    let comparison = compare_event_log_determinism(&first_log, &second_log)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
 
     assert!(
         !comparison.expected().is_empty(),
@@ -620,9 +645,13 @@ fn gate_e2e_determinism_compares_actual_causal_event_log_projection() {
 
 #[test]
 fn gate_e2e_determinism_compares_actual_concurrent_causal_event_log_projection() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (_, _, _, first_log) = drive_with_assertions(DriveMode::Concurrent, Vec::new());
     let (_, _, _, second_log) = drive_with_assertions(DriveMode::Concurrent, Vec::new());
-    let comparison = compare_event_log_determinism(&first_log, &second_log);
+    let comparison = compare_event_log_determinism(&first_log, &second_log)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
 
     assert!(
         !comparison.expected().is_empty(),
@@ -638,6 +667,9 @@ fn gate_e2e_determinism_compares_actual_concurrent_causal_event_log_projection()
 
 #[test]
 fn gate_e2e_determinism_covers_assertion_online_offline_outcomes_and_verdict() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (_, _, authoritative, _) = drive_with_assertions(DriveMode::Authoritative, Vec::new());
     let (_, _, concurrent, _) = drive_with_assertions(DriveMode::Concurrent, Vec::new());
 
@@ -696,6 +728,9 @@ fn gate_e2e_determinism_covers_assertion_online_offline_outcomes_and_verdict() {
 
 #[test]
 fn gate_e2e_determinism_disk_completion_lands_at_independently_computed_tick() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     // The disk completion lands at its independently-computed exact tick under
     // both the serial and concurrent drives ([IO-2], [DET-19]) — never the
     // consumer frontier, and never moved by host RUN dispatch.
@@ -729,6 +764,9 @@ fn gate_e2e_determinism_disk_completion_lands_at_independently_computed_tick() {
 
 #[test]
 fn gate_e2e_determinism_concurrent_is_anchored_to_authoritative_path() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     // T-SCHED-25 / SCHED-40: the REAL reference is the committed authoritative
     // `drive_quantum`, not another concurrent run. Driving the identical scenario
     // through the authoritative path and through the full-budget concurrent path
@@ -754,6 +792,9 @@ fn gate_e2e_determinism_concurrent_is_anchored_to_authoritative_path() {
 
 #[test]
 fn gate_e2e_determinism_authoritative_anchor_holds_with_control_op() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     // SCHED-33/40 regression at the gate level: a control op admitted at a boundary
     // must enter the scheduler's control-application record identically on the
     // authoritative and concurrent paths. If concurrent dispatch dropped or

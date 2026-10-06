@@ -118,6 +118,7 @@ impl PausedPagingOwner {
         completed_work: Arc<AtomicU64>,
     ) -> Result<(), RamError> {
         let mut action = PhysicalPlacement {
+            owner: self,
             service,
             generation: self.topology_generation.load(Ordering::Acquire),
             token: 0,
@@ -126,6 +127,11 @@ impl PausedPagingOwner {
             eviction_preference: 0,
             writeback_rate: 1,
             prefetch: false,
+            policy_revision: 0,
+            policy_generation: self.policy_generation.load(Ordering::Acquire),
+            mode: crucible_protocol::ram_control::RamControlMode::Managed,
+            receipt: None,
+            establish_guarantee: false,
             operation,
             completed_work,
             error: None,
@@ -171,6 +177,7 @@ impl PausedPagingOwner {
             ));
         }
         let mut action = PhysicalPlacement {
+            owner: self,
             service,
             generation: self.topology_generation.load(Ordering::Acquire),
             token: 0,
@@ -179,6 +186,14 @@ impl PausedPagingOwner {
             eviction_preference: policy.eviction_preference,
             writeback_rate: policy.writeback_bytes_per_second,
             prefetch: policy.prefetch_on_increase,
+            policy_revision: self.requested_policy_revision.load(Ordering::Acquire),
+            policy_generation: self.policy_generation.load(Ordering::Acquire),
+            mode: policy.mode,
+            receipt: None,
+            establish_guarantee: self.placement_receipt().is_none_or(|receipt| {
+                receipt.policy_revision != self.requested_policy_revision.load(Ordering::Acquire)
+                    || receipt.mode != policy.mode
+            }),
             operation,
             completed_work,
             error: None,
@@ -187,21 +202,27 @@ impl PausedPagingOwner {
     }
 }
 
-struct PhysicalPlacement {
-    service: Arc<FaultService>,
-    generation: u64,
-    token: u64,
-    activate: bool,
+pub(super) struct PhysicalPlacement<'a> {
+    pub(super) owner: &'a PausedPagingOwner,
+    pub(super) service: Arc<FaultService>,
+    pub(super) generation: u64,
+    pub(super) token: u64,
+    pub(super) activate: bool,
     target: u64,
     eviction_preference: u8,
-    writeback_rate: u64,
+    pub(super) writeback_rate: u64,
     prefetch: bool,
-    operation: Option<Arc<dyn SourceOperation>>,
+    pub(super) policy_revision: u64,
+    pub(super) policy_generation: u64,
+    pub(super) mode: crucible_protocol::ram_control::RamControlMode,
+    pub(super) receipt: Option<crucible_protocol::ram_control::RamControlPlacementReceipt>,
+    pub(super) establish_guarantee: bool,
+    pub(super) operation: Option<Arc<dyn SourceOperation>>,
     completed_work: Arc<AtomicU64>,
     error: Option<RamError>,
 }
 
-impl PhysicalPlacement {
+impl PhysicalPlacement<'_> {
     fn dispatch(&mut self) -> Result<(), RamError> {
         let complete_here = self.operation.is_none();
         let operation: Arc<dyn SourceOperation> = match self.operation.as_ref() {
@@ -244,11 +265,32 @@ impl PhysicalPlacement {
         if complete_here {
             operation.complete()?;
         }
+        if !self.activate {
+            self.publish_placement(complete_here)?;
+        }
         Ok(())
     }
 
     fn run(&mut self) -> Result<(), RamError> {
         self.check_budget()?;
+        let mut locks = self.prepare_locks()?;
+        let result = self.run_with_locks(&mut locks);
+        if result.is_err() && self.token != 0 && locks.is_some() {
+            // The failed certificate still owns this exact verification FD.
+            // Retain it instead of allowing numeric descriptor reuse under a
+            // physical hold whose cleanup can no longer be established.
+            match self.owner.retained_lock_transition.try_lock() {
+                Ok(mut retained) if retained.is_none() => *retained = locks.take(),
+                _ => std::mem::forget(locks.take()),
+            }
+        }
+        result
+    }
+
+    fn run_with_locks(
+        &mut self,
+        locks: &mut Option<super::strict_placement::LockTransition>,
+    ) -> Result<(), RamError> {
         let native = self.service.native;
         let status = (native.begin)(self.generation, &mut self.token);
         if status != 0 || self.token == 0 {
@@ -314,7 +356,7 @@ impl PhysicalPlacement {
             self.service.destructive.store(true, Ordering::Release);
             self.service.activated.store(true, Ordering::Release);
         } else {
-            self.reclaim_pages()?;
+            self.apply_placement(locks)?;
         }
         let status = (native.end)(self.token);
         if status != 0 {
@@ -328,7 +370,7 @@ impl PhysicalPlacement {
         Ok(())
     }
 
-    fn reclaim_pages(&mut self) -> Result<(), RamError> {
+    pub(super) fn reclaim_pages(&mut self) -> Result<(), RamError> {
         let mut resident = self
             .service
             .states
@@ -406,7 +448,8 @@ impl PhysicalPlacement {
                                     .spill
                                     .try_lock()
                                     .map_err(|_| "spill authority unavailable")?
-                                    .preserve(&scratch, PAGE_BYTES as u32, state.version)?;
+                                    .preserve(&scratch, PAGE_BYTES as u32, state.version)
+                                    .map_err(|error| self.owner.writeback_failure(error.into()))?;
                                 count_completed(&self.service.counters.preserved_writes)?;
                                 operation.wait_slice()?;
                                 writeback = Some(operation);
@@ -452,7 +495,7 @@ impl PhysicalPlacement {
         Ok(())
     }
 
-    fn progress_work(&self) -> Result<(), RamError> {
+    pub(super) fn progress_work(&self) -> Result<(), RamError> {
         let completed = self
             .completed_work
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
@@ -467,7 +510,7 @@ impl PhysicalPlacement {
         Ok(())
     }
 
-    fn check_budget(&self) -> Result<(), RamError> {
+    pub(super) fn check_budget(&self) -> Result<(), RamError> {
         self.operation
             .as_ref()
             .ok_or("physical placement supervisor absent")?
@@ -547,7 +590,7 @@ fn prefault_original_page(address: u64) {
 extern "C" fn physical_placement(opaque: *mut c_void) -> c_int {
     // SAFETY: the synchronous native runner lends this exclusive context until
     // completion and never publishes its process-private pointer.
-    let placement = unsafe { &mut *opaque.cast::<PhysicalPlacement>() };
+    let placement = unsafe { &mut *opaque.cast::<PhysicalPlacement<'_>>() };
     match placement.run() {
         Ok(()) => 0,
         Err(error) => {
@@ -561,6 +604,9 @@ extern "C" fn physical_placement(opaque: *mut c_void) -> c_int {
                 _ => None,
             };
             if retry.is_none() {
+                placement
+                    .owner
+                    .retain_operational_failure(SourceOperationClass::Quiescence, &error);
                 placement.service.failed.store(true, Ordering::Release);
             }
             placement.error = Some(error);
@@ -650,7 +696,10 @@ pub(super) extern "C" fn placement_before_resume() -> c_int {
     }
 }
 
-fn pace_writeback(operation: &dyn SourceOperation, bytes_per_second: u64) -> Result<(), RamError> {
+pub(super) fn pace_writeback(
+    operation: &dyn SourceOperation,
+    bytes_per_second: u64,
+) -> Result<(), RamError> {
     if bytes_per_second == 0 {
         return Err(RamError::Invariant("zero writeback rate"));
     }

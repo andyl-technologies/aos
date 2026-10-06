@@ -4,6 +4,9 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+#[path = "output_support.rs"]
+mod output_support;
+
 use crucible::{QuantumLoop, QuantumOutcome, QuantumRequest, SchedulerError, Seed, VirtualTime};
 use crucible_api::{
     AttachRequest, CommandResultStatus, CreateSessionRequest, DestroySessionRequest,
@@ -146,14 +149,38 @@ async fn reproduction_records_decode_exactly_and_reject_corrupt_material() {
         .expect("step schedule should record one command");
     let decoded = SessionControlLogEntry::try_from(record.clone())
         .unwrap_or_else(|error| panic!("canonical reproduction record should decode: {error}"));
-    assert_eq!(ReproductionCommandRecord::from(decoded), record);
+    let budget = crate::output_support::budget();
+    let _scope = budget.enter();
+    assert_eq!(
+        ReproductionCommandRecord::from_entry_admitted(&decoded).expect("admitted fixture record"),
+        record
+    );
 
-    let mut wrong_command = record.clone();
-    wrong_command.payload.command = SessionCommandKind::Stop;
+    let copy_with_payload = |command, scheduler_batch| {
+        crucible::owned_decode::charge_bytes(record.payload.command_payload.len() as u64)
+            .expect("fixture payload copy credit");
+        ReproductionCommandRecord::from_owned_fields(
+            crucible_api::ReproductionCommandRecordFields {
+                sequence: record.sequence,
+                payload: crucible_api::ReproductionCommandPayload {
+                    command,
+                    command_payload: record.payload.command_payload.clone(),
+                    scheduler_batch,
+                    scheduler_control: None,
+                },
+                virtual_time: record.virtual_time,
+                quanta: record.quanta,
+                at_sequence: record.at_sequence,
+                result: record.result,
+                observational_order: record.observational_order,
+            },
+        )
+        .expect("admitted negative fixture record")
+    };
+    let wrong_command = copy_with_payload(SessionCommandKind::Stop, record.payload.scheduler_batch);
     assert!(SessionControlLogEntry::try_from(wrong_command).is_err());
 
-    let mut orphaned_batch = record.clone();
-    orphaned_batch.payload.scheduler_batch = 1;
+    let orphaned_batch = copy_with_payload(record.payload.command, 1);
     assert!(SessionControlLogEntry::try_from(orphaned_batch).is_err());
 
     let mut wrong_order = record;
@@ -161,7 +188,9 @@ async fn reproduction_records_decode_exactly_and_reject_corrupt_material() {
     assert!(SessionControlLogEntry::try_from(wrong_order).is_err());
 }
 
-async fn drive_step_with_control(seed: Seed) -> Vec<ReproductionCommandRecord> {
+async fn drive_step_with_control(
+    seed: Seed,
+) -> std::sync::Arc<crucible_api::AdmittedShared<Vec<ReproductionCommandRecord>>> {
     let mut control_plane = lifecycle_control_plane();
     let session = create_paused_session(&mut control_plane, seed).await;
     let control = control_plane
@@ -182,7 +211,9 @@ async fn drive_step_with_control(seed: Seed) -> Vec<ReproductionCommandRecord> {
     commands
 }
 
-async fn drive_step_with_send(seed: Seed) -> Vec<ReproductionCommandRecord> {
+async fn drive_step_with_send(
+    seed: Seed,
+) -> std::sync::Arc<crucible_api::AdmittedShared<Vec<ReproductionCommandRecord>>> {
     let mut control_plane = lifecycle_control_plane();
     let session = create_paused_session(&mut control_plane, seed).await;
     let paused = control_plane
@@ -221,7 +252,7 @@ async fn wait_for_reproduction_len(
     control_plane: &LifecycleControlPlane<BoundaryLoop, LifecycleLoopFactory<BoundaryLoop>>,
     session: SessionRef,
     expected_len: usize,
-) -> Vec<ReproductionCommandRecord> {
+) -> std::sync::Arc<crucible_api::AdmittedShared<Vec<ReproductionCommandRecord>>> {
     for _ in 0..128 {
         let response = control_plane
             .get_reproduction(GetReproductionRequest::new(session))
@@ -264,6 +295,7 @@ fn lifecycle_control_plane()
         )],
         |_scenario, _seed| BoundaryLoop { quanta: 0 },
     )
+    .with_decode_budget(crate::output_support::budget())
 }
 
 struct BoundaryLoop {
@@ -286,6 +318,7 @@ impl QuantumLoop for BoundaryLoop {
             event_log_segment_hash: None,
             event_log_offset: crucible::EventLogOffset::default(),
             scheduler_quiescence: None,
+            event_log_custody: Default::default(),
         })
     }
 }

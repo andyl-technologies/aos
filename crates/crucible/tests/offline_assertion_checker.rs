@@ -77,18 +77,22 @@ fn recorded_log() -> Vec<SchedulerEventLogEntry> {
     let coverage = ObservableEvent::guest_marker(icount(5), node("guest"), marker_id("coverage"));
 
     vec![
-        crucible::test_support::condition_observation_entry_for_test(0, &ack),
+        crucible::test_support::condition_observation_entry_for_test(0, &ack)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_boundary_entry_for_test(
             1,
             time(3),
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
-        crucible::test_support::condition_observation_entry_for_test(2, &coverage),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+        crucible::test_support::condition_observation_entry_for_test(2, &coverage)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_boundary_entry_for_test(
             3,
             time(5),
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ]
 }
 
@@ -186,8 +190,10 @@ fn online_report(
     properties: &Properties,
     event_log: &[SchedulerEventLogEntry],
 ) -> HostAssertionReport {
-    let mut evaluator =
-        HostAssertionEvaluator::new(properties).with_world_white_box_policies(world);
+    let mut evaluator = HostAssertionEvaluator::new(properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"))
+        .with_world_white_box_policies(world)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     let mut oracle = BlackBoxHostOracle;
     let first_boundary = crucible::test_support::condition_prefix_from_scheduler_entries_for_test(
         event_log[..2].to_vec(),
@@ -222,6 +228,9 @@ where
 
 #[test]
 fn offline_assertion_checker_matches_online_report_for_recorded_log() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let properties = all_quantifier_properties(&world);
     let event_log = recorded_log();
@@ -239,6 +248,9 @@ fn offline_assertion_checker_matches_online_report_for_recorded_log() {
 
 #[test]
 fn offline_assertion_checker_regrades_amended_properties_idempotently() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let properties = amended_properties(&world);
     let event_log = recorded_log();
@@ -265,6 +277,9 @@ fn offline_assertion_checker_regrades_amended_properties_idempotently() {
 
 #[test]
 fn offline_assertion_checker_uses_custom_host_oracle_over_recorded_state() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let properties = properties(
         &world,
@@ -310,6 +325,9 @@ fn offline_assertion_checker_uses_custom_host_oracle_over_recorded_state() {
 
 #[test]
 fn offline_assertion_checker_requires_offsets_for_custom_host_oracle() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let properties = properties(
         &world,
@@ -321,7 +339,8 @@ fn offline_assertion_checker_requires_offsets_for_custom_host_oracle() {
             },
         )],
     );
-    let recorded_log = RecordedAssertionLog::from_entries(recorded_log());
+    let recorded_log = RecordedAssertionLog::from_entries(recorded_log())
+        .expect("recorded oracle fixture fits the original component authority");
     let checker = OfflineAssertionChecker::new().with_world_white_box_policies(&world);
     let mut oracle =
         linted_host_oracle(
@@ -343,6 +362,9 @@ fn offline_assertion_checker_requires_offsets_for_custom_host_oracle() {
 
 #[test]
 fn offline_assertion_checker_preserves_empty_run_offset_for_custom_oracle() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let properties = properties(
         &world,
@@ -387,6 +409,9 @@ fn offline_assertion_checker_preserves_empty_run_offset_for_custom_oracle() {
 
 #[test]
 fn offline_assertion_checker_rejects_invalid_recorded_log() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let properties = all_quantifier_properties(&world);
     let mut event_log = recorded_log();
@@ -410,6 +435,9 @@ fn offline_assertion_checker_rejects_invalid_recorded_log() {
 
 #[test]
 fn offline_assertion_checker_defers_incomplete_atomic_observation_segment() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let properties = properties(
         &world,
@@ -428,13 +456,16 @@ fn offline_assertion_checker_defers_incomplete_atomic_observation_segment() {
             0,
             time(10),
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
-        crucible::test_support::condition_observation_entry_for_test(1, &observation),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+        crucible::test_support::condition_observation_entry_for_test(1, &observation)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_boundary_entry_for_test(
             2,
             time(10),
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ];
 
     let offline = OfflineAssertionChecker::new()
@@ -449,8 +480,10 @@ fn offline_assertion_checker_defers_incomplete_atomic_observation_segment() {
     let terminal =
         crucible::test_support::condition_prefix_from_scheduler_entries_for_test(event_log.clone())
             .expect("atomic online boundary should be valid");
-    let mut online_evaluator =
-        HostAssertionEvaluator::new(&properties).with_world_white_box_policies(&world);
+    let mut online_evaluator = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"))
+        .with_world_white_box_policies(&world)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     let mut oracle = BlackBoxHostOracle;
     online_evaluator
         .observe_prefix(&first, &mut oracle)
@@ -469,6 +502,9 @@ fn offline_assertion_checker_defers_incomplete_atomic_observation_segment() {
 
 #[test]
 fn offline_assertion_checker_defers_unpublished_causal_prefix_inside_quantum() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     // A live linked delivery produced this shape: the prior evaluation was at
     // 3.75B ticks, then one atomic quantum appended a physical backend input
     // near 3.58B and its observation and boundary at 3.75B.
@@ -513,16 +549,19 @@ fn offline_assertion_checker_defers_unpublished_causal_prefix_inside_quantum() {
             0,
             time(10),
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_entry_with_retirement_witness_for_test(
             crucible::test_support::condition_payload_entry_for_test(
                 1,
                 time(5),
                 SchedulerEventLogPayload::ResolvedHappening(delivery),
-            ),
+            )
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
             Some(node("guest")),
             Icount { retired: 0 },
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_payload_entry_for_test(
             2,
             time(5),
@@ -530,13 +569,16 @@ fn offline_assertion_checker_defers_unpublished_causal_prefix_inside_quantum() {
                 stream: RngStreamId::from_name("late-quantum"),
                 value: 7,
             })),
-        ),
-        crucible::test_support::condition_observation_entry_for_test(3, &delivered),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+        crucible::test_support::condition_observation_entry_for_test(3, &delivered)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_boundary_entry_for_test(
             4,
             time(10),
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ];
     let checker = OfflineAssertionChecker::new().with_world_white_box_policies(&world);
 
@@ -577,6 +619,9 @@ fn offline_assertion_checker_defers_unpublished_causal_prefix_inside_quantum() {
 
 #[test]
 fn offline_assertion_checker_rejects_unbounded_future_observation_prefix() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let properties = amended_properties(&world);
     let early = ObservableEvent::guest_marker(icount(5), node("guest"), marker_id("early"));
@@ -586,9 +631,12 @@ fn offline_assertion_checker_rejects_unbounded_future_observation_prefix() {
             0,
             time(10),
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
-        crucible::test_support::condition_observation_entry_for_test(1, &early),
-        crucible::test_support::condition_observation_entry_for_test(2, &later),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+        crucible::test_support::condition_observation_entry_for_test(1, &early)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+        crucible::test_support::condition_observation_entry_for_test(2, &later)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ];
 
     let error = OfflineAssertionChecker::new()
@@ -610,6 +658,9 @@ fn offline_assertion_checker_rejects_unbounded_future_observation_prefix() {
 
 #[test]
 fn offline_assertion_checker_rejects_regressed_explicit_evaluation_boundary() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let properties = amended_properties(&world);
     let event_log = vec![
@@ -617,17 +668,20 @@ fn offline_assertion_checker_rejects_regressed_explicit_evaluation_boundary() {
             0,
             time(10),
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_boundary_entry_for_test(
             1,
             time(8),
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_boundary_entry_for_test(
             2,
             time(10),
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ];
 
     let error = OfflineAssertionChecker::new()
@@ -649,6 +703,9 @@ fn offline_assertion_checker_rejects_regressed_explicit_evaluation_boundary() {
 
 #[test]
 fn offline_assertion_checker_rejects_future_observation_at_recorded_segment_boundary() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let properties = amended_properties(&world);
     let observation =
@@ -658,13 +715,16 @@ fn offline_assertion_checker_rejects_future_observation_at_recorded_segment_boun
             0,
             time(10),
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
-        crucible::test_support::condition_observation_entry_for_test(1, &observation),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+        crucible::test_support::condition_observation_entry_for_test(1, &observation)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_boundary_entry_for_test(
             2,
             time(10),
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ];
     let recorded_log = RecordedAssertionLog::from_segments(vec![
         entries[..1].to_vec(),
@@ -693,6 +753,9 @@ fn offline_assertion_checker_rejects_future_observation_at_recorded_segment_boun
 
 #[test]
 fn offline_assertion_checker_evaluates_valid_observation_after_deferred_prefix() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let properties = properties(
         &world,
@@ -711,14 +774,18 @@ fn offline_assertion_checker_evaluates_valid_observation_after_deferred_prefix()
             0,
             time(10),
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
-        crucible::test_support::condition_observation_entry_for_test(1, &early),
-        crucible::test_support::condition_observation_entry_for_test(2, &current),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+        crucible::test_support::condition_observation_entry_for_test(1, &early)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+        crucible::test_support::condition_observation_entry_for_test(2, &current)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_boundary_entry_for_test(
             3,
             time(10),
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ];
     let recorded_log = RecordedAssertionLog::from_segments(vec![
         entries[..1].to_vec(),
@@ -752,8 +819,10 @@ fn offline_assertion_checker_evaluates_valid_observation_after_deferred_prefix()
     let terminal =
         crucible::test_support::condition_prefix_from_scheduler_entries_for_test(entries.clone())
             .expect("terminal online boundary should be valid");
-    let mut online_evaluator =
-        HostAssertionEvaluator::new(&properties).with_world_white_box_policies(&world);
+    let mut online_evaluator = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"))
+        .with_world_white_box_policies(&world)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     let mut online_oracle = linted_host_oracle(oracle);
     online_evaluator
         .observe_prefix(&first, &mut online_oracle)
@@ -778,6 +847,9 @@ fn offline_assertion_checker_evaluates_valid_observation_after_deferred_prefix()
 
 #[test]
 fn offline_atomic_batch_matches_online_and_preserves_earlier_always_failure() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let properties = properties(
         &world,
@@ -795,13 +867,16 @@ fn offline_atomic_batch_matches_online_and_preserves_earlier_always_failure() {
             0,
             time(5),
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
-        crucible::test_support::condition_observation_entry_for_test(1, &retained),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+        crucible::test_support::condition_observation_entry_for_test(1, &retained)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_boundary_entry_for_test(
             2,
             time(10),
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ];
     let recorded_log =
         RecordedAssertionLog::from_segments(vec![entries[..1].to_vec(), entries[1..].to_vec()])
@@ -827,8 +902,10 @@ fn offline_atomic_batch_matches_online_and_preserves_earlier_always_failure() {
     let terminal =
         crucible::test_support::condition_prefix_from_scheduler_entries_for_test(entries.clone())
             .expect("atomic online boundary should be valid");
-    let mut online_evaluator =
-        HostAssertionEvaluator::new(&properties).with_world_white_box_policies(&world);
+    let mut online_evaluator = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"))
+        .with_world_white_box_policies(&world)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     let mut online_oracle = linted_host_oracle(
         |state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
             ConditionLeaf::Named { name, nodes } => {
@@ -857,6 +934,9 @@ fn offline_atomic_batch_matches_online_and_preserves_earlier_always_failure() {
 
 #[test]
 fn offline_assertion_checker_implementation_reads_log_without_guest_reexecution() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let trigger = include_str!("../src/trigger/assertions.rs");
     let checker_block = trigger
         .split("pub struct OfflineAssertionChecker")

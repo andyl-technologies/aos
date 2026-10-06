@@ -464,7 +464,11 @@ fn validate_savepoint_boundary_proof(
             },
             node.clone(),
             crucible::MarkerId::from_name(name),
-        );
+        )
+        .map_err(|source| CliError::EventEvidence {
+            context: "authenticate savepoint marker event",
+            source: Box::new(source),
+        })?;
         if event.content_hash() != *event_content_hash {
             return Err(artifact_error(
                 "campaign marker event proof content hash does not match its canonical event",

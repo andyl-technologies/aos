@@ -34,8 +34,8 @@ pub(crate) fn run_finding_bundle_fork_write(
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(async {
-        let _decoding_scope = prepared.decoding.enter();
+    let decoding = prepared.decoding.clone();
+    let workflow = async {
         let _private_guard = prepared.private;
         let transport = midpoint::private_midpoint_transport(_private_guard.path())?;
         let checkpoint_id = prepared.imported.midpoint().checkpoint();
@@ -63,7 +63,8 @@ pub(crate) fn run_finding_bundle_fork_write(
             RpcEndpoint::http2(format!("https://{address}")),
             RpcMutualTlsConfig::from_pem(transport.ca_pem, transport.client_identity_pem),
         )
-        .map_err(control_client_error)?;
+        .map_err(control_client_error)?
+        .with_decode_budget(decoding.clone());
         let sessions = prepared
             .imported
             .admit_debug_session_pair()
@@ -181,7 +182,11 @@ pub(crate) fn run_finding_bundle_fork_write(
                 "{error}; finding fork teardown failed: {teardown}"
             ))),
         }
-    })
+    };
+    runtime.block_on(
+        crucible_api::admit_future(workflow, prepared.decoding.clone())
+            .map_err(|error| backend_error(format!("fork workflow admission failed: {error}")))?,
+    )
 }
 
 struct RegisterWriteProof {

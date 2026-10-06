@@ -25,7 +25,19 @@ pub(crate) struct PreparedChildArenas {
     states: Option<Vec<PageState>>,
     reservation: Option<MetadataReservation>,
     arena_reservation: Option<MetadataReservation>,
+    mode: crucible_protocol::ram_control::RamControlMode,
     captured: bool,
+}
+
+/// Couples one staged child incarnation to its complete source and resource plan.
+pub(crate) struct ChildArenaConfiguration {
+    pub(crate) generation: u64,
+    pub(crate) resources: PluginRamResources,
+    pub(crate) operations: Arc<dyn SourceOperationFactory>,
+    pub(crate) source: Option<ValidatedRestoreSource>,
+    pub(crate) spill_file: File,
+    pub(crate) spill_quota: u64,
+    pub(crate) policy: crucible_protocol::ram_control::RamControlPolicy,
 }
 
 /// Proves fresh child fault service and transfer of inherited descriptor custody.
@@ -53,14 +65,19 @@ impl PausedPagingOwner {
     /// Refuses mismatched immutable sources, insufficient entitlement, or failed staging allocation.
     pub(crate) fn prepare_child(
         self: &Arc<Self>,
-        generation: u64,
-        resources: PluginRamResources,
-        operations: Arc<dyn SourceOperationFactory>,
-        source: Option<ValidatedRestoreSource>,
-        spill_file: File,
-        spill_quota: u64,
+        configuration: ChildArenaConfiguration,
     ) -> Result<PreparedChildArenas, RamError> {
+        let ChildArenaConfiguration {
+            generation,
+            resources,
+            operations,
+            source,
+            spill_file,
+            spill_quota,
+            policy,
+        } = configuration;
         self.require_no_prepared_write()?;
+        self.admit_policy(&policy)?;
         if generation == 0
             || resources.metadata_bytes < self.resources.metadata_bytes
             || resources.resident_peak_bytes < self.authority_snapshot()?.full_peak_bytes
@@ -159,6 +176,7 @@ impl PausedPagingOwner {
             reservation: Some(reservation),
             arena_reservation: Some(arena_reservation),
             captured: false,
+            mode: policy.mode,
         })
     }
 
@@ -278,12 +296,14 @@ impl PreparedChildArenas {
                     .take()
                     .ok_or("child versions already consumed")?,
             ),
+            placement_dependency: Mutex::new(None),
             worker: Mutex::new(None),
             stop: AtomicBool::new(false),
             activated: AtomicBool::new(false),
             destructive: AtomicBool::new(true),
             retained_token: AtomicU64::new(0),
             failed: AtomicBool::new(false),
+            lifetime: Mutex::new(service::ActorLifetime::default()),
             operations: self.operations.clone(),
             worker_generation,
             native: self.parent_service.native,
@@ -347,6 +367,11 @@ impl PreparedChildArenas {
         }
         service.activated.store(true, Ordering::Release);
         service.start()?;
+        if self.mode == crucible_protocol::ram_control::RamControlMode::ResidentRequired {
+            // Linux never inherits mlock guarantees. Only this freshly ready
+            // child actor may populate cold mappings before reconstruction.
+            owner.lock_immediate_child(&service)?;
+        }
         let mut retained = [-1; 4];
         let mut closed = [-1; 4];
         retained[0] = service.registration.raw_descriptor();
@@ -355,7 +380,7 @@ impl PreparedChildArenas {
             .try_lock()
             .map_err(|_| "child spill unavailable")?
             .descriptor()?;
-        closed[0] = self.parent_service.registration.raw_descriptor();
+        closed[0] = self.parent_service.registration.disarm_inherited()?;
         closed[1] = self
             .parent_service
             .spill

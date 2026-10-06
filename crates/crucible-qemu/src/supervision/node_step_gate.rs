@@ -162,6 +162,7 @@ pub struct QemuLiveNodeStepGateConfig {
     host_operation_supervisor:
         Option<crucible_linux_resource::host_supervision::HostOperationSupervisor>,
     ram_control_registration: Option<crate::ram_control::RamControlRegistration>,
+    fault_actor_test_entitlement: Option<[u8; 32]>,
     unbounded_advance_completion: bool,
     console_capture: bool,
     rr_control_boundary_trace: bool,
@@ -334,6 +335,7 @@ impl QemuLiveNodeStepGateConfig {
             completion_timeout: Duration::from_secs(240),
             host_operation_supervisor: None,
             ram_control_registration: None,
+            fault_actor_test_entitlement: None,
             unbounded_advance_completion: false,
             console_capture: false,
             rr_control_boundary_trace: false,
@@ -398,6 +400,7 @@ impl QemuLiveNodeStepGateConfig {
             completion_timeout: Duration::from_secs(240),
             host_operation_supervisor: None,
             ram_control_registration: None,
+            fault_actor_test_entitlement: None,
             unbounded_advance_completion: false,
             console_capture: false,
             rr_control_boundary_trace: false,
@@ -689,6 +692,30 @@ impl QemuLiveNodeStepGateConfig {
     ) -> Self {
         self.ram_control_registration = Some(registration);
         self
+    }
+
+    /// Installs a separate explicit terminal-request entitlement for native tests.
+    ///
+    /// # Errors
+    /// Rejects a zero nonce. Actual launch additionally requires an admitted RAM
+    /// registration; fresh fork children never inherit this entitlement.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_fault_actor_test_entitlement(
+        mut self,
+        entitlement: [u8; 32],
+    ) -> Result<Self, crucible_protocol::ram_control::RamControlError> {
+        if entitlement == [0; 32] {
+            return Err(crucible_protocol::ram_control::RamControlError::InvalidFrame);
+        }
+        self.fault_actor_test_entitlement = Some(entitlement);
+        Ok(self)
+    }
+
+    /// Returns the explicitly authored native-test launch entitlement.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn fault_actor_test_entitlement(&self) -> Option<[u8; 32]> {
+        self.fault_actor_test_entitlement
     }
 
     /// Returns the exact admitted operational launch owner.
@@ -1267,6 +1294,7 @@ fn build_live_node_with_authority(
             .map_err(|source| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
                 reason: format!("configure admitted native setup budgets: {source}"),
             })?
+            .with_fault_actor_test_entitlement(config.fault_actor_test_entitlement)
             .with_ram_resources(registration.resources)
             .with_ram_spill_quota(registration.spill_quota_bytes)
             .with_ram_control(crate::QemuRamControlLaunch {

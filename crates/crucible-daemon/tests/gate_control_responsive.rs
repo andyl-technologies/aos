@@ -53,6 +53,16 @@ fn gate_control_responsive_daemon_declares_in_process_sim_double_backend() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn gate_control_responsive_daemon_routes_use_api_quantum_bound() {
+    let scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .expect("finite original control component account");
+    let decoding = crucible::owned_decode::current_budget().expect("original component budget");
+    drop(scope);
+    crucible_api::admit_future(check_control_responsive_routes(), decoding)
+        .expect("restore original component account on every poll")
+        .await;
+}
+
+async fn check_control_responsive_routes() {
     let fixture = RunningSimDoubleControlPlane::spawn().await;
     let route = DaemonControlResponsiveRoute::new(fixture.probe.clone());
     let mut acknowledgements = Vec::new();
@@ -141,7 +151,10 @@ impl RunningSimDoubleControlPlane {
         let (sender, receiver) = mpsc::channel(16);
         let actor = SessionActor::new(engine, receiver);
         let live = actor.live_snapshot();
-        let actor_task = tokio::spawn(async move { actor.run().await });
+        let decoding =
+            crucible::owned_decode::current_budget().expect("original control component budget");
+        let actor_task = crucible_api::spawn_admitted_session_actor(actor, decoding)
+            .expect("admitted component actor polls");
 
         send_command(&sender, SessionCommand::Start).await;
         send_command(&sender, SessionCommand::Continue).await;
@@ -224,6 +237,8 @@ impl QuantumLoop for SimDoubleQuantumLoop {
             event_log_segment_hash: Some(crucible::ContentHash::from_bytes(b"x")),
             event_log_offset: crucible::EventLogOffset::new(Default::default(), 0, 0),
             scheduler_quiescence: None,
+            event_log_custody: crucible::EventLogOutputCustody::retain_current()
+                .expect("original control fixture event output"),
         })
     }
 

@@ -399,7 +399,7 @@ struct ClosureObjects {
     event_log_segments: BTreeMap<ContentHash, Vec<u8>>,
     signal_artifacts: BTreeMap<ContentHash, Vec<u8>>,
     trigger_state: Vec<u8>,
-    assertion_state: Vec<u8>,
+    assertion_state: crucible::HostAssertionCheckpointBytes,
     lifecycle_state: Vec<u8>,
     fault_checkpoint: Vec<u8>,
     snapshots: BTreeMap<NodeId, Vec<u8>>,
@@ -2314,7 +2314,7 @@ fn manifest_and_objects_with_boundary(
     let assertion_state = checkpoint
         .assertion_state
         .canonical_bytes()
-        .map_err(|error| store_error(format!("encode assertion continuation: {error}")))?;
+        .map_err(SchedulerError::from)?;
     let lifecycle_state = encode_lifecycle(checkpoint)?;
     let fault_checkpoint = checkpoint
         .fault_checkpoint

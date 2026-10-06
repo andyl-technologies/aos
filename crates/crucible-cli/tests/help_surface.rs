@@ -38,13 +38,13 @@ fn cli_help_process_outputs_top_level_surface() -> Result<(), Box<dyn Error>> {
         "serve",
         "completions",
         "--seed <u64|hex>",
-        "Root entropy (06 §5.3). Overrides CRUCIBLE_SEED",
+        "Root entropy. Overrides CRUCIBLE_SEED",
         BACKEND_HELP,
-        "Local backend (20 §10). Default: auto",
-        "Talk to a daemon (21) instead of running in-process",
-        "Patched QEMU system binary (26). Else discovered",
-        "crucible-qemu-plugin cdylib (12, 26). Else discovered",
-        "Content-addressed store root (06, 07). Else default",
+        "Local backend. Default: auto",
+        "Talk to a daemon instead of running in-process",
+        "Patched QEMU system binary. Else discovered",
+        "crucible-qemu-plugin cdylib. Else discovered",
+        "Set the content-addressed store root",
         "--format <jsonl|json|table|markdown>",
         "Trace/report render format. Default: table on a terminal, otherwise jsonl",
         "Write the event-log stream here. Default: stdout",
@@ -106,7 +106,7 @@ fn cli_run_help_describes_guarded_campaign_deployment() -> Result<(), Box<dyn Er
     assert!(output.stderr.is_empty());
     let stdout = String::from_utf8(output.stdout)?;
     assert!(stdout.contains("--campaign-deployment <PATH>"));
-    assert!(stdout.contains("Guarded local campaign-executor deployment capability"));
+    assert!(stdout.contains("Load deployed host and storage resource limits"));
 
     Ok(())
 }
@@ -123,7 +123,7 @@ fn cli_production_selftest_help_excludes_test_double_options() -> Result<(), Box
     let stdout = String::from_utf8(output.stdout)?;
     assert!(stdout.contains("Run the packaged determinism gates"));
     assert!(stdout.contains("--campaign-deployment <PATH>"));
-    assert!(stdout.contains("Guarded local campaign-executor deployment capability"));
+    assert!(stdout.contains("Load deployed host and storage resource limits"));
     assert!(!stdout.contains("--with-qemu"));
     assert!(!stdout.contains("double"));
     assert!(!stdout.contains("--corpus"));

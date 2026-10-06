@@ -148,10 +148,12 @@ async fn production_http2_lifecycle_server_hosts_rpc_control_surface() {
         "production-http2-lifecycle-server",
         Vec::new(),
         |_scenario: &ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
-    );
+    )
+    .with_decode_budget(crate::output_support::budget());
     let server = tokio::spawn(async move { serve_lifecycle_http2(listener, control_plane).await });
 
     let rpc = RpcControlClient::new(RpcEndpoint::http2(format!("http://{addr}")))
+        .map(|client| client.with_decode_budget(crate::output_support::budget()))
         .unwrap_or_else(|error| panic!("production HTTP/2 RPC client should build: {error}"));
     let hello = rpc
         .hello(HelloRequest::new(
@@ -234,11 +236,13 @@ async fn production_http2_lifecycle_server_admits_concurrent_watch_and_query_cli
         "production-http2-multi-client-server",
         Vec::new(),
         test_loop_factory as fn(&ScenarioDef, Seed) -> ServerQuantumLoop,
-    );
+    )
+    .with_decode_budget(crate::output_support::budget());
     let server = tokio::spawn(async move { serve_lifecycle_http2(listener, control_plane).await });
 
     let endpoint = RpcEndpoint::http2(format!("http://{addr}"));
     let rpc = RpcControlClient::new(endpoint)
+        .map(|client| client.with_decode_budget(crate::output_support::budget()))
         .unwrap_or_else(|error| panic!("production HTTP/2 RPC client should build: {error}"));
     let scenario = generated_scenario(92);
     let created = rpc
@@ -366,7 +370,8 @@ async fn production_http2_lifecycle_server_shutdown_completes_with_active_watch_
         "production-http2-active-watch-shutdown-server",
         Vec::new(),
         test_loop_factory as fn(&ScenarioDef, Seed) -> ServerQuantumLoop,
-    );
+    )
+    .with_decode_budget(crate::output_support::budget());
     let (shutdown_sender, shutdown_receiver) = oneshot::channel();
     let server = tokio::spawn(async move {
         serve_lifecycle_http2_with_mode_until_shutdown(
@@ -381,6 +386,7 @@ async fn production_http2_lifecycle_server_shutdown_completes_with_active_watch_
     });
 
     let rpc = RpcControlClient::new(RpcEndpoint::http2(format!("http://{addr}")))
+        .map(|client| client.with_decode_budget(crate::output_support::budget()))
         .unwrap_or_else(|error| panic!("production HTTP/2 RPC client should build: {error}"));
     let scenario = generated_scenario(93);
     let created = rpc
@@ -416,9 +422,10 @@ async fn production_http2_lifecycle_server_shutdown_completes_with_active_watch_
 
 #[tokio::test(flavor = "current_thread")]
 async fn in_process_send_rejections_use_closed_status_taxonomy_without_closing_stream() {
-    let (streaming, actor, session) =
+    let (streaming, actor, session, actor_budget) =
         streaming_session_fixture(ServerQuantumLoop { quanta: 0 }, 90);
-    let actor_task = tokio::spawn(actor.run());
+    let actor_task = crucible_api::spawn_admitted_session_actor(actor, actor_budget)
+        .unwrap_or_else(|error| panic!("finite fixture actor admission: {error}"));
 
     let started = streaming
         .send(SendRequest::new(session, 1, SessionCommand::Start))
@@ -436,7 +443,16 @@ async fn in_process_send_rejections_use_closed_status_taxonomy_without_closing_s
     .await;
     assert_accepted_query_after_rejection(&streaming, session, 3).await;
 
-    let reproduction_before_missing_remove = streaming.reproduction_log().snapshot();
+    let snapshot_budget = crate::output_support::budget();
+    let reproduction_before_missing_remove = {
+        let _scope = snapshot_budget.enter();
+        streaming
+            .reproduction_log()
+            .snapshot_admitted()
+            .unwrap_or_else(|error| {
+                panic!("finite reproduction snapshot before rejection: {error}")
+            })
+    };
     let event_tail_before_missing_remove = streaming.event_log().current_cursor();
     assert_rejected_send(
         &streaming,
@@ -449,9 +465,16 @@ async fn in_process_send_rejections_use_closed_status_taxonomy_without_closing_s
         CommandRejectionKind::NotFound,
     )
     .await;
+    let reproduction_after_missing_remove = {
+        let _scope = snapshot_budget.enter();
+        streaming
+            .reproduction_log()
+            .snapshot_admitted()
+            .unwrap_or_else(|error| panic!("finite reproduction snapshot after rejection: {error}"))
+    };
     assert_eq!(
-        streaming.reproduction_log().snapshot(),
-        reproduction_before_missing_remove,
+        reproduction_after_missing_remove.entries(),
+        reproduction_before_missing_remove.entries(),
         "running missing-breakpoint rejection must not record reproduction control",
     );
     assert_eq!(
@@ -509,8 +532,10 @@ async fn in_process_send_rejections_use_closed_status_taxonomy_without_closing_s
 
 #[tokio::test(flavor = "current_thread")]
 async fn in_process_send_maps_backend_rejections_to_invalid_argument() {
-    let (streaming, actor, session) = streaming_session_fixture(RejectingGdbLoop { quanta: 0 }, 91);
-    let actor_task = tokio::spawn(actor.run());
+    let (streaming, actor, session, actor_budget) =
+        streaming_session_fixture(RejectingGdbLoop { quanta: 0 }, 91);
+    let actor_task = crucible_api::spawn_admitted_session_actor(actor, actor_budget)
+        .unwrap_or_else(|error| panic!("finite fixture actor admission: {error}"));
     start_and_pause_streaming_actor(&streaming, session).await;
 
     assert_rejected_send(
@@ -528,8 +553,10 @@ async fn in_process_send_maps_backend_rejections_to_invalid_argument() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn in_process_send_maps_internal_command_failures_without_closing_stream() {
-    let (streaming, actor, session) = streaming_session_fixture(InternalGdbLoop { quanta: 0 }, 92);
-    let actor_task = tokio::spawn(actor.run());
+    let (streaming, actor, session, actor_budget) =
+        streaming_session_fixture(InternalGdbLoop { quanta: 0 }, 92);
+    let actor_task = crucible_api::spawn_admitted_session_actor(actor, actor_budget)
+        .unwrap_or_else(|error| panic!("finite fixture actor admission: {error}"));
     start_and_pause_streaming_actor(&streaming, session).await;
 
     assert_rejected_send(
@@ -547,14 +574,15 @@ async fn in_process_send_maps_internal_command_failures_without_closing_stream()
 
 #[tokio::test(flavor = "current_thread")]
 async fn in_process_send_observes_payload_free_actor_failures() {
-    let (streaming, actor, session) = streaming_session_fixture(
+    let (streaming, actor, session, actor_budget) = streaming_session_fixture(
         RejectingOnceShutdownLoop {
             quanta: 0,
             shutdown_rejections: 1,
         },
         93,
     );
-    let actor_task = tokio::spawn(actor.run());
+    let actor_task = crucible_api::spawn_admitted_session_actor(actor, actor_budget)
+        .unwrap_or_else(|error| panic!("finite fixture actor admission: {error}"));
     start_and_pause_streaming_actor(&streaming, session).await;
 
     assert_rejected_send(
@@ -596,6 +624,7 @@ async fn rpc_send_decodes_all_rejection_statuses_and_golden_error_bytes() {
         ])
         .await;
         let client = RpcControlClient::new(RpcEndpoint::http2(server.endpoint()))
+            .map(|client| client.with_decode_budget(crate::output_support::budget()))
             .unwrap_or_else(|error| panic!("scripted RPC client should build: {error}"));
         let rejected = client
             .send_command(SendRequest::new(session, 1, SessionCommand::Start))
@@ -619,6 +648,7 @@ async fn rpc_send_decodes_all_rejection_statuses_and_golden_error_bytes() {
     )])
     .await;
     let client = RpcControlClient::new(RpcEndpoint::http2(golden_rejection.endpoint()))
+        .map(|client| client.with_decode_budget(crate::output_support::budget()))
         .unwrap_or_else(|error| panic!("golden rejection RPC client should build: {error}"));
     let decoded = client
         .send_command(SendRequest::new(session, 9002, SessionCommand::Start))
@@ -639,6 +669,7 @@ async fn rpc_send_decodes_all_rejection_statuses_and_golden_error_bytes() {
     )])
     .await;
     let client = RpcControlClient::new(RpcEndpoint::http2(query_result_server.endpoint()))
+        .map(|client| client.with_decode_budget(crate::output_support::budget()))
         .unwrap_or_else(|error| panic!("query-result RPC client should build: {error}"));
     let decoded = client
         .send_command(SendRequest::new(session, 12, query_state_command()))
@@ -663,6 +694,7 @@ async fn rpc_send_decodes_all_rejection_statuses_and_golden_error_bytes() {
     )])
     .await;
     let client = RpcControlClient::new(RpcEndpoint::http2(snapshot_result_server.endpoint()))
+        .map(|client| client.with_decode_budget(crate::output_support::budget()))
         .unwrap_or_else(|error| panic!("snapshot result RPC client should build: {error}"));
     let decoded = client
         .send_command(SendRequest::new(
@@ -709,6 +741,7 @@ async fn rpc_send_decodes_all_rejection_statuses_and_golden_error_bytes() {
     )])
     .await;
     let client = RpcControlClient::new(RpcEndpoint::http2(breakpoint_result_server.endpoint()))
+        .map(|client| client.with_decode_budget(crate::output_support::budget()))
         .unwrap_or_else(|error| panic!("breakpoint result RPC client should build: {error}"));
     let decoded = client
         .send_command(SendRequest::new(
@@ -747,6 +780,7 @@ async fn rpc_send_decodes_all_rejection_statuses_and_golden_error_bytes() {
     .await;
     let client =
         RpcControlClient::new(RpcEndpoint::http2(excessive_firing_count_server.endpoint()))
+            .map(|client| client.with_decode_budget(crate::output_support::budget()))
             .unwrap_or_else(|error| {
                 panic!("excessive firing count RPC client should build: {error}")
             });
@@ -771,6 +805,7 @@ async fn rpc_send_decodes_all_rejection_statuses_and_golden_error_bytes() {
     )])
     .await;
     let client = RpcControlClient::new(RpcEndpoint::http2(breakpoint_id_server.endpoint()))
+        .map(|client| client.with_decode_budget(crate::output_support::budget()))
         .unwrap_or_else(|error| panic!("breakpoint id RPC client should build: {error}"));
     let decoded = client
         .send_command(SendRequest::new(
@@ -794,6 +829,7 @@ async fn rpc_send_decodes_all_rejection_statuses_and_golden_error_bytes() {
     )])
     .await;
     let client = RpcControlClient::new(RpcEndpoint::http2(golden_error.endpoint()))
+        .map(|client| client.with_decode_budget(crate::output_support::budget()))
         .unwrap_or_else(|error| panic!("golden error RPC client should build: {error}"));
     let error = client
         .send_command(SendRequest::new(session, 8, SessionCommand::Start))
@@ -812,22 +848,27 @@ async fn rpc_send_decodes_all_rejection_statuses_and_golden_error_bytes() {
 
 #[test]
 fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() {
+    let budget = crate::output_support::budget();
+    let _scope = budget.enter();
     let session = SessionRef::new(SessionId::new(42), 7, Seed::from_u64(42));
     let seed_hex = session.seed.to_hex();
-    let reproduction = ReproductionCommandRecord {
-        sequence: 1,
-        payload: ReproductionCommandPayload {
-            command: SessionCommandKind::Pause,
-            command_payload: String::from("payload=command-kind\ncommand=Pause\n"),
-            scheduler_batch: 0,
-            scheduler_control: None,
+    let reproduction = ReproductionCommandRecord::from_owned_fields(
+        crucible_api::ReproductionCommandRecordFields {
+            sequence: 1,
+            payload: ReproductionCommandPayload {
+                command: SessionCommandKind::Pause,
+                command_payload: String::from("payload=command-kind\ncommand=Pause\n"),
+                scheduler_batch: 0,
+                scheduler_control: None,
+            },
+            virtual_time: VirtualTime { ticks: 5 },
+            quanta: 4,
+            at_sequence: 3,
+            result: ReproductionCommandResult::Accepted,
+            observational_order: 1,
         },
-        virtual_time: VirtualTime { ticks: 5 },
-        quanta: 4,
-        at_sequence: 3,
-        result: ReproductionCommandResult::Accepted,
-        observational_order: 1,
-    };
+    )
+    .expect("admitted fixture reproduction record");
 
     let hello = String::from_utf8(encode_rpc_hello_request(
         "contract-client",
@@ -1151,34 +1192,42 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
     );
     assert_rpc_snapshot(
         "get-reproduction-response",
-        &encode_get_reproduction_response(&GetReproductionResponse {
-            session,
-            commands: vec![reproduction.clone()],
-        }),
+        &encode_get_reproduction_response(
+            &GetReproductionResponse::from_owned_commands(session, vec![reproduction.clone()])
+                .expect("admitted fixture commands"),
+        ),
         &format!(
             "crucible.rpc/get-reproduction-response\nsession-id=42\nepoch=7\nseed={seed_hex}\ncommand=1|crucible.cmd.pause|5|4|3|accepted|1|0|none|7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\n"
         ),
     );
     assert_rpc_snapshot(
         "attached-response",
-        &encode_attached_response(&Attached {
-            session,
-            event_log_len: 9,
-            state: LiveStateKind::Paused,
-            version: RPC_PROTOCOL_VERSION,
-            capabilities: StreamingCapabilitySet {
-                commands: Vec::new(),
-                snapshot_on_attach: true,
-            },
-            snapshot: Some(AttachSnapshot {
-                through: EventLogCursor::new(9),
-                event_count: 2,
-                causal_event_count: 1,
-                observational_event_count: 1,
-                last_sequence: Some(8),
-                reproduction: vec![reproduction],
-            }),
-        }),
+        &encode_attached_response(
+            &Attached::from_owned_fields(
+                session,
+                9,
+                LiveStateKind::Paused,
+                RPC_PROTOCOL_VERSION,
+                StreamingCapabilitySet {
+                    commands: Vec::new(),
+                    snapshot_on_attach: true,
+                },
+                Some(
+                    AttachSnapshot::from_event_log_admitted(
+                        crucible_api::SessionEventLogSnapshot {
+                            through: EventLogCursor::new(9),
+                            event_count: 2,
+                            causal_count: 1,
+                            observational_count: 1,
+                            last_sequence: Some(8),
+                        },
+                        vec![reproduction],
+                    )
+                    .expect("admitted fixture snapshot"),
+                ),
+            )
+            .expect("admitted fixture attach"),
+        ),
         &format!(
             "crucible.rpc/attached-response\nsession-id=42\nepoch=7\nseed={seed_hex}\nevent-log-len=9\nstate=paused\nversion=9.0.0+crucible-rpc-abi-v9\ncommands=\nsnapshot=9|2|1|1|8\nreproduction=1|crucible.cmd.pause|5|4|3|accepted|1|0|none|7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\n"
         ),
@@ -1225,24 +1274,27 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
     attributes.insert(String::from("ok"), OpenSetAttributeValue::Bool(true));
     assert_rpc_snapshot(
         "event-frame",
-        &encode_streaming_frame(&StreamingFrame::Event(StreamingEventFrame {
-            generation: 2,
-            cursor: EventLogCursor::new(3),
-            next_cursor: EventLogCursor::new(4),
-            event: OpenSetEventEnvelope {
-                sequence: 3,
-                at: OpenSetEventTime {
-                    virtual_time_ticks: 5,
-                    stamp_tick: 355,
-                    stamp_retired: Some(6),
-                    stamp_node: Some(String::from("node-a")),
+        &encode_streaming_frame(&StreamingFrame::Event(
+            StreamingEventFrame::from_owned_fields(
+                2,
+                EventLogCursor::new(3),
+                EventLogCursor::new(4),
+                OpenSetEventEnvelope {
+                    sequence: 3,
+                    at: OpenSetEventTime {
+                        virtual_time_ticks: 5,
+                        stamp_tick: 355,
+                        stamp_retired: Some(6),
+                        stamp_node: Some(String::from("node-a")),
+                    },
+                    source: OpenSetEventSource::Command { command_id: 99 },
+                    level: EventLevel::Info,
+                    observational: false,
+                    payload: OpenSetPayload::new("crucible.event.contract", attributes),
                 },
-                source: OpenSetEventSource::Command { command_id: 99 },
-                level: EventLevel::Info,
-                observational: false,
-                payload: OpenSetPayload::new("crucible.event.contract", attributes),
-            },
-        })),
+            )
+            .expect("admitted fixture frame"),
+        )),
         "crucible.rpc/event-frame\ngeneration=2\ncursor=3\nnext-cursor=4\nsequence=3\nvirtual-time-ticks=5\nstamp-tick=355\nstamp-retired=6\nstamp-node=6e6f64652d61\nsource=command|99\nlevel=info\nobservational=false\nkind=crucible.event.contract\nattribute=6f6b|bool|true\n",
     );
     assert_rpc_snapshot(

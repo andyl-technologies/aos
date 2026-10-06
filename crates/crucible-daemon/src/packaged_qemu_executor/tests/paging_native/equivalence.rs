@@ -48,6 +48,8 @@ mod scenario {
 }
 
 mod atomic;
+mod dma;
+pub(crate) use dma::run as run_dma_borrowers_native;
 mod invalid_files;
 pub(crate) use atomic::{NativeAtomicWorldCase, run as run_atomic_world_native};
 mod campaign_perf;
@@ -165,7 +167,7 @@ pub(crate) fn run(
             case_project + u32::try_from(depth).expect("bounded semantic depth") * 100,
             catalog,
             |root, storage| native_repository(&source, root, storage),
-            |config| resources(config, &source, lifecycle.clone(), case),
+            |config| resources(config, &source, &lifecycle, case),
             |prepared, config, repository| {
                 run_accepted(
                     prepared,
@@ -190,7 +192,7 @@ pub(crate) fn run(
 fn resources(
     mut config: PackagedQemuExecutorConfig,
     source: &ScenarioDefForm,
-    lifecycle: ProductionVmLifecycleConfig,
+    lifecycle: &ProductionVmLifecycleConfig,
     case: NativeEquivalenceCase,
 ) -> PackagedQemuExecutorConfig {
     let nodes = u64::try_from(source.world().vm_nodes().len()).expect("native node count");
@@ -237,8 +239,24 @@ fn resources(
         2 << 30,
     )
     .expect("explicit native metadata and staging envelopes");
-    config.lifecycle =
-        lifecycle.with_run_state_root(config.lifecycle.run_state_root().join("equivalence"));
+    // Native fixture assets are borrowed operator inputs. Their mutable copy
+    // uses the installed catalog's original authority and retains child credit.
+    let admitted_base = config
+        .admitted_lifecycle_config()
+        .expect("installed native catalog admits lifecycle metadata");
+    let _input_scope = admitted_base.enter_input_custody();
+    let provider = config
+        .lifecycle
+        .ram_catalog_provider()
+        .expect("actual installed catalog provider")
+        .clone();
+    config.lifecycle = Arc::new(
+        lifecycle
+            .try_clone_admitted()
+            .expect("original catalog authority admits native fixture assets")
+            .with_run_state_root(config.lifecycle.run_state_root().join("equivalence"))
+            .with_ram_catalog_provider(provider),
+    );
     config
         .with_assignment_resources(
             world,
@@ -479,8 +497,8 @@ fn fresh_factory(
         .expect("actual world cgroup and storage namespace");
     QemuAttemptProductionVmLifecycleFactory::new(
         config
-            .lifecycle
-            .clone()
+            .admitted_lifecycle_config()
+            .expect("native world projection retains its actual catalog metadata credit")
             .with_run_state_root(config.lifecycle.run_state_root().join(lane)),
         ComposedQemuAttemptResourceGuardFactory::new(host),
     )
@@ -598,6 +616,9 @@ impl AttemptExecutionModel for ResumeModel<'_> {
                 "exact source changed its captured boundary"
             );
             let setup = operational_monotonic_nanoseconds().saturating_sub(started);
+            if matches!(self.case, NativeEquivalenceCase::Performance) {
+                println!("corpus_{}_exact_setup_ns={setup}", self.sample_index);
+            }
             let mut world = parent
                 .prepare_hot_fork_source_world()
                 .expect("complete retained template barriers")
@@ -816,6 +837,12 @@ impl AttemptExecutionModel for ResumeModel<'_> {
                     service.context(),
                 );
                 let elapsed = operational_monotonic_nanoseconds().saturating_sub(begun);
+                if matches!(self.case, NativeEquivalenceCase::Performance) {
+                    println!(
+                        "corpus_{}_exact_guest_continuation_ns={elapsed}",
+                        self.sample_index
+                    );
+                }
                 assert_continuation_equivalent(
                     "hot child versus exact source continuation",
                     &hot,

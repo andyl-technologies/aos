@@ -41,13 +41,13 @@ pub(super) const CLASS_NAMES: [&str; 14] = [
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct OperationBudgetDeployment {
+pub(crate) struct OperationBudgetDeployment {
     poll_interval_ms: u64,
     progress_timeout_ms: Option<u64>,
     total_timeout_ms: Option<u64>,
 }
 
-pub(super) fn deployed_budgets(
+pub(crate) fn deployed_budgets(
     deployment: &BTreeMap<String, OperationBudgetDeployment>,
 ) -> Result<HostOperationBudgets, CliError> {
     if deployment.len() != CLASS_NAMES.len() {

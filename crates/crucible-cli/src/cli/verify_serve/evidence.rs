@@ -22,6 +22,7 @@ pub(crate) fn canonical_run_log_entries(
         reproduction_artifact: None,
         side_reproduction_artifacts: Vec::new(),
         host_scheduler_preemption: Vec::new(),
+        _output_custody: crucible_session::engine::owned_decode::current_custody(),
     };
     append_local_double_run_entries(&mut outcome, run_plan, report);
     outcome.canonical_log
@@ -85,10 +86,17 @@ pub(crate) fn canonical_verify_log_stream_bytes(
     bytes
 }
 
+#[cfg(test)]
 pub(crate) fn canonical_streaming_event_frame_bytes(
     frame: &crucible_api::StreamingEventFrame,
 ) -> Vec<u8> {
-    let mut output = String::from("crucible.rpc/event-frame\n");
+    render_streaming_event_frame(frame, String::from("crucible.rpc/event-frame\n"))
+}
+
+fn render_streaming_event_frame(
+    frame: &crucible_api::StreamingEventFrame,
+    mut output: String,
+) -> Vec<u8> {
     push_canonical_wire_line(&mut output, "generation", &frame.generation.to_string());
     push_canonical_wire_line(
         &mut output,
@@ -157,6 +165,96 @@ pub(crate) fn canonical_streaming_event_frame_bytes(
         );
     }
     output.into_bytes()
+}
+
+/// Admits canonical frame storage and its overlapping formatting temporaries.
+pub(crate) fn admitted_streaming_event_frame_bytes(
+    frame: &crucible_api::StreamingEventFrame,
+    budget: &crucible_session::engine::owned_decode::DecodeBudget,
+) -> Result<Vec<u8>, CliError> {
+    let overflow = || backend_error("canonical event-frame allocation size overflow");
+    let doubled = |bytes: usize| bytes.checked_mul(2).ok_or_else(overflow);
+    let source_bytes = match &frame.event.source {
+        crucible_api::OpenSetEventSource::Scenario { event } => 9usize
+            .checked_add(doubled(event.len())?)
+            .ok_or_else(overflow)?,
+        crucible_api::OpenSetEventSource::Node { node } => 5usize
+            .checked_add(doubled(node.len())?)
+            .ok_or_else(overflow)?,
+        crucible_api::OpenSetEventSource::Guest { node } => 6usize
+            .checked_add(doubled(node.len())?)
+            .ok_or_else(overflow)?,
+        crucible_api::OpenSetEventSource::Command { .. } => 8 + 20,
+        crucible_api::OpenSetEventSource::Engine => 6,
+    };
+    let node_bytes = frame
+        .event
+        .at
+        .stamp_node
+        .as_ref()
+        .map(|node| doubled(node.len()))
+        .transpose()?
+        .unwrap_or(4);
+    let mut output_bytes = "crucible.rpc/event-frame\n".len();
+    // Decimal u64 fields use at most twenty bytes, including optional stamps.
+    for (key, value_bytes) in [
+        ("generation", 20),
+        ("cursor", 20),
+        ("next-cursor", 20),
+        ("sequence", 20),
+        ("virtual-time-ticks", 20),
+        ("stamp-tick", 20),
+        ("stamp-retired", 20),
+        ("stamp-node", node_bytes),
+        ("source", source_bytes),
+        ("level", 5),
+        ("observational", 5),
+        ("kind", frame.event.payload.kind.len()),
+    ] {
+        output_bytes = output_bytes
+            .checked_add(key.len())
+            .and_then(|size| size.checked_add(value_bytes))
+            .and_then(|size| size.checked_add(2))
+            .ok_or_else(overflow)?;
+    }
+    for (name, value) in &frame.event.payload.attributes {
+        let value_bytes = match value {
+            crucible_api::OpenSetAttributeValue::Bool(_) => 5 + 5,
+            crucible_api::OpenSetAttributeValue::Int(_) => 4 + 20,
+            crucible_api::OpenSetAttributeValue::Uint(_) => 5 + 20,
+            crucible_api::OpenSetAttributeValue::Uint128(_) => 8 + 39,
+            crucible_api::OpenSetAttributeValue::Float64Bits(_) => 12 + 20,
+            crucible_api::OpenSetAttributeValue::String(value) => 7usize
+                .checked_add(doubled(value.len())?)
+                .ok_or_else(overflow)?,
+            crucible_api::OpenSetAttributeValue::Bytes(value) => 6usize
+                .checked_add(doubled(value.len())?)
+                .ok_or_else(overflow)?,
+        };
+        output_bytes = output_bytes
+            .checked_add("attribute=".len())
+            .and_then(|size| size.checked_add(doubled(name.len()).ok()?))
+            .and_then(|size| size.checked_add(value_bytes))
+            .and_then(|size| size.checked_add(2))
+            .ok_or_else(overflow)?;
+    }
+    // Reserve the complete output once. A line's nested hex/value/combined
+    // formatting, including old/new allocations during geometric growth, can
+    // overlap up to six line-sized buffers. Each line is included above.
+    let peak_bytes = output_bytes.checked_mul(8).ok_or_else(overflow)?;
+    budget
+        .charge_bytes(u64::try_from(peak_bytes).map_err(|_| overflow())?)
+        .map_err(|error| backend_error(format!("admit canonical event frame: {error}")))?;
+    let mut output = String::new();
+    output
+        .try_reserve_exact(output_bytes)
+        .map_err(|error| backend_error(format!("reserve canonical event frame: {error}")))?;
+    output.push_str("crucible.rpc/event-frame\n");
+    let output = render_streaming_event_frame(frame, output);
+    budget
+        .check()
+        .map_err(|error| backend_error(format!("admit canonical event frame: {error}")))?;
+    Ok(output)
 }
 
 pub(crate) fn optional_string_canonical_wire(value: Option<&str>) -> String {
@@ -297,19 +395,19 @@ pub(crate) fn canonical_log_entries_from_artifact(
             "verify comparison artifact contains no canonical decisions",
         ));
     }
-    artifact
-        .decisions
-        .iter()
-        .map(|decision| {
-            Ok(CanonicalLogEntry {
-                sequence: decision.sequence,
-                virtual_time_ticks: decision.virtual_time_ticks,
-                node: decision.node.clone(),
-                kind: decision.kind.clone(),
-                summary: decision_payload_summary(artifact, decision)?,
-            })
-        })
-        .collect()
+    let mut entries = Vec::new();
+    crucible_session::engine::owned_decode::reserve_vec(&mut entries, artifact.decisions.len())
+        .map_err(CliError::MetadataAdmission)?;
+    for decision in &artifact.decisions {
+        entries.push(CanonicalLogEntry {
+            sequence: decision.sequence,
+            virtual_time_ticks: decision.virtual_time_ticks,
+            node: copy_artifact_field(&decision.node)?,
+            kind: copy_artifact_field(&decision.kind)?,
+            summary: decision_payload_summary(artifact, decision)?,
+        });
+    }
+    Ok(entries)
 }
 
 pub(crate) fn decision_payload_summary(
@@ -323,50 +421,42 @@ pub(crate) fn decision_payload_summary(
         .ok_or_else(|| {
             artifact_error(format!(
                 "decision payload `{}` is missing from artifact payloads",
-                decision.payload_digest
+                decision.payload_digest,
             ))
         })?;
-    String::from_utf8(payload.bytes.clone()).map_err(|error| {
+    let text = std::str::from_utf8(&payload.bytes).map_err(|error| {
         artifact_error(format!(
             "decision payload `{}` is not UTF-8: {error}",
-            decision.payload_digest
+            decision.payload_digest,
         ))
-    })
+    })?;
+    copy_artifact_field(text)
 }
 
 pub(crate) fn artifact_fingerprint_samples(
     artifact: &CliReproductionArtifact,
-) -> Vec<VerifyFingerprintSample> {
-    artifact
-        .fingerprints
-        .iter()
-        .map(|fingerprint| VerifyFingerprintSample {
+) -> Result<Vec<VerifyFingerprintSample>, CliError> {
+    let mut samples = Vec::new();
+    crucible_session::engine::owned_decode::reserve_vec(&mut samples, artifact.fingerprints.len())
+        .map_err(CliError::MetadataAdmission)?;
+    for fingerprint in &artifact.fingerprints {
+        samples.push(VerifyFingerprintSample {
             index: fingerprint.index,
             instruction: fingerprint.instruction,
-            node: fingerprint.node.clone(),
-            digest: fingerprint.digest.clone(),
-        })
-        .collect()
-}
-
-pub(crate) fn artifact_state_dump(artifact: &CliReproductionArtifact) -> String {
-    format!(
-        "scenario={} seed={} decisions={} fingerprints={} schedule={}",
-        artifact.scenario.digest,
-        artifact.seed,
-        artifact.decisions.len(),
-        artifact.fingerprints.len(),
-        artifact.schedule_digest
-    )
+            node: copy_artifact_field(&fingerprint.node)?,
+            digest: copy_artifact_field(&fingerprint.digest)?,
+        });
+    }
+    Ok(samples)
 }
 
 pub(crate) fn compare_verify_witnesses(
-    witnesses: &[VerifyRunWitness],
+    witnesses: &[impl std::borrow::Borrow<VerifyRunWitness>],
 ) -> Option<VerifyDivergenceReport> {
     for left_index in 0..witnesses.len() {
         for right_index in left_index + 1..witnesses.len() {
-            let left = &witnesses[left_index];
-            let right = &witnesses[right_index];
+            let left = witnesses[left_index].borrow();
+            let right = witnesses[right_index].borrow();
             let canonical_log_differs = left.canonical_log_bytes != right.canonical_log_bytes;
             let fingerprint_differs = left.fingerprint_stream != right.fingerprint_stream;
             if let Some(mismatch) = verify_mismatch_kind(canonical_log_differs, fingerprint_differs)

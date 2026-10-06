@@ -20,6 +20,8 @@ const ISOLATION_FAULTS: [QemuTestHotForkIsolationFault; 7] = [
 
 #[test]
 fn scripted_factory_rejects_the_complete_isolation_negative_matrix_before_readiness() {
+    let _metadata_scope = component_metadata_scope();
+
     for (index, fault) in ISOLATION_FAULTS.into_iter().enumerate() {
         let source =
             scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::IsolationRejected(fault))

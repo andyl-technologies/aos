@@ -647,6 +647,19 @@ impl<'a> CampaignLocalStoreMaintenanceAuthority<'a> {
 }
 
 impl CampaignLocalStoreGcAuthority<'_> {
+    /// Opens isolated mark storage under the repository's original quota owner.
+    ///
+    /// # Errors
+    /// Refuses missing or ambiguous metadata authority, expired supervision,
+    /// and unavailable secure namespace preparation.
+    pub fn gc_mark_backend(
+        &self,
+        node: &str,
+        scope: &str,
+    ) -> Result<Arc<dyn ImmutableBlobBackend>, StoreError> {
+        self.maintenance.graph.gc_mark_backend(node, scope)
+    }
+
     /// Builds one complete non-destructive single-host deletion plan.
     ///
     /// The caller supplies the stopped executor's exact assignment ledger and,
@@ -663,6 +676,7 @@ impl CampaignLocalStoreGcAuthority<'_> {
         &self,
         ledger: &mut L,
         exact_pins: Option<&mut dyn crate::ExactPinRetentionAdmin>,
+        operation: &crate::CampaignGcOperationContext<'_>,
     ) -> Result<crate::CampaignGcPreparedPlan, crate::CampaignGcPlanningError<L::Error>>
     where
         L: crate::AssignmentRetentionAdmin,
@@ -685,7 +699,7 @@ impl CampaignLocalStoreGcAuthority<'_> {
             ledger,
             Some(self.maintenance.store.as_ref()),
             roots,
-            &self.maintenance.graph,
+            crate::CampaignGcMaintenance::new(&self.maintenance.graph, operation),
         )
     }
 
@@ -706,6 +720,7 @@ impl CampaignLocalStoreGcAuthority<'_> {
         journal: &mut crate::DirectoryCampaignGcJournal,
         ledger: &mut L,
         exact_pins: Option<&mut dyn crate::ExactPinRetentionAdmin>,
+        operation: &crate::CampaignGcOperationContext<'_>,
     ) -> Result<crate::CampaignGcApplyReport, crate::CampaignGcApplyError<L::Error>>
     where
         L: crate::AssignmentRetentionAdmin,
@@ -729,7 +744,7 @@ impl CampaignLocalStoreGcAuthority<'_> {
             ledger,
             Some(self.maintenance.store.as_ref()),
             roots,
-            &self.maintenance.graph,
+            crate::CampaignGcMaintenance::new(&self.maintenance.graph, operation),
         )
     }
 }

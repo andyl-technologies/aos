@@ -38,6 +38,8 @@ use crate::{QemuLogicalTimeCalibration, QemuNode, QemuNodeError, QemuNodeIdleSta
 #[cfg(target_os = "linux")]
 #[path = "node_set/block_boundary.rs"]
 mod block_boundary;
+#[cfg(any(test, feature = "test-support"))]
+mod block_completion_observation;
 #[path = "node_set/collection.rs"]
 mod collection;
 #[path = "node_set/concurrent.rs"]

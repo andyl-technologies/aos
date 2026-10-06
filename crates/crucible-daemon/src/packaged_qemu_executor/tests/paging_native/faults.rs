@@ -353,6 +353,7 @@ pub(super) fn discover_target(
             },
         )
         .expect("actual arena discovery")
+        .value()
     {
         HostOperationalResponse::Targets { targets, next, .. } => {
             assert_eq!(targets.len(), 1);

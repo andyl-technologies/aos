@@ -44,80 +44,88 @@ pub(crate) fn run_finding_bundle_midpoint(
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(async move {
-        let _decoding_scope = decoding.enter();
-        let transport = private_midpoint_transport(private.path())?;
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .map_err(CliError::Io)?;
-        let address = listener.local_addr().map_err(CliError::Io)?;
-        let mut policy = DebugAuthorizationPolicy::deny_all();
-        policy
-            .grant_certificate_role(
-                transport.client_identity.certificate_sha256(),
-                DebugRole::new([DebugCapability::Observe, DebugCapability::Control]),
+    let output_budget = decoding.clone();
+    let admitted = crucible_api::admit_future(
+        async move {
+            let transport = private_midpoint_transport(private.path())?;
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .map_err(CliError::Io)?;
+            let address = listener.local_addr().map_err(CliError::Io)?;
+            let mut policy = DebugAuthorizationPolicy::deny_all();
+            policy
+                .grant_certificate_role(
+                    transport.client_identity.certificate_sha256(),
+                    DebugRole::new([DebugCapability::Observe, DebugCapability::Control]),
+                )
+                .map_err(|error| {
+                    backend_error(format!("midpoint client role is invalid: {error}"))
+                })?;
+            let client = RpcControlClient::new_mtls(
+                RpcEndpoint::http2(format!("https://{address}")),
+                RpcMutualTlsConfig::from_pem(transport.ca_pem, transport.client_identity_pem),
             )
-            .map_err(|error| backend_error(format!("midpoint client role is invalid: {error}")))?;
-        let client = RpcControlClient::new_mtls(
-            RpcEndpoint::http2(format!("https://{address}")),
-            RpcMutualTlsConfig::from_pem(transport.ca_pem, transport.client_identity_pem),
-        )
-        .map_err(control_client_error)?;
-        let session = imported
-            .admit_read_only_session()
-            .await
-            .map_err(|error| backend_error(format!("finding midpoint restore failed: {error}")))?;
-        let (shutdown, stopped) = tokio::sync::oneshot::channel();
-        let mut server = tokio::spawn(serve_shared_lifecycle_http2_mtls_with_mode_until_shutdown(
-            listener,
-            session.shared_control_plane(),
-            LifecycleServerMode::read_write(),
-            transport.acceptor,
-            policy,
-            async move {
-                let _ = stopped.await;
-            },
-        ));
-        let relay = async {
-            print_midpoint_report(&report, cli.output_format())?;
-            crate::cli_triage_debug::run_private_unix_debug_relay_with_client_async(
-                &client,
-                session.session(),
-                crucible::NodeId {
-                    name: args.node.clone(),
-                },
-                &private.path().join("gdb.sock"),
-            )
-            .await
-        }
-        .await;
-        let destroyed = session
-            .in_process_client()
-            .destroy_session(
-                DestroySessionRequest::new(session.session())
-                    .with_expected_epoch(session.session().epoch),
-            )
-            .await
-            .map_err(control_client_error);
-        drop(client);
-        let _ = shutdown.send(());
-        let served =
-            match tokio::time::timeout(std::time::Duration::from_secs(10), &mut server).await {
-                Ok(result) => result
-                    .map_err(|error| {
-                        backend_error(format!("finding midpoint relay task failed: {error}"))
-                    })?
-                    .map_err(CliError::Io),
-                Err(_) => {
-                    server.abort();
-                    let _ = server.await;
-                    Err(backend_error("finding midpoint relay shutdown timed out"))
-                }
-            };
-        destroyed?;
-        served?;
-        relay
-    })
+            .map_err(control_client_error)?
+            .with_decode_budget(decoding.clone());
+            let session = imported.admit_read_only_session().await.map_err(|error| {
+                backend_error(format!("finding midpoint restore failed: {error}"))
+            })?;
+            let (shutdown, stopped) = tokio::sync::oneshot::channel();
+            let mut server =
+                tokio::spawn(serve_shared_lifecycle_http2_mtls_with_mode_until_shutdown(
+                    listener,
+                    session.shared_control_plane(),
+                    LifecycleServerMode::read_write(),
+                    transport.acceptor,
+                    policy,
+                    async move {
+                        let _ = stopped.await;
+                    },
+                ));
+            let relay = async {
+                print_midpoint_report(&report, cli.output_format())?;
+                crate::cli_triage_debug::run_private_unix_debug_relay_with_client_async(
+                    &client,
+                    session.session(),
+                    crucible::NodeId {
+                        name: args.node.clone(),
+                    },
+                    &private.path().join("gdb.sock"),
+                )
+                .await
+            }
+            .await;
+            let destroyed = session
+                .in_process_client()
+                .destroy_session(
+                    DestroySessionRequest::new(session.session())
+                        .with_expected_epoch(session.session().epoch),
+                )
+                .await
+                .map_err(control_client_error);
+            drop(client);
+            let _ = shutdown.send(());
+            let served =
+                match tokio::time::timeout(std::time::Duration::from_secs(10), &mut server).await {
+                    Ok(result) => result
+                        .map_err(|error| {
+                            backend_error(format!("finding midpoint relay task failed: {error}"))
+                        })?
+                        .map_err(CliError::Io),
+                    Err(_) => {
+                        server.abort();
+                        let _ = server.await;
+                        Err(backend_error("finding midpoint relay shutdown timed out"))
+                    }
+                };
+            destroyed?;
+            served?;
+            relay
+        },
+        output_budget,
+    )
+    .map_err(|error| backend_error(format!("midpoint task admission failed: {error}")))?;
+    runtime.block_on(admitted)
 }
 
 pub(super) fn prepare_finding_bundle_midpoint(
@@ -435,11 +443,19 @@ mod tests {
             let (stream, _) = listener.accept().await.expect("accept TLS test peer");
             acceptor.accept(stream).await.is_ok()
         });
-        let client = RpcControlClient::new_mtls(
-            RpcEndpoint::http2(format!("https://{address}")),
-            RpcMutualTlsConfig::from_pem(ca_pem, client_identity_pem),
-        )
-        .expect("construct TLS test client");
+        let authority = crucible_daemon::component_ram_root_resources()
+            .expect("finite TLS component metadata authority");
+        let decoding = crucible_session::engine::owned_decode::DecodeBudget::for_store(authority)
+            .expect("finite TLS component metadata budget");
+        let client = {
+            let _scope = decoding.enter();
+            RpcControlClient::new_mtls(
+                RpcEndpoint::http2(format!("https://{address}")),
+                RpcMutualTlsConfig::from_pem(ca_pem, client_identity_pem),
+            )
+            .expect("construct TLS test client")
+            .with_decode_budget(decoding.clone())
+        };
 
         let _ = tokio::time::timeout(Duration::from_secs(5), client.list_sessions()).await;
         tokio::time::timeout(Duration::from_secs(5), server)

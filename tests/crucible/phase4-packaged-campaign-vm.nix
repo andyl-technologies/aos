@@ -185,7 +185,7 @@
       cargoArtifactContract = controllerArtifactContract;
     };
   };
-  deployment = builtins.toFile "campaign-executor.toml" ''
+  deploymentText = ''
     schema = "crucible.campaign-packaged-executor"
     version = 3
     cgroup_root = "/sys/fs/cgroup/crucible"
@@ -201,6 +201,7 @@
       else "64"
     }
     maximum_file_descriptors = 1024
+    maximum_locked_bytes = 0
     maximum_node_host_service_tasks = 4
     maximum_node_host_service_file_descriptors = 32
     maximum_node_host_service_resident_bytes = 8388608
@@ -378,6 +379,7 @@
       maximum_events = 256
     ''}
   '';
+  deployment = builtins.toFile "campaign-executor.toml" deploymentText;
   choiceInitramfs = import ./phase4-packaged-campaign-choice-guest.nix {inherit pkgs;};
   networkChoiceInitramfs = import ./phase2-qemu-live-network-io-guest.nix {
     inherit pkgs;
@@ -1143,5 +1145,6 @@ in
       (vmTest.passthru or {})
       // {
         campaignFlight = flight;
+        campaignDeploymentText = deploymentText;
       };
   }

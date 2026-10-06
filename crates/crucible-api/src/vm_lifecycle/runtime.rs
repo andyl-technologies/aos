@@ -1152,6 +1152,7 @@ impl ProductionVmLifecycleLoop {
             });
         }
         let mut pass = ConditionEvaluationPass::from_log_prefix_ref(prefix, no_named_trigger_leaf)
+            .map_err(SchedulerError::from)?
             .with_timer_fires(scheduler.trigger_actions().armed_timers.clone())
             .with_scheduler_quiescence(scheduler.quiescence()?)
             .with_world_white_box_policies(&self.trigger_world);
@@ -1240,6 +1241,7 @@ impl ProductionVmLifecycleLoop {
                 scheduler.condition_event_log_prefix(),
                 no_named_trigger_leaf,
             )
+            .map_err(SchedulerError::from)?
             .with_timer_fires(scheduler.trigger_actions().armed_timers.clone())
             .with_scheduler_quiescence(scheduler.quiescence()?)
             .with_world_white_box_policies(&self.trigger_world);

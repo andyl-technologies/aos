@@ -869,6 +869,8 @@ fn missing_publication_owner() -> SchedulerError {
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- catalog fixture setup and explicit last-reader assertions intentionally panic on failure.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -1296,6 +1298,9 @@ mod tests {
     #[cfg(feature = "test-support")]
     #[test]
     fn failed_terminal_capture_refreshes_same_configuration_snapshot() {
+        let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+            .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
         let root = tempfile::tempdir()
             .unwrap_or_else(|error| panic!("create refresh fixture store: {error}"));
         let fixture =
@@ -1353,6 +1358,9 @@ mod tests {
     #[cfg(feature = "test-support")]
     #[test]
     fn indeterminate_v10_retry_rehydrates_the_complete_paged_parent() {
+        let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+            .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
         let root = tempfile::tempdir()
             .unwrap_or_else(|error| panic!("create reconciliation fixture store: {error}"));
         let fixture =

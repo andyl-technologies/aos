@@ -9,6 +9,8 @@ pub(crate) fn run_local_double_search_workflow(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     plan: &SearchDriverPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
+    let decoding = crate::cli_input_resources::original_budget()?;
+    let _scope = decoding.enter();
     let scenario = plan.scenario.scenario_def().clone();
     let root = crucible::Configuration::genesis(scenario.clone());
     let mut graph = save_validation_graph(&scenario)?;

@@ -70,6 +70,9 @@ where
         .map(|supervisor| supervisor.begin(HostOperationClass::Quantum))
         .transpose()
         .map_err(supervision_error)?;
+    target
+        .operational_health()
+        .map_err(QemuAsyncDriverError::OperationalHealth)?;
 
     let mut async_operations = Vec::new();
     runtime
@@ -111,12 +114,18 @@ where
         if is_initial_wait {
             first_wait = false;
         }
-        let wait_outcome = if is_initial_wait {
+        let wait_result = if is_initial_wait {
             runtime.await_child(QemuAsyncWait::AdvanceCompletion, wait_timeout)
         } else {
             runtime.repoll_child(QemuAsyncWait::AdvanceCompletion, wait_timeout)
-        }
-        .map_err(QemuAsyncDriverError::Runtime)?;
+        };
+        // Source failure closes only operational continuation. The actual
+        // process and pending buffers remain owned for explicit containment;
+        // this path never turns a blocked memory access into a guest crash.
+        target
+            .operational_health()
+            .map_err(QemuAsyncDriverError::OperationalHealth)?;
+        let wait_outcome = wait_result.map_err(QemuAsyncDriverError::Runtime)?;
         let observed_wait = QemuAsyncDriverOperation::AwaitChild {
             wait: QemuAsyncWait::AdvanceCompletion,
             timeout: wait_timeout,
@@ -160,10 +169,20 @@ where
         }
         match target.finish_quantum(&mut pending) {
             Ok(completion) => {
+                target
+                    .operational_health()
+                    .map_err(QemuAsyncDriverError::OperationalHealth)?;
                 break Some(completion);
             }
-            Err(error) if error.is_retryable() => continue,
-            Err(error) => return Err(QemuAsyncDriverError::Channel(error)),
+            Err(error) => {
+                target
+                    .operational_health()
+                    .map_err(QemuAsyncDriverError::OperationalHealth)?;
+                if error.is_retryable() {
+                    continue;
+                }
+                return Err(QemuAsyncDriverError::Channel(error));
+            }
         }
     };
     let Some(completion) = completion else {

@@ -23,12 +23,7 @@ pub(super) fn scheduler_event_log_prefix_after_append(
     bytes: u64,
     events: u64,
 ) -> ContentHash {
-    let prefix_material = format!(
-        "previous_prefix={}\nappended_segment={}\nbytes={bytes}\nevents={events}",
-        previous_prefix.to_hex(),
-        appended_segment.to_hex(),
-    );
-    ContentHash::from_canonical_material("crucible.scheduler.event-log.prefix.v2", &prefix_material)
+    prefix_identity::prefix_after_append(previous_prefix, appended_segment, bytes, events)
 }
 
 pub(super) fn scheduler_event_log_sequence(
@@ -60,11 +55,14 @@ pub(crate) fn recorded_assertion_log_from_schedule_for_search(
             .map_err(|_| OfflineAssertionCheckError::PrefixLengthOverflow { prefix_len: index })?;
         let at = search_schedule_decision_event_time(decision, sequence);
         terminal_ticks = terminal_ticks.max(at.ticks);
-        entries.push(scheduler_event_log_entry(
-            sequence,
-            at,
-            SchedulerEventLogPayload::Decision(decision.clone()),
-        ));
+        entries.push(
+            scheduler_event_log_entry(
+                sequence,
+                at,
+                SchedulerEventLogPayload::Decision(decision.clone()),
+            )
+            .map_err(|source| OfflineAssertionCheckError::Engine(Box::new(source)))?,
+        );
     }
 
     let boundary_index = entries.len();
@@ -78,13 +76,16 @@ pub(crate) fn recorded_assertion_log_from_schedule_for_search(
     } else {
         terminal_ticks.saturating_add(1)
     };
-    entries.push(scheduler_event_log_entry(
-        boundary_sequence,
-        VirtualTime {
-            ticks: boundary_ticks,
-        },
-        SchedulerEventLogPayload::EvaluationBoundary(SchedulerEvaluationBoundaryKind::Quantum),
-    ));
+    entries.push(
+        scheduler_event_log_entry(
+            boundary_sequence,
+            VirtualTime {
+                ticks: boundary_ticks,
+            },
+            SchedulerEventLogPayload::EvaluationBoundary(SchedulerEvaluationBoundaryKind::Quantum),
+        )
+        .map_err(|source| OfflineAssertionCheckError::Engine(Box::new(source)))?,
+    );
 
     RecordedAssertionLog::from_segments(vec![entries])
 }
@@ -108,7 +109,7 @@ pub(super) fn scheduler_event_log_entry(
     sequence: u64,
     at: VirtualTime,
     payload: SchedulerEventLogPayload,
-) -> SchedulerEventLogEntry {
+) -> Result<SchedulerEventLogEntry, crate::EngineError> {
     let event_payload = event_payload_from_scheduler_payload(&payload);
     let class = event_kind_catalog_class_for_entry_construction(&event_payload);
     scheduler_event_log_entry_with_class(sequence, at, class, event_payload, payload)
@@ -120,7 +121,7 @@ pub(super) fn scheduler_event_log_entry_with_physical_icount(
     payload: SchedulerEventLogPayload,
     node: NodeId,
     icount: Icount,
-) -> SchedulerEventLogEntry {
+) -> Result<SchedulerEventLogEntry, crate::EngineError> {
     let event_payload = event_payload_from_scheduler_payload(&payload);
     let class = event_kind_catalog_class_for_entry_construction(&event_payload);
     let time = scheduler_event_log_time(at, &payload).with_icount(node, icount);
@@ -133,7 +134,7 @@ pub(super) fn scheduler_event_log_entry_with_class(
     class: SchedulerEventLogClass,
     event_payload: EventPayload,
     payload: SchedulerEventLogPayload,
-) -> SchedulerEventLogEntry {
+) -> Result<SchedulerEventLogEntry, crate::EngineError> {
     let time = scheduler_event_log_time(at, &payload);
     scheduler_event_log_entry_with_time(sequence, time, class, event_payload, payload)
 }
@@ -144,10 +145,10 @@ pub(super) fn scheduler_event_log_entry_with_time(
     class: SchedulerEventLogClass,
     event_payload: EventPayload,
     payload: SchedulerEventLogPayload,
-) -> SchedulerEventLogEntry {
+) -> Result<SchedulerEventLogEntry, crate::EngineError> {
     let source = scheduler_event_log_payload_source(&payload);
     let level = scheduler_event_log_payload_level(&payload);
-    let content_hash = ContentHash::from_canonical_material(
+    let content_hash = crate::model::hash_canonical_display(
         "crucible.scheduler.event-log.entry.v5",
         &scheduler_event_log_entry_material(
             sequence,
@@ -158,8 +159,8 @@ pub(super) fn scheduler_event_log_entry_with_time(
             &event_payload,
             &payload,
         ),
-    );
-    SchedulerEventLogEntry {
+    )?;
+    Ok(SchedulerEventLogEntry {
         sequence,
         at: time,
         source,
@@ -169,7 +170,7 @@ pub(super) fn scheduler_event_log_entry_with_time(
         payload,
         content_hash,
         provenance: SchedulerEventLogEntryProvenance,
-    }
+    })
 }
 
 pub(super) fn scheduler_event_log_entry_with_material(
@@ -180,8 +181,8 @@ pub(super) fn scheduler_event_log_entry_with_material(
     class: SchedulerEventLogClass,
     event_payload: EventPayload,
     payload: SchedulerEventLogPayload,
-) -> SchedulerEventLogEntry {
-    let content_hash = ContentHash::from_canonical_material(
+) -> Result<SchedulerEventLogEntry, crate::EngineError> {
+    let content_hash = crate::model::hash_canonical_display(
         "crucible.scheduler.event-log.entry.v5",
         &scheduler_event_log_entry_material(
             sequence,
@@ -192,8 +193,8 @@ pub(super) fn scheduler_event_log_entry_with_material(
             &event_payload,
             &payload,
         ),
-    );
-    SchedulerEventLogEntry {
+    )?;
+    Ok(SchedulerEventLogEntry {
         sequence,
         at,
         source,
@@ -203,73 +204,7 @@ pub(super) fn scheduler_event_log_entry_with_material(
         payload,
         content_hash,
         provenance: SchedulerEventLogEntryProvenance,
-    }
-}
-
-pub(super) fn scheduler_event_log_entry_material(
-    sequence: u64,
-    at: &EventLogTime,
-    source: &EventSource,
-    level: EventLevel,
-    class: SchedulerEventLogClass,
-    event_payload: &EventPayload,
-    payload: &SchedulerEventLogPayload,
-) -> String {
-    let mut lines = Vec::new();
-    lines.push(format!("sequence={sequence}"));
-    lines.push(format!("at_virtual_time_ticks={}", at.virtual_time.ticks));
-    lines.push(format!("at_tick={}", at.stamp.tick.ticks));
-    match at.stamp.retired {
-        Some(retired) => lines.push(format!("at_raw_retired={}", retired.retired)),
-        None => lines.push(String::from("at_raw_retired=none")),
-    }
-    match &at.stamp.node {
-        Some(node) => {
-            lines.push(String::from("at_node=some"));
-            lines.push(format!("at_node_len={}", node.name.len()));
-            lines.push(format!("at_node_name={}", node.name));
-        }
-        None => lines.push(String::from("at_node=none")),
-    }
-    lines.push(scheduler_event_log_source_material("source", source));
-    lines.push(format!("level={}", event_level_label(level)));
-    lines.push(format!("class={}", event_class_label(class)));
-    lines.push(event_payload_material("event_payload", event_payload));
-    match payload {
-        SchedulerEventLogPayload::ResolvedHappening(event) => {
-            lines.push(String::from("payload=resolved-happening"));
-            lines.push(scheduled_event_material(event));
-        }
-        SchedulerEventLogPayload::Decision(decision) => {
-            lines.push(String::from("payload=decision"));
-            lines.push(scheduler_decision_material(decision));
-        }
-        SchedulerEventLogPayload::Observable(observable) => {
-            lines.push(String::from("payload=observable"));
-            lines.push(format!("observable={observable:?}"));
-        }
-        SchedulerEventLogPayload::EvaluationBoundary(kind) => {
-            lines.push(String::from("payload=evaluation-boundary"));
-            lines.push(format!("kind={kind:?}"));
-        }
-        SchedulerEventLogPayload::TriggerFired(firing) => {
-            lines.push(String::from("payload=trigger_fired"));
-            lines.push(trigger_firing_material(firing));
-        }
-        SchedulerEventLogPayload::TriggerActionApplied(application) => {
-            lines.push(String::from("payload=trigger_action_applied"));
-            lines.push(trigger_action_application_material(application));
-        }
-        SchedulerEventLogPayload::FaultObservation(observation) => {
-            lines.push(String::from("payload=fault_observation"));
-            lines.push(fault_observation_material(observation));
-        }
-        SchedulerEventLogPayload::Diagnostic(diagnostic) => {
-            lines.push(String::from("payload=diagnostic"));
-            lines.push(diagnostic_payload_material(diagnostic));
-        }
-    }
-    lines.join("\n")
+    })
 }
 
 pub(super) fn event_payload_from_scheduler_payload(
@@ -1243,30 +1178,6 @@ pub(super) fn event_level_from_trigger_log(level: LogLevel) -> EventLevel {
     }
 }
 
-pub(super) fn scheduler_event_log_source_material(prefix: &str, source: &EventSource) -> String {
-    match source {
-        EventSource::Scenario { event } => format!(
-            "{prefix}=scenario\n{prefix}.event_len={}\n{prefix}.event={}",
-            event.name.len(),
-            event.name
-        ),
-        EventSource::Engine => format!("{prefix}=engine"),
-        EventSource::Node { node } => format!(
-            "{prefix}=node\n{prefix}.node_len={}\n{prefix}.node={}",
-            node.name.len(),
-            node.name
-        ),
-        EventSource::Guest { node } => format!(
-            "{prefix}=guest\n{prefix}.node_len={}\n{prefix}.node={}",
-            node.name.len(),
-            node.name
-        ),
-        EventSource::Command { command_id } => {
-            format!("{prefix}=command\n{prefix}.command_id={command_id}")
-        }
-    }
-}
-
 pub(super) fn event_level_label(level: EventLevel) -> &'static str {
     match level {
         EventLevel::Trace => "trace",
@@ -1296,83 +1207,6 @@ pub(super) fn event_class_label(class: SchedulerEventLogClass) -> &'static str {
         SchedulerEventLogClass::Causal => "causal",
         SchedulerEventLogClass::Observational => "observational",
     }
-}
-
-pub(super) fn event_payload_material(prefix: &str, payload: &EventPayload) -> String {
-    let mut lines = Vec::new();
-    lines.push(format!("{prefix}.kind_len={}", payload.kind().len()));
-    lines.push(format!("{prefix}.kind={}", payload.kind()));
-    lines.push(format!(
-        "{prefix}.attributes={}",
-        payload.attributes().len()
-    ));
-    for (name, value) in payload.attributes() {
-        lines.push(format!("{prefix}.attribute.{name}.name_len={}", name.len()));
-        lines.push(format!("{prefix}.attribute.{name}.name={name}"));
-        lines.push(event_attribute_value_material(
-            &format!("{prefix}.attribute.{name}.value"),
-            value,
-        ));
-    }
-    lines.join("\n")
-}
-
-pub(super) fn event_attribute_value_material(prefix: &str, value: &EventAttributeValue) -> String {
-    match value {
-        EventAttributeValue::Bool(value) => format!("{prefix}.type=bool\n{prefix}.value={value}"),
-        EventAttributeValue::U64(value) => format!("{prefix}.type=u64\n{prefix}.value={value}"),
-        EventAttributeValue::U128(value) => format!("{prefix}.type=u128\n{prefix}.value={value}"),
-        EventAttributeValue::String(value) => format!(
-            "{prefix}.type=string\n{prefix}.len={}\n{prefix}.value={value}",
-            value.len()
-        ),
-        EventAttributeValue::Bytes(value) => format!(
-            "{prefix}.type=bytes\n{prefix}.len={}\n{prefix}.value={}",
-            value.len(),
-            hex_bytes(value)
-        ),
-        EventAttributeValue::Node(value) => format!(
-            "{prefix}.type=node\n{prefix}.name_len={}\n{prefix}.name={}",
-            value.name.len(),
-            value.name
-        ),
-        EventAttributeValue::Event(value) => format!(
-            "{prefix}.type=event\n{prefix}.name_len={}\n{prefix}.name={}",
-            value.name.len(),
-            value.name
-        ),
-        EventAttributeValue::VirtualTime(value) => {
-            format!("{prefix}.type=virtual-time\n{prefix}.ticks={}", value.ticks)
-        }
-        EventAttributeValue::Icount(value) => {
-            format!("{prefix}.type=icount\n{prefix}.retired={}", value.retired)
-        }
-        EventAttributeValue::Level(value) => {
-            format!(
-                "{prefix}.type=level\n{prefix}.value={}",
-                event_level_label(*value)
-            )
-        }
-    }
-}
-
-pub(super) fn diagnostic_payload_material(diagnostic: &EventDiagnosticPayload) -> String {
-    let mut lines = Vec::new();
-    lines.push(format!("diagnostic.name_len={}", diagnostic.name.len()));
-    lines.push(format!("diagnostic.name={}", diagnostic.name));
-    lines.push(format!(
-        "diagnostic.level={}",
-        event_level_label(diagnostic.level)
-    ));
-    lines.push(event_payload_material(
-        "diagnostic.event_payload",
-        &diagnostic.event_payload(),
-    ));
-    lines.join("\n")
-}
-
-pub(super) fn fault_observation_material(observation: &FaultObservation) -> String {
-    observation.canonical_material()
 }
 
 pub(super) fn fault_observation_event_payload(observation: &FaultObservation) -> EventPayload {
@@ -1485,119 +1319,6 @@ pub(super) fn event_kind_catalog_class_for_entry_construction(
 
 pub(super) fn event_kind_catalog_class(payload: &EventPayload) -> Option<SchedulerEventLogClass> {
     crate::event_catalog::event_kind_catalog_class(payload.kind())
-}
-
-pub(super) fn trigger_action_application_material(
-    application: &TriggerActionApplication,
-) -> String {
-    let mut lines = Vec::new();
-    lines.push(format!("trigger_action_sequence={}", application.sequence));
-    lines.push(format!("event_len={}", application.event.name.len()));
-    lines.push(format!("event={}", application.event.name));
-    lines.push(format!("applied_at_ticks={}", application.at.ticks));
-    lines.push(format!("path_len={}", application.path.len()));
-    for (depth, index) in application.path.iter().enumerate() {
-        lines.push(format!("path.{depth}={index}"));
-    }
-    lines.push(trigger_action_material("action", &application.action));
-    lines.join("\n")
-}
-
-pub(super) fn trigger_firing_material(firing: &EventFiring) -> String {
-    let mut lines = Vec::new();
-    lines.push(format!("event_len={}", firing.event().name.len()));
-    lines.push(format!("event={}", firing.event().name));
-    lines.push(format!("fired_at_ticks={}", firing.at().ticks));
-    lines.push(format!(
-        "condition_summary_len={}",
-        firing.condition_summary().len()
-    ));
-    lines.push(format!("condition_summary={}", firing.condition_summary()));
-    lines.push(trigger_action_material("action", firing.action()));
-    lines.join("\n")
-}
-
-pub(super) fn trigger_action_material(prefix: &str, action: &Action) -> String {
-    let mut lines = Vec::new();
-    match action {
-        Action::ArmTimer { name, after } => {
-            lines.push(format!("{prefix}.kind=arm-timer"));
-            lines.push(trigger_timer_material(&format!("{prefix}.timer"), name));
-            lines.push(format!("{prefix}.after_ticks={}", after.ticks));
-        }
-        Action::CancelTimer { name } => {
-            lines.push(format!("{prefix}.kind=cancel-timer"));
-            lines.push(trigger_timer_material(&format!("{prefix}.timer"), name));
-        }
-        Action::StartNode { node } => {
-            lines.push(format!("{prefix}.kind=start-node"));
-            lines.push(trigger_node_material(&format!("{prefix}.node"), node));
-        }
-        Action::StopNode { node } => {
-            lines.push(format!("{prefix}.kind=stop-node"));
-            lines.push(trigger_node_material(&format!("{prefix}.node"), node));
-        }
-        Action::CreateSavepoint { label } => {
-            lines.push(format!("{prefix}.kind=create-savepoint"));
-            lines.push(trigger_optional_label_material(
-                &format!("{prefix}.label"),
-                label,
-            ));
-        }
-        Action::Fork { label } => {
-            lines.push(format!("{prefix}.kind=fork"));
-            lines.push(trigger_optional_label_material(
-                &format!("{prefix}.label"),
-                label,
-            ));
-        }
-        Action::Pass => {
-            lines.push(format!("{prefix}.kind=pass"));
-        }
-        Action::Fail { reason } => {
-            lines.push(format!("{prefix}.kind=fail"));
-            lines.push(format!("{prefix}.reason_len={}", reason.len()));
-            lines.push(format!("{prefix}.reason={reason}"));
-        }
-        Action::Log { level, message } => {
-            lines.push(format!("{prefix}.kind=log"));
-            lines.push(format!(
-                "{prefix}.level={}",
-                trigger_log_level_label(*level)
-            ));
-            lines.push(format!("{prefix}.message_len={}", message.len()));
-            lines.push(format!("{prefix}.message={message}"));
-        }
-        Action::Group(actions) => {
-            lines.push(format!("{prefix}.kind=group"));
-            lines.push(format!("{prefix}.actions={}", actions.len()));
-            for (index, action) in actions.iter().enumerate() {
-                lines.push(trigger_action_material(
-                    &format!("{prefix}.action.{index}"),
-                    action,
-                ));
-            }
-        }
-    }
-    lines.join("\n")
-}
-
-pub(super) fn trigger_node_material(prefix: &str, node: &NodeId) -> String {
-    format!("{prefix}.len={}\n{prefix}={}", node.name.len(), node.name)
-}
-
-pub(super) fn trigger_timer_material(prefix: &str, timer: &TimerId) -> String {
-    format!("{prefix}.len={}\n{prefix}={}", timer.name.len(), timer.name)
-}
-
-pub(super) fn trigger_optional_label_material(prefix: &str, label: &Option<String>) -> String {
-    match label {
-        Some(label) => format!(
-            "{prefix}.present=true\n{prefix}.len={}\n{prefix}={label}",
-            label.len()
-        ),
-        None => format!("{prefix}.present=false"),
-    }
 }
 
 pub(super) fn trigger_log_level_label(level: LogLevel) -> &'static str {
@@ -1890,13 +1611,38 @@ pub(super) fn validate_trigger_node_schedule_target(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct SchedulerEventLogSegmentMaterial {
-    previous_prefix: ContentHash,
+    pub(super) previous_prefix: ContentHash,
     pub(super) entries: Vec<SchedulerEventLogSegmentEntryMaterial>,
 }
 
 impl SchedulerEventLogSegmentMaterial {
-    pub(super) fn encode(&self) -> Vec<u8> {
+    pub(super) fn encode(&self) -> Result<Vec<u8>, crate::model::EngineError> {
+        let mut length = 16_usize + 4 + 32 + 8;
+        for entry in &self.entries {
+            let fields = [
+                24 + 1 + usize::from(entry.at_raw_retired.is_some()) * 8,
+                1 + entry.at_node.as_ref().map_or(0, |node| 8 + node.len()),
+                8,
+                entry.source_material.len(),
+                2,
+                8,
+                entry.payload_kind.len(),
+                8,
+                32,
+                8,
+                entry.entry_material.len(),
+            ];
+            for field in fields {
+                length = length.checked_add(field).ok_or_else(|| {
+                    crate::model::EngineError::ArtifactDecodeAdmission {
+                        source: crate::owned_decode::DecodeAdmissionError::new(std::fmt::Error),
+                    }
+                })?;
+            }
+        }
         let mut bytes = Vec::new();
+        crate::owned_decode::reserve_vec(&mut bytes, length)
+            .map_err(|source| crate::model::EngineError::ArtifactDecodeAdmission { source })?;
         bytes.extend_from_slice(EVENT_LOG_SEGMENT_BINARY_MAGIC);
         bytes.extend_from_slice(&EVENT_LOG_SEGMENT_BINARY_VERSION.to_le_bytes());
         bytes.extend_from_slice(&self.previous_prefix.bytes);
@@ -1915,53 +1661,13 @@ impl SchedulerEventLogSegmentMaterial {
             bytes.extend_from_slice(&entry.content_hash.bytes);
             write_string(&mut bytes, &entry.entry_material);
         }
-        bytes
+        debug_assert_eq!(bytes.len(), length);
+        Ok(bytes)
     }
 
-    pub(super) fn text_view(&self) -> String {
-        let mut lines = Vec::new();
-        lines.push(String::from(
-            "format=crucible.scheduler.event-log.segment-text.v5",
-        ));
-        lines.push(String::from(
-            "canonical_format=crucible.scheduler.event-log.segment.v5",
-        ));
-        lines.push(format!("schema_version={EVENT_LOG_SEGMENT_BINARY_VERSION}"));
-        lines.push(format!("previous_prefix={}", self.previous_prefix.to_hex()));
-        lines.push(format!("entries={}", self.entries.len()));
-        for entry in &self.entries {
-            lines.push(format!("entry.sequence={}", entry.sequence));
-            lines.push(format!(
-                "entry.at_virtual_time_ticks={}",
-                entry.at_virtual_time_ticks
-            ));
-            lines.push(format!("entry.at_tick={}", entry.at_tick));
-            match entry.at_raw_retired {
-                Some(retired) => lines.push(format!("entry.at_raw_retired={retired}")),
-                None => lines.push(String::from("entry.at_raw_retired=none")),
-            }
-            match &entry.at_node {
-                Some(node) => {
-                    lines.push(String::from("entry.at_node=some"));
-                    lines.push(format!("entry.at_node_name={node}"));
-                }
-                None => lines.push(String::from("entry.at_node=none")),
-            }
-            lines.push(entry.source_material.clone());
-            lines.push(format!("entry.level={}", event_level_label(entry.level)));
-            lines.push(format!("entry.class={}", event_class_label(entry.class)));
-            lines.push(format!("entry.payload.kind={}", entry.payload_kind));
-            lines.push(format!(
-                "entry.payload.attributes={}",
-                entry.payload_attribute_count
-            ));
-            lines.push(format!("entry.hash={}", entry.content_hash.to_hex()));
-            lines.push(format!("entry.bytes={}", entry.entry_material.len()));
-            lines.push(String::from("entry.material_begin"));
-            lines.push(entry.entry_material.clone());
-            lines.push(String::from("entry.material_end"));
-        }
-        lines.join("\n")
+    pub(super) fn text_view(&self) -> Result<String, crate::model::EngineError> {
+        crate::owned_decode::display_string(&scheduler_event_log_segment_text_material(self))
+            .map_err(|source| crate::model::EngineError::ArtifactDecodeAdmission { source })
     }
 }
 
@@ -1981,25 +1687,51 @@ pub(super) struct SchedulerEventLogSegmentEntryMaterial {
     pub(super) entry_material: String,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum SchedulerEventLogSegmentDecodeError {
+    Admission {
+        source: crate::owned_decode::DecodeAdmissionError,
+    },
     InvalidMagic,
-    UnsupportedVersion { version: u32 },
-    Truncated { field: &'static str },
-    InvalidUtf8 { field: &'static str },
-    InvalidFlag { field: &'static str, value: u8 },
-    InvalidLevel { value: u8 },
-    InvalidClass { value: u8 },
-    InvalidBackendInputStamp { sequence: u64 },
-    LengthTooLarge { field: &'static str, len: u64 },
-    TrailingBytes { remaining: usize },
+    UnsupportedVersion {
+        version: u32,
+    },
+    Truncated {
+        field: &'static str,
+    },
+    InvalidUtf8 {
+        field: &'static str,
+    },
+    InvalidFlag {
+        field: &'static str,
+        value: u8,
+    },
+    InvalidLevel {
+        value: u8,
+    },
+    InvalidClass {
+        value: u8,
+    },
+    InvalidBackendInputStamp {
+        sequence: u64,
+    },
+    LengthTooLarge {
+        field: &'static str,
+        len: u64,
+    },
+    TrailingBytes {
+        remaining: usize,
+    },
 }
 
+#[cfg(test)]
 pub(super) struct SchedulerEventLogSegmentCursor<'a> {
     pub(super) bytes: &'a [u8],
     pub(super) offset: usize,
 }
 
+#[cfg(test)]
 impl<'a> SchedulerEventLogSegmentCursor<'a> {
     fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, offset: 0 }
@@ -2064,9 +1796,10 @@ impl<'a> SchedulerEventLogSegmentCursor<'a> {
         let len = usize::try_from(len)
             .map_err(|_| SchedulerEventLogSegmentDecodeError::LengthTooLarge { field, len })?;
         let bytes = self.read_exact(field, len)?;
-        std::str::from_utf8(bytes)
-            .map(str::to_owned)
-            .map_err(|_| SchedulerEventLogSegmentDecodeError::InvalidUtf8 { field })
+        let text = std::str::from_utf8(bytes)
+            .map_err(|_| SchedulerEventLogSegmentDecodeError::InvalidUtf8 { field })?;
+        crate::owned_decode::display_string(&text)
+            .map_err(|source| SchedulerEventLogSegmentDecodeError::Admission { source })
     }
 
     fn read_optional_string(
@@ -2103,54 +1836,62 @@ impl<'a> SchedulerEventLogSegmentCursor<'a> {
 pub(crate) fn scheduler_event_log_segment_bytes(
     previous_prefix: ContentHash,
     entries: &[SchedulerEventLogEntry],
-) -> Vec<u8> {
-    let bytes = scheduler_event_log_segment_material(previous_prefix, entries).encode();
-    debug_assert!(
-        decode_scheduler_event_log_segment(&bytes)
-            .map(|decoded| decoded.encode() == bytes)
-            .unwrap_or(false)
-    );
-    bytes
+) -> Result<Vec<u8>, crate::model::EngineError> {
+    let bytes = scheduler_event_log_segment_material(previous_prefix, entries)?.encode()?;
+    Ok(bytes)
 }
 
 pub(super) fn scheduler_event_log_segment_material(
     previous_prefix: ContentHash,
     entries: &[SchedulerEventLogEntry],
-) -> SchedulerEventLogSegmentMaterial {
-    let entries = entries
-        .iter()
-        .map(|entry| {
-            let entry_material = scheduler_event_log_entry_material(
-                entry.sequence,
-                &entry.at,
-                &entry.source,
-                entry.level,
-                entry.class,
-                &entry.event_payload,
-                &entry.payload,
-            );
-            SchedulerEventLogSegmentEntryMaterial {
-                sequence: entry.sequence,
-                at_virtual_time_ticks: entry.at.virtual_time.ticks,
-                at_tick: entry.at.stamp.tick.ticks,
-                at_raw_retired: entry.at.stamp.retired.map(|count| count.retired),
-                at_node: entry.at.stamp.node.as_ref().map(|node| node.name.clone()),
-                source_material: scheduler_event_log_source_material("entry.source", &entry.source),
-                level: entry.level,
-                class: entry.class,
-                payload_kind: entry.event_payload.kind().to_owned(),
-                payload_attribute_count: entry.event_payload.attributes().len() as u64,
-                content_hash: entry.content_hash,
-                entry_material,
-            }
-        })
-        .collect();
-    SchedulerEventLogSegmentMaterial {
-        previous_prefix,
-        entries,
+) -> Result<SchedulerEventLogSegmentMaterial, crate::model::EngineError> {
+    let mut materials = Vec::new();
+    crate::owned_decode::reserve_vec(&mut materials, entries.len())
+        .map_err(|source| crate::model::EngineError::ArtifactDecodeAdmission { source })?;
+    for entry in entries {
+        let entry_material = scheduler_event_log_entry_material(
+            entry.sequence,
+            &entry.at,
+            &entry.source,
+            entry.level,
+            entry.class,
+            &entry.event_payload,
+            &entry.payload,
+        );
+        materials.push(SchedulerEventLogSegmentEntryMaterial {
+            sequence: entry.sequence,
+            at_virtual_time_ticks: entry.at.virtual_time.ticks,
+            at_tick: entry.at.stamp.tick.ticks,
+            at_raw_retired: entry.at.stamp.retired.map(|count| count.retired),
+            at_node: entry
+                .at
+                .stamp
+                .node
+                .as_ref()
+                .map(|node| crate::owned_decode::display_string(&node.name))
+                .transpose()
+                .map_err(|source| crate::model::EngineError::ArtifactDecodeAdmission { source })?,
+            source_material: crate::owned_decode::display_string(
+                &scheduler_event_log_source_material("entry.source", &entry.source),
+            )
+            .map_err(|source| crate::model::EngineError::ArtifactDecodeAdmission { source })?,
+            level: entry.level,
+            class: entry.class,
+            payload_kind: crate::owned_decode::display_string(&entry.event_payload.kind())
+                .map_err(|source| crate::model::EngineError::ArtifactDecodeAdmission { source })?,
+            payload_attribute_count: entry.event_payload.attributes().len() as u64,
+            content_hash: entry.content_hash,
+            entry_material: crate::owned_decode::display_string(&entry_material)
+                .map_err(|source| crate::model::EngineError::ArtifactDecodeAdmission { source })?,
+        });
     }
+    Ok(SchedulerEventLogSegmentMaterial {
+        previous_prefix,
+        entries: materials,
+    })
 }
 
+#[cfg(test)]
 pub(super) fn decode_scheduler_event_log_segment(
     bytes: &[u8],
 ) -> Result<SchedulerEventLogSegmentMaterial, SchedulerEventLogSegmentDecodeError> {
@@ -2172,7 +1913,14 @@ pub(super) fn decode_scheduler_event_log_segment(
             len: entry_count,
         }
     })?;
-    let mut entries = Vec::with_capacity(entry_count);
+    // Every entry carries at least 92 bytes before any variable field.
+    // Reject impossible counts before admitting or reserving their array.
+    if entry_count > bytes.len().saturating_sub(cursor.offset) / 92 {
+        return Err(SchedulerEventLogSegmentDecodeError::Truncated { field: "entries" });
+    }
+    let mut entries = Vec::new();
+    crate::owned_decode::reserve_vec(&mut entries, entry_count)
+        .map_err(|source| SchedulerEventLogSegmentDecodeError::Admission { source })?;
     for _ in 0..entry_count {
         let entry = SchedulerEventLogSegmentEntryMaterial {
             sequence: cursor.read_u64_le("entry.sequence")?,
@@ -2190,13 +1938,10 @@ pub(super) fn decode_scheduler_event_log_segment(
         };
         if entry.payload_kind == "backend_input" {
             let valid_source = entry.at_node.as_ref().is_some_and(|node| {
-                entry.source_material
-                    == scheduler_event_log_source_material(
-                        "entry.source",
-                        &EventSource::Node {
-                            node: NodeId { name: node.clone() },
-                        },
-                    )
+                canonical_text_matches(
+                    &entry.source_material,
+                    &scheduler_event_log_node_source_material("entry.source", node),
+                )
             });
             if !valid_source || entry.at_raw_retired.is_none() {
                 return Err(
@@ -2254,6 +1999,7 @@ pub(super) fn event_level_code(level: EventLevel) -> u8 {
     }
 }
 
+#[cfg(test)]
 pub(super) fn event_level_from_code(
     value: u8,
 ) -> Result<EventLevel, SchedulerEventLogSegmentDecodeError> {
@@ -2274,6 +2020,7 @@ pub(super) fn event_class_code(class: SchedulerEventLogClass) -> u8 {
     }
 }
 
+#[cfg(test)]
 pub(super) fn event_class_from_code(
     value: u8,
 ) -> Result<SchedulerEventLogClass, SchedulerEventLogSegmentDecodeError> {
@@ -2332,81 +2079,4 @@ pub(super) fn scheduler_decision_event_log_time(
             ticks: fallback.ticks,
         }),
     }
-}
-
-pub(super) fn scheduler_decision_material(decision: &Decision) -> String {
-    let mut lines = Vec::new();
-    match decision {
-        Decision::DeliveryOrder(order) => {
-            lines.push(String::from("decision=delivery-order"));
-            lines.push(format!("decision_at={}", order.at.ticks));
-            lines.push(format!("decision_events={}", order.order.len()));
-            for event in &order.order {
-                lines.push(format!("event_time={}", event.virtual_time.ticks));
-                lines.push(format!(
-                    "event_consumer:\n{}",
-                    scheduler_node_material(&event.consumer)
-                ));
-                lines.push(format!(
-                    "event_producer:\n{}",
-                    scheduler_node_material(&event.producer)
-                ));
-                lines.push(format!("event_sequence={}", event.sequence));
-            }
-        }
-        Decision::RngDraw(draw) => {
-            lines.push(String::from("decision=rng-draw"));
-            lines.push(format!("stream_domain_len={}", draw.stream.domain.len()));
-            lines.push(format!("stream_domain={}", draw.stream.domain));
-            lines.push(format!("stream_name_len={}", draw.stream.name.len()));
-            lines.push(format!("stream_name={}", draw.stream.name));
-            lines.push(format!("value={}", draw.value));
-        }
-        Decision::Override(override_decision) => {
-            lines.push(String::from("decision=override"));
-            lines.push(format!("point_len={}", override_decision.point.key.len()));
-            lines.push(format!("point={}", override_decision.point.key));
-            lines.push(format!(
-                "choice_len={}",
-                override_decision.choice.name.len()
-            ));
-            lines.push(format!("choice={}", override_decision.choice.name));
-        }
-        Decision::Preemption(preemption) => {
-            lines.push(String::from("decision=preemption"));
-            lines.push(format!("node_len={}", preemption.node.name.len()));
-            lines.push(format!("node={}", preemption.node.name));
-            lines.push(format!("at_tick={}", preemption.at.ticks));
-            match &preemption.kind {
-                PreemptionKind::VcpuSwitch { from_vcpu, to_vcpu } => {
-                    lines.push(String::from("preemption_kind=vcpu-switch"));
-                    lines.push(format!("from_vcpu={}", from_vcpu.index));
-                    lines.push(format!("to_vcpu={}", to_vcpu.index));
-                }
-                PreemptionKind::InterruptAt { target_vcpu, irq } => {
-                    lines.push(String::from("preemption_kind=interrupt-at"));
-                    lines.push(format!("target_vcpu={}", target_vcpu.index));
-                    lines.push(format!("irq={}", irq.vector));
-                }
-            }
-        }
-        Decision::Selection(selection) => {
-            lines.push(String::from("decision=campaign-selection"));
-            lines.push(format!(
-                "canonical_selection={}",
-                scheduler_hex_bytes(selection.canonical_bytes())
-            ));
-        }
-    }
-    lines.join("\n")
-}
-
-fn scheduler_hex_bytes(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
-    for byte in bytes {
-        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
-        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    encoded
 }

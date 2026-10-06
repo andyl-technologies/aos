@@ -658,4 +658,5 @@ fn finding_publication_clusters_replay_and_fails_before_invalid_writes() {
 }
 
 mod candidate;
+mod candidate_credit;
 mod retention;

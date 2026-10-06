@@ -4,6 +4,9 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+#[path = "output_support.rs"]
+mod output_support;
+
 use crucible::{QuantumLoop, QuantumOutcome, QuantumRequest, SchedulerError, Seed};
 use crucible_api::{
     AttachRequest, CreateSessionRequest, DestroySessionRequest, EventLogCursor,
@@ -179,7 +182,7 @@ fn lifecycle_control_plane() -> LifecycleControlPlane<NoopLoop, LifecycleLoopFac
         "crucible-epoch-guard-test-server",
         vec![catalog_entry()],
         |_scenario, _seed| NoopLoop,
-    )
+    ).with_decode_budget(crate::output_support::budget())
     .with_mailbox_capacity(LIFECYCLE_SESSION_MAILBOX_CAPACITY)
 }
 

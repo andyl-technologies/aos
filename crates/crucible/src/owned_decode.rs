@@ -11,13 +11,20 @@ pub use crucible_cas::owned_decode::{
 };
 
 mod serde_budget;
+pub use serde_budget::deserialize_with_budget;
 pub use serde_budget::from_json_slice;
 
 mod json_encode;
 pub use json_encode::{to_json_vec, to_json_vec_bounded};
+
+mod output_scope;
+pub use output_scope::{require_current_child_budget, require_current_custody};
 
 mod text_encode;
 pub use text_encode::display_string;
 
 #[cfg(test)]
 mod tests;
+
+mod retained_vec;
+pub use retained_vec::grow_retained_vec;

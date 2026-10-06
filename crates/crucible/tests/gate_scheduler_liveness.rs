@@ -76,6 +76,9 @@ fn complete_sim_double_setup(backend: &mut SimDouble) {
 
 #[test]
 fn gate_scheduler_liveness_declares_in_process_sim_double_backend() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     assert_eq!(
         SCHEDULER_LIVENESS_BACKEND,
         "crucible::SimDouble liveness harness"
@@ -89,6 +92,9 @@ fn gate_scheduler_liveness_declares_in_process_sim_double_backend() {
 
 #[test]
 fn gate_scheduler_liveness_generated_scenarios_terminate() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenarios = generated_scheduler_liveness_scenarios();
     assert!(
         scenarios.len() >= 32,
@@ -124,6 +130,9 @@ fn gate_scheduler_liveness_generated_scenarios_terminate() {
 
 #[test]
 fn gate_scheduler_liveness_reaches_time_limit_terminal() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "time-limit-negative-space",
         16,
@@ -141,6 +150,9 @@ fn gate_scheduler_liveness_reaches_time_limit_terminal() {
 
 #[test]
 fn gate_scheduler_liveness_picks_global_minimum_horizon_before_current_time_order() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "global-minimum-horizon-before-current-time-order",
         8,
@@ -162,6 +174,9 @@ fn gate_scheduler_liveness_picks_global_minimum_horizon_before_current_time_orde
 
 #[test]
 fn gate_scheduler_liveness_breaks_equal_horizon_ties_by_node_id() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "global-minimum-horizon-node-id-tie",
         8,
@@ -183,6 +198,9 @@ fn gate_scheduler_liveness_breaks_equal_horizon_ties_by_node_id() {
 
 #[test]
 fn gate_scheduler_liveness_rejects_due_event_deadlock() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let consumer = scheduler_node("node-a", SchedulingNodeKind::Vm);
     let producer = scheduler_node("node-b", SchedulingNodeKind::Vm);
     let scenario = SchedulerLivenessScenario::from_canonical_material(
@@ -216,6 +234,9 @@ fn gate_scheduler_liveness_rejects_due_event_deadlock() {
 
 #[test]
 fn gate_scheduler_liveness_rejects_stalled_runnable_livelock() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "stalled-runnable-node",
         8,

@@ -46,7 +46,7 @@
 //! the crate's no-`unwrap`/no-`panic` bar. Tests turn a [`Divergence`] into an
 //! assertion at their boundary.
 //!
-//! # The idle-vs-busy-poll proof (§15.8)
+//! # Exact delivery under idle and busy-poll advancement
 //!
 //! [`idle_busy_poll_equivalence`] drives the *same* script two ways — one big
 //! `advance_to(limit)` (the idle / fast-forward path, [SCHED-28]) versus many
@@ -55,7 +55,7 @@
 //! `delivery_icount` is fixed at COMPUTE and the in-flight queue drains strictly
 //! by `delivery_icount <= limit`, the two paths MUST agree: a completion lands at
 //! its exact icount regardless of how the consumer advances ([IO-29]). The
-//! documented [`BUSY_POLL_SPIKE`] records the §15.8 spike conclusion ([IO-30]).
+//! documented [`BUSY_POLL_SPIKE`] records this exact-delivery tradeoff.
 //!
 //! # Coverage note: network-link emit-after-advance
 //!
@@ -779,12 +779,12 @@ pub struct BusyPollSpike {
     pub mitigation_must_preserve_exactness: bool,
 }
 
-/// The recorded §15.8 spike conclusion ([IO-30]).
+/// The recorded exact-delivery tradeoff for busy polling.
 ///
 /// Completion exactness is preserved under both the idle/fast-forward and the
 /// busy-poll consumer paths; busy-poll is a performance concern only; and any
 /// mitigation it motivates must preserve exactness. This is the documented spike
-/// result the RFC requires, not a runtime measurement — the live half of the
+/// result, rather than a runtime measurement; the executable half of the
 /// claim is exercised by [`idle_busy_poll_equivalence`] across all three device
 /// kinds.
 pub const BUSY_POLL_SPIKE: BusyPollSpike = BusyPollSpike {

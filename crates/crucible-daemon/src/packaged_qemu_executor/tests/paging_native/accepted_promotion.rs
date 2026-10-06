@@ -44,8 +44,8 @@ pub(in crate::packaged_qemu_executor::tests) fn promote_accepted_checkpoint(
     promote_accepted_checkpoint_with_model(prepared, config, repository, source, |host, store| {
         let factory = QemuAttemptProductionVmLifecycleFactory::new(
             config
-                .lifecycle
-                .clone()
+                .admitted_lifecycle_config()
+                .unwrap_or_else(|error| panic!("admitted native lifecycle projection: {error}"))
                 .with_run_state_root(config.lifecycle.run_state_root().join("accepted-worker")),
             ComposedQemuAttemptResourceGuardFactory::new(host),
         )
@@ -85,8 +85,8 @@ where
     let store = CampaignExecutorStore::new(Arc::clone(&repository));
     let mut baked_factory = QemuAttemptProductionVmLifecycleFactory::new(
         config
-            .lifecycle
-            .clone()
+            .admitted_lifecycle_config()
+            .unwrap_or_else(|error| panic!("admitted native lifecycle projection: {error}"))
             .with_run_state_root(config.lifecycle.run_state_root().join("accepted-baked")),
         ComposedQemuAttemptResourceGuardFactory::new(host.clone()),
     );

@@ -258,7 +258,9 @@ fn public_paused_composed_campaign_survives_s3_outage_repack_archive_and_gc()
         "GC did not bind the packed cache candidate to an authenticated S3 copy"
     );
     {
-        let journal = DirectoryCampaignGcJournal::open(&source.journal)?;
+        let mut inspection = gc_quota::inspection(&source.store, "inspect-s3-gc")?;
+        let operation = inspection.context()?;
+        let journal = DirectoryCampaignGcJournal::open(&source.journal, &operation)?;
         assert!(
             journal.roots().iter().any(|root| root == pending_policy),
             "GC omitted the pending write-back policy root"

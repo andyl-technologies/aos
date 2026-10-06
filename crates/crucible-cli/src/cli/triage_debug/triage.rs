@@ -461,7 +461,7 @@ pub(crate) fn triage_evidence_for_finding(
 ) -> Result<TriageFindingEvidence, crucible_model::EngineError> {
     match &template.failure {
         crucible_model::FailureClusterReportFailure::Property(record) => {
-            let mut violation = record.violation.clone();
+            let mut violation = record.violation.try_clone_admitted()?;
             violation.reproduction_artifact = finding.artifact.id();
             triage_property_evidence_for_violation(finding, violation)
         }
@@ -510,7 +510,7 @@ pub(crate) fn triage_property_evidence_for_violation_with_recording(
                 at,
                 violation.assertion.clone(),
                 crucible::AssertionPhase::Violated,
-            ),
+            )?,
         ]
     } else {
         triage_causal_entries_from_frames(&recorded_event_frames)?
@@ -523,7 +523,7 @@ pub(crate) fn triage_property_evidence_for_violation_with_recording(
             &recorded_event_frames,
         )?;
     let failure = crucible_model::FailureClusterReportFailure::property(
-        crucible_model::FailurePropertyViolationRecord::new(violation),
+        crucible_model::FailurePropertyViolationRecord::new(violation)?,
     );
     let crucible_model::FailureClusterReportFailure::Property(record) = &failure else {
         return Err(
@@ -569,7 +569,7 @@ pub(crate) fn triage_timeout_evidence(
             entries.len() as u64,
             at,
             budget_kind,
-        ),
+        )?,
     );
     let recorded_event_log =
         crucible_model::FailureRecordedEventLog::from_causal_entries_coverage_and_frames(

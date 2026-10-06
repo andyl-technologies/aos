@@ -403,7 +403,11 @@ fn build_one_node_raw_checkpoint(
         event_log_objects: Arc::new(BTreeMap::new()),
         signal_artifact_objects: Arc::new(BTreeMap::new()),
         trigger_state: EventGraphState::default(),
-        assertion_state: HostAssertionEvaluator::new(source.properties()).checkpoint(),
+        assertion_state: crate::vm_lifecycle::admitted_clone::component_assertion_evaluator(
+            &source,
+        )
+        .checkpoint()
+        .unwrap_or_else(|error| panic!("component assertion checkpoint: {error}")),
         terminal_verdict: None,
         terminal_cause: None,
         initial_lifecycle_observations_pending: true,
@@ -461,6 +465,9 @@ fn publish_one_node_raw_checkpoint(
 #[cfg(feature = "test-support")]
 #[test]
 fn baked_snapshot_catalog_exposes_only_authenticated_modeled_snapshots() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let root = tempfile::tempdir().expect("create baked snapshot catalog store");
     let fixture = build_authenticated_production_checkpoint_codec_fixture(root.path())
         .expect("build authenticated baked snapshot fixture");
@@ -498,6 +505,9 @@ fn baked_snapshot_catalog_exposes_only_authenticated_modeled_snapshots() {
 #[cfg(feature = "test-support")]
 #[test]
 fn materialized_baked_snapshots_survive_native_catalog_retirement() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let root = tempfile::tempdir().expect("create baked snapshot retirement store");
     let fixture = build_authenticated_production_checkpoint_codec_fixture(root.path())
         .expect("build authenticated baked snapshot fixture");
@@ -542,10 +552,17 @@ fn materialized_baked_snapshots_survive_native_catalog_retirement() {
 
 #[test]
 fn cold_genesis_catalog_checkpoint_round_trips_only_at_initial_boundary() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
+    let budget = crucible::owned_decode::current_budget().expect("original component account");
     std::thread::Builder::new()
         .name(String::from("cold-genesis-selectable-checkpoint"))
         .stack_size(32 * 1024 * 1024)
-        .spawn(run_cold_genesis_catalog_checkpoint_test)
+        .spawn(move || {
+            let _scope = budget.enter();
+            run_cold_genesis_catalog_checkpoint_test();
+        })
         .expect("spawn cold-genesis selectable checkpoint test")
         .join()
         .expect("cold-genesis selectable checkpoint test should not panic");
@@ -776,6 +793,9 @@ fn predecessor_closure_is_refused_before_payload_decoding() {
 
 #[test]
 fn exact_ram_manifest_rejects_wrong_scope_digest_and_root_codec() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     use crucible_ram::{Limits, RootRecord, Scope};
 
     let directory = tempfile::tempdir().expect("create credited RAM catalog fixture");
@@ -802,9 +822,7 @@ fn exact_ram_manifest_rejects_wrong_scope_digest_and_root_codec() {
 
     let mut wrong_digest = original.clone();
     wrong_digest.paged.logical_root.bytes[0] ^= 1;
-    let error = load(wrong_digest)
-        .err()
-        .expect("refuse wrong logical digest");
+    let error = load(wrong_digest).expect_err("refuse wrong logical digest");
     assert!(
         error
             .to_string()
@@ -822,7 +840,7 @@ fn exact_ram_manifest_rejects_wrong_scope_digest_and_root_codec() {
     let mut wrong_scope = original.clone();
     wrong_scope.paged.root_record = lifecycle.encode();
     wrong_scope.paged.logical_root.bytes = *lifecycle.digest().as_bytes();
-    let error = load(wrong_scope).err().expect("refuse lifecycle scope");
+    let error = load(wrong_scope).expect_err("refuse lifecycle scope");
     assert!(
         error
             .to_string()
@@ -831,16 +849,12 @@ fn exact_ram_manifest_rejects_wrong_scope_digest_and_root_codec() {
 
     let mut truncated = original.clone();
     truncated.paged.root_record.pop();
-    let error = load(truncated)
-        .err()
-        .expect("refuse truncated canonical root");
+    let error = load(truncated).expect_err("refuse truncated canonical root");
     assert!(error.to_string().contains("decode RAM root record"));
 
     let mut trailing = original;
     trailing.paged.root_record.push(0);
-    let error = load(trailing)
-        .err()
-        .expect("refuse trailing canonical root bytes");
+    let error = load(trailing).expect_err("refuse trailing canonical root bytes");
     assert!(error.to_string().contains("decode RAM root record"));
 }
 
@@ -927,6 +941,9 @@ fn checkpoint_set_rejects_wrong_failed_node_fingerprint_owner() {
 
 #[test]
 fn failed_node_authority_round_trips_through_the_closure() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let root = tempfile::tempdir().expect("create failed-node checkpoint store");
     let (source, mut checkpoint, node, _) = build_one_node_raw_checkpoint(root.path(), None);
     checkpoint.targets.remove(&node);
@@ -1037,10 +1054,15 @@ fn closure_manifest_allows_content_deduplication_between_distinct_nodes() {
 
 #[test]
 fn shared_snapshot_content_does_not_authorize_a_foreign_node_target() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
+    let budget = crucible::owned_decode::current_budget().expect("original component account");
     std::thread::Builder::new()
         .name(String::from("checkpoint-target-ownership"))
         .stack_size(32 * 1024 * 1024)
-        .spawn(|| {
+        .spawn(move || {
+            let _scope = budget.enter();
             let store = tempfile::tempdir().expect("create checkpoint store");
             let (source, identity, node, _) = publish_one_node_raw_checkpoint(store.path());
             let restored = load_exact_checkpoint_set(
@@ -1896,6 +1918,9 @@ fn lifecycle_wire_reopens_passed_trigger_with_matching_checkpoint_cause() {
 #[cfg(feature = "test-support")]
 #[test]
 fn paged_exact_fixture_retains_independent_complete_images() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let source_root = tempfile::tempdir().expect("create exact RAM source store");
     let fixture = build_exact_ram_production_checkpoint_codec_fixture(source_root.path())
         .expect("build exact RAM closure fixture");
@@ -1945,6 +1970,9 @@ fn paged_exact_fixture_retains_independent_complete_images() {
 #[cfg(feature = "test-support")]
 #[test]
 fn paged_catalog_rejects_substituted_authenticated_root() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let source_root = tempfile::tempdir().expect("create paged root substitution store");
     let fixture = build_exact_ram_production_checkpoint_codec_fixture(source_root.path())
         .expect("build complete paged fixture");
@@ -2116,6 +2144,9 @@ fn rewrite_exact_ram_fixture_manifest(
 #[cfg(feature = "test-support")]
 #[test]
 fn paged_exact_loader_derives_the_qmp_identity_from_authenticated_state() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let store = tempfile::tempdir().expect("create exact RAM store");
     let fixture = build_exact_ram_production_checkpoint_codec_fixture(store.path())
         .expect("build exact RAM closure fixture");
@@ -2137,6 +2168,9 @@ fn paged_exact_loader_derives_the_qmp_identity_from_authenticated_state() {
 #[cfg(feature = "test-support")]
 #[test]
 fn paged_exact_loader_authenticates_declared_device_digest() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let store = tempfile::tempdir().expect("create exact RAM store");
     let fixture = build_exact_ram_production_checkpoint_codec_fixture(store.path())
         .expect("build exact RAM closure fixture");

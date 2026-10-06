@@ -62,6 +62,17 @@ where
         }
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn performance_observation(
+        &mut self,
+        guard: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        resident: std::sync::Arc<dyn Send + Sync>,
+    ) -> Result<super::QemuPerformanceObservation, QemuNodeChannelError> {
+        self.client
+            .performance_observation(guard, resident)
+            .map_err(QemuNodeChannelError::from)
+    }
+
     pub(crate) fn query_paused_cpu(
         &mut self,
         vcpu: u32,
@@ -659,7 +670,9 @@ where
         kind: crate::node::QemuTestNativeAliasKind,
         descriptor: BorrowedFd<'_>,
     ) -> Result<QemuNodeChannelError, QemuNodeChannelError> {
-        self.client.probe_native_source_alias(kind, descriptor).map_err(QemuNodeChannelError::from)
+        self.client
+            .probe_native_source_alias(kind, descriptor)
+            .map_err(QemuNodeChannelError::from)
     }
 
     /// Releases QEMU-owned and monitor-owned plugin endpoint descriptors.

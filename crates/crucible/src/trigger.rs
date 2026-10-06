@@ -28,8 +28,7 @@ use crate::scheduler::{
     ScheduledEventKey, ScheduledEventPayload, ScheduledEventResolveClass,
     SchedulerEvaluationBoundaryKind, SchedulerEventLogClass, SchedulerEventLogEntry,
     SchedulerEventLogPayload, SchedulerQuiescence, TriggerActionApplication,
-    compare_event_log_determinism, scheduled_event_resolve_class, scheduler_event_log_empty_prefix,
-    scheduler_event_log_segment_bytes,
+    scheduled_event_resolve_class, scheduler_event_log_empty_prefix,
 };
 
 /// Shared predicate vocabulary used by both assertions and event triggers.
@@ -45,6 +44,7 @@ mod deadlines;
 mod evaluation;
 mod event_graph;
 mod evidence;
+mod formal_trace;
 mod guest_assertion_declarations;
 mod guest_assertion_observation;
 mod observability;
@@ -56,6 +56,7 @@ pub use conditions::*;
 pub use evaluation::*;
 pub use event_graph::*;
 use evidence::*;
+use formal_trace::{external_formal_trace_bytes, external_formal_trace_hash};
 use guest_assertion_declarations::*;
 use guest_assertion_observation::*;
 pub use observability::*;

@@ -31,7 +31,10 @@ const MAX_CAMPAIGN_RUN_EXACT_CHECKPOINTS: usize = 65_536;
 struct FindingExactBoundary {
     failure_events: u64,
     measurement_events: Option<u64>,
-    assertion: Option<(FindingAssertionFailureBoundary, Vec<u8>)>,
+    assertion: Option<(
+        FindingAssertionFailureBoundary,
+        crate::CrucibleMeasurementEvidenceBytes,
+    )>,
 }
 
 #[derive(Clone, Copy, Debug, thiserror::Error, PartialEq, Eq)]
@@ -390,13 +393,15 @@ pub(super) fn prepare_finding_exact_retention(
             measurement_events: Some(proof.boundary().start_events()),
             assertion: None,
         }),
-        StopOutcome::AssertionFailure(property) => execution
-            .and_then(|execution| assertion_failure_boundary(input, result, execution, property))
-            .map(|(witness, bytes)| FindingExactBoundary {
-                failure_events: witness.terminal_events(),
-                measurement_events: Some(witness.quantum_start_events()),
-                assertion: Some((witness, bytes)),
-            }),
+        StopOutcome::AssertionFailure(property) => match execution {
+            Some(execution) => assertion_failure_boundary(input, result, execution, property)?,
+            None => None,
+        }
+        .map(|(witness, bytes)| FindingExactBoundary {
+            failure_events: witness.terminal_events(),
+            measurement_events: Some(witness.quantum_start_events()),
+            assertion: Some((witness, bytes)),
+        }),
         _ => None,
     };
     select_finding_exact_retention(
@@ -415,46 +420,71 @@ fn assertion_failure_boundary(
     result: &PreparedSemanticAttemptResult,
     execution: &QemuAttemptExecutionEvidenceSnapshot,
     property: &str,
-) -> Option<(FindingAssertionFailureBoundary, Vec<u8>)> {
-    let observation = result.observation();
-    if observation.observation().attempt() != input.attempt().id().ok()?
-        || observation
-            .properties()
-            .properties()
-            .get(property)?
-            .verdict()
-            != PropertyVerdict::Failed
-    {
-        return None;
-    }
+) -> Result<
+    Option<(
+        FindingAssertionFailureBoundary,
+        crate::CrucibleMeasurementEvidenceBytes,
+    )>,
+    CampaignCodecError,
+> {
+    let selected = (|| {
+        let observation = result.observation();
+        if observation.observation().attempt() != input.attempt().id().ok()?
+            || observation
+                .properties()
+                .properties()
+                .get(property)?
+                .verdict()
+                != PropertyVerdict::Failed
+        {
+            return None;
+        }
 
-    let terminal_events = execution.semantic_stop_events()?;
-    let quantum_start_events = execution.latest_quantum_start_events()?;
-    let terminal_len = usize::try_from(terminal_events).ok()?;
-    let entries = execution.event_log_entries().get(..terminal_len)?;
-    if quantum_start_events >= terminal_events {
-        return None;
-    }
+        let terminal_events = execution.semantic_stop_events()?;
+        let quantum_start_events = execution.latest_quantum_start_events()?;
+        let terminal_len = usize::try_from(terminal_events).ok()?;
+        let entries = execution.event_log_entries().get(..terminal_len)?;
+        if quantum_start_events >= terminal_events {
+            return None;
+        }
 
-    let measurement_ids = observation.measurements().evaluation().evidence();
-    let mut matching = result
-        .measurement_replay_evidence()
-        .iter()
-        .filter_map(|leaf| {
-            let id = leaf.id().ok()?;
-            (measurement_ids.contains(&id)
-                && leaf.scenario() == input.lineage().scenario()
-                && leaf.configuration() == observation.child().configuration()
-                && leaf.stop() == CrucibleMeasurementStopEvidence::Campaign
-                && leaf.entries() == entries)
-                .then_some((id, leaf))
-        });
-    let (trace, leaf) = matching.next()?;
-    if matching.next().is_some() || measurement_ids.len() != 1 {
-        return None;
-    }
+        let measurement_ids = observation.measurements().evaluation().evidence();
+        let mut matching = result
+            .measurement_replay_evidence()
+            .iter()
+            .filter_map(|leaf| {
+                let id = leaf.id().ok()?;
+                (measurement_ids.contains(&id)
+                    && leaf.scenario() == input.lineage().scenario()
+                    && leaf.configuration() == observation.child().configuration()
+                    && leaf.stop() == CrucibleMeasurementStopEvidence::Campaign
+                    && leaf.entries() == entries)
+                    .then_some((id, leaf))
+            });
+        let (trace, leaf) = matching.next()?;
+        if matching.next().is_some() || measurement_ids.len() != 1 {
+            return None;
+        }
 
-    let transition = verified_assertion_transition(entries, quantum_start_events, property)?;
+        Some((trace, leaf, entries, terminal_events, quantum_start_events))
+    })();
+    let Some((trace, leaf, entries, terminal_events, quantum_start_events)) = selected else {
+        return Ok(None);
+    };
+    let engine_custody =
+        crate::crucible_measurement::boundary_error::admit::<crucible::EngineError>()?;
+    let measurement_custody =
+        crate::crucible_measurement::boundary_error::admit::<crate::CrucibleMeasurementError>()?;
+    let Some(transition) = verified_assertion_transition(entries, quantum_start_events, property)
+        .map_err(|source| match source {
+        crucible::EngineError::ArtifactDecodeAdmission { source } => {
+            CampaignCodecError::DecodeAdmission(source)
+        }
+        source => crate::crucible_measurement::boundary_error::campaign(source, engine_custody),
+    })?
+    else {
+        return Ok(None);
+    };
 
     let boundary = FindingAssertionFailureBoundary::new(
         trace,
@@ -463,10 +493,17 @@ fn assertion_failure_boundary(
         quantum_start_events,
         transition.sequence(),
         CampaignHash::from_bytes(transition.content_hash().bytes),
-        property.to_owned(),
+        crucible::owned_decode::display_string(property)
+            .map_err(CampaignCodecError::DecodeAdmission)?,
     )
-    .ok()?;
-    Some((boundary, leaf.canonical_bytes().ok()?))
+    .ok();
+    let Some(boundary) = boundary else {
+        return Ok(None);
+    };
+    let bytes = leaf.canonical_bytes().map_err(|source| {
+        crate::crucible_measurement::boundary_error::campaign(source, measurement_custody)
+    })?;
+    Ok(Some((boundary, bytes)))
 }
 
 fn select_finding_exact_retention(
@@ -894,43 +931,49 @@ mod tests {
     }
 
     #[test]
-    fn assertion_boundary_requires_one_dense_violated_transition_in_terminal_quantum() {
+    fn assertion_boundary_requires_one_dense_violated_transition_in_terminal_quantum()
+    -> Result<(), Box<dyn Error>> {
+        let _scope = crucible::test_support::fixture_decode_scope(16 << 20)?;
         let unrelated = SchedulerEventLogEntry::assertion_state_observation(
             0,
             VirtualTime { ticks: 1 },
             AssertionId::from_name("unrelated"),
             AssertionPhase::Violated,
-        );
+        )?;
         let target = SchedulerEventLogEntry::assertion_state_observation(
             1,
             VirtualTime { ticks: 2 },
             AssertionId::from_name("target"),
             AssertionPhase::Violated,
-        );
+        )?;
         let entries = vec![unrelated.clone(), target.clone()];
 
         assert_eq!(
-            verified_assertion_transition(&entries, 1, "target"),
+            verified_assertion_transition(&entries, 1, "target")?,
             Some(&target),
         );
-        assert!(verified_assertion_transition(&entries, 1, "unrelated").is_none());
-        assert!(verified_assertion_transition(&entries, 2, "target").is_none());
+        assert!(verified_assertion_transition(&entries, 1, "unrelated")?.is_none());
+        assert!(verified_assertion_transition(&entries, 2, "target")?.is_none());
 
         let duplicate = SchedulerEventLogEntry::assertion_state_observation(
             2,
             VirtualTime { ticks: 2 },
             AssertionId::from_name("target"),
             AssertionPhase::Violated,
-        );
+        )?;
         assert!(
-            verified_assertion_transition(&[unrelated, target, duplicate], 1, "target").is_none()
+            verified_assertion_transition(&[unrelated, target, duplicate], 1, "target")?.is_none()
         );
-        assert!(verified_assertion_transition(&[entries[1].clone()], 0, "target").is_none());
+        assert!(verified_assertion_transition(&[entries[1].clone()], 0, "target")?.is_none());
+        Ok(())
     }
 
     #[test]
     fn assertion_retention_uses_unpublished_trace_and_excludes_divergent_root()
     -> Result<(), Box<dyn Error>> {
+        let _original_fixture_scope =
+            crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
         let mut roots = [checkpoint(b"first")?, checkpoint(b"second")?];
         roots.sort();
         let divergent = roots[0];
@@ -950,14 +993,14 @@ mod tests {
                     },
                 )
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
         let mut divergent_log = matching_log.clone();
         divergent_log[0] = SchedulerEventLogEntry::assertion_state_observation(
             0,
             VirtualTime { ticks: 1 },
             AssertionId::from_name("foreign"),
             AssertionPhase::Satisfied,
-        );
+        )?;
         let source = PrefixSource {
             inner: TestSource {
                 inventory: TestInventory::Roots(roots.to_vec()),
@@ -991,7 +1034,10 @@ mod tests {
             Some(FindingExactBoundary {
                 failure_events: 5,
                 measurement_events: Some(2),
-                assertion: Some((boundary.clone(), b"matching".to_vec())),
+                assertion: Some((
+                    boundary.clone(),
+                    crate::CrucibleMeasurementEvidenceBytes::fixture(b"matching")?,
+                )),
             }),
         )?;
 
@@ -1014,7 +1060,10 @@ mod tests {
             Some(FindingExactBoundary {
                 failure_events: 5,
                 measurement_events: Some(2),
-                assertion: Some((boundary, b"forged".to_vec())),
+                assertion: Some((
+                    boundary,
+                    crate::CrucibleMeasurementEvidenceBytes::fixture(b"forged")?,
+                )),
             }),
         )?;
         assert_eq!(invalid_pins, FindingExactPins::default());
@@ -1070,6 +1119,9 @@ mod tests {
     #[test]
     fn retained_production_checkpoint_authenticates_into_complete_evidence()
     -> Result<(), Box<dyn Error>> {
+        let _original_fixture_scope =
+            crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
         let directory = tempfile::tempdir()?;
         let fixture =
             crucible_api::build_exact_ram_production_checkpoint_codec_fixture(directory.path())?;
@@ -1097,13 +1149,16 @@ mod tests {
             "campaign-run-exact-retention-checkpoints",
             checkpoint_directory.path(),
         ));
-        let checkpoints = Arc::new(ExactCheckpointStore::new(
-            checkpoint_backend,
-            u64::MAX,
-            repository.ram_retention_authority(),
-        )?.with_ram_root_resources(
-            crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()?,
-        ));
+        let checkpoints = Arc::new(
+            ExactCheckpointStore::new(
+                checkpoint_backend,
+                u64::MAX,
+                repository.ram_retention_authority(),
+            )?
+            .with_ram_root_resources(
+                crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()?,
+            ),
+        );
         let prepared = checkpoints.prepare_production_closure(fixture.closure().clone())?;
         let checkpoint = checkpoints.publish_production_closure(&prepared)?.root();
         let source = CampaignRunFindingExactRetentionSource::new(

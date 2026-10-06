@@ -206,6 +206,12 @@ impl ProductionVmLifecycleConfig {
             host_operation_supervisor: None,
             host_ram_registration_factory: None,
             ram_catalog_provider: None,
+            #[cfg(any(test, feature = "test-support"))]
+            ram_source_decorator: None,
+            #[cfg(any(test, feature = "test-support"))]
+            block_completion_observer: None,
+            #[cfg(any(test, feature = "test-support"))]
+            fault_actor_test_entitlement: None,
             unbounded_advance_completion: false,
             coverage: QemuLaunchPluginSwitch::Off,
             rr_control_boundary_trace: false,

@@ -114,7 +114,8 @@ extern "C" fn lifecycle(operation: u32, generation: u64, _opaque: *mut c_void) -
             if status != 0 {
                 return status;
             }
-            crate::ram_fingerprint::rebind_child()
+            super::fork::rebind_child(generation)
+                .and_then(|()| crate::ram_fingerprint::rebind_child())
         }
         5 => super::fork::resume_parent()
             .and_then(|()| crate::ram_fingerprint::abort_fork())

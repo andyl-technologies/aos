@@ -4,6 +4,8 @@ use super::*;
 
 #[test]
 fn fresh_paired_replay_keeps_selected_evidence_and_both_distinct_coverages_coherent() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let fork_entry = |sequence, label: &'static [u8]| {
         let mut attributes = BTreeMap::new();
         attributes.insert(
@@ -27,6 +29,7 @@ fn fresh_paired_replay_keeps_selected_evidence_and_both_distinct_coverages_coher
                 attributes,
             )),
         )
+        .unwrap_or_else(|source| panic!("fixture event admission: {source}"))
     };
     let world = World::from_nodes_and_links(Vec::new(), Vec::new()).expect("empty World");
     let properties =
@@ -50,7 +53,8 @@ fn fresh_paired_replay_keeps_selected_evidence_and_both_distinct_coverages_coher
             },
             MarkerId::from_name("expected-path"),
         ),
-    );
+    )
+    .unwrap_or_else(|source| panic!("fixture event admission: {source}"));
     let reproduced_event = condition_observation_entry_for_test(
         1,
         &ObservableEvent::coverage_marker(
@@ -60,7 +64,8 @@ fn fresh_paired_replay_keeps_selected_evidence_and_both_distinct_coverages_coher
             },
             MarkerId::from_name("reproduced-path"),
         ),
-    );
+    )
+    .unwrap_or_else(|source| panic!("fixture event admission: {source}"));
     let expected_boundary = fork_entry(2, b"expected-fork");
     let reproduced_boundary = fork_entry(2, b"reproduced-fork");
     let mut runner = QemuFreshExecutionRunner::new(
@@ -95,7 +100,11 @@ fn fresh_paired_replay_keeps_selected_evidence_and_both_distinct_coverages_coher
     let (_, expected_causal, _, _, _) = expected_triage.into_parts();
     let (_, reproduced_causal, _, _, _) = reproduced_triage.into_parts();
     assert_ne!(expected_causal, reproduced_causal);
-    let reproduced = Box::new((*reproduced).compare_against_expected_replay(&expected));
+    let reproduced = Box::new(
+        (*reproduced)
+            .compare_against_expected_replay(&expected)
+            .expect("original paired replay metadata admission"),
+    );
     let reproduced_coverage = reproduced
         .paired_reproduced_coverage()
         .expect("paired replay retains reproduced coverage")
@@ -123,17 +132,26 @@ fn fresh_paired_replay_keeps_selected_evidence_and_both_distinct_coverages_coher
 
 #[test]
 fn replay_divergence_uses_the_actual_first_causal_log_mismatch() {
-    let expected = vec![SchedulerEventLogEntry::execution_budget_exhausted(
-        0,
-        VirtualTime { ticks: 9 },
-        "execution-quanta",
-    )];
-    let reproduced = vec![SchedulerEventLogEntry::execution_budget_exhausted(
-        0,
-        VirtualTime { ticks: 9 },
-        "virtual-time",
-    )];
-    let comparison = crucible::compare_event_log_determinism(&expected, &reproduced);
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
+    let expected = vec![
+        SchedulerEventLogEntry::execution_budget_exhausted(
+            0,
+            VirtualTime { ticks: 9 },
+            "execution-quanta",
+        )
+        .unwrap_or_else(|source| panic!("fixture event admission: {source}")),
+    ];
+    let reproduced = vec![
+        SchedulerEventLogEntry::execution_budget_exhausted(
+            0,
+            VirtualTime { ticks: 9 },
+            "virtual-time",
+        )
+        .unwrap_or_else(|source| panic!("fixture event admission: {source}")),
+    ];
+    let comparison = crucible::compare_event_log_determinism(&expected, &reproduced)
+        .expect("original divergence metadata admission");
     let mismatch = comparison.mismatch().expect("actual causal mismatch");
     let expected_point = mismatch.first_location().expect("mismatch coordinate");
     let expected_coverage = ContentHash::from_bytes(b"expected-replay-coverage");
@@ -155,6 +173,7 @@ fn replay_divergence_uses_the_actual_first_causal_log_mismatch() {
         &expected_inputs,
         &reproduced_inputs,
     )
+    .expect("original divergence metadata admission")
     .expect("divergence triage inputs");
     let (failures, causal_entries, coverage_fingerprint, frames, paired_logs) = triage.into_parts();
     let [crucible::FailureClusterReportFailure::Divergence(divergence)] = failures.as_slice()
@@ -193,12 +212,17 @@ fn replay_divergence_uses_the_actual_first_causal_log_mismatch() {
 
 #[test]
 fn replay_divergence_uses_reproduced_evidence_when_expected_entry_is_absent() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let expected = Vec::new();
-    let reproduced = vec![SchedulerEventLogEntry::execution_budget_exhausted(
-        0,
-        VirtualTime { ticks: 9 },
-        "execution-quanta",
-    )];
+    let reproduced = vec![
+        SchedulerEventLogEntry::execution_budget_exhausted(
+            0,
+            VirtualTime { ticks: 9 },
+            "execution-quanta",
+        )
+        .unwrap_or_else(|source| panic!("fixture event admission: {source}")),
+    ];
     let expected_coverage = ContentHash::from_bytes(b"empty-expected-replay-coverage");
     let reproduced_coverage = ContentHash::from_bytes(b"present-reproduced-replay-coverage");
     let expected_inputs =
@@ -218,6 +242,7 @@ fn replay_divergence_uses_reproduced_evidence_when_expected_entry_is_absent() {
         &expected_inputs,
         &reproduced_inputs,
     )
+    .expect("original divergence metadata admission")
     .expect("divergence triage inputs");
     let (_, causal_entries, coverage_fingerprint, frames, paired_logs) = triage.into_parts();
 

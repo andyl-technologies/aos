@@ -99,7 +99,7 @@ pub(crate) fn run(
         52_000 + (case as u32) * 100,
         catalog,
         |root, storage| native_repository(&source, root, storage),
-        |config| resources(config, &source, lifecycle, NativeEquivalenceCase::Depth),
+        |config| resources(config, &source, &lifecycle, NativeEquivalenceCase::Depth),
         |prepared, config, repository| run_accepted(prepared, config, repository, &source, case),
     );
 }

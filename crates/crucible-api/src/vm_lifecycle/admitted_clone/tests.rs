@@ -43,6 +43,16 @@ fn authority(maximum: u64) -> Arc<Authority> {
     })
 }
 
+pub(super) fn component_decode_budget() -> DecodeBudget {
+    const COMPONENT_METADATA_BYTES: u64 = 16 * 1024 * 1024;
+    DecodeBudget::new(
+        authority(COMPONENT_METADATA_BYTES),
+        COMPONENT_METADATA_BYTES,
+    )
+    .unwrap_or_else(|error| panic!("finite component metadata account: {error}"))
+}
+
+#[cfg(test)]
 pub(super) fn copy_component_configuration(
     source: &ProductionVmLifecycleConfig,
 ) -> Arc<ProductionVmLifecycleConfig> {

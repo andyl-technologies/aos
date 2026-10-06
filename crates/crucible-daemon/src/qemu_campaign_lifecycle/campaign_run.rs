@@ -36,7 +36,7 @@ use crucible_campaign::{
 };
 use crucible_cas::content_store::{ContentId, ObjectKind};
 #[cfg(any(test, feature = "test-support"))]
-use crucible_cas::content_store::{DirectoryBlobBackend, ImmutableBlobBackend, MutableRefBackend};
+use crucible_cas::content_store::{ImmutableBlobBackend, MutableRefBackend};
 use thiserror::Error;
 
 use super::{
@@ -62,7 +62,7 @@ use crate::{
     SharedQemuAttemptHostResourceFactory, decode_crucible_configuration_artifact_with_selections,
 };
 #[cfg(any(test, feature = "test-support"))]
-use crucible_campaign::{DaemonEpoch, DebuggerAuthorityKey};
+use crucible_campaign::DaemonEpoch;
 #[cfg(any(test, feature = "test-support"))]
 use crucible_cas::content_store::{MemoryBlobBackend, MemoryRefBackend};
 
@@ -70,7 +70,14 @@ mod finding_branch;
 pub use finding_branch::GuardedFindingBranchError;
 pub(crate) use finding_branch::run_admitted_finding_branch;
 
+#[cfg(any(test, feature = "test-support"))]
+mod component_repository;
+#[cfg(any(test, feature = "test-support"))]
+use component_repository::{campaign_run_exact_checkpoint_store, default_run_repository};
+
 mod executor;
+#[cfg(test)]
+pub(crate) mod native_throughput;
 use executor::{SynchronousCampaignExecutor, SynchronousCampaignExecutorError};
 
 mod exploration;
@@ -227,6 +234,9 @@ pub enum GuardedDefaultCampaignRunConfigurationError {
     /// A replay attempted to replace the admitted executable or plugin.
     #[error("guarded replay uses a different native executable or plugin")]
     NativeIdentityMismatch,
+    /// A modeled request attempted to exceed its original deployed limit.
+    #[error("guarded campaign request exceeds original semantic execution limits")]
+    ExecutionLimitsExceedAdmission,
     /// The original catalog could not lend metadata for an active configuration.
     #[error("guarded replay metadata resources: {0}")]
     Metadata(#[source] crucible_cas::content_store::StoreError),
@@ -271,6 +281,60 @@ impl GuardedDefaultCampaignRunRequest {
             resources,
             Some(execution),
         ))
+    }
+
+    /// Returns the original admitted namespace's metadata resource authority.
+    ///
+    /// Callers retain this authority before consuming the request so subsequent
+    /// evidence and report projections use the same account. The completed
+    /// observation itself does not grant additional allocation capacity.
+    ///
+    /// # Errors
+    /// Refuses a component request without a genuine execution owner or a
+    /// backend without the owner's original resource authority.
+    pub fn repository_metadata_resources(
+        &self,
+    ) -> Result<
+        Arc<dyn crucible_cas::content_store::StorePhysicalQuotaGuard>,
+        crucible_cas::content_store::StoreError,
+    > {
+        self.execution
+            .as_ref()
+            .ok_or(crucible_cas::content_store::StoreError::Unsupported {
+                capability: "guarded-campaign-metadata-resources",
+            })?
+            .repository_metadata_resources()
+    }
+
+    /// Uses narrower modeled limits under the same original execution owner.
+    ///
+    /// Each request validates against that owner's immutable deployed semantic
+    /// ceiling. The accepted actor still reserves its complete physical vector;
+    /// independent replay requests do not open another owner or reset capacity.
+    ///
+    /// # Errors
+    /// Refuses a component request without genuine owner authority, absent
+    /// deployed limits, or a CPU, memory, disk or quantum bound above admission.
+    pub fn with_execution_limits(
+        mut self,
+        limits: AttemptResourceLimits,
+    ) -> Result<Self, GuardedDefaultCampaignRunConfigurationError> {
+        let original = self
+            .execution
+            .as_ref()
+            .and_then(|owner| owner.inner.config.assignment_limits())
+            .ok_or(GuardedDefaultCampaignRunConfigurationError::MissingAssignmentAuthority)?;
+        if limits.maximum_vcpus() > original.maximum_vcpus()
+            || limits.maximum_resident_bytes() > original.maximum_resident_bytes()
+            || limits.maximum_disk_bytes() > original.maximum_disk_bytes()
+            || limits.maximum_execution_quanta() > original.maximum_execution_quanta()
+        {
+            return Err(
+                GuardedDefaultCampaignRunConfigurationError::ExecutionLimitsExceedAdmission,
+            );
+        }
+        self.resources = limits;
+        Ok(self)
     }
 
     /// Creates pure campaign fixtures without claiming managed execution authority.
@@ -941,7 +1005,7 @@ impl GuardedCampaignSupplementalFinding {
 }
 
 /// One deterministic property failure returned by a supplemental oracle.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct GuardedCampaignFindingOracleEvaluation {
     finding: crucible::SearchAssertionFinding,
 }
@@ -1893,76 +1957,6 @@ where
         request.capture_reached_stop.as_deref(),
         request.resume_source.as_ref(),
     )
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn default_run_repository<E>(
-    blobs: Arc<dyn ImmutableBlobBackend>,
-    refs: Arc<dyn MutableRefBackend>,
-) -> Result<(CampaignRepository, PlannerAuthorityKey), GuardedDefaultCampaignRunError<E>>
-where
-    E: Error + 'static,
-{
-    let planner_authority = PlannerAuthorityKey::from_bytes([0x31; 32])
-        .map_err(GuardedDefaultCampaignRunError::Codec)?;
-    let debugger_authority = DebuggerAuthorityKey::from_bytes([0x47; 32])
-        .map_err(GuardedDefaultCampaignRunError::Codec)?;
-    let repository = CampaignRepository::with_component_authorities(
-        blobs,
-        refs,
-        planner_authority.clone(),
-        debugger_authority,
-    )
-    .map_err(GuardedDefaultCampaignRunError::Repository)?;
-    Ok((repository, planner_authority))
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn campaign_run_exact_checkpoint_store<E>(
-    request: &GuardedDefaultCampaignRunRequest,
-    repository: &CampaignRepository,
-) -> Result<Arc<ExactCheckpointStore>, GuardedDefaultCampaignRunError<E>>
-where
-    E: Error + 'static,
-{
-    request
-        .capture_reached_stop
-        .as_ref()
-        .or_else(|| {
-            request
-                .resume_source
-                .as_ref()
-                .map(|source| &source.checkpoints)
-        })
-        .cloned()
-        .map_or_else(
-            || {
-                let root = request
-                    .lifecycle
-                    .run_state_root()
-                    .join("campaign-finding-exact-checkpoints");
-                ExactCheckpointStore::new(
-                    Arc::new(DirectoryBlobBackend::new(
-                        "guarded-campaign-run-exact-checkpoints",
-                        root,
-                    )),
-                    request.resources.maximum_disk_bytes(),
-                    repository.ram_retention_authority(),
-                )
-                .and_then(|checkpoints| {
-                    let resources =
-                        crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
-                            .map_err(|_| {
-                            ExactCheckpointStoreError::Store(
-                                crucible_cas::content_store::StoreError::Quota,
-                            )
-                        })?;
-                    Ok(Arc::new(checkpoints.with_ram_root_resources(resources)))
-                })
-                .map_err(GuardedDefaultCampaignRunError::ExactCheckpoint)
-            },
-            Ok,
-        )
 }
 
 fn default_run_lineage<E>(

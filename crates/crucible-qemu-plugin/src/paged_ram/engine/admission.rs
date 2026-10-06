@@ -39,6 +39,7 @@ impl PausedPagingOwner {
             .and_then(|bytes| bytes.checked_mul(2))
             .and_then(|bytes| bytes.checked_add(mutation_receipt))
             .and_then(|bytes| bytes.checked_add(native_mutation_scratch))
+            .and_then(|bytes| bytes.checked_add(2 * (16 * u64::from(regions) + 256)))
             .ok_or(RamError::Invariant(
                 "live and staged paging metadata bound overflow",
             ))
@@ -131,7 +132,7 @@ mod tests {
         };
 
         assert!(matches!(
-            owner.apply_policy(&policy),
+            owner.apply_policy(&policy, 1),
             Err(RamError::MetadataAdmission {
                 required: 16384,
                 admitted: 8192
@@ -277,11 +278,13 @@ pub(super) fn prepare_service_for_inventory(
         spill,
         arenas,
         states: Mutex::new(states),
+        placement_dependency: Mutex::new(None),
         worker: Mutex::new(None),
         stop: AtomicBool::new(false),
         activated: AtomicBool::new(false),
         destructive: AtomicBool::new(false),
         failed: AtomicBool::new(false),
+        lifetime: Mutex::new(service::ActorLifetime::default()),
         retained_token: AtomicU64::new(0),
         operations,
         worker_generation: generation,

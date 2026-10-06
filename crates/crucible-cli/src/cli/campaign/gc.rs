@@ -13,9 +13,9 @@ use crucible_daemon::campaign_store_composition::{
 use crucible_daemon::{
     CampaignGcApplyStatus, CampaignGcCandidateManifest, CampaignGcCandidateReason,
     CampaignGcJournalCreateDisposition, CampaignGcJournalPhase, CampaignGcJournalTransition,
-    CampaignGcPlan, CampaignLocalServiceConfig, CampaignLocalServiceMode,
-    CampaignLoopbackEndpointConfig, CampaignLoopbackServerConfig, DirectoryAssignmentLedger,
-    DirectoryCampaignGcJournal, DirectoryExactPinMaterializationStore,
+    CampaignGcOperationContext, CampaignGcPlan, CampaignLocalServiceConfig,
+    CampaignLocalServiceMode, CampaignLoopbackEndpointConfig, CampaignLoopbackServerConfig,
+    DirectoryAssignmentLedger, DirectoryCampaignGcJournal, DirectoryExactPinMaterializationStore,
     EXACT_PIN_MATERIALIZATION_DIRECTORY,
 };
 use serde::Serialize;
@@ -24,6 +24,10 @@ use crate::cli_campaign_store::{
     MAX_STORE_VERIFY_LOGICAL_BYTES, MAX_STORE_VERIFY_PLACEMENTS, load_campaign_repository_store,
     load_campaign_store_graph, verify_campaign_store_inventory,
 };
+
+#[cfg(test)]
+#[path = "../../../tests/support/gc_quota_setup.rs"]
+mod gc_quota;
 
 const CAMPAIGN_GC_REPORT_SCHEMA: &str = "crucible.cli.campaign-store-gc.v2";
 const CAMPAIGN_GC_PLAN_VERSION: &str = "v1";
@@ -275,6 +279,12 @@ pub(super) fn run_campaign_store_gc(
     format: OutputFormat,
 ) -> Result<String, CliError> {
     validate_gc_paths(args)?;
+    let maintenance =
+        crucible_daemon::campaign_store_composition::CampaignArchiveHostOperation::start(
+            crucible_api::host_operational::HostOperationClass::Writeback,
+            std::time::Duration::from_millis(args.host_maintenance_timeout_ms),
+        )
+        .map_err(|error| maintenance_error(format!("GC supervision failed: {error}")))?;
 
     let endpoint = CampaignLoopbackEndpointConfig::new(
         UNUSED_GC_ENDPOINT,
@@ -305,10 +315,29 @@ pub(super) fn run_campaign_store_gc(
     let mut exact_pins = DirectoryExactPinMaterializationStore::open(&exact_pin_path)
         .map_err(|error| maintenance_error(format!("exact-pin journal open failed: {error}")))?;
 
+    let mut boundary = || {
+        maintenance.boundary().map_err(|source| {
+            crucible_daemon::campaign_store_composition::StoreError::Supervision {
+                source: Box::new(source),
+            }
+        })
+    };
+    let marks = authority
+        .gc_mark_backend(&args.mark_store_node, &args.journal.to_string_lossy())
+        .map_err(|error| maintenance_error(format!("GC mark namespace unavailable: {error}")))?;
+    let decoding = crucible_session::engine::owned_decode::DecodeBudget::for_store(
+        marks.metadata_resources().map_err(|error| {
+            maintenance_error(format!("GC metadata authority unavailable: {error}"))
+        })?,
+    )
+    .map_err(|error| maintenance_error(format!("GC output metadata admission failed: {error}")))?;
+    let _scope = decoding.enter();
+    let operation = CampaignGcOperationContext::new(marks, &mut boundary)
+        .map_err(|error| maintenance_error(format!("GC operation admission failed: {error}")))?;
     let report = match args.operation {
         CampaignStoreGcCommand::Plan => {
             let planned = authority
-                .plan(&mut ledger, Some(&mut exact_pins))
+                .plan(&mut ledger, Some(&mut exact_pins), &operation)
                 .map_err(|error| {
                     maintenance_error(format!("campaign GC planning failed: {error}"))
                 })?;
@@ -316,9 +345,11 @@ pub(super) fn run_campaign_store_gc(
                 maintenance_error(format!("campaign GC plan identity failed: {error}"))
             })?;
             let (journal, disposition) =
-                DirectoryCampaignGcJournal::create(&args.journal, &planned).map_err(|error| {
-                    maintenance_error(format!("campaign GC journal creation failed: {error}"))
-                })?;
+                DirectoryCampaignGcJournal::create(&args.journal, &planned, &operation).map_err(
+                    |error| {
+                        maintenance_error(format!("campaign GC journal creation failed: {error}"))
+                    },
+                )?;
             CampaignStoreGcReport {
                 schema: CAMPAIGN_GC_REPORT_SCHEMA,
                 operation: "plan",
@@ -345,9 +376,10 @@ pub(super) fn run_campaign_store_gc(
             }
         }
         CampaignStoreGcCommand::Apply => {
-            let mut journal = DirectoryCampaignGcJournal::open(&args.journal).map_err(|error| {
-                maintenance_error(format!("campaign GC journal open failed: {error}"))
-            })?;
+            let mut journal =
+                DirectoryCampaignGcJournal::open(&args.journal, &operation).map_err(|error| {
+                    maintenance_error(format!("campaign GC journal open failed: {error}"))
+                })?;
             let plan_id = journal.plan().id().map_err(|error| {
                 maintenance_error(format!("campaign GC plan identity failed: {error}"))
             })?;
@@ -356,7 +388,7 @@ pub(super) fn run_campaign_store_gc(
             let plan_version = CAMPAIGN_GC_PLAN_VERSION;
             let required_copies = cache_required_copy_report(journal.plan(), journal.candidates())?;
             let result = authority
-                .apply(&mut journal, &mut ledger, Some(&mut exact_pins))
+                .apply(&mut journal, &mut ledger, Some(&mut exact_pins), &operation)
                 .map_err(|error| maintenance_error(format!("campaign GC apply failed: {error}")))?;
             CampaignStoreGcReport {
                 schema: CAMPAIGN_GC_REPORT_SCHEMA,
@@ -381,9 +413,10 @@ pub(super) fn run_campaign_store_gc(
             }
         }
         CampaignStoreGcCommand::Cancel => {
-            let mut journal = DirectoryCampaignGcJournal::open(&args.journal).map_err(|error| {
-                maintenance_error(format!("campaign GC journal open failed: {error}"))
-            })?;
+            let mut journal =
+                DirectoryCampaignGcJournal::open(&args.journal, &operation).map_err(|error| {
+                    maintenance_error(format!("campaign GC journal open failed: {error}"))
+                })?;
             let plan_id = journal.plan().id().map_err(|error| {
                 maintenance_error(format!("campaign GC plan identity failed: {error}"))
             })?;
@@ -431,6 +464,9 @@ pub(super) fn run_campaign_store_gc(
         }
     };
 
+    maintenance
+        .complete()
+        .map_err(|error| maintenance_error(format!("GC completion failed: {error}")))?;
     render_campaign_store_gc(&report, format)
 }
 
@@ -934,6 +970,36 @@ mod tests {
     }
 
     #[test]
+    fn offline_gc_refuses_unconfigured_scratch_before_journal_publication() {
+        let fixture = GcFixture::new();
+        let raw = fixture.root.join("raw-store.toml");
+        fs::write(&raw, format!(
+            r#"schema = "crucible.campaign-repository-store"
+version = 2
+root = "primary"
+admitted_kinds = ["campaign-fact", "campaign-snapshot", "merkle-node", "scenario", "configuration", "policy", "exact-manifest", "ram-extent", "disk-extent", "device-state", "observation", "finding", "projection", "trace"]
+ref_directory = {:?}
+
+[[nodes]]
+id = "primary"
+[nodes.spec]
+kind = "directory"
+root = {:?}
+"#,
+            fixture.root.join("refs"), fixture.objects,
+        )).expect("write raw store fixture");
+        fs::set_permissions(&raw, Permissions::from_mode(0o600)).expect("secure raw store fixture");
+        let mut args = fixture.args(CampaignStoreGcCommand::Plan);
+        args.store = raw;
+
+        let error = run_campaign_store_gc(&args, OutputFormat::Jsonl)
+            .expect_err("unguarded scratch must refuse");
+
+        assert!(error.to_string().contains("GC mark namespace unavailable"));
+        assert!(!fixture.journal.exists());
+    }
+
+    #[test]
     fn offline_gc_plans_reopens_and_applies_one_exact_empty_store() {
         let fixture = GcFixture::new();
         let mut args = fixture.args(CampaignStoreGcCommand::Plan);
@@ -1065,7 +1131,17 @@ mod tests {
             .map(|argument| argument.get_id().as_str())
             .filter(|id| *id != "help")
             .collect::<BTreeSet<_>>();
-        assert_eq!(ids, BTreeSet::from(["state", "policy", "store", "journal"]));
+        assert_eq!(
+            ids,
+            BTreeSet::from([
+                "state",
+                "policy",
+                "store",
+                "journal",
+                "mark_store_node",
+                "host_maintenance_timeout_ms"
+            ])
+        );
         assert!(store.find_subcommand("status").is_some());
         assert!(store.find_subcommand("ensure").is_some());
         assert!(store.find_subcommand("verify").is_some());
@@ -1140,6 +1216,7 @@ root = {objects:?}
             .expect("write GC store deployment");
             fs::set_permissions(&store, Permissions::from_mode(0o600))
                 .expect("secure GC store deployment");
+            gc_quota::prepare(&store).expect("project native GC store quota");
             Self {
                 journal: root.join("journal"),
                 _directory: directory,
@@ -1158,6 +1235,8 @@ root = {objects:?}
                 store: self.store.clone(),
                 journal: self.journal.clone(),
                 operation,
+                host_maintenance_timeout_ms: 300_000,
+                mark_store_node: String::from("primary"),
             }
         }
     }

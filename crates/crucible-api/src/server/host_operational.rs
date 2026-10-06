@@ -8,6 +8,7 @@
 use super::*;
 use crate::host_operational::{HOST_OPERATIONAL_MAX_BYTES, HostOperationalError, codec};
 use axum::Extension;
+use futures_util::StreamExt;
 
 const MAX_HOST_CONTROL_IN_FLIGHT: usize = 16;
 static HOST_CONTROL_ADMISSION: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> =
@@ -41,38 +42,80 @@ where
             message: String::from("host operational RPC build mismatch"),
         });
     }
-    let body = match axum::body::to_bytes(request.into_body(), HOST_OPERATIONAL_MAX_BYTES).await {
-        Ok(body) => body,
-        Err(_) => {
+    let Some(control) = state.host_operational_control.clone() else {
+        return error_response(HostOperationalError::Unavailable);
+    };
+    let budget = match control
+        .metadata_budget(identity.certificate_sha256())
+        .and_then(|budget| {
+            budget
+                .child()
+                .map_err(|source| HostOperationalError::Admission { source })
+        }) {
+        Ok(budget) => budget,
+        Err(error) => return error_response(error),
+    };
+    let mut body = {
+        let _scope = budget.enter();
+        if let Err(source) = crucible::owned_decode::charge_array::<u8>(HOST_OPERATIONAL_MAX_BYTES)
+        {
+            return error_response(HostOperationalError::Admission { source });
+        }
+        let mut bytes = Vec::new();
+        if let Err(source) = bytes.try_reserve_exact(HOST_OPERATIONAL_MAX_BYTES) {
+            return error_response(HostOperationalError::Admission {
+                source: crucible::owned_decode::DecodeAdmissionError::new(source),
+            });
+        }
+        bytes
+    };
+    let mut chunks = request.into_body().into_data_stream();
+    while let Some(chunk) = chunks.next().await {
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(_) => return error_response(HostOperationalError::Unavailable),
+        };
+        if chunk.len() > HOST_OPERATIONAL_MAX_BYTES.saturating_sub(body.len()) {
             return http2_response(StatusCode::PAYLOAD_TOO_LARGE, "host operational size limit");
         }
-    };
-    let request = match codec::decode_request(&body) {
-        Ok(request) => request,
-        Err(error) => return error_response(error),
+        body.extend_from_slice(&chunk);
+    }
+    let request = {
+        let _scope = budget.enter();
+        match codec::decode_request(&body) {
+            Ok(request) => request,
+            Err(error) => return error_response(error),
+        }
     };
     if state.mode.is_read_only() && request.is_mutating() {
         return read_only_rejection_response("host-operational");
     }
-    let control = state.host_operational_control.clone();
-    let Some(control) = control else {
-        return error_response(HostOperationalError::Unavailable);
-    };
     let admission = HOST_CONTROL_ADMISSION
         .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(MAX_HOST_CONTROL_IN_FLIGHT)));
     let permit = match Arc::clone(admission).try_acquire_owned() {
         Ok(permit) => permit,
         Err(_) => return error_response(HostOperationalError::Unavailable),
     };
-    let principal = identity.certificate_sha256().to_owned();
+    let principal = {
+        let _scope = budget.enter();
+        match crucible::owned_decode::display_string(identity.certificate_sha256()) {
+            Ok(principal) => principal,
+            Err(source) => return error_response(HostOperationalError::Admission { source }),
+        }
+    };
     match tokio::task::spawn_blocking(move || {
         let _permit = permit;
+        let _scope = budget.enter();
+        let (request, _request_custody) = request.into_parts();
         control.execute(&principal, request)
     })
     .await
     {
-        Ok(Ok(response)) => match codec::encode_response(&response) {
-            Ok(bytes) => http2_response(StatusCode::OK, bytes),
+        Ok(Ok(response)) => match codec::encode_owned_response(&response) {
+            Ok(bytes) => match bytes.into_wire_bytes() {
+                Ok(bytes) => http2_response(StatusCode::OK, bytes),
+                Err(source) => error_response(HostOperationalError::Admission { source }),
+            },
             Err(error) => error_response(error),
         },
         Ok(Err(error)) => error_response(error),
@@ -87,7 +130,7 @@ fn error_response(error: HostOperationalError) -> Response {
             RpcStatusCode::Unsupported,
             "host-principal-denied",
         ),
-        HostOperationalError::Unavailable => (
+        HostOperationalError::Unavailable | HostOperationalError::Admission { .. } => (
             StatusCode::SERVICE_UNAVAILABLE,
             RpcStatusCode::Internal,
             "host-owner-unavailable",
@@ -107,6 +150,8 @@ fn error_response(error: HostOperationalError) -> Response {
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::host_operational::{
@@ -121,11 +166,24 @@ mod tests {
     }
 
     impl HostOperationalControl for Probe {
+        fn metadata_budget(
+            &self,
+            principal: &str,
+        ) -> Result<crucible::owned_decode::DecodeBudget, HostOperationalError> {
+            if principal != self.principal {
+                return Err(HostOperationalError::PrincipalDenied);
+            }
+            crate::admitted_output::tests::fixture_budget()
+                .map_err(|source| HostOperationalError::Admission { source })
+        }
+
         fn execute(
             &self,
             principal: &str,
             request: HostOperationalRequest,
-        ) -> Result<HostOperationalResponse, HostOperationalError> {
+        ) -> Result<crate::AdmittedOutput<HostOperationalResponse>, HostOperationalError> {
+            let _scope = crucible::test_support::fixture_decode_scope(32 * 1024 * 1024)
+                .map_err(|source| HostOperationalError::Admission { source })?;
             if principal != self.principal {
                 return Err(HostOperationalError::PrincipalDenied);
             }
@@ -134,18 +192,20 @@ mod tests {
             else {
                 return Err(HostOperationalError::Unavailable);
             };
-            Ok(HostOperationalResponse::Capabilities {
-                target,
-                capabilities: HostRamCapabilities {
-                    logical_ram_bytes: 4096,
-                    compulsory_resident_bytes: 4096,
-                    minimum_execution_peak_bytes: 4096,
-                    maximum_paging_io_slots: 1,
-                    dynamic_residency: false,
-                    disk_oriented: false,
-                    resident_required: false,
-                },
-                qualification: crate::host_operational::HostRamQualification::default(),
+            HostOperationalResponse::admit(|| {
+                Ok(HostOperationalResponse::Capabilities {
+                    target,
+                    capabilities: HostRamCapabilities {
+                        logical_ram_bytes: 4096,
+                        compulsory_resident_bytes: 4096,
+                        minimum_execution_peak_bytes: 4096,
+                        maximum_paging_io_slots: 1,
+                        dynamic_residency: false,
+                        disk_oriented: false,
+                        resident_required: false,
+                    },
+                    qualification: crate::host_operational::HostRamQualification::default(),
+                })
             })
         }
     }
@@ -161,11 +221,20 @@ mod tests {
         }
     }
 
-    fn request(bytes: Vec<u8>) -> Request<Body> {
+    fn request(bytes: impl Into<bytes::Bytes>) -> Request<Body> {
         Request::builder()
             .version(Version::HTTP_2)
             .header("x-crucible-rpc-build", RPC_PROTOCOL_BUILD)
-            .body(Body::from(bytes))
+            .body(Body::from(bytes.into()))
+            .unwrap()
+    }
+
+    fn encode_request(request: &HostOperationalRequest) -> bytes::Bytes {
+        let budget = crate::admitted_output::tests::fixture_budget().unwrap();
+        let _scope = budget.enter();
+        codec::encode_request(request)
+            .unwrap()
+            .into_wire_bytes()
             .unwrap()
     }
 
@@ -183,9 +252,7 @@ mod tests {
             calls: AtomicU64::new(0),
         });
         let state = state(Arc::clone(&probe), LifecycleServerMode::read_write()).await;
-        let bytes =
-            codec::encode_request(&HostOperationalRequest::Capabilities { target: target() })
-                .unwrap();
+        let bytes = encode_request(&HostOperationalRequest::Capabilities { target: target() });
 
         let response = handle(State(state), None, request(bytes)).await;
 
@@ -201,9 +268,7 @@ mod tests {
             calls: AtomicU64::new(0),
         });
         let state = state(Arc::clone(&probe), LifecycleServerMode::read_write()).await;
-        let bytes =
-            codec::encode_request(&HostOperationalRequest::Capabilities { target: target() })
-                .unwrap();
+        let bytes = encode_request(&HostOperationalRequest::Capabilities { target: target() });
 
         let response = handle(State(state), Some(Extension(identity)), request(bytes)).await;
 
@@ -211,8 +276,11 @@ mod tests {
         let bytes = axum::body::to_bytes(response.into_body(), HOST_OPERATIONAL_MAX_BYTES)
             .await
             .unwrap();
-        assert!(matches!(codec::decode_response(&bytes).unwrap(),
-            HostOperationalResponse::Capabilities { target: observed, .. } if observed == target()));
+        let _scope = crucible::test_support::fixture_decode_scope(32 * 1024 * 1024)
+            .unwrap_or_else(|error| panic!("finite response decoding fixture: {error}"));
+        let decoded = codec::decode_response(&bytes).unwrap();
+        assert!(matches!(decoded.value(),
+            HostOperationalResponse::Capabilities { target: observed, .. } if *observed == target()));
         assert_eq!(probe.calls.load(Ordering::SeqCst), 1);
     }
 
@@ -224,9 +292,7 @@ mod tests {
             calls: AtomicU64::new(0),
         });
         let state = state(Arc::clone(&probe), LifecycleServerMode::read_write()).await;
-        let bytes =
-            codec::encode_request(&HostOperationalRequest::Capabilities { target: target() })
-                .unwrap();
+        let bytes = encode_request(&HostOperationalRequest::Capabilities { target: target() });
         let held_lifecycle = state.control_plane.lock().await;
 
         let response = tokio::time::timeout(
@@ -264,7 +330,7 @@ mod tests {
             idempotency_key: [8; 32],
             allowance: Some(std::time::Duration::from_secs(60)),
         };
-        let bytes = codec::encode_request(&mutation).unwrap();
+        let bytes = encode_request(&mutation);
 
         let response = handle(
             State(state.clone()),
@@ -291,9 +357,7 @@ mod tests {
             calls: AtomicU64::new(0),
         });
         let state = state(Arc::clone(&probe), LifecycleServerMode::read_write()).await;
-        let bytes =
-            codec::encode_request(&HostOperationalRequest::Capabilities { target: target() })
-                .unwrap();
+        let bytes = encode_request(&HostOperationalRequest::Capabilities { target: target() });
         let mut request = request(bytes);
         request.headers_mut().insert(
             "x-crucible-rpc-build",

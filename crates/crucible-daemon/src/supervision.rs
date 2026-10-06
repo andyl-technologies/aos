@@ -113,6 +113,7 @@ pub(crate) struct PublicationSupervision {
 struct PublicationOwnership {
     watcher: Option<AssignmentHostWatchdogGuard>,
     caller: Option<HostOperationSupervisor>,
+    metadata: Option<crucible::owned_decode::DecodeCustody>,
 }
 
 impl std::fmt::Debug for PublicationSupervision {
@@ -124,6 +125,37 @@ impl std::fmt::Debug for PublicationSupervision {
 }
 
 impl PublicationSupervision {
+    /// Retains the successful worker input's original metadata account.
+    pub(crate) fn retain_metadata(
+        &self,
+        metadata: crucible::owned_decode::DecodeCustody,
+    ) -> std::io::Result<()> {
+        let mut ownership = self
+            .ownership
+            .lock()
+            .map_err(|_| std::io::Error::other("publication ownership poisoned"))?;
+        if ownership.metadata.is_some() {
+            return Err(std::io::Error::other(
+                "publication metadata already retained",
+            ));
+        }
+        ownership.metadata = Some(metadata);
+        Ok(())
+    }
+
+    /// Restores original worker metadata on the synchronous publication thread.
+    pub(crate) fn enter_metadata(
+        &self,
+    ) -> std::io::Result<Option<crucible::owned_decode::DecodeScope>> {
+        let metadata = self
+            .ownership
+            .lock()
+            .map_err(|_| std::io::Error::other("publication ownership poisoned"))?
+            .metadata
+            .clone();
+        Ok(metadata.and_then(|metadata| metadata.enter()))
+    }
+
     /// Binds the original caller before any assignment watcher is started.
     pub(crate) fn bind_caller(&self, caller: &HostOperationSupervisor) -> std::io::Result<()> {
         caller

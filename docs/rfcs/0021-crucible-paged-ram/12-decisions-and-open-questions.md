@@ -78,6 +78,11 @@ RAM algorithm. BLAKE3's internal hashing tree does not supply the persistent,
 address-positioned RAM tree defined in chapter 02. Logical and storage identities
 remain distinct even though their primitives now agree.
 
+The [offline host measurements](measurements/host-hashing/README.md) record the
+selected implementations and canonical workloads. SHA-256 was faster on that
+measured host; those results do not establish a general ranking or measure the
+native C implementation, persistent allocation, or physical residency costs.
+
 Incremental digests avoid paging unchanged RAM in merely to observe it.
 They also supply immutable fork baselines, checkpoint roots, and transfer
 differences. The benefit depends on complete write discovery and coherent

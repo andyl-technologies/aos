@@ -107,6 +107,44 @@ fn content_identity_is_domain_and_schema_separated() {
 }
 
 #[test]
+fn content_identity_parser_checks_bounded_canonical_ascii_without_encoding() {
+    let digest = "0123456789abcdef".repeat(4);
+    for version in ["0", "1", "4294967295"] {
+        let id = format!("campaign-snapshot.{version}.{digest}");
+        let parsed = ContentId::parse(&id).expect("canonical bounded content ID");
+        assert_eq!(
+            parsed.schema_version(),
+            version.parse::<u32>().expect("fixture version")
+        );
+    }
+    for version in ["", "00", "01", "+1", "-1", "4294967296", "00000000000", "١"] {
+        assert!(matches!(
+            ContentId::parse(&format!("trace.{version}.{digest}")),
+            Err(StoreError::InvalidId)
+        ));
+    }
+    for digest in [
+        "a".repeat(63),
+        "a".repeat(65),
+        "A".repeat(64),
+        "g".repeat(64),
+        "é".repeat(32),
+    ] {
+        assert!(matches!(
+            ContentId::parse(&format!("trace.1.{digest}")),
+            Err(StoreError::InvalidId)
+        ));
+    }
+    for id in [
+        format!("trace.1.{digest}.extra"),
+        format!("unknown.1.{digest}"),
+        "x".repeat(90),
+    ] {
+        assert!(matches!(ContentId::parse(&id), Err(StoreError::InvalidId)));
+    }
+}
+
+#[test]
 fn invalid_ref_names_fail_closed() {
     for invalid in ["", "/absolute", "../escape", "a//b", "a/../b", "snowman-☃"] {
         assert!(matches!(

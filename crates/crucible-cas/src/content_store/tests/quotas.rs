@@ -4,6 +4,69 @@ use super::*;
 use crate::content_store::composition::VerifiedStore;
 
 #[test]
+fn paired_directory_admin_views_retain_and_enforce_original_quota() -> Result<(), StoreError> {
+    let root = TempDir::new().unwrap_or_else(|error| panic!("admin quota fixture: {error}"));
+    let guard = Arc::new(RecordingPhysicalQuotaGuard::default());
+    guard.set_allowed(true);
+    let (backend, admin) = DirectoryBlobBackend::new_with_physical_quota_and_admin(
+        "paired-quota",
+        root.path().join("objects"),
+        guard.clone(),
+    )?;
+    let bytes = b"original quota-owned object";
+    let id = ContentId::for_bytes(ObjectKind::Trace, 1, bytes);
+    backend.put_if_absent(id, &BlobHandle::from_bytes(bytes.to_vec()))?;
+    let (refs, ref_admin) = DirectoryRefBackend::new_with_physical_quota_and_admin(
+        root.path().join("authority"),
+        guard.clone(),
+    )?;
+    let name = RefName::new("nested/owner/root")?;
+    refs.compare_exchange(&name, None, id)?;
+
+    drop(backend);
+    drop(refs);
+    let mut blobs = admin.acquire_inventory_fence()?;
+    let mut references = ref_admin.acquire_ref_inventory_fence()?;
+    let mut observed = 0;
+    let summary = blobs.visit_inventory(&mut |record| {
+        assert_eq!(record.id(), id);
+        observed += 1;
+        Ok(())
+    })?;
+    assert_eq!(observed, 1);
+    assert_eq!(summary.objects(), 1);
+    references.visit_refs(&mut |record| {
+        assert_eq!(record.name(), &name);
+        assert_eq!(record.target(), id);
+        Ok(())
+    })?;
+    assert!(matches!(
+        guard.reserve_resources(128, 1),
+        Err(StoreError::Quota)
+    ));
+
+    guard.set_allowed(false);
+    assert!(matches!(
+        blobs.visit_inventory(&mut |_| Ok(())),
+        Err(StoreError::Quota)
+    ));
+    assert!(matches!(blobs.delete_candidate(id), Err(StoreError::Quota)));
+    assert!(matches!(
+        references.visit_refs(&mut |_| Ok(())),
+        Err(StoreError::Quota)
+    ));
+
+    drop(blobs);
+    drop(references);
+    drop(admin);
+    drop(ref_admin);
+    guard.set_allowed(true);
+    let restored = guard.reserve_resources(128, 1)?;
+    drop(restored);
+    Ok(())
+}
+
+#[test]
 fn decoded_metadata_projection_retains_original_owner_and_refuses_ambiguous_routes()
 -> Result<(), StoreError> {
     let root = TempDir::new().unwrap_or_else(|error| panic!("metadata owner fixture: {error}"));

@@ -201,7 +201,24 @@ impl CampaignRepository {
         roots: impl IntoIterator<Item = ContentId>,
         _inventory: &dyn crucible_cas::content_store::RefInventoryFence,
     ) -> Result<CampaignStorageClosure, CampaignRepositoryError> {
-        self.authenticated_archive_closure(roots, false, &mut || Ok(()))
+        self.authenticated_storage_closure_with_boundary(roots, _inventory, &mut || Ok(()))
+    }
+
+    /// Authenticates storage metadata under the caller's original inventory operation.
+    ///
+    /// RAM graphs remain a separate bounded inventory traversal under the same
+    /// exclusive fence. The callback is polled throughout generic closure reads.
+    ///
+    /// # Errors
+    /// Refuses expired supervision, invalid metadata, missing objects, and
+    /// incomplete or excessive closures before permitting any deletion.
+    pub fn authenticated_storage_closure_with_boundary(
+        &self,
+        roots: impl IntoIterator<Item = ContentId>,
+        _inventory: &dyn crucible_cas::content_store::RefInventoryFence,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
+    ) -> Result<CampaignStorageClosure, CampaignRepositoryError> {
+        self.authenticated_archive_closure(roots, false, boundary)
     }
 
     pub(in crate::repository) fn authenticated_archive_closure(

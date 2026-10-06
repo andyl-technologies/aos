@@ -100,6 +100,12 @@ struct Fixture {
 
 #[test]
 fn gc_requires_current_selection_and_ignores_stale_record_after_unpin() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
+    let mut gc_fixture = crate::campaign_gc::ComponentGcOperation::new();
+    let gc_operation = gc_fixture.context();
+
     let temp = tempfile::tempdir().expect("exact-pin GC root");
     let node = StoreNodeId::new("durable").expect("store node");
     let (graph, admin) = StoreGraph::build_with_admin(StoreGraphConfig {
@@ -130,7 +136,12 @@ fn gc_requires_current_selection_and_ignores_stale_record_after_unpin() {
     })
     .expect("durable store graph");
     let graph = Arc::new(graph);
-    let backend: Arc<dyn ImmutableBlobBackend> = graph.clone();
+    let metadata = crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+        .expect("finite exact-pin namespace metadata");
+    let backend = crate::exact_checkpoint_store::test_support::fixture_metadata_backend(
+        graph.clone(),
+        metadata,
+    );
     let fixture = fixture_with_backend("gc", backend.clone());
     let mut ledger = crate::MemoryAssignmentLedger::default();
     let mut selections = DirectoryExactPinMaterializationStore::open(temp.path().join("pins"))
@@ -143,7 +154,7 @@ fn gc_requires_current_selection_and_ignores_stale_record_after_unpin() {
             &mut ledger,
             None,
             None,
-            &admin,
+            crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
         ),
         Err(crate::CampaignGcPlanningError::MissingExactPinMaterialization { .. })
     ));
@@ -154,7 +165,7 @@ fn gc_requires_current_selection_and_ignores_stale_record_after_unpin() {
         &mut ledger,
         None,
         Some(&mut selections),
-        &admin,
+        crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
     )
     .expect("plan with exact materialization");
     let exact_closure = {
@@ -208,9 +219,12 @@ fn gc_requires_current_selection_and_ignores_stale_record_after_unpin() {
             .iter()
             .all(|candidate| !exact_closure.contains(&candidate.id()))
     );
-    let (mut journal, _) =
-        crate::DirectoryCampaignGcJournal::create(temp.path().join("gc-journal"), &planned)
-            .expect("persist exact-pin GC plan");
+    let (mut journal, _) = crate::DirectoryCampaignGcJournal::create(
+        temp.path().join("gc-journal"),
+        &planned,
+        &gc_operation,
+    )
+    .expect("persist exact-pin GC plan");
 
     let head = fixture
         .repository
@@ -238,7 +252,7 @@ fn gc_requires_current_selection_and_ignores_stale_record_after_unpin() {
             &mut ledger,
             None,
             Some(&mut selections),
-            &admin,
+            crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
         ),
         Err(crate::CampaignGcApplyError::RefBasisChanged)
     ));
@@ -254,7 +268,7 @@ fn gc_requires_current_selection_and_ignores_stale_record_after_unpin() {
         &mut ledger,
         None,
         Some(&mut selections),
-        &admin,
+        crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
     )
     .expect("plan after unpin with stale selection record");
     assert!(
@@ -278,6 +292,9 @@ fn gc_requires_current_selection_and_ignores_stale_record_after_unpin() {
 
 #[test]
 fn selection_authenticates_pin_and_checkpoint_and_survives_restart() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let temp = tempfile::tempdir().expect("selection journal root");
     let fixture = fixture("round-trip");
     let mut store = DirectoryExactPinMaterializationStore::open(temp.path())
@@ -335,6 +352,9 @@ fn selection_authenticates_pin_and_checkpoint_and_survives_restart() {
 
 #[test]
 fn imported_selection_never_replaces_an_existing_campaign_owner() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let temp = tempfile::tempdir().expect("selection journal root");
     let fixture = fixture("import-conflict");
     let original = ExactPinMaterializationSelection::prepare(
@@ -381,6 +401,9 @@ fn imported_selection_never_replaces_an_existing_campaign_owner() {
 
 #[test]
 fn selection_rejects_unpinned_configuration_before_journal_write() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let temp = tempfile::tempdir().expect("selection journal root");
     let expected = fixture("expected");
     let foreign_configuration = ConfigurationId::from_hash(CampaignHash::derive(
@@ -412,6 +435,9 @@ fn selection_rejects_unpinned_configuration_before_journal_write() {
 
 #[test]
 fn clear_is_idempotent_and_corruption_fails_closed() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let temp = tempfile::tempdir().expect("selection journal root");
     let fixture = fixture("clear");
     let mut store = DirectoryExactPinMaterializationStore::open(temp.path())
@@ -446,7 +472,12 @@ fn clear_is_idempotent_and_corruption_fails_closed() {
 }
 
 fn fixture(name: &str) -> Fixture {
-    let backend = Arc::new(TestDurableBackend::new());
+    let metadata = crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+        .expect("finite exact-pin namespace metadata");
+    let backend = crate::exact_checkpoint_store::test_support::fixture_metadata_backend(
+        Arc::new(TestDurableBackend::new()),
+        metadata,
+    );
     fixture_with_backend(name, backend)
 }
 
@@ -465,6 +496,12 @@ fn select_fixture(
 }
 
 fn fixture_with_backend(name: &str, backend: Arc<dyn ImmutableBlobBackend>) -> Fixture {
+    let metadata = backend
+        .metadata_resources()
+        .expect("original namespace metadata");
+    let decoding = crucible::owned_decode::DecodeBudget::for_store(metadata.clone())
+        .expect("same original namespace decode account");
+    let _namespace_scope = decoding.enter();
     let production_directory = tempfile::tempdir().expect("production checkpoint fixture");
     let production = crucible_api::build_exact_ram_production_checkpoint_codec_fixture(
         production_directory.path(),
@@ -533,10 +570,7 @@ fn fixture_with_backend(name: &str, backend: Arc<dyn ImmutableBlobBackend>) -> F
     let checkpoints =
         ExactCheckpointStore::new(backend, STORE_LIMIT, repository.ram_retention_authority())
             .expect("checkpoint store")
-            .with_ram_root_resources(
-                crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
-                    .expect("finite component RAM-root credit"),
-            );
+            .with_ram_root_resources(metadata);
     let prepared = checkpoints
         .prepare_production_closure(production.closure().clone())
         .expect("prepare checkpoint");

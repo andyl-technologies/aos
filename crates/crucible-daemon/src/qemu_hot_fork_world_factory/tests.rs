@@ -553,6 +553,7 @@ impl QemuFreshAttemptLifecycleOwner for BranchReplayLifecycle {
             event_log_segment_hash: None,
             event_log_offset: crucible::EventLogOffset::default(),
             scheduler_quiescence: None,
+            event_log_custody: crucible::EventLogOutputCustody::default(),
         })
     }
 
@@ -911,7 +912,7 @@ impl QemuHotForkWorldLifecycleOwner for InheritedBoundaryLifecycle {
             .start_events
             .iter()
             .map(SchedulerEventLogEntry::canonical_material_len)
-            .sum();
+            .sum::<Result<usize, _>>()?;
         Ok(crate::QemuFreshStartMaterialization::from_resume_parts(
             self.configuration.clone(),
             self.start_events.clone(),
@@ -1217,6 +1218,7 @@ impl QemuHotForkSourceWorldProvider for CleanupOrderedSourceWorldProvider {
 
 #[test]
 fn source_provider_failure_preserves_its_diagnostic_chain() {
+    let _metadata_scope = component_metadata_scope();
     let input = execution_input();
     let observations = ScriptedWorldObservations::new();
     let run_state = tempfile::tempdir().expect("run state");
@@ -1270,6 +1272,12 @@ impl CrucibleExecutionRunner for RecordingFallbackRunner {
         self.reconciliations.fetch_add(1, Ordering::SeqCst);
         Ok(AttemptExecutionReconciliationStep::Complete)
     }
+}
+
+/// Keeps one explicit component metadata bank alive through all scripted owners.
+fn component_metadata_scope() -> crucible::test_support::FixtureDecodeScope {
+    crucible::test_support::fixture_decode_scope(128 * 1024 * 1024)
+        .expect("finite scripted World/configuration/output metadata bank")
 }
 
 fn test_realization_error(error: impl std::fmt::Display) -> QemuVmRealizationError {

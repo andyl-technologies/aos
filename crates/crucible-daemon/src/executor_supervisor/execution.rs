@@ -182,6 +182,12 @@ where
                 self.validator
                     .validate_completion_artifacts(&active.request, observation, finding_candidate)
                     .map_err(|reason| LocalExecutorError::CompletionValidation { reason })?;
+                #[cfg(test)]
+                let next_completed_count = self.native_completed_transitions.checked_add(1).ok_or(
+                    LocalExecutorError::LedgerInvariant {
+                        reason: "native completion diagnostic counter exhausted",
+                    },
+                )?;
                 let next = AttemptRuntimeState::Completed {
                     execution_basis,
                     origin,
@@ -191,6 +197,11 @@ where
                     finding_candidate: CompletedFindingCandidate::pending(finding_candidate),
                 };
                 let advance = self.advance_attempt(key, current, Some(next))?;
+                #[cfg(test)]
+                {
+                    self.native_completed_transitions = next_completed_count;
+                }
+
                 self.release_active_if_present(execution)?;
                 if let AttemptAdvance::CommittedAfterError(error) = advance {
                     return Err(LocalExecutorError::Ledger(error));

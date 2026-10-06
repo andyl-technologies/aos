@@ -95,7 +95,7 @@ impl QemuNode {
         generation: u64,
         template_generation: u64,
     ) -> Result<(), QemuNodeChannelError> {
-        let identity = crate::QmpHotForkChildProcessContractIdentity::new(1, 2, 9, 3, 4)
+        let identity = crate::QmpHotForkChildProcessContractIdentity::new(1, 2, 9, 3, 4, 0)
             .map_err(QemuNodeChannelError::from)?;
         let checkpoint_cancellation =
             super::hot_fork_plugin_endpoints::create_nonblocking_eventfd().map_err(|source| {
@@ -210,6 +210,7 @@ impl QemuNode {
             cgroup_procs_inode,
             cancellation_eventfd_id,
             contract.maximum_writable_bytes(),
+            contract.maximum_locked_bytes(),
         )
         .map_err(QemuNodeChannelError::from)?;
         let cgroup_name =

@@ -144,7 +144,8 @@ pub(super) fn assert_campaign_save_exports_closure(
                 },
                 missing_node.clone(),
                 proved_marker.clone(),
-            );
+            )
+            .or_panic("construct missing-node marker evidence");
             let missing_source = handle
                 .lines()
                 .map(|line| {
@@ -364,6 +365,10 @@ pub(super) fn assert_campaign_save_exports_closure(
                     ticks: source_frontier,
                 })
             },
+        )
+        .with_decode_budget(
+            crate::cli_input_resources::original_budget()
+                .or_panic("retain the original remote observation fixture budget"),
         )
         .with_resume_replay_closure_validator(|scenario, configuration, checkpoint, envelope| {
             crucible_daemon::qemu_campaign_lifecycle::validate_remote_resume_replay_closure(

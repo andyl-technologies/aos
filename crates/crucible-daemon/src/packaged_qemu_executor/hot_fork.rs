@@ -600,9 +600,11 @@ where
                 Ok(PackagedQemuInitialRunnerBuild::fresh(
                     (0..worker_count)
                         .map(|slot| {
-                            let lifecycle = retained_service_config.admitted_lifecycle_config()?.with_run_state_root(
-                                worker_state_root.join(format!("worker-{slot:03}")),
-                            );
+                            let lifecycle = retained_service_config
+                                .admitted_lifecycle_config()?
+                                .with_run_state_root(
+                                    worker_state_root.join(format!("worker-{slot:03}")),
+                                );
                             let lifecycle_factory = PackagedStatusLifecycleFactory {
                                 inner: QemuAttemptProductionVmLifecycleFactory::new(
                                     lifecycle,
@@ -650,12 +652,14 @@ where
             for basis in &source_bases {
                 let lineage = basis.lineage_id();
                 let fallback = HotCheckpointFallback::Thin(basis.source_artifact());
-                let source_lifecycle = retained_service_config.admitted_lifecycle_config()?.with_run_state_root(
-                    lifecycle_config
-                        .run_state_root()
-                        .join("campaign-hot-fork-sources")
-                        .join(lineage.to_string()),
-                );
+                let source_lifecycle = retained_service_config
+                    .admitted_lifecycle_config()?
+                    .with_run_state_root(
+                        lifecycle_config
+                            .run_state_root()
+                            .join("campaign-hot-fork-sources")
+                            .join(lineage.to_string()),
+                    );
                 let lifecycles = QemuAttemptProductionVmLifecycleFactory::new(
                     source_lifecycle,
                     ComposedQemuAttemptResourceGuardFactory::new(shared.clone()),
@@ -746,13 +750,15 @@ where
                 let mut demanded_factories = BTreeMap::new();
                 for basis in &source_bases {
                     let lineage = basis.lineage_id();
-                    let source_lifecycle = retained_service_config.admitted_lifecycle_config()?.with_run_state_root(
-                        lifecycle_config
-                            .run_state_root()
-                            .join("campaign-hot-fork-demanded")
-                            .join(format!("worker-{slot:03}"))
-                            .join(lineage.to_string()),
-                    );
+                    let source_lifecycle = retained_service_config
+                        .admitted_lifecycle_config()?
+                        .with_run_state_root(
+                            lifecycle_config
+                                .run_state_root()
+                                .join("campaign-hot-fork-demanded")
+                                .join(format!("worker-{slot:03}"))
+                                .join(lineage.to_string()),
+                        );
                     let lifecycles = QemuAttemptProductionVmLifecycleFactory::new(
                         source_lifecycle,
                         ComposedQemuAttemptResourceGuardFactory::new(shared.clone()),

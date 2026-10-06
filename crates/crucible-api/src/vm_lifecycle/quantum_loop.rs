@@ -125,7 +125,7 @@ impl ProductionVmLifecycleLoop {
                 .map_err(|error| {
                     attempt_boundary_scheduler_error("publish retained physical outcomes", error)
                 })?;
-            let outcomes = pending.outcomes.clone();
+            let outcomes = host_concurrent::copy_host_concurrent_outcomes(&pending.outcomes)?;
             if let Some(pending) = &mut self.pending_held_host_outcomes {
                 pending.publication_started = true;
             }
@@ -188,7 +188,10 @@ impl ProductionVmLifecycleLoop {
             let network_settlement = self
                 .inner
                 .settle_pending_network_outputs_at_current_frontier()?;
-            let reserved_network_outcome = network_settlement.reservation().cloned();
+            let reserved_network_outcome = network_settlement
+                .reservation()
+                .map(QuantumOutcome::try_clone_admitted)
+                .transpose()?;
             let (mut pre_quantum_decisions, settled_configuration, network_appends) =
                 network_settlement.into_parts();
             if let Some(mut outcome) = reserved_network_outcome {
@@ -228,11 +231,11 @@ impl ProductionVmLifecycleLoop {
                     .splice(0..0, discoveries.iter().cloned());
                 self.pending_live_network_prefix = Some(PendingLiveNetworkPrefix {
                     decisions: Vec::new(),
-                    appends: pre_quantum_appends.clone(),
+                    appends: copy_event_log_appends(&pre_quantum_appends)?,
                     discoveries: std::mem::take(&mut discoveries),
                     signal_fault_frontier_start: self.inner.loop_impl().search_frontiers().len(),
                 });
-                prepend_event_log_appends(&mut outcome, pre_quantum_appends);
+                prepend_event_log_appends(&mut outcome, pre_quantum_appends)?;
                 outcome.scheduler_quiescence = Some(self.inner.loop_impl().quiescence()?);
                 self.capture_debug_runtime_evidence()?;
                 return Ok(outcome);
@@ -282,8 +285,9 @@ impl ProductionVmLifecycleLoop {
                     event_log_segment_hash: None,
                     event_log_offset: scheduler.event_log_offset(),
                     scheduler_quiescence: Some(scheduler.quiescence()?),
+                    event_log_custody: Default::default(),
                 };
-                prepend_event_log_appends(&mut outcome, pre_quantum_appends);
+                prepend_event_log_appends(&mut outcome, pre_quantum_appends)?;
                 self.capture_debug_runtime_evidence()?;
                 return Ok(outcome);
             }
@@ -302,8 +306,9 @@ impl ProductionVmLifecycleLoop {
                     event_log_segment_hash: None,
                     event_log_offset: scheduler.event_log_offset(),
                     scheduler_quiescence: Some(scheduler.quiescence()?),
+                    event_log_custody: Default::default(),
                 };
-                prepend_event_log_appends(&mut outcome, pre_quantum_appends);
+                prepend_event_log_appends(&mut outcome, pre_quantum_appends)?;
                 self.append_live_signal_fault_campaign_discoveries(
                     signal_fault_frontier_start,
                     &mut outcome,
@@ -411,10 +416,11 @@ impl ProductionVmLifecycleLoop {
                         event_log_segment_hash: append.segment_hash,
                         event_log_offset: append.offset,
                         scheduler_quiescence,
+                        event_log_custody: append.event_log_custody,
                     };
-                    prepend_event_log_appends(&mut outcome, pre_quantum_appends);
+                    prepend_event_log_appends(&mut outcome, pre_quantum_appends)?;
                     for append in self.settle_trigger_graph()? {
-                        merge_event_log_append(&mut outcome, append);
+                        merge_event_log_append(&mut outcome, append)?;
                     }
                     self.append_live_signal_fault_campaign_discoveries(
                         signal_fault_frontier_start,
@@ -492,10 +498,11 @@ impl ProductionVmLifecycleLoop {
                         event_log_segment_hash: append.segment_hash,
                         event_log_offset: append.offset,
                         scheduler_quiescence,
+                        event_log_custody: append.event_log_custody,
                     };
-                    prepend_event_log_appends(&mut outcome, pre_quantum_appends);
+                    prepend_event_log_appends(&mut outcome, pre_quantum_appends)?;
                     for append in self.settle_trigger_graph()? {
-                        merge_event_log_append(&mut outcome, append);
+                        merge_event_log_append(&mut outcome, append)?;
                     }
                     self.append_live_signal_fault_campaign_discoveries(
                         signal_fault_frontier_start,
@@ -531,13 +538,13 @@ impl ProductionVmLifecycleLoop {
             if self.inner.live_network_preselection().is_some() {
                 self.pending_live_network_prefix = Some(PendingLiveNetworkPrefix {
                     decisions: pre_quantum_decisions.clone(),
-                    appends: pre_quantum_appends.clone(),
+                    appends: copy_event_log_appends(&pre_quantum_appends)?,
                     discoveries: Vec::new(),
                     signal_fault_frontier_start,
                 });
                 pre_quantum_decisions.extend(std::mem::take(&mut outcome.decisions));
                 outcome.decisions = pre_quantum_decisions;
-                prepend_event_log_appends(&mut outcome, pre_quantum_appends);
+                prepend_event_log_appends(&mut outcome, pre_quantum_appends)?;
                 self.capture_debug_runtime_evidence()?;
                 return Ok(outcome);
             }

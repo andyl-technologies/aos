@@ -1,6 +1,8 @@
 //! Authenticated streaming replay views over exact-checkpoint closures.
 
 use super::*;
+use crucible_cas::content_store::StoreError;
+use crucible_cas::ram::RamStoreError;
 
 /// One immutable object in a portable production exact-checkpoint closure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -158,8 +160,59 @@ impl crucible_qemu::ram_source::QemuRamBacking for ProductionPagedRamSource {
                 self.store
                     .read_page_with_proof(&self.root, region_id, page_index, ram_boundary)
             },
-            |error| crucible_qemu::ram_source::QemuRamSourceError::Backing(error.to_string()),
+            |error| crucible_qemu::ram_source::QemuRamSourceError::BackingFailure {
+                kind: ram_backing_failure_kind(&error),
+                source: crucible::BackendOperationalCause::new(error),
+            },
         )
+    }
+}
+
+fn ram_backing_failure_kind(error: &RamStoreError) -> crucible::BackendOperationalFailureKind {
+    use crucible::BackendOperationalFailureKind as Kind;
+    use crucible_linux_resource::host_supervision::{HostOperationState, HostSupervisionError};
+
+    // Wrapping through SQLite, stream I/O or RAM authentication must preserve
+    // the actionable category of the original supervision failure.
+    // A bounded walk cannot stall cleanup on an erroneous source cycle.
+    // crucible-lint: allow erased-error -- this borrows the standard Error source chain to classify retained typed supervision; it creates no erased owner or diagnostic replacement.
+    let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    for _ in 0..64 {
+        let Some(current) = cause else {
+            break;
+        };
+        if let Some(supervision) = current.downcast_ref::<HostSupervisionError>() {
+            return match supervision {
+                HostSupervisionError::InvalidBudget
+                | HostSupervisionError::UnboundedInfrastructure { .. } => Kind::InvalidPolicy,
+                HostSupervisionError::RevisionConflict { .. } => Kind::RevisionConflict,
+                HostSupervisionError::Terminal {
+                    state: HostOperationState::Canceled,
+                } => Kind::Canceled,
+                HostSupervisionError::Terminal {
+                    state: HostOperationState::Expired,
+                } => Kind::Expired,
+                HostSupervisionError::Terminal { .. } => Kind::Terminal,
+                HostSupervisionError::DeadlineExpired { .. } => Kind::Expired,
+                HostSupervisionError::CapacityExhausted => Kind::CapacityExhausted,
+                HostSupervisionError::IdentityExhausted => Kind::IdentityExhausted,
+                HostSupervisionError::ProgressRegressed => Kind::ProgressRegressed,
+                HostSupervisionError::Unavailable => Kind::Unavailable,
+            };
+        }
+        cause = current.source();
+    }
+    match error {
+        RamStoreError::Canceled => Kind::Canceled,
+        RamStoreError::Limit(_) | RamStoreError::Store(StoreError::Quota) => {
+            Kind::CapacityExhausted
+        }
+        RamStoreError::Store(_)
+        | RamStoreError::Invalid(_)
+        | RamStoreError::Logical(_)
+        | RamStoreError::Envelope(_)
+        | RamStoreError::Retention(_)
+        | RamStoreError::Transfer(_) => Kind::Unavailable,
     }
 }
 

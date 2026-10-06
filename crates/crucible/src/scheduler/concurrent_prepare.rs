@@ -5,7 +5,7 @@ use super::*;
 use crate::backend::StepObservation;
 
 /// Output produced by one bounded host-concurrent scheduler round.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct SchedulerConcurrentQuantumOutcome {
     /// RUN set selected from the same scheduler boundary before host dispatch.
     pub run_set: SchedulerConcurrentRunSet,

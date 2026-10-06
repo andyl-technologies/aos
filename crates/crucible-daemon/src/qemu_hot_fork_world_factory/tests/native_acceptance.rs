@@ -77,6 +77,27 @@ fn production_factory_forks_complete_live_world_atomically() {
     run_atomic_world_case(crate::packaged_qemu_executor::NativeAtomicWorldCase::Complete);
 }
 
+#[test]
+#[ignore = "requires isolated AOS paging kernel, actual mapped virtqueue and original Service"]
+fn production_managed_dma_maps_block_reclaim_until_real_completion() {
+    let paths = NativeGatePaths::from_environment();
+    let fixture = fs::read_to_string(&paths.fixture).expect("original real block traffic");
+    let artifacts: Arc<dyn DagStore> = Arc::new(LocalDagStore::new(&paths.artifacts));
+    let (source, artifacts) = scenario::build_single_node_equivalence(
+        &fixture,
+        artifacts,
+        &paths.kernel,
+        &paths.root_image,
+    )
+    .expect("actual one-VM virtio-block traffic");
+    let config = lifecycle_config(
+        &paths,
+        paths.run_state_root.join("dma-borrowers"),
+        artifacts,
+    );
+    crate::packaged_qemu_executor::run_dma_borrowers_native(source, config);
+}
+
 fn run_atomic_world_case(case: crate::packaged_qemu_executor::NativeAtomicWorldCase) {
     let paths = NativeGatePaths::from_environment();
     let fixture = fs::read_to_string(&paths.fixture).expect("reviewed traffic scenario");

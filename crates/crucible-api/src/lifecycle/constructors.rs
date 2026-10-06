@@ -63,6 +63,7 @@ where
             max_sessions: None,
             retain_stopped_sessions: false,
             _loop: PhantomData,
+            decode_budget: None,
         }
     }
 }

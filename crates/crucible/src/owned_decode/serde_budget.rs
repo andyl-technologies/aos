@@ -42,7 +42,7 @@ pub fn from_json_slice<'de, T: Deserialize<'de>>(bytes: &'de [u8]) -> Result<T, 
     // Declared before the parser so its buffers close before the credit.
     let _parser_scratch = budget
         .reserve_scratch_bytes(scratch)
-        .map_err(serde::de::Error::custom)?;
+        .map_err(|error| refusal::<serde_json::Error>(&budget, error))?;
     admit_seed::<T, serde_json::Error>(&budget)?;
     let mut decoder = serde_json::Deserializer::from_slice(bytes);
     let result = T::deserialize(BudgetDeserializer {
@@ -57,7 +57,40 @@ fn admit_seed<T, E: serde::de::Error>(budget: &DecodeBudget) -> Result<(), E> {
     // Key and value seeds each admit their complete typed node contribution.
     // Their combined charges cover a map node; the same cumulative allowance
     // exceeds Vec's minimum capacity and old/new geometric growth overlap.
-    budget.charge_btree_entry::<T, ()>().map_err(E::custom)
+    budget
+        .charge_btree_entry::<T, ()>()
+        .map_err(|error| refusal::<E>(budget, error))
+}
+
+/// Applies typed allocation admission to an already admitted parser.
+///
+/// The parser's private scratch and diagnostic allocations must be admitted by
+/// its format owner before this function runs. This supplies only typed visitor
+/// admission and suppresses untrusted collection size hints.
+///
+/// # Errors
+/// Returns the parser error or a fixed refusal marker; the account retains the
+/// original typed admission cause independently of the parser's diagnostic.
+pub fn deserialize_with_budget<'de, T, D>(
+    decoder: D,
+    budget: &DecodeBudget,
+) -> Result<T, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    admit_seed::<T, D::Error>(budget)?;
+    T::deserialize(BudgetDeserializer {
+        inner: decoder,
+        budget: budget.clone(),
+    })
+}
+
+fn refusal<E: serde::de::Error>(budget: &DecodeBudget, error: super::DecodeAdmissionError) -> E {
+    budget.record_failure(error);
+    // Provider diagnostics can own arbitrary data. The upstream parser only
+    // receives this fixed marker; callers recover the original typed cause.
+    E::custom("original decoded metadata admission refused")
 }
 
 struct BudgetDeserializer<D> {
@@ -173,42 +206,42 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for BudgetVisitor<V> {
     fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
         self.budget
             .charge_bytes(2 * value.len() as u64)
-            .map_err(E::custom)?;
+            .map_err(|error| refusal::<E>(&self.budget, error))?;
         self.inner.visit_str(value)
     }
 
     fn visit_borrowed_str<E: serde::de::Error>(self, value: &'de str) -> Result<Self::Value, E> {
         self.budget
             .charge_bytes(2 * value.len() as u64)
-            .map_err(E::custom)?;
+            .map_err(|error| refusal::<E>(&self.budget, error))?;
         self.inner.visit_borrowed_str(value)
     }
 
     fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Self::Value, E> {
         self.budget
             .charge_bytes(2 * value.capacity() as u64)
-            .map_err(E::custom)?;
+            .map_err(|error| refusal::<E>(&self.budget, error))?;
         self.inner.visit_string(value)
     }
 
     fn visit_bytes<E: serde::de::Error>(self, value: &[u8]) -> Result<Self::Value, E> {
         self.budget
             .charge_bytes(2 * value.len() as u64)
-            .map_err(E::custom)?;
+            .map_err(|error| refusal::<E>(&self.budget, error))?;
         self.inner.visit_bytes(value)
     }
 
     fn visit_borrowed_bytes<E: serde::de::Error>(self, value: &'de [u8]) -> Result<Self::Value, E> {
         self.budget
             .charge_bytes(2 * value.len() as u64)
-            .map_err(E::custom)?;
+            .map_err(|error| refusal::<E>(&self.budget, error))?;
         self.inner.visit_borrowed_bytes(value)
     }
 
     fn visit_byte_buf<E: serde::de::Error>(self, value: Vec<u8>) -> Result<Self::Value, E> {
         self.budget
             .charge_bytes(2 * value.capacity() as u64)
-            .map_err(E::custom)?;
+            .map_err(|error| refusal::<E>(&self.budget, error))?;
         self.inner.visit_byte_buf(value)
     }
 

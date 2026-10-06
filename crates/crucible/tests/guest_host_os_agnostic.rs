@@ -116,6 +116,9 @@ impl crucible::ConditionLeafOracle for NoGuestSoftwareLeaves {
 
 #[test]
 fn black_box_contract_catalog_has_no_guest_software_assumptions() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let kinds = BLACK_BOX_OBSERVATION_CONTRACTS
         .iter()
         .map(|contract| contract.kind())
@@ -146,6 +149,9 @@ fn black_box_contract_catalog_has_no_guest_software_assumptions() {
 
 #[test]
 fn non_linux_opaque_image_uses_black_box_observation_without_guest_contract() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = opaque_non_linux_world();
     let node = world
         .vm_nodes()
@@ -209,6 +215,9 @@ fn non_linux_opaque_image_uses_black_box_observation_without_guest_contract() {
 
 #[test]
 fn console_serial_observation_is_output_only() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let event = ObservableEvent::console_output(
         time(7),
         node("monitor"),

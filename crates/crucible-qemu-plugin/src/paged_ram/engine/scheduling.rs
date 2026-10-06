@@ -51,11 +51,12 @@ impl PausedPagingOwner {
         // and native fork admission proved the mailbox empty.
         let status = schedule(queued_placement, (self as *const Self).cast_mut().cast());
         if status != 0 {
-            self.failed.store(true, Ordering::Release);
-            return Err(RamError::Native {
+            let error = RamError::Native {
                 operation: "enqueue paused RAM placement",
                 status,
-            });
+            };
+            self.retain_operational_failure(SourceOperationClass::Quiescence, &error);
+            return Err(error);
         }
         Ok(())
     }
@@ -173,6 +174,7 @@ impl PausedPagingOwner {
         };
         if let Some(receipt) = receipt {
             receipt.operation.complete()?;
+            self.complete_placement_receipt(generation)?;
         }
         Ok(())
     }
@@ -186,8 +188,15 @@ extern "C" fn queued_placement(opaque: *mut c_void) -> c_int {
         owner.run_queued_placement()
     })) {
         Ok(Ok(())) => 0,
-        _ => {
-            owner.failed.store(true, Ordering::Release);
+        Ok(Err(error)) => {
+            owner.retain_operational_failure(SourceOperationClass::Quiescence, &error);
+            -libc::EIO
+        }
+        Err(_) => {
+            owner.retain_operational_failure(
+                SourceOperationClass::Quiescence,
+                &RamError::Invariant("paused placement callback panicked"),
+            );
             -libc::EIO
         }
     }

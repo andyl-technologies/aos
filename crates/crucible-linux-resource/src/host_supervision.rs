@@ -227,7 +227,7 @@ pub enum HostProgressKind {
 }
 
 /// Coherent effective deadline including every tied limiting source.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct HostEffectiveDeadline {
     /// Remaining operational allowance; zero means elapsed.
     pub remaining: Duration,
@@ -236,7 +236,7 @@ pub struct HostEffectiveDeadline {
 }
 
 /// Coherent operational status of one original-start operation.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct HostOperationStatus {
     /// Nonreused operation identity within this supervisor incarnation.
     pub operation_id: u64,
@@ -871,7 +871,23 @@ impl HostOperationSupervisor {
     pub fn status_snapshot(
         &self,
     ) -> Result<(HostOuterCapStatus, Vec<HostOperationStatus>), HostSupervisionError> {
-        self.status_snapshot_with_elapsed()
+        self.status_snapshot_with_elapsed(usize::MAX)
+            .map(|(cap, _, operations)| (cap, operations))
+    }
+
+    /// Observes at most `maximum` operations without allocating a larger roster.
+    ///
+    /// Callers reserve the concrete status, identity and three-source deadline
+    /// storage before calling. The ownership lock covers the count check and
+    /// construction, so concurrent admissions cannot enlarge that snapshot.
+    ///
+    /// # Errors
+    /// Refuses an oversized roster or uncertain ownership before allocation.
+    pub fn status_snapshot_bounded(
+        &self,
+        maximum: usize,
+    ) -> Result<(HostOuterCapStatus, Vec<HostOperationStatus>), HostSupervisionError> {
+        self.status_snapshot_with_elapsed(maximum)
             .map(|(cap, _, operations)| (cap, operations))
     }
 
@@ -883,7 +899,7 @@ impl HostOperationSupervisor {
     /// # Errors
     /// Refuses uncertain operational ownership or invalid active-operation status.
     pub fn outer_cap_binding(&self) -> Result<HostOuterCapBinding, HostSupervisionError> {
-        let (status, _, _) = self.status_snapshot_with_elapsed()?;
+        let (status, _, _) = self.status_snapshot_with_elapsed(usize::MAX)?;
         Ok(HostOuterCapBinding {
             cap_id: self.shared.cap_id,
             original_monotonic_ns: self.shared.original_monotonic_ns,
@@ -895,6 +911,7 @@ impl HostOperationSupervisor {
 
     fn status_snapshot_with_elapsed(
         &self,
+        maximum: usize,
     ) -> Result<(HostOuterCapStatus, Duration, Vec<HostOperationStatus>), HostSupervisionError>
     {
         let mut state = self.lock()?;
@@ -917,11 +934,21 @@ impl HostOperationSupervisor {
                 .map(|allowance| allowance.saturating_sub(elapsed)),
             state: state.cap_state,
         };
-        let ids: Vec<u64> = state.operations.keys().copied().collect();
-        let operations = ids
-            .into_iter()
-            .map(|id| evaluate_operation(&mut state, id, elapsed))
-            .collect::<Result<_, _>>()?;
+        let count = state.operations.len();
+        if count > maximum {
+            return Err(HostSupervisionError::CapacityExhausted);
+        }
+        let mut ids = Vec::new();
+        ids.try_reserve_exact(count)
+            .map_err(|_| HostSupervisionError::CapacityExhausted)?;
+        ids.extend(state.operations.keys().copied());
+        let mut operations = Vec::new();
+        operations
+            .try_reserve_exact(count)
+            .map_err(|_| HostSupervisionError::CapacityExhausted)?;
+        for id in ids {
+            operations.push(evaluate_operation(&mut state, id, elapsed)?);
+        }
         Ok((cap, elapsed, operations))
     }
 
@@ -1222,10 +1249,12 @@ fn effective_deadline(
         ));
     }
     let remaining = limits.iter().map(|(remaining, _)| *remaining).min()?;
-    let sources = limits
-        .into_iter()
-        .filter_map(|(limit, source)| (limit == remaining).then_some(source))
-        .collect();
+    let mut sources = Vec::with_capacity(3);
+    sources.extend(
+        limits
+            .into_iter()
+            .filter_map(|(limit, source)| (limit == remaining).then_some(source)),
+    );
     Some(HostEffectiveDeadline { remaining, sources })
 }
 

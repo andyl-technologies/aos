@@ -532,6 +532,18 @@ impl QemuNodePendingQuantum {
 
 /// QMP machine-control channel for snapshot and quit commands.
 pub(crate) trait QemuQmpMachineControlChannel: Send {
+    #[cfg(any(test, feature = "test-support"))]
+    fn performance_observation(
+        &mut self,
+        _guard: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        _resident: std::sync::Arc<dyn Send + Sync>,
+    ) -> Result<crate::qmp::QemuPerformanceObservation, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "performance observation",
+            "fixed read-only observation unavailable",
+        ))
+    }
+
     fn query_paused_cpu(
         &mut self,
         _vcpu: u32,
@@ -690,6 +702,21 @@ pub(crate) trait QemuQmpMachineControlChannel: Send {
     fn query_hot_fork_plugin_barrier(
         &mut self,
     ) -> Result<crate::QmpHotForkPluginBarrierState, QemuNodeChannelError>;
+
+    /// Observes actual native map lifetimes under a retained original test scope.
+    ///
+    /// # Errors
+    /// Refuses unsupported channels, expired authority, or a malformed native report.
+    #[cfg(any(test, feature = "test-support"))]
+    fn query_block_borrowers_for_test(
+        &mut self,
+        _guard: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crate::QmpHotForkBlockBarrierState, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "query actual block borrowers",
+            "read-only native borrower observation is unavailable",
+        ))
+    }
 
     /// Holds the native graph writer and block-drain barrier before sealing.
     ///
@@ -1043,7 +1070,10 @@ pub(crate) trait QemuQmpMachineControlChannel: Send {
         _kind: crate::node::QemuTestNativeAliasKind,
         _descriptor: BorrowedFd<'_>,
     ) -> Result<QemuNodeChannelError, QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new("probe native source alias", "channel has no real native descriptor probe"))
+        Err(QemuNodeChannelError::new(
+            "probe native source alias",
+            "channel has no real native descriptor probe",
+        ))
     }
 
     /// Closes plugin endpoints retained by the QEMU template and monitor.

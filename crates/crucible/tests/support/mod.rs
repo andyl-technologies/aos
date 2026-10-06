@@ -12,6 +12,7 @@ pub fn time(ticks: u64) -> VirtualTime {
 
 pub fn quantum_prefix(ticks: u64) -> ConditionEventLogPrefix {
     crucible::test_support::condition_prefix_at_quantum_boundary_for_test(ticks)
+        .unwrap_or_else(|error| panic!("finite component scheduler prefix: {error}"))
 }
 
 pub fn observable_prefix(ticks: u64, events: Vec<ObservableEvent>) -> ConditionEventLogPrefix {

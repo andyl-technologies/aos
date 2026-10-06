@@ -32,6 +32,9 @@ fn source_key(source: &ProductionVmHotForkSourceWorld) -> QemuHotForkSourceWorld
 #[test]
 fn canonical_genesis_accepts_the_authenticated_nonzero_ready_point()
 -> Result<(), Box<dyn std::error::Error>> {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let source = nonzero_ready_point_source()?;
     let retained = source
         .continuation()
@@ -126,6 +129,9 @@ fn canonical_genesis_rejects_completed_quanta_and_preserves_its_diagnostic()
 #[test]
 fn canonical_genesis_rejects_recorded_events_and_foreign_configuration_keys()
 -> Result<(), Box<dyn std::error::Error>> {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let mut source = nonzero_ready_point_source()?;
     let form = crucible::crash_restart_scenario()?.scenario;
     let node = form

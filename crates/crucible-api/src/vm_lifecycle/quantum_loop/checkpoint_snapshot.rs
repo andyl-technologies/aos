@@ -105,7 +105,10 @@ impl ProductionVmLifecycleLoop {
         })?;
         let signal_artifact_objects = self.signal_artifact_objects.clone();
         let trigger_state = self.trigger_state.clone();
-        let assertion_state = self.assertion_evaluator.checkpoint();
+        let assertion_state = self
+            .assertion_evaluator
+            .checkpoint()
+            .map_err(SchedulerError::from)?;
         let terminal_verdict = self.terminal_verdict.clone();
         let terminal_cause = self.checkpoint_terminal_cause.clone();
         let branch = self.branch.clone();

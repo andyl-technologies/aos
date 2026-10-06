@@ -1,39 +1,7 @@
 //! Reachability equivalence and original-account graph admission regressions.
 
 use super::*;
-use crate::owned_decode::{DecodeAdmissionError, DecodeBudget, DecodeResourceAuthority};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-struct Authority(Arc<AtomicU64>, u64);
-struct Credit(Arc<AtomicU64>, u64);
-
-impl Drop for Credit {
-    fn drop(&mut self) {
-        self.0.fetch_sub(self.1, Ordering::SeqCst);
-    }
-}
-
-impl DecodeResourceAuthority for Authority {
-    fn reserve(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, DecodeAdmissionError> {
-        self.0
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
-                used.checked_add(bytes).filter(|next| *next <= self.1)
-            })
-            .map_err(|_| {
-                DecodeAdmissionError::new(std::io::Error::other("original graph credit exhausted"))
-            })?;
-        Ok(Arc::new(Credit(self.0.clone(), bytes)))
-    }
-}
-
-fn budget(bytes: u64) -> DecodeBudget {
-    DecodeBudget::new(
-        Arc::new(Authority(Arc::new(AtomicU64::new(0)), bytes)),
-        bytes,
-    )
-    .expect("fixture original account")
-}
+use std::error::Error;
 
 fn after(name: &str) -> Condition {
     Condition::After {
@@ -80,7 +48,8 @@ fn alternatives(
 }
 
 #[test]
-fn direct_reachability_matches_dependency_alternatives() {
+fn direct_reachability_matches_dependency_alternatives() -> Result<(), Box<dyn Error>> {
+    let decoding = crate::test_support::fixture_decode_scope(1024 * 1024)?;
     let timer = TimerId {
         name: "timer".to_owned(),
     };
@@ -132,10 +101,13 @@ fn direct_reachability_matches_dependency_alternatives() {
             );
         }
     }
+    decoding.check()?;
+    Ok(())
 }
 
 #[test]
-fn wide_compound_does_not_allocate_cartesian_dependency_expansion() {
+fn wide_compound_does_not_allocate_cartesian_dependency_expansion() -> Result<(), Box<dyn Error>> {
+    let decoding = crate::test_support::fixture_decode_scope(1024 * 1024)?;
     let compound = Condition::AllOf {
         predicates: (0..26)
             .map(|_| Condition::AnyOf {
@@ -148,22 +120,20 @@ fn wide_compound_does_not_allocate_cartesian_dependency_expansion() {
         Event::once(EventId::from_name("b"), None, Action::Pass),
         Event::once(EventId::from_name("compound"), Some(compound), Action::Pass),
     ];
-    let budget = budget(1024 * 1024);
-    let scope = budget.enter();
-    let graph = EventGraph::new(events).expect("linear compound admission");
-    drop(scope);
+    let graph = EventGraph::new(events)?;
     assert_eq!(graph.events().len(), 3);
-    assert!(budget.failure().expect("account health").is_none());
+    decoding.check()?;
+    Ok(())
 }
 
 #[test]
-fn graph_indexes_refuse_original_credit_before_construction() {
+fn graph_indexes_refuse_original_credit_before_construction() -> Result<(), Box<dyn Error>> {
+    let decoding = crate::test_support::fixture_decode_scope(256)?;
     let events = vec![Event::once(EventId::from_name("entry"), None, Action::Pass)];
-    let budget = budget(256);
-    let _scope = budget.enter();
     assert!(matches!(
         EventGraph::new(events),
         Err(EventGraphError::OriginalAdmission(_))
     ));
-    assert!(budget.failure().expect("account health").is_some());
+    assert!(decoding.check().is_err());
+    Ok(())
 }

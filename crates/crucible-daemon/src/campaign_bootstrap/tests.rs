@@ -1579,6 +1579,9 @@ fn read_only_owner_denies_store_maintenance_with_graph_authority() {
 
 #[test]
 fn prepared_store_gc_authority_plans_journals_and_applies_under_one_owner() {
+    let mut gc_fixture = crate::campaign_gc::ComponentGcOperation::new();
+    let gc_operation = gc_fixture.context();
+
     let (directory, config) = fixture();
     let (store, graph) = external_graph_store(&directory);
     let orphan_bytes = b"unreachable imported scenario bytes";
@@ -1595,7 +1598,7 @@ fn prepared_store_gc_authority_plans_journals_and_applies_under_one_owner() {
     let mut ledger = MemoryAssignmentLedger::default();
 
     let planned = authority
-        .plan(&mut ledger, None)
+        .plan(&mut ledger, None, &gc_operation)
         .expect("plan stopped-owner GC");
     assert_eq!(planned.roots().len(), 0);
     assert_eq!(planned.candidates().len(), 1);
@@ -1611,6 +1614,7 @@ fn prepared_store_gc_authority_plans_journals_and_applies_under_one_owner() {
     let (mut journal, disposition) = crate::DirectoryCampaignGcJournal::create(
         directory.path().join("owner-gc-journal"),
         &planned,
+        &gc_operation,
     )
     .expect("persist owner GC journal");
     assert_eq!(
@@ -1619,7 +1623,7 @@ fn prepared_store_gc_authority_plans_journals_and_applies_under_one_owner() {
     );
 
     let report = authority
-        .apply(&mut journal, &mut ledger, None)
+        .apply(&mut journal, &mut ledger, None, &gc_operation)
         .expect("apply exact owner GC journal");
     assert_eq!(report.status(), crate::CampaignGcApplyStatus::Applied);
     assert_eq!(journal.phase(), crate::CampaignGcJournalPhase::Complete);
@@ -1628,6 +1632,9 @@ fn prepared_store_gc_authority_plans_journals_and_applies_under_one_owner() {
 
 #[test]
 fn prepared_store_gc_automatically_inventories_registered_transfer_journal() {
+    let mut gc_fixture = crate::campaign_gc::ComponentGcOperation::new();
+    let gc_operation = gc_fixture.context();
+
     let (_source_directory, source_config) = fixture();
     let (_destination_directory, destination_config) = fixture();
     let mut source = source_config.prepare().expect("prepare source service");
@@ -1678,7 +1685,7 @@ fn prepared_store_gc_automatically_inventories_registered_transfer_journal() {
     let source_gc = source
         .store_gc_authority()
         .expect("source GC authority")
-        .plan(&mut source_ledger, None)
+        .plan(&mut source_ledger, None, &gc_operation)
         .expect("plan source GC with transfer roots");
     for id in &transfer_objects {
         assert!(
@@ -1691,7 +1698,7 @@ fn prepared_store_gc_automatically_inventories_registered_transfer_journal() {
     let destination_gc = destination
         .store_gc_authority()
         .expect("destination GC authority")
-        .plan(&mut destination_ledger, None)
+        .plan(&mut destination_ledger, None, &gc_operation)
         .expect("plan destination GC with transfer roots");
     for id in transfer_objects {
         assert!(
@@ -1703,6 +1710,9 @@ fn prepared_store_gc_automatically_inventories_registered_transfer_journal() {
 
 #[test]
 fn prepared_store_gc_automatically_retains_durable_hot_fallbacks_across_restart() {
+    let mut gc_fixture = crate::campaign_gc::ComponentGcOperation::new();
+    let gc_operation = gc_fixture.context();
+
     let (directory, config) = fixture();
     let (store, graph) = external_graph_store(&directory);
     let prepared = config
@@ -1752,7 +1762,7 @@ fn prepared_store_gc_automatically_retains_durable_hot_fallbacks_across_restart(
     let planned = restarted
         .store_gc_authority()
         .expect("borrow restarted GC authority")
-        .plan(&mut ledger, None)
+        .plan(&mut ledger, None, &gc_operation)
         .expect("plan restarted GC with fallback");
     assert!(
         planned
@@ -1769,6 +1779,7 @@ fn prepared_store_gc_automatically_retains_durable_hot_fallbacks_across_restart(
     let (mut journal, disposition) = crate::DirectoryCampaignGcJournal::create(
         directory.path().join("hot-fallback-restart-gc-journal"),
         &planned,
+        &gc_operation,
     )
     .expect("persist restarted hot-fallback GC journal");
     assert_eq!(
@@ -1779,7 +1790,7 @@ fn prepared_store_gc_automatically_retains_durable_hot_fallbacks_across_restart(
     let report = restarted
         .store_gc_authority()
         .expect("borrow restarted GC authority for apply")
-        .apply(&mut journal, &mut ledger, None)
+        .apply(&mut journal, &mut ledger, None, &gc_operation)
         .expect("apply restarted GC with hot fallback");
     assert_eq!(report.status(), crate::CampaignGcApplyStatus::Applied);
     assert!(

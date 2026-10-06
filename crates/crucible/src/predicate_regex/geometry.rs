@@ -188,9 +188,12 @@ fn implicit_metadata() -> Result<u64, PredicateRegexError> {
     accumulate(&mut bytes, growing::<Option<std::sync::Arc<str>>>(1)?)?;
     accumulate(&mut bytes, growing::<StateID>(1)?)?;
     accumulate(&mut bytes, growing::<(usize, usize)>(1)?)?;
+    // Each empty name map has two u64 hash-seed words plus hashbrown's
+    // control pointer, bucket mask, growth counter, and item count. The
+    // allocator is zero-sized; unnamed captures create no buckets.
     accumulate(
         &mut bytes,
-        growing::<std::collections::HashMap<std::sync::Arc<str>, usize>>(1)?,
+        growing::<([u64; 2], [usize; 4])>(1)?,
     )?;
     accumulate(&mut bytes, growing::<Vec<Option<std::sync::Arc<str>>>>(1)?)?;
     accumulate(&mut bytes, growing::<Option<std::sync::Arc<str>>>(1)?)?;
@@ -222,7 +225,7 @@ fn implicit_metadata() -> Result<u64, PredicateRegexError> {
         &mut bytes,
         private_record(&[
             extent::<Vec<(usize, usize)>>(),
-            extent::<Vec<std::collections::HashMap<std::sync::Arc<str>, usize>>>(),
+            extent::<Vec<()>>(),
             extent::<Vec<Vec<Option<std::sync::Arc<str>>>>>(),
             extent::<usize>(),
         ])?,

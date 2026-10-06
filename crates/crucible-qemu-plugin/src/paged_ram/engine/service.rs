@@ -5,6 +5,9 @@
 
 use super::*;
 
+mod actor_lifetime;
+pub(super) use actor_lifetime::ActorLifetime;
+
 pub(super) struct FaultService {
     pub(super) registration: Arc<Registration>,
     pub(super) counters: Arc<PagingCounters>,
@@ -12,11 +15,13 @@ pub(super) struct FaultService {
     pub(super) spill: Arc<Mutex<super::super::PreservedPages>>,
     pub(super) arenas: Vec<Arena>,
     pub(super) states: Mutex<Vec<PageState>>,
+    pub(super) placement_dependency: Mutex<Option<Arc<dyn SourceOperation>>>,
     pub(super) worker: Mutex<Option<JoinHandle<Result<(), RamError>>>>,
     pub(super) stop: AtomicBool,
     pub(super) activated: AtomicBool,
     pub(super) destructive: AtomicBool,
     pub(super) failed: AtomicBool,
+    pub(super) lifetime: Mutex<ActorLifetime>,
     pub(super) retained_token: AtomicU64,
     pub(super) operations: Arc<dyn SourceOperationFactory>,
     pub(super) worker_generation: u64,
@@ -58,6 +63,11 @@ impl FaultService {
                             status,
                         });
                     }
+                    service
+                        .lifetime
+                        .lock()
+                        .map_err(|_| RamError::Invariant("fault actor lifetime poisoned"))?
+                        .admitted(tid as u64);
                     if ready_tx.send(0).is_err() {
                         service.failed.store(true, Ordering::Release);
                         let release =
@@ -70,7 +80,14 @@ impl FaultService {
                     let result =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| service.run()))
                             .unwrap_or(Err(RamError::Invariant("paging fault actor panicked")));
-                    if result.is_err() {
+                    if let Err(error) = &result {
+                        service
+                            .lifetime
+                            .lock()
+                            .map_err(|_| {
+                                RamError::Invariant("fault actor failure publication poisoned")
+                            })?
+                            .failed(error.clone());
                         service.failed.store(true, Ordering::Release);
                     }
                     let mut release =
@@ -89,6 +106,11 @@ impl FaultService {
                             status: release,
                         });
                     }
+                    service
+                        .lifetime
+                        .lock()
+                        .map_err(|_| RamError::Invariant("fault actor disposition poisoned"))?
+                        .released();
                     result
                 })
                 .map_err(RamError::from)?,
@@ -190,6 +212,10 @@ impl FaultService {
     fn run(&self) -> Result<(), RamError> {
         let mut scratch = [0; PAGE_BYTES];
         while !self.stop.load(Ordering::Acquire) {
+            self.lifetime
+                .lock()
+                .map_err(|_| RamError::Invariant("fault actor poll publication poisoned"))?
+                .poll()?;
             self.registration.wait(10).map_err(RamError::from)?;
             if !self.activated.load(Ordering::Acquire) {
                 continue;
@@ -245,6 +271,11 @@ impl FaultService {
     }
 
     fn resolve(&self, fault: FaultEvent, scratch: &mut [u8; PAGE_BYTES]) -> Result<(), RamError> {
+        self.lifetime
+            .lock()
+            .map_err(|_| "fault actor poll publication poisoned")?
+            .poll()?;
+        self.check_placement_dependency()?;
         let operation = self
             .operations
             .begin(SourceOperationClass::PageIn)
@@ -316,16 +347,24 @@ impl FaultService {
             if resident {
                 // A prior service of another queued accessor already installed
                 // this page; no removal is admitted while this service is active.
+                self.check_placement_dependency()?;
                 self.registration.wake(address).map_err(RamError::from)?;
                 return operation.complete().map_err(RamError::from);
             }
             let valid = self.read_cold(arena, page_index, coordinate, false, scratch)?;
+            // A terminal request accepted while backing I/O was pending refuses
+            // installation after the original read returns, retaining UFFD.
+            self.lifetime
+                .lock()
+                .map_err(|_| "fault actor poll publication poisoned")?
+                .poll()?;
             if valid as usize != PAGE_BYTES {
                 return Err(RamError::Invariant(
                     "source page length differs from admitted host mapping",
                 ));
             }
             operation.wait_slice().map_err(RamError::from)?;
+            self.check_placement_dependency()?;
             self.registration
                 .populate(address, scratch)
                 .map_err(RamError::from)?;
@@ -343,8 +382,21 @@ impl FaultService {
             }
         }
         operation.wait_slice().map_err(RamError::from)?;
+        self.check_placement_dependency()?;
         self.registration.wake(address).map_err(RamError::from)?;
         operation.complete().map_err(RamError::from)
+    }
+
+    fn check_placement_dependency(&self) -> Result<(), RamError> {
+        let dependency = self
+            .placement_dependency
+            .try_lock()
+            .map_err(|_| "page fault placement dependency unavailable")?
+            .clone();
+        if let Some(dependency) = dependency {
+            dependency.wait_slice()?;
+        }
+        Ok(())
     }
 }
 

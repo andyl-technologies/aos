@@ -124,9 +124,13 @@ fn negated_once() -> Predicate {
 
 #[test]
 fn refused_assertion_copy_cannot_latch_negated_provisional_truth() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let predicate = negated_once();
     let (budget, account) = original_account();
-    let prefix = crucible::test_support::condition_prefix_at_quantum_boundary_for_test(1);
+    let prefix = crucible::test_support::condition_prefix_at_quantum_boundary_for_test(1)
+        .unwrap_or_else(|error| panic!("finite component scheduler prefix: {error}"));
     let mut pass =
         ConditionEvaluationPass::from_log_prefix(prefix, refusing_leaf(&budget, &account));
 
@@ -140,6 +144,9 @@ fn refused_assertion_copy_cannot_latch_negated_provisional_truth() {
 
 #[test]
 fn refused_trigger_copy_preserves_edges_one_shots_and_firings() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let event = EventId::from_name("copy-refused-before-publication");
     let earlier = EventId::from_name("earlier-successful-row");
     let graph = EventGraph::new(vec![
@@ -166,9 +173,11 @@ fn refused_trigger_copy_preserves_edges_one_shots_and_firings() {
     let mut state = EventGraphState::new();
     let before = state.to_compact_binary();
     let (budget, account) = original_account();
-    let prefix = crucible::test_support::condition_prefix_at_quantum_boundary_for_test(1);
+    let prefix = crucible::test_support::condition_prefix_at_quantum_boundary_for_test(1)
+        .unwrap_or_else(|error| panic!("finite component scheduler prefix: {error}"));
     let mut pass =
-        ConditionEvaluationPass::from_log_prefix(prefix.clone(), refusing_leaf(&budget, &account));
+        ConditionEvaluationPass::from_log_prefix_ref(&prefix, refusing_leaf(&budget, &account))
+            .unwrap_or_else(|error| panic!("finite component condition projection: {error}"));
 
     let scope = budget.enter();
     assert!(budget.check().is_ok());
@@ -197,6 +206,9 @@ fn refused_trigger_copy_preserves_edges_one_shots_and_firings() {
 
 #[test]
 fn repeated_graph_passes_release_temporary_credit_to_the_persistent_floor() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let event = EventId::from_name("stable-persistent-graph-state");
     let graph = EventGraph::new(vec![Event::repeatable(
         event,
@@ -209,12 +221,14 @@ fn repeated_graph_passes_release_temporary_credit_to_the_persistent_floor() {
         },
     )])
     .unwrap_or_else(|error| panic!("finite graph fixture: {error}"));
-    let prefix = crucible::test_support::condition_prefix_at_quantum_boundary_for_test(1);
+    let prefix = crucible::test_support::condition_prefix_at_quantum_boundary_for_test(1)
+        .unwrap_or_else(|error| panic!("finite component scheduler prefix: {error}"));
     let (budget, account) = original_account();
     let mut state = EventGraphState::new();
     let scope = budget.enter();
     let mut first =
-        ConditionEvaluationPass::from_log_prefix(prefix.clone(), |_leaf: ConditionLeaf<'_>| false);
+        ConditionEvaluationPass::from_log_prefix_ref(&prefix, |_leaf: ConditionLeaf<'_>| false)
+            .unwrap_or_else(|error| panic!("finite component condition projection: {error}"));
 
     let firings = first
         .evaluate_event_graph(&graph, &mut state)
@@ -228,9 +242,8 @@ fn repeated_graph_passes_release_temporary_credit_to_the_persistent_floor() {
 
     for _ in 0..32 {
         let mut pass =
-            ConditionEvaluationPass::from_log_prefix(prefix.clone(), |_leaf: ConditionLeaf<'_>| {
-                false
-            });
+            ConditionEvaluationPass::from_log_prefix_ref(&prefix, |_leaf: ConditionLeaf<'_>| false)
+                .unwrap_or_else(|error| panic!("finite component condition projection: {error}"));
         let firings = pass
             .evaluate_event_graph(&graph, &mut state)
             .unwrap_or_else(|error| panic!("repeated admitted graph pass: {error}"));

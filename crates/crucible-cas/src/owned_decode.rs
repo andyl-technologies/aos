@@ -10,6 +10,9 @@ use std::error::Error;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
+#[cfg(test)]
+mod tests;
+
 /// Provides actual original-owner memory credits for one artifact decoder.
 pub trait DecodeResourceAuthority: Send + Sync {
     /// Reserves owned memory before allocation, retaining original custody.
@@ -273,6 +276,8 @@ impl DecodeBudget {
     ///
     /// The returned guard must outlive the corresponding buffer or compiler
     /// object. Retained decoded fields use [`Self::charge_bytes`] instead.
+    /// Empty storage retains the validated account without requesting a resource
+    /// credit; it still refuses poisoning or an earlier account failure.
     ///
     /// # Errors
     /// Refuses overflow, poisoning, earlier failure or original exhaustion.
@@ -284,6 +289,13 @@ impl DecodeBudget {
             .map_err(|_| refusal("decoded metadata account is poisoned"))?;
         if let Some(error) = &state.failure {
             return Err(error.clone());
+        }
+        if bytes == 0 {
+            return Ok(DecodeScratch {
+                receipt: None,
+                budget: self.clone(),
+                bytes: 0,
+            });
         }
         let result = state
             .used

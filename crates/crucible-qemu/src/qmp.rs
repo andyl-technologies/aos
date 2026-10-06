@@ -31,10 +31,16 @@ use crucible_shmem::SetupRegionBackingIdentity;
 
 use crate::QemuNodeChannelError;
 
+#[cfg(any(test, feature = "test-support"))]
+mod block_completion_observation;
 mod checkpoint;
 mod command;
 mod paused_cpu;
+#[cfg(any(test, feature = "test-support"))]
+mod performance_observation;
 pub use paused_cpu::{QMP_PAUSED_CPU_SCHEMA_VERSION, QMP_QUERY_PAUSED_CPU_COMMAND, QmpPausedCpu};
+#[cfg(any(test, feature = "test-support"))]
+pub use performance_observation::QemuPerformanceObservation;
 mod fingerprint_projection;
 mod hot_fork;
 mod hot_fork_coordinator;
@@ -56,6 +62,10 @@ pub(crate) use fingerprint_projection::{
 };
 #[cfg(all(test, target_os = "linux"))]
 mod checkpoint_paged_source_tests;
+
+#[cfg(all(test, unix))]
+pub(crate) mod checkpoint_paged_source_support;
+
 mod hot_fork_ram;
 pub(crate) use hot_fork_ram::{
     QmpHotForkChildRamDescriptors, QmpHotForkChildRamNames, QmpHotForkChildRamState,
@@ -122,9 +132,9 @@ pub use hot_fork::{
     QmpHotForkPluginBarrierState, QmpHotForkPluginEndpointDescriptorPlan,
     QmpHotForkPluginEndpointIdentity, QmpHotForkPluginEndpointState,
     QmpHotForkPluginResourceInventory, QmpHotForkPrivateRingState, QmpHotForkProof,
-    QmpHotForkRcuBarrierState, QmpHotForkRequest, QmpHotForkRequestError,
-    QmpHotForkSourceGraphMember, QmpHotForkSourceGraphReceipt, QmpHotForkState,
-    QmpHotForkTemplateFailureStage, QmpHotForkTemplateOutcome,
+    QmpHotForkRamBorrowInventory, QmpHotForkRcuBarrierState, QmpHotForkRequest,
+    QmpHotForkRequestError, QmpHotForkSourceGraphMember, QmpHotForkSourceGraphReceipt,
+    QmpHotForkState, QmpHotForkTemplateFailureStage, QmpHotForkTemplateOutcome,
     QmpHotForkTemplateResourceStageState, QmpHotForkTemplateState,
 };
 pub(crate) use ram_restore::{QmpCheckpointRestore, QmpCheckpointRestoreRequest};
@@ -953,7 +963,7 @@ where
     fn operation_deadline(
         &self,
         command: QmpCommandKind,
-    ) -> Result<QmpOperationDeadline, QmpError> {
+    ) -> Result<QmpOperationDeadline<'static>, QmpError> {
         let class = match command {
             QmpCommandKind::CheckpointCapture | QmpCommandKind::CheckpointTopology => {
                 HostOperationClass::CheckpointCapture
@@ -982,7 +992,7 @@ where
     fn read_command_response(
         &mut self,
         command: QmpCommandKind,
-        deadline: &QmpOperationDeadline,
+        deadline: &QmpOperationDeadline<'_>,
     ) -> Result<QmpCommandReturn, QmpError> {
         let mut skipped_events = 0usize;
         loop {
@@ -1059,7 +1069,7 @@ where
     fn read_json_line(
         &mut self,
         operation: &'static str,
-        deadline: &QmpOperationDeadline,
+        deadline: &QmpOperationDeadline<'_>,
     ) -> Result<Value, QmpError> {
         let mut line = Vec::new();
         loop {
@@ -1107,7 +1117,7 @@ where
         &mut self,
         operation: &'static str,
         request: Value,
-        deadline: &QmpOperationDeadline,
+        deadline: &QmpOperationDeadline<'_>,
     ) -> Result<(), QmpError> {
         let mut line = serde_json::to_vec(&request).map_err(|error| QmpError::Json {
             operation,
@@ -1151,7 +1161,7 @@ where
         operation: &'static str,
         request: Value,
         descriptor: BorrowedFd<'_>,
-        deadline: &QmpOperationDeadline,
+        deadline: &QmpOperationDeadline<'_>,
     ) -> Result<(), QmpError> {
         let mut line = serde_json::to_vec(&request).map_err(|error| QmpError::Json {
             operation,
@@ -1267,13 +1277,16 @@ impl QmpDescriptorName {
     }
 }
 
-struct QmpOperationDeadline {
+struct QmpOperationDeadline<'a> {
     supervision: HostSupervisionDeadline,
     timeout: Duration,
     shared: Option<HostOperationGuard>,
+    #[cfg(any(test, feature = "test-support"))]
+    borrowed: Option<&'a HostOperationGuard>,
+    _lifetime: std::marker::PhantomData<&'a ()>,
 }
 
-impl QmpOperationDeadline {
+impl QmpOperationDeadline<'_> {
     fn new(timeout: Duration) -> Self {
         // QMP lifecycle I/O uses host realtime only to bound child liveness; the
         // resulting timestamp is never folded into virtual-time ordering state.
@@ -1281,10 +1294,22 @@ impl QmpOperationDeadline {
             supervision: HostSupervisionDeadline::start(timeout),
             timeout,
             shared: None,
+            #[cfg(any(test, feature = "test-support"))]
+            borrowed: None,
+            _lifetime: std::marker::PhantomData,
         }
     }
 
     fn remaining(&self, operation: &'static str) -> Result<Duration, QmpError> {
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(guard) = self.borrowed {
+            return guard
+                .wait_slice()
+                .map_err(|error| QmpError::OperationalSupervision {
+                    operation,
+                    message: error.to_string(),
+                });
+        }
         if let Some(guard) = &self.shared {
             return guard
                 .wait_slice()
@@ -1312,7 +1337,10 @@ impl QmpOperationDeadline {
     }
 
     fn retry_slice(&self, error: &io::Error) -> bool {
-        self.shared.is_some()
+        let supervised = self.shared.is_some();
+        #[cfg(any(test, feature = "test-support"))]
+        let supervised = supervised || self.borrowed.is_some();
+        supervised
             && matches!(
                 error.kind(),
                 ErrorKind::Interrupted | ErrorKind::WouldBlock | ErrorKind::TimedOut
@@ -1320,6 +1348,16 @@ impl QmpOperationDeadline {
     }
 
     fn complete(&self, operation: &'static str) -> Result<(), QmpError> {
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(guard) = self.borrowed {
+            return guard
+                .progress(1)
+                .and_then(|()| guard.wait_slice().map(|_| ()))
+                .map_err(|error| QmpError::OperationalSupervision {
+                    operation,
+                    message: error.to_string(),
+                });
+        }
         if let Some(guard) = &self.shared {
             guard
                 .progress(1)
@@ -1536,6 +1574,9 @@ pub enum QmpCommandKind {
     QueryCheckpointEpoch,
     /// Read-only architectural PC at a paused SIM boundary.
     QueryPausedCpu,
+    /// Fixed read-only observations for admitted performance fixtures.
+    #[cfg(any(test, feature = "test-support"))]
+    PerformanceObservation,
     /// Exact realized fingerprint projection manifest query.
     QueryFingerprintProjectionManifest,
     /// Snapshot job status query.
@@ -1618,6 +1659,8 @@ impl QmpCommandKind {
                 QMP_QUERY_FINGERPRINT_PROJECTION_MANIFEST_COMMAND
             }
             Self::QueryPausedCpu => QMP_QUERY_PAUSED_CPU_COMMAND,
+            #[cfg(any(test, feature = "test-support"))]
+            Self::PerformanceObservation => "human-monitor-command",
             Self::QueryJobs => QMP_QUERY_JOBS_COMMAND,
             Self::JobDismiss => QMP_JOB_DISMISS_COMMAND,
             Self::QueryStatus => QMP_QUERY_STATUS_COMMAND,
@@ -2022,7 +2065,7 @@ mod tests {
             QmpDescriptorName::new("target-cgroup-procs").expect("valid cgroup.procs name");
         let cancellation =
             QmpDescriptorName::new("target-cancellation").expect("valid cancellation name");
-        let identity = QmpHotForkChildProcessContractIdentity::new(11, 12, 14, 13, 4096)
+        let identity = QmpHotForkChildProcessContractIdentity::new(11, 12, 14, 13, 4096, 8192)
             .expect("valid child process identity");
 
         assert_eq!(
@@ -2128,6 +2171,7 @@ mod tests {
                     "expected-cgroup-procs-inode": 14,
                     "expected-cancellation-eventfd-id": 13,
                     "maximum-file-bytes": 4096,
+                    "maximum-locked-bytes": 8192,
                 },
             })
         );

@@ -4,8 +4,10 @@
 //! The lifecycle retains that Service until its node and directory borrowers
 //! close; an uncertain final cleanup preserves the original capacity charge.
 
+use std::sync::Arc;
+
 use crucible::{ScenarioDef, ScenarioDefForm};
-use crucible_api::ProductionVmLifecycleLoop;
+use crucible_api::{ProductionVmLifecycleConfig, ProductionVmLifecycleLoop};
 use crucible_campaign::AttemptResourceLimits;
 use crucible_linux_resource::host_supervision::HostOperationClass;
 use thiserror::Error;
@@ -38,6 +40,15 @@ pub enum InteractiveQemuSessionError {
     /// A model copy could not retain its original metadata credit.
     #[error("interactive QEMU model admission: {0}")]
     Decoding(#[source] crucible::owned_decode::DecodeAdmissionError),
+    /// A replay projection changes the admitted executable or plugin.
+    #[error("interactive QEMU replay changes the admitted native identity")]
+    NativeIdentityMismatch,
+    /// Requested modeled limits exceed the original deployed semantic ceiling.
+    #[error("interactive QEMU replay limits exceed the original admission")]
+    ExecutionLimitsExceedAdmission,
+    /// An active lifecycle projection could not retain its original credit.
+    #[error("interactive QEMU lifecycle projection: {0}")]
+    ConfigurationCopy(#[source] crucible_api::vm_lifecycle::ProductionVmLifecycleConfigCloneError),
     /// The original actor refused independent complete Service admission.
     #[error("interactive QEMU Service admission: {0}")]
     Admission(#[source] Box<crate::PackagedQemuExecutorError>),
@@ -60,6 +71,38 @@ struct InteractiveSessionCustody {
 }
 
 impl GuardedCampaignOwner {
+    /// Admits an interactive world with narrower modeled execution limits.
+    ///
+    /// The original actor, lifecycle configuration, physical Service ceiling,
+    /// and operation roster are reused. Only the requested semantic bounds
+    /// may narrow the deployment's accepted limits.
+    ///
+    /// # Errors
+    /// Refuses limits exceeding the original admission or any source, resource,
+    /// supervision, or native startup failure reported by the session builder.
+    pub fn begin_interactive_session_with_limits(
+        &self,
+        scenario: &ScenarioDef,
+        source: &ScenarioDefForm,
+        cancellation: ExecutionCancellation,
+        resources: AttemptResourceLimits,
+    ) -> Result<ProductionVmLifecycleLoop, InteractiveQemuSessionError> {
+        let (lifecycle, _, _) =
+            self.inner
+                .config
+                .guarded_inputs()
+                .ok_or(InteractiveQemuSessionError::Authority(
+                    crucible_api::host_operational::HostOperationalError::Unavailable,
+                ))?;
+        self.begin_interactive_session_with_lifecycle(
+            scenario,
+            source,
+            cancellation,
+            lifecycle,
+            resources,
+        )
+    }
+
     /// Admits a fresh interactive native world on this owner's original actor.
     ///
     /// The deployment's semantic limits and complete physical Service ceiling
@@ -79,20 +122,77 @@ impl GuardedCampaignOwner {
         source: &ScenarioDefForm,
         cancellation: ExecutionCancellation,
     ) -> Result<ProductionVmLifecycleLoop, InteractiveQemuSessionError> {
+        let (lifecycle, _, resources) =
+            self.inner
+                .config
+                .guarded_inputs()
+                .ok_or(InteractiveQemuSessionError::Authority(
+                    crucible_api::host_operational::HostOperationalError::Unavailable,
+                ))?;
+        self.begin_interactive_session_with_lifecycle(
+            scenario,
+            source,
+            cancellation,
+            lifecycle,
+            resources,
+        )
+    }
+
+    /// Admits an interactive replay projection under this owner's original account.
+    ///
+    /// The supplied lifecycle may change replay traces and quantum policy. Its
+    /// executable and plugin must match admission; its paths and catalog provider
+    /// are rebound to the original namespace before native construction. Modeled
+    /// limits may only narrow the immutable deployment ceiling. The fresh Service
+    /// retains the same actor, full physical vector and original operation roster.
+    ///
+    /// # Errors
+    /// Refuses a changed native identity, wider modeled limits, unavailable
+    /// original metadata or Service authority, expiry, or native startup failure.
+    pub fn begin_interactive_session_with_lifecycle(
+        &self,
+        scenario: &ScenarioDef,
+        source: &ScenarioDefForm,
+        cancellation: ExecutionCancellation,
+        lifecycle: impl Into<Arc<ProductionVmLifecycleConfig>>,
+        resources: AttemptResourceLimits,
+    ) -> Result<ProductionVmLifecycleLoop, InteractiveQemuSessionError> {
         let decoding = crucible::owned_decode::DecodeBudget::for_store(
             self.repository_metadata_resources()
                 .map_err(InteractiveQemuSessionError::Metadata)?,
         )
         .map_err(InteractiveQemuSessionError::Decoding)?;
         let _scope = decoding.enter();
-        let resources =
+        let (admitted, _, ceiling) =
             self.inner
                 .config
-                .assignment_limits()
+                .guarded_inputs()
                 .ok_or(InteractiveQemuSessionError::Authority(
                     crucible_api::host_operational::HostOperationalError::Unavailable,
                 ))?;
+        validate_interactive_limits(resources, ceiling)?;
         validate_interactive_source(scenario, source, resources)?;
+        let lifecycle = lifecycle.into();
+        if lifecycle.executable() != admitted.executable()
+            || lifecycle.plugin() != admitted.plugin()
+        {
+            return Err(InteractiveQemuSessionError::NativeIdentityMismatch);
+        }
+        let provider = admitted.ram_catalog_provider().cloned().ok_or(
+            InteractiveQemuSessionError::Authority(
+                crucible_api::host_operational::HostOperationalError::Unavailable,
+            ),
+        )?;
+        decoding
+            .charge_array::<u8>(admitted.run_state_root().as_os_str().len())
+            .map_err(InteractiveQemuSessionError::Decoding)?;
+        let lifecycle_config = Arc::new(
+            lifecycle
+                .try_clone_admitted()
+                .map_err(InteractiveQemuSessionError::ConfigurationCopy)?
+                .with_run_state_root(admitted.run_state_root())
+                .with_ram_catalog_provider(provider),
+        );
 
         decoding
             .charge_array::<InteractiveSessionCustody>(1)
@@ -121,11 +221,6 @@ impl GuardedCampaignOwner {
         operation
             .wait_slice()
             .map_err(InteractiveQemuSessionError::Supervision)?;
-        let lifecycle_config = self.inner.config.guarded_inputs().ok_or(
-            InteractiveQemuSessionError::Authority(
-                crucible_api::host_operational::HostOperationalError::Unavailable,
-            ),
-        )?.0;
         let mut factory = QemuAttemptProductionVmLifecycleFactory::new(
             lifecycle_config,
             ComposedQemuAttemptResourceGuardFactory::new(self.inner.host.clone()),
@@ -143,6 +238,20 @@ impl GuardedCampaignOwner {
             .map_err(InteractiveQemuSessionError::Supervision)?;
         Ok(lifecycle)
     }
+}
+
+fn validate_interactive_limits(
+    requested: AttemptResourceLimits,
+    ceiling: AttemptResourceLimits,
+) -> Result<(), InteractiveQemuSessionError> {
+    if requested.maximum_vcpus() > ceiling.maximum_vcpus()
+        || requested.maximum_resident_bytes() > ceiling.maximum_resident_bytes()
+        || requested.maximum_disk_bytes() > ceiling.maximum_disk_bytes()
+        || requested.maximum_execution_quanta() > ceiling.maximum_execution_quanta()
+    {
+        return Err(InteractiveQemuSessionError::ExecutionLimitsExceedAdmission);
+    }
+    Ok(())
 }
 
 fn validate_interactive_source(
@@ -214,6 +323,30 @@ mod tests {
                 }
             )
         ));
+    }
+
+    #[test]
+    fn replay_limits_refuse_each_dimension_above_original_admission() {
+        let ceiling = test_value(AttemptResourceLimits::new(2, 2048, 4096, 16), "ceiling");
+        let narrower = test_value(AttemptResourceLimits::new(1, 1024, 2048, 8), "narrower");
+        assert!(validate_interactive_limits(narrower, ceiling).is_ok());
+        assert!(validate_interactive_limits(ceiling, ceiling).is_ok());
+
+        for values in [
+            (3, 2048, 4096, 16),
+            (2, 2049, 4096, 16),
+            (2, 2048, 4097, 16),
+            (2, 2048, 4096, 17),
+        ] {
+            let requested = test_value(
+                AttemptResourceLimits::new(values.0, values.1, values.2, values.3),
+                "wider requested limits",
+            );
+            assert!(matches!(
+                validate_interactive_limits(requested, ceiling),
+                Err(InteractiveQemuSessionError::ExecutionLimitsExceedAdmission)
+            ));
+        }
     }
 
     fn scenario_form() -> ScenarioDefForm {

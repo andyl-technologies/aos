@@ -1174,6 +1174,7 @@ fn completion_and_cancellation_races_are_idempotent() {
         epoch,
         capacity,
     );
+    assert_eq!(supervisor.native_completed_transitions(), 0);
     let completed_request = request(0x21, 0x41, epoch, resources(1, 2048, 4096));
     let completed_response = supervisor
         .submit_attempt(&completed_request)
@@ -1197,6 +1198,7 @@ fn completion_and_cancellation_races_are_idempotent() {
             .expect("first completion"),
         CompletionOutcome::Completed
     );
+    assert_eq!(supervisor.native_completed_transitions(), 1);
     assert_eq!(
         supervisor
             .complete_execution(
@@ -1207,6 +1209,7 @@ fn completion_and_cancellation_races_are_idempotent() {
             .expect("completion replay"),
         CompletionOutcome::AlreadyCompleted
     );
+    assert_eq!(supervisor.native_completed_transitions(), 1);
     assert!(matches!(
         supervisor.complete_execution(
             execution_key(&completed_request),
@@ -1270,6 +1273,7 @@ fn completion_and_cancellation_races_are_idempotent() {
             .disposition(),
         SubmitAttemptDisposition::Accepted { .. }
     ));
+    assert_eq!(supervisor.native_completed_transitions(), 1);
 }
 
 #[test]

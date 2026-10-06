@@ -2,9 +2,14 @@
 
 use super::*;
 
+pub(super) struct RetainedQuantumLog<'a> {
+    pub(super) entries: &'a mut Vec<SchedulerEventLogEntry>,
+    pub(super) bytes: &'a mut usize,
+    pub(super) custody: &'a mut crate::crucible_measurement::CrucibleMeasurementEventCustody,
+}
+
 pub(super) fn append_quantum(
-    event_log: &mut Vec<SchedulerEventLogEntry>,
-    event_log_bytes: &mut usize,
+    retained_log: RetainedQuantumLog<'_>,
     discoveries: &mut RetainedChoiceDiscoveries,
     terminal_quiescence: &mut Option<SchedulerQuiescence>,
     terminal_at: &mut VirtualTime,
@@ -17,9 +22,15 @@ pub(super) fn append_quantum(
         event_log_entries,
         scheduler_quiescence,
         frontier,
+        event_log_custody,
         ..
     } = outcome;
-    append_event_entries(event_log, event_log_bytes, event_log_entries)
+    retained_log
+        .custody
+        .retain(event_log_custody)
+        .map_err(QemuFreshModeledDriverError::Configuration)
+        .map_err(AttemptWorkerFailure::Retryable)?;
+    append_event_entries(retained_log.entries, retained_log.bytes, event_log_entries)
         .map_err(AttemptWorkerFailure::Terminal)?;
     for discovery in discovered_choices {
         if is_environment_fault_discovery(&discovery) && !retain_environment_fault_discoveries {
@@ -59,11 +70,15 @@ pub(super) fn append_event_entries(
         });
     }
     let added_bytes = entries.iter().try_fold(0usize, |total, entry| {
-        total.checked_add(entry.canonical_material_len()).ok_or(
-            QemuFreshModeledDriverError::LimitExceeded {
+        total
+            .checked_add(
+                entry
+                    .canonical_material_len()
+                    .map_err(QemuFreshModeledDriverError::Configuration)?,
+            )
+            .ok_or(QemuFreshModeledDriverError::LimitExceeded {
                 limit: "fresh-campaign-event-log-bytes",
-            },
-        )
+            })
     })?;
     let total_bytes = retained_bytes.checked_add(added_bytes).ok_or(
         QemuFreshModeledDriverError::LimitExceeded {
@@ -75,6 +90,9 @@ pub(super) fn append_event_entries(
             limit: "fresh-campaign-event-log-bytes",
         });
     }
+    crucible::owned_decode::reserve_vec(event_log, entries.len()).map_err(|source| {
+        QemuFreshModeledDriverError::Configuration(EngineError::ArtifactDecodeAdmission { source })
+    })?;
     event_log.extend(entries);
     *retained_bytes = total_bytes;
     Ok(())

@@ -2287,6 +2287,9 @@ mod tests {
 
     #[test]
     fn raw_root_without_authenticated_source_pair_cannot_resume() {
+        let _original_fixture_scope =
+            crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
         let ram_retention = crucible_cas::ram::RamRetentionAuthority::new(Arc::new(
             crucible_cas::content_store::MemoryRefBackend::new(),
         ));

@@ -43,12 +43,17 @@ use crate::{
     TerminalFailureOutcome,
 };
 
+mod assignment_supervision;
+pub(crate) use assignment_supervision::start_original_assignment;
 mod context;
 mod result;
 
 pub use context::{AttemptExecutionContext, ExecutionQuantumBudgetError};
 pub use result::*;
-pub(crate) use result::{bind_admitted_semantic_replay_captures, stage_admitted_prepared_result};
+pub(crate) use result::{
+    AdmittedPreparedResultFailure, SemanticReplayCaptureBindingError,
+    bind_admitted_semantic_replay_captures, stage_admitted_prepared_result,
+};
 
 /// Fully authenticated discovery or branch start supplied to an execution model.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -907,18 +912,23 @@ where
         let expected_scenario = ContentHash {
             bytes: input.lineage().scenario().as_hash().as_bytes(),
         };
-        let host_watchdog_ms = match queued.request().retention_policy() {
-            AttemptRetentionPolicyDisposition::Required(basis) => self
-                .store
-                .load_attempt_timeout_policy(
-                    queued.request().lineage(),
-                    queued.request().attempt(),
-                    basis,
-                )
-                .map_err(repository_worker_failure)?
-                .and_then(|policy| policy.host_completion_watchdog_ms()),
-            AttemptRetentionPolicyDisposition::Disabled => None,
-        };
+        let _decode_scope = input.enter_decode_scope();
+        let (watchdog, host_watchdog_ms) =
+            start_original_assignment(queued, &self.store).map_err(|error| {
+                use assignment_supervision::AssignmentSupervisionError;
+                let error = match error {
+                    AssignmentSupervisionError::Repository(error) => {
+                        return repository_worker_failure(error);
+                    }
+                    AssignmentSupervisionError::Watchdog(error) => {
+                        RepositoryAttemptWorkerError::HostWatchdogStart(error)
+                    }
+                    AssignmentSupervisionError::Registry(error) => {
+                        RepositoryAttemptWorkerError::HostOperational(error)
+                    }
+                };
+                AttemptWorkerFailure::Terminal(error)
+            })?;
         let mut context = AttemptExecutionContext::new(
             queued.request().resources(),
             queued.request().retention(),
@@ -934,55 +944,19 @@ where
         .with_execution_origin(queued.origin())
         .with_checkpoint_handoff(expected_scenario, queued.checkpoint_handoff().cloned())
         .with_guest_selectable_boundary_diagnostics(self.guest_selectable_diagnostics.clone());
-        let (watchdog, first_start) = queued
-            .start_host_watchdog(
-                host_watchdog_ms,
-                context.cancellation().clone(),
-                queued.host_operation_budgets().ok_or_else(|| {
-                    AttemptWorkerFailure::Terminal(RepositoryAttemptWorkerError::HostWatchdogStart(
-                        std::io::Error::other("missing authored host operation budgets"),
-                    ))
-                })?,
-            )
-            .map_err(|error| {
-                AttemptWorkerFailure::Terminal(RepositoryAttemptWorkerError::HostWatchdogStart(
-                    error,
-                ))
-            })?;
         context = context.with_host_watchdog(watchdog.clone());
-        {
-            let registry = queued.host_operational_registry();
-            let target = crucible_api::host_operational::HostOuterCapTarget {
-                daemon_epoch: queued.host_daemon_epoch(),
-                owner: crucible_api::host_operational::HostOuterCapOwner::Execution(
-                    crate::host_operational_registry::operational_identity(
-                        queued.execution().as_bytes(),
-                    ),
+        context.host_operational_registry = Some(queued.host_operational_registry());
+        context.host_outer_cap_owner = Some(
+            crucible_api::host_operational::HostOuterCapOwner::Execution(
+                crate::host_operational_registry::operational_identity(
+                    queued.execution().as_bytes(),
                 ),
-                owner_generation: 1,
-                cap_id: watchdog.supervisor().cap_id(),
-            };
-            if first_start {
-                registry
-                    .register_cap(
-                        target,
-                        crucible_api::host_operational::HostOuterCapClass::Assignment,
-                        watchdog.supervisor().clone(),
-                    )
-                    .map_err(|error| {
-                        AttemptWorkerFailure::Terminal(
-                            RepositoryAttemptWorkerError::HostOperational(error),
-                        )
-                    })?;
-            }
-            context.host_operational_registry = Some(registry);
-            context.host_outer_cap_owner = Some(target.owner);
-            context.host_daemon_epoch = queued.host_daemon_epoch();
-        }
+            ),
+        );
+        context.host_daemon_epoch = queued.host_daemon_epoch();
         context = context.install_selected_checkpoint(queued.take_selected_checkpoint());
         // Every model launch and copy shares the already authenticated input's
         // original account; the input retains its credits through reconciliation.
-        let _decode_scope = input.enter_decode_scope();
         let product = self
             .model
             .execute(&input, &context)
@@ -1046,6 +1020,13 @@ where
             }
         }
 
+        queued
+            .retain_publication_metadata(input._decode_custody.clone())
+            .map_err(|error| {
+                AttemptWorkerFailure::Terminal(RepositoryAttemptWorkerError::HostWatchdogStart(
+                    error,
+                ))
+            })?;
         queued.begin_publication().map_err(|error| {
             AttemptWorkerFailure::Terminal(RepositoryAttemptWorkerError::HostWatchdogStart(error))
         })?;

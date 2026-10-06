@@ -2,6 +2,12 @@
 
 use super::*;
 
+#[path = "backend/native_input.rs"]
+mod native_input;
+pub(crate) use native_input::{
+    NativeExecutionAdmissionError, admit_native_command_input, take_native_owner,
+};
+
 #[path = "backend_outcome.rs"]
 mod backend_outcome;
 pub(super) use backend_outcome::*;
@@ -15,6 +21,7 @@ pub(super) struct BackendSelectionPlan {
     pub(super) reason: BackendSelectionReason,
     pub(super) daemon: Option<String>,
     pub(super) daemon_security: Option<DaemonMutualTlsPaths>,
+    pub(super) metadata_deployment: Option<PathBuf>,
     pub(super) remote_uses_control_api: bool,
     pub(super) local_uses_simulation_backend: bool,
     pub(super) local_remote_equivalence_contract: bool,
@@ -263,6 +270,7 @@ pub(super) fn plan_backend_selection_with_discovery(
             reason: BackendSelectionReason::RemoteDaemon,
             daemon: Some(daemon.clone()),
             daemon_security,
+            metadata_deployment: cli.campaign_deployment.clone(),
             remote_uses_control_api: true,
             local_uses_simulation_backend: false,
             local_remote_equivalence_contract: true,
@@ -303,6 +311,7 @@ pub(super) fn plan_backend_selection_with_discovery(
         reason,
         daemon: None,
         daemon_security: None,
+        metadata_deployment: cli.campaign_deployment.clone(),
         remote_uses_control_api: false,
         local_uses_simulation_backend: true,
         local_remote_equivalence_contract: true,
@@ -357,6 +366,20 @@ impl AosQemuPackageSet for CompileTimeAosQemuPackageSet {
     fn plugin_path(&self) -> Option<PathBuf> {
         option_env!("CRUCIBLE_AOS_PLUGIN").map(PathBuf::from)
     }
+}
+
+/// Checks whether discovery has any explicit or packaged native input.
+///
+/// Presence chooses the input owner before model planning. Artifact validation
+/// remains in the discovery path after command-specific input validation.
+#[cfg(any(test, feature = "test-double"))]
+pub(super) fn has_native_artifact_candidate(cli: &Cli) -> bool {
+    cli.qemu.is_some()
+        || cli.plugin.is_some()
+        || std::env::var_os(CRUCIBLE_QEMU_ENV).is_some()
+        || std::env::var_os(CRUCIBLE_PLUGIN_ENV).is_some()
+        || option_env!("CRUCIBLE_AOS_QEMU").is_some()
+        || option_env!("CRUCIBLE_AOS_PLUGIN").is_some()
 }
 
 #[cfg(test)]
@@ -416,6 +439,30 @@ pub(super) fn discover_qemu_artifacts(
         qemu_source: qemu.source,
         plugin_source: plugin.source,
     }))
+}
+
+/// Selects concrete launch paths without reading native artifacts or guest models.
+///
+/// The first execution owner uses these same discovery inputs to bind its
+/// namespace. Normal discovery still authenticates the binaries before launch.
+pub(super) fn native_input_artifact_paths(cli: &Cli) -> Option<(PathBuf, PathBuf)> {
+    let environment = ProcessQemuDiscoveryEnvironment;
+    #[cfg(test)]
+    let package_set = NoAosQemuPackageSet;
+    #[cfg(not(test))]
+    let package_set = CompileTimeAosQemuPackageSet;
+
+    let qemu = select_qemu_candidate(
+        cli.qemu.as_ref(),
+        environment.variable(CRUCIBLE_QEMU_ENV),
+        package_set.qemu_path(),
+    )?;
+    let plugin = select_plugin_candidate(
+        cli.plugin.as_ref(),
+        environment.variable(CRUCIBLE_PLUGIN_ENV),
+        package_set.plugin_path(),
+    )?;
+    Some((qemu.path, plugin.path))
 }
 
 pub(super) fn select_qemu_candidate(
@@ -1172,7 +1219,10 @@ impl BackendCommandRunner for NullBackendCommandRunner {
         let outcome = if let Some(verify_plan) = verify_plan {
             match (&verify_plan.mode, backend) {
                 (VerifyMode::CompareArtifacts { .. }, _) => {
-                    let report = verify_compare_artifacts(verify_plan)?;
+                    let report = verify_compare_artifacts(
+                        verify_plan,
+                        backend_plan.metadata_deployment.as_deref(),
+                    )?;
                     finish_verify_workflow_outcome(
                         thin_plan,
                         backend_plan,

@@ -258,7 +258,8 @@ pub use campaign_gc::{
     CampaignGcBlobInventoryBasis, CampaignGcCandidate, CampaignGcCandidateManifest,
     CampaignGcCandidateReason, CampaignGcCandidateSetId, CampaignGcCandidateSetSummary,
     CampaignGcJournalCreateDisposition, CampaignGcJournalError, CampaignGcJournalPhase,
-    CampaignGcJournalTransition, CampaignGcManifestError, CampaignGcPlan, CampaignGcPlanError,
+    CampaignGcJournalTransition, CampaignGcMaintenance, CampaignGcManifestError,
+    CampaignGcOperationContext, CampaignGcPlan, CampaignGcPlanBytes, CampaignGcPlanError,
     CampaignGcPlanId, CampaignGcPlanningError, CampaignGcPreparedPlan, CampaignGcRootManifest,
     CampaignGcRootSetId, DirectoryCampaignGcJournal, MAX_CAMPAIGN_GC_BACKEND_ID_BYTES,
     MAX_CAMPAIGN_GC_MANIFEST_ENTRIES, MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES,
@@ -346,7 +347,7 @@ pub use crucible_execution::{
 pub use crucible_measurement::{
     CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2,
     CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2, CrucibleMeasurementError,
-    CrucibleMeasurementPublication, CrucibleMeasurementReplayEvidence,
+    CrucibleMeasurementEvidenceBytes, CrucibleMeasurementPublication, CrucibleMeasurementReplayEvidence,
     CrucibleMeasurementStopEvidence, CrucibleObservationBoundaryEvidence,
     MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES, derive_crucible_measurement_samples,
     evaluate_crucible_measurement_publication, evaluate_crucible_objectives,

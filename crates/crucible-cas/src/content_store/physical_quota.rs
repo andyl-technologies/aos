@@ -84,6 +84,24 @@ pub trait StorePhysicalQuotaGuard: Send + Sync {
         })
     }
 
+    /// Opens an isolated GC mark backend under this exact retained namespace.
+    ///
+    /// The implementation retains the original quota, resource allocator, and
+    /// finite supervisor. It must reject ambiguous or unavailable namespace
+    /// authority rather than create an independent scratch store.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::Unsupported`] when this guard cannot securely
+    /// prepare a mark namespace, or the original admission refuses the work.
+    fn gc_mark_backend(
+        self: Arc<Self>,
+        _scope: &str,
+    ) -> Result<Arc<dyn super::ImmutableBlobBackend>, StoreError> {
+        Err(StoreError::Unsupported {
+            capability: "gc-mark-backend",
+        })
+    }
+
     /// Reserves actual descriptor and resident credits before a retained loan.
     ///
     /// The returned owner keeps the original capacity and quota custody alive.

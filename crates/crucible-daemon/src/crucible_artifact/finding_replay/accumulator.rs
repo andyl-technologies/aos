@@ -246,6 +246,10 @@ pub(super) fn validate_replay_configuration(
     candidate: &FindingReproductionArtifact,
     replay: &CrucibleFindingReplayEvidence,
 ) -> Result<(), CrucibleArtifactError> {
+    // Only scalar authentication leaves this call. Temporary model encodings
+    // close before their same-origin scope so repeated validation retains no loan.
+    let validation = original_validation_budget()?;
+    let _validation_scope = validation.enter();
     let scenario = candidate.artifact.scenario_form();
     let scenario_artifact = encode_crucible_scenario_artifact(scenario)?;
     let expected =
@@ -263,6 +267,10 @@ pub(super) fn validate_incompatible_configuration(
     candidate: &FindingReproductionArtifact,
     replay: &ConfigurationArtifact,
 ) -> Result<(), CrucibleArtifactError> {
+    // Only scalar authentication leaves this call. Temporary model encodings
+    // close before their same-origin scope so repeated validation retains no loan.
+    let validation = original_validation_budget()?;
+    let _validation_scope = validation.enter();
     let scenario = candidate.artifact.scenario_form();
     let scenario_artifact = encode_crucible_scenario_artifact(scenario)?;
     let expected =
@@ -441,6 +449,10 @@ pub(crate) fn validate_recorded_replay_configuration(
     candidate: &FindingReproductionArtifact,
     replay: &RecordedFindingReplay,
 ) -> Result<(), CrucibleArtifactError> {
+    // Only scalar authentication leaves this call. Temporary model encodings
+    // close before their same-origin scope so repeated validation retains no loan.
+    let validation = original_validation_budget()?;
+    let _validation_scope = validation.enter();
     let scenario = encode_crucible_scenario_artifact(candidate.artifact.scenario_form())?;
     let expected =
         encode_crucible_configuration_artifact(&scenario, candidate.artifact.schedule())?;
@@ -450,4 +462,14 @@ pub(crate) fn validate_recorded_replay_configuration(
         });
     }
     Ok(())
+}
+
+fn original_validation_budget()
+-> Result<crucible::owned_decode::DecodeBudget, CrucibleArtifactError> {
+    crucible::owned_decode::require_current_child_budget().map_err(|source| {
+        CrucibleArtifactError::InvalidPayload {
+            artifact: "finding replay validation",
+            source: Box::new(crucible::EngineError::ArtifactDecodeAdmission { source }),
+        }
+    })
 }

@@ -108,6 +108,9 @@ impl ConditionLeafOracle for NoLeafFallback {
 
 #[test]
 fn guest_marker_observes_enabled_doorbell_marker_at_retirement_icount() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let condition = Predicate::guest_marker(marker("commit"));
     let matching = ObservableEvent::guest_marker(icount(44), node("guest"), marker("commit"));
@@ -124,6 +127,9 @@ fn guest_marker_observes_enabled_doorbell_marker_at_retirement_icount() {
 
 #[test]
 fn guest_marker_rejects_wrong_marker_disabled_opt_in_and_wrong_time_in_isolation() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let condition = Predicate::guest_marker(marker("commit"));
     let enabled = world();
     let disabled = disabled_world();
@@ -183,6 +189,9 @@ fn guest_marker_rejects_wrong_marker_disabled_opt_in_and_wrong_time_in_isolation
 
 #[test]
 fn guest_marker_names_are_global_but_emitting_node_must_be_opted_in() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = multi_node_world();
     let condition = Predicate::guest_marker(marker("commit"));
 
@@ -216,6 +225,9 @@ fn guest_marker_names_are_global_but_emitting_node_must_be_opted_in() {
 
 #[test]
 fn guest_marker_event_point_is_doorbell_retirement_icount() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let event = ObservableEvent::guest_marker(icount(77), node("guest"), marker("checkpoint"));
 
     assert_eq!(event.at(), time(77));
@@ -235,6 +247,9 @@ fn guest_marker_event_point_is_doorbell_retirement_icount() {
 
 #[test]
 fn event_graph_fires_from_guest_marker_without_named_leaf_fallback() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let graph = EventGraph::new_for_world(
         vec![Event::once(
@@ -264,6 +279,9 @@ fn event_graph_fires_from_guest_marker_without_named_leaf_fallback() {
 
 #[test]
 fn event_graph_rejects_guest_marker_without_white_box_world() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let result = EventGraph::new_for_world(
         vec![Event::once(
             EventId::from_name("pass-on-commit"),
@@ -284,6 +302,9 @@ fn event_graph_rejects_guest_marker_without_white_box_world() {
 
 #[test]
 fn event_graph_rejects_guest_marker_without_world_backed_constructor() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let event = Event::once(
         EventId::from_name("pass-on-commit"),
         Some(Predicate::guest_marker(marker("commit"))),
@@ -309,6 +330,9 @@ fn event_graph_rejects_guest_marker_without_world_backed_constructor() {
 
 #[test]
 fn zero_guest_marker_conditions_run_without_guest_marker_support() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let graph = EventGraph::new(vec![Event::once(
         EventId::from_name("pass-at-boundary"),
         Some(Predicate::at(time(12))),
@@ -325,6 +349,9 @@ fn zero_guest_marker_conditions_run_without_guest_marker_support() {
 
 #[test]
 fn zero_guest_marker_conditions_ignore_guest_marker_events() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let condition = Predicate::quiescent();
     let mut evaluation = evaluator(
         20,
@@ -345,6 +372,9 @@ fn zero_guest_marker_conditions_ignore_guest_marker_events() {
 
 #[test]
 fn guest_marker_round_trips_through_properties_serialization() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let properties = Properties::from_assertions_for_world(
         &world,
@@ -374,6 +404,9 @@ fn guest_marker_round_trips_through_properties_serialization() {
 
 #[test]
 fn guest_marker_properties_require_a_white_box_enabled_world() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let result = Properties::from_assertions_for_world(
         &disabled_world(),
         vec![assertion(
@@ -392,6 +425,9 @@ fn guest_marker_properties_require_a_white_box_enabled_world() {
 
 #[test]
 fn guest_marker_material_distinguishes_marker_names() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let commit = Properties::from_assertions_for_world(
         &world,

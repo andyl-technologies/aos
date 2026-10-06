@@ -36,10 +36,12 @@ pub(super) fn inventory_authoritative_refs(
     fence: &mut dyn RefInventoryFence,
     exact_fence: &mut Option<Box<dyn ExactPinRetentionFence + '_>>,
     roots: &mut RootAccumulator,
+    operation: &super::CampaignGcOperationContext<'_>,
 ) -> Result<RefInventorySummary, CampaignGcRootInventoryError> {
     let mut semantic_error = None;
     let mut archives = Vec::new();
     let summary = fence.visit_refs(&mut |record| {
+        operation.check()?;
         if semantic_error.is_some() {
             return Err(StoreError::InvalidComposition {
                 reason: "campaign GC exact-pin inventory already failed",
@@ -193,14 +195,22 @@ pub(super) fn inventory_authoritative_refs(
     let summary = summary.map_err(CampaignGcRootInventoryError::Ref)?;
     for archive in archives {
         let inspection = repository
-            .inspect_campaign_archive_for_gc(archive, fence)
+            .inspect_campaign_archive_for_gc_with_boundary(archive, fence, &mut || {
+                operation.check().map_err(Into::into)
+            })
             .map_err(CampaignGcRootInventoryError::Campaign)?;
         for root in inspection.manifest().ram_roots() {
+            operation
+                .check()
+                .map_err(CampaignGcRootInventoryError::Ref)?;
             roots
                 .insert(*root)
                 .map_err(|()| CampaignGcRootInventoryError::Limit)?;
         }
         for id in inspection.retained_objects() {
+            operation
+                .check()
+                .map_err(CampaignGcRootInventoryError::Ref)?;
             roots
                 .insert_direct(*id)
                 .map_err(|()| CampaignGcRootInventoryError::Limit)?;

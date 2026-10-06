@@ -158,10 +158,12 @@ pub(super) fn world_config(
         Duration::from_secs(30),
     )
     .expect("authored disjoint cgroup and project-quota namespace");
-    world.lifecycle = config
-        .lifecycle
-        .clone()
-        .with_run_state_root(config.lifecycle.run_state_root().join(lane));
+    world.lifecycle = Arc::new(
+        config
+            .admitted_lifecycle_config()
+            .expect("actual catalog authority admits the independent world projection")
+            .with_run_state_root(config.lifecycle.run_state_root().join(lane)),
+    );
     world
 }
 

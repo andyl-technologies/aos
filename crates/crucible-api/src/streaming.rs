@@ -26,7 +26,7 @@ use crate::event_log_stream::{
     SessionEventLogStreamError,
 };
 use crate::lifecycle::{ReproductionCommandRecord, SessionRef};
-use crate::open_set::{OpenSetEventEnvelope, open_set_event_envelope_from_entry};
+use crate::open_set::OpenSetEventEnvelope;
 use crate::rpc_abi::{ProtocolVersion, RPC_PROTOCOL_VERSION, RpcStatusCode};
 use crate::session_mapping::{
     API_COMMAND_MAPPINGS, ApiDispatch, ApiMethod, CommandDispatchCardinality, method_mapping,
@@ -129,9 +129,39 @@ pub struct Attached {
     /// Protocol version used by this API surface.
     pub version: ProtocolVersion,
     /// Command capabilities available after attach.
-    pub capabilities: StreamingCapabilitySet,
+    pub capabilities: Arc<crate::AdmittedShared<StreamingCapabilitySet>>,
     /// Optional log-derived snapshot captured at attach time.
     pub snapshot: Option<AttachSnapshot>,
+    _decode_custody: crucible::owned_decode::DecodeCustody,
+}
+
+impl Attached {
+    /// Shares admitted capabilities and snapshot under their original custody.
+    ///
+    /// # Errors
+    /// Refuses a missing original account or exhausted allocation credit. The
+    /// caller must admit owned capability entries before constructing them.
+    pub fn from_owned_fields(
+        session: SessionRef,
+        event_log_len: u64,
+        state: LiveStateKind,
+        version: ProtocolVersion,
+        capabilities: StreamingCapabilitySet,
+        snapshot: Option<AttachSnapshot>,
+    ) -> Result<Self, EngineError> {
+        let custody = crucible::owned_decode::require_current_custody()
+            .map_err(crate::admitted_output::admission)?;
+        let capabilities = crate::admitted_output::shared(capabilities)?;
+        Ok(Self {
+            session,
+            event_log_len,
+            state,
+            version,
+            capabilities,
+            snapshot,
+            _decode_custody: custody,
+        })
+    }
 }
 
 /// Log-derived snapshot summary included in `Attached`.
@@ -148,22 +178,33 @@ pub struct AttachSnapshot {
     /// Last sequence folded into the snapshot, when any entry was present.
     pub last_sequence: Option<u64>,
     /// Recorded command stream captured for deterministic reproduction.
-    pub reproduction: Vec<ReproductionCommandRecord>,
+    pub reproduction: Arc<crate::AdmittedShared<Vec<ReproductionCommandRecord>>>,
+    _decode_custody: crucible::owned_decode::DecodeCustody,
 }
 
 impl AttachSnapshot {
-    fn from_event_log(
+    /// Shares already admitted reproduction records with their original custody.
+    ///
+    /// # Errors
+    /// Refuses missing original authority or exhausted allocation credit. The
+    /// caller must admit the owned vector before allocating its elements.
+    pub fn from_event_log_admitted(
         value: SessionEventLogSnapshot,
         reproduction: Vec<ReproductionCommandRecord>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, EngineError> {
+        crucible::owned_decode::require_current_custody()
+            .map_err(crate::admitted_output::admission)?;
+        let reproduction = crate::admitted_output::shared(reproduction)?;
+        Ok(Self {
             through: value.through,
             event_count: value.event_count,
             causal_event_count: value.causal_count,
             observational_event_count: value.observational_count,
             last_sequence: value.last_sequence,
             reproduction,
-        }
+            _decode_custody: crucible::owned_decode::require_current_custody()
+                .map_err(crate::admitted_output::admission)?,
+        })
     }
 }
 
@@ -177,17 +218,82 @@ pub struct StreamingEventFrame {
     /// Cursor position immediately after this entry.
     pub next_cursor: EventLogCursor,
     /// Open-set API event envelope.
-    pub event: OpenSetEventEnvelope,
+    pub event: Arc<crate::AdmittedShared<OpenSetEventEnvelope>>,
+    _decode_custody: crucible::owned_decode::DecodeCustody,
 }
 
-impl From<SessionEventLogFrame> for StreamingEventFrame {
-    fn from(value: SessionEventLogFrame) -> Self {
-        Self {
-            generation: value.generation,
-            cursor: value.cursor,
-            next_cursor: value.next_cursor,
-            event: open_set_event_envelope_from_entry(&value.entry),
-        }
+impl StreamingEventFrame {
+    /// Shares an already admitted event envelope under its original custody.
+    ///
+    /// # Errors
+    /// Refuses missing original authority or exhausted allocation credit. The
+    /// caller must admit the envelope's owned fields before constructing them.
+    pub fn from_owned_fields(
+        generation: u64,
+        cursor: EventLogCursor,
+        next_cursor: EventLogCursor,
+        event: OpenSetEventEnvelope,
+    ) -> Result<Self, EngineError> {
+        crucible::owned_decode::require_current_custody()
+            .map_err(crate::admitted_output::admission)?;
+        let event = crate::admitted_output::shared(event)?;
+        Ok(Self {
+            generation,
+            cursor,
+            next_cursor,
+            event,
+            _decode_custody: crucible::owned_decode::require_current_custody()
+                .map_err(crate::admitted_output::admission)?,
+        })
+    }
+
+    /// Converts a session frame into a returned nominal admitted owner.
+    ///
+    /// # Errors
+    /// Refuses missing authority, original exhaustion or allocation failure.
+    pub fn from_session_admitted(value: SessionEventLogFrame) -> Result<Self, EngineError> {
+        let (frame, custody) = Self::from_admitted(value)?.into_parts();
+        // The nominal frame retains the same account through its private field.
+        drop(custody);
+        Ok(frame)
+    }
+
+    /// Copies a borrowed scheduler entry into an admitted API frame.
+    ///
+    /// # Errors
+    /// Refuses missing authority, original exhaustion or allocation failure.
+    pub fn from_entry_admitted(
+        generation: u64,
+        cursor: EventLogCursor,
+        next_cursor: EventLogCursor,
+        entry: &crucible::SchedulerEventLogEntry,
+    ) -> Result<crate::AdmittedOutput<Self>, EngineError> {
+        crate::AdmittedOutput::build(|| {
+            Self::from_owned_fields(
+                generation,
+                cursor,
+                next_cursor,
+                crate::open_set::event_envelope_admitted(entry)?,
+            )
+        })
+    }
+
+    /// Converts a session frame after admitting each owned API field.
+    ///
+    /// # Errors
+    /// Refuses missing authority, exhausted original resources or allocation
+    /// failure. The returned value shares its immutable body when cloned.
+    pub fn from_admitted(
+        value: SessionEventLogFrame,
+    ) -> Result<crate::AdmittedOutput<Self>, EngineError> {
+        crate::AdmittedOutput::build(|| {
+            Self::from_owned_fields(
+                value.generation,
+                value.cursor,
+                value.next_cursor,
+                crate::open_set::event_envelope_admitted(&value.entry)?,
+            )
+        })
     }
 }
 
@@ -413,6 +519,12 @@ impl CommandReplyObserver {
 /// Error returned by streaming API operations.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum StreamingApiError {
+    /// Original output metadata authority refused a concrete owned response.
+    #[error("streaming output admission failed: {source}")]
+    OutputAdmission {
+        /// Original typed admission failure.
+        source: EngineError,
+    },
     /// The requested session is not present in the live registry.
     #[error("streaming session {session:?} was not found")]
     SessionNotFound {
@@ -467,6 +579,7 @@ pub enum StreamingApiError {
 #[derive(Clone)]
 pub struct InProcessStreamingSession {
     session: SessionRef,
+    output_budget: Option<crucible::owned_decode::DecodeBudget>,
     sender: mpsc::Sender<SessionCommand>,
     live: Arc<LiveSnapshot>,
     event_log: ControlPlaneEventLog,
@@ -495,12 +608,27 @@ impl StreamingCommandPolicy {
         }
     }
 
-    fn capabilities(self) -> StreamingCapabilitySet {
-        let mut capabilities = StreamingCapabilitySet::current();
-        capabilities
-            .commands
-            .retain(|capability| self.permits(capability.command_kind));
-        capabilities
+    fn capabilities(self) -> Result<StreamingCapabilitySet, EngineError> {
+        let count = API_COMMAND_MAPPINGS
+            .iter()
+            .filter(|mapping| self.permits(mapping.command_kind))
+            .count();
+        let mut commands = Vec::new();
+        crucible::owned_decode::reserve_vec(&mut commands, count)
+            .map_err(crate::admitted_output::admission)?;
+        for mapping in API_COMMAND_MAPPINGS
+            .iter()
+            .filter(|mapping| self.permits(mapping.command_kind))
+        {
+            commands.push(StreamingCommandCapability {
+                command_name: mapping.command_name,
+                command_kind: mapping.command_kind,
+            });
+        }
+        Ok(StreamingCapabilitySet {
+            commands,
+            snapshot_on_attach: true,
+        })
     }
 }
 
@@ -517,6 +645,7 @@ impl InProcessStreamingSession {
     ) -> Self {
         Self {
             session,
+            output_budget: crucible::owned_decode::current_budget(),
             sender,
             live,
             event_log,
@@ -525,6 +654,14 @@ impl InProcessStreamingSession {
             max_actor_yields: STREAMING_COMMAND_MAX_ACTOR_YIELDS,
             command_policy: StreamingCommandPolicy::All,
         }
+    }
+
+    pub(crate) fn with_output_budget(
+        mut self,
+        budget: Option<crucible::owned_decode::DecodeBudget>,
+    ) -> Self {
+        self.output_budget = budget;
+        self
     }
 
     pub(crate) const fn with_read_only_debug_policy(mut self) -> Self {
@@ -567,6 +704,7 @@ impl InProcessStreamingSession {
         let (attached, events, state_updates) = self.attach_stream(&request)?;
         Ok(ControlStream {
             session: self.session,
+            output_budget: self.output_budget.clone(),
             sender: self.sender.clone(),
             live: Arc::clone(&self.live),
             attached,
@@ -587,6 +725,7 @@ impl InProcessStreamingSession {
         let (attached, events, state_updates) = self.attach_stream(&request)?;
         Ok(WatchStream {
             session: self.session,
+            output_budget: self.output_budget.clone(),
             attached,
             events,
             state_updates,
@@ -631,28 +770,60 @@ impl InProcessStreamingSession {
         self.validate_session(request.session, request.expected_epoch)?;
         let mut state_updates = self.state_transitions.subscribe();
         let (attach_tail, events) = self.event_log.subscribe_with_replay_tail(request.from);
-        let reproduction = self
+        let _original = self
+            .output_budget
+            .as_ref()
+            .map(crucible::owned_decode::DecodeBudget::enter);
+        let budget = crucible::owned_decode::require_current_child_budget().map_err(|source| {
+            StreamingApiError::OutputAdmission {
+                source: crate::admitted_output::admission(source),
+            }
+        })?;
+        let _scope = budget.enter();
+        let recorded = self
             .reproduction_log
-            .snapshot()
-            .into_iter()
-            .map(ReproductionCommandRecord::from)
-            .filter(|record| record.at_sequence <= attach_tail.next_sequence)
-            .collect();
-        let snapshot = AttachSnapshot::from_event_log(
+            .snapshot_admitted()
+            .map_err(|source| StreamingApiError::OutputAdmission { source })?;
+        let mut reproduction = Vec::new();
+        let count = recorded
+            .entries()
+            .iter()
+            .filter(|entry| entry.event_log_sequence_before <= attach_tail.next_sequence)
+            .count();
+        crucible::owned_decode::reserve_vec(&mut reproduction, count).map_err(|source| {
+            StreamingApiError::OutputAdmission {
+                source: crate::admitted_output::admission(source),
+            }
+        })?;
+        for entry in recorded
+            .entries()
+            .iter()
+            .filter(|entry| entry.event_log_sequence_before <= attach_tail.next_sequence)
+        {
+            reproduction.push(
+                ReproductionCommandRecord::from_entry_admitted(entry)
+                    .map_err(|source| StreamingApiError::OutputAdmission { source })?,
+            );
+        }
+        let snapshot = AttachSnapshot::from_event_log_admitted(
             self.event_log.snapshot_through(attach_tail),
             reproduction,
-        );
+        )
+        .map_err(|source| StreamingApiError::OutputAdmission { source })?;
         let live = self.live.read();
         state_updates.set_sequence_floor(live.state_transition_sequence);
         Ok((
-            Attached {
-                session: self.session,
-                event_log_len: attach_tail.next_sequence,
-                state: live.state_kind,
-                version: RPC_PROTOCOL_VERSION,
-                capabilities: self.command_policy.capabilities(),
-                snapshot: Some(snapshot),
-            },
+            Attached::from_owned_fields(
+                self.session,
+                attach_tail.next_sequence,
+                live.state_kind,
+                RPC_PROTOCOL_VERSION,
+                self.command_policy
+                    .capabilities()
+                    .map_err(|source| StreamingApiError::OutputAdmission { source })?,
+                Some(snapshot),
+            )
+            .map_err(|source| StreamingApiError::OutputAdmission { source })?,
             events,
             state_updates,
         ))
@@ -684,6 +855,7 @@ impl InProcessStreamingSession {
 /// Attached bidirectional `Control` stream handle.
 pub struct ControlStream {
     session: SessionRef,
+    output_budget: Option<crucible::owned_decode::DecodeBudget>,
     sender: mpsc::Sender<SessionCommand>,
     live: Arc<LiveSnapshot>,
     attached: Attached,
@@ -713,7 +885,7 @@ impl ControlStream {
     /// Returns [`StreamingApiError::EventStreamLagged`] if the subscriber falls
     /// behind the bounded live tail.
     pub async fn recv_event(&mut self) -> Result<Option<StreamingEventFrame>, StreamingApiError> {
-        recv_api_event(&mut self.events).await
+        recv_api_event(&mut self.events, self.output_budget.as_ref()).await
     }
 
     /// Receives the next live run-state update.
@@ -734,7 +906,13 @@ impl ControlStream {
     /// Returns [`StreamingApiError::EventStreamLagged`] if the canonical event
     /// subscriber falls behind. Superseded state updates are coalesced.
     pub async fn recv_frame(&mut self) -> Result<Option<StreamingFrame>, StreamingApiError> {
-        recv_api_frame(self.session, &mut self.events, &mut self.state_updates).await
+        recv_api_frame(
+            self.session,
+            &mut self.events,
+            &mut self.state_updates,
+            self.output_budget.as_ref(),
+        )
+        .await
     }
 
     /// Dispatches one command envelope through the control stream.
@@ -783,6 +961,7 @@ fn policy_rejection(command_id: u64, command_kind: SessionCommandKind) -> SendRe
 /// Attached read-only `Watch` stream handle.
 pub struct WatchStream {
     session: SessionRef,
+    output_budget: Option<crucible::owned_decode::DecodeBudget>,
     attached: Attached,
     events: SessionEventLogStream,
     state_updates: SessionStateTransitionStream,
@@ -808,7 +987,7 @@ impl WatchStream {
     /// Returns [`StreamingApiError::EventStreamLagged`] if the subscriber falls
     /// behind the bounded live tail.
     pub async fn recv_event(&mut self) -> Result<Option<StreamingEventFrame>, StreamingApiError> {
-        recv_api_event(&mut self.events).await
+        recv_api_event(&mut self.events, self.output_budget.as_ref()).await
     }
 
     /// Receives the next live run-state update.
@@ -829,18 +1008,28 @@ impl WatchStream {
     /// Returns [`StreamingApiError::EventStreamLagged`] if the canonical event
     /// subscriber falls behind. Superseded state updates are coalesced.
     pub async fn recv_frame(&mut self) -> Result<Option<StreamingFrame>, StreamingApiError> {
-        recv_api_frame(self.session, &mut self.events, &mut self.state_updates).await
+        recv_api_frame(
+            self.session,
+            &mut self.events,
+            &mut self.state_updates,
+            self.output_budget.as_ref(),
+        )
+        .await
     }
 }
 
 async fn recv_api_event(
     events: &mut SessionEventLogStream,
+    budget: Option<&crucible::owned_decode::DecodeBudget>,
 ) -> Result<Option<StreamingEventFrame>, StreamingApiError> {
-    events
-        .recv()
-        .await
-        .map(|frame| frame.map(StreamingEventFrame::from))
-        .map_err(stream_error)
+    let frame = events.recv().await.map_err(stream_error)?;
+    // A scope never crosses await; each delivered frame borrows the same
+    // retained session authority on the thread performing its conversion.
+    let _scope = budget.map(crucible::owned_decode::DecodeBudget::enter);
+    frame
+        .map(StreamingEventFrame::from_session_admitted)
+        .transpose()
+        .map_err(|source| StreamingApiError::OutputAdmission { source })
 }
 
 fn stream_error(error: SessionEventLogStreamError) -> StreamingApiError {
@@ -1046,6 +1235,7 @@ fn scheduler_error_rejection_kind(error: &SchedulerError) -> CommandRejectionKin
         }
         SchedulerError::BoundaryViolation { .. }
         | SchedulerError::Evaluation { .. }
+        | SchedulerError::AssertionCheckpoint { .. }
         | SchedulerError::OperationalBoundary { .. }
         | SchedulerError::ResourceLimit { .. } => CommandRejectionKind::Internal,
     }
@@ -1055,9 +1245,9 @@ const fn backend_error_rejection_kind(error: &BackendError) -> CommandRejectionK
     match error {
         BackendError::Unsupported { .. } => CommandRejectionKind::Unsupported,
         BackendError::Rejected { .. } => CommandRejectionKind::InvalidArgument,
-        BackendError::ResourceLimit { .. } | BackendError::OperationalFailure { .. } => {
-            CommandRejectionKind::Internal
-        }
+        BackendError::ResourceLimit { .. }
+        | BackendError::OperationalFailure { .. }
+        | BackendError::RetainedOperationalFailure { .. } => CommandRejectionKind::Internal,
     }
 }
 
@@ -1065,10 +1255,11 @@ async fn recv_api_frame(
     session: SessionRef,
     events: &mut SessionEventLogStream,
     state_updates: &mut SessionStateTransitionStream,
+    budget: Option<&crucible::owned_decode::DecodeBudget>,
 ) -> Result<Option<StreamingFrame>, StreamingApiError> {
     // crucible-lint: allow unordered-select -- API stream multiplexing preserves per-source ordering.
     tokio::select! {
-        event = recv_api_event(events) => event.map(|frame| frame.map(StreamingFrame::Event)),
+        event = recv_api_event(events, budget) => event.map(|frame| frame.map(StreamingFrame::Event)),
         state_update = state_updates.recv_latest() => {
             Ok(state_update.map(|frame| StreamingFrame::StateUpdate(state_update_frame(session, frame))))
         }

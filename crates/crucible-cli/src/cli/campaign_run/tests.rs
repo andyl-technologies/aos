@@ -29,6 +29,7 @@ use tempfile::TempDir;
 #[test]
 fn native_resume_loads_the_explicit_guarded_deployment_before_backend_execution()
 -> Result<(), Box<dyn std::error::Error>> {
+    let _component_scope = crate::tests::component_decode_scope();
     let temporary = TempDir::new()?;
     let deployment = temporary.path().join("executor.toml");
     write_resume_deployment(&deployment)?;
@@ -54,6 +55,7 @@ fn native_resume_loads_the_explicit_guarded_deployment_before_backend_execution(
 #[test]
 fn native_resume_refuses_missing_malformed_and_mutable_explicit_deployments()
 -> Result<(), Box<dyn std::error::Error>> {
+    let _component_scope = crate::tests::component_decode_scope();
     use std::os::unix::fs::PermissionsExt;
 
     let temporary = TempDir::new()?;
@@ -110,6 +112,7 @@ child_user_id = 2000
 child_group_id = 2000
 maximum_tasks = 64
 maximum_file_descriptors = 1024
+maximum_locked_bytes = 0
 maximum_node_host_service_tasks = 4
 maximum_node_host_service_file_descriptors = 32
 maximum_node_host_service_resident_bytes = 8388608

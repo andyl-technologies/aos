@@ -18,6 +18,7 @@
   outerTimeoutSeconds ? 3000,
   innerEvidence ? _: "",
   innerPreparation ? "",
+  innerInvocation ? null,
   outerEvidence,
   extraRootfsDeps ? [],
   storageImageBytes ? 8589934592,
@@ -64,6 +65,10 @@
     inherit pkgs lib nativeQemu nativePlugin guest lanes buildGraph;
     inherit storageImageBytes;
   };
+  invocation =
+    if innerInvocation == null
+    then "${flight}/bin/crucible-daemon-paging-flight --ignored --exact ${testName} --nocapture"
+    else innerInvocation {inherit flight;};
   rootfs = (import ../../lib/testing/firecracker.nix {inherit pkgs lib;}).mkFirecrackerRootfs {
     inherit pname;
     extraWritableMiB = writableMiB;
@@ -87,8 +92,7 @@
       log=/tmp/paging-native.log
       set +e
       ${pkgs.coreutils}/bin/timeout -k 30 ${toString innerTimeoutSeconds} \
-        ${flight}/bin/crucible-daemon-paging-flight \
-        --ignored --exact ${testName} --nocapture > "$log" 2>&1
+        ${invocation} > "$log" 2>&1
       status=$?
       set -e
       cat "$log"

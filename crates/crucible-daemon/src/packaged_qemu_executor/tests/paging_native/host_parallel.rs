@@ -312,8 +312,8 @@ impl AttemptExecutionModel for RoundModel {
             .expect("real cgroup and quota allocator");
         let mut factory = QemuAttemptProductionVmLifecycleFactory::new(
             self.config
-                .lifecycle
-                .clone()
+                .admitted_lifecycle_config()
+                .unwrap_or_else(|error| panic!("admitted parallel lifecycle projection: {error}"))
                 .with_maximum_host_workers(self.workers),
             ComposedQemuAttemptResourceGuardFactory::new(host),
         );
@@ -449,7 +449,10 @@ impl AttemptExecutionModel for RecoveryModel {
         let host = LinuxQemuAttemptHostResourceFactory::open(self.config.host.clone())
             .expect("genuine recovered world containment");
         let mut factory = QemuAttemptProductionVmLifecycleFactory::new(
-            self.config.lifecycle.clone().with_maximum_host_workers(2),
+            self.config
+                .admitted_lifecycle_config()
+                .unwrap_or_else(|error| panic!("admitted recovered lifecycle projection: {error}"))
+                .with_maximum_host_workers(2),
             ComposedQemuAttemptResourceGuardFactory::new(host),
         );
         let scenario = source.scenario_def();

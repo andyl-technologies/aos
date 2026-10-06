@@ -16,19 +16,15 @@ pub(super) fn evaluate_at_frontier<E: ConditionEvaluator>(
     check_evaluation_admission()?;
     let original = crate::owned_decode::current_budget();
     let persistent_scope = state._decode_custody.enter();
+    let install_persistent_custody = persistent_scope.is_none();
     let persistent = if persistent_scope.is_some() {
         crate::owned_decode::current_budget()
     } else {
-        let child = original
+        original
             .as_ref()
             .map(crate::owned_decode::DecodeBudget::child)
             .transpose()
-            .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
-        state._decode_custody = child
-            .as_ref()
-            .map(crate::owned_decode::DecodeBudget::custody)
-            .unwrap_or_default();
-        child
+            .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?
     };
     drop(persistent_scope);
     let temporary = original
@@ -157,6 +153,15 @@ pub(super) fn evaluate_at_frontier<E: ConditionEvaluator>(
     let capacity = latches.max(required_latches);
     let additional = capacity.saturating_sub(state.once_latches.len());
     reserve(&mut state.once_latches, additional)?;
+    if install_persistent_custody {
+        // An unsuccessful first pass must not attach its refused authority to
+        // an otherwise untouched state. Destination storage is admitted now;
+        // the remaining publication only moves already owned values.
+        state._decode_custody = persistent
+            .as_ref()
+            .map(crate::owned_decode::DecodeBudget::custody)
+            .unwrap_or_default();
+    }
     for (event, truth) in stage.updates.previous_truth {
         state.previous_truth.insert(event, truth);
     }

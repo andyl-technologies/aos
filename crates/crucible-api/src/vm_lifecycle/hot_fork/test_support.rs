@@ -462,8 +462,9 @@ fn lifecycle_without_backends(
         trigger_graph,
         trigger_state: EventGraphState::default(),
         trigger_world: source.world().clone(),
-        assertion_evaluator: HostAssertionEvaluator::new(source.properties())
-            .with_world_white_box_policies(source.world()),
+        assertion_evaluator: crate::vm_lifecycle::admitted_clone::component_assertion_evaluator(
+            source,
+        ),
         assertion_oracle: BlackBoxHostOracle,
         terminal_verdict: None,
         checkpoint_terminal_cause: None,

@@ -39,42 +39,48 @@ pub(crate) const MAX_DISCOVERED_CHOICES: usize = MAX_ENVELOPE_CHILDREN - OBSERVA
 /// One execution-model-verified canonical measurement evaluation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MeasurementEvaluationPayload {
+    body: std::sync::Arc<MeasurementEvaluationBody>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct MeasurementEvaluationBody {
     definitions: CampaignHash,
     payload_schema: u32,
     evaluation: CampaignHash,
     payload: Vec<u8>,
     evidence: BTreeSet<ContentId>,
+    custody: crucible_cas::owned_decode::DecodeCustody,
 }
 
 impl MeasurementEvaluationPayload {
     /// Returns the exact scenario measurement-definition identity.
     #[must_use]
-    pub const fn definitions(&self) -> CampaignHash {
-        self.definitions
+    pub fn definitions(&self) -> CampaignHash {
+        self.body.definitions
     }
 
     /// Returns the execution-model evaluation payload schema.
     #[must_use]
-    pub const fn payload_schema(&self) -> u32 {
-        self.payload_schema
+    pub fn payload_schema(&self) -> u32 {
+        self.body.payload_schema
     }
 
     /// Returns the execution-model-verified evaluation identity.
     #[must_use]
-    pub const fn evaluation(&self) -> CampaignHash {
-        self.evaluation
+    pub fn evaluation(&self) -> CampaignHash {
+        self.body.evaluation
     }
 
     /// Returns the exact canonical evaluation bytes.
     #[must_use]
     pub fn payload(&self) -> &[u8] {
-        &self.payload
+        &self.body.payload
     }
 
     /// Returns immutable evidence objects retained for replay or audit.
     #[must_use]
-    pub const fn evidence(&self) -> &BTreeSet<ContentId> {
-        &self.evidence
+    pub fn evidence(&self) -> &BTreeSet<ContentId> {
+        &self.body.evidence
     }
 }
 
@@ -138,13 +144,21 @@ impl MeasurementSet {
                 limit: "measurement-evidence-count",
             });
         }
+        crucible_cas::owned_decode::charge_bytes(
+            (std::mem::size_of::<MeasurementEvaluationBody>() + 2 * std::mem::size_of::<usize>())
+                as u64,
+        )
+        .map_err(CampaignCodecError::DecodeAdmission)?;
         let value = Self {
             evaluation: MeasurementEvaluationPayload {
-                definitions,
-                payload_schema,
-                evaluation,
-                payload,
-                evidence,
+                body: std::sync::Arc::new(MeasurementEvaluationBody {
+                    definitions,
+                    payload_schema,
+                    evaluation,
+                    payload,
+                    evidence,
+                    custody: crucible_cas::owned_decode::current_custody().unwrap_or_default(),
+                }),
             },
         };
         codec::ensure_encoded_size(
@@ -200,6 +214,7 @@ impl MeasurementSet {
 
     pub(crate) fn content_children(&self) -> Vec<(String, ContentId)> {
         self.evaluation
+            .body
             .evidence
             .iter()
             .enumerate()
@@ -211,11 +226,11 @@ impl MeasurementSet {
 impl Canonical for MeasurementSet {
     fn encode(&self, encoder: &mut Encoder) {
         MEASUREMENT_SET_SCHEMA_VERSION.encode(encoder);
-        self.evaluation.definitions.encode(encoder);
-        self.evaluation.payload_schema.encode(encoder);
-        self.evaluation.evaluation.encode(encoder);
-        self.evaluation.payload.encode(encoder);
-        self.evaluation.evidence.encode(encoder);
+        self.evaluation.body.definitions.encode(encoder);
+        self.evaluation.body.payload_schema.encode(encoder);
+        self.evaluation.body.evaluation.encode(encoder);
+        self.evaluation.body.payload.encode(encoder);
+        self.evaluation.body.evidence.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {

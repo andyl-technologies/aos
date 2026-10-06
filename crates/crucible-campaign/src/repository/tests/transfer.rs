@@ -2,6 +2,9 @@
 
 use std::sync::Arc;
 
+#[path = "transfer_resources.rs"]
+mod resources;
+
 use crucible_cas::content_envelope::ContentEnvelope;
 use crucible_cas::content_store::{
     BlobHandle, ContentId, DirectoryBlobBackend, DirectoryRefBackend, DurabilityRequirement,
@@ -532,10 +535,14 @@ fn archive_ram_graphs_have_compact_inventories_and_real_transitive_possession() 
 
     let (_memory_source, lineage, policy, memory_blobs) = counted_fixture();
     let source_directory = tempfile::tempdir().expect("durable source directory");
-    let source_blobs = Arc::new(DirectoryBlobBackend::new(
+    let resources: Arc<dyn crucible_cas::content_store::StorePhysicalQuotaGuard> =
+        Arc::new(resources::TransferResources::new(128, 256 * 1024 * 1024));
+    let (source_blobs, _source_admin) = DirectoryBlobBackend::new_with_physical_quota_and_admin(
         "ram-source",
         source_directory.path().join("objects"),
-    ));
+        resources.clone(),
+    )
+    .expect("durable source with original finite component metadata");
     let source_refs = Arc::new(DirectoryRefBackend::new(
         source_directory.path().join("refs"),
     ));
@@ -655,9 +662,15 @@ fn archive_ram_graphs_have_compact_inventories_and_real_transitive_possession() 
     assert_eq!(inspection_boundaries, 8);
 
     let temporary = tempfile::tempdir().expect("destination directory");
-    let blobs = Arc::new(DirectoryBlobBackend::new(
+    let (blobs, blob_admin) = DirectoryBlobBackend::new_with_physical_quota_and_admin(
         "ram-destination",
         temporary.path().join("objects"),
+        resources.clone(),
+    )
+    .expect("durable receiver with the same finite component metadata");
+    assert!(Arc::ptr_eq(
+        &blobs.metadata_resources().expect("receiver origin"),
+        &resources
     ));
     let refs = Arc::new(DirectoryRefBackend::new(temporary.path().join("refs")));
     let destination = CampaignRepository::new(blobs.clone(), refs.clone());
@@ -680,7 +693,7 @@ fn archive_ram_graphs_have_compact_inventories_and_real_transitive_possession() 
         .copied()
         .find(|id| id.kind() == ObjectKind::RamExtent)
         .expect("real RAM page");
-    blobs
+    blob_admin
         .acquire_inventory_fence()
         .expect("fixture destructive inventory")
         .delete_candidate(page)

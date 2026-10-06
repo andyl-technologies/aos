@@ -22,6 +22,16 @@ pub(crate) fn open_guarded_campaign_owner(
     seed: crucible_session::engine::Seed,
     resources: crucible_campaign::AttemptResourceLimits,
 ) -> Result<crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignOwner, CliError> {
+    if let Some(owner) = crate::cli_input_resources::take_native_owner()? {
+        let decoding = crate::cli_input_resources::original_budget()?;
+        let _scope = decoding.enter();
+        return owner.with_imported_lifecycle(lifecycle).map_err(|source| {
+            CliError::ExecutionAdmission {
+                context: "native input owner binding failed",
+                source: NativeExecutionAdmissionError::Lifecycle(Box::new(source)),
+            }
+        });
+    }
     let campaign = crucible_campaign::CampaignName::new(format!(
         "guarded-campaign-run-{:016x}",
         seed.decision_rng_root_seed(),
@@ -33,8 +43,12 @@ pub(crate) fn open_guarded_campaign_owner(
         std::env::current_dir()?.join(lifecycle.run_state_root())
     };
     let config = deployment.execution_config(lifecycle, campaign, &state, resources)?;
-    crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignOwner::open(config)
-        .map_err(|error| backend_error(format!("guarded campaign admission failed: {error}")))
+    crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignOwner::open(config).map_err(|source| {
+        CliError::ExecutionAdmission {
+            context: "guarded campaign admission failed",
+            source: NativeExecutionAdmissionError::Owner(Box::new(source)),
+        }
+    })
 }
 
 /// Creates a guarded request with the original admitted owner and lifecycle.
@@ -50,7 +64,9 @@ pub(crate) fn configured_guarded_campaign_request(
     resources: crucible_campaign::AttemptResourceLimits,
 ) -> Result<crucible_daemon::qemu_campaign_lifecycle::GuardedDefaultCampaignRunRequest, CliError> {
     let owner = open_guarded_campaign_owner(deployment, lifecycle, seed, resources)?;
-    guarded_campaign_request(owner, scenario, seed, qemu_build_id)
+    guarded_campaign_request(owner, scenario, seed, qemu_build_id)?
+        .with_execution_limits(resources)
+        .map_err(|error| backend_error(format!("guarded execution limits failed: {error}")))
 }
 
 /// Binds a request to an existing admitted owner and authenticated lifecycle.
@@ -75,6 +91,9 @@ pub(crate) fn guarded_campaign_request(
 
 /// Shared complete resource schema for independently authored host services.
 pub(super) type HostOwnerResourcesDeployment = packaged_executor::HostOwnerResourcesDeployment;
+pub(crate) use packaged_executor::host_operation_budgets::{
+    OperationBudgetDeployment, deployed_budgets,
+};
 pub(crate) fn load_guarded_campaign_deployment(
     explicit: Option<&Path>,
 ) -> Result<packaged_executor::GuardedCampaignRunDeployment, CliError> {
@@ -159,6 +178,7 @@ pub(crate) fn run_local_qemu_campaign_replay(
     lifecycle: crucible_api::ProductionVmLifecycleConfig,
     schedule: crucible::Schedule,
     replay_closure: crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
+    owner: crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignOwner,
 ) -> Result<RunWorkflowReport, CliError> {
     campaign_run::run_local_qemu_campaign_replay(
         backend,
@@ -166,6 +186,7 @@ pub(crate) fn run_local_qemu_campaign_replay(
         lifecycle,
         schedule,
         replay_closure,
+        owner,
     )
 }
 
@@ -205,28 +226,36 @@ where
 
 pub(super) fn verify_compare_artifacts(
     verify_plan: &VerifyInvocationPlan,
+    deployment: Option<&Path>,
 ) -> Result<VerifyWorkflowReport, CliError> {
     let VerifyMode::CompareArtifacts { left, right } = &verify_plan.mode else {
         return Err(backend_error(
             "verify run mode must use the live control-client workflow",
         ));
     };
-    let left_bytes = fs::read(left)?;
-    let right_bytes = fs::read(right)?;
+    let resources = crate::cli_input_resources::StandaloneInputResources::open(deployment)?;
+    let _scope = resources.decoding.enter();
+    let left_bytes = resources.read(left)?;
+    let right_bytes = resources.read(right)?;
     let left_artifact = decode_reproduction_artifact(&left_bytes)?;
     let right_artifact = decode_reproduction_artifact(&right_bytes)?;
     verify_replay_identity(&right_artifact.identity, &left_artifact.identity)?;
     verify_compare_artifact_inputs_match("verify --compare", &left_artifact, &right_artifact)?;
     let witnesses = vec![
-        verify_witness_from_artifact(verify_plan.reductions[0].clone(), left_artifact, left_bytes)?,
+        verify_witness_from_artifact(
+            verify_plan.reductions[0].clone(),
+            &left_artifact,
+            left_bytes,
+        )?,
         verify_witness_from_artifact(
             verify_plan.reductions[1].clone(),
-            right_artifact,
+            &right_artifact,
             right_bytes,
         )?,
     ];
     let divergence = compare_verify_witnesses(&witnesses);
     Ok(VerifyWorkflowReport {
+        _input_custody: crucible_session::engine::owned_decode::current_custody(),
         witnesses,
         divergence,
     })
@@ -390,6 +419,7 @@ pub(super) fn verify_witness_from_run_report(
         })
         .transpose()?;
     Ok(VerifyRunWitness {
+        _input_custody: crucible_session::engine::owned_decode::current_custody(),
         reduction,
         canonical_log,
         canonical_log_bytes,
@@ -404,15 +434,26 @@ pub(super) fn verify_witness_from_run_report(
 
 pub(super) fn verify_witness_from_artifact(
     reduction: VerifyReductionPlan,
-    artifact: CliReproductionArtifact,
+    artifact: &CliReproductionArtifact,
     bytes: Vec<u8>,
 ) -> Result<VerifyRunWitness, CliError> {
-    let canonical_log = canonical_log_entries_from_artifact(&artifact)?;
-    let canonical_log_bytes = canonical_log_entry_bytes(&canonical_log);
-    let fingerprint_samples = artifact_fingerprint_samples(&artifact);
-    let fingerprint_stream = verify_fingerprint_stream_bytes(&fingerprint_samples);
-    let state_dump = artifact_state_dump(&artifact);
+    let canonical_log = canonical_log_entries_from_artifact(artifact)?;
+    let canonical_log_bytes =
+        admitted_artifact_evidence::admitted_canonical_entries(&canonical_log)?;
+    let fingerprint_samples = artifact_fingerprint_samples(artifact)?;
+    let fingerprint_stream =
+        admitted_artifact_evidence::admitted_fingerprint_stream(&fingerprint_samples)?;
+    let state_dump = crucible_session::engine::owned_decode::display_string(&format_args!(
+        "scenario={} seed={} decisions={} fingerprints={} schedule={}",
+        artifact.scenario.digest,
+        artifact.seed,
+        artifact.decisions.len(),
+        artifact.fingerprints.len(),
+        artifact.schedule_digest,
+    ))
+    .map_err(CliError::MetadataAdmission)?;
     Ok(VerifyRunWitness {
+        _input_custody: crucible_session::engine::owned_decode::current_custody(),
         reduction,
         canonical_log,
         canonical_log_bytes,
@@ -510,6 +551,9 @@ fn verify_frame_string_attribute(
 #[path = "verify_serve/evidence.rs"]
 mod evidence;
 
+#[path = "verify_serve/admitted_artifact_evidence.rs"]
+mod admitted_artifact_evidence;
+
 pub(crate) use evidence::*;
 
 fn validate_remote_resume_replay_closure(
@@ -538,7 +582,8 @@ pub(super) async fn run_local_double_workflow_async(
         Vec::new(),
         |_scenario: &crucible::ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
     )
-    .with_terminal_session_retention(true);
+    .with_terminal_session_retention(true)
+    .with_decode_budget(crate::cli_input_resources::original_budget()?);
     let client = InProcessLifecycleClient::new(control_plane);
     run_control_client_workflow_async(&client, run_plan, interactive_commands).await
 }
@@ -553,7 +598,8 @@ pub(super) async fn run_local_double_workflow_stdin_async(
         Vec::new(),
         |_scenario: &crucible::ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
     )
-    .with_terminal_session_retention(true);
+    .with_terminal_session_retention(true)
+    .with_decode_budget(crate::cli_input_resources::original_budget()?);
     let client = InProcessLifecycleClient::new(control_plane);
     run_control_client_workflow_stdin_async(&client, run_plan, false, false).await
 }

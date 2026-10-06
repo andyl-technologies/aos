@@ -483,6 +483,11 @@ pub enum SchedulerError {
         /// Original typed evaluation error retained without diagnostic conversion.
         source: std::sync::Arc<crate::EngineError>,
     },
+    /// Assertion continuation capture refused its original allocation authority.
+    AssertionCheckpoint {
+        /// Original failure and any retained continuation allocation custody.
+        source: crate::HostAssertionCheckpointError,
+    },
     /// A backend operation failed while driven by the scheduler.
     Backend(BackendError),
     /// A component attempted to bypass the scheduler boundary.
@@ -531,6 +536,9 @@ impl fmt::Display for SchedulerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Evaluation { source } => write!(f, "scheduler evaluation refused: {source}"),
+            Self::AssertionCheckpoint { source } => {
+                write!(f, "assertion checkpoint refused: {source}")
+            }
             Self::Backend(error) => write!(f, "backend failed under scheduler control: {error}"),
             Self::BoundaryViolation { message } => f.write_str(message),
             Self::OperationalBoundary { message, .. } => f.write_str(message),
@@ -559,7 +567,40 @@ impl fmt::Display for SchedulerError {
 impl Error for SchedulerError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::Backend(source) => Some(source),
             Self::Evaluation { source } => Some(source.as_ref()),
+            Self::AssertionCheckpoint { source } => Some(source),
+            _ => None,
+        }
+    }
+}
+
+impl SchedulerError {
+    /// Classifies explicit infrastructure failures without evaluating a guest outcome.
+    ///
+    /// Unknown semantic or backend rejections remain unclassified. The original
+    /// cause is retained by the error; classification neither consumes resources
+    /// nor authorizes replacing a failed owner or resuming its pending guest.
+    #[must_use]
+    pub const fn operational_failure_class(&self) -> Option<SchedulerOperationalFailureClass> {
+        use crate::BackendOperationalFailureKind;
+        match self {
+            Self::OperationalBoundary { class, .. } => Some(*class),
+            Self::Evaluation { .. } | Self::AssertionCheckpoint { .. } => {
+                Some(SchedulerOperationalFailureClass::Retryable)
+            }
+            Self::Backend(source) => match source.operational_kind() {
+                Some(BackendOperationalFailureKind::Canceled) => {
+                    Some(SchedulerOperationalFailureClass::Canceled)
+                }
+                Some(
+                    BackendOperationalFailureKind::Unavailable
+                    | BackendOperationalFailureKind::CapacityExhausted
+                    | BackendOperationalFailureKind::RevisionConflict,
+                ) => Some(SchedulerOperationalFailureClass::Retryable),
+                Some(_) => Some(SchedulerOperationalFailureClass::Terminal),
+                None => None,
+            },
             _ => None,
         }
     }
@@ -597,5 +638,11 @@ impl From<BackendError> for SchedulerError {
 impl From<TimeConversionError> for SchedulerError {
     fn from(error: TimeConversionError) -> Self {
         Self::TimeConversion(error)
+    }
+}
+
+impl From<crate::HostAssertionCheckpointError> for SchedulerError {
+    fn from(source: crate::HostAssertionCheckpointError) -> Self {
+        Self::AssertionCheckpoint { source }
     }
 }

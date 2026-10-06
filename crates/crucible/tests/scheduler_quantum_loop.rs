@@ -22,6 +22,9 @@ use crucible::{
 
 #[test]
 fn quantum_loop_pick_run_resolve_and_step_are_one_atomic_boundary() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let consumer = scheduler_node("consumer");
     let producer = scheduler_node("producer");
     let due = backend_event(4, &consumer, &producer, 7, b"first");
@@ -69,6 +72,9 @@ fn quantum_loop_pick_run_resolve_and_step_are_one_atomic_boundary() {
 
 #[test]
 fn quantum_loop_sequence_is_pure_for_identical_scenario_inputs() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let first = check_scheduler_liveness(pure_sequence_scenario())
         .expect("first scheduler run should terminate");
     let second = check_scheduler_liveness(pure_sequence_scenario())
@@ -97,6 +103,9 @@ fn quantum_loop_sequence_is_pure_for_identical_scenario_inputs() {
 
 #[test]
 fn quantum_loop_scheduler_state_contributes_to_effective_scenario_def() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let node_a = scheduler_node("node-a");
     let node_b = scheduler_node("node-b");
     let first = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
@@ -134,6 +143,9 @@ fn quantum_loop_scheduler_state_contributes_to_effective_scenario_def() {
 
 #[test]
 fn quantum_loop_steps_boundary_control_when_no_node_advances() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "control-only-boundary",
         8,
@@ -181,6 +193,9 @@ fn quantum_loop_steps_boundary_control_when_no_node_advances() {
 
 #[test]
 fn quantum_loop_rejects_non_frontier_configuration_request() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler =
         SingleScheduler::new(pure_sequence_scenario()).expect("scenario should build");
     let stale = Configuration::genesis(crucible::ScenarioDef::from_canonical_material(

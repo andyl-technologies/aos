@@ -240,7 +240,7 @@ where
         }
         let event_log_bytes = event_log.iter().try_fold(0usize, |total, entry| {
             total
-                .checked_add(entry.canonical_material_len())
+                .checked_add(entry.canonical_material_len()?)
                 .ok_or_else(|| SchedulerError::BoundaryViolation {
                     message: String::from("hot-fork start event-log byte count overflowed"),
                 })

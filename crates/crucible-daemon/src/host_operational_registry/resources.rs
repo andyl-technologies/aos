@@ -4,6 +4,7 @@
 //! entitlement is reserved before filesystem access, independently of guest
 //! allocations. The retained permit outlives the writer and all indexed state.
 
+use crucible::owned_decode::{DecodeAdmissionError, DecodeBudget, DecodeResourceAuthority};
 use crucible_linux_resource::host_services::{HostServiceAllocator, HostServiceLease};
 
 use super::*;
@@ -48,13 +49,132 @@ impl Drop for Retirement {
 
 pub(super) struct RegistryResources {
     pub(super) entitlement: HostResourceVector,
+    services: HostServiceAllocator,
+    metadata: HostServiceAllocator,
     _lease: HostServiceLease,
+    _metadata_floor: HostServiceLease,
     // Last-field destruction releases the original actor only after its actual
     // descriptor and resident permits have been returned by the field above.
     retirement: Retirement,
 }
 
+struct RegistryMetadataCredit {
+    _resident: HostServiceLease,
+    _metadata: HostServiceLease,
+    // Last: the original actor cannot retire while this receipt still owns
+    // resident or metadata permits, including DecodeBudget's initial receipt.
+    _resources: Arc<RegistryResources>,
+}
+
+struct RegistryMetadataAuthority {
+    resources: Arc<RegistryResources>,
+    _credit: RegistryMetadataCredit,
+}
+
+impl RegistryResources {
+    fn reserve_metadata(
+        self: &Arc<Self>,
+        bytes: u64,
+    ) -> Result<RegistryMetadataCredit, DecodeAdmissionError> {
+        let bytes = bytes
+            .checked_add(std::mem::size_of::<RegistryMetadataCredit>() as u64)
+            .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<usize>() as u64))
+            .and_then(|bytes| bytes.checked_add(2 * HostServiceLease::metadata_bytes()))
+            .ok_or_else(|| DecodeAdmissionError::new(HostOperationalError::Unavailable))?;
+        let resident = self
+            .services
+            .reserve_resources(0, 0, bytes)
+            .map_err(DecodeAdmissionError::new)?;
+        let metadata = self
+            .metadata
+            .reserve_resources(0, 0, bytes)
+            .map_err(DecodeAdmissionError::new)?;
+        Ok(RegistryMetadataCredit {
+            _resident: resident,
+            _metadata: metadata,
+            _resources: Arc::clone(self),
+        })
+    }
+}
+
+impl DecodeResourceAuthority for RegistryMetadataAuthority {
+    fn reserve(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, DecodeAdmissionError> {
+        Ok(Arc::new(self.resources.reserve_metadata(bytes)?))
+    }
+}
+
 impl HostOperationalRegistry {
+    /// Creates response metadata custody within the original registry service.
+    ///
+    /// Both retained responses and concurrent decoders draw from the same
+    /// resident allocator and independently authored metadata subset. The
+    /// authority retains final registry retirement until their last close.
+    ///
+    /// # Errors
+    /// Refuses missing original admission, exhausted subset capacity, or
+    /// unavailable accounting. No detached allowance is inferred.
+    pub(crate) fn metadata_budget(&self) -> Result<DecodeBudget, HostOperationalError> {
+        if let Some(resources) = &self.shared.resources {
+            let maximum = resources
+                .entitlement
+                .metadata_bytes
+                .checked_sub(registry_resource_floor()?.metadata_bytes)
+                .ok_or(HostOperationalError::Unavailable)?;
+            let authority_bytes = (std::mem::size_of::<RegistryMetadataAuthority>()
+                + 2 * std::mem::size_of::<usize>()) as u64;
+            let credit = resources
+                .reserve_metadata(authority_bytes)
+                .map_err(|source| HostOperationalError::Admission { source })?;
+            let authority = Arc::new(RegistryMetadataAuthority {
+                resources: Arc::clone(resources),
+                _credit: credit,
+            });
+            return DecodeBudget::new(authority, maximum)
+                .map_err(|source| HostOperationalError::Admission { source });
+        }
+        #[cfg(test)]
+        if let Some(budget) = self
+            .shared
+            .component_metadata
+            .lock()
+            .map_err(unavailable)?
+            .as_ref()
+        {
+            return budget
+                .child()
+                .map_err(|source| HostOperationalError::Admission { source });
+        }
+        Err(HostOperationalError::Unavailable)
+    }
+
+    /// Attaches explicitly supplied finite metadata authority to a component.
+    ///
+    /// This supports isolated protocol fixtures. It cannot replace an admitted
+    /// registry service or attach another account to an existing component.
+    ///
+    /// # Errors
+    /// Refuses existing admission, an earlier attachment, or failed accounting.
+    #[cfg(test)]
+    pub(crate) fn with_component_metadata_budget(
+        self,
+        budget: DecodeBudget,
+    ) -> Result<Self, HostOperationalError> {
+        if self.shared.resources.is_some() {
+            return Err(HostOperationalError::Unavailable);
+        }
+        budget
+            .check()
+            .map_err(|source| HostOperationalError::Admission { source })?;
+        {
+            let mut slot = self.shared.component_metadata.lock().map_err(unavailable)?;
+            if slot.is_some() {
+                return Err(HostOperationalError::Unavailable);
+            }
+            *slot = Some(budget);
+        }
+        Ok(self)
+    }
+
     /// Validates the complete fixed-roster service before any namespace I/O.
     ///
     /// # Errors
@@ -134,12 +254,22 @@ impl HostOperationalRegistry {
         let lease = allocator
             .reserve_resources(0, floor.file_descriptors, floor.resident_peak_bytes)
             .map_err(unavailable)?;
+        // This counter tracks only the metadata subset; it is paired with the
+        // same resident allocator for every loan, never a second entitlement.
+        let metadata =
+            HostServiceAllocator::new(1, 1, resources.metadata_bytes).map_err(unavailable)?;
+        let metadata_floor = metadata
+            .reserve_resources(0, 0, floor.metadata_bytes)
+            .map_err(unavailable)?;
         let history = history::History::open(path, resources.backing_peak_bytes)?;
         Ok(Self::from_history_and_resources(
             Some(history),
             Some(RegistryResources {
                 entitlement: resources,
+                services: allocator,
+                metadata,
                 _lease: lease,
+                _metadata_floor: metadata_floor,
                 retirement: Retirement {
                     owner,
                     authority: Mutex::new(None),
@@ -187,6 +317,10 @@ fn registry_resource_floor() -> Result<HostResourceVector, HostOperationalError>
     let metadata = record
         .checked_mul(MAX_OWNERS)
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Shared>()))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<RegistryResources>()))
+        .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<usize>()))
+        .and_then(|bytes| bytes.checked_add(HostServiceAllocator::metadata_bytes() as usize))
+        .and_then(|bytes| bytes.checked_add(2 * HostServiceLease::metadata_bytes() as usize))
         .and_then(|bytes| {
             bytes.checked_add(
                 MAX_PRINCIPALS
@@ -239,6 +373,144 @@ mod tests {
             self.retired.store(true, Ordering::Release);
             Ok(())
         }
+    }
+
+    struct ResponseCleanupWitness {
+        descriptors: CleanupWitness,
+        services: HostServiceAllocator,
+    }
+
+    impl RegistryRetirementAuthority for ResponseCleanupWitness {
+        fn retire_after_cleanup(&mut self, owner: [u8; 32]) -> Result<(), HostOperationalError> {
+            // Whole-capacity reuse proves both baseline and escaped response
+            // permits closed before final original-actor retirement begins.
+            let _closed = self
+                .services
+                .reserve_resources(
+                    self.services.maximum_tasks(),
+                    self.services.maximum_file_descriptors(),
+                    self.services.maximum_resident_bytes(),
+                )
+                .map_err(unavailable)?;
+            self.descriptors.retire_after_cleanup(owner)
+        }
+    }
+
+    fn resources_with_response_headroom() -> HostResourceVector {
+        let mut resources = registry_resource_floor().unwrap();
+        resources.metadata_bytes += 8192;
+        resources.resident_peak_bytes += 8192;
+        resources
+    }
+
+    #[test]
+    fn response_custody_keeps_original_retirement_until_its_last_close() {
+        let directory = tempfile::tempdir().unwrap();
+        let registry = HostOperationalRegistry::open_admitted(
+            directory.path(),
+            [7; 32],
+            resources_with_response_headroom(),
+        )
+        .unwrap();
+        let retired = Arc::new(AtomicBool::new(false));
+        assert!(
+            registry
+                .retain_retirement_authority(Box::new(ResponseCleanupWitness {
+                    descriptors: CleanupWitness {
+                        lock: directory.path().join("writer.lock"),
+                        retired: Arc::clone(&retired),
+                    },
+                    services: registry.shared.resources.as_ref().unwrap().services.clone(),
+                }))
+                .is_ok()
+        );
+        let budget = registry.metadata_budget().unwrap();
+        let scope = budget.enter();
+        let response = HostOperationalResponse::admit(|| {
+            Ok(HostOperationalResponse::Targets {
+                target: HostRamOwnerTarget {
+                    daemon_epoch: [1; 32],
+                    owner_id: [7; 32],
+                },
+                targets: Vec::new(),
+                next: None,
+            })
+        })
+        .unwrap();
+        let wire = crucible_api::host_operational::codec::encode_owned_response(&response).unwrap();
+        {
+            let _wire_scope = wire.enter_original_scope().unwrap();
+            crucible::owned_decode::charge_bytes(
+                (std::mem::size_of_val(&wire) + 2 * std::mem::size_of::<usize>()) as u64,
+            )
+            .unwrap();
+        }
+        let wire = Arc::new(wire);
+        let final_reader = Arc::clone(&wire);
+
+        drop(scope);
+        drop(budget);
+        drop(response);
+        drop(wire);
+        drop(registry);
+        assert!(!retired.load(Ordering::Acquire));
+        assert!(!final_reader.value().is_empty());
+
+        drop(final_reader);
+        assert!(retired.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn concurrent_response_accounts_share_the_authored_metadata_peak() {
+        let directory = tempfile::tempdir().unwrap();
+        let registry = HostOperationalRegistry::open_admitted(
+            directory.path(),
+            [7; 32],
+            resources_with_response_headroom(),
+        )
+        .unwrap();
+        let first = registry.metadata_budget().unwrap();
+        first.charge_bytes(6000).unwrap();
+        let second = registry.metadata_budget().unwrap();
+        assert!(second.charge_bytes(2000).is_err());
+
+        drop(second);
+        drop(first);
+        let replacement = registry.metadata_budget().unwrap();
+        replacement.charge_bytes(6000).unwrap();
+    }
+
+    #[test]
+    fn component_metadata_requires_an_explicit_original_account() {
+        assert!(
+            HostOperationalRegistry::default()
+                .metadata_budget()
+                .is_err()
+        );
+        let _scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+        let budget = crucible::owned_decode::current_budget().unwrap();
+        let registry = HostOperationalRegistry::default()
+            .with_component_metadata_budget(budget.clone())
+            .unwrap();
+        registry
+            .metadata_budget()
+            .unwrap()
+            .charge_bytes(128)
+            .unwrap();
+        assert!(registry.with_component_metadata_budget(budget).is_err());
+
+        let directory = tempfile::tempdir().unwrap();
+        let registry = HostOperationalRegistry::open_admitted(
+            directory.path(),
+            [7; 32],
+            resources_with_response_headroom(),
+        )
+        .unwrap();
+        assert!(
+            registry
+                .with_component_metadata_budget(crucible::owned_decode::current_budget().unwrap())
+                .is_err()
+        );
     }
 
     #[test]

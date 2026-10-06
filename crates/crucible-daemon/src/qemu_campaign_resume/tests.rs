@@ -284,6 +284,8 @@ mod admission;
 
 #[test]
 fn event_count_resume_rejects_a_missing_start_proof_before_factory_invocation() {
+    let _fixture_metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let calls = Arc::new(ResumeCalls::default());
     let observed = Arc::new(Mutex::new(None));
     let mut runner = resume_runner(
@@ -319,6 +321,8 @@ fn event_count_resume_rejects_a_missing_start_proof_before_factory_invocation() 
 
 #[test]
 fn cold_fallback_distinguishes_an_absent_selected_root_from_a_missing_child() {
+    let _fixture_metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let checkpoint = checkpoint_id("selected-source-root");
     let context = selected_source_context(checkpoint);
     let absent_root = crate::QemuAttemptProductionVmLifecycleError::CheckpointRestore(Box::new(
@@ -354,13 +358,19 @@ fn cold_fallback_distinguishes_an_absent_selected_root_from_a_missing_child() {
 
 #[test]
 fn resume_runner_preserves_exact_event_prefix_and_final_drain() {
+    let _fixture_metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let calls = Arc::new(ResumeCalls::default());
     let observed = Arc::new(Mutex::new(None));
     let prefix = vec![event(0, 11, "restored-prefix")];
     let final_events = vec![event(1, 12, "final-drain")];
     let expected_bytes: usize = prefix
         .iter()
-        .map(SchedulerEventLogEntry::canonical_material_len)
+        .map(|entry| {
+            entry
+                .canonical_material_len()
+                .unwrap_or_else(|source| panic!("fixture event material admission: {source}"))
+        })
         .sum();
     let mut runner = resume_runner(
         Arc::clone(&calls),
@@ -414,6 +424,8 @@ fn resume_runner_preserves_exact_event_prefix_and_final_drain() {
 
 #[test]
 fn observed_resume_factory_retains_the_exact_terminal_world_node_set_in_the_result() {
+    let _fixture_metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let calls = Arc::new(ResumeCalls::default());
     let input = modeled_test_input_with_stop(StopCondition::ExecutionQuanta(5));
     let terminal_at = VirtualTime { ticks: 23 };
@@ -479,6 +491,8 @@ fn observed_resume_factory_retains_the_exact_terminal_world_node_set_in_the_resu
 
 #[test]
 fn event_count_resume_derives_same_attempt_progress_for_discovery_and_branch_starts() {
+    let _fixture_metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let inherited = vec![event(0, 3, "inherited-a"), event(1, 5, "inherited-b")];
     let same_attempt = vec![
         event(2, 7, "attempt-a"),
@@ -539,6 +553,8 @@ fn event_count_resume_derives_same_attempt_progress_for_discovery_and_branch_sta
 
 #[test]
 fn event_count_resume_keeps_quiet_and_repeated_same_attempt_progress_exact() {
+    let _fixture_metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let input = test_input_with_stop(StopCondition::EventCount(8));
     let inherited = vec![event(0, 3, "inherited")];
     let proof = QemuAttemptStartReplayProof::from_reached_boundary(
@@ -592,6 +608,8 @@ fn event_count_resume_keeps_quiet_and_repeated_same_attempt_progress_exact() {
 
 #[test]
 fn event_count_resume_rejects_foreign_or_short_inherited_prefixes() {
+    let _fixture_metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let input = test_input_with_stop(StopCondition::EventCount(8));
     let inherited = vec![event(0, 3, "inherited-a"), event(1, 5, "inherited-b")];
     let proof = QemuAttemptStartReplayProof::from_reached_boundary(
@@ -644,6 +662,8 @@ fn event_count_resume_rejects_foreign_or_short_inherited_prefixes() {
 
 #[test]
 fn selected_resume_materialization_carries_cold_derived_attempt_event_progress() {
+    let _fixture_metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let calls = Arc::new(ResumeCalls::default());
     let configuration = test_configuration();
     let events = (0..5)
@@ -683,6 +703,8 @@ fn selected_resume_materialization_carries_cold_derived_attempt_event_progress()
 
 #[test]
 fn resume_runner_rejects_suffix_only_evidence_and_still_cleans_up() {
+    let _fixture_metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let calls = Arc::new(ResumeCalls::default());
     let observed = Arc::new(Mutex::new(None));
     let mut runner = resume_runner(
@@ -808,6 +830,7 @@ fn selected_source_context(checkpoint: ExactCheckpointId) -> AttemptExecutionCon
 
 fn event(sequence: u64, ticks: u64, kind: &str) -> SchedulerEventLogEntry {
     SchedulerEventLogEntry::execution_budget_exhausted(sequence, VirtualTime { ticks }, kind)
+        .unwrap_or_else(|source| panic!("fixture event admission: {source}"))
 }
 
 fn test_configuration() -> Configuration {

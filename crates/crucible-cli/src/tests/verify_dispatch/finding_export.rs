@@ -19,6 +19,7 @@ impl crucible_campaign::CampaignPrincipalAuthorizer for AllowCampaignFindingExpo
 #[test]
 pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_tampering()
 -> Result<(), Box<dyn Error>> {
+    let _component_scope = crate::tests::component_decode_scope();
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
 
@@ -875,7 +876,7 @@ fn finding_export_violation(
         crucible::VirtualTime { ticks: 7 },
         crucible::AssertionId::from_name(property),
         crucible::AssertionPhase::Violated,
-    );
+    )?;
     let report = crucible_core::OfflineAssertionChecker::new()
         .with_world_white_box_policies(scenario.world())
         .check_run(scenario.properties(), &[entry])?;
@@ -883,8 +884,8 @@ fn finding_export_violation(
         .violations()
         .iter()
         .find(|violation| violation.assertion.name == property)
-        .cloned()
-        .ok_or_else(|| std::io::Error::other("fixture assertion did not fail at its boundary"))?;
+        .ok_or_else(|| std::io::Error::other("fixture assertion did not fail at its boundary"))?
+        .try_clone_admitted()?;
     violation.reproduction_artifact = finding.artifact.id();
     Ok(violation)
 }
@@ -895,4 +896,5 @@ fn finding_export_observational_entry(name: &str) -> crucible::SchedulerEventLog
         crucible::VirtualTime { ticks: 8 },
         crucible::EventDiagnosticPayload::new(name, crucible::EventLevel::Info, Default::default()),
     )
+    .unwrap_or_else(|error| panic!("construct finding diagnostic fixture: {error}"))
 }

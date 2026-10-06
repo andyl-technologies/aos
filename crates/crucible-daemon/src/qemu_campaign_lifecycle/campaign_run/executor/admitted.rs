@@ -20,12 +20,11 @@ impl crate::executor_supervisor::ExecutionCancellationHook for GuardedCancellati
     }
 }
 
-fn admitted_error<E: Error + 'static>(
-    error: impl Error + Send + 'static,
-) -> SynchronousCampaignExecutorError<E> {
-    SynchronousCampaignExecutorError::Admitted(Box::new(
-        crate::packaged_qemu_executor::guarded::RetainedOperationError::new(error),
-    ))
+pub(super) fn admitted_error<E, T>(error: T) -> SynchronousCampaignExecutorError<E>
+where
+    AdmittedCampaignError<E>: From<T>,
+{
+    SynchronousCampaignExecutorError::Admitted(Box::new(error.into()))
 }
 
 impl<M> SynchronousCampaignExecutor<M>
@@ -150,7 +149,7 @@ where
     ) -> Result<SubmitAttemptResponse, SynchronousCampaignExecutorError<M::Error>> {
         let basis = owner
             .completed_reproduction_basis(request, expected)
-            .map_err(SynchronousCampaignExecutorError::Admitted)?;
+            .map_err(admitted_error)?;
         let mut services = owner.replay_services().map_err(admitted_error)?;
         if let Some(caller) = &self.caller_supervisor {
             services = services.with_outer_supervisor(caller.clone());
@@ -198,9 +197,7 @@ where
             Ok(fence) => fence,
             Err(error) => {
                 reconcile_model(self.worker.model_mut(), AttemptExecutionDisposition::Failed)?;
-                return Err(SynchronousCampaignExecutorError::Admitted(Box::new(
-                    crate::packaged_qemu_executor::guarded::RetainedOperationError::from_box(error),
-                )));
+                return Err(admitted_error(error));
             }
         };
         let published = (|| {

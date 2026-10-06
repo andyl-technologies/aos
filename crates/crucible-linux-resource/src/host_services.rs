@@ -51,6 +51,16 @@ impl PartialEq for HostServiceAllocator {
 impl Eq for HostServiceAllocator {}
 
 impl HostServiceAllocator {
+    /// Returns the allocator value and shared capacity allocation payload.
+    ///
+    /// Callers include this bookkeeping and the two Arc counters in their
+    /// retained metadata admission before constructing an allocator.
+    pub const fn metadata_bytes() -> u64 {
+        (std::mem::size_of::<Self>()
+            + std::mem::size_of::<ServiceCapacity>()
+            + 2 * std::mem::size_of::<usize>()) as u64
+    }
+
     /// Validates explicit independently admitted host service subset ceilings.
     ///
     /// # Errors

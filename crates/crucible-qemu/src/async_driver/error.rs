@@ -4,14 +4,28 @@ use super::*;
 use thiserror::Error;
 
 /// Error returned by a host-I/O runtime adapter.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-#[error("{operation} failed: {message}")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuAsyncDriverRuntimeError {
     /// Operation being attempted.
     pub operation: &'static str,
     /// Deterministic failure detail.
     pub message: String,
     detail: QemuAsyncDriverRuntimeErrorDetail,
+}
+
+impl std::fmt::Display for QemuAsyncDriverRuntimeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{} failed: {}", self.operation, self.message)
+    }
+}
+
+impl std::error::Error for QemuAsyncDriverRuntimeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.detail {
+            QemuAsyncDriverRuntimeErrorDetail::HostSupervision(source) => Some(source),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -171,6 +185,9 @@ impl QemuAsyncDriverTargetError {
 /// Error returned by the bounded async driver.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum QemuAsyncDriverError {
+    /// A retained host service failed before a guest result could be committed.
+    #[error("QEMU operational service failed: {0}")]
+    OperationalHealth(#[source] QemuAsyncDriverHealthError),
     /// A host-I/O await timeout was zero.
     #[error("QEMU async driver wait {wait:?} has a zero timeout")]
     UnboundedAwait {

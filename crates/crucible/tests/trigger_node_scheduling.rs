@@ -71,16 +71,20 @@ impl ConditionLeafOracle for NoLeaves {
 
 fn evaluate_genesis(graph: &EventGraph, scheduler: &SingleScheduler) -> crucible::EventFirings {
     let mut state = EventGraphState::new();
-    let mut pass = ConditionEvaluationPass::from_log_prefix(
-        scheduler.condition_event_log_prefix().clone(),
+    let mut pass = ConditionEvaluationPass::from_log_prefix_ref(
+        scheduler.condition_event_log_prefix(),
         NoLeaves,
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component condition projection: {error}"));
     pass.evaluate_event_graph(graph, &mut state)
         .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
 }
 
 #[test]
 fn start_stop_schedule_declared_baked_nodes_without_topology_mutation() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world_with(&["db-0", "db-1", "standby"]);
     let graph = EventGraph::new_for_world(
         vec![Event::once(
@@ -141,6 +145,9 @@ fn start_stop_schedule_declared_baked_nodes_without_topology_mutation() {
 
 #[test]
 fn start_stop_without_world_static_topology_is_rejected_atomically() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let graph_world = world_with(&["standby"]);
     let graph = EventGraph::new_for_world(
         vec![Event::once(
@@ -174,6 +181,9 @@ fn start_stop_without_world_static_topology_is_rejected_atomically() {
 
 #[test]
 fn scheduler_rejects_undeclared_node_schedule_target_atomically() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scheduler_world = world_with(&["db-0"]);
     let graph_world = world_with(&["missing"]);
     let graph = EventGraph::new_for_world(
@@ -214,6 +224,9 @@ fn scheduler_rejects_undeclared_node_schedule_target_atomically() {
 
 #[test]
 fn event_graph_requires_world_for_start_stop_targets() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let cases = vec![
         (
             "start-without-world",
@@ -248,6 +261,9 @@ fn event_graph_requires_world_for_start_stop_targets() {
 
 #[test]
 fn event_graph_for_world_rejects_undeclared_start_stop_targets() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world_with(&["db-0"]);
     let cases = vec![
         (

@@ -461,7 +461,7 @@ pub(super) fn debug_read_only_observation_entry(
     at: VirtualTime,
     event: DebugReadOnlyInspectionEvent,
     attach: &DebugAttachReport,
-) -> SchedulerEventLogEntry {
+) -> Result<SchedulerEventLogEntry, EngineError> {
     let mut details = BTreeMap::new();
     details.insert(
         String::from("phase"),
@@ -657,7 +657,7 @@ pub(super) fn debug_non_canonical_fork_marker(
     fork_checkpoint: ContentHash,
     request: &DebugNonCanonicalBranchRequest,
     sequence: u64,
-) -> DebugNonCanonicalForkMarker {
+) -> Result<DebugNonCanonicalForkMarker, EngineError> {
     let mut details = BTreeMap::new();
     details.insert(
         String::from("branch"),
@@ -695,12 +695,12 @@ pub(super) fn debug_non_canonical_fork_marker(
         fork_checkpoint,
         schedule_delta,
         details,
-    );
-    DebugNonCanonicalForkMarker {
+    )?;
+    Ok(DebugNonCanonicalForkMarker {
         branch,
         fork_point,
         entry,
-    }
+    })
 }
 
 pub(super) fn next_event_log_sequence(event_log: &[SchedulerEventLogEntry]) -> u64 {
@@ -711,7 +711,7 @@ pub(super) fn next_event_log_sequence(event_log: &[SchedulerEventLogEntry]) -> u
 
 pub(super) fn canonical_run_event_log_projection_without_debug_branches(
     entries: &[SchedulerEventLogEntry],
-) -> EventLogCausalProjection {
+) -> Result<EventLogCausalProjection, EngineError> {
     let canonical_entries = entries
         .iter()
         .filter(|entry| !is_debug_non_canonical_fork_marker_entry(entry))
@@ -1323,7 +1323,7 @@ impl DebugNonCanonicalBranch {
         attach: &DebugAttachReport,
         request: &DebugNonCanonicalBranchRequest,
         marker_sequence: u64,
-    ) -> Self {
+    ) -> Result<Self, EngineError> {
         let fork_point = request.current.id();
         let id = debug_non_canonical_branch_id(attach, request);
         let debug_edit_script = DebugEditScript::from_actions(fork_point, &request.actions);
@@ -1368,7 +1368,7 @@ impl DebugNonCanonicalBranch {
             attach.checkpoint,
             request,
             marker_sequence,
-        );
+        )?;
         let live_status = DebugNonCanonicalLiveStatus {
             branch: id,
             fork_point,
@@ -1380,7 +1380,7 @@ impl DebugNonCanonicalBranch {
             one_execution_path: true,
         };
 
-        Self {
+        Ok(Self {
             id,
             fork_point,
             fork_checkpoint: attach.checkpoint,
@@ -1396,7 +1396,7 @@ impl DebugNonCanonicalBranch {
             divergent_actions_recorded: !request.actions.is_empty(),
             replay_oracle_excluded: true,
             seed_scenario_schedule_artifact: false,
-        }
+        })
     }
 
     /// Returns whether this branch is visibly non-canonical everywhere exposed.

@@ -37,6 +37,7 @@ fn assert_scripted_child_owned_or_reaped(expected: &QemuProcessIdentity) {
 
 #[test]
 fn two_running_nodes_install_shutdown_reconcile_and_reuse_one_source_world() {
+    let _metadata_scope = component_metadata_scope();
     let first =
         scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("first source");
     let second =
@@ -175,6 +176,7 @@ fn two_running_nodes_install_shutdown_reconcile_and_reuse_one_source_world() {
 
 #[test]
 fn powered_off_node_forks_with_the_complete_world_and_releases_on_shutdown() {
+    let _metadata_scope = component_metadata_scope();
     let first =
         scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("first source");
     let second =
@@ -281,6 +283,7 @@ fn powered_off_node_forks_with_the_complete_world_and_releases_on_shutdown() {
 
 #[test]
 fn two_factories_keep_independent_live_children_from_one_managed_source() {
+    let _metadata_scope = component_metadata_scope();
     let source_node =
         scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("source node");
     let (_nodes, mut source_world) =
@@ -432,6 +435,7 @@ fn two_factories_keep_independent_live_children_from_one_managed_source() {
 
 #[test]
 fn proven_first_child_rejection_restores_the_exact_source_world_for_retry() {
+    let _metadata_scope = component_metadata_scope();
     let source =
         scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::RejectedOnce).expect("source");
     let source_process = source.process_id();
@@ -520,6 +524,7 @@ fn proven_first_child_rejection_restores_the_exact_source_world_for_retry() {
 
 #[test]
 fn target_directory_rejection_restores_the_source_without_invoking_qemu() {
+    let _metadata_scope = component_metadata_scope();
     let source = scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("source");
     let (_nodes, source_world) =
         prepared_test_source_world(vec![source]).expect("prepared source world");
@@ -563,6 +568,7 @@ fn target_directory_rejection_restores_the_source_without_invoking_qemu() {
 
 #[test]
 fn failed_target_cleanup_after_first_child_rejection_keeps_the_source_unavailable() {
+    let _metadata_scope = component_metadata_scope();
     let source = scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("source");
     let source_process = source.process_id();
     let (_nodes, source_world) =
@@ -603,6 +609,7 @@ fn failed_target_cleanup_after_first_child_rejection_keeps_the_source_unavailabl
 
 #[test]
 fn indeterminate_child_failure_quarantines_complete_world_during_sibling_launch() {
+    let _metadata_scope = component_metadata_scope();
     let first =
         scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("first source");
     let first_source_process = first.process_id();
@@ -667,6 +674,7 @@ fn indeterminate_child_failure_quarantines_complete_world_during_sibling_launch(
 #[cfg(feature = "destructive-recovery-faults")]
 #[test]
 fn child_resource_alias_rejects_before_fork_and_restores_source_world() {
+    let _metadata_scope = component_metadata_scope();
     if std::env::var_os(CHILD_RESOURCE_ALIAS_CHILD_ENVIRONMENT).is_none() {
         let child =
             std::process::Command::new(std::env::current_exe().expect("current test binary"))
@@ -747,6 +755,7 @@ fn child_resource_alias_rejects_before_fork_and_restores_source_world() {
 #[cfg(feature = "destructive-recovery-faults")]
 #[test]
 fn world_fork_preflight_failure_restores_source_world() {
+    let _metadata_scope = component_metadata_scope();
     if std::env::var_os(WORLD_FORK_PREFLIGHT_FAILURE_CHILD_ENVIRONMENT).is_none() {
         let child =
             std::process::Command::new(std::env::current_exe().expect("current test binary"))

@@ -596,6 +596,7 @@ fn spawn_unpinned_test_process_with_resources(
         cancellation_event: contract.cancellation_event.as_raw_fd(),
         maximum_file_bytes: contract.maximum_writable_bytes,
         maximum_file_descriptors: contract.maximum_file_descriptors,
+        maximum_locked_bytes: contract.maximum_locked_bytes,
         credentials: contract.credentials,
     });
 
@@ -815,6 +816,55 @@ fn guarded_pre_exec_enforces_explicit_descriptor_ceiling() -> Result<(), Box<dyn
         &[(PROBE_ENV, "1")],
         "spawn guarded descriptor-limit probe",
         Some(&contract),
+    )?;
+    assert!(child.wait()?.success());
+    let mut placement = [0_u8; 2];
+    std::fs::File::from(cgroup_read).read_exact(&mut placement)?;
+    assert_eq!(&placement, CGROUP_ATTACH_SELF);
+    Ok(())
+}
+
+#[test]
+fn guarded_pre_exec_installs_exact_memory_lock_entitlement() -> Result<(), Box<dyn Error>> {
+    const LOCKED_BYTES: u64 = 4096;
+    if env::var_os(PROBE_ENV).is_some() {
+        let mut limit = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+        let result = unsafe {
+            // SAFETY: The syscall initializes the complete limit record on success.
+            libc::getrlimit(libc::RLIMIT_MEMLOCK, limit.as_mut_ptr())
+        };
+        if result != 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        let limit = unsafe {
+            // SAFETY: The successful syscall initialized both fields.
+            limit.assume_init()
+        };
+        assert_eq!(limit.rlim_cur, LOCKED_BYTES);
+        assert_eq!(limit.rlim_max, LOCKED_BYTES);
+        return Ok(());
+    }
+
+    let (cgroup_read, cgroup_write) = pipe_pair()?;
+    let cancellation = event_fd_for_test()?;
+    let mut contract =
+        QemuChildProcessContract::for_test(cgroup_write, cancellation, current_file_size_limit()?);
+    contract.maximum_locked_bytes = LOCKED_BYTES;
+    let cloned = contract.try_clone_for_attempt_generation()?;
+    assert_eq!(cloned.maximum_locked_bytes(), LOCKED_BYTES);
+    let (_host, child_resources) = create_spawn_resources(4096)?;
+    let executable = env::current_exe()?.to_string_lossy().into_owned();
+    let args = vec![
+        String::from("--exact"),
+        String::from("spawn::tests::guarded_pre_exec_installs_exact_memory_lock_entitlement"),
+    ];
+    let mut child = spawn_unpinned_test_process_with_resources(
+        &executable,
+        &args,
+        child_resources,
+        &[(PROBE_ENV, "1")],
+        "spawn exact memory-lock probe",
+        Some(&cloned),
     )?;
     assert!(child.wait()?.success());
     let mut placement = [0_u8; 2];
@@ -1067,6 +1117,7 @@ fn process_contract_rejects_forged_regular_descriptors() -> Result<(), Box<dyn E
         super::QemuChildFileLimits {
             writable_bytes: 4096,
             descriptors: 1024,
+            locked_bytes: 0,
         },
         credentials,
         None,

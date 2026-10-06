@@ -13,6 +13,9 @@ use crucible::{
 
 #[test]
 fn fault_observations_append_as_typed_causal_evidence() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "fault-observation-log",
         8,
@@ -71,7 +74,11 @@ fn fault_observations_append_as_typed_causal_evidence() {
                 .as_str()
         )
     );
-    assert!(entry.has_valid_content_hash());
+    assert!(
+        entry
+            .has_valid_content_hash()
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
+    );
     assert!(
         append
             .segment_text

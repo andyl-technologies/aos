@@ -23,6 +23,9 @@ fn target() -> HostRamTarget {
 
 fn state() -> RamControlReply {
     RamControlReply {
+        placement_receipt: None,
+        operation_failure: None,
+        fault_actor: None,
         kernel_probe: None,
         activity: None,
         disposition: RamControlDisposition::Accepted,

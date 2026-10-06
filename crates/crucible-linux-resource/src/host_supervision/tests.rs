@@ -6,6 +6,32 @@
 use super::*;
 
 #[test]
+fn bounded_status_refuses_an_oversized_roster_without_retiring_operations() {
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
+    let first = supervisor.begin(HostOperationClass::PageIn).unwrap();
+    let second = supervisor.begin(HostOperationClass::Writeback).unwrap();
+
+    assert!(matches!(
+        supervisor.status_snapshot_bounded(1),
+        Err(HostSupervisionError::CapacityExhausted)
+    ));
+    let (_, statuses) = supervisor.status_snapshot_bounded(2).unwrap();
+    assert_eq!(statuses.len(), 2);
+    assert_eq!(statuses[0].operation_id, first.id);
+    assert_eq!(statuses[1].operation_id, second.id);
+    assert!(
+        statuses
+            .iter()
+            .all(|status| status.state == HostOperationState::Running)
+    );
+
+    drop(second);
+    assert_eq!(supervisor.status_snapshot_bounded(1).unwrap().1.len(), 1);
+    drop(first);
+    assert!(supervisor.status_snapshot_bounded(0).unwrap().1.is_empty());
+}
+
+#[test]
 fn native_cap_bindings_preserve_kernel_origin_across_owners_and_amendments() {
     let root = HostOperationSupervisor::new(
         HostOperationBudgets::default(),

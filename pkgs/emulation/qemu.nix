@@ -1727,6 +1727,9 @@ in
                   ("${../../tests/crucible/ram-dirty-plane-native.py}",
                    source_root, "ram-dirty-plane",
                    "ram_dirty_plane_activation_component=passed"),
+                  ("${../../tests/crucible/ram-child-contract-native.py}",
+                   source_root, "ram-child-contract",
+                   "child_contract_before_pager_rebind=true"),
               ):
                   with (source_root / f"{result_name}.result").open("w") as result:
                       subprocess.run([

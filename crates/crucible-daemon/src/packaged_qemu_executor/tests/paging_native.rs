@@ -19,18 +19,27 @@ use environment::{OPERATOR, environment_path};
 const QUANTA: usize = 64;
 
 pub(super) mod accepted_promotion;
+mod blocked_control;
 mod byte_service;
 pub(super) mod environment;
 mod equivalence;
 mod faults;
 mod host_parallel;
 mod lazy_restore;
+mod performance;
 mod plugin_flight;
+mod source_failures;
+mod spill_io;
+mod storage_scale;
+mod strict_child;
+mod strict_modes;
+mod throughput;
 mod transfer;
 use crate::paging_qualification::artifacts as evidence;
 pub(crate) use equivalence::{
     NativeAtomicFailureCase, NativeAtomicWorldCase, NativeEquivalenceCase,
     run as run_equivalence_native, run_atomic_failure_native, run_atomic_world_native,
+    run_dma_borrowers_native,
 };
 pub(crate) use host_parallel::run as run_host_parallel_native;
 
@@ -223,6 +232,7 @@ fn run_lane(source: &ScenarioDefForm, lane: &str, project: u32, paging: bool) ->
                 },
             )
             .expect("discover current registered arena")
+            .value()
         {
             HostOperationalResponse::Targets { targets, next, .. } => {
                 assert_eq!(targets.len(), 1);
@@ -236,6 +246,7 @@ fn run_lane(source: &ScenarioDefForm, lane: &str, project: u32, paging: bool) ->
         let logical_ram = match registry
             .execute(OPERATOR, HostOperationalRequest::Capabilities { target })
             .expect("actual capability declaration")
+            .value()
         {
             HostOperationalResponse::Capabilities {
                 capabilities,
@@ -262,7 +273,8 @@ fn run_lane(source: &ScenarioDefForm, lane: &str, project: u32, paging: bool) ->
                         reservation_amendment: None,
                     }
                 )
-                .expect("public qualification gate"),
+                .expect("public qualification gate")
+                .value(),
             HostOperationalResponse::PolicyUpdate {
                 disposition: HostOperationalDisposition::Unsupported,
                 ..
@@ -391,12 +403,16 @@ fn boundary(lifecycle: &mut ProductionVmLifecycleLoop) -> Boundary {
     }
 }
 
-fn status(registry: &crate::HostOperationalRegistry, target: HostRamTarget) -> HostRamStatus {
-    match registry
+fn status(
+    registry: &crate::HostOperationalRegistry,
+    target: HostRamTarget,
+) -> crucible_api::AdmittedOutput<HostRamStatus> {
+    registry
         .execute(OPERATOR, HostOperationalRequest::Status { target })
         .expect("independent authenticated status")
-    {
-        HostOperationalResponse::Status(status) => *status,
-        response => panic!("unexpected status: {response:?}"),
-    }
+        .try_map(|response| match response {
+            HostOperationalResponse::Status(status) => Ok(*status),
+            response => Err(format!("unexpected status: {response:?}")),
+        })
+        .unwrap_or_else(|error| panic!("{error}"))
 }

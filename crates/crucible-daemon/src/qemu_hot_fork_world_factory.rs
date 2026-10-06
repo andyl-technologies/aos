@@ -525,6 +525,8 @@ where
     async_policy: QemuAsyncDriverPolicy,
     #[cfg(test)]
     node_launch_nanoseconds: Vec<(String, u64)>,
+    #[cfg(test)]
+    native_qualification_ram_mode: Option<crucible_linux_resource::ram_policy::HostRamMode>,
 }
 
 impl<S, R> QemuProductionHotForkWorldLifecycleFactory<S, R>
@@ -551,7 +553,22 @@ where
             async_policy,
             #[cfg(test)]
             node_launch_nanoseconds: Vec::new(),
+            #[cfg(test)]
+            native_qualification_ram_mode: None,
         }
+    }
+
+    /// Selects strict initial placement for a genuine native child fixture.
+    ///
+    /// The mode enters the original registration grant before plan sealing;
+    /// public capabilities remain unchanged and native placement must attest it.
+    #[cfg(test)]
+    pub(crate) fn with_native_qualification_ram_mode(
+        mut self,
+        mode: crucible_linux_resource::ram_policy::HostRamMode,
+    ) -> Self {
+        self.native_qualification_ram_mode = Some(mode);
+        self
     }
 
     /// Selects the campaign store used for recoverable terminal restarts.
@@ -836,6 +853,13 @@ where
                     )
                 })
                 .collect::<Vec<_>>();
+            #[cfg(test)]
+            let factory = if let Some(mode) = self.native_qualification_ram_mode {
+                crate::qemu_campaign_lifecycle::create_native_qualification_ram_registration_factory(context, mode)
+            } else {
+                crate::qemu_campaign_lifecycle::create_host_ram_registration_factory(context)
+            }.map_err(|error| error.to_string())?;
+            #[cfg(not(test))]
             let factory =
                 crate::qemu_campaign_lifecycle::create_host_ram_registration_factory(context)
                     .map_err(|error| error.to_string())?;

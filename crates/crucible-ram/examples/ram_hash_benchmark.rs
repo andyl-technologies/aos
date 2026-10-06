@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Offline canonical RAM hashing measurements for the selected host implementation.
 //!
 //! Run this example in release mode with `test-support` and one output-directory
@@ -17,7 +16,9 @@
 //! CSV rows identify the algorithm, workload, logical/changed page counts, hash
 //! and preimage-byte counts, repetitions, sample number and elapsed nanoseconds.
 
-// crucible-lint: allow rust-allow -- this feature-gated offline executable measures host duration; it never participates in simulated state.
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+// crucible-lint: allow clippy-disallowed-method -- this feature-gated offline executable measures host duration; it never participates in simulated state.
 #![allow(clippy::disallowed_methods)]
 
 use std::collections::BTreeSet;

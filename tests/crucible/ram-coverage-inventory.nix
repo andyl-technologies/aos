@@ -20,6 +20,7 @@
     (chapter "09-security-and-cutover.md" "crucible-harness" ["gate:ram-cutover" "gate:ram-store-transfer" "gate:ram-paging"])
     (chapter "10-validation-and-performance.md" "crucible-harness" ["gate:ram-performance"])
     (chapter "11-implementation-plan.md" "crucible-harness" [])
+    (chapter "12-decisions-and-open-questions.md" "crucible-ram" ["gate:ram-performance"])
   ];
   discover = entry: let
     lines = lib.splitString "\n" (builtins.readFile entry.path);
@@ -43,6 +44,51 @@
     builtins.concatLists (builtins.genList scan (builtins.length lines));
   discovered = lib.concatMap discover chapters;
   ids = map (requirement: requirement.id) discovered;
+  # Some normative performance obligations are prose rather than numbered IDs.
+  # Retain their exact source anchors and scoped evidence alongside the ID table.
+  proseReference = file: marker: let
+    path = ../../docs/rfcs/0021-crucible-paged-ram + "/${file}";
+    lines = lib.splitString "\n" (builtins.readFile path);
+    matches = builtins.filter (index: lib.hasPrefix marker (builtins.elemAt lines index)) (builtins.genList (index: index) (builtins.length lines));
+  in
+    if builtins.length matches != 1
+    then throw "Unnumbered RAM obligation must retain exactly one descriptive source anchor"
+    else {
+      source = "docs/rfcs/0021-crucible-paged-ram/${file}";
+      line = builtins.head matches + 1;
+      text = builtins.elemAt lines (builtins.head matches);
+    };
+  evidenceFile = relative: {
+    path = relative;
+    sha256 = builtins.hashFile "sha256" (../.. + "/${relative}");
+  };
+  unnumberedRequirements = [
+    {
+      name = "offline-canonical-ram-hash-comparison";
+      sourceReferences = [
+        (proseReference "10-validation-and-performance.md" "Hash measurements MUST include 4 KiB page preimages")
+        (proseReference "12-decisions-and-open-questions.md" "Measurements must cover 4 KiB page preimages")
+      ];
+      owner = "crucible-ram";
+      evidenceClass = "performance";
+      executable = {
+        package = "crucible-ram";
+        example = "ram-hash-benchmark";
+        features = ["test-support"];
+      };
+      evidenceFiles = map evidenceFile [
+        "crates/crucible-ram/examples/ram_hash_benchmark.rs"
+        "crates/crucible-ram/Cargo.toml"
+        "docs/rfcs/0021-crucible-paged-ram/measurements/host-hashing/README.md"
+        "docs/rfcs/0021-crucible-paged-ram/measurements/host-hashing/receipt.json"
+        "docs/rfcs/0021-crucible-paged-ram/measurements/host-hashing/measurements.csv"
+      ];
+      coverage = "offline-host-measurement-recorded";
+      scope = "The retained 130 warm host-side samples compare declared Rust BLAKE3 AVX2/SSE4.1 and accelerated x86 SHA-256 over full and final partial page preimages, small typed node/root preimages, and sparse/dense changed-page ancestor unions at two logical sizes. The receipt records the actual host and paths; it does not time native C hashing, persistent-tree allocation or metadata COW, paging, whole-VM throughput or physical peaks. No portable threshold or runtime capability follows from this run.";
+      qualified = false;
+      advertisedCapabilities = [];
+    }
+  ];
   bindingsFor = id: builtins.filter (binding: builtins.elem id binding.requirementIds) caseBindings;
   invalidBindings =
     builtins.filter (
@@ -84,7 +130,7 @@ in
     kind = "review-inventory";
     qualification = "not-execution-evidence";
     advertisedCapabilities = [];
-    inherit requirements;
+    inherit requirements unnumberedRequirements;
     requirementCount = builtins.length requirements;
     uncovered = map (requirement: requirement.id) (builtins.filter (requirement: requirement.coverage == "uncovered") requirements);
     sourceDigests =

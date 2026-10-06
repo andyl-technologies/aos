@@ -122,6 +122,7 @@ impl From<crucible::NetworkFaultSelectableError> for CrucibleArtifactError {
 
 impl CrucibleArtifactError {
     pub(crate) fn is_decode_admission_refusal(&self) -> bool {
+        // crucible-lint: allow erased-error -- this borrows retained typed causes through Error::source for bounded admission classification; it creates no erased error owner or replacement diagnostic.
         let mut error: &dyn std::error::Error = self;
         // The closed host wrappers are shallow. This bound also protects
         // classification from an external authority's cyclic source chain.

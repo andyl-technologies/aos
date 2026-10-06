@@ -128,6 +128,42 @@ in rec {
       inherit pkgs lib;
       attrPath = "checks.crucible.ram.memoryFaults";
     };
+    blockedControl = import ./ram-blocked-control.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.ram.blockedControl";
+    };
+    sourceCompletions = import ./ram-source-completions.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.ram.sourceCompletions";
+    };
+    spillIo = import ./ram-spill-io.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.ram.spillIo";
+    };
+    dmaBorrowers = import ./ram-dma-borrowers.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.ram.dmaBorrowers";
+    };
+    faultActor = import ./ram-fault-actor.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.ram.faultActor";
+    };
+    strictPlacement = import ./ram-strict-placement.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.ram.strictPlacement";
+    };
+    strictChild = import ./ram-strict-child.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.ram.strictChild";
+    };
+    storageScale = import ./ram-storage-scale.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.ram.storageScale";
+    };
+    completedThroughput = import ./ram-completed-throughput.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.ram.completedThroughput";
+    };
     byteService = import ./ram-byte-service.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.ram.byteService";
@@ -509,6 +545,7 @@ in rec {
     tcgPerformanceFixtures = import ./tcg-performance-fixtures.nix {inherit pkgs;};
     tcgPerformanceDeterminism = import ./tcg-performance.nix {inherit pkgs;};
     tcgLinuxBootPerformanceDeterminism = import ./tcg-linux-boot-performance.nix {inherit pkgs lib;};
+    tcgManagedPerformanceDeterminism = import ./tcg-managed-performance.nix {inherit pkgs lib;};
     tcgProductionPerformanceDriver = import ./tcg-production-performance-driver.nix {inherit pkgs lib;};
     tcgLinuxSerialGuest = import ./tcg-linux-serial-guest.nix {inherit pkgs;};
     tcgLinuxSerialPerformanceDriver = import ./tcg-linux-serial-performance-driver.nix {inherit pkgs lib;};
@@ -1484,6 +1521,15 @@ in rec {
     };
   };
   phase5 = {
+    cliNativePlanningIntegration = import ./phase5-cli-native-planning-integration.nix {
+      inherit pkgs lib;
+    };
+    cliNativeOfflineIntegration = import ./phase5-cli-native-offline-integration.nix {
+      inherit pkgs lib;
+    };
+    cliNativeGcIntegration = import ./phase5-cli-native-gc-integration.nix {
+      inherit pkgs lib;
+    };
     cliNativeFindingIntegration = import ./phase5-cli-native-finding-integration.nix {
       inherit pkgs lib;
     };
@@ -1603,9 +1649,12 @@ in rec {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase5.gates.campaignStoreComposition";
           nativeFindingIntegration = phase5.cliNativeFindingIntegration;
-          dependencies = [campaignStoreEquivalence.rawGate phase5.cliNativeFindingIntegration];
+          nativeGcIntegration = phase5.cliNativeGcIntegration;
+          nativeOfflineIntegration = phase5.cliNativeOfflineIntegration;
+          nativePlanningIntegration = phase5.cliNativePlanningIntegration;
+          dependencies = [campaignStoreEquivalence.rawGate phase5.cliNativeFindingIntegration phase5.cliNativeGcIntegration phase5.cliNativeOfflineIntegration phase5.cliNativePlanningIntegration];
         };
-        dependencies = [campaignStoreEquivalence phase5.cliNativeFindingIntegration];
+        dependencies = [campaignStoreEquivalence phase5.cliNativeFindingIntegration phase5.cliNativeGcIntegration phase5.cliNativeOfflineIntegration phase5.cliNativePlanningIntegration];
       };
       campaignExactMaintenanceTransfer = import ./phase5-campaign-exact-maintenance-transfer-vm.nix {
         inherit pkgs lib;
@@ -1934,6 +1983,7 @@ in rec {
     };
     cliReplayCheck = import ./phase5-cli-replay-check.nix {
       inherit pkgs lib;
+      nativeOfflineIntegration = phase5.cliNativeOfflineIntegration;
       attrPath = "checks.crucible.phase5.cliReplayCheck";
       taskIds = ["T-CLI-12" "T-CLI-21" "T-HARN-29"];
       openTaskIds = [];
@@ -1945,6 +1995,7 @@ in rec {
     };
     cliSearchFuzzWorkflow = import ./phase5-cli-search-fuzz-workflow.nix {
       inherit pkgs lib;
+      nativeOfflineIntegration = phase5.cliNativeOfflineIntegration;
       attrPath = "checks.crucible.phase5.cliSearchFuzzWorkflow";
       taskIds = ["T-CLI-13"];
       openTaskIds = [];
@@ -2002,6 +2053,7 @@ in rec {
     };
     cliServeShutdown = import ./phase5-cli-serve-shutdown.nix {
       inherit pkgs lib;
+      nativeOfflineIntegration = phase5.cliNativeOfflineIntegration;
       attrPath = "checks.crucible.phase5.cliServeShutdown";
       taskIds = ["T-CLI-14"];
       openTaskIds = [];
@@ -2013,6 +2065,7 @@ in rec {
     };
     cliExitMachineReadable = import ./phase5-cli-exit-machine-readable.nix {
       inherit pkgs lib;
+      nativeOfflineIntegration = phase5.cliNativeOfflineIntegration;
       attrPath = "checks.crucible.phase5.cliExitMachineReadable";
       taskIds = ["T-CLI-15"];
       openTaskIds = [];

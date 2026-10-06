@@ -4,6 +4,9 @@ use super::*;
 
 #[test]
 fn shared_source_leases_allow_bounded_siblings_and_delay_reuse_until_the_last_release() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let source_node =
         scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("source node");
     let (_nodes, mut source) =
@@ -142,6 +145,9 @@ fn shared_source_leases_allow_bounded_siblings_and_delay_reuse_until_the_last_re
 
 #[test]
 fn source_admission_accounts_for_live_child_lease_reservations() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let first_node =
         scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("first source");
     let second_node =
@@ -263,6 +269,9 @@ fn source_admission_accounts_for_live_child_lease_reservations() {
 
 #[test]
 fn abandoned_shared_lease_closes_admission_without_revoking_a_healthy_sibling() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let source_node =
         scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("source node");
     let (_nodes, mut source) =
@@ -344,6 +353,9 @@ fn abandoned_shared_lease_closes_admission_without_revoking_a_healthy_sibling() 
 
 #[test]
 fn shared_worker_providers_release_before_orderly_shutdown_and_restart_inventory() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let first_node =
         scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("first source");
     let second_node =

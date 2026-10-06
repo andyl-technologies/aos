@@ -26,6 +26,9 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+mod admitted_output;
+pub use admitted_output::{AdmittedOutput, AdmittedShared};
+
 pub mod client;
 pub mod control_responsive;
 pub mod debug_access;
@@ -66,7 +69,7 @@ pub use debug_relay::{
 };
 pub use event_log_stream::{
     ControlPlaneEventLog, EventLogCursor, SESSION_EVENT_LOG_BROADCAST_CAPACITY,
-    SESSION_EVENT_LOG_REPLAY_BATCH_SIZE, SessionEventLogFrame, SessionEventLogHub,
+    SessionEventLogFrame, SessionEventLogHub,
     SessionEventLogSnapshot, SessionEventLogStream, SessionEventLogStreamError,
 };
 pub use lifecycle::{
@@ -74,17 +77,19 @@ pub use lifecycle::{
     DebugRepositionDispatch, DebugRepositionResult, DestroySessionRequest, DestroySessionResponse,
     GetReproductionRequest, GetReproductionResponse, GuestIntrospectionDispatch,
     InProcessLifecycleClient, LIFECYCLE_SESSION_MAILBOX_CAPACITY,
-    LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS, LifecycleApiError, LifecycleControlPlane,
-    LifecycleLoopFactory, LifecycleResourceLimit, ListScenariosResponse, ListSessionsResponse,
-    QuiescentLifecycleLoop, RESUME_OBSERVATION_PREPARATION_CAPACITY,
-    RESUME_OBSERVATION_PREPARATION_TIMEOUT, RESUME_OBSERVATION_SOURCE_MAX_BYTES,
-    RESUME_REPLAY_CLOSURE_MAX_BYTES, ReproductionCommandDecodeError, ReproductionCommandPayload,
-    ReproductionCommandRecord, ReproductionCommandResult, ResumeObservationCancellation,
+    LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS, LifecycleApiError,
+    LifecycleBackendConstructionError, LifecycleControlPlane, LifecycleLoopFactory,
+    LifecycleResourceLimit, ListScenariosResponse, ListSessionsResponse, QuiescentLifecycleLoop,
+    RESUME_OBSERVATION_PREPARATION_CAPACITY, RESUME_OBSERVATION_PREPARATION_TIMEOUT,
+    RESUME_OBSERVATION_SOURCE_MAX_BYTES, RESUME_REPLAY_CLOSURE_MAX_BYTES,
+    ReproductionCommandDecodeError, ReproductionCommandPayload, ReproductionCommandRecord, ReproductionCommandRecordFields,
+    ReproductionCommandResult, ResumeObservationCancellation,
     ResumeObservationCancellationRegistration, ResumeObservationLoopFactory,
     ResumeObservationPreparationContext, ResumeObservationSource, ResumeReplayClosure,
     ResumeReplayClosureValidationError, ResumeReplayClosureValidator, ResumeSessionRequest,
     ResumeSessionResponse, ScenarioCatalogEntry, ScenarioCatalogSource, ScenarioSummary, SessionId,
     SessionLifetimeRetention, SessionRef, SessionRetentionUpdateError, SessionSummary,
+    admit_future, spawn_admitted_session_actor,
 };
 pub use open_set::{
     OPEN_SET_BREAKPOINT_KIND_PREFIX, OPEN_SET_CAPABILITY_CATEGORIES, OPEN_SET_COMMAND_KIND_PREFIX,

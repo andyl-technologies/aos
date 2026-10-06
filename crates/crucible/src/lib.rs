@@ -54,9 +54,10 @@ pub use backend::{
     BackendIoNativeCaps, BackendIoQueueSnapshot, BackendNetworkCompletedFaultPhase,
     BackendNetworkFaultContinuation, BackendNetworkFaultCursor, BackendNetworkFaultCursorError,
     BackendNetworkOutput, BackendNetworkOutputCodecError, BackendNetworkPreservedAvailability,
-    BackendNetworkRoute, BackendOperationalFailureKind, BackendPhysicalStop, BackendSnapshot,
-    ExecutionFingerprint, ExecutionHorizon, FingerprintSample, GdbAttachInfo, GdbListen,
-    SimulationBackend, StepObservation, deterministic_node_mac, deterministic_node_mac_string,
+    BackendNetworkRoute, BackendOperationalCause, BackendOperationalFailureKind,
+    BackendPhysicalStop, BackendSnapshot, ExecutionFingerprint, ExecutionHorizon,
+    FingerprintSample, GdbAttachInfo, GdbListen, SimulationBackend, StepObservation,
+    deterministic_node_mac, deterministic_node_mac_string,
 };
 #[cfg(any(test, feature = "test-double"))]
 pub use backend::{MockSimulationBackend, MockSimulationBackendState};
@@ -223,12 +224,12 @@ pub use scheduler::{
     ControlOperation, ControlOperationKind, DeviceGroupSelectionPublication, EventAttributeValue,
     EventDiagnosticPayload, EventLevel, EventLog, EventLogAssertionProximityProjection,
     EventLogAssertionProximityProjectionEntry, EventLogCausalDivergencePoint,
-    EventLogCausalProjection, EventLogCausalProjectionEntry, EventLogCoverageFeedback,
-    EventLogCoverageFeedbackConsumer, EventLogCoverageObservation, EventLogCoverageProjection,
-    EventLogCoverageProjectionEntry, EventLogDeterminismComparison, EventLogDeterminismMismatch,
-    EventLogTickStamp, EventLogTime, EventPayload, EventSource, ExactLocalEvent,
-    FailedCapNegotiation, FailedDispatchResolution, FailedInputResolution, HeldHostStopKind,
-    HeldHostStopWitness, IoCompletion, LiveNetworkPreselection,
+    EventLogCausalIdentity, EventLogCausalProjection, EventLogCausalProjectionEntry,
+    EventLogCoverageFeedback, EventLogCoverageFeedbackConsumer, EventLogCoverageObservation,
+    EventLogCoverageProjection, EventLogCoverageProjectionEntry, EventLogDeterminismComparison,
+    EventLogDeterminismMismatch, EventLogTickStamp, EventLogTime, EventPayload, EventSource,
+    ExactLocalEvent, FailedCapNegotiation, FailedDispatchResolution, FailedInputResolution,
+    HeldHostStopKind, HeldHostStopWitness, IoCompletion, LiveNetworkPreselection,
     MAX_SINGLE_SCHEDULER_CHECKPOINT_BYTES, NetworkDroppedFrameEvidence,
     NetworkInFlightDropEvidence, NetworkLookahead, NodeTimelineProjection,
     NoopBackendNetworkOutputInterceptor, PreparedDeviceGroupSelection, PreparedHostFixedInput,
@@ -238,7 +239,8 @@ pub use scheduler::{
     SchedulerActorError, SchedulerActorHandle, SchedulerActorReply, SchedulerActorStateSnapshot,
     SchedulerConcurrentQuantumOutcome, SchedulerConcurrentRunCandidate, SchedulerConcurrentRunSet,
     SchedulerControlApplication, SchedulerEffectiveClock, SchedulerEffectiveClockSource,
-    SchedulerError, SchedulerEvaluationBoundaryKind, SchedulerEventLogAppend,
+    SchedulerError, SchedulerEvaluationBoundaryKind, SchedulerEventLogAppend, EventLogOutputCustody,
+    AdmittedSchedulerEventLogEntry,
     SchedulerEventLogClass, SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerHorizon,
     SchedulerHorizonLimit, SchedulerHorizonSource, SchedulerLivenessError, SchedulerLivenessReport,
     SchedulerLivenessScenario, SchedulerLookaheadEdge, SchedulerLookaheadEdgeEndpoint,
@@ -258,15 +260,15 @@ pub use scheduler::{
     UnresolvedCrossNodeDependency, WorldNetworkLinkRuntime,
     assertion_proximity_fingerprint_from_event_log, authorize_conservative_advance,
     check_scheduler_liveness, compare_event_log_determinism, coverage_fingerprint_from_event_log,
-    event_log_assertion_proximity_projection, event_log_causal_projection,
-    event_log_coverage_projection, exact_local_event_from_io_completion,
-    exact_local_event_from_scheduled_event, exact_local_event_from_timer_deadline_ns,
-    horizon_from_exact_local_event, horizon_from_network_lookahead,
-    is_live_world_network_selection, lookahead_for_node, network_horizon_from_lookahead,
-    next_exact_local_event, next_scheduled_event_key, ordered_scheduled_events,
-    ordered_timeline_keys, rendezvous_cap_for, resolve_due_scheduled_events,
-    scheduled_event_delivery_time, scheduled_event_resolve_class, scheduler_rr_run_subdivision,
-    unresolved_cross_node_dependencies,
+    event_log_assertion_proximity_projection, event_log_causal_identity,
+    event_log_causal_projection, event_log_coverage_projection,
+    exact_local_event_from_io_completion, exact_local_event_from_scheduled_event,
+    exact_local_event_from_timer_deadline_ns, horizon_from_exact_local_event,
+    horizon_from_network_lookahead, is_live_world_network_selection, lookahead_for_node,
+    network_horizon_from_lookahead, next_exact_local_event, next_scheduled_event_key,
+    ordered_scheduled_events, ordered_timeline_keys, rendezvous_cap_for,
+    resolve_due_scheduled_events, scheduled_event_delivery_time, scheduled_event_resolve_class,
+    scheduler_rr_run_subdivision, unresolved_cross_node_dependencies,
 };
 #[cfg(feature = "test-double")]
 pub use sim_backend::{
@@ -290,13 +292,14 @@ pub use trigger::{
     EventGraphEventBuilder, EventGraphState, ExternalFormalTraceExport,
     ExternalFormalTraceExporter, FirePolicy, GuestAssertionDetail, GuestAssertionKind,
     GuestAssertionMarker, GuestMeasurementEvent, GuestMeasurementRational, GuestMeasurementValue,
-    GuestSemanticMarkerDetail, HostAssertionCheckpointError, HostAssertionEvaluator,
-    HostAssertionEvaluatorCheckpoint, HostAssertionHarnessLint, HostAssertionHarnessLintError,
-    HostAssertionHarnessLintViolation, HostAssertionLifecycle, HostAssertionOracle,
-    HostAssertionOutcome, HostAssertionOutcomeKind, HostAssertionPredicate, HostAssertionProximity,
-    HostAssertionReport, HostAssertionViolation, LintedHostAssertionOracle, LogLevel,
-    LoweredPlanEventGraph, ObservableEvent, ObservableEventPayload, ObservedOrderingFact,
-    ObservedState, OfflineAssertionCheckError, OfflineAssertionChecker, PropertyLifecycleState,
+    GuestSemanticMarkerDetail, HostAssertionCheckpointBytes, HostAssertionCheckpointError,
+    HostAssertionEvaluator, HostAssertionEvaluatorCheckpoint, HostAssertionHarnessLint,
+    HostAssertionHarnessLintError, HostAssertionHarnessLintViolation, HostAssertionLifecycle,
+    HostAssertionOracle, HostAssertionOutcome, HostAssertionOutcomeKind, HostAssertionPredicate,
+    HostAssertionProximity, HostAssertionReport, HostAssertionViolation,
+    HostAssertionViolationFields, LintedHostAssertionOracle, LogLevel, LoweredPlanEventGraph,
+    ObservableEvent, ObservableEventPayload, ObservedOrderingFact, ObservedState,
+    OfflineAssertionCheckError, OfflineAssertionChecker, PropertyLifecycleState,
     ReadyPointResolution, ReadyPointResolutionError, ReadyPointResolutionKind,
     RecordedAssertionLog, ResolvedCodePoint, ResolvedMemPlace, SearchScheduleNamedPredicateKey,
     SearchScheduleNamedPredicateTruths, TcgExecBasicBlock, basic_block_coverage_map_index,
@@ -309,6 +312,9 @@ pub use trigger::{
 #[doc(hidden)]
 pub mod test_support {
     //! Debug-build helpers for integration tests.
+
+    mod decode;
+    pub use decode::{FixtureDecodeScope, fixture_decode_scope};
 
     use crate::{
         ConditionEvaluationError, ConditionEventLogPrefix, ContentHash, EventPayload,
@@ -330,43 +336,55 @@ pub mod test_support {
     }
 
     /// Builds a scheduler observable event-log entry for integration tests.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns the original metadata admission or canonical rendering refusal.
     pub fn condition_observation_entry_for_test(
         sequence: u64,
         event: &ObservableEvent,
-    ) -> SchedulerEventLogEntry {
+    ) -> Result<SchedulerEventLogEntry, crate::EngineError> {
         SchedulerEventLogEntry::observable(sequence, event.at(), event.payload().clone())
     }
 
     /// Builds a scheduler evaluation-boundary entry for integration tests.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns the original metadata admission or canonical rendering refusal.
     pub fn condition_boundary_entry_for_test(
         sequence: u64,
         at: VirtualTime,
         kind: SchedulerEvaluationBoundaryKind,
-    ) -> SchedulerEventLogEntry {
+    ) -> Result<SchedulerEventLogEntry, crate::EngineError> {
         SchedulerEventLogEntry::evaluation_boundary(sequence, at, kind)
     }
 
     /// Builds a scheduler event-log entry carrying a typed payload for integration tests.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns the original metadata admission or canonical rendering refusal.
     pub fn condition_payload_entry_for_test(
         sequence: u64,
         at: VirtualTime,
         payload: SchedulerEventLogPayload,
-    ) -> SchedulerEventLogEntry {
+    ) -> Result<SchedulerEventLogEntry, crate::EngineError> {
         SchedulerEventLogEntry::with_payload_for_test(sequence, at, payload)
     }
 
     /// Builds a scheduler event-log entry with a caller-supplied open payload for tests.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns the original metadata admission or canonical rendering refusal.
     pub fn condition_open_payload_entry_for_test(
         sequence: u64,
         at: VirtualTime,
         class: SchedulerEventLogClass,
         event_payload: EventPayload,
         payload: SchedulerEventLogPayload,
-    ) -> SchedulerEventLogEntry {
+    ) -> Result<SchedulerEventLogEntry, crate::EngineError> {
         SchedulerEventLogEntry::with_open_payload_for_test(
             sequence,
             at,
@@ -450,12 +468,15 @@ pub mod test_support {
     }
 
     /// Adds an observed raw retirement to an entry while preserving its exact tick.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns the original metadata admission or canonical rendering refusal.
     pub fn condition_entry_with_retirement_witness_for_test(
         entry: SchedulerEventLogEntry,
         node: Option<NodeId>,
         icount: Icount,
-    ) -> SchedulerEventLogEntry {
+    ) -> Result<SchedulerEventLogEntry, crate::EngineError> {
         let mut time = entry.time().clone();
         time.stamp = crate::scheduler::EventLogTickStamp {
             node,
@@ -481,21 +502,17 @@ pub mod test_support {
 
     /// Builds a checked quantum-boundary condition prefix for integration tests.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics when the synthetic scheduler boundary entry does not form a valid
-    /// prefix.
-    #[must_use]
-    pub fn condition_prefix_at_quantum_boundary_for_test(ticks: u64) -> ConditionEventLogPrefix {
-        let at = VirtualTime { ticks };
-        match ConditionEventLogPrefix::from_scheduler_event_log_entries(vec![
-            condition_boundary_entry_for_test(0, at, SchedulerEvaluationBoundaryKind::Quantum),
-        ]) {
-            Ok(prefix) => prefix,
-            Err(error) => {
-                panic!("test scheduler boundary entry should form a checked prefix: {error}")
-            }
-        }
+    /// Returns the original metadata or checked-prefix validation refusal.
+    pub fn condition_prefix_at_quantum_boundary_for_test(
+        ticks: u64,
+    ) -> Result<ConditionEventLogPrefix, ConditionEvaluationError> {
+        ConditionEventLogPrefix::from_evaluation_boundary(
+            0,
+            VirtualTime { ticks },
+            SchedulerEvaluationBoundaryKind::Quantum,
+        )
     }
 
     /// Builds a checked condition prefix from observable events for integration tests.
@@ -519,12 +536,12 @@ pub mod test_support {
                     event,
                 )
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
         entries.push(condition_boundary_entry_for_test(
             u64::try_from(entries.len()).unwrap_or(u64::MAX),
             VirtualTime { ticks },
             SchedulerEvaluationBoundaryKind::Quantum,
-        ));
+        )?);
         ConditionEventLogPrefix::from_scheduler_event_log_entries(entries)
     }
 }

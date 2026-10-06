@@ -904,6 +904,12 @@ pub enum Predicate {
 }
 
 impl Predicate {
+    /// Borrows the stable canonical summary without allocating intermediate material.
+    #[must_use]
+    pub fn canonical_display(&self) -> impl std::fmt::Display + '_ {
+        predicate_display(self)
+    }
+
     /// Returns a stable canonical summary for event-log payload attributes.
     #[must_use]
     pub fn canonical_summary(&self) -> String {

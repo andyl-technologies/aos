@@ -601,6 +601,12 @@ impl FindingExactCheckpointAuthenticator for ExactFindingCheckpointAuthenticator
         if leaf.scenario() != scenario
             || leaf.configuration() != configuration
             || !crate::crucible_measurement::verify_assertion_failure_boundary(&leaf, boundary)
+                .map_err(|source| match source {
+                    crucible::EngineError::ArtifactDecodeAdmission { source } => {
+                        FindingExactCheckpointAuthenticationError::DecodeAdmission(source)
+                    }
+                    _ => FindingExactCheckpointAuthenticationError::AuthenticationFailed,
+                })?
         {
             return Err(FindingExactCheckpointAuthenticationError::AuthenticationFailed);
         }
