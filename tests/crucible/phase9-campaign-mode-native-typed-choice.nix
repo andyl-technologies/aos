@@ -47,7 +47,7 @@ in
         {
           executable = "crucible-campaign-lib";
           arguments = [];
-          expectedCount = 433;
+          expectedCount = 441;
           evidence = "crucible_campaign_lib";
         }
         {

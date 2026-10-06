@@ -160,7 +160,23 @@ impl CampaignRepository {
         head: ContentId,
         planner_context: &mut PlannerValidationContext,
     ) -> Result<ValidationCheckpoint, CampaignRepositoryError> {
+        let mut merkle_reads = MerkleValidationReads::default();
+        self.load_validation_checkpoint_with_contexts(head, planner_context, &mut merkle_reads)
+    }
+
+    /// Ends both attempt-local contexts before returning or promoting a head.
+    ///
+    /// # Errors
+    ///
+    /// Returns every original ancestry or fresh closure validation error.
+    pub(super) fn load_validation_checkpoint_with_contexts(
+        &self,
+        head: ContentId,
+        planner_context: &mut PlannerValidationContext,
+        merkle_reads: &mut MerkleValidationReads,
+    ) -> Result<ValidationCheckpoint, CampaignRepositoryError> {
         planner_context.clear();
+        merkle_reads.clear();
         let result = (|| {
             if let Some(checkpoint) = self.validation_checkpoints().get(&head).copied() {
                 return Ok(checkpoint);
@@ -168,12 +184,16 @@ impl CampaignRepository {
 
             let mut choice_cache = ChoiceValidationCache::default();
             let (ancestry_depth, lifecycle, genesis, derived_branch) = self
-                .validate_snapshot_ancestry_with_planner_context(
+                .validate_snapshot_ancestry_with_validation_reads(
                     head,
                     &mut choice_cache,
                     MAX_SNAPSHOT_ANCESTRY,
                     Some(planner_context),
+                    Some(merkle_reads),
                 )?;
+            // Ancestry node custody ends here. Fresh closure reads the backend.
+            merkle_reads.clear();
+
             let closure_objects = self.verify_campaign_closures_with_planner_context(
                 [head],
                 &BTreeSet::new(),
@@ -196,6 +216,7 @@ impl CampaignRepository {
         // Successful reuse also ends here; only the original head checkpoint
         // is promoted after both complete validation passes succeed.
         planner_context.clear();
+        merkle_reads.clear();
         result
     }
 
@@ -365,10 +386,40 @@ impl CampaignRepository {
     /// transition, root, budget, cursor, or exact Issue validation errors.
     pub(super) fn validate_snapshot_ancestry_with_planner_context(
         &self,
+        content_id: ContentId,
+        choice_cache: &mut ChoiceValidationCache,
+        maximum_depth: usize,
+        planner_context: Option<&mut PlannerValidationContext>,
+    ) -> Result<
+        (
+            usize,
+            ProjectedState,
+            ContentId,
+            Option<DerivedBranchCheckpoint>,
+        ),
+        CampaignRepositoryError,
+    > {
+        self.validate_snapshot_ancestry_with_validation_reads(
+            content_id,
+            choice_cache,
+            maximum_depth,
+            planner_context,
+            None,
+        )
+    }
+
+    /// Preserves ancestry checks while sharing only strict Issue node reads.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original ancestry bound, object, successor, or owner error.
+    pub(super) fn validate_snapshot_ancestry_with_validation_reads(
+        &self,
         mut content_id: ContentId,
         choice_cache: &mut ChoiceValidationCache,
         maximum_depth: usize,
         mut planner_context: Option<&mut PlannerValidationContext>,
+        mut merkle_reads: Option<&mut MerkleValidationReads>,
     ) -> Result<
         (
             usize,
@@ -593,12 +644,22 @@ impl CampaignRepository {
                                 validated_planner_step.as_ref().ok_or_else(|| {
                                     integrity("planner-step-transition-fact-was-not-validated")
                                 })?;
-                            self.validate_planner_step_successor(
-                                &parent_snapshot,
-                                &loaded,
-                                step,
-                                validated_step,
-                            )?;
+                            match merkle_reads.as_deref_mut() {
+                                Some(reads) => self
+                                    .validate_planner_step_successor_with_validation_reads(
+                                        &parent_snapshot,
+                                        &loaded,
+                                        step,
+                                        validated_step,
+                                        Some(reads),
+                                    )?,
+                                None => self.validate_planner_step_successor(
+                                    &parent_snapshot,
+                                    &loaded,
+                                    step,
+                                    validated_step,
+                                )?,
+                            }
                         }
                         CampaignFact::ObservationCredited(observation) => {
                             self.validate_credited_observation_successor(

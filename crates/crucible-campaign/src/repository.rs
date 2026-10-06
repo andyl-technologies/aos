@@ -631,6 +631,8 @@ mod mode_derivation;
 mod objective;
 mod observation;
 mod planner_driver;
+use crate::merkle::{MerkleReadSession, MerkleValidationReads};
+
 mod planner_issue;
 mod planner_validation;
 use planner_validation::{PlannerValidationContext, ValidatedPlannerRequest, ValidatedPlannerStep};

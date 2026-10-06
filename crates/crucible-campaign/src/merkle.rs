@@ -16,6 +16,9 @@ use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::{CampaignCodecError, CampaignHash, CampaignRecordKind, ChildReference, ObjectEnvelope};
 
 mod bulk;
+mod validation_reads;
+
+pub(crate) use validation_reads::{MerkleReadSession, MerkleValidationReads};
 
 const MERKLE_NODE_SCHEMA_VERSION: u32 = 1;
 const MAX_PAGE_ITEMS: usize = 10_000;
@@ -680,6 +683,18 @@ impl MerkleMap {
         Self::get_from_node(node, key, &mut |id, depth| self.read_node(id, depth))
     }
 
+    fn get_with_validation_reads(
+        &self,
+        root: ContentId,
+        key: CampaignHash,
+        retained: &mut MerkleValidationReads,
+    ) -> Result<Option<ContentId>, CampaignStoreError> {
+        let node = retained.read_node(self, root, 0)?;
+        Self::get_from_node(node, key, &mut |id, depth| {
+            retained.read_node(self, id, depth)
+        })
+    }
+
     /// Returns one exact lookup result and the minimal authenticated path.
     ///
     /// The proof authenticates presence with the exact leaf value and absence
@@ -1032,7 +1047,7 @@ impl MerkleMap {
             let node = self.read_overlay_node(current, 0, &overlay)?;
             current = match value {
                 Some(value) => {
-                    self.insert_overlay_node(current, node, *key, *value, &mut overlay)?
+                    self.insert_overlay_node(current, node, *key, *value, &mut overlay, None)?
                 }
                 None => self.remove_overlay_node(current, node, *key, &mut overlay)?,
             }
@@ -1126,12 +1141,33 @@ impl MerkleMap {
         prior: ContentId,
         upserts: &BTreeMap<CampaignHash, ContentId>,
     ) -> Result<(ContentId, BTreeMap<ContentId, MerkleNode>), CampaignStoreError> {
+        self.overlay_after_upserts_with_validation_reads(prior, upserts, None)
+    }
+
+    fn overlay_after_upserts_with_validation_reads(
+        &self,
+        prior: ContentId,
+        upserts: &BTreeMap<CampaignHash, ContentId>,
+        mut retained: Option<&mut MerkleValidationReads>,
+    ) -> Result<(ContentId, BTreeMap<ContentId, MerkleNode>), CampaignStoreError> {
         let mut overlay = BTreeMap::new();
         let mut current = prior;
         for (key, value) in upserts {
-            let node = self.read_overlay_node(current, 0, &overlay)?;
+            let node = self.read_overlay_node_with_validation_reads(
+                current,
+                0,
+                &overlay,
+                retained.as_deref_mut(),
+            )?;
             current = self
-                .insert_overlay_node(current, node, *key, *value, &mut overlay)?
+                .insert_overlay_node(
+                    current,
+                    node,
+                    *key,
+                    *value,
+                    &mut overlay,
+                    retained.as_deref_mut(),
+                )?
                 .content_id;
         }
         Ok((current, overlay))
@@ -1144,6 +1180,7 @@ impl MerkleMap {
         key: CampaignHash,
         value: ContentId,
         overlay: &mut BTreeMap<ContentId, MerkleNode>,
+        mut retained: Option<&mut MerkleValidationReads>,
     ) -> Result<NodeUpdate, CampaignStoreError> {
         let slot = digest_nibble(key, node.depth);
         let existing = node.entries.get(&slot).cloned();
@@ -1180,11 +1217,17 @@ impl MerkleMap {
                 entry_count,
             }) => {
                 let next_depth = node.depth.checked_add(1).ok_or(invalid("depth-overflow"))?;
-                let child = self.read_overlay_node(content_id, next_depth, overlay)?;
+                let child = self.read_overlay_node_with_validation_reads(
+                    content_id,
+                    next_depth,
+                    overlay,
+                    retained.as_deref_mut(),
+                )?;
                 if child.entry_count != entry_count {
                     return Err(invalid("child-entry-count-mismatch"));
                 }
-                let update = self.insert_overlay_node(content_id, child, key, value, overlay)?;
+                let update =
+                    self.insert_overlay_node(content_id, child, key, value, overlay, retained)?;
                 (
                     MerkleEntry::Node {
                         content_id: update.content_id,
@@ -1274,13 +1317,26 @@ impl MerkleMap {
         expected_depth: u8,
         overlay: &BTreeMap<ContentId, MerkleNode>,
     ) -> Result<MerkleNode, CampaignStoreError> {
+        self.read_overlay_node_with_validation_reads(content_id, expected_depth, overlay, None)
+    }
+
+    fn read_overlay_node_with_validation_reads(
+        &self,
+        content_id: ContentId,
+        expected_depth: u8,
+        overlay: &BTreeMap<ContentId, MerkleNode>,
+        retained: Option<&mut MerkleValidationReads>,
+    ) -> Result<MerkleNode, CampaignStoreError> {
         if let Some(node) = overlay.get(&content_id) {
             if node.depth != expected_depth {
                 return Err(invalid("node-depth-mismatch"));
             }
             return Ok(node.clone());
         }
-        self.read_node(content_id, expected_depth)
+        match retained {
+            Some(retained) => retained.read_node(self, content_id, expected_depth),
+            None => self.read_node(content_id, expected_depth),
+        }
     }
 
     fn scan_node(

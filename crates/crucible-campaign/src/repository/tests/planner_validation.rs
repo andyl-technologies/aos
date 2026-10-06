@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[path = "planner_validation/merkle_reads.rs"]
+mod merkle_reads;
+
 #[derive(Clone, Copy)]
 enum ReadFault {
     Missing,
@@ -134,6 +137,10 @@ impl Corpus {
 }
 
 fn corpus(step_count: usize) -> Corpus {
+    corpus_with_scan_limit(step_count, 4)
+}
+
+fn corpus_with_scan_limit(step_count: usize, scan_limit: u32) -> Corpus {
     let (original, lineage, base_policy, inner, planner, debugger) = authorized_fixture();
     let backend = Arc::new(CountingBackend {
         inner,
@@ -214,7 +221,7 @@ fn corpus(step_count: usize) -> Corpus {
         engine,
         artifact,
         state,
-        4,
+        scan_limit,
         PlanningBudget::new(2, 2, 64, 1024 * 1024, 10_000).expect("budget"),
     )
     .expect("driver")

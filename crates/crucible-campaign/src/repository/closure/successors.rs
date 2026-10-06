@@ -664,6 +664,28 @@ impl CampaignRepository {
         step_id: PlannerStepId,
         validated_step: &ValidatedPlannerStep,
     ) -> Result<(), CampaignRepositoryError> {
+        self.validate_planner_step_successor_with_validation_reads(
+            parent,
+            child,
+            step_id,
+            validated_step,
+            None,
+        )
+    }
+
+    /// Keeps successor checks live before the optional Issue node reader.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original transition, immutable basis, or owner mismatch error.
+    pub(in crate::repository) fn validate_planner_step_successor_with_validation_reads(
+        &self,
+        parent: &LoadedSnapshot,
+        child: &LoadedSnapshot,
+        step_id: PlannerStepId,
+        validated_step: &ValidatedPlannerStep,
+        merkle_reads: Option<&mut MerkleValidationReads>,
+    ) -> Result<(), CampaignRepositoryError> {
         if child.snapshot.lineage() != parent.snapshot.lineage()
             || child.snapshot.active_policy() != parent.snapshot.active_policy()
         {
@@ -747,7 +769,16 @@ impl CampaignRepository {
             ));
         }
         if matches!(step.disposition(), PlannerDisposition::Issue { .. }) {
-            self.validate_planner_issue_projection(parent, child, step, invocation)?;
+            match merkle_reads {
+                Some(reads) => self.validate_planner_issue_projection_with_validation_reads(
+                    parent,
+                    child,
+                    step,
+                    invocation,
+                    Some(reads),
+                )?,
+                None => self.validate_planner_issue_projection(parent, child, step, invocation)?,
+            }
         } else if prior_roots.exploration != next_roots.exploration
             || prior_roots.accounting != next_roots.accounting
         {
