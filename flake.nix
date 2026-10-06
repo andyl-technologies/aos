@@ -322,14 +322,17 @@
           aos.pkgs.which
         ];
         binPath = builtins.concatStringsSep ":" (map (p: "${p}/bin") packages);
-        # Per-target cargo rustflags env var for the dev-shell host. Used to
-        # inject an OpenSSL rpath for native `cargo build` (see shellHook)
-        # without disturbing the wasm32 rustflags in crates/.cargo/config.toml:
-        # a plain RUSTFLAGS would replace those and break the Workers build.
+        # Host-target flags keep native binaries and executable doctests bound
+        # to AOS libraries without replacing wasm32 flags in crates/.cargo/config.toml.
         cargoHostRustflagsVar = builtins.getAttr system {
           "x86_64-linux" = "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS";
           "aarch64-linux" = "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS";
         };
+        cargoHostRustdocflagsVar = builtins.getAttr system {
+          "x86_64-linux" = "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTDOCFLAGS";
+          "aarch64-linux" = "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTDOCFLAGS";
+        };
+        nativeLibraryRustflags = "-C link-arg=-Wl,-rpath,${aos.pkgs.openssl}/lib -C link-arg=-Wl,-rpath,${aos.pkgs.sqlite}/lib";
       in {
         default = builtins.derivation {
           name = "aos-dev";
@@ -371,10 +374,11 @@
               # OPENSSL_DIR above only lets `openssl-sys` *link* against the AOS
               # OpenSSL and pkg-config above only let native crates link against
               # the AOS libraries; the resulting binary still records SONAMEs.
-              # Bake both library directories into native cargo binaries so
-              # they run directly without an LD_LIBRARY_PATH that would poison
-              # the `nix` subprocesses they launch.
-              export ${cargoHostRustflagsVar}="-C link-arg=-Wl,-rpath,${aos.pkgs.openssl}/lib -C link-arg=-Wl,-rpath,${aos.pkgs.sqlite}/lib"
+              # Bake both library directories into native cargo binaries and
+              # rustdoc's separately linked test executables. They run directly
+              # without an LD_LIBRARY_PATH that would poison `nix` subprocesses.
+              export ${cargoHostRustflagsVar}="${nativeLibraryRustflags}"
+              export ${cargoHostRustdocflagsVar}="${nativeLibraryRustflags}"
             '';
         };
 
