@@ -202,7 +202,7 @@ impl Drop for StorageInitialActivationTableV1 {
     }
 }
 
-// Only the three closed wrappers instantiate this owner. Field order retains
+// Only closed fixed-role wrappers instantiate this owner. Field order retains
 // descriptor-before-error release after the shared abort fence is disarmed.
 struct FixedInitialActivationTable<const N: usize> {
     descriptors: [Option<OwnedFd>; N],
@@ -336,6 +336,53 @@ fn observe_initial_prefix(
 #[must_use]
 pub struct HostCanaryInitialActivationTableV1 {
     original: ControllerInitialActivationTableV1,
+}
+
+/// Retains Host's three listeners and four original image/enrollment entries.
+///
+/// The complete seven slots are descriptor DATA. Only the fixed Host startup
+/// owner can associate them with image policy and actual PID1 launch custody.
+#[must_use]
+pub struct HostComponentInitialActivationTableV2 {
+    original: FixedInitialActivationTable<7>,
+}
+
+impl HostComponentInitialActivationTableV2 {
+    /// Creates fixed resident storage before any descriptor observation.
+    pub const fn new() -> Self {
+        Self { original: FixedInitialActivationTable::new() }
+    }
+
+    /// Captures exactly the original entries3 through9 once.
+    ///
+    /// # Errors
+    /// Retains the first native or complete-table cause and successful prefix.
+    /// Reentry cannot retry, reopen or discard the original attempt.
+    pub fn observe_once(&mut self) -> std::result::Result<(), &Error> {
+        self.original.observe_once(
+            7, "Host component initial table", "count exceeds seven slots",
+            "observation is closed",
+        )
+    }
+
+    /// Borrows the actual first failure without extracting partial originals.
+    pub fn failure(&self) -> Option<&Error> {
+        self.original.failure()
+    }
+
+    /// Transfers the complete fixed table without another observation.
+    #[must_use]
+    pub fn take_completed_entries(&mut self) -> Option<[Option<OwnedFd>; 7]> {
+        self.original.take_completed_entries()
+    }
+}
+
+impl Default for HostComponentInitialActivationTableV2 {
+    fn default() -> Self { Self::new() }
+}
+
+impl Drop for HostComponentInitialActivationTableV2 {
+    fn drop(&mut self) { self.original.abort_if_armed(); }
 }
 
 impl HostCanaryInitialActivationTableV1 {

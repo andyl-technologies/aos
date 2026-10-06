@@ -21,7 +21,7 @@ diff --git a/src/core/aos-resource-enrollment.c b/src/core/aos-resource-enrollme
 new file mode 100644
 --- /dev/null
 +++ b/src/core/aos-resource-enrollment.c
-@@ -0,0 +1,386 @@
+@@ -0,0 +1,411 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +
 +#include <fcntl.h>
@@ -41,6 +41,8 @@ new file mode 100644
 +
 +#define AOS_RESOURCE_POLICY_BYTES 776U
 +#define AOS_RESOURCE_POLICY_BODY 744U
++#define AOS_RESOURCE_HOST_POLICY_BYTES 1128U
++#define AOS_RESOURCE_HOST_POLICY_BODY 1096U
 +#define AOS_RESOURCE_VECTOR_BYTES (22U * 8U)
 +#define AOS_RESOURCE_COMPONENTS_OFFSET (40U + 3U * AOS_RESOURCE_VECTOR_BYTES)
 +#define AOS_RESOURCE_CONCURRENT_OPERATIONS 21U
@@ -71,13 +73,16 @@ new file mode 100644
 +        bool admitted;
 +        sd_id128_t boot;
 +        sd_id128_t invocation;
-+        uint8_t policy[AOS_RESOURCE_POLICY_BYTES];
++        uint8_t policy[AOS_RESOURCE_HOST_POLICY_BYTES];
++        size_t policy_bytes;
 +        uint64_t job_limit;
 +        uint64_t jobs;
 +        sd_id128_t controller_invocation;
 +        sd_id128_t storage_invocation;
++        sd_id128_t host_invocation;
 +        AosResourceDelivery controller_delivery;
 +        AosResourceDelivery storage_delivery;
++        AosResourceDelivery host_delivery;
 +} AosResourceEnrollment;
 +
 +/* The existing root PID1 is the only issuer. This original owner is neither
@@ -97,6 +102,7 @@ new file mode 100644
 +        .policy_fd = -EBADF,
 +        .controller_delivery = AOS_RESOURCE_DELIVERY_EMPTY,
 +        .storage_delivery = AOS_RESOURCE_DELIVERY_EMPTY,
++        .host_delivery = AOS_RESOURCE_DELIVERY_EMPTY,
 +};
 +
 +static uint64_t policy_u64(const uint8_t *bytes) {
@@ -125,14 +131,16 @@ new file mode 100644
 +        if (fstat(enrollment.policy_fd, &st) < 0 ||
 +            fstatfs(enrollment.policy_fd, &fs) < 0)
 +                return -errno;
-+        if (!S_ISREG(st.st_mode) || st.st_size != AOS_RESOURCE_POLICY_BYTES ||
++        if (!S_ISREG(st.st_mode) ||
++            (st.st_size != AOS_RESOURCE_POLICY_BYTES && st.st_size != AOS_RESOURCE_HOST_POLICY_BYTES) ||
 +            st.st_uid != 0 || st.st_gid != 0 || (st.st_mode & 0222) != 0 ||
 +            fs.f_type != AOS_RESOURCE_EROFS_MAGIC)
 +                return -EPERM;
 +
-+        while (used < sizeof(enrollment.policy)) {
++        enrollment.policy_bytes = st.st_size;
++        while (used < enrollment.policy_bytes) {
 +                ssize_t returned = pread(enrollment.policy_fd, enrollment.policy + used,
-+                                         sizeof(enrollment.policy) - used, used);
++                                         enrollment.policy_bytes - used, used);
 +                if (returned < 0) {
 +                        if (errno == EINTR)
 +                                continue;
@@ -142,10 +150,12 @@ new file mode 100644
 +                        return -EBADMSG;
 +                used += returned;
 +        }
-+        if (memcmp(enrollment.policy, "AOSRSB01", 8) != 0)
++        bool host_policy = enrollment.policy_bytes == AOS_RESOURCE_HOST_POLICY_BYTES;
++        size_t body_bytes = host_policy ? AOS_RESOURCE_HOST_POLICY_BODY : AOS_RESOURCE_POLICY_BODY;
++        if (memcmp(enrollment.policy, host_policy ? "AOSRSB02" : "AOSRSB01", 8) != 0)
 +                return -EBADMSG;
-+        sha256_direct(enrollment.policy, AOS_RESOURCE_POLICY_BODY, digest);
-+        if (memcmp(digest, enrollment.policy + AOS_RESOURCE_POLICY_BODY, sizeof(digest)) != 0)
++        sha256_direct(enrollment.policy, body_bytes, digest);
++        if (memcmp(digest, enrollment.policy + body_bytes, sizeof(digest)) != 0)
 +                return -EBADMSG;
 +
 +        /* Image generation checks all 22 rows with explicit finite policy.
@@ -205,6 +215,15 @@ new file mode 100644
 +        return 0;
 +}
 +
++bool aos_resource_host_selected_name(const char *name) {
++        /* manager_startup establishes this original before enumeration. A
++         * lookup never opens/reparses policy or initializes an issuer. */
++        return enrollment.admitted && enrollment.first_error == 0 &&
++               enrollment.policy_bytes == AOS_RESOURCE_HOST_POLICY_BYTES &&
++               streq_ptr(name, "aos-sandbox-hostd.service") &&
++               aos_network_image_guard_active();
++}
++
 +static bool selected_unit(const Unit *unit) {
 +        const char *alias;
 +        bool selected;
@@ -256,6 +275,9 @@ new file mode 100644
 +                return &enrollment.controller_invocation;
 +        if (streq_ptr(unit->id, "aos-storaged.service"))
 +                return &enrollment.storage_invocation;
++        if (enrollment.policy_bytes == AOS_RESOURCE_HOST_POLICY_BYTES &&
++            streq_ptr(unit->id, "aos-sandbox-hostd.service"))
++                return &enrollment.host_invocation;
 +        return NULL;
 +}
 +
@@ -264,6 +286,9 @@ new file mode 100644
 +                return &enrollment.controller_delivery;
 +        if (streq_ptr(unit->id, "aos-storaged.service"))
 +                return &enrollment.storage_delivery;
++        if (enrollment.policy_bytes == AOS_RESOURCE_HOST_POLICY_BYTES &&
++            streq_ptr(unit->id, "aos-sandbox-hostd.service"))
++                return &enrollment.host_delivery;
 +        return NULL;
 +}
 +
@@ -375,7 +400,7 @@ new file mode 100644
 +        memcpy(capsule + 8, enrollment.policy + 8, 32);
 +        memcpy(capsule + 40, enrollment.boot.bytes, 16);
 +        memcpy(capsule + 56, enrollment.invocation.bytes, 16);
-+        sha256_direct(enrollment.policy, sizeof(enrollment.policy), digest);
++        sha256_direct(enrollment.policy, enrollment.policy_bytes, digest);
 +        memcpy(capsule + 72, digest, sizeof(digest));
 +        memcpy(capsule + 104, unit->invocation_id.bytes, 16);
 +        sha256_direct(capsule, 120, capsule + 120);
@@ -411,8 +436,9 @@ new file mode 100644
 diff --git a/src/core/load-fragment.h b/src/core/load-fragment.h
 --- a/src/core/load-fragment.h
 +++ b/src/core/load-fragment.h
-@@ -17,2 +17,4 @@
+@@ -17,2 +17,5 @@
  int aos_nix_verify_loaded_fragment(const Unit *u);
++bool aos_resource_host_selected_name(const char *name);
 +int aos_resource_open_image_policy(void);
 +int aos_resource_verify_component_fragment(const Unit *u);
  
@@ -466,9 +492,10 @@ diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
 diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
 --- a/src/core/load-fragment.c
 +++ b/src/core/load-fragment.c
-@@ -6370,3 +6370,10 @@
+@@ -6370,3 +6370,11 @@
 +int aos_resource_verify_component_fragment(const Unit *u) {
-+        if (!STR_IN_SET(u->id, "aos-sandboxd.service", "aos-storaged.service") ||
++        if ((!STR_IN_SET(u->id, "aos-sandboxd.service", "aos-storaged.service") &&
++             !aos_resource_host_selected_name(u->id)) ||
 +            !aos_network_image_guard_active())
 +                return -EPERM;
 +        return aos_verify_loaded_image_fragment(u);
@@ -480,22 +507,28 @@ diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
 diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
 --- a/src/core/load-fragment.c
 +++ b/src/core/load-fragment.c
-@@ -6155,3 +6155,5 @@
+@@ -6155,3 +6155,7 @@
  static const char *aos_network_template_name(const char *name) {
 +        if (STR_IN_SET(name, "aos-sandboxd.service", "aos-storaged.service"))
++                return name;
++        if (aos_resource_host_selected_name(name))
 +                return name;
          if (aos_nix_protected_name(name))
                  return name;
 diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
 --- a/src/core/load-fragment.c
 +++ b/src/core/load-fragment.c
-@@ -6527,3 +6527,21 @@
+@@ -6527,3 +6527,25 @@
 +        if (aos_network_image_guard_active() &&
 +            (STR_IN_SET(u->id, "aos-sandboxd.service", "aos-storaged.service") ||
-+             set_contains(names, "aos-sandboxd.service") || set_contains(names, "aos-storaged.service"))) {
++             set_contains(names, "aos-sandboxd.service") || set_contains(names, "aos-storaged.service") ||
++             aos_resource_host_selected_name(u->id) ||
++             (aos_resource_host_selected_name("aos-sandbox-hostd.service") &&
++              set_contains(names, "aos-sandbox-hostd.service")))) {
 +                const char *alias;
 +
-+                if (!STR_IN_SET(u->id, "aos-sandboxd.service", "aos-storaged.service") || u->transient ||
++                if ((!STR_IN_SET(u->id, "aos-sandboxd.service", "aos-storaged.service") &&
++                     !aos_resource_host_selected_name(u->id)) || u->transient ||
 +                    !set_isempty(u->aliases) || !isempty(u->source_path))
 +                        return -EPERM;
 +                SET_FOREACH(alias, names)

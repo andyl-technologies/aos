@@ -50,6 +50,7 @@
     sourceProviderMount = selectedSourceMount;
     runtimeDeploymentPublisher = config.aos.sandbox.runtimeDeploymentPublisher.enable;
     resourceBankEnrollment = config.aos.sandbox.resourceBank.policy != null;
+    hostComponentControl = config.aos.sandbox.hostBroker.componentControl;
   } // lib.optionalAttrs selectedOnlineNix {
     onlineNix = true;
     aos-sandboxd = config.aos.sandbox.nixBroker._package;

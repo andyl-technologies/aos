@@ -18,12 +18,20 @@
 //!                || capacity[22*u64be] || baseline[22*u64be]
 //!                || controller[22*u64be] || components[22*u64be]
 //!                || sha256[32]
+//! host-image-policy = AOSRSB02 || node[16] || policy-epoch[16]
+//!                     || capacity[22*u64be] || baseline[22*u64be]
+//!                     || controller[22*u64be] || components[22*u64be]
+//!                     || host-service[22*u64be] || host-control[22*u64be]
+//!                     || sha256[32]
 //! pid1-delivery = AOSRSE01 || enrollment[96] || controller-invocation[16]
 //!                 || sha256[32]
 //! ```
 //!
 //! Every dimension is present, finite, and ordered by the sole resource
 //! registry. A checksum establishes canonical bytes, never producer authority.
+//! The 776-byte V1 policy and claim purposes 1 through 6 remain strict. The
+//! 1128-byte Host policy uses claim family `AOSRSC03` only for purposes 7 and 8;
+//! its claim layout is otherwise the same 531-byte canonical record.
 
 use aos_sandbox_core::{ResourceAccount, ResourceCeilings, ResourceDimension, ResourceLimit, ResourceVector};
 use sha2::{Digest as _, Sha256};
@@ -37,9 +45,27 @@ pub(super) const PREPARATION_BYTES: usize = 787;
 const HEAD_MAGIC: &[u8; 8] = b"AOSRSH01";
 const CLAIM_MAGIC: &[u8; 8] = b"AOSRSC02";
 pub(super) const IMAGE_POLICY_BYTES: usize = 776;
+pub(super) const HOST_IMAGE_POLICY_BYTES: usize = 1128;
 const IMAGE_POLICY_MAGIC: &[u8; 8] = b"AOSRSB01";
 
 pub(super) fn decode_image_policy(bytes: &[u8]) -> Result<ImageBootstrapPolicy, ResourceReservationErrorV1> {
+    if bytes.get(..8) == Some(b"AOSRSB02".as_slice()) {
+        require_record(bytes, HOST_IMAGE_POLICY_BYTES, b"AOSRSB02")?;
+        let policy = ImageBootstrapPolicy {
+            node: fixed(&bytes[8..24])?,
+            epoch: fixed(&bytes[24..40])?,
+            capacity: decode_vector(&bytes[40..216])?,
+            baseline: decode_vector(&bytes[216..392])?,
+            controller: decode_vector(&bytes[392..568])?,
+            components: decode_vector(&bytes[568..744])?,
+            host: Some(super::HostComponentPolicy {
+                service: decode_vector(&bytes[744..920])?,
+                control: decode_vector(&bytes[920..1096])?,
+            }),
+        };
+        policy.validate()?;
+        return Ok(policy);
+    }
     require_record(bytes, IMAGE_POLICY_BYTES, IMAGE_POLICY_MAGIC)?;
     let policy = ImageBootstrapPolicy {
         node: fixed(&bytes[8..24])?,
@@ -48,6 +74,7 @@ pub(super) fn decode_image_policy(bytes: &[u8]) -> Result<ImageBootstrapPolicy, 
         baseline: decode_vector(&bytes[216..392])?,
         controller: decode_vector(&bytes[392..568])?,
         components: decode_vector(&bytes[568..744])?,
+        host: None,
     };
     policy.validate()?;
     Ok(policy)
@@ -128,6 +155,11 @@ pub(super) fn encode_claim(claim: Claim) -> Result<[u8; CLAIM_BYTES], ResourceRe
     validate_claim(claim)?;
     let mut bytes = [0; CLAIM_BYTES];
     bytes[..8].copy_from_slice(CLAIM_MAGIC);
+    if matches!(claim.purpose,
+        ClaimPurpose::HostComponentBootstrap | ClaimPurpose::HostControlInterval)
+    {
+        bytes[..8].copy_from_slice(b"AOSRSC03");
+    }
     encode_enrollment(claim.enrollment, &mut bytes[8..104]);
     bytes[104..120].copy_from_slice(&claim.id);
     bytes[120..136].copy_from_slice(&claim.account);
@@ -140,6 +172,8 @@ pub(super) fn encode_claim(claim: Claim) -> Result<[u8; CLAIM_BYTES], ResourceRe
         ClaimPurpose::Snapshot => 4,
         ClaimPurpose::ProjectPreparation => 5,
         ClaimPurpose::Q04Preparation => 6,
+        ClaimPurpose::HostComponentBootstrap => 7,
+        ClaimPurpose::HostControlInterval => 8,
     };
     bytes[185..201].copy_from_slice(&claim.operation);
     bytes[201..217].copy_from_slice(&claim.project);
@@ -168,7 +202,12 @@ pub(super) fn encode_claim(claim: Claim) -> Result<[u8; CLAIM_BYTES], ResourceRe
 }
 
 pub(super) fn decode_claim(bytes: &[u8]) -> Result<Claim, ResourceReservationErrorV1> {
-    require_record(bytes, CLAIM_BYTES, CLAIM_MAGIC)?;
+    let host = bytes.get(..8) == Some(b"AOSRSC03".as_slice());
+    if host {
+        require_record(bytes, CLAIM_BYTES, b"AOSRSC03")?;
+    } else {
+        require_record(bytes, CLAIM_BYTES, CLAIM_MAGIC)?;
+    }
     let claim = Claim {
         enrollment: decode_enrollment(&bytes[8..104])?,
         id: fixed(&bytes[104..120])?,
@@ -176,12 +215,14 @@ pub(super) fn decode_claim(bytes: &[u8]) -> Result<Claim, ResourceReservationErr
         child: fixed(&bytes[136..152])?,
         owner: fixed(&bytes[152..184])?,
         purpose: match bytes[184] {
-            1 => ClaimPurpose::ControllerBootstrap,
-            2 => ClaimPurpose::ComponentEnvelope,
-            3 => ClaimPurpose::InclusiveGrant,
-            4 => ClaimPurpose::Snapshot,
-            5 => ClaimPurpose::ProjectPreparation,
-            6 => ClaimPurpose::Q04Preparation,
+            1 if !host => ClaimPurpose::ControllerBootstrap,
+            2 if !host => ClaimPurpose::ComponentEnvelope,
+            3 if !host => ClaimPurpose::InclusiveGrant,
+            4 if !host => ClaimPurpose::Snapshot,
+            5 if !host => ClaimPurpose::ProjectPreparation,
+            6 if !host => ClaimPurpose::Q04Preparation,
+            7 if host => ClaimPurpose::HostComponentBootstrap,
+            8 if host => ClaimPurpose::HostControlInterval,
             _ => return Err(ResourceReservationErrorV1::CorruptLedger),
         },
         operation: fixed(&bytes[185..201])?,
@@ -287,6 +328,17 @@ fn validate_claim(claim: Claim) -> Result<(), ResourceReservationErrorV1> {
         return Err(ResourceReservationErrorV1::CorruptLedger);
     }
     match (claim.purpose, claim.cut) {
+        (ClaimPurpose::HostComponentBootstrap | ClaimPurpose::HostControlInterval,
+            ClaimCut::BootLifetime)
+            if claim.state == ClaimState::Reserved
+            && claim.owner == claim.enrollment.manifest
+            && claim.operation == [0; 16] && claim.project == [0; 16]
+            && claim.sandbox == [0; 16] && claim.tree_revision == [0; 32]
+            && claim.genesis_instance == [0; 32]
+            && ((claim.purpose == ClaimPurpose::HostComponentBootstrap
+                && claim.child != [0; 16])
+                || (claim.purpose == ClaimPurpose::HostControlInterval
+                    && claim.child == [0; 16])) => {}
         (ClaimPurpose::ProjectPreparation, ClaimCut::Operation {
             original_boottime_nanoseconds, deadline_boottime_nanoseconds, ..
         }) if claim.operation != [0; 16] && claim.project != [0; 16]
