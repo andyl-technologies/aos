@@ -113,6 +113,8 @@ pub(super) struct Row {
     pub(super) samples: Vec<Sample>,
     #[serde(serialize_with = "vector")]
     pub(super) reservation_peak: HostResourceVector,
+    pub(super) paused_census: resource_census::Census,
+    pub(super) cleanup_census: resource_census::Census,
 }
 
 #[derive(Serialize)]
@@ -364,6 +366,8 @@ pub(super) fn publish(
         repeated_rates: Vec<RepeatedRates>,
         rate: &'static str,
         cache_scope: &'static str,
+        resource_census_schema: &'static str,
+        resource_census_scope: &'static str,
         unavailable_metrics: [&'static str; 6],
     }
     let mut corpus = blake3::Hasher::new();
@@ -412,6 +416,16 @@ pub(super) fn publish(
         repeated_rates: repeated_rates(rows),
         rate: "completed * 3600000000000 / elapsed_ns attempts per host hour; raw repeats retained",
         cache_scope: "fresh native processes; shared immutable catalog; host storage cache not controlled",
+        resource_census_schema: "crucible.host-resource-census.v1",
+        resource_census_scope: concat!(
+            "controller-thread stopped prepared worlds and post-join cleanup; ",
+            "cgroup hierarchy and combined admitted host-run/lifecycle run-state storage, ",
+            "catalog excluded; shared RSS counts mappings, PSS is proportional; ",
+            "best-effort observations with process birth/inode and membership revalidation; ",
+            "null means unavailable, observed identity instability or finite census bound exceeded; ",
+            "stopped census overhead is included in row elapsed but excluded from guest ",
+            "drive/fingerprint intervals; no atomic snapshot, cleanup authority or peak usage claim"
+        ),
         unavailable_metrics: [
             "cold host-cache throughput",
             "fork duration",
@@ -458,6 +472,8 @@ fn repeated_receipt_keeps_failed_rows_in_uncertainty() {
                     },
                     samples: Vec::new(),
                     reservation_peak: HostResourceVector::default(),
+                    paused_census: resource_census::Census::default(),
+                    cleanup_census: resource_census::Census::default(),
                 });
             }
         }

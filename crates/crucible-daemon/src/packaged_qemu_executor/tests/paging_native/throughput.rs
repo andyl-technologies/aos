@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 mod corpus;
 mod report;
+mod resource_census;
 mod workers;
 
 const PARALLEL: [usize; 3] = [1, 2, 4];
@@ -141,8 +142,7 @@ fn run_row(
     let probe = Arc::new(PlacementProbe {
         divisor,
         parallel,
-        arrived: AtomicUsize::new(0),
-        aborted: AtomicBool::new(false),
+        rendezvous: Rendezvous::default(),
         owner: owner.clone(),
         initial_available: report::availability(owner),
         samples: Mutex::new(Vec::with_capacity(parallel)),
@@ -151,7 +151,11 @@ fn run_row(
     });
     let before = report::completed_count(owner);
     let start = report::now();
-    let outcomes = std::thread::scope(|scope| {
+    let mut paused_census = resource_census::Census::default();
+    let (outcomes, controller_error) = std::thread::scope(|scope| {
+        // This guard drops before Scope joins on an unwind, including failures
+        // before the first spawn. Every parked worker observes abort + release.
+        let controller_abort = RendezvousAbortGuard::new(&probe.rendezvous);
         let mut handles = Vec::with_capacity(parallel);
         for worker in 0..parallel {
             let seed = corpus::seed(divisor, parallel, repeat, worker);
@@ -164,6 +168,7 @@ fn run_row(
                     .stack_size(workers::WORKER_STACK)
                     .spawn_scoped(scope, move || {
                         let _permit = permit;
+                        let worker_abort = RendezvousAbortGuard::new(&probe.rendezvous);
                         let result = (|| {
                             let input = owner.inner.config.admitted_lifecycle_config().map_err(
                                 |error| -> Box<dyn std::error::Error + Send> { Box::new(error) },
@@ -194,18 +199,48 @@ fn run_row(
                                 |error| -> Box<dyn std::error::Error + Send> { Box::new(error) },
                             )
                         })();
-                        if result.is_err() {
-                            probe.aborted.store(true, Ordering::Release);
+                        if result.is_ok() {
+                            worker_abort.disarm();
                         }
                         result.map(|run| run.terminal().id())
                     })
                     .expect("permit before bounded host worker spawn"),
             );
         }
-        handles
+        // Sampling stays on this controller thread. All prepared worlds wait
+        // stopped until the census completes; no clocks or kernel observations
+        // enter their canonical execution. An aborted worker releases the rest.
+        let supervisor = controller.supervisor();
+        let controller_result = (|| {
+            let wait = supervisor.begin(HostOperationClass::Preparation)?;
+            while probe.rendezvous.arrived.load(Ordering::Acquire) != parallel
+                && !probe.rendezvous.aborted.load(Ordering::Acquire)
+            {
+                wait.wait_for_change()?;
+            }
+            if !probe.rendezvous.aborted.load(Ordering::Acquire) {
+                paused_census = resource_census::sample(
+                    controller,
+                    owner.inner.config.host.cgroup_root(),
+                    &[
+                        owner.inner.config.host.run_root(),
+                        owner.inner.config.lifecycle.run_state_root(),
+                    ],
+                );
+            }
+            wait.complete()
+        })();
+        if controller_result.is_ok() {
+            probe.rendezvous.released.store(true, Ordering::Release);
+            controller_abort.disarm();
+        } else {
+            drop(controller_abort);
+        }
+        let outcomes = handles
             .into_iter()
             .map(|handle| handle.join())
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        (outcomes, controller_result.err())
     });
     let elapsed_ns = report::now()
         .checked_sub(start)
@@ -214,6 +249,9 @@ fn run_row(
         .checked_sub(before)
         .expect("completed states cannot disappear during this retention interval");
     let mut failures = Vec::new();
+    if let Some(error) = controller_error {
+        failures.push(format!("controller rendezvous failed: {error}"));
+    }
     for outcome in outcomes {
         match outcome {
             Ok(Ok(_)) => {}
@@ -244,19 +282,84 @@ fn run_row(
             .peaks
             .lock()
             .expect("actual reservation high-water mark"),
+        paused_census,
+        cleanup_census: resource_census::sample(
+            controller,
+            owner.inner.config.host.cgroup_root(),
+            &[
+                owner.inner.config.host.run_root(),
+                owner.inner.config.lifecycle.run_state_root(),
+            ],
+        ),
     }
 }
 
 struct PlacementProbe {
     divisor: u64,
     parallel: usize,
-    arrived: AtomicUsize,
-    aborted: AtomicBool,
+    rendezvous: Rendezvous,
     owner: GuardedCampaignOwner,
     initial_available: HostResourceVector,
     samples: Mutex<Vec<report::Sample>>,
     started: Mutex<Vec<([u8; 32], u64)>>,
     peaks: Mutex<HostResourceVector>,
+}
+
+/// Publishes one stopped cut or an abort to every waiting worker.
+#[derive(Default)]
+struct Rendezvous {
+    arrived: AtomicUsize,
+    aborted: AtomicBool,
+    released: AtomicBool,
+}
+
+impl Rendezvous {
+    fn wait_for_release(
+        &self,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), HostOperationalError> {
+        while !self.released.load(Ordering::Acquire) {
+            if self.aborted.load(Ordering::Acquire) {
+                return Err(HostOperationalError::Unavailable);
+            }
+            original
+                .wait_for_change()
+                .map_err(|_| HostOperationalError::Unavailable)?;
+        }
+        // Abort precedes release. Acquire on release also covers that marker;
+        // exiting the wait must never authorize guest execution after failure.
+        if self.aborted.load(Ordering::Acquire) {
+            return Err(HostOperationalError::Unavailable);
+        }
+        Ok(())
+    }
+}
+
+struct RendezvousAbortGuard<'a> {
+    rendezvous: &'a Rendezvous,
+    disarmed: bool,
+}
+
+impl<'a> RendezvousAbortGuard<'a> {
+    fn new(rendezvous: &'a Rendezvous) -> Self {
+        Self {
+            rendezvous,
+            disarmed: false,
+        }
+    }
+
+    fn disarm(mut self) {
+        self.disarmed = true;
+    }
+}
+
+impl Drop for RendezvousAbortGuard<'_> {
+    fn drop(&mut self) {
+        if !self.disarmed {
+            self.rendezvous.aborted.store(true, Ordering::Release);
+            self.rendezvous.released.store(true, Ordering::Release);
+        }
+    }
 }
 
 impl NativeCampaignProbe for PlacementProbe {
@@ -286,20 +389,14 @@ impl NativeCampaignProbe for PlacementProbe {
         };
         let target_bytes = logical_bytes.checked_div(self.divisor).unwrap_or(0);
         registry.apply_native_qualification_policy(target, target_bytes)?;
-        self.arrived.fetch_add(1, Ordering::AcqRel);
+        self.rendezvous.arrived.fetch_add(1, Ordering::AcqRel);
         let original = context
             .host_operation_supervisor()
             .ok_or(HostOperationalError::Unavailable)?;
         let wait = original
             .begin(HostOperationClass::Quiescence)
             .map_err(|_| HostOperationalError::Unavailable)?;
-        while self.arrived.load(Ordering::Acquire) != self.parallel {
-            if self.aborted.load(Ordering::Acquire) {
-                return Err(HostOperationalError::Unavailable);
-            }
-            wait.wait_for_change()
-                .map_err(|_| HostOperationalError::Unavailable)?;
-        }
+        self.rendezvous.wait_for_release(&wait)?;
         wait.complete()
             .map_err(|_| HostOperationalError::Unavailable)?;
         report::observe_peak(

@@ -29,12 +29,14 @@ impl WorkerService {
         let resources = HostResourceVector {
             resident_peak_bytes: 8 << 20,
             backing_peak_bytes: 1 << 20,
-            metadata_bytes: 4 << 20,
+            // The controller census adds a finite 1 MiB metadata/scratch
+            // subset beside four worker halves and the report's 2 MiB bank.
+            metadata_bytes: 5 << 20,
             staging_bytes: 1 << 20,
             paging_io_slots: 1,
             cpu_slots: 4,
             task_slots: 5,
-            file_descriptors: 5,
+            file_descriptors: 7,
         };
         let supervisor = HostOperationSupervisor::new(
             config
@@ -59,7 +61,7 @@ impl WorkerService {
         let custody = registry
             .capacity_custody()
             .expect("same original charged actor");
-        let allocator = HostServiceAllocator::new(4, 5, 7 << 20)
+        let allocator = HostServiceAllocator::new(4, 7, 7 << 20)
             .expect("explicit worker subset leaves the watchdog's envelope outside");
         let cancellation = crate::ExecutionCancellation::default();
         let progress = Arc::new(
@@ -103,6 +105,19 @@ impl WorkerService {
 
     pub(super) fn cancellation(&self) -> crate::ExecutionCancellation {
         self.cancellation.clone()
+    }
+
+    pub(super) fn reserve_census(&self) -> Result<HostServiceLease, HostOperationalError> {
+        self.progress
+            .wait_slice()
+            .map_err(|_| HostOperationalError::Unavailable)?;
+        self.allocator
+            .reserve_resources(
+                0,
+                resource_census::DESCRIPTORS,
+                resource_census::SCRATCH_BYTES,
+            )
+            .map_err(|_| HostOperationalError::Unavailable)
     }
 
     pub(super) fn supervisor(&self) -> HostOperationSupervisor {
