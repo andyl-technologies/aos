@@ -1892,6 +1892,17 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Its initial trunk run exits 1 in actual-default Clippy with 37 library and
   22 test diagnostics on unfinished integration. Later profiles and rustdoc
   do not execute; no suppression or profile success is inferred.
+  A further pure prerequisite is declared as
+  `checks.terrane.integration.mixed-view-interpretation`: eight exact cases
+  require independently selected Legacy and Recorded views in one disclosure
+  history, exact original-root association, inert revision-one names, strict
+  missing association refusal and unchanged scope verification. The installed
+  base and exact overrides are ordinary configuration under PROP-30 and
+  PROV-4/7 to PROV-10/16; they supply no original authority or coverage.
+  The existing uniform constructors must remain compatible. Missing witnesses
+  fail explicitly; declaration alone qualifies no implementation or task.
+  The declaration's initial Nix run compiles, then exits 1 naming all eight
+  missing cases. Registry completeness and both mandatory formatters pass.
   T-DRV-2, ALG-32, task merges and T1 remain open.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
