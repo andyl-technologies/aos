@@ -28,6 +28,7 @@ pub(crate) struct OriginalControllerPolicyPeerV1<'startup> {
     cgroup: RetainedCgroupAnchor,
     fragment: RetainedImmutableFileV1,
     nix_profile: Option<RetainedImmutableFileV1>,
+    resource_producer: Option<[u8; 16]>,
     observed: service::ServiceObservationV1,
 }
 
@@ -39,7 +40,7 @@ impl ProductionNormalRootStartupV1 {
         self.recheck()?;
         stream.revalidate_original().map_err(|_| Error::Service)?;
         let pid = stream.peer().credentials().pid();
-        let (observed, nix_profile) = observe_initial(self, pid)?;
+        let (observed, nix_profile, resource_producer) = observe_initial(self, pid)?;
         let fragment = RetainedImmutableFileV1::observe_fragment(observed.fragment.clone())
             .map_err(|_| Error::Service)?;
         let peer = OriginalControllerPolicyPeerV1 {
@@ -48,6 +49,7 @@ impl ProductionNormalRootStartupV1 {
             cgroup: retain_fixed_cgroup(Path::new(CGROUP))?,
             fragment,
             nix_profile,
+            resource_producer,
             observed,
         };
         peer.recheck_stream(stream)?;
@@ -74,6 +76,7 @@ impl OriginalControllerPolicyPeerV1<'_> {
             self.startup,
             self.pid,
             self.nix_profile.as_ref().map(|profile| profile.path()),
+            self.resource_producer,
         )?;
         service::require_same(&self.observed, &observed)?;
         self.fragment.revalidate().map_err(|_| Error::Service)
@@ -130,34 +133,87 @@ fn observe(
     startup: &ProductionNormalRootStartupV1,
     pid: NonZeroU32,
     nix_profile: Option<&Path>,
+    resource_producer: Option<[u8; 16]>,
 ) -> Result<service::ServiceObservationV1, Error> {
-    let (properties, unit) =
-        service::read_properties(UNIT, pid.get(), service::SERVICE_PROPERTIES)?;
-    service::immutable_observation(decode_delivery_with_backends(
-        &properties,
+    let recipe = if resource_producer.is_some() {
+        service::RESOURCE_SERVICE_PROPERTIES
+    } else {
+        service::SERVICE_PROPERTIES
+    };
+    let (properties, unit) = service::read_properties(UNIT, pid.get(), recipe)?;
+    let common = if resource_producer.is_some() {
+        properties.get(..service::SERVICE_PROPERTIES.len()).ok_or(Error::Service)?
+    } else {
+        &properties
+    };
+    let observed = service::immutable_observation(decode_delivery_with_resource_pair(
+        common,
         &unit,
         startup.profile_file.path(),
         nix_profile,
-    )?)
+        resource_producer.is_some(),
+    )?)?;
+    if let Some(expected) = resource_producer {
+        let producer = properties.last().ok_or(Error::Service)?;
+        if service::decode_resource_producer(producer)? != expected {
+            return Err(Error::Service);
+        }
+    }
+    Ok(observed)
 }
 
 fn observe_initial(
     startup: &ProductionNormalRootStartupV1,
     pid: NonZeroU32,
-) -> Result<(service::ServiceObservationV1, Option<RetainedImmutableFileV1>), Error> {
+) -> Result<(
+    service::ServiceObservationV1,
+    Option<RetainedImmutableFileV1>,
+    Option<[u8; 16]>,
+), Error> {
     let (properties, unit) = service::read_properties(UNIT, pid.get(), service::SERVICE_PROPERTIES)?;
     let nix_path = selected_nix_profile(&properties)?;
     let nix_profile = nix_path.map(|path| {
         let file = std::fs::File::open(path).map_err(|_| Error::Profile)?;
         super::nix_startup::retain_controller_profile(file)
     }).transpose()?;
-    let observed = service::immutable_observation(decode_delivery_with_backends(
+    let resource_delivery = selected_resource_pair(&properties)?;
+    let observed = service::immutable_observation(decode_delivery_with_resource_pair(
         &properties,
         &unit,
         startup.profile_file.path(),
         nix_profile.as_ref().map(|profile| profile.path()),
+        resource_delivery,
     )?)?;
-    Ok((observed, nix_profile))
+    let resource_producer = if resource_delivery {
+        let (current, unit) = service::read_properties(
+            UNIT, pid.get(), service::RESOURCE_SERVICE_PROPERTIES,
+        )?;
+        let (producer, common) = current.split_last().ok_or(Error::Service)?;
+        let current = service::immutable_observation(decode_delivery_with_resource_pair(
+            common, &unit, startup.profile_file.path(),
+            nix_profile.as_ref().map(|profile| profile.path()), true,
+        )?)?;
+        service::require_same(&observed, &current)?;
+        Some(service::decode_resource_producer(producer)?)
+    } else {
+        None
+    };
+    Ok((observed, nix_profile, resource_producer))
+}
+
+// Only a complete, ordered original PID1 pair selects the additional recipe.
+// Pair DATA grants no resource loan; the owning bank checks its own original FDs.
+fn selected_resource_pair(properties: &[OwnedValue]) -> Result<bool, Error> {
+    let Some(Value::Array(extras)) = properties.get(2).map(|value| &**value) else {
+        return Err(Error::Service);
+    };
+    if extras.is_empty() {
+        return Ok(false);
+    }
+    if !client::valid_resource_delivery_names(extras.inner(), true) {
+        return Err(Error::Service);
+    }
+    Ok(true)
 }
 
 fn selected_nix_profile(properties: &[OwnedValue]) -> Result<Option<std::path::PathBuf>, Error> {
@@ -215,6 +271,16 @@ fn decode_delivery_with_backends(
     profile: &Path,
     nix_profile: Option<&Path>,
 ) -> Result<service::ServiceObservationV1, Error> {
+    decode_delivery_with_resource_pair(properties, unit, profile, nix_profile, false)
+}
+
+fn decode_delivery_with_resource_pair(
+    properties: &[OwnedValue],
+    unit: &[OwnedValue],
+    profile: &Path,
+    nix_profile: Option<&Path>,
+    resource_delivery: bool,
+) -> Result<service::ServiceObservationV1, Error> {
     let Some(Value::Array(files)) = properties.get(1).map(|value| &**value) else {
         return Err(Error::Service);
     };
@@ -227,7 +293,9 @@ fn decode_delivery_with_backends(
         2 => true,
         _ => return Err(Error::Service),
     };
-    client::decode_delivery_with_backends(properties, unit, profile, tpm_image, nix_profile)
+    client::decode_delivery_with_resource_bank(
+        properties, unit, profile, tpm_image, nix_profile, resource_delivery,
+    )
 }
 
 #[cfg(test)]

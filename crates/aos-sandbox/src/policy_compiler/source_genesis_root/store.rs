@@ -1025,8 +1025,18 @@ impl RootSourceGenesisAuthorityV1 {
                 }
             }
             Q04ControllerPacketPositionV1::OriginalHeld { original_next } => {
+                // Legacy hold recipes contain three members. The resource
+                // family co-issues the six bank members in that SAME native
+                // transaction; both include the original begin/commit frames.
+                // This signed sequence join observes membership, not payment.
+                let members = if accepted.acceptance.resource_envelope().is_some() {
+                    3_usize.checked_add(crate::controller_resource_reservation::Q04_BANK_MEMBERS)
+                        .ok_or(CreateQ04ErrorV1::Bounds)?
+                } else { 3 };
+                let frames = u64::try_from(members).map_err(|_| CreateQ04ErrorV1::Bounds)?
+                    .checked_add(2).ok_or(CreateQ04ErrorV1::Bounds)?;
                 if current.journal_sequence() != original_next
-                    || held.journal_sequence() != original_next.checked_add(5)
+                    || held.journal_sequence() != original_next.checked_add(frames)
                         .ok_or(CreateQ04ErrorV1::Bounds)?
                     || held.journal_sequence() >= gen1.controller_sequence
                 {

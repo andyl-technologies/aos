@@ -215,6 +215,18 @@ impl CompletedRootSourceProjectGenesisFloorV3<'_, '_> {
     pub(crate) fn signing_boundary_clock(&self) -> Result<RawPairedClockSample, SourceGenesisErrorV1> {
         self.proof.original.origin.first_successor_clock()
     }
+
+    // The bank admission borrows the initial cut, never a refreshed sample.
+    pub(crate) fn resource_admission_cut(&self) -> Result<(RawPairedClockSample, u64), SourceGenesisErrorV1> {
+        let original = self.proof.original.origin.clock;
+        let deadline = original.boottime_nanoseconds().checked_add(60_000_000_000)
+            .ok_or(SourceGenesisErrorV1::Stale)?;
+        Ok((original, deadline))
+    }
+
+    pub(crate) fn independent_resource_clock(&self) -> Result<(), SourceGenesisErrorV1> {
+        self.proof.original.origin.observe_first_successor_clock().map(|_| ())
+    }
 }
 
 impl RootSourceGenesisFloorProofV1<'_> {

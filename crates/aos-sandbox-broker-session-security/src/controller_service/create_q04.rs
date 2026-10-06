@@ -19,6 +19,7 @@ pub(super) struct OriginalQ04ControllerSelectionV1 {
     profile: Arc<ProductionControllerNormalRootProfileV1>,
     admission: Option<Result<(), NormalRootStartupErrorV1>>,
     initialization: CacheResidentInitializationV1,
+    reservation: Option<aos_sandbox::ProjectPreparationReservationAttemptV1>,
 }
 
 pub(super) fn select(
@@ -38,6 +39,7 @@ pub(super) fn select(
         profile,
         admission: None,
         initialization: CacheResidentInitializationV1::new(),
+        reservation: None,
     });
     let Some(selected) = executor.q04.as_mut() else {
         std::process::exit(1);
@@ -98,7 +100,7 @@ pub(super) fn reconcile(
     let Some(physical) = executor.cache_physical.as_ref() else {
         std::process::exit(1);
     };
-    Some(aos_sandbox::reconciler::continue_original_create_q04_policy_subgate_v1(
+    let continued = aos_sandbox::reconciler::continue_original_create_q04_policy_subgate_v1(
         journal,
         &mut executor.source_domains,
         &mut selected.initialization,
@@ -108,5 +110,13 @@ pub(super) fn reconcile(
         operation,
         executor.request_scope,
         plan,
-    ))
+        executor.resource_bank.as_ref(),
+        &mut selected.reservation,
+    );
+    if continued.is_ok() && !selected.reservation.as_ref()
+        .is_some_and(|reservation| reservation.require_terminal_retention().is_ok())
+    {
+        std::process::exit(1);
+    }
+    Some(continued)
 }

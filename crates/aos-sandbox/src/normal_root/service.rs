@@ -26,6 +26,20 @@ pub(super) const SERVICE_PROPERTIES: &[&str] = &[
     "AmbientCapabilities",
     "NoNewPrivileges",
 ];
+// Only the resource enrollment consumer reads original producer custody.
+// Ordinary Root/Controller observers keep their literal property lists.
+pub(super) const RESOURCE_SERVICE_PROPERTIES: &[&str] = &[
+    "ControlGroup",
+    "OpenFile",
+    "ExtraFileDescriptorNames",
+    "FileDescriptorStoreMax",
+    "NFileDescriptorStore",
+    "SELinuxContext",
+    "CapabilityBoundingSet",
+    "AmbientCapabilities",
+    "NoNewPrivileges",
+    "AOSResourceProducerEpoch",
+];
 const UNIT_PROPERTIES: &[&str] = &["FragmentPath", "DropInPaths", "Transient", "InvocationID"];
 const NIX_BARRIER_PROPERTIES: &[&str] = &[
     "ControlGroup",
@@ -71,6 +85,19 @@ const STORAGE_PROPERTIES: &[&str] = &[
     "NoNewPrivileges",
     "ExecStart",
 ];
+const STORAGE_RESOURCE_PROPERTIES: &[&str] = &[
+    "ControlGroup",
+    "OpenFile",
+    "ExtraFileDescriptorNames",
+    "FileDescriptorStoreMax",
+    "NFileDescriptorStore",
+    "SELinuxContext",
+    "CapabilityBoundingSet",
+    "AmbientCapabilities",
+    "NoNewPrivileges",
+    "ExecStart",
+    "AOSResourceProducerEpoch",
+];
 
 #[derive(Debug, PartialEq)]
 pub(super) struct ServiceObservationV1 {
@@ -88,8 +115,27 @@ pub(super) fn observe(
 pub(super) fn observe_storage(
 ) -> Result<super::StorageWorkerParentDataV3, NormalRootStartupErrorV1> {
     let (service, unit) = read_properties(STORAGE_UNIT, std::process::id(), STORAGE_PROPERTIES)?;
+    decode_storage(&service, &unit, false)
+}
+
+pub(super) fn observe_storage_resource(
+) -> Result<(super::StorageWorkerParentDataV3, [u8; 16]), NormalRootStartupErrorV1> {
+    let (service, unit) = read_properties(
+        STORAGE_UNIT, std::process::id(), STORAGE_RESOURCE_PROPERTIES,
+    )?;
+    let (producer, common) = service.split_last()
+        .ok_or(NormalRootStartupErrorV1::Service)?;
+    let parent = decode_storage(common, &unit, true)?;
+    Ok((parent, decode_resource_producer(producer)?))
+}
+
+fn decode_storage(
+    service: &[OwnedValue],
+    unit: &[OwnedValue],
+    resource_delivery: bool,
+) -> Result<super::StorageWorkerParentDataV3, NormalRootStartupErrorV1> {
     let [cgroup, open_files, extras, maximum, stored, context, bounding, ambient, nnp, start] =
-        service.as_slice()
+        service
     else {
         return Err(NormalRootStartupErrorV1::Service);
     };
@@ -108,7 +154,7 @@ pub(super) fn observe_storage(
     if <&str>::try_from(cgroup).ok() != Some(STORAGE_CGROUP)
         || path.as_str() != "/proc/1/exe"
         || name.as_str() != "aos-method46-pid1-image"
-        || !extras.is_empty()
+        || !super::client::valid_resource_delivery_names(extras.inner(), resource_delivery)
         || extras.element_signature() != Value::from("").value_signature()
         || u32::try_from(maximum).ok() != Some(0)
         || u32::try_from(stored).ok() != Some(0)
@@ -141,7 +187,7 @@ pub(super) fn observe_storage(
             Ok(value.as_str().to_owned())
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let observed = immutable_observation(decode_unit(&unit, STORAGE_UNIT)?)?;
+    let observed = immutable_observation(decode_unit(unit, STORAGE_UNIT)?)?;
     Ok(super::StorageWorkerParentDataV3 {
         fragment: observed.fragment,
         invocation: observed.invocation,
@@ -411,6 +457,21 @@ pub(super) fn require_same(
         return Err(NormalRootStartupErrorV1::Service);
     }
     Ok(())
+}
+
+// A live property is merely an observation. The owning enrollment consumer
+// compares it to its retained original pair under the same PID1 bookends.
+pub(super) fn decode_resource_producer(
+    value: &OwnedValue,
+) -> Result<[u8; 16], NormalRootStartupErrorV1> {
+    let Value::Array(bytes) = &**value else {
+        return Err(NormalRootStartupErrorV1::Service);
+    };
+    if bytes.element_signature() != Value::from(0_u8).value_signature() {
+        return Err(NormalRootStartupErrorV1::Service);
+    }
+    systemd_property_data::nonzero_invocation_bytes(bytes.inner())
+        .ok_or(NormalRootStartupErrorV1::Service)
 }
 
 #[cfg(test)]

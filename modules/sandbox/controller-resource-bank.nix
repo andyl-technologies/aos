@@ -1,0 +1,190 @@
+##! Image-owned policy for the existing PID1/Controller resource enrollment.
+##!
+##! Policy bytes are not a loan. PID1 must reserve the fixed bootstrap and
+##! component envelopes under its original boot custody before selected jobs;
+##! Controller then admits dynamic grants through the one protected bank.
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}: let
+  cfg = config.aos.sandbox.resourceBank;
+  onlineNix = config.aos.sandbox.nixBroker.enable;
+  controllerMinimum = {
+    memory-bytes = if onlineNix then 4294967296 else 536870912;
+    pids = 8;
+    open-files = if onlineNix then 16384 else 128;
+    concurrent-operations = 1;
+  };
+  componentMinimum = lib.optionalAttrs config.aos.sandbox.storageBroker.enable {
+    memory-bytes = 536870912;
+    pids = 32;
+    open-files = 256;
+    concurrent-operations = 1;
+  };
+  dimensions = [
+    "cpu-micros-per-period"
+    "memory-bytes"
+    "pids"
+    "open-files"
+    "mounts"
+    "descendants"
+    "storage-bytes"
+    "tmpfs-bytes"
+    "cache-reservation-bytes"
+    "pinned-bytes"
+    "metadata-entries"
+    "mapped-index-bytes"
+    "inflight-fetch-bytes"
+    "inflight-decompressed-bytes"
+    "publication-staging-bytes"
+    "backing-registrations"
+    "attachment-edges"
+    "executions"
+    "network-bytes"
+    "log-bytes"
+    "output-bytes"
+    "concurrent-operations"
+  ];
+  vectorType = lib.types.attrsOf (lib.types.addCheck lib.types.int (value: value >= 0));
+  policyType = lib.types.submodule {
+    options = {
+      node = lib.mkOption {
+        type = lib.types.strMatching "[0-9a-f]{32}";
+        description = "The exact provisioned node UUID, without separators.";
+      };
+      epoch = lib.mkOption {
+        type = lib.types.strMatching "[0-9a-f]{32}";
+        description = "The nonzero fresh-install image policy epoch, without separators.";
+      };
+      capacity = lib.mkOption {
+        type = vectorType;
+        description = "Explicit finite allocatable node policy in every resource dimension.";
+      };
+      baseline = lib.mkOption {
+        type = vectorType;
+        description = "Conservative competing node demand outside the two prepaid envelopes.";
+      };
+      controller = lib.mkOption {
+        type = vectorType;
+        description = "Prepaid Controller startup, bank replay, journal and control-service envelope.";
+      };
+      components = lib.mkOption {
+        type = vectorType;
+        description = "Prepaid aggregate manager, journald, audit and fixed component all-trigger envelope.";
+      };
+    };
+  };
+
+  policy = pkgs.runCommand "aos-controller-resource-bootstrap-policy-v1" {
+    nativeBuildInputs = [pkgs.python3 pkgs.coreutils];
+    policyJson = builtins.toJSON cfg.policy;
+    dimensionJson = builtins.toJSON dimensions;
+    controllerMinimumJson = builtins.toJSON controllerMinimum;
+    componentMinimumJson = builtins.toJSON componentMinimum;
+  } ''
+    set -eu
+    mkdir -p "$out"
+    ${pkgs.python3}/bin/python3 -B - "$out/bootstrap.bin" <<'PY'
+    import hashlib
+    import json
+    import os
+    import struct
+    import sys
+    from pathlib import Path
+
+    policy = json.loads(os.environ["policyJson"])
+    dimensions = json.loads(os.environ["dimensionJson"])
+    controller_minimum = json.loads(os.environ["controllerMinimumJson"])
+    component_minimum = json.loads(os.environ["componentMinimumJson"])
+    if len(dimensions) != 22 or len(set(dimensions)) != 22:
+        raise ValueError("resource dimension registry is inconsistent")
+    if set(policy) != {"node", "epoch", "capacity", "baseline", "controller", "components"}:
+        raise ValueError("resource policy must contain its complete fixed schema")
+
+    def identity(name):
+        encoded = bytes.fromhex(policy[name])
+        if len(encoded) != 16 or encoded == bytes(16):
+            raise ValueError("resource policy has an unspecified identity")
+        return encoded
+
+    def vector(name):
+        values = policy[name]
+        if set(values) != set(dimensions):
+            raise ValueError("every resource dimension must be explicitly configured")
+        ordered = [values[dimension] for dimension in dimensions]
+        if any(type(value) is not int or value < 0 or value > (1 << 64) - 1 for value in ordered):
+            raise ValueError("resource policy is not a finite unsigned vector")
+        return ordered
+
+    capacity, baseline, controller, components = map(
+        vector, ("capacity", "baseline", "controller", "components")
+    )
+    for index in range(22):
+        if baseline[index] + controller[index] + components[index] > capacity[index]:
+            raise ValueError("the fixed prepaid envelopes exceed node policy")
+    for envelope in (controller, components):
+        if any(envelope[dimensions.index(name)] == 0 for name in (
+            "memory-bytes", "pids", "open-files", "concurrent-operations"
+        )):
+            raise ValueError("the fixed service envelope is incomplete")
+    # The original PID1 reservation must pay at least the unchanged fixed
+    # Controller enforcement envelope before its first capture or journal open.
+    # These bounds do not issue payment; admission still requires that action.
+    for name, minimum in controller_minimum.items():
+        if controller[dimensions.index(name)] < minimum:
+            raise ValueError("the prepaid Controller envelope is below its fixed enforcement bounds")
+    # These are only Storage's existing bounds. The separately configured
+    # aggregate must also cover competing manager, journald and audit demand;
+    # this necessary comparison does not issue or subdivide their reservation.
+    for name, minimum in component_minimum.items():
+        if components[dimensions.index(name)] < minimum:
+            raise ValueError("the prepaid component envelope is below fixed Storage enforcement bounds")
+
+    body = b"AOSRSB01" + identity("node") + identity("epoch")
+    for values in (capacity, baseline, controller, components):
+        body += struct.pack(">22Q", *values)
+    encoded = body + hashlib.sha256(body).digest()
+    if len(encoded) != 776:
+        raise ValueError("native bootstrap policy width changed")
+    Path(sys.argv[1]).write_bytes(encoded)
+    PY
+    chmod 0444 "$out/bootstrap.bin"
+  '';
+in {
+  options.aos.sandbox.resourceBank = {
+    policy = lib.mkOption {
+      type = lib.types.nullOr policyType;
+      default = null;
+      description = "Mandatory explicit image-owned policy for fresh shared-bank enrollment; absence does not fund selected work.";
+    };
+    _imagePolicy = lib.mkOption {
+      type = lib.types.nullOr lib.types.package;
+      default = null;
+      internal = true;
+      readOnly = true;
+      description = "The immutable native policy bytes, not a reservation owner.";
+    };
+  };
+
+  config = lib.mkIf (cfg.policy != null) {
+    assertions = [
+      {
+        assertion = config.aos.security.selinux.enable
+          && config.aos.security.selinux.mode == "enforcing"
+          && config.aos.security.selinux.bootMode == "immutable-stage0";
+        message = "Shared resource enrollment requires the existing immutable enforcing PID1/Controller trust boundary.";
+      }
+      {
+        assertion = config.aos.sandbox.controllerService.enable;
+        message = "Shared resource enrollment requires the existing fixed Controller service.";
+      }
+    ];
+    aos.sandbox.resourceBank._imagePolicy = policy;
+    environment.etc."aos/resource-bootstrap-v1" = {
+      source = "${policy}/bootstrap.bin";
+      mode = "0444";
+    };
+  };
+}

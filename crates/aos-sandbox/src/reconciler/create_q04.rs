@@ -43,6 +43,9 @@ struct InstalledOriginalCreateQ04V1<'profile> {
     ledger: Option<Result<OriginalQ04ControllerLedgerV1, CreateQ04ErrorV1>>,
     preparation: Option<Result<Q04ControllerPreparationV1, CreateQ04ErrorV1>>,
     identity: Option<Result<Q04CutIdentityV1, CreateQ04ErrorV1>>,
+    resource_transfer: Option<Result<crate::controller_resource_reservation::Q04ResourceTransferV1, CreateQ04ErrorV1>>,
+    resource_posts: [Option<Result<(), CreateQ04ErrorV1>>; 7],
+    terminal: Option<Result<crate::controller_resource_reservation::Q04TerminalDispositionV1, CreateQ04ErrorV1>>,
     commits: [Option<Result<crate::journal::CommitResult, CreateQ04ErrorV1>>; 8],
     acknowledgements: [Vec<u8>; 4],
     signatures: [Option<Result<(), CreateQ04ErrorV1>>; 4],
@@ -59,6 +62,9 @@ impl<'profile> InstalledOriginalCreateQ04V1<'profile> {
             ledger: None,
             preparation: None,
             identity: None,
+            resource_transfer: None,
+            resource_posts: std::array::from_fn(|_| None),
+            terminal: None,
             commits: std::array::from_fn(|_| None),
             acknowledgements: std::array::from_fn(|_| Vec::new()),
             signatures: std::array::from_fn(|_| None),
@@ -110,6 +116,7 @@ impl ControllerQ04RecipesV1 {
         ledger: &'recipe OriginalQ04ControllerLedgerV1,
         identity: &'recipe Q04CutIdentityV1,
         decision: &'recipe Q04RootDecisionV1,
+        resource: Option<&'recipe crate::controller_resource_reservation::Q04ResourceTransferV1>,
     ) -> Result<Vec<crate::journal::ControllerQ04TransitionV1<'recipe>>, CreateQ04ErrorV1> {
         let mut transitions = Vec::new();
         transitions.try_reserve_exact(8)?;
@@ -122,7 +129,7 @@ impl ControllerQ04RecipesV1 {
                 _ => None,
             };
             transitions.push(crate::journal::ControllerQ04TransitionV1::recipe(
-                ledger, identity, phase, (phase.phase() >= 2).then_some(decision), gate,
+                ledger, identity, phase, (phase.phase() >= 2).then_some(decision), gate, resource,
             )?);
         }
         Ok(transitions)
@@ -136,9 +143,10 @@ impl ControllerQ04RecipesV1 {
         decision: &Q04RootDecisionV1,
         previous_decision: &Q04RootDecisionV1,
         committed: usize,
+        resource: Option<&crate::controller_resource_reservation::Q04ResourceTransferV1>,
     ) -> Result<(), CreateQ04ErrorV1> {
-        let current = self.transitions(ledger, identity, decision)?;
-        let previous = previous.transitions(ledger, identity, previous_decision)?;
+        let current = self.transitions(ledger, identity, decision, resource)?;
+        let previous = previous.transitions(ledger, identity, previous_decision, resource)?;
         if committed > 8 || current[..committed].iter().zip(&previous[..committed])
             .any(|(current, previous)| current.transaction() != previous.transaction())
         {
@@ -170,6 +178,7 @@ fn capture_controller_q04_commit(
     destination: &mut Option<Result<crate::journal::CommitResult, CreateQ04ErrorV1>>,
     first: &mut Option<CreateQ04ErrorV1>,
     postcheck: &mut Option<CreateQ04ErrorV1>,
+    resource_posts: &mut [Option<Result<(), CreateQ04ErrorV1>>; 7],
 ) -> Result<(), ()> {
     let prepared = (|| {
         if destination.is_some() || first.is_some() || postcheck.is_some() {
@@ -179,7 +188,18 @@ fn capture_controller_q04_commit(
         root.cache_terminal_loan(transition.identity())
     })();
     let original = retain_q04_data(first, prepared)?;
+    if let Some(resource) = transitions[index].resource_transfer() {
+        retain_q04_data(first, resource.retain_transaction(transitions[index].transaction()))?;
+    }
     *destination = Some(journal.commit_controller_q04_phase_v1(transitions, index, &original));
+    if let Some(resource) = transitions[index].resource_transfer() {
+        // Park every independent available post before projecting native success
+        // or refusal. A native error never suppresses these original debts.
+        resource_posts[0] = Some(resource.require_readback(journal)
+            .map_err(|error| CreateQ04ErrorV1::ResourceReservation(Box::new(error))));
+        resource_posts[1] = Some(journal.validate_held_protected_names().map_err(Into::into));
+        resource_posts[2] = Some(original.recheck());
+    }
 
     // Even an error result stays in its original slot. Readback/name/clock debt
     // is separate; none may replace a completed append with an ordinary error.
@@ -193,7 +213,9 @@ fn capture_controller_q04_commit(
     if let Err(cause) = checked {
         postcheck.get_or_insert(cause);
     }
-    if !matches!(destination, Some(Ok(_))) || postcheck.is_some() {
+    if !matches!(destination, Some(Ok(_))) || postcheck.is_some()
+        || resource_posts.iter().any(|post| matches!(post, Some(Err(_))))
+    {
         return Err(());
     }
     Ok(())
@@ -207,11 +229,12 @@ fn replace_controller_q04_suffix(
     previous_decision: &Q04RootDecisionV1,
     events: &Q04ControllerPhaseEventsV1,
     committed: usize,
+    resource: Option<&crate::controller_resource_reservation::Q04ResourceTransferV1>,
     first: &mut Option<CreateQ04ErrorV1>,
 ) -> Result<(), ()> {
     let next = retain_q04_data(first, ControllerQ04RecipesV1::encode(identity, decision, events))?;
     retain_q04_data(first, next.require_committed_prefix(
-        recipes, ledger, identity, decision, previous_decision, committed,
+        recipes, ledger, identity, decision, previous_decision, committed, resource,
     ))?;
     *recipes = next;
     Ok(())
@@ -295,9 +318,20 @@ pub fn continue_original_create_q04_policy_subgate_v1(
     operation: OperationId,
     scope: crate::controller::ControllerRequestScopeV1,
     plan: &super::EffectPlan,
+    bank: Option<&std::sync::Arc<std::sync::Mutex<crate::ControllerResourceBankOpeningV1>>>,
+    pending_reservation: &mut Option<crate::ProjectPreparationReservationAttemptV1>,
 ) -> Result<(), super::EffectFailure> {
     let mut resident = InstalledOriginalCreateQ04V1::park(profile);
-    let mut source = crate::lifecycle::protected_journal_join::OriginalQ04SourceOwnerCutV1::park(source);
+    // The one parent slot must be vacant before any selected preparation.
+    // A prior uncertain reservation is never discarded to rearm this path.
+    let Some(bank) = bank.filter(|_| pending_reservation.is_none()) else {
+        std::process::exit(1);
+    };
+    if resident.root.arm_resource_preparation(journal, bank, operation).is_err() {
+        std::process::exit(1);
+    }
+    let source_original = source;
+    let mut source = crate::lifecycle::protected_journal_join::OriginalQ04SourceOwnerCutV1::park(&mut *source_original);
     let mut cache = match initialization.begin_original_q04(cache_owner, physical) {
         Ok(cache) => cache,
         // The actual initializer, including its original result, is still
@@ -306,19 +340,24 @@ pub fn continue_original_create_q04_policy_subgate_v1(
         Err(_) => std::process::exit(1),
     };
     let InstalledOriginalCreateQ04V1 {
-        root, credentials, ledger, preparation, identity, commits, acknowledgements,
+        root, credentials, ledger, preparation, identity, resource_transfer, resource_posts, terminal, commits, acknowledgements,
         signatures, first, postcheck, complete,
     } = &mut resident;
 
     let continued = (|| -> Result<(), ()> {
         retain_q04_data(first, profile.recheck().map_err(Into::into))?;
         if credentials.capture().is_err() { return Err(()); }
-        *ledger = Some(OriginalQ04ControllerLedgerV1::capture(journal, operation, scope, plan));
-        let ledger = match ledger.as_ref() { Some(Ok(ledger)) => ledger, _ => return Err(()) };
-        cache.capture_prepare_readback(ledger.project)?;
+        let context = retain_q04_data(first, plan.public_mutation_context().map_err(Into::into))?
+            .ok_or(())?;
+        let project = context.project();
         let (generation, signer) = retain_q04_data(first,
             credentials.signer().ok_or(CreateQ04ErrorV1::ChangedCut))?;
-        source.connect_original_root(root, journal, ledger.project, generation, signer)?;
+        source.connect_original_root(root, journal, project, generation, signer)?;
+        retain_q04_data(first, root.require_resource_preparation())?;
+        *ledger = Some(OriginalQ04ControllerLedgerV1::capture(journal, operation, scope, plan));
+        let ledger = match ledger.as_ref() { Some(Ok(ledger)) => ledger, _ => return Err(()) };
+        if ledger.project != project { return Err(()); }
+        cache.capture_prepare_readback(ledger.project)?;
         root.receive_preview()?;
         if credentials.recheck().is_err() { return Err(()); }
         source.capture_controller_preparation(root, journal, ledger, &mut cache, credentials, preparation)?;
@@ -334,6 +373,13 @@ pub fn continue_original_create_q04_policy_subgate_v1(
         source.recheck_controller_preparation(root, journal, ledger, &mut cache, prepared)?;
         *identity = Some(root.form_finalized_identity(ledger, prepared));
         let identity = match identity.as_ref() { Some(Ok(identity)) => identity, _ => return Err(()) };
+        *resource_transfer = Some(crate::controller_resource_reservation::Q04ResourceTransferV1::prepare(
+            journal, root, ledger, prepared, identity,
+        ));
+        let resource = match resource_transfer.as_ref() {
+            Some(Ok(resource)) => Some(resource),
+            _ => return Err(()),
+        };
         let mut source_recipes = source.capture_recipes(ledger, identity)?;
         source.preflight_original_suffix(&source_recipes)?;
         let mut cache_recipes = cache.capture_transaction_recipes(ledger, identity)?;
@@ -359,11 +405,28 @@ pub fn continue_original_create_q04_policy_subgate_v1(
             q04_controller_capacity_events_v1(identity, pairs, state_next, authority_next))?;
         let mut recipes = retain_q04_data(first,
             ControllerQ04RecipesV1::encode(identity, &capacity_decision, &events))?;
-        let transitions = retain_q04_data(first, recipes.transitions(ledger, identity, &capacity_decision))?;
+        let transitions = retain_q04_data(first, recipes.transitions(ledger, identity, &capacity_decision, resource))?;
         retain_q04_data(first, journal.preflight_controller_q04_suffix_v1(&transitions))?;
         // Complete Controller/Source/Cache native suffixes and Root's own DATA
         // preflight have all passed before the first logical hold or Stage.
-        capture_controller_q04_commit(journal, &transitions, 0, root, &mut commits[0], first, postcheck)?;
+        let coheld = capture_controller_q04_commit(
+            journal, &transitions, 0, root, &mut commits[0], first, postcheck, resource_posts,
+        );
+        // Controller native Err cannot suppress the available lower owners.
+        // These are their existing closed comparisons, not new admission.
+        resource_posts[3] = Some(source.preflight_original_suffix(&source_recipes)
+            .map_err(|()| CreateQ04ErrorV1::ChangedCut));
+        let mut cache_metadata = [0; crate::policy_compiler::create_q04::PREHOLD_METADATA_BYTES];
+        resource_posts[4] = Some(cache.write_prepare_metadata(&mut cache_metadata)
+            .map_err(|()| CreateQ04ErrorV1::ChangedCut));
+        resource_posts[5] = Some(credentials.recheck().map_err(|_| CreateQ04ErrorV1::ChangedCut));
+        resource_posts[6] = Some(profile.recheck().map_err(Into::into));
+        let last_clock = match resource { Some(resource) => resource.capture_last_clock(), None => Err(()) };
+        if coheld.is_err() || last_clock.is_err()
+            || resource_posts.iter().any(|post| matches!(post, Some(Err(_))))
+        {
+            return Err(());
+        }
         let (generation, signer) = retain_q04_data(first,
             credentials.signer().ok_or(CreateQ04ErrorV1::ChangedCut))?;
         source.refresh_original_root(root, journal, ledger, &transitions, ledger.project, generation, signer)?;
@@ -390,9 +453,9 @@ pub fn continue_original_create_q04_policy_subgate_v1(
         drop(transitions);
         events.decision = decision.digest();
         events.consumed_gate = consumed_gate.digest();
-        replace_controller_q04_suffix(&mut recipes, ledger, identity, &decision, &capacity_decision, &events, 1, first)?;
-        let transitions = retain_q04_data(first, recipes.transitions(ledger, identity, &decision))?;
-        capture_controller_q04_commit(journal, &transitions, 1, root, &mut commits[1], first, postcheck)?;
+        replace_controller_q04_suffix(&mut recipes, ledger, identity, &decision, &capacity_decision, &events, 1, resource, first)?;
+        let transitions = retain_q04_data(first, recipes.transitions(ledger, identity, &decision, resource))?;
+        capture_controller_q04_commit(journal, &transitions, 1, root, &mut commits[1], first, postcheck, resource_posts)?;
         source.refresh_original_root(root, journal, ledger, &transitions, ledger.project, generation, signer)?;
 
         events.policy_ack = capture_controller_q04_acknowledgement(
@@ -401,10 +464,10 @@ pub fn continue_original_create_q04_policy_subgate_v1(
         )?;
         root.exchange_acknowledgement(identity, Q04AcknowledgementKindV1::Policy, &acknowledgements[0])?;
         drop(transitions);
-        replace_controller_q04_suffix(&mut recipes, ledger, identity, &decision, &decision, &events, 2, first)?;
-        let transitions = retain_q04_data(first, recipes.transitions(ledger, identity, &decision))?;
+        replace_controller_q04_suffix(&mut recipes, ledger, identity, &decision, &decision, &events, 2, resource, first)?;
+        let transitions = retain_q04_data(first, recipes.transitions(ledger, identity, &decision, resource))?;
         for index in 2..=3 {
-            capture_controller_q04_commit(journal, &transitions, index, root, &mut commits[index], first, postcheck)?;
+            capture_controller_q04_commit(journal, &transitions, index, root, &mut commits[index], first, postcheck, resource_posts)?;
             let (generation, signer) = retain_q04_data(first,
                 credentials.signer().ok_or(CreateQ04ErrorV1::ChangedCut))?;
             source.refresh_original_root(root, journal, ledger, &transitions, ledger.project, generation, signer)?;
@@ -427,9 +490,9 @@ pub fn continue_original_create_q04_policy_subgate_v1(
             credentials.signer().ok_or(CreateQ04ErrorV1::ChangedCut))?;
         source.refresh_original_root(root, journal, ledger, &transitions, ledger.project, generation, signer)?;
         drop(transitions);
-        replace_controller_q04_suffix(&mut recipes, ledger, identity, &decision, &decision, &events, 4, first)?;
-        let transitions = retain_q04_data(first, recipes.transitions(ledger, identity, &decision))?;
-        capture_controller_q04_commit(journal, &transitions, 4, root, &mut commits[4], first, postcheck)?;
+        replace_controller_q04_suffix(&mut recipes, ledger, identity, &decision, &decision, &events, 4, resource, first)?;
+        let transitions = retain_q04_data(first, recipes.transitions(ledger, identity, &decision, resource))?;
+        capture_controller_q04_commit(journal, &transitions, 4, root, &mut commits[4], first, postcheck, resource_posts)?;
         source.refresh_original_root(root, journal, ledger, &transitions, ledger.project, generation, signer)?;
 
         events.settlement_ack = capture_controller_q04_acknowledgement(
@@ -440,9 +503,9 @@ pub fn continue_original_create_q04_policy_subgate_v1(
         let root_six = retain_q04_data(first, root.observed_root_phase(identity, 2))?;
         events.settlement = root_six.digest();
         drop(transitions);
-        replace_controller_q04_suffix(&mut recipes, ledger, identity, &decision, &decision, &events, 5, first)?;
-        let transitions = retain_q04_data(first, recipes.transitions(ledger, identity, &decision))?;
-        capture_controller_q04_commit(journal, &transitions, 5, root, &mut commits[5], first, postcheck)?;
+        replace_controller_q04_suffix(&mut recipes, ledger, identity, &decision, &decision, &events, 5, resource, first)?;
+        let transitions = retain_q04_data(first, recipes.transitions(ledger, identity, &decision, resource))?;
+        capture_controller_q04_commit(journal, &transitions, 5, root, &mut commits[5], first, postcheck, resource_posts)?;
         let (generation, signer) = retain_q04_data(first,
             credentials.signer().ok_or(CreateQ04ErrorV1::ChangedCut))?;
         source.refresh_original_root(root, journal, ledger, &transitions, ledger.project, generation, signer)?;
@@ -464,9 +527,9 @@ pub fn continue_original_create_q04_policy_subgate_v1(
             status_three_bytes,
         ))?;
         drop(transitions);
-        replace_controller_q04_suffix(&mut recipes, ledger, identity, &decision, &decision, &events, 6, first)?;
-        let transitions = retain_q04_data(first, recipes.transitions(ledger, identity, &decision))?;
-        capture_controller_q04_commit(journal, &transitions, 6, root, &mut commits[6], first, postcheck)?;
+        replace_controller_q04_suffix(&mut recipes, ledger, identity, &decision, &decision, &events, 6, resource, first)?;
+        let transitions = retain_q04_data(first, recipes.transitions(ledger, identity, &decision, resource))?;
+        capture_controller_q04_commit(journal, &transitions, 6, root, &mut commits[6], first, postcheck, resource_posts)?;
         source.refresh_original_root(root, journal, ledger, &transitions, ledger.project, generation, signer)?;
 
         events.clearance_ack = capture_controller_q04_acknowledgement(
@@ -477,9 +540,9 @@ pub fn continue_original_create_q04_policy_subgate_v1(
         root.exchange_acknowledgement(identity, Q04AcknowledgementKindV1::Clearance, &acknowledgements[3])?;
         events.final_root = retain_q04_data(first, root.observed_root_phase(identity, 3))?.digest();
         drop(transitions);
-        replace_controller_q04_suffix(&mut recipes, ledger, identity, &decision, &decision, &events, 7, first)?;
-        let transitions = retain_q04_data(first, recipes.transitions(ledger, identity, &decision))?;
-        capture_controller_q04_commit(journal, &transitions, 7, root, &mut commits[7], first, postcheck)?;
+        replace_controller_q04_suffix(&mut recipes, ledger, identity, &decision, &decision, &events, 7, resource, first)?;
+        let transitions = retain_q04_data(first, recipes.transitions(ledger, identity, &decision, resource))?;
+        capture_controller_q04_commit(journal, &transitions, 7, root, &mut commits[7], first, postcheck, resource_posts)?;
         let (generation, signer) = retain_q04_data(first,
             credentials.signer().ok_or(CreateQ04ErrorV1::ChangedCut))?;
         source.refresh_original_root(root, journal, ledger, &transitions, ledger.project, generation, signer)?;
@@ -492,8 +555,74 @@ pub fn continue_original_create_q04_policy_subgate_v1(
         {
             return Err(());
         }
-        // No further fallible action may separate exact final clearance from
-        // returning the original parents. The generic Create remains pending.
+        // Prepare while all actual terminal originals and eight native results
+        // are still held. The event is charged history, not a disposal proof.
+        *terminal = Some(root.resource_terminal_observation(identity).and_then(|final_root| {
+            crate::controller_resource_reservation::Q04TerminalDispositionV1::prepare(
+                journal, &final_root, resource.ok_or(CreateQ04ErrorV1::ChangedCut)?,
+                &transitions, commits,
+            )
+        }));
+
+        // The same paid owner and ALL eight whole results move to the vacant
+        // parent before the later native retention CAS or any projection.
+        drop(transitions);
+        let original = match resource_transfer.take() { Some(Ok(original)) => original, _ => return Err(()) };
+        let native = std::mem::replace(commits, std::array::from_fn(|_| None));
+        let posts = std::mem::replace(resource_posts, std::array::from_fn(|_| None));
+        let disposition = terminal.take().ok_or(())?;
+        *pending_reservation = Some(retain_q04_data(first, root.take_resource_preparation())?);
+        let reservation = pending_reservation.as_mut().ok_or(())?;
+        let retained = reservation.retain_cleared_child(original, native, posts, disposition);
+        reservation.terminal_preparation(retained)?;
+
+        // Returning these finished short loans does not dispose their parent
+        // Journals/physical owners. They stay charged at full C. No bank lock
+        // spans an owner recheck, and native Err cannot suppress later posts.
+        drop(source);
+        drop(cache);
+        // Park each authentic borrowing error before the next observation.
+        // Missing borrowers remain negative, while unrelated posts still run.
+        let physical_original = match physical.held_snapshot() {
+            Ok(original) => {
+                reservation.terminal_borrow(0, Ok(()))?;
+                Some(original)
+            }
+            Err(error) => {
+                reservation.terminal_borrow(0, Err(error.into()))?;
+                None
+            }
+        };
+        let final_root = match root.resource_terminal_observation(identity) {
+            Ok(original) => {
+                reservation.terminal_borrow(1, Ok(()))?;
+                Some(original)
+            }
+            Err(error) => {
+                reservation.terminal_borrow(1, Err(error))?;
+                None
+            }
+        };
+        reservation.append_terminal(journal, bank, profile);
+        let source_post = (|| -> Result<(), CreateQ04ErrorV1> {
+            source_recipes.require_named_owner(source_original)?;
+            source_original.journal().readback_source_q04_original_v1(&source_recipes, 3)?;
+            source_recipes.require_named_owner(source_original).map_err(Into::into)
+        })();
+        reservation.terminal_post(0, source_post)?;
+        reservation.terminal_post(1, initialization.recheck(cache_owner)
+            .map_err(|_| CreateQ04ErrorV1::ChangedCut))?;
+        reservation.terminal_post(2, match physical_original.as_ref() {
+            Some(original) => original.revalidate().map_err(Into::into),
+            None => Err(CreateQ04ErrorV1::ChangedCut),
+        })?;
+        reservation.terminal_post(3, match final_root.as_ref() {
+            Some(original) => original.recheck(),
+            None => Err(CreateQ04ErrorV1::ChangedCut),
+        })?;
+        reservation.terminal_post(4, credentials.recheck()
+            .map_err(|_| CreateQ04ErrorV1::ChangedCut))?;
+        reservation.finish_terminal_posts(profile)?;
         *complete = true;
         Ok(())
     })();
@@ -524,6 +653,7 @@ pub(crate) struct OriginalQ04ControllerLedgerV1 {
     original_next: u64,
     original_names: crate::journal::ProtectedJournalNamesV1,
     source: crate::policy_compiler::CurrentCreateProjectPolicySourceV1,
+    specification: aos_sandbox_core::ObjectDescriptor,
 }
 
 impl OriginalQ04ControllerLedgerV1 {
@@ -607,6 +737,19 @@ impl OriginalQ04ControllerLedgerV1 {
             return Err(ReconcilerError::CorruptLedger("Q04 original Create/Desired changed").into());
         }
 
+        let specification = create.specification.as_option()
+            .ok_or(CreateQ04ErrorV1::ChangedCut)?;
+        crate::controller_query::registry::validate_descriptor_media(
+            specification, "application/vnd.aos.sandbox.spec.v1+cbor",
+        ).map_err(|_| CreateQ04ErrorV1::ChangedCut)?;
+        let specification = aos_sandbox_core::ObjectDescriptor::new(
+            aos_sandbox_core::MediaType::new(specification.media_type.clone())
+                .map_err(|_| CreateQ04ErrorV1::ChangedCut)?,
+            ObjectDigest::from_bytes(specification.sha256.as_slice().try_into()
+                .map_err(|_| CreateQ04ErrorV1::ChangedCut)?),
+            specification.encoded_size,
+        );
+
         let before_rows = crate::journal::q04_controller_before_rows_digest_v1(
             operation, sandbox_bytes, operation_bytes, desired_bytes, effect_bytes,
         )?;
@@ -627,6 +770,7 @@ impl OriginalQ04ControllerLedgerV1 {
             original_next,
             original_names,
             source,
+            specification,
         };
         retained.require_original(journal)?;
         journal.require_q04_native_recipes_v1(&[])?;
@@ -635,6 +779,10 @@ impl OriginalQ04ControllerLedgerV1 {
         }
         journal.validate_held_protected_names()?;
         Ok(retained)
+    }
+
+    pub(crate) fn specification(&self) -> &aos_sandbox_core::ObjectDescriptor {
+        &self.specification
     }
 
     pub(crate) fn before_rows(&self) -> ObjectDigest {

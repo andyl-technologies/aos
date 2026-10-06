@@ -558,6 +558,7 @@ macro_rules! finish {
             cgroup: $cgroup,
             tpm_image: ($capture).tpm_image,
             nix_delivery: $nix,
+            resource_delivery: ($capture).resource_delivery,
         };
         retained.recheck()?;
         Ok(Some(retained))
@@ -612,6 +613,7 @@ macro_rules! selected_recipe {
             direct!($mode, "delivery", observe_delivery(
                 profile_file.path(), ($capture).tpm_image,
                 nix_delivery.as_ref().map(|file| file.path()),
+                ($capture).resource_delivery,
             )));
         phase!($mode, $phase, "fragment");
         fragment!($mode, $storage, observed, fragment);
@@ -716,6 +718,7 @@ impl AdmissionStorage {
                     process,
                     cgroup,
                     tpm_image: self.capture.tpm_image,
+                    resource_delivery: self.capture.resource_delivery,
                     nix_delivery,
                 });
                 Ok(())

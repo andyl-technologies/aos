@@ -414,6 +414,8 @@ pub enum RecordNamespace {
     ControllerConsumerReadAttempt = 75,
     /// Purpose-owned original offline paired Nix provisioning history.
     NixOfflineProvisioning = 76,
+    /// The Controller's closed native shared resource account and claim ledger.
+    ControllerResourceReservation = 80,
 }
 
 impl RecordNamespace {
@@ -495,6 +497,7 @@ impl RecordNamespace {
             74 => Ok(Self::ControllerStorageOutputReserveAttempt),
             75 => Ok(Self::ControllerConsumerReadAttempt),
             76 => Ok(Self::NixOfflineProvisioning),
+            80 => Ok(Self::ControllerResourceReservation),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -1821,6 +1824,283 @@ struct ProtectedJournalLocation {
     original_compaction_selection: runtime_deployment_history::OriginalCompactionSelectionV1,
 }
 
+// A closed Controller constructor keeps partial originals in its parent.
+// This is not a Journal/FD factory and does not issue authority or a payer.
+pub(crate) struct ControllerJournalOpenOriginalsV1 {
+    ancestors: Vec<File>,
+    directory: Option<File>,
+    lock: Option<File>,
+    file: Option<File>,
+    protected: Option<ProtectedJournalLocation>,
+    lock_open: Option<Result<(), JournalError>>,
+    lock_claim: Option<Result<(), JournalError>>,
+    compaction: Option<Result<(), JournalError>>,
+    file_open: Option<Result<(), JournalError>>,
+    directory_sync: Option<Result<(), JournalError>>,
+    replay: ControllerOpenedReplayV1,
+    returned: Option<Result<RecoveryReport, JournalError>>,
+    journal: Option<Journal>,
+    attempted: bool,
+}
+
+impl ControllerJournalOpenOriginalsV1 {
+    pub(crate) const fn new() -> Self {
+        Self {
+            ancestors: Vec::new(), directory: None, lock: None, file: None,
+            protected: None, lock_open: None, lock_claim: None, compaction: None,
+            file_open: None, directory_sync: None, replay: ControllerOpenedReplayV1::new(),
+            returned: None, journal: None, attempted: false,
+        }
+    }
+
+    pub(crate) fn open_once(
+        &mut self,
+        path: &Path,
+        name: &str,
+        limits: JournalLimits,
+        uid: u32,
+    ) {
+        if self.attempted {
+            return;
+        }
+        self.attempted = true;
+        self.returned = Some(self.open_inner(path, name, limits, uid));
+    }
+
+    fn open_inner(
+        &mut self,
+        path: &Path,
+        name: &str,
+        limits: JournalLimits,
+        uid: u32,
+    ) -> Result<RecoveryReport, JournalError> {
+        self.directory = Some(resolve_protected_directory_from_root_with_retention(
+            path, uid, Some(&mut self.ancestors),
+        )?);
+        validate_limits(limits)?;
+        if name.len() > MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        validate_basename(name)?;
+        let directory = self.directory.as_ref().ok_or(JournalError::ProtectedBoundary)?;
+        validate_protected_fd(directory, uid, FileType::Directory, Mode::RWXU)?;
+        let lock_name = format!("{name}.lock");
+        self.lock_open = Some(open_protected_file_into(
+            directory, &lock_name, uid, true, false, false, &mut self.lock,
+        ));
+        require_controller_open_step(&self.lock_open)?;
+        let lock = self.lock.as_ref().ok_or(JournalError::ProtectedBoundary)?;
+        self.lock_claim = Some(flock(lock, FlockOperation::NonBlockingLockExclusive)
+            .map_err(|error| {
+                if error == rustix::io::Errno::WOULDBLOCK {
+                    JournalError::AlreadyLocked
+                } else {
+                    rustix_io(error)
+                }
+            }));
+        require_controller_open_step(&self.lock_claim)?;
+        self.compaction = Some(remove_stale_protected_compaction(directory, name));
+        require_controller_open_step(&self.compaction)?;
+        self.file_open = Some(open_protected_file_into(
+            directory, name, uid, true, false, false, &mut self.file,
+        ));
+        require_controller_open_step(&self.file_open)?;
+        self.directory_sync = Some(fsync(directory).map_err(rustix_io));
+        require_controller_open_step(&self.directory_sync)?;
+
+        let protected_name = name.to_owned();
+        #[cfg(target_os = "linux")]
+        let selection = runtime_deployment_history::OriginalCompactionSelectionV1::capture(path, name);
+        self.protected = Some(ProtectedJournalLocation {
+            directory: self.directory.take().ok_or(JournalError::ProtectedBoundary)?,
+            name: protected_name,
+            expected_uid: uid,
+            #[cfg(target_os = "linux")]
+            original_compaction_selection:
+                selection,
+        });
+        let file = self.file.as_mut().ok_or(JournalError::ProtectedBoundary)?;
+        let (_, report) = prepare_opened_replay(
+            file, limits, true, OpenedReplayDestinationV1::Controller(&mut self.replay),
+        )?;
+
+        // Every fallible native/replay operation precedes these infallible
+        // moves. Partial files/replay remain parked on every earlier Err.
+        let opened_path = PathBuf::from(name);
+        let authority = Arc::new(JournalAuthorityInstance);
+        let originals = (
+            self.file.take(), self.lock.take(), self.protected.take(), self.replay.replay.take(),
+        );
+        let (file, lock, protected, replay) = match originals {
+            (Some(file), Some(lock), Some(protected), Some(Ok(replay))) => {
+                (file, lock, protected, replay)
+            }
+            (file, lock, protected, replay) => {
+                self.file = file;
+                self.lock = lock;
+                self.protected = protected;
+                self.replay.replay = replay;
+                return Err(JournalError::ProtectedBoundary);
+            }
+        };
+        self.journal = Some(journal_from_original_replay!(
+            opened_path, file, lock, limits, Some(protected), replay, authority
+        ));
+        Ok(report)
+    }
+
+    pub(crate) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.lock_open.as_ref().and_then(|result| result.as_ref().err())
+            .map(|error| error as &(dyn std::error::Error + 'static))
+            .or_else(|| self.lock_claim.as_ref().and_then(|result| result.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.compaction.as_ref().and_then(|result| result.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.file_open.as_ref().and_then(|result| result.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.directory_sync.as_ref().and_then(|result| result.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.replay.failure())
+            .or_else(|| self.returned.as_ref().and_then(|result| result.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+    }
+
+    pub(crate) fn journal_mut(&mut self) -> Option<&mut Journal> {
+        if !matches!(self.returned, Some(Ok(_))) {
+            return None;
+        }
+        self.journal.as_mut()
+    }
+
+    pub(crate) fn take_journal(&mut self) -> Option<Journal> {
+        if !matches!(self.returned, Some(Ok(_))) {
+            return None;
+        }
+        self.journal.take()
+    }
+}
+
+fn require_controller_open_step(
+    result: &Option<Result<(), JournalError>>,
+) -> Result<(), JournalError> {
+    if matches!(result, Some(Ok(()))) {
+        Ok(())
+    } else {
+        // The genuine Err stays in its exact native stage, not this facade.
+        Err(JournalError::ProtectedBoundary)
+    }
+}
+
+struct ControllerOpenedReplayV1 {
+    metadata: Option<Result<fs::Metadata, io::Error>>,
+    replay: Option<Result<ReplayState, JournalError>>,
+    truncate: Option<Result<(), io::Error>>,
+    sync: Option<Result<(), io::Error>>,
+    seek: Option<Result<u64, io::Error>>,
+}
+
+impl ControllerOpenedReplayV1 {
+    const fn new() -> Self {
+        Self { metadata: None, replay: None, truncate: None, sync: None, seek: None }
+    }
+
+    fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.metadata.as_ref().and_then(|result| result.as_ref().err())
+            .map(|error| error as &(dyn std::error::Error + 'static))
+            .or_else(|| self.replay.as_ref().and_then(|result| result.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.truncate.as_ref().and_then(|result| result.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.sync.as_ref().and_then(|result| result.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.seek.as_ref().and_then(|result| result.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+    }
+}
+
+enum OpenedReplayDestinationV1<'owner> {
+    Ordinary,
+    Controller(&'owner mut ControllerOpenedReplayV1),
+}
+
+// One replay/repair recipe. Only the closed Controller arm parks its whole
+// native results; the ordinary arm expands to the former local expressions.
+fn prepare_opened_replay(
+    file: &mut File,
+    limits: JournalLimits,
+    repair_tail: bool,
+    destination: OpenedReplayDestinationV1<'_>,
+) -> Result<(Option<ReplayState>, RecoveryReport), JournalError> {
+    let (metadata_slot, replay_slot, truncate_slot, sync_slot, seek_slot) = match destination {
+        OpenedReplayDestinationV1::Ordinary => (None, None, None, None, None),
+        OpenedReplayDestinationV1::Controller(originals) => (
+            Some(&mut originals.metadata), Some(&mut originals.replay),
+            Some(&mut originals.truncate), Some(&mut originals.sync), Some(&mut originals.seek),
+        ),
+    };
+    let length = match metadata_slot {
+        None => file.metadata()?.len(),
+        Some(slot) => {
+            *slot = Some(file.metadata());
+            match slot.as_ref() {
+                Some(Ok(metadata)) => metadata.len(),
+                _ => return Err(JournalError::ProtectedBoundary),
+            }
+        }
+    };
+    if length > limits.maximum_journal_bytes {
+        return Err(JournalError::JournalTooLarge);
+    }
+    let mut ordinary_replay = None;
+    let replay = match replay_slot {
+        None => {
+            ordinary_replay = Some(replay(file, limits)?);
+            ordinary_replay.as_ref().ok_or(JournalError::ProtectedBoundary)?
+        }
+        Some(slot) => {
+            *slot = Some(replay(file, limits));
+            match slot.as_ref() {
+                Some(Ok(replay)) => replay,
+                _ => return Err(JournalError::ProtectedBoundary),
+            }
+        }
+    };
+    let truncated_bytes = length.saturating_sub(replay.durable_end);
+
+    // Native IO results have Copy successes, but actual owning Errs remain
+    // in the selected destination before classification or another operation.
+    macro_rules! native {
+        ($slot:expr, $operation:expr) => {
+            match $slot {
+                None => $operation?,
+                Some(slot) => {
+                    *slot = Some($operation);
+                    match slot.as_ref() {
+                        Some(Ok(value)) => *value,
+                        _ => return Err(JournalError::ProtectedBoundary),
+                    }
+                }
+            }
+        };
+    }
+    if truncated_bytes > 0 {
+        if !repair_tail {
+            return Err(JournalError::MalformedTransaction(
+                "read-only journal has an uncommitted tail",
+            ));
+        }
+        native!(truncate_slot, file.set_len(replay.durable_end));
+        native!(sync_slot, file.sync_data());
+    }
+    native!(seek_slot, file.seek(SeekFrom::End(0)));
+    let report = RecoveryReport {
+        committed_transactions: replay.committed_transactions,
+        committed_records: replay.committed_records,
+        truncated_bytes,
+    };
+    Ok((ordinary_replay, report))
+}
+
 #[derive(Clone, Copy)]
 enum ProtectedOwnerPolicy {
     Root,
@@ -2581,27 +2861,10 @@ impl Journal {
         protected: Option<ProtectedJournalLocation>,
         repair_tail: bool,
     ) -> Result<(Self, RecoveryReport), JournalError> {
-        let length = file.metadata()?.len();
-        if length > limits.maximum_journal_bytes {
-            return Err(JournalError::JournalTooLarge);
-        }
-        let replay = replay(&mut file, limits)?;
-        let truncated_bytes = length.saturating_sub(replay.durable_end);
-        if truncated_bytes > 0 {
-            if !repair_tail {
-                return Err(JournalError::MalformedTransaction(
-                    "read-only journal has an uncommitted tail",
-                ));
-            }
-            file.set_len(replay.durable_end)?;
-            file.sync_data()?;
-        }
-        file.seek(SeekFrom::End(0))?;
-        let report = RecoveryReport {
-            committed_transactions: replay.committed_transactions,
-            committed_records: replay.committed_records,
-            truncated_bytes,
-        };
+        let (replay, report) = prepare_opened_replay(
+            &mut file, limits, repair_tail, OpenedReplayDestinationV1::Ordinary,
+        )?;
+        let replay = replay.ok_or(JournalError::ProtectedBoundary)?;
         Ok((
             journal_from_original_replay!(
                 path, file, lock, limits, protected, replay,
@@ -2710,6 +2973,7 @@ impl Journal {
         self.ensure_protected_authority()?;
         if namespace == RecordNamespace::MountSourceAcquisition
             || namespace == RecordNamespace::NixOfflineProvisioning
+            || namespace == RecordNamespace::ControllerResourceReservation
         {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
@@ -3688,6 +3952,8 @@ impl Journal {
             #[cfg(target_os = "linux")]
             q04_transition,
             first_successor, None,
+            #[cfg(target_os = "linux")]
+            None,
         )
     }
 
@@ -3745,6 +4011,7 @@ impl Journal {
             RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
             None, None, None,
             Some(ProjectNativeTransitionV3::Genesis(Phase::SourceAppend(root.record().project()), Cut::SourcePrepared(root))),
+            None,
         )
     }
 
@@ -3766,6 +4033,7 @@ impl Journal {
             RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
             None, None, None,
             Some(ProjectNativeTransitionV3::Genesis(Phase::SourceAck(root.floor().project()), Cut::SourceAnchored(root))),
+            None,
         )
     }
 
@@ -3789,6 +4057,7 @@ impl Journal {
             source_tree_genesis::SourceGenesisTransitionV1::None,
             RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
             None, None, None, Some(ProjectNativeTransitionV3::Genesis(phase, Cut::SourceAnchored(root))),
+            None,
         )
     }
 
@@ -3806,6 +4075,7 @@ impl Journal {
             RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
             Some(transition), None, None,
             Some(ProjectNativeTransitionV3::Issuance { transition, completed }),
+            None,
         )
     }
 
@@ -3847,6 +4117,7 @@ impl Journal {
             RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
             None, None, None, Some(ProjectNativeTransitionV3::Genesis(source_tree_successor::ProjectGenesisNativePhaseV3::RootPrepared(project),
                 source_tree_successor::ProjectGenesisNativeCutV3::RootServer { original, deadline })),
+            None,
         )?;
         Ok((result, GlobalCapacityReservationV1 {
             request: prepared.request, admission_transaction_id: prepared.admission_transaction_id,
@@ -3890,6 +4161,46 @@ impl Journal {
             RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
             None, None, None, Some(ProjectNativeTransitionV3::Genesis(source_tree_successor::ProjectGenesisNativePhaseV3::RootAnchor(project),
                 source_tree_successor::ProjectGenesisNativeCutV3::RootServer { original, deadline })),
+            None,
+        )
+    }
+
+    /// Borrows the complete bank replay cut from the healthy original writer.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn controller_resource_state_v1(
+        &self,
+    ) -> Result<&BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>, JournalError> {
+        self.validate_held_protected_names()?;
+        Ok(&self.state)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn controller_resource_contains_transaction_v1(
+        &self,
+        transaction_id: &[u8; 16],
+    ) -> Result<bool, JournalError> {
+        self.validate_held_protected_names()?;
+        Ok(self.transaction_ids.contains(transaction_id))
+    }
+
+    /// Appends only the exact private bank CAS through the ordinary engine.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn commit_controller_resource_transition_v1(
+        &mut self,
+        transaction: &JournalTransaction,
+        original: &crate::controller_resource_reservation::Transition,
+    ) -> Result<CommitResult, JournalError> {
+        self.validate_held_protected_names()?;
+        self.commit_with_project_genesis_transition_v3(
+            transaction, None, false, false, false, false, false,
+            SourceProjectAdmissionTransition::None,
+            controller_source_genesis::ControllerSourceGenesisTransition::None,
+            source_tree_genesis::SourceGenesisTransitionV1::None,
+            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
+            None,
+            #[cfg(target_os = "linux")]
+            None,
+            None, None, Some(original),
         )
     }
 
@@ -3914,6 +4225,8 @@ impl Journal {
         q04_transition: Option<Q04JournalTransitionV1<'_>>,
         first_successor: Option<FirstSourceSuccessorNativePhaseV2>,
         project_genesis: Option<ProjectNativeTransitionV3<'_, '_>>,
+        #[cfg(target_os = "linux")]
+        resource_reservation: Option<&crate::controller_resource_reservation::Transition>,
     ) -> Result<CommitResult, JournalError> {
         #[cfg(target_os = "linux")]
         if matches!(root_local_edge, Some(RootOwnerEdge::NixOfflineClosureData)) {
@@ -3921,6 +4234,16 @@ impl Journal {
             return Err(JournalError::ProtectedBoundary);
         }
         self.ensure_healthy()?;
+        #[cfg(target_os = "linux")]
+        crate::controller_resource_reservation::require_transition(
+            &self.state, transaction, resource_reservation,
+        )?;
+        #[cfg(not(target_os = "linux"))]
+        if transaction.records().iter().any(|record| {
+            record.namespace() == RecordNamespace::ControllerResourceReservation
+        }) {
+            return Err(JournalError::ProtectedBoundary);
+        }
         let selected_successor = first_successor.is_some_and(|phase| phase != phase.canonical());
         #[cfg(target_os = "linux")]
         if selected_successor != matches!(&project_genesis, Some(ProjectNativeTransitionV3::FirstSuccessor(_))) {
@@ -4232,6 +4555,11 @@ impl Journal {
             let phase = first_successor.ok_or(JournalError::ProtectedBoundary)?;
             original.final_crossing(self, transaction, phase)
                 .map_err(|cause| JournalError::ProjectGenesisOriginal(Box::new(cause)))?;
+        }
+
+        #[cfg(target_os = "linux")]
+        if let Some(original) = resource_reservation {
+            original.final_crossing()?;
         }
 
         let durable_bytes = match append_and_sync(&mut self.file, &frames) {
@@ -4846,6 +5174,13 @@ impl Journal {
         source_project_admission_challenge::require_no_compaction(&self.state)?;
         controller_source_genesis::require_no_compaction(&self.state)?;
         controller_source_successor_issuance::require_no_compaction(&self.state)?;
+        // The bank retains exact native transaction membership and uncertain
+        // claims. Generic state-only compaction is not its recovery barrier.
+        if self.state.keys().any(|(namespace, _)| {
+            *namespace == RecordNamespace::ControllerResourceReservation
+        }) {
+            return Err(JournalError::ProtectedBoundary);
+        }
         cache_policy_hold::require_valid_compaction(self)?;
         host_settlement_admission_gate::require_no_compaction(&self.state)?;
         host_currentness_fence::require_no_compaction(&self.state)?;
@@ -7078,6 +7413,7 @@ struct Q04NativeRecipeAuditV1<'recipes> {
     previous_end: u64,
     previous_next: u64,
     original_next: Option<u64>,
+    bank_history: Option<crate::controller_resource_reservation::ResourceNativeHistoryV1<'recipes>>,
 }
 
 #[cfg(target_os = "linux")]
@@ -7090,6 +7426,9 @@ impl Q04NativeRecipeAuditV1<'_> {
         begin_offset: u64,
         end_offset: u64,
     ) -> Result<(), JournalError> {
+        if let Some(history) = self.bank_history.as_mut() {
+            history.observe(transaction, begin_sequence, commit_sequence, begin_offset, end_offset)?;
+        }
         let next = commit_sequence.checked_add(1).ok_or(JournalError::SequenceExhausted)?;
         let frames = u64::try_from(transaction.records().len())
             .map_err(|_| JournalError::LimitExceeded("Q04 native record count"))?
@@ -7314,6 +7653,26 @@ impl Journal {
         self.require_q04_native_recipe_view_v1(PreflightTransactionViewV1::Ordinary(recipes))
     }
 
+    // Closed bank observation reuses the same native parser and complete
+    // replay/name bookends. Terminal rows alone cannot prove their origins.
+    pub(crate) fn require_controller_resource_history_v1(
+        &self,
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        self.require_q04_native_recipes_v1(&[])
+    }
+
+    pub(crate) fn require_controller_resource_q04_prefix_v1(
+        &self,
+        recipes: &[ControllerQ04TransitionV1<'_>],
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        let first = recipes.first()
+            .ok_or(crate::policy_compiler::create_q04::CreateQ04ErrorV1::ChangedCut)?;
+        self.require_q04_native_recipe_view_at_original_v1(
+            PreflightTransactionViewV1::ControllerQ04(recipes),
+            Some(first.ledger().original_next()),
+        )
+    }
+
     fn require_q04_native_recipe_view_v1(
         &self,
         recipes: PreflightTransactionViewV1<'_>,
@@ -7366,6 +7725,7 @@ impl Journal {
                 previous_end: 0,
                 previous_next: 1,
                 original_next,
+                bank_history: crate::controller_resource_reservation::ResourceNativeHistoryV1::new(&self.state),
             };
             let mut reader = runtime_deployment_history::ReadAtCursorV1::new(
                 &self.file, witness.file.size,
@@ -7374,6 +7734,9 @@ impl Journal {
                 &mut reader, self.limits, None,
                 Some(DeploymentHistoryObserverV1::Q04(&mut history)),
             )?;
+            if let Some(history) = history.bank_history.as_ref() {
+                history.finish(&replayed.transaction_ids, self.protected_writer_physical_names_v1()?)?;
+            }
             if history.matched != recipe_count
                 || (recipe_count == 0 && original_next.is_some_and(|next| next != self.next_sequence))
                 || history.previous_end != witness.file.size
@@ -7492,13 +7855,15 @@ impl Journal {
         // The caller parks this whole outcome before any fallible readback.
         // In particular, an acknowledged append is not replaced by a later
         // currentness error and its original native position remains owned.
-        self.commit_with_cache_gate_and_q04_transition(
+        let resource = transition.resource_transfer().map(|resource| resource.crossing());
+        self.commit_with_project_genesis_transition_v3(
             transition.transaction(), None, false, false, false, false, false,
             SourceProjectAdmissionTransition::None,
             controller_source_genesis::ControllerSourceGenesisTransition::None,
             source_tree_genesis::SourceGenesisTransitionV1::None,
             RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
             None, Some(Q04JournalTransitionV1::Controller(transition, Some(root))),
+            None, None, resource.as_ref(),
         ).map_err(Into::into)
     }
 
@@ -8840,6 +9205,14 @@ fn resolve_protected_directory_from_root(
     path: &Path,
     expected_uid: u32,
 ) -> Result<File, JournalError> {
+    resolve_protected_directory_from_root_with_retention(path, expected_uid, None)
+}
+
+fn resolve_protected_directory_from_root_with_retention(
+    path: &Path,
+    expected_uid: u32,
+    retained: Option<&mut Vec<File>>,
+) -> Result<File, JournalError> {
     let bytes = path.as_os_str().as_bytes();
     if bytes.first() != Some(&b'/') {
         return Err(JournalError::ProtectedBoundary);
@@ -8859,6 +9232,19 @@ fn resolve_protected_directory_from_root(
         return Err(JournalError::ProtectedBoundary);
     }
 
+    if let Some(ancestors) = retained.as_ref() {
+        if !ancestors.is_empty() {
+            return Err(JournalError::ProtectedBoundary);
+        }
+    }
+    let retained = match retained {
+        Some(ancestors) => {
+            ancestors.try_reserve_exact(components.clone().count().saturating_add(1))
+                .map_err(io::Error::other)?;
+            Some(ancestors)
+        }
+        None => None,
+    };
     let root: File = openat2(
         CWD,
         "/",
@@ -8868,19 +9254,73 @@ fn resolve_protected_directory_from_root(
     )
     .map_err(protected_open_error)?
     .into();
-    traverse_protected_directory(root, components, expected_uid)
+    match retained {
+        None => traverse_protected_directory(root, components, expected_uid),
+        Some(ancestors) => {
+            // Capacity was reserved before the first descriptor exists.
+            ancestors.push(root);
+            traverse_protected_directory_originals(
+                ControllerDirectoryTraversalV1::Retained(ancestors), components, expected_uid,
+            )
+        }
+    }
 }
 
 fn traverse_protected_directory<'a>(
-    mut directory: File,
+    directory: File,
+    components: impl IntoIterator<Item = &'a [u8]>,
+    expected_uid: u32,
+) -> Result<File, JournalError> {
+    traverse_protected_directory_originals(
+        ControllerDirectoryTraversalV1::Ordinary(directory), components, expected_uid,
+    )
+}
+
+enum ControllerDirectoryTraversalV1<'owner> {
+    Ordinary(File),
+    Retained(&'owner mut Vec<File>),
+}
+
+impl ControllerDirectoryTraversalV1<'_> {
+    fn current(&self) -> Result<&File, JournalError> {
+        match self {
+            Self::Ordinary(directory) => Ok(directory),
+            Self::Retained(ancestors) => ancestors.last().ok_or(JournalError::ProtectedBoundary),
+        }
+    }
+
+    fn admit_child(&mut self, child: File, ancestry: &mut ProtectedAncestry) -> Result<(), JournalError> {
+        match self {
+            Self::Ordinary(directory) => {
+                ancestry.admit(&child)?;
+                *directory = child;
+                Ok(())
+            }
+            Self::Retained(ancestors) => {
+                ancestors.push(child);
+                ancestry.admit(ancestors.last().ok_or(JournalError::ProtectedBoundary)?)
+            }
+        }
+    }
+
+    fn finish(self) -> Result<File, JournalError> {
+        match self {
+            Self::Ordinary(directory) => Ok(directory),
+            Self::Retained(ancestors) => ancestors.pop().ok_or(JournalError::ProtectedBoundary),
+        }
+    }
+}
+
+fn traverse_protected_directory_originals<'a>(
+    mut directory: ControllerDirectoryTraversalV1<'_>,
     components: impl IntoIterator<Item = &'a [u8]>,
     expected_uid: u32,
 ) -> Result<File, JournalError> {
     let mut ancestry = ProtectedAncestry::new(expected_uid);
-    ancestry.admit(&directory)?;
+    ancestry.admit(directory.current()?)?;
     for component in components {
         let child: File = openat2(
-            &directory,
+            directory.current()?,
             OsStr::from_bytes(component),
             protected_directory_flags(),
             Mode::empty(),
@@ -8888,11 +9328,10 @@ fn traverse_protected_directory<'a>(
         )
         .map_err(protected_open_error)?
         .into();
-        ancestry.admit(&child)?;
-        directory = child;
+        directory.admit_child(child, &mut ancestry)?;
     }
-    validate_protected_fd(&directory, expected_uid, FileType::Directory, Mode::RWXU)?;
-    Ok(directory)
+    validate_protected_fd(directory.current()?, expected_uid, FileType::Directory, Mode::RWXU)?;
+    directory.finish()
 }
 
 /// Tracks the one-way transition from administrative to service-owned ancestry.
@@ -10162,7 +10601,13 @@ mod tests {
             assert_eq!(code, u8::try_from(index + 1).unwrap());
             assert_eq!(RecordNamespace::from_byte(code).unwrap(), namespace);
         }
-        for code in [0, 255] {
+        assert_eq!(RecordNamespace::ControllerResourceReservation as u8, 80);
+        assert_eq!(
+            RecordNamespace::from_byte(80).unwrap(),
+            RecordNamespace::ControllerResourceReservation,
+        );
+
+        for code in [0, 77, 78, 79, 255] {
             assert!(RecordNamespace::from_byte(code).is_err());
         }
     }

@@ -897,17 +897,142 @@ fn run_retained_controller(
     complete!(Mount);
 
     begin!(Controller);
-    // The unchanged consuming constructor still has a pre-return custody gap
-    // for these attachment inputs and its own Journal/executor locals.
-    originals.controller = Some(checked!(open_controller(
-        &configuration,
-        node_id,
-        Arc::clone(required!(originals.sessions.as_ref())),
-        required!(parent.host.take()),
-        required!(parent.mount.take()),
-        required!(originals.nix_selector.as_ref()).clone(),
-        Some(Arc::clone(required!(originals.snapshot_ownership.as_ref()))),
-    )));
+    // The actual selected capture transfers its originals into an already
+    // prepared parent before either attachment identity can leave custody.
+    parent.resource_opening = startup.take_resource_opening();
+    if let Some(opening) = parent.resource_opening.as_mut() {
+        let profile = required!(required!(originals.profile.as_ref()).as_deref());
+        if opening.admit_preopen_once(profile).is_err() {
+            worker.terminate(ControllerResidentCauseV1::Closed("original bootstrap preopening refused"));
+        }
+        {
+            let loan = match opening.borrow_preopen(profile) {
+                Ok(loan) => loan,
+                Err(_) => worker.terminate(ControllerResidentCauseV1::Closed("original bootstrap loan unavailable")),
+            };
+            parent.construction = Some((|| {
+                parent.controller_journal.open_once(
+                    &loan, &configuration.state_directory, configuration.uid, node_id,
+                ).map_err(|_| ControllerRuntimeError::Journal(JournalError::ProtectedBoundary))?;
+                let scope = ControllerRequestScopeV1::new(ObjectDigest::from_bytes(REQUEST_SCOPE))?;
+                let limits = NodeControllerLimits::new(1024 * 1024, 65_536, 1)?;
+                parent.executor_signer = Some(ControllerBrokerPlanSignerV1::from_process_credentials_optional()
+                    .map_err(|_| ControllerRuntimeError::InvalidBrokerPlanCredential));
+                let signer = parent.executor_signer.as_ref().and_then(|result| result.as_ref().ok())
+                    .ok_or(ControllerRuntimeError::InvalidBrokerPlanCredential)?;
+                validate_process_cache_readback_credentials_v1(
+                    signer.as_ref().map(ControllerBrokerPlanSignerV1::verifying_key_bytes),
+                ).map_err(|_| ControllerRuntimeError::InvalidCacheReadbackCredential)?;
+                validate_process_controller_hold_credentials_v1(
+                    signer.as_ref().map(ControllerBrokerPlanSignerV1::verifying_key_bytes),
+                ).map_err(|_| ControllerRuntimeError::InvalidControllerHoldCredential)?;
+                parent.source_journal.open_once(&loan, configuration.uid)
+                    .map_err(|_| ControllerRuntimeError::Journal(JournalError::ProtectedBoundary))?;
+                let source = parent.source_journal.source_mut()
+                    .ok_or(ControllerRuntimeError::Journal(JournalError::ProtectedBoundary))?;
+                // The old semantic engines and their borrowing owners remain
+                // unchanged. This milestone does not retain their internal
+                // unreturned credential/Root/recovery prefixes.
+                parent.lifecycle_replay = Some(match aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(source) {
+                    Ok(owner) => owner.replay().map_err(ControllerRuntimeError::from),
+                    Err(cause) => Err(ControllerRuntimeError::from(cause)),
+                });
+                if !matches!(parent.lifecycle_replay, Some(Ok(_))) {
+                    return Err(ControllerRuntimeError::Journal(JournalError::ProtectedBoundary));
+                }
+                let journal = parent.controller_journal.journal_mut()
+                    .ok_or(ControllerRuntimeError::Journal(JournalError::ProtectedBoundary))?;
+                parent.project_recovery = Some(crate::project_admission_coordinator::recover_source_project_admission_v1(
+                    journal, source, scope,
+                ));
+                if !matches!(parent.project_recovery, Some(Ok(()))) {
+                    return Err(ControllerRuntimeError::Journal(JournalError::ProtectedBoundary));
+                }
+                Ok((scope, limits))
+            })());
+            // These two independently available posts are attempted even
+            // after a constructor action Err. The original action fields are
+            // never replaced by the later negative dispositions.
+            let source_post = parent.source_journal.finish_posts(&loan);
+            let controller_post = parent.controller_journal.finish_posts(&loan);
+            if !matches!(parent.construction, Some(Ok(_)))
+                || source_post.is_err() || controller_post.is_err()
+            {
+                let _first = parent.controller_journal.primary_failure()
+                    .or_else(|| parent.executor_signer.as_ref().and_then(|result| result.as_ref().err())
+                        .map(|cause| cause as &(dyn std::error::Error + 'static)))
+                    .or_else(|| parent.source_journal.primary_failure())
+                    .or_else(|| parent.lifecycle_replay.as_ref().and_then(|result| result.as_ref().err())
+                        .map(|cause| cause as &(dyn std::error::Error + 'static)))
+                    .or_else(|| parent.project_recovery.as_ref().and_then(|result| result.as_ref().err())
+                        .map(|cause| cause as &(dyn std::error::Error + 'static)))
+                    .or_else(|| parent.construction.as_ref().and_then(|result| result.as_ref().err())
+                        .map(|cause| cause as &(dyn std::error::Error + 'static)))
+                    .or_else(|| parent.source_journal.postcheck_debt())
+                    .or_else(|| parent.controller_journal.postcheck_debt());
+                worker.terminate(ControllerResidentCauseV1::Closed("resident Controller construction refused"));
+            }
+        }
+        // The short pre-opening borrow has ended. Native enrollment now uses
+        // the SAME staged writer and still-resident original PID1 pair.
+        let journal = required!(parent.controller_journal.journal_mut());
+        if opening.open_once(journal, profile, node_id).is_err() {
+            worker.terminate(ControllerResidentCauseV1::Closed("resident native bootstrap enrollment refused"));
+        }
+        // Transfer the same enrolled original into the prearmed shared slot;
+        // its uncertainty and pair remain alive with the worker and executor.
+        originals.resource_bank = parent
+            .resource_opening
+            .take()
+            .map(|opening| Arc::new(Mutex::new(opening)));
+
+        let (scope, limits) = match parent.construction.as_ref() {
+            Some(Ok(parts)) => *parts,
+            _ => worker.terminate(ControllerResidentCauseV1::Closed("Controller assembly unavailable")),
+        };
+        // The unchanged process-start observation occurs while both staged
+        // writers and the signer still reside in the parent destinations.
+        let process_start = current_boot_and_boottime();
+        let signer = match parent.executor_signer.take() {
+            Some(Ok(signer)) => signer,
+            _ => worker.terminate(ControllerResidentCauseV1::Closed("Controller signer unavailable")),
+        };
+        let source = required!(parent.source_journal.take_source());
+        let mut executor = ProductionEffectExecutor::from_retained_source(
+            Arc::clone(required!(originals.sessions.as_ref())), scope, signer,
+            required!(parent.host.take()), required!(parent.mount.take()), source,
+            configuration.uid, NodeId::from_bytes(node_id), process_start,
+        );
+        executor.resource_bank = originals.resource_bank.as_ref().map(Arc::clone);
+        executor.snapshot_ownership = Some(Arc::clone(required!(originals.snapshot_ownership.as_ref())))
+            .filter(|donation| donation.get().is_some());
+        let nix_start = required!(originals.nix_selector.as_ref()).clone();
+        #[cfg(feature = "online-nix")]
+        {
+            executor.nix_generation_enabled = configuration.nix_storage_generation_prepare;
+            if let Some(selector) = nix_start.as_ref() {
+                executor.nix_start = Some(Arc::clone(selector));
+            }
+        }
+        let compiler = match nix_start {
+            Some(selector) => ProductionOperationCompilerV1::with_nix_start(selector),
+            None => ProductionOperationCompilerV1::new(),
+        };
+        let journal = required!(parent.controller_journal.take_journal());
+        originals.controller = Some(NodeController::new(scope, limits, compiler, Reconciler::new(journal, executor)));
+    } else {
+        // Ordinary construction keeps its original consuming boundaries.
+        // Lower nested recovery owners are not rescued by this milestone.
+        originals.controller = Some(checked!(open_controller(
+            &configuration,
+            node_id,
+            Arc::clone(required!(originals.sessions.as_ref())),
+            required!(parent.host.take()),
+            required!(parent.mount.take()),
+            required!(originals.nix_selector.as_ref()).clone(),
+            Some(Arc::clone(required!(originals.snapshot_ownership.as_ref()))),
+        )));
+    }
     complete!(Controller);
 
     begin!(ControllerStartup);
@@ -1301,6 +1426,8 @@ fn run_retained_controller(
 // observed optional absence. The worker only borrows a completed destination.
 #[derive(Default)]
 struct ControllerWorkerOriginalsV1 {
+    resource_bank: Option<Arc<Mutex<aos_sandbox::ControllerResourceBankOpeningV1>>>,
+
     git_coverage_enabled: bool,
     git_read: Option<git_read_inspection::GitReadWorkerInputsV1>,
     publisher_attempt: Option<publisher_ingress::PublisherStartupAttemptV1>,
@@ -1592,6 +1719,13 @@ struct ControllerParentCustodyV1 {
     public: Option<Option<public_api::PublicListener>>,
     host: Option<Option<aos_sandbox::runtime_scope::HostServiceIdentity>>,
     mount: Option<Option<aos_sandbox::mount_preparation::MountServiceIdentity>>,
+    resource_opening: Option<aos_sandbox::ControllerResourceBankOpeningV1>,
+    controller_journal: aos_sandbox::controller_service::journal::ControllerJournalConstructionV1,
+    source_journal: aos_sandbox::lifecycle::protected_journal_join::ControllerSourceJournalConstructionV1,
+    executor_signer: Option<Result<Option<ControllerBrokerPlanSignerV1>, ControllerRuntimeError>>,
+    lifecycle_replay: Option<Result<aos_sandbox::lifecycle::protected_journal::LifecycleProtectedJournalProjectionV1, ControllerRuntimeError>>,
+    project_recovery: Option<std::io::Result<()>>,
+    construction: Option<Result<(ControllerRequestScopeV1, NodeControllerLimits), ControllerRuntimeError>>,
     notifier: Option<SystemdReadyNotifier>,
     thread: Option<std::thread::JoinHandle<()>>,
     monitor: Option<tokio::task::JoinHandle<ControllerMonitorOutcomeV1>>,
@@ -1624,6 +1758,13 @@ impl ControllerParentCustodyV1 {
             public: None,
             host: None,
             mount: None,
+            resource_opening: None,
+            controller_journal: aos_sandbox::controller_service::journal::ControllerJournalConstructionV1::new(),
+            source_journal: aos_sandbox::lifecycle::protected_journal_join::ControllerSourceJournalConstructionV1::new(),
+            executor_signer: None,
+            lifecycle_replay: None,
+            project_recovery: None,
+            construction: None,
             notifier: None,
             thread: None,
             monitor: None,
@@ -3811,6 +3952,8 @@ fn parse_identity(
 }
 
 struct ProductionEffectExecutor {
+    resource_bank: Option<Arc<Mutex<aos_sandbox::ControllerResourceBankOpeningV1>>>,
+
     snapshot_ownership: Option<SnapshotOwnershipDonationV3>,
     pending_snapshot_derivative: Option<storage_snapshot::authorization::SnapshotDerivativeAttemptV3>,
     #[cfg(feature = "online-nix")]
@@ -3936,6 +4079,7 @@ impl ProductionEffectExecutor {
         process_start: Option<([u8; 16], u64)>,
     ) -> Self {
         Self {
+            resource_bank: None,
             snapshot_ownership: None,
             pending_snapshot_derivative: None,
             #[cfg(feature = "online-nix")]

@@ -69,6 +69,8 @@ pub mod controller_fuse_admission;
 pub mod controller_no_apply_settlement_cursor;
 pub mod controller_query;
 #[cfg(target_os = "linux")]
+mod controller_resource_reservation;
+#[cfg(target_os = "linux")]
 pub mod controller_service;
 pub mod controller_storage_output_reserve_attempt;
 pub mod create_holder_proof;
@@ -170,6 +172,13 @@ mod systemd_property_data;
 #[cfg(target_os = "linux")]
 #[doc(hidden)]
 pub mod tpm_nv_custody;
+
+#[cfg(target_os = "linux")]
+pub use controller_resource_reservation::{
+    ControllerResourceBankOpeningV1, ControllerResourceEnrollmentCaptureV1,
+    ProjectPreparationReservationAttemptV1, StorageComponentEnvelopeLoanV1,
+    StorageComponentEnvelopeOriginalV1, StorageComponentPostV1,
+};
 
 #[cfg(target_os = "linux")]
 pub use runtime_deployment::{

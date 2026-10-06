@@ -82,6 +82,65 @@ impl Drop for ControllerInitialActivationTableV1 {
     }
 }
 
+/// Keeps Controller's fixed eight-slot duplicate prefix resident through observation.
+///
+/// Slots are descriptor DATA, not launch, role or image authority. Construction
+/// performs no observation. A failed or abandoned attempt must remain resident
+/// until intentional process termination; armed Drop aborts before field release.
+#[must_use]
+pub struct ControllerResourceInitialActivationTableV1 {
+    original: FixedInitialActivationTable<8>,
+}
+
+impl ControllerResourceInitialActivationTableV1 {
+    /// Creates empty fixed storage without reading the descriptor table.
+    pub const fn new() -> Self {
+        Self {
+            original: FixedInitialActivationTable::new(),
+        }
+    }
+
+    /// Observes the names-derived prefix of original entries 3 through 10 once.
+    ///
+    /// # Errors
+    /// Keeps the first actual duplication, flag or complete-table refusal.
+    /// A repeated call ends observation without touching the process table.
+    pub fn observe_once(&mut self, count: usize) -> std::result::Result<(), &Error> {
+        self.original.observe_once(
+            count,
+            "Controller resource initial table",
+            "count exceeds eight slots",
+            "observation is closed",
+        )
+    }
+
+    /// Borrows the permanently retained first observation failure.
+    pub fn failure(&self) -> Option<&Error> {
+        self.original.failure()
+    }
+
+    /// Moves the complete fixed slots once without another observation.
+    ///
+    /// The caller parks the returned array before any fallible continuation.
+    /// No failed or interrupted observation exposes its successful prefix.
+    #[must_use]
+    pub fn take_completed_entries(&mut self) -> Option<[Option<OwnedFd>; 8]> {
+        self.original.take_completed_entries()
+    }
+}
+
+impl Default for ControllerResourceInitialActivationTableV1 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for ControllerResourceInitialActivationTableV1 {
+    fn drop(&mut self) {
+        self.original.abort_if_armed();
+    }
+}
+
 struct AbortInitialCaptureUnwind;
 
 /// Retains Storage's fixed listener, image and resource-enrollment prefix.
@@ -143,7 +202,7 @@ impl Drop for StorageInitialActivationTableV1 {
     }
 }
 
-// Only the two closed wrappers instantiate this owner. Field order retains
+// Only the three closed wrappers instantiate this owner. Field order retains
 // descriptor-before-error release after the shared abort fence is disarmed.
 struct FixedInitialActivationTable<const N: usize> {
     descriptors: [Option<OwnedFd>; N],

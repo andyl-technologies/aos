@@ -150,6 +150,19 @@ impl StorageWorkerParentDataV3 {
 /// nonzero credentials/capabilities, changed custody, or permissive SELinux.
 pub fn observe_fixed_storage_worker_parent_v3(
 ) -> Result<StorageWorkerParentDataV3, NormalRootStartupErrorV1> {
+    observe_storage_worker_parent(false).map(|(parent, _producer)| parent)
+}
+
+// Only the original component-pair owner enters the resource recipient recipe.
+pub(crate) fn observe_fixed_storage_resource_parent_v1(
+) -> Result<(StorageWorkerParentDataV3, [u8; 16]), NormalRootStartupErrorV1> {
+    let (parent, producer) = observe_storage_worker_parent(true)?;
+    Ok((parent, producer.ok_or(NormalRootStartupErrorV1::Service)?))
+}
+
+fn observe_storage_worker_parent(
+    resource_delivery: bool,
+) -> Result<(StorageWorkerParentDataV3, Option<[u8; 16]>), NormalRootStartupErrorV1> {
     let process = PidFd::open(
         NonZeroU32::new(std::process::id()).ok_or(NormalRootStartupErrorV1::Service)?,
     )
@@ -188,7 +201,12 @@ pub fn observe_fixed_storage_worker_parent_v3(
         .map_err(|_| NormalRootStartupErrorV1::Confinement)?;
     require_status(&read_bounded("/proc/self/status", 64 * 1024)?)?;
 
-    let observed = service::observe_storage()?;
+    let (observed, producer) = if resource_delivery {
+        let (parent, producer) = service::observe_storage_resource()?;
+        (parent, Some(producer))
+    } else {
+        (service::observe_storage()?, None)
+    };
 
     cgroup
         .verify_exact_membership(&process)
@@ -200,7 +218,7 @@ pub fn observe_fixed_storage_worker_parent_v3(
     {
         return Err(NormalRootStartupErrorV1::Service);
     }
-    Ok(observed)
+    Ok((observed, producer))
 }
 
 /// Captures only the actual initial normal-Root process descriptor table.

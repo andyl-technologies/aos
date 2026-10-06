@@ -58,6 +58,129 @@ pub struct ProtectedSourceDomainJournalOwnerV1 {
     journal: Journal,
 }
 
+/// Retains fixed Source opening originals for the paid Controller constructor.
+///
+/// This purpose-specific destination shares the existing protected opener and
+/// owns neither a new Source admission nor a per-operation resource permit.
+#[cfg(target_os = "linux")]
+pub struct ControllerSourceJournalConstructionV1 {
+    opening: crate::journal::ControllerJournalOpenOriginalsV1,
+    source: Option<ProtectedSourceDomainJournalOwnerV1>,
+    before: Option<crate::controller_resource_reservation::ControllerResourcePreopenPostV1>,
+    post: Option<crate::controller_resource_reservation::ControllerResourcePreopenPostV1>,
+    names_post: Option<Result<(), JournalError>>,
+    attempted: bool,
+    finished: bool,
+}
+
+#[cfg(target_os = "linux")]
+impl ControllerSourceJournalConstructionV1 {
+    /// Prearms empty partial custody without opening the fixed Source directory.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            opening: crate::journal::ControllerJournalOpenOriginalsV1::new(),
+            source: None,
+            before: None,
+            post: None,
+            names_post: None,
+            attempted: false,
+            finished: false,
+        }
+    }
+
+    /// Opens the same fixed Source writer under the original bootstrap loan.
+    ///
+    /// # Errors
+    /// Retains protected open/replay errors and all returned partial originals.
+    /// The enclosing Controller owns the independent before/after reports.
+    pub fn open_once(
+        &mut self,
+        loan: &crate::controller_resource_reservation::ControllerResourcePreopenLoanV1<'_>,
+        uid: u32,
+    ) -> Result<(), ()> {
+        if self.attempted {
+            return Err(());
+        }
+        self.attempted = true;
+        self.before = Some(crate::controller_resource_reservation::ControllerResourcePreopenPostV1::new());
+        loan.observe_into(self.before.as_mut().ok_or(())?);
+        self.before.as_ref().ok_or(())?.require_success().map_err(|_| ())?;
+        self.opening.open_once(
+            Path::new(PROTECTED_SOURCE_DOMAIN_ROOT), PROTECTED_SOURCE_DOMAIN_JOURNAL,
+            source_domain_journal_limits(), uid,
+        );
+        if self.opening.failure().is_some() {
+            return Err(());
+        }
+        let journal = self.opening.take_journal().ok_or(())?;
+        self.source = Some(ProtectedSourceDomainJournalOwnerV1 { journal });
+        Ok(())
+    }
+
+    /// Borrows the same resident fixed writer for existing lifecycle recovery.
+    #[must_use]
+    pub fn source_mut(&mut self) -> Option<&mut ProtectedSourceDomainJournalOwnerV1> {
+        if self.failure().is_some() {
+            return None;
+        }
+        self.source.as_mut()
+    }
+
+    /// Retains independent Source-name and bootstrap posts after any action Err.
+    ///
+    /// # Errors
+    /// Rejects repeated completion or any retained primary/post failure.
+    pub fn finish_posts(
+        &mut self,
+        loan: &crate::controller_resource_reservation::ControllerResourcePreopenLoanV1<'_>,
+    ) -> Result<(), ()> {
+        if self.finished {
+            return Err(());
+        }
+        self.finished = true;
+        if let Some(source) = self.source.as_ref() {
+            self.names_post = Some(source.journal.validate_held_protected_names());
+        }
+        self.post = Some(crate::controller_resource_reservation::ControllerResourcePreopenPostV1::new());
+        loan.observe_into(self.post.as_mut().ok_or(())?);
+        if self.failure().is_some() || self.source.is_none() {
+            return Err(());
+        }
+        self.post.as_ref().ok_or(())?.require_success().map_err(|_| ())
+    }
+
+    /// Moves the original into the infallible executor assembly after recovery.
+    #[must_use]
+    pub fn take_source(&mut self) -> Option<ProtectedSourceDomainJournalOwnerV1> {
+        if !self.finished || self.failure().is_some() {
+            return None;
+        }
+        self.source.take()
+    }
+
+    /// Borrows the actual first protected construction cause.
+    #[must_use]
+    pub fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.primary_failure().or_else(|| self.postcheck_debt())
+    }
+
+    /// Borrows the opening cause without projecting later name/profile debt.
+    #[must_use]
+    pub fn primary_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.before.as_ref().and_then(|post| post.failure())
+            .or_else(|| self.opening.failure())
+    }
+
+    /// Borrows the retained later Source-name or original-profile debt.
+    #[must_use]
+    pub fn postcheck_debt(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.names_post.as_ref().and_then(|result| result.as_ref().err())
+            .map(|error| error as &(dyn std::error::Error + 'static))
+            .or_else(|| self.post.as_ref().and_then(|post| post.failure()))
+    }
+}
+
 // The actual installed Q04 caller borrows this SAME Source owner before Root
 // is opened. This private negative guard exposes only fixed Q04 actions and
 // comparison DATA, never a Journal/FD or an authority constructor.

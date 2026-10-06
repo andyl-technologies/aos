@@ -906,6 +906,7 @@ pub(crate) struct ControllerQ04TransitionV1<'cut> {
     phase: &'cut Q04PhaseRecordV1,
     decision: Option<&'cut Q04RootDecisionV1>,
     gate: Option<&'cut Q04EffectSubgateV1>,
+    resource: Option<&'cut crate::controller_resource_reservation::Q04ResourceTransferV1>,
     transaction: JournalTransaction,
 }
 
@@ -917,6 +918,7 @@ impl<'cut> ControllerQ04TransitionV1<'cut> {
         phase: &'cut Q04PhaseRecordV1,
         decision: Option<&'cut Q04RootDecisionV1>,
         gate: Option<&'cut Q04EffectSubgateV1>,
+        resource: Option<&'cut crate::controller_resource_reservation::Q04ResourceTransferV1>,
     ) -> Result<Self, CreateQ04ErrorV1> {
         ledger.require_identity(identity)?;
         Q04PhaseRecordV1::decode(Q04PhaseOwnerV1::Controller, phase.bytes(), identity)?;
@@ -982,6 +984,10 @@ impl<'cut> ControllerQ04TransitionV1<'cut> {
         records.push(JournalRecord::put(
             RecordNamespace::ControllerPolicyHold, phase_key, phase.bytes().to_vec(),
         ));
+        let resource = if number == 1 { resource } else { None };
+        if let Some(resource) = resource {
+            resource.append_records(&mut records)?;
+        }
         let predecessor = if number == 1 {
             identity.before_controller_rows()
         } else {
@@ -995,7 +1001,7 @@ impl<'cut> ControllerQ04TransitionV1<'cut> {
         if transaction.id() != &phase.native_transaction_id() {
             return Err(CreateQ04ErrorV1::ChangedCut);
         }
-        Ok(Self { ledger, identity, phase, decision, gate, transaction })
+        Ok(Self { ledger, identity, phase, decision, gate, resource, transaction })
     }
 
     pub(crate) fn transaction(&self) -> &JournalTransaction {
@@ -1016,6 +1022,10 @@ impl<'cut> ControllerQ04TransitionV1<'cut> {
 
     pub(crate) fn phase_number(&self) -> u8 {
         self.phase.phase()
+    }
+
+    pub(crate) fn resource_transfer(&self) -> Option<&crate::controller_resource_reservation::Q04ResourceTransferV1> {
+        self.resource
     }
 
     pub(crate) fn same_original_cut(&self, other: &Self) -> bool {
@@ -1140,6 +1150,10 @@ pub(super) fn require_q04_transition(
 ) -> Result<(), JournalError> {
     if transaction != transition.transaction() {
         return Err(JournalError::ProtectedBoundary);
+    }
+    if let Some(resource) = transition.resource {
+        resource.require_current(state, transaction)
+            .map_err(|_| JournalError::ProtectedBoundary)?;
     }
     let prior_gate = transition.ledger.require_materialized_rows(state)
         .map_err(|cause| JournalError::Q04ControllerLedger(Box::new(cause)))?;
