@@ -2221,12 +2221,6 @@ fn validate_cache_transition(
             let reducer = decode_reducer_payload_with_validator::<
                 CacheResidencyProtectedJournalSchemaV1,
             >(successor.key(), successor.payload(), validator)?;
-            validate_cache_body(
-                successor.key().kind(),
-                successor.key().identity(),
-                reducer.body(),
-                validator,
-            )?;
             let record = decode_cache_body(
                 successor.key().kind(),
                 successor.key().identity(),
@@ -2770,18 +2764,6 @@ fn cache_transaction_partition(
         partition = Some(candidate);
     }
     Ok(partition)
-}
-
-fn validate_cache_body(
-    kind: CacheResidencyProtectedRecordKindV1,
-    identity: &[u8],
-    body: &[u8],
-    validator: &CacheResidencyReplayValidatorV1,
-) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
-    if decode_cache_body(kind, identity, body, validator).is_none() {
-        return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
-    }
-    Ok(())
 }
 
 fn decode_cache_body(
