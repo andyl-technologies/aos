@@ -527,6 +527,52 @@ impl BrokerAuthority {
         )
     }
 
+    /// Admits only Nix population on the same installed Storage assignment.
+    ///
+    /// The post-Create grant may rotate its exact plan, but it borrows the
+    /// original local lease without renewing its fail-stop deadline. This
+    /// verification supplies no resource reservation or native writer loan.
+    ///
+    /// # Errors
+    ///
+    /// Rejects another domain, verb, target, descriptor-bearing request,
+    /// missing or changed assignment fence, invalid grant, or lease renewal.
+    pub fn admit_storage_nix_generation_population(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request: AdmissionRequest<'_>,
+        current_clock: &RawPairedClockSample,
+        prior_fence: &[u8],
+    ) -> Result<VerifiedBrokerAdmission, BrokerAdmissionError> {
+        if self.domain != BrokerDomain::Storage
+            || request.verb != BrokerVerb::StoragePopulateNixGenerationRoot
+            || request.target != BrokerGrantTarget::Assignment
+            || request.descriptor_count != 0
+        {
+            return Err(BrokerAdmissionError::RequestMismatch);
+        }
+
+        let current = self.open_fence(request.assignment.sandbox().as_bytes(), prior_fence)?;
+        if current.assignment() != request.assignment {
+            return Err(BrokerAdmissionError::FenceRejected);
+        }
+
+        let admission = self.admit_with_plan_rotation(
+            artifacts,
+            request,
+            current_clock,
+            Some(prior_fence),
+            AdmissionPhase::ExactGrantRotation,
+        )?;
+        if admission.fence.local_lease_record() != current.local_lease_record() {
+            // Exact-plan rotation is not permission to renew the installed
+            // lease, create a new BOOTTIME cut, or extend the original attempt.
+            return Err(BrokerAdmissionError::FenceRejected);
+        }
+
+        Ok(admission)
+    }
+
     fn admit_with_plan_rotation(
         &self,
         artifacts: &ValidatedUntrustedAuthorizationArtifacts,

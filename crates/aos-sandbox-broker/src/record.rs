@@ -29,6 +29,9 @@
 //! compare recovered state with a trusted non-rollback source.
 //! Host effect code 15 carries only pending fixed-worker launch escrow. Codes
 //! 1 through 14 retain their original meanings; older readers reject code 15.
+//! Storage effect code 12 names only Nix generation population. Storage codes
+//! 1 through 11 remain unchanged; older readers reject code 12. Decoding that
+//! purpose does not supply a paid owner or permission to mutate a journal.
 
 use aos_sandbox::journal::RecordNamespace;
 use aos_sandbox_core::model::{KeyReference, KeyUsage, StableKeyId};
@@ -600,6 +603,7 @@ impl BrokerEffectIntentV1 {
                 | BrokerVerb::StoragePrepareCatalog
                 | BrokerVerb::StorageAtomicSnapshot
                 | BrokerVerb::StoragePopulateGuestRoot
+                | BrokerVerb::StoragePopulateNixGenerationRoot
                 | BrokerVerb::NetworkPrepare,
                 BrokerGrantTarget::Assignment,
             ) => true,
@@ -1410,6 +1414,7 @@ const fn verb_code(domain: BrokerDomain, verb: BrokerVerb) -> u8 {
         (BrokerDomain::Storage, BrokerVerb::StorageRepairWorkspacePin) => 9,
         (BrokerDomain::Storage, BrokerVerb::StorageAtomicSnapshot) => 10,
         (BrokerDomain::Storage, BrokerVerb::StoragePopulateGuestRoot) => 11,
+        (BrokerDomain::Storage, BrokerVerb::StoragePopulateNixGenerationRoot) => 12,
         (BrokerDomain::Nix, BrokerVerb::NixResolveProtectedRecipe) => 1,
         (BrokerDomain::Nix, BrokerVerb::NixRealizeAuthorizedDerivation) => 2,
         (BrokerDomain::Nix, BrokerVerb::NixQueryAuthorizedPathInfo) => 3,
@@ -1453,6 +1458,7 @@ fn decode_verb(domain: BrokerDomain, code: u8) -> Result<BrokerVerb, Authorizati
         (BrokerDomain::Storage, 9) => Ok(BrokerVerb::StorageRepairWorkspacePin),
         (BrokerDomain::Storage, 10) => Ok(BrokerVerb::StorageAtomicSnapshot),
         (BrokerDomain::Storage, 11) => Ok(BrokerVerb::StoragePopulateGuestRoot),
+        (BrokerDomain::Storage, 12) => Ok(BrokerVerb::StoragePopulateNixGenerationRoot),
         (BrokerDomain::Network, 1) => Ok(BrokerVerb::NetworkPrepare),
         (BrokerDomain::Network, 2) => Ok(BrokerVerb::NetworkArmLease),
         (BrokerDomain::Network, 3) => Ok(BrokerVerb::NetworkRenewLease),
@@ -1554,6 +1560,36 @@ mod tests {
     use super::*;
     use aos_sandbox_core::InvalidBrokerAuthorizationPlan;
     use sha2::Digest as _;
+
+    #[test]
+    fn storage_population_native_code_is_distinct_and_keeps_guest_eleven() {
+        assert_eq!(
+            verb_code(BrokerDomain::Storage, BrokerVerb::StoragePopulateGuestRoot),
+            11,
+        );
+        assert_eq!(
+            verb_code(
+                BrokerDomain::Storage,
+                BrokerVerb::StoragePopulateNixGenerationRoot,
+            ),
+            12,
+        );
+        assert_eq!(
+            decode_verb(BrokerDomain::Storage, 12).unwrap(),
+            BrokerVerb::StoragePopulateNixGenerationRoot,
+        );
+
+        for unsupported in [0, 13, u8::MAX] {
+            assert!(decode_verb(BrokerDomain::Storage, unsupported).is_err());
+        }
+        assert_eq!(
+            verb_code(
+                BrokerDomain::Nix,
+                BrokerVerb::StoragePopulateNixGenerationRoot,
+            ),
+            0,
+        );
+    }
 
     #[test]
     fn online_nix_successor_codes_are_closed_and_keep_resolve_one() {

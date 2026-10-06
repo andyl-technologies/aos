@@ -76,7 +76,9 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
     // messages. This does not register a public RPC or enable either service.
     // Additive denial-only Git coverage: methods53..56 and one shared bounded
     // request/response DATA carrier; all earlier declarations remain exact.
-    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0x04eb_1973_b13a_850a;
+    // The committed schema plus two Nix population comparison messages forms
+    // this baseline. No population method or request route is registered here.
+    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0x9b6c_f5f3_4a69_e3dd;
     let actual = complete_schema_fingerprint(source);
     if actual != EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT {
         return Err(std::io::Error::other(format!(

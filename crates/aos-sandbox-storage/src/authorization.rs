@@ -836,6 +836,75 @@ impl StorageAuthorityV1 {
         Ok(admission)
     }
 
+    // The exact post-Create grant borrows the installed assignment and lease.
+    // Decoded comparison DATA cannot replace the protected signed-plan match.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn admit_nix_generation_population(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        semantics: &aos_sandbox_protocol::semantics::storage_nix_generation_root::CanonicalStorageNixGenerationSemanticsV1,
+        request_body: &[u8],
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        current_clock: &RawPairedClockSample,
+        prior_fence: Option<&[u8]>,
+    ) -> Result<VerifiedBrokerAdmission, StorageAdmissionError> {
+        use aos_sandbox_protocol::semantics::storage_nix_generation_root::CanonicalStorageNixGenerationSemanticsV1;
+
+        let decoded = CanonicalStorageNixGenerationSemanticsV1::decode(
+            request_body,
+            peer,
+            policy,
+            current_clock.boottime_nanoseconds(),
+        )
+        .map_err(|_| StorageAdmissionError::RequestMismatch)?;
+        if &decoded != semantics || decoded.header().protocol_version() != protocol_version {
+            return Err(StorageAdmissionError::RequestMismatch);
+        }
+
+        let assignment = decoded
+            .fence()
+            .broker_assignment()
+            .map_err(|_| StorageAdmissionError::RequestMismatch)?;
+        let prior_fence = prior_fence.ok_or(StorageAdmissionError::FenceRejected)?;
+        let admission = self.0.admit_storage_nix_generation_population(
+            artifacts,
+            AdmissionRequest {
+                audience: BrokerAudience::Storage,
+                protocol: ProtocolId::StorageBroker,
+                protocol_version,
+                assignment,
+                request_id: *decoded.header().request_id(),
+                request_body,
+                descriptor_count: 0,
+                verb: BrokerVerb::StoragePopulateNixGenerationRoot,
+                target: BrokerGrantTarget::Assignment,
+                argument_commitment: decoded.argument_commitment(),
+                request_deadline_boottime_nanoseconds: decoded
+                    .header()
+                    .deadline_boottime_nanoseconds(),
+            },
+            current_clock,
+            prior_fence,
+        )?;
+        if admission.fence.assignment() != assignment
+            || admission.effect.status() != BrokerEffectStatusV1::Pending
+            || admission.effect.verb() != BrokerVerb::StoragePopulateNixGenerationRoot
+            || admission.effect.target() != BrokerGrantTarget::Assignment
+            || admission.effect.request_id() != decoded.header().request_id()
+            || admission.effect.transport_request_digest()
+                != ObjectDigest::from_bytes(Sha256::digest(request_body).into())
+            || admission.effect.request_digest() != decoded.argument_commitment().digest()
+            || admission.effect.plan_digest() != admission.fence.plan_digest()
+            || admission.effect.lease_digest()
+                != admission.fence.local_lease_record().lease_digest()
+        {
+            return Err(StorageAdmissionError::RequestMismatch);
+        }
+        Ok(admission)
+    }
+
     pub(crate) fn seal(
         &self,
         sandbox_id: &[u8; 16],

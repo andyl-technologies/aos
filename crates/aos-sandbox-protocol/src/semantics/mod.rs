@@ -1,8 +1,10 @@
 //! Pure portable semantic compilers for hostile protocol requests.
 //!
 //! These modules depend only on protobuf input, shared protocol validation,
-//! and portable core authority types. They never accept or emit backend paths,
-//! dataset names, GUIDs, encryption keys, or other node-local expressions.
+//! and portable core authority types. Their plan-match tuples never accept or
+//! emit backend paths, dataset names, GUIDs, encryption keys, or other
+//! node-local expressions. Readback codecs may carry native observation DATA;
+//! those observations grant no authority.
 //! Their outputs are nonauthorizing plan-match tuples: portable object
 //! descriptors may remain committed as data, but ancillary descriptors,
 //! descriptor numbers, and kernel objects never become semantic authority.
@@ -22,6 +24,7 @@ pub mod network;
 pub mod payload_scope;
 pub mod storage;
 pub mod storage_guest_root;
+pub mod storage_nix_generation_root;
 pub mod storage_prepare;
 pub mod storage_repair;
 

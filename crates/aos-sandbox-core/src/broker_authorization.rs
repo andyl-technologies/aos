@@ -227,6 +227,8 @@ pub enum BrokerVerb {
     NixRealizeAuthorizedDerivation,
     /// Reads only the exact authorized recipe's original path information.
     NixQueryAuthorizedPathInfo,
+    /// Populates one original Nix G0 workspace from its independently bound seed.
+    StoragePopulateNixGenerationRoot,
 }
 
 impl BrokerVerb {
@@ -298,6 +300,7 @@ impl BrokerVerb {
             58 => Ok(Self::NixResolveProtectedRecipe),
             59 => Ok(Self::NixRealizeAuthorizedDerivation),
             60 => Ok(Self::NixQueryAuthorizedPathInfo),
+            61 => Ok(Self::StoragePopulateNixGenerationRoot),
             _ => Err(InvalidBrokerAuthorizationPlan::UnknownVerb),
         }
     }
@@ -366,6 +369,7 @@ impl BrokerVerb {
             Self::NixResolveProtectedRecipe => 58,
             Self::NixRealizeAuthorizedDerivation => 59,
             Self::NixQueryAuthorizedPathInfo => 60,
+            Self::StoragePopulateNixGenerationRoot => 61,
         }
     }
 
@@ -419,6 +423,7 @@ impl BrokerVerb {
             | Self::StorageRepairWorkspacePin
             | Self::StorageAtomicSnapshot
             | Self::StoragePopulateGuestRoot
+            | Self::StoragePopulateNixGenerationRoot
             | Self::StorageReserveExecutionCapture
             | Self::StorageReserveExecutionOutput
             | Self::StorageQueryExecutionOutput
@@ -463,6 +468,7 @@ impl BrokerVerb {
             | Self::StoragePrepareCatalog
             | Self::StorageAtomicSnapshot
             | Self::StoragePopulateGuestRoot
+            | Self::StoragePopulateNixGenerationRoot
             | Self::StorageReserveExecutionCapture
             | Self::StorageReserveExecutionOutput
             | Self::StorageQueryExecutionOutput
@@ -1887,6 +1893,7 @@ mod tests {
             (58, BrokerVerb::NixResolveProtectedRecipe),
             (59, BrokerVerb::NixRealizeAuthorizedDerivation),
             (60, BrokerVerb::NixQueryAuthorizedPathInfo),
+            (61, BrokerVerb::StoragePopulateNixGenerationRoot),
         ];
         for (code, expected) in stable_codes {
             let verb = BrokerVerb::from_code(code)
@@ -1895,7 +1902,7 @@ mod tests {
             assert_eq!(verb.get(), code);
         }
         assert_eq!(
-            BrokerVerb::from_code(61),
+            BrokerVerb::from_code(62),
             Err(InvalidBrokerAuthorizationPlan::UnknownVerb)
         );
         assert_eq!(

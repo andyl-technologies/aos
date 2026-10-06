@@ -1050,6 +1050,23 @@ message PopulateStorageGuestRootResponseV1 {
   bytes publication_proof = 1; // Exact physically read-back 266-byte AOSGRP01.
 }
 
+// Comparison selectors for a distinct population after the original birth
+// Create and staging pin. This DATA schema does not activate a broker method.
+message PopulateStorageNixGenerationRootRequestV1 {
+  RequestHeader header = 1;
+  AssignmentFence fence = 2;
+  bytes operation_id = 3; // Original population operation, exactly 16 bytes.
+  bytes workspace_handle = 4; // Actual preceding birth Create result, 32 bytes.
+  bytes creation_operation_id = 5; // Original birth Create operation, 16 bytes.
+  bytes seed_descriptor_digest = 6; // Complete delivered descriptor280 digest.
+  bytes birth_binding_digest = 7; // Complete original signed birth binding.
+  bytes seed_tree_digest = 8; // Complete independently bound seed Tree digest.
+}
+
+message PopulateStorageNixGenerationRootResponseV1 {
+  bytes population_receipt = 1; // Physical population DATA, never Hold authority.
+}
+
 message StorageResult {
   bytes storage_handle = 1;
   bytes immutable_version_handle = 2;
