@@ -11,23 +11,17 @@ in
     cd crates
     cargo test --frozen --offline -p terrane --no-default-features \
       --features tokio,surface-sdk --test local_sdk -- --list > "$TMPDIR/sdk-tests.txt"
-    python3 - "$TMPDIR/sdk-tests.txt" <<'PYTEST'
-    import sys
-
-    with open(sys.argv[1], encoding="utf-8") as test_list:
-        names = {line.strip() for line in test_list}
-
-    required = ${builtins.toJSON tests}
-    if len(required) != len(set(required)):
-        raise SystemExit("duplicate required local SDK test")
-
-    missing = [name for name in required if f"{name}: test" not in names]
-    if missing:
-        raise SystemExit(f"required public local SDK tests are missing: {missing}")
-    PYTEST
+    python3 ../tests/terrane/check_native_gate.py inventory \
+      "$TMPDIR/sdk-tests.txt" '${builtins.toJSON tests}'
     for test_name in ${builtins.concatStringsSep " " tests}; do
-      cargo test --frozen --offline -p terrane --no-default-features \
-        --features tokio,surface-sdk --test local_sdk "$test_name" -- --exact
+      if ! cargo test --frozen --offline -p terrane --no-default-features \
+        --features tokio,surface-sdk --test local_sdk "$test_name" -- --exact \
+        > "$TMPDIR/sdk-test.log" 2>&1; then
+        cat "$TMPDIR/sdk-test.log"
+        exit 1
+      fi
+      python3 ../tests/terrane/check_native_gate.py execution \
+        "$TMPDIR/sdk-test.log" "[\"$test_name\"]"
     done
     printf 'PASS: supported public local SDK checkout (5 exact cases); broader SDK conformance remains separate\n' \
       > "$out/result"

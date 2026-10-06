@@ -17,23 +17,17 @@ in
     cd crates
     cargo test --frozen --offline -p terrane --no-default-features \
       --features tokio,surface-sdk --lib -- --list > "$TMPDIR/restore-tests.txt"
-    python3 - "$TMPDIR/restore-tests.txt" <<'PYTEST'
-    import sys
-
-    with open(sys.argv[1], encoding="utf-8") as test_list:
-        names = {line.strip() for line in test_list}
-
-    required = ${builtins.toJSON selectors}
-    if len(required) != len(set(required)):
-        raise SystemExit("duplicate required restore test")
-
-    missing = [name for name in required if f"{name}: test" not in names]
-    if missing:
-        raise SystemExit(f"required native restore tests are missing: {missing}")
-    PYTEST
+    python3 ../tests/terrane/check_native_gate.py inventory \
+      "$TMPDIR/restore-tests.txt" '${builtins.toJSON selectors}'
     for test_name in ${builtins.concatStringsSep " " selectors}; do
-      cargo test --frozen --offline -p terrane --no-default-features \
-        --features tokio,surface-sdk --lib "$test_name" -- --exact
+      if ! cargo test --frozen --offline -p terrane --no-default-features \
+        --features tokio,surface-sdk --lib "$test_name" -- --exact \
+        > "$TMPDIR/restore-test.log" 2>&1; then
+        cat "$TMPDIR/restore-test.log"
+        exit 1
+      fi
+      python3 ../tests/terrane/check_native_gate.py execution \
+        "$TMPDIR/restore-test.log" "[\"$test_name\"]"
     done
     printf 'PASS: native pre-ownership restore (10 exact cases); two-phase deletion remains separate\n' \
       > "$out/result"

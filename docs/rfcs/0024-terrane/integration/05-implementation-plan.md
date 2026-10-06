@@ -459,6 +459,14 @@ remote parity, job or extended algebra obligations, which remain ordered by
 T2/T3 and the branch worklines. The CLI frontend and genuine ext4 workflow also
 remain unqualified local deployment obligations.
 
+The current floor also requires `checks.terrane.integration.local-cli-workflow`,
+with three exact separate-process witnesses for local porcelain, private
+authority refusals and configured-role compatibility. The SDK, CLI and native
+restore harnesses check both named discovery and passing, non-ignored execution
+through the common native gate verifier. This prevents an ignored or empty
+selection from qualifying a prerequisite. The CLI target remains on its private
+candidate; its registration does not supply runtime or ext4 qualification.
+
 The preceding completed full qualification records candidate
 `15540ef204ec`, which combines reviewed source discovery, immutable lookup,
 repeatable I/P/G maintenance, separate verifier/preparation work, common Memo
