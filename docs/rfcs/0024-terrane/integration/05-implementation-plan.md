@@ -3080,9 +3080,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   3044/1047/116 to 2146/795/90 and selected reads from 63 to 45, preserving
   both mandatory repair effects. These are scoped fixture observations.
   All 156 default tests and strict native/default/Send Clippy/private rustdoc
-  pass. Final independent owning store checks, application compilation,
-  formatters and source review remain pending; no task or full-floor result
-  is inferred from the focused witnesses.
+  pass. Final independent owning store checks execute 1/3/12 cases and pass,
+  along with application compilation and both formatters. All four actual Nix
+  inputs independently match the same 4,856-file source. Full production and
+  fixture review preserves earlier failed attempts and distinguishes the
+  capture-only log-path error from successful test execution. The exact
+  fixture correction is preserved at `3c3d51b5b5` and locally composed for
+  future trunk qualification. No task or full-floor result is inferred.
 - [ ] **T-GC-1** Mark-and-sweep collector: roots, mark, grace, two-phase
   sweep, singleton lease, resumability, retention values `gc`, `lease`,
   `ttl`, `forever`, and ordinary reflog duration/count selection. D-78
@@ -3157,6 +3161,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   and exact-selector discovery pass; the unchanged cancellation witness remains
   pending. No sufficiency or
   deletion-gate success is claimed.
+  The unchanged cancellation case on that renewal draft subsequently fails
+  with the same `gc-checkpoint` refusal after 196.12 seconds: zero passes,
+  one failure, zero ignored. The command stops before any broader matrix or
+  quality run. This output does not establish whether cancellation or real
+  renewal reached acknowledgment. A finite opt-in test-only phase observation
+  now distinguishes those actual boundaries in one private hermetic case;
+  source checks and natural restoration timestamps remain explicit. Session,
+  timers, assertions and qualification predicates remain unchanged.
   The reviewed pure journal, marking, proof-context, checkpoint, retention and
   grace-window bodies now replace their trunk declarations. All 27 adopted
   paths, including 16 independent hexadecimal witnesses, match the qualified
