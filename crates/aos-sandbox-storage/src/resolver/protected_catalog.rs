@@ -144,6 +144,17 @@ pub(crate) struct ProtectedStorageResolverPolicyDirectoryV1 {
 }
 
 impl ProtectedStorageResolverPolicyDirectoryV1 {
+    /// Lends only the original directory to the fixed capture-policy reader.
+    /// The runtime supplies its private configuration binding, not this
+    /// catalog's distinct public authority binding.
+    pub(crate) fn read_original_capture_policy(
+        &self,
+        reader: &mut crate::execution_capture_policy::OriginalCapturePolicyReadV1,
+        configuration_binding: ObjectDigest,
+    ) {
+        reader.read_original(&self.directory, self.expected_uid, configuration_binding);
+    }
+
     pub(crate) fn open_root_owned(
         path: &Path,
         authority_binding: ObjectDigest,
@@ -428,6 +439,10 @@ pub(crate) struct SelectedStorageResolverPolicyV1 {
 }
 
 impl SelectedStorageResolverPolicyV1 {
+    pub(crate) const fn policy(&self) -> &ProtectedStorageResolverPolicyV1 {
+        &self.policy
+    }
+
     pub(crate) const fn binding(&self) -> StorageResolverPolicyBindingV1 {
         self.binding
     }

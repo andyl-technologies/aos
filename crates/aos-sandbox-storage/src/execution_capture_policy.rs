@@ -63,6 +63,203 @@ pub(crate) struct CaptureAllocationV1 {
     maximum_allocation_bytes: u64,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum CapturePolicyReadCauseV1 {
+    Directory,
+    Open,
+    Before,
+    Read,
+    Extra,
+    After,
+    Decode,
+    Path,
+}
+
+/// Parks each native return before inspecting a fixed-file policy read.
+///
+/// The original reader retains its file even after a rejected identity or
+/// read. It borrows the already retained resolver directory; no caller path,
+/// public authority digest, directory reopen or retry can select the source.
+pub(crate) struct OriginalCapturePolicyReadV1 {
+    directory: Option<Result<rustix::fs::Stat, rustix::io::Errno>>,
+    file: Option<Result<std::fs::File, rustix::io::Errno>>,
+    before: Option<Result<rustix::fs::Stat, rustix::io::Errno>>,
+    read: Option<Result<(), std::io::Error>>,
+    extra: Option<Result<usize, std::io::Error>>,
+    after: Option<Result<rustix::fs::Stat, rustix::io::Errno>>,
+    decoded: Option<Result<CaptureAllocationV1, CaptureAllocationPolicyErrorV1>>,
+    bytes: [u8; BYTES],
+    first: Option<CapturePolicyReadCauseV1>,
+    attempted: bool,
+}
+
+impl OriginalCapturePolicyReadV1 {
+    pub(crate) const fn empty() -> Self {
+        Self {
+            directory: None,
+            file: None,
+            before: None,
+            read: None,
+            extra: None,
+            after: None,
+            decoded: None,
+            bytes: [0; BYTES],
+            first: None,
+            attempted: false,
+        }
+    }
+
+    pub(crate) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self.first? {
+            CapturePolicyReadCauseV1::Directory => self.directory.as_ref()?.as_ref().err()
+                .map(|error| error as &dyn std::error::Error),
+            CapturePolicyReadCauseV1::Open => self.file.as_ref()?.as_ref().err()
+                .map(|error| error as &dyn std::error::Error),
+            CapturePolicyReadCauseV1::Before => self.before.as_ref()?.as_ref().err()
+                .map(|error| error as &dyn std::error::Error),
+            CapturePolicyReadCauseV1::Read => self.read.as_ref()?.as_ref().err()
+                .map(|error| error as &dyn std::error::Error),
+            CapturePolicyReadCauseV1::Extra => self.extra.as_ref()?.as_ref().err()
+                .map(|error| error as &dyn std::error::Error),
+            CapturePolicyReadCauseV1::After => self.after.as_ref()?.as_ref().err()
+                .map(|error| error as &dyn std::error::Error),
+            CapturePolicyReadCauseV1::Decode => self.decoded.as_ref()?.as_ref().err()
+                .map(|error| error as &dyn std::error::Error),
+            CapturePolicyReadCauseV1::Path => Some(&CaptureAllocationPolicyErrorV1::ProtectedPath),
+        }
+    }
+
+    pub(crate) fn postcheck_debt(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        if self.first != Some(CapturePolicyReadCauseV1::After) {
+            if let Some(Err(error)) = &self.after {
+                return Some(error);
+            }
+            if let (Some(Ok(before)), Some(Ok(after))) = (&self.before, &self.after) {
+                if !same_file(before, after) {
+                    return Some(&CaptureAllocationPolicyErrorV1::Changed);
+                }
+            }
+        }
+        None
+    }
+
+    pub(crate) fn allocation(&self) -> Option<CaptureAllocationV1> {
+        if self.first.is_some() || self.postcheck_debt().is_some() {
+            return None;
+        }
+        self.decoded.as_ref()?.as_ref().ok().copied()
+    }
+
+    pub(crate) fn read_original(
+        &mut self,
+        directory: &OwnedFd,
+        expected_uid: u32,
+        configuration_binding: ObjectDigest,
+    ) {
+        if self.attempted {
+            self.first.get_or_insert(CapturePolicyReadCauseV1::Path);
+            return;
+        }
+        self.directory = Some(fstat(directory));
+        match &self.directory {
+            Some(Err(_)) => {
+                self.first = Some(CapturePolicyReadCauseV1::Directory);
+                self.attempted = true;
+                return;
+            }
+            Some(Ok(metadata)) if safe_directory(metadata, expected_uid) => {}
+            _ => {
+                self.first = Some(CapturePolicyReadCauseV1::Path);
+                self.attempted = true;
+                return;
+            }
+        }
+        self.read_file(directory, expected_uid, configuration_binding);
+    }
+
+    fn read_file(&mut self, directory: &OwnedFd, expected_uid: u32, binding: ObjectDigest) {
+        if self.attempted {
+            self.first.get_or_insert(CapturePolicyReadCauseV1::Path);
+            return;
+        }
+        self.attempted = true;
+        self.file = Some(openat(
+            directory,
+            FILE_NAME,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+            Mode::empty(),
+        ).map(std::fs::File::from));
+        let Some(Ok(file)) = &mut self.file else {
+            self.first = Some(CapturePolicyReadCauseV1::Open);
+            return;
+        };
+        self.before = Some(fstat(&*file));
+        match &self.before {
+            Some(Err(_)) => {
+                self.first = Some(CapturePolicyReadCauseV1::Before);
+                return;
+            }
+            Some(Ok(metadata)) if safe_file(metadata, expected_uid) => {}
+            _ => {
+                self.first = Some(CapturePolicyReadCauseV1::Path);
+                return;
+            }
+        }
+        self.read = Some(file.read_exact(&mut self.bytes));
+        if matches!(&self.read, Some(Err(_))) {
+            self.first = Some(CapturePolicyReadCauseV1::Read);
+        } else {
+            let mut extra = [0; 1];
+            self.extra = Some(file.read(&mut extra));
+            match &self.extra {
+                Some(Err(_)) => self.first = Some(CapturePolicyReadCauseV1::Extra),
+                Some(Ok(0)) => {}
+                _ => self.first = Some(CapturePolicyReadCauseV1::Path),
+            }
+        }
+        // The native read owns chronological priority. Final identity debt
+        // is retained independently, including after a short/failed read.
+        self.after = Some(fstat(&*file));
+        if matches!(&self.after, Some(Err(_))) {
+            self.first.get_or_insert(CapturePolicyReadCauseV1::After);
+        } else if let (Some(Ok(before)), Some(Ok(after))) = (&self.before, &self.after) {
+            if !same_file(before, after) {
+                self.first.get_or_insert(CapturePolicyReadCauseV1::Path);
+            }
+        }
+        if self.first.is_some() {
+            return;
+        }
+        self.decoded = Some(decode(&self.bytes, binding));
+        if matches!(&self.decoded, Some(Err(_))) {
+            self.first = Some(CapturePolicyReadCauseV1::Decode);
+        }
+    }
+}
+
+fn safe_directory(metadata: &rustix::fs::Stat, expected_uid: u32) -> bool {
+    FileType::from_raw_mode(metadata.st_mode) == FileType::Directory
+        && metadata.st_uid == expected_uid
+        && matches!(metadata.st_mode & 0o7777, 0o500 | 0o700)
+}
+
+fn safe_file(metadata: &rustix::fs::Stat, expected_uid: u32) -> bool {
+    FileType::from_raw_mode(metadata.st_mode) == FileType::RegularFile
+        && metadata.st_uid == expected_uid
+        && metadata.st_nlink == 1
+        && matches!(metadata.st_mode & 0o7777, 0o400 | 0o600)
+        && metadata.st_size == BYTES as i64
+}
+
+fn same_file(before: &rustix::fs::Stat, after: &rustix::fs::Stat) -> bool {
+    before.st_dev == after.st_dev && before.st_ino == after.st_ino
+        && before.st_size == after.st_size && before.st_mode == after.st_mode
+        && before.st_uid == after.st_uid && before.st_gid == after.st_gid
+        && before.st_nlink == after.st_nlink && before.st_mtime == after.st_mtime
+        && before.st_mtime_nsec == after.st_mtime_nsec && before.st_ctime == after.st_ctime
+        && before.st_ctime_nsec == after.st_ctime_nsec
+}
+
 impl ProtectedCaptureAllocationPolicyV1 {
     pub(crate) const fn authority_binding(&self) -> ObjectDigest {
         self.authority_binding
@@ -177,51 +374,15 @@ fn read_policy(
     expected_uid: u32,
     authority_binding: ObjectDigest,
 ) -> Result<CaptureAllocationV1, CaptureAllocationPolicyErrorV1> {
-    let descriptor = openat(
-        directory,
-        FILE_NAME,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
-        Mode::empty(),
-    )
-    .map_err(|_| CaptureAllocationPolicyErrorV1::ProtectedPath)?;
-    let before = fstat(&descriptor).map_err(|_| CaptureAllocationPolicyErrorV1::ProtectedPath)?;
-    if FileType::from_raw_mode(before.st_mode) != FileType::RegularFile
-        || before.st_uid != expected_uid
-        || before.st_nlink != 1
-        || !matches!(before.st_mode & 0o7777, 0o400 | 0o600)
-        || before.st_size != BYTES as i64
-    {
-        return Err(CaptureAllocationPolicyErrorV1::ProtectedPath);
+    let mut original = OriginalCapturePolicyReadV1::empty();
+    original.read_file(directory, expected_uid, authority_binding);
+    if let Some(allocation) = original.allocation() {
+        return Ok(allocation);
     }
-
-    let mut file = std::fs::File::from(descriptor);
-    let mut bytes = [0; BYTES];
-    file.read_exact(&mut bytes)
-        .map_err(|_| CaptureAllocationPolicyErrorV1::ProtectedPath)?;
-    let mut extra = [0; 1];
-    if file
-        .read(&mut extra)
-        .map_err(|_| CaptureAllocationPolicyErrorV1::ProtectedPath)?
-        != 0
-    {
-        return Err(CaptureAllocationPolicyErrorV1::ProtectedPath);
+    match original.decoded {
+        Some(Err(error)) => Err(error),
+        _ => Err(CaptureAllocationPolicyErrorV1::ProtectedPath),
     }
-    let after = fstat(&file).map_err(|_| CaptureAllocationPolicyErrorV1::ProtectedPath)?;
-    if before.st_dev != after.st_dev
-        || before.st_ino != after.st_ino
-        || before.st_size != after.st_size
-        || before.st_mode != after.st_mode
-        || before.st_uid != after.st_uid
-        || before.st_gid != after.st_gid
-        || before.st_nlink != after.st_nlink
-        || before.st_mtime != after.st_mtime
-        || before.st_mtime_nsec != after.st_mtime_nsec
-        || before.st_ctime != after.st_ctime
-        || before.st_ctime_nsec != after.st_ctime_nsec
-    {
-        return Err(CaptureAllocationPolicyErrorV1::ProtectedPath);
-    }
-    decode(&bytes, authority_binding)
 }
 
 fn decode(

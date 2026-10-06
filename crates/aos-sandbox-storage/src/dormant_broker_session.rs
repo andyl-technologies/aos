@@ -40,12 +40,60 @@ mod sealed {
 /// Reports rejection at the dormant broker-session-to-Storage boundary.
 #[derive(Debug, thiserror::Error)]
 pub enum DormantStorageBrokerCallErrorV1 {
+    /// A read-only candidate failed with the entire original source retained.
+    #[error(transparent)]
+    CaptureCandidate(#[from] DormantCaptureCandidateFailureV1),
     /// The protected session and live kernel boot identities differ.
     #[error("authenticated Storage handoff has stale kernel evidence")]
     StaleKernel,
     /// Storage admission or execution rejected the exact request.
     #[error("authenticated Storage Apply failed: {0}")]
     Runtime(#[from] StorageRuntimeError),
+}
+
+/// Retains a failed candidate's concrete partial owner and original results.
+///
+/// This diagnostic custody grants no allocation, source loan or retry. Its
+/// destructor fails closed through the original owner rather than discarding
+/// a returned native error, opened policy file or authenticated cut.
+pub struct DormantCaptureCandidateFailureV1 {
+    original: Box<crate::runtime::capture_candidate::OriginalCaptureCandidateV1>,
+}
+
+impl std::fmt::Debug for DormantCaptureCandidateFailureV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("DormantCaptureCandidateFailureV1")
+            .field("cause", &self.original.failure()).finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for DormantCaptureCandidateFailureV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.original.failure().or_else(|| self.original.postcheck_debt()) {
+            Some(error) => std::fmt::Display::fmt(error, formatter),
+            None => formatter.write_str("original capture candidate is permanently closed"),
+        }
+    }
+}
+
+impl std::error::Error for DormantCaptureCandidateFailureV1 {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.original.failure().or_else(|| self.original.postcheck_debt())
+    }
+}
+
+impl DormantCaptureCandidateFailureV1 {
+    /// Borrows the exact chronological source cause without moving custody.
+    #[must_use]
+    pub fn original_cause(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.original.failure()
+    }
+
+    /// Borrows independent later comparison debt without replacing that cause.
+    #[must_use]
+    pub fn postcheck_debt(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.original.postcheck_debt()
+    }
 }
 
 /// Seals the result produced by the real Storage admission/execution path.
@@ -198,13 +246,119 @@ pub trait DormantStorageBrokerCallsiteV1: sealed::Sealed {
 /// install a listener; consumption remains an explicit broker-session call.
 pub struct DormantStorageApplyCompositionV1 {
     runtime: StorageBrokerRuntime,
+    capture_candidate: Option<Box<crate::runtime::capture_candidate::OriginalCaptureCandidateV1>>,
+    capture_candidate_closed: bool,
+    capture_allocation_pin: Option<crate::execution_capture_policy::CaptureAllocationV1>,
     nix_generation: Option<crate::StorageGenerationAttemptV1>,
     nix_generation_clock_error: Option<crate::StorageRuntimeError>,
     guest_root_template: Option<ProtectedGuestRootTemplateV1>,
     _private_live_export_clones: Option<StorageLiveExportCloneLedgerV1>,
 }
 
+impl Drop for DormantStorageApplyCompositionV1 {
+    fn drop(&mut self) {
+        if self.capture_candidate.is_some() || self.capture_candidate_closed {
+            // Abort before the runtime's original directory and writers drop.
+            // Only the real signed-successor path can retire this source.
+            std::process::abort();
+        }
+    }
+}
+
 impl DormantStorageApplyCompositionV1 {
+    fn take_capture_candidate_failure(&mut self) -> DormantStorageBrokerCallErrorV1 {
+        self.capture_candidate_closed = true;
+        match self.capture_candidate.take() {
+            Some(original) => DormantCaptureCandidateFailureV1 { original }.into(),
+            None => DormantStorageBrokerCallErrorV1::StaleKernel,
+        }
+    }
+
+    /// Observes one received method-41 request through the original owners.
+    ///
+    /// The lazy slot is armed before any new read. It uses only the runtime's
+    /// retained resolver directory and private configuration binding. This
+    /// informational response does not reserve output or authorize mutation.
+    ///
+    /// # Errors
+    /// Rejects reuse, an absent provisioned source or any failed currentness
+    /// observation. The error retains the whole original owner; failure
+    /// requires process exit rather than replacement or retry.
+    pub fn observe_original_capture_candidate_v1(
+        &mut self,
+        output: &crate::execution_output_credential::StorageExecutionOutputCustodyV1,
+        request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+        version: ProtocolVersion,
+        boot: KernelBootId,
+    ) -> Result<Vec<u8>, DormantStorageBrokerCallErrorV1> {
+        if self.capture_candidate_closed {
+            return Err(DormantStorageBrokerCallErrorV1::StaleKernel);
+        }
+        if let Some(attempt) = &mut self.capture_candidate {
+            attempt.close_on_reentry();
+            return Err(self.take_capture_candidate_failure());
+        }
+        self.capture_candidate = Some(Box::new(crate::runtime::capture_candidate::OriginalCaptureCandidateV1::empty(
+            request, version, boot,
+        )));
+        let Some(attempt) = &mut self.capture_candidate else {
+            return Err(DormantStorageBrokerCallErrorV1::StaleKernel);
+        };
+        self.runtime.observe_original_capture_candidate(attempt, output, &mut self.capture_allocation_pin);
+        match attempt.take_response() {
+            Some(body) => Ok(body),
+            None => Err(self.take_capture_candidate_failure()),
+        }
+    }
+
+    /// Rechecks the same retained source immediately before signing or sending.
+    ///
+    /// # Errors
+    /// Rejects an absent or closed recipe, changed policies, expired original
+    /// request or changed actual owners, without resetting any failed result.
+    pub fn recheck_original_capture_candidate_v1(
+        &mut self,
+        output: &crate::execution_output_credential::StorageExecutionOutputCustodyV1,
+        before_signing: bool,
+    ) -> Result<(), DormantStorageBrokerCallErrorV1> {
+        let Some(attempt) = &mut self.capture_candidate else {
+            return Err(DormantStorageBrokerCallErrorV1::StaleKernel);
+        };
+        self.runtime.recheck_original_capture_candidate(attempt, output, before_signing);
+        if attempt.failure().is_some() || attempt.postcheck_debt().is_some() {
+            return Err(self.take_capture_candidate_failure());
+        }
+        Ok(())
+    }
+
+    /// Borrows the actual receipt's immutable request DATA for successor comparison.
+    #[must_use]
+    pub fn original_capture_candidate_request(
+        &self,
+    ) -> Option<&aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1> {
+        Some(self.capture_candidate.as_ref()?.original_request())
+    }
+
+    /// Retires a successful source only under an actually admitted successor.
+    ///
+    /// # Errors
+    /// Rejects absence, failed custody, replay or another session/sequence.
+    /// The same BSA receipt must already have authenticated the predecessor.
+    pub fn retire_original_capture_candidate_v1(
+        &mut self,
+        successor: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+    ) -> Result<(), DormantStorageBrokerCallErrorV1> {
+        let Some(attempt) = &mut self.capture_candidate else {
+            return Err(DormantStorageBrokerCallErrorV1::StaleKernel);
+        };
+        if !attempt.retire_on_successor(successor) {
+            attempt.close_on_reentry();
+            return Err(self.take_capture_candidate_failure());
+        }
+        self.capture_candidate = None;
+        Ok(())
+    }
+
     /// Borrows only the selected original result and its independent clock debt.
     ///
     /// This diagnostic does not admit another request or expose a writer.
@@ -408,6 +562,9 @@ impl DormantStorageApplyCompositionV1 {
         )?;
         Ok(Self {
             runtime,
+            capture_candidate: None,
+            capture_candidate_closed: false,
+            capture_allocation_pin: None,
             nix_generation: None,
             nix_generation_clock_error: None,
             guest_root_template: None,
@@ -492,6 +649,9 @@ impl DormantStorageApplyCompositionV1 {
     pub const fn from_runtime(runtime: StorageBrokerRuntime) -> Self {
         Self {
             runtime,
+            capture_candidate: None,
+            capture_candidate_closed: false,
+            capture_allocation_pin: None,
             nix_generation: None,
             nix_generation_clock_error: None,
             guest_root_template: None,
