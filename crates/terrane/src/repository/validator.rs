@@ -21,6 +21,9 @@ use crate::store::{
 /// opaque bytes without a registered validator.
 pub struct MetadataValidator {
     profile: Box<ChunkProfile>,
+    #[cfg(all(test, feature = "tokio", unix))]
+    observation:
+        std::sync::OnceLock<std::sync::Arc<crate::bucket::content_observation::ContentObservation>>,
 }
 
 impl MetadataValidator {
@@ -28,6 +31,36 @@ impl MetadataValidator {
     pub fn new(profile: ChunkProfile) -> Self {
         Self {
             profile: Box::new(profile),
+            #[cfg(all(test, feature = "tokio", unix))]
+            observation: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Attaches one fixture's actual decoder observer without accepting a callback.
+    ///
+    /// # Errors
+    /// Refuses replacement by a different observer, including a concurrent attachment.
+    #[cfg(all(test, feature = "tokio", unix))]
+    pub(crate) fn observe_for_tests(
+        &self,
+        observer: std::sync::Arc<crate::bucket::content_observation::ContentObservation>,
+    ) -> Result<(), StoreFailure> {
+        let _ = self.observation.set(std::sync::Arc::clone(&observer));
+        if self
+            .observation
+            .get()
+            .is_some_and(|current| std::sync::Arc::ptr_eq(current, &observer))
+        {
+            Ok(())
+        } else {
+            Err(StoreFailure::new(StoreErrorKind::Unsupported))
+        }
+    }
+
+    #[cfg(all(test, feature = "tokio", unix))]
+    fn observe_node_decode(&self) {
+        if let Some(observer) = self.observation.get() {
+            observer.node_decode();
         }
     }
 }
@@ -73,13 +106,19 @@ impl ContentValidator for MetadataValidator {
                 "OBJ-15",
             ),
             IdentityKind::Node => (
-                tree_format::decode_node_for(
-                    upload.bytes(),
-                    true,
-                    self.profile.minimum() as u64,
-                    TreeUse::Ordinary,
-                )
+                {
+                    #[cfg(all(test, feature = "tokio", unix))]
+                    self.observe_node_decode();
+                    tree_format::decode_node_for(
+                        upload.bytes(),
+                        true,
+                        self.profile.minimum() as u64,
+                        TreeUse::Ordinary,
+                    )
+                }
                 .or_else(|_| {
+                    #[cfg(all(test, feature = "tokio", unix))]
+                    self.observe_node_decode();
                     tree_format::decode_node_for(
                         upload.bytes(),
                         false,

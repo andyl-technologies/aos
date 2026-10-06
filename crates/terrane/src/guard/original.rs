@@ -423,7 +423,15 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn bootstrap_record(view: &BootstrapView<'_>) -> Result<(String, Vec<u8>), StoreFailure> {
+/// Encodes an untrusted bootstrap row and its registered protected key.
+///
+/// Canonical bytes alone establish no physical registration or operation rights.
+///
+/// # Errors
+/// Rejects invalid ref names, empty ACL subjects and unregistered verb bits.
+pub(super) fn bootstrap_record(
+    view: &BootstrapView<'_>,
+) -> Result<(String, Vec<u8>), StoreFailure> {
     terrane_core::refs::RefName::parse(view.reference).map_err(|_| invalid())?;
     if view
         .acl

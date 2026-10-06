@@ -430,6 +430,12 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         held: &super::held::HeldBucket<'_, F, C, V, WRITABLE>,
         upload: ContentUpload<'_>,
     ) -> Result<Identity, StoreFailure> {
+        #[cfg(all(test, feature = "tokio", unix))]
+        self.inner.content_observation.put(match upload {
+            ContentUpload::Chunk(_) => IdentityKind::Chunk,
+            ContentUpload::Meta(meta) => meta.kind(),
+        });
+
         if !std::ptr::eq(self, held.bucket()) {
             return Err(files::layout_corrupt());
         }
@@ -575,6 +581,9 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         identity: &Identity,
         range: Option<ByteRange>,
     ) -> Result<Vec<u8>, StoreFailure> {
+        #[cfg(all(test, feature = "tokio", unix))]
+        self.inner.content_observation.get(identity.kind());
+
         let catalog = self.catalog().await?;
         self.get_catalog_body(&catalog, identity, range).await
     }
@@ -594,6 +603,9 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         identity: &Identity,
         range: Option<ByteRange>,
     ) -> Result<Vec<u8>, StoreFailure> {
+        #[cfg(all(test, feature = "tokio", unix))]
+        self.inner.content_observation.get(identity.kind());
+
         if !std::ptr::eq(self, held.bucket()) {
             return Err(files::layout_corrupt());
         }

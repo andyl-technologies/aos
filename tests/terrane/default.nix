@@ -221,6 +221,7 @@ in {
   integration.native-preownership-restore = import ./native-preownership-restore.nix {inherit sourceGate;};
   integration.native-held-lease-renewal = import ./native-held-lease-renewal.nix {inherit sourceGate;};
   integration.native-cold-fork-source = import ./native-cold-fork-source.nix {inherit sourceGate;};
+  integration.native-content-observation = import ./native-content-observation.nix {inherit sourceGate;};
   integration.namespace-reference-models = import ./namespace-models.nix {inherit sourceGate;};
   integration.attribute-reference-models = import ./attribute-models.nix {inherit sourceGate;};
   integration.index-format = import ./index-format.nix {inherit sourceGate;};

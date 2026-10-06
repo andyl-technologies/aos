@@ -548,6 +548,15 @@ read data, not publication authority. End-to-end fork publication with no
 TreeNode reads/decodes and source-preserving collection remain ALG-32
 prerequisites; the broad `algebra-fork` gate stays pending.
 
+The test-only bucket observer records actual typed Node/Commit get and put
+attempts before catalog lookup, admission or deduplication. The same per-bucket
+observer follows clones and held adapters and can attach to the actual metadata
+validator's Node decoder. Three genuine native calibration cases pass: cloned
+and held reads, missing Node reads without decoding, and deduplicated puts.
+`checks.terrane.integration.native-content-observation` requires those exact
+non-ignored cases. These counters do not infer physical pack byte ranges or
+count later core tree decoders; complete cold-fork and ALG-32 work remains open.
+
 The reviewed concrete ext4 VM harness is now adopted as a shared prerequisite.
 It uses the checked release package in the existing source-built headless VM
 framework, verifies the actual ext4 filesystem, and checks separate-process

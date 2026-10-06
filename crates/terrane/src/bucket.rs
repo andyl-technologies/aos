@@ -11,6 +11,8 @@ use access::Access;
 mod catalog;
 mod containers;
 mod content;
+#[cfg(all(test, feature = "tokio", unix))]
+pub(crate) mod content_observation;
 mod files;
 pub(crate) mod held;
 #[cfg(all(test, feature = "tokio", unix))]
@@ -113,6 +115,8 @@ struct Inner<F, C, V> {
     validator: V,
     capabilities: Capabilities,
     access: Access,
+    #[cfg(all(test, feature = "tokio", unix))]
+    content_observation: Arc<content_observation::ContentObservation>,
 }
 
 impl<F, C, V> Clone for FileBucket<F, C, V> {
@@ -170,6 +174,8 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                 validator,
                 capabilities,
                 access: Access::Writable,
+                #[cfg(all(test, feature = "tokio", unix))]
+                content_observation: Arc::default(),
             }),
         };
 
@@ -260,6 +266,8 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                 validator,
                 capabilities,
                 access: Access::LegacyReadOnly,
+                #[cfg(all(test, feature = "tokio", unix))]
+                content_observation: Arc::default(),
             }),
         };
 
@@ -353,3 +361,28 @@ impl<F, C, V> CapabilityReport for FileBucket<F, C, V> {
 
 #[cfg(all(test, feature = "tokio"))]
 mod requirement_tests;
+
+#[cfg(all(test, feature = "tokio", unix))]
+impl<F, C, V> FileBucket<F, C, V> {
+    /// Borrows the same typed observer used by this bucket and all its clones.
+    pub(crate) fn observe_content_for_tests(&self) -> Arc<content_observation::ContentObservation> {
+        Arc::clone(&self.inner.content_observation)
+    }
+}
+
+#[cfg(all(test, feature = "tokio", unix))]
+impl<F, C> FileBucket<F, C, crate::repository::MetadataValidator> {
+    /// Attaches actual validator decoder observations to this bucket's observer.
+    ///
+    /// # Errors
+    /// Refuses reuse of the validator with a different fixture observer.
+    pub(crate) fn observe_metadata_for_tests(
+        &self,
+    ) -> Result<Arc<content_observation::ContentObservation>, StoreFailure> {
+        let observer = self.observe_content_for_tests();
+        self.inner
+            .validator
+            .observe_for_tests(Arc::clone(&observer))?;
+        Ok(observer)
+    }
+}
