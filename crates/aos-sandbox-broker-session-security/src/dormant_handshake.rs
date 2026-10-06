@@ -6110,12 +6110,13 @@ impl DormantAuthenticatedBrokerSessionV1 {
         authenticated: AuthenticatedBrokerMethodRequestV1,
         initialize: bool,
     ) -> Result<DormantBrokerRequestPreparationV1, BrokerSessionSecurityError> {
-        let prepared = DormantPreparedBrokerRequestV1(authenticated.clone());
         if initialize {
             return Ok(
                 match self.0.initialize_authenticated_request(&authenticated)? {
                     ProtectedBrokerSessionInitializationResultV1::Initialized => {
-                        DormantBrokerRequestPreparationV1::Prepared(prepared)
+                        DormantBrokerRequestPreparationV1::Prepared(
+                            DormantPreparedBrokerRequestV1(authenticated),
+                        )
                     }
                     ProtectedBrokerSessionInitializationResultV1::RecoveryRequired {
                         error,
@@ -6130,7 +6131,9 @@ impl DormantAuthenticatedBrokerSessionV1 {
         }
         Ok(match self.0.append_authenticated_request(&authenticated)? {
             ProtectedBrokerRequestCommitResultV1::Committed => {
-                DormantBrokerRequestPreparationV1::Prepared(prepared)
+                DormantBrokerRequestPreparationV1::Prepared(
+                    DormantPreparedBrokerRequestV1(authenticated),
+                )
             }
             ProtectedBrokerRequestCommitResultV1::RecoveryRequired { error, recovery } => {
                 DormantBrokerRequestPreparationV1::SuccessorRecoveryRequired {
