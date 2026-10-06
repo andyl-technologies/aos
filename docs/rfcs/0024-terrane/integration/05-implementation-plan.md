@@ -356,6 +356,19 @@ snapshot/reopen continuity and incomplete-successor refusal. The shared
 opaque-Notes/current-root case, with exact inventory validation. Registry and
 format checks pass; composed Nix gates and full T1 remain unqualified.
 
+The private composition `079866be4bd1` passes native production compilation and
+strict all-target Clippy without new suppressions. It declares 503 native tests,
+including all 35 selected retirement, current-root, common-walker, root-inventory
+and held-read cases; their combined runtime remains under qualification. Two
+earlier preserved lint failures identify test calls to a removed byte-only
+wrapper and a direct wall-clock call in the distinct-timestamp fixture. The
+corrections retain exact observed reads and wait on a separate actual backend
+timestamp without rewriting either pack/index timestamp. The shared
+`gc-grace-window` producer requires four exact native cases covering the strict
+pair-age boundary, independently newer index, enforced commit bound and actual
+exclusion-before-Trash acknowledgment. Its Nix execution remains pending.
+Restore, physical deletion, task merges and the complete T1 floor remain open.
+
 The preceding completed full qualification records candidate
 `15540ef204ec`, which combines reviewed source discovery, immutable lookup,
 repeatable I/P/G maintenance, separate verifier/preparation work, common Memo

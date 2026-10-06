@@ -32,6 +32,13 @@
     "gc::runner::tests::current_roots::gc_current_native_keeps_opaque_notes_absent_history_and_guard_record"
   ];
 
+  graceTests = [
+    "gc::runner::tests::retirement::gc_initial_retirement_native_grace_uses_pair_backend_upper_bound"
+    "gc::runner::tests::retirement::gc_initial_retirement_native_newer_index_controls_pair_grace"
+    "gc::runner::tests::retirement::gc_initial_retirement_native_refuses_unenforced_commit_window_before_effects"
+    "gc::runner::tests::retirement::gc_initial_retirement_native_selects_exact_exclusion_then_committed_trash"
+  ];
+
   markTests = [
     "gc::runner::walk::tests::common_walk_certificates_apply_only_to_direct_entry_objects"
     "gc::runner::walk::tests::common_walk_context_order_is_fieldwise_and_round_trips_exact_state"
@@ -74,6 +81,13 @@
     done
   '';
 in {
+  gc-grace-window = sourceGate "gc-grace-window" ''
+    cd crates
+    ${focusedTests "tokio,surface-sdk" graceTests}
+    printf 'PASS: actual pack/index timestamps, strict grace boundary and enforced commit window (4 exact cases)\n' \
+      > "$out/result"
+  '';
+
   gc-roots-complete = sourceGate "gc-roots-complete" ''
     cd crates
     ${focusedTests "tokio,surface-sdk" rootTests}
