@@ -478,19 +478,35 @@ pub(super) extern "C" fn operational_read(address: u64, output: *mut u8, valid: 
     if output.is_null() || valid == 0 || valid as usize > PAGE_BYTES {
         return -libc::EINVAL;
     }
-    let result = read_operational_page(address, valid as usize);
-    match result {
-        Ok(bytes) => {
+    complete_operational_read(output, valid as usize, |bytes| {
+        read_operational_page(address, valid as usize, bytes)
+    })
+}
+
+fn complete_operational_read(
+    output: *mut u8,
+    valid: usize,
+    read: impl FnOnce(&mut [u8; PAGE_BYTES]) -> Result<(), RamError>,
+) -> c_int {
+    // Staging belongs to this caller. A failed read may modify private scratch,
+    // but it cannot publish even a partial authenticated page to native output.
+    let mut bytes = [0; PAGE_BYTES];
+    match read(&mut bytes) {
+        Ok(()) => {
             // SAFETY: native capture lends a writable valid-byte output buffer
             // for this call; the page scratch is fully authenticated beforehand.
-            unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), output, valid as usize) };
+            unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), output, valid) };
             0
         }
         Err(_) => -libc::EIO,
     }
 }
 
-fn read_operational_page(address: u64, valid: usize) -> Result<[u8; PAGE_BYTES], RamError> {
+fn read_operational_page(
+    address: u64,
+    valid: usize,
+    bytes: &mut [u8; PAGE_BYTES],
+) -> Result<(), RamError> {
     let owner = OPERATIONAL_OWNER
         .get()
         .ok_or(RamError::Invariant("operational RAM owner absent"))?
@@ -503,7 +519,6 @@ fn read_operational_page(address: u64, valid: usize) -> Result<[u8; PAGE_BYTES],
         .lock()
         .map_err(|_| "paging authority owner poisoned")?
         .clone();
-    let mut bytes = [0; PAGE_BYTES];
     if let Some(service) = service {
         if service.failed.load(Ordering::Acquire) {
             return Err(RamError::Invariant("paging authority failed"));
@@ -533,18 +548,21 @@ fn read_operational_page(address: u64, valid: usize) -> Result<[u8; PAGE_BYTES],
                 .ok_or("operational page coordinate absent")?
                 .resident;
             if !resident {
-                let length = service.read_cold(arena, page_index, coordinate, true, &mut bytes)?;
+                let length = service.read_cold(arena, page_index, coordinate, true, bytes)?;
                 if length as usize != valid {
                     return Err(RamError::Invariant(
                         "operational source page length differs",
                     ));
                 }
-                return Ok(bytes);
+                return Ok(());
             }
         }
     }
     // SAFETY: native capture retains a coherent writer/physical-access fence and
     // lends this valid RAM range. Cold pages returned above never dereference it.
     unsafe { std::ptr::copy_nonoverlapping(address as *const u8, bytes.as_mut_ptr(), valid) };
-    Ok(bytes)
+    Ok(())
 }
+
+#[cfg(test)]
+mod operational_read_tests;
