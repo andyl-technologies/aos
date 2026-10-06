@@ -800,10 +800,13 @@ pub(super) fn materialization_flight_deployment(
 ) -> Result<PathBuf, Box<dyn Error>> {
     let deployment = fixture._temporary.path().join("hot-fork-executor.toml");
     let authored = fs::read_to_string(required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?)?;
+
+    // Reserve two retained 256 MiB worlds and one concurrent child lease.
+    // Each reservation also includes both QEMU nodes' measured private dirties.
     fs::write(
         &deployment,
         format!(
-            "{authored}\n[hot_fork]\nmaximum_templates = 2\nmaximum_template_bytes = 1073741824\nmaximum_expected_private_dirty_bytes = 536870912\nmaximum_processes = 8\nmaximum_virtual_cpus = 8\nmaximum_descriptors = 4096\nmaximum_overlays = 16\nmaximum_forks_per_window = 8\nfork_rate_window_ms = 1000\nshutdown_step_timeout_ms = 1000\nhost_io_timeout_ms = 30000\n"
+            "{authored}\n[hot_fork]\nmaximum_templates = 2\nmaximum_template_bytes = 1073741824\nmaximum_expected_private_dirty_bytes = 1610612736\nmaximum_processes = 8\nmaximum_virtual_cpus = 8\nmaximum_descriptors = 4096\nmaximum_overlays = 16\nmaximum_forks_per_window = 8\nfork_rate_window_ms = 1000\nshutdown_step_timeout_ms = 1000\nhost_io_timeout_ms = 30000\n"
         ),
     )?;
     fs::set_permissions(&deployment, fs::Permissions::from_mode(0o600))?;
