@@ -52,6 +52,7 @@ pub(crate) struct GuardEffectContext {
     final_check: super::OwnedFinalCheck,
     controls: Vec<crate::guard::RetainedControls>,
     selected_reads: Vec<SelectedControlRead>,
+    publication_original: Option<crate::guard::OriginalCommitContext>,
 }
 
 /// Retains one actual separately protected selected read and its configured owner.
@@ -114,6 +115,14 @@ where
 }
 
 impl GuardEffectContext {
+    /// Borrows the actual retained new candidate context chosen by this producer.
+    ///
+    /// Absence never establishes that consumed controls were previously durable;
+    /// non-candidate producers conservatively synchronize all their actual rows.
+    pub(crate) fn publication_original(&self) -> Option<&crate::guard::OriginalCommitContext> {
+        self.publication_original.as_ref()
+    }
+
     /// Retains the same genuine owned request check for submitted dispatch.
     pub(crate) fn final_check(&self) -> super::OwnedFinalCheck {
         self.final_check.clone()
@@ -203,6 +212,7 @@ where
             final_check: final_check.clone(),
             controls: vec![retained_controls],
             selected_reads,
+            publication_original: None,
         }),
     };
     match held.publish_checked(permit).await {
@@ -428,6 +438,7 @@ where
             final_check: final_check.clone(),
             controls: vec![retained_controls],
             selected_reads,
+            publication_original: Some(original.clone()),
         }),
     };
     #[cfg(test)]
@@ -600,6 +611,7 @@ where
             final_check: final_check.clone(),
             controls: vec![retained_controls],
             selected_reads,
+            publication_original: None,
         }),
     };
     let receipt = held.publish_checked(permit).await?;

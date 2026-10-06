@@ -104,6 +104,7 @@ pub(in super::super) fn frame(owner: u32, exclusions: Arc<[NativeExclusion]>) ->
         names: Vec::new(),
         reads: Vec::new(),
         parents: BTreeMap::new(),
+        writes: None,
         final_check: None,
         owner,
     }

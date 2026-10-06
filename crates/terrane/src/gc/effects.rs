@@ -60,6 +60,7 @@ pub(crate) async fn publish_checked<F: LocalFs + BucketBinding>(
         names: Vec::new(),
         reads: Vec::new(),
         parents: BTreeMap::new(),
+        writes: None,
         final_check: Some(context.final_check()),
         owner,
     };

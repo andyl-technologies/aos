@@ -70,6 +70,52 @@ struct Frame {
     parents: BTreeMap<PathBuf, (MetadataStamp, u32)>,
     final_check: Option<OwnedFinalCheck>,
     owner: u32,
+    writes: Option<CompletedWrites>,
+}
+
+/// Records completed targets, the new candidate log and required current controls.
+///
+/// This inventory is ordinary derived data. It supplies no permission, excludes
+/// temporary names consumed by rename, and never replaces retained preimages.
+/// The checked producer also retains the exact newly selected log after its
+/// actual body and whole predecessor association have passed existing checks.
+/// Current Original rows come from the retained opaque candidate context; other
+/// producers retain all consumed administrative rows conservatively.
+#[derive(Clone)]
+pub(super) struct CompletedWrites {
+    records: BTreeMap<PathBuf, CompletedWrite>,
+}
+
+/// Retains one final record body or removal under its actual root policy.
+#[derive(Clone)]
+pub(super) struct CompletedWrite {
+    root: PathBuf,
+    policy: FencePolicy,
+    expected: Option<Vec<u8>>,
+}
+
+impl CompletedWrites {
+    /// Iterates final completed targets by their exact native paths.
+    pub(super) fn records(&self) -> impl Iterator<Item = (&PathBuf, &CompletedWrite)> {
+        self.records.iter()
+    }
+}
+
+impl CompletedWrite {
+    /// Borrows the genuine namespace or control boundary of the completed write.
+    pub(super) fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Returns the retained payload or protected-record ownership policy.
+    pub(super) fn policy(&self) -> FencePolicy {
+        self.policy
+    }
+
+    /// Borrows the final body, or returns absence for a completed removal.
+    pub(super) fn expected(&self) -> Option<&[u8]> {
+        self.expected.as_deref()
+    }
 }
 
 fn corrupt() -> StoreFailure {
@@ -161,6 +207,9 @@ pub(crate) async fn publish_checked<F: LocalFs + BucketBinding>(
         parents: BTreeMap::new(),
         final_check: Some(context.final_check()),
         owner,
+        writes: Some(CompletedWrites {
+            records: BTreeMap::new(),
+        }),
     };
 
     for retained in controls {
@@ -263,6 +312,66 @@ pub(crate) async fn publish_checked<F: LocalFs + BucketBinding>(
         }
     }
 
+    // Candidate authoring can just have retained new Original rows through
+    // generic adapters. Its opaque checked context fixes the exact current pins.
+    // Other closed producers can have written imports or current setup rows;
+    // conservatively retain every consumed row until they own a write inventory.
+    let current_original = context.publication_original();
+    let current_pins = current_original
+        .map(crate::guard::publication_original_pins)
+        .transpose()?;
+    let mut retained_current_pins = 0;
+    for retained in controls {
+        for record in retained.records() {
+            let include = match (&current_pins, current_original) {
+                (Some(pins), Some(_)) => {
+                    // The genuine context can retain an imported original under
+                    // the destination owner. Match its actual derived pin owner,
+                    // rather than the foreign original baseline's control path.
+                    if let Some(pin) = pins.iter().find(|pin| {
+                        matches!(
+                            &pin.owner,
+                            terrane_core::gc::publication::evidence::PhysicalRegistration::Local(owner)
+                                if owner.control.as_slice()
+                                    == retained.directory().as_os_str().as_encoded_bytes()
+                        ) && retained.directory().join(&pin.key) == record.path()
+                    }) {
+                        pin.check_record(record.bytes()).map_err(|_| corrupt())?;
+                        retained_current_pins += 1;
+                        true
+                    } else {
+                        false
+                    }
+                }
+                (None, None) => true,
+                _ => return Err(corrupt()),
+            };
+            if include {
+                frame
+                    .writes
+                    .as_mut()
+                    .ok_or_else(unsupported)?
+                    .records
+                    .insert(
+                        record.path().to_owned(),
+                        CompletedWrite {
+                            root: retained.directory().to_owned(),
+                            policy: FencePolicy::ProtectedRecord {
+                                owner: retained.owner(),
+                            },
+                            expected: Some(record.bytes().to_vec()),
+                        },
+                    );
+            }
+        }
+    }
+    if current_pins
+        .as_ref()
+        .is_some_and(|pins| pins.len() != retained_current_pins)
+    {
+        return Err(corrupt());
+    }
+
     if let Some(bytes) = checked.lineage() {
         use terrane_core::gc::publication::{CommittedSelection, evidence::CheckedLineage};
         use terrane_core::refs::RefLogRecord;
@@ -307,6 +416,21 @@ pub(crate) async fn publish_checked<F: LocalFs + BucketBinding>(
         if log.selected_previous().map_err(|_| corrupt())? != retained {
             return Err(corrupt());
         }
+        // This staged log participates in the new selected lineage. Its fixed
+        // native staging result alone cannot fill the final acknowledgment.
+        frame
+            .writes
+            .as_mut()
+            .ok_or_else(unsupported)?
+            .records
+            .insert(
+                observed.identity().root().join(key.as_str()),
+                CompletedWrite {
+                    root: observed.identity().root().to_owned(),
+                    policy: FencePolicy::Payload { owner },
+                    expected: Some(bytes),
+                },
+            );
     }
 
     // This check uses each actual borrowed backend before the first effect.
@@ -317,6 +441,15 @@ pub(crate) async fn publish_checked<F: LocalFs + BucketBinding>(
     }
     checked.recheck_before_slot()?;
     let root = observed.identity().root();
+    #[cfg(all(test, feature = "tokio"))]
+    if matches!(
+        checked.proof(),
+        terrane_core::gc::publication::PublicationProof::Candidate(_)
+    ) {
+        fs.before_candidate_projection_for_tests(root)
+            .await
+            .map_err(io_failure)?;
+    }
     frame
         .project(fs, root, observed.snapshot(), observed.logical())
         .await?;
@@ -457,6 +590,7 @@ pub(crate) async fn publish_checked<F: LocalFs + BucketBinding>(
         &slot,
         &transaction,
         &snapshot_bytes,
+        frame.writes.as_ref().ok_or_else(unsupported)?,
     )
     .map_err(native_failure)?;
     frame.execute(fs, acknowledgment).await?;

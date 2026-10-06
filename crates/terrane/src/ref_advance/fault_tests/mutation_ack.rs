@@ -4,6 +4,8 @@
 //! checked mutation nor populate its private acknowledgment channel. All ordinary
 //! I/O and authority factories remain the native implementations.
 
+mod write_set;
+
 use super::{
     AdvanceError, FaultFs, LocalFs, NativeFixture, Path, PathBuf, RefStore, StoreErrorKind,
     TokioLocalFs, configured_with_fs, fixture, request, token,
@@ -18,10 +20,12 @@ use terrane_core::gc::publication::{PublicationCommit, PublicationProof, Publica
 pub(super) struct Hooks {
     pending: Arc<Mutex<Option<Hook>>>,
     slots: Arc<Mutex<Vec<PathBuf>>>,
+    cache_change: Arc<Mutex<Option<write_set::CacheChange>>>,
 }
 
 enum Hook {
     Noop,
+    Observe(mpsc::Sender<crate::store::MutationSyncEvent>),
     Fault {
         fault: EffectFault,
         swallow: bool,
@@ -38,6 +42,17 @@ enum Hook {
 }
 
 impl Hooks {
+    /// Applies a cache fault at the checked candidate's actual projection handoff.
+    ///
+    /// # Errors
+    /// Rejects poisoned fixture state or failed actual cache I/O.
+    ///
+    /// # Panics
+    /// Panics if the injected cache differs from its immediately verified state.
+    pub(super) fn before_candidate_projection(&self, root: &Path) -> std::io::Result<()> {
+        write_set::before_candidate_projection(self, root)
+    }
+
     fn arm(&self, hook: Hook) {
         let mut pending = self.pending.lock().unwrap();
         assert!(
@@ -99,6 +114,9 @@ pub(super) async fn execute(
     let mut swallow = false;
     match hook {
         Some(Hook::Noop) => return Ok(()),
+        Some(Hook::Observe(sender)) => {
+            effect = effect.observe_mutation_syncs(sender)?;
+        }
         Some(Hook::Fault {
             fault,
             swallow: requested,

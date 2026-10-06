@@ -687,7 +687,7 @@ impl<S, C> Guard<S, C> {
 ///
 /// # Errors
 /// Rejects an unsupported retained owner or malformed canonical administrative rows.
-pub(super) fn consumed_pins(
+pub(crate) fn consumed_pins(
     context: &OriginalCommitContext,
 ) -> Result<Vec<terrane_core::gc::publication::evidence::RequiredControlPin>, StoreFailure> {
     use terrane_core::gc::publication::evidence::{ControlKind, RequiredControlPin};

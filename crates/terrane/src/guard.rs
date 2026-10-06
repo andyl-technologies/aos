@@ -24,7 +24,9 @@ mod merge;
 #[cfg(feature = "std")]
 mod original;
 #[cfg(feature = "std")]
-pub(crate) use original::{ControlExclusion, RetainedControls};
+pub(crate) use original::{
+    ControlExclusion, RetainedControls, consumed_pins as publication_original_pins,
+};
 #[cfg(feature = "std")]
 mod policy;
 mod read;

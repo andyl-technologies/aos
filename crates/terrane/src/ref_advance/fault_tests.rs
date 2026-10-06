@@ -673,6 +673,11 @@ impl LocalFs for FaultFs {
         TokioLocalFs.execute_retained_effect(effect).await
     }
 
+    #[cfg(unix)]
+    async fn before_candidate_projection_for_tests(&self, root: &Path) -> std::io::Result<()> {
+        self.mutation.before_candidate_projection(root)
+    }
+
     async fn random_bytes(&self, length: usize) -> std::io::Result<Vec<u8>> {
         self.check(Failure::Entropy)?;
         TokioLocalFs.random_bytes(length).await

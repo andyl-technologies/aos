@@ -1,8 +1,9 @@
 //! Submits fixed private staging and projection commands under the retained frame.
 
 use super::{
-    BTreeMap, BucketBinding, FencePolicy, Frame, LocalFs, MetadataStamp, Mutability, Path, Plan,
-    PortableCurrent, StoreErrorKind, StoreFailure, corrupt, io_failure, unsupported,
+    BTreeMap, BucketBinding, CompletedWrite, FencePolicy, Frame, LocalFs, MetadataStamp,
+    Mutability, Path, Plan, PortableCurrent, StoreErrorKind, StoreFailure, corrupt, io_failure,
+    unsupported,
 };
 use terrane_core::bucket::BucketKey;
 
@@ -144,6 +145,16 @@ impl Frame {
         if self.actual_read(fs, &target, policy).await?.as_deref() != Some(bytes) {
             return Err(corrupt());
         }
+        if let Some(writes) = &mut self.writes {
+            writes.records.insert(
+                target,
+                CompletedWrite {
+                    root: root.to_owned(),
+                    policy,
+                    expected: Some(bytes.to_vec()),
+                },
+            );
+        }
         Ok(())
     }
 
@@ -205,6 +216,16 @@ impl Frame {
                             FencePolicy::Payload { owner: self.owner },
                         )
                         .await?;
+                        if let Some(writes) = &mut self.writes {
+                            writes.records.insert(
+                                path,
+                                CompletedWrite {
+                                    root: root.to_owned(),
+                                    policy: FencePolicy::Payload { owner: self.owner },
+                                    expected: None,
+                                },
+                            );
+                        }
                     }
                 }
                 None => {}

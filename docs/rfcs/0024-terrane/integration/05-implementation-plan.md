@@ -617,6 +617,32 @@ runtime qualification is still red, with two 120-second ownership timeouts
 and an early-wait observer timeout recorded so far. Full-D ownership,
 recovery, unlink and cancellation remain unqualified.
 
+The checked mutation now synchronizes its actual final writes, completed
+projection repairs/removals, newly selected log and genuine current Original
+rows, plus unique required directories. Every complete input refresh and current
+operation check remains required. The six original acknowledgment fixtures are
+unchanged; six additional fixtures independently derive the expected sync paths
+and exercise actual queued file/directory faults. All twelve native cases and
+both six-case owning Nix checks pass. Ref-advance ordering, registry,
+default/Send builds, strict private rustdoc and both mandatory formatters pass;
+strict native Clippy retains the same 34 library and 12 test errors without
+suppression. The two original new cache-oracle failures identified an incorrect
+test handoff and remain preserved with their corrected runs.
+
+The subsequent full package executes 890 cases: 884 pass, six fail and none
+are skipped. Its remaining failure inventory contains the same six legacy
+retirement/copy fixtures; all three unchanged multiwriter cases pass both the
+isolated sample and this package run. These observations do not establish a
+general expiry fix. Actual package inputs match all eighteen changed code/gate
+images at that run; subsequent changes add documentation only. The aggregate
+still fails, and the four unfinished specification gates remain pending.
+The private first-ownership matrix finishes with three failures and three
+120-second timeouts. Corrected fixtures and the exact lease synchronization
+proposal remain unqualified. Temporary dispatch traces observe real queue and
+worker entry, initial current checks, and repeated complete input refreshes;
+they do not establish a timing cause and are removed from production sources.
+No formal task merge, checkbox, milestone exit or freeze advances.
+
 The existing private cold-fork source candidate retains its original commit
 `78eb15c7f6` and current prerequisite composition for review and adaptation.
 `checks.terrane.integration.native-cold-fork-source` requires its six exact

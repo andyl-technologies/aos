@@ -735,6 +735,28 @@ impl NativeFsEffect {
         }
     }
 
+    /// Observes completed real syncs of this genuine common publication request.
+    ///
+    /// # Errors
+    /// Rejects a different plan or unexpected nested retained-directory wrappers.
+    #[cfg(all(test, feature = "tokio", unix))]
+    pub(crate) fn observe_mutation_syncs(
+        mut self,
+        sender: std::sync::mpsc::Sender<artifact_seal::mutation_publication::MutationSyncEvent>,
+    ) -> io::Result<Self> {
+        let plan = match &mut self.plan {
+            Plan::RetainedDirectories { operation, .. } => operation.as_mut(),
+            plan => plan,
+        };
+        let Plan::SealMutationPublication(request) = plan else {
+            return Err(io::Error::other(
+                "sync observation requires checked mutation",
+            ));
+        };
+        request.observe_syncs(sender);
+        Ok(self)
+    }
+
     /// Attaches closed test failure strategies to this already sealed effect.
     #[cfg(test)]
     pub(crate) fn inject_test_faults(mut self, faults: Vec<EffectFault>) -> Self {
@@ -1163,3 +1185,6 @@ impl NativeFsEffect {
 #[cfg(all(test, unix))]
 #[path = "native_effect/tests.rs"]
 mod tests;
+
+#[cfg(all(test, feature = "tokio", unix))]
+pub(crate) use artifact_seal::mutation_publication::MutationSyncEvent;

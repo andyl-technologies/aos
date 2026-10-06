@@ -2,11 +2,15 @@
 //!
 //! The private channel starts empty. Only the native executor can fill it after
 //! checking the selected slot/transaction/snapshot association, synchronizing
-//! retained metadata descriptors and required directories, and refreshing all
+//! exact outputs, completed repairs and unique required directories, and refreshing all
 //! real namespace/control exclusions and current operation checks. Receipt bytes
 //! or unit-returning adapters cannot manufacture this acknowledgment.
 
-use super::publication_sync::{SyncScope, synchronize};
+use super::super::publication::CompletedWrites;
+use super::publication_sync::SyncScope;
+
+#[path = "mutation_publication/synchronize.rs"]
+mod synchronization;
 use super::{FencePolicy, MetadataStamp, NativeEffectFailure, PathBuf, Plan, Worker};
 use std::{io, sync::mpsc};
 use terrane_core::gc::publication::{PublicationCommit, PublicationTransaction};
@@ -26,6 +30,11 @@ pub(in super::super) struct MutationRequest {
     pointer: Vec<u8>,
     proofs: Vec<(PathBuf, Vec<u8>)>,
     selected_reads: Vec<(PathBuf, Vec<u8>, MetadataStamp, u32)>,
+    writes: CompletedWrites,
+    changes: Vec<(PathBuf, Option<Vec<u8>>)>,
+    original_directories: Vec<(PathBuf, u32)>,
+    #[cfg(all(test, feature = "tokio"))]
+    completed_syncs: Option<mpsc::Sender<MutationSyncEvent>>,
     result: mpsc::Sender<DurableMutation>,
 }
 
@@ -34,6 +43,24 @@ impl MutationRequest {
     #[cfg(all(test, feature = "tokio"))]
     pub(in super::super) fn path(&self) -> &std::path::Path {
         &self.slot_path
+    }
+}
+
+/// Reports successful actual sync syscalls to a fixture, never acknowledgment.
+#[cfg(all(test, feature = "tokio"))]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum MutationSyncEvent {
+    /// Reports the fixed metadata path after its real descriptor synchronization.
+    File(PathBuf),
+    /// Reports the fixed directory path after its real descriptor synchronization.
+    Directory(PathBuf),
+}
+
+impl MutationRequest {
+    /// Attaches a fixture-owned observation channel without changing the plan.
+    #[cfg(all(test, feature = "tokio", unix))]
+    pub(in super::super) fn observe_syncs(&mut self, sender: mpsc::Sender<MutationSyncEvent>) {
+        self.completed_syncs = Some(sender);
     }
 }
 
@@ -78,6 +105,7 @@ pub(in super::super) fn mutation_plan(
     slot: &PublicationCommit,
     transaction: &PublicationTransaction,
     snapshot: &[u8],
+    writes: &CompletedWrites,
 ) -> Result<(Plan, MutationReceiver), NativeEffectFailure> {
     let observed = checked.observed();
     let context = checked.effect_context().ok_or_else(|| {
@@ -224,6 +252,24 @@ pub(in super::super) fn mutation_plan(
             scopes,
             proofs,
             selected_reads,
+            writes: writes.clone(),
+            changes: checked
+                .changes()
+                .iter()
+                .map(|change| {
+                    (
+                        observed.identity().root().join(&change.key),
+                        change.new.clone(),
+                    )
+                })
+                .collect(),
+            original_directories: context
+                .controls()
+                .iter()
+                .map(|controls| (controls.directory().to_owned(), controls.owner()))
+                .collect(),
+            #[cfg(all(test, feature = "tokio"))]
+            completed_syncs: None,
             result: sender,
         })),
         MutationReceiver { result: receiver },
@@ -301,7 +347,7 @@ pub(super) fn execute(
     mut worker: Worker,
 ) -> Result<(), NativeEffectFailure> {
     association(&request, &worker)?;
-    synchronize(&mut worker, &request.scopes)?;
+    synchronization::synchronize(&request, &mut worker)?;
     association(&request, &worker)?;
     let _ = request.result.send(DurableMutation { _private: () });
     Ok(())

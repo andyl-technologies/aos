@@ -24,6 +24,8 @@ pub use native_clock::NativeEffectClock;
 #[cfg(all(feature = "std", test))]
 pub(crate) use native_clock::gc_test_clock::TestClock;
 
+#[cfg(all(feature = "std", test, feature = "tokio", unix))]
+pub(crate) use native_effect::MutationSyncEvent;
 #[cfg(feature = "std")]
 pub(crate) use native_effect::publication as native_publication_effects;
 #[cfg(feature = "std")]
@@ -862,6 +864,23 @@ pub trait LocalFs {
             "retained native effects unavailable",
         )
         .into())
+    }
+
+    /// Hands a test fixture the actual candidate cache-projection boundary.
+    ///
+    /// The handoff follows borrowed revalidation and the current pre-slot check,
+    /// before the checked mutation first captures or repairs physical caches.
+    /// It supplies no mutation, selected-state or acknowledgment authority. The
+    /// default has no effect, and the method is absent from production builds.
+    ///
+    /// # Errors
+    /// Propagates fixture observation or deliberately injected cache-I/O failure.
+    #[cfg(all(test, feature = "tokio"))]
+    async fn before_candidate_projection_for_tests(
+        &self,
+        _root: &std::path::Path,
+    ) -> std::io::Result<()> {
+        Ok(())
     }
 
     /// Reads a complete file.
