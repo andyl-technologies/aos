@@ -38,6 +38,7 @@ members = [
     "crucible-assert",
     "crucible-shmem",
     "crucible-protocol",
+    "crucible-ram",
     "crucible-device",
     "crucible-debug-gateway",
     "crucible-qemu",
@@ -213,6 +214,7 @@ rcgen = "0.14"
 aos-contract = { path = "aos-contract" }
 aos-maintain = { path = "aos-maintain" }
 crucible-cas = { path = "crucible-cas" }
+crucible-ram = { path = "crucible-ram" }
 crucible-linux-resource = { path = "crucible-linux-resource" }
 crucible-s3-store = { path = "crucible-s3-store" }
 crucible-campaign = { path = "crucible-campaign" }

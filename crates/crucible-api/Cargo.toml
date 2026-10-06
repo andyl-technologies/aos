@@ -18,6 +18,9 @@ blake3 = { workspace = true }
 bytes = { workspace = true }
 ciborium = { workspace = true }
 crucible = { path = "../crucible" }
+crucible-cas = { workspace = true }
+crucible-ram = { workspace = true }
+crucible-linux-resource = { workspace = true }
 crucible-campaign = { path = "../crucible-campaign" }
 crucible-device = { path = "../crucible-device" }
 crucible-protocol = { path = "../crucible-protocol" }
@@ -40,6 +43,7 @@ tokio-rustls = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+rusqlite = { workspace = true }
 crucible = { path = "../crucible", features = ["test-double", "test-support"] }
 crucible-qemu = { path = "../crucible-qemu", features = ["test-support"] }
 crucible-session = { path = "../crucible-session", features = ["test-support"] }

@@ -19,6 +19,7 @@ ciborium = { workspace = true }
 crucible-sim = { path = "../crucible-sim" }
 crucible-campaign = { workspace = true }
 crucible-cas = { workspace = true }
+crucible-ram = { path = "../crucible-ram" }
 crucible-device = { path = "../crucible-device" }
 crucible-shmem = { path = "../crucible-shmem", optional = true }
 crucible-protocol = { path = "../crucible-protocol" }

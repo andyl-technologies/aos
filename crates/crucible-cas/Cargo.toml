@@ -19,6 +19,7 @@ path = "src/bin/crucible-fleet-store.rs"
 [dependencies]
 aes-gcm = { workspace = true, features = ["zeroize"] }
 blake3 = { workspace = true }
+crucible-ram = { path = "../crucible-ram" }
 rustix = { workspace = true }
 rusqlite = { workspace = true, features = ["blob"] }
 thiserror = { workspace = true }
