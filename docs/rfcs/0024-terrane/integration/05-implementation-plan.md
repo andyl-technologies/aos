@@ -652,6 +652,12 @@ selected digest and source name before and after observation. Its receipt is
 read data, not publication authority. End-to-end fork publication with no
 TreeNode reads/decodes and source-preserving collection remain ALG-32
 prerequisites; the broad `algebra-fork` gate stays pending.
+The same focused integration check now additionally requires five exact public
+publication/interpretation cases and one route-lifetime regression, for twelve
+selectors total. The public fork case measures preparation through final
+publication. Missing selectors fail explicitly until the isolated production
+draft and shared preparation hook are qualified. Source-preserving collection
+and the full `algebra-fork` gate remain separate obligations.
 
 The test-only bucket observer records actual typed Node/Commit get and put
 attempts before catalog lookup, admission or deduplication. The same per-bucket
@@ -1960,8 +1966,19 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   inert historical attributes and independently configured reopening.
   Work reporting separates retained/staged input acquisition, real delegated
   store calls, reconstruction, verification and maintenance; it does not claim
-  total publication I/O. Qualification after composition with the shared view
-  helper remains pending. These local prerequisites do not close a task or
+  total publication I/O. After composition with the shared view helper, all ten
+  focused native cases pass with zero skipped in 76.592 seconds, UUID
+  `d48f2742-19f5-46e1-83c4-a162f0ac34a6`. Separate owning publication and
+  historical completion checks each pass all eight selectors on independently
+  matched frozen input. Application qualification compiles 111 test executables
+  across 29 packages; it executes none. Strict native Clippy refuses only a
+  complex test return type; default/Send Clippy and private rustdoc pass.
+  A separately preserved equivalent tuple alias and formatter correction
+  change no test bodies or assertions. Strict three-profile Clippy/private
+  rustdoc and both formatters pass on that final source, with all 4,861 actual
+  included inputs independently matched. Earlier runtime successes retain
+  their explicitly pre-alias scope; the complete trunk floor remains pending.
+  These local prerequisites do not close a task or
   qualify the full current trunk gate set.
   T-DRV-2, ALG-32, task merges and T1 remain open.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
@@ -3053,7 +3070,19 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   runtime cases still fail during setup: a plain Filter body correctly violates
   STORE-33's canonical-CBOR requirement. None reaches its behavior assertions.
   The reviewed fixture correction preserves that typed refusal and supplies
-  independently encoded canonical Filter data; runtime qualification is pending.
+  independently encoded canonical Filter data. The next runtime passes three
+  cases, then refuses the fourth fixture's attempted overwrite of an immutable
+  corrupted row. The reviewed fixture distinguishes actual missing-row repair
+  from the required typed refusal of a present conflicting immutable row.
+  All four unchanged-production native witnesses then pass in 8.763 seconds,
+  UUID `13bdabb9-0889-44ed-8a03-bba8d733255b`, with zero ignored cases.
+  The measured fixture reduces metadata/dispatch/GET counts from
+  3044/1047/116 to 2146/795/90 and selected reads from 63 to 45, preserving
+  both mandatory repair effects. These are scoped fixture observations.
+  All 156 default tests and strict native/default/Send Clippy/private rustdoc
+  pass. Final independent owning store checks, application compilation,
+  formatters and source review remain pending; no task or full-floor result
+  is inferred from the focused witnesses.
 - [ ] **T-GC-1** Mark-and-sweep collector: roots, mark, grace, two-phase
   sweep, singleton lease, resumability, retention values `gc`, `lease`,
   `ttl`, `forever`, and ordinary reflog duration/count selection. D-78
@@ -3115,6 +3144,19 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   corrections; later profiles and rustdoc do not run on that attempt.
   Original failures remain preserved; no full matrix, deletion gate, timing
   fix or task qualification is inferred.
+  Subsequent strict default/Send/native Clippy and private rustdoc pass after
+  equivalent conditional-style corrections. A bounded test-only Session
+  observation identifies the first actual final-check refusal as lease expiry,
+  with no prior poison or clock regression; later poison observations follow
+  the failed fixture. Original Session bytes are restored after the terminal
+  run. The trace does not distinguish cancellation from final restoration
+  within that callback. A reviewed local draft separates acknowledged durable
+  cancellation, genuine same-holder whole-lease renewal, and complete fresh
+  restoration qualification. It discards old successor/read expectations and
+  preserves original expiry, validation and durability checks. Native compilation
+  and exact-selector discovery pass; the unchanged cancellation witness remains
+  pending. No sufficiency or
+  deletion-gate success is claimed.
   The reviewed pure journal, marking, proof-context, checkpoint, retention and
   grace-window bodies now replace their trunk declarations. All 27 adopted
   paths, including 16 independent hexadecimal witnesses, match the qualified
