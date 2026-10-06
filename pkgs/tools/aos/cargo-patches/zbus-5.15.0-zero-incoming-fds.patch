@@ -1082,10 +1082,10 @@ index d313103752e59bc391ace89fd429e0096575980d..affc15a5e5bbfd4db8c9df7471c8bfb3
  
      /// Attempt to receive bytes from the socket.
 diff --git a/src/connection/socket/unix.rs b/src/connection/socket/unix.rs
-index 1875ce0a5113b3918bef098de25b767086b56dd4..d9bc24c2489615c70e891e5500219220474a9248 100644
+index 1875ce0a5113b3918bef098de25b767086b56dd4..6740e74cd6a29c6852e492e5bca9cfe1c7e8e84d 100644
 --- a/src/connection/socket/unix.rs
 +++ b/src/connection/socket/unix.rs
-@@ -27,6 +27,731 @@ use rustix::net::{
+@@ -27,6 +27,725 @@ use rustix::net::{
  #[cfg(unix)]
  use crate::utils::FDS_MAX;
  
@@ -1314,8 +1314,8 @@ index 1875ce0a5113b3918bef098de25b767086b56dd4..d9bc24c2489615c70e891e5500219220
 +        matches!(self.disposition, FixedReceiveDispositionV1::ControllerProperties)
 +    }
 +
-+    fn outgoing_limit(&self) -> usize {
-+        if self.is_controller_properties() {
++    fn outgoing_limit(disposition: FixedReceiveDispositionV1) -> usize {
++        if matches!(disposition, FixedReceiveDispositionV1::ControllerProperties) {
 +            super::super::ControllerPropertyReceiveAttemptV1::OUTGOING_MESSAGES
 +        } else {
 +            25
@@ -1357,13 +1357,7 @@ index 1875ce0a5113b3918bef098de25b767086b56dd4..d9bc24c2489615c70e891e5500219220
 +                messages: Vec::with_capacity(LAUNCHER_MESSAGE_COUNT),
 +            }),
 +            first_failure: std::sync::OnceLock::new(),
-+            requests: std::sync::Mutex::new(Vec::with_capacity(
-+                if matches!(disposition, FixedReceiveDispositionV1::ControllerProperties) {
-+                    super::super::ControllerPropertyReceiveAttemptV1::OUTGOING_MESSAGES
-+                } else {
-+                    25
-+                },
-+            )),
++            requests: std::sync::Mutex::new(Vec::with_capacity(Self::outgoing_limit(disposition))),
 +            auth_sends: tokio::sync::Mutex::new(Vec::with_capacity(4)),
 +            auth_lines: std::sync::Mutex::new(Vec::with_capacity(4)),
 +        }
@@ -1419,7 +1413,7 @@ index 1875ce0a5113b3918bef098de25b767086b56dd4..d9bc24c2489615c70e891e5500219220
 +    pub(crate) fn retain_request(&self, message: &crate::Message) -> crate::Result<()> {
 +        self.require_open()?;
 +        let mut requests = self.requests.try_lock().map_err(|_| crate::Error::InvalidReply)?;
-+        if requests.len() == self.outgoing_limit() || message.data().len() > LAUNCHER_MESSAGE_BYTES {
++        if requests.len() == Self::outgoing_limit(self.disposition) || message.data().len() > LAUNCHER_MESSAGE_BYTES {
 +            self.end();
 +            return Err(crate::Error::ExcessData);
 +        }
@@ -1817,7 +1811,7 @@ index 1875ce0a5113b3918bef098de25b767086b56dd4..d9bc24c2489615c70e891e5500219220
  #[cfg(all(unix, not(feature = "tokio")))]
  #[async_trait::async_trait]
  impl super::ReadHalf for Arc<Async<UnixStream>> {
-@@ -129,26 +854,7 @@ impl super::Socket for tokio::net::UnixStream {
+@@ -129,26 +848,7 @@ impl super::Socket for tokio::net::UnixStream {
  #[async_trait::async_trait]
  impl super::ReadHalf for tokio::net::unix::OwnedReadHalf {
      async fn recvmsg(&mut self, buf: &mut [u8]) -> super::RecvmsgResult {
@@ -1845,7 +1839,7 @@ index 1875ce0a5113b3918bef098de25b767086b56dd4..d9bc24c2489615c70e891e5500219220
      }
  
      /// Supports passing file descriptors.
-@@ -162,36 +868,179 @@
+@@ -162,36 +862,179 @@
  }
  
  #[cfg(all(unix, feature = "tokio"))]
@@ -2048,7 +2042,7 @@ index 1875ce0a5113b3918bef098de25b767086b56dd4..d9bc24c2489615c70e891e5500219220
      }
  
      async fn close(&mut self) -> std::io::Result<()> {
-@@ -275,27 +1124,234 @@ impl super::WriteHalf for Arc<Async<UnixStream>> {
+@@ -275,27 +1118,234 @@ impl super::WriteHalf for Arc<Async<UnixStream>> {
  
  #[cfg(unix)]
  fn fd_recvmsg(fd: BorrowedFd<'_>, buffer: &mut [u8]) -> std::io::Result<(usize, Vec<OwnedFd>)> {
@@ -2286,7 +2280,7 @@ index 1875ce0a5113b3918bef098de25b767086b56dd4..d9bc24c2489615c70e891e5500219220
                  // On Linux, credentials might be received. This shouldn't normally happen
                  // in our use case since we don't request them, but ignore if present.
                  continue;
-@@ -308,9 +1364,43 @@ fn fd_recvmsg(fd: BorrowedFd<'_>, buffer: &mut [u8]) -> std::io::Result<(usize,
+@@ -308,9 +1358,43 @@ fn fd_recvmsg(fd: BorrowedFd<'_>, buffer: &mut [u8]) -> std::io::Result<(usize,
              }
          }
      }
@@ -2331,7 +2325,7 @@ index 1875ce0a5113b3918bef098de25b767086b56dd4..d9bc24c2489615c70e891e5500219220
  #[cfg(unix)]
  fn fd_sendmsg(fd: BorrowedFd<'_>, buffer: &[u8], fds: &[BorrowedFd<'_>]) -> std::io::Result<usize> {
      use std::mem::MaybeUninit;
-@@ -528,3 +1618,97 @@ fn send_zero_byte_blocking(fd: RawFd) -> std::io::Result<usize> {
+@@ -528,3 +1612,97 @@ fn send_zero_byte_blocking(fd: RawFd) -> std::io::Result<usize> {
          Ok(ret as usize)
      }
  }
