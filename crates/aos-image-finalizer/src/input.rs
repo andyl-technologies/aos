@@ -159,7 +159,7 @@ pub fn digest_regular_file(path: &Path) -> Result<(u64, Sha256Digest)> {
 
 /// Hashes a regular file in a private reconstructed image tree.
 ///
-/// Firmware and tool aliases can share an inode after filesystem extraction.
+/// Identical immutable files can share an inode after filesystem extraction.
 /// Symlinks and files that change during hashing remain rejected.
 ///
 /// # Errors
@@ -187,6 +187,14 @@ fn digest_file(path: &Path, require_single_link: bool) -> Result<(u64, Sha256Dig
 /// a real directory beneath `root`, the leaf is linked or special, or the file
 /// changes while it is hashed.
 pub fn digest_regular_file_beneath(root: &Path, relative: &Path) -> Result<(u64, Sha256Digest)> {
+    digest_confined_regular_file(root, relative, true)
+}
+
+fn digest_confined_regular_file(
+    root: &Path,
+    relative: &Path,
+    require_single_link: bool,
+) -> Result<(u64, Sha256Digest)> {
     let root_descriptor = open(
         root,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
@@ -211,7 +219,7 @@ pub fn digest_regular_file_beneath(root: &Path, relative: &Path) -> Result<(u64,
                 Mode::empty(),
             )
             .with_context(|| format!("opening confined file {}", relative.display()))?;
-            return digest_opened_regular_file(File::from(descriptor), true);
+            return digest_opened_regular_file(File::from(descriptor), require_single_link);
         }
 
         let descriptor = openat(
@@ -226,11 +234,13 @@ pub fn digest_regular_file_beneath(root: &Path, relative: &Path) -> Result<(u64,
     bail!("confined digest path has no file component")
 }
 
-/// Hashes a native document alias without resolving links on the host.
+/// Hashes a native document in a private reconstructed image tree.
 ///
 /// The fixed image bundle directory may link to its immutable store root.
 /// Document aliases are then followed only inside the copied Nix store, with a
 /// bounded chain and no linked store parents. Host paths are never resolved.
+/// Identical documents may share an inode within the extracted filesystem;
+/// incoming assembly documents retain their separate single-link checks.
 ///
 /// # Errors
 /// Returns an error for unexpected linked parents, a non-store target, cyclic
@@ -313,7 +323,9 @@ fn digest_native_alias(
         }
         let target = match readlinkat(&directory, name, Vec::new()) {
             Ok(target) => target,
-            Err(rustix::io::Errno::INVAL) => return digest_regular_file_beneath(root, relative),
+            Err(rustix::io::Errno::INVAL) => {
+                return digest_confined_regular_file(root, relative, false);
+            }
             Err(error) => return Err(error.into()),
         };
         let target_text = target
@@ -559,6 +571,38 @@ mod tests {
             )
             .is_err()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn private_native_document_accepts_shared_file_shaped_store_roots() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let tree = temporary.path();
+        let store = Path::new("usr/lib/aos/nix/store");
+        fs::create_dir_all(tree.join(store))?;
+        fs::create_dir_all(tree.join("usr/lib/aos/host/deployment"))?;
+
+        let store_root = "00000000000000000000000000000000-native-input";
+        let relative = store.join(store_root);
+        let document = tree.join(&relative);
+        fs::write(&document, b"immutable native evaluation")?;
+        fs::hard_link(
+            &document,
+            tree.join(store)
+                .join("11111111111111111111111111111111-native-input"),
+        )?;
+        let alias = Path::new("usr/lib/aos/host/deployment/evaluation.json");
+        symlink(format!("/nix/store/{store_root}"), tree.join(alias))?;
+
+        let identity = digest_native_document_beneath(tree, alias, store)?;
+
+        assert_eq!(identity, super::digest_image_tree_file(&document)?);
+        assert_eq!(
+            identity.1,
+            Sha256Digest::of_bytes(b"immutable native evaluation")
+        );
+        assert!(digest_regular_file(&document).is_err());
+        assert!(digest_regular_file_beneath(tree, &relative).is_err());
         Ok(())
     }
 

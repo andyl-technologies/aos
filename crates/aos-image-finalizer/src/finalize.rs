@@ -82,7 +82,8 @@ pub async fn prepare_filesystems(
 
     let fsck_erofs = PinnedTool::from_verified(fsck_erofs_spec, work.to_path_buf(), TOOL_TIMEOUT)?;
     let mkfs_erofs = PinnedTool::from_verified(mkfs_erofs_spec, work.to_path_buf(), TOOL_TIMEOUT)?;
-    let hardlink_tree = PinnedTool::from_verified(hardlink_tree_spec, work.to_path_buf(), TOOL_TIMEOUT)?;
+    let hardlink_tree =
+        PinnedTool::from_verified(hardlink_tree_spec, work.to_path_buf(), TOOL_TIMEOUT)?;
     let zstd = PinnedTool::from_verified(zstd_spec, work.to_path_buf(), TOOL_TIMEOUT)?;
     let openssl = PinnedTool::from_verified(openssl_spec, work.to_path_buf(), TOOL_TIMEOUT)?;
     let veritysetup =
@@ -367,12 +368,14 @@ fn capture_copy(
 /// resolve only inside the extracted image, with every target component opened
 /// without following links. `captured_inputs` must exist and must not already
 /// contain either native stage directory.
+/// `initrd_tree` and `root_tree` must be the caller's private extracted images;
+/// identical embedded documents may share inodes within those filesystems.
 ///
 /// # Errors
 ///
 /// Returns an error when an assembly sidecar changed, the embedded initrd
-/// contract is absent or linked, a parent escapes its extracted tree, or its
-/// exact bytes differ.
+/// contract is absent or has an unexpected alias, a parent escapes its extracted
+/// tree, or its exact bytes differ.
 pub fn verify_native_deployment_attachments(
     assembly_root: &Path,
     assembly: &UnsignedImageAssemblyV1,
