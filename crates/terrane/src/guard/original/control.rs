@@ -16,6 +16,9 @@ use super::{invalid, io_failure, protected_file};
 ///
 /// This physical receipt establishes no actor or publication authority. Only the
 /// checked producer combines it with actual selected state and request evidence.
+/// Cloning retains the same acquired native exclusions and original observations;
+/// it neither acquires a new lock nor refreshes physical or semantic authority.
+#[derive(Clone)]
 pub(crate) struct RetainedControls {
     exclusions: std::sync::Arc<[crate::store::NativeExclusion]>,
     directory: PathBuf,
@@ -27,7 +30,7 @@ pub(crate) struct RetainedControls {
 }
 
 /// Preserves the checked incarnation and protection of a control ancestor.
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct RetainedControlAncestor {
     path: PathBuf,
     identity: (u64, u64),
@@ -53,6 +56,7 @@ impl RetainedControlAncestor {
 }
 
 /// Preserves one exact canonical control read and its checked named incarnation.
+#[derive(Clone)]
 pub(crate) struct RetainedControlRecord {
     path: PathBuf,
     identity: (u64, u64),

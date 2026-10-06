@@ -489,8 +489,11 @@ candidate; its registration does not supply runtime or ext4 qualification.
 
 The frozen pre-ownership restore candidate also passes all 35 collector
 regressions in 331.089 seconds, alongside its ten owning cases and actual
-ten-case Nix prerequisite. Two private style corrections are qualifying on a
-new frozen candidate; the earlier default and `std,send` lint failures remain
+ten-case Nix prerequisite. The final clean candidate `f460c9b07ac4` passes
+fresh native, default and
+`std,send` strict Clippy, private rustdoc, both formatters and strengthened Nix
+qualification. Both actual Nix inputs match all 732 frozen scoped images; all
+69 evidence artifacts are independently verified. Earlier lint failures remain
 recorded. Genuine elapsed-D qualification, durable local deletion ownership,
 owned absence recovery and cancellation remain production prerequisites.
 Codec-valid claimed-owner refusal cases do not establish those producers.
@@ -515,6 +518,25 @@ for this prerequisite. Registration does not implement it. The forthcoming
 ownership slice ends at genuine durable Invalidated after all three journals
 become DeleteOwned; unlink, recovery, cancellation and owned restore remain
 separate producers. No duration, clock contract or local-v1 bytes change.
+
+The shared lease publisher now requires a closed native acknowledgment after
+exact canonical selected slot/transaction/snapshot/pointer verification and
+same-descriptor file and required-directory synchronization. The worker refreshes
+actual clock, controls and physical preimages after its final sync before filling
+the private receiver; no-op effect success cannot acknowledge publication. The
+existing singleton gate executes all nineteen cases successfully, and the native
+build, strict private rustdoc and both mandatory formatters pass. Its original
+exhaustive test-phase compile failure remains preserved separately. This shared
+mechanic does not implement held renewal, elapsed-D ownership or reclamation.
+The lease handoff also retains the separately protected selected Guard record
+through every queued effect; byte-only validation before dispatch is insufficient
+under D-79. Strict trunk Clippy still reports existing unused production
+components; no diagnostic is suppressed. The owning held-renewal matrix remains
+responsible for actual queued Guard replacement, missing acknowledgment and
+cancellation witnesses before this prerequisite qualifies. The crate-private
+control receipt can retain its same acquired native exclusions and exact original
+observations for renewal without reacquiring the already-held control lock;
+cloning neither refreshes authority nor creates a new physical receipt.
 
 The reviewed concrete ext4 VM harness is now adopted as a shared prerequisite.
 It uses the checked release package in the existing source-built headless VM

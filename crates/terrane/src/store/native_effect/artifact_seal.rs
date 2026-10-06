@@ -10,6 +10,10 @@
 //! seal + exact current Pending -> protected Committed + directory sync
 //! ```
 
+/// Closes actual whole collector lease publication durability.
+#[path = "artifact_seal/lease_publication.rs"]
+pub(super) mod lease_publication;
+
 #[path = "artifact_seal/pending.rs"]
 pub(super) mod pending;
 
@@ -411,14 +415,20 @@ impl Worker {
     }
 }
 
-/// Identifies the three closed operations, including one ordinary retention wrapper.
+/// Identifies closed creation and lease operations, including their retention wrapper.
 pub(super) fn owns(plan: &Plan) -> bool {
     match plan {
-        Plan::SealPendingCreation(_) | Plan::SealArtifact(_) | Plan::CommitCreation(_) => true,
+        Plan::SealLeasePublication(_)
+        | Plan::SealPendingCreation(_)
+        | Plan::SealArtifact(_)
+        | Plan::CommitCreation(_) => true,
         Plan::RetainedDirectories { operation, .. } => {
             matches!(
                 operation.as_ref(),
-                Plan::SealPendingCreation(_) | Plan::SealArtifact(_) | Plan::CommitCreation(_)
+                Plan::SealLeasePublication(_)
+                    | Plan::SealPendingCreation(_)
+                    | Plan::SealArtifact(_)
+                    | Plan::CommitCreation(_)
             )
         }
         _ => false,
@@ -468,6 +478,7 @@ pub(super) fn execute(effect: NativeFsEffect) -> Result<(), NativeEffectFailure>
     wait_test_gate(&mut worker.gates, TestGatePhase::BeforeChecks)?;
     worker.refresh(&[])?;
     match plan {
+        Plan::SealLeasePublication(request) => lease_publication::execute(*request, worker),
         Plan::SealPendingCreation(request) => pending::execute(*request, worker),
         Plan::SealArtifact(request) => seal(*request, worker),
         Plan::CommitCreation(request) => commit(*request, worker),

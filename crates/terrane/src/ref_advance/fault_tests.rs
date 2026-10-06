@@ -509,6 +509,10 @@ impl LocalFs for FaultFs {
                 crate::store::EffectFaultProbe::DirectorySync(_) => "directory sync",
                 crate::store::EffectFaultProbe::RenameNoReplace(_) => "create-once rename",
                 crate::store::EffectFaultProbe::Rename(_) => "replacing rename",
+                crate::store::EffectFaultProbe::SealLeasePublication(path) => {
+                    eprintln!("lease publication slot {}", path.display());
+                    "lease publication"
+                }
                 crate::store::EffectFaultProbe::Other => "other effect",
             };
             eprintln!(

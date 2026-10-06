@@ -124,7 +124,11 @@ where
     let mut controls = guard
         .hold_original_registration(authority, observed.identity())
         .await?;
-    if held.selected_guard_snapshot(&observed).await?.as_deref() != Some(snapshot.as_slice()) {
+    let guard_record = held
+        .selected_guard_snapshot_record(&observed)
+        .await?
+        .ok_or_else(denied)?;
+    if guard_record.bytes() != Some(snapshot.as_slice()) {
         return Err(denied().into());
     }
     let used = consumed.finish()?;
@@ -162,6 +166,7 @@ where
     };
     let checked = CheckedGcLease {
         observed: &observed,
+        guard: guard_record,
         next,
         change,
         effects: GcLeaseEffectContext {

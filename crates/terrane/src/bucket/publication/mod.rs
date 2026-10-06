@@ -364,14 +364,41 @@ impl<
         &self,
         observed: &SelectedObservation<'_>,
     ) -> Result<Option<Vec<u8>>, StoreFailure> {
-        self.check_observation(observed).await?;
+        Ok(self
+            .selected_guard_snapshot_record(observed)
+            .await?
+            .and_then(receipts::RecordRead::into_bytes))
+    }
+
+    /// Retains the exact selected protected Guard snapshot read under this holder.
+    ///
+    /// The whole selected digest fixes the canonical record key. These bytes and
+    /// metadata are storage observations; the genuine producer independently
+    /// checks its trusted configuration and retains this read in the native frame.
+    ///
+    /// # Errors
+    /// Rejects mismatched holders, absent or malformed selected Guard bytes,
+    /// digest disagreement and changed observations before or after the read.
+    pub(crate) async fn selected_guard_snapshot_record(
+        &self,
+        observed: &SelectedObservation<'_>,
+    ) -> Result<Option<receipts::RecordRead>, StoreFailure> {
+        let control = self.check_observation(observed).await?;
         let Some(expected) = observed.state().guard else {
             return Ok(None);
         };
-        let bytes = self.selected_evidence(observed, "guards", expected).await?;
-        terrane_core::gc::publication::evidence::GuardSnapshot::decode(&bytes)
+        let suffix: String = expected.iter().map(|byte| format!("{byte:02x}")).collect();
+        let read = control
+            .read_observed(self.fs(), &format!("publication/guards/{suffix}"))
+            .await?;
+        let bytes = read.bytes().ok_or_else(corrupt)?;
+        if digest(bytes) != expected {
+            return Err(corrupt());
+        }
+        terrane_core::gc::publication::evidence::GuardSnapshot::decode(bytes)
             .map_err(|_| corrupt())?;
-        Ok(Some(bytes))
+        self.check_observation(observed).await?;
+        Ok(Some(read))
     }
 
     /// Reads the exact protected source lineage selected by this observation.

@@ -73,6 +73,7 @@ impl OwnedFinalCheck {
 /// retirement authority. Only the descendant collector producer initializes it.
 pub(crate) struct CheckedGcLease<'operation, 'held> {
     observed: &'operation SelectedObservation<'held>,
+    guard: crate::bucket::publication::receipts::RecordRead,
     next: PublicationState,
     change: LogicalChange,
     effects: GcLeaseEffectContext,
@@ -104,6 +105,11 @@ impl<'operation, 'held> CheckedGcLease<'operation, 'held> {
     /// Borrows the complete observation checked for this lease operation.
     pub(crate) fn observed(&self) -> &'operation SelectedObservation<'held> {
         self.observed
+    }
+
+    /// Borrows the exact selected protected Guard bytes and physical incarnation.
+    pub(crate) fn guard_record(&self) -> &crate::bucket::publication::receipts::RecordRead {
+        &self.guard
     }
 
     /// Borrows the exact whole selected successor checked by the producer.

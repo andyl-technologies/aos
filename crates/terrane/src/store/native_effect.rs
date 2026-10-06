@@ -386,6 +386,7 @@ impl CreatedDirectory {
 enum Plan {
     // Only the native worker can populate the result channel or consume a seal
     // into a protected creation-journal commitment.
+    SealLeasePublication(Box<artifact_seal::lease_publication::LeaseRequest>),
     SealPendingCreation(Box<artifact_seal::PendingRequest>),
     SealArtifact(Box<artifact_seal::SealRequest>),
     CommitCreation(Box<artifact_seal::CommitRequest>),
@@ -587,6 +588,8 @@ impl std::error::Error for NativeEffectFailure {
 /// Identifies actual planned phases only for existing native fault wrappers.
 #[cfg(test)]
 pub(crate) enum EffectFaultProbe<'a> {
+    /// Identifies durability of the exact selected collector lease slot.
+    SealLeasePublication(&'a std::path::Path),
     /// Identifies durability of Pending before the first artifact mutation.
     SealPendingCreation(&'a std::path::Path),
     /// Identifies same-descriptor verification and durability of one artifact.
@@ -690,6 +693,9 @@ impl NativeFsEffect {
             return EffectFaultProbe::Other;
         };
         match plan {
+            Plan::SealLeasePublication(request) => {
+                EffectFaultProbe::SealLeasePublication(request.path())
+            }
             Plan::SealPendingCreation(request) => {
                 EffectFaultProbe::SealPendingCreation(request.journal_path())
             }
@@ -845,7 +851,10 @@ impl NativeFsEffect {
             fresh_projection(None)?;
 
             match plan {
-                Plan::SealPendingCreation(_) | Plan::SealArtifact(_) | Plan::CommitCreation(_) => {
+                Plan::SealLeasePublication(_)
+                | Plan::SealPendingCreation(_)
+                | Plan::SealArtifact(_)
+                | Plan::CommitCreation(_) => {
                     return Err(io::Error::other("incorrect artifact-seal dispatch").into());
                 }
                 Plan::ProbeRange {

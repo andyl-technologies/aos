@@ -15,6 +15,13 @@ use crate::selected_bridge::CheckedGcLease;
 use terrane_core::gc::GcLease;
 use terrane_core::gc::publication::PublicationProof;
 
+fn failure(error: super::NativeEffectFailure) -> StoreFailure {
+    match error {
+        super::NativeEffectFailure::Rejected(error) => error,
+        super::NativeEffectFailure::Io(error) => io_failure(error),
+    }
+}
+
 /// Publishes the fixed lease and its exact consecutive selected revision.
 ///
 /// # Errors
@@ -77,6 +84,16 @@ pub(crate) async fn publish_checked<F: LocalFs + BucketBinding>(
         }
     }
     let control = frame.observation(fs, observed, 0).await?;
+    let guard_record = checked.guard_record();
+    frame
+        .observed_read(
+            fs,
+            guard_record.path(),
+            guard_record.bytes(),
+            guard_record.metadata(),
+            FencePolicy::ProtectedRecord { owner },
+        )
+        .await?;
     for (controls, descriptors) in context.controls().iter().zip(control_ranges) {
         let (directory, lock) = controls.identities();
         frame
@@ -226,6 +243,21 @@ pub(crate) async fn publish_checked<F: LocalFs + BucketBinding>(
             },
         )
         .await?;
+    let (acknowledgment, completed) = super::super::artifact_seal::lease_publication::lease_plan(
+        super::super::artifact_seal::lease_publication::LeaseInputs {
+            root,
+            control: &control,
+            checked,
+            slot: &slot,
+            transaction: &transaction,
+            snapshot: &snapshot_bytes,
+            owner,
+        },
+    )
+    .map_err(failure)?;
+    frame.execute(fs, acknowledgment).await?;
+    completed.take().map_err(failure)?;
+
     Ok(CheckedPublication {
         revision: slot.revision,
         digest: digest(&slot_bytes),
