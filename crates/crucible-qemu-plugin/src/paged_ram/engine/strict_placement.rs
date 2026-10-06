@@ -367,22 +367,6 @@ fn disk_record_is_current(
     pageable && !writable && version == preserved_version && valid_length == preserved_length
 }
 
-#[cfg(test)]
-mod tests {
-    use super::disk_record_is_current;
-
-    #[test]
-    fn preserved_versions_require_a_closed_write_epoch() {
-        assert!(disk_record_is_current(true, false, 7, 4096, 7, 4096));
-        // A writable page can have changed without another WP transition.
-        assert!(!disk_record_is_current(true, true, 7, 4096, 7, 4096));
-        // The first write after a cut rearm must invalidate its old version.
-        assert!(!disk_record_is_current(true, false, 8, 4096, 7, 4096));
-        assert!(!disk_record_is_current(false, false, 7, 4096, 7, 4096));
-        assert!(!disk_record_is_current(true, false, 7, 4095, 7, 4096));
-    }
-}
-
 impl PausedPagingOwner {
     /// Establishes new child locks after independent fault service is ready.
     ///
@@ -524,5 +508,21 @@ impl PausedPagingOwner {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::disk_record_is_current;
+
+    #[test]
+    fn preserved_versions_require_a_closed_write_epoch() {
+        assert!(disk_record_is_current(true, false, 7, 4096, 7, 4096));
+        // A writable page can have changed without another WP transition.
+        assert!(!disk_record_is_current(true, true, 7, 4096, 7, 4096));
+        // The first write after a cut rearm must invalidate its old version.
+        assert!(!disk_record_is_current(true, false, 8, 4096, 7, 4096));
+        assert!(!disk_record_is_current(false, false, 7, 4096, 7, 4096));
+        assert!(!disk_record_is_current(true, false, 7, 4095, 7, 4096));
     }
 }

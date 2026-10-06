@@ -137,7 +137,7 @@ fn opaque_restore_hydrates_only_written_paths_without_reverting_changes() {
     assert!(
         apply_batch(
             opaque.clone(),
-            &[descriptor.clone()],
+            std::slice::from_ref(&descriptor),
             Some(0),
             &mut batch,
             None
@@ -147,7 +147,7 @@ fn opaque_restore_hydrates_only_written_paths_without_reverting_changes() {
     assert_eq!(batch.len(), 1);
     let first = apply_batch(
         opaque,
-        &[descriptor.clone()],
+        std::slice::from_ref(&descriptor),
         Some(0),
         &mut batch,
         Some(&source),
@@ -166,7 +166,7 @@ fn opaque_restore_hydrates_only_written_paths_without_reverting_changes() {
     let mut batch = vec![(1, changed_second)];
     let both = apply_batch(
         first.clone(),
-        &[descriptor.clone()],
+        std::slice::from_ref(&descriptor),
         Some(0),
         &mut batch,
         Some(&source),

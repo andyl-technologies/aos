@@ -87,62 +87,6 @@ impl PausedPagingOwner {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crucible_protocol::ram_control::{RamControlBudget, RamControlMode, RamControlPolicy};
-
-    struct NoOperationalCalls;
-
-    impl SourceOperationFactory for NoOperationalCalls {
-        fn begin(&self, _: SourceOperationClass) -> io::Result<Box<dyn SourceOperation>> {
-            Err(io::Error::other(
-                "admission cannot perform operational work",
-            ))
-        }
-    }
-
-    #[test]
-    fn low_soft_target_cannot_authorize_an_undersized_execution_peak() {
-        let resources = PluginRamResources {
-            resident_peak_bytes: 8192,
-            backing_peak_bytes: 16384,
-            metadata_bytes: 4096,
-            staging_bytes: 4096,
-            paging_io_slots: 1,
-            cpu_slots: 1,
-            task_slots: 1,
-            file_descriptors: 3,
-        };
-        let owner = PausedPagingOwner::new(resources, Arc::new(NoOperationalCalls)).unwrap();
-        owner.seal_geometry(1, 8192).unwrap();
-        assert!(owner.kernel_probe().is_none());
-        let policy = RamControlPolicy {
-            mode: RamControlMode::Managed,
-            resident_target_bytes: 0,
-            eviction_preference: 100,
-            writeback_bytes_per_second: 4096,
-            maximum_paging_io_in_flight: 1,
-            prefetch_on_increase: false,
-            budgets: [RamControlBudget {
-                poll_ms: 1,
-                progress_ms: Some(100),
-                total_ms: Some(100),
-            }; 14],
-        };
-
-        assert!(matches!(
-            owner.apply_policy(&policy, 1),
-            Err(RamError::MetadataAdmission {
-                required: 16384,
-                admitted: 8192
-            })
-        ));
-        assert!(owner.policy.lock().unwrap().is_none());
-        assert!(owner.active.lock().unwrap().is_none());
-    }
-}
-
 pub(super) fn prepare_service(
     source: &ValidatedRestoreSource,
     operations: Arc<dyn SourceOperationFactory>,
@@ -292,4 +236,60 @@ pub(super) fn prepare_service_for_inventory(
         _reservation: reservation,
         _arena_reservation: arena_reservation,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crucible_protocol::ram_control::{RamControlBudget, RamControlMode, RamControlPolicy};
+
+    struct NoOperationalCalls;
+
+    impl SourceOperationFactory for NoOperationalCalls {
+        fn begin(&self, _: SourceOperationClass) -> io::Result<Box<dyn SourceOperation>> {
+            Err(io::Error::other(
+                "admission cannot perform operational work",
+            ))
+        }
+    }
+
+    #[test]
+    fn low_soft_target_cannot_authorize_an_undersized_execution_peak() {
+        let resources = PluginRamResources {
+            resident_peak_bytes: 8192,
+            backing_peak_bytes: 16384,
+            metadata_bytes: 4096,
+            staging_bytes: 4096,
+            paging_io_slots: 1,
+            cpu_slots: 1,
+            task_slots: 1,
+            file_descriptors: 3,
+        };
+        let owner = PausedPagingOwner::new(resources, Arc::new(NoOperationalCalls)).unwrap();
+        owner.seal_geometry(1, 8192).unwrap();
+        assert!(owner.kernel_probe().is_none());
+        let policy = RamControlPolicy {
+            mode: RamControlMode::Managed,
+            resident_target_bytes: 0,
+            eviction_preference: 100,
+            writeback_bytes_per_second: 4096,
+            maximum_paging_io_in_flight: 1,
+            prefetch_on_increase: false,
+            budgets: [RamControlBudget {
+                poll_ms: 1,
+                progress_ms: Some(100),
+                total_ms: Some(100),
+            }; 14],
+        };
+
+        assert!(matches!(
+            owner.apply_policy(&policy, 1),
+            Err(RamError::MetadataAdmission {
+                required: 16384,
+                admitted: 8192
+            })
+        ));
+        assert!(owner.policy.lock().unwrap().is_none());
+        assert!(owner.active.lock().unwrap().is_none());
+    }
 }

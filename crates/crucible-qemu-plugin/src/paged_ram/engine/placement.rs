@@ -615,6 +615,51 @@ extern "C" fn physical_placement(opaque: *mut c_void) -> c_int {
     }
 }
 
+pub(super) extern "C" fn placement_before_resume() -> c_int {
+    let owner = OPERATIONAL_OWNER
+        .get()
+        .and_then(|holder| holder.try_lock().ok())
+        .and_then(|owner| owner.clone());
+    let Some(owner) = owner else {
+        return -libc::EIO;
+    };
+    let result =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), RamError> {
+            if owner.execute_scheduled_before_resume()? {
+                return Ok(());
+            }
+            owner.activate_resident_at_boundary()?;
+            owner.reclaim_at_boundary()
+        }));
+    match result {
+        Ok(Ok(())) => 0,
+        _ => {
+            owner.failed.store(true, Ordering::Release);
+            -libc::EIO
+        }
+    }
+}
+
+pub(super) fn pace_writeback(
+    operation: &dyn SourceOperation,
+    bytes_per_second: u64,
+) -> Result<(), RamError> {
+    if bytes_per_second == 0 {
+        return Err(RamError::Invariant("zero writeback rate"));
+    }
+    let nanos = (PAGE_BYTES as u64 * 1_000_000_000).div_ceil(bytes_per_second);
+    let mut remaining = std::time::Duration::from_nanos(nanos);
+    while !remaining.is_zero() {
+        let slice = remaining
+            .min(operation.wait_slice()?)
+            .min(std::time::Duration::from_millis(10));
+        std::thread::sleep(slice);
+        remaining = remaining.saturating_sub(slice);
+    }
+    operation.wait_slice()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -669,49 +714,4 @@ mod tests {
         let bytes = unsafe { std::slice::from_raw_parts(page.0.cast::<u8>(), PAGE_BYTES) };
         assert_eq!(bytes, &[0_u8; PAGE_BYTES]);
     }
-}
-
-pub(super) extern "C" fn placement_before_resume() -> c_int {
-    let owner = OPERATIONAL_OWNER
-        .get()
-        .and_then(|holder| holder.try_lock().ok())
-        .and_then(|owner| owner.clone());
-    let Some(owner) = owner else {
-        return -libc::EIO;
-    };
-    let result =
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), RamError> {
-            if owner.execute_scheduled_before_resume()? {
-                return Ok(());
-            }
-            owner.activate_resident_at_boundary()?;
-            owner.reclaim_at_boundary()
-        }));
-    match result {
-        Ok(Ok(())) => 0,
-        _ => {
-            owner.failed.store(true, Ordering::Release);
-            -libc::EIO
-        }
-    }
-}
-
-pub(super) fn pace_writeback(
-    operation: &dyn SourceOperation,
-    bytes_per_second: u64,
-) -> Result<(), RamError> {
-    if bytes_per_second == 0 {
-        return Err(RamError::Invariant("zero writeback rate"));
-    }
-    let nanos = (PAGE_BYTES as u64 * 1_000_000_000).div_ceil(bytes_per_second);
-    let mut remaining = std::time::Duration::from_nanos(nanos);
-    while !remaining.is_zero() {
-        let slice = remaining
-            .min(operation.wait_slice()?)
-            .min(std::time::Duration::from_millis(10));
-        std::thread::sleep(slice);
-        remaining = remaining.saturating_sub(slice);
-    }
-    operation.wait_slice()?;
-    Ok(())
 }

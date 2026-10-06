@@ -13,6 +13,10 @@ struct RecordOperation {
 }
 
 impl SourceOperation for RecordOperation {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "test-only operational record deadline"
+    )]
     fn wait_slice(&self) -> io::Result<Duration> {
         self.deadline
             .checked_duration_since(std::time::Instant::now())
@@ -26,6 +30,10 @@ impl SourceOperation for RecordOperation {
 }
 
 impl SourceOperationFactory for Controller {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "test-only operational record deadline"
+    )]
     fn begin(&self, class: SourceOperationClass) -> io::Result<Box<dyn SourceOperation>> {
         assert_eq!(class, SourceOperationClass::Cleanup);
         Ok(Box::new(RecordOperation {

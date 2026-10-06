@@ -640,6 +640,10 @@ mod tests {
     }
 
     impl SourceOperation for LiveOperation {
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "test-only live transport deadline"
+        )]
         fn wait_slice(&self) -> io::Result<Duration> {
             let allowance =
                 Duration::from_millis(self.total_ms.load(std::sync::atomic::Ordering::Acquire));
@@ -661,6 +665,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "test-only live transport deadline assertions"
+    )]
     fn live_extension_preserves_partial_frame_and_authenticates_before_completion() {
         let (root, tree, binding) = fixture();
         let (client, mut server) = UnixStream::pair().unwrap();
@@ -734,6 +742,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "test-only live transport deadline assertions"
+    )]
     fn live_reduction_interrupts_stalled_partial_frame_without_publication() {
         let (root, _tree, binding) = fixture();
         let (client, mut server) = UnixStream::pair().unwrap();
