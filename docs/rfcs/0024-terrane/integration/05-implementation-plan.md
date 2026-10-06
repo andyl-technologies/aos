@@ -1854,14 +1854,22 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   remain intact. Required index completion, tracked Recorded disclosure,
   independent cold reuse and source carry remain incomplete. This candidate is
   isolated and unpublished; it does not qualify the full trunk gate set.
-  The historical-index candidate now passes its eight exact native relationship
-  cases and the related source, loading and completion checks. Application
-  compilation and both mandatory formatters pass on that recorded source.
-  Strict native Clippy reports 41 assertion-style errors in its owned tests;
-  the reviewed corrections still need final qualification. A driver labeled
-  its extra no-default-feature checks as default: their errors are preserved,
-  while the actual default feature profile remains unrun. No current-index
-  publication, lookup coverage or incremental-maintenance claim follows.
+  The reviewed historical-index candidate `1ef4500bb29e` passes all eight exact
+  native relationship cases with none ignored. Its corrected five-file source
+  passes strict all-target Clippy and private rustdoc in actual default, std/send
+  and native Tokio/SDK configurations, application compilation and both mandatory
+  formatters. Application output independently records 111 test executables
+  across 29 packages, including 74 integration targets, without execution.
+  All 4,844 owning-check inputs and 4,847 quality/application inputs match their
+  frozen snapshots; only six shared metadata paths differ between these runs.
+  The original first-case missing association, 41 owned assertion-style lint
+  errors and mislabeled extra no-default-feature errors remain preserved.
+  Explicit test matches retain original typed refusals and wire assertions;
+  genuine repository reopening loads retained Original associations.
+  Local integration candidate `5c09eaa8f0ac` assembles these qualified
+  prerequisites with exactly the same tree and all 5,901 reviewed file images.
+  It remains unpublished. No current-index publication, lookup coverage or
+  incremental-maintenance claim follows.
   A source audit identifies the next shared prerequisite: independently select
   authoring semantics before signing, then retain the successful admission's
   exact view/root interpretation through candidate recording and post-staging
