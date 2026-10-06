@@ -68,6 +68,48 @@ impl RetainedStoreRoots {
         })
     }
 
+    /// Opens authenticated retained roots for a standalone native deployment.
+    ///
+    /// The paired journals remain locked while a physical backend preserves
+    /// their original inputs. Unlike a profile, this scope has no publication
+    /// marker; its original image catalogs supply artifact admission.
+    ///
+    /// # Errors
+    /// Returns an error for incomplete or corrupt journals, unavailable original
+    /// admission catalogs, changed store artifacts, or incorrect custody roots.
+    pub(crate) fn open_deployment(directory: &Path, executable: &Path) -> Result<Self> {
+        let generations = journal_exists(&directory.join("generations.journal"))?;
+        let effects = journal_exists(&directory.join("effects.journal"))?;
+        if !generations && !effects {
+            return Ok(Self {
+                roots: Vec::new(),
+                _snapshot: None,
+            });
+        }
+        ensure!(
+            generations && effects,
+            "deployment journals are partially initialized"
+        );
+
+        let snapshot = inspect(directory, journal_limits())?;
+        let mut admission = crate::native_deployment::Admission::new(executable.to_owned())?;
+        admission.load_retained(&directory.join("admissions"))?;
+        let mut roots = retained_store_roots(&snapshot, &directory.join("roots"), &mut admission)?;
+        // Native preparation reads every retained catalog before opening the
+        // journal, including receipts whose generation has since been pruned.
+        for receipt in admission.receipt_roots() {
+            let root = receipt
+                .to_str()
+                .context("retained admission root is not UTF-8")?;
+            admission.admit(root)?;
+            roots.insert(root.to_owned());
+        }
+        Ok(Self {
+            roots: roots.into_iter().collect(),
+            _snapshot: Some(snapshot),
+        })
+    }
+
     pub(crate) fn roots(&self) -> &[String] {
         &self.roots
     }

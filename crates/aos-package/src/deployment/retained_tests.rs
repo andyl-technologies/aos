@@ -369,3 +369,61 @@ fn package_recovery_distinguishes_live_activation_from_completed_publication_gap
         before
     );
 }
+
+#[test]
+fn standalone_inventory_locks_real_paired_journals_without_profile_publication() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store {
+        directory: directory.path().join("roots"),
+        calls: Arc::default(),
+    };
+    fs::create_dir(&store.directory).unwrap();
+    drop(Transactions::open(directory.path(), store.clone(), journal_limits()).unwrap());
+    let before = ["generations.journal", "effects.journal"]
+        .map(|name| fs::read(directory.path().join(name)).unwrap());
+
+    let inventory = RetainedStoreRoots::open_deployment(
+        directory.path(),
+        &directory.path().join("unused-nix-store"),
+    )
+    .unwrap();
+
+    assert!(inventory.roots().is_empty());
+    assert!(Transactions::open(directory.path(), store.clone(), journal_limits()).is_err());
+    assert!(!directory.path().join("admissions").exists());
+    assert!(!directory.path().join("publications").exists());
+    assert_eq!(
+        ["generations.journal", "effects.journal"]
+            .map(|name| fs::read(directory.path().join(name)).unwrap()),
+        before
+    );
+
+    drop(inventory);
+    assert!(Transactions::open(directory.path(), store, journal_limits()).is_ok());
+}
+
+#[test]
+fn standalone_inventory_requires_the_exact_existing_journal_pair_without_repair() {
+    let temporary = tempfile::tempdir().unwrap();
+    let directory = temporary.path().join("absent");
+    let executable = Path::new("/nix/store/00000000000000000000000000000000-nix/bin/nix-store");
+    assert!(
+        RetainedStoreRoots::open_deployment(&directory, executable)
+            .unwrap()
+            .roots()
+            .is_empty()
+    );
+    assert!(!directory.exists());
+
+    fs::create_dir(&directory).unwrap();
+    let journal = directory.join("effects.journal");
+    fs::write(&journal, b"existing bytes").unwrap();
+    assert!(RetainedStoreRoots::open_deployment(&directory, executable).is_err());
+    assert_eq!(fs::read(&journal).unwrap(), b"existing bytes");
+    assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+
+    fs::write(directory.join("generations.journal"), [0; 128]).unwrap();
+    assert!(RetainedStoreRoots::open_deployment(&directory, executable).is_err());
+    assert_eq!(fs::read(&journal).unwrap(), b"existing bytes");
+    assert_eq!(fs::read_dir(&directory).unwrap().count(), 2);
+}

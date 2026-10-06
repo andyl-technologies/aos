@@ -46,6 +46,9 @@ struct StageRequest<'a> {
     running: &'a ImageGeneration,
     retained_generations: &'a [ImageGeneration],
     retained_store_roots: &'a [String],
+    initrd_state_directory: &'a Path,
+    initrd_storage_root: &'a Path,
+    retained_initrd_store_roots: &'a [String],
 }
 
 #[derive(Deserialize)]
@@ -235,6 +238,22 @@ pub(crate) async fn stage_candidate(
     }
     let executable = read_toplevel_meta(Path::new(&running.toplevel), "image-stage-executable")?;
     validate_executable(&executable)?;
+    let initrd_state_directory = PathBuf::from(read_toplevel_meta(
+        Path::new(&running.toplevel),
+        "initrd-state-directory",
+    )?);
+    ensure!(
+        initrd_state_directory.is_absolute(),
+        "running image initrd state directory must be absolute"
+    );
+    let initrd_storage_root = PathBuf::from(read_toplevel_meta(
+        Path::new(&running.toplevel),
+        "initrd-storage-root",
+    )?);
+    ensure!(
+        initrd_storage_root.is_absolute(),
+        "running image initrd storage root must be absolute"
+    );
     let intent_path = profile.join("candidate-stage.json");
     let intent = StageIntent {
         schema: "aos.image-candidate-stage-intent".into(),
@@ -276,6 +295,9 @@ pub(crate) async fn stage_candidate(
             running: &running,
             retained_generations: &state.generations,
             retained_store_roots: &[],
+            initrd_state_directory: &initrd_state_directory,
+            initrd_storage_root: &initrd_storage_root,
+            retained_initrd_store_roots: &[],
         },
         cancellation,
     )?;
@@ -319,6 +341,10 @@ pub(crate) async fn stage_candidate(
         &crate::types::ProfileScope::System.profile_path(),
         &crate::install::native::packaged_path("AOS_NIX_STORE")?,
     )?;
+    let retained_initrd = crate::deployment::retained::RetainedStoreRoots::open_deployment(
+        &initrd_state_directory,
+        &crate::install::native::packaged_path("AOS_NIX_STORE")?,
+    )?;
     let request = StageRequest {
         schema: "aos.image-candidate-stage",
         action: "stage",
@@ -331,6 +357,9 @@ pub(crate) async fn stage_candidate(
         running: &running,
         retained_generations: &state.generations,
         retained_store_roots: retained.roots(),
+        initrd_state_directory: &initrd_state_directory,
+        initrd_storage_root: &initrd_storage_root,
+        retained_initrd_store_roots: retained_initrd.roots(),
     };
     let receipt = run_stage(&executable, &request, cancellation)?;
     candidate = admit_receipt(profile, &mut state, candidate, receipt)?;
