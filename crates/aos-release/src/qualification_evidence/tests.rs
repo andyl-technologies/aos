@@ -814,6 +814,70 @@ fn observations_cannot_be_replayed_for_changed_bytes_with_the_same_artifact_ids(
 }
 
 #[test]
+fn qualification_snapshot_expands_recovery_image_package_cases_without_a_predecessor()
+-> anyhow::Result<()> {
+    use crate::qualification::PackageExecution;
+
+    // Recovery execution images exist only for Linux, so the recovery
+    // package is published on x86_64 Linux alone, as in the update case above.
+    let (mut snapshot, mut manifest) = qualification_fixture()?;
+    let platform = Platform::X86_64Linux;
+    manifest
+        .packages
+        .iter_mut()
+        .find(|package| package.name == "example")
+        .unwrap()
+        .platforms
+        .retain(|cell| cell.platform == platform);
+    for cell in &mut snapshot
+        .packages
+        .iter_mut()
+        .find(|package| package.name == "example")
+        .unwrap()
+        .platforms
+    {
+        if cell.platform != platform {
+            cell.decision = MatrixCell::NotApplicable {
+                rule: "recovery-execution-fixture".into(),
+                reason: "This fixture exercises recovery on x86_64 Linux only.".into(),
+            };
+        }
+    }
+    snapshot
+        .qualification
+        .package_rules
+        .iter_mut()
+        .find(|rule| rule.name == "example")
+        .unwrap()
+        .execution = Some(PackageExecution::RecoveryImage {
+        system_variant: "server".into(),
+    });
+    rebind(&mut snapshot)?;
+    snapshot.qualification_predecessor = None;
+    snapshot.release_id = format!(
+        "{}{}",
+        crate::plan::QUALIFICATION_SNAPSHOT_RELEASE_PREFIX,
+        snapshot.version
+    );
+    snapshot.source.source_tag = format!(
+        "{}{}",
+        crate::plan::QUALIFICATION_SNAPSHOT_TAG_PREFIX,
+        snapshot.version
+    );
+    snapshot.destinations.clear();
+
+    let staging_cases = cases(&snapshot, &manifest, None, QualificationPhase::Staging)?;
+
+    assert!(
+        staging_cases
+            .iter()
+            .any(|case| case.id.starts_with("package-function/example/"))
+    );
+    assert!(staging_cases.iter().all(|case| case.predecessor.is_none()));
+    Ok(())
+}
+
+#[test]
 fn qualification_snapshot_uses_current_build_policy_but_cannot_be_published() -> anyhow::Result<()>
 {
     let (mut snapshot, manifest) = qualification_fixture()?;
