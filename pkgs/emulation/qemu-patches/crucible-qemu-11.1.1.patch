@@ -1,4 +1,4 @@
-From 5daaf7803d00d92efc22eb4afcacf15e7e19dab7 Mon Sep 17 00:00:00 2001
+From 33343f63cb5e8749caadcb251c6b8a90ed0482cf Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Sat, 3 Oct 2026 07:08:17 +0000
 Subject: [PATCH] Integrate deterministic execution and private fork I/O
@@ -65,12 +65,22 @@ kinds, complete comparison reads, modeled vector replacement, native fork
 inheritance and compiled causal negatives. Retain uninstrumented O2 object
 evidence with explicit reduced-translation-unit and runtime limits.
 
-Adapt the memory-identity fixture to direct register-rule presence.
-Retain the bounded command-kind check and rule-family boolean provider,
-extract the actual register predicate, and preserve every eligibility,
-identity, active, invalid and cleanup assertion. Verify strict prototype
-diagnostics, compiled eager-identity and rule-presence causal negatives,
-accelerator classification, and Git-free default fixture execution.
+Restrict pre-stop FIFO invalidation barriers to the initialized Sim
+accelerator, retaining every common-event pass and FIFO owner restoration.
+Restore ordinary common stop-before-work ordering and avoid redundant empty
+queue locks on healthy single-threaded TCG turns. Preserve Sim global flush
+fixed points and callback/stop ordering. Exercise production wrapper, drain,
+common, FIFO, wait, kick and pause/resume bodies with causal negatives and a
+Git-free source-archive fixture. Keep bounded-provider and full-process
+qualification limits explicit.
+
+Use the cached accelerator instance classification when observing Sim ticks.
+Retain mode-before-icount admission, precise-only observation, the -1 error
+and signed tick result. Exercise the production API body with early and
+nameless safe-getter contracts, named mode matrices, lifecycle identity
+continuity, exact query order and counts, signed edge values and compiled
+causal negatives. Carry the exact rule-presence lazy-memory test adapter.
+Keep ordinary RR barriers unchanged and qualification limits explicit.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -3553,10 +3563,10 @@ index 0000000000000000000000000000000000000000..76140d303d1b89512472ebc4f0d0577a
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118082d7f100dd7655e57e28b55418d294..f40ceb6734858ff52312074a3459c90cbf3011cf 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..c0542990cb78d22a5db736d047fcc4d9bdbd6321 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -27,45 +27,1814 @@
+@@ -27,45 +27,1818 @@
  #include "qemu/lockable.h"
  #include "system/tcg.h"
  #include "system/replay.h"
@@ -4751,8 +4761,10 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..f40ceb6734858ff52312074a3459c90c
 +
 +    /* Exclusive work must name its FIFO owner, even on the shared RR thread. */
 +    current_cpu = cpu;
-+    /* Finish invalidation before stop acknowledgment permits capture or fork. */
-+    process_queued_cpu_work(cpu);
++    if (current_accel_is_sim()) {
++        /* Finish invalidation before stop acknowledgment permits capture or fork. */
++        process_queued_cpu_work(cpu);
++    }
 +    qemu_process_cpu_events_common(cpu);
 +    current_cpu = saved_cpu;
 +}
@@ -4762,14 +4774,16 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..f40ceb6734858ff52312074a3459c90c
 +    CPUState *saved_cpu = current_cpu;
 +    CPUState *cpu;
 +
-+    /* A sibling's global flush must finish before any vCPU acknowledges stop. */
-+    do {
-+        CPU_FOREACH(cpu) {
-+            current_cpu = cpu;
-+            process_queued_cpu_work(cpu);
-+        }
-+    } while (rr_crucible_sim_vcpu_work_pending());
-+    current_cpu = saved_cpu;
++    if (current_accel_is_sim()) {
++        /* A sibling's global flush must finish before any vCPU acknowledges stop. */
++        do {
++            CPU_FOREACH(cpu) {
++                current_cpu = cpu;
++                process_queued_cpu_work(cpu);
++            }
++        } while (rr_crucible_sim_vcpu_work_pending());
++        current_cpu = saved_cpu;
++    }
 +
 +    CPU_FOREACH(cpu) {
 +        rr_crucible_sim_process_vcpu_events(cpu);
@@ -5390,7 +5404,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..f40ceb6734858ff52312074a3459c90c
  }
  
  /* Kick the currently round-robin scheduled vCPU to next */
-@@ -84,18 +1853,30 @@ static void rr_kick_next_cpu(void)
+@@ -84,18 +1857,30 @@ static void rr_kick_next_cpu(void)
  
  static void rr_kick_thread(void *opaque)
  {
@@ -5423,7 +5437,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..f40ceb6734858ff52312074a3459c90c
      }
  }
  
-@@ -110,15 +1891,131 @@ static void rr_wait_io_event(void)
+@@ -110,15 +1895,131 @@ static void rr_wait_io_event(void)
  {
      CPUState *cpu;
  
@@ -5557,7 +5571,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..f40ceb6734858ff52312074a3459c90c
      }
  }
  
-@@ -140,6 +2037,18 @@ static void rr_deal_with_unplugged_cpus(void)
+@@ -140,6 +2041,18 @@ static void rr_deal_with_unplugged_cpus(void)
  
  static void rr_force_rcu(Notifier *notify, void *data)
  {
@@ -5576,7 +5590,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..f40ceb6734858ff52312074a3459c90c
      rr_kick_next_cpu();
  }
  
-@@ -184,6 +2093,8 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -184,6 +2097,8 @@ static void *rr_cpu_thread_fn(void *arg)
      CPUState *cpu = arg;
  
      assert(tcg_enabled());
@@ -5585,7 +5599,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..f40ceb6734858ff52312074a3459c90c
      rcu_register_thread();
      force_rcu.notify = rr_force_rcu;
      rcu_add_force_rcu_notifier(&force_rcu);
-@@ -204,41 +2115,199 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -204,41 +2119,199 @@ static void *rr_cpu_thread_fn(void *arg)
          /* process any pending work */
          CPU_FOREACH(cpu) {
              current_cpu = cpu;
@@ -5803,7 +5817,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..f40ceb6734858ff52312074a3459c90c
  
          if (icount_enabled()) {
              int cpu_count = rr_cpu_count();
-@@ -254,11 +2323,31 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -254,11 +2327,31 @@ static void *rr_cpu_thread_fn(void *arg)
              cpu_budget = icount_percpu_budget(cpu_count);
          }
  
@@ -5836,7 +5850,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..f40ceb6734858ff52312074a3459c90c
  
          while (cpu && cpu_work_list_empty(cpu)) {
              /*
-@@ -276,28 +2365,123 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -276,28 +2369,123 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
                                (cpu->singlestep_flags & SSTEP_NOTIMER) == 0);
  
@@ -5975,7 +5989,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..f40ceb6734858ff52312074a3459c90c
              } else if (cpu->stop) {
                  if (cpu->unplug) {
                      cpu = CPU_NEXT(cpu);
-@@ -305,11 +2489,137 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -305,11 +2493,137 @@ static void *rr_cpu_thread_fn(void *arg)
                  break;
              }
  
@@ -6115,7 +6129,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..f40ceb6734858ff52312074a3459c90c
      }
  
      g_assert_not_reached();
-@@ -318,13 +2628,34 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -318,13 +2632,34 @@ static void *rr_cpu_thread_fn(void *arg)
  void rr_start_vcpu_thread(CPUState *cpu)
  {
      char thread_name[VCPU_THREAD_NAME_SIZE];
@@ -75282,7 +75296,7 @@ index 9e9941fe73e77a7b3bcc3ca1ab7ad4bec58f0151..66e2d8cd64d01e2304aa51675bfe4959
  
  static int net_slirp_init(NetClientState *peer, const char *model,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index fbf905cd63e4cc109748b379f4209f6ad6547c2c..ad6391e3dc586dd5f5e65516db26dfb43e82c512 100644
+index fbf905cd63e4cc109748b379f4209f6ad6547c2c..61a4fba453ae6308f01eba6d175ddaf93cf4b51d 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -11,12 +11,40 @@
@@ -76890,7 +76904,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..ad6391e3dc586dd5f5e65516db26dfb4
 +
 +int64_t qemu_plugin_sim_tick_observed(void)
 +{
-+    if (strcmp(current_accel_name(), "sim") != 0 ||
++    if (!current_accel_is_sim() ||
 +        icount_enabled() != ICOUNT_PRECISE) {
 +        return -1;
 +    }
@@ -151720,18 +151734,22 @@ index aa1f719b08169025f3d9f9f0fd82113d27325c78..cfa736135e6e2e50cd1bab20a17004d2
          g_test_add_func("/perf/nesting", perf_nesting);
 diff --git a/tests/unit/test-crucible-accel-classification.py b/tests/unit/test-crucible-accel-classification.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..366ef97f0e0a216dab6e63b61f14c86253b423e3
+index 0000000000000000000000000000000000000000..e2fce3c93f85f69500792a8315cb78bed81dd91b
 --- /dev/null
 +++ b/tests/unit/test-crucible-accel-classification.py
-@@ -0,0 +1,689 @@
+@@ -0,0 +1,787 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise instance classification and hot mode predicates from production.
 +
-+The unchanged production declarations, initialization/getter and predicate bodies
-+run against bounded QOM, machine, CPU, timer, replay and fault-registry providers.
++The unchanged production declarations, initialization/getter, predicate and tick
++API bodies run against bounded QOM, machine, CPU, timer, replay and fault-registry
++providers.
 +A real fork checks inherited instance memory. Reset and restore only model the
 +unchanged accelerator identity; this does not execute native reset, migration,
 +QOM registration, a translated guest, scheduling or a full emulator build.
++Absent-machine, absent-accelerator and nameless API cases exercise the safe getter
++contract; they do not claim defined behavior for the old NULL name comparison.
++The default fixture runs in a Git-free source archive without extra headers.
 +"""
 +
 +import argparse
@@ -151804,11 +151822,14 @@ index 0000000000000000000000000000000000000000..366ef97f0e0a216dab6e63b61f14c862
 +uint64_t icount_crucible_rr_switch_quantum(void);
 +int64_t icount_percpu_budget(int);
 +bool qemu_crucible_fault_memory_rules_active(void);
++int64_t qemu_plugin_sim_tick_observed(void);
 +
 +static MachineState *current_machine;
 +static AccelState *initializing;
 +static unsigned int class_reads, name_reads, mode_reads, callbacks, unrefs;
 +static unsigned int compat_sets;
++static unsigned int icount_reads, observation_reads;
++static int64_t observed_tick;
 +static bool callback_expected;
 +static int callback_status;
 +static bool recording = true;
@@ -151912,8 +151933,19 @@ index 0000000000000000000000000000000000000000..366ef97f0e0a216dab6e63b61f14c862
 +
 +static int icount_enabled(void)
 +{
++    icount_reads++;
 +    event('E');
 +    return use_icount;
++}
++
++static int64_t icount_crucible_sim_tick_observed(void)
++{
++    observation_reads++;
++    event('W');
++    assert(current_machine && current_machine->accelerator);
++    assert(current_machine->accelerator->is_sim);
++    assert(use_icount == ICOUNT_PRECISE);
++    return observed_tick;
 +}
 +
 +static bool crucible_sim_shmem_dispatch_registered(void)
@@ -152048,6 +152080,29 @@ index 0000000000000000000000000000000000000000..366ef97f0e0a216dab6e63b61f14c862
 +"""
 +
 +CHECKS = r"""
++static void check_tick_api(bool sim)
++{
++    const int64_t ticks[] = { INT64_MIN, -2, -1, 0, 1, INT64_MAX };
++    bool precise = use_icount == ICOUNT_PRECISE;
++
++    for (size_t tick = 0; tick < sizeof(ticks) / sizeof(ticks[0]); tick++) {
++        unsigned int old_classes = class_reads, old_names = name_reads;
++        unsigned int old_modes = mode_reads, old_icount = icount_reads;
++        unsigned int old_observations = observation_reads;
++        observed_tick = ticks[tick];
++
++        clear_trace();
++        assert(qemu_plugin_sim_tick_observed() ==
++               (sim && precise ? observed_tick : -1));
++
++        expect_trace(sim ? (precise ? "GEW" : "GE") : "G");
++        assert(class_reads == old_classes && name_reads == old_names);
++        assert(mode_reads == old_modes + 1);
++        assert(icount_reads == old_icount + (sim ? 1 : 0));
++        assert(observation_reads == old_observations + (sim && precise ? 1 : 0));
++    }
++}
++
 +static void initialize(AccelState *accel, MachineState *machine,
 +                       bool expected, int status)
 +{
@@ -152082,15 +152137,26 @@ index 0000000000000000000000000000000000000000..366ef97f0e0a216dab6e63b61f14c862
 +
 +    current_machine = NULL;
 +    assert(!current_accel_is_sim());
++    for (int mode = ICOUNT_DISABLED; mode <= ICOUNT_ADAPTATIVE; mode++) {
++        use_icount = mode;
++        check_tick_api(false);
++    }
 +    current_machine = &machine;
 +    assert(!current_accel_is_sim());
++    for (int mode = ICOUNT_DISABLED; mode <= ICOUNT_ADAPTATIVE; mode++) {
++        use_icount = mode;
++        check_tick_api(false);
++    }
 +    clear_trace();
 +
 +    initialize(&failed, &machine, true, -7);
 +    assert(!machine.accelerator && !sim_allowed && unrefs == 1);
++    check_tick_api(false);
 +    initialize(&ordinary, &machine, false, 0);
 +    assert(current_accel() == &ordinary);
++    check_tick_api(false);
 +    initialize(&again, &alternate, true, 0);
++    check_tick_api(true);
 +
 +    /* Machine identity changes expose accidental cross-instance global state. */
 +    current_machine = &machine;
@@ -152103,8 +152169,10 @@ index 0000000000000000000000000000000000000000..366ef97f0e0a216dab6e63b61f14c862
 +    AccelState *identity = alternate.accelerator;
 +    use_icount = ICOUNT_DISABLED;
 +    assert(current_accel_is_sim());
++    check_tick_api(true);
 +    use_icount = ICOUNT_PRECISE;
 +    assert(current_accel_is_sim() && alternate.accelerator == identity);
++    check_tick_api(true);
 +    clear_trace();
 +
 +    pid_t child = fork();
@@ -152112,8 +152180,10 @@ index 0000000000000000000000000000000000000000..366ef97f0e0a216dab6e63b61f14c862
 +    if (!child) {
 +        assert(current_accel_is_sim());
 +        assert(alternate.accelerator == identity);
++        check_tick_api(true);
 +        current_machine = &machine;
 +        assert(!current_accel_is_sim());
++        check_tick_api(false);
 +        _exit(0);
 +    }
 +    int status;
@@ -152129,6 +152199,10 @@ index 0000000000000000000000000000000000000000..366ef97f0e0a216dab6e63b61f14c862
 +    assert(nameless_allowed && current_accel() == &no_name);
 +    assert(current_accel_name() == NULL);
 +    expect_trace("Q");
++    for (int mode = ICOUNT_DISABLED; mode <= ICOUNT_ADAPTATIVE; mode++) {
++        use_icount = mode;
++        check_tick_api(false);
++    }
 +    assert(callbacks == 4 && compat_sets == 3);
 +    puts("PASS production accel classification: callback-first query, initialized nameless class, failed init/retry, sim/tcg/sim instance isolation, identity continuity and native fork");
 +}
@@ -152157,6 +152231,7 @@ index 0000000000000000000000000000000000000000..366ef97f0e0a216dab6e63b61f14c862
 +            for (int mode = ICOUNT_DISABLED; mode <= ICOUNT_ADAPTATIVE; mode++) {
 +                use_icount = mode;
 +                bool precise = mode == ICOUNT_PRECISE;
++                check_tick_api(sim);
 +                clear_trace();
 +                assert(icount_crucible_sim_mode() == (sim && precise));
 +                expect_trace(precise ? "G" : "");
@@ -152279,6 +152354,8 @@ index 0000000000000000000000000000000000000000..366ef97f0e0a216dab6e63b61f14c862
 +    virtual_deadline = 2000;
 +
 +    unsigned int old_classes = class_reads, old_names = name_reads;
++    unsigned int old_observations = observation_reads;
++    observed_tick = INT64_MAX;
 +    crucible_node_rules = &unused_index;
 +    gpa_index.len = 1;
 +    recording = false;
@@ -152292,13 +152369,16 @@ index 0000000000000000000000000000000000000000..366ef97f0e0a216dab6e63b61f14c862
 +        assert(crucible_sim_preemption_mode());
 +        assert(qemu_crucible_fault_memory_rules_active());
 +        rr_start_kick_timer();
++        assert(qemu_plugin_sim_tick_observed() == INT64_MAX);
 +    }
 +    recording = true;
 +    assert(class_reads == old_classes && name_reads == old_names);
++    assert(observation_reads == old_observations + 10000);
 +    assert(!memcmp(current_accel_name(), "sim", sizeof("sim")));
 +    expect_trace("Q");
 +    assert(class_reads == old_classes + 1 && name_reads == old_names);
 +    puts("PASS production accel classification: zero-deadline/replay paths and 90000 hot calls retain effects without repeated QOM casts or name comparisons");
++    puts("PASS production tick observation API: safe early/nameless getter contract, all named modes, retry/reset/restore/fork identity, exact mode/icount/observation counts and order, signed edge ticks and 10000 hot observations");
 +}
 +
 +int main(void)
@@ -152322,7 +152402,8 @@ index 0000000000000000000000000000000000000000..366ef97f0e0a216dab6e63b61f14c862
 +    parser.add_argument("--negative-control", choices=[
 +        "publication-order", "callback-order", "shared-classification",
 +        "stale-retry", "superclass-match", "repeated-name-query",
-+        "predicate-order"])
++        "predicate-order", "tick-name-query", "tick-icount-order",
++        "tick-observation-order", "tick-error-result", "tick-signed-result"])
 +    arguments = parser.parse_args()
 +    arguments.output_dir.mkdir(parents=True, exist_ok=True)
 +    accel_header = (ROOT / "include/qemu/accel.h").read_text()
@@ -152390,6 +152471,37 @@ index 0000000000000000000000000000000000000000..366ef97f0e0a216dab6e63b61f14c862
 +        predicate_bodies = predicate_bodies.replace(
 +            'return current_accel_is_sim() &&\n           icount_enabled() == ICOUNT_PRECISE;',
 +            'return icount_enabled() == ICOUNT_PRECISE &&\n           current_accel_is_sim();')
++    tick_body = definition((ROOT / "plugins/api-system.c").read_text(),
++                           "int64_t qemu_plugin_sim_tick_observed(")
++    tick_guard = ('!current_accel_is_sim() ||\n'
++                  '        icount_enabled() != ICOUNT_PRECISE')
++    assert tick_body.count(tick_guard) == 1
++    if negative == "tick-name-query":
++        # Keep absent-instance rejection safe so an assertion exposes the
++        # repeated named query rather than an undefined NULL comparison.
++        tick_body = tick_body.replace(tick_guard,
++            '!current_accel_is_sim() || strcmp(current_accel_name(), "sim") != 0 ||\n'
++            '        icount_enabled() != ICOUNT_PRECISE')
++    elif negative == "tick-icount-order":
++        tick_body = tick_body.replace(tick_guard,
++            'icount_enabled() != ICOUNT_PRECISE ||\n'
++            '        !current_accel_is_sim()')
++    elif negative == "tick-observation-order":
++        tick_body = tick_body.replace(
++            'int64_t qemu_plugin_sim_tick_observed(void)\n{',
++            'int64_t qemu_plugin_sim_tick_observed(void)\n{\n'
++            '    int64_t tick = icount_crucible_sim_tick_observed();')
++        tick_body = tick_body.replace(
++            'return icount_crucible_sim_tick_observed();', 'return tick;')
++    elif negative == "tick-error-result":
++        tick_body = tick_body.replace(
++            tick_guard + ') {\n        return -1;',
++            tick_guard + ') {\n        return 0;')
++    elif negative == "tick-signed-result":
++        tick_body = tick_body.replace(
++            'return icount_crucible_sim_tick_observed();',
++            'return (uint32_t)icount_crucible_sim_tick_observed();')
++    predicate_bodies += "\n\n" + tick_body
 +    prelude = PRELUDE.replace("/* PRODUCTION_DECLARATIONS */", declarations)
 +    class_macro = source_range(accel_header, "#define ACCEL_GET_CLASS(obj)",
 +                               "AccelClass *accel_find")
@@ -176347,6 +176459,645 @@ index 0000000000000000000000000000000000000000..47c5b0de1b13d148c6b19af3e0bacdf5
 +        ]
 +        subprocess.run(command, check=True)
 +        subprocess.run([str(binary)], check=True, timeout=10)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/tests/unit/test-crucible-rr-sim-barriers.py b/tests/unit/test-crucible-rr-sim-barriers.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..68da52cf9a0dcc41ab9b45adf5bc212b2f09fe34
+--- /dev/null
++++ b/tests/unit/test-crucible-rr-sim-barriers.py
+@@ -0,0 +1,633 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Exercise production RR FIFO barriers and ordinary CPU event processing.
++
++The wrapper, global drain, wait path, common events, FIFO implementation,
++accelerator getter, plugin pending predicates, pause/resume and kick bodies are
++extracted from this source tree. GLib mutexes and QEMU queue/atomic macros are
++real. CPU topology, BQL/exclusive arbitration, host wake scheduling, plugin halt
++callbacks and timers are bounded providers. This proves local ordering and
++progress under those providers, not running guests, migration streams, a full
++QEMU process, concurrent producers or latency. No Git metadata or generated
++protocol header is required; the default works in a source archive.
++"""
++
++import argparse
++import hashlib
++import json
++import os
++from pathlib import Path
++import shlex
++import subprocess
++
++
++ROOT = Path(__file__).resolve().parents[2]
++RR = "accel/tcg/tcg-accel-ops-rr.c"
++NEGATIVES = ["wrong-mode", "skipped-common", "missing-pre-drain",
++             "missing-fixed-point", "missing-owner-restoration"]
++BASELINE_COMMIT = "f9a79a88ac52a502fd174c263a8a749debc4dbdd"
++BASELINE_HASHES = {
++    "rr_crucible_sim_process_vcpu_events":
++        "379ac45f75c582ae5232b4b629350dd439f1fa8c4df45eeddb7f7e7fdff65f05",
++    "rr_crucible_sim_drain_vcpu_work":
++        "332b54edf243f49abfabdca79f32d96bf98b6c82ac0e8e7c85cb059574c88387",
++}
++
++
++def definition(source, signature):
++    """Extract one complete function without changing its body."""
++    start = source.index(signature)
++    opening = source.index("{", start)
++    depth = 0
++    for index in range(opening, len(source)):
++        if source[index] == "{":
++            depth += 1
++        elif source[index] == "}":
++            depth -= 1
++            if depth == 0:
++                return source[start:index + 1]
++    raise AssertionError(f"unterminated definition: {signature}")
++
++
++# Captured production wrappers before the mode guards; no history dependency.
++BASELINE = r"""
++static void old_process_vcpu_events(CPUState *cpu)
++{
++    CPUState *saved_cpu = current_cpu;
++
++    /* Exclusive work must name its FIFO owner, even on the shared RR thread. */
++    current_cpu = cpu;
++    /* Finish invalidation before stop acknowledgment permits capture or fork. */
++    process_queued_cpu_work(cpu);
++    qemu_process_cpu_events_common(cpu);
++    current_cpu = saved_cpu;
++}
++
++static void old_drain_vcpu_work(void)
++{
++    CPUState *saved_cpu = current_cpu;
++    CPUState *cpu;
++
++    /* A sibling's global flush must finish before any vCPU acknowledges stop. */
++    do {
++        CPU_FOREACH(cpu) {
++            current_cpu = cpu;
++            process_queued_cpu_work(cpu);
++        }
++    } while (rr_crucible_sim_vcpu_work_pending());
++    current_cpu = saved_cpu;
++
++    CPU_FOREACH(cpu) {
++        old_process_vcpu_events(cpu);
++    }
++}
++"""
++
++PRELUDE = r"""
++#include <assert.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <glib.h>
++#define qemu_build_assert(condition) _Static_assert(condition, #condition)
++#include "qemu/atomic.h"
++#include "qemu/queue.h"
++
++#define ICOUNT_PRECISE 1
++#define QEMU_CLOCK_VIRTUAL 1
++#define QEMU_PLUGIN_TIME_ADVANCE_ARMED 2
++#define QEMU_PLUGIN_CRUCIBLE_VMSTOP_IDLE 0
++#define RR_TCG_EXEC_IDLE 0
++#define CPU_FOREACH(cpu) for ((cpu) = first_cpu; (cpu); (cpu) = (cpu)->next)
++
++typedef GMutex QemuMutex;
++typedef struct { int kind; } QemuCond;
++typedef struct CPUState CPUState;
++typedef union { unsigned long host_ulong; } run_on_cpu_data;
++typedef void (*run_on_cpu_func)(CPUState *, run_on_cpu_data);
++struct qemu_work_item {
++    QSIMPLEQ_ENTRY(qemu_work_item) node;
++    run_on_cpu_func func;
++    run_on_cpu_data data;
++    bool free, exclusive, done;
++};
++
++struct CPUState {
++    CPUState *next;
++    int cpu_index, exception_index;
++    bool stop, stopped, unplug, halted, thread_kicked, exit_request;
++    QemuMutex work_mutex;
++    QemuCond *halt_cond;
++    QSIMPLEQ_HEAD(, qemu_work_item) work_list;
++};
++
++typedef struct { bool is_sim; } AccelState;
++typedef struct { AccelState *accelerator; } MachineState;
++typedef struct { void (*kick_vcpu_thread)(CPUState *); } AccelOpsClass;
++typedef enum {
++    QEMU_PLUGIN_CRUCIBLE_IDLE_CALLBACK_COMPLETE,
++    QEMU_PLUGIN_CRUCIBLE_IDLE_CALLBACK_RESCAN
++} QemuPluginCrucibleIdleCallbackDisposition;
++
++static CPUState cpus[2], sentinel;
++static CPUState *first_cpu = cpus, *current_cpu;
++static AccelState accelerator;
++static MachineState machine, *current_machine = &machine;
++static QemuCond qemu_work_cond = { 0 }, qemu_pause_cond = { 1 };
++static QemuCond halt_cond = { 2 };
++static bool locked = true, exclusive, host_idle;
++static int count_mode, wait_action;
++static unsigned cycles[2], waits, kicks, idle_bridges, callbacks;
++static unsigned timer_starts, timer_stops, warps, deadlines, timers;
++static unsigned qemu_plugin_time_advance_pending;
++static unsigned qemu_plugin_crucible_vmstop_state, rr_tcg_exec_state;
++static bool qemu_plugin_control_boundary_deferred;
++static uint64_t qemu_plugin_rr_control_request_generation;
++static uint64_t qemu_plugin_rr_control_complete_generation;
++static char events[256];
++static size_t event_count;
++
++/* Declare the extracted public functions with their original signatures. */
++bool current_accel_is_sim(void);
++bool cpu_work_list_empty(CPUState *cpu);
++void process_queued_cpu_work(CPUState *cpu);
++void async_run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data);
++void async_safe_run_on_cpu(CPUState *cpu, run_on_cpu_func func,
++                           run_on_cpu_data data);
++void qemu_process_cpu_events_common(CPUState *cpu);
++void qemu_cpu_kick(CPUState *cpu);
++void cpu_pause(CPUState *cpu);
++void cpu_resume(CPUState *cpu);
++bool qemu_plugin_time_advance_is_pending(void);
++bool qemu_plugin_crucible_vmstop_pending(void);
++bool qemu_plugin_crucible_rr_control_boundary_pending(void);
++static bool rr_crucible_sim_vcpu_work_pending(void);
++static void rr_crucible_sim_process_vcpu_events(CPUState *cpu);
++static void rr_crucible_sim_drain_vcpu_work(void);
++static void work_callback(CPUState *cpu, run_on_cpu_data data);
++
++static void record(char event)
++{
++    assert(event_count + 1 < sizeof(events));
++    events[event_count++] = event;
++    events[event_count] = '\0';
++}
++
++static void qemu_mutex_lock(QemuMutex *mutex)
++{
++    for (unsigned index = 0; index < 2; index++) {
++        if (mutex == &cpus[index].work_mutex) {
++            cycles[index]++;
++        }
++    }
++    g_mutex_lock(mutex);
++}
++
++static void qemu_mutex_unlock(QemuMutex *mutex)
++{
++    g_mutex_unlock(mutex);
++}
++
++static void bql_unlock(void)
++{
++    assert(locked);
++    locked = false;
++    record('u');
++}
++
++static void bql_lock(void)
++{
++    assert(!locked);
++    locked = true;
++    record('l');
++}
++
++static void start_exclusive(void)
++{
++    assert(!locked && !exclusive);
++    assert(current_cpu == &cpus[0] || current_cpu == &cpus[1]);
++    exclusive = true;
++    record('x');
++}
++
++static void end_exclusive(void)
++{
++    assert(!locked && exclusive);
++    exclusive = false;
++    record('y');
++}
++
++static bool qemu_cpu_is_self(CPUState *cpu)
++{
++    return current_cpu == cpu;
++}
++
++static void cpu_exit(CPUState *cpu)
++{
++    cpu->exit_request = true;
++}
++
++static void qemu_cond_broadcast(QemuCond *condition)
++{
++    if (condition == &qemu_pause_cond) {
++        assert(locked && current_cpu && current_cpu->stopped);
++        record('S' + current_cpu->cpu_index);
++    }
++}
++
++static void kick_provider(CPUState *cpu)
++{
++    kicks++;
++    cpu->thread_kicked = true;
++    cpu_exit(cpu);
++}
++
++static AccelOpsClass ops = { kick_provider }, *cpus_accel = &ops;
++
++static void cpus_kick_thread(CPUState *cpu)
++{
++    kick_provider(cpu);
++}
++
++static void qemu_plugin_crucible_kick_idle_wait(CPUState *cpu)
++{
++    assert(cpu->thread_kicked && cpu->exit_request);
++    idle_bridges++;
++}
++
++static int icount_enabled(void) { return count_mode; }
++static bool all_cpu_threads_idle(void) { return host_idle; }
++static bool qemu_force_shutdown_requested(void) { return false; }
++static bool rr_crucible_sim_all_vcpus_halted(void) { return host_idle; }
++static bool rr_crucible_sim_complete_wake_boundary(void) { return false; }
++static void rr_hot_fork_note_parked(void) { }
++static void rr_crucible_sim_prepark(bool advance, bool control)
++{
++    (void)advance;
++    (void)control;
++    assert(!"Sim prepark outside bounded scenarios");
++}
++
++static QemuPluginCrucibleIdleCallbackDisposition
++rr_crucible_sim_sync_vcpu_halt_callbacks(void)
++{
++    return QEMU_PLUGIN_CRUCIBLE_IDLE_CALLBACK_COMPLETE;
++}
++
++static void rr_start_kick_timer(void) { timer_starts++; }
++static void rr_stop_kick_timer(void) { timer_stops++; }
++static void icount_start_warp_timer(void) { warps++; }
++static void icount_handle_deadline(void) { deadlines++; }
++static void qemu_clock_run_timers(int clock)
++{
++    assert(clock == QEMU_CLOCK_VIRTUAL);
++    timers++;
++}
++
++static void qemu_cond_wait_bql(QemuCond *condition)
++{
++    assert(locked && condition == &halt_cond);
++    assert(++waits <= 2);
++    bql_unlock();
++    /* A bounded host pass publishes work or pause/control, then wakes RR. */
++    if (wait_action == 1) {
++        current_cpu = NULL;
++        cpu_pause(&cpus[0]);
++        async_run_on_cpu(&cpus[1], work_callback,
++                         (run_on_cpu_data){ .host_ulong = 'K' });
++        qemu_cpu_kick(&cpus[0]);
++    } else if (wait_action == 2) {
++        current_cpu = NULL;
++        async_run_on_cpu(&cpus[0], work_callback,
++                         (run_on_cpu_data){ .host_ulong = 'C' });
++        qemu_plugin_rr_control_request_generation++;
++        qemu_cpu_kick(&cpus[0]);
++    } else {
++        assert(!"unexpected bounded wait action");
++    }
++    current_cpu = &sentinel;
++    host_idle = false;
++    bql_lock();
++}
++"""
++
++CHECKS = r"""
++static void reset(bool sim, int mode)
++{
++    for (unsigned index = 0; index < 2; index++) {
++        assert(QSIMPLEQ_EMPTY(&cpus[index].work_list));
++        cpus[index].stop = cpus[index].stopped = cpus[index].unplug = false;
++        cpus[index].thread_kicked = cpus[index].exit_request = false;
++        cycles[index] = 0;
++    }
++    machine.accelerator = &accelerator;
++    accelerator.is_sim = sim;
++    current_cpu = &sentinel;
++    count_mode = mode;
++    locked = true;
++    exclusive = host_idle = false;
++    waits = kicks = idle_bridges = callbacks = 0;
++    timer_starts = timer_stops = warps = deadlines = timers = 0;
++    qemu_plugin_time_advance_pending = 0;
++    qemu_plugin_crucible_vmstop_state = 0;
++    qemu_plugin_control_boundary_deferred = false;
++    qemu_plugin_rr_control_request_generation = 0;
++    qemu_plugin_rr_control_complete_generation = 0;
++    wait_action = 0;
++    event_count = 0;
++    events[0] = '\0';
++}
++
++static void work_callback(CPUState *cpu, run_on_cpu_data data)
++{
++    char event = data.host_ulong;
++
++    assert(current_cpu == cpu);
++    assert(locked != exclusive);
++    callbacks++;
++    record(event);
++    if (event == 'B') {
++        /* The later sibling adds work to the CPU already visited by the walk. */
++        async_run_on_cpu(&cpus[0], work_callback,
++                         (run_on_cpu_data){ .host_ulong = 'A' });
++    } else if (event == 'A') {
++        /* A second hop must also finish before the first stop acknowledgment. */
++        async_run_on_cpu(&cpus[1], work_callback,
++                         (run_on_cpu_data){ .host_ulong = 'C' });
++    }
++}
++
++static void enqueue(CPUState *cpu, char event, bool safe)
++{
++    run_on_cpu_data data = { .host_ulong = event };
++
++    if (safe) {
++        async_safe_run_on_cpu(cpu, work_callback, data);
++    } else {
++        async_run_on_cpu(cpu, work_callback, data);
++    }
++}
++
++static void check_healthy(void)
++{
++    for (unsigned sim = 0; sim < 2; sim++) {
++        for (int mode = 0; mode < 3; mode++) {
++            reset(sim, mode);
++            cpus[0].thread_kicked = cpus[1].thread_kicked = true;
++            rr_wait_io_event();
++            unsigned expected = !sim ? 3 : mode == ICOUNT_PRECISE ? 6 : 8;
++            assert(cycles[0] == expected && cycles[1] == expected);
++            assert(current_cpu == &sentinel && locked);
++            assert(!cpus[0].thread_kicked && !cpus[1].thread_kicked);
++            assert(!waits && !callbacks && !warps && !timers);
++            assert(timer_starts == 1 && timer_stops == 0);
++
++            char trace[sizeof(events)];
++            memcpy(trace, events, sizeof(trace));
++            reset(sim, mode);
++            old_wait_io_event();
++            unsigned old_expected = sim && mode == ICOUNT_PRECISE ? 6 : 8;
++            assert(cycles[0] == old_expected && cycles[1] == old_expected);
++            assert(!strcmp(trace, events));
++            assert(current_cpu == &sentinel && locked);
++        }
++    }
++    reset(false, 0);
++    machine.accelerator = NULL;
++    rr_wait_io_event();
++    assert(cycles[0] == 3 && cycles[1] == 3);
++    current_machine = NULL;
++    rr_wait_io_event();
++    assert(cycles[0] == 6 && cycles[1] == 6);
++    current_machine = &machine;
++    puts("PASS healthy ordinary 8->3 cycles per CPU; precise/adaptive/off Sim, absent accelerator and early startup");
++}
++
++static void check_wrapper(void)
++{
++    for (unsigned sim = 0; sim < 2; sim++) {
++        for (int mode = 0; mode < 3; mode++) {
++            reset(sim, mode);
++            cpus[0].stop = cpus[0].thread_kicked = true;
++            enqueue(&cpus[0], 'E', true);
++            enqueue(&cpus[0], 'F', false);
++            rr_crucible_sim_process_vcpu_events(&cpus[0]);
++            assert(!strcmp(events, sim ? "uxEylFS" : "SuxEylF"));
++            assert(current_cpu == &sentinel && locked && !exclusive);
++            assert(cpus[0].stopped && !cpus[0].stop && !cpus[0].thread_kicked);
++            assert(callbacks == 2 && cpu_work_list_empty(&cpus[0]));
++            if (sim) {
++                char trace[sizeof(events)];
++                memcpy(trace, events, sizeof(trace));
++                reset(sim, mode);
++                cpus[0].stop = true;
++                enqueue(&cpus[0], 'E', true);
++                enqueue(&cpus[0], 'F', false);
++                old_process_vcpu_events(&cpus[0]);
++                assert(!strcmp(trace, events));
++                assert(current_cpu == &sentinel);
++            }
++        }
++    }
++    puts("PASS FIFO owner restoration, exclusive BQL release/reacquisition and ordinary stop-before-work");
++}
++
++static void check_fixed_point(void)
++{
++    for (int mode = 0; mode < 3; mode++) {
++        reset(true, mode);
++        cpus[0].stop = cpus[1].stop = true;
++        enqueue(&cpus[1], 'B', false);
++        rr_crucible_sim_drain_vcpu_work();
++        assert(!strcmp(events, "BACST"));
++        assert(cpu_work_list_empty(&cpus[0]) && cpu_work_list_empty(&cpus[1]));
++        assert(callbacks == 3 && current_cpu == &sentinel && locked);
++        char trace[sizeof(events)];
++        memcpy(trace, events, sizeof(trace));
++
++        reset(true, mode);
++        cpus[0].stop = cpus[1].stop = true;
++        enqueue(&cpus[1], 'B', false);
++        old_drain_vcpu_work();
++        assert(!strcmp(trace, events));
++        assert(current_cpu == &sentinel);
++    }
++    puts("PASS later sibling enqueue reaches earlier CPU before first stop, identical Sim callback/stop trace");
++}
++
++static void check_generic_progress(void)
++{
++    reset(false, 0);
++    host_idle = true;
++    wait_action = 1;
++    rr_wait_io_event();
++    assert(waits == 1 && callbacks == 1 && kicks == 1 && idle_bridges == 1);
++    assert(cpus[0].stopped && !cpus[0].stop && !cpus[0].thread_kicked);
++    assert(!strcmp(events, "ulSK"));
++    assert(current_cpu == &sentinel && locked);
++    cpu_resume(&cpus[0]);
++    assert(!cpus[0].stopped && !cpus[0].stop && cpus[0].thread_kicked);
++    rr_crucible_sim_process_vcpu_events(&cpus[0]);
++    assert(!cpus[0].thread_kicked && kicks == 2 && idle_bridges == 2);
++
++    reset(false, ICOUNT_PRECISE);
++    host_idle = true;
++    wait_action = 2;
++    rr_wait_io_event();
++    assert(waits == 1 && callbacks == 1 && !strcmp(events, "ulC"));
++    assert(qemu_plugin_crucible_rr_control_boundary_pending());
++    assert(warps == 1 && deadlines == 1 && timers == 1);
++    /* Retained common passes must work with generic pending plugin state. */
++    cpus[0].stop = true;
++    enqueue(&cpus[0], 'D', false);
++    qemu_plugin_crucible_vmstop_state = 1;
++    rr_wait_io_event();
++    assert(cpus[0].stopped && !cpus[0].stop && callbacks == 2);
++    assert(strstr(events, "SD") && current_cpu == &sentinel);
++
++    reset(false, 0);
++    host_idle = true;
++    qemu_plugin_time_advance_pending = QEMU_PLUGIN_TIME_ADVANCE_ARMED;
++    wait_action = 2;
++    rr_wait_io_event();
++    assert(callbacks == 1 && waits == 1 && !warps && !timers);
++    assert(qemu_plugin_crucible_rr_control_boundary_pending());
++    puts("PASS bounded ordinary idle kick/pause/resume, control/stop and time-advance branch progression; retained timer effects");
++}
++
++int main(void)
++{
++    for (unsigned index = 0; index < 2; index++) {
++        cpus[index].cpu_index = index;
++        cpus[index].next = index == 0 ? &cpus[1] : NULL;
++        cpus[index].halt_cond = &halt_cond;
++        g_mutex_init(&cpus[index].work_mutex);
++        QSIMPLEQ_INIT(&cpus[index].work_list);
++    }
++
++    check_wrapper();
++    check_fixed_point();
++    check_healthy();
++    check_generic_progress();
++
++    for (unsigned index = 0; index < 2; index++) {
++        g_mutex_clear(&cpus[index].work_mutex);
++    }
++    return 0;
++}
++"""
++
++
++def extracted_parts():
++    """Return complete production definitions in dependency order."""
++    inventory = [
++        ("accel/accel-system.c", ["bool current_accel_is_sim(void)\n{"]),
++        ("system/cpus.c", ["bool cpu_work_list_empty(CPUState *cpu)\n{"]),
++        ("cpu-common.c", ["static void queue_work_on_cpu(",
++                          "void async_run_on_cpu(", "void async_safe_run_on_cpu(",
++                          "void process_queued_cpu_work("]),
++        ("system/cpus.c", ["static void qemu_cpu_stop(",
++                          "void qemu_process_cpu_events_common(",
++                          "void qemu_cpu_kick(CPUState *cpu)\n{",
++                          "void cpu_pause(", "void cpu_resume("]),
++        ("plugins/api-system.c", ["bool qemu_plugin_time_advance_is_pending(",
++                                  "bool qemu_plugin_crucible_vmstop_pending(",
++                                  "bool qemu_plugin_crucible_rr_control_boundary_pending("]),
++        (RR, ["static bool rr_crucible_sim_mode(void)\n{",
++              "static bool rr_crucible_sim_skip_second_events_pass(",
++              "static bool rr_crucible_sim_stop_or_unplug_pending(void)\n{",
++              "static bool rr_crucible_sim_vcpu_work_pending(void)\n{",
++              "static void rr_crucible_sim_process_vcpu_events(CPUState *cpu)\n{",
++              "static void rr_crucible_sim_drain_vcpu_work(void)\n{",
++              "static void rr_wait_io_event(void)\n{"]),
++    ]
++    return {(path, signature): definition((ROOT / path).read_text(), signature)
++            for path, signatures in inventory for signature in signatures}
++
++
++def mutated(body, negative):
++    """Apply a single causal mutation to production barrier bodies."""
++    if negative == "wrong-mode":
++        return body.replace("if (current_accel_is_sim()) {",
++                            "if (rr_crucible_sim_mode()) {")
++    if negative == "skipped-common":
++        return body.replace("    qemu_process_cpu_events_common(cpu);", "")
++    if negative == "missing-pre-drain" and "process_vcpu_events(" in body:
++        return body.replace("        process_queued_cpu_work(cpu);", "")
++    if negative == "missing-fixed-point" and "drain_vcpu_work(void)" in body:
++        return body.replace("} while (rr_crucible_sim_vcpu_work_pending());",
++                            "} while (false);")
++    if negative == "missing-owner-restoration" and "process_vcpu_events(" in body:
++        return body.replace("    current_cpu = saved_cpu;", "    (void)saved_cpu;")
++    return body
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--negative-control", choices=NEGATIVES)
++    arguments = parser.parse_args()
++    output = arguments.output_dir.resolve()
++    output.mkdir(parents=True, exist_ok=True)
++    parts = extracted_parts()
++    captured = BASELINE.replace("old_process_vcpu_events",
++                                "rr_crucible_sim_process_vcpu_events").replace(
++        "old_drain_vcpu_work", "rr_crucible_sim_drain_vcpu_work")
++    for name, expected in BASELINE_HASHES.items():
++        signature = "static void " + name + (
++            "(CPUState *cpu)\n{" if name.endswith("process_vcpu_events")
++            else "(void)\n{")
++        assert hashlib.sha256(definition(captured, signature).encode()).hexdigest() == expected
++    (output / "production-extractions.json").write_text(json.dumps({
++        "sha256": {f"{path}:{signature}": hashlib.sha256(body.encode()).hexdigest()
++                   for (path, signature), body in parts.items()},
++        "baselineWrapperSha256": hashlib.sha256(BASELINE.encode()).hexdigest(),
++        "baselineCommit": BASELINE_COMMIT,
++        "baselineProductionBodyHashes": BASELINE_HASHES,
++        "providers": "CPU topology, BQL/exclusive arbitration, host wakes, halt callbacks, timers",
++        "runtime": "real GLib mutexes, QEMU queue and atomic macros; no guest/full QEMU/concurrency/latency",
++        "negativeControl": arguments.negative_control,
++    }, indent=2) + "\n")
++    wait_signature = "static void rr_wait_io_event(void)\n{"
++    old_wait = parts[(RR, wait_signature)].replace(
++        "rr_wait_io_event", "old_wait_io_event").replace(
++        "rr_crucible_sim_drain_vcpu_work", "old_drain_vcpu_work").replace(
++        "rr_crucible_sim_process_vcpu_events", "old_process_vcpu_events")
++    bodies = []
++    changes = 0
++    for (path, signature), body in parts.items():
++        if path == RR and ("process_vcpu_events" in signature or
++                           "drain_vcpu_work(void)" in signature):
++            changed = mutated(body, arguments.negative_control)
++            changes += changed != body
++            body = changed
++        bodies.append(body)
++    if arguments.negative_control:
++        assert changes > 0, "negative must mutate an extracted production body"
++    generated = output / "rr-sim-barriers.c"
++    generated.write_text("\n\n".join([
++        "/* SPDX-License-Identifier: GPL-2.0-or-later */", PRELUDE,
++        *bodies, BASELINE, old_wait, CHECKS,
++    ]))
++    binary = output / "rr-sim-barriers"
++    flags = shlex.split(os.environ.get("CFLAGS", ""))
++    links = shlex.split(os.environ.get("LDFLAGS", ""))
++    if not flags and not links:
++        pkg_config = shlex.split(os.environ.get("PKG_CONFIG", "pkg-config"))
++        flags = shlex.split(subprocess.check_output(
++            [*pkg_config, "--cflags", "glib-2.0"], text=True))
++        links = shlex.split(subprocess.check_output(
++            [*pkg_config, "--libs", "glib-2.0"], text=True))
++    command = [*shlex.split(os.environ.get("CC", "cc")), "-std=gnu11",
++               *flags, f"-I{ROOT / 'include'}", str(generated),
++               "-o", str(binary), *links]
++    (output / "compile-command.json").write_text(json.dumps({
++        "cwd": str(ROOT), "argv": command}, indent=2) + "\n")
++    subprocess.run(command, check=True)
++    print("Compiled production-body RR Sim barrier fixture", flush=True)
++    subprocess.run([str(binary)], cwd=output, check=True)
 +
 +
 +if __name__ == "__main__":
