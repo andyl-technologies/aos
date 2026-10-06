@@ -15,7 +15,9 @@ thread_local! {
 
 extern "C" fn raw_icount_during_preemption_publication() -> u64 {
     TEST_PREEMPTION_PUBLICATION.with_borrow(|boundary| {
-        let boundary = boundary.as_ref().unwrap();
+        let Some(boundary) = boundary.as_ref() else {
+            panic!("preemption publication boundary should be installed");
+        };
         boundary.wait();
         boundary.wait();
     });
@@ -35,16 +37,15 @@ fn test_preemption_command() -> crucible_shmem::SchedulerPreemptionCommand {
 }
 
 #[test]
-fn preemption_published_during_query_after_empty_observation_is_consumed_once() {
+fn preemption_published_during_query_after_empty_observation_is_consumed_once()
+-> Result<(), Box<dyn std::error::Error>> {
     super::TEST_ICOUNT_RAW.set(0);
     TEST_PREEMPTION_COMMAND.with_borrow_mut(|command| *command = None);
     let slot = NodeSlot::new(KIND_VM);
-    let ceiling = authorize_advance_ceiling(0, 5000, None).unwrap();
-    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
-        .unwrap();
-    let mut state = super::test_live_state(1, 1, 0, &slot).unwrap();
-    state.preemption_injector =
-        PluginPreemptionInjector::require(Some(capture_preemption)).unwrap();
+    let ceiling = authorize_advance_ceiling(0, 5000, None)?;
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)?;
+    let mut state = super::test_live_state(1, 1, 0, &slot)?;
+    state.preemption_injector = PluginPreemptionInjector::require(Some(capture_preemption))?;
     let boundary = Arc::new(std::sync::Barrier::new(2));
 
     assert_eq!(state.max_advance_icount(), Ok(100));
@@ -53,16 +54,16 @@ fn preemption_published_during_query_after_empty_observation_is_consumed_once() 
     let sequence = std::thread::scope(|scope| {
         let publisher = scope.spawn(|| {
             boundary.wait();
-            let sequence = slot
-                .publish_preemption_command(test_preemption_command())
-                .unwrap();
+            let sequence = slot.publish_preemption_command(test_preemption_command());
             boundary.wait();
             sequence
         });
 
         assert_eq!(state.max_advance_icount(), Ok(100));
-        publisher.join().unwrap()
-    });
+        publisher
+            .join()
+            .unwrap_or_else(|_| panic!("preemption publisher should finish"))
+    })?;
     TEST_PREEMPTION_PUBLICATION.with_borrow_mut(|stored| *stored = None);
     state.icount_raw = test_icount_raw;
 
@@ -71,22 +72,20 @@ fn preemption_published_during_query_after_empty_observation_is_consumed_once() 
     TEST_PREEMPTION_COMMAND.with_borrow_mut(|command| *command = None);
     assert_eq!(state.max_advance_icount(), Ok(100));
     TEST_PREEMPTION_COMMAND.with_borrow(|command| assert_eq!(*command, None));
+    Ok(())
 }
 
 #[test]
-fn nested_preemption_query_leaves_outer_enqueue_command_pending() {
+fn nested_preemption_query_leaves_outer_enqueue_command_pending()
+-> Result<(), Box<dyn std::error::Error>> {
     super::TEST_ICOUNT_RAW.set(0);
     TEST_PREEMPTION_COMMAND.with_borrow_mut(|command| *command = None);
     let slot = NodeSlot::new(KIND_VM);
-    let ceiling = authorize_advance_ceiling(0, 5000, None).unwrap();
-    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
-        .unwrap();
-    let mut state = super::test_live_state(1, 1, 0, &slot).unwrap();
-    state.preemption_injector =
-        PluginPreemptionInjector::require(Some(capture_preemption)).unwrap();
-    let sequence = slot
-        .publish_preemption_command(test_preemption_command())
-        .unwrap();
+    let ceiling = authorize_advance_ceiling(0, 5000, None)?;
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)?;
+    let mut state = super::test_live_state(1, 1, 0, &slot)?;
+    state.preemption_injector = PluginPreemptionInjector::require(Some(capture_preemption))?;
+    let sequence = slot.publish_preemption_command(test_preemption_command())?;
 
     // The outer enqueue owns this flag across a synchronous QEMU budget query.
     state
@@ -104,22 +103,20 @@ fn nested_preemption_query_leaves_outer_enqueue_command_pending() {
     assert!(!state.preemption_enqueue_active.load(Ordering::Acquire));
     assert_eq!(slot.consumed_preemption_sequence(), sequence);
     TEST_PREEMPTION_COMMAND.with_borrow(|command| assert!(command.is_some()));
+    Ok(())
 }
 
 #[test]
-fn preemption_consumed_between_preflight_and_enqueue_admission_is_not_reinjected() {
+fn preemption_consumed_between_preflight_and_enqueue_admission_is_not_reinjected()
+-> Result<(), Box<dyn std::error::Error>> {
     super::TEST_ICOUNT_RAW.set(0);
     TEST_PREEMPTION_COMMAND.with_borrow_mut(|command| *command = None);
     let slot = Arc::new(NodeSlot::new(KIND_VM));
-    let ceiling = authorize_advance_ceiling(0, 5000, None).unwrap();
-    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
-        .unwrap();
-    let mut state = super::test_live_state(1, 1, 0, &slot).unwrap();
-    state.preemption_injector =
-        PluginPreemptionInjector::require(Some(capture_preemption)).unwrap();
-    let sequence = slot
-        .publish_preemption_command(test_preemption_command())
-        .unwrap();
+    let ceiling = authorize_advance_ceiling(0, 5000, None)?;
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)?;
+    let mut state = super::test_live_state(1, 1, 0, &slot)?;
+    state.preemption_injector = PluginPreemptionInjector::require(Some(capture_preemption))?;
+    let sequence = slot.publish_preemption_command(test_preemption_command())?;
     let competing_consumer = Arc::clone(&slot);
 
     // The competing query consumes and releases ownership after this query
@@ -128,7 +125,7 @@ fn preemption_consumed_between_preflight_and_enqueue_admission_is_not_reinjected
         *hook = Some(Box::new(move || {
             competing_consumer
                 .acknowledge_preemption_command(sequence)
-                .unwrap();
+                .unwrap_or_else(|error| panic!("competing consumer should acknowledge: {error}"));
         }));
     });
     assert_eq!(state.max_advance_icount(), Ok(100));
@@ -136,22 +133,20 @@ fn preemption_consumed_between_preflight_and_enqueue_admission_is_not_reinjected
     assert_eq!(slot.consumed_preemption_sequence(), sequence);
     assert!(!state.preemption_enqueue_active.load(Ordering::Acquire));
     TEST_PREEMPTION_COMMAND.with_borrow(|command| assert_eq!(*command, None));
+    Ok(())
 }
 
 #[test]
-fn preemption_republished_after_advisory_hint_is_decoded_under_enqueue_ownership() {
+fn preemption_republished_after_advisory_hint_is_decoded_under_enqueue_ownership()
+-> Result<(), Box<dyn std::error::Error>> {
     super::TEST_ICOUNT_RAW.set(0);
     TEST_PREEMPTION_COMMAND.with_borrow_mut(|command| *command = None);
     let slot = Arc::new(NodeSlot::new(KIND_VM));
-    let ceiling = authorize_advance_ceiling(0, 5000, None).unwrap();
-    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
-        .unwrap();
-    let mut state = super::test_live_state(1, 1, 0, &slot).unwrap();
-    state.preemption_injector =
-        PluginPreemptionInjector::require(Some(capture_preemption)).unwrap();
-    let sequence = slot
-        .publish_preemption_command(test_preemption_command())
-        .unwrap();
+    let ceiling = authorize_advance_ceiling(0, 5000, None)?;
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)?;
+    let mut state = super::test_live_state(1, 1, 0, &slot)?;
+    state.preemption_injector = PluginPreemptionInjector::require(Some(capture_preemption))?;
+    let sequence = slot.publish_preemption_command(test_preemption_command())?;
     let replacement = crucible_shmem::SchedulerPreemptionCommand {
         at_tick: 3500,
         kind: SchedulerPreemptionKind::InterruptAt {
@@ -169,16 +164,20 @@ fn preemption_republished_after_advisory_hint_is_decoded_under_enqueue_ownership
             std::thread::spawn(move || {
                 competing_consumer
                     .acknowledge_preemption_command(sequence)
-                    .unwrap();
+                    .unwrap_or_else(|error| {
+                        panic!("competing consumer should acknowledge: {error}")
+                    });
                 assert_eq!(
                     competing_consumer
                         .publish_preemption_command(replacement)
-                        .unwrap(),
+                        .unwrap_or_else(|error| {
+                            panic!("replacement command should publish: {error}")
+                        }),
                     sequence.wrapping_add(1),
                 );
             })
             .join()
-            .unwrap();
+            .unwrap_or_else(|_| panic!("competing consumer should finish"));
         }));
     });
     assert_eq!(state.max_advance_icount(), Ok(100));
@@ -206,6 +205,7 @@ fn preemption_republished_after_advisory_hint_is_decoded_under_enqueue_ownership
     TEST_PREEMPTION_COMMAND.with_borrow_mut(|command| *command = None);
     assert_eq!(state.max_advance_icount(), Ok(100));
     TEST_PREEMPTION_COMMAND.with_borrow(|command| assert_eq!(*command, None));
+    Ok(())
 }
 
 extern "C" fn capture_preemption(

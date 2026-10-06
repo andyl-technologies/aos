@@ -620,7 +620,6 @@ impl RingHeader {
     ///
     /// Returns [`SpscRingError`] when the entry slice has invalid capacity or
     /// the shared indices describe more live entries than the queue can hold.
-    #[must_use]
     pub fn has_whitebox_marker(
         &self,
         entries: &[WhiteboxMarkerEntry],
