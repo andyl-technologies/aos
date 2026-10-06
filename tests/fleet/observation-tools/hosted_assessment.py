@@ -489,10 +489,26 @@ def index_parity(selected):
             "readerAuthority": "independent_current_reader_process_and_source_review_required"}
 
 
+def inbound_inventory(selection, manifest):
+    """Invoke the selected reader without changing the original body manifest."""
+    if selection.get('nativeInventory') is None:
+        return None
+    path = Path(__file__).resolve(strict=True).parent / 'native_inventory.py'
+    raw = PACKAGE_READER['installed_bytes'](path, MAX_JSON)
+    namespace = {'__file__': str(path), '__name__': 'selected_inventory_reader'}
+    exec(compile(raw, str(path), 'exec'), namespace)
+    return namespace['assess'](
+        selection['nativeInventory'], SOURCE, READERS,
+        PACKAGE_READER['installed_bytes'], manifest)
+
+
 def assess(selection):
-    closed(selection, {"version", "runtime", "runtimeProvenance", "bodyManifest", "observerExecutable", "authSidecar",
+    expected = {"version", "runtime", "runtimeProvenance", "bodyManifest", "observerExecutable", "authSidecar",
                        "capturePolicy", "captureExport", "sdkApplicationLog", "clientApplicationLog", "indexSnapshots",
-                       "workloadWindows", "wireMetrics"})
+                       "workloadWindows", "wireMetrics"}
+    if 'nativeInventory' in selection:
+        expected.add('nativeInventory')
+    closed(selection, expected)
     if selection["version"] != 1:
         raise ValueError("Assessment version differs")
     runtime = selection["runtime"]
@@ -591,6 +607,13 @@ def assess(selection):
             provider[kind] = client_summary(rows) if kind == "client" else sdk_summary(rows, runtime["workerSourceDigest"])
     if selection["wireMetrics"] is not None:
         read(selection["wireMetrics"])
+    selected_inventory = inbound_inventory(selection, manifest)
+    if selected_inventory is not None:
+        body['nativeInboundInventory'] = selected_inventory
+        body['missing'].extend(body['nativeInboundInventory']['missing'])
+        # Router inventory does not cover Native outbound metadata or close
+        # independent original/auth/SQL projections for dynamic bodies.
+        body['missing'].append('independent_outbound_and_dynamic_member_projections')
     return {"version": 1, "hostedAcceptance": "incomplete", "applicationBodyAssessment": body,
             "applicationProviderLedger": provider, "indexParity": index_parity(selection["indexSnapshots"]),
             "wireMetrics": {"reference": selection["wireMetrics"], "assessment": "separate_unverified_aggregate"},

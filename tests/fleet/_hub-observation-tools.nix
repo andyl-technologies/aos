@@ -61,6 +61,8 @@
             ${helperSource}/tests/fleet/observation-tools/extract_tests.py ${runtimeSource}
           ${pkgs.python3}/bin/python3 -B -E \
             ${helperSource}/tests/fleet/observation-tools/producer_inputs_tests.py
+          ${pkgs.python3}/bin/python3 -B -E \
+            ${helperSource}/tests/fleet/observation-tools/native_inventory_tests.py
         '';
       }
     ];

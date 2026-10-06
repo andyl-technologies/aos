@@ -50,3 +50,28 @@ owned0700 directory. It invokes the measured canonical package Python and
 installed adapter, preserving selection arguments, process group and inherited
 descriptors. The invoking supervisor still owns cleanup. This mapping installs
 no capture producer, acceptance, runtime flag or credentials.
+
+## Native inbound inventory selection
+
+The optional assessment `nativeInventory` slot contains exactly `policy` and
+`sidecar`, each an existing private `{file, sha256, byteSize}` reference. The
+policy image must use the selected producer's exact four-field encoding. The
+sidecar retains the existing runtime, process, log and authentication context
+schema; selecting it does not establish an authenticated metadata projection.
+
+The reader hashes the actual raw member JSON bytes and checks begin/end,
+ordinals, settled counts, trailers, unread frames and source commitments. It
+projects only exact source-embedded public assets independently matched to their
+route, constructor and offered bytes. Dynamic instance pages, setup forms,
+publication/control bodies and current SQL/original/authentication projections
+remain unresolved. Producer `requiredProjection` labels are requirements, not
+completed evidence. Missing provider instance or log-window custody stays
+incomplete; no host process facts are invented for provider-managed instances.
+
+The inbound result covers consumed request and offered response data frames in
+one selected Native policy window. It does not prove delivered responses,
+Native outbound coverage, or overlap with a workload controller's monotonic
+window. An actual local UTC bridge and measured cross-machine clock uncertainty
+remain required. `nativeBulkBytes` remains null and hosted acceptance remains
+incomplete, including when finite asset projections account for this inbound
+window. The fixture export is test-only and describes a synthetic window.

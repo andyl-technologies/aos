@@ -244,6 +244,23 @@ async fn source_extension_joins_actual_frames_and_trailers_prevent_typed_coverag
     assert_eq!(records[1]["replyTrailers"], false);
     drop(records);
 
+    // Export actual producer bytes only for a selected private reader fixture.
+    // This synthetic window is not a deployed runtime observation.
+    #[cfg(unix)]
+    if let Some(path) = std::env::var_os("AOS_NATIVE_INVENTORY_TEST_OUTPUT") {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+
+        let raw = captured_window.raw_records.lock().unwrap().join("\n") + "\n";
+        let mut output = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+            .unwrap();
+        output.write_all(raw.as_bytes()).unwrap();
+    }
+
     let member_window = window();
     let member = member(&member_window);
     {
