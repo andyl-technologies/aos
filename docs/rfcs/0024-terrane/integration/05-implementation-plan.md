@@ -466,13 +466,18 @@ remote parity, job or extended algebra obligations, which remain ordered by
 T2/T3 and the branch worklines. The CLI frontend and genuine ext4 workflow also
 remain unqualified local deployment obligations.
 
-The public-only five-file SDK candidate passes all five native cases after
-dropping the original repository and credentials before reopen (Nextest run
-`96126827-9028-4166-a987-8e120a39d6e3`; 26.022 seconds, none skipped).
-Its preliminary actual Nix harness executes all five cases and the application
-target check compiles successfully. Final comment quality, strict checks and
-adoption of the non-ignored execution verifier remain under qualification.
-These scoped results do not qualify the broad named SDK or complete task.
+The clean public-only five-file SDK candidate `60055ac21a` passes all ten
+final checks: build, exact inventory, five native cases, strict all-target
+Clippy/private rustdoc, three doctests, the strengthened Nix prerequisite,
+application test-target compilation and both mandatory formatters. The final
+Nextest run `cb19302f-36b1-49ce-bbe1-44fea62a6982` completes in 22.119 seconds
+with none skipped. The tests drop the original repository and credentials
+before reopening. Both actual Nix inputs match all 4,780 frozen snapshot
+files and symlinks, including executable status, independently checked against
+the final checkout. Earlier assertion-lint failures remain preserved; their
+correction changes only tests. Application compilation does not execute its
+test targets. Adoption and the full current floor remain pending; these scoped
+results do not qualify the broad named SDK or complete task.
 
 The current floor also requires `checks.terrane.integration.local-cli-workflow`,
 with three exact separate-process witnesses for local porcelain, private
@@ -481,6 +486,14 @@ restore harnesses check both named discovery and passing, non-ignored execution
 through the common native gate verifier. This prevents an ignored or empty
 selection from qualifying a prerequisite. The CLI target remains on its private
 candidate; its registration does not supply runtime or ext4 qualification.
+
+The frozen pre-ownership restore candidate also passes all 35 collector
+regressions in 331.089 seconds, alongside its ten owning cases and actual
+ten-case Nix prerequisite. Two private style corrections are qualifying on a
+new frozen candidate; the earlier default and `std,send` lint failures remain
+recorded. Genuine elapsed-D qualification, durable local deletion ownership,
+owned absence recovery and cancellation remain production prerequisites.
+Codec-valid claimed-owner refusal cases do not establish those producers.
 
 The reviewed concrete ext4 VM harness is now adopted as a shared prerequisite.
 It uses the checked release package in the existing source-built headless VM
