@@ -64,7 +64,7 @@ in
           }
           {
             "argv" = [
-              "@out@/bin/cryptsetup"
+              "@out@/sbin/cryptsetup"
               "luksFormat"
               "--batch-mode"
               "--type=luks2"
@@ -75,7 +75,7 @@ in
           }
           {
             "argv" = [
-              "@out@/bin/cryptsetup"
+              "@out@/sbin/cryptsetup"
               "luksDump"
               "container.img"
             ];
@@ -109,7 +109,7 @@ in
           }
           {
             "argv" = [
-              "@out@/bin/cryptsetup"
+              "@out@/sbin/cryptsetup"
               "luksFormat"
               "--batch-mode"
               "--type=luks2"
@@ -120,7 +120,7 @@ in
           }
           {
             "argv" = [
-              "@out@/bin/cryptsetup"
+              "@out@/sbin/cryptsetup"
               "open"
               "--test-passphrase"
               "--key-file=wrong-key"
