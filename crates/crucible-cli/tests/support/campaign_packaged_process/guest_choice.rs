@@ -18,6 +18,7 @@ use crucible_daemon::{
     CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V5, ExactCheckpointStore,
     visit_directory_attempt_states_bounded,
 };
+use crucible_qemu::QemuLaunchArtifactIdentity;
 use crucible_session::engine::{LinkDef, LinkLossProbability, MarkerId};
 
 pub(crate) const FAST_ALTERNATIVE: &str =
@@ -63,7 +64,11 @@ fn public_packaged_campaign_exercises_all_materialization_tiers() -> Result<(), 
 fn run_guest_choice_campaign(hot_fork_flight: bool) -> Result<(), Box<dyn Error>> {
     let fixture = FlightFixture::new()?;
     let (compiled, _scenario) = compile_guest_choice_campaign(&fixture)?;
-    create_guest_choice_campaign(&fixture, &compiled, "qemu-11.1.1-crucible")?;
+    let packaged = QemuLaunchArtifactIdentity::authenticate(
+        required_path("CRUCIBLE_FLIGHT_QEMU")?,
+        required_path("CRUCIBLE_FLIGHT_PLUGIN")?,
+    )?;
+    create_guest_choice_campaign(&fixture, &compiled, packaged.qemu_build_id())?;
 
     let authority = write_component_authority(&fixture)?;
     let immutable_inputs = guest_choice_immutable_inputs(&authority)?;
@@ -795,10 +800,13 @@ pub(super) fn materialization_flight_deployment(
 ) -> Result<PathBuf, Box<dyn Error>> {
     let deployment = fixture._temporary.path().join("hot-fork-executor.toml");
     let authored = fs::read_to_string(required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?)?;
+
+    // Reserve two retained 256 MiB worlds and one concurrent child lease.
+    // Each reservation also includes both QEMU nodes' measured private dirties.
     fs::write(
         &deployment,
         format!(
-            "{authored}\n[hot_fork]\nmaximum_templates = 2\nmaximum_template_bytes = 1073741824\nmaximum_expected_private_dirty_bytes = 536870912\nmaximum_processes = 8\nmaximum_virtual_cpus = 8\nmaximum_descriptors = 4096\nmaximum_overlays = 16\nmaximum_forks_per_window = 8\nfork_rate_window_ms = 1000\nshutdown_step_timeout_ms = 1000\nhost_io_timeout_ms = 30000\n"
+            "{authored}\n[hot_fork]\nmaximum_templates = 2\nmaximum_template_bytes = 1073741824\nmaximum_expected_private_dirty_bytes = 1610612736\nmaximum_processes = 8\nmaximum_virtual_cpus = 8\nmaximum_descriptors = 4096\nmaximum_overlays = 16\nmaximum_forks_per_window = 8\nfork_rate_window_ms = 1000\nshutdown_step_timeout_ms = 1000\nhost_io_timeout_ms = 30000\n"
         ),
     )?;
     fs::set_permissions(&deployment, fs::Permissions::from_mode(0o600))?;
