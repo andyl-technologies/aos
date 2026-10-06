@@ -31,7 +31,7 @@
   echo '+cpu +memory +pids' > /sys/fs/cgroup/paging/cgroup.subtree_control
 
   ${pkgs.coreutils}/bin/truncate -s ${toString storageImageBytes} /var/paging-storage.img
-  ${pkgs.e2fsprogs}/bin/mkfs.ext4 -F -O quota,project -E quotatype=prjquota /var/paging-storage.img
+  ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -F -O quota,project -E quotatype=prjquota /var/paging-storage.img
   mkdir -p /var/paging-storage
   ${pkgs.util-linux}/bin/mount -o loop,prjquota /var/paging-storage.img /var/paging-storage
   for lane in ${lib.concatStringsSep " " lanes}; do
@@ -40,7 +40,7 @@
     mkdir -m 700 "/var/paging-storage/$lane"
   done
   ${pkgs.coreutils}/bin/truncate -s 8M /var/paging-root.ext4
-  ${pkgs.e2fsprogs}/bin/mkfs.ext4 -F /var/paging-root.ext4
+  ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -F /var/paging-root.ext4
   chmod 644 /var/paging-root.ext4
 
   mkdir -m 700 /var/paging-history

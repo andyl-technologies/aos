@@ -32,7 +32,7 @@ import ./ram-native-flight.nix {
       --noudevsync --uuid crucible-spill-io-disposable-v1 \
       --table "0 4194304 linear $fault_loop 0"
     ${pkgs.device-mapper}/sbin/dmsetup mknodes crucible-spill-io
-    ${pkgs.e2fsprogs}/bin/mkfs.ext4 -F -O quota,project,^has_journal \
+    ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -F -O quota,project,^has_journal \
       -E quotatype=prjquota /dev/mapper/crucible-spill-io
     mkdir -m 700 "$fault_mount"
     ${pkgs.util-linux}/bin/mount -o prjquota,errors=continue \
