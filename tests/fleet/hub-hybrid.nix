@@ -156,7 +156,11 @@
       # Only reads use the hold chain; multipart mutations retain Garage's replies.
       map $request_method $provider_upstream {
         default http://127.0.0.1:3900;
-        GET http://127.0.0.1:${if externalDirect then "3903" else "3900"};
+        GET http://127.0.0.1:${
+      if externalDirect
+      then "3903"
+      else "3900"
+    };
       }
       map $request_uri $provider_upload_query {
         ~[?&]uploadId(?:=|&|$) multipart_session;
@@ -848,7 +852,11 @@ in {
         else "native"
       }
       GARAGE = "${garage}/bin/garage -c /var/lib/hybrid-s3/garage.toml"
-      FLEET_CUTOFF_MONOTONIC = time.monotonic() + ${toString (if externalDirect then 14400 else 2400)}
+      FLEET_CUTOFF_MONOTONIC = time.monotonic() + ${toString (
+        if externalDirect
+        then 14400
+        else 2400
+      )}
 
       for machine in (client, native, worker, s3${lib.optionalString separateDatabase ", database"}):
           machine.wait_for_unit("multi-user.target", timeout=240)
@@ -1135,10 +1143,10 @@ in {
                   "sha256": hashlib.sha256(Path("${managedWorkerObservationProxyTemplate}/value").read_bytes()).hexdigest()},
               "nixStore": "${pkgs.nix}/bin/nix-store", "nixBin": "${pkgs.nix}/bin",
               "readRevisionFixture": ${builtins.toJSON {
-                source = toString alternateRevision.source;
-                distribution = toString alternateRevision.distribution;
-                inherit (alternateRevision) purpose sourceDigest scriptVersion features;
-              }},
+            source = toString alternateRevision.source;
+            distribution = toString alternateRevision.distribution;
+            inherit (alternateRevision) purpose sourceDigest scriptVersion features;
+          }},
               "workerSourcePath": "${workerDist.src}", "workerDistribution": "${workerDist}",
               "wasm": "${workerDist}/index.wasm", "shim": "${workerDist}/shim.mjs",
               "nativeSqlProjectionCollector": "${managedFixtureModules}/_hub-native-sql-projection.py",
