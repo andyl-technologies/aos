@@ -8578,9 +8578,9 @@ mod tests {
         HEADER_BYTES, IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalLimits,
         JournalRecord, JournalTransaction, MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES,
         ProtectedAncestry, ProtectedAuthorityScope, ProtectedJournalAuthority,
-        ProtectedJournalLocation, ProtectedJournalLockCustodyV1, ProtectedOwnerPolicy,
+        ProtectedJournalLockCustodyV1, ProtectedOwnerPolicy,
         ReadOnlyJournalNameWitness, RecordNamespace, RecoveryReport, encode_transaction,
-        open_protected_file, open_read_only_protected_file, protected_open_error,
+        open_protected_file, protected_open_error,
         require_opened_directory_identity, traverse_protected_directory,
     };
 
@@ -9807,38 +9807,15 @@ mod tests {
     ) -> Result<(Journal, ReadOnlyJournalNameWitness), JournalError> {
         let directory = File::open(path)?;
         let uid = directory.metadata()?.uid();
-        let directory_identity = FileIdentity::of(&directory)?;
-        let lock = open_read_only_protected_file(&directory, "protected.journal.lock", uid)?;
-        let lock_identity = FileIdentity::of(&lock)?;
-        let file = open_read_only_protected_file(&directory, "protected.journal", uid)?;
-        let file_identity = FileIdentity::of(&file)?;
-        let protected = ProtectedJournalLocation {
+
+        let (readback, _) = Journal::open_read_only_protected_directory(
+            path,
             directory,
-            name: "protected.journal".to_owned(),
-            expected_uid: uid,
-            #[cfg(target_os = "linux")]
-            original_compaction_selection:
-                super::runtime_deployment_history::OriginalCompactionSelectionV1::capture(
-                    path, "protected.journal",
-                ),
-        };
-        let (journal, _) = Journal::recover_opened(
-            PathBuf::from("protected.journal"),
-            file,
-            lock,
+            "protected.journal",
             JournalLimits::default(),
-            Some(protected),
-            false,
+            uid,
         )?;
-        let witness = ReadOnlyJournalNameWitness {
-            directory_path: path.to_owned(),
-            name: "protected.journal".to_owned(),
-            expected_uid: uid,
-            directory_identity,
-            file_identity,
-            lock_identity,
-        };
-        Ok((journal, witness))
+        Ok(readback.into_parts())
     }
 
     #[test]
