@@ -25,7 +25,7 @@ import ./ram-native-flight.nix {
     done
     fault_mount=/var/paging-spill-io
     ${pkgs.coreutils}/bin/truncate -s 2147483648 /var/paging-spill-io.img
-    fault_loop=$(${pkgs.util-linux}/bin/losetup --find --show /var/paging-spill-io.img)
+    fault_loop=$(${pkgs.util-linux}/sbin/losetup --find --show /var/paging-spill-io.img)
     # Catalog and registry remain on the healthy shared filesystem. The
     # fixture switches only this original UUID after actual native admission.
     ${pkgs.device-mapper}/sbin/dmsetup create crucible-spill-io \
@@ -42,7 +42,7 @@ import ./ram-native-flight.nix {
     # closed; a busy mount or target keeps this flight fail-closed.
     trap '${pkgs.util-linux}/bin/umount "$fault_mount" && \
       ${pkgs.device-mapper}/sbin/dmsetup remove --noudevsync crucible-spill-io && \
-      ${pkgs.util-linux}/bin/losetup -d "$fault_loop" || exit 1' EXIT
+      ${pkgs.util-linux}/sbin/losetup -d "$fault_loop" || exit 1' EXIT
   '';
   innerEvidence = _: ''
     for evidence in \

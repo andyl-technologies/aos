@@ -177,7 +177,8 @@ pub(crate) fn run(source: ScenarioDefForm, lifecycle: ProductionVmLifecycleConfi
                 task_slots: 1,
                 file_descriptors: 128,
             },
-            maximum_inodes: 4_194_304,
+            // Respects the existing bounded inode cleanup contract.
+            maximum_inodes: 1_048_576,
             installation_capacity: Some(
                 ExecutorCapacity::new(1, 14, 32 << 30, 64 << 30, 150_000)
                     .expect("complete original service/catalog installation"),

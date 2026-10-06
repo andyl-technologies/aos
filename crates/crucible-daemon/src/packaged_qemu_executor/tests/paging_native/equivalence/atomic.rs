@@ -78,7 +78,8 @@ pub(crate) fn run(
             task_slots: 1,
             file_descriptors: 128,
         },
-        maximum_inodes: 4_194_304,
+        // Respects the existing bounded inode cleanup contract.
+        maximum_inodes: 1_048_576,
         installation_capacity: Some(
             ExecutorCapacity::new(
                 1,

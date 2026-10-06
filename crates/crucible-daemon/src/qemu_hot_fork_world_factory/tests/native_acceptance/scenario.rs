@@ -191,7 +191,8 @@ pub(super) fn build_single_node_equivalence(
         .find(|node| node.id.name == "curl")
         .cloned()
         .ok_or("representative fixture has no curl VM")?;
-    node.cmdline = String::from("console=ttyS0 crucible.workload=hot-fork-single");
+    node.cmdline =
+        String::from("console=ttyS0 crucible.native_acceptance_workload=hot-fork-single");
     let owner = node.id.clone();
     let mut nodes = vec![WorldNodeDef::Vm(node)];
     nodes.extend(world.io_nodes().cloned().map(|mut io| {
@@ -237,7 +238,8 @@ pub(super) fn build_single_node_equivalence_with_memory(
         .find(|node| node.id.name == "curl")
         .cloned()
         .ok_or("representative fixture has no curl VM")?;
-    node.cmdline = String::from("console=ttyS0 crucible.workload=hot-fork-single");
+    node.cmdline =
+        String::from("console=ttyS0 crucible.native_acceptance_workload=hot-fork-single");
     node.memory_mib = memory_mib;
     let owner = node.id.clone();
     let mut nodes = vec![WorldNodeDef::Vm(node)];
@@ -283,7 +285,8 @@ pub(super) fn build_single_node_scaling(
         .find(|node| node.id.name == "curl")
         .cloned()
         .ok_or("representative fixture has no curl VM")?;
-    node.cmdline = String::from("console=ttyS0 crucible.workload=hot-fork-scaling");
+    node.cmdline =
+        String::from("console=ttyS0 crucible.native_acceptance_workload=hot-fork-scaling");
     let world = World::from_node_defs_and_links(vec![WorldNodeDef::Vm(node)], Vec::new())?;
     let plan = Plan::empty();
     let properties = Properties::from_assertions_for_world(&world, Vec::new())?;

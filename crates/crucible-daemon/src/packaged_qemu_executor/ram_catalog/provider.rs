@@ -585,7 +585,7 @@ struct CatalogMetadataCredit {
 }
 
 struct CatalogResourceCredit {
-    _descriptors: HostServiceLease,
+    _descriptors: Option<HostServiceLease>,
     _metadata: Arc<dyn Send + Sync>,
     _authority: Arc<CatalogAuthority>,
     _closed: Option<Arc<AtomicBool>>,
@@ -598,10 +598,7 @@ fn reserve_catalog_resources(
     bytes: u64,
 ) -> Result<Arc<dyn Send + Sync>, StoreError> {
     authority.verify()?;
-    let descriptors = authority
-        .allocator
-        .reserve_resources(0, descriptors, 0)
-        .map_err(|_| StoreError::Quota)?;
+    let descriptors = reserve_catalog_descriptors(&authority.allocator, descriptors)?;
     let charged = bytes
         .checked_add(std::mem::size_of::<CatalogResourceCredit>() as u64)
         .and_then(|bytes| bytes.checked_add((2 * std::mem::size_of::<usize>()) as u64))
@@ -615,6 +612,21 @@ fn reserve_catalog_resources(
         _authority: authority.clone(),
         _closed: closed,
     }))
+}
+
+fn reserve_catalog_descriptors(
+    allocator: &HostServiceAllocator,
+    descriptors: u64,
+) -> Result<Option<HostServiceLease>, StoreError> {
+    // Metadata-only loans retain the original authority without requesting an
+    // empty allocator contract. Actual descriptors still require a live lease.
+    if descriptors == 0 {
+        return Ok(None);
+    }
+    allocator
+        .reserve_resources(0, descriptors, 0)
+        .map(Some)
+        .map_err(|_| StoreError::Quota)
 }
 
 fn reserve_metadata_credit(
@@ -822,6 +834,24 @@ fn quota_error(source: LinuxProjectQuotaError) -> StoreError {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metadata_only_loans_do_not_request_empty_descriptor_contracts() {
+        let allocator =
+            HostServiceAllocator::new(1, 1, 4096).expect("one independently authored descriptor");
+        let descriptor =
+            reserve_catalog_descriptors(&allocator, 1).expect("retained actual descriptor loan");
+
+        assert!(
+            reserve_catalog_descriptors(&allocator, 0)
+                .expect("metadata-only reservation needs no descriptor")
+                .is_none()
+        );
+        assert!(reserve_catalog_descriptors(&allocator, 1).is_err());
+
+        drop(descriptor);
+        assert!(reserve_catalog_descriptors(&allocator, 1).is_ok());
+    }
 
     #[test]
     fn metadata_loans_preserve_the_heap_subset_and_release_at_last_reader() {

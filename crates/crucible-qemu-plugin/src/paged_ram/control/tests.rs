@@ -13,6 +13,7 @@ struct RecordOperation {
 }
 
 impl SourceOperation for RecordOperation {
+    // crucible-lint: allow clippy-disallowed-method -- This test-only cleanup record samples a host deadline without publishing guest time or execution state.
     #[allow(
         clippy::disallowed_methods,
         reason = "test-only operational record deadline"
@@ -30,6 +31,7 @@ impl SourceOperation for RecordOperation {
 }
 
 impl SourceOperationFactory for Controller {
+    // crucible-lint: allow clippy-disallowed-method -- This test-only controller creates the finite original cleanup deadline used by its record.
     #[allow(
         clippy::disallowed_methods,
         reason = "test-only operational record deadline"

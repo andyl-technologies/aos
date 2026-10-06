@@ -640,6 +640,7 @@ mod tests {
     }
 
     impl SourceOperation for LiveOperation {
+        // crucible-lint: allow clippy-disallowed-method -- This test-only transport operation checks its original monotonic start against the live allowance.
         #[allow(
             clippy::disallowed_methods,
             reason = "test-only live transport deadline"
@@ -665,6 +666,7 @@ mod tests {
     }
 
     #[test]
+    // crucible-lint: allow clippy-disallowed-method -- This test checks elapsed host waiting while a partial frame retains its original operation across a live extension.
     #[allow(
         clippy::disallowed_methods,
         reason = "test-only live transport deadline assertions"
@@ -742,6 +744,7 @@ mod tests {
     }
 
     #[test]
+    // crucible-lint: allow clippy-disallowed-method -- This test bounds a stalled partial frame with a live reduction and asserts refusal without page publication.
     #[allow(
         clippy::disallowed_methods,
         reason = "test-only live transport deadline assertions"

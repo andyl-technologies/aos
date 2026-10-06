@@ -112,6 +112,9 @@ pub(super) fn operational_public_exports(
         ("crucible-daemon", "src/supervision.rs") => &[
             "HOST_WATCHDOG_STACK_BYTES",
             "PublicationSupervision",
+            // Original credit retention and synchronous scope restoration expose no clock.
+            "retain_metadata",
+            "enter_metadata",
             "bind_caller",
             "start",
             "begin_publication",

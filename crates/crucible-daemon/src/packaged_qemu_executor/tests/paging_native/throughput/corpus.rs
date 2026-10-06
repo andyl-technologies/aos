@@ -185,7 +185,9 @@ pub(super) fn catalog_budget() -> environment::NativeCatalogBudget {
             task_slots: 1,
             file_descriptors: 128,
         },
-        maximum_inodes: 4_194_304,
+        // The existing bounded cleanup contract permits 1,048,576 inodes;
+        // the corpus still submits all 63 independently Completed campaigns.
+        maximum_inodes: 1_048_576,
         installation_capacity: Some(
             ExecutorCapacity::new(4, 10, 16 << 30, 64 << 30, 150_000).expect(
                 "four native assignments plus four host worker CPUs and two durable services",
@@ -227,6 +229,27 @@ pub(super) fn resources(mut config: PackagedQemuExecutorConfig) -> PackagedQemuE
         .expect("actual full-vector native assignment entitlement")
         .with_retained_template_resources(assignment)
         .expect("independent source service entitlement remains available for replay phases")
+}
+
+#[test]
+fn catalog_profile_respects_the_existing_inode_cleanup_bound() {
+    let catalog = catalog_budget();
+    let quota = crucible_linux_resource::LinuxProjectQuotaLimits::new(
+        catalog.resources.backing_peak_bytes,
+        catalog.maximum_inodes,
+    )
+    .expect("authored throughput catalog respects the production cleanup bound");
+
+    assert_eq!(quota.maximum_inodes(), 1_048_576);
+    assert_eq!(quota.requested_bytes(), 8 << 30);
+    assert!(
+        crucible_linux_resource::LinuxProjectQuotaLimits::new(
+            catalog.resources.backing_peak_bytes,
+            catalog.maximum_inodes + 1,
+        )
+        .is_err()
+    );
+    assert_eq!(SEEDS.len(), 63);
 }
 
 #[test]

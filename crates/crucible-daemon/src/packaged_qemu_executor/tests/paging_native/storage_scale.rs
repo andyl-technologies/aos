@@ -22,6 +22,10 @@ const TREE_COUNT: u64 = PAGE_COUNT * 2 - 1;
 const GRAPH_OBJECTS: u64 = PAGE_COUNT + TREE_COUNT + 1;
 const MIB: u64 = 1024 * 1024;
 
+// The existing bounded cleanup contract permits at most 1,048,576 inodes.
+// The unchanged 393,216-object RAM workload remains below that ceiling.
+const STORAGE_CATALOG_INODES: u64 = 1_048_576;
+
 // Authentication retains one full Service and checks a separate future
 // assignment peak. Registry and catalog each reserve another CPU before it.
 const INSTALLATION_CPUS: u32 = 2 + 2 + 1 + 1;
@@ -65,7 +69,7 @@ fn production_ram_storage_scales_past_packed_index_limit() {
                 task_slots: 1,
                 file_descriptors: 128,
             },
-            maximum_inodes: 4_194_304,
+            maximum_inodes: STORAGE_CATALOG_INODES,
             installation_capacity: Some(
                 ExecutorCapacity::new(8, INSTALLATION_CPUS, 4096 * MIB, 32 * 1024 * MIB, 1_000_000)
                     .expect("explicit full storage qualification host capacity"),
@@ -350,6 +354,22 @@ fn storage_profile_authors_native_service_and_separate_assignment_headroom() {
 
     assert_eq!(service, STORAGE_SERVICE_RESOURCES);
     assert_eq!(service.task_slots, 69);
+
+    let quota = crucible_linux_resource::LinuxProjectQuotaLimits::new(
+        16 * 1024 * MIB,
+        STORAGE_CATALOG_INODES,
+    )
+    .expect("storage profile respects the existing bounded inode cleanup contract");
+    assert_eq!(quota.maximum_inodes(), STORAGE_CATALOG_INODES);
+    assert!(quota.maximum_inodes() > GRAPH_OBJECTS);
+    assert!(
+        crucible_linux_resource::LinuxProjectQuotaLimits::new(
+            16 * 1024 * MIB,
+            STORAGE_CATALOG_INODES + 1,
+        )
+        .is_err()
+    );
+
     assert_eq!(
         u64::from(INSTALLATION_CPUS),
         service.cpu_slots + assignment.cpu_slots + 1 + 1
