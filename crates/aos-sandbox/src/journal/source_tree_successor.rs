@@ -935,8 +935,8 @@ pub(super) fn require_genesis_predecessor(
 ) -> Result<(), JournalError> {
     // Source genesis forwards the canonical durable phase only. Derive this
     // DATA comparison target from the actual receipt/ACK key, not the first
-    // retained receipt or a fabricated Journal. Singleton forwarding keeps
-    // its original validation and allocation order below.
+    // retained receipt or a fabricated Journal. Singleton forwarding retains
+    // strict validation order while keeping both DATA families through selection.
     let target = transaction.records().iter().find_map(|record| {
         record.key().strip_prefix(RECEIPT_PREFIX)
             .or_else(|| record.key().strip_prefix(ACK_PREFIX))
@@ -949,13 +949,15 @@ pub(super) fn require_genesis_predecessor(
     }
     let record = transaction.records().iter()
         .find(|record| record.key().starts_with(RECEIPT_PREFIX));
-    let rows = current_rows(state)?;
+    let SourceProjectFamilyDataV3 { genesis, successor: rows } =
+        current_family_with_genesis_selection(
+            state, SourceSuccessorFamilyRecipeV3::SingleProjectV2, None,
+        )?;
     let receipt = match record {
         Some(record) => SourceFirstSuccessorReceiptV2::decode(required_value(record)?)
             .map_err(|_| JournalError::ProtectedBoundary)?,
         None => rows.receipts.values().next().cloned().ok_or(JournalError::ProtectedBoundary)?,
     };
-    let genesis = super::source_tree_genesis::current_rows(state)?;
     let project = receipt.project();
     let original = genesis.receipts.get(&project)
         .ok_or(JournalError::ProtectedBoundary)?;
