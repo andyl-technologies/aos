@@ -51,6 +51,7 @@ mod capture_attempt;
     reason = "method-41 candidate awaits pinned Storage BSA verification and signed response"
 )]
 mod capture_candidate;
+pub(crate) use capture_candidate::CaptureCandidateErrorV1;
 mod held_readback;
 mod physical_observation;
 #[allow(

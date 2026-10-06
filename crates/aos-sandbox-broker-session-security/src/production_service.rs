@@ -1283,6 +1283,7 @@ pub struct ProductionOriginalStorageOutputCycleV1 {
     event: Option<crate::ProductionBrokerRequestEventV1>,
     ordinary: Option<Result<DormantAuthenticatedBrokerSessionV1, ProductionBrokerResponseErrorV1>>,
     selected: Option<OriginalStorageOutputRequestV1>,
+    capture_candidate: Option<OriginalStorageCaptureRequestV1>,
     receive_deadline: Option<Result<u64, ProductionBrokerDeadlineErrorV1>>,
     poll_failure: Option<rustix::io::Errno>,
     deadline: u64,
@@ -1294,7 +1295,7 @@ impl Drop for ProductionOriginalStorageOutputCycleV1 {
     fn drop(&mut self) {
         // The daemon uses explicit exit for a reported first cause. Unwind or
         // premature disposal must not release its original writers/carriers.
-        if self.selected.is_some() || self.failure().is_some() || self.postcheck_debt().is_some() {
+        if self.selected.is_some() || self.capture_candidate.is_some() || self.failure().is_some() || self.postcheck_debt().is_some() {
             std::process::abort();
         }
     }
@@ -1319,6 +1320,116 @@ struct OriginalStorageOutputRequestV1 {
     ended: bool,
 }
 
+struct OriginalStorageCaptureRequestV1 {
+    session: Option<DormantAuthenticatedBrokerSessionV1>,
+    receipt: crate::handshake::output_registration_continuation::OriginalOutputServerReceiptV1,
+    dispatch: Option<Result<
+        crate::ProtectedBrokerOutcomeCommitResultV1,
+        crate::DormantBrokerExecutionFailureV1<crate::ProductionStorageBrokerDispatchErrorV1>,
+    >>,
+    retirement: Option<Result<(), aos_sandbox_storage::DormantStorageBrokerCallErrorV1>>,
+    dispatch_postcheck: Option<Result<(), aos_sandbox_storage::DormantStorageBrokerCallErrorV1>>,
+    terminal: crate::production_response::OriginalCaptureCandidateResponseV1,
+    deadline: u64,
+    attempted: bool,
+}
+
+impl OriginalStorageCaptureRequestV1 {
+    fn begin(
+        session: DormantAuthenticatedBrokerSessionV1,
+        receipt: crate::handshake::output_registration_continuation::OriginalOutputServerReceiptV1,
+        deadline: u64,
+    ) -> Self {
+        Self {
+            session: Some(session),
+            receipt,
+            dispatch: None,
+            retirement: None,
+            dispatch_postcheck: None,
+            terminal: crate::production_response::OriginalCaptureCandidateResponseV1::empty(),
+            deadline,
+            attempted: false,
+        }
+    }
+
+    fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        if let Some(error) = self.receipt.failure() { return Some(error); }
+        match &self.dispatch {
+            Some(Err(crate::DormantBrokerExecutionFailureV1::BeforeEffect { error, .. })) => return Some(error),
+            Some(Err(crate::DormantBrokerExecutionFailureV1::OutcomeUnknown { error, .. })) => {
+                return match error {
+                    crate::DormantBrokerExecutionErrorV1::Domain(crate::ProductionStorageBrokerDispatchErrorV1::Operation(
+                        aos_sandbox_storage::DormantStorageBrokerCallErrorV1::CaptureCandidate(custody),
+                    )) => custody.original_cause().or_else(|| custody.postcheck_debt()),
+                    error => Some(error),
+                };
+            }
+            Some(Ok(crate::ProtectedBrokerOutcomeCommitResultV1::RecoveryRequired { error, .. })) => return Some(error),
+            _ => {}
+        }
+        if let Some(error) = self.terminal.failure() { return Some(error); }
+        if let Some(Err(error)) = &self.dispatch_postcheck {
+            return match error {
+                aos_sandbox_storage::DormantStorageBrokerCallErrorV1::CaptureCandidate(custody) =>
+                    custody.original_cause().or_else(|| custody.postcheck_debt()),
+                error => Some(error),
+            };
+        }
+        if let Some(Err(error)) = &self.retirement { return Some(error); }
+        None
+    }
+
+    fn postcheck_debt(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        if let Some(error) = self.receipt.postcheck_debt() { return Some(error); }
+        if let Some(Err(error)) = &self.dispatch_postcheck {
+            return match error {
+                aos_sandbox_storage::DormantStorageBrokerCallErrorV1::CaptureCandidate(custody) =>
+                    custody.original_cause().or_else(|| custody.postcheck_debt()),
+                error => Some(error),
+            };
+        }
+        if let Some(Err(crate::DormantBrokerExecutionFailureV1::OutcomeUnknown {
+            error: crate::DormantBrokerExecutionErrorV1::Domain(crate::ProductionStorageBrokerDispatchErrorV1::Operation(
+                aos_sandbox_storage::DormantStorageBrokerCallErrorV1::CaptureCandidate(custody),
+            )), ..
+        })) = &self.dispatch {
+            if let Some(error) = custody.postcheck_debt() { return Some(error); }
+        }
+        self.terminal.postcheck_debt()
+    }
+
+    fn advance(
+        &mut self,
+        request: crate::DormantReceivedBrokerRequestV1,
+        storage: &mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
+        output: &aos_sandbox_storage::execution_output_credential::StorageExecutionOutputCustodyV1,
+    ) {
+        if self.attempted { return; }
+        self.attempted = true;
+        let Some(session) = &mut self.session else { return; };
+        self.dispatch = Some(session.dispatch_storage_capture_candidate_and_commit_v1(request, storage, output));
+        // A terminal/currentness failure owns chronological priority. Still
+        // compare the actual source after that native signing/commit boundary;
+        // an already failed domain recipe is not reopened or retried.
+        if matches!(&self.dispatch,
+            Some(Ok(crate::ProtectedBrokerOutcomeCommitResultV1::RecoveryRequired { .. }))
+            | Some(Err(crate::DormantBrokerExecutionFailureV1::OutcomeUnknown {
+                error: crate::DormantBrokerExecutionErrorV1::Currentness(_), ..
+            }))
+        ) {
+            self.dispatch_postcheck = Some(storage.recheck_original_capture_candidate_v1(output, false));
+        }
+        let committed = match self.dispatch.take() {
+            Some(Ok(crate::ProtectedBrokerOutcomeCommitResultV1::Committed(committed))) => committed,
+            retained => {
+                self.dispatch = retained;
+                return;
+            }
+        };
+        self.terminal.send_once(session, committed, storage, output, self.deadline);
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("original Storage output request is closed with its returned custody resident")]
 struct OriginalStorageOutputClosedV1;
@@ -1331,6 +1442,7 @@ impl ProductionOriginalStorageOutputCycleV1 {
             event: None,
             ordinary: None,
             selected: None,
+            capture_candidate: None,
             receive_deadline: None,
             poll_failure: None,
             deadline: 0,
@@ -1346,6 +1458,9 @@ impl ProductionOriginalStorageOutputCycleV1 {
     pub fn as_fd(&self) -> Result<std::os::fd::BorrowedFd<'_>, crate::DormantBrokerSessionHandshakeErrorV1> {
         if self.ended {
             return Err(crate::DormantBrokerSessionHandshakeErrorV1::EndpointRole);
+        }
+        if let Some(capture) = &self.capture_candidate {
+            if let Some(session) = &capture.session { return session.as_fd(); }
         }
         if let Some(selected) = &self.selected {
             return selected.session.as_ref().ok_or(crate::DormantBrokerSessionHandshakeErrorV1::EndpointRole)?.as_fd();
@@ -1368,6 +1483,10 @@ impl ProductionOriginalStorageOutputCycleV1 {
             if let Some(error) = receipt.failure() { return Some(error); }
         }
         if let Some(Err(error)) = &self.ordinary { return Some(error); }
+        if let Some(capture) = &self.capture_candidate {
+            if let Some(error) = capture.failure() { return Some(error); }
+            if capture.postcheck_debt().is_some() { return None; }
+        }
         if let Some(selected) = &self.selected {
             if let Some(error) = selected.failure() { return Some(error); }
             if self.postcheck_debt().is_some() { return None; }
@@ -1380,6 +1499,9 @@ impl ProductionOriginalStorageOutputCycleV1 {
     pub fn postcheck_debt(&self) -> Option<&(dyn std::error::Error + 'static)> {
         if let Some(receipt) = &self.receipt {
             if let Some(error) = receipt.postcheck_debt() { return Some(error); }
+        }
+        if let Some(capture) = &self.capture_candidate {
+            if let Some(error) = capture.postcheck_debt() { return Some(error); }
         }
         let selected = self.selected.as_ref()?;
         if let Some(error) = selected.receipt.postcheck_debt() { return Some(error); }
@@ -1435,7 +1557,13 @@ impl ProductionOriginalStorageOutputCycleV1 {
         if self.started {
             // The predecessor remains resident while the sole authenticated
             // receiver admits its signed successor against the terminal head.
-            if let Some(selected) = self.selected.as_mut() {
+            if let Some(capture) = self.capture_candidate.as_mut() {
+                if !capture.terminal.locally_sent() || capture.failure().is_some() || capture.postcheck_debt().is_some() {
+                    self.ended = true;
+                    return;
+                }
+                self.session = capture.session.take();
+            } else if let Some(selected) = self.selected.as_mut() {
                 if !selected.terminal.locally_sent() {
                     self.ended = true;
                     return;
@@ -1470,6 +1598,20 @@ impl ProductionOriginalStorageOutputCycleV1 {
         if self.event.as_ref().is_some_and(|event| event.is_original_output_replay()) {
             return;
         }
+        if self.event.as_ref().is_some_and(|event| event.is_original_capture_candidate_replay()) {
+            return;
+        }
+
+        if let Some(capture) = &mut self.capture_candidate {
+            let Some(crate::ProductionBrokerRequestEventV1::Request(successor)) = &self.event else { return; };
+            let Some(original) = storage.original_capture_candidate_request() else { return; };
+            if !successor.is_original_output_successor(original) { return; }
+            capture.retirement = Some(successor.retire_original_storage_capture_candidate(storage));
+            if !matches!(&capture.retirement, Some(Ok(()))) { return; }
+            // The real receipt has authenticated the signed predecessor. Both
+            // successful source and terminal custody may now retire together.
+            self.capture_candidate = None;
+        }
 
         if let Some(predecessor) = &self.selected {
             let original = predecessor.registration.original_request();
@@ -1481,6 +1623,17 @@ impl ProductionOriginalStorageOutputCycleV1 {
         let Some(event) = self.event.take() else { return; };
         let Some(session) = self.session.take() else { return; };
         match event {
+            crate::ProductionBrokerRequestEventV1::Request(request)
+                if request.method() == aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE =>
+            {
+                let deadline = self.deadline.min(request.original_capture_candidate_deadline());
+                let Some(receipt) = self.receipt.take() else { return; };
+                self.selected = None;
+                self.capture_candidate = Some(OriginalStorageCaptureRequestV1::begin(session, receipt, deadline));
+                let Some(capture) = &mut self.capture_candidate else { return; };
+                capture.advance(request, storage, output);
+                self.ended = !capture.terminal.locally_sent() || capture.failure().is_some() || capture.postcheck_debt().is_some();
+            }
             crate::ProductionBrokerRequestEventV1::Request(request)
                 if matches!(request.method(),
                     aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
@@ -1698,7 +1851,7 @@ fn finish_original_output_terminal(
     session.send_original_output_server_terminal(terminal);
 }
 
-fn wait_output_original(
+pub(crate) fn wait_output_original(
     session: &DormantAuthenticatedBrokerSessionV1,
     write: bool,
     deadline: u64,

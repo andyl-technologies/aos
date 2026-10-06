@@ -10,6 +10,185 @@
 
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum CaptureResponseCauseV1 {
+    Clock(usize),
+    Session(usize),
+    Source(usize),
+    LateClock(usize),
+    Send,
+    Readiness,
+    Closed,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("original capture response is closed with its terminal custody retained")]
+struct CaptureResponseClosedV1;
+
+/// Keeps selected method-41 response custody beside the borrowed real Session.
+///
+/// This calls the same authenticated sender and readiness helper as ordinary
+/// completion. It never recovers/re-signs a failed terminal or dispatches the
+/// read-only source a second time. Whole native returns park before postchecks.
+pub(crate) struct OriginalCaptureCandidateResponseV1 {
+    committed: Option<crate::ProtectedBrokerOutcomeCommittedAdvancementV1>,
+    send: Option<Result<crate::DormantBrokerResponseSendProgressV1, crate::DormantBrokerSessionHandshakeErrorV1>>,
+    readiness: Option<Result<(), crate::DormantBrokerSessionHandshakeErrorV1>>,
+    clock: [Option<Result<(), crate::DormantBrokerSessionHandshakeErrorV1>>; 3],
+    current: [Option<Result<(), crate::BrokerSessionSecurityError>>; 3],
+    source: [Option<Result<(), aos_sandbox_storage::DormantStorageBrokerCallErrorV1>>; 3],
+    late_clock: [Option<Result<(), crate::DormantBrokerSessionHandshakeErrorV1>>; 3],
+    first: Option<CaptureResponseCauseV1>,
+    attempted: bool,
+}
+
+impl OriginalCaptureCandidateResponseV1 {
+    pub(crate) const fn empty() -> Self {
+        Self {
+            committed: None,
+            send: None,
+            readiness: None,
+            clock: [None, None, None],
+            current: [None, None, None],
+            source: [None, None, None],
+            late_clock: [None, None, None],
+            first: None,
+            attempted: false,
+        }
+    }
+
+    pub(crate) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self.first? {
+            CaptureResponseCauseV1::Clock(index) => self.clock[index].as_ref()?.as_ref().err()
+                .map(|error| error as &dyn std::error::Error),
+            CaptureResponseCauseV1::Session(index) => self.current[index].as_ref()?.as_ref().err()
+                .map(|error| error as &dyn std::error::Error),
+            CaptureResponseCauseV1::Source(index) => match self.source[index].as_ref()?.as_ref().err()? {
+                aos_sandbox_storage::DormantStorageBrokerCallErrorV1::CaptureCandidate(custody) =>
+                    custody.original_cause().or_else(|| custody.postcheck_debt()),
+                error => Some(error),
+            },
+            CaptureResponseCauseV1::LateClock(index) => self.late_clock[index].as_ref()?.as_ref().err()
+                .map(|error| error as &dyn std::error::Error),
+            CaptureResponseCauseV1::Send => match &self.send {
+                Some(Err(error)) | Some(Ok(crate::DormantBrokerResponseSendProgressV1::RecoveryRequired { error, .. })) => Some(error),
+                _ => Some(&CaptureResponseClosedV1),
+            },
+            CaptureResponseCauseV1::Readiness => self.readiness.as_ref()?.as_ref().err()
+                .map(|error| error as &dyn std::error::Error),
+            CaptureResponseCauseV1::Closed => Some(&CaptureResponseClosedV1),
+        }
+    }
+
+    pub(crate) fn postcheck_debt(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        for index in 0..3 {
+            if self.first != Some(CaptureResponseCauseV1::Clock(index)) {
+                if let Some(Err(error)) = &self.clock[index] { return Some(error); }
+            }
+            if self.first != Some(CaptureResponseCauseV1::Session(index)) {
+                if let Some(Err(error)) = &self.current[index] { return Some(error); }
+            }
+            if self.first != Some(CaptureResponseCauseV1::Source(index)) {
+                if let Some(Err(error)) = &self.source[index] {
+                    return match error {
+                        aos_sandbox_storage::DormantStorageBrokerCallErrorV1::CaptureCandidate(custody) =>
+                            custody.original_cause().or_else(|| custody.postcheck_debt()),
+                        error => Some(error),
+                    };
+                }
+            }
+            if self.first != Some(CaptureResponseCauseV1::LateClock(index)) {
+                if let Some(Err(error)) = &self.late_clock[index] { return Some(error); }
+            }
+        }
+        for result in &self.source {
+            if let Some(Err(aos_sandbox_storage::DormantStorageBrokerCallErrorV1::CaptureCandidate(custody))) = result {
+                if let Some(error) = custody.postcheck_debt() { return Some(error); }
+            }
+        }
+        None
+    }
+
+    pub(crate) fn locally_sent(&self) -> bool {
+        self.first.is_none() && self.postcheck_debt().is_none()
+            && matches!(&self.send, Some(Ok(crate::DormantBrokerResponseSendProgressV1::Sent(_))))
+    }
+
+    fn bookend(
+        &mut self,
+        session: &mut DormantAuthenticatedBrokerSessionV1,
+        storage: &mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
+        output: &aos_sandbox_storage::execution_output_credential::StorageExecutionOutputCustodyV1,
+        deadline: u64,
+        index: usize,
+    ) -> bool {
+        self.clock[index] = Some(crate::dormant_handshake::check_production_deadline(deadline));
+        if matches!(&self.clock[index], Some(Err(_))) {
+            self.first.get_or_insert(CaptureResponseCauseV1::Clock(index));
+            if index == 0 { return false; }
+        }
+        self.current[index] = Some(session.recheck_original_nix_generation_session());
+        if matches!(&self.current[index], Some(Err(_))) {
+            self.first.get_or_insert(CaptureResponseCauseV1::Session(index));
+        }
+        self.source[index] = Some(storage.recheck_original_capture_candidate_v1(output, false));
+        if matches!(&self.source[index], Some(Err(_))) {
+            self.first.get_or_insert(CaptureResponseCauseV1::Source(index));
+        }
+        self.late_clock[index] = Some(crate::dormant_handshake::check_production_deadline(deadline));
+        if matches!(&self.late_clock[index], Some(Err(_))) {
+            self.first.get_or_insert(CaptureResponseCauseV1::LateClock(index));
+        }
+        self.first.is_none()
+    }
+
+    pub(crate) fn send_once(
+        &mut self,
+        session: &mut DormantAuthenticatedBrokerSessionV1,
+        committed: crate::ProtectedBrokerOutcomeCommittedAdvancementV1,
+        storage: &mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
+        output: &aos_sandbox_storage::execution_output_credential::StorageExecutionOutputCustodyV1,
+        deadline: u64,
+    ) {
+        if self.attempted {
+            self.first.get_or_insert(CaptureResponseCauseV1::Closed);
+            return;
+        }
+        self.attempted = true;
+        self.committed = Some(committed);
+        if !self.bookend(session, storage, output, deadline, 0) { return; }
+        let Some(committed) = self.committed.take() else { return; };
+        self.send = Some(session.send_authenticated_response(committed));
+        if matches!(&self.send, Some(Err(_)) | Some(Ok(crate::DormantBrokerResponseSendProgressV1::RecoveryRequired { .. }))) {
+            self.first = Some(CaptureResponseCauseV1::Send);
+        }
+        if !self.bookend(session, storage, output, deadline, 1) { return; }
+
+        while matches!(&self.send, Some(Ok(crate::DormantBrokerResponseSendProgressV1::Pending(_)))) {
+            self.readiness = Some(crate::production_service::wait_output_original(session, true, deadline));
+            if matches!(&self.readiness, Some(Err(_))) {
+                self.first = Some(CaptureResponseCauseV1::Readiness);
+            }
+            if !self.bookend(session, storage, output, deadline, 2) { return; }
+            let pending = match self.send.take() {
+                Some(Ok(crate::DormantBrokerResponseSendProgressV1::Pending(pending))) => pending,
+                retained => {
+                    self.send = retained;
+                    self.first.get_or_insert(CaptureResponseCauseV1::Closed);
+                    return;
+                }
+            };
+            // Only successful Pending custody moves forward to the identical
+            // packet's next send. Errors and postcheck debt are never replaced.
+            self.send = Some(session.send_authenticated_response(pending));
+            if matches!(&self.send, Some(Err(_)) | Some(Ok(crate::DormantBrokerResponseSendProgressV1::RecoveryRequired { .. }))) {
+                self.first = Some(CaptureResponseCauseV1::Send);
+            }
+            if !self.bookend(session, storage, output, deadline, 2) { return; }
+        }
+    }
+}
+
 // The original Acquire and both fixed successor requests are retained beside
 // these closed reservoirs, never converted to BeforeEffect. Conflict closes
 // only transport stop-and-wait, not native custody; inventory is observation.

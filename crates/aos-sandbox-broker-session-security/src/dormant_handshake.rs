@@ -561,6 +561,15 @@ impl DormantBrokerOutcomeUnknownV1 {
 }
 
 impl crate::ProductionBrokerRequestEventV1 {
+    pub(crate) fn is_original_capture_candidate_replay(&self) -> bool {
+        let method = match self {
+            Self::InFlightReplay(unknown) => unknown.request.method(),
+            Self::TerminalReplay(replay) => replay.0.method(),
+            _ => return false,
+        };
+        method == BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE
+    }
+
     pub(crate) fn is_nix_generation(&self) -> bool {
         let method = match self {
             Self::Request(request) => request.method(),
@@ -845,6 +854,18 @@ mod empty_host_inventory_tests {
 }
 
 impl DormantReceivedBrokerRequestV1 {
+    pub(crate) const fn original_capture_candidate_deadline(&self) -> u64 {
+        self.0.deadline_boottime_nanoseconds()
+    }
+
+    /// Retires source custody only after this same receipt admitted its successor.
+    pub(crate) fn retire_original_storage_capture_candidate(
+        &self,
+        storage: &mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
+    ) -> Result<(), aos_sandbox_storage::DormantStorageBrokerCallErrorV1> {
+        storage.retire_original_capture_candidate_v1(&self.0)
+    }
+
     pub(crate) const fn original_nix_generation_deadline(&self) -> u64 {
         self.0.deadline_boottime_nanoseconds()
     }
@@ -4125,6 +4146,35 @@ impl DormantAuthenticatedBrokerSessionV1 {
             Ok(response) => response,
             Err(error) => return Err(Self::unknown_domain(request, error)),
         };
+        self.finish_observed_success(request, response)
+    }
+
+    /// Observes the original Storage candidate before the same BSA terminal.
+    pub(crate) fn execute_storage_capture_candidate_and_commit_v1(
+        &mut self,
+        request: DormantReceivedBrokerRequestV1,
+        storage: &mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
+        output: &aos_sandbox_storage::execution_output_credential::StorageExecutionOutputCustodyV1,
+    ) -> Result<
+        ProtectedBrokerOutcomeCommitResultV1,
+        DormantBrokerExecutionFailureV1<aos_sandbox_storage::DormantStorageBrokerCallErrorV1>,
+    > {
+        let method_matches = request.method()
+            == BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE
+            && request.authorization_artifacts().is_some();
+        let (request, context) = self.begin_execution(request, method_matches)?;
+        let version = ProtocolVersion::new(context.protocol_major(), context.protocol_minor());
+        let response = match storage.observe_original_capture_candidate_v1(
+            output, &request.0, version, context.boot_id(),
+        ) {
+            Ok(response) => response,
+            Err(error) => return Err(Self::unknown_domain(request, error)),
+        };
+        // The actual source must still match immediately before the existing
+        // canonical signing/terminal-CAS engine; no caller fence is accepted.
+        if let Err(error) = storage.recheck_original_capture_candidate_v1(output, true) {
+            return Err(Self::unknown_domain(request, error));
+        }
         self.finish_observed_success(request, response)
     }
 

@@ -710,6 +710,20 @@ impl DormantAuthenticatedBrokerSessionV1 {
         }
     }
 
+    /// Dispatches only the selected original candidate with the actual output loan.
+    pub(crate) fn dispatch_storage_capture_candidate_and_commit_v1(
+        &mut self,
+        request: DormantReceivedBrokerRequestV1,
+        storage: &mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
+        output: &aos_sandbox_storage::execution_output_credential::StorageExecutionOutputCustodyV1,
+    ) -> Result<
+        ProtectedBrokerOutcomeCommitResultV1,
+        DormantBrokerExecutionFailureV1<ProductionStorageBrokerDispatchErrorV1>,
+    > {
+        self.execute_storage_capture_candidate_and_commit_v1(request, storage, output)
+            .map_err(|failure| map_execution_failure(failure, Into::into))
+    }
+
     /// Dispatches every Storage protocol method through its sealed production owner.
     ///
     /// The signed method selects Apply, catalog preparation, workspace-pin
