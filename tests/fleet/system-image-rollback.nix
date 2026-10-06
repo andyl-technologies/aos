@@ -44,18 +44,16 @@
     then pkgs.aos
     else
       pkgs.aos.overrideAttrs (previous: {
-        phases =
-          previous.phases
-          ++ [
-            {
-              name = "mark-image-qualification-executor";
-              script = ''
-                printf '%s\n' candidate-executor > "$packageRuntime/rollout-test-identity"
-              '';
-            }
-          ];
+        postInstall =
+          previous.postInstall
+          + ''
+            printf '%s\n' candidate-executor > "$packageRuntime/rollout-test-identity"
+          '';
       });
-  candidatePackageRuntime = candidateAos.packageRuntime;
+  candidatePackageRuntime = assert lib.assertMsg (
+    !replaceExecutor || toString candidateAos.packageRuntime != toString pkgs.aos.packageRuntime
+  ) "Image rollback qualification requires a distinct candidate executor";
+    candidateAos.packageRuntime;
   candidatePkgs =
     pkgs
     // {
