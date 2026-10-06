@@ -1,0 +1,280 @@
+//! Actual typed immutable projection positives and substitution refusals.
+
+use super::*;
+use crate::native::{Bodies, Capture};
+use aos_proto_types::RegistryPublicationObjectInput;
+
+fn capture(path: &str, phase: Option<&str>) -> Capture {
+    fn unused() -> BodyFile {
+        BodyFile {
+            file: String::new(),
+            sha256: String::new(),
+            byte_size: "0".into(),
+        }
+    }
+    Capture {
+        request_id: "a".repeat(32),
+        procedure: path.into(),
+        method: "POST".into(),
+        phase: phase.map(str::to_owned),
+        status: 200,
+        response_content_type: Some("application/json".into()),
+        response_content_encoding: None,
+        bodies: Bodies {
+            request: unused(),
+            response: unused(),
+        },
+        control_selection: None,
+        storage_work_selection: None,
+        empty_response_observation: None,
+        immutable_projection: None,
+    }
+}
+
+#[test]
+fn actual_manifest_page_requires_the_original_immutable_chunk() {
+    let mut page = AppendRegistryPublicationManifestRequest {
+        publication_id: "a".repeat(32),
+        lease_token: "b".repeat(32),
+        chunk_index: 3,
+        objects: vec![RegistryPublicationObjectInput {
+            path: "web/packages/example.json".into(),
+            sha256: "c".repeat(64),
+            byte_size: 128,
+            kind: "immutable".into(),
+            media_type: "application/json".into(),
+        }],
+        ..Default::default()
+    };
+    page.chunk_digest = crate::native::manifest_digest::digest(&page.objects).unwrap();
+    let response = RegistryPublicationManifestSession {
+        publication_id: page.publication_id.clone(),
+        lease_token: page.lease_token.clone(),
+        next_chunk_index: 4,
+        ..Default::default()
+    };
+    let selected = capture(
+        "/aos.hub.v1.PublishService/AppendRegistryPublicationManifest",
+        None,
+    );
+    let request = serde_json::to_vec(&page).unwrap();
+    let reply = serde_json::to_vec(&response).unwrap();
+    let mut sql = serde_json::json!({"publicationId":page.publication_id,"chunkIndex":3,
+        "chunkDigest":page.chunk_digest,"objectCount":1});
+    assert_eq!(
+        append(
+            &selected,
+            &request,
+            &reply,
+            &serde_json::to_vec_pretty(&sql).unwrap()
+        )
+        .unwrap(),
+        1
+    );
+    for (field, wrong) in [
+        ("publicationId", serde_json::json!("d".repeat(32))),
+        ("chunkIndex", serde_json::json!(4)),
+        ("chunkDigest", serde_json::json!("e".repeat(64))),
+        ("objectCount", serde_json::json!(2)),
+    ] {
+        let mut changed = sql.clone();
+        changed[field] = wrong;
+        assert!(append(
+            &selected,
+            &request,
+            &reply,
+            &serde_json::to_vec(&changed).unwrap()
+        )
+        .is_err());
+    }
+    sql["unclassified"] = serde_json::json!("payload");
+    assert!(append(
+        &selected,
+        &request,
+        &reply,
+        &serde_json::to_vec(&sql).unwrap()
+    )
+    .is_err());
+}
+
+fn admission_fixture() -> DirectUploadAdmission {
+    let actor_slot = DirectActorSlot {
+        kind: DirectActorKind::User,
+        numeric_id: WireInteger::new(7),
+        incarnation: "01234567-89ab-4def-8123-456789abcdef".into(),
+    };
+    let credential = |purpose: &str| DirectCredentialRevision {
+        purpose: purpose.into(),
+        credential_id: "protected-profile".into(),
+        generation: WireInteger::new(1),
+        secret_version_ref: "worker-profile:1".into(),
+        credential_fingerprint: "33".repeat(32),
+    };
+    let mut admission = DirectUploadAdmission {
+        session_id: "original-session".into(),
+        principal_id: actor_slot.principal_id("deployment").unwrap(),
+        actor_slot,
+        intent: DirectUploadIntent {
+            version: 1,
+            client_operation_id: "11".repeat(32),
+            target: DirectUploadTarget::PublicationObject {
+                publication_id: "a".repeat(32),
+                path: "object".into(),
+                surface_object_id: WireInteger::new(9),
+            },
+            expected_sha256: "22".repeat(32),
+            byte_size: WireInteger::new(1),
+            part_size: WireInteger::new(8 * 1024 * 1024),
+            dependency_phase: DirectDependencyPhase::Content,
+            transfer_mode: DirectTransferMode::DirectRequired,
+        },
+        logical_fingerprint: String::new(),
+        expires_at: WireInteger::new(1000),
+        placements: vec![DirectPlacement {
+            placement_id: WireInteger::new(1),
+            placement_resource_version: WireInteger::new(2),
+            write_spec_version: WireInteger::new(3),
+            binding_id: WireInteger::new(4),
+            binding_resource_version: WireInteger::new(5),
+            binding_write_revision: WireInteger::new(6),
+            final_key: "registry/object".into(),
+            staging_prefix: ".aos-direct-upload".into(),
+            private_stage_policy: DirectPrivateStagePolicyRef {
+                policy_id: "reviewed-policy".into(),
+                policy_digest: "44".repeat(32),
+                namespace: "private-bucket".into(),
+            },
+            protected_profile_digest: "12".repeat(32),
+            checksum_algorithm: DirectChecksumAlgorithm::Md5,
+            physical: DirectPhysicalContext::DeploymentR2 {
+                deployment_id: "deployment".into(),
+                bucket_namespace: "permanent-bucket".into(),
+            },
+            write_credential: credential("write"),
+            read_credential: credential("read"),
+            presign_credential: credential("presign"),
+        }],
+    };
+    admission.logical_fingerprint = admission.fingerprint("deployment").unwrap();
+    admission.validate("deployment").unwrap();
+    admission
+}
+
+#[test]
+fn actual_direct_admission_binds_public_body_actor_source_and_placements() {
+    let admitted = admission_fixture();
+    let public = encode_direct_control(&DirectBatch {
+        operation_id: "c".repeat(64),
+        items: vec![admitted.intent.clone()],
+    })
+    .unwrap();
+    let original = DirectLogicalRequestEnvelope {
+        context: DirectRequestContext {
+            deployment_id: "deployment".into(),
+            executor_public_origin: "https://executor.example.test".into(),
+            public_authority: "hub.example.test".into(),
+            foreground: DirectForegroundBudget {
+                invocation_id: "a".repeat(64),
+                issued_at: WireInteger::new(100),
+                expires_at: WireInteger::new(130),
+            },
+            request_nonce: "b".repeat(64),
+            request_body_sha256: files::digest(&public),
+            public_method: "POST".into(),
+            public_path: "/aos.hub.v1.DirectUploadService/BeginBatch".into(),
+            issued_at: WireInteger::new(100),
+            expires_at: WireInteger::new(130),
+        },
+        request: DirectUploadLogicalRequest::Admission {
+            intents: vec![admitted.intent.clone()],
+        },
+    };
+    let response = DirectLogicalReplyEnvelope {
+        context: original.context.clone(),
+        reply: DirectUploadLogicalReply {
+            admissions: vec![admitted.clone()],
+            sessions: vec![],
+            session_summaries: vec![],
+            authorizations: vec![],
+            baseline_permissions: vec![],
+            errors: vec![],
+        },
+    };
+    let selected = capture(&original.context.public_path, Some("admission"));
+    let request = encode_direct_control(&original).unwrap();
+    let reply = encode_direct_control(&response).unwrap();
+    let sql = |value: &DirectUploadAdmission| {
+        serde_json::to_vec(&serde_json::json!({
+        "sessionId":value.session_id,"publicationId":"a".repeat(32),"state":"committed","admission":value})).unwrap()
+    };
+    assert_eq!(
+        admission(&selected, &request, &reply, &public, &sql(&admitted)).unwrap(),
+        1
+    );
+    let mut foreign = admitted.clone();
+    foreign.actor_slot.numeric_id = WireInteger::new(8);
+    foreign.principal_id = foreign.actor_slot.principal_id("deployment").unwrap();
+    foreign.logical_fingerprint = foreign.fingerprint("deployment").unwrap();
+    foreign.validate("deployment").unwrap();
+    assert!(admission(&selected, &request, &reply, &public, &sql(&foreign)).is_err());
+    let mut foreign = admitted.clone();
+    foreign.placements[0].binding_resource_version = WireInteger::new(8);
+    foreign.logical_fingerprint = foreign.fingerprint("deployment").unwrap();
+    foreign.validate("deployment").unwrap();
+    assert!(admission(&selected, &request, &reply, &public, &sql(&foreign)).is_err());
+    assert!(admission(&selected, &request, &reply, b"{}", &sql(&admitted)).is_err());
+    let mut duplicate = sql(&admitted);
+    duplicate.push(b'\n');
+    duplicate.extend(sql(&admitted));
+    assert!(admission(&selected, &request, &reply, &public, &duplicate).is_err());
+}
+
+#[test]
+fn original_byte_image_is_required_and_sql_values_never_emit_payload_zero() {
+    let mut page = AppendRegistryPublicationManifestRequest {
+        publication_id: "a".repeat(32),
+        lease_token: "b".repeat(32),
+        objects: vec![RegistryPublicationObjectInput {
+            path: "web/packages/example.json".into(),
+            sha256: "c".repeat(64),
+            byte_size: 128,
+            kind: "immutable".into(),
+            media_type: "application/json".into(),
+        }],
+        ..Default::default()
+    };
+    page.chunk_digest = crate::native::manifest_digest::digest(&page.objects).unwrap();
+    let response = RegistryPublicationManifestSession {
+        publication_id: page.publication_id.clone(),
+        lease_token: page.lease_token.clone(),
+        next_chunk_index: 1,
+        ..Default::default()
+    };
+    let request = serde_json::to_vec(&page).unwrap();
+    let reply = serde_json::to_vec(&response).unwrap();
+    let sql = serde_json::to_vec(&serde_json::json!({"publicationId":page.publication_id,
+        "chunkIndex":0,"chunkDigest":page.chunk_digest,"objectCount":1}))
+    .unwrap();
+    let selected = capture(
+        "/aos.hub.v1.PublishService/AppendRegistryPublicationManifest",
+        None,
+    );
+    let reference = crate::native::tests::reference;
+    let proof = Selection::PublicationAppend {
+        original_request: reference(&request, "projection-original"),
+        immutable_chunk_receipt: reference(&sql, "projection-sql"),
+    };
+    let observation = inspect(&proof, &selected, &request, &reply, &mut 0).unwrap();
+    assert_eq!(observation.request_control_bytes, request.len().to_string());
+    assert_eq!(observation.reply_control_bytes, reply.len().to_string());
+    assert!(observation.object_payload_bytes.is_none());
+    assert_eq!(
+        observation.sql_reader_authority,
+        "not_checked_join_measured_read_only_source_process_and_window"
+    );
+    let changed = Selection::PublicationAppend {
+        original_request: reference(b"{}", "projection-foreign-original"),
+        immutable_chunk_receipt: reference(&sql, "projection-same-sql"),
+    };
+    assert!(inspect(&changed, &selected, &request, &reply, &mut 0).is_err());
+}

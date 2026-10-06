@@ -108,13 +108,201 @@ def observe(selection, manifest_reference):
     return manifest, report, None
 
 
+DIRECT_CONTROL_ROUTES = {
+    "/_internal/storage/v1/capabilities": (64 * 1024, "direct_storage_capabilities"),
+    "/_internal/storage/direct-upload-authority": (256 * 1024, "direct_authority_lookup"),
+    "/_internal/storage/direct-upload-final-guard": (256 * 1024, "direct_final_guard"),
+}
+DIRECT_CONTROL_FIELDS = {
+    "version", "state", "route", "transportCallId", "constructorSourceSha256", "nonceSha256",
+    "offeredRequestSha256", "offeredRequestBytes", "endpointScheme", "replyStatus",
+    "exposedReplySha256", "exposedReplyBytes", "replyEof", "outcome", "observedAtUnixMicros",
+    "replyMacAuthentication", "finalSqlAuthority",
+}
+DIRECT_CONTROL_OUTCOMES = {
+    "offered", "cancelled", "transport_error", "status_rejected", "signature_header_error",
+    "stream_error", "reply_overflow", "reply_eof_unverified",
+}
+
+
+def direct_constructor_sha256():
+    """Commit the same finite compiled constructor inputs as the Native sender."""
+    value = hashlib.sha256(b"aos.native.direct-control-constructor.v1\0")
+    for name in (
+            "crates/aos-hub/src/direct_upload/authority/transport.rs",
+            "crates/aos-hub/src/direct_upload/authority/transport/observation.rs",
+            "crates/aos-hub-core/src/direct_upload/capabilities_wire.rs",
+            "crates/aos-hub-core/src/direct_upload/authority_lookup.rs",
+            "crates/aos-hub-core/src/direct_upload/final_guard.rs",
+            "crates/aos-hub-core/src/direct_upload/wire.rs"):
+        raw = PACKAGE_READER["installed_bytes"](SOURCE / name, MAX_JSON)
+        encoded = name.encode()
+        value.update(len(encoded).to_bytes(8, "big"))
+        value.update(encoded)
+        value.update(len(raw).to_bytes(8, "big"))
+        value.update(raw)
+    return value.hexdigest()
+
+
+def validate_direct_control_event(value, constructor):
+    """Validate observed transport facts without asserting MAC or SQL success."""
+    closed(value, DIRECT_CONTROL_FIELDS)
+    if (type(value["version"]) is not int or value["version"] != 1
+            or value["state"] not in {"offered", "terminal"}
+            or value["route"] not in DIRECT_CONTROL_ROUTES
+            or value["outcome"] not in DIRECT_CONTROL_OUTCOMES
+            or value["endpointScheme"] not in {"http", "https"}
+            or value["constructorSourceSha256"] != constructor
+            or value["replyMacAuthentication"] is not None or value["finalSqlAuthority"] is not None
+            or type(value["replyEof"]) is not bool
+            or not isinstance(value["transportCallId"], str)
+            or not re.fullmatch(r"[0-9a-f]{32}", value["transportCallId"])):
+        raise ValueError("Direct control sender context differs")
+    for name in ("constructorSourceSha256", "nonceSha256", "offeredRequestSha256", "exposedReplySha256"):
+        digest(value[name])
+    bound, _ = DIRECT_CONTROL_ROUTES[value["route"]]
+    decimal(value["offeredRequestBytes"], bound)
+    consumed = decimal(value["exposedReplyBytes"])
+    if value["observedAtUnixMicros"] is not None:
+        decimal(value["observedAtUnixMicros"])
+    status = value["replyStatus"]
+    if status is not None and (type(status) is not int or not 100 <= status <= 599):
+        raise ValueError("Direct control status differs")
+    if (consumed == 0 and value["exposedReplySha256"] != sha(b"")
+            or status is None and (consumed or value["replyEof"])
+            or value["state"] == "offered" and (value["outcome"] != "offered"
+                or status is not None or consumed or value["replyEof"])
+            or value["state"] == "terminal" and value["outcome"] == "offered"
+            or value["replyEof"] != (value["outcome"] == "reply_eof_unverified")
+            or value["replyEof"] and (status != 200 or consumed > bound)
+            or value["outcome"] in {"stream_error", "signature_header_error", "reply_overflow"} and status != 200
+            or value["outcome"] == "signature_header_error" and consumed
+            or value["outcome"] == "status_rejected" and (status is None or status == 200 or consumed)
+            or value["outcome"] == "transport_error" and status is not None):
+        raise ValueError("Direct control stream facts conflict")
+    return value
+
+
+def direct_control_records(source, process, provenance, message_reader):
+    """Reuse the pinned process/log reader; refuse duplicate or oversized events."""
+    result = {"directOffered": [], "directTerminal": []}
+    constructor = None
+    prefix = "[INFO] message=direct_control_sender_observed "
+    for message, journal_at in message_reader(source, process, provenance):
+        if not isinstance(message, str) or not message.startswith(prefix):
+            continue
+        encoded = message[len(prefix):]
+        if len(encoded.encode()) > 8192:
+            raise ValueError("Direct control event exceeds its retained bound")
+        _, end = json.JSONDecoder().raw_decode(encoded)
+        if len(encoded[:end].encode()) > 4096 or encoded[end:] and not encoded[end:].startswith(" span="):
+            raise ValueError("Direct control event framing differs")
+        if constructor is None:
+            constructor = direct_constructor_sha256()
+        value = validate_direct_control_event(READERS["closed_json"](encoded[:end]), constructor)
+        kind = "directOffered" if value["state"] == "offered" else "directTerminal"
+        result[kind].append({"value": value, "journalAtUnixMicros": journal_at,
+                             "receiptSha256": sha(encoded[:end].encode())})
+        if sum(len(rows) for rows in result.values()) > MAX_RECORDS:
+            raise ValueError("Direct control event inventory exceeds its bound")
+    for rows in result.values():
+        unique(rows, lambda item: item["value"]["transportCallId"])
+    return result
+
+
+def direct_control_receiver_pair(call, captures, offered, terminal, codec):
+    """Join control byte images; retain missing authentication and SQL custody."""
+    result = {"transportCallId": call, "requestImage": None, "nativeReplyConsumedBytes": None,
+              "fullReplyConsumed": False, "typedPayload": None, "replyMacAuthentication": None,
+              "finalSqlContext": None, "workerHandlerCompletion": None, "missing": []}
+    if set(captures) != {"received_request", "exposed_response"}:
+        result["missing"].append("missing_directional_receiver_image")
+        return result
+    if len(offered) != 1 or len(terminal) != 1 or codec is None:
+        result["missing"].append("missing_or_duplicate_control_sender_or_actual_codec")
+        return result
+    try:
+        first, last = offered[0], terminal[0]
+        constructor = direct_constructor_sha256()
+        validate_direct_control_event(first, constructor)
+        validate_direct_control_event(last, constructor)
+        stable = DIRECT_CONTROL_FIELDS - {"state", "replyStatus", "exposedReplySha256",
+                    "exposedReplyBytes", "replyEof", "outcome", "observedAtUnixMicros"}
+        if (first["state"] != "offered" or last["state"] != "terminal"
+                or first["transportCallId"] != call
+                or any(first[name] != last[name] for name in stable)
+                or first["observedAtUnixMicros"] is None or last["observedAtUnixMicros"] is None
+                or decimal(first["observedAtUnixMicros"]) > decimal(last["observedAtUnixMicros"])):
+            raise ValueError("Direct control sender lifetime differs")
+        route = first["route"]
+        bound, operation = DIRECT_CONTROL_ROUTES[route]
+        bodies = []
+        for direction in ("received_request", "exposed_response"):
+            receipt = captures[direction]
+            if (receipt["role"] != "storage_wrapper" or receipt["method"] != "POST"
+                    or receipt["pathSha256"] != sha(route.encode())
+                    or receipt["transportCallId"] != call or receipt["queryClass"] != "absent"
+                    or receipt["state"] != "eof" or receipt["eof"] is not True
+                    or receipt["capturePersistence"] != "written"
+                    or receipt["responseConsumptionClaim"] is not False):
+                raise ValueError("Direct control receiver is incomplete")
+            images = [image for image in receipt["privateImages"] if image["name"] == "body"]
+            if len(images) != 1:
+                raise ValueError("Direct control body ownership differs")
+            image = images[0]
+            raw = read(image["reference"], bound)
+            if (image["sha256"] != sha(raw) or image["bytes"] != str(len(raw))
+                    or receipt["observedBytes"] != str(len(raw)) or receipt["retainedBytes"] != str(len(raw))):
+                raise ValueError("Direct control receiver bytes differ")
+            bodies.append(raw)
+        request, reply = captures["received_request"], captures["exposed_response"]
+        original, exposed = bodies
+        if (request["provenance"] != "independent_wrapper_received_bytes"
+                or request["imageKind"] != "complete_received_image"
+                or reply["provenance"] != "wrapper_exposed_reply_bytes"
+                or reply["imageKind"] != "complete_wrapper_reply_image"
+                or first["offeredRequestSha256"] != sha(original)
+                or decimal(first["offeredRequestBytes"], bound) != len(original)
+                or last["replyStatus"] != reply["status"]):
+            raise ValueError("Direct control original differs")
+        consumed = decimal(last["exposedReplyBytes"], bound)
+        if (consumed > len(exposed) or sha(exposed[:consumed]) != last["exposedReplySha256"]
+                or last["replyEof"] and consumed != len(exposed)):
+            raise ValueError("Direct control consumed prefix differs")
+        control = codec["control"]
+        closed(control, {"operation", "selectedSourceDigest", "originalRequestSha256",
+                         "originalRequestSemanticSha256", "deploymentIdSha256", "challengeNonceSha256",
+                         "originalContextSha256", "returnedProtectedMaterialBytes", "correlationValidatorSourceSha256"})
+        if (codec["class"] != "storage_control_metadata" or codec["request"]["sha256"] != sha(original)
+                or codec["response"]["sha256"] != sha(exposed)
+                or control["operation"] != (operation if last["replyStatus"] == 200 else "storage_control_refused")
+                or control["originalRequestSha256"] != sha(original)
+                or control["challengeNonceSha256"] != first["nonceSha256"]
+                or control["selectedSourceDigest"] != RUNTIME["workerSourceDigest"]
+                or control["returnedProtectedMaterialBytes"] != "0"):
+            raise ValueError("Direct control actual codec differs")
+        result.update(requestImage="matched_selected_control_receiver_byte_image",
+                      nativeReplyConsumedBytes=str(consumed), fullReplyConsumed=last["replyEof"], typedPayload=control)
+        if not last["replyEof"]:
+            result["missing"].append("control_reply_not_fully_consumed")
+    except (ValueError, KeyError, TypeError, OSError):
+        result["missing"].append("control_receiver_native_codec_join_mismatch")
+    # This slice has no independently selected Worker completion/header input.
+    # A decoded byte image and EOF never imply the later Native reply verifier.
+    result["missing"].extend(("independent_worker_authenticated_completion_receipt_required",
+        "independent_protected_header_authentication_required",
+        "independent_current_receiver_deployment_and_window_proof_required",
+        "independent_current_original_policy_sql_and_provider_mapping_required"))
+    return result
+
+
 def execute_records(sidecar):
     """Reuse the real Native process/log parser on the same held, pinned inode."""
     # ingress_events checks the process epoch/source and the plain-log custody.
-    READERS["ingress_events"](sidecar)
+    _, log_missing = READERS["ingress_events"](sidecar)
     log = sidecar["nativeLog"]
-    if log is None or sidecar["nativeProcess"] is None:
-        return {"attempts": [], "finalContexts": []}
+    if log_missing or log is None or sidecar["nativeProcess"] is None:
+        return {"attempts": [], "finalContexts": [], "directOffered": [], "directTerminal": []}
     parser = runpy.run_path(str(SOURCE / "tests/fleet/_hub-storage-work-execute-observation.py"))
     function = parser["storage_work_execute_receipts"]
     if log["format"] == "journal":
@@ -122,7 +310,9 @@ def execute_records(sidecar):
         source_reader.__globals__["_closed_review_json"] = READERS["closed_json"]
         function.__globals__.update(observed_native_messages=source_reader,
                                    _closed_review_json=READERS["closed_json"])
-        records = function(read(log["reference"], 256 * MAX_JSON).decode(), sidecar["nativeProcess"])
+        raw = read(log["reference"], 256 * MAX_JSON).decode()
+        records = function(raw, sidecar["nativeProcess"])
+        records.update(direct_control_records(raw, sidecar["nativeProcess"], None, source_reader))
         return bracket_records(records, log["epoch"])
     if log["format"] != "plain" or log["provenance"] is None:
         raise ValueError("Execute log provenance differs")
@@ -139,6 +329,8 @@ def execute_records(sidecar):
             observed_native_messages=source_reader.__globals__["observed_native_messages"],
             _closed_review_json=READERS["closed_json"])
         records = function(Path(reference["file"]), sidecar["nativeProcess"], log["provenance"])
+        records.update(direct_control_records(Path(reference["file"]), sidecar["nativeProcess"],
+                       log["provenance"], source_reader.__globals__["observed_native_messages"]))
         after = os.fstat(held.fileno())
         if any(getattr(before, name) != getattr(after, name) for name in
                ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")):
@@ -148,12 +340,16 @@ def execute_records(sidecar):
 
 def bracket_records(records, epoch):
     """Require event clocks to remain within the selected Native lifetime."""
-    for kind in ("attempts", "finalContexts"):
-        for item in records[kind]:
+    for kind in ("attempts", "finalContexts", "directOffered", "directTerminal"):
+        for item in records.get(kind, []):
             value = item["value"]
             time = value.get("observedAtUnixMicros", value.get("completedAtUnixMicros"))
             if time is None or not decimal(epoch["firstUnixMicros"]) <= decimal(time) <= decimal(epoch["lastUnixMicros"]):
                 raise ValueError("Execute event lacks current process clock bracket")
+            journal_at = item.get("journalAtUnixMicros")
+            if kind in {"directOffered", "directTerminal"} and journal_at is not None:
+                if not decimal(epoch["firstUnixMicros"]) <= decimal(journal_at) <= decimal(epoch["lastUnixMicros"]):
+                    raise ValueError("Direct control journal event lies outside its process epoch")
     return records
 
 
@@ -529,13 +725,14 @@ def assess(selection):
     manifest, report, codec_error = observe(selection, selection["bodyManifest"])
     body = {"state": "incomplete", "nativeBulkBytes": None,
             "nativeCapturedObjectPayloadBytes": None, "receiverJoins": [], "ingressAuthentication": None,
+            "directControlUnmatchedOffers": [], "directControlUnmatchedTerminals": [],
             "missing": ["whole_native_original_inventory_and_current_policy_mapping",
                         "unselected_GET_identity_session_and_other_routes",
                         "independent_authenticated_control_and_provider_integrity_joins"]}
     if codec_error:
         body["missing"].append(codec_error)
     sidecar = parsed(selection["authSidecar"]) if selection["authSidecar"] else None
-    records = {"attempts": [], "finalContexts": []}
+    records = {"attempts": [], "finalContexts": [], "directOffered": [], "directTerminal": []}
     if sidecar:
         body["ingressAuthentication"] = READERS["assess"](sidecar, manifest)
         records = execute_records(sidecar)
@@ -580,12 +777,34 @@ def assess(selection):
             directions[receipt["direction"]] = receipt
         attempts = unique([row["value"] for row in records["attempts"]], lambda row: row["transportCallId"])
         contexts = unique([row["value"] for row in records["finalContexts"]], lambda row: row["attempt"]["transportCallId"])
+        controls = unique([row["value"] for row in records["directOffered"]], lambda row: row["transportCallId"])
+        terminals = unique([row["value"] for row in records["directTerminal"]], lambda row: row["transportCallId"])
+        if set(controls) & set(attempts):
+            raise ValueError("Control and execute calls reuse an identity")
         codecs = unique(report["captures"], lambda row: row["requestIdSha256"])
         for call, receipts in grouped.items():
             ids = {item["requestId"] for item in receipts.values()}
             codec = codecs.get(sha(next(iter(ids)).encode())) if len(ids) == 1 and None not in ids else None
-            body["receiverJoins"].append(receiver_pair(call, receipts, attempts.get(call), contexts.get(call), codec))
+            if call in controls or codec is not None and codec.get("control") is not None:
+                joined = direct_control_receiver_pair(call, receipts,
+                    [controls[call]] if call in controls else [],
+                    [terminals[call]] if call in terminals else [], codec)
+            else:
+                joined = receiver_pair(call, receipts, attempts.get(call), contexts.get(call), codec)
+            body["receiverJoins"].append(joined)
         body["missing"].append("capture_producer_completeness_unknown")
+    control_calls = {row["transportCallId"] for row in body["receiverJoins"]}
+    body["directControlUnmatchedOffers"] = [
+        {"transportCallId": row["value"]["transportCallId"], "route": row["value"]["route"],
+         "offeredRequestBytes": row["value"]["offeredRequestBytes"], "delivery": "unknown",
+         "missing": ["independent_directional_receiver_and_call_id_retention_required"]}
+        for row in records["directOffered"] if row["value"]["transportCallId"] not in control_calls]
+    offered_calls = {row["value"]["transportCallId"] for row in records["directOffered"]}
+    body["directControlUnmatchedTerminals"] = [
+        {"transportCallId": row["value"]["transportCallId"], "outcome": row["value"]["outcome"],
+         "nativeReplyExposedBytes": row["value"]["exposedReplyBytes"],
+         "missing": ["exclusive_current_offered_event_required"]}
+        for row in records["directTerminal"] if row["value"]["transportCallId"] not in offered_calls]
     provider = {"state": "incomplete", "sdk": None, "client": None,
                 "httpProviderRows": None, "billedWireBytes": None,
                 "missing": ["source_process_window_and_authenticated_original_binding_mapping"]}

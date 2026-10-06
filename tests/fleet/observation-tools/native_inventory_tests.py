@@ -181,6 +181,90 @@ class SelectedInventorySeam(unittest.TestCase):
         self.assertIsNone(result['nativeBulkBytes'])
 
 
+class ImmutableCodecHandoff(unittest.TestCase):
+    def setUp(self):
+        self.member = synthetic_member(1, inventory.producer(SOURCE, source_bytes))
+        self.member['requestId'] = 'a' * 32
+        self.member['requestConsumed'] = synthetic_frame(b'synthetic request image')
+        self.member['replyOffered'] = synthetic_frame(b'synthetic reply image')
+        path = '/aos.hub.v1.PublishService/AppendRegistryPublicationManifest'
+        self.member['pathSha256'] = inventory.sha(path.encode())
+        files = ('crates/aos-hub-core/src/application_body_observation.rs',
+                 'crates/aos-hub-core/src/application_body_observation/rpc.rs',
+                 'crates/aos-hub-core/src/connect.rs')
+        self.member['typedEvidence'] = {
+            'constructor': 'publication_manifest_append',
+            'constructorSourceSha256': inventory.sha(b''.join(source_bytes(SOURCE / name, 1024 * 1024)
+                                                            for name in files)),
+            'request': {'byteSize': self.member['requestConsumed']['exposedBytes'],
+                        'sha256': self.member['requestConsumed']['exposedSha256']},
+            'reply': {'byteSize': self.member['replyOffered']['exposedBytes'],
+                      'sha256': self.member['replyOffered']['exposedSha256']},
+            'requiredProjection': 'bounded_original_and_current_sql_projection',
+        }
+        image = lambda frame: {'byteSize': frame['exposedBytes'], 'sha256': frame['exposedSha256'],
+                               'typedSemanticSha256': frame['exposedSha256']}
+        self.row = {'requestIdSha256': inventory.sha(self.member['requestId'].encode()),
+            'method': 'POST', 'procedure': path, 'phase': None,
+            'authentication': 'not_checked_join_independent_authenticated_worker_receipt',
+            'request': image(self.member['requestConsumed']), 'response': image(self.member['replyOffered']),
+            'immutableProjection': {'version': 1, 'kind': 'publication_manifest_append',
+                'originalRequestSha256': self.member['requestConsumed']['exposedSha256'],
+                'sqlEvidenceSha256': 'b' * 64, 'matchedOriginalCount': '1',
+                'requestControlBytes': self.member['requestConsumed']['exposedBytes'],
+                'replyControlBytes': self.member['replyOffered']['exposedBytes'],
+                'objectPayloadBytes': None,
+                'sqlReaderAuthority': 'not_checked_join_measured_read_only_source_process_and_window',
+                'missing': ['independent_sql_reader_custody_and_temporal_current_fences']}}
+        # Only closed observational output is synthetic here. Actual DTO/page/
+        # admission comparisons are exercised by the Rust projection tests.
+        self.capture = {'requestId': self.member['requestId'], 'status': 200,
+            'method': 'POST', 'procedure': path, 'phase': None,
+            'bodies': {direction: {'file': 'synthetic-owned-image', 'sha256': frame['exposedSha256'],
+                                  'byteSize': frame['exposedBytes']}
+                       for direction, frame in (('request', self.member['requestConsumed']),
+                                                ('response', self.member['replyOffered']))}}
+        self.manifest = {'codecRevision': 'c' * 40, 'sourceDigest': 'd' * 64,
+                         'captures': [self.capture]}
+        self.report = {'version': 1, 'codecRevision': self.manifest['codecRevision'],
+            'selectedSourceDigest': self.manifest['sourceDigest'], 'manifestSha256': 'e' * 64,
+            'selectedBodyBytes': 1, 'maximumSelectedBodyBytes': 512 * 1024 * 1024,
+            'maximumBodyBytes': 8 * 1024 * 1024, 'captures': [self.row]}
+
+    def joined(self):
+        return inventory.codec_projection(self.member, self.report, self.manifest, {}, SOURCE, source_bytes)
+
+    def test_matching_codec_values_keep_control_bytes_and_sql_auth_unknown(self):
+        result = self.joined()
+        self.assertEqual(result['codecProjection']['requestControlBytes'], str(len(b'synthetic request image')))
+        self.assertIsNone(result['objectPayloadBytes'])
+        self.assertFalse(result['sourceCheckedIngress'])
+        self.assertIn('independent_sql_reader_custody_and_temporal_current_fences', result['missing'])
+        self.assertIn('independent_actual_authenticated_control_or_ingress_join', result['missing'])
+        self.member['requestId'] = 'b' * 32
+        self.assertIsNone(self.joined())
+        self.report['selectedSourceDigest'] = 'f' * 64
+        with self.assertRaises(ValueError):
+            self.joined()
+
+    def test_changed_runtime_source_body_owner_or_invented_zero_refuses(self):
+        for mutate in (lambda: self.report.update(codecRevision='f' * 40),
+                       lambda: self.row['response'].update(sha256='f' * 64),
+                       lambda: self.report['captures'].append(copy.deepcopy(self.row)),
+                       lambda: self.member['typedEvidence'].update(constructorSourceSha256='f' * 64),
+                       lambda: self.row['immutableProjection'].update(objectPayloadBytes='0'),
+                       lambda: self.capture.update(status=201),
+                       lambda: self.capture.update(phase='complete'),
+                       lambda: self.capture['bodies']['request'].update(sha256='f' * 64),
+                       lambda: self.manifest['captures'].append(copy.deepcopy(self.capture)),
+                       lambda: self.row['immutableProjection'].update(version=True),
+                       lambda: self.report.update(version=True)):
+            self.setUp()
+            mutate()
+            with self.assertRaises(ValueError):
+                self.joined()
+
+
 def actual_producer_case(path):
     class ActualProducer(unittest.TestCase):
         def test_real_rust_asset_record_and_raw_chain_are_connected(self):
@@ -206,9 +290,12 @@ def actual_producer_case(path):
 if __name__ == '__main__':
     arguments = argparse.ArgumentParser()
     arguments.add_argument('--producer-fixture')
+    arguments.add_argument('--immutable-handoff-only', action='store_true')
     selected = arguments.parse_args()
-    suite = unittest.defaultTestLoader.loadTestsFromTestCase(InventoryReader)
-    suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(SelectedInventorySeam))
+    suite = unittest.defaultTestLoader.loadTestsFromTestCase(ImmutableCodecHandoff)
+    if not selected.immutable_handoff_only:
+        suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(InventoryReader))
+        suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(SelectedInventorySeam))
     if selected.producer_fixture:
         suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(actual_producer_case(selected.producer_fixture)))
     result = unittest.TextTestRunner().run(suite)

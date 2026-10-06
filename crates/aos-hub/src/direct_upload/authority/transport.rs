@@ -2,6 +2,8 @@
 
 use futures_util::StreamExt as _;
 
+mod observation;
+
 use super::*;
 use aos_hub_core::storage_work::{STORAGE_CAPABILITIES_PATH, STORAGE_WORK_SIGNATURE_HEADER};
 
@@ -80,6 +82,7 @@ impl NativeDirectUploadAuthority {
                 STORAGE_WORK_SIGNATURE_HEADER,
                 signed,
                 MAX_DIRECT_CAPABILITY_BYTES,
+                &request.request_nonce,
             )
             .await?;
         let reply = verify_direct_storage_capabilities_reply(
@@ -178,6 +181,7 @@ impl NativeDirectUploadAuthority {
                 DIRECT_AUTHORITY_LOOKUP_SIGNATURE_HEADER,
                 signed,
                 MAX_DIRECT_CONTROL_BYTES,
+                &request.request_nonce,
             )
             .await?;
         verify_direct_authority_lookup_reply(
@@ -215,6 +219,7 @@ impl NativeDirectUploadAuthority {
                 DIRECT_FINAL_GUARD_SIGNATURE_HEADER,
                 signed,
                 MAX_DIRECT_CONTROL_BYTES,
+                &request.request_nonce,
             )
             .await?;
         verify_direct_final_guard_reply(
@@ -233,38 +238,100 @@ impl NativeDirectUploadAuthority {
         header: &str,
         signed: SignedDirectControl,
         maximum_bytes: usize,
+        request_nonce: &str,
     ) -> Result<(String, Vec<u8>)> {
         let _permit = self.lookup_slots.acquire().await?;
-        let response = self
-            .http
-            .post(format!("{}{}", self.origin, path))
-            .header(header, signed.signature)
-            .body(signed.body)
-            .send()
-            .await
-            .map_err(|_| anyhow::anyhow!("independent direct authority unavailable"))?;
-        ensure!(
-            response.status() == reqwest::StatusCode::OK,
-            "independent direct authority refused lookup"
-        );
-        let signature = response
-            .headers()
-            .get(header)
-            .context("direct authority reply signature absent")?
-            .to_str()?
-            .to_owned();
-        let mut body = Vec::new();
-        let mut stream = response.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|_| anyhow::anyhow!("direct authority reply unreadable"))?;
-            ensure!(
-                body.len().saturating_add(chunk.len()) <= maximum_bytes,
-                "direct authority reply exceeds bound"
-            );
-            body.extend_from_slice(&chunk);
-        }
-        Ok((signature, body))
+        post_exchange(
+            &self.http,
+            &self.origin,
+            path,
+            header,
+            signed,
+            maximum_bytes,
+            request_nonce,
+            observation::enabled(),
+        )
+        .await
     }
+}
+
+// Kept separate so real HTTP tests select observation without mutating process
+// environment. The authority still owns its existing lookup slot across awaits.
+async fn post_exchange(
+    http: &reqwest::Client,
+    origin: &str,
+    path: &str,
+    header: &str,
+    signed: SignedDirectControl,
+    maximum_bytes: usize,
+    request_nonce: &str,
+    observe: bool,
+) -> Result<(String, Vec<u8>)> {
+    let mut observation =
+        observation::Observation::new(observe, path, request_nonce, &signed.body, origin);
+    let mut request = http
+        .post(format!("{origin}{path}"))
+        .header(header, signed.signature)
+        .body(signed.body);
+    if let Some(observation) = &observation {
+        request = request.header(observation::CALL_ID_HEADER, observation.call_id());
+    }
+    if let Some(observation) = &mut observation {
+        observation.offered();
+    }
+    let response = request.send().await.map_err(|_| {
+        if let Some(observation) = &mut observation {
+            observation.finish("transport_error");
+        }
+        anyhow::anyhow!("independent direct authority unavailable")
+    })?;
+    if let Some(observation) = &mut observation {
+        observation.response(response.status().as_u16());
+        if response.status() != reqwest::StatusCode::OK {
+            observation.finish("status_rejected");
+        }
+    }
+    ensure!(
+        response.status() == reqwest::StatusCode::OK,
+        "independent direct authority refused lookup"
+    );
+    if let Some(observation) = &mut observation {
+        observation.finish("signature_header_error");
+    }
+    let signature = response
+        .headers()
+        .get(header)
+        .context("direct authority reply signature absent")?
+        .to_str()?
+        .to_owned();
+    if let Some(observation) = &mut observation {
+        observation.finish("cancelled");
+    }
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| {
+            if let Some(observation) = &mut observation {
+                observation.finish("stream_error");
+            }
+            anyhow::anyhow!("direct authority reply unreadable")
+        })?;
+        if let Some(observation) = &mut observation {
+            observation.exposed(&chunk);
+            if body.len().saturating_add(chunk.len()) > maximum_bytes {
+                observation.finish("reply_overflow");
+            }
+        }
+        ensure!(
+            body.len().saturating_add(chunk.len()) <= maximum_bytes,
+            "direct authority reply exceeds bound"
+        );
+        body.extend_from_slice(&chunk);
+    }
+    if let Some(observation) = &mut observation {
+        observation.eof();
+    }
+    Ok((signature, body))
 }
 
 fn nonce() -> String {

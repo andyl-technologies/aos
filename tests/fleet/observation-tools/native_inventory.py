@@ -248,6 +248,96 @@ def source_asset(member, source, read_source):
     return None
 
 
+def codec_projection(member, report, manifest, authentication, source, read_source):
+    """Match actual typed decoder output; missing authority dimensions stay null.
+
+    The caller supplies its actual successful, source-pinned codec invocation.
+    This function does not authenticate a supplied report or a SQL reader.
+    """
+    if report is None or member['requestId'] is None:
+        return None
+    closed(report, {'version', 'codecRevision', 'selectedSourceDigest', 'manifestSha256',
+                    'selectedBodyBytes', 'maximumSelectedBodyBytes', 'maximumBodyBytes', 'captures'})
+    if (type(report['version']) is not int or report['version'] != 1 or report['codecRevision'] != manifest['codecRevision']
+            or report['selectedSourceDigest'] != manifest['sourceDigest']):
+        raise ValueError('Inventory codec runtime differs')
+    if not isinstance(report['captures'], list) or len(report['captures']) > MAX_MEMBERS:
+        raise ValueError('Inventory codec capture bound differs')
+    identifier = sha(member['requestId'].encode())
+    rows = [row for row in report['captures'] if row['requestIdSha256'] == identifier]
+    if not rows:
+        return None
+    if len(rows) != 1:
+        raise ValueError('Inventory codec member ownership differs')
+    row = rows[0]
+    selected = [capture for capture in manifest['captures']
+                if capture['requestId'] == member['requestId']]
+    if len(selected) != 1:
+        raise ValueError('Inventory selected capture ownership differs')
+    capture = selected[0]
+    if (type(capture['status']) is not int or capture['status'] != member['status']
+            or capture['method'] != member['method'] or capture['procedure'] != row['procedure']
+            or capture['phase'] != row['phase']):
+        raise ValueError('Inventory selected capture status or route differs')
+    value = member['typedEvidence']
+    projection = row.get('immutableProjection')
+    if value is None or projection is None:
+        return None
+    closed(projection, {'version', 'kind', 'originalRequestSha256', 'sqlEvidenceSha256',
+                       'matchedOriginalCount', 'requestControlBytes', 'replyControlBytes',
+                       'objectPayloadBytes', 'sqlReaderAuthority', 'missing'})
+    if (not member['handlerReturned'] or member['requestTrailers'] or member['replyTrailers']
+            or not frame(member['requestConsumed']) or not frame(member['replyOffered'])
+            or row['method'] != member['method'] or sha(row['procedure'].encode()) != member['pathSha256']
+            or row['authentication'] != 'not_checked_join_independent_authenticated_worker_receipt'):
+        raise ValueError('Inventory codec frame or route differs')
+    for direction, actual in (('request', 'requestConsumed'), ('response', 'replyOffered')):
+        image = row[direction]
+        closed(image, {'sha256', 'byteSize', 'typedSemanticSha256'})
+        selected_image = capture['bodies'][direction]
+        if (selected_image['sha256'] != image['sha256']
+                or selected_image['byteSize'] != image['byteSize']):
+            raise ValueError('Inventory selected capture image differs')
+        if (image['sha256'] != member[actual]['exposedSha256']
+                or image['byteSize'] != member[actual]['exposedBytes']
+                or image['typedSemanticSha256'] != image['sha256']):
+            raise ValueError('Inventory codec body differs from actual frames')
+    if value['request'] != {'byteSize': row['request']['byteSize'], 'sha256': row['request']['sha256']}:
+        raise ValueError('Inventory constructor request image differs')
+    if value['reply'] != {'byteSize': row['response']['byteSize'], 'sha256': row['response']['sha256']}:
+        raise ValueError('Inventory constructor reply image differs')
+    if projection['kind'] == 'publication_manifest_append':
+        files = ('crates/aos-hub-core/src/application_body_observation.rs',
+                 'crates/aos-hub-core/src/application_body_observation/rpc.rs',
+                 'crates/aos-hub-core/src/connect.rs')
+        constructor, phase = 'publication_manifest_append', None
+    elif projection['kind'] == 'direct_logical_admission':
+        files = ('crates/aos-hub/src/direct_upload/mod.rs',)
+        constructor, phase = 'direct_logical_validated', 'admission'
+    else:
+        raise ValueError('Unsupported immutable codec projection')
+    expected = sha(b''.join(read_source(Path(source) / path, 1024 * 1024) for path in files))
+    if value['constructor'] != constructor or value['constructorSourceSha256'] != expected or row['phase'] != phase:
+        raise ValueError('Inventory actual constructor source/phase differs')
+    if (type(projection['version']) is not int or projection['version'] != 1 or projection['objectPayloadBytes'] is not None
+            or projection['originalRequestSha256'] != row['request']['sha256']
+            or projection['requestControlBytes'] != row['request']['byteSize']
+            or projection['replyControlBytes'] != row['response']['byteSize']
+            or projection['sqlReaderAuthority'] != 'not_checked_join_measured_read_only_source_process_and_window'
+            or projection['missing'] != ['independent_sql_reader_custody_and_temporal_current_fences']
+            or not 0 < decimal(projection['matchedOriginalCount']) <= 256):
+        raise ValueError('Immutable projection invents authority or byte accounting')
+    digest(projection['sqlEvidenceSha256'])
+    matches = [item for item in authentication.get('captures', []) if item['requestIdSha256'] == identifier]
+    checked = (len(matches) == 1 and matches[0]['sourceCheckedAuthentication']
+               == 'observed_native_checked_envelope_and_body')
+    missing = list(projection['missing'])
+    if not checked:
+        missing.append('independent_actual_authenticated_control_or_ingress_join')
+    return {'class': 'matched_immutable_codec_values', 'codecProjection': projection,
+            'sourceCheckedIngress': checked, 'objectPayloadBytes': None, 'missing': missing}
+
+
 def selected_messages(sidecar, readers):
     """Reuse the existing measured Native log reader and held private inode.
 
@@ -299,7 +389,7 @@ def selected_messages(sidecar, readers):
     return held_messages(), None
 
 
-def assess(selection, source, readers, read_source, manifest):
+def assess(selection, source, readers, read_source, manifest, codec_report=None):
     """Assess one selected inbound window while preserving all unresolved joins."""
     closed(selection, {'policy', 'sidecar'})
     policy_raw = readers['read_ref'](selection['policy'], 1024)
@@ -310,7 +400,7 @@ def assess(selection, source, readers, read_source, manifest):
     # Reuse the full existing runtime/source/provenance validation with the
     # actual selected manifest. Its authentication result is never inferred
     # from inventory or used as a blanket member classification.
-    readers['assess'](sidecar, manifest)
+    authentication = readers['assess'](sidecar, manifest)
     messages, missing = selected_messages(sidecar, readers)
     if messages is None:
         return {'inventoryComplete': False, 'nativeBulkBytes': None,
@@ -319,6 +409,10 @@ def assess(selection, source, readers, read_source, manifest):
     projections = []
     for member in result['members']:
         projection = source_asset(member, source, read_source)
+        if projection is None:
+            projection = codec_projection(member, codec_report, manifest, authentication or {}, source, read_source)
+            if projection is not None:
+                result['missing'].extend(projection['missing'])
         projections.append({'admissionOrdinal': member['admissionOrdinal'], 'projection': projection})
         if projection is None:
             result['missing'].append('unjoined_original_body_auth_sql_or_template_projection:'
@@ -327,7 +421,9 @@ def assess(selection, source, readers, read_source, manifest):
     # This number covers only fully projected inbound data frames. Existing
     # outbound receiver/control joins remain mandatory for the whole Native sum.
     result['inboundObjectPayloadBytes'] = ('0' if result['inventoryComplete']
-        and all(row['projection'] is not None for row in projections) else None)
+        and all(row['projection'] is not None
+                and row['projection']['class'] == 'exact_source_embedded_public_asset'
+                for row in projections) else None)
     result['nativeBulkBytes'] = None
     result['missing'].extend([
         'loaded_window_to_native_utc_policy_bridge_and_clock_uncertainty',

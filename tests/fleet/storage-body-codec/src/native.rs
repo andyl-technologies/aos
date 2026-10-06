@@ -5,6 +5,7 @@
 mod browser;
 mod logical;
 mod manifest_digest;
+mod projection;
 mod public_rpc;
 mod storage;
 
@@ -45,6 +46,7 @@ struct Capture {
     control_selection: Option<ControlSelection>,
     storage_work_selection: Option<StorageSelection>,
     empty_response_observation: Option<EmptyResponse>,
+    immutable_projection: Option<projection::Selection>,
 }
 
 #[derive(Deserialize)]
@@ -107,6 +109,8 @@ struct Observation {
     control: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     storage_work: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    immutable_projection: Option<projection::Observation>,
 }
 
 fn body(bytes: &[u8]) -> BodyObservation {
@@ -194,6 +198,7 @@ fn inspect(selection: Selection) -> Result<(Vec<Observation>, usize)> {
             authentication: "not_checked_join_independent_authenticated_worker_receipt",
             control: None,
             storage_work: None,
+            immutable_projection: None,
         };
         if capture.control_selection.is_some() || capture.storage_work_selection.is_some() {
             storage::classify(
@@ -224,6 +229,15 @@ fn inspect(selection: Selection) -> Result<(Vec<Observation>, usize)> {
             observation.browser_source = Some(browser::source());
         } else {
             observation.class = public_rpc::classify(&capture, &request, &response)?;
+        }
+        if let Some(selected) = &capture.immutable_projection {
+            observation.immutable_projection = Some(projection::inspect(
+                selected,
+                &capture,
+                &request,
+                &response,
+                &mut selected_bytes,
+            )?);
         }
         observations.push(observation);
     }

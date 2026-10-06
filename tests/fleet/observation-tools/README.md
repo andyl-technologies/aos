@@ -75,3 +75,22 @@ window. An actual local UTC bridge and measured cross-machine clock uncertainty
 remain required. `nativeBulkBytes` remains null and hosted acceptance remains
 incomplete, including when finite asset projections account for this inbound
 window. The fixture export is test-only and describes a synthetic window.
+
+### Immutable dynamic value matches
+
+An optional `immutableProjection` selector on a native-body capture can select
+one manifest Append original plus its retained chunk row, or one Native Direct
+Admission envelope plus the exact public BeginBatch and retained admission rows.
+The Rust observer uses production DTOs, canonical encoders and the actual
+manifest page serializer. It reports matched immutable values and positive
+request/reply control-byte costs. Selected SQL values are not measured reader,
+current-state or authentication authority: `objectPayloadBytes` remains null.
+Changing statuses, Commit/Complete phases, Get/List/WhoAmI and browser slots are
+unsupported by this projection slice.
+
+The inbound inventory reader accepts an optional actual codec report from its
+caller and matches unique member ownership, route/phase, frames and constructor
+source. Current installed assessment wiring must pass its actual successful
+source-pinned codec report; a selected JSON file alone is not a codec invocation.
+SQL reader custody/current fences and actual logical or ingress authentication
+remain separate missing joins. No projection label grants whole Native zero.

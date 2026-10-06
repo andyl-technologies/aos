@@ -4,7 +4,7 @@ use super::*;
 use aos_hub_core::{direct_upload::*, storage_work::*};
 use std::{fs, os::unix::fs::PermissionsExt as _};
 
-fn reference(raw: &[u8], label: &str) -> BodyFile {
+pub(super) fn reference(raw: &[u8], label: &str) -> BodyFile {
     let root = std::env::temp_dir().join(format!(
         "native-body-observer-{}-{label}",
         std::process::id()
@@ -37,6 +37,7 @@ fn capture(path: &str, request: &[u8], response: &[u8], label: &str) -> Capture 
         control_selection: None,
         storage_work_selection: None,
         empty_response_observation: None,
+        immutable_projection: None,
     }
 }
 

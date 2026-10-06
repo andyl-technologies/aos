@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).parent
@@ -320,6 +321,209 @@ class AssessmentTests(unittest.TestCase):
         selected["signedSourceCommit"] = "f" * 40
         with self.assertRaises(ValueError):
             adapter.index_parity(selected)
+
+
+class DirectControlAssessmentTests(unittest.TestCase):
+    """Use actual selected codec output; sender/image fixtures grant no authority."""
+
+    private = AssessmentTests.private
+    json_ref = AssessmentTests.json_ref
+    ref = AssessmentTests.ref
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.sequence = 0
+        self.call = "b" * 32
+        self.route = "/_internal/storage/v1/capabilities"
+        self.constructor = "d" * 64
+        # These tests isolate event/image joins from installed-source custody.
+        # The real constructor formula and package reader remain separate checks.
+        self.constructor_function = adapter.direct_constructor_sha256
+        patch = mock.patch.object(adapter, "direct_constructor_sha256", return_value=self.constructor)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.original = {
+            "version": 2, "deploymentId": "observation-deployment",
+            "executorPublicOrigin": "https://executor.example", "requestNonce": "1" * 64,
+            "issuedAt": "100", "expiresAt": "130", "managed": True, "externalSelectors": [],
+        }
+        profile = {
+            "deploymentId": self.original["deploymentId"], "bucketNamespace": "namespace",
+            "accountId": "account", "bucketName": "bucket", "credentialId": "credential",
+            "credentialGeneration": "1", "secretVersionRef": "worker-profile:1",
+            "credentialFingerprint": "2" * 64, "checksumAlgorithm": "md5",
+            "clockQualification": "3" * 64, "clockUncertaintySeconds": "1",
+        }
+        runtime = {
+            "version": 1, "qualificationDigest": "4" * 64, "maximumObjectBytes": "1048576",
+            "maximumVerificationSeconds": "10", "settlementReserveSeconds": "8",
+            "maximumParallelObjects": "4", "maximumParallelProviderRequests": "8",
+            "cacheDestinationPolicy": "retained_original_baseline",
+        }
+        reply = {"request": self.original, "capabilities": {
+            "version": 2, "capability": "aos.direct.multipart.v1", "profile": profile,
+            "privateStagePolicy": {"policyId": "fixture-policy", "policyDigest": "5" * 64,
+                                   "namespace": "namespace"},
+            "runtimeQualification": runtime, "externalProfiles": [],
+        }}
+        self.request = json.dumps(self.original, separators=(",", ":")).encode()
+        self.reply = json.dumps(reply, separators=(",", ":")).encode()
+        request_ref, reply_ref = self.private(self.request), self.private(self.reply)
+        manifest = {"version": 1, "codecRevision": adapter.RUNTIME["runtimeCodecRevision"],
+            "sourceDigest": adapter.RUNTIME["workerSourceDigest"], "issuerVerifier": None,
+            "captures": [{"requestId": self.call, "procedure": self.route, "method": "POST",
+                "phase": None, "status": 200, "responseContentType": "application/json",
+                "responseContentEncoding": None, "bodies": {"request": request_ref, "response": reply_ref},
+                "controlSelection": {"sourceDigest": adapter.RUNTIME["workerSourceDigest"],
+                    "deploymentId": self.original["deploymentId"], "originalRequest": request_ref}}]}
+        selected = {"runtime": adapter.RUNTIME, "observerExecutable": adapter.PACKAGE["observerExecutable"]}
+        _, report, error = adapter.observe(selected, self.json_ref(manifest))
+        self.assertIsNone(error)
+        self.codec = report["captures"][0]
+        self.receipts = {}
+        for direction, raw in (("received_request", self.request), ("exposed_response", self.reply)):
+            self.receipts[direction] = {
+                "role": "storage_wrapper", "method": "POST", "pathSha256": adapter.sha(self.route.encode()),
+                "transportCallId": self.call, "queryClass": "absent", "state": "eof", "eof": True,
+                "capturePersistence": "written", "responseConsumptionClaim": False,
+                "observedBytes": str(len(raw)), "retainedBytes": str(len(raw)), "status": 200,
+                "provenance": "independent_wrapper_received_bytes" if direction == "received_request" else "wrapper_exposed_reply_bytes",
+                "imageKind": "complete_received_image" if direction == "received_request" else "complete_wrapper_reply_image",
+                "privateImages": [{"name": "body", "bytes": str(len(raw)), "sha256": adapter.sha(raw),
+                                   "reference": self.private(raw)}],
+            }
+        self.offered = {
+            "version": 1, "state": "offered", "route": self.route, "transportCallId": self.call,
+            "constructorSourceSha256": self.constructor,
+            "nonceSha256": adapter.sha(self.original["requestNonce"].encode()),
+            "offeredRequestSha256": adapter.sha(self.request), "offeredRequestBytes": str(len(self.request)),
+            "endpointScheme": "https", "replyStatus": None, "exposedReplySha256": adapter.sha(b""),
+            "exposedReplyBytes": "0", "replyEof": False, "outcome": "offered",
+            "observedAtUnixMicros": "100", "replyMacAuthentication": None, "finalSqlAuthority": None,
+        }
+        self.terminal = dict(self.offered, state="terminal", replyStatus=200,
+            exposedReplySha256=adapter.sha(self.reply), exposedReplyBytes=str(len(self.reply)),
+            replyEof=True, outcome="reply_eof_unverified", observedAtUnixMicros="101")
+
+    def join(self, offered=None, terminal=None, receipts=None, codec=None):
+        return adapter.direct_control_receiver_pair(self.call,
+            self.receipts if receipts is None else receipts,
+            [self.offered] if offered is None else offered,
+            [self.terminal] if terminal is None else terminal,
+            self.codec if codec is None else codec)
+
+    def test_finite_constructor_inputs_and_length_frames_are_source_bound(self):
+        names = []
+        def source_fixture(path, maximum):
+            name = str(path.relative_to(adapter.SOURCE))
+            names.append(name)
+            self.assertEqual(maximum, adapter.MAX_JSON)
+            return name.encode()
+
+        with mock.patch.dict(adapter.PACKAGE_READER, {"installed_bytes": source_fixture}):
+            actual = self.constructor_function()
+        self.assertEqual(len(names), 6)
+        self.assertEqual(len(set(names)), 6)
+        expected = bytearray(b"aos.native.direct-control-constructor.v1\0")
+        for name in names:
+            raw = name.encode()
+            expected.extend(len(raw).to_bytes(8, "big") + raw)
+            expected.extend(len(raw).to_bytes(8, "big") + raw)
+        self.assertEqual(actual, adapter.sha(expected))
+        with mock.patch.dict(adapter.PACKAGE_READER, {"installed_bytes": lambda *_: b"changed"}):
+            self.assertNotEqual(self.constructor_function(), actual)
+
+    def test_actual_codec_and_complete_images_preserve_unknown_auth_sql_and_whole_egress(self):
+        result = self.join()
+        self.assertEqual(result["requestImage"], "matched_selected_control_receiver_byte_image")
+        self.assertEqual(result["nativeReplyConsumedBytes"], str(len(self.reply)))
+        self.assertTrue(result["fullReplyConsumed"])
+        self.assertEqual(result["typedPayload"], self.codec["control"])
+        for name in ("replyMacAuthentication", "finalSqlContext", "workerHandlerCompletion"):
+            self.assertIsNone(result[name])
+        self.assertIn("independent_worker_authenticated_completion_receipt_required", result["missing"])
+        self.assertNotIn("nativeBulkBytes", result)
+
+    def test_missing_duplicate_and_partial_images_never_claim_delivery(self):
+        for offered, terminal in (([], [self.terminal]), ([self.offered], []),
+                ([self.offered, self.offered], [self.terminal]), ([self.offered], [self.terminal, self.terminal])):
+            self.assertIsNone(self.join(offered, terminal)["requestImage"])
+        self.assertIsNone(self.join(receipts={"received_request": self.receipts["received_request"]})["requestImage"])
+        pair = copy.deepcopy(self.receipts)
+        pair["exposed_response"]["eof"] = False
+        self.assertIsNone(self.join(receipts=pair)["requestImage"])
+
+    def test_identity_source_nonce_route_and_actual_body_substitutions_refuse(self):
+        for name, changed in (("transportCallId", "c" * 32), ("route", "/different"),
+                ("constructorSourceSha256", "e" * 64), ("nonceSha256", "f" * 64),
+                ("offeredRequestSha256", "a" * 64), ("observedAtUnixMicros", None)):
+            with self.subTest(field=name):
+                self.assertIsNone(self.join(offered=[dict(self.offered, **{name: changed})])["requestImage"])
+        pair = copy.deepcopy(self.receipts)
+        pair["received_request"]["privateImages"][0]["reference"] = self.private(b"changed")
+        self.assertIsNone(self.join(receipts=pair)["requestImage"])
+        codec = copy.deepcopy(self.codec)
+        codec["control"]["selectedSourceDigest"] = "f" * 64
+        self.assertIsNone(self.join(codec=codec)["requestImage"])
+
+    def test_cancelled_consumed_prefix_is_distinct_from_receiver_eof(self):
+        last = dict(self.terminal, exposedReplyBytes="3", exposedReplySha256=adapter.sha(self.reply[:3]),
+                    replyEof=False, outcome="cancelled")
+        result = self.join(terminal=[last])
+        self.assertEqual(result["nativeReplyConsumedBytes"], "3")
+        self.assertFalse(result["fullReplyConsumed"])
+        self.assertIn("control_reply_not_fully_consumed", result["missing"])
+        self.assertIsNone(result["replyMacAuthentication"])
+        self.assertIsNone(self.join(terminal=[dict(last, exposedReplySha256="f" * 64)])["requestImage"])
+
+    def test_real_process_reader_closed_events_and_clock_brackets(self):
+        fixture = runpy.run_path(str(ROOT / "native_auth_tests.py"))["ContextTests"]()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        selected = fixture.selected
+        raw = b"".join(json.dumps({"_PID": str(fixture.process["pid"]),
+            "_EXE": fixture.process["executablePath"], "_SYSTEMD_UNIT": "aos-hub.service",
+            "__REALTIME_TIMESTAMP": "100", "MESSAGE": "[INFO] message=direct_control_sender_observed "
+            + json.dumps(row, separators=(",", ":"))}).encode() + b"\n"
+            for row in (self.offered, self.terminal))
+        selected["nativeLog"]["reference"] = self.private(raw)
+        records = adapter.execute_records(selected)
+        self.assertEqual(records["directOffered"][0]["value"], self.offered)
+        self.assertEqual(records["directTerminal"][0]["value"], self.terminal)
+        self.assertEqual(records["attempts"], [])
+        selected["nativeLog"]["epoch"]["lastUnixMicros"] = "100"
+        with self.assertRaises(ValueError):
+            adapter.execute_records(selected)
+        selected["nativeLog"]["epoch"]["lastUnixMicros"] = "101"
+        selected["nativeLog"]["reference"] = self.private(raw + raw)
+        with self.assertRaisesRegex(ValueError, "Duplicate record"):
+            adapter.execute_records(selected)
+
+    def test_unknown_extra_fields_counter_overflow_and_invented_authentication_refuse(self):
+        for row in (dict(self.offered, extra=True), dict(self.offered, offeredRequestBytes="65537"),
+                    dict(self.terminal, replyMacAuthentication=True), dict(self.terminal, finalSqlAuthority=True),
+                    dict(self.terminal, outcome="stream_error", replyEof=True)):
+            with self.assertRaises(ValueError):
+                adapter.validate_direct_control_event(row, self.constructor)
+        messages = lambda *_: [("[INFO] message=direct_control_sender_observed " + " " * 8193, "100")]
+        with self.assertRaises(ValueError):
+            adapter.direct_control_records("", {}, None, messages)
+
+    def test_unmatched_offer_is_retained_without_delivery_or_zero_claim(self):
+        selected = AssessmentTests.selection(self)
+        original_records = {"attempts": [], "finalContexts": [],
+                            "directOffered": [{"value": self.offered}], "directTerminal": []}
+        selected["authSidecar"] = self.json_ref({"fixture": "source-only"})
+        with mock.patch.object(adapter, "execute_records", return_value=original_records), \
+                mock.patch.dict(adapter.READERS, {"assess": lambda *_: {"state": "unknown"}}):
+            result = adapter.assess(selected)
+        body = result["applicationBodyAssessment"]
+        self.assertEqual(body["directControlUnmatchedOffers"][0]["transportCallId"], self.call)
+        self.assertEqual(body["directControlUnmatchedOffers"][0]["delivery"], "unknown")
+        self.assertIsNone(body["nativeBulkBytes"])
+        self.assertEqual(result["hostedAcceptance"], "incomplete")
 
 
 if __name__ == "__main__":
