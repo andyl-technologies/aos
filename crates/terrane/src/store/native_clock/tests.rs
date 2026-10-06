@@ -40,6 +40,71 @@ fn retained_adapter_observes_the_exact_injected_clock_state() {
     assert_eq!(owned.now(), source.now());
 }
 
+#[cfg(feature = "tokio")]
+#[tokio::test]
+async fn manual_collector_clock_keeps_sleep_unsupported() -> std::io::Result<()> {
+    let source = gc_test_clock::TestClock::new(100);
+    let retained = source.retain_native_clock()?;
+
+    let error = retained.sleep(Duration::from_millis(1)).await.err();
+
+    assert!(matches!(error, Some(error) if error.kind() == std::io::ErrorKind::Unsupported));
+    assert_eq!(
+        retained.now(),
+        SystemTime::UNIX_EPOCH + Duration::from_secs(100)
+    );
+    assert_eq!(retained.monotonic(), Duration::ZERO);
+    Ok(())
+}
+
+#[cfg(feature = "tokio")]
+#[tokio::test]
+async fn retained_collector_timer_advances_the_same_clock() -> std::io::Result<()> {
+    let source = gc_test_clock::TestClock::new(100);
+    let retained = source.retain_native_clock()?.retain_native_clock()?;
+    source.enable_timer();
+    let before_wall = retained.now();
+    let before_ticks = retained.monotonic();
+    let delay = Duration::from_millis(20);
+
+    retained.sleep(delay).await?;
+
+    assert!(retained.monotonic() >= before_ticks + delay);
+    assert!(retained.now() >= before_wall + delay);
+    let lower = source.monotonic();
+    let observed = retained.monotonic();
+    let upper = source.monotonic();
+    assert!((lower..=upper).contains(&observed));
+    Ok(())
+}
+
+#[cfg(feature = "tokio")]
+#[tokio::test]
+async fn collector_timer_exposes_regression_and_dropped_sleep() -> std::io::Result<()> {
+    let source = gc_test_clock::TestClock::new(100);
+    source.set(100, 1_000);
+    source.enable_timer();
+    let retained = source.retain_native_clock()?;
+    retained.sleep(Duration::from_millis(20)).await?;
+    let before_wall = retained.now();
+    let before_ticks = retained.monotonic();
+
+    source.set(99, 0);
+
+    assert!(retained.now() < before_wall);
+    assert!(retained.monotonic() < before_ticks);
+    tokio::select! {
+        result = retained.sleep(Duration::from_secs(60)) => {
+            result?;
+            panic!("long sleep completed before its actual timer");
+        }
+        () = tokio::time::sleep(Duration::from_millis(5)) => {}
+    }
+    assert!(retained.monotonic() < Duration::from_secs(60));
+    retained.sleep(Duration::from_millis(1)).await?;
+    Ok(())
+}
+
 #[cfg(feature = "send")]
 #[test]
 fn default_hook_preserves_send_not_sync_clock_implementations() {

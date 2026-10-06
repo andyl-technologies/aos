@@ -519,6 +519,24 @@ ownership slice ends at genuine durable Invalidated after all three journals
 become DeleteOwned; unlink, recovery, cancellation and owned restore remain
 separate producers. No duration, clock contract or local-v1 bytes change.
 
+The test-only collector clock now supports explicit real-time progression and
+Tokio sleep on the same retained instance. Existing manual sampling and
+unsupported sleep remain the default. All five selected native clock
+regressions pass, including three new timer/retention/regression/cancellation
+cases. `checks.terrane.integration.native-collector-clock` requires exact
+discovery and non-ignored execution of those three cases.
+`checks.terrane.integration.native-local-first-ownership` requires six exact
+full-D/renewal/incarnation/poisoning/partial-ownership/current-authority cases.
+Its tests and production producer remain pending; registration must refuse
+missing selectors rather than qualify an empty run. This shared fixture
+prerequisite proves no deletion, recovery or cancellation authority and advances
+no task checkbox or milestone freeze.
+The first qualification exposed existing fixture feature mismatches and direct
+host-clock calls rejected by workspace lints. The helper now samples elapsed
+time through the existing native Clock binding; local filesystem fixtures
+remain in their non-Send lane and native lease fault selectors require Tokio.
+Original failures remain recorded, and no lint is suppressed by this correction.
+
 The shared lease publisher now requires a closed native acknowledgment after
 exact canonical selected slot/transaction/snapshot/pointer verification and
 same-descriptor file and required-directory synchronization. The worker refreshes

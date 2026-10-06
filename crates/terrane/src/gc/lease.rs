@@ -146,7 +146,7 @@ pub(crate) enum Proposal {
 /// Qualifies genuine native collector acquisition and retained dispatch.
 pub(crate) mod tests;
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, unix, any(feature = "tokio", not(feature = "send"))))]
 #[path = "lease/fixture.rs"]
 mod fixture;
 

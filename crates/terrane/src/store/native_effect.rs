@@ -589,6 +589,7 @@ impl std::error::Error for NativeEffectFailure {
 #[cfg(test)]
 pub(crate) enum EffectFaultProbe<'a> {
     /// Identifies durability of the exact selected collector lease slot.
+    #[cfg(feature = "tokio")]
     SealLeasePublication(&'a std::path::Path),
     /// Identifies durability of Pending before the first artifact mutation.
     SealPendingCreation(&'a std::path::Path),
@@ -693,6 +694,7 @@ impl NativeFsEffect {
             return EffectFaultProbe::Other;
         };
         match plan {
+            #[cfg(feature = "tokio")]
             Plan::SealLeasePublication(request) => {
                 EffectFaultProbe::SealLeasePublication(request.path())
             }

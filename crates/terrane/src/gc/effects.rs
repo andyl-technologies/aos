@@ -306,7 +306,7 @@ fn validate(checked: &CheckedGcLease<'_, '_>) -> Result<(), StoreFailure> {
 /// Retains actual native test effects for runtime-specific qualification.
 pub(crate) mod test_fs;
 
-#[cfg(all(test, unix, not(feature = "tokio")))]
+#[cfg(all(test, unix, not(feature = "send")))]
 #[path = "effects/local_fs.rs"]
 /// Retains actual native test effects for runtime-specific qualification.
 pub(crate) mod test_fs;
