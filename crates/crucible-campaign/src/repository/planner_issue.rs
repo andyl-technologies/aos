@@ -167,6 +167,7 @@ impl CampaignRepository {
         parent: &LoadedSnapshot,
         child: &LoadedSnapshot,
         step: &PlannerStep,
+        invocation: &PlannerInvocation,
     ) -> Result<(), CampaignRepositoryError> {
         let PlannerDisposition::Issue {
             selected,
@@ -185,9 +186,8 @@ impl CampaignRepository {
             .iter()
             .map(|id| self.decode_proposal(id.content_id()))
             .collect::<Result<Vec<_>, _>>()?;
-        let invocation = self.load_planner_invocation(step.invocation())?;
         let basis =
-            self.planner_issue_basis(parent, &invocation, *selected, &branch_requests, &proposals)?;
+            self.planner_issue_basis(parent, invocation, *selected, &branch_requests, &proposals)?;
         let projected = self.project_planner_issue(
             &basis,
             IssueProjectionMode::Validate {

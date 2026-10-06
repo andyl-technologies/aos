@@ -145,27 +145,58 @@ impl CampaignRepository {
         &self,
         head: ContentId,
     ) -> Result<ValidationCheckpoint, CampaignRepositoryError> {
-        if let Some(checkpoint) = self.validation_checkpoints().get(&head).copied() {
-            return Ok(checkpoint);
-        }
+        let mut planner_context = PlannerValidationContext::default();
+        self.load_validation_checkpoint_with_planner_context(head, &mut planner_context)
+    }
 
-        let mut choice_cache = ChoiceValidationCache::default();
-        let (ancestry_depth, lifecycle, genesis, derived_branch) =
-            self.validate_snapshot_ancestry(head, &mut choice_cache, MAX_SNAPSHOT_ANCESTRY)?;
-        let closure_objects = self.verify_campaign_closures_anchored_cached(
-            [head],
-            &BTreeSet::new(),
-            &mut choice_cache,
-        )?;
-        let checkpoint = ValidationCheckpoint {
-            ancestry_depth,
-            closure_objects,
-            lifecycle,
-            genesis,
-            derived_branch,
-        };
-        self.remember_validation_checkpoint(head, checkpoint);
-        Ok(checkpoint)
+    /// Validates both complete-head passes with bounded attempt-local reuse.
+    ///
+    /// # Errors
+    ///
+    /// Returns any original ancestry or fresh closure failure without promoting
+    /// a checkpoint, and clears retained tuples on every result.
+    pub(super) fn load_validation_checkpoint_with_planner_context(
+        &self,
+        head: ContentId,
+        planner_context: &mut PlannerValidationContext,
+    ) -> Result<ValidationCheckpoint, CampaignRepositoryError> {
+        planner_context.clear();
+        let result = (|| {
+            if let Some(checkpoint) = self.validation_checkpoints().get(&head).copied() {
+                return Ok(checkpoint);
+            }
+
+            let mut choice_cache = ChoiceValidationCache::default();
+            let (ancestry_depth, lifecycle, genesis, derived_branch) = self
+                .validate_snapshot_ancestry_with_planner_context(
+                    head,
+                    &mut choice_cache,
+                    MAX_SNAPSHOT_ANCESTRY,
+                    Some(planner_context),
+                )?;
+            let closure_objects = self.verify_campaign_closures_with_planner_context(
+                [head],
+                &BTreeSet::new(),
+                &mut choice_cache,
+                None,
+                None,
+                Some(planner_context),
+            )?;
+            let checkpoint = ValidationCheckpoint {
+                ancestry_depth,
+                closure_objects,
+                lifecycle,
+                genesis,
+                derived_branch,
+            };
+            self.remember_validation_checkpoint(head, checkpoint);
+            Ok(checkpoint)
+        })();
+        // A failed attempt must not lend authenticated tuples to a later read.
+        // Successful reuse also ends here; only the original head checkpoint
+        // is promoted after both complete validation passes succeed.
+        planner_context.clear();
+        result
     }
 
     pub(super) fn prepare_local_successor_checkpoint(
@@ -306,9 +337,38 @@ impl CampaignRepository {
 
     pub(super) fn validate_snapshot_ancestry(
         &self,
+        content_id: ContentId,
+        choice_cache: &mut ChoiceValidationCache,
+        maximum_depth: usize,
+    ) -> Result<
+        (
+            usize,
+            ProjectedState,
+            ContentId,
+            Option<DerivedBranchCheckpoint>,
+        ),
+        CampaignRepositoryError,
+    > {
+        self.validate_snapshot_ancestry_with_planner_context(
+            content_id,
+            choice_cache,
+            maximum_depth,
+            None,
+        )
+    }
+
+    /// Validates original ancestry and owner transitions using checked tuples.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original missing-object, corruption, depth, lifecycle, lineage,
+    /// transition, root, budget, cursor, or exact Issue validation errors.
+    pub(super) fn validate_snapshot_ancestry_with_planner_context(
+        &self,
         mut content_id: ContentId,
         choice_cache: &mut ChoiceValidationCache,
         maximum_depth: usize,
+        mut planner_context: Option<&mut PlannerValidationContext>,
     ) -> Result<
         (
             usize,
@@ -366,8 +426,11 @@ impl CampaignRepository {
                     return Ok((depth, projected, content_id, derived_branch));
                 }
                 (Some(parent), Some(transition)) => {
-                    let (transition_fact, validated_planner_step) =
-                        self.read_fact_with_planner_step(transition.content_id())?;
+                    let (transition_fact, validated_planner_step) = self
+                        .read_fact_with_planner_context(
+                            transition.content_id(),
+                            planner_context.as_deref_mut(),
+                        )?;
                     let parent_snapshot = self.read_snapshot(parent.content_id())?;
                     let budget_fact = transition_fact.clone();
                     match transition_fact {

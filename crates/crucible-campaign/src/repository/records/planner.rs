@@ -38,21 +38,70 @@ impl CampaignRepository {
         &self,
         id: ContentId,
     ) -> Result<PlannerRequest, CampaignRepositoryError> {
+        self.read_planner_request_with_invocation(id)
+            .map(|validated| validated.request)
+    }
+
+    /// Loads a fully checked request with its already authenticated invocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original store, codec, or integrity error for missing, corrupt,
+    /// or inconsistent request, invocation, snapshot, or bundled input records.
+    pub(in crate::repository) fn read_planner_request_with_invocation(
+        &self,
+        id: ContentId,
+    ) -> Result<ValidatedPlannerRequest, CampaignRepositoryError> {
         let envelope =
             self.require_record_kind(id, crate::CampaignRecordKind::RetainedPlannerRequest)?;
         let request = PlannerRequest::from_canonical_bytes(envelope.body())?;
         if request.id()?.content_id() != id {
             return Err(integrity("planner-request-envelope-shape"));
         }
-        self.validate_planner_request_inputs(&request)?;
-        Ok(request)
+        let invocation = self.validate_planner_request_inputs(&request)?;
+        Ok(ValidatedPlannerRequest {
+            request,
+            invocation,
+        })
     }
 
+    /// Reuses only successfully authenticated requests within this validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original request validation errors on a cache miss; failed
+    /// validation never inserts a request.
+    pub(in crate::repository) fn read_planner_request_with_context(
+        &self,
+        id: ContentId,
+        context: Option<&mut PlannerValidationContext>,
+    ) -> Result<ValidatedPlannerRequest, CampaignRepositoryError> {
+        if let Some(context) = context.as_ref()
+            && let Some(validated) = context.request(id)
+        {
+            return Ok(validated);
+        }
+        let validated = self.read_planner_request_with_invocation(id)?;
+        if let Some(context) = context {
+            context.insert_request(id, validated.clone());
+        }
+        Ok(validated)
+    }
+
+    /// Authenticates every stored request input and returns its invocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store, codec, or integrity error for a missing, corrupt, or
+    /// inconsistent invocation, expected snapshot, or bundled input. Unlike
+    /// preflight, this path never permits unpublished derived inputs.
     pub(in crate::repository) fn validate_planner_request_inputs(
         &self,
         request: &PlannerRequest,
-    ) -> Result<(), CampaignRepositoryError> {
-        self.validate_planner_request_inputs_with_mode(request, false)
+    ) -> Result<PlannerInvocation, CampaignRepositoryError> {
+        let invocation = self.load_planner_invocation(request.invocation_id()?)?;
+        self.validate_planner_request_inputs_with_invocation(request, false, &invocation)?;
+        Ok(invocation)
     }
 
     /// Authenticates request inputs and returns their resolved invocation.
@@ -68,19 +117,6 @@ impl CampaignRepository {
         let invocation = self.load_planner_invocation(request.invocation_id()?)?;
         self.validate_planner_request_inputs_with_invocation(request, true, &invocation)?;
         Ok(invocation)
-    }
-
-    fn validate_planner_request_inputs_with_mode(
-        &self,
-        request: &PlannerRequest,
-        allow_unpublished_derived_inputs: bool,
-    ) -> Result<(), CampaignRepositoryError> {
-        let invocation = self.load_planner_invocation(request.invocation_id()?)?;
-        self.validate_planner_request_inputs_with_invocation(
-            request,
-            allow_unpublished_derived_inputs,
-            &invocation,
-        )
     }
 
     fn validate_planner_request_inputs_with_invocation(

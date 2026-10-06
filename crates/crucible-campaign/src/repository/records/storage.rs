@@ -628,8 +628,21 @@ impl CampaignRepository {
     pub(in crate::repository) fn read_fact_with_planner_step(
         &self,
         id: ContentId,
-    ) -> Result<(CampaignFact, Option<(PlannerStep, PlannerRequest)>), CampaignRepositoryError>
-    {
+    ) -> Result<(CampaignFact, Option<ValidatedPlannerStep>), CampaignRepositoryError> {
+        self.read_fact_with_planner_context(id, None)
+    }
+
+    /// Validates fact references with optional attempt-local planner reuse.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original store, codec, or integrity errors for the fact or
+    /// any referenced record.
+    pub(in crate::repository) fn read_fact_with_planner_context(
+        &self,
+        id: ContentId,
+        context: Option<&mut PlannerValidationContext>,
+    ) -> Result<(CampaignFact, Option<ValidatedPlannerStep>), CampaignRepositoryError> {
         let envelope = self.read_envelope(id)?;
         if envelope.record_kind() != crate::CampaignRecordKind::Fact {
             return Err(integrity("fact-envelope-shape"));
@@ -638,7 +651,7 @@ impl CampaignRepository {
         // Return the fully checked planner records to an ancestry caller so it
         // can check the owner transition without reprojecting the same request.
         let planner_step = if let CampaignFact::PlannerAdvanced(step) = &fact {
-            Some(self.read_planner_step_with_request(step.content_id())?)
+            Some(self.read_planner_step_with_context(step.content_id(), context)?)
         } else {
             self.validate_fact_references(&fact)?;
             None
