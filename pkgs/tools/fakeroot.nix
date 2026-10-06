@@ -93,7 +93,7 @@ in
       {
         name = "configure";
         script = ''
-          ./configure \
+          "$CONFIG_SHELL" ./configure \
             $configureFlags \
             --prefix=$out \
             --with-ipc=sysv
@@ -102,13 +102,13 @@ in
       {
         name = "build";
         script = ''
-          make -j$NIX_BUILD_CORES
+          make -j$NIX_BUILD_CORES SHELL="$CONFIG_SHELL"
         '';
       }
       {
         name = "install";
         script = ''
-          make install
+          make install SHELL="$CONFIG_SHELL"
           # Bash supplies kill; AOS coreutils does not install that optional
           # utility. Keep daemon cleanup and the default shell on AOS tools.
           sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/bin/fakeroot"
