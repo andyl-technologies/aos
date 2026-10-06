@@ -121,10 +121,8 @@ def publish_candidate() -> None:
           --image-payload {shlex.quote(CANDIDATE_IMAGE)} --image-disk {shlex.quote(CANDIDATE_IMAGE_DISK)} \\
           --image-info {shlex.quote(CANDIDATE_IMAGE_INFO)} --image-format raw \\
           --image-contract-schema aos.image.metadata/v1 \\
-          --no-ca --registry native-image --key-id release --no-commit > /tmp/native-image-publication.json
-        {GIT_BIN}/git -C "$registry" add -A
-        {GIT_BIN}/git -C "$registry" commit -m 'release: native physical image fixture'
-        {GIT_BIN}/git -C "$registry" tag v1.0.0
+          --no-ca --registry native-image --key-id release > /tmp/native-image-publication.json
+        {APR} release 1.0.0 --registry native-image --key-id release
         {APM} registry --system add "file://$registry" --name native-image --tag 1.0.0 --trust-key "$public" --no-clone
         {APM} update --system --registry native-image
     """), timeout=1800)
