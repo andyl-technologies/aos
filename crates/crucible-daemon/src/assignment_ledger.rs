@@ -783,12 +783,72 @@ impl AttemptRuntimeState {
             _ => None,
         };
         if scoped_capture
-            && matches!(self, Self::Paused { .. } | Self::CheckpointPromoting { .. })
+            && matches!(self, Self::CheckpointPromoting { .. })
             && promotion_basis.is_none()
         {
             return false;
         }
         promotion_basis.is_none_or(|basis| basis.start_mode().execution_scope() == key.scope())
+    }
+
+    /// Keeps a completed capture pause tied to its exact staged predecessor.
+    ///
+    /// The completed record deliberately drops its recovery basis so restart
+    /// does not repeat the replay comparison. Its durable shape is readable,
+    /// but neither backend may create it directly or strip a raw pause's basis.
+    /// The production caller also holds the authenticated store promotion claim
+    /// across this CAS; this rule does not replace that live authority.
+    fn validates_completion_transition(
+        self,
+        key: AttemptExecutionKey,
+        current: Option<Self>,
+    ) -> bool {
+        if !matches!(key.scope(), AttemptExecutionScope::SavepointCapture { .. })
+            || !matches!(
+                self,
+                Self::Paused {
+                    promotion_basis: None,
+                    ..
+                }
+            )
+        {
+            return true;
+        }
+        if current == Some(self) {
+            return true;
+        }
+        let Some(
+            previous @ Self::CheckpointPromoting {
+                execution_basis,
+                origin,
+                daemon_epoch,
+                execution,
+                promoted_checkpoint,
+                promotion_basis: Some(basis),
+                ..
+            },
+        ) = current
+        else {
+            return false;
+        };
+        previous.validates_for_key(key)
+            && attempt_execution_basis_digest_for_start_mode(
+                key.lineage(),
+                key.attempt(),
+                basis.resources(),
+                basis.retention(),
+                basis.start_mode(),
+                basis.retention_policy(),
+            ) == execution_basis
+            && self
+                == Self::Paused {
+                    execution_basis,
+                    origin,
+                    daemon_epoch,
+                    execution,
+                    checkpoint: promoted_checkpoint,
+                    promotion_basis: None,
+                }
     }
 }
 
@@ -1237,6 +1297,9 @@ impl AssignmentLedger for MemoryAssignmentLedger {
             return Ok(AttemptStateCas::Conflict { current });
         }
         if current != expected {
+            return Ok(AttemptStateCas::Conflict { current });
+        }
+        if next.is_some_and(|state| !state.validates_completion_transition(key, current)) {
             return Ok(AttemptStateCas::Conflict { current });
         }
         self.retention_generation = AssignmentRetentionGeneration::from_bytes(
@@ -1720,6 +1783,9 @@ impl AssignmentLedger for DirectoryAssignmentLedger {
         let current = self.load_attempt(key)?;
         if current != expected {
             return Ok(AttemptStateCas::Conflict { current });
+        }
+        if next.is_some_and(|state| !state.validates_completion_transition(key, current)) {
+            return Err(corrupt("scoped-promotion-completion-transition"));
         }
         self.advance_retention_state()?;
         let path = self.attempt_path(key);

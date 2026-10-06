@@ -3,6 +3,8 @@
 // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
 #![allow(clippy::expect_used)]
 
+mod scoped_completion;
+
 use std::fs;
 use std::os::unix::fs::symlink;
 
