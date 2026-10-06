@@ -143,9 +143,10 @@ pub fn native_held_flight_digest_v1(
     mount_attempt: ObjectDigest,
     original_source_session: ObjectDigest,
 ) -> ObjectDigest {
-    let mut bytes = Vec::with_capacity(96);
-    bytes.extend_from_slice(original_root_request.as_bytes());
-    bytes.extend_from_slice(mount_attempt.as_bytes());
-    bytes.extend_from_slice(original_source_session.as_bytes());
+    // The preimage has exactly three digests, so it needs no heap allocation.
+    let mut bytes = [0; 96];
+    bytes[..32].copy_from_slice(original_root_request.as_bytes());
+    bytes[32..64].copy_from_slice(mount_attempt.as_bytes());
+    bytes[64..].copy_from_slice(original_source_session.as_bytes());
     digest(FLIGHT_DOMAIN, &bytes)
 }
