@@ -63,6 +63,7 @@ pub(super) fn observe_original_pair(
         || fcntl_getfl(policy_file)? & OFlags::ACCMODE != OFlags::RDONLY
         || !delivery_metadata.is_file() || delivery_metadata.len() != 152
         || delivery_metadata.nlink() != 0 || delivery_metadata.uid() != 0
+        || fcntl_getfl(enrollment_file)? & OFlags::ACCMODE != OFlags::RDONLY
         || !seals.contains(SealFlags::SEAL | SealFlags::GROW | SealFlags::SHRINK | SealFlags::WRITE)
     {
         return Err(ResourceReservationErrorV1::EnrollmentUnavailable);

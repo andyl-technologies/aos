@@ -21,7 +21,7 @@ diff --git a/src/core/aos-resource-enrollment.c b/src/core/aos-resource-enrollme
 new file mode 100644
 --- /dev/null
 +++ b/src/core/aos-resource-enrollment.c
-@@ -0,0 +1,279 @@
+@@ -0,0 +1,386 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +
 +#include <fcntl.h>
@@ -46,6 +46,23 @@ new file mode 100644
 +#define AOS_RESOURCE_CONCURRENT_OPERATIONS 21U
 +#define AOS_RESOURCE_EROFS_MAGIC 0xE0F5E1E2
 +
++/* Both original OFDs stay with the recipient even after failed comparison or
++ * Service cleanup. Service.extra_fds owns only the completed delivery copy. */
++typedef struct AosResourceDelivery {
++        int sealed_fd;
++        int reopened_fd;
++        struct stat sealed_stat;
++        struct stat reopened_stat;
++        int sealed_stat_result;
++        int sealed_seals;
++        int reopened_stat_result;
++        int reopened_seals;
++        int reopened_flags;
++        int comparison;
++        int delivery_error;
++        bool attempted;
++} AosResourceDelivery;
++
 +typedef struct AosResourceEnrollment {
 +        Manager *manager;
 +        int policy_fd;
@@ -59,11 +76,28 @@ new file mode 100644
 +        uint64_t jobs;
 +        sd_id128_t controller_invocation;
 +        sd_id128_t storage_invocation;
++        AosResourceDelivery controller_delivery;
++        AosResourceDelivery storage_delivery;
 +} AosResourceEnrollment;
 +
 +/* The existing root PID1 is the only issuer. This original owner is neither
 + * serialized nor reconstructed from an inherited capsule after reexec. */
-+static AosResourceEnrollment enrollment = { .policy_fd = -EBADF };
++#define AOS_RESOURCE_DELIVERY_EMPTY { \
++        .sealed_fd = -EBADF, \
++        .reopened_fd = -EBADF, \
++        .sealed_stat_result = -EBADF, \
++        .sealed_seals = -EBADF, \
++        .reopened_stat_result = -EBADF, \
++        .reopened_seals = -EBADF, \
++        .reopened_flags = -EBADF, \
++        .comparison = -EBADF, \
++}
++
++static AosResourceEnrollment enrollment = {
++        .policy_fd = -EBADF,
++        .controller_delivery = AOS_RESOURCE_DELIVERY_EMPTY,
++        .storage_delivery = AOS_RESOURCE_DELIVERY_EMPTY,
++};
 +
 +static uint64_t policy_u64(const uint8_t *bytes) {
 +        uint64_t value = 0;
@@ -225,6 +259,60 @@ new file mode 100644
 +        return NULL;
 +}
 +
++static AosResourceDelivery *recipient_delivery(const Unit *unit) {
++        if (streq_ptr(unit->id, "aos-sandboxd.service"))
++                return &enrollment.controller_delivery;
++        if (streq_ptr(unit->id, "aos-storaged.service"))
++                return &enrollment.storage_delivery;
++        return NULL;
++}
++
++static int compare_original_capsule(AosResourceDelivery *delivery) {
++        const int required_seals = F_SEAL_SEAL | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_WRITE;
++
++        /* The actual reopen Result is already parked. Independent available
++         * original observations do not replace that earlier native cause. */
++        delivery->sealed_stat_result = fstat(delivery->sealed_fd, &delivery->sealed_stat) < 0 ? -errno : 0;
++        delivery->sealed_seals = fcntl(delivery->sealed_fd, F_GET_SEALS);
++        if (delivery->sealed_seals < 0)
++                delivery->sealed_seals = -errno;
++
++        if (delivery->reopened_fd >= 0) {
++                delivery->reopened_stat_result = fstat(delivery->reopened_fd, &delivery->reopened_stat) < 0 ? -errno : 0;
++                delivery->reopened_seals = fcntl(delivery->reopened_fd, F_GET_SEALS);
++                if (delivery->reopened_seals < 0)
++                        delivery->reopened_seals = -errno;
++                delivery->reopened_flags = fcntl(delivery->reopened_fd, F_GETFL);
++                if (delivery->reopened_flags < 0)
++                        delivery->reopened_flags = -errno;
++        }
++
++        if (delivery->reopened_fd < 0)
++                return delivery->reopened_fd;
++        if (delivery->sealed_stat_result < 0)
++                return delivery->sealed_stat_result;
++        if (delivery->sealed_seals < 0)
++                return delivery->sealed_seals;
++        if (delivery->reopened_stat_result < 0)
++                return delivery->reopened_stat_result;
++        if (delivery->reopened_seals < 0)
++                return delivery->reopened_seals;
++        if (delivery->reopened_flags < 0)
++                return delivery->reopened_flags;
++
++        if (!S_ISREG(delivery->sealed_stat.st_mode) || !S_ISREG(delivery->reopened_stat.st_mode) ||
++            delivery->sealed_stat.st_size != 152 || delivery->reopened_stat.st_size != 152 ||
++            delivery->sealed_stat.st_dev != delivery->reopened_stat.st_dev ||
++            delivery->sealed_stat.st_ino != delivery->reopened_stat.st_ino ||
++            delivery->sealed_seals != delivery->reopened_seals ||
++            (delivery->sealed_seals & required_seals) != required_seals ||
++            (delivery->reopened_flags & O_ACCMODE) != O_RDONLY ||
++            (delivery->reopened_flags & O_PATH) != 0)
++                return -EPERM;
++
++        return 0;
++}
++
 +sd_id128_t aos_resource_unit_producer(Service *service) {
 +        Unit *unit = UNIT(service);
 +        sd_id128_t *original = recipient_invocation(unit);
@@ -263,6 +351,11 @@ new file mode 100644
 +        if (service->aos_resource_delivery || service->n_extra_fds != 0 || service->n_fd_store != 0)
 +                return refuse(-EPERM);
 +
++        AosResourceDelivery *delivery = recipient_delivery(unit);
++        if (!delivery || delivery->attempted)
++                return refuse(-EALREADY);
++        delivery->attempted = true;
++
 +        service->extra_fds = new0(ServiceExtraFD, 2);
 +        if (!service->extra_fds)
 +                return refuse(-ENOMEM);
@@ -286,9 +379,23 @@ new file mode 100644
 +        memcpy(capsule + 72, digest, sizeof(digest));
 +        memcpy(capsule + 104, unit->invocation_id.bytes, 16);
 +        sha256_direct(capsule, 120, capsule + 120);
-+        service->extra_fds[1].fd = memfd_new_and_seal("aos-resource-pid1-enrollment-v1", capsule, sizeof(capsule));
-+        if (service->extra_fds[1].fd < 0)
-+                return refuse(service->extra_fds[1].fd);
++        delivery->sealed_fd = memfd_new_and_seal("aos-resource-pid1-enrollment-v1", capsule, sizeof(capsule));
++        if (delivery->sealed_fd < 0)
++                return refuse(delivery->sealed_fd);
++
++        /* Seals do not clear FMODE_WRITE at the recipient's SELinux exec
++         * boundary. Only this checked same-inode RO OFD is delivered. */
++        delivery->reopened_fd = fd_reopen(delivery->sealed_fd, O_RDONLY | O_CLOEXEC);
++        delivery->comparison = compare_original_capsule(delivery);
++        if (delivery->comparison < 0)
++                return refuse(delivery->comparison);
++
++        service->extra_fds[1].fd = fcntl(delivery->reopened_fd, F_DUPFD_CLOEXEC, 3);
++        if (service->extra_fds[1].fd < 0) {
++                delivery->delivery_error = -errno;
++                service->extra_fds[1].fd = delivery->delivery_error;
++                return refuse(delivery->delivery_error);
++        }
 +        return 0;
 +}
 +

@@ -49,6 +49,7 @@
     gitReadDelegation = config.aos.sandbox.controllerService.gitReadInspection.enable;
     sourceProviderMount = selectedSourceMount;
     runtimeDeploymentPublisher = config.aos.sandbox.runtimeDeploymentPublisher.enable;
+    resourceBankEnrollment = config.aos.sandbox.resourceBank.policy != null;
   } // lib.optionalAttrs selectedOnlineNix {
     onlineNix = true;
     aos-sandboxd = config.aos.sandbox.nixBroker._package;

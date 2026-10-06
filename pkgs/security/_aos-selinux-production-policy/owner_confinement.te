@@ -901,6 +901,12 @@ allow init_t { aos_runtime_deployment_publisher_t aos_runtime_deployment_helper_
 allow init_t { aos_runtime_deployment_publisher_t aos_runtime_deployment_helper_t }:file { getattr open read lock ioctl };
 allow init_t { aos_runtime_deployment_publisher_t aos_runtime_deployment_helper_t }:lnk_file { getattr read };
 # AOS_HOST_RUNTIME_END
+# AOS_RESOURCE_BANK_ENROLLMENT_BEGIN
+
+# Only the fixed original bank recipients may read PID1's sealed capsule.
+# Read-only delivery, not seals alone, excludes a write-mode exec inheritance.
+allow { aos_sandbox_controller_t aos_sandbox_storage_t } init_tmpfs_t:file { getattr read };
+# AOS_RESOURCE_BANK_ENROLLMENT_END
 # AOS_SELECTED_MOUNT_SOURCE_BEGIN
 
 # This closed suffix is compiled only with the fixed Mount/Source carrier.
