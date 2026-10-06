@@ -137,7 +137,8 @@ The proposed schema below defines required semantic fields. The final codec must
 use bounded, canonical, language-neutral encodings with explicit tags, integer
 widths, and lengths; the compact notation does not authorize Rust-native layout.
 Durations are unsigned host monotonic allowances. `OptionalDuration` has explicit
-`Absent` and `Milliseconds(u64)` alternatives; present durations must be nonzero.
+`Absent` and `Milliseconds(u64)` alternatives; configured present allowances
+must be nonzero, while observed remaining time may be zero after expiry.
 Policies contain a fixed roster of operation classes, not arbitrary names.
 Integers use big-endian encoding; enum tags are one byte. Strings use a `u32`
 byte length followed by UTF-8, and fixed identifiers use their declared canonical
@@ -226,6 +227,7 @@ HostRamStatusV1 = {
   remaining_unique_update_capacity: u64,
   history_disk_bytes: u64,
   transition: None | TransitionId,
+  outer_caps: BoundedOuterCapStatusList,
   outstanding_operations: BoundedOperationStatusList
 }
 ```
@@ -441,8 +443,29 @@ OperationStatusV1 = {
   completed_work_units: u64,
   outstanding_work_units: u64,
   progress_kind: FixedProgressKind,
-  state: Running | WaitingForBacking | Canceling | Completed | Failed
+  state: Running | WaitingForBacking | Canceling | Completed | Failed,
+  effective_deadline: None | EffectiveDeadlineStatusV1
 }
+
+EffectiveDeadlineStatusV1 = {
+  remaining_ms: u64,                 // zero if elapsed; original clocks retained
+  limiting_sources: BoundedDeadlineSourceList
+}
+
+DeadlineSourceV1 = ClassProgress(policy_revision: u64) |
+                   ClassTotal(policy_revision: u64) |
+                   Outer(cap_id: bytes[32], cap_revision: u64)
+
+OuterCapStatusV1 = {
+  target: OuterCapTargetV1,
+  cap_class: Assignment | Preparation | ServiceShutdown | Operator,
+  cap_revision: u64,
+  allowance: OptionalDuration,
+  remaining_ms: OptionalRemainingTimeV1,
+  state: Armed | Expired | Canceled | Completed
+}
+
+OptionalRemainingTimeV1 = Absent | Milliseconds(u64)
 ```
 
 The fixed budget roster follows the operation-class order in the table below,
@@ -453,6 +476,27 @@ present `u64` allowance as tag one. Status lists carry bounded `u32` counts and
 MUST reject allocation requests beyond their schema ceilings. Invalid or
 unrepresentable host durations are refused rather than saturated into accidental
 infinite waits.
+
+`remaining_ms` in `OuterCapStatusV1` uses a distinct status type: `Absent`
+means no deadline and `Milliseconds(0)` means elapsed. The nonzero rule applies
+to configured allowances, not observed remaining time. Its tags are zero and
+one, respectively, with the same big-endian `u64` payload convention. Positive
+remaining time is rounded up to milliseconds so zero denotes expiry rather
+than rounding. Effective-deadline status
+binds the coherent policy/cap revisions used in evaluation and names every
+limiting source when deadlines tie. Counts and aggregate status size remain
+bounded by the public codec; admission refuses a supervision topology that
+cannot be represented. Status does not expose host-native clock structures.
+
+- **[TIME-9]** Setup, page-in, writeback, fingerprint, checkpoint, fork/rearm,
+  restore, transfer, and cleanup phases MUST have a finite applicable progress,
+  total, or independently supervised outer allowance. Configuring both class
+  allowances as absent MUST be refused unless a finite applicable outer cap
+  establishes bounded resolution or failure. Validation MUST apply at launch,
+  live update, phase entry, and outer-cap amendment. An expiring execution cap
+  MUST NOT eliminate cleanup's independent finite budget. Deliberately unlimited
+  guest execution MAY remain separately configurable; it MUST NOT remove these
+  infrastructure-phase requirements.
 
 **[TIME-2]** Poll expiration MUST only yield a control-plane opportunity, check
 cancellation and ownership, and continue waiting when other budgets permit.
@@ -513,6 +557,85 @@ absolute host watchdog. A disk-oriented policy with a longer checkpoint budget
 does not override it. Operators must see the remaining limiting cap in status,
 so an accepted paging policy is not mistaken for permission to run beyond the
 assignment allowance.
+
+### Explicit outer-cap amendments
+
+Outer-cap mutation is a separate operational transaction, not an implicit field
+of `UpdateHostRamPolicyRequestV1`. It does not rewrite the authored assignment,
+campaign policy, or any modeled bound. The proposed records are:
+
+```text
+OuterCapTargetV1 = {
+  daemon_epoch: DaemonEpoch,
+  owner: Execution(ExecutionId) | Service(service_instance_id: bytes[32]),
+  owner_generation: u64,
+  cap_id: bytes[32]
+}
+
+AmendOuterCapRequestV1 = {
+  principal: OperationalPrincipal,
+  target: OuterCapTargetV1,
+  expected_cap_revision: u64,
+  idempotency_key: bytes[32],
+  allowance: OptionalDuration
+}
+
+AmendOuterCapResponseV1 = {
+  request_digest: bytes[32],
+  target: OuterCapTargetV1,
+  disposition: Accepted | Replayed | RevisionConflict | NotCurrent |
+               Terminal | AdmissionRefused | HistoryCapacityRefused |
+               RateLimited | Unavailable,
+  accepted_cap_revision: None | u64,
+  accepted_allowance: None | OptionalDuration
+}
+```
+
+The target selects an existing cap with one supervisor owner; it cannot create
+or relabel a cap. The cap's class, original monotonic start, and clock-incarnation
+binding are immutable. A new allowance is measured from that original start,
+not from request arrival. Removing a deadline requires explicit authority and
+passes TIME-9 validation for every affected phase. Authentication failure has
+no mutation effect and is reported through the control protocol's existing
+authorization error contract.
+An accepted or replayed response carries the original accepted revision and
+allowance; a refusal carries neither. Current cap state is a separate status
+observation, so an old successful receipt cannot be mistaken for a live deadline.
+
+The transaction is `validated -> journaled/applied -> acknowledged`, or a typed
+refusal without mutation. Expiry, cancellation, completion, and amendment use
+the same supervisor-owned atomic ordering. Before accepting a new revision,
+the owner evaluates the old cap against the current monotonic clock. If that
+cap has elapsed or the owner is terminal, expiry or terminal disposition wins;
+an increased allowance cannot rescue already expired work merely because a
+watcher has not yet run. An accepted shorter allowance that is already elapsed
+records the amendment and enters cancellation in the same ordered transaction.
+
+- **[TIME-10]** Outer-cap amendments MUST authenticate exact owner incarnation,
+  cap identity, and expected revision. Revisions MUST increase without reuse.
+  The request digest, idempotency history, history admission, and replay ordering
+  MUST satisfy POLICY-6 and POLICY-11 through an independently charged outer-cap
+  owner history. Known-key retry MUST return the original accepted response
+  without reapplying it, including after later expiry. Conflicting bytes MUST
+  be rejected. Acceptance MUST preserve original elapsed-time coordinates,
+  durably bind the new allowance and revision, and wake every affected watcher.
+  No caller-local timeout update may leave another watcher on an obsolete cap.
+  Amendment MUST NOT resurrect terminal cancellation or released authority.
+- **[TIME-11]** Restart recovery MUST reconcile accepted cap amendments and
+  terminal decisions before resuming affected authority. It MUST retain the
+  original elapsed-time basis when a trustworthy same-clock incarnation can
+  establish it. If elapsed time or ordering cannot be recovered safely, the
+  owner MUST remain unavailable or enter containment with independently bounded
+  cleanup; restarting a full allowance is forbidden. Operational journals,
+  clocks, cap revisions, and deadline provenance MUST remain outside semantic
+  checkpoint identity. Status MUST report coherent cap identities/revisions,
+  remaining allowances, and the effective limiting source for each operation.
+
+Journal recovery must distinguish accepted-but-unacknowledged amendments from
+refused requests. A failure to establish whether an amendment committed leaves
+the owner held until reconciliation; it does not authorize whichever deadline
+is more convenient. The codec and supervisor implementation must specify the
+durable commit/expiry ordering under PLAN-2 before this control is enabled.
 
 **[TIME-6]** Every inherited finite wait MUST be audited at cutover. The audit MUST
 include QMP commands and jobs, plugin setup, quantum awaits, checkpoint quiescence,

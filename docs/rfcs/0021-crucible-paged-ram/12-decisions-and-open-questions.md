@@ -12,14 +12,16 @@
 | Use ordered binary trees with defined padding | Position is committed while equal-content pages/subtrees can share across positions |
 | Use named scopes and complete topology inventory | Removes current inconsistent implicit coverage while avoiding an accidental omission of mutable device RAM |
 | Use complete write tracking with independent epochs | Shared discovery supports multiple consumers without one clearing another's observation |
-| Start removal at coherent paused boundaries | Establishes a tractable correctness baseline; does not claim general strict low-peak progress |
+| Start removal at coherent paused boundaries | Requires physical-borrow safety and sound inter-boundary peak admission; unsupported smaller peaks are refused |
 | Gate fault-safe reclamation separately | A blocked fault must be able to reach a safe reclamation mechanism or fail, rather than wait for an unreachable boundary |
-| Prefer a precise custom backend after a kernel-swap baseline | Kernel reclaim is useful and simple but does not expose the complete requested per-VM control contract |
+| Prefer a precise custom backend after a kernel-swap baseline | Kernel swap remains measurement-only unless independent preserved-byte integrity qualification satisfies the unchanged threat model |
 | Place native mapping/fault work GPL side | Preserves QEMU implementation ownership and keeps host-side contracts portable |
 | Make runtime policy operational and revisioned | Tuning does not change guest identity; reservation and convergence remain auditable |
+| Amend outer caps through separate operational transactions | Expiry precedence, original elapsed time, shared supervision, and restart recovery stay explicit |
 | Store direct root-based RAM checkpoints | Persistent trees encode shared unchanged state without an eight-layer replay chain |
 | Require complete local closure before lazy restore | Fault latency does not silently become a remote availability dependency |
 | Transfer missing authenticated state | Tree differences reduce work while ownership, possession, and publication remain independently checked |
+| Separate stored closure from restore readiness | Storage-only archive publication needs no execution admission; maintenance ownership handoff does |
 | Make the experimental cutover immediate | Avoids legacy readers, digest conversion, dual algorithms, and mixed-peer execution |
 
 These are normative choices through the requirements in their owning chapters.
@@ -53,9 +55,11 @@ authenticity, or complete fork barriers. Explicit buffered I/O without stable
 mapped RAM would require changing every CPU/device access to use an accessor,
 with substantial TCG and device audit cost. It is not the proposed fast path.
 
-Kernel-managed swap may be retained as a supported backend if its guarantees
-are declared accurately. It is not a silent fallback for a requested precise
-budget or strict residency mode.
+Kernel-managed swap remains a labeled measurement baseline unless independently
+qualified under PAGER-22. Accurate approximate-residency reporting alone does
+not satisfy authenticated preserved-byte integrity. It is not a silent fallback
+for a requested precise budget or strict residency mode, and this edition does
+not add an ordinary-swap deployment profile with a weaker storage threat model.
 
 ## 12.3 Why Merkle state is foundational rather than incidental
 
@@ -98,7 +102,7 @@ Changing the logical construction later requires another coordinated edition.
 
 | Question | Constraint | Evidence required before enablement |
 | --- | --- | --- |
-| Fault-safe suspension or concurrent removal? | Must progress while an access is blocked and cover CPU/device/raw-pointer reads and writes | Complete wait-for/lifetime proof and real-QEMU adversarial tests; general low-peak paging remains blocked until then |
+| Fault-safe suspension or concurrent removal? | Must identify an independently runnable discard primitive, preserve interrupt/RR/timer order, and cover physical borrowers while an access is blocked | Complete wait-for/lifetime proof and real-QEMU adversarial tests; general low-peak paging remains blocked until then |
 | Exact GPL companion topology and startup? | Must preserve the public license/process boundary and fault authority across fork/death | ABI/license review, process lifecycle specification, and retained-barrier dependency tests |
 | Supported userfaultfd mapping modes and host kernels? | Cannot assume fork/WP/kernel-fault behavior from generic availability | Deployed feature probes, permission checks, and positive/negative tests for every advertised mode |
 | Host page sizes larger than 4 KiB? | Logical pages stay fixed; population/removal may need grouped host pages | Complete group versioning, preservation, bounds, and portability evidence |
@@ -137,6 +141,15 @@ KVM and additional nondeterministic accelerators require separate execution
 contracts. The baseline hot-fork helper explicitly rejects KVM. This RFC does
 not treat a software memory pager as proof that hardware execution obeys the
 same modeled-time or fork-lifecycle invariants.
+
+Continuous reference/fault-modified RAM layers are deferred. This RFC does not
+maintain a parallel hypothetical fault-free image or require fault-overlay
+provenance retention. Existing admitted read transformations and physical fault
+mutations remain supported under chapter 03's integration requirements.
+Optional historical before/after versions can use explicitly retained immutable
+pages, but are not dependencies of paging, Merkle identity, fork, or transfer.
+The full-recompute qualification oracle checks the actual logical image; it is
+not a second runtime image or a counterfactual execution model.
 
 ## 12.6 Acceptance of the design versus acceptance of performance
 

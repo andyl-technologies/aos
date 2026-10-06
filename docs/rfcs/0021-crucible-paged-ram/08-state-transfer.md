@@ -27,9 +27,9 @@ complete-closure transfer mode and identifies additional gates required for
 future modes.
 
 - **[TRANSFER-1]** The initial transfer mode MUST transfer a coherent complete
-  whole-world exact closure and establish destination readiness before any
-  source execution authority is destructively released. A RAM root alone MUST
-  NOT be offered as a resumable machine or world.
+  whole-world exact closure and establish mode-specific destination readiness
+  before any source execution authority is destructively released. A RAM root
+  alone MUST NOT be offered as a resumable machine or world.
 - **[TRANSFER-2]** Host location, transfer progress, packing, physical page
   size, and paging-policy settings MUST NOT alter the logical RAM roots or
   modeled configuration. Destination execution MUST retain the same guest
@@ -124,8 +124,9 @@ An endpoint rejects unsupported versions before processing payload effects.
 | `ObjectReceipt` | Authenticated identity/length, durable placement floor, retained possession lease, request sequence |
 | `TransferProgress` | Monotonic authenticated discovery, verification, persistence, and remaining-work counters |
 | `TransferSeal` | Source declaration that the offered immutable closure is complete, with final authenticated inventory summary |
-| `DestinationReady` | Receipt binding complete local closure, semantic/provenance validation, retention, and destination restore admission |
-| `TransferCommit` | Authorized publication or maintenance handoff decision bound to the ready receipt and ownership generation |
+| `ClosureStored` | Receipt binding complete authenticated local closure, structural/provenance validation, required durability, namespace, and retention; no execution admission implied |
+| `RestoreReady` | Receipt extending `ClosureStored` with current destination machine/resource admission, complete continuation checks, and execution ownership generation |
+| `TransferCommit` | Authorized archive publication bound to `ClosureStored`, or maintenance handoff bound to `RestoreReady` and the execution ownership transition |
 | `TransferComplete` | Durable destination selection/publication receipt and final journal disposition |
 | `TransferCancel` | Authorized cancellation generation and reason, without releasing unresolved ownership |
 | `TransferFailure` | Typed integrity, compatibility, resource, storage, transport, or supervision failure and recoverable journal state |
@@ -157,19 +158,28 @@ cross-machine transactions.
 
 ```text
 source:      selected -> retained -> offered -> transferring -> sealed
-             -> destination-ready -> committed -> retention-released
+             -> mode-ready -> committed -> transfer-retention-released
 
-destination: absent -> admitted/journaled -> discovering -> receiving
-             -> closure-verified -> restore-admitted -> ready
-             -> committed/published -> transfer-retention-retired
+destination common:
+             absent -> storage-admitted/journaled -> discovering -> receiving
+             -> closure-verified -> closure-stored
+
+archive:     closure-stored -> archive-published -> transfer-retention-retired
+maintenance: closure-stored -> restore-admitted -> restore-ready
+             -> ownership-committed -> executable-selection-published
+             -> transfer-retention-retired
 ```
 
 `discovering` and `receiving` may overlap within credit limits. `sealed` means
 the immutable offer has a complete authenticated inventory; it does not mean
 that the destination has those bytes. `closure-verified` means every required
 descendant is present or canonically derivable locally and retained.
-`restore-admitted` additionally establishes whole-world semantic and physical
-compatibility checks. Publication and execution authority remain distinct.
+`closure-stored` additionally establishes the requested durable possession and
+receipt. Storage admission does not require an executable machine profile.
+`restore-admitted` adds execution compatibility, whole-world continuation checks,
+and physical resource admission. `mode-ready` means `ClosureStored` for archive
+copy and `RestoreReady` for maintenance handoff. Publication and execution
+authority remain distinct.
 
 - **[TRANSFER-8]** Destination readiness MUST require complete local
   availability, authenticated whole-world relationships, required durability,
@@ -178,6 +188,14 @@ compatibility checks. Publication and execution authority remain distinct.
 - **[TRANSFER-9]** Destination publication MUST install ordinary selection
   retention before retiring transfer retention. Source retention MUST remain
   until the corresponding destination receipt is durably reconciled.
+
+- **[TRANSFER-17]** Archive publication MUST require `ClosureStored` and MUST
+  NOT require destination QEMU launch or restore admission. A later restore
+  MUST independently establish current execution compatibility, resources,
+  retention, and ownership. Maintenance execution handoff or destruction of
+  source execution recovery authority MUST additionally require `RestoreReady`
+  and the durable execution-ownership transition. Neither receipt alone grants
+  permission to run a canonical continuation twice.
 
 An archive transfer may finish by publishing an archive ref without executing
 anything. Executable imports must additionally satisfy the exact selection and
@@ -199,17 +217,27 @@ at different times is prohibited.
   resume that continuation after releasing its execution authority. A lost
   completion message MUST NOT result in both sides independently resuming.
 - **[TRANSFER-11]** Source destruction MUST occur only after authenticated
-  destination readiness and the durable ownership transition required by the
+  `RestoreReady` and the durable execution-ownership transition required by the
   transfer mode. Before that transition, failure MUST leave a valid retained
   source closure or recoverable source process.
+
+Retiring an archive copy's temporary transfer lease after `ClosureStored` and
+publication is not destruction of source execution authority. Ordinary source
+selection/process retention remains governed by its existing owner. A storage-only
+destination can therefore complete an archive transfer even when it cannot run
+the offered machine; incompatibility becomes a separately typed later restore
+refusal. Maintenance release requires revalidation if readiness expires or its
+execution/reservation generation changes before ownership commit.
 
 Copying a closure for independent campaign branches is different from moving
 the same execution owner. Branch creation must use the campaign's declared
 derivation and assignment mechanisms. Content sharing does not implicitly
 create a branch or permit duplicate canonical workers.
 
-If a destination is ready but the commit decision is unknown, it remains
-unexposed and retained until the ownership authority resolves the operation.
+If a maintenance destination has `RestoreReady` but the commit decision is
+unknown, its executable world remains unexposed and retained until the ownership
+authority resolves the operation. An archive ref may already be published
+without creating that world or granting execution.
 If the source has durably released execution authority but transport loses the
 receipt, recovery follows the recorded owner generation; the source cannot
 infer permission to resume from elapsed time. These rules need the surrounding
@@ -323,6 +351,12 @@ wrong storage kind, stale catalog cursors, mismatched scope, incompatible
 provenance, missing device state, and unknown ownership outcomes. Crash and
 cancellation injection covers every journal, receipt, publication, and release
 transition. GC and repacking run concurrently with authenticated extraction.
+
+The archive case must succeed on a storage-only destination with no QEMU profile
+or execution reservation. Its later restore must independently refuse an
+incompatible profile or insufficient resources. Maintenance must fail safely
+when readiness becomes stale before ownership commit, preserving source recovery
+authority. Dropped receipts cannot promote `ClosureStored` into `RestoreReady`.
 
 Acceptance also measures peak metadata/buffer memory, discovery scratch,
 temporary disk, transferred logical bytes, durable progress, and time to

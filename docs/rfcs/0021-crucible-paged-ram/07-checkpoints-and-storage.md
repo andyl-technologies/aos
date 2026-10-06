@@ -111,7 +111,8 @@ records. Consequently, freezing a RAM tree before device pre-save would capture
 inconsistent state. The new flow is:
 
 1. Acquire the whole-world capture owner and cancellation context.
-2. Quiesce required writers and establish the declared boundary.
+2. Quiesce required writers, establish the declared boundary, and acquire a
+   capture-bound disposition barrier for in-flight pager and policy work.
 3. Perform device pre-save and capture final CPU/device state.
 4. Flush and reconcile every RAM-writing source, then establish the RAM epoch.
 5. Rehash invalidated logical leaves, construct immutable roots, and capture
@@ -132,7 +133,24 @@ its dirty epoch advanced.
 - **[CHECK-5]** Candidate creation MUST leave the previously committed
   checkpoint and dirty-consumer acknowledgments intact. Failure, cancellation,
   or indeterminate publication MUST NOT acknowledge changes absent from a
-  durably selected successor.
+   durably selected successor.
+
+- **[CHECK-13]** Capture MUST classify pending page fetch/install, replacement,
+  removal, writeback, and accepted policy-transition work before establishing
+  its RAM epoch. Work MUST drain or remain held under explicit source ownership
+  and version fencing. Only proved content-preserving work that cannot alter
+  the frozen logical view MAY continue. Cancellation MUST retain buffers,
+  registrations, backing leases, and operation claims until completion or
+  containment is reconciled. Semantic writer quiescence alone MUST NOT stand
+  in for this operational disposition barrier.
+
+The barrier binds the whole-world capture, node/arena generations, topology,
+and selected page versions. Physical installs of the same frozen bytes can be
+permitted by its proof; stale completions cannot replace those versions or
+acknowledge another consumer's baseline. An accepted policy update may remain
+operationally pending, but cannot change capture membership, shorten retained
+leases, or permit eviction of the only required version. Operational disposition
+is not a new semantic checkpoint component.
 
 For resident pages, capture reads a coherent view under the owner. For
 nonresident clean pages, it reuses an authenticated content association and its
@@ -343,6 +361,21 @@ already be operational before those callbacks execute. Such accesses populate
 only the necessary pages under the restore budget. A fault during restoration
 cannot advance guest-visible virtual time or invent a modeled I/O event.
 
+- **[CHECK-14]** Restore MUST create fresh node/controller incarnations,
+  registrations, waiter and request namespaces, and mutable page-state owners
+  before pageable reconstruction. It MUST reconstruct dirty-consumer baselines
+  from the selected authenticated checkpoint and MUST NOT replay source-side
+  operational I/O requests or import their completion authority. Policy,
+  reservation, and deadline journal recovery MUST remain separate from semantic
+  restore and require fresh physical admission and current-owner validation.
+
+Fault/plugin semantic continuation, including deferred memory-service tickets,
+does restore from the selected complete closure. This is distinct from rebuilding
+the operational pager: a pending modeled store resumes once under the new
+host service context, with unchanged virtual coordinates. Former source I/O
+completions cannot select any fresh request namespace. Cleanup of the old
+controller retains its own resources until positively reconciled.
+
 ## 07.9 Resource budgets, cancellation, and acceptance
 
 Capture, publication, restore, discovery, and maintenance receive separate
@@ -368,6 +401,9 @@ Implementation acceptance includes incompressible large RAM, sparse zero RAM,
 write-and-revert, many retained roots, device pre-save writes, mid-operation
 cancellation, forced storage errors, pack replacement during page reads, and
 crash injection at every root/selection/epoch transition.
+Capture/restore adversaries additionally hold page-in, install, removal,
+writeback, and accepted policy changes across the disposition barrier and then
+deliver their completions after cancellation or controller replacement.
 
 The decisive correctness result is equal logical roots and equal whole-world
 continuation across resident, aggressively paged, restored, and forked

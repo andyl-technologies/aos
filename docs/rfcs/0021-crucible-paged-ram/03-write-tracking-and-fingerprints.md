@@ -73,7 +73,8 @@ a correct cached tree. Restore needs an explicit content-state transition.
 length and bytes. Repeated content can share a `PageDigest` across positions.
 `RegionTreeDigest` commits ordered page content in the canonical binary tree.
 `RamRootDigest` commits the selected scope, topology, and ordered region roots.
-The storage `ContentId` separately authenticates a stored representation. These
+The storage `ContentId` separately authenticates canonical serialized object
+bytes, independently of pack, compression, encryption, or placement. These
 terms and their encodings have exactly the meanings assigned in chapter 02.
 
 Logical pages are 4096 bytes on every host. Host pages, target dirty granules,
@@ -131,7 +132,10 @@ must inspect the corresponding patched source and participating devices.
 | Cached DMA and mapped buffers | Patched cached-access declarations and helpers in `include/system/memory.h`, plus address-space map/unmap users | Direct pointer writes, cached stores, bounce buffers, and delayed unmap reporting |
 | Device-owned RAM and ROM backing | Migratable RAM inventory, device callbacks, and ROM-device dirty/flush APIs | CPU-inaccessible and read-only-to-guest bytes that the device can mutate; explicit scope ownership |
 | Debugger and management writes | QEMU debugger/physical-memory write entry points and admitted QMP mutation commands | Dirty accounting while paused, including writes to already-dirty pages |
-| Memory faults | Patched `plugins/crucible-fault-memory.c`, `memory_region_fault_commit_ram()` | Committed mutations only; suppressed writes do not manufacture content changes |
+| Boundary memory mutations | Patched `plugins/crucible-fault-memory.c`, `memory_region_fault_commit_ram()` | Atomic prepared mutations, branch-private authoritative versions, all affected dirty consumers; suppressed writes do not manufacture content changes |
+| Persistent fault-model mutations | Patched `plugins/crucible-fault-node.c` retention, rowhammer, and staged fetch paths | Cold victims and delayed physical writes; tracking and translated-code invalidation for every committed subrange |
+| Modeled memory service | Patched `plugins/crucible-fault-node.c`, `qemu.memory.service.v3`, and x86 CPU memory-service tickets | Deferred stores and frozen loads preserve grant/ready coordinates, access sequence, ordering, and replay state through host faults |
+| Hardware-error reporting | Admitted QEMU hardware-error delivery and guest-RAM record writers | Reporting writes such as GHES records enter tracking; reporting alone is not proof of a data mutation or guest handling |
 | Instruction fault state observation | Patched `plugins/crucible-fault-instruction.c` | Observes the correct pre- or post-action root without modifying tracker state inconsistently |
 | Reset, boot loading, and device post-load | System reset/load paths and participating device reset/post-load callbacks | Establishes tracked initial content and invalidates overwritten bytes before root reuse |
 | Exact checkpoint restore | Patched `system/crucible-checkpoint-restore.c`, `crucible_restore_parse_layer()` | Direct restored writes explicitly install or invalidate page identities |
@@ -157,6 +161,47 @@ The evidence is a maintained writer inventory plus differential tests. Adding a
 device, memory backend, raw-pointer optimization, or management write command
 requires updating that inventory. A source-string check showing the presence of
 one dirty flag is insufficient evidence of coverage.
+
+### 03.3.1 Fault semantics and preservation work
+
+The integration inventory distinguishes three kinds of work. Architectural
+accesses exercise the admitted guest-memory model. Simulation mutations alter
+RAM under the authored fault model, including delayed retention or rowhammer
+victims. Operational preservation moves or observes existing logical contents
+for paging, hashing, checkpoints, transfer, and COW. A host fault during either
+of the first two kinds does not create another architectural access.
+
+- **[TRACK-17]** Operational preservation MUST NOT create modeled access
+  opportunities, consume occurrence counters or random choices, refresh
+  simulated retention cells, increment rowhammer counters, or consume modeled
+  memory-controller service. Retry and population MUST resume the same admitted
+  access or mutation without duplicating its semantic effects.
+- **[TRACK-18]** A simulation mutation of a cold page MUST acquire the latest
+  authoritative logical version and branch-private mutation rights before
+  changing bytes. It MUST notify every affected dirty consumer and satisfy the
+  existing translated-code invalidation contract. Population and copying of
+  unchanged bytes MUST NOT stand in for that notification.
+- **[TRACK-19]** Expanded fingerprint inventory MUST NOT expand fault-target
+  authorization. A region's inclusion in a RAM scope does not admit mutation
+  of device RAM, ROM/ROMD, MMIO, read-only/protected ranges, or ambiguous aliases.
+  Each fault capability MUST retain its own explicit target restrictions and
+  reject unsupported targets before applying effects.
+
+Read corruption, stuck reads, poison, and modeled service delays can change
+observed values or future continuation without changing physical RAM bytes.
+Their fault/plugin state belongs to the enclosing complete continuation, not
+to a fabricated RAM write. RAM-root equality alone does not establish their
+semantic equivalence. Authored fault-service delays remain modeled time;
+host population delays remain operational wall time under INV-2.
+
+The source baseline's `MemoryService` capability is narrower than arbitrary
+per-access latency or a physical controller model. Shared-dispatch non-fw_cfg
+CPU service uses an explicit-vCPU one-byte range and x86_64/i386 tickets. Broad
+random latency, controller failures, address aliasing, or new ECC decoding
+require separately specified semantic capabilities. Before claiming the current
+service profile, implementation must reconcile its host payload encoder and
+GPL decoder, including the actor field, through independent codec and live
+tests. The source audit alone does not establish a working admitted profile.
 
 ## 03.4 Independent epochs and consumer baselines
 
@@ -281,6 +326,29 @@ explicit pager in [chapter 04](04-host-paging.md) can preserve an authenticated
 page identity during eviction and avoid that reload. This distinction affects
 cost, not logical fingerprint semantics.
 
+### 03.6.1 Prepared fault mutations across residency transitions
+
+The existing range-mutation contract prepares before/after evidence for all
+fragments and admits an all-or-nothing commit; see
+[RFC-0014's boundary mutation contract](../0014-signal-driven-fault-model/14-qemu-fault-patches/03-memory-boundary-mutation.md).
+Cold-page acquisition and COW add operational failure points to that transaction.
+
+- **[TRACK-20]** Before the first fault-transaction write, preparation MUST
+  establish coherent before bytes, the bound page versions, mutation/COW
+  authority, and admitted commit resources for every affected fragment.
+  Residency transitions MUST NOT change that prepared logical view or introduce
+  a recoverable partial commit. Precommit refusal MUST preserve logical state.
+  If an unavoidable operational failure makes commit disposition uncertain,
+  the affected execution authority MUST be held or stopped, with unresolved
+  resources retained; it MUST NOT acknowledge successful fault evidence or
+  continue as a valid completed mutation.
+
+Pinning, immutable staging, and temporary placement exclusion are implementation
+choices. Their capacity and lifetime must be admitted, and stale I/O cannot
+replace a prepared version. Independent consumers observe committed writes
+without losing earlier obligations. The same before/after evidence contract
+applies whether the original fragments were resident, cold, or shared by COW.
+
 ## 03.7 Fork, restore, reset, and recovery
 
 A hot-fork child inherits immutable content roots and establishes private
@@ -350,10 +418,14 @@ paging-aware content access. Hashes of unrelated accelerator buffers or device
 protocol payloads remain their own contracts; replacing every 32-byte digest
 with a RAM root would corrupt state meaning.
 
-- **[FP-10]** Every production RAM hash surface MUST use the new declared
-  scope/schema. No unchanged algorithm tag may silently acquire Merkle semantics.
-  Request producers, sample consumers, fault preconditions, and replay evidence
-  MUST reject mismatched definitions.
+- **[FP-10]** Every production complete-RAM state identity observer MUST use the
+  new declared scope/schema. Selected-range fault preconditions and before/after
+  evidence MUST retain an independently declared, versioned range, observation
+  boundary, and coherent paging-aware hashing contract; they MUST NOT be
+  replaced by a whole-scope root that answers a different predicate. No unchanged
+  algorithm tag may silently acquire Merkle semantics. Request producers,
+  sample consumers, fault preconditions, and replay evidence MUST reject
+  mismatched definitions for their respective contracts.
 - **[FP-11]** The cutover MUST preserve component coverage, exact coordinates,
   register/RR evidence, and device observation ordering. Paging policy MUST NOT
   select a different fingerprint algorithm or weaker scope.
@@ -379,10 +451,12 @@ and qualification mechanism, not a backward-compatible production digest.
   restore. They MUST include repeated writes, reverted writes, partial final
   pages, cold pages, and host allocation-geometry changes.
 
-For 4 KiB pages and 32-byte digests, dense binary leaf/internal hashes consume
-approximately 1.56% of RAM size before allocation overhead: about 8 MiB for a
-512 MiB guest, or 1 GiB for a 64 GiB guest. One dirty bitmap consumes 16 KiB per
-512 MiB, and an eight-byte version per page adds 1 MiB. Persistent roots,
+For 4 KiB pages and 32-byte digests, a power-of-two page count's dense binary
+leaf/internal hashes consume approximately 1.56% of RAM size before allocation
+overhead: about 8 MiB for a 512 MiB guest, or 1 GiB for a 64 GiB guest. Padding
+can raise that cost toward 3.125%; chapter 02's dense/padded bound governs
+admission. One dirty bitmap consumes 16 KiB per 512 MiB, and an eight-byte
+version per page adds 1 MiB. Persistent roots,
 references, retained snapshots, and fork-induced metadata copies add further
 cost. Compact realization may preserve the specified binary tree while storing
 its metadata more efficiently.

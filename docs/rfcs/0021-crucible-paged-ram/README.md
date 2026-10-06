@@ -29,6 +29,15 @@ and bounded transfer of missing pages and subtrees. These capabilities share
 foundations but have separate release gates. Remote demand paging and live
 migration are not prerequisites for local paging or archive transfer.
 
+The initial paused-only pager requires a sound inter-boundary peak reservation
+and physical-access lifetime proof. Smaller guaranteed execution footprints
+remain gated on independently progressing reclamation that preserves interrupt,
+scheduler, and timer ordering. Existing simulated faults remain compatible with
+cold RAM and atomic mutation transactions; continuous reference/fault RAM images
+are deferred. Infrastructure phases retain finite supervision, and outer-cap
+changes use separate revisioned operational transactions. Archive storage
+receipts are distinct from restore readiness and execution handoff authority.
+
 ## Document status and terminology
 
 This is a repository design record, not an IETF submission. Uppercase MUST,

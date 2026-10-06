@@ -100,6 +100,13 @@ The existing subsystem barriers remain mandatory. The page-state extension adds
 work to their transaction; it does not permit an external host process to infer
 fork safety from a RAM root or paused status.
 
+Any in-QEMU discard worker must appear in the thread/mutex inventory, with an
+explicit parked or drained disposition and child reconstruction. The current
+closed fork registry does not admit arbitrary extra workers. Its retained locks
+must not become dependencies of fault population or discard while an accessing
+thread is blocked. An external companion likewise requires explicit descriptor,
+registration, and control ownership through the handoff.
+
 Preparation proceeds in the following dependency order:
 
 1. Reach the authorized deterministic boundary and complete the guest/device
@@ -141,9 +148,10 @@ kernel-managed reclamation has its own memory-preservation contract and does
 not establish correctness of custom discard operations.
 
 - **[FORK-10]** Initial custom eviction MUST NOT race running CPU or device RAM
-  accesses. Concurrent custom eviction requires a separately admitted capability
-  proving write exclusion, page-version validation, dirty preservation, and
-  interaction with every fork barrier.
+  accesses and MUST satisfy PAGER-23's retained physical-borrow, alias, kernel-pin,
+  and observation-reader proof. Concurrent custom eviction requires a separately
+  admitted capability proving write exclusion, page-version validation,
+  dirty preservation, and interaction with every fork barrier.
 
 ## 06.4 Child service and rebinding
 

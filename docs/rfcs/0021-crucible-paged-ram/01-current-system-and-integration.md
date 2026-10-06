@@ -75,6 +75,17 @@ or tracking invalidation. Reset bulk writes, cached DMA mappings, device raw
 pointers, debugger writes, modeled corruption, and direct initialization need
 the same complete audit. A CPU plugin store callback alone is insufficient.
 
+Current boundary memory mutations prepare selected-range before/after evidence
+and require an all-or-nothing commit; see
+[the fault transaction owner](../../../crates/crucible-qemu/src/fault_action_sink/transaction.rs)
+and [RFC-0014's mutation contract](../0014-signal-driven-fault-model/14-qemu-fault-patches/03-memory-boundary-mutation.md).
+Persistent retention/rowhammer and staged physical writes also occur in patched
+`plugins/crucible-fault-node.c`. Its read transformations and `MemoryService`
+continuation can affect guest execution without a physical RAM write. Host
+population must not replay a modeled access or consume new fault opportunities.
+The service host encoder and GPL decoder are separate integration surfaces,
+including actor-field agreement; their static presence is not live qualification.
+
 The execution fingerprint definition is in
 [mapped quantum fingerprints](../../../crates/crucible-qemu/src/mapped_quantum/fingerprint.rs);
 the harness has its own
@@ -167,7 +178,7 @@ lease expiry.
 | GPL-side pager | Fault addresses, page materialization/removal, generation checks, fork readiness |
 | Public protocol/shmem | Versioned topology/root/control records; checked offsets; independent C/Rust vectors |
 | Apache host orchestration | Resource reservations, policy updates, storage authorization, host failure reporting |
-| Fingerprint/fault/harness | One logical hash edition, named scope, publication ordering |
+| Fingerprint/fault/harness | One complete-RAM identity edition with named scopes; independently versioned range evidence, atomic fault transactions, and preserved modeled service continuation |
 | Hot-source pools | Shared ownership accounting, immutable source seal, child-specific mutable versions |
 | Checkpoint/CAS | Durable page/tree closure, scalable index, exact-root publication |
 | Repository transfer | Bounded tree differences, authenticated possession, resume journals and retention |

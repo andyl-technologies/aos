@@ -35,9 +35,20 @@ storage operation, or additional simulated memory latency.
 
 The selected architecture is an explicit page store underneath stable,
 private, forkable mappings, with fault-based population. Kernel swap is a useful
-qualification and deployment option for approximate residency. It is also a
-performance baseline against which custom paging must justify its complexity.
-It does not satisfy the precise control contract by itself.
+measurement baseline for approximate residency against which custom paging
+must justify its complexity. It does not satisfy the precise control or
+authenticated-preservation contract by itself.
+
+- **[PAGER-22]** Kernel-managed swap MUST remain a measurement-only baseline
+  unless its deployment profile independently satisfies INV-4, PAGER-8, and
+  TEST-7's preserved-byte integrity and failure contract before access resumes.
+  Swap availability, cgroup configuration, or Merkle verification at a later
+  boundary MUST NOT count as that proof. An unqualified baseline MUST NOT be
+  advertised as an admitted authenticated paging backend or used as a silent
+  fallback. This edition does not introduce a weaker storage threat model.
+  A custom backend MUST prevent unqualified kernel swapping of its guest arenas
+  or independently qualify that additional preservation path; authenticating its
+  own page store does not authenticate bytes returned through kernel swap.
 
 The first explicit-pager stage validates preservation and population using
 paused-boundary removal. That stage does not provide general low-peak execution
@@ -47,7 +58,7 @@ a fault descriptor and setting a small limit does not establish that capability.
 
 | Backend | Preservation and sharing | Integration decision |
 |---|---|---|
-| Anonymous mappings with kernel swap | Kernel preserves modified bytes and fork copy-on-write | Qualify for approximate reclaim; retain as comparison backend |
+| Anonymous mappings with kernel swap | Kernel preserves modified bytes and fork copy-on-write | Measurement baseline; deployment additionally requires independent integrity qualification under PAGER-22 |
 | Immutable file with private mappings | Clean pages reload from the file; writes become private | Useful immutable basis, but private dirty pages still require preservation |
 | Writable shared file mapping | Modified bytes belong to the file | Reject direct inheritance across hot forks |
 | Distinct reflink files with shared mappings | Filesystem shares extents between separate files | Candidate requiring a separate remapping and filesystem qualification |
@@ -178,17 +189,25 @@ must follow the chapter's ownership protocol as appropriate.
 - **[PAGER-9]** Initial eviction MUST be bounded and occur under a proved RAM
   quiescence scope. The scope MUST bind the node and operation generations and
   exclude all semantic writers until current bytes are preserved and removal
-  completes. A claim of continued execution using paused-only removal MUST
+  completes. Admission using paused-only removal MUST
   reserve a sound worst-case population bound until the next reachable eviction
   boundary; absent such a bound, that reservation MUST cover full guest RAM plus
-  required host progress resources. An executor accepting a smaller reservation
-  bounded by resource failure MUST report that guarantee accurately and fail
-  as a typed host resource failure before exhausting its emergency reserve. It
-  MUST NOT advertise general low-peak forward progress.
+  required host progress resources. A smaller unsupported peak MUST be refused
+  before execution admission or policy application; fail-on-capacity admission
+  is not an alternative guarantee in this edition. Unexpected resource loss
+  after sound admission MUST still fail as a typed host resource failure before
+  exhausting the independent progress reserve.
 - **[PAGER-10]** Concurrent removal MUST remain disabled until separately
   qualified. Qualification MUST prove exclusion of writes during preservation,
   exclusion of stale accesses during removal, and correct handling of readers,
   aliases, blocked faults, and canceled operations.
+- **[PAGER-23]** Paused-boundary removal MUST additionally establish physical
+  access-lifetime safety for retained DMA mappings, raw-pointer borrowers,
+  kernel pins, aliases, and observation readers. Every such user MUST be
+  drained, held under proved exclusion, or covered by the qualified fault path
+  without retaining stale physical contents. Exact semantic pause, RCU object
+  lifetime, or write protection alone MUST NOT authorize removal. This proof
+  MUST hold with guest fault injection disabled as well as enabled.
 
 Write protection is useful for tracking mutations; it is not alone a complete
 reader-exclusion mechanism. A reader can race mapping removal, and a writer
@@ -216,8 +235,8 @@ interval. It cannot guarantee both a generally small peak and continued
 execution for arbitrary unmodified guests. Policy updates remain available,
 but a low target is a convergence preference in this stage, not a strict peak
 guarantee. A stricter unsupported request must be rejected under Chapter 05's
-capability and admission rules; a smaller reservation deliberately accepting
-resource failure must retain that explicit distinction.
+capability and admission rules. Refusing an unsupported peak does not prohibit
+lowering the soft target while preserving the admitted peak reservation.
 
 General low-peak execution requires a later, separately implemented and
 qualified mechanism: either fault-safe resource suspension with reclaim that
@@ -229,6 +248,32 @@ without requiring the blocked access to complete first. Its reclaim path must
 remain live despite QEMU locks, device activity, and retained barriers. The
 implementation and validation plan must treat this mechanism as a prerequisite
 for general precise low-residency execution, rather than optional optimization.
+
+- **[PAGER-24]** General low-peak qualification MUST identify the process,
+  thread, kernel primitive, and retained authority that can discard a victim
+  while the faulting QEMU thread is blocked. Independent fetch service alone
+  MUST NOT satisfy this obligation. A local discard worker MUST have an
+  explicit thread/mutex disposition and child reconstruction contract. Resource
+  suspension MUST NOT introduce additional interrupt checks, vCPU rotation,
+  virtual-timer dispatch, modeled idle advancement, or semantic pause
+  publication. Exit-and-resume MUST be equivalent to uninterrupted execution;
+  retaining icount alone MUST NOT count as that proof.
+
+The current exact pause can revoke a quantum's unused tail and publish semantic
+control state; it cannot be reused wholesale as an operational hold. Pending
+timers, bottom halves, and coroutines must remain ordered rather than being
+dispatched to obtain a hold. Selected retained AIO/RCU admission machinery may
+be reused only with a separate physical-borrow and dependency proof.
+
+The GPL companion's fault descriptor does not itself provide remote discard
+authority. `process_madvise` does not offer remote `MADV_DONTNEED`, and
+`UFFDIO_MOVE` has pinned-page and fork-COW sharing restrictions; see
+[process_madvise](https://man7.org/linux/man-pages/man2/process_madvise.2.html)
+and [UFFDIO_MOVE](https://man7.org/linux/man-pages/man2/UFFDIO_MOVE.2const.html).
+Qualification must establish the selected primitive on the actual mapping,
+including shared source pages and kernel pins. A hold requested before capacity
+depletion must retain enough capacity to reach its proven safe point; a fault
+already blocking that point requires independent population or safe failure.
 
 Qualified logical reset may replace a volatile region with authenticated zero
 backing and a new operation basis without loading old pages. It must preserve
@@ -496,6 +541,11 @@ the separately qualified suspension/reclaim or concurrent-removal path. A fault
 left waiting for the boundary it prevents is a blocking correctness failure.
 Dynamic reduction of a target or peak during that interval must exercise the
 same test rather than relying on a configuration applied only at launch.
+
+For the initial paused-only backend, the admission-negative variant must refuse
+the unsupported small peak before launch or a live update. The operational
+failure variant tests unexpected resource loss after valid admission; it must
+not be used to qualify deliberately undersized admission.
 
 Acceptance also requires bounded scan behavior: a Merkle fingerprint must not
 rehydrate unchanged absent pages, and direct state export must use bounded

@@ -25,6 +25,11 @@ Process termination can occur between preserving bytes, publishing metadata,
 and releasing a lease. These conditions are part of the threat model even when
 the operator does not expect malicious infrastructure.
 
+Kernel swap measurement runs do not weaken this storage threat model.
+[PAGER-22](04-host-paging.md) requires an independently qualified integrity basis
+before kernel-managed swap can be an admitted authenticated backend; ordinary
+swap and later fingerprint verification are not sufficient admission evidence.
+
 The unkeyed BLAKE3-256 constructions in
 [02-logical-ram-and-merkle-format.md](02-logical-ram-and-merkle-format.md)
 provide content integrity under the usual collision and second-preimage
@@ -37,7 +42,7 @@ prove that those bytes belong to the requested campaign boundary.
   scoped `RamRootDigest` through the complete checkpoint or transfer contract
   before authorizing execution. It MUST verify page contents and tree
   relationships against that expected root. A page's `PageDigest`, or a store's
-  representation `ContentId`, alone MUST NOT authorize resume.
+  canonical object `ContentId`, alone MUST NOT authorize resume.
 - **[SEC-2]** Untrusted region inventories, tree records, page references, and
   backing descriptors MUST be validated before allocation or access. Validation
   MUST bound counts, sizes, depths, offsets, aggregate work, decompressed output

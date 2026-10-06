@@ -70,6 +70,16 @@ its covered geometry, caller lifetime, and consumer epochs. Identify external
 kernel reads/writes through guest pointers, device pre-save mutations, bulk
 reset/restore, fault injection, and cached DMA stores.
 
+Separate the complete RAM read-resolution inventory from writable fault-target
+admission. The existing mutation mapping filter excludes readonly, ROM, and
+RAM-device regions; pager lookup must cover admitted cold reads of those regions
+without granting mutation rights. Include retained raw/DMA borrowers and kernel
+pins even with fault rules disabled. Inventory persistent retention/rowhammer
+mutations, guest-RAM hardware-reporting writes, and modeled memory-service
+tickets/frozen loads/deferred stores. Reconcile the host/GPL service payload
+contract, including actor fields, before claiming live service coverage.
+Operational copies must not exercise simulated access opportunities or timing.
+
 Define the new fingerprint and checkpoint editions and enumerate all consumers:
 production execution, exact snapshot, harness, instruction fault state,
 lifecycle preconditions/source seals, trace, and persisted canonical samples.
@@ -121,6 +131,12 @@ accepted latency configuration. Reconcile QEMU-internal placement waits and
 host-side deadlines. Make operational controls independently responsive while
 QMP and guest execution stall.
 
+Enforce TIME-9's finite infrastructure-phase bounds at admission and on every
+live update. Implement the separate outer-cap amendment transaction, shared
+watcher wakeup, original-start retention, expiry precedence, durable recovery,
+bounded idempotency history, and limiting-deadline status. An updated caller
+duration without rebinding every affected supervisor is not complete.
+
 Exit evidence includes nested deadlines, in-flight updates, rollback of refused
 reservations, restart recovery, prolonged legitimate progress, endless paging
 without guest progress, cancellation, and quarantine that remains charged.
@@ -132,7 +148,10 @@ the existing default behavior unless the operator selects the backend. Probe
 usable swap and cgroup delegation. Document that cgroup swap and memory limits
 apply to an aggregate owner, including file cache and emulator overhead.
 There is no precise per-VM cache guarantee from `mmap`, global swappiness,
-or an attempt-level cgroup alone.
+or an attempt-level cgroup alone. Package D is a labeled measurement baseline:
+operator selection permits the experiment, not authenticated-backend deployment.
+Advertising a supported backend requires PAGER-22's separate integrity proof;
+this edition does not silently trust swap bytes or narrow TEST-7's threat model.
 
 Measure deterministic equality and host throughput for resident, swap-enabled,
 and constrained-memory runs. These measurements supply a realistic comparison
@@ -185,6 +204,13 @@ offsets. Prove its service cannot depend on a barrier held by an accessing
 QEMU thread, and reserve its minimum service resources. License and ABI
 review precedes adoption of this placement.
 
+Initial acceptance includes PAGER-23's physical-access lifetime proof for
+retained DMA/raw mappings, kernel pins, aliases, and observation readers.
+Reserve the sound inter-boundary peak before admitting the paused-only backend;
+unsupported peak reductions are refused rather than admitted with expected
+runtime failure. Cold fault-transaction preparation must secure all fragments'
+versions, COW rights, and commit resources before any write, under TRACK-20.
+
 Exit evidence includes missing/short/corrupt backing, delayed and stale I/O,
 companion death, kernel fault denial, mapping removal events, cleanup races,
 and preservation failure before discarding the last correct resident version.
@@ -202,22 +228,30 @@ boundary that the fault itself prevents the guest from reaching.
   during a blocked access, or safe concurrent removal with complete CPU,
   DMA, raw-pointer, and read-lifetime protection. Neither approach MAY inject
   a guest-visible event or modeled time step. Initial paused-only operation
-  MUST reserve its sound interval peak or fail operationally before exhausting
-  the independent progress reserve.
+  MUST reserve its sound interval peak and refuse unsupported smaller admission
+  or live peak reductions. Unexpected resource loss after valid admission MUST
+  fail operationally before exhausting the independent progress reserve.
 
 Resource suspension requires a complete stop protocol that can progress while
 a vCPU or device thread is blocked in a host fault, including mutex ownership,
 BQL constraints, event-loop work, pager callbacks, and any dirty re-arm work.
+Qualification identifies the actual discard executor and kernel primitive,
+not just an independent fetch companion. A local worker needs a closed
+thread/mutex plan and child reconstruction. Operational holds cannot use ordinary
+host-timed CPU kicks or semantic vmstop publication without proving unchanged
+interrupt checks, RR allocation, timer/device order, and partial operation state.
 Concurrent removal requires a different proof: preserving every latest write,
-rejecting stale I/O, preventing reads through removed mappings, and covering
-all device/DMA lifetimes. Benchmark gains do not replace either proof.
+rejecting stale I/O, preventing stale physical references or bypass of the
+qualified fault path, and covering all device/DMA lifetimes. Benchmark gains
+do not replace either proof.
 
 Exit evidence includes an unmodified guest whose single quantum touches more
 distinct pages than the resident peak, without extra reservation capacity,
 and equivalent scenarios during device activity and runtime target reduction.
 For the general backend the run must make bounded progress with correct bytes.
-For the limited baseline it must refuse or terminate operationally without a
-deadlock, zero substitution, or accidental dependence on extra host RAM.
+For the limited baseline unsupported admission must be refused; a distinct
+post-admission resource-loss adversary must terminate safely. Neither case may
+deadlock, substitute zeroes, or depend accidentally on extra host RAM.
 
 ## 11.10 Package I: cold forks and local lazy restore
 
@@ -233,6 +267,12 @@ contract. CPU/device and continuation reconstruction remain coherent. Verify
 complete local durable availability before launch, and each page before it
 is exposed. Cold reads during device restore must be serviced independently.
 No remote-page server is implied.
+
+Capture establishes CHECK-13's disposition barrier for pending pager and policy
+work. Restore constructs fresh controller/registration/request namespaces and
+independent consumer baselines under CHECK-14. Source I/O completions cannot
+be replayed into the restored owner. Existing modeled fault/service continuation
+must remain intact and resume its admitted semantic effects exactly once.
 
 Exit evidence includes mostly cold sources, fork barrier adversaries, child
 reconstruction reads, failed rearm, source death, child cancellation, descendants,
@@ -258,6 +298,12 @@ Exit evidence includes runtime tuning during blocked faults and forks,
 idempotent retry across restart, revision conflicts, quota exhaustion, dropped
 transfer sessions, corrupt destination claims, partial receipts, and publication
 only after complete authenticated durable possession.
+
+Archive transfer completes with `ClosureStored` and ordinary archive selection
+retention on a storage-only destination. Maintenance additionally requires
+`RestoreReady`, current execution admission, and the durable ownership transition.
+Test stale readiness before handoff and independently refused later restore;
+neither publication nor source lease retirement implicitly grants execution.
 
 ## 11.12 Coordinated release and documentation
 

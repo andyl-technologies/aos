@@ -46,6 +46,10 @@ Repository policies apply independently of this proposal's status.
   and shared mappings, address space, and lifetime semantics.
 - [Linux `madvise(2)`](https://man7.org/linux/man-pages/man2/madvise.2.html):
   reclamation/advice behavior, fork disposition, and host capability constraints.
+- [Linux `process_madvise(2)`](https://man7.org/linux/man-pages/man2/process_madvise.2.html):
+  restricted remote advice set; remote `MADV_DONTNEED` is not supplied by this interface.
+- [Linux `UFFDIO_MOVE(2const)`](https://man7.org/linux/man-pages/man2/UFFDIO_MOVE.2const.html):
+  move semantics and pinned/exclusive-page constraints, including fork-COW sharing.
 - [Linux `mlock(2)`](https://man7.org/linux/man-pages/man2/mlock.2.html):
   residency locking, privileges/limits, and noninheritance of locks across fork.
 - [Linux `ioctl_ficlone(2)`](https://man7.org/linux/man-pages/man2/ioctl_ficlone.2.html):
@@ -81,7 +85,7 @@ references. Particularly important evidence includes:
 - [CAS storage](../../../crates/crucible-cas/src/content_store.rs),
   [packing](../../../crates/crucible-cas/src/content_store/packed.rs), and
   [envelopes](../../../crates/crucible-cas/src/content_envelope.rs): existing
-  representation identity, indices, limits, and closure ownership.
+  canonical serialized object identity, indices, limits, and closure ownership.
 - [Repository transfer](../../../crates/crucible-campaign/src/repository/transfer.rs):
   transfer planning, closure validation, and publication integration.
 - [Campaign performance qualification](../../../tests/crucible/phase9-campaign-performance.nix):

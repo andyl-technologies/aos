@@ -44,8 +44,8 @@ encoding, unkeyed BLAKE3-256 domain separation, fixed 4,096-byte logical pages,
 ordered binary region trees, padding and scoped RAM inventory. `PageDigest` authenticates
 content length and bytes. Logical position is committed by the ordered tree and
 region inventory, not included in the content leaf; identical real zero pages
-therefore remain shareable. `ContentId` authenticates a storage representation
-independently. The two identities must not be conflated in vectors or tests.
+therefore remain shareable. `ContentId` authenticates canonical serialized object
+bytes independently. The two identities must not be conflated in vectors or tests.
 
 - **[TEST-3]** `gate:ram-format` MUST verify independently implemented canonical
   vectors across the host and GPL-side implementations. Vectors MUST cover
@@ -116,6 +116,8 @@ restrictions; they MUST NOT be hidden by silently omitting a writer or region.
 | Region scope | Ordinary writable RAM, ROM, RAM-device, migratable device RAM, aliases and multiple blocks | Each scoped root includes exactly its specified logical inventory. |
 | CPU writes | Fast/slow stores, page crossings, relevant supported architectures and multi-vCPU RR boundaries | Incremental and independent roots agree at requested coordinates. |
 | Host/device writes | DMA, debug, fault injection, reset, restore, discard and initialization | Correct pages and consumers observe changes, including direct host paths. |
+| Existing fault continuations | Retention/rowhammer victims, staged physical mutations, read-only transforms, and deferred `MemoryService` loads/stores | Cold pages preserve fault opportunity counts, grant/ready coordinates, replay state, and every committed write. |
+| Hardware reporting | Guest-RAM error records and realized supported delivery paths | Reporting writes are tracked; guest-visible delivery is established independently of command acceptance. |
 | Epoch order | Fingerprint before/after checkpoint commit, abort during writeback, restore followed by capture | No consumer can erase another consumer's pending changes. |
 | Snapshot coherence | Writer admitted just before freeze; background operations paused or draining | Published root describes one exact boundary, never mixed generations. |
 | Root acknowledgement | Queued hash work, cancelled request, stale generation and worker failure | Publication and matching acknowledgement retain their specified order. |
@@ -165,7 +167,9 @@ actually promises that target.
 ## 10.5 Guest transparency and exact continuation
 
 - **[TEST-10]** `gate:ram-guest-transparency` MUST run the same unmodified image
-  with fully resident policy, kernel paging, and admitted custom-pager policies.
+  with fully resident policy, the labeled kernel-swap measurement baseline,
+  and admitted custom-pager policies. A baseline run MUST NOT be presented as
+  authenticated-backend qualification without PAGER-22's independent proof.
   It MUST require no guest kernel changes, agents, balloon driver, guest swap,
   changed disk image, special allocator or workload cooperation. Input bytes,
   guest RAM capacity, launch entropy and modeled device configuration MUST be
@@ -236,9 +240,12 @@ obligations as the other `gate:ram-*` names above.
   reduction, and MUST establish that it exercised a blocked capacity fault
   without relying on unreserved resident capacity. A general low-peak backend
   MUST make bounded progress with correct bytes and unchanged modeled timing.
-  A limited paused-only backend MUST refuse the unsupported admission or
-  terminate as a typed host resource failure before exhausting its independent
-  progress reserve. Neither result may deadlock waiting for the unreachable
+  The initial paused-only backend MUST refuse the unsupported peak at launch
+  and on a live reduction; its valid-admission case MUST retain the sound
+  interval reservation. A separate adversary MUST remove resources after valid
+  admission and require typed host failure before the independent progress
+  reserve is exhausted. Deliberately undersized admission MUST NOT pass by
+  terminating later. Neither result may deadlock waiting for the unreachable
   quantum boundary, install zeroes, or quietly obtain extra host memory. The
   gate MUST include a causal negative that withholds the only qualified reclaim
   path and detects lack of progress or the specified safe operational failure.
@@ -264,12 +271,70 @@ obligations as the other `gate:ram-*` names above.
   The gate MUST show that the denied child operation was actually attempted;
   observing inherited resident pages alone is insufficient evidence.
 
+### 10.6.2 Fault, physical-access, checkpoint, and deadline qualification
+
+- **[TEST-18]** Fault integration qualification MUST repeat resident and cold
+  runs with persistent mutations, retention/rowhammer victims, suppressed and
+  torn writes, read corruption, poison, and the admitted memory-service model.
+  Paging, observation, COW, and host paging retries MUST leave modeled access
+  opportunities, random/occurrence state, cell refresh, row counters, and
+  controller service unchanged. Deferred loads/stores MUST retain grant/ready
+  coordinates, access
+  order, store count, and replay state through live policy updates, fork,
+  checkpoint, and transfer. Read-only transforms MUST include equal-RAM-root
+  cases whose complete continuation differs as expected. Cold multi-fragment
+  mutations MUST inject page-in/COW/resource failures before preparation and
+  after preparation but before commit, proving unchanged-state refusal or
+  contained uncertain failure without accepted partial mutation. Scope
+  expansion MUST NOT authorize unsupported fault targets. Hardware-error tests
+  MUST use the actual admitted CPU/machine/firmware profile and independently
+  assert the supported guest-visible delivery/handling contract; an applied
+  command or evidence-envelope marker alone MUST NOT qualify it.
+- **[TEST-19]** Initial removal MUST exercise retained direct DMA mappings,
+  cached pointers, aliases, kernel pins, observation readers, and pre-save
+  activity, with fault injection both disabled and enabled. The test MUST prove
+  the intended physical borrower was reached and cannot retain stale contents
+  or bypass the qualified fault path. General low-peak qualification MUST
+  demonstrate the actual discard executor making bounded progress while a CPU
+  or device thread is fault-blocked, including fork-COW pages and retained
+  barriers. Pressure arriving at different TB positions with pending interrupts,
+  timers, and queued device work MUST preserve uninterrupted execution's polling,
+  RR choices, event order, and partial-turn state. Companion-death negatives
+  MUST include nonzero cold pages and blocked CPU/device/child-initialization
+  access, and attempt final fault-reference release during cancellation and
+  fork handoff. Registration MUST remain retained until verified repopulation
+  or completed containment; a sent stop/kill request MUST NOT count as completion.
+- **[TEST-20]** Checkpoint qualification MUST hold page fetch/install,
+  replacement/removal, writeback, and accepted policy changes across capture,
+  cancellation, and restore. It MUST verify the disposition barrier, independent
+  baselines, retained source authority, fresh controller namespaces, and refusal
+  of late source completions. Transfer qualification MUST publish an archive on
+  a storage-only destination without QEMU execution admission, then independently
+  refuse an incompatible or under-resourced restore. Maintenance MUST retain
+  source recovery authority when `RestoreReady` becomes stale before ownership
+  commit. `ClosureStored` MUST NOT be accepted as execution readiness. Tests
+  MUST also show that packing, compression, encryption, and placement of the
+  same canonical CAS object preserve its `ContentId`, while distinct canonical
+  objects may share a decoded RAM digest.
+- **[TEST-21]** Supervision qualification MUST refuse infrastructure phases
+  with absent class budgets and no finite applicable outer cap, including live
+  updates and amendments that remove the last bound. Outer-cap tests MUST race
+  amendment against expiry, cancellation, and completion; expire a cap before
+  its watcher runs; lose the accepted response; exhaust bounded history; shorten
+  below elapsed time; and restart before and after journal commit. All affected
+  watchers MUST observe the same revision, original start, terminal decision,
+  and limiting-cap status. Lost clock-incarnation or elapsed-time evidence MUST
+  fail closed without restarting the allowance. Independently bounded cleanup
+  MUST remain possible after execution expiry, and unlimited guest execution
+  MUST NOT imply unlimited infrastructure waits.
+
 ## 10.7 Tree arithmetic and resource costs
 
-For a single region of logical length `L`, let `N = ceil(L / 4096)` and let `P`
-be the least power of two covering the region's real leaves, using chapter 02's
-specified empty-region behavior. A fully materialized binary tree has `P` leaf
-positions and `P - 1` internal nodes. Real-page content, padding and logical
+For a single region of logical length `L > 0`, let `N = ceil(L / 4096)` and let `P`
+be the least power of two covering the region's real leaves. Chapter 02 forbids
+zero-length regions; empty inventories are separate format-vector cases.
+A fully materialized binary tree has `P` leaf positions and `P - 1` internal
+nodes. Real-page content, padding and logical
 length semantics remain distinct. The following values count only 32-byte
 digests for a power-of-two region; they exclude node objects, allocator overhead,
 generation metadata, indexes, dirty state and resident bytes.
@@ -351,7 +416,7 @@ metadata cost. Slow storage may reduce completed campaign throughput even when
 many more VMs fit in memory.
 
 - **[PERF-6]** Qualification MUST proceed through separately reviewable stages:
-  contract/schema/oracle work; kernel-swap policy and Merkle tracking in
+  contract/schema/oracle work; kernel-swap measurement and Merkle tracking in
   parallel where their dependencies permit; scalable storage representation;
   custom pager and boundary/eviction safety; independently qualified fault-safe
   low-residency progress; fork and lazy restore; then portable transfer. General

@@ -80,6 +80,12 @@ foundation may support them, but none is claimed by this RFC. Storage compressio
 encryption, deduplication across trust domains, and concurrent eviction during
 guest execution are separately qualified extensions, not correctness shortcuts.
 
+Existing admitted simulation memory faults and modeled memory-service timing
+must continue to work across residency changes; deferring realistic controller
+extensions does not defer that integration. Continuous parallel reference/fault
+RAM images are deferred as described in chapter 12. Independent full recomputation
+is validation of the actual image, not a mandatory runtime overlay.
+
 ## 0.4 Vocabulary and identity domains
 
 | Term | Meaning |

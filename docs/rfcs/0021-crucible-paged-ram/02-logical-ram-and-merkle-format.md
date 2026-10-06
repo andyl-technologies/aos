@@ -224,10 +224,13 @@ cannot reconstruct the flat ordered scoped-root preimage.
 Portable structural nodes must explicitly identify leaf/inner kind, height,
 children, and any storage references; their exact representation belongs to
 the store schema in chapter 07. They may contain `PageObjectId` values even
-though those values are excluded from logical hash preimages. Equivalent
-physical representations can share logical identity without sharing CAS
-identity. An implementation must validate structural fields against the
-logical preimage, not trust them because their representation hash is valid.
+though those values are excluded from logical hash preimages. Different
+canonical serialized RAM objects can share a logical digest while having
+different `ContentId` values. Packing, compression, encryption, and placement
+of the same canonical plaintext object do not change its `ContentId`; their
+physical authentication remains a separate storage obligation. An implementation
+must validate structural fields against the logical preimage, not trust them
+because their canonical object authentication is valid.
 
 - **[RAM-11]** Logical BLAKE3-256 digests MUST NOT be substituted for existing
   CAS `ContentId` values. Each preserved or transferred representation MUST
@@ -238,7 +241,7 @@ logical preimage, not trust them because their representation hash is valid.
 Both logical RAM digests and existing CAS identities now use BLAKE3. Their
 preimages, domains, types, and responsibilities still differ. A shared primitive
 does not make a page digest the identity of its serialized object, and a
-representation hash does not establish the page's placement in a RAM root.
+canonical object hash does not establish the page's placement in a RAM root.
 
 - **[RAM-12]** Internal persistent trees MAY share immutable nodes across
   versions and positions. Publication MUST bind an immutable coherent view.
