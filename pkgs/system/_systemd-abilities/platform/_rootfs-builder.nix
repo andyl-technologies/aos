@@ -227,6 +227,7 @@ in
           pkgs.util-linux
           pkgs.erofs-utils
         ]
+        ++ lib.optional (fsType == "erofs") pkgs.image-hardlink-tree
         # Verity sub-step tooling is gated so the non-verity path's
         # build environment (and thus its derivation hash) is unchanged.
         ++ lib.optionals verity [
@@ -484,8 +485,9 @@ in
                 #     erofs-utils 1.8 can occasionally publish one small file at
                 #     another file's fragment offset. `fsck.erofs` validates that
                 #     structurally sound image, but the extracted bytes are corrupt.
-                # Block dedupe was measured at 0 bytes saved — Nix store paths are
-                # content-addressed.
+                # Identical files can occur in distinct store paths (including
+                # retained rollout executors). Share their inodes before mkfs:
+                # EROFS block dedupe would disable parallel compression.
                 #
                 # --workers parallelizes the otherwise single-threaded zstd-19
                 # compression (hours on one core for the whole server closure).
@@ -503,6 +505,7 @@ in
                 # mkfs prints "libgcc_s.so.1 must be installed for pthread_exit
                 # to work" and risks aborting a worker.
                 export LD_LIBRARY_PATH="${pkgs.gcc-libs}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+                ${pkgs.image-hardlink-tree}/bin/aos-image-hardlink-tree rootfs
                 mkfs.erofs --all-root -T0 \
                   -U bdfb6fc9-0000-4000-8000-000000000001 \
                   --workers="$NIX_BUILD_CORES" \

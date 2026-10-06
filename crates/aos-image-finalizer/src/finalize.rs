@@ -74,6 +74,7 @@ pub async fn prepare_filesystems(
     }
     let fsck_erofs_spec = verified_tool(assembly, "fsck_erofs", &mut resolve_owner_nar_hash)?;
     let mkfs_erofs_spec = verified_tool(assembly, "mkfs_erofs", &mut resolve_owner_nar_hash)?;
+    let hardlink_tree_spec = verified_tool(assembly, "hardlink_tree", &mut resolve_owner_nar_hash)?;
     let zstd_spec = verified_tool(assembly, "zstd", &mut resolve_owner_nar_hash)?;
     let cpio_spec = verified_tool(assembly, "cpio", &mut resolve_owner_nar_hash)?;
     let openssl_spec = verified_tool(assembly, "openssl", &mut resolve_owner_nar_hash)?;
@@ -81,6 +82,7 @@ pub async fn prepare_filesystems(
 
     let fsck_erofs = PinnedTool::from_verified(fsck_erofs_spec, work.to_path_buf(), TOOL_TIMEOUT)?;
     let mkfs_erofs = PinnedTool::from_verified(mkfs_erofs_spec, work.to_path_buf(), TOOL_TIMEOUT)?;
+    let hardlink_tree = PinnedTool::from_verified(hardlink_tree_spec, work.to_path_buf(), TOOL_TIMEOUT)?;
     let zstd = PinnedTool::from_verified(zstd_spec, work.to_path_buf(), TOOL_TIMEOUT)?;
     let openssl = PinnedTool::from_verified(openssl_spec, work.to_path_buf(), TOOL_TIMEOUT)?;
     let veritysetup =
@@ -199,6 +201,7 @@ pub async fn prepare_filesystems(
     rebuild_erofs(
         &mkfs_erofs,
         &fsck_erofs,
+        &hardlink_tree,
         &root_tree,
         &root_filesystem,
         &assembly.layout,
