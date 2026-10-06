@@ -386,6 +386,35 @@ until actual deletion-window, ownership, physical recovery and cancellation
 behavior also qualifies. Restore implementation and test-profile correction
 continue in separate isolated worktrees.
 
+The private five-file test-profile correction `0c0c108e4f24` selects actual
+Rc lease fixtures only in compatible non-Send tests, preserves generic Send
+clock contracts and uses the standard synchronous no-op waker. Separate complete
+runtimes pass 156 default, 78 no-default, 149 `std,send`, 156 `std,surface-sdk`
+and 157 `std,wasm` cases with no skips. Native strict all-target Clippy, strict
+private rustdoc, both mandatory formatters and the actual singleton gate's
+nineteen exact cases pass. Application qualification compiles 109 test
+executables across 29 packages, including 72 integration targets, without
+executing them. All 572 source images match both actual derivations and the
+preserved commit. Default strict Clippy remains red on 63 library and 14 test
+diagnostics; no warning is suppressed and the complete feature matrix remains
+unqualified.
+D-109 clarifies GC-29's privately qualified exact restoration: existing serving
+placements, quarantine, other exclusions, burns, owners and selected source
+lineage remain unchanged when one active binding is cleared with its eligible
+rows. The native implementation acquires a genuine maintenance lease and
+derives fresh current roots using a retained candidate-only metadata view;
+implementation and its ten owning witnesses remain under qualification.
+Physical deletion and the complete T1 floor remain open.
+
+The frozen composition `ff14aef673f4` passes actual Nix
+`gc-grace-window` and `bucket-file-layout`, executing all four and eleven exact
+cases respectively with none ignored. Both actual derivations match all 626
+frozen Terrane/core, Cargo, specification and gate source images. File-layout
+witnesses cover selected portable-copy closure, absent-name history, genuine
+destination registration, preserved burns, activation recovery at each boundary,
+interrupted source projection and retained cancellation exclusion. Neither check
+qualifies restore, physical deletion or the complete T1 floor.
+
 The preceding completed full qualification records candidate
 `15540ef204ec`, which combines reviewed source discovery, immutable lookup,
 repeatable I/P/G maintenance, separate verifier/preparation work, common Memo
