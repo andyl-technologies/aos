@@ -1718,6 +1718,11 @@ fn qemu_spawn_clears_inherited_environment_and_preserves_explicit_values()
             env::var_os("CRUCIBLE_OUT_RESUME_RUNTIME_TRACE"),
             (runtime_expected == "1").then(|| std::ffi::OsString::from("1")),
         );
+        let idle_minimum = env::var("CRUCIBLE_QEMU_TEST_IDLE_MINIMUM_EXPECTED")?;
+        assert_eq!(
+            env::var("CRUCIBLE_IDLE_PLAN_DIAGNOSTIC_MIN_PS").ok(),
+            (idle_minimum != "absent").then(|| idle_minimum.clone())
+        );
         let pending = env::var("CRUCIBLE_QEMU_TEST_PENDING_EXPECTED")?;
         assert_eq!(
             env::var("CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN").ok(),
@@ -1760,6 +1765,10 @@ fn qemu_spawn_clears_inherited_environment_and_preserves_explicit_values()
                     "CRUCIBLE_QEMU_TEST_PENDING_EXPECTED",
                     &env::var("CRUCIBLE_QEMU_TEST_PENDING_EXPECTED")?,
                 ),
+                (
+                    "CRUCIBLE_QEMU_TEST_IDLE_MINIMUM_EXPECTED",
+                    &env::var("CRUCIBLE_QEMU_TEST_IDLE_MINIMUM_EXPECTED")?,
+                ),
                 (SOURCE_FDS_ENV, &source_fds),
             ],
             "spawn child clean-environment probe",
@@ -1797,6 +1806,8 @@ fn qemu_spawn_clears_inherited_environment_and_preserves_explicit_values()
                 "CRUCIBLE_QEMU_TEST_RUNTIME_TRACE_EXPECTED",
                 runtime_trace.unwrap_or("absent"),
             )
+            .env("CRUCIBLE_QEMU_TEST_IDLE_MINIMUM_EXPECTED", "absent")
+            .env_remove("CRUCIBLE_IDLE_PLAN_DIAGNOSTIC_MIN_PS")
             .env_remove("CRUCIBLE_TIME_OWNERSHIP_WITNESS")
             .env_remove("CRUCIBLE_OUT_RESUME_RUNTIME_TRACE")
             .env_remove("CRUCIBLE_CONTROL_CALLBACK_WITNESS")
@@ -1816,6 +1827,54 @@ fn qemu_spawn_clears_inherited_environment_and_preserves_explicit_values()
         }
 
         assert!(command.spawn()?.wait()?.success());
+    }
+    Ok(())
+}
+
+#[test]
+fn qemu_spawn_forwards_only_checked_idle_plan_floor() -> Result<(), Box<dyn Error>> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let current_exe = env::current_exe()?;
+    for (minimum, expected, runtime) in [
+        (std::ffi::OsStr::new("0"), "0", "1"),
+        (std::ffi::OsStr::new("393994554800"), "393994554800", "1"),
+        (
+            std::ffi::OsStr::new("9223372036854775807"),
+            "9223372036854775807",
+            "1",
+        ),
+        (std::ffi::OsStr::new("0393994554800"), "absent", "absent"),
+        (
+            std::ffi::OsStr::new("9223372036854775808"),
+            "absent",
+            "absent",
+        ),
+        (std::ffi::OsStr::new("-1"), "absent", "absent"),
+        (std::ffi::OsStr::new("1x"), "absent", "absent"),
+        (std::ffi::OsStr::from_bytes(&[0xff]), "absent", "absent"),
+    ] {
+        // The original parent probe invokes the production cleared-environment
+        // spawn and its child verifies inherited descriptors and exact values.
+        let status = Command::new(&current_exe)
+            .args(["--exact", "spawn::tests::qemu_spawn_clears_inherited_environment_and_preserves_explicit_values"])
+            .env(ENV_CLEAR_PARENT_PROBE, "1")
+            .env(INHERITED_ENV_SENTINEL, "parent-only-value")
+            .env(TIME_OWNERSHIP_EXPECTED, "absent")
+            .env("CRUCIBLE_QEMU_TEST_PENDING_EXPECTED", "absent")
+            .env("CRUCIBLE_QEMU_TEST_RUNTIME_TRACE_EXPECTED", runtime)
+            .env("CRUCIBLE_QEMU_TEST_IDLE_MINIMUM_EXPECTED", expected)
+            .env("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS", "64")
+            .env("CRUCIBLE_OUT_RESUME_RUNTIME_TRACE", "1")
+            .env("CRUCIBLE_IDLE_PLAN_DIAGNOSTIC_MIN_PS", minimum)
+            .env_remove("CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN")
+            .env_remove("CRUCIBLE_CONTROL_CALLBACK_WITNESS")
+            .env_remove("CRUCIBLE_TIME_OWNERSHIP_WITNESS")
+            .spawn()?.wait()?;
+        assert!(
+            status.success(),
+            "checked floor child failed for {minimum:?}"
+        );
     }
     Ok(())
 }

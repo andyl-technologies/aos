@@ -6,7 +6,7 @@ use super::*;
 use std::ffi::OsStr;
 use std::io::{Read, Seek};
 
-fn captured_witness() -> (idle_plan_witness::IdlePlanWitness, File) {
+fn captured_witness(minimum: Option<&OsStr>) -> (idle_plan_witness::IdlePlanWitness, File) {
     let path = std::env::temp_dir().join(format!(
         "idle-plan-{}-{:?}",
         std::process::id(),
@@ -19,7 +19,11 @@ fn captured_witness() -> (idle_plan_witness::IdlePlanWitness, File) {
         .open(&path)
         .unwrap_or_else(|error| panic!("capture: {error}"));
     std::fs::remove_file(path).unwrap_or_else(|error| panic!("unlink: {error}"));
-    let mut witness = idle_plan_witness::IdlePlanWitness::from_setting(Some(OsStr::new("256")));
+    let mut witness = idle_plan_witness::IdlePlanWitness::from_settings(
+        Some(OsStr::new("1")),
+        Some(OsStr::new("64")),
+        minimum,
+    );
     witness.destination = Some(Mutex::new(
         capture
             .try_clone()
@@ -30,7 +34,14 @@ fn captured_witness() -> (idle_plan_witness::IdlePlanWitness, File) {
 
 #[test]
 fn genuine_due_return_and_forward_selection_keep_original_slot_and_advance_effects() {
-    for deadline in [100, 200] {
+    for (deadline, minimum) in [
+        (100, None),
+        (200, None),
+        (100, Some(OsStr::new("100"))),
+        (200, Some(OsStr::new("100"))),
+        (100, Some(OsStr::new("101"))),
+        (200, Some(OsStr::new("101"))),
+    ] {
         let mut without_observer = None;
         for enabled in [false, true] {
             let slot = NodeSlot::new(KIND_VM);
@@ -43,7 +54,7 @@ fn genuine_due_return_and_forward_selection_keep_original_slot_and_advance_effec
             state
                 .on_vcpu_init(0)
                 .unwrap_or_else(|error| panic!("init: {error}"));
-            let (witness, mut capture) = captured_witness();
+            let (witness, mut capture) = captured_witness(minimum);
             state.idle_plan_witness = if enabled {
                 witness
             } else {
@@ -76,7 +87,7 @@ fn genuine_due_return_and_forward_selection_keep_original_slot_and_advance_effec
             capture
                 .read_to_string(&mut rows)
                 .unwrap_or_else(|error| panic!("read: {error}"));
-            if enabled {
+            if enabled && minimum != Some(OsStr::new("101")) {
                 assert_eq!(rows.lines().count(), 2);
                 assert!(rows.contains("raw=2 current_ps=100 ceiling_ps=1000 stop=Ceiling "));
                 assert!(rows.contains("cause=TimerDeadline"));
@@ -106,7 +117,7 @@ fn genuine_wait_error_preserves_original_error_and_dropped_busy_capture() {
         state
             .on_vcpu_init(0)
             .unwrap_or_else(|error| panic!("init: {error}"));
-        let (witness, mut capture) = captured_witness();
+        let (witness, mut capture) = captured_witness(None);
         state.idle_plan_witness = witness;
         let held = busy.then(|| {
             state

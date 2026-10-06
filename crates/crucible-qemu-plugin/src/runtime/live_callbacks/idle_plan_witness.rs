@@ -4,6 +4,8 @@
 //! rows, each at most 512 bytes. A plan reserves its return allowance before the
 //! original wait. Identical rows are omitted; contention, exhaustion, PID mismatch
 //! and failed captures lose only observations. Missing rows are inconclusive.
+//! An optional picosecond floor filters already-computed plans before admission;
+//! it does not authorize time or consume allowance for earlier boot plans.
 //! No control request, native grant or callback completion is minted here.
 //! Existing capture policy preserves descriptor flags and signal disposition.
 
@@ -21,6 +23,7 @@ const MAX_ROWS: usize = 256;
 
 pub(super) struct IdlePlanWitness {
     budget: usize,
+    minimum_ps: u64,
     owner_pid: u32,
     inventory: Mutex<Inventory>,
     #[cfg(test)]
@@ -32,16 +35,31 @@ impl IdlePlanWitness {
         Self::from_settings(
             std::env::var_os("CRUCIBLE_OUT_RESUME_RUNTIME_TRACE").as_deref(),
             std::env::var_os("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS").as_deref(),
+            std::env::var_os("CRUCIBLE_IDLE_PLAN_DIAGNOSTIC_MIN_PS").as_deref(),
         )
     }
 
-    fn from_settings(runtime_trace: Option<&OsStr>, aggregate: Option<&OsStr>) -> Self {
-        let setting = if runtime_trace == Some(OsStr::new("1")) {
+    pub(super) fn from_settings(
+        runtime_trace: Option<&OsStr>,
+        aggregate: Option<&OsStr>,
+        minimum: Option<&OsStr>,
+    ) -> Self {
+        let minimum_ps = match minimum {
+            None => Some(0),
+            Some(value) => value.to_str().and_then(|text| {
+                text.parse::<u64>()
+                    .ok()
+                    .filter(|value| *value <= i64::MAX as u64 && value.to_string() == text)
+            }),
+        };
+        let setting = if runtime_trace == Some(OsStr::new("1")) && minimum_ps.is_some() {
             aggregate
         } else {
             None
         };
-        Self::from_setting(setting)
+        let mut witness = Self::from_setting(setting);
+        witness.minimum_ps = minimum_ps.unwrap_or(0);
+        witness
     }
 
     pub(super) fn from_setting(setting: Option<&OsStr>) -> Self {
@@ -55,6 +73,7 @@ impl IdlePlanWitness {
             .unwrap_or(0);
         Self {
             budget,
+            minimum_ps: 0,
             owner_pid: if budget == 0 { 0 } else { std::process::id() },
             inventory: Mutex::new(Inventory::default()),
             #[cfg(test)]
@@ -71,7 +90,10 @@ impl IdlePlanWitness {
         exact_deadline: ExactDeadlineReport,
         stop: AdvanceStopCondition,
     ) -> Option<PlanObservation> {
-        if self.budget == 0 || self.owner_pid != std::process::id() {
+        if plan.current_icount() < self.minimum_ps
+            || self.budget == 0
+            || self.owner_pid != std::process::id()
+        {
             return None;
         }
         let plan = PlanRecord {

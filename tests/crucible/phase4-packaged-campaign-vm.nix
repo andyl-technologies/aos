@@ -16,11 +16,20 @@
   storageRecovery ? false,
   packedMaintenance ? false,
   tierMaintenance ? false,
+  idlePlanDiagnosticMinimumPs ? null,
   policyTimeout ? false,
   singleGuest ? null,
   twoNodeHttp ? false,
   twoNodeHttpServer ? "nginx",
 }:
+assert idlePlanDiagnosticMinimumPs
+== null
+|| (
+  tierMaintenance
+  && builtins.isInt idlePlanDiagnosticMinimumPs
+  && idlePlanDiagnosticMinimumPs >= 0
+  && idlePlanDiagnosticMinimumPs <= 9223372036854775807
+);
 assert !packedMaintenance
 || (
   guestChoice
@@ -314,7 +323,7 @@ assert !interruptedTransfer
       else if policyTimeout
       then "crucible-packaged-campaign-policy-timeout"
       else if tierMaintenance
-      then "crucible-campaign-tier-maintenance"
+      then "crucible-campaign-tier-maintenance${lib.optionalString (idlePlanDiagnosticMinimumPs != null) "-idle-diagnostics"}"
       else if packedMaintenance
       then "crucible-campaign-packed-maintenance"
       else if storageRecovery
@@ -449,6 +458,11 @@ assert !interruptedTransfer
           export CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS=64
           unset CRUCIBLE_CONTROL_CALLBACK_WITNESS CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN \
             CRUCIBLE_RR_CLAMP_TAIL CRUCIBLE_PHASE7_IDLE_TRACE CRUCIBLE_TIME_OWNERSHIP_WITNESS
+        '')}${lib.optionalString (idlePlanDiagnosticMinimumPs != null) ("\n"
+        + ''
+          # This window admits copied plans only; it grants no guest-time authority.
+          export CRUCIBLE_OUT_RESUME_RUNTIME_TRACE=1
+          export CRUCIBLE_IDLE_PLAN_DIAGNOSTIC_MIN_PS=${toString idlePlanDiagnosticMinimumPs}
         '')}
       # A missing closure member must name its configured asset, rather than
       # failing later with a bare ENOENT from guest campaign compilation.

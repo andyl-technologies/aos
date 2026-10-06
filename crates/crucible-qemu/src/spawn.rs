@@ -1138,7 +1138,19 @@ pub(crate) fn guarded_qemu_process_command(
     // aggregate diagnostics alone retain the original native I/O behavior.
     // crucible-lint: allow host-nondeterminism-state -- a default-off observation flag cannot change control decisions.
     if std::env::var("CRUCIBLE_OUT_RESUME_RUNTIME_TRACE").as_deref() == Ok("1") {
-        command.env("CRUCIBLE_OUT_RESUME_RUNTIME_TRACE", "1");
+        let minimum = std::env::var_os("CRUCIBLE_IDLE_PLAN_DIAGNOSTIC_MIN_PS");
+        let admitted = minimum.as_ref().is_none_or(|value| {
+            value.to_str().is_some_and(|text| {
+                text.parse::<u64>()
+                    .is_ok_and(|value| value <= i64::MAX as u64 && value.to_string() == text)
+            })
+        });
+        if admitted {
+            command.env("CRUCIBLE_OUT_RESUME_RUNTIME_TRACE", "1");
+            if let Some(minimum) = minimum {
+                command.env("CRUCIBLE_IDLE_PLAN_DIAGNOSTIC_MIN_PS", minimum);
+            }
+        }
     }
     // Aggregate mode uses this minimum for capped pending-return notices only;
     // forwarding it does not enable the legacy callback or stage streams.

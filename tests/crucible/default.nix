@@ -1574,6 +1574,11 @@ in rec {
       campaignTierMaintenance = import ./phase5-campaign-tier-maintenance-vm.nix {
         inherit pkgs lib;
       };
+      campaignTierMaintenanceIdleDiagnostics = import ./phase5-campaign-tier-maintenance-vm.nix {
+        inherit pkgs lib;
+        # The recorded idle edge defines a diagnostic window, not a policy bound.
+        idlePlanDiagnosticMinimumPs = 393994554800;
+      };
       campaignPolicyTimeoutVm = import ./phase5-campaign-policy-timeout-vm.nix {
         inherit pkgs lib;
       };

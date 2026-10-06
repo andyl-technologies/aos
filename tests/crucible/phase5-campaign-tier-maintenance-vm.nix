@@ -2,11 +2,13 @@
 {
   pkgs,
   lib,
+  idlePlanDiagnosticMinimumPs ? null,
 }: let
   flight = import ./phase4-packaged-campaign-vm.nix {
     inherit pkgs lib;
     guestChoice = true;
     tierMaintenance = true;
+    inherit idlePlanDiagnosticMinimumPs;
   };
   claims = [
     "tier_maintenance_real_exact_pause=true"
@@ -23,7 +25,7 @@
   ];
 in
   pkgs.mkDerivation {
-    pname = "crucible-phase5-campaign-tier-maintenance-vm";
+    pname = "crucible-phase5-campaign-tier-maintenance-vm${lib.optionalString (idlePlanDiagnosticMinimumPs != null) "-idle-diagnostics"}";
     version = "0";
     buildDeps = [pkgs.coreutils pkgs.grep flight];
 

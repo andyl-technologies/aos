@@ -29,6 +29,34 @@ pub(super) fn report_recent_host_wait_observations(service: &CampaignServiceChil
     }
 }
 
+/// Retains the original capped idle-plan rows before owner cancellation.
+pub(super) fn report_recent_idle_plan_observations(service: &CampaignServiceChild) {
+    match recent_idle_plan_rows(service) {
+        Ok(records) => {
+            for record in records {
+                let _write_result = writeln!(std::io::stderr().lock(), "{record}");
+            }
+        }
+        Err(error) => {
+            let _write_result = writeln!(
+                std::io::stderr().lock(),
+                "idle plan observation unavailable: {error}"
+            );
+        }
+    }
+}
+
+fn recent_idle_plan_rows(service: &CampaignServiceChild) -> Result<Vec<String>, Box<dyn Error>> {
+    Ok(service
+        .stderr_recent_lines_with_prefix("CRUCIBLE-IDLE-PLAN-V1 ", 64, 511)?
+        .into_iter()
+        .filter(|row| {
+            row.bytes()
+                .all(|byte| byte == b' ' || byte.is_ascii_graphic())
+        })
+        .collect())
+}
+
 pub(super) fn report_recent_callback_context(service: &CampaignServiceChild) {
     // Each exact prefix retains <=32 rows of <=512 bytes. Context and final
     // callback summaries survive unrelated rows outside the ordinary tail.
@@ -266,6 +294,10 @@ fn materialization_capture_preserves_one_shot_record_outside_the_recent_tail()
     for record in 0..70 {
         writeln!(
             service.stderr,
+            "CRUCIBLE-IDLE-PLAN-V1 phase=plan pid=42 current_ps=100 record={record}"
+        )?;
+        writeln!(
+            service.stderr,
             "CRUCIBLE-HOST-WAIT-V1 phase=advance-pending slot=0 record={record}"
         )?;
     }
@@ -310,6 +342,20 @@ fn materialization_capture_preserves_one_shot_record_outside_the_recent_tail()
             .is_some_and(|record| record.ends_with("record=69"))
     );
     assert!(!service.stderr_tail().contains("CRUCIBLE-HOST-WAIT-V1 "));
+    let idle_plans = recent_idle_plan_rows(&service)?;
+    assert_eq!(idle_plans.len(), 64);
+    assert!(
+        idle_plans
+            .first()
+            .is_some_and(|row| row.ends_with("record=6"))
+    );
+    assert!(
+        idle_plans
+            .last()
+            .is_some_and(|row| row.ends_with("record=69"))
+    );
+    assert!(!service.stderr_tail().contains("CRUCIBLE-IDLE-PLAN-V1 "));
+
     assert_eq!(
         service.stderr_recent_lines_with_prefix("CRUCIBLE-NETWORK-OUTPUT-CONTEXT-V1 ", 32, 512)?,
         [output_context]
@@ -360,6 +406,17 @@ fn materialization_capture_preserves_one_shot_record_outside_the_recent_tail()
     writeln!(service.stderr, "{stage_prefix}{}", "x".repeat(256))?;
     service.stderr.flush()?;
     assert!(recent_callback_context_rows(&service, stage_prefix, 255).is_err());
+
+    writeln!(service.stderr, "CRUCIBLE-IDLE-PLAN-V1 non-ascii=é")?;
+    service.stderr.flush()?;
+    assert!(
+        recent_idle_plan_rows(&service)?
+            .iter()
+            .all(|row| row.is_ascii())
+    );
+    writeln!(service.stderr, "CRUCIBLE-IDLE-PLAN-V1 {}", "x".repeat(512))?;
+    service.stderr.flush()?;
+    assert!(recent_idle_plan_rows(&service).is_err());
     // Advisory read failure has not changed the retained file or process owner.
     assert_eq!(
         service.stderr.as_file().metadata()?.ino(),

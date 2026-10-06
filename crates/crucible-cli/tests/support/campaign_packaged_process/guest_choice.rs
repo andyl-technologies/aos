@@ -1419,6 +1419,10 @@ fn campaign_execution_diagnostics(
     // Capture the original pending wait before service Drop initiates
     // cancellation: shutdown SIGKILL must not stand in for the first failure.
     diagnostics::report_recent_host_wait_observations(service);
+    if std::env::var("CRUCIBLE_OUT_RESUME_RUNTIME_TRACE").as_deref() == Ok("1") {
+        diagnostics::report_recent_idle_plan_observations(service);
+        diagnostics::report_recent_callback_context(service);
+    }
     let boundary_log = fixture._temporary.path().join(format!(
         "guest-selectable-boundary-{}.log",
         service.child.id()
