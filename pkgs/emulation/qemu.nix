@@ -98,6 +98,10 @@
     then throw "the full patched-QEMU test suite requires an explicit generic QEMU runner"
     else null;
   version = atomicPatch.qemuVersion;
+  nativeCostsBaseline = import ./qemu-patches/_native-costs-baseline.nix;
+  nativeCostsBaselineManifest = builtins.toFile "native-costs-baseline.json" (
+    builtins.toJSON (builtins.removeAttrs nativeCostsBaseline ["patch"])
+  );
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
 
   # The Crucible check phase executes the built target programs, so a cross
@@ -1744,6 +1748,81 @@ in
               grep -q '^PASS production-body differential rule-presence fixture' fault-rule-presence.result
               cat rr-sim-barriers.result
               grep -q '^PASS healthy ordinary 8->3 cycles per CPU' rr-sim-barriers.result
+              # Use each changed translation unit's actual configured command,
+              # then compare the reconstructed prior production bodies. Every
+              # negative must compile and fail a native ownership assertion.
+              ${python3}/bin/python3 - <<'PYTHON'
+              import json
+              import os
+              from pathlib import Path
+              import shlex
+              import subprocess
+              import sys
+
+              source_root = Path.cwd()
+              commands = json.loads((source_root / "build/compile_commands.json").read_text())
+              for name, source_file in (
+                  ("mutex-waiter-counters", "/util/qemu-thread-posix.c"),
+                  ("tcg-page-collection", "/accel/tcg/tb-maint.c"),
+                  ("tcg-crossing-membership", "/accel/tcg/tb-maint.c"),
+                  ("tsc-source-index", "/plugins/crucible-fault-clock.c"),
+              ):
+                  entries = [entry for entry in commands
+                             if entry["file"].endswith(source_file)]
+                  if source_file == "/accel/tcg/tb-maint.c":
+                      # This target-neutral unit is compiled for both shared
+                      # libraries; its system definition owns PageDesc locks.
+                      entries = [entry for entry in entries
+                                 if "-DCONFIG_SOFTMMU" in shlex.split(entry["command"])]
+                  if len(entries) != 1:
+                      raise SystemExit(f"expected one configured {name} compile command")
+
+                  entry = entries[0]
+                  proof_dir = source_root / f"{name}-proof"
+                  proof_dir.mkdir(exist_ok=True)
+                  (proof_dir / "configured-production-compile-command.json").write_text(
+                      json.dumps(entry, indent=2) + "\n"
+                  )
+                  command = shlex.split(entry["command"])
+                  flags = []
+                  arguments = iter(command[1:])
+                  for argument in arguments:
+                      if argument in ("-MQ", "-MF", "-o", "-c"):
+                          next(arguments)
+                      elif argument not in ("-MD", "-MMD", "-MP"):
+                          flags.append(argument)
+
+                  environment = os.environ.copy()
+                  environment["CC"] = command[0]
+                  environment["CFLAGS"] = shlex.join(flags)
+                  environment["LDFLAGS"] = "-L${glib.dev}/lib -Wl,-rpath,${glib}/lib -lglib-2.0"
+                  with (source_root / f"{name}.result").open("w") as result:
+                      subprocess.run([
+                          sys.executable, "${../../tests/crucible/qemu-native-cost-proofs.py}",
+                          "--case", name, "--source-root", str(source_root),
+                          "--baseline-manifest", "${nativeCostsBaselineManifest}",
+                          "--baseline-patch", "${nativeCostsBaseline.patch}",
+                          "--output-dir", str(source_root / f"{name}-proof"),
+                      ], cwd=entry["directory"], env=environment,
+                         stdout=result, check=True)
+              PYTHON
+              for name in mutex-waiter-counters tcg-page-collection tcg-crossing-membership tsc-source-index; do
+                cat "$name.result"
+                grep -Fxq "PASS production $name: differential observations and compiled causal negatives" \
+                  "$name.result"
+              done
+
+              # Select exactly one bare-metal system guest. This exercises real
+              # TB invalidation, including physical page order and current-TB
+              # writes; the extracted page-table provider cannot establish it.
+              make -rR -C build/tests/tcg/x86_64-softmmu \
+                -f "$PWD/tests/tcg/Makefile.target" SRC_PATH="$PWD" V=1 TIMEOUT=60 \
+                QEMU="$PWD/build/qemu-system-x86_64 -L $PWD/pc-bios -accel tcg,thread=single -smp 1" \
+                run-self-modifying-code > self-modifying-code.build-run.log 2>&1
+              cat self-modifying-code.build-run.log
+              cp build/tests/tcg/x86_64-softmmu/self-modifying-code.out \
+                self-modifying-code.result
+              grep -Fxq 'self-modifying code: passed' self-modifying-code.result
               grep -Fxq 'PASS production TX/stop/clock/RR: batches, race, completion settlement, paused ack, explicit retry' \
                 net-output-stop.result
               grep -Fxq 'PASS lifecycle production encode/rebind: full save retained, canonical custody independence, guest frontier sensitivity, invalid rebind refusal' \
@@ -4309,6 +4388,15 @@ in
                 install -m 644 "$name-proof/compile-command.json" \
                   "$out/share/aos/crucible/$name.compile-command.json"
               done
+              for name in mutex-waiter-counters tcg-page-collection tcg-crossing-membership tsc-source-index; do
+                install -m 644 "$name.result" \
+                  "$out/share/aos/crucible/$name.result"
+                cp -R "$name-proof" "$out/share/aos/crucible/$name-proof"
+              done
+              install -m 644 self-modifying-code.build-run.log self-modifying-code.result \
+                "$out/share/aos/crucible/"
+              install -m 644 build/tests/tcg/x86_64-softmmu/config-target.mak \
+                "$out/share/aos/crucible/self-modifying-code.config-target.mak"
               install -m 644 acpi-fingerprint-tests.tap \
                 "$out/share/aos/crucible/acpi-fingerprint-tests.tap"
               install -m 644 vga-fingerprint-tests.tap \
