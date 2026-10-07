@@ -379,7 +379,8 @@ async fn target_mutation_and_terminal_receipt_roll_back_together_on_failed_cas()
     let mut stale = record.clone();
     stale.resource_version = WireInteger::new(1);
 
-    assert!(db
+    let (refused_commit, refused_projection) = crate::application_body_observation::observe_with_sql_projection(async {
+        let result = db
         .commit_direct_upload(
             "deployment",
             &stale,
@@ -392,8 +393,12 @@ async fn target_mutation_and_terminal_receipt_roll_back_together_on_failed_cas()
             .expecting(1)],
             13
         )
-        .await
-        .is_err());
+        .await;
+        crate::application_body_observation::confirm_sql_constructor("direct_logical_validated");
+        result
+    }).await;
+    assert!(refused_commit.is_err());
+    assert!(refused_projection.is_none());
     let usage = db
         .backend
         .query_opt("SELECT used_bytes FROM org_usage WHERE org_id = 1", &[])
@@ -456,16 +461,25 @@ async fn target_mutation_and_terminal_receipt_roll_back_together_on_failed_cas()
 
     let settlement =
         Database::complete_cache_write_ticket_statements("cache-single-pre", 2, 14).unwrap();
-    db.commit_direct_upload(
-        "deployment",
-        &record,
-        &evidence,
-        &[guard.clone()],
-        settlement,
-        14,
-    )
-    .await
-    .unwrap();
+    let (committed_result, projection) = crate::application_body_observation::observe_with_sql_projection(async {
+        let result = db.commit_direct_upload(
+            "deployment", &record, &evidence, &[guard.clone()], settlement, 14,
+        ).await;
+        crate::application_body_observation::confirm_sql_constructor("direct_logical_validated");
+        result
+    }).await;
+    committed_result.unwrap();
+    let projection = serde_json::to_value(projection.unwrap()).unwrap();
+    let checkpoints = projection["checkpoints"].as_array().unwrap();
+    assert_eq!(checkpoints.len(), 1);
+    let observed = &checkpoints[0]["observation"];
+    assert_eq!(observed["operation"], "direct_commit");
+    assert_eq!(observed["retainedOriginal"], false);
+    assert!(observed["checkedStatementCount"].as_u64().unwrap() > 0);
+    assert_eq!(observed["expectedResourceVersion"], "2");
+    assert_eq!(observed["resultingResourceVersion"], "3");
+    assert_eq!(observed["completionEvidence"]["sha256"],
+        crate::application_body_observation::image(&serde_json::to_vec(&evidence).unwrap()).sha256);
     // Simulate an acknowledged final transaction whose reply was lost.
     drop(db);
     let db = Database::open(&path).await.unwrap();
@@ -483,6 +497,21 @@ async fn target_mutation_and_terminal_receipt_roll_back_together_on_failed_cas()
     assert_eq!(committed.resource_version, WireInteger::new(3));
     assert_eq!(committed.completion_evidence, Some(evidence.clone()));
     assert_eq!(committed.final_guards, vec![guard.clone()]);
+    let (replayed, replay_projection) = crate::application_body_observation::observe_with_sql_projection(async {
+        let result = db.commit_direct_upload(
+            "deployment", &committed, &evidence, &[guard.clone()], Vec::new(), 101,
+        ).await;
+        crate::application_body_observation::confirm_sql_constructor("direct_logical_validated");
+        result
+    }).await;
+    replayed.unwrap();
+    let replay_projection = serde_json::to_value(replay_projection.unwrap()).unwrap();
+    let replay = &replay_projection["checkpoints"][0]["observation"];
+    assert_eq!(replay["retainedOriginal"], true);
+    assert_eq!(replay["checkedStatementCount"], 0);
+    assert!(replay["checkedStatements"].is_null());
+    assert!(replay["resultingResourceVersion"].is_null());
+
     assert_eq!(
         guard_reference
             .expand(

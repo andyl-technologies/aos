@@ -18,6 +18,8 @@ use crate::direct_upload::WireInteger;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
+pub(crate) mod dynamic;
+
 pub(crate) const MAX_CHECKPOINTS: usize = crate::direct_upload::MAX_DIRECT_BATCH_ITEMS;
 const MAX_BYTES: u64 = 64 * 1024;
 
@@ -38,6 +40,9 @@ impl SqlProjection {
         source.update(include_bytes!("rpc.rs"));
         source.update(include_bytes!("../db/direct_upload.rs"));
         source.update(include_bytes!("../db/publication_admission.rs"));
+        source.update(include_bytes!("sql_projection/dynamic.rs"));
+        source.update(include_bytes!("../direct_upload/service.rs"));
+        source.update(include_bytes!("../service.rs"));
         let value = Self {
             version: 1,
             producer_sha256: hex::encode(source.finalize()),
@@ -68,6 +73,9 @@ impl SqlProjection {
                 .checkpoints
                 .iter()
                 .all(|checkpoint| match &checkpoint.selection {
+                    Selection::Dynamic { observation } => {
+                        observation.constructor() == evidence.constructor
+                    }
                     Selection::Admission { .. } => {
                         evidence.constructor == "direct_logical_validated"
                     }
@@ -105,6 +113,9 @@ pub(crate) struct Checkpoint {
     rename_all_fields = "camelCase"
 )]
 enum Selection {
+    Dynamic {
+        observation: dynamic::Observation,
+    },
     #[serde(rename = "admission_checked_transaction")]
     Admission {
         deployment_sha256: String,
@@ -148,6 +159,7 @@ enum Selection {
 impl Selection {
     fn constructor(&self) -> &'static str {
         match self {
+            Self::Dynamic { observation } => observation.constructor(),
             Self::Admission { .. } => "direct_logical_validated",
             Self::AppendChecked { .. } | Self::AppendRetained { .. } => {
                 "publication_manifest_append"

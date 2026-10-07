@@ -25265,6 +25265,7 @@ impl RpcService {
         auth: Option<&str>,
         req: pb::GetRegistryPublicationRequest,
     ) -> Result<pb::RegistryPublication, RpcError> {
+        let observation = crate::application_body_observation::sql_projection::dynamic::Started::new();
         let claims = self.require_claims(auth)?;
         let publication = self
             .db
@@ -25281,8 +25282,11 @@ impl RpcService {
         let scope = self.registry_scope(&registry).await?;
         self.require_permission(&claims, Permission::Publish, &scope)
             .await?;
-        self.registry_publication_response(&publication.publication_id, true)
-            .await
+        let reply = self.registry_publication_response(&publication.publication_id, true).await?;
+        if let Some(observation) = observation {
+            observation.publication_get(&claims, &publication, &registry, &reply);
+        }
+        Ok(reply)
     }
 
     async fn registry_publication_object_context(
@@ -37799,15 +37803,34 @@ pub(crate) mod cache_upload_tests {
         assert_eq!(listed.publications.len(), 1);
         assert!(listed.publications[0].objects.is_empty());
 
-        let shown = service
-            .get_registry_publication(
-                Some(&auth),
-                pb::GetRegistryPublicationRequest {
-                    publication_id: publication_id.into(),
-                },
-            )
-            .await
-            .unwrap();
+        let request = pb::GetRegistryPublicationRequest {
+            publication_id: publication_id.into(),
+        };
+        let raw = serde_json::to_vec(&request).unwrap();
+        let (shown, projection) = crate::application_body_observation::observe_with_sql_projection(async {
+            let encoder = crate::application_body_observation::rpc::request::<
+                pb::GetRegistryPublicationRequest, pb::RegistryPublication,
+            >(&request, &raw);
+            let shown = service.get_registry_publication(Some(&auth), request.clone()).await.unwrap();
+            let evidence = crate::application_body_observation::rpc::reply(encoder, &shown).unwrap();
+            assert_eq!(evidence.constructor, "publication_get");
+            shown
+        }).await;
+        let projection = serde_json::to_value(projection.unwrap()).unwrap();
+        let checkpoints = projection["checkpoints"].as_array().unwrap();
+        assert_eq!(checkpoints.len(), 1);
+        let observed = &checkpoints[0]["observation"];
+        assert_eq!(observed["operation"], "publication_get");
+        assert_eq!(observed["publicationId"], publication_id);
+        assert_eq!(observed["state"], "ready");
+        assert_eq!(observed["reply"]["sha256"],
+            crate::application_body_observation::image(&serde_json::to_vec(&shown).unwrap()).sha256);
+
+        let (refused, refused_projection) = crate::application_body_observation::observe_with_sql_projection(async {
+            service.get_registry_publication(None, request).await
+        }).await;
+        assert!(refused.is_err());
+        assert!(refused_projection.is_none());
         assert_eq!(shown.objects.len(), 2);
         assert_eq!(
             db.registry_publication_state(registry_id)

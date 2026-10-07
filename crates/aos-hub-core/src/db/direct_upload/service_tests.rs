@@ -222,7 +222,12 @@ async fn signed_structural_stage_proof_cannot_advance_without_independent_readba
     let authority = Arc::new(RefusedStorageAuthority::new(11));
     let service = DirectUploadService::new(Arc::clone(&db), authority.clone());
 
-    let reply = service.dispatch(&claims, &verified, 11).await.unwrap();
+    let (reply, refused_projection) = crate::application_body_observation::observe_with_sql_projection(async {
+        let reply = service.dispatch(&claims, &verified, 11).await.unwrap();
+        crate::application_body_observation::confirm_sql_constructor("direct_logical_validated");
+        reply
+    }).await;
+    assert!(refused_projection.is_none());
     assert_eq!(reply.errors.len(), 1);
     assert!(reply.sessions.is_empty());
     assert!(reply.authorizations.is_empty());
@@ -258,7 +263,22 @@ async fn signed_structural_stage_proof_cannot_advance_without_independent_readba
         11,
     )
     .unwrap();
-    let frozen = service.dispatch(&claims, &freeze, 11).await.unwrap();
+    let (frozen, projection) = crate::application_body_observation::observe_with_sql_projection(async {
+        let frozen = service.dispatch(&claims, &freeze, 11).await.unwrap();
+        frozen.validate("deployment").unwrap();
+        crate::application_body_observation::confirm_sql_constructor("direct_logical_validated");
+        frozen
+    }).await;
+    let projection = serde_json::to_value(projection.unwrap()).unwrap();
+    let observations = projection["checkpoints"].as_array().unwrap();
+    assert_eq!(observations.len(), 1);
+    let observation = &observations[0]["observation"];
+    assert_eq!(observation["operation"], "direct_authorize");
+    assert_eq!(observation["sessionId"], admitted.admission.session_id);
+    assert_eq!(observation["completeStep"], "freeze");
+    assert_eq!(observation["admission"]["sha256"],
+        crate::application_body_observation::image(&serde_json::to_vec(&admitted.admission).unwrap()).sha256);
+
     assert!(frozen.errors.is_empty());
     assert!(frozen.sessions.is_empty());
     assert_eq!(frozen.session_summaries.len(), 1);

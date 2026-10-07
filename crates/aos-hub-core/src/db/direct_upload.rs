@@ -503,6 +503,7 @@ impl Database {
         mut target_statements: Vec<CheckedStatement>,
         now: i64,
     ) -> Result<()> {
+        let observation = crate::application_body_observation::sql_projection::dynamic::Started::new();
         evidence.validate_against(&record.admission, deployment)?;
         let complete = record
             .complete_intent
@@ -526,6 +527,9 @@ impl Database {
                     code: DirectItemErrorCode::Conflict
                 }
             );
+            if let Some(observation) = observation {
+                observation.direct_commit(deployment, record, evidence, final_guards, None);
+            }
             return Ok(());
         }
         ensure!(
@@ -592,7 +596,11 @@ impl Database {
             )
             .expecting(1),
         );
-        self.direct_batch(&record).checked_batch(&statements).await
+        self.direct_batch(&record).checked_batch(&statements).await?;
+        if let Some(observation) = observation {
+            observation.direct_commit(deployment, record, evidence, final_guards, Some(&statements));
+        }
+        Ok(())
     }
 }
 

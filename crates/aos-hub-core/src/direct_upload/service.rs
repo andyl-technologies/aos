@@ -319,6 +319,7 @@ impl DirectUploadService {
                     .iter()
                     .enumerate()
                     .map(|(index, session)| async move {
+                        let observation = crate::application_body_observation::sql_projection::dynamic::Started::new();
                         let result = async {
                             let mut record =
                                 self.load_owned(context, &session.session, &actor).await?;
@@ -503,16 +504,19 @@ impl DirectUploadService {
                             Ok((record, Vec::new()))
                         }
                         .await;
-                        (session, result)
+                        (session, result, observation)
                     })
                     .collect::<Vec<_>>();
                 let results = stream::iter(work)
                     .buffered(MAX_AUTHORITY_ITEM_CONCURRENCY)
                     .collect::<Vec<_>>()
                     .await;
-                for (session, result) in results {
+                for (session, result, observation) in results {
                     match result {
                         Ok((record, permissions)) => {
+                            if let Some(observation) = observation {
+                                observation.direct_authorize(context, session, *action, *complete_step, &record, &permissions);
+                            }
                             // Freeze returns retained originals. Later complete phases
                             // acknowledge exact authorizations without repeating those
                             // bounded but large admission and manifest snapshots.
