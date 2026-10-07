@@ -16,7 +16,7 @@ use super::{AuthorizedRef, Guard, acl_permits, denied, domain_label, invalid};
 use crate::bucket::BucketBinding;
 use crate::bucket::held::HeldBucket;
 use crate::selected_bridge::native_guard::cold_fork::QualifiedPolicies;
-use crate::store::{Clock, ContentValidator, LocalFs, RefStore, StoreFailure};
+use crate::store::{Clock, ContentValidator, LocalFs, RefStore, StoreErrorKind, StoreFailure};
 
 /// Resolves a previously qualified occurrence without opening its TreeNode.
 ///

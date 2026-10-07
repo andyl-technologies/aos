@@ -6,7 +6,7 @@ use terrane_core::auth::{self, Request, RequestRoot, Verb};
 use terrane_core::codec::{Codec, parse_envelope};
 use terrane_core::identity::{Digest, IdentityKind, TERRANE_V1};
 use terrane_core::manifest::Manifest;
-use terrane_core::properties::{self, RootLayer};
+use terrane_core::properties::RootLayer;
 use terrane_core::provenance::{Preset, Selector, TrustContext, VerifiedCommit, VerifiedHistory};
 use terrane_core::tree_format::{ContentRef, EntryKind};
 

@@ -132,42 +132,44 @@ fn indexed_uid(parents: Vec<Digest>, nested: bool, uid: &[u8]) -> Result<Indexed
             provenance: None,
         },
     };
-    let mut trees = std::collections::BTreeMap::new();
-    let (child, child_index) = owner(vec![file], &trees)?;
+    let (child, child_index) = owner(vec![file], &std::collections::BTreeMap::new())?;
     let child_root = child.root;
-    let node = terrane_core::tree_format::decode_node_for(
-        child.nodes.get(&child_root).ok_or("missing child owner")?,
-        true,
-        262144,
-        TreeUse::Ordinary,
-    )?;
-    let terrane_core::tree_format::NodeItems::Leaf(entries) = node.items else {
-        return Err("small child is not a leaf".into());
-    };
-    let child_tree = Tree::build(entries, node.props, 262144, TreeUse::Ordinary)?;
-    assert_eq!(child_tree.root_identity(), child_root);
-    trees.insert(child_root, child_tree);
-    let (tree, data) = if nested {
-        let entries = [b"left".as_slice(), b"right".as_slice()]
-            .into_iter()
-            .map(|key| LeafItem {
-                key: key.to_vec(),
-                entry: Entry {
-                    kind: EntryKind::Tree {
-                        root: child_root,
-                        props: None,
+    let (tree, data) = {
+        let mut trees = std::collections::BTreeMap::new();
+        let node = terrane_core::tree_format::decode_node_for(
+            child.nodes.get(&child_root).ok_or("missing child owner")?,
+            true,
+            262144,
+            TreeUse::Ordinary,
+        )?;
+        let terrane_core::tree_format::NodeItems::Leaf(entries) = node.items else {
+            return Err("small child is not a leaf".into());
+        };
+        let child_tree = Tree::build(entries, node.props, 262144, TreeUse::Ordinary)?;
+        assert_eq!(child_tree.root_identity(), child_root);
+        trees.insert(child_root, child_tree);
+        if nested {
+            let entries = [b"left".as_slice(), b"right".as_slice()]
+                .into_iter()
+                .map(|key| LeafItem {
+                    key: key.to_vec(),
+                    entry: Entry {
+                        kind: EntryKind::Tree {
+                            root: child_root,
+                            props: None,
+                        },
+                        attrs: Vec::new(),
+                        attrs_present: false,
+                        xattrs: Vec::new(),
+                        xattrs_present: false,
+                        provenance: None,
                     },
-                    attrs: Vec::new(),
-                    attrs_present: false,
-                    xattrs: Vec::new(),
-                    xattrs_present: false,
-                    provenance: None,
-                },
-            })
-            .collect();
-        owner(entries, &trees)?
-    } else {
-        (child.clone(), child_index.clone())
+                })
+                .collect();
+            owner(entries, &trees)?
+        } else {
+            (child.clone(), child_index.clone())
+        }
     };
     let root = tree.root;
     let mut nodes = std::collections::BTreeMap::new();
@@ -327,57 +329,63 @@ pub(super) fn divergent_index() -> Result<Indexed> {
     let mut actual = indexed(Vec::new(), false)?;
     let other = indexed_uid(Vec::new(), false, &[8])?;
     assert_ne!(actual.primary, other.primary);
-    let owner_bytes = actual
-        .request
-        .uploads
-        .iter()
-        .find_map(|upload| match upload {
-            StagedUpload::Meta {
-                kind: IdentityKind::Node,
-                bytes,
-            } if TERRANE_V1
-                .calculate(IdentityKind::Node, bytes)
-                .is_ok_and(|identity| {
-                    identity
-                        .terrane_v1_digest()
-                        .is_ok_and(|digest| digest == actual.owner)
-                }) =>
-            {
-                Some(bytes)
-            }
-            _ => None,
-        })
-        .ok_or("actual owner missing")?;
-    let node =
-        terrane_core::tree_format::decode_node_for(owner_bytes, true, 262144, TreeUse::Ordinary)?;
-    let terrane_core::tree_format::NodeItems::Leaf(entries) = node.items else {
-        return Err("fixture owner is not leaf".into());
-    };
-    let mut value = Vec::new();
-    terrane_core::cbor::write_map(&mut value, 1);
-    terrane_core::cbor::write_text(&mut value, "uid");
-    terrane_core::cbor::write_text(
-        &mut value,
-        &other
-            .primary
+    let (replacement_owner, replacement_nodes) = {
+        let owner_bytes = actual
+            .request
+            .uploads
             .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>(),
-    );
-    let binding = IndexRoots::decode_value(&value)?.encode_binding()?;
-    let mut properties = node.props.ok_or("missing actual root properties")?;
-    let selected = properties
-        .iter_mut()
-        .find(|property| property.name == "index-roots")
-        .ok_or("missing local binding")?;
-    selected.value = &binding;
-    let rebuilt = Tree::build(entries, Some(properties), 262144, TreeUse::Ordinary)?;
-    let replacement_owner = rebuilt.root_identity();
-    let replacement_nodes = rebuilt
-        .nodes()
-        .map(|node| node.encoded().to_vec())
-        .collect::<Vec<_>>();
-    drop(rebuilt);
+            .find_map(|upload| match upload {
+                StagedUpload::Meta {
+                    kind: IdentityKind::Node,
+                    bytes,
+                } if TERRANE_V1
+                    .calculate(IdentityKind::Node, bytes)
+                    .is_ok_and(|identity| {
+                        identity
+                            .terrane_v1_digest()
+                            .is_ok_and(|digest| digest == actual.owner)
+                    }) =>
+                {
+                    Some(bytes)
+                }
+                _ => None,
+            })
+            .ok_or("actual owner missing")?;
+        let node = terrane_core::tree_format::decode_node_for(
+            owner_bytes,
+            true,
+            262144,
+            TreeUse::Ordinary,
+        )?;
+        let terrane_core::tree_format::NodeItems::Leaf(entries) = node.items else {
+            return Err("fixture owner is not leaf".into());
+        };
+        let mut value = Vec::new();
+        terrane_core::cbor::write_map(&mut value, 1);
+        terrane_core::cbor::write_text(&mut value, "uid");
+        terrane_core::cbor::write_text(
+            &mut value,
+            &other
+                .primary
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>(),
+        );
+        let binding = IndexRoots::decode_value(&value)?.encode_binding()?;
+        let mut properties = node.props.ok_or("missing actual root properties")?;
+        let selected = properties
+            .iter_mut()
+            .find(|property| property.name == "index-roots")
+            .ok_or("missing local binding")?;
+        selected.value = &binding;
+        let rebuilt = Tree::build(entries, Some(properties), 262144, TreeUse::Ordinary)?;
+        let replacement_owner = rebuilt.root_identity();
+        let replacement_nodes = rebuilt
+            .nodes()
+            .map(|node| node.encoded().to_vec())
+            .collect::<Vec<_>>();
+        (replacement_owner, replacement_nodes)
+    };
     actual.owner = replacement_owner;
     actual.request.commit.tree = replacement_owner;
     for bytes in replacement_nodes {

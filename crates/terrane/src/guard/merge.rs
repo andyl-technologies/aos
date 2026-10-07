@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use terrane_core::algebra::{self, OperationDomains, Roots};
 use terrane_core::identity::{Digest, IdentityKind};
-use terrane_core::properties::{self, RootLayer};
+use terrane_core::properties::RootLayer;
 use terrane_core::provenance::{Preset, Selector, TrustContext, VerifiedHistory};
 use terrane_core::refs::{Commit, MergePolicy, RefRecord};
 use terrane_core::tree_builder::Tree;
