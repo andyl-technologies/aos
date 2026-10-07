@@ -5,6 +5,7 @@
 //! prefix that authenticates these original image and delivery descriptors.
 //! Native DATA never reconstructs that producer or refunds a dead invocation.
 
+use std::error::Error;
 use std::fs::File;
 use std::os::fd::OwnedFd;
 
@@ -43,6 +44,7 @@ pub(crate) struct RootReceivingOriginalV1 {
     profile: Option<OwnedFd>,
     process: u32,
     original: Option<Result<bootstrap::OriginalEnrollment, ResourceReservationErrorV1>>,
+    pair: bootstrap::OriginalEnrollmentPairAttemptV1,
     shape: Option<Result<(), ResourceReservationErrorV1>>,
     armed: bool,
 }
@@ -60,6 +62,7 @@ impl RootReceivingOriginalV1 {
             profile: None,
             process: std::process::id(),
             original: None,
+            pair: bootstrap::OriginalEnrollmentPairAttemptV1::new(),
             shape: None,
             armed: true,
         }
@@ -107,13 +110,6 @@ impl RootReceivingOriginalV1 {
         Ok(())
     }
 
-    pub(crate) fn take_image_pair(&mut self) -> Option<(OwnedFd, OwnedFd)> {
-        if !matches!(self.shape, Some(Ok(()))) || self.pid1.is_none() || self.profile.is_none() {
-            return None;
-        }
-        Some((self.pid1.take()?, self.profile.take()?))
-    }
-
     pub(crate) fn authenticate_once(&mut self) -> Result<ResourceVector, ResourceReservationErrorV1> {
         if self.original.is_some() || self.role_error.is_some() || self.names.is_none()
             || self.process != std::process::id()
@@ -122,45 +118,36 @@ impl RootReceivingOriginalV1 {
         }
         let policy = self.policy.as_ref().ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
         let delivery = self.delivery.as_ref().ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
-        self.original = Some(bootstrap::observe_original_pair(policy, delivery));
+        // The shared destination keeps the same fixed buffers, native
+        // observations and first error; the copied enrollment is DATA only.
+        self.original = Some(match self.pair.observe_once(policy, delivery) {
+            Ok(original) => Ok(*original),
+            Err(_) => Err(ResourceReservationErrorV1::EnrollmentUnavailable),
+        });
         let original = self.original.as_ref().and_then(|result| result.as_ref().ok())
             .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
-        let envelope = original.policy.root_receiving
-            .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
-        self.shape = Some(require_service_envelope(envelope));
+        self.shape = Some(original.policy.root_receiving
+            .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)
+            .and_then(require_service_envelope));
         if !matches!(self.shape, Some(Ok(()))) {
             return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
         }
-        Ok(envelope)
+        original.policy.root_receiving
+            .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)
     }
 
-    pub(crate) fn require_recipient(
-        &self,
-        invocation: [u8; 16],
-        producer: [u8; 16],
-    ) -> Result<(), ResourceReservationErrorV1> {
-        if !matches!(self.shape, Some(Ok(()))) {
-            return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
-        }
-        let original = self.original.as_ref().and_then(|result| result.as_ref().ok())
-            .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
-        if self.process != std::process::id()
-            || original.recipient_invocation != invocation
-            || original.identity.invocation != producer
-        {
-            return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
-        }
-        Ok(())
+    pub(crate) fn failure(&self) -> Option<&(dyn Error + 'static)> {
+        self.table.failure().map(|cause| cause as &(dyn Error + 'static))
+            .or_else(|| self.names.as_ref().and_then(|result| result.as_ref().err())
+                .map(|cause| cause as &(dyn Error + 'static)))
+            .or_else(|| self.pair.failure())
+            .or_else(|| self.role_error.as_ref()
+                .map(|cause| cause as &(dyn Error + 'static)))
+            .or_else(|| self.original.as_ref().and_then(|result| result.as_ref().err())
+                .map(|cause| cause as &(dyn Error + 'static)))
+            .or_else(|| self.shape.as_ref().and_then(|result| result.as_ref().err())
+                .map(|cause| cause as &(dyn Error + 'static)))
     }
-
-    pub(crate) fn envelope(&self) -> Option<ResourceVector> {
-        if !matches!(self.shape, Some(Ok(()))) {
-            return None;
-        }
-        self.original.as_ref().and_then(|result| result.as_ref().ok())
-            .and_then(|original| original.policy.root_receiving)
-    }
-
 }
 
 impl Drop for RootReceivingOriginalV1 {

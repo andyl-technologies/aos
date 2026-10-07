@@ -291,7 +291,19 @@ fn main() -> ExitCode {
 fn run() -> Result<(), Box<dyn Error>> {
     // Capture every inherited descriptor before credentials/journals/listeners
     // or readback threads open anything. This is independent of method46 mode.
-    let startup = aos_sandbox_broker_session_security::production_normal_root::ProductionNormalRootStartupCaptureV1::capture()?;
+    let mut initial = aos_sandbox_broker_session_security::production_normal_root::ProductionNormalRootInitialStartupV1::new();
+    if let Err(cause) = initial.capture_once() {
+        eprintln!("aos-sandbox-policy-authorityd: {cause}");
+        // Intentional termination retains the same failed original owner.
+        // No local Drop, recovery, receiving, refund or rearm follows.
+        std::process::exit(1);
+    }
+    let Some(startup) = initial.take_ordinary_capture() else {
+        eprintln!("aos-sandbox-policy-authorityd: incomplete initial Root handoff");
+        std::process::exit(1);
+    };
+    drop(initial);
+    let startup = startup?;
     if rustix::process::geteuid().as_raw() != 0 || rustix::process::getuid().as_raw() != 0 {
         return Err(io::Error::new(io::ErrorKind::PermissionDenied, "root required").into());
     }
