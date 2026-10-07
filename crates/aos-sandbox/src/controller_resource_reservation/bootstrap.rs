@@ -4,6 +4,8 @@
 //! those same bytes with the sole resource arithmetic before recording the
 //! node and two inclusive envelopes. A capsule alone cannot enter this path:
 //! the original closed Controller table and current fixed launch are required.
+//! Original enrollment commits fixed Controller and Components demand, with
+//! only their explicit subdivisions retained as separate reserved claims.
 //! Native uncertainty retains the entire transaction and original descriptors.
 
 use std::os::unix::fs::{FileExt as _, MetadataExt as _};
@@ -395,13 +397,29 @@ impl EnrollmentTransition {
             enrollment: identity, id, parent, kind, generation: 1,
             project: [0; 16], sandbox: [0; 16], tree_revision: [0; 32], account, baseline,
         };
-        let child_account = |amount| ResourceAccount::from_usage(
-            ResourceCeilings::bounded(amount), ResourceVector::ZERO, ResourceVector::ZERO,
+
+        // Fixed aggregate demand stays committed inside the once-paid grant;
+        // only the explicit Host and Root subdivisions remain reserved.
+        let components_baseline = match policy.host {
+            Some(host) => policy.components
+                .checked_sub(host.service)?.checked_sub(host.control)?,
+            None => policy.components,
+        }
+        .checked_sub(policy.root_receiving.unwrap_or(ResourceVector::ZERO))?;
+        let child_account = |amount, baseline| ResourceAccount::from_usage(
+            ResourceCeilings::bounded(amount), baseline, ResourceVector::ZERO,
         );
+
         let mut heads = [
             head(node, [0; 16], AccountKind::Node, root_account, policy.baseline),
-            head(controller, node, AccountKind::Controller, child_account(policy.controller)?, ResourceVector::ZERO),
-            head(components, node, AccountKind::Components, child_account(policy.components)?, ResourceVector::ZERO),
+            head(
+                controller, node, AccountKind::Controller,
+                child_account(policy.controller, policy.controller)?, policy.controller,
+            ),
+            head(
+                components, node, AccountKind::Components,
+                child_account(policy.components, components_baseline)?, components_baseline,
+            ),
         ];
         let claim = |child, amount, purpose| Claim {
             enrollment: identity, id: account_id(identity, &child), account: node, child,
