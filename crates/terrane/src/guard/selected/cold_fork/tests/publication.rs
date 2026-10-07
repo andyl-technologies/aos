@@ -71,6 +71,7 @@ async fn root_native_cold_fork_refuses_absent_context_before_node_io() -> TestRe
     fixture
         .calibrate(Commit::decode(&before.commit)?.tree)
         .await?;
+    let calibrated = Snapshot::capture(&fixture, alias).await?;
     let observer = fixture.bucket().observe_content_for_tests();
 
     let error = rejected(
@@ -88,8 +89,8 @@ async fn root_native_cold_fork_refuses_absent_context_before_node_io() -> TestRe
     assert_eq!(fixture.fs.successful_ref_ack(TARGET), 0);
     assert!(fixture.bucket().ref_get(TARGET).await?.is_none());
     let after = Snapshot::capture(&fixture, alias).await?;
-    assert_eq!(after.state, before.state);
-    assert_eq!(after.logical, before.logical);
+    assert_eq!(after.state, calibrated.state);
+    assert_eq!(after.logical, calibrated.logical);
     before.assert_source_unchanged(&fixture, alias).await?;
     Ok(())
 }
@@ -104,6 +105,7 @@ async fn root_native_cold_fork_after_separate_same_head_requalification() -> Tes
     fixture
         .calibrate(Commit::decode(&before.commit)?.tree)
         .await?;
+    let calibrated = Snapshot::capture(&fixture, alias).await?;
     let observer = fixture.bucket().observe_content_for_tests();
 
     let returned = fixture
@@ -135,13 +137,15 @@ async fn root_native_cold_fork_after_separate_same_head_requalification() -> Tes
             .as_ref()
             .is_some_and(|old| old.branches == mutation.transaction.new.branches)
     );
+    assert_eq!(mutation.transaction.old.as_ref(), Some(&calibrated.state));
     let after = Snapshot::capture(&fixture, alias).await?;
-    assert_eq!(after.logical, before.logical);
+    assert_eq!(mutation.transaction.new, after.state);
+    assert_eq!(after.logical, calibrated.logical);
     let lineage = after.lineage()?;
     fixture.assert_full_context(&lineage)?;
     assert_eq!(lineage.source, before.record);
     assert_eq!(lineage.commit_bytes, before.commit);
-    let mut expected = before.state.clone();
+    let mut expected = calibrated.state.clone();
     expected.revision += 1;
     expected.sources.retain(|row| row.name != alias);
     expected.sources.push(SourceLineage {
@@ -201,6 +205,7 @@ async fn root_native_cold_fork_refuses_current_source_and_destination_rights() -
         fixture
             .calibrate(Commit::decode(&before.commit)?.tree)
             .await?;
+        let calibrated = Snapshot::capture(&fixture, SOURCE).await?;
         let observer = fixture.bucket().observe_content_for_tests();
         let mut proposal = fork_request()?;
         let mut attenuation = Attenuation::default();
@@ -263,8 +268,8 @@ async fn root_native_cold_fork_refuses_current_source_and_destination_rights() -
         assert_eq!(fixture.fs.successful_ref_ack(TARGET), 0, "{case}");
         assert!(fixture.bucket().ref_get(TARGET).await?.is_none(), "{case}");
         let after = Snapshot::capture(&fixture, SOURCE).await?;
-        assert_eq!(after.state, before.state, "{case}");
-        assert_eq!(after.logical, before.logical, "{case}");
+        assert_eq!(after.state, calibrated.state, "{case}");
+        assert_eq!(after.logical, calibrated.logical, "{case}");
         before.assert_source_unchanged(&fixture, SOURCE).await?;
     }
     // Equal source/destination ACLs require actual Fork+Commit, without a new Admin bar.

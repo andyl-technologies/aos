@@ -1,5 +1,8 @@
 //! Builds genuine native repositories and calibrates their actual Node observers.
 
+#[path = "calibration.rs"]
+mod calibration;
+
 use super::fs::ProbeFs;
 use crate::{
     bucket::publication::receipts::RecordRead,
@@ -356,6 +359,8 @@ impl<C: Clock + BucketBinding + Clone + Sync + 'static> Fixture<C> {
     ///
     /// Validator Node decodes are distinct from read-side Core TreeEvidence decodes.
     pub(super) async fn calibrate(&self, root: Digest) -> TestResult {
+        let before = calibration::Selection::capture(self).await?;
+        let mutation_start = self.fs.mutations().len();
         let observer = self.bucket().observe_metadata_for_tests()?;
         assert!(Arc::ptr_eq(
             &observer,
@@ -399,6 +404,10 @@ impl<C: Clock + BucketBinding + Clone + Sync + 'static> Fixture<C> {
         let counts = fresh.snapshot();
         assert!(counts.node_gets > 0 && counts.node_puts > 0 && counts.node_decodes > 0);
         drop(reopened);
+        let after = calibration::Selection::capture(self).await?;
+        before
+            .assert_probe_successor(self, &after, mutation_start)
+            .await?;
         observer.reset();
         self.fs.reset();
         Ok(())
@@ -408,6 +417,7 @@ impl<C: Clock + BucketBinding + Clone + Sync + 'static> Fixture<C> {
         let before = Snapshot::capture(self, source).await?;
         let prior = Commit::decode(&before.commit)?;
         self.calibrate(prior.tree).await?;
+        let calibrated = Snapshot::capture(self, source).await?;
         let observer = self.bucket().observe_content_for_tests();
 
         let next = self
@@ -441,6 +451,7 @@ impl<C: Clock + BucketBinding + Clone + Sync + 'static> Fixture<C> {
             .old
             .as_ref()
             .ok_or("actual prior native selection")?;
+        assert_eq!(old, &calibrated.state);
         assert_eq!(mutation.transaction.new.revision, old.revision + 1);
         assert!(matches!(
             mutation.transaction.proof,
@@ -451,6 +462,7 @@ impl<C: Clock + BucketBinding + Clone + Sync + 'static> Fixture<C> {
         assert_eq!(self.bucket().ref_get(target).await?, Some(next.clone()));
         before.assert_source_unchanged(self, source).await?;
         let after = Snapshot::capture(self, source).await?;
+        assert_eq!(mutation.transaction.new, after.state);
         assert_eq!(after.state.guard, before.state.guard);
         assert_eq!(after.state.loss_generation, before.state.loss_generation);
         assert_eq!(after.state.binding, before.state.binding);

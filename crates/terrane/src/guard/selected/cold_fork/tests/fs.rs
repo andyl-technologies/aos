@@ -37,6 +37,10 @@ pub(super) enum Hook {
 pub(super) struct Mutation {
     pub(super) path: PathBuf,
     pub(super) transaction: PublicationTransaction,
+    /// Retains exact bytes observed from the actual submitted publication slot.
+    pub(super) slot_bytes: Vec<u8>,
+    /// Retains exact bytes observed from the referenced immutable transaction.
+    pub(super) transaction_bytes: Vec<u8>,
     pub(super) acknowledged: bool,
 }
 
@@ -120,13 +124,16 @@ impl ProbeFs {
 }
 
 fn mutation(path: &Path) -> Mutation {
-    let slot = required(PublicationCommit::decode(&required(std::fs::read(path))));
+    let slot_bytes = required(std::fs::read(path));
+    let slot = required(PublicationCommit::decode(&slot_bytes));
     let control = required(path.ancestors().nth(3).ok_or("actual publication control"));
     let body = required(std::fs::read(control.join(&slot.transaction_key)));
     required(slot.check_transaction(&format!("publication/commits/{}", slot.revision), &body));
     Mutation {
         path: path.to_owned(),
         transaction: required(PublicationTransaction::decode(&body)),
+        slot_bytes,
+        transaction_bytes: body,
         acknowledged: false,
     }
 }
@@ -210,7 +217,7 @@ impl LocalFs for ProbeFs {
             EffectFaultProbe::FileSync => ("FileSync", None, false, false),
             EffectFaultProbe::Other => ("Other", None, false, false),
         };
-        let observed = if final_slot {
+        let observed = if final_slot || name == "SealRawPublication" {
             Some(mutation(required(
                 path.as_deref().ok_or("actual mutation path"),
             )))
