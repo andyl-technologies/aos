@@ -94,7 +94,10 @@ impl RamStore {
             let _scope = account.enter();
             let bytes = envelope.canonical_bytes();
             account.check().map_err(admission)?;
-            (envelope.content_id(kind), bytes)
+            // The admitted image is already canonical. Hash that exact image
+            // without emitting the framing and child identities a second time.
+            let id = ContentId::for_bytes(kind, envelope.schema_version(), &bytes);
+            (id, bytes)
         };
         // Operation, retention and all backend callbacks use original authority.
         // Only concrete codec allocations enter the prepaid partition.

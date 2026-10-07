@@ -14,6 +14,7 @@ use crate::owned_decode::DecodeBudget;
 
 use super::*;
 
+mod hash_reuse;
 mod record_prepay;
 
 const METADATA_BYTES: u64 = 4 * 1024 * 1024;
