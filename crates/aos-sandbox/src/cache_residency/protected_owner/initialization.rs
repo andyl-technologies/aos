@@ -876,7 +876,7 @@ impl CacheResidentInitializationV1 {
         };
 
         let returned = (|| {
-            self.require_same_coverage_inputs(original_inputs)?;
+            Self::require_same_coverage_inputs(self.coverage_inputs, original_inputs)?;
             operation.compare_source(source_domains, original_inputs)
                 .map_err(|_| InitializationCauseV1::ReadMetadata)?;
             let data = original_inputs.ready().ok_or(InitializationCauseV1::CoverageInputs)?;
@@ -901,7 +901,7 @@ impl CacheResidentInitializationV1 {
                 .map_err(|_| InitializationCauseV1::ReadMetadata)?;
             operation.compare_source(source_domains, original_inputs)
                 .map_err(|_| InitializationCauseV1::ReadMetadata)?;
-            self.require_same_coverage_inputs(original_inputs)?;
+            Self::require_same_coverage_inputs(self.coverage_inputs, original_inputs)?;
             if let Err(cause) = operation.check_original_crossing() {
                 operation.refuse(cause);
                 return Err(InitializationCauseV1::ReadMetadata);
@@ -923,7 +923,7 @@ impl CacheResidentInitializationV1 {
         if operation.compare_source(source_domains, original_inputs).is_err() {
             self.postcheck.get_or_insert(InitializationCauseV1::ReadMetadata);
         }
-        if let Err(cause) = self.require_same_coverage_inputs(original_inputs) {
+        if let Err(cause) = Self::require_same_coverage_inputs(self.coverage_inputs, original_inputs) {
             self.postcheck.get_or_insert(cause);
         }
         if let Some(source) = self.source.as_mut() {
@@ -1020,7 +1020,7 @@ impl CacheResidentInitializationV1 {
         };
 
         let returned = (|| {
-            self.require_same_coverage_inputs(original_inputs)?;
+            Self::require_same_coverage_inputs(self.coverage_inputs, original_inputs)?;
             original_bootstrap_credentials.recheck()
                 .map_err(|_| InitializationCauseV1::CoverageInputs)?;
             let inputs = original_inputs.ready().ok_or(InitializationCauseV1::CoverageInputs)?;
@@ -1065,7 +1065,7 @@ impl CacheResidentInitializationV1 {
             }
         }
         let local_postcheck = (|| {
-            self.require_same_coverage_inputs(original_inputs)?;
+            Self::require_same_coverage_inputs(self.coverage_inputs, original_inputs)?;
             let hold = self.hold.as_mut().ok_or(InitializationCauseV1::Closed)?;
             require_original_hold(
                 &mut hold.0, self.original_hold, self.coverage_inputs, self.original_coverage,
@@ -1148,7 +1148,7 @@ impl CacheResidentInitializationV1 {
         };
 
         let returned = (|| {
-            self.require_same_coverage_inputs(original_inputs)?;
+            Self::require_same_coverage_inputs(self.coverage_inputs, original_inputs)?;
             original_bootstrap_credentials.recheck()
                 .map_err(|_| InitializationCauseV1::CoverageInputs)?;
             let inputs = original_inputs.ready().ok_or(InitializationCauseV1::CoverageInputs)?;
@@ -1186,7 +1186,7 @@ impl CacheResidentInitializationV1 {
             self.postcheck.get_or_insert(InitializationCauseV1::CoverageAppend);
         }
         let local_postcheck = (|| {
-            self.require_same_coverage_inputs(original_inputs)?;
+            Self::require_same_coverage_inputs(self.coverage_inputs, original_inputs)?;
             let inputs = original_inputs.ready().ok_or(InitializationCauseV1::CoverageInputs)?;
             let catalog = GitCoverageCatalogV1::decode(inputs.catalog())?;
             let source = self.source.as_mut().ok_or(InitializationCauseV1::Closed)?;
@@ -1741,7 +1741,7 @@ impl CacheResidentInitializationV1 {
                     Err(CacheResidentUnavailableV1)
                 }
             });
-        if let Err(cause) = self.require_same_coverage_inputs(original_inputs) {
+        if let Err(cause) = Self::require_same_coverage_inputs(self.coverage_inputs, original_inputs) {
             self.complete = false;
             self.postcheck.get_or_insert(cause);
         }
@@ -1984,14 +1984,14 @@ impl CacheResidentInitializationV1 {
         owner: &mut CacheResidencyProtectedOwnerV1,
         original_inputs: &mut GitCoverageCredentialCustodyV1,
     ) -> Result<(), CacheResidentUnavailableV1> {
-        if let Err(cause) = self.require_same_coverage_inputs(original_inputs) {
+        if let Err(cause) = Self::require_same_coverage_inputs(self.coverage_inputs, original_inputs) {
             self.complete = false;
             self.first_failure.get_or_insert(cause);
             return Err(CacheResidentUnavailableV1);
         }
         let returned = self.compare_fixed_git_coverage_catalog(owner, original_inputs)
             .and_then(|()| self.recheck(owner));
-        if let Err(cause) = self.require_same_coverage_inputs(original_inputs) {
+        if let Err(cause) = Self::require_same_coverage_inputs(self.coverage_inputs, original_inputs) {
             self.complete = false;
             self.postcheck.get_or_insert(cause);
         }
@@ -2143,7 +2143,7 @@ impl CacheResidentInitializationV1 {
                 self.postcheck.get_or_insert(cause);
             }
         }
-        if let Err(cause) = self.require_same_coverage_inputs(original_inputs) {
+        if let Err(cause) = Self::require_same_coverage_inputs(self.coverage_inputs, original_inputs) {
             self.postcheck.get_or_insert(cause);
         }
         if self.first_failure.is_some() || self.postcheck.is_some() {
@@ -2319,7 +2319,7 @@ impl CacheResidentInitializationV1 {
                 self.postcheck.get_or_insert(cause);
             }
         }
-        if let Err(cause) = self.require_same_coverage_inputs(original_inputs) {
+        if let Err(cause) = Self::require_same_coverage_inputs(self.coverage_inputs, original_inputs) {
             self.postcheck.get_or_insert(cause);
         }
         if self.first_failure.is_some() || self.postcheck.is_some() {
@@ -2516,12 +2516,14 @@ impl CacheResidentInitializationV1 {
         Ok(())
     }
 
+    // Use only comparison coordinates, leaving the same clock guard live
+    // while callers mutate disjoint resident fields and park observations.
     #[cfg(target_os = "linux")]
     fn require_same_coverage_inputs(
-        &self,
+        coverage_inputs: Option<CacheGitCoverageInputsV1>,
         original_inputs: &mut GitCoverageCredentialCustodyV1,
     ) -> Result<(), InitializationCauseV1> {
-        if self.coverage_inputs != Some(CacheGitCoverageInputsV1::capture(original_inputs)?) {
+        if coverage_inputs != Some(CacheGitCoverageInputsV1::capture(original_inputs)?) {
             return Err(InitializationCauseV1::CoverageInputs);
         }
         Ok(())
