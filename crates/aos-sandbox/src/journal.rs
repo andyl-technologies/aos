@@ -27,7 +27,7 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use aos_sandbox_core::OperationId;
+use aos_sandbox_core::{ObjectDigest, OperationId};
 use rustix::fs::{
     AtFlags, CWD, FileType, FlockOperation, Mode, OFlags, ResolveFlags, fcntl_getfl, flock, fstat,
     fsync, openat2, renameat, statat, unlinkat,

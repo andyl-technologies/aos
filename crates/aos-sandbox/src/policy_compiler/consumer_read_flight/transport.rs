@@ -455,7 +455,9 @@ impl RetainedCarrier {
     }
 
     pub(crate) fn accepted(original: std::os::unix::net::UnixStream) -> Self {
-        Self { raw: Some(original.into()), ..Self::empty() }
+        let mut carrier = Self::empty();
+        carrier.raw = Some(original.into());
+        carrier
     }
 
     pub(crate) fn connect(&mut self, deadline: Deadline) -> Result<(), Error> {
@@ -626,6 +628,25 @@ mod tests {
             Flight::adopt(left.into(), correlation, deadline).unwrap(),
             right,
         )
+    }
+
+    #[test]
+    fn accepted_original_retains_empty_state_until_adoption() {
+        use std::os::fd::AsRawFd as _;
+
+        let (original, _peer) = UnixStream::pair().unwrap();
+        let descriptor = original.as_raw_fd();
+
+        let carrier = RetainedCarrier::accepted(original);
+
+        assert_eq!(carrier.raw.as_ref().unwrap().as_raw_fd(), descriptor);
+        assert!(carrier.stream.is_none());
+        assert!(carrier.deadline.is_none());
+        assert!(matches!(&carrier.slot, ReceiveSlot::Retaining(None)));
+        assert!(carrier.buffers.is_empty());
+        assert_eq!(carrier.write_cursor, 0);
+        assert!(carrier.shutdown_failure.is_none());
+        assert!(!carrier.ended);
     }
 
     #[test]
