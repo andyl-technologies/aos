@@ -2,7 +2,7 @@ diff --git a/src/core/aos-resource-enrollment.h b/src/core/aos-resource-enrollme
 new file mode 100644
 --- /dev/null
 +++ b/src/core/aos-resource-enrollment.h
-@@ -0,0 +1,24 @@
+@@ -0,0 +1,28 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +#pragma once
 +
@@ -24,6 +24,10 @@ new file mode 100644
 +bool aos_resource_root_protected_unit(const Unit *unit);
 +FixedCgroupSpawnOriginal *aos_resource_root_spawn_original(Unit *unit);
 +int aos_resource_root_cgroup_fd(Unit *unit);
++void aos_resource_root_sigchld(Manager *manager, const siginfo_t *si);
++void aos_resource_root_reaped(Manager *manager, pid_t pid, const siginfo_t *si, int result);
++void aos_resource_root_oom(Unit *unit, bool managed_oom);
++void aos_resource_root_before_cleanup(Unit *unit);
 +sd_id128_t aos_resource_unit_producer(Service *service);
 +int aos_resource_job_acquire(Unit *unit);
 +void aos_resource_job_release(bool charged);
@@ -31,12 +35,13 @@ diff --git a/src/core/aos-resource-enrollment.c b/src/core/aos-resource-enrollme
 new file mode 100644
 --- /dev/null
 +++ b/src/core/aos-resource-enrollment.c
-@@ -0,0 +1,891 @@
+@@ -0,0 +1,1165 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +
 +#include <fcntl.h>
 +#include <sys/stat.h>
 +#include <sys/vfs.h>
++#include <sys/wait.h>
 +#include <sys/resource.h>
 +#include <unistd.h>
 +
@@ -48,6 +53,7 @@ new file mode 100644
 +#include "initrd-util.h"
 +#include "load-fragment.h"
 +#include "memfd-util.h"
++#include "parse-util.h"
 +#include "set.h"
 +#include "sha256.h"
 +#include "string-util.h"
@@ -68,6 +74,8 @@ new file mode 100644
 +#define AOS_RESOURCE_CONTROLLER_PREFIX_OFFSET 1096U
 +#define AOS_RESOURCE_CONTROLLER_CGROUP "/aos.slice/aos-control.slice/aos-sandboxd.service"
 +#define AOS_RESOURCE_CONTROLLER_CGROUP_FILE "/sys/fs/cgroup" AOS_RESOURCE_CONTROLLER_CGROUP
++#define AOS_RESOURCE_ROOT_CGROUP "/system.slice/aos-sandbox-policy-authorityd.service"
++#define AOS_RESOURCE_ROOT_CGROUP_FILE "/sys/fs/cgroup" AOS_RESOURCE_ROOT_CGROUP
 +#define AOS_RESOURCE_VECTOR_BYTES (22U * 8U)
 +#define AOS_RESOURCE_COMPONENTS_OFFSET (40U + 3U * AOS_RESOURCE_VECTOR_BYTES)
 +#define AOS_RESOURCE_CONCURRENT_OPERATIONS 21U
@@ -126,6 +134,34 @@ new file mode 100644
 +        AosResourceControllerCPUCheck later;
 +} AosResourceControllerCPU;
 +
++/* Each bookend is written once. Raw event bytes and native errors are evidence,
++ * not a Drained claim. This fixed storage and two held OFDs are parent costs;
++ * this slice does not establish their whole-parent C/K payment. */
++typedef struct AosResourceRootObservation {
++        bool attempted;
++        bool unit_seen;
++        sd_id128_t invocation;
++        uint64_t cgroup_id;
++        uint64_t oom_kill_last;
++        uint64_t managed_oom_kill_last;
++        struct stat named_before;
++        struct stat named_after;
++        struct stat event_stats[2];
++        struct stat event_after_stats[2];
++        int named_before_result;
++        int named_after_result;
++        int event_stat_results[2];
++        int event_after_stat_results[2];
++        int unit_join_result;
++        int identity_result;
++        ssize_t read_lengths[2];
++        int read_results[2];
++        uint8_t readback[2][512];
++        int parse_results[2];
++        uint64_t event_values[2]; /* memory.events oom_kill; cgroup.events populated */
++        int result;
++} AosResourceRootObservation;
++
 +typedef struct AosResourceEnrollment {
 +        Manager *manager;
 +        int policy_fd;
@@ -163,6 +199,25 @@ new file mode 100644
 +        int root_limit_error;
 +        bool root_limits_attempted;
 +        FixedCgroupSpawnOriginal root_spawn;
++        int root_event_fds[2];
++        int root_event_open_results[2];
++        struct stat root_event_stats[2];
++        int root_event_stat_results[2];
++        AosResourceRootObservation root_before_spawn;
++        AosResourceRootObservation root_at_death;
++        AosResourceRootObservation root_kernel_oom;
++        AosResourceRootObservation root_managed_oom;
++        AosResourceRootObservation root_before_cleanup;
++        bool root_death_attempted;
++        siginfo_t root_child_death;
++        siginfo_t root_manager_death;
++        int root_death_wait_result;
++        int root_death_join_result;
++        bool root_reap_attempted;
++        siginfo_t root_reaped_death;
++        int root_reap_result;
++        int root_reap_join_result;
++        int root_post_error;
 +} AosResourceEnrollment;
 +
 +/* The existing root PID1 is the only issuer. This original owner is neither
@@ -205,6 +260,9 @@ new file mode 100644
 +        .root_cgroup_statfs_result = -EBADF,
 +        .root_control_stat_results = { -EBADF, -EBADF, -EBADF },
 +        .root_spawn = { .pidfd = -EBADF, .duplicate_pidfd = -EBADF },
++        .root_event_fds = { -EBADF, -EBADF },
++        .root_event_open_results = { -EBADF, -EBADF },
++        .root_event_stat_results = { -EBADF, -EBADF },
 +};
 +
 +static uint64_t policy_u64(const uint8_t *bytes) {
@@ -624,6 +682,206 @@ new file mode 100644
 +        return 0;
 +}
 +
++static const char *const root_event_names[2] = { "memory.events", "cgroup.events" };
++
++/* Decode only the two fixed native event fields; preserve the unparsed bytes.
++ * Missing, duplicate, unterminated or overlong fields remain uncertain. */
++static int root_event_value(const uint8_t *bytes, size_t length, const char *key, uint64_t *ret) {
++        size_t key_length = strlen(key);
++        bool found = false;
++
++        if (memchr(bytes, 0, length))
++                return -EBADMSG;
++
++        while (length > 0) {
++                const uint8_t *end = memchr(bytes, '\n', length);
++                size_t line_length;
++                char value[DECIMAL_STR_MAX(uint64_t)];
++                int r;
++
++                if (!end)
++                        return -EBADMSG;
++                line_length = end - bytes;
++                if (line_length > key_length && memcmp(bytes, key, key_length) == 0 && bytes[key_length] == ' ') {
++                        size_t value_length = line_length - key_length - 1;
++
++                        if (found)
++                                return -EBADMSG;
++                        if (value_length == 0)
++                                return -EBADMSG;
++                        if (value_length >= sizeof(value))
++                                return -E2BIG;
++                        for (size_t i = 0; i < value_length; i++)
++                                if (bytes[key_length + 1 + i] < '0' || bytes[key_length + 1 + i] > '9')
++                                        return -EBADMSG;
++                        memcpy(value, bytes + key_length + 1, value_length);
++                        value[value_length] = 0;
++                        r = safe_atou64_full(value, 10, ret);
++                        if (r < 0)
++                                return r;
++                        found = true;
++                }
++
++                bytes = end + 1;
++                length -= line_length + 1;
++        }
++
++        return found ? 0 : -ENXIO;
++}
++
++static int root_observe(AosResourceRootObservation *observation, Unit *unit) {
++        if (observation->attempted)
++                return observation->result;
++        observation->attempted = true;
++
++        if (unit) {
++                CGroupRuntime *runtime = unit_get_cgroup_runtime(unit);
++
++                observation->unit_seen = true;
++                observation->invocation = unit->invocation_id;
++                if (runtime) {
++                        observation->cgroup_id = runtime->cgroup_id;
++                        observation->oom_kill_last = runtime->oom_kill_last;
++                        observation->managed_oom_kill_last = runtime->managed_oom_kill_last;
++                }
++                observation->unit_join_result =
++                        enrollment.manager == unit->manager &&
++                        sd_id128_equal(enrollment.root_invocation, unit->invocation_id) &&
++                        runtime && streq_ptr(runtime->cgroup_path, AOS_RESOURCE_ROOT_CGROUP) &&
++                        runtime->cgroup_id == enrollment.root_cgroup_stat.st_ino ? 0 : -EOWNERDEAD;
++        }
++
++        /* Observe the fixed name on both sides of the reads. All reads use the
++         * original OFDs, even if the name was removed or replaced meanwhile. */
++        observation->named_before_result =
++                fstatat(AT_FDCWD, AOS_RESOURCE_ROOT_CGROUP_FILE,
++                        &observation->named_before, AT_SYMLINK_NOFOLLOW) < 0 ? -errno : 0;
++        for (unsigned i = 0; i < 2; i++) {
++                observation->event_stat_results[i] =
++                        fstatat(enrollment.root_cgroup_fd, root_event_names[i],
++                                &observation->event_stats[i], AT_SYMLINK_NOFOLLOW) < 0 ? -errno : 0;
++                observation->read_lengths[i] =
++                        pread(enrollment.root_event_fds[i], observation->readback[i],
++                              sizeof(observation->readback[i]), 0);
++                observation->read_results[i] = observation->read_lengths[i] < 0 ? -errno :
++                        observation->read_lengths[i] == 0 ? -ENODATA :
++                        observation->read_lengths[i] == (ssize_t) sizeof(observation->readback[i]) ? -E2BIG : 0;
++                observation->parse_results[i] = observation->read_results[i] < 0 ? observation->read_results[i] :
++                        root_event_value(observation->readback[i], observation->read_lengths[i],
++                                         i == 0 ? "oom_kill" : "populated", &observation->event_values[i]);
++                if (i == 1 && observation->parse_results[i] >= 0 && observation->event_values[i] > 1)
++                        observation->parse_results[i] = -EBADMSG;
++                /* Retain this after-read result even when read or decode failed. */
++                observation->event_after_stat_results[i] =
++                        fstatat(enrollment.root_cgroup_fd, root_event_names[i],
++                                &observation->event_after_stats[i], AT_SYMLINK_NOFOLLOW) < 0 ? -errno : 0;
++        }
++        observation->named_after_result =
++                fstatat(AT_FDCWD, AOS_RESOURCE_ROOT_CGROUP_FILE,
++                        &observation->named_after, AT_SYMLINK_NOFOLLOW) < 0 ? -errno : 0;
++
++        observation->identity_result = observation->named_before_result < 0 ? observation->named_before_result :
++                observation->named_after_result;
++        if (observation->identity_result >= 0 &&
++            (!S_ISDIR(observation->named_before.st_mode) ||
++             observation->named_before.st_uid != 0 || observation->named_before.st_gid != 0 ||
++             observation->named_before.st_dev != enrollment.root_cgroup_stat.st_dev ||
++             observation->named_before.st_ino != enrollment.root_cgroup_stat.st_ino ||
++             !S_ISDIR(observation->named_after.st_mode) ||
++             observation->named_after.st_uid != 0 || observation->named_after.st_gid != 0 ||
++             observation->named_after.st_dev != enrollment.root_cgroup_stat.st_dev ||
++             observation->named_after.st_ino != enrollment.root_cgroup_stat.st_ino))
++                observation->identity_result = -EOWNERDEAD;
++
++        for (unsigned i = 0; i < 2; i++) {
++                if (observation->identity_result < 0)
++                        break;
++                if (observation->event_stat_results[i] < 0)
++                        observation->identity_result = observation->event_stat_results[i];
++                else if (observation->event_after_stat_results[i] < 0)
++                        observation->identity_result = observation->event_after_stat_results[i];
++                else if (observation->event_stats[i].st_dev != enrollment.root_event_stats[i].st_dev ||
++                         observation->event_stats[i].st_ino != enrollment.root_event_stats[i].st_ino ||
++                         observation->event_after_stats[i].st_dev != enrollment.root_event_stats[i].st_dev ||
++                         observation->event_after_stats[i].st_ino != enrollment.root_event_stats[i].st_ino)
++                        observation->identity_result = -EOWNERDEAD;
++        }
++
++        observation->result = observation->unit_join_result < 0 ? observation->unit_join_result :
++                observation->identity_result;
++        for (unsigned i = 0; i < 2; i++)
++                if (observation->result >= 0 && observation->parse_results[i] < 0)
++                        observation->result = observation->parse_results[i];
++        return observation->result;
++}
++
++static void root_post_error(int result) {
++        if (result < 0 && enrollment.root_post_error == 0)
++                enrollment.root_post_error = result;
++}
++
++void aos_resource_root_sigchld(Manager *manager, const siginfo_t *si) {
++        siginfo_t original = {};
++        int r;
++
++        if (enrollment.manager != manager || enrollment.root_spawn.pidfd < 0 ||
++            enrollment.root_death_attempted)
++                return;
++
++        /* The manager has not reaped si yet. Query the original clone pidfd,
++         * including when duplicate/PidRef handoff failed and no unit watches it.
++         * An unrelated child or a still-live original supplies no death. */
++        r = waitid(P_PIDFD, enrollment.root_spawn.pidfd, &original, WEXITED | WNOHANG | WNOWAIT) < 0 ? -errno : 0;
++        if (r >= 0 && (original.si_pid == 0 || original.si_pid != si->si_pid))
++                return;
++
++        enrollment.root_death_attempted = true;
++        enrollment.root_child_death = original;
++        enrollment.root_manager_death = *si;
++        enrollment.root_death_wait_result = r;
++        enrollment.root_death_join_result = r < 0 ? r :
++                original.si_code == si->si_code && original.si_status == si->si_status &&
++                IN_SET(original.si_code, CLD_EXITED, CLD_KILLED, CLD_DUMPED) ? 0 : -EOWNERDEAD;
++        root_post_error(enrollment.root_death_join_result);
++        root_post_error(root_observe(&enrollment.root_at_death, NULL));
++}
++
++void aos_resource_root_reaped(Manager *manager, pid_t pid, const siginfo_t *si, int result) {
++        if (enrollment.manager != manager || !enrollment.root_death_attempted ||
++            enrollment.root_death_join_result < 0 || enrollment.root_reap_attempted ||
++            pid != enrollment.root_child_death.si_pid)
++                return;
++
++        enrollment.root_reap_attempted = true;
++        enrollment.root_reaped_death = *si;
++        enrollment.root_reap_result = result;
++        enrollment.root_reap_join_result = result < 0 ? result :
++                si->si_pid == pid && si->si_code == enrollment.root_child_death.si_code &&
++                si->si_status == enrollment.root_child_death.si_status ? 0 : -EOWNERDEAD;
++        root_post_error(enrollment.root_reap_join_result);
++}
++
++void aos_resource_root_oom(Unit *unit, bool managed_oom) {
++        if (!aos_resource_root_protected_unit(unit) || enrollment.manager != unit->manager ||
++            enrollment.root_cgroup_fd < 0)
++                return;
++
++        /* This is the actual native notification, before OOMPolicy= or Service
++         * state can discard it. Kernel and oomd suppliers stay distinct; neither
++         * identifies which individual process the cgroup OOM killed. */
++        root_post_error(root_observe(managed_oom ? &enrollment.root_managed_oom : &enrollment.root_kernel_oom, unit));
++}
++
++void aos_resource_root_before_cleanup(Unit *unit) {
++        if (!aos_resource_root_protected_unit(unit) || enrollment.manager != unit->manager ||
++            enrollment.root_cgroup_fd < 0)
++                return;
++
++        /* Cgroup pruning calls this before trim; unit_free is the fallback
++         * before unit_done or unwatch. Neither resets or closes the original. */
++        root_post_error(root_observe(&enrollment.root_before_cleanup, unit));
++}
++
 +int aos_resource_enforce_root_limits(Service *service) {
 +        static const char *const controls[3] = { "memory.max", "pids.max", "cpu.max" };
 +        CGroupRuntime *runtime;
@@ -637,7 +895,7 @@ new file mode 100644
 +            enrollment.root_cgroup_fd >= 0)
 +                return refuse(-EOWNERDEAD);
 +        runtime = unit_get_cgroup_runtime(UNIT(service));
-+        if (!runtime || !streq_ptr(runtime->cgroup_path, "/system.slice/aos-sandbox-policy-authorityd.service"))
++        if (!runtime || !streq_ptr(runtime->cgroup_path, AOS_RESOURCE_ROOT_CGROUP))
 +                return refuse(enrollment.root_limit_error = -EPERM);
 +
 +        /* unit_prepare_exec has realized the cgroup. Its ordinary setters log
@@ -681,6 +939,26 @@ new file mode 100644
 +                if (r < 0)
 +                        return refuse(enrollment.root_limit_error = r);
 +        }
++
++        for (unsigned i = 0; i < 2; i++) {
++                enrollment.root_event_fds[i] =
++                        openat(enrollment.root_cgroup_fd, root_event_names[i], O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
++                enrollment.root_event_open_results[i] = enrollment.root_event_fds[i] < 0 ? -errno : 0;
++                if (enrollment.root_event_open_results[i] < 0)
++                        return refuse(enrollment.root_limit_error = enrollment.root_event_open_results[i]);
++                enrollment.root_event_stat_results[i] =
++                        fstat(enrollment.root_event_fds[i], &enrollment.root_event_stats[i]) < 0 ? -errno : 0;
++                if (enrollment.root_event_stat_results[i] < 0)
++                        return refuse(enrollment.root_limit_error = enrollment.root_event_stat_results[i]);
++                if (!S_ISREG(enrollment.root_event_stats[i].st_mode) ||
++                    enrollment.root_event_stats[i].st_uid != 0 || enrollment.root_event_stats[i].st_gid != 0 ||
++                    enrollment.root_event_stats[i].st_dev != enrollment.root_cgroup_stat.st_dev)
++                        return refuse(enrollment.root_limit_error = -EPERM);
++        }
++        r = root_observe(&enrollment.root_before_spawn, UNIT(service));
++        if (r < 0)
++                return refuse(enrollment.root_limit_error = r);
++
 +        /* With sandboxing mandatory and PAM absent, exec_invoke's existing
 +         * setrlimit_closest_all applies both finite NOFILE limits before exec.
 +         * Its only fallback clamps downward; every other failure stops exec. */
@@ -690,7 +968,7 @@ new file mode 100644
 +FixedCgroupSpawnOriginal *aos_resource_root_spawn_original(Unit *unit) {
 +        if (!aos_resource_root_selected_name(unit->id) ||
 +            !enrollment.admitted || enrollment.manager != unit->manager ||
-+            enrollment.root_limit_error < 0 || enrollment.root_cgroup_fd < 0 ||
++            enrollment.root_limit_error < 0 || enrollment.root_post_error < 0 || enrollment.root_cgroup_fd < 0 ||
 +            enrollment.root_read_results[0] != 0 || enrollment.root_read_results[1] != 0 ||
 +            enrollment.root_read_results[2] != 0)
 +                return NULL;
@@ -1422,3 +1700,75 @@ diff --git a/src/core/dbus-service.c b/src/core/dbus-service.c
          SD_BUS_PROPERTY("ExtraFileDescriptorNames", "as", property_get_extra_file_descriptors, 0, SD_BUS_VTABLE_PROPERTY_CONST),
 +        SD_BUS_PROPERTY("AOSResourceProducerEpoch", "ay", property_get_aos_resource_producer, 0, 0),
          SD_BUS_PROPERTY("ReloadSignal", "i", bus_property_get_int, offsetof(Service, reload_signal), SD_BUS_VTABLE_PROPERTY_CONST),
+diff --git a/src/core/service.c b/src/core/service.c
+--- a/src/core/service.c
++++ b/src/core/service.c
+@@ -4622,2 +4622,4 @@
+-static void service_notify_cgroup_oom_event(Unit *u, bool managed_oom) {
+-        Service *s = ASSERT_PTR(SERVICE(u));
++static void service_notify_cgroup_oom_event(Unit *u, bool managed_oom) {
++        Service *s = ASSERT_PTR(SERVICE(u));
++
++        aos_resource_root_oom(u, managed_oom);
+diff --git a/src/core/manager.c b/src/core/manager.c
+--- a/src/core/manager.c
++++ b/src/core/manager.c
+@@ -3000,1 +3000,3 @@
+-        if (SIGINFO_CODE_IS_DEAD(si.si_code)) {
++        if (SIGINFO_CODE_IS_DEAD(si.si_code)) {
++                aos_resource_root_sigchld(m, &si);
++
+diff --git a/src/core/manager.c b/src/core/manager.c
+--- a/src/core/manager.c
++++ b/src/core/manager.c
+@@ -3042,3 +3042,6 @@
+-        /* And now, we actually reap the zombie. */
+-        if (waitid(P_PID, si.si_pid, &si, WEXITED) < 0) {
+-                log_error_errno(errno, "Failed to dequeue child, ignoring: %m");
++        /* And now, we actually reap the zombie. */
++        pid_t reaped_pid = si.si_pid;
++        r = waitid(P_PID, reaped_pid, &si, WEXITED) < 0 ? -errno : 0;
++        aos_resource_root_reaped(m, reaped_pid, &si, r);
++        if (r < 0) {
++                log_error_errno(r, "Failed to dequeue child, ignoring: %m");
+diff --git a/src/core/cgroup.c b/src/core/cgroup.c
+--- a/src/core/cgroup.c
++++ b/src/core/cgroup.c
+@@ -1,1 +1,2 @@
+-/* SPDX-License-Identifier: LGPL-2.1-or-later */
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#include "aos-resource-enrollment.h"
+diff --git a/src/core/cgroup.c b/src/core/cgroup.c
+--- a/src/core/cgroup.c
++++ b/src/core/cgroup.c
+@@ -2828,5 +2828,7 @@
+-void unit_prune_cgroup(Unit *u) {
+-        bool is_root_slice;
+-        int r;
+-
+-        assert(u);
++void unit_prune_cgroup(Unit *u) {
++        bool is_root_slice;
++        int r;
++
++        assert(u);
++
++        aos_resource_root_before_cleanup(u);
+diff --git a/src/core/unit.c b/src/core/unit.c
+--- a/src/core/unit.c
++++ b/src/core/unit.c
+@@ -777,6 +777,8 @@
+-Unit* unit_free(Unit *u) {
+-        Unit *slice;
+-        char *t;
+-
+-        if (!u)
+-                return NULL;
++Unit* unit_free(Unit *u) {
++        Unit *slice;
++        char *t;
++
++        if (!u)
++                return NULL;
++
++        aos_resource_root_before_cleanup(u);
