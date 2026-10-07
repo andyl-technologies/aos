@@ -10,6 +10,7 @@
   mkSystem,
   pkgs,
   runtimeSource ? null,
+  runtimeSourceIdentity ? null,
   separateDatabase ? false,
   externalDirect ? false,
   readRevisionFixture ? null,
@@ -57,6 +58,64 @@
   };
   containerPublicationInputs = containerFixture.config.system.build.containers.aos.publicationInputs;
   managedCleanupNativeHelper = import ./_hub-managed-cleanup-native-helper.nix {inherit pkgs;};
+  packMemoryEnabled = externalDirect && runtimeSourceIdentity != null;
+  packMemoryExporter = import ./_hub-pack-memory/exporter.nix {inherit pkgs;};
+  packMemoryModules = pkgs.runCommand "hub-pack-memory-fixture-modules" {} ''
+    mkdir -p "$out"
+    cp ${./_hub-pack-memory/bridge.py} "$out/bridge.py"
+    cp ${./_hub-pack-memory/guest.py} "$out/guest.py"
+    cp ${./_hub-pack-memory/worker_owner.py} "$out/worker_owner.py"
+    cp ${./_hub-pack-memory/transport.py} "$out/transport.py"
+    cp ${./_hub-pack-memory/files.py} "$out/files.py"
+    cp ${./_hub-pack-memory/callbacks.py} "$out/callbacks.py"
+    cp ${./_hub-pack-memory/admission.py} "$out/admission.py"
+    cp ${./_hub-pack-memory/native.py} "$out/native.py"
+    cp ${./_hub-pack-memory/window.py} "$out/window.py"
+    cp ${./_hub-pack-memory/hold.py} "$out/hold.py"
+    cp ${./_hub-pack-memory/source-hold.mjs} "$out/source-hold.mjs"
+    cp ${./_hub-pack-memory/source-hold-launch.mjs} "$out/source-hold-launch.mjs"
+  '';
+  # The caller supplies the independently verified final committed capture.
+  # Package outputs and module bytes are measured only after realization.
+  packMemorySourceDescriptor =
+    assert runtimeSource != null;
+    assert runtimeSourceIdentity != null;
+    assert builtins.attrNames runtimeSourceIdentity == ["sourceCommit" "sourceTree"];
+    assert builtins.match "[0-9a-f]{40}" runtimeSourceIdentity.sourceCommit != null;
+    assert builtins.match "[0-9a-f]{40}" runtimeSourceIdentity.sourceTree != null;
+    pkgs.runCommand "hub-pack-memory-source-descriptor" {buildDeps = [pkgs.python3];} ''
+      mkdir -p "$out"
+      ${pkgs.python3}/bin/python3 - "$out" <<'PACK_MEMORY_SOURCE_DESCRIPTOR'
+      import hashlib, json, sys
+      from pathlib import Path
+
+      def measured(path):
+          selected = Path(path)
+          with selected.open("rb") as stream:
+              count = selected.stat().st_size
+              sha256 = hashlib.file_digest(stream, "sha256").hexdigest()
+          return {"file": str(selected), "bytes": count, "sha256": sha256}
+
+      source = "${runtimeSource}"
+      modules = {name: measured(source + relative) for name, relative in (
+          ("resources", "/tests/fleet/_hub-direct-invocation-resources.py"),
+          ("executeParser", "/tests/fleet/_hub-storage-work-execute-observation.py"))}
+      artifacts = {
+          "nativeExecutable": measured("${managedCleanupNativeHelper}/bin/aos-hub-managed-cleanup-contract"),
+          "codecExecutable": measured("${storageBodyCodec}/bin/aos-storage-body-codec")}
+      descriptor = {"version": 1, "sourceCommit": "${runtimeSourceIdentity.sourceCommit}",
+          "sourceTree": "${runtimeSourceIdentity.sourceTree}", "commonSourceStorePath": source,
+          "modules": {name: {"relativePath": value["file"][len(source) + 1:],
+              "bytes": value["bytes"], "sha256": value["sha256"]}
+              for name, value in modules.items()}, "artifacts": artifacts}
+      current = {"version": 2, "runtimeParentCommit": descriptor["sourceCommit"],
+          "runtimeSourceStorePath": source, **modules, **artifacts}
+      for name, value in (("descriptor.json", descriptor), ("current-tuple.json", current)):
+          with (Path(sys.argv[1]) / name).open("x") as stream:
+              json.dump(value, stream, separators=(",", ":"))
+              stream.write("\n")
+      PACK_MEMORY_SOURCE_DESCRIPTOR
+    '';
   verificationObservationHelper = import ./_hub-direct-verification-native-helper.nix {inherit pkgs;};
   verificationObservationHelperProvenance = import ./_hub-direct-verification-helper-provenance.nix {
     inherit pkgs;
@@ -687,7 +746,8 @@
         issuerClockReviewer
         sqlObserver
       ]
-      ++ lib.optional (nativeBodyObservationTools != null) nativeBodyObservationTools;
+      ++ lib.optional (nativeBodyObservationTools != null) nativeBodyObservationTools
+      ++ lib.optionals packMemoryEnabled [packMemoryModules packMemoryExporter packMemorySourceDescriptor];
   };
 in {
   name =
@@ -787,6 +847,7 @@ in {
       + builtins.readFile ./_hub-external-copy-cancel.py
       + builtins.readFile ./_hub-external-copy-loss.py
       + builtins.readFile ./_hub-external-oci-window.py
+      + builtins.readFile ./_hub-pack-memory-fleet.py
       + builtins.readFile ./_hub-external-copy-window.py
       + builtins.readFile ./_hub-external-copy-configuration.py
       + builtins.readFile ./_hub-direct-runtime-profile.py
@@ -1154,6 +1215,10 @@ in {
               "readWindowModule": "${managedFixtureModules}/_hub-direct-read-window.py",
               "managedCleanupNativeHelper": "${managedCleanupNativeHelper}/bin/aos-hub-managed-cleanup-contract",
               "managedCleanupNativeHelperProvenance": "${managedCleanupHelperProvenance}/provenance.json",
+              "packMemoryModules": ${if packMemoryEnabled then builtins.toJSON (toString packMemoryModules) else "None"},
+              "packMemoryExporter": ${if packMemoryEnabled then builtins.toJSON "${packMemoryExporter}/bin/aos-pack-memory-fixture" else "None"},
+              "packMemorySourceDescriptor": ${if packMemoryEnabled then builtins.toJSON "${packMemorySourceDescriptor}/descriptor.json" else "None"},
+              "packMemoryCurrentTuple": ${if packMemoryEnabled then builtins.toJSON "${packMemorySourceDescriptor}/current-tuple.json" else "None"},
               "verificationObservationHelper": "${verificationObservationHelper}/bin/aos-hub-worker-verification-observation",
               "verificationObservationHelperProvenance": "${verificationObservationHelperProvenance}/provenance.json",
               "consoleAssetInputs": [

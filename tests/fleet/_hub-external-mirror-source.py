@@ -33,6 +33,16 @@ def mirror_upstream_configuration(run_id, root, tools):
         "    server {\n        listen 4778 ssl;\n        server_name aos.andyl.org;\n"
         "        ssl_certificate " + tools["issuerCertificate"] + ";\n"
         "        ssl_certificate_key " + tools["issuerPrivateKey"] + ";\n"
+        + ("        location /fleet-mirror/" + run_id + "/releases/memory/" + run_id + "/ {\n"
+           "            proxy_pass https://127.0.0.1:4780;\n"
+           "            proxy_set_header Host aos.andyl.org:4778;\n"
+           "            proxy_http_version 1.1;\n"
+           "            proxy_buffering off;\n            proxy_request_buffering off;\n"
+           "            proxy_ssl_server_name on;\n            proxy_ssl_name aos.andyl.org;\n"
+           "            proxy_ssl_verify on;\n"
+           "            proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;\n"
+           "        }\n" if tools.get("packMemoryModules") is not None else "")
+        +
         "        location /fleet-mirror/" + run_id + "/ {\n"
         "            alias " + root + "/surface/;\n            autoindex off;\n        }\n"
         "        location / { return 404; }\n    }\n}\n"

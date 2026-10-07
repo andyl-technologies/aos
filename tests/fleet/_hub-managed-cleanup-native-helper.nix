@@ -6,6 +6,8 @@
   selector = "storage_work::oci_cleanup::controlled::actual_managed_terminal_cleanup_pair";
   externalOciSelector = "storage_work::external_oci::tests::fleet::actual_external_oci_fleet_origin";
   externalOciSetupSelector = "storage_work::external_oci::tests::fleet_setup::actual_external_oci_fleet_setup";
+  packMemorySelector = "storage_work::external_oci::tests::fleet::pack_memory::actual_pack_memory_native_consumer";
+  packMemoryMaterialSelector = "storage_work::external_oci::tests::fleet::pack_memory::actual_pack_memory_candidate_material";
   cargoCommand = "test --release --frozen --offline --no-run -p aos-hub --lib --features postgres,required-live-dialects -j$NIX_BUILD_CORES";
 in
   assert pkgs.stdenv.hostPlatform.isLinux && !pkgs.stdenv.isCross;
@@ -73,6 +75,14 @@ in
           --list --ignored --exact '${externalOciSetupSelector}' \
           > "$out/nix-support/external-oci-setup-test-registration.txt"
         grep -Fx '${externalOciSetupSelector}: test' "$out/nix-support/external-oci-setup-test-registration.txt"
+        "$out/bin/aos-hub-managed-cleanup-contract" \
+          --list --ignored --exact '${packMemorySelector}' \
+          > "$out/nix-support/pack-memory-test-registration.txt"
+        grep -Fx '${packMemorySelector}: test' "$out/nix-support/pack-memory-test-registration.txt"
+        "$out/bin/aos-hub-managed-cleanup-contract" \
+          --list --ignored --exact '${packMemoryMaterialSelector}' \
+          > "$out/nix-support/pack-memory-material-test-registration.txt"
+        grep -Fx '${packMemoryMaterialSelector}: test' "$out/nix-support/pack-memory-material-test-registration.txt"
       '';
 
       # Ordinary fixup remains enabled. The tuple coordinator observes the final
@@ -81,6 +91,7 @@ in
         testSelector = selector;
         externalOciTestSelector = externalOciSelector;
         externalOciSetupTestSelector = externalOciSetupSelector;
+        inherit packMemorySelector packMemoryMaterialSelector;
         inherit cargoCommand;
         nativeFilteredSourceStorePath = toString native.src;
         workerFilteredSourceStorePath = toString worker.src;

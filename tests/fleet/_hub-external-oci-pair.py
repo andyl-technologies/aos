@@ -22,6 +22,17 @@ EXTERNAL_OCI_PAIR_KEYS = (
 )
 
 
+def external_oci_role_names(tools):
+    """Keep candidate-only entropy separate from ordinary Direct authority."""
+    names = EXTERNAL_OCI_PAIR_KEYS
+    if tools.get("mirrorFunctionalReviewer") is not None:
+        names += ("HUB_MIRROR_GUARD_KEY",)
+    if tools.get("packMemoryModules") is not None and tools.get("copyIsolationCase") == "same_worker":
+        names += ("HUB_MIRROR_CANDIDATE_KEY", "HUB_DIRECT_UPLOAD_R2_ACCESS_KEY_ID",
+            "HUB_DIRECT_UPLOAD_R2_SECRET_ACCESS_KEY")
+    return names
+
+
 def external_oci_pair_coordinates(run):
     """Name only the dedicated fixed listeners and new private resources."""
     if not isinstance(run, str) or re.fullmatch(r"[0-9a-f]{32}", run) is None:
@@ -51,7 +62,7 @@ def external_oci_initial_configuration(original, tools, coordinates, roles, cloc
     if coordinates != external_oci_pair_coordinates(coordinates["runId"]):
         raise ValueError("External OCI initial coordinates changed")
     mirror = tools.get("mirrorFunctionalReviewer")
-    role_names = EXTERNAL_OCI_PAIR_KEYS + (("HUB_MIRROR_GUARD_KEY",) if mirror is not None else ())
+    role_names = external_oci_role_names(tools)
     if (set(roles) != set(role_names) or len(set(roles.values())) != len(roles)
             or any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
                 for value in roles.values())):
@@ -135,6 +146,23 @@ def external_oci_initial_configuration(original, tools, coordinates, roles, cloc
         configuration["bindings"].update({"HUB_EXTERNAL_MIRROR_FUNCTIONAL_PROBE": "1",
             "HUB_EXTERNAL_MIRROR_FUNCTIONAL_REVIEWER_PUBLIC_KEY": mirror["publicKey"],
             "HUB_EXTERNAL_MIRROR_FUNCTIONAL_REVIEWER_KEY_ID": mirror["keyId"]})
+    if tools.get("packMemoryModules") is not None and isolation_case == "same_worker":
+        # These are actual dedicated Miniflare candidate bindings. They do not
+        # supply an accepted Managed profile to ordinary config::load, whose
+        # independent do-e2e refusal remains unchanged.
+        configuration["bindings"].update({
+            "HUB_DIRECT_UPLOAD_MANAGED_R2": "true",
+            "HUB_DIRECT_UPLOAD_R2_ACCOUNT_ID": run,
+            "HUB_DIRECT_UPLOAD_R2_BUCKET_NAME": configuration["r2Buckets"]["REGISTRY_BUCKET"],
+            "HUB_DIRECT_UPLOAD_R2_BUCKET_NAMESPACE": configuration["r2Buckets"]["REGISTRY_BUCKET"],
+            "HUB_DIRECT_UPLOAD_R2_CREDENTIAL_ID": "pack-memory-" + run,
+            "HUB_DIRECT_UPLOAD_R2_CREDENTIAL_GENERATION": "1",
+            "HUB_DIRECT_UPLOAD_R2_SECRET_VERSION_REF": "secret://fleet/pack-memory/" + run + "/v1",
+            "HUB_DIRECT_UPLOAD_R2_CHECKSUM": "md5",
+            "HUB_DIRECT_UPLOAD_R2_PRIVATE_POLICY_ID": "pack-memory-" + run,
+            "HUB_MIRROR_CANDIDATE_SOURCE_SHA256": hashlib.sha256(tools["workerSourcePath"].encode()).hexdigest(),
+            "HUB_MIRROR_CANDIDATE_SCRIPT_VERSION": "emulated-"
+                + hashlib.sha256(tools["workerSourcePath"].encode()).hexdigest()})
     return configuration
 
 
@@ -224,12 +252,15 @@ def provision_external_oci_pair(native, worker, client, database, tools,
                 'signerSecretRef':'external-probe-'+selected['run'],
                 'signingSeed':base64.urlsafe_b64encode(seed).decode().rstrip('=')}]}))
     """, {"root": coordinates["workerRoot"], "run": run,
-        "roles": EXTERNAL_OCI_PAIR_KEYS + (("HUB_MIRROR_GUARD_KEY",)
-            if tools.get("mirrorFunctionalReviewer") is not None else ()),
+        "roles": external_oci_role_names(tools),
         "reviewer": tools["reviewer"]}, timeout=40))
     original = json.loads(read_direct_guest_file(worker, tools["python"], original_configuration, 1024 * 1024))
     configuration = external_oci_initial_configuration(original, tools, coordinates,
         material["roles"], material["clockPolicy"], reviewer_public_key)
+    pack_material = None
+    if tools.get("packMemoryModules") is not None and tools.get("copyIsolationCase") == "same_worker":
+        configuration, pack_material = prepare_pack_memory_initial_material(
+            native, tools, coordinates, configuration)
     body = json.dumps(configuration, sort_keys=True, separators=(",", ":")).encode()
     configuration_file = coordinates["workerRoot"] + "/configuration-bootstrap.json"
     install_direct_guest_file(worker, tools["python"], configuration_file, body)
@@ -281,6 +312,7 @@ def provision_external_oci_pair(native, worker, client, database, tools,
         "configurationSha256": hashlib.sha256(body).hexdigest(), "nativeFiles": files,
         "databaseReceipt": database_receipt, "initialization": initialized,
         "clockPolicy": material["clockPolicy"],
+        "packMemoryMaterial": pack_material,
         "probePublicKey": material["probePublicKey"], "probeManifest": material["probeManifest"]}
 
 

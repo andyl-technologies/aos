@@ -92,6 +92,22 @@ def run_external_oci_pair_window(client, native, worker, s3, database_machine, t
                 capture_error = error
                 retain_direct_flow("external-oci-" + run + "-capture-failure.json", {
                     "version": 1, "failureClass": type(error).__name__, "nativeBulkBytes": None})
+        # Ordinary publication and its complete boundary capture finish first.
+        # Separate measurement children must not be assigned to the serving
+        # Native epoch. Unknown exact isolate allocation remains supplemental.
+        if producer_error is None and capture_error is None and result is not None:
+            memory_caller = ownership.get("packMemoryCaller")
+            if memory_caller is not None:
+                try:
+                    result["packMemory"] = memory_caller()
+                except Exception as error:
+                    capture_error = error
+                    try:
+                        retain_direct_flow("external-oci-" + run + "-pack-memory-failure.json", {
+                            "version": 1, "failureClass": type(error).__name__,
+                            "wholeIsolateBytes": None, "memory128PredicateQualified": False})
+                    except Exception as retention_error:
+                        error.add_note("pack failure retention failed: " + type(retention_error).__name__)
         exits = teardown_external_oci_pair(client, native, worker, pair_tools, ownership,
             producer_error or capture_error)
         if result is not None:
@@ -329,4 +345,10 @@ def run_external_oci_business_lane(client, native, worker, s3, database_machine,
         "scope": "connected emulated External OCI/Copy lane; independent full byte and provider joins required"}
     retain_direct_flow(label + "-business-window.json", report)
     ownership["business"] = report
+    if tools.get("packMemoryModules") is not None and mirror is not None:
+        # This private callable is never serialized as purported evidence. Its
+        # inputs stay the latest real ownership records until outer completion.
+        ownership["packMemoryCaller"] = lambda: run_current_pack_memory_window(
+            client, native, worker, pair_tools, ownership["prepared"], ownership["processes"],
+            ownership["helper"], mirror, controls)
     return report

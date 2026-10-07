@@ -119,7 +119,9 @@ export async function startOwnedSource(config) {
           actualIfMatch: request.headers["if-match"] ?? null, providerVersion: null });
         const owner = { source, response, offset: 0 };
         if (source.role === "pack") {
-          const prefix = Buffer.alloc(Math.min(65536, source.reference.bytes));
+          // A Content-Length client can finish before response.end(). Retain
+          // an actual body byte when the compressed pack fits in the prefix.
+          const prefix = Buffer.alloc(Math.min(65536, source.reference.bytes - 1));
           const { bytesRead } = await source.file.read(prefix, 0, prefix.length, 0);
           if (bytesRead !== prefix.length) throw new Error("pack prefix ended early");
           if (remaining(config.cutoffUptimeMillis) <= 0) throw new Error("source cutoff reached");
@@ -138,6 +140,22 @@ export async function startOwnedSource(config) {
       if (retired || remaining(config.cutoffUptimeMillis) <= 0
           || !same(owner.source.before, await owner.source.file.stat({ bigint: true }))) {
         throw new Error("source owner identity or cutoff changed");
+      }
+      if (owner.offset === owner.source.reference.bytes) {
+        // A small compressed pair can fit entirely in the held prefix. Its
+        // original EOF is still held: release ends this response without
+        // constructing an invalid empty file range or replacing the original.
+        await new Promise((resolve, reject) => {
+          owner.response.once("finish", resolve);
+          owner.response.once("error", reject);
+          owner.response.once("close", () => {
+            if (!owner.response.writableFinished) reject(new Error("source EOF remains unknown"));
+          });
+          owner.response.end();
+        });
+        record({ event: "offered_finished", role: owner.source.role,
+          bytes: owner.source.reference.bytes, providerConsumedBytes: null });
+        return;
       }
       const stream = owner.source.file.createReadStream({ start: owner.offset,
         end: owner.source.reference.bytes - 1, autoClose: false, highWaterMark: 65536 });
@@ -197,7 +215,12 @@ export async function startOwnedSource(config) {
       sockets.add(socket); socket.once("close", () => sockets.delete(socket));
     });
     await new Promise((resolve, reject) => {
-      server.once("error", reject); server.listen(config.port, "0.0.0.0", resolve);
+      // The fleet's original source listener remains live for ordinary
+      // signed-source reads and background sync. Only its fixed memory
+      // release subtree forwards to this owner without response buffering.
+      const fronted = config.frontedBySelectedMirror === true;
+      server.once("error", reject);
+      server.listen(fronted ? 4780 : config.port, fronted ? "127.0.0.1" : "0.0.0.0", resolve);
     });
     await new Promise((resolve, reject) => {
       control.once("error", reject); control.listen(config.controlSocket, resolve);
