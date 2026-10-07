@@ -489,6 +489,7 @@ let
     "aos-hub-dialect-tests"
     "aos-hub-e2e"
     "aos-hub-worker-do-e2e"
+    "aos-nix-generation-seed-builder"
     "aos-secret-reference-test"
     "aos-system-image-e2e-fixture"
     "aos-test-agent"
@@ -595,17 +596,23 @@ let
     "aos-fuse-transport"
     "aos-filesystem-fuse-worker"
     "aos-git-helper"
+    "aos-installed-filter-collector"
     "aos-landlock"
     "aos-method46-tpm-helper"
+    "aos-nix-offline-tpm-helper"
+    "aos-nix-runtime-tpm-helpers"
     "aos-netd"
     "aos-namespace-inspector-manager-query"
     "aos-recovery"
     "aos-registry-server"
+    "aos-runtime-deployment-tpm-helper"
     "aos-sandbox-agent"
+    "aos-sandbox-deployment-specimen-root"
     "aos-sandbox-guest-root-template"
     "aos-sandbox-guardian"
     "aos-sandbox-hostd"
     "aos-sandbox-mountd"
+    "aos-sandbox-nix-generation-template"
     "aos-source-providerd"
     "aos-sandbox-ownershipd"
     "aos-sandbox-network-lease-gate"
@@ -614,6 +621,7 @@ let
     "aos-sandbox-kernel-export-owner"
     "aos-sandbox-kernel-export-ownerd"
     "aos-sandbox-network-observer"
+    "aos-sandbox-runtime-publisher"
     "aos-sandbox-view-preparer-tools"
     "aos-selinux-runtime-roots"
     "aos-sandbox-zfs-worker"
@@ -869,6 +877,8 @@ let
   };
 
   architectureOverrides = {
+    "aos-installed-filter-collector" = ["x86_64"];
+    "aos-sandbox-deployment-specimen-root" = ["x86_64"];
     "aos-selinux-kernel-policy-readback" = ["x86_64"];
     darling = ["x86_64"];
     # TODO: cross-compile the complete Samba suite. Its AD/DC Python modules
@@ -981,8 +991,11 @@ let
     "kubernetes/_source.nix" = "mixed-source";
     "security/_aos-mount-executable-carrier.nix" = "linux-only-build-helper";
     "security/_aos-normal-root-profile.nix" = "linux-only-build-helper";
+    "security/_aos-nix-offline-startup-profile.nix" = "linux-only-build-helper";
+    "security/_aos-nix-startup-profile.nix" = "linux-only-build-helper";
     "security/_openssl-output-check.nix" = "cross-build-helper";
     "storage/_postgresql-cross.nix" = "cross-build-helper";
+    "tools/_aos-git-helper-images.nix" = "linux-only-build-helper";
     "toolchain/_bazel-asm.nix" = "native-build-helper";
     "toolchain/_bazel-async-profiler-api.nix" = "native-build-helper";
     "toolchain/_bazel-async-profiler-jar.nix" = "linux-only-build-helper";
