@@ -3304,14 +3304,19 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   frozen source. Four exact grace-window regressions and the retirement-fault
   case also pass on those same 4,904 independently reviewed input files.
   Required native build and the ten local-deletion Nextest cases remain pending.
-  These local
-  prerequisites do not qualify the complete collector gate or close T-GC-1.
+  These local prerequisites do not qualify the complete collector gate or close
+  T-GC-1.
   Independent review identifies a GC-3/4/5 gap in that source qualifier: its
   unbounded parent cutoff can make unrelated expired ancestral Chunks live.
   It must instead use each source's independently qualified actual current-root
   retention context while retaining full ordinary visitation of the source.
   The cutoff correction and count-zero/duration witnesses remain pending;
   the six-case result alone does not discharge those retention requirements.
+  The focused registry now requires eight source cases plus the existing genuine
+  live/expired job-root case. The expired lease witness must drop carry rather
+  than revive unrelated chunks; count-zero and duration cases require actual
+  reclaimability with eligible cold reuse. Missing corrected selectors fail
+  explicitly. This registration establishes no corrected runtime result.
   The reviewed pure journal, marking, proof-context, checkpoint, retention and
   grace-window bodies now replace their trunk declarations. All 27 adopted
   paths, including 16 independent hexadecimal witnesses, match the qualified
