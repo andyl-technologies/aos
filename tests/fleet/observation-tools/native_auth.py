@@ -122,7 +122,50 @@ def source_readers(held_log=None):
 
 # A reviewed source-bound collector may supply this code hook. No selected
 # input, environment variable or arbitrary module path can install a verifier.
-HOSTED_EXPORT_VERIFIER = None
+_HOSTED_COLLECTOR = None
+_HOSTED_SUPERVISOR = None
+
+
+def hosted_collector():
+    """Load the adjacent immutable collector, preserving its live observation map."""
+    global _HOSTED_COLLECTOR
+    if _HOSTED_COLLECTOR is None:
+        path = Path(__file__).resolve(strict=True).parent / 'hosted_collect.py'
+        raw = PACKAGE_READER['installed_bytes'](path, 1024 * 1024)
+        namespace = {'__file__': str(path), '__name__': 'installed_hosted_collect'}
+        exec(compile(raw, str(path), 'exec'), namespace)
+        _HOSTED_COLLECTOR = namespace
+    return _HOSTED_COLLECTOR
+
+
+def hosted_verifier():
+    """Select code-bound supervision; retained JSON alone remains unavailable."""
+    return hosted_export_verifier
+
+
+def start_hosted_supervision(python, collector, trust, deadline, managed_reader=None):
+    """Create the actual source-bound collector before selected read-only calls.
+
+    This is a trusted caller API, not a sidecar or environment activation field.
+    Its observation map survives only in this controller process; raw retained
+    receipts alone cannot recreate transport authentication in another process.
+    """
+    global _HOSTED_SUPERVISOR
+    if _HOSTED_SUPERVISOR is not None:
+        raise ValueError('Hosted supervision already owns an observation window')
+    _HOSTED_SUPERVISOR = hosted_collector()['Supervisor'](
+        python, collector, trust, deadline, managed_reader)
+    return _HOSTED_SUPERVISOR
+
+
+def hosted_export_verifier(operation, request, response, receipt, scope):
+    """Match current observed invocation bytes, never a JSON authentication flag."""
+    if _HOSTED_SUPERVISOR is None:
+        return None
+    return _HOSTED_SUPERVISOR.verify(operation, request, response, receipt, scope)
+
+
+HOSTED_EXPORT_VERIFIER = hosted_export_verifier
 
 
 def hosted_custody():
@@ -141,7 +184,7 @@ def hosted_messages(selected):
         raise ValueError('Hosted log invents local Native process custody')
     spec = closed_json(read_ref(log['selection'], 1024 * 1024))
     return hosted_custody()['cloud_run'](spec, globals(), PACKAGE['runtime'],
-                                       HOSTED_EXPORT_VERIFIER)
+                                       hosted_verifier())
 
 
 def ingress_events(selected):

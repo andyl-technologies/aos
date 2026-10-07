@@ -164,16 +164,24 @@ def native_sql_private(path, maximum):
     return raw
 
 
-def native_sql_rows(raw, selection, checkpoints, *, server_address='127.0.0.1', server_port=5432):
+def native_sql_rows(raw, selection, checkpoints, *, server_address='127.0.0.1', server_port=5432,
+                    managed_socket=False):
     """Check actual reader identity and exact selected coverage at reader time."""
     if not 0 < len(raw) <= NATIVE_SQL_MAX_OUTPUT or len(raw.splitlines()) != 1:
         raise ValueError('Native SQL output bound or framing differs')
     value = native_sql_json(raw)
     native_sql_closed(value, {'database', 'databaseOid', 'serverPort', 'serverAddress', 'user', 'backendPid', 'readOnly', 'isolation',
         'snapshot', 'snapshotAt', 'observedAt', 'role', 'privileges', 'admissions', 'chunks'})
+    if type(managed_socket) is not bool:
+        raise ValueError('Native SQL selected transport differs')
+    if managed_socket and (server_address is not None or server_port is not None):
+        raise ValueError('Native SQL selected socket facts differ')
+    endpoint = (value['serverAddress'] is None and value['serverPort'] is None) if managed_socket else (
+        value['serverAddress'] == server_address and type(value['serverPort']) is int
+        and value['serverPort'] == server_port)
     if (value['database'] != selection['database'] or value['user'] != selection['role']
             or not isinstance(value['databaseOid'], str) or not re.fullmatch('[1-9][0-9]{0,9}', value['databaseOid'])
-            or value['serverAddress'] != server_address or type(value['serverPort']) is not int or value['serverPort'] != server_port
+            or not endpoint
             or type(value['backendPid']) is not int or value['backendPid'] <= 1
             or value['readOnly'] != 'on' or value['isolation'] != 'repeatable read'):
         raise ValueError('Native SQL actual database/role/transaction differs')

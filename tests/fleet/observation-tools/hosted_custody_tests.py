@@ -122,8 +122,37 @@ class HostedCustody(unittest.TestCase):
         self.assertTrue(result['missing'])
         entry['textPayload'] = 'x' * (100 * 1024 + 1)
         spec['pages'][-1] = self.exchange('logging_entries_list', request, page)
-        with self.assertRaises(ValueError):
-            custody.cloud_run(spec, self.readers, self.runtime, self.synthetic_verifier)
+        result = custody.cloud_run(spec, self.readers, self.runtime, self.synthetic_verifier)
+        self.assertEqual(result['messages'], {'synthetic-instance': []})
+        self.assertEqual(result['unknownEntries'][0]['page'], spec['pages'][-1]['response'])
+        self.assertIn('unclassified_provider_entries', result['missing'])
+        self.assertIsNone(result['nativeBulkBytes'])
+
+    def test_actual_source_query_accepts_64_checkpoints_within_reader_ingress_bounds(self):
+        contract = runpy.run_path(str(Path(__file__).resolve().parents[1] / '_hub-native-sql-projection.py'))
+        for kind in ('admission_checked_transaction', 'manifest_append_checked_transaction'):
+            rows = []
+            for index in range(64):
+                identifier = 's' * 62 + '%02d' % index
+                rows.append({'kind': kind, 'sessionId': identifier} if kind.startswith('admission') else
+                            {'kind': kind, 'publicationId': identifier, 'chunkIndex': '2147483647'})
+            child = {'version': 1, 'event': 'sql_projection', 'status': 200,
+                     'projection': {'version': 1, 'checkpoints': rows}}
+            raw = json.dumps(child, separators=(',', ':'))
+            selected = contract['native_sql_checkpoints']([(inventory.SQL_MARKER + raw, '1')])
+            self.assertEqual(selected[0]['checkpoints'], rows)
+            query = contract['native_sql_query'](selected[0]['checkpoints'], 'd' * 128, 'r' * 63).encode()
+
+            # The actual existing generator, not a copied SQL encoder, handles
+            # both maximum identity geometry and the selected 64-row corpus.
+            self.assertLessEqual(len(query), 32 * 1024)  # Go maxQuery.
+            self.assertLessEqual(len(query), 64 * 1024)  # Supervisor MAX_REQUEST.
+            self.assertTrue(query.startswith(b'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;'))
+            self.assertTrue(query.endswith(b'; COMMIT;'))
+            for row in rows:
+                self.assertIn((row.get('sessionId') or row['publicationId']).encode(), query)
+            with self.assertRaises(ValueError):
+                contract['native_sql_query'](rows + [rows[0]], 'synthetic-deployment', 'synthetic_reader')
 
     def test_json_cannot_assert_authenticated_transport(self):
         spec = self.logs()
@@ -134,18 +163,16 @@ class HostedCustody(unittest.TestCase):
         with self.assertRaises(ValueError):
             custody.cloud_run(spec, self.readers, self.runtime, self.synthetic_verifier)
 
-    def test_missing_page_duplicate_or_foreign_instance_refuses(self):
+    def test_missing_page_duplicate_scope_refuses_and_foreign_instance_stays_unknown(self):
         spec = self.logs()
         with self.assertRaises(ValueError):
             custody.cloud_run(dict(spec, pages=spec['pages'][:1]), self.readers, self.runtime, self.synthetic_verifier)
-        for mutate in ('duplicate', 'foreign', 'filtered', 'wrong_token'):
+        for mutate in ('duplicate', 'filtered', 'wrong_token'):
             changed = copy.deepcopy(spec)
             request = parse(self.read(changed['pages'][1]['request'], 64 * 1024))
             response = parse(self.read(changed['pages'][1]['response'], custody.MAX_PAGE))
             if mutate == 'duplicate':
                 response['entries'] *= 2
-            elif mutate == 'foreign':
-                response['entries'][0]['labels']['instanceId'] = 'another-instance'
             elif mutate == 'filtered':
                 request['filter'] += ' AND textPayload:"begin"'
             else:
@@ -153,6 +180,37 @@ class HostedCustody(unittest.TestCase):
             changed['pages'][1] = self.exchange('logging_entries_list', request, response)
             with self.assertRaises(ValueError, msg=mutate):
                 custody.cloud_run(changed, self.readers, self.runtime, self.synthetic_verifier)
+        response = parse(self.read(spec['pages'][1]['response'], custody.MAX_PAGE))
+        request = parse(self.read(spec['pages'][1]['request'], 64 * 1024))
+        response['entries'][0]['labels']['instanceId'] = 'another-instance'
+        spec['pages'][1] = self.exchange('logging_entries_list', request, response)
+        result = custody.cloud_run(spec, self.readers, self.runtime, self.synthetic_verifier)
+        self.assertEqual(result['unknownEntries'][0]['instanceId'], 'another-instance')
+        self.assertEqual(result['absentSelectedInstances'], ['synthetic-instance'])
+        self.assertIsNone(result['nativeBulkBytes'])
+
+    def test_structured_and_unattributed_rows_retain_raw_page_unknown_references(self):
+        spec = self.logs()
+        request = parse(self.read(spec['pages'][1]['request'], 64 * 1024))
+        response = parse(self.read(spec['pages'][1]['response'], custody.MAX_PAGE))
+        structured = response['entries'][0]
+        del structured['textPayload']
+        structured['jsonPayload'] = {'message': inventory.MARKER + '{"event":"end"}'}
+        unattributed = copy.deepcopy(structured)
+        unattributed['protoPayload'] = unattributed.pop('jsonPayload')
+        unattributed['insertId'] = 'another'
+        del unattributed['labels']['instanceId']
+        response['entries'].append(unattributed)
+        spec['pages'][1] = self.exchange('logging_entries_list', request, response)
+
+        result = custody.cloud_run(spec, self.readers, self.runtime, self.synthetic_verifier)
+        self.assertEqual(result['messages'], {'synthetic-instance': []})
+        self.assertEqual([row['payloadKinds'] for row in result['unknownEntries']],
+                         [['jsonPayload'], ['protoPayload']])
+        self.assertEqual([row['entryIndex'] for row in result['unknownEntries']], [0, 1])
+        self.assertTrue(all(row['page'] == spec['pages'][1]['response'] for row in result['unknownEntries']))
+        self.assertIn('unclassified_provider_entries', result['missing'])
+        self.assertIsNone(result['nativeBulkBytes'])
 
     def test_export_substitution_and_current_tuple_mismatch_refuse(self):
         spec = self.logs()
@@ -252,6 +310,48 @@ class HostedCustody(unittest.TestCase):
         # The VM default remains exact loopback, with no fabricated rewrite.
         with self.assertRaises(ValueError):
             contract['native_sql_rows'](self.read(spec['rows'], 512 * 1024), spec, checkpoint['checkpoints'])
+
+    def test_managed_socket_keeps_null_facts_requires_transport_and_live_verifier(self):
+        spec, checkpoint, codec, contract = self.sql()
+        spec.update(version=2, serverAddress=None, serverPort=None, transport={
+            'kind': 'official_connector', 'connectionName': spec['connectionName'], 'ipType': 'private',
+            'connectorSourceSha256': '4' * 64, 'connectorExecutableSha256': '3' * 64})
+        spec['readerExecutableSha256'] = spec.pop('psqlExecutableSha256')
+        rows = parse(self.read(spec['rows'], 512 * 1024))
+        rows.update(serverAddress=None, serverPort=None)
+        spec['rows'] = self.ref(rows)
+        receipt = parse(self.read(spec['readerReceipt'], 64 * 1024))
+        receipt.update(version=2, transport=spec['transport'])
+        receipt['readerExecutableSha256'] = receipt.pop('psqlExecutableSha256')
+        receipt['rowsSha256'] = spec['rows']['sha256']
+        spec['readerReceipt'] = self.ref(receipt)
+        result = custody.cloud_sql(spec, checkpoint, codec, self.readers, contract,
+                                   self.runtime, self.synthetic_verifier)
+        self.assertIsNone(result['objectPayloadBytes'])
+        self.assertEqual(result['readerBackendPid'], rows['backendPid'])
+        unavailable = custody.cloud_sql(spec, checkpoint, codec, self.readers, contract,
+            self.runtime, lambda operation, *args: None if operation == 'cloud_sql_reader'
+            else self.synthetic_verifier(operation, *args))
+        self.assertIn('missing_source_bound_managed_reader_invocation', unavailable['missing'])
+        old = dict(contract, native_sql_rows=lambda raw, selection, checkpoints: rows)
+        unavailable = custody.cloud_sql(spec, checkpoint, codec, self.readers, old,
+            self.runtime, self.synthetic_verifier)
+        self.assertIn('selected_source_sql_validator_lacks_managed_transport', unavailable['missing'])
+        with self.assertRaises(ValueError):
+            contract['native_sql_rows'](self.read(spec['rows'], 512 * 1024), spec, checkpoint['checkpoints'])
+        for mutate in ('tcp', 'mixed_null', 'wrong_instance', 'unknown_field'):
+            changed = copy.deepcopy(spec)
+            if mutate == 'tcp':
+                changed['transport'] = {'kind': 'tcp'}
+            elif mutate == 'mixed_null':
+                changed['serverPort'] = 5432
+            elif mutate == 'wrong_instance':
+                changed['transport']['connectionName'] += '-different'
+            else:
+                changed['transport']['authenticated'] = True
+            with self.assertRaises(ValueError, msg=mutate):
+                custody.cloud_sql(changed, checkpoint, codec, self.readers, contract,
+                                   self.runtime, self.synthetic_verifier)
 
     def test_managed_endpoint_null_privileges_or_substituted_query_refuses(self):
         for field, value in (('serverAddress', None), ('user', 'another_reader'),

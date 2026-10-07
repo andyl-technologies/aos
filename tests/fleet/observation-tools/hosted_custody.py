@@ -9,6 +9,7 @@ produces a Native bulk total or reconstructs an earlier authorization fence.
 
 from datetime import datetime, timezone
 import hashlib
+import inspect
 import ipaddress
 import re
 
@@ -86,6 +87,8 @@ def verified_response(exchange, readers, verifier, operation, maximum, scope):
     if verifier is None:
         return None, 'missing_source_bound_authenticated_export_collector'
     binding = verifier(operation, request_raw, response_raw, receipt_raw, scope)
+    if binding is None:
+        return None, 'missing_source_bound_authenticated_export_collector'
     # The implementation returns byte commitments, so it cannot accidentally
     # authenticate another response or silently ignore a substituted receipt.
     expected = {'operation': operation, 'requestSha256': sha(request_raw),
@@ -152,6 +155,7 @@ def cloud_run(selection, readers, runtime, verifier=None):
     if not isinstance(pages, list) or not 1 <= len(pages) <= MAX_PAGES:
         raise ValueError('Hosted pagination bound differs')
     groups = {instance: [] for instance in instances}
+    unknown = []
     tokens, identifiers, consumed, count = set(), set(), 0, 0
     previous = None
     query = None
@@ -189,10 +193,12 @@ def cloud_run(selection, readers, runtime, verifier=None):
         if (not isinstance(response['entries'], list)
                 or len(response['entries']) > request['pageSize']):
             raise ValueError('Hosted entries differ')
-        for entry in response['entries']:
+        for entry_index, entry in enumerate(response['entries']):
             count += 1
             if count > MAX_ENTRIES:
                 raise ValueError('Hosted entry count exceeds bound')
+            if not isinstance(entry, dict):
+                raise ValueError('Hosted log entry is not an object')
             resource = entry.get('resource', {})
             labels = resource.get('labels', {})
             if (resource.get('type') != 'cloud_run_revision'
@@ -201,80 +207,141 @@ def cloud_run(selection, readers, runtime, verifier=None):
                     or labels.get('service_name') != selection['serviceName'].rsplit('/', 1)[-1]
                     or labels.get('revision_name') != selection['revisionName'].rsplit('/', 1)[-1]):
                 raise ValueError('Hosted log resource differs')
-            instance = entry.get('labels', {}).get('instanceId')
-            identifier, message = entry.get('insertId'), entry.get('textPayload')
-            if (instance not in groups or not isinstance(identifier, str) or not identifier
-                    or len(identifier) > 256 or (instance, identifier) in identifiers
-                    or not isinstance(message, str) or len(message.encode()) > MAX_MESSAGE):
-                raise ValueError('Hosted instance, duplicate event or message differs')
-            identifiers.add((instance, identifier))
+            instance_labels = entry.get('labels')
+            instance = instance_labels.get('instanceId') if isinstance(instance_labels, dict) else None
+            identifier = entry.get('insertId')
+            if identifier is not None:
+                if (not isinstance(identifier, str) or not 0 < len(identifier) <= 256
+                        or (instance, identifier) in identifiers):
+                    raise ValueError('Hosted duplicate event or identifier differs')
+                identifiers.add((instance, identifier))
             observed = timestamp(entry.get('timestamp'))
             if not first <= observed <= last:
                 raise ValueError('Hosted event is outside selected export window')
+            payloads = [key for key in ('textPayload', 'jsonPayload', 'protoPayload') if key in entry]
+            message = entry.get('textPayload')
+            missing = []
+            if instance not in groups:
+                missing.append('unselected_or_missing_instance')
+            if identifier is None:
+                missing.append('missing_insert_id')
+            if payloads != ['textPayload'] or not isinstance(message, str):
+                missing.append('unsupported_payload_envelope')
+            elif len(message.encode()) > MAX_MESSAGE:
+                missing.append('message_exceeds_source_bound')
+            if missing:
+                # The page is the authenticated byte image; an entry index is
+                # a location in its parsed values, never a reserialized image.
+                unknown.append({'page': exchange['response'], 'entryIndex': entry_index,
+                    'insertId': identifier, 'instanceId': instance, 'payloadKinds': payloads,
+                    'timestamp': entry['timestamp'], 'missing': missing})
+                continue
             groups[instance].append((message, str(observed)))
-    if any(not values for values in groups.values()):
-        raise ValueError('Selected instance is absent from the actual export')
-    return {'messages': groups, 'nativeBulkBytes': None,
+    absent = [instance for instance, values in groups.items() if not values]
+    return {'messages': groups, 'unknownEntries': unknown, 'absentSelectedInstances': absent,
+            'nativeBulkBytes': None,
             'missing': ['independent_active_instance_inventory_and_current_image_to_native_artifact_custody',
-                        'provider_export_completeness_and_clock_uncertainty']}
+                        'provider_export_completeness_and_clock_uncertainty']
+                + (['unclassified_provider_entries'] if unknown else [])
+                + (['selected_instance_has_no_supported_messages'] if absent else [])}
 
 
 def cloud_sql(selection, checkpoint, codec, readers, source_contract, runtime, verifier=None):
     """Match managed reader-time rows, never local postmaster or prior IAM."""
+    tool_field = 'readerExecutableSha256' if selection.get('version') == 2 else 'psqlExecutableSha256'
     closed(selection, {'version', 'kind', 'runtime', 'instanceName', 'connectionName',
         'instance', 'database', 'role', 'serverAddress', 'serverPort', 'deployment',
         'sourceChild', 'query', 'rows', 'readerReceipt', 'codecImages',
-        'collectorSourceSha256', 'psqlExecutableSha256', 'firstUnixNanos', 'lastUnixNanos'})
-    if (type(selection['version']) is not int or selection['version'] != 1
+        'collectorSourceSha256', tool_field, 'firstUnixNanos', 'lastUnixNanos'}
+        | ({'transport'} if selection.get('version') == 2 else set()))
+    if (type(selection['version']) is not int or selection['version'] not in (1, 2)
             or selection['kind'] != 'cloud_sql' or selection['runtime'] != runtime
             or selection['sourceChild'] != {'rawChildSha256': checkpoint['rawChildSha256'],
                 'rawChildByteSize': checkpoint['rawChildByteSize']}):
         raise ValueError('Managed SQL runtime or source checkpoint differs')
     scope = {key: selection[key] for key in ('runtime', 'instanceName', 'connectionName',
         'database', 'role', 'serverAddress', 'serverPort', 'sourceChild')}
+    transport = selection.get('transport', {'kind': 'tcp'})
+    if not isinstance(transport, dict):
+        raise ValueError('Managed transport schema differs')
+    if transport.get('kind') == 'tcp':
+        closed(transport, {'kind'})
+    elif transport.get('kind') == 'official_connector':
+        closed(transport, {'kind', 'connectionName', 'ipType', 'connectorSourceSha256', 'connectorExecutableSha256'})
+        if (transport['connectionName'] != selection['connectionName'] or any(
+                not isinstance(transport[key], str) or re.fullmatch('[0-9a-f]{64}', transport[key]) is None
+                for key in ('connectorSourceSha256', 'connectorExecutableSha256'))):
+            raise ValueError('Managed connector source or instance selection differs')
+        if transport['ipType'] not in ('public', 'private', 'psc'):
+            raise ValueError('Managed connector network selection differs')
+        if transport['connectorExecutableSha256'] != selection[tool_field]:
+            raise ValueError('Managed reader and actual connector executable differ')
+    else:
+        raise ValueError('Managed transport is unsupported')
+    if selection['version'] == 2:
+        scope['transport'] = transport
     value, missing = verified_response(selection['instance'], readers, verifier,
                                       'cloud_sql_instance', 1024 * 1024, scope)
     if missing:
         return {'objectPayloadBytes': None, 'missing': [missing]}
     request, instance = value
-    if not isinstance(selection['serverAddress'], str):
-        raise ValueError('Managed SQL socket endpoint is unavailable')
-    ipaddress.ip_address(selection['serverAddress'])
     if (request != {'name': selection['instanceName']}
             or instance.get('name') != selection['instanceName'].rsplit('/', 1)[-1]
             or instance.get('project') != selection['instanceName'].split('/')[1]
-            or instance.get('connectionName') != selection['connectionName']
-            or selection['serverAddress'] not in
-                [row.get('ipAddress') for row in instance.get('ipAddresses', [])]
-            or type(selection['serverPort']) is not int or selection['serverPort'] != 5432):
+            or instance.get('connectionName') != selection['connectionName']):
         raise ValueError('Managed SQL instance or actual endpoint differs')
+    socket = selection['serverAddress'] is None and selection['serverPort'] is None
+    if socket:
+        if transport['kind'] != 'official_connector':
+            raise ValueError('Managed SQL socket endpoint is unavailable')
+    elif (not isinstance(selection['serverAddress'], str)
+            or type(selection['serverPort']) is not int or not 1 <= selection['serverPort'] <= 65535):
+        raise ValueError('Managed SQL observed endpoint differs')
+    else:
+        ipaddress.ip_address(selection['serverAddress'])
+        if (transport['kind'] == 'tcp' and (selection['serverAddress'] not in
+                [row.get('ipAddress') for row in instance.get('ipAddresses', [])]
+                or selection['serverPort'] != 5432)):
+            raise ValueError('Managed SQL TCP endpoint differs')
     query_raw = readers['read_ref'](selection['query'], 32 * 1024)
     expected = source_contract['native_sql_query'](checkpoint['checkpoints'],
                                                   selection['deployment'], selection['role'])
     if query_raw != expected.encode():
         raise ValueError('Managed SQL query differs from exact source-selected originals')
     rows_raw = readers['read_ref'](selection['rows'], 512 * 1024)
+    parameters = inspect.signature(source_contract['native_sql_rows']).parameters
+    required = {'server_address', 'server_port'} | ({'managed_socket'} if socket else set())
+    if not required <= set(parameters):
+        return {'objectPayloadBytes': None,
+                'missing': ['selected_source_sql_validator_lacks_managed_transport']}
+    endpoint = {'server_address': selection['serverAddress'], 'server_port': selection['serverPort']}
+    if socket:
+        endpoint['managed_socket'] = True
     rows = source_contract['native_sql_rows'](rows_raw, selection, checkpoint['checkpoints'],
-        server_address=selection['serverAddress'], server_port=selection['serverPort'])
+                                             **endpoint)
     receipt_raw = readers['read_ref'](selection['readerReceipt'], 64 * 1024)
     if verifier is None:
         return {'objectPayloadBytes': None, 'missing': ['missing_source_bound_managed_reader_invocation']}
     binding = verifier('cloud_sql_reader', query_raw, rows_raw, receipt_raw, scope)
+    if binding is None:
+        return {'objectPayloadBytes': None, 'missing': ['missing_source_bound_managed_reader_invocation']}
     if binding != {'operation': 'cloud_sql_reader', 'requestSha256': sha(query_raw),
                    'responseSha256': sha(rows_raw), 'receiptSha256': sha(receipt_raw), 'scope': scope}:
         raise ValueError('Managed SQL reader invocation differs')
     receipt = readers['closed_json'](receipt_raw)
     closed(receipt, {'version', 'querySha256', 'rowsSha256', 'exitCode', 'readerBefore',
-        'readerAfter', 'psqlExecutableSha256', 'collectorSourceSha256', 'backend',
-        'beforeUnixNanos', 'afterUnixNanos', 'sourceChild'})
-    if (type(receipt['version']) is not int or receipt['version'] != 1
+        'readerAfter', tool_field, 'collectorSourceSha256', 'backend',
+        'beforeUnixNanos', 'afterUnixNanos', 'sourceChild'}
+        | ({'transport'} if selection['version'] == 2 else set()))
+    if (type(receipt['version']) is not int or receipt['version'] != selection['version']
             or type(receipt['exitCode']) is not int or receipt['exitCode'] != 0
             or receipt['querySha256'] != sha(query_raw) or receipt['rowsSha256'] != sha(rows_raw)
             or receipt['sourceChild'] != selection['sourceChild']
             or any(receipt[key] != selection[key] for key in
-                   ('psqlExecutableSha256', 'collectorSourceSha256'))):
+                   (tool_field, 'collectorSourceSha256'))
+            or (selection['version'] == 2 and receipt['transport'] != transport)):
         raise ValueError('Managed SQL source, tool, exit or image receipt differs')
-    for key in ('psqlExecutableSha256', 'collectorSourceSha256'):
+    for key in (tool_field, 'collectorSourceSha256'):
         if not isinstance(receipt[key], str) or not re.fullmatch('[0-9a-f]{64}', receipt[key]):
             raise ValueError('Managed SQL reader source commitment differs')
     pin = receipt['readerBefore']
@@ -282,7 +349,7 @@ def cloud_sql(selection, checkpoint, codec, readers, source_contract, runtime, v
     if (receipt['readerAfter'] != pin or type(pin['pid']) is not int or pin['pid'] <= 1
             or type(pin['ownerUid']) is not int or pin['ownerUid'] < 0
             or decimal(pin['startTicks']) == 0
-            or pin['executableSha256'] != receipt['psqlExecutableSha256']):
+            or pin['executableSha256'] != receipt[tool_field]):
         raise ValueError('Managed SQL actual local reader lifetime differs')
     backend = receipt['backend']
     closed(backend, {'pid', 'connectionName', 'database', 'role', 'snapshot'})
