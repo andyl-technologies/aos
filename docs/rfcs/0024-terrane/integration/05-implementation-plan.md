@@ -3374,8 +3374,18 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   private docs, application compilation and both formatters also pass; all
   4,898 actual hermetic input files match independent review. The corrected
   source is now normally composed with the reviewed protected-lineage regression
-  oracle at `353006757eea`; every cutoff correction is preserved. Coherent
-  grace/fault and remaining collector qualification are pending. T-GC-1 stays open.
+  oracle at `353006757eea`; every cutoff correction is preserved. This corrected
+  composition passes all nine exact preservation cases, all four grace-window
+  regressions and the actual retirement-fault case. Each selected test passes
+  once, with zero ignored and 629 cases outside its scoped run. Strict default,
+  Send and native Clippy, private docs, application compilation and both
+  mandatory formatters also pass on the unchanged source. Independent review
+  verifies all 4,904 actual input files from the five hermetic derivations against
+  the 5,958 frozen tracked images, including executable modes; complete tracked
+  hashes, modes and mtimes remain unchanged. Corrected composed native build
+  and the ten local-deletion Nextest cases remain pending, separately from the
+  historical pre-correction ten-case result. Full collector and current-trunk
+  qualification remain pending. T-GC-1 stays open.
   The reviewed pure journal, marking, proof-context, checkpoint, retention and
   grace-window bodies now replace their trunk declarations. All 27 adopted
   paths, including 16 independent hexadecimal witnesses, match the qualified
