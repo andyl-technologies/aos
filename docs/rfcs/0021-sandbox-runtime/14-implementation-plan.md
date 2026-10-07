@@ -3,13 +3,25 @@
 ## Delivery strategy
 
 Implementation proceeds as vertical slices with falsifiable exit criteria.
-The public model includes the full design, but optional backends do not block
-proof of the smaller native path. No phase may temporarily grant sandboxes raw
-host systemd, mount, ZFS, Nix-trusted-user, or FUSE authority.
+The first implementation phase is single-node: the first connected milestone
+is Phase 3's public Create/boot/execute/Stop/Delete lifecycle on one host.
+Phase 4 and then Phases 5-8 add separately gated local profiles. Multi-node
+implementation is reserved for a later phase; Phase 9 is not a dependency of
+local CLI delivery, local fencing, or single-node completion.
+
+The public model documents the full design, but optional profiles and future
+coordinator code do not block proof of the smaller native path. Do not expand
+unused distributed implementations while the local lifecycle is incomplete.
+The [boundary amendment](18-implementation-boundaries-and-single-node-rollout.md)
+owns the crate/interface and removal plan. No phase may temporarily grant
+sandboxes raw host systemd, mount, ZFS, Nix-trusted-user, or FUSE authority.
 
 ## Phase 0: blockers and executable probes
 
-Before runtime code:
+Before enabling each affected runtime/profile, prove its prerequisites below.
+This list is a probe catalog, not a requirement to implement FUSE, remote fetch
+or future profiles before the first local lifecycle. Optional-profile probes
+gate those profiles only; required local safety probes remain mandatory:
 
 1. upgrade AOS systemd from 259.1 to at least 259.4, select 259.8 as the
    maintained 259-series patch level at the RFC date, and rebase its AOS
@@ -48,16 +60,19 @@ backend; it is not papered over in later phases.
 
 ## Phase 1: portable model and protocols
 
-Implement resource IDs, generations, desired/observed state machines,
-capability attenuation, reservations, operations, the complete tree/view/spec/
-snapshot/trust/signature schemas, and public `aos.sandbox.v1` messages.
-Implement ownership-lease generations, bounded local broker protocols, and
-descriptor-role validation without performing privileged effects.
+Implement the portable IDs, generations, desired/observed transitions,
+capabilities, reservations, operation/spec/trust/signature contracts and public
+`aos.sandbox.v1` messages consumed by the first local lifecycle. Add further
+tree/view/snapshot contracts with their local slices, rather than making full
+future source coverage a prerequisite. Implement local ownership-lease
+generations, bounded broker protocols and descriptor-role validation without
+performing privileged effects. Coordinator-only models and generated messages
+stay outside the default local closure.
 
 Exit criteria: model/property tests, protobuf compatibility fixtures, canonical
-format vectors, authority decoder tests, local protocol fuzzing, and simulated
-multi-node assignment fencing pass without Linux-specific dependencies in the
-portable core.
+format vectors, authority decoder tests, local protocol fuzzing, and stale
+local epoch/generation and lease tests pass without Linux-specific dependencies
+in the portable core. Cross-node simulation belongs to the later phase.
 
 ## Phase 2: journal, controller, and host boundary
 
@@ -79,6 +94,14 @@ allocation, cgroup policy, private networking baseline, transient nspawn unit,
 prepared default-drop network namespace, and the selected guest execution
 endpoint. Keep machined disabled.
 
+Deliver the public client/CLI against this normal installed path, including
+operation observation and deterministic errors for unsupported profiles. No
+coordinator process or remote control exchange participates in local creation.
+
+Include the minimal protected Source/Cache/Publisher/Policy and current
+compiler/deployment producers required by section 17's Create admission.
+Later user-facing profiles do not defer these initial authority prerequisites.
+
 Exit criteria: an unprivileged client creates, starts, executes in, stops, and
 deletes a user-namespaced sandbox in the AOS VM; resource/OOM and device policy
 are verified; guest reboot produces a new namespace generation; no host tool or
@@ -96,7 +119,8 @@ authority and aggregate admission policy.
 
 Exit criteria: live attachment, replacement, detach, stable snapshot
 inspection, tree authorization, race corpus, reboot replay, and hard revocation
-pass. This is the minimum usable v1 vertical slice.
+pass. This extends the first usable local lifecycle with the native attachment
+and hierarchy profile; optional FUSE is not required for this slice.
 
 ## Phase 5: project environments, Git, and caches
 
@@ -143,12 +167,18 @@ page-cache sharing, disclosure-domain isolation, worker crash, and performance
 profiles pass on all supported architectures. Mutable distributed POSIX is not
 part of this phase.
 
-## Phase 9: multi-node and rollout
+## Phase 9: multi-node (reserved for later implementation)
 
-Add placement, assignment epochs, authenticated node transport, immutable
-snapshot transfer, resumable watch, draining, and restore to a compatible
-destination. Roll out CLI and automation skills only against public API
-features that have passed their node gates.
+Only after the connected local lifecycle and required single-node profiles
+are established, implement the separately selected coordinator package. Add
+cross-node placement using the existing local ownership epochs, authenticated
+node transport, immutable snapshot transfer, resumable watch, draining, and
+restore to a compatible destination. This phase is not part of the first
+implementation commitment.
+Its crates, generated protocols, services and configuration are behind an
+off-by-default `multi-node` feature. Public CLI and automation skills already
+ship against qualified local features; later remote features require their own
+advertisement and gates.
 
 Exit criteria: stale coordinators and partitioned nodes cannot both mutate one
 sandbox generation; interrupted transfer resumes or restarts safely; missing
@@ -157,30 +187,19 @@ format and protocol versions.
 
 ## Rust ownership
 
-The proposed boundaries are:
+The canonical target map and internal interface contracts are in
+[section 18](18-implementation-boundaries-and-single-node-rollout.md). It replaces
+the earlier mixed Controller/client/placement ownership and production-inert
+adapter descriptions. New crate names are planned extractions, not assertions
+that those packages already exist.
 
-| Component | Responsibility | Explicitly excluded |
-| --- | --- | --- |
-| `aos-proto` | Public `aos.sandbox.v1` descriptors and Connect API | Linux and backend details |
-| `aos-sandbox-core` | Portable model, policy math, state machines, manifests, journal contracts, backend traits | D-Bus, syscalls, ZFS commands |
-| `aos-sandbox-linux` | Audited pidfd, namespace, path-resolution, and new-mount-API wrappers | Public parsing and policy |
-| `aos-filesystem-fuse` | FUSE worker logic and the narrow libfuse C ABI/callback boundary | Mount-namespace authority, public policy, and general Linux helpers |
-| `aos-sandbox` | Client library, unprivileged controller/node reconciler, operations, placement | Direct privileged effects |
-| `aos-sandbox-broker-session-protocol` | Canonical Broker Session artifacts, all-method durable records, and pure replay histories | Protected key custody, journal ownership, dispatch, and descriptor use |
-| `aos-sandbox-broker-session-security` | Protected Broker Session manifest/key custody and sealed recovery/currentness | Feature advertisement, public endpoints, and effect dispatch |
-| `aos-sandbox-source-provider-protocol` | Canonical SourceProvider wire objects and cryptographic verification | Journal, backend, socket, and descriptor custody |
-| `aos-sandbox-source-provider-ledger` | Pure canonical `AOSSPL01` codec, reducer, limits, and offline migration planning | Journal, keys, sockets, kernel observations, and effects |
-| `aos-sandbox-source-provider-security` | Protected provider configuration, key/process custody, verification, and authenticated migration provenance | Listener, routing, backend dispatch, and production advertisement |
-| `aos-sandbox-source-provider` | Production-inert provider-owned ledger facade, reservations, recovery, and backend-effect permits | Listener, real backend, service wiring, and feature advertisement |
-| `aos-sandbox-host` | Root-only fixed host protocol and typed systemd/freeze verbs | Storage, public/network listeners, and arbitrary properties |
-| `aos-sandbox-storage` | Root-only storage protocol and one-shot typed OpenZFS workers | PID 1 authority, public parsing, and caller-supplied names/options |
-| `aos-sandbox-mount` | Root-only descriptor mount broker and one-shot namespace helper | Source parsing, network, and arbitrary paths/options |
-| `aos-sandbox-net` | Root-only typed veth, netlink, firewall, endpoint, and network-lease broker | Public policy parsing and arbitrary rule text |
-| `aos-sandbox-lease-guard` | Per-assignment `CLOCK_BOOTTIME` fail-stop and systemd coupling | Public policy, storage mutation, and lease issuance |
-| `aos-sandbox-view` | Portable-tree compiler, isolated publisher, FUSE worker, view/cache client | Sandbox lifecycle authority |
-| `aos-sandbox-agent` | In-guest readiness, execution authorization handoff/observation, and quiesce | Public stream, host control, and mount authority |
-| `aos-systemd` | Typed D-Bus transport for transient units and unit/cgroup observations | Sandbox policy and arbitrary property maps |
-| `aos` | User-facing CLI backed by the client library | Privileged runtime closure |
+Shared models/codecs and generic journal/Linux mechanics sit below protected
+domain owners. Session-security owns sealed authentication and custody, not
+Controller orchestration or concrete daemon dispatch. Application assembly
+depends on both domain owners and narrow security interfaces. The local
+Controller and shared foundations never depend on coordinator implementation.
+Local lease/inventory ownership currently located under `multi_node` must move
+below that boundary before the optional coordinator is isolated.
 
 Internal backend traits are a Rust implementation detail, not a stable ABI.
 A backend that must evolve independently becomes a separate process with a
@@ -244,6 +263,13 @@ runtime, guest-agent, migration, and protected-journal modules are not thereby
 installed, enabled, advertised, or added to a production closure. Packaging
 and activation remain subject to their phase exit criteria and qualification
 gates.
+
+The default local package and system-module selection exclude coordinator
+crates, coordinator-only protobuf generation, remote services and their
+credentials. The later `multi-node` feature uses optional dependencies and
+explicit package/role selections; no local default enables it transitively.
+Dependency/closure checks cover the actual local selections, not merely
+source-level conditional compilation.
 
 The first packaged candidate is libfuse 3.18.2. Its source-built AOS package
 contains the shared library, headers, and package metadata but no mount helper,

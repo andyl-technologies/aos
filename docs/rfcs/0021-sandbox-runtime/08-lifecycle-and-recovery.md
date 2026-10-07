@@ -134,6 +134,11 @@ explicit review or fails; restore never resurrects a revoked capability.
 
 ## Snapshot consistency
 
+The snapshot coordinator is the local dependency/transaction orchestrator,
+not a required fleet service. The first snapshot profile and restore run on
+one host. Cross-node transfer and destination orchestration are reserved for
+the later multi-node phase in [section 18](18-implementation-boundaries-and-single-node-rollout.md).
+
 A snapshot request selects one of:
 
 - crash-consistent: freeze and storage synchronization only;

@@ -105,6 +105,12 @@ namespace.
 
 ## Placement and locality
 
+In the first implementation phase, placement is local resource/affinity
+admission on one host. Requests for another node fail explicitly; fleet
+discovery and cross-node scheduling are reserved for the later coordinator
+phase. The constraints below describe portable locality semantics, not an
+initial distributed implementation. See [section 18](18-implementation-boundaries-and-single-node-rollout.md).
+
 Each attachment declares a required consistency class:
 
 - `local-live` requires source and consumer incarnations on one node;

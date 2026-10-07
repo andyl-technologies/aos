@@ -6,6 +6,13 @@ different kinds of evidence. None substitutes for the owner that establishes
 the underlying fact. A production effect remains unavailable until the complete
 authority chain below is connected and recoverable.
 
+The [implementation-boundary amendment](18-implementation-boundaries-and-single-node-rollout.md)
+sets single-node-first delivery and the target crate/interface ownership. It
+does not waive this amendment's local protected producers, held cuts, floors,
+expiry, or recovery obligations. Cross-process local coordination is not
+multi-node functionality; local safety owners remain available when the later
+coordinator feature is disabled.
+
 ## Shared trust and currentness rules
 
 - Each signing role has a pinned, role-specific public key and key generation

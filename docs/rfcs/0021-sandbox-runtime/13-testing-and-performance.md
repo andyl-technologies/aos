@@ -12,6 +12,18 @@ Tests use AOS-built tools and hermetic fixtures. They do not introduce nixpkgs,
 host Docker images, host `fusermount`, or an untracked dependency on a runner's
 systemd configuration.
 
+Gate scope follows the [single-node rollout](18-implementation-boundaries-and-single-node-rollout.md).
+The first milestone exercises the installed public local lifecycle and its
+required safety/resource/recovery behavior, with no coordinator dependency.
+Later local profiles and multi-node have separate gates. This does not relax
+requirements for any enabled feature or substitute component tests for effects.
+
+Boundary regression checks cover acyclic crate dependencies, the actual
+coordinator-free local package graph, explicit optional `multi-node` selection,
+sealed authority construction and removal of superseded entry points. Common
+test builders may replace repeated setup, but behavioral/fault assertions must
+not be replaced by source-name, comment-text or line-count checks.
+
 ## Model and protocol tests
 
 Property and state-machine tests cover:
@@ -223,13 +235,21 @@ not meet the package-view performance profile.
 
 ## Gate progression
 
+Local CLI, broker, Guest, expiry and restart tests precede coordinator
+implementation. Partition, cross-node transfer, remote draining and cluster
+rolling-upgrade tests gate only the later multi-node package; stale local
+epochs, lease expiry and boot recovery still gate the local runtime. Optional
+FUSE tests gate FUSE advertisement, not the first native lifecycle.
+
 Initial measurements establish per-hardware budgets in checked-in test
 profiles. Subsequent releases may tighten them or add profiles, but may not
 replace a regression with an unreviewed larger threshold. Correctness,
 isolation, and hard resource limits are release blockers independent of
 performance.
 
-Native dynamic attachment is the first vertical-slice performance gate. The
-immutable FUSE profile has a separate gate and does not delay validating the
-usable nspawn/ZFS/Nix/native-view core; the RFC is fully implemented only when
-both profiles pass their declared gates.
+The first lifecycle gate measures Phase 3's local create/boot/execute/Stop/Delete
+path. Native dynamic attachment adds the Phase 4 gate; environments/Nix add
+their Phase 5 gate. The immutable FUSE profile is separately gated and does
+not delay validating those local slices. Full design conformance requires the
+declared gates for all delivered profiles, with multi-node gated only when
+the later phase is selected.

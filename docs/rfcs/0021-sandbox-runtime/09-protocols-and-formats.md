@@ -13,6 +13,13 @@ The design has four independent compatibility domains:
 An API package version does not imply a kernel capability or data-format
 version. Every domain negotiates or identifies its own compatibility.
 
+The first implementation phase implements the public, local broker and
+portable contracts required by its selected single-node profiles. Coordinator
+messages remain documented here for later delivery; coordinator-only generated
+schemas and implementation live in optional coordinator crates, not the default
+local protocol closure. Shared local ownership/fencing contracts are separate
+from remote reconciliation. See [section 18](18-implementation-boundaries-and-single-node-rollout.md).
+
 ## Public API
 
 The public API uses protobuf service definitions in `aos.sandbox.v1` and AOS's
@@ -269,7 +276,13 @@ the reason. Quota details reveal only the caller's effective dimension and
 limit, never another tenant's use. Error details come from a closed registry;
 unknown or backend-private details are not reflected through the public API.
 
-## Coordinator-to-node protocol
+## Coordinator-to-node protocol (reserved for later)
+
+Remote assignment, fleet discovery, transfer, reconnect/resync and coordinator
+watch delivery are outside the first implementation phase. The following
+contract specifies the later protocol, not an enabled local service. Local
+ownership leases and stale epoch/generation rejection remain required without
+this transport; the exclusive-lease semantics below also apply on one host.
 
 The node protocol uses a distinct protobuf package and mutual node identity. An
 assignment binds:
@@ -357,8 +370,9 @@ lease has expired beyond the skew bound and all shared endpoints have accepted
 the newer fence, or after an authoritative mechanism proves and records that
 the old node/runtime is stopped. Loss of network reachability is not proof.
 
-The single-node implementation still records epochs but does not claim live
-reassignment. Multi-node enablement requires the ownership authority and
+The single-node implementation uses protected local ownership and records
+epochs, but does not implement remote reassignment or require cluster
+consensus. Multi-node enablement requires the ownership authority and
 endpoint fencing tests; the exact consensus implementation is replaceable,
 not optional semantics.
 

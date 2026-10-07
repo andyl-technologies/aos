@@ -54,7 +54,13 @@ handle's role, or renew authority by replay.
 
 ## Enablement blockers
 
-The initial backend is disabled until all of these gates pass:
+The initial backend is disabled until the gates below pass for its selected
+profile. Optional Nix/cache publication, dynamic views and FUSE keep their own
+gates when enabled; their full implementations are not prerequisites of the
+first lifecycle. All required local admission/currentness owners and shared
+kernel/MAC/expiry protections remain mandatory under sections
+[17](17-production-authority-closure.md) and
+[18](18-implementation-boundaries-and-single-node-rollout.md):
 
 - AOS upgrades systemd 259.1 to at least 259.4, selects 259.8 as the maintained
   259-series patch level at the RFC date, rebases its patches, and proves

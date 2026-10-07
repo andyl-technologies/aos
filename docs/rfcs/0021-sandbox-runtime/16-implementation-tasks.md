@@ -14,6 +14,13 @@ they gate any affected runtime backend.
 
 ## P0: executable platform probes
 
+The [boundary amendment](18-implementation-boundaries-and-single-node-rollout.md)
+governs current scope: first deliver the normal single-node lifecycle, remove
+superseded implementations, and extract shared/local ownership boundaries.
+Coordinator work is reserved for later; historical checked tasks below are
+component coverage records, not dependencies of local completion. Optional
+profile probes gate those profiles rather than all local implementation.
+
 - [x] **SBX-P0-01** Upgrade systemd to 259.8, rebase AOS patches, and pass its
   package and VM tests.
 - [x] **SBX-P0-02** Enable and test FUSE passthrough and fs-verity kernel
@@ -267,16 +274,28 @@ they gate any affected runtime backend.
 - [x] **SBX-FS-08** Prove million-entry working-set memory, OOM containment,
   cache identity/isolation, worker crash, and native-I/O performance gates.
 
-## P9: multi-node, user interfaces, and release gates
+## P9: multi-node (reserved for later)
 
-- [x] **SBX-MULTI-01** Implement authenticated node capability discovery,
+These delivery tasks are deferred from the first implementation phase.
+Existing models and historical component claims do not establish enabled
+multi-node functionality. Retained code moves behind the optional coordinator
+boundary after necessary local ownership primitives are extracted.
+
+- [ ] **SBX-MULTI-01** Implement authenticated node capability discovery,
   placement, assignment epochs, ownership leases, and draining.
-- [x] **SBX-MULTI-02** Implement immutable snapshot transfer, integrity checks,
+- [ ] **SBX-MULTI-02** Implement immutable snapshot transfer, integrity checks,
   resumability, and dependency-aware restore (`SBX-LIFE-02`).
-- [x] **SBX-MULTI-03** Implement resumable ordered watch across coordinators and
+- [ ] **SBX-MULTI-03** Implement resumable ordered watch across coordinators and
   preserve compatible protocol/format versions during rolling upgrades.
-- [x] **SBX-MULTI-04** Pass partitions, stale coordinator, lease expiry,
+- [ ] **SBX-MULTI-04** Pass partitions, stale coordinator, lease expiry,
   interrupted transfer, missing dependency, and rolling-upgrade tests.
+
+## Local user interfaces and profile-scoped release gates
+
+CLI, operations and observation work proceeds with the local slices, starting
+with Phase 3. These tasks are not dependent on P9; gates apply to the selected
+single-node profile, with additional gates when later profiles are enabled.
+
 - [ ] **SBX-CLI-01** Add the complete `aos sandbox` command family over only the
   public client API.
 - [x] **SBX-CLI-02** Add tree/status/event views, structured output, stable exit
@@ -513,11 +532,13 @@ before FloorSeal, failed-Create CAS, or ACK can be enabled.
   Guardian enforcement. An opaque client authorization context or local UID
   must not substitute for those proofs.
 
-Completion requires exercising the packaged CLI and daemon through the real
-public endpoints and protected brokers for every requested lifecycle,
-execution, view, snapshot, capability, cache, and operator path. Test doubles
-and dormant composition tests remain useful component evidence, but cannot
-establish that these production connections exist.
+Completion of a selected advertised profile requires exercising its packaged
+CLI and daemon through the real public endpoints and protected brokers. The
+first milestone is the normal local Create/boot/execute/Stop/Delete path;
+further lifecycle, view, snapshot, capability, cache and operator profiles are
+gated when introduced. Test doubles and dormant composition tests remain useful
+component evidence, but cannot establish those production connections or make
+later optional features prerequisites of the first local milestone.
 
 `checks.qualification.all` and `checks.eval` are regression entry points, not
 blanket proof of RFC completion or release admission. Match each required

@@ -36,6 +36,6 @@ topic files.
 | [0018](0018-maintainer-package-upgrades/README.md) | 2026-09-03 | Local maintainer package upgrades — upstream discovery, deterministic source updates, bounded agent repair, complete validation, and maintainer UX | Proposed (design-only) |
 | [0019](0019-oci-containers/README.md) | 2026-08-27 | Scratch OCI containers built from AOS package closures and published through AOS Hub | Proposed — phased plan in [`implementation-plan.md`](0019-oci-containers/implementation-plan.md) |
 | [0020](0020-crucible-campaigns/README.md) | 2026-09-04 | Crucible campaigns — adaptive exploration, lazy frontiers, and hot QEMU forking | Proposed; implementation in progress |
-| [0021](0021-sandbox-runtime/README.md) | 2026-09-03 | Generic sandboxes and filesystem views | Proposed; implementation in progress |
+| [0021](0021-sandbox-runtime/README.md) | 2026-09-03 | Generic sandboxes and filesystem views | Accepted design; single-node implementation first |
 
 Numbering is chronological by the date the design entered the tree.

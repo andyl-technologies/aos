@@ -8,6 +8,9 @@ implementation preferences.
 | Area | Decision | Consequence |
 | --- | --- | --- |
 | Product surface | Sandboxes are generic resources; agents are ordinary clients | One lifecycle and security model serves development, CI, and automation |
+| First implementation | Single-node public lifecycle first; multi-node is documented but reserved for a later optional phase | Local creation and CLI delivery require no coordinator or cluster consensus |
+| Code ownership | Shared data/mechanics below protected domain owners; thin assembly above; one current path per profile | Session security contains no general application runtime, and superseded paths are removed |
+| Coordinator boundary | Separate coordinator protocol/implementation crates behind off-by-default `multi-node` selection | Local ownership, epochs and Guardian safety do not depend on distributed implementation |
 | Hierarchy | Logical ancestry is independent of runtime, cgroup, storage, Git, and mount graphs | Descendants can move nodes without changing identity or unit paths |
 | Runtime | nspawn transient units are the first backend | AOS reuses systemd supervision without exposing nspawn as the API |
 | Host authority | An unprivileged reconciler uses separate root-only host, storage, mount, and network brokers | Public/network parsing never shares a root process with systemd, ZFS, or mounts; PID 1 and dataset authority remain split |
@@ -102,8 +105,9 @@ connections, quotas, leases, and abort authority remain isolated.
 
 Correct rename, mmap, locks, cache invalidation, reconnect, conflict, and
 failure semantics amount to a distributed filesystem. It is not a necessary
-dependency for remote sandbox placement. V1 transfers immutable snapshots and
-uses service protocols for mutation.
+dependency for remote sandbox placement. The later multi-node phase transfers
+immutable snapshots and uses service protocols for mutation; the first
+single-node phase implements no cross-node transfer.
 
 ### Process checkpoint/restore
 

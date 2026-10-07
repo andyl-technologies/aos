@@ -168,6 +168,9 @@ migration path. Rollback remains supported until every record has crossed the
 declared compatibility point. The controller, node daemon, brokers, guest
 agent, and FUSE worker negotiate protocols independently.
 
+This deployed-upgrade contract does not require preserving every PR-only
+predecessor before initial delivery; section 18 defines that cleanup baseline.
+
 An upgrade that changes canonical snapshot or tree semantics creates a new
 format version; it does not reinterpret old signed objects. A node-local mmap
 index may simply be invalidated and rebuilt.
@@ -177,12 +180,21 @@ operations, and prove inventory reconciliation before the node is uncordoned.
 Changing the systemd, kernel, ZFS, or seccomp capability set triggers the same
 probe and readiness process as a fresh node.
 
+Initially those admission/drain/recovery steps apply to the single host.
+Fleet rolling-upgrade coordination and cordon scheduling belong to the later
+multi-node phase, not a required service for local upgrades.
+
 ## Backup and disaster recovery
 
-The coordinator database, retention ledger, portable snapshot manifests,
-canonical tree objects, and required immutable content are backed up according
+The local Controller journal, protected ownership/domain state, retention
+ledger, portable snapshot manifests, canonical tree objects, and required
+immutable content are backed up according
 to their independent retention policies. Node-local unit names, mount IDs,
 FUSE indexes, and rebuildable caches are not backup state.
+
+The later multi-node phase additionally backs up its coordinator state under
+its own retention and authority policy. A coordinator database or remote
+backup authority is not a dependency of initial single-node operation.
 
 A restore drill must prove that held storage snapshots and external immutable
 dependencies still match their recorded identities. Missing dependencies leave

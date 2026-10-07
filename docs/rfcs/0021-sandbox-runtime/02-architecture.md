@@ -2,28 +2,28 @@
 
 ## Overview
 
+The initial implementation runs the public control and local reconciliation
+roles in one unprivileged node service. Separate protected brokers retain their
+own authority and confinement. Multi-node control is a later optional layer,
+not a prerequisite for local admission. The normative crate/interface target
+is in [section 18](18-implementation-boundaries-and-single-node-rollout.md).
+
 ```text
 CLI / API clients
         |
         v
-Sandbox control service
-desired state, capability evaluation, scheduling, audit
+Local aos-sandboxd
+public control, local admission, desired state, reconciliation, audit
         |
-        +---------------- coordinator-to-node assignment ----------------+
-                                                                         |
-                                                                         v
-                                                               aos-sandboxd
-                                                       node reconciliation and
-                                                            desired state
-                          +----------+----------+----------+----------+----------+
-                          v          v          v          v          v          v
-                     aos-viewd     hostd     storaged    mountd      netd    guardians
-                   unprivileged    +------ root fixed-function -------+   fail-stop units
-                    /   |   \         |          |          |          |
-                FUSE publisher source systemd  storage    mount     packet
-              workers           adapters API   workers   workers     gates
-                       |
-               immutable backing
+        +---------+----------+----------+----------+-----------+
+        v         v          v          v          v           v
+      hostd    storaged    mountd      netd     guardians   local view services
+        |         |          |          |      fail-stop    optional profiles
+     systemd   storage     mount      packet
+       API     workers     workers     gates
+
+Later, explicitly selected multi-node phase:
+coordinator -> authenticated node control -> local aos-sandboxd
 ```
 
 The names are implementation-oriented and are not embedded in portable
@@ -37,13 +37,14 @@ The control service owns:
 - project and ancestry policy ceilings;
 - capability issuance and revocation generations;
 - durable sandbox, view, attachment, snapshot, and lease desired state;
-- node placement, assignment epochs, and capacity reservations;
+- local resource admission, assignment epochs, and capacity reservations;
 - idempotency records and audit events; and
 - orchestration of multi-object operations such as snapshot and cascading
   deletion.
 
 It never performs host mount syscalls and never serializes a host path into a
-node assignment.
+node assignment. The later coordinator owns cross-node placement; the local
+service neither discovers a fleet nor depends on coordinator transport.
 
 ## `aos-sandboxd`
 
@@ -126,26 +127,21 @@ and old plans; transient payload units are not resumed until current authority
 is reacquired. A restart reconstructs a deadline only from a still-valid
 authority-signed lease and never from a persisted monotonic counter alone.
 
-## Current runtime and guest-agent source status
+## Runtime and guest-agent boundaries
 
-The portable `aos-sandbox-core` runtime-backend module defines move-only
-prepare, start, freeze, thaw, stop, destroy, execution-admission, effect, and
-recovery contracts. `aos-sandbox-host` contains a dormant projection from an
-already validated Host 1.0 request into those contracts and a concrete dormant
-`RuntimeBackend` composition backed by fixed-root protected owner records and
-readiness evidence. It has no active service call site, listener, readiness
-advertisement, or production activation.
+Portable runtime contracts describe prepare/start/observe/stop/recovery and
+capabilities, without implementing Linux effects. Host owns the nspawn/systemd
+implementation and independently checked runtime observations. Controller owns
+durable execution admission and lifecycle orchestration; it does not supply
+caller-constructed observations as authority.
 
-The source-only `aos-sandbox-agent` crate defines the bounded `AOSAGE01`
-incarnation handshake and stop-and-wait operation data model. Protected reducer,
-reservation, checkpoint, and terminal-commit ownership now resides under the
-runtime execution owner in `aos-sandbox`, while the agent crate retains only
-portable protocol and dormant executable/root-builder/package seams. A dormant
-guest adapter and protected process supervisor implement credential, process,
-PTY, resize, and signal effects and mint opaque observations only after injected
-effects; the same protected owner reconciles signed restart readback. These
-source foundations do not start nspawn, register a public route, advertise
-readiness, or activate a Host or guest service.
+Agent framing and decoded values remain usable without linking a concrete
+Guest executable. Guest owns credential/process/PTY/control effects and its
+protected ledger. Application assembly supplies fixed startup and transport
+wiring, not a second execution state machine. One canonical path per supported
+profile replaces obsolete dormant adapters; missing required authority still
+prevents activation. These boundaries describe the target, not current
+end-to-end readiness.
 
 ## `aos-viewd`
 
@@ -268,9 +264,10 @@ after readiness. Guardian expiry can always apply local default-drop. Removing
 or reassigning a shared external endpoint requires current ownership and an
 authoritative endpoint compare-and-swap, not an expired cleanup plan.
 
-For multi-node ownership, every packet also crosses fixed ingress and egress
-host-veth lease gates installed by netd. The gates compare the assignment epoch
-and a `CLOCK_BOOTTIME` expiry in a broker-owned map using a pre-reviewed tc-BPF
+For every active assignment, including a local one, packets cross fixed ingress
+and egress host-veth lease gates installed by netd. The gates compare the
+assignment epoch and a `CLOCK_BOOTTIME` expiry in a broker-owned map using a
+pre-reviewed tc-BPF
 program and `bpf_ktime_get_boot_ns()`; missing, stale, or expired entries drop
 without a userspace callback.
 Renewal updates only the matching map entry under a newer authority lease. This

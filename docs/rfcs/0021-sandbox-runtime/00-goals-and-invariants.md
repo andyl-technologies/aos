@@ -19,10 +19,25 @@ The design provides:
 - a stable local and distributed control protocol; and
 - a CLI suitable for humans, CI systems, and automation.
 
+## Initial implementation scope
+
+The first implementation phase runs on one host. It delivers the real local
+Create/boot/execute/Stop/Delete path before adding further local profiles.
+Multi-node contracts are design scope only until a later implementation phase;
+remote discovery, placement, draining, reassignment, transfer, coordinator
+watches and consensus do not enter the default local build or deployment.
+
+Local ownership leases, epochs, Guardian/network expiry, protected inventories
+and restart fencing remain mandatory. They are not classified as distributed
+features merely because the future coordinator also uses them. See the
+[normative boundary and rollout plan](18-implementation-boundaries-and-single-node-rollout.md).
+
 ## Non-goals
 
 The first implementation does not:
 
+- implement or deploy a multi-node coordinator, fleet scheduler, remote
+  reassignment/transfer service, or cluster consensus authority;
 - promise a VM-strength boundary from a shared-kernel backend;
 - run a nested nspawn manager inside each sandbox;
 - expose arbitrary host paths or mount option strings to sandbox clients;
@@ -56,8 +71,10 @@ The first implementation does not:
   Mutating requests use compare-and-swap against it.
 
 **Assignment epoch**
-: A monotonically fenced coordinator decision assigning an incarnation to a
-  node. A node rejects mutations from older epochs.
+: A monotonically fenced ownership decision assigning an incarnation to a
+  node. The initial local authority records it on one host; a later coordinator
+  may orchestrate cross-node assignment without becoming the lease issuer.
+  A node rejects mutations from older epochs.
 
 **Export**
 : A named resource a sandbox makes eligible for separately authorized viewing,

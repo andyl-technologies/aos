@@ -1,6 +1,6 @@
 # RFC-0021: Generic sandboxes and filesystem views
 
-- **Status:** Implemented
+- **Status:** Accepted design; single-node implementation first
 - **Date:** 2026-09-03
 - **Audience:** maintainers of `aos`, AOS system images, systemd integration,
   package and cache infrastructure, storage, security policy, and distributed
@@ -27,13 +27,19 @@ attachment, and reconciliation. Backends remain pluggable: the portable API
 describes sandbox semantics and required capabilities rather than nspawn
 arguments.
 
-The source tree implements the portable contracts and their production paths:
-the public API and CLI, durable controller, authenticated privileged brokers,
-systemd-nspawn Host backend, guest agent, ownership guardian, storage and
-network effects, native and FUSE filesystem views, lifecycle recovery,
-multi-node fencing, policy, observability, and release qualification. The
-implementation task ledger records the executable evidence and historical
-increments behind that final integrated state.
+The first implementation phase is single-node. Its first connected milestone
+is public Create, boot/Ready, execution/observation, Stop, and Delete on one
+host, with local ownership, private storage/networking, hard resource policy,
+and restart reconciliation. Native views and the other local profiles follow
+as separate slices. Multi-node protocols remain documented, but coordinator
+implementation, remote placement/transfer, and cluster deployment are reserved
+for a later phase behind explicit optional crate and feature boundaries.
+
+The [implementation-boundary amendment](18-implementation-boundaries-and-single-node-rollout.md)
+defines the target crate splits, internal interfaces, removal of superseded
+paths, and delivery order. It does not assert that the current source has
+completed those changes. Source coverage and historical ledger entries are not
+proof of connected or qualified production behavior.
 
 Dynamic filesystem attachment is part of the first architecture, not an
 afterthought. A source-neutral **filesystem view** abstraction selects among:
@@ -88,8 +94,14 @@ snapshot views or service protocols.
     a complete sandbox snapshot.
 12. Tree, view, snapshot, policy, and RPC versions are independent compatibility
     domains.
-13. Multi-node operation is designed into object identity and fencing, but v1
-    does not claim coherent live remote POSIX mounts.
+13. Initial implementation is single-node. Portable identity and local fencing
+    retain future compatibility, but coordinator implementation and multi-node
+    enablement belong to a later optional phase; no phase claims coherent live
+    remote POSIX mounts.
+14. Shared data and mechanisms sit below protected domain owners; application
+    assembly sits above them. The local implementation never depends on a
+    coordinator implementation. Superseded paths are removed, not accumulated
+    as permanent compatibility layers.
 
 ## Documents
 
@@ -113,10 +125,20 @@ snapshot views or service protocols.
 - [Decisions, alternatives, and open questions](15-decisions-and-open-questions.md)
 - [Implementation task ledger](16-implementation-tasks.md)
 - [Production authority closure amendment](17-production-authority-closure.md)
+- [Implementation boundaries and single-node rollout](18-implementation-boundaries-and-single-node-rollout.md)
 
-## Completion criteria
+## Completion scope
 
-This RFC is implemented only when:
+Initial single-node completion is defined by the connected lifecycle and
+boundary criteria in the implementation-boundary amendment. Later local
+profiles and multi-node enablement have independent exit gates; neither
+unimplemented FUSE nor deferred coordinator work prevents demonstrating the
+first native local lifecycle. No unavailable feature is advertised as ready.
+
+## Full design conformance
+
+The full design, including subsequently selected profiles, is implemented only
+when:
 
 - an unprivileged client can create, execute in, inspect, fork, snapshot,
   suspend, resume, and delete a sandbox through the public CLI;
