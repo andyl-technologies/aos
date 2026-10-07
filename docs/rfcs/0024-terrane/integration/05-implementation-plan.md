@@ -840,6 +840,18 @@ ALG-32. Independent review verifies its 75 preserved artifacts and actual source
 binding. The earlier failed runs remain preserved. No formal task merge,
 checkbox, exit gate or freeze advances.
 
+The trunk now composes retained separate Source requalification with native cold
+publication for the explicitly supported Legacy, empty-required-index profile.
+The cold coordinator retains the same selected source and destination exclusions
+through real publication acknowledgment. A reviewed lifetime correction separates
+the coordinator borrow from its held resources without changing publication
+ordering. Frozen `5447f3642c` compiles the native test target and passes all six
+existing exact metadata-batch groups. Independent review verifies all 34
+preserved artifacts, 4,597 actual derivation inputs and 5,651 unchanged source
+images. The original lifetime compilation failure remains preserved. This is
+compilation and regression evidence; the new Source/cold owning witnesses,
+Active completion and complete ALG-32 remain unqualified.
+
 The focused separate-source requalification check is registered with twelve
 exact completion/refusal selectors; registry-complete and both required
 formatters pass. Its first private native compilation stops on two child-module
@@ -2348,6 +2360,16 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   equivalent idiom corrections are reviewed separately. The seven placement
   witnesses and complete backfill/history qualification remain outstanding;
   these Raw results do not complete DRV-28 or T1.
+  Frozen private `638bad375f` passes strict all-target Clippy and private rustdoc
+  for default, Send and native profiles, application test-target compilation and
+  both required formatters. The owning backfill gate runs all four exact cases
+  among 640 native tests with zero ignored cases: reuse, evidence gaps and
+  current/final checks pass; completeness returns `Advance(Expired)` in 43.64
+  seconds. Historical completion remains unrun. Independent review verifies all
+  91 preserved artifacts, three derivations' 4,916 actual inputs and all 5,970
+  unchanged committed images. These results preserve the failure and establish
+  neither an expiry fix nor complete backfill qualification. The earlier thirteen
+  Raw/current regression successes belong to their separately frozen source.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
   codec, value-plus-object opaque keys and D-104's contextual primary/gap/route
