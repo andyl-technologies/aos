@@ -37,6 +37,8 @@ pub(super) enum Hook {
 pub(super) struct Mutation {
     pub(super) path: PathBuf,
     pub(super) transaction: PublicationTransaction,
+    slot_bytes: Vec<u8>,
+    transaction_bytes: Vec<u8>,
     pub(super) acknowledged: bool,
 }
 
@@ -47,12 +49,34 @@ struct State {
     staging_reached: bool,
     effects: Vec<(String, Option<PathBuf>)>,
     mutations: Vec<Mutation>,
+    raw_diagnostic: bool,
 }
 
 #[derive(Clone, Default)]
 pub(super) struct ProbeFs(Arc<Mutex<State>>);
 
 impl ProbeFs {
+    /// Enables finite transparent Raw observation only for the diagnostic fixture.
+    pub(super) fn enable_raw_diagnostic(&self) {
+        required(self.0.lock()).raw_diagnostic = true;
+    }
+
+    /// Reports actual canonical Raw bytes and success after the genuine executor.
+    pub(super) fn report_raw_diagnostics(&self, stage: &str) {
+        let state = required(self.0.lock());
+        if !state.raw_diagnostic {
+            return;
+        }
+        for row in &state.mutations {
+            if matches!(row.transaction.proof, PublicationProof::Raw) {
+                eprintln!(
+                    "cold-raw-diagnostic stage={stage} path={:?} acknowledged={} slot={:?} transaction={:?}",
+                    row.path, row.acknowledged, row.slot_bytes, row.transaction_bytes
+                );
+            }
+        }
+    }
+
     pub(super) fn reset(&self) {
         let mut state = required(self.0.lock());
         assert!(state.hook.is_none(), "unconsumed finite native hook");
@@ -120,13 +144,16 @@ impl ProbeFs {
 }
 
 fn mutation(path: &Path) -> Mutation {
-    let slot = required(PublicationCommit::decode(&required(std::fs::read(path))));
+    let slot_bytes = required(std::fs::read(path));
+    let slot = required(PublicationCommit::decode(&slot_bytes));
     let control = required(path.ancestors().nth(3).ok_or("actual publication control"));
     let body = required(std::fs::read(control.join(&slot.transaction_key)));
     required(slot.check_transaction(&format!("publication/commits/{}", slot.revision), &body));
     Mutation {
         path: path.to_owned(),
         transaction: required(PublicationTransaction::decode(&body)),
+        slot_bytes,
+        transaction_bytes: body,
         acknowledged: false,
     }
 }
@@ -210,7 +237,8 @@ impl LocalFs for ProbeFs {
             EffectFaultProbe::FileSync => ("FileSync", None, false, false),
             EffectFaultProbe::Other => ("Other", None, false, false),
         };
-        let observed = if final_slot {
+        let observe_raw = name == "SealRawPublication" && required(self.0.lock()).raw_diagnostic;
+        let observed = if final_slot || observe_raw {
             Some(mutation(required(
                 path.as_deref().ok_or("actual mutation path"),
             )))
