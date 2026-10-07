@@ -421,7 +421,7 @@ impl EnrollmentTransition {
                 child_account(policy.components, components_baseline)?, components_baseline,
             ),
         ];
-        let claim = |child, amount, purpose| Claim {
+        let claim = |child: [u8; 16], amount, purpose| Claim {
             enrollment: identity, id: account_id(identity, &child), account: node, child,
             owner: identity.manifest, purpose, operation: [0; 16], project: [0; 16],
             sandbox: [0; 16], tree_revision: [0; 32], cut: ClaimCut::BootLifetime,

@@ -2213,7 +2213,7 @@ fn decode_record<'bytes>(key: &[u8], bytes: &'bytes [u8]) -> Result<NativeRecord
     hash.update((key.len() as u16).to_be_bytes());
     hash.update(key);
     hash.update(&bytes[..132 + length]);
-    if bytes[132 + length..] != hash.finalize().as_slice() {
+    if &bytes[132 + length..] != hash.finalize().as_slice() {
         return Err(reject());
     }
     let job = array(bytes, 16)?;
@@ -2461,7 +2461,7 @@ fn expected_record_transaction_id(
         match row.kind {
             1 if before.is_none() => (1, 1, 0),
             5 if before.is_some_and(|old| old[11] == 0) && decoded.body[11] == 1 => {
-                if decoded.body[16..48] != Sha256::digest(&row.body[16..320]).as_slice() {
+                if &decoded.body[16..48] != Sha256::digest(&row.body[16..320]).as_slice() {
                     return Err(JournalError::ProtectedBoundary);
                 }
                 (2, 2, 0)
@@ -2483,14 +2483,14 @@ fn expected_record_transaction_id(
                 if let Some(frame) = frame {
                     if entry[8..40] != frame[80..112]
                         || (attempt == 2 && frame[48..80] != decoded.body[16..48])
-                        || (row.kind == 3 && entry[40..72] != Sha256::digest(frame).as_slice())
-                        || (row.kind == 4 && (entry[72..104] != Sha256::digest(frame).as_slice()
+                        || (row.kind == 3 && &entry[40..72] != Sha256::digest(frame).as_slice())
+                        || (row.kind == 4 && (&entry[72..104] != Sha256::digest(frame).as_slice()
                             || entry[4] != row.body[10]))
                     {
                         return Err(JournalError::ProtectedBoundary);
                     }
                 } else if attempt != 1 || decoded.body[11] != 1 || entry[4] != 3
-                    || entry[72..104] != Sha256::digest(row.body).as_slice()
+                    || &entry[72..104] != Sha256::digest(row.body).as_slice()
                 {
                     return Err(JournalError::ProtectedBoundary);
                 }

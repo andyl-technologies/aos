@@ -149,8 +149,14 @@ impl<'journal> OperatorStorageRepairBridgeV1<'journal> {
         let pair_digest = pair.as_ref().map_or([0; 32], |pair| hash(b"aos.sandbox.operator-storage-repair-signed-pair.v2\0", &[pair]));
         let owner_pair = match pair {
             Some(pair) => {
-                let evidence = pair.get(..OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2).and_then(|bytes| bytes.try_into().ok()).ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
-                let receipt = pair.get(OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2..).and_then(|bytes| bytes.try_into().ok()).ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
+                let evidence: [u8; OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2] = pair
+                    .get(..OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2)
+                    .and_then(|bytes| bytes.try_into().ok())
+                    .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
+                let receipt: [u8; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2] = pair
+                    .get(OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2..)
+                    .and_then(|bytes| bytes.try_into().ok())
+                    .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
                 self.owner.verify_wire_receipt(&intent, &evidence, &receipt)?;
                 Some((evidence, receipt))
             }

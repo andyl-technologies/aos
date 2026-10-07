@@ -103,10 +103,8 @@ impl StorageRepairAdmissionV1 {
         let assignment = aos_sandbox_core::BrokerAssignment::new(
             SandboxId::from_bytes(*fence.sandbox_id()),
             aos_sandbox_core::IncarnationId::from_bytes(*fence.incarnation_id()),
-            aos_sandbox_core::AssignmentEpoch::new(fence.assignment_epoch())
-                .map_err(|_| OperationCompilationError::Rejected)?,
-            aos_sandbox_core::DesiredGeneration::new(fence.desired_generation())
-                .map_err(|_| OperationCompilationError::Rejected)?,
+            aos_sandbox_core::AssignmentEpoch::new(fence.assignment_epoch()),
+            aos_sandbox_core::DesiredGeneration::new(fence.desired_generation()),
             aos_sandbox_core::ObjectDigest::from_bytes(*fence.assignment_digest()),
         )
         .map_err(|_| OperationCompilationError::Rejected)?;
