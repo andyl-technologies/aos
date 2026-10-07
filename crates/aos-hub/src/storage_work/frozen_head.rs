@@ -18,7 +18,7 @@ use aos_hub_core::storage_work::{
 use aos_hub_core::surface_write::FrozenSurfaceAccess;
 use async_trait::async_trait;
 
-use super::{read_bounded_response, RemoteStorageWorkClient};
+use super::RemoteStorageWorkClient;
 
 impl RemoteStorageWorkClient {
     /// Observes one external object's metadata using its live durable cleanup claim.
@@ -45,6 +45,11 @@ impl RemoteStorageWorkClient {
             .context("storage Worker concurrency gate closed")?;
         let request = self.frozen_cleanup_request(db, claim).await?;
         let signed = sign_storage_frozen_cleanup_custody(&self.key, &request)?;
+        let mut outbound = crate::outbound_inventory::Observation::start(
+            crate::outbound_inventory::Owner::FrozenHead,
+            crate::outbound_inventory::Image::Nonsecret(&signed.body),
+            None,
+        );
         let response = self
             .http
             .post(&self.frozen_cleanup_endpoint)
@@ -54,6 +59,7 @@ impl RemoteStorageWorkClient {
             .send()
             .await
             .context("observing claimed external object through storage Worker")?;
+        outbound.response(response.status().as_u16());
         anyhow::ensure!(
             response.status() == reqwest::StatusCode::OK,
             "storage Worker returned HTTP {} for claimed cleanup HEAD",
@@ -65,7 +71,7 @@ impl RemoteStorageWorkClient {
             .context("frozen cleanup reply signature absent")?
             .to_str()?
             .to_owned();
-        let body = read_bounded_response(response, MAX_FROZEN_CLEANUP_BYTES).await?;
+        let body = crate::storage_work::read_inventory_response(response, MAX_FROZEN_CLEANUP_BYTES, &mut outbound).await?;
         let now = aos_hub_core::clock::now_unix_secs();
         let reply = verify_storage_frozen_cleanup_custody_reply(
             &self.key, &signature, &body, &request, now,

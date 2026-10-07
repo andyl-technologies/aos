@@ -122,6 +122,11 @@ impl RemoteStorageWorkClient {
             .acquire()
             .await
             .context("storage client is closed")?;
+        let mut outbound = crate::outbound_inventory::Observation::start(
+            crate::outbound_inventory::Owner::StorageAuthority,
+            crate::outbound_inventory::Image::Nonsecret(&body),
+            None,
+        );
         let mut response = self
             .http
             .post(endpoint.as_str())
@@ -131,6 +136,7 @@ impl RemoteStorageWorkClient {
             .send()
             .await
             .context("requesting fresh authority control evidence")?;
+        outbound.response(response.status().as_u16());
         ensure!(
             response.status() == reqwest::StatusCode::OK,
             "authority control returned status {}",
@@ -144,12 +150,14 @@ impl RemoteStorageWorkClient {
             .to_owned();
         let mut bytes = Vec::new();
         while let Some(chunk) = response.chunk().await? {
+            outbound.exposed(&chunk);
             ensure!(
                 chunk.len() <= MAX_AUTHORITY_CONTROL_BYTES.saturating_sub(bytes.len()),
                 "authority response exceeds its wire bound"
             );
             bytes.extend_from_slice(&chunk);
         }
+        outbound.eof();
         verify_authority_message(&self.key, true, &signature, &bytes)?;
         let reply: StorageAuthorityResponse = serde_json::from_slice(&bytes)?;
         reply.validate_for(&request, aos_hub_core::clock::now_unix_secs())?;

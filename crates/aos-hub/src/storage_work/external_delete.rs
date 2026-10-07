@@ -16,7 +16,7 @@ use aos_hub_core::{
 };
 use async_trait::async_trait;
 
-use super::{read_bounded_response, RemoteStorageWorkClient};
+use super::RemoteStorageWorkClient;
 
 pub(super) struct ExternalCurrentDeleter {
     db: Arc<Database>,
@@ -292,6 +292,11 @@ impl RemoteStorageWorkClient {
         let signed = sign_storage_frozen_delete_custody(&self.key, &request)?;
         let mut endpoint = url::Url::parse(&self.endpoint)?;
         endpoint.set_path(STORAGE_FROZEN_DELETE_CUSTODY_PATH);
+        let mut outbound = crate::outbound_inventory::Observation::start(
+            crate::outbound_inventory::Owner::FrozenDelete,
+            crate::outbound_inventory::Image::Nonsecret(&signed.body),
+            None,
+        );
         let response = self
             .semantic_observation_http
             .post(endpoint)
@@ -300,6 +305,7 @@ impl RemoteStorageWorkClient {
             .body(signed.body)
             .send()
             .await?;
+        outbound.response(response.status().as_u16());
         anyhow::ensure!(
             response.status() == reqwest::StatusCode::OK,
             "frozen external deletion refused"
@@ -310,7 +316,7 @@ impl RemoteStorageWorkClient {
             .context("frozen delete reply MAC absent")?
             .to_str()?
             .to_owned();
-        let body = read_bounded_response(response, MAX_BINDING_CUSTODY_BYTES).await?;
+        let body = crate::storage_work::read_inventory_response(response, MAX_BINDING_CUSTODY_BYTES, &mut outbound).await?;
         let now = aos_hub_core::clock::now_unix_secs();
         let reply = verify_storage_frozen_delete_custody_reply(
             &self.key, &signature, &body, &request, now,

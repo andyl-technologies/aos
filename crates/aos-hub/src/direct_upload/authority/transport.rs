@@ -3,6 +3,8 @@
 use futures_util::StreamExt as _;
 
 mod observation;
+#[cfg(test)]
+mod outbound_window_tests;
 
 use super::*;
 use aos_hub_core::storage_work::{STORAGE_CAPABILITIES_PATH, STORAGE_WORK_SIGNATURE_HEADER};
@@ -269,6 +271,11 @@ async fn post_exchange(
 ) -> Result<(String, Vec<u8>)> {
     let mut observation =
         observation::Observation::new(observe, path, request_nonce, &signed.body, origin);
+    let mut outbound = crate::outbound_inventory::Observation::start(
+        crate::outbound_inventory::Owner::DirectAuthority,
+        crate::outbound_inventory::Image::Nonsecret(&signed.body),
+        observation.as_ref().map(|observation| observation.call_id()),
+    );
     let mut request = http
         .post(format!("{origin}{path}"))
         .header(header, signed.signature)
@@ -285,6 +292,7 @@ async fn post_exchange(
         }
         anyhow::anyhow!("independent direct authority unavailable")
     })?;
+    outbound.response(response.status().as_u16());
     if let Some(observation) = &mut observation {
         observation.response(response.status().as_u16());
         if response.status() != reqwest::StatusCode::OK {
@@ -316,6 +324,7 @@ async fn post_exchange(
             }
             anyhow::anyhow!("direct authority reply unreadable")
         })?;
+        outbound.exposed(&chunk);
         if let Some(observation) = &mut observation {
             observation.exposed(&chunk);
             if body.len().saturating_add(chunk.len()) > maximum_bytes {
@@ -328,6 +337,7 @@ async fn post_exchange(
         );
         body.extend_from_slice(&chunk);
     }
+    outbound.eof();
     if let Some(observation) = &mut observation {
         observation.eof();
     }

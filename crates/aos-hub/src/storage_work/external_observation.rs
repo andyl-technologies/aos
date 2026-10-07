@@ -14,7 +14,7 @@ use aos_hub_core::storage_authority::external_object::observation::{
 };
 use aos_hub_core::storage_work::{StorageWorkKey, STORAGE_WORK_SIGNATURE_HEADER};
 
-use super::{read_bounded_response, RemoteStorageWorkClient};
+use super::RemoteStorageWorkClient;
 
 /// Builds the pooled client for a single semantic invocation per HTTP request.
 ///
@@ -67,6 +67,11 @@ impl RemoteStorageWorkClient {
         let (body, mac) = request.sign(&self.key, &self.deployment_id, clock())?;
         let mut endpoint = url::Url::parse(&self.endpoint)?;
         endpoint.set_path(SEMANTIC_OBSERVATION_PATH);
+        let mut outbound = crate::outbound_inventory::Observation::start(
+            crate::outbound_inventory::Owner::ExternalHead,
+            crate::outbound_inventory::Image::Nonsecret(&body),
+            None,
+        );
         let response = self
             .semantic_observation_http
             .post(endpoint)
@@ -76,6 +81,7 @@ impl RemoteStorageWorkClient {
             .send()
             .await
             .context("requesting paired external HEAD observation")?;
+        outbound.response(response.status().as_u16());
         ensure!(
             response.status() == reqwest::StatusCode::OK,
             "storage Worker refused semantic observation"
@@ -87,7 +93,7 @@ impl RemoteStorageWorkClient {
             .to_str()
             .context("semantic observation signature malformed")?
             .to_owned();
-        let reply_bytes = read_bounded_response(response, MAX_OBSERVATION_REPLY_BYTES).await?;
+        let reply_bytes = crate::storage_work::read_inventory_response(response, MAX_OBSERVATION_REPLY_BYTES, &mut outbound).await?;
         let reply = authenticate_reply(&self.key, &reply_mac, &reply_bytes, &body)?;
         request.validate(&self.deployment_id, clock())?;
         // Observe again after validation CPU. This is only the original local

@@ -93,6 +93,8 @@ pub mod db;
 pub mod direct_upload;
 /// Independent measured direct-upload review preparation and explicit signing.
 pub mod direct_upload_review;
+/// Default-off remote-storage dispatch inventory without body images.
+pub mod outbound_inventory;
 pub mod external_mirror_review;
 pub mod oci_sdk_review;
 pub mod egress_gateway;

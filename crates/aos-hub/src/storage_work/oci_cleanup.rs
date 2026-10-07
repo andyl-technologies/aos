@@ -214,6 +214,11 @@ async fn exchange_cleanup(
     exchange: &mut ExchangeTelemetry<'_>,
 ) -> Result<ManagedOciCleanupReply> {
     exchange.offer_control(MANAGED_OCI_CLEANUP_PATH, &body);
+    let mut outbound = crate::outbound_inventory::Observation::start(
+        crate::outbound_inventory::Owner::ManagedCleanup,
+        crate::outbound_inventory::Image::Nonsecret(&body),
+        Some(exchange.transport_call_id()),
+    );
     let response = http
         .post(url)
         .header(MANAGED_OCI_CLEANUP_HEADER, signature)
@@ -227,6 +232,7 @@ async fn exchange_cleanup(
             exchange.finish("transport_failed");
             anyhow::anyhow!("Managed terminal cleanup exchange unknown")
         })?;
+    outbound.response(response.status().as_u16());
     if response.status() != reqwest::StatusCode::OK {
         exchange.discard_status_response();
         exchange.finish("http_rejected");
@@ -243,7 +249,7 @@ async fn exchange_cleanup(
         })
         .inspect_err(|_| exchange.finish("invalid_result"))?
         .to_owned();
-    let bytes = super::read_observed_response(response, MAX_MANAGED_OCI_CLEANUP_BYTES, |length| {
+    let bytes = super::read_inventory_observed_response(response, MAX_MANAGED_OCI_CLEANUP_BYTES, &mut outbound, |length| {
         exchange.observe_body(length)
     })
     .await

@@ -134,6 +134,11 @@ impl HybridSurfaceWrites {
         );
         let operation = async {
             exchange.offer_control(OCI_CLEANUP_PATH, &body);
+            let mut outbound = crate::outbound_inventory::Observation::start(
+                crate::outbound_inventory::Owner::ExternalCleanup,
+                crate::outbound_inventory::Image::Nonsecret(&body),
+                Some(exchange.transport_call_id()),
+            );
             let response = self
                 .work
                 .http
@@ -153,6 +158,7 @@ impl HybridSurfaceWrites {
                 .send()
                 .await
                 .map_err(|_| anyhow::anyhow!("terminal OCI delete exchange unknown"))?;
+            outbound.response(response.status().as_u16());
             ensure!(
                 response.status() == reqwest::StatusCode::OK,
                 "terminal OCI cleanup refused or unknown"
@@ -163,7 +169,7 @@ impl HybridSurfaceWrites {
                 .context("OCI cleanup positive guard signature absent")?
                 .to_str()?
                 .to_owned();
-            let body = super::read_observed_response(response, MAX_OCI_CLEANUP_BYTES, |length| {
+            let body = crate::storage_work::read_inventory_observed_response(response, MAX_OCI_CLEANUP_BYTES, &mut outbound, |length| {
                 exchange.observe_body(length)
             })
             .await?;

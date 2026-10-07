@@ -7,9 +7,7 @@ use aos_hub_core::{
 };
 use std::time::Duration;
 
-use crate::storage_work::{
-    read_observed_response, telemetry::ExchangeTelemetry, RemoteStorageWorkClient,
-};
+use crate::storage_work::{telemetry::ExchangeTelemetry, RemoteStorageWorkClient};
 
 impl RemoteStorageWorkClient {
     pub(in crate::storage_work) async fn exchange_oci_projection(
@@ -78,11 +76,17 @@ impl RemoteStorageWorkClient {
             .timeout(timeout);
         exchange.offer_control(OCI_PROJECTION_PATH, &signed.body);
         let operation = async {
+            let mut outbound = crate::outbound_inventory::Observation::start(
+                crate::outbound_inventory::Owner::OciProjection,
+                crate::outbound_inventory::Image::Nonsecret(&signed.body),
+                Some(exchange.transport_call_id()),
+            );
             let response = request
                 .send()
                 .await
                 .context("reading exact OCI document projection")
                 .inspect_err(|_| exchange.finish("transport_failed"))?;
+            outbound.response(response.status().as_u16());
             if !response.status().is_success() {
                 exchange.discard_status_response();
                 exchange.finish("http_rejected");
@@ -97,7 +101,7 @@ impl RemoteStorageWorkClient {
                 .context("OCI projection signature invalid")
                 .inspect_err(|_| exchange.finish("invalid_result"))?
                 .to_owned();
-            let bytes = read_observed_response(response, MAX_OCI_PROJECTION_BYTES, |length| {
+            let bytes = crate::storage_work::read_inventory_observed_response(response, MAX_OCI_PROJECTION_BYTES, &mut outbound, |length| {
                 exchange.observe_body(length);
                 tracing::trace!(
                     chunk_bytes = length,

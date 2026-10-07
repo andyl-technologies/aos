@@ -23,7 +23,7 @@ use aos_hub_core::storage_authority::{
 use super::telemetry::context::ControlObservation;
 use super::telemetry::{ExchangeTelemetry, STORAGE_CALL_ID_HEADER};
 use super::{
-    HybridSurfaceFetch, HybridSurfaceWrites, RemoteStorageWorkClient, read_observed_response,
+    HybridSurfaceFetch, HybridSurfaceWrites, RemoteStorageWorkClient,
 };
 
 pub(super) mod observation;
@@ -95,6 +95,11 @@ impl RemoteStorageWorkClient {
             .context("external OCI control expired before exchange")?;
         let url = format!("{}{}", self.executor_origin()?, EXTERNAL_OCI_PATH);
         exchange.offer_control(EXTERNAL_OCI_PATH, &bytes);
+        let mut outbound = crate::outbound_inventory::Observation::start(
+            crate::outbound_inventory::Owner::ExternalOciControl,
+            crate::outbound_inventory::Image::Nonsecret(&bytes),
+            Some(exchange.transport_call_id()),
+        );
         let response = self
             .http
             .post(url)
@@ -108,6 +113,7 @@ impl RemoteStorageWorkClient {
             .map_err(|_| {
                 anyhow::anyhow!("external OCI control exchange failed; effects remain unknown")
             })?;
+        outbound.response(response.status().as_u16());
         ensure!(
             response.status() == reqwest::StatusCode::OK,
             "external OCI control refused"
@@ -124,7 +130,7 @@ impl RemoteStorageWorkClient {
             .context("external OCI reply original deadline expired")?;
         let bytes = tokio::time::timeout(
             std::time::Duration::from_secs(remaining as u64),
-            read_observed_response(response, MAX_EXTERNAL_OCI_REPLY_BYTES, |length| {
+            crate::storage_work::read_inventory_observed_response(response, MAX_EXTERNAL_OCI_REPLY_BYTES, &mut outbound, |length| {
                 exchange.observe_body(length)
             }),
         )
@@ -475,6 +481,11 @@ impl HybridSurfaceFetch {
         let mut exchange = ExchangeTelemetry::control(&lookup.nonce, "external_oci_source");
         let operation = async {
             exchange.offer_control(OCI_SOURCE_PATH, &body);
+            let mut outbound = crate::outbound_inventory::Observation::start(
+                crate::outbound_inventory::Owner::ExternalOciSource,
+                crate::outbound_inventory::Image::Nonsecret(&body),
+                Some(exchange.transport_call_id()),
+            );
             let response = self
                 .work
                 .http
@@ -491,6 +502,7 @@ impl HybridSurfaceFetch {
                 .send()
                 .await
                 .map_err(|_| anyhow::anyhow!("OCI source lookup transport failed"))?;
+            outbound.response(response.status().as_u16());
             ensure!(
                 response.status() == reqwest::StatusCode::OK,
                 "OCI source is unavailable or unsettled"
@@ -501,7 +513,7 @@ impl HybridSurfaceFetch {
                 .context("OCI source reply signature absent")?
                 .to_str()?
                 .to_owned();
-            let body = read_observed_response(response, MAX_OCI_SOURCE_BYTES, |length| {
+            let body = crate::storage_work::read_inventory_observed_response(response, MAX_OCI_SOURCE_BYTES, &mut outbound, |length| {
                 exchange.observe_body(length)
             })
             .await?;

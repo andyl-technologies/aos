@@ -80,6 +80,11 @@ impl RemoteStorageWorkClient {
         signed: SignedStorageCustodyControl,
     ) -> Result<(String, Vec<u8>)> {
         let endpoint = format!("{}{path}", self.executor_origin()?);
+        let mut outbound = crate::outbound_inventory::Observation::start(
+            crate::outbound_inventory::Owner::CredentialCustody,
+            crate::outbound_inventory::Image::SecretLength(signed.body.len()),
+            None,
+        );
         let response = self
             .http
             .post(endpoint)
@@ -89,6 +94,7 @@ impl RemoteStorageWorkClient {
             .send()
             .await
             .context("sending protected credential custody challenge")?;
+        outbound.response(response.status().as_u16());
         anyhow::ensure!(
             response.status() == reqwest::StatusCode::OK,
             "storage Worker rejected custody challenge with HTTP {}",
@@ -101,7 +107,7 @@ impl RemoteStorageWorkClient {
             .to_str()
             .context("custody reply signature malformed")?
             .to_owned();
-        let body = read_bounded_response(response, MAX_BINDING_CUSTODY_BYTES).await?;
+        let body = crate::storage_work::read_inventory_response(response, MAX_BINDING_CUSTODY_BYTES, &mut outbound).await?;
         Ok((signature, body))
     }
 

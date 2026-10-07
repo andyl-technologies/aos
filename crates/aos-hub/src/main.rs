@@ -1016,6 +1016,7 @@ async fn main() -> Result<()> {
             oci_gc_enabled,
             cloudflare_api_token_file,
         } => {
+            aos_hub::outbound_inventory::initialize()?;
             let root = resolve_root(cli.root, dev)?;
             let listener = tokio::net::TcpListener::bind(&listen)
                 .await

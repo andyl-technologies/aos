@@ -53,6 +53,8 @@ mod external_delete;
 mod external_oci;
 pub use external_oci::ExternalOciRuntime;
 mod execute_observation;
+#[cfg(test)]
+mod outbound_window_tests;
 mod external_copy;
 mod external_observation;
 mod fetch;
@@ -351,6 +353,11 @@ impl RemoteStorageWorkClient {
 
     async fn capabilities(&self) -> Result<StorageCapabilities> {
         let signature = self.key.sign_body(STORAGE_CAPABILITIES_CHALLENGE)?;
+        let mut outbound = crate::outbound_inventory::Observation::start(
+            crate::outbound_inventory::Owner::Capabilities,
+            crate::outbound_inventory::Image::Nonsecret(STORAGE_CAPABILITIES_CHALLENGE),
+            None,
+        );
         let response = self
             .http
             .post(&self.capabilities_endpoint)
@@ -359,12 +366,13 @@ impl RemoteStorageWorkClient {
             .send()
             .await
             .context("probing the hybrid storage Worker")?;
+        outbound.response(response.status().as_u16());
         anyhow::ensure!(
             response.status() == reqwest::StatusCode::OK,
             "hybrid storage Worker returned HTTP {} during readiness probe",
             response.status()
         );
-        let body = read_bounded_response(response, 4096).await?;
+        let body = read_inventory_response(response, 4096, &mut outbound).await?;
         let capabilities: StorageCapabilities =
             serde_json::from_slice(&body).context("decoding storage Worker capabilities")?;
         validate_capabilities(&self.deployment_id, &capabilities)?;
@@ -678,6 +686,11 @@ impl RemoteStorageWorkClient {
             "binding control body exceeds its limit"
         );
         let signature = self.key.sign_body(body.as_slice())?;
+        let mut outbound = crate::outbound_inventory::Observation::start(
+            crate::outbound_inventory::Owner::BindingControl,
+            crate::outbound_inventory::Image::SecretLength(body.len()),
+            None,
+        );
         let response = self
             .http
             .post(&self.binding_control_endpoint)
@@ -687,12 +700,13 @@ impl RemoteStorageWorkClient {
             .send()
             .await
             .context("sending binding control to storage Worker")?;
+        outbound.response(response.status().as_u16());
         anyhow::ensure!(
             response.status() == reqwest::StatusCode::OK,
             "storage Worker rejected binding control with HTTP {}",
             response.status()
         );
-        let response_body = read_bounded_response(response, 4096).await?;
+        let response_body = read_inventory_response(response, 4096, &mut outbound).await?;
         let acknowledgement: StorageBindingAcknowledgement =
             serde_json::from_slice(&response_body).context("decoding binding acknowledgement")?;
         anyhow::ensure!(
@@ -866,7 +880,7 @@ impl RemoteStorageWorkClient {
             1
         };
         let mut attempt = 0;
-        let (response, mut observed_attempt) = loop {
+        let (response, mut observed_attempt, mut outbound) = loop {
             attempt += 1;
             plan.validate(&self.deployment_id, aos_hub_core::clock::now_unix_secs())
                 .inspect_err(|_| exchange.finish("invalid_plan"))?;
@@ -914,6 +928,11 @@ impl RemoteStorageWorkClient {
             }
             exchange.offer_plan(request_bytes);
             observed_attempt.offer(request_bytes);
+            let mut outbound = crate::outbound_inventory::Observation::start(
+                crate::outbound_inventory::Owner::Execute,
+                crate::outbound_inventory::Image::Nonsecret(&body),
+                Some(observed_attempt.call_id()),
+            );
             let response = match request.send().await {
                 Ok(response) => response,
                 Err(error) if attempt < max_attempts => {
@@ -944,6 +963,7 @@ impl RemoteStorageWorkClient {
                 }
             };
             observed_attempt.response(response.status().as_u16());
+            outbound.response(response.status().as_u16());
             if attempt < max_attempts && retryable_worker_status(response.status()) {
                 observed_attempt.finish("http_status_retry");
                 exchange.discard_status_response();
@@ -957,7 +977,7 @@ impl RemoteStorageWorkClient {
                 tokio::time::sleep(Duration::from_millis(100 * attempt as u64)).await;
                 continue;
             }
-            break (response, observed_attempt);
+            break (response, observed_attempt, outbound);
         };
         let status = response.status();
         if status != reqwest::StatusCode::OK {
@@ -995,6 +1015,7 @@ impl RemoteStorageWorkClient {
             |chunk| {
                 exchange.observe_body(chunk.len());
                 observed_attempt.exposed(chunk);
+                outbound.exposed(chunk);
             },
         )
         .await
@@ -1003,6 +1024,7 @@ impl RemoteStorageWorkClient {
             observed_attempt.finish("response_read_failed");
         })?;
         observed_attempt.eof();
+        outbound.eof();
         let response_bytes = body.len();
         let result: StorageWorkResult = serde_json::from_slice(&body)
             .context("decoding storage work result")
@@ -1121,6 +1143,32 @@ impl StorageCredentialProbeProvider for HybridStorageCredentialProbeProvider {
 #[derive(Debug, thiserror::Error)]
 #[error("storage Worker result exceeds its limit")]
 struct StorageWorkResultTooLarge;
+
+// The existing consumer still owns the stream and its original bound. Observe
+// only chunks it exposes, including the overflow chunk before refusal.
+async fn read_inventory_response(
+    response: reqwest::Response,
+    maximum: usize,
+    outbound: &mut crate::outbound_inventory::Observation,
+) -> Result<Vec<u8>> {
+    read_inventory_observed_response(response, maximum, outbound, |_| {}).await
+}
+
+async fn read_inventory_observed_response(
+    response: reqwest::Response,
+    maximum: usize,
+    outbound: &mut crate::outbound_inventory::Observation,
+    mut observe_chunk: impl FnMut(usize),
+) -> Result<Vec<u8>> {
+    let result = read_observed_response_chunks(response, maximum, |chunk| {
+        outbound.exposed(chunk);
+        observe_chunk(chunk.len());
+    }).await;
+    if result.is_ok() {
+        outbound.eof();
+    }
+    result
+}
 
 async fn read_bounded_response(response: reqwest::Response, maximum: usize) -> Result<Vec<u8>> {
     read_observed_response(response, maximum, |_| {}).await

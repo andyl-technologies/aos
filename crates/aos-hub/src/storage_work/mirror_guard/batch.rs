@@ -141,6 +141,11 @@ impl RemoteStorageWorkClient {
             "mirror_guard_batch",
         );
         exchange.offer_control(path, &signed.body);
+        let mut outbound = crate::outbound_inventory::Observation::start(
+            crate::outbound_inventory::Owner::MirrorGuardBatch,
+            crate::outbound_inventory::Image::Nonsecret(&signed.body),
+            Some(exchange.transport_call_id()),
+        );
         let response = self
             .http
             .post(format!("{origin}{path}"))
@@ -155,6 +160,7 @@ impl RemoteStorageWorkClient {
             .await
             .context("reading independent mirror guard batch")
             .inspect_err(|_| exchange.finish("transport_failed"))?;
+        outbound.response(response.status().as_u16());
         if !response.status().is_success() {
             exchange.discard_status_response();
             exchange.finish("http_rejected");
@@ -174,6 +180,7 @@ impl RemoteStorageWorkClient {
         while let Some(chunk) = chunks.next().await {
             let chunk = chunk.inspect_err(|_| exchange.finish("response_read_failed"))?;
             exchange.observe_body(chunk.len());
+            outbound.exposed(&chunk);
             ensure!(
                 bytes
                     .len()
@@ -183,6 +190,7 @@ impl RemoteStorageWorkClient {
             );
             bytes.extend_from_slice(&chunk);
         }
+        outbound.eof();
         let latest = u64::try_from(aos_hub_core::clock::now_unix_secs())?
             .checked_add(uncertainty)
             .context("mirror guard clock overflow")?;

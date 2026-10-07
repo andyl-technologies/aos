@@ -33,7 +33,7 @@ use aos_hub_core::{
 use base64::Engine as _;
 
 use super::{
-    HybridSurfaceWrites, RemoteStorageWorkClient, read_observed_response,
+    HybridSurfaceWrites, RemoteStorageWorkClient,
     telemetry::ExchangeTelemetry,
 };
 
@@ -153,6 +153,11 @@ impl RemoteStorageWorkClient {
         // This client has retries disabled. A timeout cannot acknowledge or
         // redispatch the immutable provider turn retained by the Worker guard.
         exchange.offer_control(path, &body);
+        let mut outbound = crate::outbound_inventory::Observation::start(
+            crate::outbound_inventory::Owner::ExternalCopy,
+            crate::outbound_inventory::Image::Nonsecret(&body),
+            Some(exchange.transport_call_id()),
+        );
         let response = self
             .semantic_observation_http
             .post(endpoint)
@@ -167,6 +172,7 @@ impl RemoteStorageWorkClient {
             .await
             .context("requesting external placement copy")
             .inspect_err(|_| exchange.finish("transport_failed"))?;
+        outbound.response(response.status().as_u16());
         if response.status() != reqwest::StatusCode::OK {
             exchange.discard_status_response();
             exchange.finish("http_rejected");
@@ -180,7 +186,7 @@ impl RemoteStorageWorkClient {
             .to_str()
             .inspect_err(|_| exchange.finish("invalid_result"))?
             .to_owned();
-        let body = read_observed_response(response, MAX_EXTERNAL_COPY_CONTROL_BYTES, |length| {
+        let body = crate::storage_work::read_inventory_observed_response(response, MAX_EXTERNAL_COPY_CONTROL_BYTES, &mut outbound, |length| {
             exchange.observe_body(length);
         })
         .await
