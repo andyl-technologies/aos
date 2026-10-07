@@ -2089,6 +2089,250 @@ struct ProtectedJournalLocation {
     original_compaction_selection: runtime_deployment_history::OriginalCompactionSelectionV1,
 }
 
+/// Retains a read-only opening and its partial native replay originals.
+///
+/// This crate-private reservoir supplies custody, not admission or funding.
+/// The caller must already own the receiving interval and price its reached
+/// allocations before entry. In particular, an allocator abort cannot return
+/// an error or establish that independent posts completed.
+pub(crate) struct ReadOnlyJournalOpenOriginalsV1 {
+    ancestors: Vec<File>,
+    directory: Option<Result<File, JournalError>>,
+    directory_native_error: Option<rustix::io::Errno>,
+    directory_binding: Option<Result<(), JournalError>>,
+    directory_identity: Option<Result<FileIdentity, JournalError>>,
+    lock: Option<Result<File, rustix::io::Errno>>,
+    lock_validation: Option<Result<(), JournalError>>,
+    lock_identity: Option<Result<FileIdentity, JournalError>>,
+    file: Option<Result<File, rustix::io::Errno>>,
+    file_validation: Option<Result<(), JournalError>>,
+    file_identity: Option<Result<FileIdentity, JournalError>>,
+    protected: Option<ProtectedJournalLocation>,
+    replay: ControllerOpenedReplayV1,
+    scratch: Option<ReadOnlyReplayScratchV1>,
+    returned: Option<Result<RecoveryReport, JournalError>>,
+    readback: Option<ReadOnlyProtectedJournal>,
+    witness: Option<ReadOnlyJournalNameWitness>,
+    initial_name: Option<Result<(), JournalError>>,
+    post_name: Option<Result<(), JournalError>>,
+    attempted: bool,
+    post_attempted: bool,
+    closed: bool,
+}
+
+impl ReadOnlyJournalOpenOriginalsV1 {
+    /// Prearms empty custody without opening a file or creating authority.
+    pub(crate) const fn new() -> Self {
+        Self {
+            ancestors: Vec::new(),
+            directory: None,
+            directory_native_error: None,
+            directory_binding: None,
+            directory_identity: None,
+            lock: None,
+            lock_validation: None,
+            lock_identity: None,
+            file: None,
+            file_validation: None,
+            file_identity: None,
+            protected: None,
+            replay: ControllerOpenedReplayV1::new(),
+            scratch: None,
+            returned: None,
+            readback: None,
+            witness: None,
+            initial_name: None,
+            post_name: None,
+            attempted: false,
+            post_attempted: false,
+            closed: false,
+        }
+    }
+
+    /// Enters one retained, bound read-only opening without retry or repair.
+    ///
+    /// The outer owner parks this reservoir before calling it. Every native
+    /// result precedes its projection; a later name failure retains the reader
+    /// and report. Reentry closes positive borrowing without replacing debt.
+    pub(crate) fn open_once(
+        &mut self,
+        path: &Path,
+        name: &str,
+        limits: JournalLimits,
+        uid: u32,
+        directory_identity: (u64, u64),
+    ) {
+        if self.attempted || self.closed {
+            self.closed = true;
+            return;
+        }
+        self.attempted = true;
+        self.returned = Some(self.open_inner(path, name, limits, uid, directory_identity));
+        self.initial_name = self.observe_names();
+    }
+
+    fn open_inner(
+        &mut self,
+        path: &Path,
+        name: &str,
+        limits: JournalLimits,
+        uid: u32,
+        expected_directory: (u64, u64),
+    ) -> Result<RecoveryReport, JournalError> {
+        self.directory = Some(resolve_protected_directory_from_root_original(
+            path, uid, Some(&mut self.ancestors), Some(&mut self.directory_native_error),
+        ));
+        let directory = self.directory.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(JournalError::ProtectedBoundary)?;
+        self.directory_binding = Some(require_opened_directory_identity(directory, expected_directory));
+        require_controller_open_step(&self.directory_binding)?;
+        validate_limits(limits)?;
+        if name.len() > MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        validate_basename(name)?;
+        self.directory_identity = Some(FileIdentity::of(directory));
+        let directory_identity = self.directory_identity.as_ref()
+            .and_then(|result| result.as_ref().ok()).copied()
+            .ok_or(JournalError::ProtectedBoundary)?;
+        self.lock_validation = Some(open_read_only_protected_file_original(
+            directory, &format!("{name}.lock"), uid, &mut self.lock,
+        ));
+        require_controller_open_step(&self.lock_validation)?;
+        let lock = self.lock.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(JournalError::ProtectedBoundary)?;
+        self.lock_identity = Some(FileIdentity::of(lock));
+        let lock_identity = self.lock_identity.as_ref()
+            .and_then(|result| result.as_ref().ok()).copied()
+            .ok_or(JournalError::ProtectedBoundary)?;
+        self.file_validation = Some(open_read_only_protected_file_original(
+            directory, name, uid, &mut self.file,
+        ));
+        require_controller_open_step(&self.file_validation)?;
+        let file = self.file.as_mut().and_then(|result| result.as_mut().ok())
+            .ok_or(JournalError::ProtectedBoundary)?;
+        self.file_identity = Some(FileIdentity::of(file));
+        let file_identity = self.file_identity.as_ref()
+            .and_then(|result| result.as_ref().ok()).copied()
+            .ok_or(JournalError::ProtectedBoundary)?;
+        self.protected = Some(ProtectedJournalLocation {
+            directory: match self.directory.take() {
+                Some(Ok(directory)) => directory,
+                original => {
+                    self.directory = original;
+                    return Err(JournalError::ProtectedBoundary);
+                }
+            },
+            name: name.to_owned(),
+            expected_uid: uid,
+            #[cfg(target_os = "linux")]
+            original_compaction_selection:
+                runtime_deployment_history::OriginalCompactionSelectionV1::capture(path, name),
+        });
+        self.witness = Some(ReadOnlyJournalNameWitness {
+            directory_path: path.to_owned(), name: name.to_owned(), expected_uid: uid,
+            directory_identity, file_identity, lock_identity,
+        });
+        let (_, report) = prepare_opened_replay(
+            file, limits, false,
+            OpenedReplayDestinationV1::ReadOnly(&mut self.replay, &mut self.scratch),
+        )?;
+
+        let opened_path = PathBuf::from(name);
+        let authority = Arc::new(JournalAuthorityInstance);
+        let originals = (
+            self.file.take(), self.lock.take(), self.protected.take(), self.replay.replay.take(),
+            self.witness.take(),
+        );
+        let (file, lock, protected, replay, witness) = match originals {
+            (Some(Ok(file)), Some(Ok(lock)), Some(protected), Some(Ok(replay)), Some(witness)) => {
+                (file, lock, protected, replay, witness)
+            }
+            (file, lock, protected, replay, witness) => {
+                self.file = file;
+                self.lock = lock;
+                self.protected = protected;
+                self.replay.replay = replay;
+                self.witness = witness;
+                return Err(JournalError::ProtectedBoundary);
+            }
+        };
+        let journal = journal_from_original_replay!(
+            opened_path, file, lock, limits, Some(protected), replay, authority
+        );
+        self.readback = Some(ReadOnlyProtectedJournal { journal, witness });
+        Ok(report)
+    }
+
+    /// Parks one independent name post on the same reader, including after Err.
+    pub(crate) fn recheck_named_once(&mut self) {
+        if self.post_attempted || !self.attempted {
+            self.closed = true;
+            return;
+        }
+        self.post_attempted = true;
+        self.post_name = self.observe_names();
+    }
+
+    fn observe_names(&self) -> Option<Result<(), JournalError>> {
+        if let Some(readback) = &self.readback {
+            return Some(readback.check_named_currentness());
+        }
+        let witness = self.witness.as_ref()?;
+        let file = self.file.as_ref()?.as_ref().ok()?;
+        Some((|| {
+            witness.check_named_currentness()?;
+            if FileIdentity::of(file)? != witness.file_identity {
+                return Err(JournalError::ProtectedBoundary);
+            }
+            Ok(())
+        })())
+    }
+
+    /// Borrows the earliest retained opening or name-check cause.
+    pub(crate) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        macro_rules! cause {
+            ($slot:expr) => {
+                $slot.as_ref().and_then(|result| result.as_ref().err())
+                    .map(|error| error as &(dyn std::error::Error + 'static))
+            };
+        }
+        self.directory_native_error.as_ref()
+            .map(|error| error as &(dyn std::error::Error + 'static))
+            .or_else(|| cause!(self.directory))
+            .or_else(|| cause!(self.directory_binding))
+            .or_else(|| cause!(self.directory_identity))
+            .or_else(|| cause!(self.lock))
+            .or_else(|| cause!(self.lock_validation))
+            .or_else(|| cause!(self.lock_identity))
+            .or_else(|| cause!(self.file))
+            .or_else(|| cause!(self.file_validation))
+            .or_else(|| cause!(self.file_identity))
+            .or_else(|| self.replay.failure())
+            .or_else(|| cause!(self.returned))
+            .or_else(|| cause!(self.initial_name))
+            .or_else(|| cause!(self.post_name))
+            .or_else(|| self.closed.then_some(&READ_ONLY_OPEN_CLOSED as &(dyn std::error::Error + 'static)))
+    }
+
+    /// Borrows only a successfully returned and still-open diagnostic reader.
+    pub(crate) fn readback_mut(&mut self) -> Option<&mut ReadOnlyProtectedJournal> {
+        if self.closed || self.failure().is_some()
+            || !matches!(self.returned, Some(Ok(_)))
+            || !matches!(self.initial_name, Some(Ok(())))
+        {
+            return None;
+        }
+        self.readback.as_mut()
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("read-only original opening is closed")]
+struct ReadOnlyOpenClosedV1;
+
+static READ_ONLY_OPEN_CLOSED: ReadOnlyOpenClosedV1 = ReadOnlyOpenClosedV1;
+
 // A closed Controller constructor keeps partial originals in its parent.
 // This is not a Journal/FD factory and does not issue authority or a payer.
 pub(crate) struct ControllerJournalOpenOriginalsV1 {
@@ -2286,6 +2530,7 @@ impl ControllerOpenedReplayV1 {
 enum OpenedReplayDestinationV1<'owner> {
     Ordinary,
     Controller(&'owner mut ControllerOpenedReplayV1),
+    ReadOnly(&'owner mut ControllerOpenedReplayV1, &'owner mut Option<ReadOnlyReplayScratchV1>),
 }
 
 // One replay/repair recipe. Only the closed Controller arm parks its whole
@@ -2296,11 +2541,15 @@ fn prepare_opened_replay(
     repair_tail: bool,
     destination: OpenedReplayDestinationV1<'_>,
 ) -> Result<(Option<ReplayState>, RecoveryReport), JournalError> {
-    let (metadata_slot, replay_slot, truncate_slot, sync_slot, seek_slot) = match destination {
-        OpenedReplayDestinationV1::Ordinary => (None, None, None, None, None),
+    let (metadata_slot, replay_slot, truncate_slot, sync_slot, seek_slot, scratch_slot) = match destination {
+        OpenedReplayDestinationV1::Ordinary => (None, None, None, None, None, None),
         OpenedReplayDestinationV1::Controller(originals) => (
             Some(&mut originals.metadata), Some(&mut originals.replay),
-            Some(&mut originals.truncate), Some(&mut originals.sync), Some(&mut originals.seek),
+            Some(&mut originals.truncate), Some(&mut originals.sync), Some(&mut originals.seek), None,
+        ),
+        OpenedReplayDestinationV1::ReadOnly(originals, scratch) => (
+            Some(&mut originals.metadata), Some(&mut originals.replay),
+            Some(&mut originals.truncate), Some(&mut originals.sync), Some(&mut originals.seek), Some(scratch),
         ),
     };
     let length = match metadata_slot {
@@ -2323,7 +2572,10 @@ fn prepare_opened_replay(
             ordinary_replay.as_ref().ok_or(JournalError::ProtectedBoundary)?
         }
         Some(slot) => {
-            *slot = Some(replay(file, limits));
+            *slot = Some(match scratch_slot {
+                None => replay(file, limits),
+                Some(scratch) => replay_read_only_retained(file, limits, scratch),
+            });
             match slot.as_ref() {
                 Some(Ok(replay)) => replay,
                 _ => return Err(JournalError::ProtectedBoundary),
@@ -7133,6 +7385,52 @@ struct ReplayState {
     q04_lower_history_present: bool,
 }
 
+// Only Journal-owned partial originals live here. Transitive validators keep
+// their existing private temporaries; this is not a complete allocator bound.
+struct ReadOnlyReplayScratchV1 {
+    offset: u64,
+    durable_end: u64,
+    expected_sequence: u64,
+    durable_next_sequence: u64,
+    committed_transactions: usize,
+    committed_records: usize,
+    materialized_bytes: usize,
+    source_challenge_history_bytes: u64,
+    transaction_ids: BTreeSet<[u8; 16]>,
+    committed_namespaces: BTreeSet<RecordNamespace>,
+    state: BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    idempotency: BTreeMap<Vec<u8>, IdempotencyDecision>,
+    pending: Option<PendingTransaction>,
+    reached_pending: Option<PendingTransaction>,
+    reached_transaction: Option<JournalTransaction>,
+    reached_frame: Option<Frame>,
+    partial_frame: Option<ReadOnlyFrameScratchV1>,
+    prospective: Option<BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>>,
+    compaction_last_key: Option<(RecordNamespace, Vec<u8>)>,
+    source_challenge_history: Vec<source_original_native::SourceOriginalChallengeCheckpointV5>,
+    source_original_replay: source_original_native::replay::SourceOriginalReplayCacheV5,
+}
+
+struct ReadOnlyFrameScratchV1 {
+    header: [u8; HEADER_BYTES],
+    header_filled: usize,
+    payload: Option<Vec<u8>>,
+    payload_filled: usize,
+}
+
+fn replay_read_only_retained(
+    file: &mut File,
+    limits: JournalLimits,
+    scratch: &mut Option<ReadOnlyReplayScratchV1>,
+) -> Result<ReplayState, JournalError> {
+    replay_original_retained(
+        file, limits, None,
+        #[cfg(target_os = "linux")]
+        None,
+        Some(scratch),
+    )
+}
+
 // Shared logical representation arithmetic only. The original Release caller
 // still prices its already-owned indexes before this independent replay work.
 #[cfg(target_os = "linux")]
@@ -8569,7 +8867,25 @@ fn replay_original_observed<R: Read + Seek + Borrow<File>>(
     limits: JournalLimits,
     challenges: Option<&source_original_native::SourceOriginalChallengeHistoryViewV5<'_>>,
     #[cfg(target_os = "linux")]
+    deployment_history: Option<DeploymentHistoryObserverV1<'_, '_>>,
+) -> Result<ReplayState, JournalError> {
+    replay_original_retained(
+        file, limits, challenges,
+        #[cfg(target_os = "linux")]
+        deployment_history,
+        None,
+    )
+}
+
+// The selected destination changes ownership on failure, never replay rules.
+// Ordinary calls inline to the original loop and local disposal order.
+fn replay_original_retained<R: Read + Seek + Borrow<File>>(
+    file: &mut R,
+    limits: JournalLimits,
+    challenges: Option<&source_original_native::SourceOriginalChallengeHistoryViewV5<'_>>,
+    #[cfg(target_os = "linux")]
     mut deployment_history: Option<DeploymentHistoryObserverV1<'_, '_>>,
+    scratch: Option<&mut Option<ReadOnlyReplayScratchV1>>,
 ) -> Result<ReplayState, JournalError> {
     file.seek(SeekFrom::Start(0))?;
     let mut offset = 0_u64;
@@ -8595,252 +8911,318 @@ fn replay_original_observed<R: Read + Seek + Borrow<File>>(
     let mut source_original_replay =
         source_original_native::replay::SourceOriginalReplayCacheV5::default();
     let mut source_history_compacted = false;
-    let source_journal_identity = FileIdentity::of(<R as Borrow<File>>::borrow(file))?;
+    let mut reached_pending = None;
+    let mut reached_transaction = None;
+    let mut reached_frame = None;
+    let mut partial_frame = None;
+    let mut reached_prospective = None;
+    let retained = scratch.is_some();
+    let outcome: Result<(), JournalError> = (|| {
+        let source_journal_identity = FileIdentity::of(<R as Borrow<File>>::borrow(file))?;
 
-    loop {
-        let Some((frame, bytes_read)) = read_frame(file, offset, limits)? else {
-            break;
-        };
-        if frame.sequence != expected_sequence {
-            return Err(JournalError::SequenceDiscontinuity(offset));
-        }
-        expected_sequence = expected_sequence
-            .checked_add(1)
-            .ok_or(JournalError::SequenceExhausted)?;
-        offset = offset
-            .checked_add(bytes_read)
-            .ok_or(JournalError::JournalTooLarge)?;
+        loop {
+            let Some((frame, bytes_read)) = read_frame_retained(
+                file, offset, limits, retained.then_some(&mut partial_frame),
+            )? else {
+                break;
+            };
+            let frame_outcome: Result<(), JournalError> = (|| {
+                if frame.sequence != expected_sequence {
+                    return Err(JournalError::SequenceDiscontinuity(offset));
+                }
+                expected_sequence = expected_sequence
+                    .checked_add(1)
+                    .ok_or(JournalError::SequenceExhausted)?;
+                offset = offset
+                    .checked_add(bytes_read)
+                    .ok_or(JournalError::JournalTooLarge)?;
 
-        match frame.kind {
-            FrameKind::Begin => {
-                if pending.is_some() {
-                    return Err(JournalError::MalformedTransaction("nested begin frame"));
-                }
-                let count = decode_count(&frame.payload)?;
-                if count == 0 || count > limits.maximum_records_per_transaction {
-                    return Err(JournalError::LimitExceeded("records per transaction"));
-                }
-                pending = Some(PendingTransaction {
-                    id: frame.transaction_id,
-                    expected_records: count,
-                    records: Vec::with_capacity(count),
-                    digest: transaction_hasher(),
-                    begin_sequence: frame.sequence,
-                    begin_offset: offset.checked_sub(bytes_read)
-                        .ok_or(JournalError::JournalTooLarge)?,
-                });
-            }
-            FrameKind::Record => {
-                let transaction = pending.as_mut().ok_or(JournalError::MalformedTransaction(
-                    "record outside transaction",
-                ))?;
-                if transaction.id != frame.transaction_id {
-                    return Err(JournalError::MalformedTransaction(
-                        "record transaction identity mismatch",
-                    ));
-                }
-                if transaction.records.len() >= transaction.expected_records {
-                    return Err(JournalError::MalformedTransaction("too many record frames"));
-                }
-                transaction.digest.update(&frame.payload);
-                transaction
-                    .records
-                    .push(decode_record(&frame.payload, limits)?);
-            }
-            FrameKind::Commit => {
-                let transaction = pending.take().ok_or(JournalError::MalformedTransaction(
-                    "commit outside transaction",
-                ))?;
-                if transaction.id != frame.transaction_id
-                    || transaction.records.len() != transaction.expected_records
-                {
-                    return Err(JournalError::MalformedTransaction(
-                        "commit transaction identity or record count mismatch",
-                    ));
-                }
-                validate_commit(&frame.payload, &transaction)?;
-                let begin_sequence = transaction.begin_sequence;
-                let begin_offset = transaction.begin_offset;
-                let replay_transaction = JournalTransaction {
-                    id: transaction.id,
-                    records: transaction.records,
-                };
-                validate_transaction(&replay_transaction, limits)?;
-                delete_batch::validate(&state, &replay_transaction, begin_sequence, limits)?;
-
-                #[cfg(target_os = "linux")]
-                if let Some(history) = deployment_history.as_mut() {
-                    history.observe(
-                        &replay_transaction, begin_sequence, frame.sequence, begin_offset, offset,
-                        &frame.payload[4..],
-                    )?;
-                }
-
-                let mut query_edge = None;
-                let mut logical_replay = false;
-                let mut first_successor_replay = false;
-                let mut compaction_id = [0_u8; 16];
-                compaction_id[..8].copy_from_slice(&compaction_index.to_le_bytes());
-                compaction_id[8..].copy_from_slice(b"compact1");
-                if compaction_prefix && replay_transaction.id == compaction_id {
-                    if delete_batch::has_dependencies(&state)
-                        || delete_batch::selected(&replay_transaction)
-                    {
-                        return Err(JournalError::ProtectedBoundary);
+                match frame.kind {
+                    FrameKind::Begin => {
+                        if pending.is_some() {
+                            return Err(JournalError::MalformedTransaction("nested begin frame"));
+                        }
+                        let count = decode_count(&frame.payload)?;
+                        if count == 0 || count > limits.maximum_records_per_transaction {
+                            return Err(JournalError::LimitExceeded("records per transaction"));
+                        }
+                        pending = Some(PendingTransaction {
+                            id: frame.transaction_id,
+                            expected_records: count,
+                            records: Vec::with_capacity(count),
+                            digest: transaction_hasher(),
+                            begin_sequence: frame.sequence,
+                            begin_offset: offset.checked_sub(bytes_read)
+                                .ok_or(JournalError::JournalTooLarge)?,
+                        });
                     }
-                    // Private compaction emits a sorted, PUT-only initial copy.
-                    // Its IDs alone never exempt an ordinary logical mutation.
-                    for record in replay_transaction.records() {
-                        let key = (record.namespace(), record.key().to_vec());
-                        if record.value().is_none()
-                            || compaction_last_key
-                                .as_ref()
-                                .is_some_and(|last| *last >= key)
-                            || state.contains_key(&key)
-                        {
+                    FrameKind::Record => {
+                        let transaction = pending.as_mut().ok_or(JournalError::MalformedTransaction(
+                            "record outside transaction",
+                        ))?;
+                        if transaction.id != frame.transaction_id {
                             return Err(JournalError::MalformedTransaction(
-                                "invalid compaction snapshot",
+                                "record transaction identity mismatch",
                             ));
                         }
-                        compaction_last_key = Some(key);
+                        if transaction.records.len() >= transaction.expected_records {
+                            return Err(JournalError::MalformedTransaction("too many record frames"));
+                        }
+                        transaction.digest.update(&frame.payload);
+                        transaction
+                            .records
+                            .push(decode_record(&frame.payload, limits)?);
                     }
-                    compaction_index = compaction_index
-                        .checked_add(1)
-                        .ok_or(JournalError::SequenceExhausted)?;
-                    materialized_compaction = true;
-                    source_history_compacted = true;
-                    source_original_replay.observe_compaction(
-                        &root_original_inventory::materialize(&state, &replay_transaction),
-                    );
-                } else {
-                    if materialized_compaction {
-                        source_tree_successor::validate_replayed_state(&state, true)?;
-                        root_local_recovery::pending(&state)?;
-                        root_original_native::pending(&state, limits)?;
-                        root_original_inventory::validate_rejoined_capacity(
-                            &state, materialized_bytes, durable_end, committed_transactions,
-                            limits, durable_next_sequence,
-                        )?;
-                        materialized_compaction = false;
-                    }
-                    compaction_prefix = false;
-                    logical_replay = true;
-                    first_successor_replay = source_tree_successor::validate_replayed_transaction(
-                        &state, &replay_transaction, limits,
-                    )?;
-                    let source_edge = source_original_replay.replay_transaction(
-                        &state,
-                        &replay_transaction,
-                        challenges,
-                        limits,
-                        begin_sequence,
-                        frame.sequence,
-                        begin_offset,
-                        offset,
-                        committed_transactions.checked_add(1)
-                            .ok_or(JournalError::LimitExceeded("committed transaction count"))?,
-                        (source_journal_identity.device, source_journal_identity.inode),
-                    )?;
-                    if !source_edge {
-                        query_edge = root_original_inventory::replay_edge(
-                            &state, &replay_transaction, limits,
-                        )?;
-                        if query_edge.is_none()
-                            && !root_original_native::validate_replayed_transaction(
-                                &state, &replay_transaction, limits, expected_sequence,
-                            )?
+                    FrameKind::Commit => {
+                        reached_pending = pending.take();
+                        let transaction = reached_pending.as_ref().ok_or(JournalError::MalformedTransaction(
+                            "commit outside transaction",
+                        ))?;
+                        if transaction.id != frame.transaction_id
+                            || transaction.records.len() != transaction.expected_records
                         {
-                            root_local_recovery::validate_replayed_transaction(
-                                &state,
-                                &replay_transaction,
+                            return Err(JournalError::MalformedTransaction(
+                                "commit transaction identity or record count mismatch",
+                            ));
+                        }
+                        validate_commit(&frame.payload, &transaction)?;
+                        let begin_sequence = transaction.begin_sequence;
+                        let begin_offset = transaction.begin_offset;
+                        reached_transaction = Some(JournalTransaction {
+                            id: transaction.id,
+                            records: std::mem::take(&mut reached_pending.as_mut()
+                                .ok_or(JournalError::ProtectedBoundary)?.records),
+                        });
+                        let replay_transaction = reached_transaction.as_ref()
+                            .ok_or(JournalError::ProtectedBoundary)?;
+                        validate_transaction(&replay_transaction, limits)?;
+                        delete_batch::validate(&state, &replay_transaction, begin_sequence, limits)?;
+
+                        #[cfg(target_os = "linux")]
+                        if let Some(history) = deployment_history.as_mut() {
+                            history.observe(
+                                &replay_transaction, begin_sequence, frame.sequence, begin_offset, offset,
+                                &frame.payload[4..],
                             )?;
                         }
-                        if query_edge.is_none() {
-                            root_original_inventory::preserve_other_owner(
+
+                        let mut query_edge = None;
+                        let mut logical_replay = false;
+                        let mut first_successor_replay = false;
+                        let mut compaction_id = [0_u8; 16];
+                        compaction_id[..8].copy_from_slice(&compaction_index.to_le_bytes());
+                        compaction_id[8..].copy_from_slice(b"compact1");
+                        if compaction_prefix && replay_transaction.id == compaction_id {
+                            if delete_batch::has_dependencies(&state)
+                                || delete_batch::selected(&replay_transaction)
+                            {
+                                return Err(JournalError::ProtectedBoundary);
+                            }
+                            // Private compaction emits a sorted, PUT-only initial copy.
+                            // Its IDs alone never exempt an ordinary logical mutation.
+                            for record in replay_transaction.records() {
+                                let key = (record.namespace(), record.key().to_vec());
+                                if record.value().is_none()
+                                    || compaction_last_key
+                                        .as_ref()
+                                        .is_some_and(|last| *last >= key)
+                                    || state.contains_key(&key)
+                                {
+                                    return Err(JournalError::MalformedTransaction(
+                                        "invalid compaction snapshot",
+                                    ));
+                                }
+                                compaction_last_key = Some(key);
+                            }
+                            compaction_index = compaction_index
+                                .checked_add(1)
+                                .ok_or(JournalError::SequenceExhausted)?;
+                            materialized_compaction = true;
+                            source_history_compacted = true;
+                            source_original_replay.observe_compaction(
+                                &root_original_inventory::materialize(&state, &replay_transaction),
+                            );
+                        } else {
+                            if materialized_compaction {
+                                source_tree_successor::validate_replayed_state(&state, true)?;
+                                root_local_recovery::pending(&state)?;
+                                root_original_native::pending(&state, limits)?;
+                                root_original_inventory::validate_rejoined_capacity(
+                                    &state, materialized_bytes, durable_end, committed_transactions,
+                                    limits, durable_next_sequence,
+                                )?;
+                                materialized_compaction = false;
+                            }
+                            compaction_prefix = false;
+                            logical_replay = true;
+                            first_successor_replay = source_tree_successor::validate_replayed_transaction(
                                 &state, &replay_transaction, limits,
                             )?;
+                            let source_edge = source_original_replay.replay_transaction(
+                                &state,
+                                &replay_transaction,
+                                challenges,
+                                limits,
+                                begin_sequence,
+                                frame.sequence,
+                                begin_offset,
+                                offset,
+                                committed_transactions.checked_add(1)
+                                    .ok_or(JournalError::LimitExceeded("committed transaction count"))?,
+                                (source_journal_identity.device, source_journal_identity.inode),
+                            )?;
+                            if !source_edge {
+                                query_edge = root_original_inventory::replay_edge(
+                                    &state, &replay_transaction, limits,
+                                )?;
+                                if query_edge.is_none()
+                                    && !root_original_native::validate_replayed_transaction(
+                                        &state, &replay_transaction, limits, expected_sequence,
+                                    )?
+                                {
+                                    root_local_recovery::validate_replayed_transaction(
+                                        &state,
+                                        &replay_transaction,
+                                    )?;
+                                }
+                                if query_edge.is_none() {
+                                    root_original_inventory::preserve_other_owner(
+                                        &state, &replay_transaction, limits,
+                                    )?;
+                                }
+                            }
+                            source_original_native::challenge::capture_checkpoint(
+                                &mut source_challenge_history,
+                                &mut source_challenge_history_bytes,
+                                &replay_transaction,
+                                begin_sequence,
+                                frame.sequence,
+                                begin_offset,
+                                offset,
+                                limits,
+                            )?;
                         }
-                    }
-                    source_original_native::challenge::capture_checkpoint(
-                        &mut source_challenge_history,
-                        &mut source_challenge_history_bytes,
-                        &replay_transaction,
-                        begin_sequence,
-                        frame.sequence,
-                        begin_offset,
-                        offset,
-                        limits,
-                    )?;
-                }
-                if !transaction_ids.insert(replay_transaction.id) {
-                    return Err(JournalError::DuplicateTransaction);
-                }
-                validate_idempotency_changes(&idempotency, &replay_transaction.records)?;
-                materialized_bytes = validate_materialized_change(
-                    &state,
-                    materialized_bytes,
-                    &replay_transaction.records,
-                    limits,
-                )?;
-                if logical_replay {
-                    let prospective = root_original_inventory::materialize(&state, &replay_transaction);
-                    if query_edge.is_some()
-                        || first_successor_replay
-                        || root_original_inventory::has_query_floor(&state)?
-                        || root_original_inventory::has_query_floor(&prospective)?
-                    {
-                        // Exact owner/settlement validation already ran above.
-                        // Empty-change accounting charges that exact post-state;
-                        // no new settlement interpretation or authority follows.
-                        validate_reserved_capacity(
-                            &prospective,
+                        if !transaction_ids.insert(replay_transaction.id) {
+                            return Err(JournalError::DuplicateTransaction);
+                        }
+                        validate_idempotency_changes(&idempotency, &replay_transaction.records)?;
+                        materialized_bytes = validate_materialized_change(
+                            &state,
                             materialized_bytes,
-                            &[],
-                            None,
-                            offset,
-                            committed_transactions.checked_add(1)
-                                .ok_or(JournalError::LimitExceeded("committed transaction count"))?,
+                            &replay_transaction.records,
                             limits,
-                            None,
                         )?;
-                        root_original_inventory::require_sequence_headroom(
-                            &prospective, expected_sequence,
-                        )?;
-                        if first_successor_replay {
-                            source_tree_successor::require_sequence_headroom(&prospective, expected_sequence)?;
+                        if logical_replay {
+                            reached_prospective = Some(root_original_inventory::materialize(&state, &replay_transaction));
+                            let prospective = reached_prospective.as_ref()
+                                .ok_or(JournalError::ProtectedBoundary)?;
+                            if query_edge.is_some()
+                                || first_successor_replay
+                                || root_original_inventory::has_query_floor(&state)?
+                                || root_original_inventory::has_query_floor(&prospective)?
+                            {
+                                // Exact owner/settlement validation already ran above.
+                                // Empty-change accounting charges that exact post-state;
+                                // no new settlement interpretation or authority follows.
+                                validate_reserved_capacity(
+                                    &prospective,
+                                    materialized_bytes,
+                                    &[],
+                                    None,
+                                    offset,
+                                    committed_transactions.checked_add(1)
+                                        .ok_or(JournalError::LimitExceeded("committed transaction count"))?,
+                                    limits,
+                                    None,
+                                )?;
+                                root_original_inventory::require_sequence_headroom(
+                                    &prospective, expected_sequence,
+                                )?;
+                                if first_successor_replay {
+                                    source_tree_successor::require_sequence_headroom(&prospective, expected_sequence)?;
+                                }
+                            }
+                            reached_prospective = None;
                         }
+                        for record in &replay_transaction.records {
+                            committed_namespaces.insert(record.namespace());
+                            #[cfg(target_os = "linux")]
+                            {
+                                q04_lower_history_present |= is_q04_lower_history_record_v1(record);
+                            }
+                            apply_record(&mut state, &mut idempotency, record)?;
+                        }
+                        committed_transactions = committed_transactions
+                            .checked_add(1)
+                            .ok_or(JournalError::LimitExceeded("committed transaction count"))?;
+                        if committed_transactions > limits.maximum_transactions {
+                            return Err(JournalError::LimitExceeded("committed transaction count"));
+                        }
+                        committed_records = committed_records
+                            .checked_add(replay_transaction.records.len())
+                            .ok_or(JournalError::LimitExceeded("committed record count"))?;
+                        durable_end = offset;
+                        durable_next_sequence = expected_sequence;
+                        reached_transaction = None;
+                        reached_pending = None;
                     }
                 }
-                for record in &replay_transaction.records {
-                    committed_namespaces.insert(record.namespace());
-                    #[cfg(target_os = "linux")]
-                    {
-                        q04_lower_history_present |= is_q04_lower_history_record_v1(record);
-                    }
-                    apply_record(&mut state, &mut idempotency, record)?;
+                Ok(())
+            })();
+            if let Err(error) = frame_outcome {
+                if retained {
+                    reached_frame = Some(frame);
+                } else {
+                    // Match the ordinary commit locals' disposal before its frame.
+                    drop(reached_prospective.take());
+                    drop(reached_transaction.take());
+                    drop(reached_pending.take());
                 }
-                committed_transactions = committed_transactions
-                    .checked_add(1)
-                    .ok_or(JournalError::LimitExceeded("committed transaction count"))?;
-                if committed_transactions > limits.maximum_transactions {
-                    return Err(JournalError::LimitExceeded("committed transaction count"));
-                }
-                committed_records = committed_records
-                    .checked_add(replay_transaction.records.len())
-                    .ok_or(JournalError::LimitExceeded("committed record count"))?;
-                durable_end = offset;
-                durable_next_sequence = expected_sequence;
+                return Err(error);
             }
         }
-    }
 
-    source_tree_successor::validate_replayed_state(&state, materialized_compaction)?;
-    root_local_recovery::pending(&state)?;
-    root_original_native::pending(&state, limits)?;
-    root_original_inventory::validate_rejoined_capacity(
-        &state, materialized_bytes, durable_end, committed_transactions, limits,
-        durable_next_sequence,
-    )?;
+        source_tree_successor::validate_replayed_state(&state, materialized_compaction)?;
+        root_local_recovery::pending(&state)?;
+        root_original_native::pending(&state, limits)?;
+        root_original_inventory::validate_rejoined_capacity(
+            &state, materialized_bytes, durable_end, committed_transactions, limits,
+            durable_next_sequence,
+        )?;
+        Ok(())
+    })();
+    if let Some(destination) = scratch {
+        if outcome.is_err() || pending.is_some() || partial_frame.is_some() {
+            let failed = outcome.is_err();
+            *destination = Some(ReadOnlyReplayScratchV1 {
+                offset, durable_end, expected_sequence, durable_next_sequence,
+                committed_transactions, committed_records, materialized_bytes,
+                source_challenge_history_bytes,
+                transaction_ids: if failed { std::mem::take(&mut transaction_ids) } else { BTreeSet::new() },
+                committed_namespaces: if failed { std::mem::take(&mut committed_namespaces) } else { BTreeSet::new() },
+                state: if failed { std::mem::take(&mut state) } else { BTreeMap::new() },
+                idempotency: if failed { std::mem::take(&mut idempotency) } else { BTreeMap::new() },
+                pending,
+                reached_pending,
+                reached_transaction,
+                reached_frame,
+                partial_frame,
+                prospective: reached_prospective,
+                compaction_last_key,
+                source_challenge_history: if failed {
+                    std::mem::take(&mut source_challenge_history)
+                } else {
+                    Vec::new()
+                },
+                source_original_replay: if failed {
+                    std::mem::take(&mut source_original_replay)
+                } else {
+                    Default::default()
+                },
+            });
+        }
+    }
+    outcome?;
     Ok(ReplayState {
         durable_end,
         next_sequence: durable_next_sequence,
@@ -8864,80 +9246,105 @@ fn read_frame<R: Read>(
     offset: u64,
     limits: JournalLimits,
 ) -> Result<Option<(Frame, u64)>, JournalError> {
+    read_frame_retained(file, offset, limits, None)
+}
+
+// The sole frame parser retains a selected partial payload before returning.
+fn read_frame_retained<R: Read>(
+    file: &mut R,
+    offset: u64,
+    limits: JournalLimits,
+    scratch: Option<&mut Option<ReadOnlyFrameScratchV1>>,
+) -> Result<Option<(Frame, u64)>, JournalError> {
     let mut header = [0_u8; HEADER_BYTES];
     let mut filled = 0_usize;
-    while filled < HEADER_BYTES {
-        let read = file.read(&mut header[filled..])?;
-        if read == 0 {
-            return Ok(None);
-        }
-        filled += read;
-    }
-    if &header[..8] != MAGIC {
-        return Err(JournalError::MalformedTransaction("invalid frame magic"));
-    }
-    let version = u16::from_le_bytes([header[8], header[9]]);
-    if version != FORMAT_VERSION {
-        return Err(JournalError::UnsupportedVersion(version));
-    }
-    if header[11] != 0 {
-        return Err(JournalError::MalformedTransaction(
-            "nonzero reserved frame flags",
-        ));
-    }
-    let kind = FrameKind::from_byte(header[10])?;
-    let sequence = u64::from_le_bytes(
-        header[12..20]
-            .try_into()
-            .map_err(|_| JournalError::MalformedTransaction("invalid sequence field"))?,
-    );
-    let transaction_id = header[20..36]
-        .try_into()
-        .map_err(|_| JournalError::MalformedTransaction("invalid transaction identity"))?;
-    if transaction_id == [0; 16] {
-        return Err(JournalError::MalformedTransaction(
-            "zero transaction identity",
-        ));
-    }
-    let payload_length = u32::from_le_bytes(
-        header[36..40]
-            .try_into()
-            .map_err(|_| JournalError::MalformedTransaction("invalid payload length"))?,
-    ) as usize;
-    let maximum_frame_payload = limits.maximum_record_bytes.saturating_add(7);
-    if payload_length > maximum_frame_payload {
-        return Err(JournalError::LimitExceeded("frame payload bytes"));
-    }
-
-    let mut payload = vec![0_u8; payload_length];
+    let mut payload_original = None;
     let mut payload_filled = 0_usize;
-    while payload_filled < payload_length {
-        let read = file.read(&mut payload[payload_filled..])?;
-        if read == 0 {
-            return Ok(None);
+    let outcome = (|| {
+        while filled < HEADER_BYTES {
+            let read = file.read(&mut header[filled..])?;
+            if read == 0 {
+                return Ok(None);
+            }
+            filled += read;
         }
-        payload_filled += read;
-    }
+        if &header[..8] != MAGIC {
+            return Err(JournalError::MalformedTransaction("invalid frame magic"));
+        }
+        let version = u16::from_le_bytes([header[8], header[9]]);
+        if version != FORMAT_VERSION {
+            return Err(JournalError::UnsupportedVersion(version));
+        }
+        if header[11] != 0 {
+            return Err(JournalError::MalformedTransaction(
+                "nonzero reserved frame flags",
+            ));
+        }
+        let kind = FrameKind::from_byte(header[10])?;
+        let sequence = u64::from_le_bytes(
+            header[12..20]
+                .try_into()
+                .map_err(|_| JournalError::MalformedTransaction("invalid sequence field"))?,
+        );
+        let transaction_id = header[20..36]
+            .try_into()
+            .map_err(|_| JournalError::MalformedTransaction("invalid transaction identity"))?;
+        if transaction_id == [0; 16] {
+            return Err(JournalError::MalformedTransaction(
+                "zero transaction identity",
+            ));
+        }
+        let payload_length = u32::from_le_bytes(
+            header[36..40]
+                .try_into()
+                .map_err(|_| JournalError::MalformedTransaction("invalid payload length"))?,
+        ) as usize;
+        let maximum_frame_payload = limits.maximum_record_bytes.saturating_add(7);
+        if payload_length > maximum_frame_payload {
+            return Err(JournalError::LimitExceeded("frame payload bytes"));
+        }
 
-    let expected_checksum: [u8; 32] = header[CHECKSUM_OFFSET..]
-        .try_into()
-        .map_err(|_| JournalError::MalformedTransaction("invalid checksum field"))?;
-    let actual_checksum = frame_checksum(&header[..CHECKSUM_OFFSET], &payload);
-    if expected_checksum != actual_checksum {
-        return Err(JournalError::ChecksumMismatch(offset));
-    }
+        payload_original = Some(vec![0_u8; payload_length]);
+        let payload = payload_original.as_mut().ok_or(JournalError::ProtectedBoundary)?;
+        while payload_filled < payload_length {
+            let read = file.read(&mut payload[payload_filled..])?;
+            if read == 0 {
+                return Ok(None);
+            }
+            payload_filled += read;
+        }
 
-    let bytes =
-        u64::try_from(HEADER_BYTES + payload_length).map_err(|_| JournalError::JournalTooLarge)?;
-    Ok(Some((
-        Frame {
-            kind,
-            sequence,
-            transaction_id,
-            payload,
-        },
-        bytes,
-    )))
+        let expected_checksum: [u8; 32] = header[CHECKSUM_OFFSET..]
+            .try_into()
+            .map_err(|_| JournalError::MalformedTransaction("invalid checksum field"))?;
+        let actual_checksum = frame_checksum(&header[..CHECKSUM_OFFSET], &payload);
+        if expected_checksum != actual_checksum {
+            return Err(JournalError::ChecksumMismatch(offset));
+        }
+
+        let bytes =
+            u64::try_from(HEADER_BYTES + payload_length).map_err(|_| JournalError::JournalTooLarge)?;
+        Ok(Some((
+            Frame {
+                kind,
+                sequence,
+                transaction_id,
+                payload: std::mem::take(payload),
+            },
+            bytes,
+        )))
+    })();
+    if let Some(destination) = scratch {
+        if !matches!(&outcome, Ok(Some(_))) {
+            *destination = Some(ReadOnlyFrameScratchV1 {
+                header,
+                header_filled: filled,
+                payload: payload_original,
+                payload_filled,
+            });
+        }
+    }
+    outcome
 }
 
 fn validate_transaction(
@@ -9717,6 +10124,15 @@ fn resolve_protected_directory_from_root_with_retention(
     expected_uid: u32,
     retained: Option<&mut Vec<File>>,
 ) -> Result<File, JournalError> {
+    resolve_protected_directory_from_root_original(path, expected_uid, retained, None)
+}
+
+fn resolve_protected_directory_from_root_original(
+    path: &Path,
+    expected_uid: u32,
+    retained: Option<&mut Vec<File>>,
+    mut native_error: Option<&mut Option<rustix::io::Errno>>,
+) -> Result<File, JournalError> {
     let bytes = path.as_os_str().as_bytes();
     if bytes.first() != Some(&b'/') {
         return Err(JournalError::ProtectedBoundary);
@@ -9756,15 +10172,21 @@ fn resolve_protected_directory_from_root_with_retention(
         Mode::empty(),
         ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
     )
-    .map_err(protected_open_error)?
+    .map_err(|error| {
+        if let Some(slot) = native_error.as_mut() {
+            **slot = Some(error);
+        }
+        protected_open_error(error)
+    })?
     .into();
     match retained {
         None => traverse_protected_directory(root, components, expected_uid),
         Some(ancestors) => {
             // Capacity was reserved before the first descriptor exists.
             ancestors.push(root);
-            traverse_protected_directory_originals(
+            traverse_protected_directory_observed(
                 ControllerDirectoryTraversalV1::Retained(ancestors), components, expected_uid,
+                native_error,
             )
         }
     }
@@ -9816,9 +10238,18 @@ impl ControllerDirectoryTraversalV1<'_> {
 }
 
 fn traverse_protected_directory_originals<'a>(
+    directory: ControllerDirectoryTraversalV1<'_>,
+    components: impl IntoIterator<Item = &'a [u8]>,
+    expected_uid: u32,
+) -> Result<File, JournalError> {
+    traverse_protected_directory_observed(directory, components, expected_uid, None)
+}
+
+fn traverse_protected_directory_observed<'a>(
     mut directory: ControllerDirectoryTraversalV1<'_>,
     components: impl IntoIterator<Item = &'a [u8]>,
     expected_uid: u32,
+    mut native_error: Option<&mut Option<rustix::io::Errno>>,
 ) -> Result<File, JournalError> {
     let mut ancestry = ProtectedAncestry::new(expected_uid);
     ancestry.admit(directory.current()?)?;
@@ -9830,7 +10261,12 @@ fn traverse_protected_directory_originals<'a>(
             Mode::empty(),
             ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
         )
-        .map_err(protected_open_error)?
+        .map_err(|error| {
+            if let Some(slot) = native_error.as_mut() {
+                **slot = Some(error);
+            }
+            protected_open_error(error)
+        })?
         .into();
         directory.admit_child(child, &mut ancestry)?;
     }
@@ -10041,23 +10477,43 @@ fn open_read_only_protected_file(
     name: &str,
     expected_uid: u32,
 ) -> Result<File, JournalError> {
+    let mut original = None;
+    open_read_only_protected_file_original(directory, name, expected_uid, &mut original)?;
+    match original {
+        Some(Ok(file)) => Ok(file),
+        _ => Err(JournalError::ProtectedBoundary),
+    }
+}
+
+fn open_read_only_protected_file_original(
+    directory: &File,
+    name: &str,
+    expected_uid: u32,
+    original: &mut Option<Result<File, rustix::io::Errno>>,
+) -> Result<(), JournalError> {
+    if original.is_some() {
+        return Err(JournalError::ProtectedBoundary);
+    }
     validate_basename(name)?;
-    let file: File = openat2(
+    *original = Some(openat2(
         directory,
         name,
         OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
         Mode::empty(),
         ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
     )
-    .map_err(protected_open_error)?
-    .into();
+    .map(File::from));
+    let file = match original.as_ref() {
+        Some(Ok(file)) => file,
+        Some(Err(error)) => return Err(protected_open_error(*error)),
+        None => return Err(JournalError::ProtectedBoundary),
+    };
     validate_protected_fd(
-        &file,
+        file,
         expected_uid,
         FileType::RegularFile,
         Mode::RUSR | Mode::WUSR,
-    )?;
-    Ok(file)
+    )
 }
 
 /// Removes an uncommitted compaction file relative to the retained directory.
