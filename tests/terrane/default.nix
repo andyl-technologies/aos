@@ -230,6 +230,7 @@ in {
   integration.native-collector-clock = import ./native-collector-clock.nix {inherit sourceGate;};
   integration.native-cold-fork-source = import ./native-cold-fork-source.nix {inherit sourceGate;};
   integration.native-guard-carry = import ./native-guard-carry.nix {inherit sourceGate;};
+  integration.native-source-requalification = import ./native-source-requalification.nix {inherit sourceGate;};
   integration.native-missing-placement = import ./native-missing-placement.nix {inherit sourceGate;};
   integration.native-content-observation = import ./native-content-observation.nix {inherit sourceGate;};
   integration.native-index-lookup = import ./native-index-lookup.nix {inherit sourceGate;};
