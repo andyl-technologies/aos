@@ -21,6 +21,7 @@ use sha2::{Digest, Sha256};
 use crate::boot_storage::with_writable_boot;
 use crate::executable::validate_store_executable;
 use crate::image_profile::{BOOT_ROOT, IMAGE_PROFILE, candidate_path, private_directory};
+use crate::recovery::{RecoveryEvidence, validate_uki_identity};
 
 #[path = "image_stage/copy_up.rs"]
 mod copy_up;
@@ -57,6 +58,12 @@ struct Tools {
     blkid: PathBuf,
     veritysetup: PathBuf,
     nix_store: PathBuf,
+}
+
+struct PreparedRecovery {
+    evidence: RecoveryEvidence,
+    uki: PathBuf,
+    entry: PathBuf,
 }
 
 /// Executes physical staging with exact tool paths supplied by the retained wrapper.
@@ -276,6 +283,13 @@ fn stage(request: &Request, tools: &Tools) -> Result<Value> {
     let normal = efi
         .get(format!("normal_{target}"))
         .context("metadata has no target UKI")?;
+    let recovery = prepare_recovery(
+        efi,
+        &artifacts,
+        target,
+        candidate_version,
+        request.generation,
+    )?;
     let fact = normal
         .get("artifact")
         .context("target UKI has no artifact identity")?;
@@ -394,8 +408,9 @@ fn stage(request: &Request, tools: &Tools) -> Result<Value> {
         &uki_path,
         &measurement,
         &signature,
+        recovery.as_ref(),
     )?;
-    Ok(json!({
+    let mut receipt = json!({
         "schema":"aos.image-candidate-staged", "generation":request.generation,
         "toplevel":string(&request.candidate, "toplevel")?,
         "boot_artifact_contract":string(&request.candidate, "boot_artifact_contract")?,
@@ -408,6 +423,73 @@ fn stage(request: &Request, tools: &Tools) -> Result<Value> {
                 "slot":target.to_ascii_uppercase()
             }
         }
+    });
+    if let Some(recovery) = recovery {
+        receipt["boot_provider_state"]["evidence"]["recovery"] =
+            serde_json::to_value(recovery.evidence)?;
+    }
+    Ok(receipt)
+}
+
+fn prepare_recovery(
+    efi: &Value,
+    artifacts: &Path,
+    target: &str,
+    release: &str,
+    generation: u32,
+) -> Result<Option<PreparedRecovery>> {
+    let copy_a = efi.get("recovery_a").filter(|value| !value.is_null());
+    let copy_b = efi.get("recovery_b").filter(|value| !value.is_null());
+    ensure!(
+        copy_a.is_some() == copy_b.is_some(),
+        "candidate metadata has an incomplete recovery pair"
+    );
+    let Some(fact) = (match target {
+        "a" => copy_a,
+        "b" => copy_b,
+        _ => anyhow::bail!("recovery target has an invalid slot"),
+    }) else {
+        return Ok(None);
+    };
+    ensure!(
+        copy_a.is_some_and(Value::is_object) && copy_b.is_some_and(Value::is_object),
+        "candidate recovery facts are not artifact objects"
+    );
+
+    let uki = artifact_path(artifacts, fact)?;
+    let byte_size = integer(fact, "size_bytes")?;
+    ensure!(
+        byte_size > 0 && byte_size <= 512 * 1024 * 1024,
+        "candidate recovery UKI exceeds its byte bound"
+    );
+    let sha256 = string(fact, "sha256")?;
+    verify_path(&uki, byte_size, sha256)?;
+    let copy = target.to_ascii_uppercase();
+    let recovery_abi = validate_uki_identity(&uki, &copy, release)?;
+    let evidence = RecoveryEvidence {
+        copy: copy.clone(),
+        uki_path: format!("EFI/AOS/recovery-{target}.efi"),
+        entry_path: format!("loader/entries/recovery-{target}.conf"),
+        source_path: format!("candidates/{generation}/recovery-{target}.efi"),
+        sha256: digest_hex(sha256)?.to_string(),
+        byte_size,
+        release: release.to_string(),
+        recovery_abi,
+    };
+    evidence.validate_identity(&copy)?;
+
+    let entry = artifact_path(
+        artifacts,
+        &json!({"path":format!("recovery-{target}.conf")}),
+    )?;
+    ensure!(
+        read_bounded(&entry, 4096)? == evidence.entry_bytes()?,
+        "candidate recovery loader entry differs from its authenticated identity"
+    );
+    Ok(Some(PreparedRecovery {
+        evidence,
+        uki,
+        entry,
     }))
 }
 
@@ -684,15 +766,22 @@ fn publish_candidate(
     uki: &Path,
     measurement: &Path,
     signature: &Path,
+    recovery: Option<&PreparedRecovery>,
 ) -> Result<()> {
     candidate_path(generation)?;
     let candidates = private_directory(profile, "candidates")?;
     let destination = private_directory(&candidates, &generation.to_string())?;
-    for (source, name) in [
-        (uki, "candidate.efi"),
-        (measurement, "candidate.efi.measurement"),
-        (signature, "candidate.efi.measurement.sig"),
-    ] {
+    let mut sources = vec![
+        (uki, "candidate.efi".to_string()),
+        (measurement, "candidate.efi.measurement".to_string()),
+        (signature, "candidate.efi.measurement.sig".to_string()),
+    ];
+    if let Some(recovery) = recovery {
+        let copy = recovery.evidence.copy.to_ascii_lowercase();
+        sources.push((&recovery.uki, format!("recovery-{copy}.efi")));
+        sources.push((&recovery.entry, format!("recovery-{copy}.conf")));
+    }
+    for (source, name) in sources {
         let temp = destination.join(format!(".{name}.tmp"));
         let mut output = OpenOptions::new()
             .write(true)
@@ -1063,10 +1152,79 @@ mod tests {
         fs::write(&source, b"pinned artifact").unwrap();
         let profile = temp.path().join("profile");
         fs::create_dir(&profile).unwrap();
-        publish_candidate(&profile, 2, &source, &source, &source).unwrap();
+        publish_candidate(&profile, 2, &source, &source, &source, None).unwrap();
         let hidden = profile.join(candidate_path(2).unwrap());
         assert_eq!(fs::read(&hidden).unwrap(), b"pinned artifact");
         assert!(!temp.path().join("EFI/Linux").exists());
+    }
+
+    #[test]
+    fn recovery_pair_is_optional_but_cannot_be_partial() {
+        let temp = tempfile::tempdir().unwrap();
+        let empty = json!({});
+        assert!(
+            prepare_recovery(&empty, temp.path(), "b", "1.0.0", 2)
+                .unwrap()
+                .is_none()
+        );
+
+        for partial in [json!({"recovery_a":{}}), json!({"recovery_b":{}})] {
+            let error = prepare_recovery(&partial, temp.path(), "b", "1.0.0", 2)
+                .err()
+                .unwrap();
+            assert!(error.to_string().contains("incomplete recovery pair"));
+        }
+    }
+
+    #[test]
+    fn interrupted_private_recovery_pair_replays_without_esp_publication() {
+        let temp = tempfile::tempdir().unwrap();
+        let normal = temp.path().join("normal");
+        let recovery_uki = temp.path().join("recovery-source");
+        let recovery_entry = temp.path().join("recovery-entry");
+        fs::write(&normal, b"signed normal").unwrap();
+        fs::write(&recovery_uki, b"signed recovery").unwrap();
+        let evidence = RecoveryEvidence {
+            copy: "B".to_string(),
+            uki_path: "EFI/AOS/recovery-b.efi".to_string(),
+            entry_path: "loader/entries/recovery-b.conf".to_string(),
+            source_path: "candidates/2/recovery-b.efi".to_string(),
+            sha256: hex::encode(Sha256::digest(b"signed recovery")),
+            byte_size: 15,
+            release: "1.0.0".to_string(),
+            recovery_abi: 1,
+        };
+        let entry_bytes = evidence.entry_bytes().unwrap();
+        fs::write(&recovery_entry, &entry_bytes).unwrap();
+        let recovery = PreparedRecovery {
+            evidence,
+            uki: recovery_uki,
+            entry: recovery_entry,
+        };
+        let candidates = private_directory(temp.path(), "candidates").unwrap();
+        let generation = private_directory(&candidates, "2").unwrap();
+        fs::write(generation.join(".recovery-b.efi.tmp"), b"partial").unwrap();
+        fs::write(generation.join(".recovery-b.conf.tmp"), b"partial entry").unwrap();
+
+        for _ in 0..2 {
+            publish_candidate(temp.path(), 2, &normal, &normal, &normal, Some(&recovery)).unwrap();
+        }
+
+        assert_eq!(
+            fs::read(generation.join("recovery-b.efi")).unwrap(),
+            b"signed recovery"
+        );
+        assert_eq!(
+            fs::read(generation.join("recovery-b.conf")).unwrap(),
+            entry_bytes
+        );
+        assert_eq!(
+            fs::read(generation.join("candidate.efi")).unwrap(),
+            b"signed normal"
+        );
+        assert!(!generation.join(".recovery-b.efi.tmp").exists());
+        assert!(!generation.join(".recovery-b.conf.tmp").exists());
+        assert!(!temp.path().join("EFI").exists());
     }
 
     #[test]
@@ -1078,8 +1236,8 @@ mod tests {
         let generation = private_directory(&candidates, "2").unwrap();
         fs::write(generation.join(".candidate.efi.tmp"), b"partial").unwrap();
 
-        publish_candidate(temp.path(), 2, &source, &source, &source).unwrap();
-        publish_candidate(temp.path(), 2, &source, &source, &source).unwrap();
+        publish_candidate(temp.path(), 2, &source, &source, &source, None).unwrap();
+        publish_candidate(temp.path(), 2, &source, &source, &source, None).unwrap();
 
         for name in [
             "candidate.efi",

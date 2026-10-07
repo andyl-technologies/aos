@@ -6,6 +6,8 @@ mod boot_platform;
 mod boot_storage;
 #[path = "../image_profile.rs"]
 mod image_profile;
+#[path = "../recovery.rs"]
+mod recovery;
 
 fn main() {
     if let Err(error) = boot_platform::run_from_process() {

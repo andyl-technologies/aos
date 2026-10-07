@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::boot_storage::with_writable_boot;
 use crate::image_profile::{BOOT_ROOT, IMAGE_PROFILE, PayloadSource, private_directory};
+use crate::recovery::{RecoveryEvidence, RecoveryPayload};
 
 const RETENTION_ROOT: &str = "rollout-retention";
 const BOOT_ARTIFACT_CONTRACT: &str = "contract.json";
@@ -100,9 +101,9 @@ struct SystemdBootGenerationEvidence {
     #[serde(default)]
     retired: bool,
     #[serde(default, rename = "slot")]
-    _slot: Option<String>,
+    slot: Option<String>,
     #[serde(default, rename = "recovery")]
-    _recovery: Option<serde_json::Value>,
+    recovery: Option<RecoveryEvidence>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -740,11 +741,11 @@ fn exhausted_candidate_boot(rollout: &RolloutRequest) -> Result<bool> {
         aos_boot_identity::BootSlot::B => "B",
     };
     ensure!(
-        predecessor.boot_provider_state.evidence._slot.as_deref() == Some(slot)
+        predecessor.boot_provider_state.evidence.slot.as_deref() == Some(slot)
             && candidate
                 .boot_provider_state
                 .evidence
-                ._slot
+                .slot
                 .as_deref()
                 .is_some_and(|candidate_slot| candidate_slot != slot),
         "exhausted boot slot differs from retained physical pair"
@@ -951,16 +952,55 @@ fn promote_candidate(identity: &ImageIdentity, reset_count: bool) -> Result<()> 
     let evidence = &generation_for(&state, identity)?
         .boot_provider_state
         .evidence;
+    promote_staged_payload(
+        evidence,
+        Path::new(BOOT_ROOT),
+        Path::new(IMAGE_PROFILE),
+        reset_count,
+    )
+}
+
+fn promote_staged_payload(
+    evidence: &SystemdBootGenerationEvidence,
+    boot: &Path,
+    profile: &Path,
+    reset_count: bool,
+) -> Result<()> {
     let Some(source) = &evidence.uki_source_path else {
         return Ok(());
     };
     let source = PayloadSource::parse(source)?;
-    if !matches!(source, PayloadSource::Staged(_)) {
+    let PayloadSource::Staged(relative) = &source else {
         return Ok(());
-    }
-    let source = source.resolve(Path::new(BOOT_ROOT), Path::new(IMAGE_PROFILE));
+    };
+    // Authenticate any declared recovery pair before altering a normal entry.
+    let recovery_payload = evidence
+        .recovery
+        .as_ref()
+        .map(|recovery| -> Result<_> {
+            recovery
+                .validate_identity(evidence.slot.as_deref().context("candidate slot missing")?)?;
+            Ok((recovery, recovery.checked_payload(profile, relative)?))
+        })
+        .transpose()?;
+    let source = source.resolve(boot, profile);
     let bytes = checked_staged_bytes(evidence, &source)?;
-    let destination = Path::new(BOOT_ROOT).join(safe_entry_path(&evidence.installed_entry)?);
+    let destination = boot.join(safe_entry_path(&evidence.installed_entry)?);
+    checked_destination_parent(boot, &destination)?;
+    let mut sidecars = Vec::new();
+    for suffix in [".measurement", ".measurement.sig"] {
+        let sidecar = PathBuf::from(format!("{}{suffix}", source.display()));
+        ensure!(
+            fs::symlink_metadata(&sidecar)?.is_file(),
+            "staged measurement sidecar is not regular"
+        );
+        sidecars.push((suffix, fs::read(sidecar)?));
+    }
+
+    // Recovery is independently durable even when replay finds consumed tries.
+    if let Some((recovery, payload)) = &recovery_payload {
+        publish_recovery_payload(boot, recovery, payload)?;
+    }
     if !prepare_counted_payload(
         destination
             .parent()
@@ -974,18 +1014,54 @@ fn promote_candidate(identity: &ImageIdentity, reset_count: bool) -> Result<()> 
     )? {
         return Ok(());
     }
-    for suffix in [".measurement", ".measurement.sig"] {
-        let sidecar = PathBuf::from(format!("{}{suffix}", source.display()));
-        ensure!(
-            fs::symlink_metadata(&sidecar)?.is_file(),
-            "staged measurement sidecar is not regular"
-        );
+    for (suffix, bytes) in sidecars {
         write_atomic(
             &PathBuf::from(format!("{}{suffix}", destination.display())),
-            &fs::read(sidecar)?,
+            &bytes,
         )?;
     }
     write_atomic(&destination, &bytes)
+}
+
+fn checked_destination_parent(boot: &Path, destination: &Path) -> Result<()> {
+    let parent = destination
+        .parent()
+        .context("boot payload destination has no parent")?;
+    ensure!(
+        destination.starts_with(boot) && fs::canonicalize(parent)? == parent,
+        "boot payload destination traverses an alias"
+    );
+    match fs::symlink_metadata(destination) {
+        Ok(metadata) => ensure!(
+            metadata.is_file(),
+            "boot payload destination is not regular"
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
+fn publish_recovery_payload(
+    boot: &Path,
+    evidence: &RecoveryEvidence,
+    payload: &RecoveryPayload,
+) -> Result<()> {
+    let uki = boot.join(&evidence.uki_path);
+    let entry = boot.join(&evidence.entry_path);
+    checked_destination_parent(boot, &uki)?;
+    checked_destination_parent(boot, &entry)?;
+    write_atomic(&uki, &payload.uki)?;
+    ensure!(
+        fs::read(&uki)? == payload.uki,
+        "paired recovery UKI read-back differs"
+    );
+    write_atomic(&entry, &payload.entry)?;
+    ensure!(
+        fs::read(&entry)? == payload.entry,
+        "paired recovery entry read-back differs"
+    );
+    Ok(())
 }
 
 // Replaying the same preferred selection preserves systemd's consumed tries.
@@ -1173,14 +1249,26 @@ fn retired_payload_is_absent(
             return Ok(false);
         }
     }
-    if let Some(source) = &evidence.uki_source_path {
-        let source = PayloadSource::parse(source)?.resolve(boot_root, profile);
-        for suffix in ["", ".measurement", ".measurement.sig"] {
-            match fs::symlink_metadata(PathBuf::from(format!("{}{suffix}", source.display()))) {
-                Ok(_) => return Ok(false),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
+    let paths = match staged_payload_paths(evidence, profile)? {
+        Some(paths) => paths,
+        None => evidence
+            .uki_source_path
+            .as_deref()
+            .map(|source| -> Result<_> {
+                let source = PayloadSource::parse(source)?.resolve(boot_root, profile);
+                Ok(["", ".measurement", ".measurement.sig"]
+                    .iter()
+                    .map(|suffix| PathBuf::from(format!("{}{suffix}", source.display())))
+                    .collect::<Vec<_>>())
+            })
+            .transpose()?
+            .unwrap_or_default(),
+    };
+    for path in paths {
+        match fs::symlink_metadata(&path) {
+            Ok(_) => return Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
         }
     }
     Ok(true)
@@ -1294,6 +1382,10 @@ fn remove_inactive_payload(rollout: &RolloutRequest, retained: &RetentionManifes
             .is_none_or(serde_json::Value::is_null),
         "cannot retire an active rollout participant"
     );
+    staged_payload_paths(
+        &inactive.boot_provider_state.evidence,
+        Path::new(IMAGE_PROFILE),
+    )?;
     let stable = stable_entry(entry)?;
     let stem = stable
         .strip_suffix(".efi")
@@ -1314,22 +1406,11 @@ fn remove_inactive_payload(rollout: &RolloutRequest, retained: &RetentionManifes
             remove_regular_payload(&member.path())?;
         }
     }
-    if let Some(source) = &inactive.boot_provider_state.evidence.uki_source_path {
-        let source = PayloadSource::parse(source)?;
-        if matches!(source, PayloadSource::Staged(_)) {
-            let path = source.resolve(Path::new(BOOT_ROOT), Path::new(IMAGE_PROFILE));
-            for suffix in ["", ".measurement", ".measurement.sig"] {
-                remove_regular_payload(&PathBuf::from(format!("{}{suffix}", path.display())))?;
-            }
-            if let Some(parent) = path.parent() {
-                match fs::remove_dir(parent) {
-                    Ok(()) => sync_parent(parent)?,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(error.into()),
-                }
-            }
-        }
-    }
+    // Keep the retained source until no inactive normal entry can be selected.
+    remove_staged_payload(
+        &inactive.boot_provider_state.evidence,
+        Path::new(IMAGE_PROFILE),
+    )?;
     // Publish retirement only after inactive physical bytes are durably absent.
     // The historical native sources remain available for profile provenance.
     let generations = document
@@ -1349,6 +1430,64 @@ fn remove_inactive_payload(rollout: &RolloutRequest, retained: &RetentionManifes
         .context("inactive generation omits evidence")?;
     evidence.insert("retired".into(), serde_json::Value::Bool(true));
     write_atomic(&state_path, &serde_json::to_vec(&document)?)
+}
+
+fn staged_payload_paths(
+    evidence: &SystemdBootGenerationEvidence,
+    profile: &Path,
+) -> Result<Option<Vec<PathBuf>>> {
+    let Some(source) = &evidence.uki_source_path else {
+        return Ok(None);
+    };
+    let PayloadSource::Staged(relative) = PayloadSource::parse(source)? else {
+        return Ok(None);
+    };
+    let source = profile.join(&relative);
+    let mut paths = ["", ".measurement", ".measurement.sig"]
+        .iter()
+        .map(|suffix| PathBuf::from(format!("{}{suffix}", source.display())))
+        .collect::<Vec<_>>();
+    if let Some(recovery) = &evidence.recovery {
+        recovery.validate_identity(evidence.slot.as_deref().context("candidate slot missing")?)?;
+        let (uki, entry) = recovery.staged_paths(&relative)?;
+        paths.extend([profile.join(uki), profile.join(entry)]);
+    }
+    Ok(Some(paths))
+}
+
+fn remove_staged_payload(evidence: &SystemdBootGenerationEvidence, profile: &Path) -> Result<()> {
+    let Some(paths) = staged_payload_paths(evidence, profile)? else {
+        return Ok(());
+    };
+    ensure!(
+        fs::canonicalize(profile)? == profile,
+        "staged payload profile traverses an alias"
+    );
+    let parent = paths[0].parent().context("staged payload has no parent")?;
+    let candidates = parent.parent().context("staged generation has no parent")?;
+    for directory in [candidates, parent] {
+        match fs::symlink_metadata(directory) {
+            Ok(metadata) => ensure!(
+                metadata.is_dir() && fs::canonicalize(directory)? == directory,
+                "staged payload parent is not a canonical real directory"
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    // Validate every owned member before deleting any normal or recovery source.
+    for path in &paths {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) => ensure!(metadata.is_file(), "inactive staged payload is not regular"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    for path in &paths {
+        remove_regular_payload(path)?;
+    }
+    fs::remove_dir(parent)?;
+    sync_parent(parent)
 }
 
 fn remove_regular_payload(path: &Path) -> Result<()> {
@@ -1493,8 +1632,8 @@ mod tests {
             uki_sha256: Some(Sha256Digest::of_bytes(b"authenticated UKI").to_string()),
             uki_byte_size: Some(17),
             retired: false,
-            _slot: Some("A".into()),
-            _recovery: None,
+            slot: Some("A".into()),
+            recovery: None,
         };
         assert_eq!(
             checked_staged_bytes(&evidence, &path).unwrap(),
@@ -1519,6 +1658,253 @@ mod tests {
                 .unwrap()
                 .resolve(boot, profile),
             boot.join("EFI/Linux/gen12.efi")
+        );
+    }
+
+    fn recovery_pe(copy: &str) -> Vec<u8> {
+        let cmdline =
+            b"console=ttyS0,115200 rd.systemd.unit=aos-recovery.target aos.recovery=1 rd.luks=0";
+        let osrel = format!("VERSION_ID=2.0\nAOS_RECOVERY_COPY={copy}\nAOS_RECOVERY_ABI=1\n");
+        let mut bytes = vec![0; 512];
+        bytes[..2].copy_from_slice(b"MZ");
+        bytes[60..64].copy_from_slice(&64_u32.to_le_bytes());
+        bytes[64..68].copy_from_slice(b"PE\0\0");
+        bytes[68..70].copy_from_slice(&0x8664_u16.to_le_bytes());
+        bytes[70..72].copy_from_slice(&2_u16.to_le_bytes());
+        bytes[84..86].copy_from_slice(&240_u16.to_le_bytes());
+        bytes[88..90].copy_from_slice(&0x20b_u16.to_le_bytes());
+        for (index, name, payload) in [
+            (0, ".cmdline", cmdline.as_slice()),
+            (1, ".osrel", osrel.as_bytes()),
+        ] {
+            let header = 328 + index * 40;
+            let offset = bytes.len() as u32;
+            bytes[header..header + name.len()].copy_from_slice(name.as_bytes());
+            bytes[header + 8..header + 12].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+            bytes[header + 16..header + 20].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+            bytes[header + 20..header + 24].copy_from_slice(&offset.to_le_bytes());
+            bytes.extend_from_slice(payload);
+        }
+        bytes
+    }
+
+    fn paired_promotion_fixture(root: &Path) -> (PathBuf, PathBuf, SystemdBootGenerationEvidence) {
+        let boot = root.join("boot");
+        let profile = root.join("profile");
+        for directory in [
+            boot.join("EFI/Linux"),
+            boot.join("EFI/AOS"),
+            boot.join("loader/entries"),
+            profile.join("candidates/2"),
+        ] {
+            fs::create_dir_all(directory).unwrap();
+        }
+        let source = profile.join("candidates/2/candidate.efi");
+        fs::write(&source, b"normal candidate").unwrap();
+        for suffix in [".measurement", ".measurement.sig"] {
+            fs::write(
+                format!("{}{suffix}", source.display()),
+                b"authenticated sidecar",
+            )
+            .unwrap();
+        }
+        let uki = recovery_pe("B");
+        let recovery = RecoveryEvidence {
+            copy: "B".into(),
+            uki_path: "EFI/AOS/recovery-b.efi".into(),
+            entry_path: "loader/entries/recovery-b.conf".into(),
+            source_path: "candidates/2/recovery-b.efi".into(),
+            sha256: Sha256Digest::of_bytes(&uki).to_string(),
+            byte_size: uki.len() as u64,
+            release: "2.0".into(),
+            recovery_abi: 1,
+        };
+        fs::write(profile.join(&recovery.source_path), uki).unwrap();
+        fs::write(
+            profile.join("candidates/2/recovery-b.conf"),
+            recovery.entry_bytes().unwrap(),
+        )
+        .unwrap();
+        let evidence = SystemdBootGenerationEvidence {
+            installed_entry: "EFI/Linux/candidate-gen2+3.efi".into(),
+            uki_source_path: Some("candidates/2/candidate.efi".into()),
+            uki_sha256: Some(Sha256Digest::of_bytes(b"normal candidate").to_string()),
+            uki_byte_size: Some(16),
+            retired: false,
+            slot: Some("B".into()),
+            recovery: Some(recovery),
+        };
+        (boot, profile, evidence)
+    }
+
+    #[test]
+    fn missing_or_changed_recovery_never_exposes_a_normal_candidate() {
+        let directory = tempfile::tempdir().unwrap();
+        let (boot, profile, evidence) = paired_promotion_fixture(directory.path());
+        let recovery = evidence.recovery.as_ref().unwrap();
+        fs::remove_file(profile.join(&recovery.source_path)).unwrap();
+        assert!(promote_staged_payload(&evidence, &boot, &profile, false).is_err());
+        assert!(!boot.join(&evidence.installed_entry).exists());
+        fs::write(profile.join(&recovery.source_path), b"changed recovery").unwrap();
+        assert!(promote_staged_payload(&evidence, &boot, &profile, false).is_err());
+        assert!(!boot.join(&evidence.installed_entry).exists());
+        assert!(!boot.join(&recovery.uki_path).exists());
+    }
+
+    #[test]
+    fn normal_only_platform_can_promote_without_recovery_evidence() {
+        let directory = tempfile::tempdir().unwrap();
+        let (boot, profile, mut evidence) = paired_promotion_fixture(directory.path());
+        evidence.recovery = None;
+        evidence.slot = None;
+
+        promote_staged_payload(&evidence, &boot, &profile, false).unwrap();
+
+        assert_eq!(
+            fs::read(boot.join(&evidence.installed_entry)).unwrap(),
+            b"normal candidate"
+        );
+        assert_eq!(fs::read_dir(boot.join("EFI/AOS")).unwrap().count(), 0);
+        assert_eq!(
+            fs::read_dir(boot.join("loader/entries")).unwrap().count(),
+            0
+        );
+    }
+
+    #[test]
+    fn recovery_publication_finishes_before_normal_and_replay_preserves_consumed_tries() {
+        let directory = tempfile::tempdir().unwrap();
+        let (boot, profile, evidence) = paired_promotion_fixture(directory.path());
+        let recovery = evidence.recovery.as_ref().unwrap();
+        let predecessor = boot.join("EFI/Linux/predecessor.efi");
+        let opposite = boot.join("EFI/AOS/recovery-a.efi");
+        fs::write(&predecessor, b"predecessor normal").unwrap();
+        fs::write(&opposite, b"predecessor recovery").unwrap();
+        let blocked_temporary = boot.join("loader/entries/.recovery-b.conf.tmp");
+        fs::create_dir(&blocked_temporary).unwrap();
+
+        assert!(promote_staged_payload(&evidence, &boot, &profile, false).is_err());
+        assert!(!boot.join(&evidence.installed_entry).exists());
+        assert_eq!(
+            fs::read(boot.join(&recovery.uki_path)).unwrap(),
+            recovery_pe("B")
+        );
+        fs::remove_dir(blocked_temporary).unwrap();
+        promote_staged_payload(&evidence, &boot, &profile, false).unwrap();
+        assert_eq!(
+            fs::read(boot.join(&recovery.entry_path)).unwrap(),
+            recovery.entry_bytes().unwrap()
+        );
+        let consumed = boot.join("EFI/Linux/candidate-gen2+1-2.efi");
+        fs::rename(boot.join(&evidence.installed_entry), &consumed).unwrap();
+        fs::write(boot.join(&recovery.uki_path), b"drifted recovery").unwrap();
+
+        promote_staged_payload(&evidence, &boot, &profile, false).unwrap();
+
+        assert_eq!(fs::read(&consumed).unwrap(), b"normal candidate");
+        assert!(!boot.join(&evidence.installed_entry).exists());
+        assert_eq!(
+            fs::read(boot.join(&recovery.uki_path)).unwrap(),
+            recovery_pe("B")
+        );
+        assert_eq!(fs::read(&predecessor).unwrap(), b"predecessor normal");
+        assert_eq!(fs::read(&opposite).unwrap(), b"predecessor recovery");
+        assert_eq!(
+            fs::read(profile.join(&recovery.source_path)).unwrap(),
+            recovery_pe("B")
+        );
+    }
+
+    #[test]
+    fn recovery_publication_rejects_aliased_destination_before_normal_selection() {
+        let directory = tempfile::tempdir().unwrap();
+        let (boot, profile, evidence) = paired_promotion_fixture(directory.path());
+        let outside = directory.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::remove_dir(boot.join("EFI/AOS")).unwrap();
+        std::os::unix::fs::symlink(&outside, boot.join("EFI/AOS")).unwrap();
+
+        assert!(promote_staged_payload(&evidence, &boot, &profile, false).is_err());
+
+        assert!(!boot.join(&evidence.installed_entry).exists());
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn staged_retirement_removes_the_pair_and_replays_without_touching_other_generations() {
+        let directory = tempfile::tempdir().unwrap();
+        let (boot, profile, evidence) = paired_promotion_fixture(directory.path());
+        let other = profile.join("candidates/3");
+        fs::create_dir(&other).unwrap();
+        fs::write(other.join("candidate.efi"), b"other generation").unwrap();
+        let installed_recovery = boot.join("EFI/AOS/recovery-b.efi");
+        fs::write(&installed_recovery, b"independent installed recovery").unwrap();
+        let generation: ImageGeneration = serde_json::from_value(serde_json::json!({
+            "number":2, "toplevel":"/nix/store/image", "native_executor_ref":"/nix/store/executor",
+            "state_version":"1", "boot_artifact_contract":"/nix/store/contract",
+            "boot_provider_state":{"schema":"aos.systemd.boot-generation-state/v1", "evidence":{
+                "installed-entry":evidence.installed_entry, "uki-source-path":evidence.uki_source_path,
+                "slot":"B", "retired":true, "recovery":evidence.recovery
+            }}
+        })).unwrap();
+        // An interrupted deletion with only recovery sources left is not complete.
+        let normal = profile.join("candidates/2/candidate.efi");
+        for suffix in ["", ".measurement", ".measurement.sig"] {
+            fs::remove_file(format!("{}{suffix}", normal.display())).unwrap();
+        }
+        assert!(!retired_payload_is_absent(&boot, &profile, &generation).unwrap());
+
+        remove_staged_payload(&evidence, &profile).unwrap();
+        remove_staged_payload(&evidence, &profile).unwrap();
+
+        assert!(!profile.join("candidates/2").exists());
+        assert!(retired_payload_is_absent(&boot, &profile, &generation).unwrap());
+        assert_eq!(
+            fs::read(other.join("candidate.efi")).unwrap(),
+            b"other generation"
+        );
+        assert_eq!(
+            fs::read(installed_recovery).unwrap(),
+            b"independent installed recovery"
+        );
+    }
+
+    #[test]
+    fn foreign_recovery_retirement_identity_refuses_before_any_normal_deletion() {
+        let directory = tempfile::tempdir().unwrap();
+        let (_, profile, mut evidence) = paired_promotion_fixture(directory.path());
+        evidence.recovery.as_mut().unwrap().source_path = "candidates/3/recovery-b.efi".into();
+
+        assert!(remove_staged_payload(&evidence, &profile).is_err());
+
+        assert_eq!(
+            fs::read(profile.join("candidates/2/candidate.efi")).unwrap(),
+            b"normal candidate"
+        );
+        assert_eq!(
+            fs::read(profile.join("candidates/2/recovery-b.efi")).unwrap(),
+            recovery_pe("B")
+        );
+    }
+
+    #[test]
+    fn staged_retirement_rejects_parent_alias_before_deleting_sources() {
+        let directory = tempfile::tempdir().unwrap();
+        let (_, profile, evidence) = paired_promotion_fixture(directory.path());
+        let original = profile.join("candidates/2");
+        let foreign = directory.path().join("foreign-generation");
+        fs::rename(&original, &foreign).unwrap();
+        std::os::unix::fs::symlink(&foreign, &original).unwrap();
+
+        assert!(remove_staged_payload(&evidence, &profile).is_err());
+
+        assert_eq!(
+            fs::read(foreign.join("candidate.efi")).unwrap(),
+            b"normal candidate"
+        );
+        assert_eq!(
+            fs::read(foreign.join("recovery-b.efi")).unwrap(),
+            recovery_pe("B")
         );
     }
 
