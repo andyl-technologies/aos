@@ -375,8 +375,7 @@ in {
           garage-runtime.input = directory "/run/aos-pkg-garage";
         };
         network.operations.ready.effects.garage.input = {
-          scope = "address-configured";
-          families = ["ipv4" "ipv6"];
+          scope = "stack-prepared";
         };
         configuration.operations.file.effects.garage.input = {
           path = "/etc/aos/packages/garage/garage.toml";

@@ -411,8 +411,8 @@ in {
           mode = "0444";
         };
         network.operations.ready.effects.ssh.input = {
-          scope = "address-configured";
-          families = ["ipv4" "ipv6"];
+          # Wildcard listeners need the network stack, not an acquired address.
+          scope = "stack-prepared";
         };
       };
       aos.networkPolicy = {

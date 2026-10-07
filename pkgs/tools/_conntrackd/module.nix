@@ -312,8 +312,7 @@ in {
           mode = "0444";
         };
         network.operations.ready.effects.conntrackd.input = {
-          scope = "address-configured";
-          families = ["ipv4"];
+          scope = "stack-prepared";
         };
       };
     })

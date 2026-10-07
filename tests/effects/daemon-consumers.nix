@@ -269,7 +269,33 @@ in {
   chronyPreservesStateIdentity = assert evaluated.config.aos.abilities.identity.operations.group.effects.chrony.input.requested_id == 994;
   assert evaluated.config.aos.abilities.identity.operations.principal.effects.chrony.input.requested_id == 994; true;
   chronyConfigurationChangesReconcile = assert builtins.any (reference: reference == evaluated.config.aos.abilities.configuration.operations.file.effects.chrony.outputs.resource) evaluated.config.aos.services.chrony.dependencies.prerequisites; true;
-  dockerWaitsForConfiguredAddress = assert evaluated.config.aos.abilities.network.operations.ready.effects.docker.input.scope == "address-configured"; true;
+  chronyStartsWithoutConfiguredAddress = let
+    readiness = evaluated.config.aos.abilities.network.operations.ready.effects.chrony;
+    service = evaluated.config.aos.services.chrony;
+  in
+    assert readiness.input.scope == "stack-prepared";
+    assert readiness.input.required;
+    assert builtins.elem readiness.outputs.resource service.dependencies.after;
+    assert builtins.elem readiness.outputs.resource service.dependencies.wants;
+    assert service.lifecycle.restart == "on-failure"; true;
+  sshStartsWithoutConfiguredAddress = let
+    readiness = opkssh.config.aos.abilities.network.operations.ready.effects.ssh;
+    service = opkssh.config.aos.services.ssh;
+    keygen = opkssh.config.aos.abilities.serviceManagement.operations.realize.effects."ssh.sshd-keygen";
+  in
+    assert readiness.input.scope == "stack-prepared";
+    assert readiness.input.required;
+    assert builtins.elem readiness.outputs.resource service.dependencies.after;
+    assert builtins.elem keygen.outputs.resource service.dependencies.requires;
+    assert service.lifecycle.restart == "on-failure"; true;
+  dockerOrdersAfterPreparedNetworkStack = let
+    readiness = evaluated.config.aos.abilities.network.operations.ready.effects.docker;
+    service = evaluated.config.aos.services.docker;
+  in
+    assert readiness.input.scope == "stack-prepared";
+    assert readiness.input.required;
+    assert builtins.elem readiness.outputs.resource service.dependencies.after;
+    assert builtins.elem readiness.outputs.resource service.dependencies.wants; true;
   protectedHomeDirectories = assert evaluated.config.aos.services.chrony.isolation.home_access == "inaccessible";
   assert evaluated.config.aos.services.tailscale.isolation.home_access == "inaccessible"; true;
   sharedServiceManager = assert builtins.length services == 7;

@@ -355,8 +355,8 @@ in {
           };
         };
         network.operations.ready.effects.chrony.input = {
-          scope = "address-configured";
-          families = ["ipv4" "ipv6"];
+          # chronyd starts offline and retries its sources as connectivity returns.
+          scope = "stack-prepared";
         };
         configuration.operations.file.effects.chrony.input = {
           path = "/etc/chrony.conf";

@@ -406,8 +406,7 @@ in {
       aos.abilities = {
         serviceManagement.operations.resourceGroup.effects.${package.name}.input.name = "aos-pkg-${package.name}";
         network.operations.ready.effects.edgecore.input = {
-          scope = "address-configured";
-          families = ["ipv4" "ipv6"];
+          scope = "stack-prepared";
         };
         configuration.operations.file.effects.edgecore.input = {
           path = "/etc/edgecore/config.yaml";

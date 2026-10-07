@@ -436,7 +436,7 @@ in {
           };
           integrations = config.aos.k3s.integrations;
         };
-        network.operations.ready.effects.k3s.input.scope = "address-configured";
+        network.operations.ready.effects.k3s.input.scope = "stack-prepared";
         credential.operations.deliver.effects.k3s.input = cfg.token;
         kernelModules.operations.ensure.effects.k3s.input = {
           modules = roleSpec.kernelModules;
