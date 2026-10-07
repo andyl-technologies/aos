@@ -69,7 +69,7 @@ use ssh_key::{PublicKey, public::Ed25519PublicKey};
 
 use crate::controller_plan_signer::ControllerBrokerPlanSignerV1;
 use crate::controller_retained_exchange::{RetainedBrokerExchangeV1, RetainedExchangeErrorsV1};
-use crate::{DormantAuthenticatedBrokerSessionV1, DormantBrokerRequestCoordinatesV1};
+use crate::DormantBrokerRequestCoordinatesV1;
 
 use super::REQUEST_SCOPE;
 
@@ -1075,132 +1075,6 @@ impl ControllerExecutionExchangeV1 {
 
     pub(crate) const fn requires_reconnect(&self) -> bool {
         self.exchange.requires_reconnect()
-    }
-
-    pub(crate) fn query(
-        &mut self,
-        session: &mut DormantAuthenticatedBrokerSessionV1,
-        intent: &ControllerExecutionIntentV1,
-        authorization: Option<&BrokerAuthorizationArtifactsV1>,
-    ) -> Result<ControllerExecutionObservationV1, EffectFailure> {
-        let outcome = self.exchange(
-            session,
-            intent,
-            ExecutionAuthorizationKindV1::Query,
-            authorization,
-        )?;
-        let result = classify_outcome(intent, ExecutionAuthorizationKindV1::Query, &outcome);
-        if matches!(&result, Err(EffectFailure::Permanent(_))) {
-            self.exchange.mark_failed();
-        }
-        result
-    }
-
-    pub(crate) fn apply(
-        &mut self,
-        session: &mut DormantAuthenticatedBrokerSessionV1,
-        intent: &ControllerExecutionIntentV1,
-        authorization: Option<&BrokerAuthorizationArtifactsV1>,
-    ) -> Result<ControllerExecutionCompletionV1, EffectFailure> {
-        let outcome = self.exchange(
-            session,
-            intent,
-            ExecutionAuthorizationKindV1::Apply,
-            authorization,
-        )?;
-        let result = classify_outcome(intent, ExecutionAuthorizationKindV1::Apply, &outcome);
-        if matches!(&result, Err(EffectFailure::Permanent(_))) {
-            self.exchange.mark_failed();
-        }
-        match result? {
-            ControllerExecutionObservationV1::Applied(completion) => Ok(completion),
-            ControllerExecutionObservationV1::Absent => Err(EffectFailure::Retryable(
-                "Host execution effect has not completed".to_owned(),
-            )),
-        }
-    }
-
-    fn exchange(
-        &mut self,
-        session: &mut DormantAuthenticatedBrokerSessionV1,
-        intent: &ControllerExecutionIntentV1,
-        kind: ExecutionAuthorizationKindV1,
-        authorization: Option<&BrokerAuthorizationArtifactsV1>,
-    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
-        // A canonical spec exists, but no cross-owner physical Storage and
-        // live Host effect handoff proves its admission at this boundary.
-        // An in-memory specification cannot substitute for that custody.
-        if intent.action == ControllerExecutionActionV1::Authorize {
-            return Err(EffectFailure::Retryable(
-                "execution authorization requires protected cross-owner handoff".to_owned(),
-            ));
-        }
-        if self.requires_reconnect() {
-            return Err(EffectFailure::Retryable(SESSION_UNUSABLE.to_owned()));
-        }
-        if self
-            .exchange
-            .context()
-            .is_some_and(|pending| pending.intent != *intent || pending.kind != kind)
-        {
-            return Err(EffectFailure::Retryable(
-                "another exact execution exchange retains Host session custody".to_owned(),
-            ));
-        }
-        if self.exchange.context().is_none() {
-            let authorization = authorization.ok_or_else(|| {
-                EffectFailure::Retryable(
-                    "current Host execution authorization is unavailable".to_owned(),
-                )
-            })?;
-            let context = ExecutionExchangeContextV1 {
-                intent: intent.clone(),
-                kind,
-            };
-            let content = intent.descriptor_content()?;
-            let stable_content = HostExecutionSpecContentFieldsV1::for_grant(&content);
-            if kind == ExecutionAuthorizationKindV1::Apply {
-                let credential = SealedReadOnlyCredential::create(
-                    "aos-host-execution-spec",
-                    &content,
-                    MAXIMUM_HOST_EXECUTION_SPEC_BYTES,
-                )
-                .map_err(retryable)?;
-                let descriptor = rustix::io::dup(credential.as_fd()).map_err(retryable)?;
-                let preparation = session
-                    .prepare_authenticated_descriptor_request(
-                        kind.broker_method(),
-                        vec![descriptor],
-                        |coordinates| {
-                            intent.envelope(kind, coordinates, authorization, stable_content)
-                        },
-                    )
-                    .map_err(|_| {
-                        self.exchange.mark_failed();
-                        EffectFailure::Retryable(
-                            "execution descriptor could not enter protected Host session custody"
-                                .to_owned(),
-                        )
-                    })?;
-                self.exchange.start_descriptor(context, preparation);
-            } else {
-                let preparation = session
-                    .prepare_authenticated_request(kind.broker_method(), |coordinates| {
-                        intent.envelope(kind, coordinates, authorization, stable_content)
-                    })
-                    .map_err(|_| {
-                        self.exchange.mark_failed();
-                        EffectFailure::Retryable(
-                            "execution request could not enter protected Host session custody"
-                                .to_owned(),
-                        )
-                    })?;
-                self.exchange.start(context, preparation);
-            }
-        }
-        self.exchange
-            .drive(session, &ERRORS)
-            .map(|(_, outcome)| outcome)
     }
 }
 

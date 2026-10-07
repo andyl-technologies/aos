@@ -187,8 +187,8 @@ impl ControllerExecutionExchangeV1 {
             return Err(EffectFailure::Retryable(SESSION_UNUSABLE.to_owned()));
         };
 
-        // This preparation is the same fixed producer used by the legacy
-        // execution exchange. Ambiguous variants are retained, never recovered.
+        // Preparation uses the fixed credential and authenticated Session
+        // producers. Ambiguous variants are retained, never recovered.
         let prepared = (|| {
             let authorization = authorization.ok_or_else(|| retryable("current Host execution authorization is unavailable"))?;
             let content = intent.descriptor_content()?;
