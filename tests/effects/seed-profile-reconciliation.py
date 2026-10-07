@@ -45,6 +45,11 @@ FUNCTIONS = "\n".join(
     )
 )
 
+# Exercise the production equality check, including its immutable fields.
+identity_check_start = source.index('    jq -e --argjson expected "$generation"')
+identity_check_end = source.index("\n    update_running_image_state", identity_check_start)
+IDENTITY_CHECK = source[identity_check_start:identity_check_end]
+
 
 def identity(path):
     stat = path.lstat()
@@ -191,6 +196,56 @@ class SeedReconciliation(unittest.TestCase):
         result = self.run_helpers("update_running_image_state")
 
         self.assert_success(result)
+        self.assertEqual(identity(self.state), before)
+        self.assertEqual(self.spy.read_text(), "")
+
+    def staged_generation(self):
+        return {
+            "number": 2,
+            "boot_artifact_contract": self.targets["boot-artifact-contract"],
+            "boot_provider_state": {
+                "schema": "aos.systemd.boot-generation-state/v1",
+                "evidence": {"slot": "B"},
+            },
+            "toplevel": self.targets["toplevel"],
+            "package_name": "server",
+            "version": "2.0.0",
+            "state_version": "1",
+            "native_executor_ref": self.targets["native-executor"],
+            "registry": "signed-registry",
+            "kernel_path": "/nix/store/selected-linux",
+            "module_library": library_metadata,
+            "evaluation_descriptor": self.targets["evaluation-descriptor"],
+            "created_at": "2026-10-07T00:00:00Z",
+        }
+
+    def test_staged_identity_matches_seed_with_resolved_kernel(self):
+        generation = self.staged_generation()
+        self.document["generations"] = [generation]
+        self.write_state()
+        expected = generation | {"number": 0, "registry": "seed"}
+
+        result = self.run_helpers(
+            IDENTITY_CHECK,
+            {"generation": json.dumps(expected)},
+        )
+
+        self.assert_success(result)
+        self.assertEqual(self.spy.read_text(), "")
+
+    def test_staged_null_kernel_identity_is_refused_by_seed(self):
+        generation = self.staged_generation()
+        self.document["generations"] = [generation | {"kernel_path": None}]
+        self.write_state()
+        before = identity(self.state)
+
+        result = self.run_helpers(
+            IDENTITY_CHECK,
+            {"generation": json.dumps(generation)},
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("native image index disagrees", result.stderr)
         self.assertEqual(identity(self.state), before)
         self.assertEqual(self.spy.read_text(), "")
 

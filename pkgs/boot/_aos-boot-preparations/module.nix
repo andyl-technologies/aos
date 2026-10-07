@@ -442,6 +442,8 @@
   seedProfiles = substrateService {
     key = "aos-seed-profiles";
     description = "Seed apm system-profile state on first boot";
+    # Identity failures must remain visible when switch-root cannot complete.
+    logging = substrateLogging;
     dependencies =
       emptyDependencies
       // {
