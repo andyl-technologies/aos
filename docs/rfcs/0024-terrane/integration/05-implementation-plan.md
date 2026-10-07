@@ -124,7 +124,19 @@ empty `terrane` binary.
 
 ### T1 — Local repository
 
-**Status:** In progress. Latest completed full qualification records candidate
+**Status:** In progress; nine of twenty-two T1 tasks are complete. The latest
+owning qualification freezes `4e6c14a7f3`: all ten exact native Active completion
+cases pass with zero ignored cases. The first of eight native cold cases fails
+at the Candidate predecessor comparison: actual revision 8 versus calibrated
+revision 7, with all other state fields equal. The remaining seven cold cases
+are unrun. Both actual Nix inputs match all 4,610 included frozen images;
+all 5,664 source images and filesystem metadata remain unchanged. The
+Recorded per-view interpretation implementation and its stronger owning
+witnesses remain under review and unqualified. D-111 clarifies independent
+current-revision validation without changing registered historical bytes.
+No task merge, checkbox, milestone exit or freeze advances.
+
+The preceding completed full qualification records candidate
 `21981e66f440`, which combines the reviewed immutable owner completion and
 native namespace acquisition with the preceding immutable index/Memo work.
 Both mandatory formatters, five immutable index/Memo/no-std checks and

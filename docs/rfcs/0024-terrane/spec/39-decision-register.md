@@ -2269,6 +2269,45 @@ is added rather than editing history.
     physical retention and durability qualification remain required; this
     correction completes no task or gate.
 
+- **[D-111] Keep current selection independent of historical context bytes.**
+  - **Status:** Decided (2026-10-07)
+  - **Decision:** Clarify ALG-38 without changing its registered version-three
+    tuple. Explicit current property revision remains independently selected
+    and checked configuration input governing justification of trusted later
+    preserve-only registrations. Historical execution remains fixed by the
+    recorded revision and its exact behavioral vocabulary. The tuple retains
+    its existing four-field recorded context: original signed view root,
+    recorded revision, exact behavioral names and trusted later names. Decoded
+    claims supply neither current selection nor registration authority.
+    Native runtime per-view selection equality and memo contexts retain the
+    explicit current revision even when registered tuple bytes are identical.
+    Persisted D-110 lineage has no separate current field. On fresh reopen,
+    independently checked supported current selections with identical historical
+    execution and recorded inputs may therefore qualify identical ordinary
+    context bytes; no exact old-current comparison is claimed or required.
+  - **Rationale:** ALG-38's earlier prose could be read as adding a current
+    revision field that the normative CDDL does not contain. CONV gives the
+    registered CDDL precedence. Changing that tuple would alter recipe bytes
+    unnecessarily; dropping current selection would instead hide distinct
+    runtime configuration inputs. A typed memo context can keep the exact
+    independently selected interpretation alongside existing evidence keys
+    without inventing a serialized field or deriving authority from data. Cold
+    reuse compares the actual registered serialized mode and semantic profiles,
+    while fresh current selection is checked independently. Unknown current or
+    changed later names, recorded revision, mode, root or registered semantics
+    still refuse reuse until genuine requalification.
+  - **Alternatives considered:** Add an unregistered tuple field (rejected:
+    changes registered bytes); infer current revision from historical revision,
+    latest compiled code or lineage key 7 (rejected: lacks independent
+    configuration); share runtime contexts whenever tuple bytes match
+    (rejected: loses current-selection distinction under PROV-16).
+  - **Compatibility:** No identity, encoding, media type, registry revision,
+    existing requirement ID, store interface or golden byte changes. Existing
+    version-one and version-two selection rules remain unchanged. Explicit
+    current selection, exact registration checks and genuine view/root
+    associations remain required. This clarification completes no task or gate.
+  - **Affects:** ALG-38, PROP-30, PROV-16 and D-110.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

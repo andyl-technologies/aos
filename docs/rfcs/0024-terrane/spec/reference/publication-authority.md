@@ -284,22 +284,34 @@ conflicting uses cannot be flattened to a global default.
 The completed genuine producer MUST capture the actual independently selected
 mode, property revision, exact registered behavioral names and trusted later
 preserve-only names, together with the actual attribute, selector, physical
-tree, chunk and identity semantics used for that view. Recorded inputs come
-from its independently justified association, including an explicitly selected
-current revision. Legacy explicitly records its actual registered inputs.
-Neither raw names nor the global support profile can supply an omitted view
-selection. Only actually consumed associations are retained; an unrelated
-table addition MUST NOT enlarge the used set or change its context bytes.
+tree, chunk and identity semantics used for that view. Recorded inputs come from
+its independently justified association. Execution MUST check an explicitly
+selected supported current revision independently. The registered lineage
+records the historical revision, exact vocabularies and actual registered
+semantic profiles; it has no separate current-revision field. Legacy explicitly
+records its actual registered inputs. Neither raw names nor the global support
+profile can supply an omitted view selection. Only actually consumed
+associations are retained; an unrelated table addition MUST NOT enlarge the used
+set or change its context bytes.
 
 Reuse MUST independently select the current inputs for each used view and
 compare the complete recorded context, separately from original trust, current
 authorization, controls and completed-producer checks. Changed or missing used
 mode, root, revision, name set or semantic profile refuses reuse until genuine
-requalification. A new candidate view needs its own independently selected
-context; rewriting a source record's view identity supplies no such evidence.
-Decoded context is ordinary historical data, never permission or certification.
-An optional recipe or attribute revision cannot stand for exhaustive context,
-maintained index relationships or complete gap coverage.
+requalification. A fresh independent current-revision selection changing only
+from one supported revision to another MAY retain identical ordinary context
+bytes when its historical execution and all recorded inputs remain identical.
+The registered bytes contain no prior-current field, so no exact comparison with
+such a field is required. The newly selected current revision and its later-
+registration justification MUST still be checked; unknown current revisions or
+changed later names, recorded revision, mode, original root or semantic profiles
+require genuine requalification. Runtime contexts and memo selection MUST
+distinguish the independently selected current revisions under PROV-16 even when
+serialized context bytes match. A new candidate view needs its own independently
+selected context; rewriting a source record's view identity supplies no such
+evidence. Decoded context is ordinary historical data, never permission or
+certification. An optional recipe or attribute revision cannot stand for
+exhaustive context, maintained index relationships or complete gap coverage.
 
 Absent key 7 remains valid legacy data with its exact old encoding. It MUST
 NOT be interpreted as implicit Legacy or qualify zero-Tree cold reuse or

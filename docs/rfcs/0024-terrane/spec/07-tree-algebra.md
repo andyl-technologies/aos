@@ -271,11 +271,17 @@ operations above.
   `terrane-preset-any/v1` profile is an inert placeholder and MUST NOT
   authorize either policy. A provenance context whose evaluation uses an
   explicitly associated recorded property interpretation MUST use version
-  three, including an explicitly selected current revision. Its complete
-  configuration MUST bind the immutable view's original namespace root before
-  fold preprocessing, the recorded revision, its exact behavioral vocabulary
-  and its trusted later preservation vocabulary. The view/root association
-  and registrations MUST be checked independently of those serialized claims.
+  three. Execution MUST additionally check an explicitly selected current
+  revision as independent configuration input; the current revision governs
+  justification of trusted later registrations, not historical behavior.
+  The registered version-three tuple MUST retain the immutable view's original
+  namespace root before fold preprocessing, the recorded revision, its exact
+  behavioral vocabulary and its trusted later preservation vocabulary. It
+  MUST NOT infer the current revision or registration authority from those
+  decoded claims. Runtime context and memo selection MUST distinguish different
+  independently selected current revisions even when these tuple bytes match.
+  The view/root association and registrations MUST be checked independently
+  of those serialized claims.
   One justified interpretation MUST apply throughout that view's root and
   ancestor-prefix resolution; conflicting interpretations within one view
   MUST be rejected. Independently justified interpretations for ours and
