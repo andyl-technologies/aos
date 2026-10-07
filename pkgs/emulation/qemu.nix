@@ -641,6 +641,32 @@ in
               grep -q 'ldid -S"$ENTITLEMENT" "$SRC"' scripts/entitlement.sh
               ! grep -Eq '^(Rez|SetFile|codesign) ' scripts/entitlement.sh
             ''}
+            # Configure re-executes itself; Meson executes its helpers directly.
+            # Bind only build-time entry points to the declared build-host shell.
+            for build_script in \
+              configure \
+              scripts/git-submodule.sh \
+              scripts/hxtool \
+              scripts/make-config-poison.sh \
+              scripts/qemu-version.sh \
+              scripts/rust/rust_root_crate.sh \
+              scripts/entitlement.sh; do
+              case "$(head -n 1 "$build_script")" in
+                '#!/bin/sh'|'#! /bin/sh')
+                  shell_options=
+                  ;;
+                '#!/bin/sh -e')
+                  shell_options=' -e'
+                  ;;
+                *)
+                  printf 'Unexpected build-script shebang: %s\n' "$build_script" >&2
+                  exit 1
+                  ;;
+              esac
+
+              sed -i "1c#!${buildBash}/bin/bash$shell_options" "$build_script"
+              test "$(head -n 1 "$build_script")" = "#!${buildBash}/bin/bash$shell_options"
+            done
             # Patch Python shebangs for Nix sandbox
             find . -type f -name '*.py' | while read f; do
               if head -1 "$f" | grep -q '^#!'; then
