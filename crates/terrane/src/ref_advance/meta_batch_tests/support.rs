@@ -92,6 +92,7 @@ impl ContentValidator for Validator {
                     .is_ok()
             }
             IdentityKind::Commit => Commit::decode(upload.bytes()).is_ok(),
+            IdentityKind::Memo => terrane_core::derivation::Memo::decode(upload.bytes()).is_ok(),
             IdentityKind::Pack => PackReader::open(upload.bytes()).is_ok(),
             IdentityKind::Index => PackIndexSnapshot::decode(upload.bytes(), 0).is_ok(),
             _ => false,

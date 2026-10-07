@@ -11,8 +11,8 @@ use crate::{
     ref_advance::{AdvanceError, StagedUpload},
     repository::Error as RepositoryError,
     store::{
-        ContentStore, CorruptSubject, EffectFault, InvalidReason, LocalFs, RefStore,
-        StoreErrorKind, StoreFailure, TokioLocalFs,
+        ContentStore, ContentUpload, CorruptSubject, EffectFault, InvalidReason, LocalFs,
+        MetaUpload, RefStore, StoreErrorKind, StoreFailure, TokioLocalFs,
     },
 };
 use fs::{Action, Phase};
@@ -20,7 +20,10 @@ use std::{error::Error, sync::Arc, time::Duration};
 use support::{Fixture, TestResult, expiry_clock, node, put, rejected, replace, request, required};
 use terrane_core::{
     bucket::BucketKey,
+    derivation::Memo,
     identity::{IdentityKind, TERRANE_V1},
+    indexing::IndexEvaluationRecipe,
+    refs::Commit,
 };
 
 fn store_failure(error: &RepositoryError) -> &StoreFailure {
@@ -187,9 +190,30 @@ async fn native_meta_batch_validates_duplicates_and_preserves_existing_and_empty
     let fixture = Fixture::new().await?;
     let (first, members) = request(Vec::new(), &[])?;
     let first = fixture.publish(first).await?;
-    let old = fixture.snapshot().await?;
     let old_commit_id = TERRANE_V1.from_digest(IdentityKind::Commit, &first.commit)?;
     let old_commit = fixture.bucket().get(&old_commit_id, None).await?;
+    let signed_owner = Commit::decode(&old_commit)?;
+    assert_eq!(signed_owner.tree, members[0].0.terrane_v1_digest()?);
+
+    // The existing signed owner supplies immutable recipe inputs. This Memo is
+    // only advisory metadata: storing/reoffering it proves no replay, coverage,
+    // completed index or publication authority.
+    let recipe = IndexEvaluationRecipe::new(signed_owner.tree, "uid")?;
+    let memo = Memo::new(recipe.identity()?, signed_owner.tree);
+    let memo_bytes = memo.encode();
+    let memo_id = TERRANE_V1.calculate(IdentityKind::Memo, &memo_bytes)?;
+    assert_eq!(
+        fixture
+            .bucket()
+            .put(ContentUpload::Meta(MetaUpload::new(
+                IdentityKind::Memo,
+                &memo_bytes,
+            )?))
+            .await?,
+        memo_id
+    );
+    assert_eq!(Memo::decode(&memo_bytes)?, memo);
+    let old = fixture.snapshot().await?;
     let old_pack = required(
         old.rows
             .get(&members[0].0.terrane_v1_digest()?)
@@ -199,6 +223,35 @@ async fn native_meta_batch_validates_duplicates_and_preserves_existing_and_empty
     let old_pack_bytes = TokioLocalFs
         .read_nofollow(&fixture.bucket().root().join(old_pack.pack_key()))
         .await?;
+
+    // Ordinary admission intentionally denies reoffered Commit records before
+    // store effects. Preserve that real refusal separately from duplicate Memo
+    // validation, rather than weakening the producer's staged Commit boundary.
+    let mut forbidden = crate::ref_advance::tests::request(vec![first.commit]);
+    forbidden.commit.tree = signed_owner.tree;
+    forbidden.uploads = vec![StagedUpload::Meta {
+        kind: IdentityKind::Commit,
+        bytes: old_commit.clone(),
+    }];
+    fixture.fs.reset();
+    let refusal = rejected(fixture.publish(forbidden).await);
+    assert_eq!(
+        store_failure(&refusal).kind(),
+        &StoreErrorKind::Denied {
+            verb: "commit",
+            pattern: "refs/heads/_/main".into(),
+        }
+    );
+    let rejected_offers = fixture.fs.observations();
+    assert!(rejected_offers.pending.is_empty());
+    assert!(rejected_offers.committed.is_empty());
+    assert!(rejected_offers.raw.is_empty());
+    assert!(rejected_offers.mutations.is_empty());
+    assert_eq!(fixture.snapshot().await?.state, old.state);
+    assert_eq!(
+        fixture.bucket().ref_get("refs/heads/_/main").await?,
+        Some(first.clone())
+    );
 
     for duplicate in [false, true] {
         fixture.fs.reset();
@@ -212,15 +265,15 @@ async fn native_meta_batch_validates_duplicates_and_preserves_existing_and_empty
         let mut proposal = crate::ref_advance::tests::request(vec![current.commit]);
         proposal.commit.tree = members[0].0.terrane_v1_digest()?;
         proposal.uploads.clear();
-        let prior = fixture.validator.calls(IdentityKind::Commit, &old_commit);
+        let prior = fixture.validator.calls(IdentityKind::Memo, &memo_bytes);
         if duplicate {
-            // Node uploads are deliberately not duplicated: Snapshot rejects
-            // duplicate staged Nodes before this store boundary. The old signed
-            // Commit is a real valid metadata offer and needs no forged evidence.
+            // Snapshot rejects duplicate Nodes, and admission rejects Commit
+            // offers. Duplicate advisory Memo offers lawfully reach the real
+            // batch validator without introducing any permission evidence.
             for _ in 0..2 {
                 proposal.uploads.push(StagedUpload::Meta {
-                    kind: IdentityKind::Commit,
-                    bytes: old_commit.clone(),
+                    kind: IdentityKind::Memo,
+                    bytes: memo_bytes.clone(),
                 });
             }
         }
@@ -234,7 +287,7 @@ async fn native_meta_batch_validates_duplicates_and_preserves_existing_and_empty
         assert_eq!(observations.pending.len(), 2);
         assert_eq!(observations.committed.len(), 2);
         if duplicate {
-            assert!(fixture.validator.calls(IdentityKind::Commit, &old_commit) >= prior + 2);
+            assert!(fixture.validator.calls(IdentityKind::Memo, &memo_bytes) >= prior + 2);
         }
         assert_eq!(
             TokioLocalFs
@@ -247,6 +300,11 @@ async fn native_meta_batch_validates_duplicates_and_preserves_existing_and_empty
             old_commit
         );
         let selected = fixture.snapshot().await?;
+        assert_eq!(fixture.bucket().get(&memo_id, None).await?, memo_bytes);
+        assert_eq!(
+            selected.rows.get(&memo_id.terrane_v1_digest()?),
+            old.rows.get(&memo_id.terrane_v1_digest()?)
+        );
         assert_eq!(
             selected.rows.get(&members[0].0.terrane_v1_digest()?),
             old.rows.get(&members[0].0.terrane_v1_digest()?)
@@ -293,7 +351,7 @@ async fn native_meta_batch_validates_duplicates_and_preserves_existing_and_empty
                 }));
         } else {
             proposal.uploads.push(StagedUpload::Meta {
-                kind: IdentityKind::Commit,
+                kind: IdentityKind::Memo,
                 bytes: vec![0xff],
             });
         }
