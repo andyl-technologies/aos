@@ -9,7 +9,7 @@
 //! AOSORP01 | operation[16] | phase:u8 | zero[7] | payload-length:u32be | payload
 //! ```
 
-use aos_sandbox_core::OperationId;
+use aos_sandbox_core::{OperationId, ProtocolId};
 use aos_sandbox_core::operator_recovery_effect_v2::{
     OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2, OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2,
 };
@@ -17,7 +17,7 @@ use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBroke
 use aos_sandbox_protocol::operator_storage_repair_transport_v3::{
     OperatorStorageRepairModeV3, OperatorStorageRepairRequestV3, OperatorStorageRepairResultV3,
 };
-use aos_sandbox_protocol::{ProtocolId, decode_request_envelope};
+use aos_sandbox_protocol::decode_request_envelope;
 use sha2::{Digest as _, Sha256};
 
 use super::before::RepairBeforeV1 as _;

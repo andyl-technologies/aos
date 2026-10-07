@@ -22,9 +22,11 @@ use aos_sandbox_linux::pidfd::{PidFd, PidFdInfo};
 use aos_sandbox_linux::selinux_policy::VerifiedLiveSelinuxPolicy;
 use aos_systemd::{OwnedValue, SystemdClient, Value};
 use rustix::fs::{CWD, Mode, OFlags, openat};
+use rustix::net::sockopt::{
+    ipv6_v6only, set_ipv6_v6only, socket_acceptconn, socket_cookie, socket_domain, socket_type,
+};
 use rustix::net::{
-    AddressFamily, Protocol, SocketFlags, SocketType, bind, getsockname, ipv6_v6only, listen,
-    set_ipv6_v6only, socket_acceptconn, socket_cookie, socket_domain, socket_type, socket_with,
+    AddressFamily, SocketFlags, SocketType, bind, getsockname, ipproto, listen, socket_with,
 };
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
@@ -667,7 +669,7 @@ impl GatewayListenerV1 {
         let domain = if endpoint.is_ipv4() { AddressFamily::INET } else { AddressFamily::INET6 };
         let socket = socket_with(
             domain, SocketType::STREAM, SocketFlags::CLOEXEC | SocketFlags::NONBLOCK,
-            Some(Protocol::TCP),
+            Some(ipproto::TCP),
         ).map_err(|_| Error::Listener)?;
         if endpoint.is_ipv6() {
             // One selected family, not an implicit IPv4-mapped second ingress.

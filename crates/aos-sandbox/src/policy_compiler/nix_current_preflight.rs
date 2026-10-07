@@ -28,6 +28,7 @@ use crate::journal::ProtectedJournalNamesV1;
 use crate::JournalError;
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
 
+use super::consumer_read_flight::ConsumerReadFlightErrorV1;
 use super::controller_hold_readback::PinnedControllerHoldSignerV1;
 use super::source_hold_readback::PinnedSourceHoldReadbackSignerV1;
 use super::source_successor_readback::{
@@ -184,13 +185,13 @@ struct CurrentNixPreflightCarrierV1 {
     original: super::consumer_read_flight::RetainedCarrier,
     entered: bool,
     correlation: Option<Result<CurrentNixCorrelationV1, CurrentNixPreflightDataErrorV1>>,
-    deadline: Option<Result<super::consumer_read_flight::Deadline, super::ConsumerReadFlightErrorV1>>,
-    open: Option<Result<(), super::ConsumerReadFlightErrorV1>>,
+    deadline: Option<Result<super::consumer_read_flight::Deadline, ConsumerReadFlightErrorV1>>,
+    open: Option<Result<(), ConsumerReadFlightErrorV1>>,
     reads: [Option<Result<usize, super::consumer_read_flight::TransportFault>>; MAXIMUM_FRAME_READS],
     headers: [Option<Result<usize, CurrentNixPreflightDataErrorV1>>; MAXIMUM_FRAME_HEADERS],
     sent_headers: [Option<[u8; FRAME_HEADER_BYTES]>; MAXIMUM_FRAME_HEADERS],
     writes: [Option<Result<(), super::consumer_read_flight::TransportFault>>; MAXIMUM_FRAME_WRITES],
-    shutdown: Option<Result<(), super::ConsumerReadFlightErrorV1>>,
+    shutdown: Option<Result<(), ConsumerReadFlightErrorV1>>,
     eof: Option<Result<(), super::consumer_read_flight::TransportFault>>,
     used_reads: usize,
     used_headers: usize,
@@ -854,15 +855,15 @@ impl<'startup> CurrentNixRootPreflightAttemptV1<'startup> {
                     Some(chunk) => peer.require_chunk(stream, chunk),
                     None => peer.recheck_stream(stream),
                 };
-                observed.map_err(super::ConsumerReadFlightErrorV1::from)?;
+                observed.map_err(ConsumerReadFlightErrorV1::from)?;
                 if matches!(root_check, Some(Err(_))) {
-                    return Err(super::ConsumerReadFlightErrorV1::Protocol.into());
+                    return Err(ConsumerReadFlightErrorV1::Protocol.into());
                 }
                 // A successful unit check has no payload to retain. Its first
                 // failed original Result stays here, not in a Protocol marker.
                 *root_check = Some(root.recheck());
                 if !matches!(root_check, Some(Ok(()))) {
-                    return Err(super::ConsumerReadFlightErrorV1::Protocol.into());
+                    return Err(ConsumerReadFlightErrorV1::Protocol.into());
                 }
                 Ok(())
             };

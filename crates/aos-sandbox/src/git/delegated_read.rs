@@ -1227,7 +1227,7 @@ impl GitDelegatedClientV1 {
                 bytes[96..128].copy_from_slice(&trust[3]);
                 bytes[128..160].copy_from_slice(peer.key_binding().as_bytes());
                 bytes[160..192].copy_from_slice(&peer.session_binding());
-                bytes[192..224].copy_from_slice(ready.binding().as_bytes());
+                bytes[192..224].copy_from_slice(ready.binding().digest().as_bytes());
                 let body_digest = Sha256::digest(body).into();
                 bytes[224..256].copy_from_slice(&request_commitment(
                     kind as u8, *peer.project().as_bytes(),

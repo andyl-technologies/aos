@@ -12,10 +12,13 @@
 
 use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 use buffa::Message as _;
-use aos_sandbox_broker_session_protocol::{
+use aos_sandbox_broker_session_protocol::manifest::{
     BROKER_SESSION_MANIFEST_BYTES, BrokerSessionManifestAudienceV1,
-    BrokerSessionManifestErrorV1, BrokerSessionManifestV1, BrokerSessionProjectionError,
-    BrokerSessionProtocolV1, BrokerSessionSequenceError, BrokerSessionTrafficStateV1,
+    BrokerSessionManifestErrorV1, BrokerSessionManifestV1,
+};
+use aos_sandbox_broker_session_protocol::{
+    BrokerSessionProjectionError, BrokerSessionProtocolV1, BrokerSessionSequenceError,
+    BrokerSessionTrafficStateV1,
     decode_canonical_request_v1, decode_canonical_response_v1,
 };
 use aos_sandbox_core::format::git_upload_enrollment::{
