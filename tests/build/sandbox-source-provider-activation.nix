@@ -91,27 +91,30 @@
 in
   assert !(lib.elem "aos-source-providerd.socket" inactive.requires);
   assert !(lib.elem "aos-source-providerd.socket" inactive.after);
-  assert !(lib.hasSuffix " --source-provider" inactive.serviceConfig.ExecStart);
+  assert !lib.hasInfix " --source-provider" inactive.serviceConfig.ExecStart;
+  assert !lib.hasInfix " --selected-mount-source" inactive.serviceConfig.ExecStart;
   assert !(lib.elem "aos-source-providerd.socket" providerOnly.requires);
   assert !(lib.elem "aos-source-providerd.socket" providerOnly.after);
-  assert !(lib.hasSuffix " --source-provider" providerOnly.serviceConfig.ExecStart);
+  assert !lib.hasInfix " --source-provider" providerOnly.serviceConfig.ExecStart;
+  assert !lib.hasInfix " --selected-mount-source" providerOnly.serviceConfig.ExecStart;
   assert lib.length (lib.filter connectorAssertion activeConfiguration.config.assertions) == 1;
   assert lib.all (check: check.assertion) (lib.filter connectorAssertion activeConfiguration.config.assertions);
   assert lib.any (check: !check.assertion) (lib.filter connectorAssertion invalidConfiguration.config.assertions);
   assert lib.all (check: check.assertion) (lib.filter carrierAssertion carrierConfiguration.config.assertions);
   assert lib.any (check: !check.assertion) (lib.filter carrierAssertion invalidCarrierConfiguration.config.assertions);
   assert lib.any (check: !check.assertion) (lib.filter carrierAssertion wrongDaemonConfiguration.config.assertions);
-  assert carrierService.serviceConfig.ExecStart == "/run/aos/mount-executable-carrier/daemon ${pkgs.aos-sandbox-mountd}/bin/aos-sandbox-mount-helper --source-provider";
-  assert lib.elem "/run/aos/mount-executable-carrier/daemon --check-source-provider-authority" carrierService.serviceConfig.ExecStartPre;
+  assert carrierService.serviceConfig.ExecStart == "/run/aos/mount-executable-carrier/daemon ${pkgs.aos-sandbox-mountd}/bin/aos-sandbox-mount-helper --source-provider --selected-mount-source";
+  assert lib.elem "/run/aos/mount-executable-carrier/daemon --check-selected-source-provider-authority" carrierService.serviceConfig.ExecStartPre;
   assert lib.elem "aos-source-providerd.socket" active.requires;
   assert lib.elem "aos-source-providerd.socket" active.after;
-  assert lib.hasSuffix " --source-provider" active.serviceConfig.ExecStart;
-  assert lib.elem "${activeConfiguration.config.aos.sandbox.mountBroker.package}/bin/aos-sandbox-mountd --check-source-provider-authority" active.serviceConfig.ExecStartPre;
+  assert active.serviceConfig.ExecStart == "${pkgs.aos-sandbox-mountd}/bin/aos-sandbox-mountd ${pkgs.aos-sandbox-mountd}/bin/aos-sandbox-mount-helper --source-provider --selected-mount-source";
+  assert lib.elem "${activeConfiguration.config.aos.sandbox.mountBroker.package}/bin/aos-sandbox-mountd --check-selected-source-provider-authority" active.serviceConfig.ExecStartPre;
   assert activeProvider.serviceConfig.ExecStartPre
   == [
-    "${activeConfiguration.config.aos.sandbox.sourceProvider.package}/bin/aos-source-providerd --check-source-provider-authority"
-    "${activeConfiguration.config.aos.sandbox.sourceProvider.package}/bin/aos-source-providerd --install-catalog"
+    "${activeConfiguration.config.aos.sandbox.sourceProvider.package}/bin/aos-source-providerd --check-source-provider-authority --selected-mount-source"
+    "${activeConfiguration.config.aos.sandbox.sourceProvider.package}/bin/aos-source-providerd --install-catalog --selected-mount-source"
   ];
+  assert activeProvider.serviceConfig.ExecStart == "${activeConfiguration.config.aos.sandbox.sourceProvider.package}/bin/aos-source-providerd --selected-mount-source";
   assert activeProvider.serviceConfig.LoadCredential
   == [
     "current-catalog-publication:/run/credentials/@system/source-provider-catalog-test"

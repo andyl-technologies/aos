@@ -109,6 +109,14 @@
         options.aos.sandbox.storageBroker.enable = lib.mkOption {type = lib.types.bool;};
         options.aos.sandbox.mountBroker.enable = lib.mkOption {type = lib.types.bool;};
         options.aos.sandbox.networkBroker.enable = lib.mkOption {type = lib.types.bool;};
+        options.aos.sandbox.nixBroker.enable = lib.mkOption {
+          type = lib.types.bool;
+          default = false;
+        };
+        options.aos.sandbox.nixBroker.storageGenerationPrepare.enable = lib.mkOption {
+          type = lib.types.bool;
+          default = false;
+        };
 
         config.aos.sandbox = {
           controller = {
@@ -206,6 +214,10 @@ in
   assert controllerServiceConfig.User == "aos-sandboxd";
   assert controllerServiceConfig.Slice == "aos-control.slice";
   assert controllerServiceConfig.MemoryMax == "512M";
+  assert !controllerEvaluation.config.aos.sandbox.nixBroker.enable;
+  assert !controllerEvaluation.config.aos.sandbox.nixBroker.storageGenerationPrepare.enable;
+  assert !lib.hasInfix " --nix-start-admission" controllerServiceConfig.ExecStart;
+  assert !lib.hasInfix " --nix-storage-generation-prepare" controllerServiceConfig.ExecStart;
   assert controllerServiceConfig.TimeoutStartSec == "90s";
   assert builtins.length controllerServiceConfig.LoadCredential == 15;
   assert builtins.elem "guest-root-package-binding-v1:${pkgs.aos-sandbox-guest-root-template}/package-binding" controllerServiceConfig.LoadCredential;
@@ -232,7 +244,8 @@ in
   assert !(hostEvaluation.config.systemd.services ? aos-sandbox-host-phase0-inspector);
   assert lib.hasSuffix " ${pkgs.aosSelinuxKernelPolicyReadbackForKernel hostProbeEvaluation.config.system.build.kernel}/policy.33" hostProbeEvaluation.config.systemd.services.aos-sandbox-host-phase0-inspector.serviceConfig.ExecStart;
   assert requires "LoadCredential =\n          nodeCredentials\n          ++ cacheReplayCredentials\n          ++ cacheReadbackCredentials\n          ++ controllerHoldCredentials\n          ++ guestRootTemplateCredentials" moduleSource;
-  assert requires ''required = true;'' moduleSource;
+  assert requires ''required = !(endpoint.optionalManifest or false);'' moduleSource;
+  assert requires ''optionalManifest = true;'' moduleSource;
   assert requires ''aos-sandbox-hostd.service'' moduleSource;
   assert requires ''aos-storaged.service'' moduleSource;
   assert requires ''aos-sandbox-mountd.service'' moduleSource;
