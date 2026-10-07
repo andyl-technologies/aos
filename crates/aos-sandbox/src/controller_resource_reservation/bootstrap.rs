@@ -74,59 +74,23 @@ pub(super) fn observe_original_pair(
 
     let (policy, identity, recipient_invocation, manifest) =
         if policy_metadata.len() == codec::IMAGE_POLICY_BYTES as u64 {
-            let mut policy_bytes = [0; codec::IMAGE_POLICY_BYTES];
-            let mut delivery_bytes = [0; 152];
-            policy_file.read_exact_at(&mut policy_bytes, 0)?;
-            enrollment_file.read_exact_at(&mut delivery_bytes, 0)?;
-            let policy = codec::decode_image_policy(&policy_bytes)?;
-            let (identity, recipient_invocation) = codec::decode_pid1_delivery(&delivery_bytes)?;
-            (policy, identity, recipient_invocation,
-                <[u8; 32]>::from(Sha256::digest(policy_bytes)))
+            read_original_pair::<{ codec::IMAGE_POLICY_BYTES }>(policy_file, enrollment_file)?
         } else if policy_metadata.len() == codec::HOST_IMAGE_POLICY_BYTES as u64 {
-            let mut policy_bytes = [0; codec::HOST_IMAGE_POLICY_BYTES];
-            let mut delivery_bytes = [0; 152];
-            policy_file.read_exact_at(&mut policy_bytes, 0)?;
-            enrollment_file.read_exact_at(&mut delivery_bytes, 0)?;
-            let policy = codec::decode_image_policy(&policy_bytes)?;
-            let (identity, recipient_invocation) = codec::decode_pid1_delivery(&delivery_bytes)?;
-            (policy, identity, recipient_invocation,
-                <[u8; 32]>::from(Sha256::digest(policy_bytes)))
+            read_original_pair::<{ codec::HOST_IMAGE_POLICY_BYTES }>(policy_file, enrollment_file)?
         } else if policy_metadata.len() == codec::FIRST_GLOBAL_IMAGE_POLICY_BYTES as u64 {
-            let mut policy_bytes = [0; codec::FIRST_GLOBAL_IMAGE_POLICY_BYTES];
-            let mut delivery_bytes = [0; 152];
-            policy_file.read_exact_at(&mut policy_bytes, 0)?;
-            enrollment_file.read_exact_at(&mut delivery_bytes, 0)?;
-            let policy = codec::decode_image_policy(&policy_bytes)?;
-            let (identity, recipient_invocation) = codec::decode_pid1_delivery(&delivery_bytes)?;
-            (policy, identity, recipient_invocation,
-                <[u8; 32]>::from(Sha256::digest(policy_bytes)))
+            read_original_pair::<{ codec::FIRST_GLOBAL_IMAGE_POLICY_BYTES }>(
+                policy_file, enrollment_file,
+            )?
         } else if policy_metadata.len() == codec::NIX_INTAKE_IMAGE_POLICY_BYTES as u64 {
-            let mut policy_bytes = [0; codec::NIX_INTAKE_IMAGE_POLICY_BYTES];
-            let mut delivery_bytes = [0; 152];
-            policy_file.read_exact_at(&mut policy_bytes, 0)?;
-            enrollment_file.read_exact_at(&mut delivery_bytes, 0)?;
-            let policy = codec::decode_image_policy(&policy_bytes)?;
-            let (identity, recipient_invocation) = codec::decode_pid1_delivery(&delivery_bytes)?;
-            (policy, identity, recipient_invocation,
-                <[u8; 32]>::from(Sha256::digest(policy_bytes)))
+            read_original_pair::<{ codec::NIX_INTAKE_IMAGE_POLICY_BYTES }>(
+                policy_file, enrollment_file,
+            )?
         } else if policy_metadata.len() == codec::Q04_INTAKE_IMAGE_POLICY_BYTES as u64 {
-            let mut policy_bytes = [0; codec::Q04_INTAKE_IMAGE_POLICY_BYTES];
-            let mut delivery_bytes = [0; 152];
-            policy_file.read_exact_at(&mut policy_bytes, 0)?;
-            enrollment_file.read_exact_at(&mut delivery_bytes, 0)?;
-            let policy = codec::decode_image_policy(&policy_bytes)?;
-            let (identity, recipient_invocation) = codec::decode_pid1_delivery(&delivery_bytes)?;
-            (policy, identity, recipient_invocation,
-                <[u8; 32]>::from(Sha256::digest(policy_bytes)))
+            read_original_pair::<{ codec::Q04_INTAKE_IMAGE_POLICY_BYTES }>(
+                policy_file, enrollment_file,
+            )?
         } else {
-            let mut policy_bytes = [0; codec::ROOT_IMAGE_POLICY_BYTES];
-            let mut delivery_bytes = [0; 152];
-            policy_file.read_exact_at(&mut policy_bytes, 0)?;
-            enrollment_file.read_exact_at(&mut delivery_bytes, 0)?;
-            let policy = codec::decode_image_policy(&policy_bytes)?;
-            let (identity, recipient_invocation) = codec::decode_pid1_delivery(&delivery_bytes)?;
-            (policy, identity, recipient_invocation,
-                <[u8; 32]>::from(Sha256::digest(policy_bytes)))
+            read_original_pair::<{ codec::ROOT_IMAGE_POLICY_BYTES }>(policy_file, enrollment_file)?
         };
     if identity.node != policy.node || identity.epoch != policy.epoch
         || identity.manifest != manifest
@@ -135,6 +99,25 @@ pub(super) fn observe_original_pair(
         return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
     }
     Ok(OriginalEnrollment { identity, policy, recipient_invocation })
+}
+
+// Reads both fixed-width records before decoding either, then hashes the policy.
+fn read_original_pair<const N: usize>(
+    policy_file: &std::fs::File,
+    enrollment_file: &std::fs::File,
+) -> Result<
+    (ImageBootstrapPolicy, EnrollmentIdentity, [u8; 16], [u8; 32]),
+    ResourceReservationErrorV1,
+> {
+    let mut policy_bytes = [0; N];
+    let mut delivery_bytes = [0; 152];
+    policy_file.read_exact_at(&mut policy_bytes, 0)?;
+    enrollment_file.read_exact_at(&mut delivery_bytes, 0)?;
+
+    let policy = codec::decode_image_policy(&policy_bytes)?;
+    let (identity, recipient_invocation) = codec::decode_pid1_delivery(&delivery_bytes)?;
+    Ok((policy, identity, recipient_invocation,
+        <[u8; 32]>::from(Sha256::digest(policy_bytes))))
 }
 
 pub(super) struct EnrollmentTransition {
