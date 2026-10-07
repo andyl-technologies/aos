@@ -3,6 +3,7 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  bash,
 }: let
   version = "1.13.2";
 in
@@ -18,7 +19,7 @@ in
     };
 
     buildDeps = [gnumake];
-    runtimeDeps = [];
+    runtimeDeps = [bash];
     propagatedDeps = [];
 
     phases = [
@@ -32,8 +33,13 @@ in
       {
         name = "configure";
         script = ''
-          # No configure step — ninja is bootstrapped directly from C++ sources
-          true
+          # Retain sh/POSIX invocation semantics without a host shell path.
+          test "$(grep -F -c 'const char* spawned_args[] = { "/bin/sh", "-c", command.c_str(), NULL };' src/subprocess-posix.cc)" -eq 1
+          test "$(grep -F -c 'err = posix_spawn(&pid_, "/bin/sh", &action, &attr,' src/subprocess-posix.cc)" -eq 1
+          sed -i \
+            -e 's|{ "/bin/sh", "-c", command.c_str(), NULL }|{ "sh", "-c", command.c_str(), NULL }|' \
+            -e 's|posix_spawn(&pid_, "/bin/sh",|posix_spawn(\&pid_, "${bash}/bin/bash",|' \
+            src/subprocess-posix.cc
         '';
       }
       {
@@ -57,6 +63,38 @@ in
             esac
           done
           $CXX ''${CXXFLAGS:-} -Isrc -o ninja $srcs -lpthread
+        '';
+      }
+      {
+        name = "check";
+        script = ''
+          mkdir shell-dispatch-check
+          cd shell-dispatch-check
+
+          cat > build.ninja <<'EOF'
+          rule posix_shell
+            command = test "$$0" = sh && case ":$$SHELLOPTS:" in *:posix:*) ;; *) exit 1 ;; esac && printf '%s\n' 'hermetic shell dispatch' | tr 'a-z' 'A-Z' > "$out"
+          build success: posix_shell
+          default success
+          EOF
+
+          ../ninja -v
+          test "$(cat success)" = 'HERMETIC SHELL DISPATCH'
+          ../ninja -v > incremental.log
+          grep -F 'ninja: no work to do.' incremental.log
+
+          cat > failure.ninja <<'EOF'
+          rule refused
+            command = exit 7
+          build refused: refused
+          EOF
+
+          if ../ninja -f failure.ninja > failure.log 2>&1; then
+            cat failure.log
+            exit 1
+          fi
+          grep -F 'FAILED: [code=7] refused' failure.log
+          cd ..
         '';
       }
       {
