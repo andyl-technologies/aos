@@ -24,6 +24,7 @@ use crate::ledger::{
     native_held_completion::SourceNativeHeldMutationV1,
 };
 
+#[path = "pre_requested_cold/graph.rs"]
 pub(crate) mod graph;
 
 pub use graph::{

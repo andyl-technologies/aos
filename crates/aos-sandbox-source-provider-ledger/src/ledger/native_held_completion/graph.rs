@@ -174,13 +174,15 @@ fn derive_provider_preparation_data_v5<'rows>(
     for (family, key) in families.into_iter().zip(&rows.keys) {
         let value = records.get(key).ok_or(corrupt("held phase4 witness missing"))?;
         witnesses.push(NativeHeldByteWitnessV1::new(
-            family, key.clone(), native_held_record_byte_digest_v1(family, key, value)?,
+            family, key.clone(),
+            native_held_record_byte_digest_v1(family, key, value).map_err(super::schema_error)?,
         ).map_err(super::schema_error)?);
     }
     let challenge_key = challenge_key(&record);
     witnesses.push(NativeHeldByteWitnessV1::new(
         Family::Challenge, challenge_key.clone(),
-        native_held_record_byte_digest_v1(Family::Challenge, &challenge_key, original_spent)?,
+        native_held_record_byte_digest_v1(Family::Challenge, &challenge_key, original_spent)
+            .map_err(super::schema_error)?,
     ).map_err(super::schema_error)?);
     let records = witnesses.try_into().map_err(|_| corrupt("held seven witnesses"))?;
     Ok((ProviderNativeHeldWitnessV1 {
