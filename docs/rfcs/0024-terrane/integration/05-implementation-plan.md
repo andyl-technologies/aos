@@ -772,6 +772,14 @@ The earlier xattr and first-eligible-orphan failures remain preserved. This
 bounded composition qualifies that imported-used-view case; true foreign heads,
 multiple owners, the separate raw-source requalification path, physical deletion
 and complete ALG-32/current-trunk qualification remain open.
+The first coherent trunk Original prerequisite preserves ordinary protected
+acquisition and adds exact same-holder read/recheck plumbing. Its frozen source
+`7433f151d7` compiles all default, Send and native test targets and passes four
+exact existing Original/consumed-context regressions with zero ignored cases.
+Both mandatory formatters pass, and independent review verifies every original
+terminal result and all 5,618 unchanged tracked images. Its retained receipt
+setter and actual factory consumer are still absent; no retained-positive,
+imported-context or complete collector result follows from these checks.
 
 The focused native graft-locality check now requires three actual publication
 cases and three structural cases, with exact discovery and non-ignored
