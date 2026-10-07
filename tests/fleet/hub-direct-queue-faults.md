@@ -1,5 +1,47 @@
 # Direct queue fault and process observation fixtures
 
+## Called production window
+
+`run_production_queue_fault_window` runs after the ordinary publication while
+the issuer remains live, before the existing lifecycle and cold-recovery cases.
+Each case uses a fresh publication manifest, real Begin/Grant/provider PUT/Report,
+and the staged driver's saved first Complete request. Its callback captures the
+admission-only SQL row and requires the selected Core-backed `native-bodies`
+observer before installing a one-shot production queue wrapper. A missing
+observer is a prerequisite refusal, never a skipped validation or stock-codec
+substitution. The whole source-owned SQL journal marker is preserved separately.
+
+The wrapper retains the actual selected SDK job in its confined R2 capture
+prefix. Capture PUT, local SDK return, queue acceptance, delivery and provider
+settlement are distinct observations. The bounded runner read-hook exports only
+that key under its selected process/configuration/source lifetime. The original
+job, options and SDK receiver are preserved, including immediately after awaited
+capture; a known acknowledgment may send the identical job without a second PUT.
+
+The conditional-replacement case uses an unarmed GET owner on port 3904 ahead of
+the existing 3903 chain. It holds only an actually received conditional signed
+GET for the selected staging object, before forwarding, and releases the same
+request in `finally`. The real SigV4 adapter first verifies the old bytes and
+condition, performs one conditional replacement, and observes the provider's
+actual old-condition reply. A still-readable pinned old version is unavailable
+for this case; the fixture never manufactures a 412 response. The extra GET hop
+is part of the measured fixture topology, not a production performance claim.
+
+Actor invalidation follows the actual first pending Complete/job. Its retained
+known-acknowledgment continuation may establish same-original promotion refusal;
+it does not establish consumer revocation from a generic denial. Early expiry
+remains setup refusal and never selects a renewed token. Lost/refused/unknown
+phases do not authorize a new original or automatic mutation replay.
+
+These separate 8 MiB originals leave the main three 2 GiB objects and 12,535
+metadata objects unchanged. Missing consumer-authority, provider-redispatch,
+foreground-budget and full-resource assessments remain null. Object progression
+does not invoke publication Commit. The collector's actual terminal is retained
+before its window image; an existing zero-byte collection prefix is not completion.
+Controlled source gates do not establish runtime qualification for these windows.
+
+## Individual helper contracts
+
 These additive helpers prepare faults around one retained production admission
 and Complete item. They do not install acceptance, construct an admission or mint
 a JWT. Their API calls are identity controls and exact Complete retries. They

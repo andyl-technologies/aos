@@ -34,6 +34,7 @@ def _load_sibling(name):
 
 runtime = _load_sibling("_hub-direct-runtime-observations.py")
 resources = _load_sibling("_hub-direct-invocation-resources.py")
+native_faults = _load_sibling("_hub-direct-queue-fault-native.py")
 
 
 def canonical_digest(value):
@@ -121,6 +122,214 @@ def production_original(admission, complete, placement_id):
             "originalDigest": digest(admission["logicalFingerprint"]),
             "completeOperationDigest": digest(complete["operationId"]),
             "placementDigest": digest(placement_id)}
+
+
+def authenticated_admission_join(manifest, events, admission):
+    """Join actual successful typed Worker verification before queue dispatch.
+
+    Unlike the full-window accounting join, this requires no queue membership:
+    no queue send is allowed yet. The selected session comes from the separately
+    Core-validated immutable admission. Log/source/process custody is measured
+    by the caller; this function only compares those retained observations.
+    """
+    capture = manifest["captures"][0]
+    request, reply = (capture["bodies"][name] for name in ("request", "response"))
+    public_sha = capture["immutableProjection"]["originalPublicRequest"]["sha256"]
+    expected = {"sessionDigest": hashlib.sha256(admission["sessionId"].encode()).hexdigest(),
+                "originalDigest": hashlib.sha256(admission["logicalFingerprint"].encode()).hexdigest()}
+    offers, replies = [], []
+    for event in events:
+        if event["kind"] not in {"control_request", "control_reply"}:
+            continue
+        control = event["control"]
+        if control["step"] != "admission" or control["signedBodyDigest"] != request["sha256"]:
+            continue
+        if (event["sourceDigest"] != manifest["sourceDigest"]
+                or control["publicBodyDigest"] != public_sha):
+            raise ValueError("authenticated admission source or public original differs")
+        if event["kind"] == "control_request" and event["bytes"] == request["byteSize"]:
+            offers.append(event)
+        elif (event["kind"] == "control_reply" and event["outcome"] == "positive"
+                and event["bytes"] == reply["byteSize"]
+                and control["replyBodyDigest"] == reply["sha256"]):
+            if control["sessions"] != [expected]:
+                raise ValueError("authenticated admission reply names a different original")
+            replies.append(event)
+    pairs = {(offer["control"]["requestDigest"], finish["control"]["requestDigest"])
+             for offer in offers for finish in replies
+             if offer["control"]["requestDigest"] == finish["control"]["requestDigest"]}
+    if len(pairs) != 1:
+        raise ValueError("one exact authenticated Admission exchange is unavailable")
+    return {"publicBeginSha256": public_sha, "requestSha256": request["sha256"],
+            "replySha256": reply["sha256"], "requestDigest": next(iter(pairs))[0],
+            "session": expected, "queueMembership": None,
+            "scope": "actual successful typed Worker reply; independent source/process/window custody required"}
+
+
+def prepared_queue_context(admission_body, status, complete_body, whoami,
+                           placement_id, source_digest, run_digest, fault):
+    """Join actual pre-Complete SQL and prepared production wire originals.
+
+    The caller retains all arguments privately before installing the wrapper.
+    No closed job, queue acceptance or completion intent is manufactured here.
+    """
+    if fault not in FAULTS:
+        raise ValueError("production queue fault case differs")
+    batch = native_faults._sql_row(complete_body)
+    if (set(batch) != {"operationId", "items"} or not DIGEST.fullmatch(batch["operationId"])
+            or not isinstance(batch["items"], list) or len(batch["items"]) != 1):
+        raise ValueError("production fault needs one exact prepared Complete item")
+    complete = batch["items"][0]
+    if (complete["session"] != status["session"] or status["state"] != "creating"
+            or complete["expectedResourceVersion"] != status["resourceVersion"]
+            or not isinstance(complete["manifests"], list) or not complete["manifests"]
+            or len(complete["manifests"]) != 1 or len(status["placements"]) != 1):
+        # This first called slice selects one actual required placement. Extra
+        # placements need independently retained originals, never truncation.
+        raise ValueError("prepared Complete CAS, session or placement scope differs")
+    manifest = complete["manifests"][0]
+    if (manifest["placement"]["placementId"] != placement_id
+            or manifest["placement"] != status["placements"][0]):
+        raise ValueError("prepared Complete does not name the selected placement")
+    admission, before = native_faults.admission_snapshot(
+        admission_body, status["session"], status["intent"], whoami, placement_id)
+    selected = queue_selection(admission, complete, placement_id, source_digest, run_digest,
+                               fault if fault in {"enqueue_ack_lost", "completion_ack_lost"} else "none")
+    return {"admission": admission, "complete": complete, "batch": batch,
+            "completeBodySha256": hashlib.sha256(complete_body).hexdigest(),
+            "completeBodyBytes": str(len(complete_body)), "before": before,
+            "selection": selected, "original": production_original(admission, complete, placement_id),
+            "fault": fault, "closedJob": None, "qualification": None}
+
+
+def run_precomplete_queue_fault(prepared, *, read_admission, read_whoami,
+                               capture_admission_projection, install_wrapper,
+                               start_collector, configure_fault, retain_private):
+    """Run the actual supervisor callback before its one saved dispatch.
+
+    Operations are supplied by the existing machine/SQL/process owners. The
+    Native supervisor owns the child and continuation marker; this callback
+    does not send Complete or retry a mutation. Its returned references feed
+    Native's closed continuation_record, not a ready/accepted boolean.
+    """
+    fields = {"fault", "status", "publicBeginBody", "completeBody", "placementId", "sourceDigest", "runDigest",
+              "cutoffUnixMs"}
+    if set(prepared) != fields:
+        raise ValueError("production pre-Complete callback fields differ")
+    admission_body = read_admission(prepared["status"]["session"]["sessionId"])
+    whoami = read_whoami()
+    context = prepared_queue_context(
+        admission_body, prepared["status"], prepared["completeBody"], whoami,
+        prepared["placementId"], prepared["sourceDigest"], prepared["runDigest"], prepared["fault"])
+    if type(prepared["cutoffUnixMs"]) is not int or prepared["cutoffUnixMs"] <= 0:
+        raise ValueError("production original has no fixed supervisor cutoff")
+    context["cutoffUnixMs"] = prepared["cutoffUnixMs"]
+    context["selection"]["capture"] = {
+        "version": 1, "binding": "REGISTRY_BUCKET",
+        "prefix": ".aos-queue-fault-capture/" + prepared["runDigest"] + "/",
+        "cutoffUnixMs": prepared["cutoffUnixMs"]}
+    # This callback must execute the current feature-enabled codec on actual
+    # captured envelopes and the measured reader's original admission image.
+    # Python comparisons of the public DTO or SQL fields do not replace it.
+    evidence = capture_admission_projection(context)
+    evidence_fields = {"manifest", "manifestSha256", "codecStdout", "sqlAdmissionsBody",
+                       "authenticatedEvents", "references"}
+    if not isinstance(evidence, dict) or set(evidence) != evidence_fields:
+        raise ValueError("actual admission projection evidence is unavailable")
+    manifest = evidence["manifest"]
+    selected = manifest["captures"][0]["immutableProjection"]
+    public = prepared["publicBeginBody"]
+    sql_image = evidence["sqlAdmissionsBody"]
+    if (not isinstance(public, bytes) or not isinstance(sql_image, bytes)
+            or selected["originalPublicRequest"]["sha256"] != hashlib.sha256(public).hexdigest()
+            or selected["originalPublicRequest"]["byteSize"] != str(len(public))
+            or selected["sqlAdmissions"]["sha256"] != hashlib.sha256(sql_image).hexdigest()
+            or selected["sqlAdmissions"]["byteSize"] != str(len(sql_image))
+            or manifest["sourceDigest"] != prepared["sourceDigest"]):
+        raise ValueError("actual codec projection selected a different original")
+    sql_row = native_faults._sql_row(sql_image)
+    if (sql_row["admission"] != context["admission"] or sql_row["state"] != "admitted"
+            or sql_row["sessionId"] != context["admission"]["sessionId"]
+            or sql_row["publicationId"] != context["admission"]["intent"]["target"]["publicationId"]):
+        raise ValueError("Core image and admission-only reader selected different originals")
+    projection = native_faults.admission_codec_result(
+        evidence["codecStdout"], manifest, evidence["manifestSha256"])
+    authenticated = authenticated_admission_join(
+        manifest, evidence["authenticatedEvents"], context["admission"])
+    references = evidence["references"]
+    if not isinstance(references, dict) or set(references) != {
+            "codecExecution", "codecOutput", "manifest", "sqlReader", "nativeCapture", "workerCapture"}:
+        raise ValueError("admission codec, reader and capture custody references are missing")
+    for reference in references.values():
+        if (not isinstance(reference, dict) or set(reference) != {"file", "sha256", "byteSize"}
+                or not isinstance(reference["file"], str) or not reference["file"].startswith("/")
+                or not isinstance(reference["sha256"], str) or not DIGEST.fullmatch(reference["sha256"])
+                or not isinstance(reference["byteSize"], str)
+                or not re.fullmatch(r"[1-9][0-9]{0,8}", reference["byteSize"])):
+            raise ValueError("admission validation receipt is not a private byte reference")
+    if (references["codecOutput"]["sha256"] != hashlib.sha256(evidence["codecStdout"]).hexdigest()
+            or references["manifest"]["sha256"] != evidence["manifestSha256"]):
+        raise ValueError("actual codec result or manifest receipt changed")
+    validation_ref = retain_private("queue-admission-core.json", {
+        "projection": projection, "authenticatedControlJoin": authenticated,
+        "references": references, "qualification": None})
+    # Persist this complete original before wrapper installation or fault actions.
+    original_ref = retain_private("queue-original.json", context)
+    wrapper = install_wrapper(context["selection"])
+    if (wrapper["compiledSourceDigest"] != context["selection"]["sourceDigest"]
+            or wrapper.get("selection") != context["selection"]
+            or not isinstance(wrapper.get("scriptPath"), str)
+            or not wrapper["scriptPath"].endswith("/queue-fault-entry.mjs")
+            or set(wrapper["modules"]) != {"installed-shim.mjs", "index.wasm",
+                                          "queue-fault-worker.mjs", "queue-fault-entry.mjs"}):
+        raise ValueError("actual wrapper installation differs from the prepared original")
+    wrapper_ref = retain_private("queue-wrapper.json", wrapper)
+    # Collection begins before continuation can cause the first real delivery.
+    collector = start_collector(wrapper, prepared["cutoffUnixMs"])
+    fault_ref = configure_fault(context)
+    admission_ref = retain_private("queue-admission.json", {
+        "sqlBodySha256": hashlib.sha256(admission_body).hexdigest(),
+        "sqlBodyBytes": str(len(admission_body)), "original": original_ref,
+        "coreValidation": validation_ref,
+        "admissionDigest": context["selection"]["admissionDigest"],
+        "completeBodySha256": context["completeBodySha256"], "fault": fault_ref})
+    return {"admissionObservation": admission_ref, "wrapperObservation": wrapper_ref,
+            "collector": collector, "context": context}
+
+
+def run_called_queue_fault_window(cases, run_staged, callback_factory, assess):
+    """Call five independently selected production windows without replay.
+
+    Each case already names a real caller-owned preparing PublicationObject and
+    its authenticated token/runtime selection. Window B's own source/child
+    supervisor implements prepare/continue; a stopped child is not restaged.
+    """
+    if (not isinstance(cases, list) or len(cases) != len(FAULTS)
+            or {case["fault"] for case in cases} != FAULTS
+            or len({case["runDigest"] for case in cases}) != len(cases)
+            or any(set(case) != {"fault", "runDigest", "selectionFile", "outputDirectory"}
+                   or not DIGEST.fullmatch(case["runDigest"]) for case in cases)):
+        raise ValueError("called production window needs five distinct exact fault originals")
+    results = {}
+    for case in cases:
+        callbacks = []
+        callback = callback_factory(case)
+
+        def before_complete(prepared, root):
+            if callbacks:
+                raise ValueError("pre-Complete callback cannot repeat or restage an original")
+            callbacks.append((prepared, root))
+            return callback(prepared, root)
+
+        # No exception handler retries this driver or writes a new original.
+        run = run_staged(case["selectionFile"], case["outputDirectory"],
+                         before_complete=before_complete)
+        if len(callbacks) != 1:
+            raise ValueError("production driver did not reach its saved-original boundary")
+        results[case["fault"]] = assess(case, run)
+    return {"cases": results, "nativeBulkBytes": None, "qualification": None,
+            "resource2GiBAssessment": None,
+            "scope": "called normal broker fault windows; independent provider/current-source joins required"}
 
 
 def selected_queue_events(events, original):

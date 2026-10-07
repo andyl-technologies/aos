@@ -10,10 +10,11 @@
   sourceTree,
   nativeArtifact,
   workerArtifact,
+  selectedWorker ? pkgs.aos-hub-worker-dist,
   clientArtifact ? null,
 }: let
   native = pkgs.aos-hub;
-  worker = pkgs.aos-hub-worker-dist;
+  worker = selectedWorker;
   contract = native.passthru.cargoArtifactContract;
   vendor = builtins.elemAt native.passthru.evidenceSources 1;
   selected = builtins.fromJSON (builtins.readFile runtimeProvenance);

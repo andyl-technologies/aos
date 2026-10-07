@@ -396,8 +396,13 @@ def native_sql_topology(native_before, native_after, database_before, database_a
 
 
 def capture_native_sql_projection(native, database_machine, tools, checkpoints,
-                                  reader, native_process, database_host):
+                                  reader, native_process, database_host, *, capture_namespace=None):
     """Select the ordinary five-VM reader explicitly and retain both host brackets."""
+    if (capture_namespace is not None
+            and (not isinstance(capture_namespace, str)
+                 or re.fullmatch(r'queue-fault-[0-9a-f]{64}', capture_namespace) is None)):
+        raise ValueError('SQL capture namespace is not an exact queue fault original')
+    prefix = '' if capture_namespace is None else capture_namespace + '-'
     if not checkpoints:
         return {'version': 1, 'observations': [], 'objectPayloadBytes': None,
                 'missing': ['absent_or_capped_source_sql_projection_child']}
@@ -420,7 +425,7 @@ def capture_native_sql_projection(native, database_machine, tools, checkpoints,
         operations = batch['checkpoints']
         native_before = observe(native, 'native_sql_native_context', selected)
         database_before = observe(database_machine, 'native_sql_database_context', selected)
-        root = '/var/lib/hybrid-worker/native-sql-projection-%04d' % index
+        root = '/var/lib/hybrid-worker/' + prefix + 'native-sql-projection-%04d' % index
         local = {'root': root, 'role': reader['role'], 'deployment': tools['deploymentId'],
                  'database': 'postgres', 'psql': tools['postgres'] + '/psql',
                  'collectorSourceSha256': script_sha, 'runtimeSourcePath': tools['workerSourcePath'],
@@ -459,7 +464,7 @@ print(json.dumps(native_sql_collect(selection, selected['checkpoints'])))
             image = base64.b64decode(encoded.strip(), validate=True)
             if native_sql_digest(image) != reference['sha256'] or str(len(image)) != reference['byteSize']:
                 raise ValueError('Transferred Database SQL image commitment differs')
-            name = 'native-sql-%04d-image-%02d.private' % (index, position)
+            name = prefix + 'native-sql-%04d-image-%02d.private' % (index, position)
             retain_direct_flow(name, image)
             received = {'file': str((Path('external-direct-flow') / name).resolve()),
                         'sha256': native_sql_digest(image), 'byteSize': str(len(image))}

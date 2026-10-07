@@ -13,6 +13,7 @@
   separateDatabase ? false,
   externalDirect ? false,
   readRevisionFixture ? null,
+  nativeBodyObservationTools ? null,
 }: let
   databaseHost =
     if separateDatabase
@@ -158,7 +159,7 @@
         default http://127.0.0.1:3900;
         GET http://127.0.0.1:${
       if externalDirect
-      then "3903"
+      then "3904"
       else "3900"
     };
       }
@@ -407,6 +408,19 @@
   # Adjacent imports select the same reviewed fixture files in every guest.
   managedFixtureModules = pkgs.runCommand "hub-managed-fleet-fixture-modules" {} ''
     mkdir -p "$out"
+    mkdir -p "$out/protocol"
+    cp ${../../pkgs/tools/aos-hub-direct-staged-races.mjs} "$out/aos-hub-direct-staged-races.mjs"
+    cp ${../../pkgs/tools/aos-hub-direct-qualification.mjs} "$out/aos-hub-direct-qualification.mjs"
+    cp ${./_hub-direct-queue-fault-window.py} "$out/_hub-direct-queue-fault-window.py"
+    cp ${./_hub-direct-queue-fault-native.py} "$out/_hub-direct-queue-fault-native.py"
+    cp ${./_hub-direct-queue-faults.py} "$out/_hub-direct-queue-faults.py"
+    cp ${./_hub-direct-queue-fault-setup.py} "$out/_hub-direct-queue-fault-setup.py"
+    cp ${./_hub-direct-queue-fault-garage.py} "$out/_hub-direct-queue-fault-garage.py"
+    cp ${./_hub-direct-queue-fault-get.mjs} "$out/_hub-direct-queue-fault-get.mjs"
+    cp ${./_hub-direct-queue-fault-worker.mjs} "$out/_hub-direct-queue-fault-worker.mjs"
+    cp ${./_hub-direct-queue-fault-modules.py} "$out/_hub-direct-queue-fault-modules.py"
+    cp ${./_hub-direct-invocation-resources.py} "$out/_hub-direct-invocation-resources.py"
+    cp ${./_hub-direct-staged-window.py} "$out/_hub-direct-staged-window.py"
     cp ${./_hub-direct-issuer-scale-setup.py} "$out/_hub-direct-issuer-scale-setup.py"
     cp ${./_hub-direct-issuer-scale-workload.py} "$out/_hub-direct-issuer-scale-workload.py"
     cp ${./_hub-direct-issuer-scale.py} "$out/_hub-direct-issuer-scale.py"
@@ -667,7 +681,8 @@
         independentReview
         issuerClockReviewer
         sqlObserver
-      ];
+      ]
+      ++ lib.optional (nativeBodyObservationTools != null) nativeBodyObservationTools;
   };
 in {
   name =
@@ -825,6 +840,7 @@ in {
       import base64
       import hashlib
       import hmac
+      import importlib.util
       import json
       import re
       import shlex
@@ -926,6 +942,19 @@ in {
             external_oci_pair_coordinates(run)["placementPrefix"].rsplit("/", 1)[0],
             external_oci_pair_coordinates(run)["placementPrefix"])
             for run in external_copy_cases.values()])
+      ''}
+      ${lib.optionalString externalDirect ''
+        queue_get_tools = {
+            "python": "${pkgs.python3}/bin/python3", "node": "${pkgs.nodejs}/bin/node",
+            "queueFaultGetListener": "${managedFixtureModules}/_hub-direct-queue-fault-get.mjs",
+        }
+        queue_setup_spec = importlib.util.spec_from_file_location("production_queue_setup",
+            "${managedFixtureModules}/_hub-direct-queue-fault-setup.py")
+        queue_setup_module = importlib.util.module_from_spec(queue_setup_spec)
+        queue_setup_spec.loader.exec_module(queue_setup_module)
+        # This owner starts unarmed. Every ordinary GET retains its signed URI,
+        # headers and the existing 3903 chain; only one reviewed case may arm it.
+        queue_get_installation = queue_setup_module.install_get_owner(s3, queue_get_tools, globals())
       ''}
       s3.wait_until_succeeds(f"{GARAGE} status > /dev/null", timeout=180)
       s3.succeed(textwrap.dedent(f"""
@@ -1041,6 +1070,31 @@ in {
               "nativeSourcePath": "${pkgs.aos-hub.src}",
               "python": "${pkgs.python3}/bin/python3", "node": "${pkgs.nodejs}/bin/node",
               "runner": "${workerRunner}/value", "miniflare": "${pkgs.miniflare}",
+              "queueFaultWindow": "${managedFixtureModules}/_hub-direct-queue-fault-window.py",
+              "queueFaultStagedSupervisor": "${managedFixtureModules}/_hub-direct-staged-window.py",
+              "queueFaultStagedSupervisorSha256": "${builtins.hashFile "sha256" ./_hub-direct-staged-window.py}",
+              "queueFaultStagedDriver": {"file": "${managedFixtureModules}/aos-hub-direct-staged-races.mjs",
+                  "sha256": "${builtins.hashFile "sha256" ../../pkgs/tools/aos-hub-direct-staged-races.mjs}",
+                  "byteSize": "${toString (builtins.stringLength (builtins.readFile ../../pkgs/tools/aos-hub-direct-staged-races.mjs))}"},
+              "queueFaultNode": {"file": "${pkgs.nodejs}/bin/node",
+                  "sha256": hashlib.sha256(Path("${pkgs.nodejs}/bin/node").read_bytes()).hexdigest(),
+                  "byteSize": str(Path("${pkgs.nodejs}/bin/node").stat().st_size)},
+              "queueFaultReportHelper": {"file": "${managedFixtureModules}/aos-hub-direct-qualification.mjs",
+                  "sha256": "${builtins.hashFile "sha256" ../../pkgs/tools/aos-hub-direct-qualification.mjs}"},
+              "queueFaultProtoSources": [
+                  {"file": "${runtimeSource}/crates/aos-proto-types/src/direct_upload/model.rs",
+                      "sha256": "${builtins.hashFile "sha256" (runtimeSource + "/crates/aos-proto-types/src/direct_upload/model.rs")}"},
+                  {"file": "${runtimeSource}/crates/aos-proto-types/src/direct_upload/validation.rs",
+                      "sha256": "${builtins.hashFile "sha256" (runtimeSource + "/crates/aos-proto-types/src/direct_upload/validation.rs")}"},
+                  {"file": "${runtimeSource}/crates/aos-proto-types/src/direct_upload/batch.rs",
+                      "sha256": "${builtins.hashFile "sha256" (runtimeSource + "/crates/aos-proto-types/src/direct_upload/batch.rs")}"},
+              ],
+              "queueFaultGetInstallation": queue_get_installation,
+              "queueFaultGarage": "${managedFixtureModules}/_hub-direct-queue-fault-garage.py",
+              "queueFaultModules": "${managedFixtureModules}/_hub-direct-queue-fault-modules.py",
+              "queueFaultInvocationResources": "${managedFixtureModules}/_hub-direct-invocation-resources.py",
+              "queueFaultWrapper": "${managedFixtureModules}/_hub-direct-queue-fault-worker.mjs",
+              "queueFaultGetListener": "${managedFixtureModules}/_hub-direct-queue-fault-get.mjs",
               "workerd": "${pkgs.workerd-source}/bin/workerd", "curl": CURL,
               "nginx": "${pkgs.nginx}/bin/nginx", "socat": "${pkgs.socat}/bin/socat",
               "ociNamespaceObserver": "${managedFixtureModules}/_hub-oci-sdk-namespace.py",
@@ -1114,6 +1168,19 @@ in {
               "managedWorkflowAccounting": "${managedFixtureModules}/_hub-managed-workflow-accounting.py",
               "managedCleanupSql": "${managedFixtureModules}/_hub-managed-cleanup-sql.py",
               "storageCodecSourceSha256": "${builtins.hashString "sha256" (builtins.concatStringsSep "" (map (name: builtins.readFile (runtimeSource + ("/tests/fleet/storage-body-codec/src/" + name))) ["main.rs" "files.rs" "classify.rs" "storage_work.rs" "ingress.rs" "controls.rs" "copy_request.rs" "copy_closed.rs" "mirror.rs"]))}",
+              "nativeBodyObservationTools": ${
+            if nativeBodyObservationTools == null
+            then "None"
+            else ''{
+                  "package": "${nativeBodyObservationTools}",
+                  "context": {"path": "${nativeBodyObservationTools}/libexec/aos-observation-tools/package-context.json",
+                      "sha256": hashlib.sha256(Path("${nativeBodyObservationTools}/libexec/aos-observation-tools/package-context.json").read_bytes()).hexdigest()},
+                  "provenance": {"path": "${nativeBodyObservationTools}/helper-build-provenance.json",
+                      "sha256": hashlib.sha256(Path("${nativeBodyObservationTools}/helper-build-provenance.json").read_bytes()).hexdigest()},
+                  "wrapper": {"path": "${nativeBodyObservationTools}/bin/aos-native-body-observer",
+                      "sha256": hashlib.sha256(Path("${nativeBodyObservationTools}/bin/aos-native-body-observer").read_bytes()).hexdigest()},
+              }''
+          },
               "storageCodecExecutable": {"path": "${storageBodyCodec}/bin/aos-storage-body-codec",
                   "sha256": hashlib.sha256(Path("${storageBodyCodec}/bin/aos-storage-body-codec").read_bytes()).hexdigest()},
               "managedIngressObservationSources": {
@@ -1203,7 +1270,8 @@ in {
               raise
           finally:
               stop_direct_provider_listeners(s3, direct_tools,
-                  {"verification": provider_hold, "copy-partial": copy_partial_hold}, direct_producer_error)
+                  {"verification": provider_hold, "copy-partial": copy_partial_hold,
+                   "queue-get": queue_get_installation}, direct_producer_error)
         ''
       else
         import ./_hub-hybrid-legacy.nix {

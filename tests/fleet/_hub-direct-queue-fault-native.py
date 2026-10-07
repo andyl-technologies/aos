@@ -18,6 +18,166 @@ IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
 MAX_BODY = 256 * 1024
 
 
+def admission_only_query(deployment, session):
+    """Read the original admission before any completion intent exists."""
+    # Reuse the existing closed SQL-identity checks, never a caller SQL fragment.
+    pending_original_query(deployment, session, "0" * 64)
+    return (
+        "BEGIN TRANSACTION READ ONLY; SET LOCAL statement_timeout = '30s'; "
+        "SELECT json_build_object('sessionId',s.session_id,'deploymentId',s.deployment_id,"
+        "'principalId',s.principal_id,'state',s.state,'admission',s.admission_json::json,"
+        "'intent',s.intent_json::json,'logicalFingerprint',s.logical_fingerprint,"
+        "'sourceSha256',s.source_sha256,'declaredSize',s.declared_size::text,"
+        "'publicationId',s.publication_id,'publicationState',p.state,"
+        "'completionIntents',(SELECT count(*) FROM direct_upload_completion_intents c "
+        "WHERE c.deployment_id=s.deployment_id AND c.session_id=s.session_id),"
+        "'completionReceipts',(SELECT count(*) FROM direct_upload_completion_receipts r "
+        "WHERE r.deployment_id=s.deployment_id AND r.session_id=s.session_id))::text "
+        "FROM direct_upload_sessions s JOIN registry_publications p "
+        "ON p.publication_id=s.publication_id "
+        f"WHERE s.deployment_id='{deployment}' AND s.session_id='{session}'; COMMIT;"
+    )
+
+
+def _sql_row(body):
+    if not isinstance(body, bytes) or not 0 < len(body) <= MAX_BODY:
+        raise ValueError("SQL original exceeds its private bound")
+
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError("SQL original contains duplicate fields")
+            result[key] = value
+        return result
+
+    lines = body.splitlines()
+    if len(lines) != 1:
+        raise ValueError("SQL did not select exactly one original")
+    return json.loads(lines[0], object_pairs_hook=pairs)
+
+
+def admission_snapshot(body, session, intent, whoami, placement_id):
+    """Join actual SQL admission to prepared production Begin and current actor.
+
+    The returned full admission stays private. It is not a completion intent,
+    queue acceptance, provider permission or caller-supplied accepted flag.
+    """
+    row = _sql_row(body)
+    fields = {"sessionId", "deploymentId", "principalId", "state", "admission",
+              "intent", "logicalFingerprint", "sourceSha256", "declaredSize",
+              "publicationId", "publicationState", "completionIntents", "completionReceipts"}
+    if set(row) != fields or not isinstance(row["admission"], dict):
+        raise ValueError("admission SQL schema differs")
+    admission = row["admission"]
+    if (session != {"sessionId": row["sessionId"], "logicalFingerprint": row["logicalFingerprint"]}
+            or admission["sessionId"] != row["sessionId"]
+            or admission["logicalFingerprint"] != row["logicalFingerprint"]
+            or row["intent"] != intent or admission["intent"] != intent
+            or row["sourceSha256"] != intent["expectedSha256"]
+            or row["declaredSize"] != intent["byteSize"]
+            or row["principalId"] != admission["principalId"]
+            or intent["target"]["kind"] != "publication_object"
+            or row["publicationId"] != intent["target"]["publicationId"]
+            or row["state"] != "admitted" or row["publicationState"] != "preparing"
+            or type(row["completionIntents"]) is not int or row["completionIntents"] != 0
+            or type(row["completionReceipts"]) is not int or row["completionReceipts"] != 0
+            or len([item for item in admission["placements"]
+                    if item["placementId"] == placement_id]) != 1):
+        raise ValueError("prepared source, owner or pre-Complete SQL original differs")
+    assert_original_actor(whoami, admission, row["deploymentId"])
+    # Copy the parsed document so later callback mutations cannot alter this join.
+    retained = json.loads(json.dumps(admission))
+    encoded = json.dumps(retained, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    projection = {"sessionDigest": hashlib.sha256(row["sessionId"].encode()).hexdigest(),
+                  "admissionDigest": hashlib.sha256(encoded).hexdigest(),
+                  "state": row["state"], "publicationState": row["publicationState"],
+                  "completionReceipts": 0}
+    return retained, projection
+
+
+def capture_admission_sql(native, tools, guest_python, session, sequence):
+    """Capture actual admission-only SQL through the same source-built reader."""
+    return _capture_sql(native, tools, guest_python,
+                        admission_only_query(tools["deploymentId"], session), sequence, "admission")
+
+
+def admission_codec_manifest(capture, public_begin, sql_admissions, codec_revision, source_digest):
+    """Select the existing Core-backed logical-admission projection.
+
+    All references name independently retained bytes. The SQL image comes from
+    the existing measured SQL reader, not a synthesized logical reply. Runtime,
+    reader and authenticated control custody remain the caller's obligations.
+    """
+    if (not re.fullmatch(r"[0-9a-f]{40}", codec_revision)
+            or not DIGEST.fullmatch(source_digest)
+            or capture.get("phase") != "admission" or capture.get("method") != "POST"
+            or capture.get("procedure") != "/aos.hub.v1.DirectUploadService/BeginBatch"
+            or type(capture.get("status")) is not int or capture["status"] != 200
+            or capture.get("responseContentType") != "application/json"
+            or capture.get("responseContentEncoding") not in {None, "", "identity"}
+            or set(capture.get("bodies", {})) != {"request", "response"}):
+        raise ValueError("selected actual logical Admission capture differs")
+    references = [*capture["bodies"].values(), public_begin, sql_admissions]
+    for reference in references:
+        if (not isinstance(reference, dict) or set(reference) != {"file", "sha256", "byteSize"}
+                or not isinstance(reference["file"], str) or not reference["file"].startswith("/")
+                or not isinstance(reference["sha256"], str) or not DIGEST.fullmatch(reference["sha256"])
+                or not isinstance(reference["byteSize"], str)
+                or not re.fullmatch(r"[1-9][0-9]{0,6}", reference["byteSize"])
+                or int(reference["byteSize"]) > MAX_BODY):
+            raise ValueError("actual Admission image reference differs")
+    selected = json.loads(json.dumps(capture))
+    selected["immutableProjection"] = {
+        "kind": "direct_admission", "originalRequest": selected["bodies"]["request"],
+        "originalPublicRequest": dict(public_begin), "sqlAdmissions": dict(sql_admissions)}
+    return {"version": 1, "codecRevision": codec_revision, "sourceDigest": source_digest,
+            "issuerVerifier": None, "captures": [selected]}
+
+
+def admission_codec_result(body, manifest, manifest_sha256):
+    """Require the actual codec result for every selected immutable byte image.
+
+    This comparison grants neither SQL-reader authority nor authentication. The
+    existing codec explicitly retains those missing joins in its own output.
+    """
+    result = _sql_row(body)
+    if (result.get("version") != 1 or type(result.get("version")) is not int
+            or result.get("codecRevision") != manifest["codecRevision"]
+            or result.get("selectedSourceDigest") != manifest["sourceDigest"]
+            or result.get("manifestSha256") != manifest_sha256
+            or not isinstance(result.get("captures"), list) or len(result["captures"]) != 1):
+        raise ValueError("actual admission codec runtime or input differs")
+    original = manifest["captures"][0]
+    capture = result["captures"][0]
+    projection = capture.get("immutableProjection")
+    selected = original["immutableProjection"]
+    if (capture.get("requestIdSha256") != hashlib.sha256(original["requestId"].encode()).hexdigest()
+            or capture.get("procedure") != original["procedure"] or capture.get("method") != "POST"
+            or capture.get("phase") != "admission"
+            or capture.get("originalPublicRequestSha256") != selected["originalPublicRequest"]["sha256"]
+            or not isinstance(projection, dict)
+            or projection.get("version") != 1 or type(projection.get("version")) is not int
+            or projection.get("kind") != "direct_logical_admission"
+            or projection.get("matchedOriginalCount") != "1"
+            or projection.get("originalRequestSha256") != original["bodies"]["request"]["sha256"]
+            or projection.get("sqlEvidenceSha256") != selected["sqlAdmissions"]["sha256"]
+            or projection.get("objectPayloadBytes") is not None
+            or projection.get("sqlReaderAuthority") != "not_checked_join_measured_read_only_source_process_and_window"
+            or projection.get("missing") != ["independent_sql_reader_custody_and_temporal_current_fences"]):
+        raise ValueError("Core admission projection does not match the actual original")
+    for direction in ("request", "response"):
+        reference = original["bodies"][direction]
+        observed = capture.get(direction, {})
+        if (observed.get("sha256") != reference["sha256"]
+                or observed.get("byteSize") != reference["byteSize"]):
+            raise ValueError("Core admission capture bytes changed")
+    if (projection.get("requestControlBytes") != original["bodies"]["request"]["byteSize"]
+            or projection.get("replyControlBytes") != original["bodies"]["response"]["byteSize"]):
+        raise ValueError("Core admission control lengths changed")
+    return json.loads(json.dumps(projection))
+
+
 def pending_original_query(deployment, session, operation):
     """Construct a bounded read-only query for the retained Complete original."""
     if (not isinstance(deployment, str) or not re.fullmatch(r"[a-z0-9-]{1,128}", deployment)
@@ -42,13 +202,17 @@ def pending_original_query(deployment, session, operation):
 
 def capture_pending_sql(native, tools, guest_python, session, operation, sequence):
     """Run actual source-built psql without modifying target schema or rows."""
+    query = pending_original_query(tools["deploymentId"], session, operation)
+    return _capture_sql(native, tools, guest_python, query, sequence, "snapshot")
+
+
+def _capture_sql(native, tools, guest_python, query, sequence, kind):
     if type(sequence) is not int or not 0 <= sequence < 4096:
         raise ValueError("pending SQL observation sequence differs")
-    query = pending_original_query(tools["deploymentId"], session, operation)
     if not tools["postgres"].startswith("/nix/store/") or not tools["python"].startswith("/nix/store/"):
         raise ValueError("pending SQL observation requires declared source-built tools")
     selected = {"query": query, "databaseUrlFile": tools["nativeDatabaseUrlFile"],
-                "psql": tools["postgres"] + "/psql", "sequence": sequence}
+                "psql": tools["postgres"] + "/psql", "sequence": sequence, "kind": kind}
     # This code runs on the selected Native machine through the existing private
     # transport. The URL is loaded there; it never enters the returned receipt.
     body = """
@@ -58,7 +222,7 @@ def capture_pending_sql(native, tools, guest_python, session, operation, sequenc
         root = Path('/var/lib/hybrid-native-observations/queue-faults')
         root.mkdir(mode=0o700, exist_ok=True)
         os.umask(0o077)
-        path = root / ('snapshot-%04d.jsonl' % selected['sequence'])
+        path = root / ('%s-%04d.jsonl' % (selected['kind'], selected['sequence']))
         environment = dict(os.environ)
         environment['PGDATABASE'] = Path(selected['databaseUrlFile']).read_text().strip()
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
@@ -112,7 +276,17 @@ def pending_snapshot(body, admission, complete):
 
 
 class QueueFaultNativeTransport:
-    """Send actual WhoAmI and exact Complete without token refresh or upload APIs."""
+    """Send closed publication setup, actual WhoAmI and exact Complete.
+
+    This metadata transport never refreshes an original bearer or uploads bytes.
+    The separately selected staged driver owns ordinary Direct admission/parts.
+    """
+
+    ROUTES = {"IdentityService/WhoAmI", "DirectUploadService/CompleteBatch",
+              "DirectUploadService/GetCapabilities",
+              "PublishService/BeginRegistryPublicationManifest",
+              "PublishService/AppendRegistryPublicationManifest",
+              "PublishService/SealRegistryPublicationManifest"}
 
     def __init__(self, client, tools, token_file, guest_python, copy_private_body):
         self.client = client
@@ -123,6 +297,7 @@ class QueueFaultNativeTransport:
         self.guest_python = guest_python
         self.copy_private_body = copy_private_body
         self.observations = []
+        self.saved_complete_dispatched = False
         if not isinstance(token_file, str) or not re.fullmatch(
                 r"/var/lib/hybrid-client/queue-faults/[A-Za-z0-9_-]+\.token", token_file):
             raise ValueError("queue fault token must be one owner-private fixture file")
@@ -205,11 +380,26 @@ class QueueFaultNativeTransport:
 
     def call(self, route, request):
         """Retain the actual request/reply prefix and return independently copied JSON."""
-        if route not in {"IdentityService/WhoAmI", "DirectUploadService/CompleteBatch"}:
+        return self._call_encoded(route, json.dumps(request, separators=(",", ":")))
+
+    def select_browser_bearer(self, token, install_private):
+        """Retain the actual existing caller bearer without issuing or refreshing it.
+
+        This chooses transport bytes only; the following actual WhoAmI and SQL
+        actor join establish the observed caller, not this local state change.
+        """
+        if (self.provisioned or self.observations or not isinstance(token, str)
+                or not re.fullmatch(r"[A-Za-z0-9._-]{1,8192}", token)):
+            raise ValueError("browser bearer selection is substituted or repeated")
+        install_private(self.jwt_file, token.encode())
+        self.jwt_sha256 = hashlib.sha256(token.encode()).hexdigest()
+        self.provisioned = True
+
+    def _call_encoded(self, route, encoded):
+        if route not in self.ROUTES:
             raise ValueError("queue fault route is outside the selected identity/retry contract")
         if not self.provisioned:
             raise ValueError("actual provisioning exchange must precede RPC")
-        encoded = json.dumps(request, separators=(",", ":"))
         if len(encoded.encode()) >= 64 * 1024 or len(self.observations) >= 4096:
             raise ValueError("queue fault metadata transport bound differs")
         index = len(self.observations)
@@ -286,6 +476,25 @@ class QueueFaultNativeTransport:
             "operationId": batch_operation_id, "items": [original],
         })
 
+    def complete_saved(self, body, reference, original, batch_operation_id):
+        """Dispatch the prepared original byte image once, retaining unknown effects.
+
+        This is for the prepared production handoff, not a retry authority. Even
+        a local transport error consumes this object's dispatch opportunity.
+        """
+        if (self.saved_complete_dispatched or not isinstance(body, bytes)
+                or not 0 < len(body) < 64 * 1024
+                or set(reference) != {"sha256", "byteSize"}
+                or reference["byteSize"] != str(len(body))
+                or reference["sha256"] != hashlib.sha256(body).hexdigest()):
+            raise ValueError("saved Complete is changed or already dispatched")
+        parsed = _sql_row(body)
+        if parsed != {"operationId": batch_operation_id, "items": [original]}:
+            raise ValueError("saved Complete batch identity or composition differs")
+        encoded = body.decode("utf-8")
+        self.saved_complete_dispatched = True
+        return self._call_encoded("DirectUploadService/CompleteBatch", encoded)
+
 
 def retire_actual_token(controls, token_id, scope, label):
     """Use the current list revision and persisted retirement Plan/Apply pair."""
@@ -336,9 +545,12 @@ def assert_complete_denied(receipt, reply, original, batch_operation_id):
         raise AssertionError("exact Complete retry did not receive an authorization denial")
 
 
-def assert_original_actor(whoami, admission):
+def assert_original_actor(whoami, admission, deployment_id=None):
     """Join the actual pre-fault token identity to its admitted session actor."""
-    if (whoami.get("deploymentId") != admission.get("deploymentId")
+    # DirectUploadAdmission deliberately has no deploymentId. Production joins
+    # use its independently read SQL namespace rather than extending the wire.
+    namespace = deployment_id if deployment_id is not None else admission.get("deploymentId")
+    if (not namespace or whoami.get("deploymentId") != namespace
             or whoami.get("principalId") != admission.get("principalId")
             or not whoami.get("principalId")
             or whoami.get("principalKind") != admission["actorSlot"]["kind"]):

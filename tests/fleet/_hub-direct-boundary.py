@@ -105,8 +105,16 @@ def observe_direct_provider_callers(s3, tools):
 
 def capture_direct_native_bodies(native, tools, observations,
                                 body_root="/var/lib/hybrid-native-observations",
-                                capture_label="native", empty_response_observations=None):
+                                capture_label="native", empty_response_observations=None,
+                                *, artifact_namespace=None):
     """Retain exact actual private files and resolve lengths from measured bytes."""
+    if (artifact_namespace is not None
+            and (not isinstance(artifact_namespace, str)
+                 or re.fullmatch(r"queue-fault-[0-9a-f]{64}", artifact_namespace) is None)):
+        raise ValueError("Native body capture namespace is not an exact queue fault original")
+    # The full run digest stays in the locator; the shorter label leaves room
+    # for the existing request ID and stream suffix within the host name bound.
+    artifact_prefix = "" if artifact_namespace is None else "qf-" + artifact_namespace.removeprefix("queue-fault-") + "-"
     ordinary = (body_root, capture_label) in {
             ("/var/lib/hybrid-native-observations", "native"),
             ("/var/lib/hybrid-native-outbound", "native-original"),
@@ -173,7 +181,7 @@ def capture_direct_native_bodies(native, tools, observations,
             if corpus_bytes > NATIVE_CAPTURE_CORPUS_LIMIT:
                 raise ValueError("Native private body corpus exceeds its selected observation bound")
             actual[direction + "_body_bytes"] = len(body)
-            filename = capture_label + "-" + identifier + "." + direction + ".body"
+            filename = artifact_prefix + capture_label + "-" + identifier + "." + direction + ".body"
             digest = retain_direct_flow(filename, body)
             captured["bodies"][direction] = {"file": str(Path("external-direct-flow") / filename),
                 "sha256": digest, "byteSize": len(body)}
@@ -188,7 +196,7 @@ def capture_direct_native_bodies(native, tools, observations,
         "observerOverhead": "private request buffering and response storage enabled equally for baseline and loaded probes",
         "rawBodies": "retained owner-private; not included in public numeric evidence",
         "scope": "actual Native request and response files; codec classification is independent"}
-    retain_direct_flow("actual-" + capture_label + "-private-body-receipts.json", receipt)
+    retain_direct_flow(artifact_prefix + "actual-" + capture_label + "-private-body-receipts.json", receipt)
     return measured, receipt
 
 

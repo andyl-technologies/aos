@@ -1,5 +1,6 @@
 """Exercise fault identity/refusal joins and actual owned-process observations."""
 
+import copy
 import hashlib
 import importlib.util
 import json
@@ -41,6 +42,195 @@ def snapshot_body(admission, complete):
 
 
 class OriginalRefusalTests(unittest.TestCase):
+    def test_admission_query_does_not_require_a_complete_intent(self):
+        query = native.admission_only_query("fixture-deployment", "session_1")
+        self.assertTrue(query.startswith("BEGIN TRANSACTION READ ONLY;"))
+        self.assertNotIn("JOIN direct_upload_completion_intents", query)
+        self.assertIn("'completionIntents',(SELECT count(*)", query)
+        self.assertIn("'deploymentId',s.deployment_id", query)
+        with self.assertRaises(ValueError):
+            native.admission_only_query("fixture", "x';DELETE")
+
+    def prepared(self):
+        admission, complete = original()
+        admission.update(principalId="actor", actorSlot={"kind": "service_account"})
+        admission["intent"].update(expectedSha256="7" * 64, byteSize="8388608")
+        placement = {"placementId": "1"}
+        complete["manifests"] = [{"placement": placement, "manifestDigest": "8" * 64, "parts": []}]
+        status = {"session": complete["session"], "intent": admission["intent"],
+                  "resourceVersion": "1", "state": "creating", "placements": [placement]}
+        whoami = {"deploymentId": "fixture", "principalId": "actor", "principalKind": "service_account"}
+        row = {"sessionId": "session_1", "deploymentId": "fixture", "principalId": "actor",
+               "state": "admitted", "admission": admission, "intent": admission["intent"],
+               "logicalFingerprint": "a" * 64, "sourceSha256": "7" * 64, "declaredSize": "8388608",
+               "publicationId": "b" * 32, "publicationState": "preparing",
+               "completionIntents": 0, "completionReceipts": 0}
+        batch = {"operationId": "9" * 64, "items": [complete]}
+        return row, status, whoami, batch
+
+    def test_precomplete_sql_joins_actual_namespace_and_refuses_existing_intent(self):
+        row, status, whoami, batch = self.prepared()
+        context = faults.prepared_queue_context(json.dumps(row).encode(), status,
+            json.dumps(batch).encode(), whoami, "1", "d" * 64, "e" * 64, "enqueue_ack_lost")
+        self.assertNotIn("deploymentId", context["admission"])
+        self.assertIsNone(context["closedJob"])
+        for field, value in [("completionIntents", 1), ("completionIntents", False),
+                             ("principalId", "foreign"), ("sourceSha256", "0" * 64)]:
+            changed = {**row, field: value}
+            with self.assertRaises(ValueError):
+                faults.prepared_queue_context(json.dumps(changed).encode(), status,
+                    json.dumps(batch).encode(), whoami, "1", "d" * 64, "e" * 64, "enqueue_ack_lost")
+        with self.assertRaises(ValueError):
+            faults.prepared_queue_context(json.dumps(row).encode(), status,
+                json.dumps(batch).encode(), {**whoami, "deploymentId": "other"},
+                "1", "d" * 64, "e" * 64, "enqueue_ack_lost")
+
+    def test_precomplete_callback_retains_original_before_install_and_starts_bounded_collection(self):
+        row, status, whoami, batch = self.prepared()
+        actions = []
+        def retain(name, value):
+            actions.append(name)
+            return {"file": "/private/" + name, "sha256": faults.canonical_digest(value), "byteSize": "1"}
+        def install(selection):
+            actions.append("install")
+            return {"compiledSourceDigest": selection["sourceDigest"], "selection": selection,
+                    "scriptPath": "/private/queue-fault-entry.mjs",
+                    "modules": {name: {} for name in ["installed-shim.mjs", "index.wasm",
+                                                      "queue-fault-worker.mjs", "queue-fault-entry.mjs"]}}
+        def collector(wrapper, cutoff):
+            actions.append("collect")
+            self.assertEqual(cutoff, 123456789)
+            return {"scope": "fixed_owned_collector"}
+        def configure(context):
+            actions.append("fault")
+            self.assertEqual(context["before"]["completionReceipts"], 0)
+            return {"scope": "selected_fault_original"}
+        public, evidence = self.admission_evidence(row)
+        def project(context):
+            actions.append("core-project")
+            self.assertEqual(context["admission"], row["admission"])
+            return evidence
+        result = faults.run_precomplete_queue_fault({"fault": "enqueue_ack_lost", "status": status,
+            "publicBeginBody": public, "completeBody": json.dumps(batch).encode(),
+            "placementId": "1", "sourceDigest": "d" * 64,
+            "runDigest": "e" * 64, "cutoffUnixMs": 123456789},
+            read_admission=lambda session: json.dumps(row).encode(), read_whoami=lambda: whoami,
+            capture_admission_projection=project,
+            install_wrapper=install, start_collector=collector, configure_fault=configure, retain_private=retain)
+        self.assertLess(actions.index("core-project"), actions.index("install"))
+        self.assertLess(actions.index("queue-admission-core.json"), actions.index("install"))
+        self.assertLess(actions.index("queue-original.json"), actions.index("install"))
+        self.assertLess(actions.index("collect"), actions.index("fault"))
+        self.assertIn("admissionObservation", result)
+
+    def admission_evidence(self, row):
+        """Supply synthetic codec output for orchestration refusal tests only."""
+        def reference(name, raw):
+            return {"file": "/private/" + name, "sha256": hashlib.sha256(raw).hexdigest(),
+                    "byteSize": str(len(raw))}
+        public = json.dumps({"operationId": "3" * 64,
+                             "items": [row["admission"]["intent"]]}, separators=(",", ":")).encode()
+        request, reply = b"synthetic-logical-request", b"synthetic-logical-reply"
+        sql = json.dumps({"sessionId": row["sessionId"], "publicationId": row["publicationId"],
+                         "state": "admitted", "admission": row["admission"]}).encode()
+        capture = {"requestId": "synthetic-request", "procedure": "/aos.hub.v1.DirectUploadService/BeginBatch",
+                   "method": "POST", "phase": "admission", "status": 200,
+                   "responseContentType": "application/json", "responseContentEncoding": None,
+                   "bodies": {"request": reference("request", request), "response": reference("reply", reply)}}
+        manifest = native.admission_codec_manifest(capture, reference("public", public),
+            reference("sql", sql), "1" * 40, "d" * 64)
+        raw_manifest = json.dumps(manifest).encode()
+        manifest_sha = hashlib.sha256(raw_manifest).hexdigest()
+        projection = {"version": 1, "kind": "direct_logical_admission",
+            "originalRequestSha256": hashlib.sha256(request).hexdigest(),
+            "sqlEvidenceSha256": hashlib.sha256(sql).hexdigest(), "matchedOriginalCount": "1",
+            "requestControlBytes": str(len(request)), "replyControlBytes": str(len(reply)),
+            "objectPayloadBytes": None,
+            "sqlReaderAuthority": "not_checked_join_measured_read_only_source_process_and_window",
+            "missing": ["independent_sql_reader_custody_and_temporal_current_fences"]}
+        observed = {"requestIdSha256": hashlib.sha256(b"synthetic-request").hexdigest(),
+            "procedure": capture["procedure"], "method": "POST", "phase": "admission",
+            "originalPublicRequestSha256": hashlib.sha256(public).hexdigest(),
+            "immutableProjection": projection,
+            "request": {key: value for key, value in capture["bodies"]["request"].items() if key != "file"},
+            "response": {key: value for key, value in capture["bodies"]["response"].items() if key != "file"}}
+        stdout = json.dumps({"version": 1, "codecRevision": "1" * 40, "selectedSourceDigest": "d" * 64,
+                             "manifestSha256": manifest_sha, "captures": [observed]}).encode()
+        control = {"step": "admission", "requestDigest": "2" * 64,
+            "signedBodyDigest": hashlib.sha256(request).hexdigest(),
+            "publicBodyDigest": hashlib.sha256(public).hexdigest(),
+            "replyBodyDigest": hashlib.sha256(reply).hexdigest(),
+            "sessions": [{"sessionDigest": hashlib.sha256(row["sessionId"].encode()).hexdigest(),
+                          "originalDigest": hashlib.sha256(row["logicalFingerprint"].encode()).hexdigest()}]}
+        events = [{"kind": kind, "sourceDigest": "d" * 64, "outcome": "positive",
+                   "bytes": str(len(body)), "control": dict(control)}
+                  for kind, body in [("control_request", request), ("control_reply", reply)]]
+        references = {name: reference(name, b"synthetic-custody") for name in (
+            "codecExecution", "sqlReader", "nativeCapture", "workerCapture")}
+        references.update(codecOutput=reference("output", stdout), manifest=reference("manifest", raw_manifest))
+        return public, {"manifest": manifest, "manifestSha256": manifest_sha, "codecStdout": stdout,
+                        "sqlAdmissionsBody": sql, "authenticatedEvents": events, "references": references}
+
+    def test_precomplete_refuses_missing_core_or_foreign_authenticated_original_before_install(self):
+        row, status, whoami, batch = self.prepared()
+        public, evidence = self.admission_evidence(row)
+        installed = []
+        def invoke(selected):
+            return faults.run_precomplete_queue_fault({"fault": "enqueue_ack_lost", "status": status,
+                "publicBeginBody": public, "completeBody": json.dumps(batch).encode(),
+                "placementId": "1", "sourceDigest": "d" * 64, "runDigest": "e" * 64,
+                "cutoffUnixMs": 123456789}, read_admission=lambda session: json.dumps(row).encode(),
+                read_whoami=lambda: whoami, capture_admission_projection=lambda context: selected,
+                install_wrapper=lambda value: installed.append(value), start_collector=lambda *args: None,
+                configure_fault=lambda context: None, retain_private=lambda *args: None)
+        with self.assertRaises(ValueError):
+            invoke({"ready": True})
+        changed = copy.deepcopy(evidence)
+        changed["authenticatedEvents"][1]["control"]["sessions"][0]["originalDigest"] = "0" * 64
+        with self.assertRaises(ValueError):
+            invoke(changed)
+        changed = copy.deepcopy(evidence)
+        changed["authenticatedEvents"] = changed["authenticatedEvents"][:1]
+        with self.assertRaises(ValueError):
+            invoke(changed)
+        changed = copy.deepcopy(evidence)
+        decoded = json.loads(changed["codecStdout"])
+        decoded["captures"][0]["immutableProjection"]["matchedOriginalCount"] = "0"
+        changed["codecStdout"] = json.dumps(decoded).encode()
+        with self.assertRaises(ValueError):
+            invoke(changed)
+        self.assertEqual(installed, [])
+
+    def test_saved_complete_preserves_bytes_and_cannot_replay_after_unknown(self):
+        _, _, _, batch = self.prepared()
+        body = json.dumps(batch, separators=(", ", ": ")).encode()
+        reference = {"sha256": hashlib.sha256(body).hexdigest(), "byteSize": str(len(body))}
+        class UnknownTransport(native.QueueFaultNativeTransport):
+            def _call_encoded(self, route, encoded):
+                self.dispatched_body = encoded.encode()
+                raise RuntimeError("unknown controlled transport")
+        transport = UnknownTransport(None, {}, "/var/lib/hybrid-client/queue-faults/case.token", None, None)
+        with self.assertRaises(RuntimeError):
+            transport.complete_saved(body, reference, batch["items"][0], batch["operationId"])
+        self.assertEqual(transport.dispatched_body, body)
+        with self.assertRaises(ValueError):
+            transport.complete_saved(body, reference, batch["items"][0], batch["operationId"])
+
+    def test_called_window_does_not_repeat_a_failed_production_driver(self):
+        cases = [{"fault": fault, "runDigest": f"{index:064x}",
+                  "selectionFile": "/private/case-%d.json" % index,
+                  "outputDirectory": "/private/output-%d" % index}
+                 for index, fault in enumerate(sorted(faults.FAULTS), 1)]
+        calls = []
+        def run(selection, output, *, before_complete):
+            calls.append(selection)
+            before_complete({}, output)
+            raise RuntimeError("unknown actual mutation boundary")
+        with self.assertRaises(RuntimeError):
+            faults.run_called_queue_fault_window(cases, run, lambda case: lambda prepared, root: {},
+                                                  lambda case, result: {})
+        self.assertEqual(len(calls), 1)
+
     def test_canonical_original_rejects_unsafe_numbers_and_matches_closed_utf8(self):
         self.assertEqual(faults.canonical_digest({"z": "é", "a": "1"}),
                          hashlib.sha256('{"a":"1","z":"é"}'.encode()).hexdigest())

@@ -957,6 +957,7 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
     # measurements. Their distinction remains explicit in the retained ledger.
     print("Actual External publication measurements and scoped Native bulk assessment retained:",
           str(Path('external-direct-flow/actual-publication-assessed.json').resolve()), flush=True)
+    summary["queueFaultRegistry"] = registries["a"]
     return summary, process
 
 
@@ -1118,6 +1119,13 @@ def run_external_direct_fleet(client, native, worker, s3, database_machine, tool
     tools = prepare_direct_client_provider_policy(client, tools, credentials)
     publication, process = run_external_direct_publication(client, native, worker, s3, tools, controls, credentials,
         authority, process, identity, acceptance, database_machine)
+    queue_spec = importlib.util.spec_from_file_location("production_queue_window", tools["queueFaultWindow"])
+    queue_module = importlib.util.module_from_spec(queue_spec)
+    queue_spec.loader.exec_module(queue_module)
+    queue_faults, process = queue_module.run_production_queue_fault_window(
+        client, native, worker, s3, database_machine, tools, controls, credentials,
+        artifacts, identity, process, publication, globals())
+    retain_direct_flow("actual-called-production-queue-faults.json", queue_faults)
     verification_timeout = run_direct_verification_timeout(client, native, worker, s3, tools,
         controls, credentials, process)
     called_faults = called_read_fault_ledger(verification_timeout,
