@@ -142,8 +142,8 @@ fn run_control_worker_rejects_unsolicited_run_frame_with_fail_loud_shutdown() {
     CONTROL_WORKER_SHUTDOWN_CALLS.store(0, Ordering::SeqCst);
     CONTROL_WORKER_DONE_BEFORE_SHUTDOWN.store(false, Ordering::SeqCst);
     host.write_all(&control_encode_host_msg(&HostMsg::HelloAck {
-        proto_version: 3,
-        abi_version: 25,
+        proto_version: crucible_protocol::CONTROL_PROTOCOL_VERSION,
+        abi_version: crucible_shmem::ABI_VERSION,
         slot_index: 0,
         node_count: 1,
     }))
@@ -414,16 +414,16 @@ fn running_plugin_control_pair() -> (UnixStream, ControlLifecycleStream<UnixStre
     let mut plugin = ControlLifecycleStream::connected_unix_stream(plugin_socket)
         .unwrap_or_else(|error| panic!("plugin lifecycle should connect: {error}"));
     host.write_all(&control_encode_host_msg(&HostMsg::HelloAck {
-        proto_version: 3,
-        abi_version: 25,
+        proto_version: crucible_protocol::CONTROL_PROTOCOL_VERSION,
+        abi_version: crucible_shmem::ABI_VERSION,
         slot_index: 0,
         node_count: 1,
     }))
     .unwrap_or_else(|error| panic!("HelloAck should write: {error}"));
     plugin
         .plugin_start_handshake(PluginHandshakeConfig {
-            proto_version: 3,
-            abi_version: 25,
+            proto_version: crucible_protocol::CONTROL_PROTOCOL_VERSION,
+            abi_version: crucible_shmem::ABI_VERSION,
         })
         .unwrap_or_else(|error| panic!("plugin handshake should complete: {error}"));
     let _hello = read_control_frame(&mut host)
@@ -1838,4 +1838,51 @@ fn handshake_failure_marks_the_singleton_failed_before_second_install_attempt() 
         Err(PluginRuntimeInstallError::RuntimeAlreadyReserved)
     ));
     join_host(host);
+}
+
+#[test]
+fn joined_teardown_reports_outstanding_retained_request_but_success_is_silent() {
+    for outstanding in [false, true] {
+        let (mut handle, _header, slot, _wake_owner, _wake_peer) = control_worker_teardown_handle();
+        handle.control_callback_witness = Some(Arc::new(
+            live_callbacks::ControlCallbackWitness::from_settings(
+                None,
+                Some(std::ffi::OsStr::new("256")),
+            ),
+        ));
+        if outstanding {
+            slot.request_control_boundary(6, None)
+                .unwrap_or_else(|error| panic!("owned request: {error}"));
+        }
+        let quiescence = Arc::clone(&handle.quiescence);
+        let admission = quiescence
+            .enter()
+            .unwrap_or_else(|| panic!("original admitted work"));
+        let worker = std::thread::spawn(move || {
+            handle.quiesce();
+            let mut rows = Vec::new();
+            handle
+                .write_final_control_callback_to("host-quit", &mut rows)
+                .unwrap_or_else(|error| panic!("bounded retained report: {error}"));
+            rows
+        });
+        wait_until_callback_admission_closed(&quiescence);
+        assert!(!worker.is_finished());
+        drop(admission);
+        let rows = worker
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        assert_eq!(quiescence.snapshot().in_flight, 0);
+        if outstanding {
+            let text =
+                String::from_utf8(rows).unwrap_or_else(|error| panic!("ASCII report: {error}"));
+            assert_eq!(text.lines().count(), 3);
+            assert!(text.contains("CRUCIBLE-CONTROL-SETTLEMENT-LAST-V1"));
+            assert!(text.contains("generation=1 final_token=2 observation=unavailable"));
+            assert_eq!(slot.control_boundary_token(), 2);
+        } else {
+            assert!(rows.is_empty());
+            assert_eq!(slot.control_boundary_token(), 1);
+        }
+    }
 }

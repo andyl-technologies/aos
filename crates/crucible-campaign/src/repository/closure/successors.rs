@@ -662,7 +662,29 @@ impl CampaignRepository {
         parent: &LoadedSnapshot,
         child: &LoadedSnapshot,
         step_id: PlannerStepId,
-        validated_step: &(PlannerStep, PlannerRequest),
+        validated_step: &ValidatedPlannerStep,
+    ) -> Result<(), CampaignRepositoryError> {
+        self.validate_planner_step_successor_with_validation_reads(
+            parent,
+            child,
+            step_id,
+            validated_step,
+            None,
+        )
+    }
+
+    /// Keeps successor checks live before the optional Issue node reader.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original transition, immutable basis, or owner mismatch error.
+    pub(in crate::repository) fn validate_planner_step_successor_with_validation_reads(
+        &self,
+        parent: &LoadedSnapshot,
+        child: &LoadedSnapshot,
+        step_id: PlannerStepId,
+        validated_step: &ValidatedPlannerStep,
+        merkle_reads: Option<&mut MerkleValidationReads>,
     ) -> Result<(), CampaignRepositoryError> {
         if child.snapshot.lineage() != parent.snapshot.lineage()
             || child.snapshot.active_policy() != parent.snapshot.active_policy()
@@ -682,7 +704,8 @@ impl CampaignRepository {
         }
 
         let step_content = step_id.content_id();
-        let (step, request) = validated_step;
+        let step = &validated_step.step;
+        let request = &validated_step.retained.request;
         if step.id()?.content_id() != step_content
             || request.id()?.content_id() != step.request().content_id()
         {
@@ -698,7 +721,7 @@ impl CampaignRepository {
                 "planner-step-transition-request-snapshot-mismatch",
             ));
         }
-        let invocation = self.load_planner_invocation(step.invocation())?;
+        let invocation = &validated_step.retained.invocation;
         let expected_view = parent.snapshot.planning_view();
         if expected_view.id()? != step.input_view()
             || invocation.input_view() != step.input_view()
@@ -706,12 +729,12 @@ impl CampaignRepository {
         {
             return Err(integrity("planner-step-transition-input-basis-mismatch"));
         }
-        self.validate_planner_page(&expected_view, &invocation)?;
+        self.validate_planner_page(&expected_view, invocation)?;
         self.validate_planner_cursor(parent, step.disposition())?;
-        self.validate_planner_disposition_page(&invocation, step.disposition())?;
+        self.validate_planner_disposition_page(invocation, step.disposition())?;
         self.validate_planner_selected_source(&expected_view, step.disposition(), None)?;
         let expected_parent =
-            self.validate_planner_invocation_start(prior_roots.coordination, &invocation)?;
+            self.validate_planner_invocation_start(prior_roots.coordination, invocation)?;
         if step.parent() != expected_parent {
             return Err(integrity("planner-step-transition-parent-mismatch"));
         }
@@ -746,7 +769,16 @@ impl CampaignRepository {
             ));
         }
         if matches!(step.disposition(), PlannerDisposition::Issue { .. }) {
-            self.validate_planner_issue_projection(parent, child, step)?;
+            match merkle_reads {
+                Some(reads) => self.validate_planner_issue_projection_with_validation_reads(
+                    parent,
+                    child,
+                    step,
+                    invocation,
+                    Some(reads),
+                )?,
+                None => self.validate_planner_issue_projection(parent, child, step, invocation)?,
+            }
         } else if prior_roots.exploration != next_roots.exploration
             || prior_roots.accounting != next_roots.accounting
         {

@@ -20,6 +20,7 @@ use super::{
 };
 
 thread_local! {
+    static TEST_NODE_DISPATCH_COUNT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     pub(super) static TEST_EVENT_PENDING: std::cell::RefCell<Option<(QemuFaultEvent, Vec<u8>)>> =
         const { std::cell::RefCell::new(None) };
     static TEST_EVENT_NEXT: std::cell::RefCell<Option<(QemuFaultEvent, Vec<u8>)>> =
@@ -336,8 +337,18 @@ pub(crate) fn stage_dispatch_event(target_node_hash: [u8; 32]) -> u64 {
     event.event_sequence
 }
 
+pub(super) fn record_node_dispatch() {
+    TEST_NODE_DISPATCH_COUNT.set(TEST_NODE_DISPATCH_COUNT.get() + 1);
+}
+
+/// Returns the actual test API dispatch count since results were staged.
+pub(crate) fn node_dispatch_count() -> u64 {
+    TEST_NODE_DISPATCH_COUNT.get()
+}
+
 /// Stages one QEMU result and fingerprint mutation for synchronous dispatch.
 pub(crate) fn stage_dispatch_results(headers: &[FaultCommandHeaderV1], capture_seed: u8) {
+    TEST_NODE_DISPATCH_COUNT.set(0);
     let commands = headers
         .iter()
         .map(|header| QemuFaultCommand {

@@ -497,6 +497,24 @@ impl QemuLiveBlockHostWorkPool {
         Ok(())
     }
 
+    /// Borrows the already-pinned request without querying or waiting for its worker.
+    ///
+    /// A newer pin does not establish ownership of an older queued minimum.
+    pub(crate) fn in_flight_request_observation(&self) -> Option<(u64, Option<u32>, u64, u64)> {
+        self.in_flight_pin
+            .as_ref()?
+            .observed
+            .as_ref()
+            .map(|request| {
+                (
+                    request.request_sequence,
+                    request.request.as_ref().map(|request| request.request_id),
+                    request.request_icount,
+                    request.completion_icount,
+                )
+            })
+    }
+
     /// Returns the exact deadline published before the active worker pass.
     ///
     /// The value is cached from the synchronous pin and the most recently

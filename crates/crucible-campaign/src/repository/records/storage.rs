@@ -379,7 +379,10 @@ impl CampaignRepository {
             return Err(integrity("lineage-envelope-shape"));
         }
         let scenario = self.read_scenario_artifact(lineage.scenario_content().content_id())?;
-        let genesis = self.read_configuration_artifact(lineage.genesis_content().content_id())?;
+        let genesis = self.read_configuration_artifact_with_scenario(
+            lineage.genesis_content().content_id(),
+            Some((lineage.scenario_content(), &scenario)),
+        )?;
         if scenario.scenario() != lineage.scenario()
             || scenario.payload_schema() != lineage.scenario_schema()
             || genesis.scenario() != lineage.scenario()
@@ -410,6 +413,23 @@ impl CampaignRepository {
         &self,
         id: ContentId,
     ) -> Result<ConfigurationArtifact, CampaignRepositoryError> {
+        self.read_configuration_artifact_with_scenario(id, None)
+    }
+
+    /// Reuses an already authenticated scenario only within its owner's load.
+    ///
+    /// The exact artifact ID, not the semantic scenario ID, selects reuse.
+    /// Ordinary configuration loads and different child IDs authenticate anew.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original missing, corrupt, canonical-shape, or scenario-owner
+    /// error from the configuration and its exact scenario artifact.
+    fn read_configuration_artifact_with_scenario(
+        &self,
+        id: ContentId,
+        authenticated_scenario: Option<(ScenarioArtifactId, &ScenarioArtifact)>,
+    ) -> Result<ConfigurationArtifact, CampaignRepositoryError> {
         let envelope = self.read_envelope(id)?;
         if envelope.record_kind() != crate::CampaignRecordKind::ConfigurationArtifact {
             return Err(integrity("configuration-artifact-envelope-shape"));
@@ -418,7 +438,16 @@ impl CampaignRepository {
         if artifact.id()?.content_id() != id {
             return Err(integrity("configuration-artifact-envelope-shape"));
         }
-        let scenario = self.read_scenario_artifact(artifact.scenario_artifact().content_id())?;
+        let loaded_scenario;
+        let scenario = if let Some((_, scenario)) =
+            authenticated_scenario.filter(|(known_id, _)| *known_id == artifact.scenario_artifact())
+        {
+            scenario
+        } else {
+            loaded_scenario =
+                self.read_scenario_artifact(artifact.scenario_artifact().content_id())?;
+            &loaded_scenario
+        };
         if scenario.scenario() != artifact.scenario() {
             return Err(integrity("configuration-scenario-artifact-mismatch"));
         }
@@ -628,8 +657,21 @@ impl CampaignRepository {
     pub(in crate::repository) fn read_fact_with_planner_step(
         &self,
         id: ContentId,
-    ) -> Result<(CampaignFact, Option<(PlannerStep, PlannerRequest)>), CampaignRepositoryError>
-    {
+    ) -> Result<(CampaignFact, Option<ValidatedPlannerStep>), CampaignRepositoryError> {
+        self.read_fact_with_planner_context(id, None)
+    }
+
+    /// Validates fact references with optional attempt-local planner reuse.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original store, codec, or integrity errors for the fact or
+    /// any referenced record.
+    pub(in crate::repository) fn read_fact_with_planner_context(
+        &self,
+        id: ContentId,
+        context: Option<&mut PlannerValidationContext>,
+    ) -> Result<(CampaignFact, Option<ValidatedPlannerStep>), CampaignRepositoryError> {
         let envelope = self.read_envelope(id)?;
         if envelope.record_kind() != crate::CampaignRecordKind::Fact {
             return Err(integrity("fact-envelope-shape"));
@@ -638,7 +680,7 @@ impl CampaignRepository {
         // Return the fully checked planner records to an ancestry caller so it
         // can check the owner transition without reprojecting the same request.
         let planner_step = if let CampaignFact::PlannerAdvanced(step) = &fact {
-            Some(self.read_planner_step_with_request(step.content_id())?)
+            Some(self.read_planner_step_with_context(step.content_id(), context)?)
         } else {
             self.validate_fact_references(&fact)?;
             None

@@ -36,8 +36,10 @@ mod guest_introspection;
 mod location;
 mod marker;
 mod selectable;
+pub(super) mod selectable_resume_witness;
 #[cfg(test)]
 mod test_restore;
+mod translation;
 use super::live_callbacks::SelectableVmstopHandoff;
 pub(crate) use api::LiveWhiteboxApis;
 pub(super) use api::QemuForceVcpuTbExitFn;
@@ -57,6 +59,8 @@ pub(crate) use marker::LiveWhiteboxMarkerShmemProducer;
 pub(crate) use selectable::LiveSelectableReplyShmemConsumer;
 #[cfg(test)]
 pub(super) use test_restore::install_app_random_restore_state_for_test;
+#[cfg(test)]
+pub(crate) use translation::tests::assert_original_translation as assert_original_translation_for_test;
 
 const QEMU_PLUGIN_CB_R_REGS: c_int = 1;
 const QEMU_PLUGIN_CB_NO_REGS: c_int = 0;
@@ -109,6 +113,29 @@ pub(super) fn rebind_selectable_pending_boundary(
     })
 }
 
+/// Copies reply indices only for the already-armed advisory resume witness.
+pub(super) fn observe_selectable_resume(
+    phase: selectable_resume_witness::Phase,
+    vcpu_index: u32,
+    raw_icount: Option<u64>,
+    logical_icount: Option<u64>,
+) {
+    if !selectable_resume_witness::is_armed() {
+        selectable_resume_witness::finish_unrecorded_rust_return(phase);
+        return;
+    }
+    let indices = NonNull::new(LIVE_WHITEBOX_STATE.load(Ordering::Acquire)).and_then(|state| {
+        // SAFETY: the original deterministic RR resume callback serializes this
+        // immutable view with the process-lifetime white-box/catalog owner.
+        let state = unsafe { state.as_ref() };
+        state
+            .selectable
+            .as_ref()
+            .map(|selectable| selectable.reply_indices())
+    });
+    selectable_resume_witness::observe(phase, vcpu_index, raw_icount, logical_icount, indices);
+}
+
 /// Delivers one queued host reply at the exact vCPU resume boundary.
 pub(super) fn deliver_selectable_reply_on_vcpu_resume(
     vcpu_index: u32,
@@ -134,6 +161,20 @@ pub(super) fn deliver_selectable_reply_on_vcpu_resume(
             .marker_sink
             .output
             .record_selectable_completed(current_icount, vcpu_index, &reply)?;
+        selectable_resume_witness::reply_completed();
+        if selectable_resume_witness::is_armed() {
+            let indices = state
+                .selectable
+                .as_ref()
+                .map(|selectable| selectable.reply_indices());
+            selectable_resume_witness::observe(
+                selectable_resume_witness::Phase::ReplyCompleted,
+                vcpu_index,
+                None,
+                Some(current_icount),
+                indices,
+            );
+        }
     }
     Ok(())
 }
@@ -142,6 +183,7 @@ pub(super) fn deliver_selectable_reply_on_vcpu_resume(
 struct LiveWhiteboxRegisters {
     pointer: Option<LiveWhiteboxRegisterHandle>,
     length: Option<LiveWhiteboxRegisterHandle>,
+    instruction_pointer: Option<LiveWhiteboxRegisterHandle>,
 }
 
 impl LiveWhiteboxRegisters {
@@ -222,6 +264,10 @@ fn required_registers(
             (QemuPluginTargetArchitecture::X86_64, b"rcx")
             | (QemuPluginTargetArchitecture::Aarch64, b"x1") => {
                 registers.length = handle;
+            }
+            (QemuPluginTargetArchitecture::X86_64, b"rip")
+            | (QemuPluginTargetArchitecture::Aarch64, b"pc") => {
+                registers.instruction_pointer = handle;
             }
             _ => {}
         }
@@ -671,8 +717,11 @@ impl LiveWhiteboxState {
                 .selectable
                 .as_mut()
                 .ok_or(LiveWhiteboxError::SelectableNotConfigured)?;
-            let outcome =
-                selectable.handle(&self.doorbell, self.apis, &mut reader, event, trap_tick_ps)?;
+            let outcome = selectable
+                .handle(&self.doorbell, self.apis, &mut reader, event, trap_tick_ps)
+                .map_err(|failure| {
+                    with_selectable_failure_pc(failure, registers, register_reader, &mut reader)
+                })?;
             match outcome {
                 crate::SelectableDoorbellOutcome::Registered { registration, .. }
                     if selectable.catalog_events_enabled() =>
@@ -788,6 +837,44 @@ impl LiveWhiteboxState {
 #[cfg(test)]
 mod tests;
 
+fn with_selectable_failure_pc(
+    mut failure: LiveWhiteboxError,
+    registers: LiveWhiteboxRegisters,
+    reader: LiveRegisterReader,
+    memory: &mut impl GuestMemoryReader,
+) -> LiveWhiteboxError {
+    if let LiveWhiteboxError::LateSelectableRegistration {
+        guest_pc,
+        pc_bytes,
+        vcpu_index,
+        raw_icount,
+        ..
+    } = &mut failure
+    {
+        // PC is advisory and never becomes another admission requirement or
+        // masks the original refusal when its descriptor/read is unavailable.
+        *guest_pc = registers
+            .instruction_pointer
+            .and_then(|handle| reader.read_u64(handle).ok());
+
+        // The public debug read observes the current virtual mapping, not a
+        // process identity or a guarantee that pending guest writes are flushed.
+        *pc_bytes = guest_pc.and_then(|pc| {
+            pc.checked_add(3)?;
+            memory
+                .read_guest_memory(
+                    *vcpu_index,
+                    *raw_icount,
+                    GuestMemoryRange::new(GuestMemoryAddressSpace::Virtual, pc, 4),
+                )
+                .ok()?
+                .try_into()
+                .ok()
+        });
+    }
+    failure
+}
+
 fn is_setup_complete_marker(payload: &[u8]) -> bool {
     WhiteboxDoorbellFrame::decode_bounded(payload, MAX_FRAME_DATA)
         .ok()
@@ -854,43 +941,10 @@ extern "C" fn crucible_qemu_plugin_live_whitebox_tb_trans_cb(
     // SAFETY: publication retains the state for QEMU's process lifetime, and
     // the validated single-threaded RR execution model serializes callbacks.
     let state = unsafe { state.as_mut() };
-    let count = (state.apis.tb_n_insns)(tb);
-    let mut registered_entry_callback = false;
-    for index in 0..count {
-        let insn = (state.apis.tb_get_insn)(tb, index);
-        if insn.is_null() {
-            continue;
-        }
-        let mut bytes = [0_u8; 4];
-        let copied = (state.apis.insn_data)(insn, bytes.as_mut_ptr().cast(), bytes.len());
-        let trap_bytes: &[u8] = match state.architecture {
-            QemuPluginTargetArchitecture::X86_64 => &WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES,
-            QemuPluginTargetArchitecture::Aarch64 => &WHITEBOX_DOORBELL_AARCH64_HINT_BYTES,
-        };
-        if bytes[..copied.min(bytes.len())] == *trap_bytes {
-            let location = match LiveWhiteboxInstructionLocation::new(count, index) {
-                Ok(location) => location,
-                Err(error) => {
-                    state.fail_loud(&error);
-                    return;
-                }
-            };
-            if !registered_entry_callback {
-                (state.apis.register_tb_exec_cb)(
-                    tb,
-                    Some(crucible_qemu_plugin_live_whitebox_tb_exec_cb),
-                    QEMU_PLUGIN_CB_NO_REGS,
-                    location.tb_userdata(),
-                );
-                registered_entry_callback = true;
-            }
-            (state.apis.register_insn_exec_cb)(
-                insn,
-                Some(crucible_qemu_plugin_live_whitebox_insn_exec_cb),
-                QEMU_PLUGIN_CB_R_REGS,
-                location.into_userdata(),
-            );
-        }
+    if let Err(error) =
+        translation::TranslationApis::from(state.apis).instrument(state.architecture, tb)
+    {
+        state.fail_loud(&error);
     }
 }
 

@@ -41,6 +41,19 @@ pub(super) fn observe_live_diagnostics<'a>(
     }
 }
 
+// Aggregate diagnostics enable only the bounded final private-child summary.
+// They do not select native trace files or the live per-quantum drain.
+fn callback_summary_enabled_from(
+    callback: Option<&std::ffi::OsStr>,
+    aggregate: Option<&std::ffi::OsStr>,
+) -> bool {
+    callback == Some(std::ffi::OsStr::new("1"))
+        || aggregate
+            .and_then(std::ffi::OsStr::to_str)
+            .and_then(|value| value.parse::<u16>().ok())
+            .is_some_and(|budget| (1..=256).contains(&budget))
+}
+
 impl<G> LinuxQemuHotForkReconciliationBackend<G>
 where
     G: crate::QemuAttemptResourceGuard,
@@ -50,8 +63,10 @@ where
         identity: &ProductionVmNodeGeneration,
         complete: bool,
     ) {
-        let callback_enabled = std::env::var_os("CRUCIBLE_CONTROL_CALLBACK_WITNESS").as_deref()
-            == Some(std::ffi::OsStr::new("1"));
+        let callback_enabled = callback_summary_enabled_from(
+            std::env::var_os("CRUCIBLE_CONTROL_CALLBACK_WITNESS").as_deref(),
+            std::env::var_os("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS").as_deref(),
+        );
         let trace_enabled = std::env::var_os("CRUCIBLE_RR_CLAMP_TAIL").as_deref()
             == Some(std::ffi::OsStr::new("1"));
         if !callback_enabled && !trace_enabled {
@@ -133,6 +148,31 @@ where
 #[cfg(test)]
 mod live_tests {
     use super::*;
+
+    #[test]
+    fn aggregate_alone_admits_final_summary_without_a_live_drain_or_trace_selection() {
+        for budget in ["1", "256"] {
+            assert!(callback_summary_enabled_from(
+                None,
+                Some(std::ffi::OsStr::new(budget))
+            ));
+            let live_enabled = live_diagnostics_enabled_from(None, None);
+            assert!(!live_enabled);
+            observe_live_diagnostics(live_enabled, || {
+                panic!("aggregate-only diagnostics must not borrow a live consumer")
+            });
+        }
+        for budget in [None, Some("0"), Some("257"), Some("bad"), Some("65536")] {
+            assert!(!callback_summary_enabled_from(
+                None,
+                budget.map(std::ffi::OsStr::new)
+            ));
+        }
+        assert!(callback_summary_enabled_from(
+            Some(std::ffi::OsStr::new("1")),
+            None
+        ));
+    }
 
     #[test]
     fn disabled_admission_never_borrows_the_owned_consumer() {

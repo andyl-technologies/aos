@@ -1,0 +1,289 @@
+# Actual TCG/production-plugin stop/resume probes for ROM and Linux guests.
+{
+  pkgs,
+  lib,
+  profile ? "rom",
+  runtimeDiagnostics ? false,
+}:
+assert builtins.elem profile ["rom" "linux"];
+assert builtins.isBool runtimeDiagnostics;
+assert !runtimeDiagnostics || profile == "linux"; let
+  source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  flight = pkgs.mkCargoPackage {
+    pname = "crucible-whitebox-out-resume-flight";
+    version = "0";
+    src = source;
+    inherit cargoDeps;
+    cargoRoot = "crates";
+    cargoBuildCommands = [
+      "build --frozen --offline --release -p crucible-qemu --example crucible-qemu-whitebox-out-resume"
+    ];
+    doCheck = false;
+    installBins = false;
+    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+    dontStrip = true;
+    dontPatchELF = true;
+    buildDeps = [pkgs.coreutils pkgs.pkg-config];
+    runtimeDeps = [pkgs.sqlite];
+    postInstall = ''
+      binary=$(jq -r \
+        'select(.reason == "compiler-artifact" and .target.name == "crucible-qemu-whitebox-out-resume" and .target.kind == ["example"] and .profile.test == false and .executable != null) | .executable' \
+        "$NIX_BUILD_TOP/cargo-build-messages.jsonl")
+      test -f "$binary"
+      mkdir -p "$out/bin"
+      cp "$binary" "$out/bin/crucible-qemu-whitebox-out-resume"
+    '';
+  };
+  romGuest = pkgs.mkDerivation {
+    pname = "crucible-whitebox-out-resume-rom";
+    version = "0";
+    src = null;
+    buildDeps = [pkgs.coreutils flight];
+    phases = [
+      {
+        name = "encode-and-build-roms";
+        script = ''
+          set -eu
+          mkdir -p "$out"
+          for mode in ${lib.concatStringsSep " " modes}; do
+            ${flight}/bin/crucible-qemu-whitebox-out-resume firmware "$mode" "$mode"
+            (
+              cd "$mode"
+              as --32 bios.S -o bios.o
+              ld -m elf_i386 -nostdlib -T bios.ld -o bios.elf bios.o
+              objcopy -O binary bios.elf "$out/$mode.bin"
+            )
+            test "$(wc -c < "$out/$mode.bin")" -eq 65536
+          done
+        '';
+      }
+    ];
+  };
+  child = pkgs.mkDerivation {
+    pname = "crucible-out-probe-no-sdk-child";
+    version = "0";
+    src = null;
+    buildDeps = [pkgs.coreutils pkgs.patchelf];
+    runtimeDeps = [];
+    phases = [
+      {
+        name = "build-no-sdk-child";
+        script = ''
+          set -eu
+          cc -static -O2 -Wall -Wextra -Werror ${./phase2-out-probe-child.c} -o child
+          if patchelf --print-interpreter child > interpreter 2>/dev/null; then
+            echo 'OUT probe child unexpectedly has an ELF interpreter' >&2
+            exit 1
+          fi
+          mkdir -p "$out/bin"
+          cp child "$out/bin/out-probe-child"
+        '';
+      }
+    ];
+  };
+  linuxGuest = import ./_static-sdk-guest.nix {
+    inherit pkgs source cargoDeps;
+    pname = "crucible-linux-out-probe-initramfs";
+    example = "crucible-guest-out-exec";
+    rootName = "linux-out-probe";
+    extraPackages = [child];
+    extraFiles = {out-probe-child = "${child}/bin/out-probe-child";};
+    evidence = ''
+      guest_format=diskless-linux-initramfs
+      guest_init=pid1-sdk-out-exec-probe
+      guest_profiles=no-child,exec-child,late-register
+      guest_buffer=one-fixed-parent-buffer
+      child_sdk=absent
+    '';
+  };
+  guest =
+    if profile == "rom"
+    then romGuest
+    else linuxGuest;
+  positiveModes =
+    if profile == "rom"
+    then ["normal"]
+    else ["no-child" "exec-child"];
+  modes = positiveModes ++ ["late-register"];
+  # Linux panic context can occupy 16 KiB after escaping binary console bytes.
+  stderrTailBytes =
+    if profile == "linux"
+    then 32768
+    else 16384;
+  stderrBase64Characters = 4 * builtins.div (stderrTailBytes + 2) 3;
+  name =
+    if profile == "rom"
+    then "crucible-whitebox-out-resume"
+    else "crucible-linux-whitebox-out-resume";
+  runCommand =
+    if profile == "rom"
+    then ''
+      ${flight}/bin/crucible-qemu-whitebox-out-resume run \
+      ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
+      ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
+      ${guest}/"$mode.bin" /sys/fs/cgroup/crucible "/tmp/attempts/$mode" "$mode" \
+    ''
+    else ''
+      ${flight}/bin/crucible-qemu-whitebox-out-resume run-linux \
+      ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
+      ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
+      ${pkgs.linux}/boot/vmlinuz-* ${guest}/initrd.img \
+      ${pkgs.qemu-crucible}/share/qemu/bios-256k.bin \
+      /sys/fs/cgroup/crucible "/tmp/attempts/$mode" "$mode" \
+    '';
+  testing = import ../../lib/testing {inherit pkgs lib;};
+  vmTest = testing.mkVMTest {
+    inherit name;
+    memory = 3072;
+    rootfsDeps =
+      [
+        flight
+        guest
+        pkgs.qemu-crucible
+        pkgs.crucible-qemu-plugin
+        pkgs.linux
+        pkgs.e2fsprogs
+        pkgs.coreutils
+        pkgs.util-linux
+        pkgs.grep
+      ]
+      ++ lib.optionals runtimeDiagnostics [
+        pkgs.python3
+        "${./selectable-resume-witness.py}"
+      ];
+    testScript = ''
+      set -eu
+      export TMPDIR=/tmp
+      mkdir -p /sys/fs/cgroup
+      ${pkgs.util-linux}/bin/mount -t cgroup2 none /sys/fs/cgroup
+      echo '+cpu +memory +pids' > /sys/fs/cgroup/cgroup.subtree_control
+      mkdir /sys/fs/cgroup/crucible
+      echo '+cpu +memory +pids' > /sys/fs/cgroup/crucible/cgroup.subtree_control
+      truncate -s 2G /tmp/attempts.img
+      ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -F -O quota,project -E quotatype=prjquota /tmp/attempts.img
+      mkdir /tmp/attempts
+      ${pkgs.util-linux}/bin/mount -o loop,prjquota /tmp/attempts.img /tmp/attempts
+
+      ${lib.optionalString (profile == "linux") "export CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS=64\n"}${lib.optionalString runtimeDiagnostics "export CRUCIBLE_OUT_RESUME_RUNTIME_TRACE=1\n"}for mode in ${lib.concatStringsSep " " modes}; do
+        mkdir -m 700 "/tmp/attempts/$mode"
+        if ${pkgs.coreutils}/bin/timeout -k 15 ${
+        if profile == "rom"
+        then "90"
+        else "900"
+      } \
+          ${lib.removeSuffix "\n" runCommand}
+          > "/tmp/$mode.result" 2> "/tmp/$mode.log"; then
+          :
+        else
+          status=$?
+          ${lib.optionalString (profile == "linux") ''echo "CRUCIBLE_OUT_RESUME_FAILED_MODE=$mode" >&2 || true''}
+          cat "/tmp/$mode.result" >&2
+          ${lib.optionalString runtimeDiagnostics ''
+        ${pkgs.python3}/bin/python3 ${./selectable-resume-witness.py} "/tmp/$mode.log" >&2 || true
+      ''}
+          tail -c ${toString stderrTailBytes} "/tmp/$mode.log" >&2
+          exit "$status"
+        fi
+        grep -Fxq PASS "/tmp/$mode.result"
+        grep -Fxq 'owned_cleanup=complete' "/tmp/$mode.result"
+        ${lib.optionalString (profile == "linux") ''echo "CRUCIBLE_OUT_RESUME_COMPLETED_MODE=$mode" || true''}
+      done
+      ${lib.concatMapStringsSep "\n" (mode: ''
+          grep -Fxq 'registration_sequence=1' /tmp/${mode}.result
+          grep -Fxq 'request_sequences=2,3' /tmp/${mode}.result
+          grep -Fxq 'distinct_semantic_frames=first,second' /tmp/${mode}.result
+          ${
+            if profile == "rom"
+            then "grep -Fxq 'same_guest_buffer=20480' /tmp/${mode}.result"
+            else "grep -Fxq 'linux_profile=${mode}' /tmp/${mode}.result"
+          }
+        '')
+        positiveModes}
+      grep -Fxq 'late_register_step_refused=true' /tmp/late-register.result
+      test "$(grep -Fc 'selectable registration arrived after catalog freeze; kind=register id=out.ready seq=1 prev=1 done=2' /tmp/late-register.log)" -eq 1
+      # Every owned process is reaped before forwarding diagnostic tails.
+      for mode in ${lib.concatStringsSep " " modes}; do
+        echo "CRUCIBLE_OUT_RESUME_STDERR_''${mode}_BEGIN"
+        echo "original_bytes=$(wc -c < "/tmp/$mode.log")"
+        tail -c ${toString stderrTailBytes} "/tmp/$mode.log" > "/tmp/$mode.stderr-tail"
+        ${pkgs.coreutils}/bin/base64 -w 0 "/tmp/$mode.stderr-tail"
+        printf '\n'
+        echo "CRUCIBLE_OUT_RESUME_STDERR_''${mode}_END"
+      done
+      echo CRUCIBLE_OUT_RESUME_RESULT_BEGIN
+      cat ${lib.concatMapStringsSep " " (mode: "/tmp/${mode}.result") modes}
+      echo 'original_late_registration_refusal=true'
+      echo CRUCIBLE_OUT_RESUME_RESULT_END
+    '';
+  };
+in
+  pkgs.mkDerivation {
+    pname = "crucible-phase2-${
+      if profile == "rom"
+      then "whitebox-out-resume"
+      else "linux-whitebox-out-resume"
+    }";
+    version = "0";
+    src = null;
+    buildDeps = [pkgs.coreutils pkgs.gawk pkgs.grep pkgs.sed vmTest];
+    passthru = {inherit flight guest vmTest;};
+    phases = [
+      {
+        name = "retain-result";
+        script = ''
+          set -eu
+          mkdir -p "$out"
+          sed 's/\r$//' "${vmTest}/serial.log" > "$out/vm-serial.log"
+          cp "${vmTest}/fc.log" "$out/vm-monitor.log"
+          test "$(grep -Fxc CRUCIBLE_OUT_RESUME_RESULT_BEGIN "$out/vm-serial.log")" -eq 1
+          test "$(grep -Fxc CRUCIBLE_OUT_RESUME_RESULT_END "$out/vm-serial.log")" -eq 1
+          sed -n '/^CRUCIBLE_OUT_RESUME_RESULT_BEGIN$/,/^CRUCIBLE_OUT_RESUME_RESULT_END$/ {
+            /^CRUCIBLE_OUT_RESUME_RESULT_/d
+            p
+          }' "$out/vm-serial.log" > "$out/result"
+          # Each frame carries one original byte count and one encoded tail.
+          for mode in ${lib.concatStringsSep " " modes}; do
+            begin="CRUCIBLE_OUT_RESUME_STDERR_''${mode}_BEGIN"
+            end="CRUCIBLE_OUT_RESUME_STDERR_''${mode}_END"
+            awk -v begin="$begin" -v end="$end" '
+              $0 == begin {
+                if (state != 0) exit 1
+                state = 1
+                next
+              }
+              $0 == end {
+                if (state != 1 || payload_lines != 2) exit 1
+                state = 2
+                next
+              }
+              state == 1 {
+                if (payload_lines == 0 && $0 !~ /^original_bytes=(0|[1-9][0-9]*)$/) exit 1
+                if (payload_lines == 1 && (length($0) > ${toString stderrBase64Characters} || $0 !~ /^[A-Za-z0-9+\/=]*$/)) exit 1
+                if (payload_lines >= 2) exit 1
+                print
+                payload_lines += 1
+              }
+              END { if (state != 2) exit 1 }
+            ' "$out/vm-serial.log" > "$TMPDIR/$mode.stderr-frame"
+            original_bytes=$(sed -n '1s/^original_bytes=//p' "$TMPDIR/$mode.stderr-frame")
+            sed -n '2p' "$TMPDIR/$mode.stderr-frame" \
+              | ${pkgs.coreutils}/bin/base64 -d > "$out/$mode.stderr.log"
+            retained_bytes=$(wc -c < "$out/$mode.stderr.log")
+            test "$retained_bytes" -le ${toString stderrTailBytes}
+            if test "$original_bytes" -gt ${toString stderrTailBytes}; then
+              test "$retained_bytes" -eq ${toString stderrTailBytes}
+              truncated=true
+            else
+              test "$retained_bytes" -eq "$original_bytes"
+              truncated=false
+            fi
+            printf 'capture=tail\nmaximum_bytes=${toString stderrTailBytes}\noriginal_bytes=%s\nretained_bytes=%s\ntruncated=%s\n' \
+              "$original_bytes" "$retained_bytes" "$truncated" > "$out/$mode.stderr.scope"
+          done
+          test "$(grep -Fxc PASS "$out/result")" -eq ${toString (builtins.length modes)}
+          grep -Fxq 'original_late_registration_refusal=true' "$out/result"
+        '';
+      }
+    ];
+  }

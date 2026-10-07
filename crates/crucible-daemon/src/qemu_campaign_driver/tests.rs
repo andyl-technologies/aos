@@ -41,6 +41,7 @@ use super::*;
 use crate::{ExecutionCancellation, ExecutionCheckpointRequest, QemuFreshAttemptLifecycleOwner};
 
 mod guest_marker_boundary;
+mod held_source;
 mod network_boundary;
 
 #[test]

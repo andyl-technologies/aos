@@ -4,6 +4,39 @@ use super::*;
 
 /// Host-I/O runtime used by the bounded async driver.
 pub trait QemuHostIoRuntime: Send {
+    /// Starts the original advance budget before acquiring its coherent source.
+    ///
+    /// Immediate model runtimes need no host deadline. Live runtimes retain
+    /// this same deadline through acquisition and ordinary completion polling.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a deadline that cannot be represented without renewing it.
+    fn prepare_advance_completion(
+        &mut self,
+        _timeout: Duration,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Ok(())
+    }
+
+    /// Waits for coherent source availability without a wake or authorization.
+    ///
+    /// `Completed` means acquisition may be retried, not that a quantum ran.
+    /// `Pending` retains the original deadline for owned-child supervision.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a runtime without an explicit bounded publication-wait owner.
+    fn await_node_publication(
+        &mut self,
+        _timeout: Duration,
+    ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "await node publication",
+            "runtime has no bounded publication-wait owner",
+        ))
+    }
+
     /// Binds a scripted fixture's complete queue inventory to its World owner.
     ///
     /// This test-only seam creates no operational Source or native capability.
@@ -77,6 +110,18 @@ pub trait QemuHostIoRuntime: Send {
         ))
     }
 
+    /// Observes the live polling policy for unit-test reconstruction checks.
+    ///
+    /// The default identifies a runtime without this test-only observation.
+    /// Production and externally feature-enabled builds expose no such method.
+    #[cfg(test)]
+    fn poll_intervals_for_test(
+        &self,
+        _remaining: std::time::Duration,
+    ) -> Option<(std::time::Duration, std::time::Duration)> {
+        None
+    }
+
     /// Clones the complete host-I/O continuation onto one branch-private ring.
     ///
     /// The source runtime must remain unchanged. Implementations must clone
@@ -124,6 +169,14 @@ pub trait QemuHostIoRuntime: Send {
         Ok(())
     }
 
+    /// Retains the original node state before the post-publication start hook.
+    ///
+    /// This observation is independent of the optional generation fence. Live
+    /// runtimes distinguish an observed state without a checkpoint marker from
+    /// a provider that supplied no initial state; a later pause cannot replace
+    /// the original observation. Providers without live state may ignore it.
+    fn retain_advance_initial_state(&mut self, _state: Option<crate::QemuNodeIdleState>) {}
+
     /// Arms the publication fence for the next advance-completion wait.
     ///
     /// Live runtimes retain the supplied pre-wake generation until the plugin
@@ -139,6 +192,14 @@ pub trait QemuHostIoRuntime: Send {
         _fence: Option<QemuAdvanceCompletionFence>,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         Ok(())
+    }
+
+    /// Returns the original accepted clamp record for the current advance.
+    ///
+    /// Providers without a live clamp handshake retain the absent default. The
+    /// next advance must clear the previous record before awaiting completion.
+    fn completed_quantum_boundary(&self) -> Option<crate::QemuCompletedQuantumBoundary> {
+        None
     }
 
     /// Reports whether QEMU owns no in-flight device coroutine at this boundary.
@@ -410,6 +471,30 @@ pub trait QemuHostIoRuntime: Send {
     /// Returns [`QemuAsyncDriverRuntimeError`] when the runtime cannot yield.
     fn yield_to_control_plane(&mut self) -> Result<(), QemuAsyncDriverRuntimeError>;
 
+    /// Limits each advance poll without replacing its original watchdog.
+    ///
+    /// A live runtime returns [`QemuAsyncWaitOutcome::Pending`] when this slice
+    /// ends before the deadline established by [`Self::await_child`]. `None`
+    /// retains the existing full-budget await. Immediate modeled runtimes need
+    /// no additional polling state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverRuntimeError`] when an explicit slice is zero
+    /// or the runtime cannot configure its host-liveness polling.
+    fn set_advance_completion_poll_slice(
+        &mut self,
+        slice: Option<Duration>,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        if slice.is_some_and(|duration| duration.is_zero()) {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "set advance completion poll slice",
+                "poll slice must be positive",
+            ));
+        }
+        Ok(())
+    }
+
     /// Waits for one child event using `timeout` as a bounded budget.
     ///
     /// # Errors
@@ -426,8 +511,9 @@ pub trait QemuHostIoRuntime: Send {
     ///
     /// The runtime must retain the deadline established by
     /// [`Self::await_child`] and return [`QemuAsyncWaitOutcome::TimedOut`] when
-    /// that original `timeout` budget expires. A repeated poll must not repeat
-    /// one-shot side effects such as waking the plugin.
+    /// that original `timeout` budget expires. An advance may yield
+    /// [`QemuAsyncWaitOutcome::Pending`] before then. A repeated poll must not
+    /// repeat one-shot side effects such as waking the plugin.
     ///
     /// # Errors
     ///

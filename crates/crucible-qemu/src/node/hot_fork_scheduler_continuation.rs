@@ -311,6 +311,7 @@ impl QemuHotForkSchedulerNodeContinuation {
             last_observed_time: state.last_observed_time,
             last_step_ceiling: state.last_step_ceiling,
             last_step_final_state: state.last_step_final_state,
+            last_step_completed_boundary: None,
             last_step_inbound_frames_consumed: state.last_step_inbound_frames_consumed,
             console_observation_boundary: state.console_observation_boundary,
             gdbstub: None,

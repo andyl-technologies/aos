@@ -3,6 +3,15 @@
 use super::*;
 use crucible_cas::content_store::{ContentId, ObjectKind};
 
+#[path = "lifecycle/drain_pause.rs"]
+mod drain_pause;
+
+#[path = "lifecycle/report.rs"]
+mod report;
+
+#[path = "lifecycle/request_observation.rs"]
+mod request_observation;
+
 // A fresh packaged realization must boot to its authenticated selectable.
 // The previous 90-second host wait reached only 203 ms of virtual time;
 // source discovery on the same clock reaches its marker near 555 ms.
@@ -20,7 +29,7 @@ const LIFECYCLE_ALL_BRANCH_RETRY_BACKOFF: Duration = Duration::from_millis(250);
 fn public_packaged_campaign_lifecycle_uses_only_cli() -> Result<(), Box<dyn Error>> {
     let fixture = FlightFixture::new()?;
     let (compiled, _scenario) = compile_guest_choice_campaign(&fixture)?;
-    create_guest_choice_campaign(&fixture, &compiled, "qemu-11.1.1-crucible")?;
+    create_lifecycle_campaign(&fixture, &compiled)?;
     let steering_policy = prepare_steering_policy(&fixture, &compiled)?;
     let authority = write_component_authority(&fixture)?;
     let mut service = start_packaged_service(&fixture, &authority)?;
@@ -29,7 +38,7 @@ fn public_packaged_campaign_lifecycle_uses_only_cli() -> Result<(), Box<dyn Erro
     assert_eq!(created["state"], "created");
     assert_eq!(created["semantic"]["admitted_attempts"], 0);
     let created_snapshot = json_string(&created, "snapshot")?;
-    let created_report = campaign_report(&fixture, &created_snapshot)?;
+    let created_report = report::current_campaign_report(&fixture, &created_snapshot)?;
     assert_eq!(created_report["explored_attempts"], 0);
     assert_eq!(created_report["unexplored_attempts"], 0);
 
@@ -88,26 +97,19 @@ fn public_packaged_campaign_lifecycle_uses_only_cli() -> Result<(), Box<dyn Erro
     );
     assert_eq!(safe_explanation["proposal"]["request"], safe_request);
 
-    let finite = submit_all_choices(&fixture, &recovery)?;
+    let finite = submit_all_choices(&fixture, &recovery)
+        .inspect_err(|_| report_rpc_failure_context(&service, "finite-domain"))?;
     assert_eq!(finite["validated_cardinality"]["count"], 2);
     assert_eq!(finite["deduplicated_existing_edges"]["count"], 2);
     assert_eq!(finite["remaining_lazy_candidates"]["count"], 0);
 
     let running = campaign_status(&fixture)?;
     let running_snapshot = json_string(&running, "snapshot")?;
-    let running_report = campaign_report(&fixture, &running_snapshot)?;
+    let running_report = report::current_campaign_report(&fixture, &running_snapshot)?;
     assert!(json_u64(&running_report, "explored_attempts")? >= 3);
-    run_json(
-        connected_campaign(&fixture).args([
-            "pause",
-            CAMPAIGN,
-            "--expected",
-            &running_snapshot,
-            "--command",
-            &"a3".repeat(32),
-            "--active",
-            "drain",
-        ]),
+    drain_pause::pause_running_campaign(
+        &fixture,
+        &"a3".repeat(32),
         "pause public campaign after finite branches",
     )?;
     let paused = campaign_status(&fixture)?;
@@ -141,23 +143,15 @@ fn public_packaged_campaign_lifecycle_uses_only_cli() -> Result<(), Box<dyn Erro
         &safe_configuration,
         LIFECYCLE_SELECTABLE_WAIT,
     )?;
-    let resumed = campaign_status(&fixture)?;
-    run_json(
-        connected_campaign(&fixture).args([
-            "pause",
-            CAMPAIGN,
-            "--expected",
-            &json_string(&resumed, "snapshot")?,
-            "--command",
-            &"a5".repeat(32),
-            "--active",
-            "drain",
-        ]),
+    drain_pause::pause_running_campaign(
+        &fixture,
+        &"a5".repeat(32),
         "pause resumed campaign before bounded expansion",
     )?;
     assert_eq!(campaign_status(&fixture)?["state"], "paused");
 
-    let pressured = submit_bounded_choices(&fixture, &retry)?;
+    let pressured = submit_bounded_choices(&fixture, &retry)
+        .inspect_err(|_| report_rpc_failure_context(&restarted, "bounded-domain"))?;
     assert_eq!(pressured["budget"]["maximum_proposals"], 3);
     assert_eq!(pressured["budget"]["maximum_attempts"], 1);
     assert_eq!(pressured["validated_cardinality"]["count"], 3);
@@ -181,18 +175,9 @@ fn public_packaged_campaign_lifecycle_uses_only_cli() -> Result<(), Box<dyn Erro
         pressure_explanation["observation"]["stop"],
         "terminal-success"
     );
-    let pressure_running = campaign_status(&fixture)?;
-    run_json(
-        connected_campaign(&fixture).args([
-            "pause",
-            CAMPAIGN,
-            "--expected",
-            &json_string(&pressure_running, "snapshot")?,
-            "--command",
-            &"aa".repeat(32),
-            "--active",
-            "drain",
-        ]),
+    drain_pause::pause_running_campaign(
+        &fixture,
+        &"aa".repeat(32),
         "pause after one budgeted campaign attempt",
     )?;
 
@@ -230,7 +215,8 @@ fn public_packaged_campaign_lifecycle_uses_only_cli() -> Result<(), Box<dyn Erro
     assert_eq!(stopped["operation"], "stop");
     let completed = campaign_status(&fixture)?;
     assert_eq!(completed["state"], "completed");
-    let completed_report = campaign_report(&fixture, &json_string(&completed, "snapshot")?)?;
+    let completed_report =
+        report::current_campaign_report(&fixture, &json_string(&completed, "snapshot")?)?;
     assert!(json_u64(&completed_report, "explored_attempts")? >= 4);
     restarted.stop()?;
 
@@ -241,6 +227,110 @@ fn public_packaged_campaign_lifecycle_uses_only_cli() -> Result<(), Box<dyn Erro
     println!("campaign_lifecycle_pause_restart_resume=true");
     println!("campaign_lifecycle_steering_graceful_stop=true");
     Ok(())
+}
+
+fn report_rpc_failure_context(service: &CampaignServiceChild, operation: &str) {
+    // Capture before this owner enters failure cleanup. Advisory I/O never
+    // replaces the original submission error or retries the public request.
+    let records = recent_rpc_failure_rows(service.stderr.as_file());
+    let mut output = std::io::stderr().lock();
+    let _ = writeln!(
+        output,
+        "lifecycle RPC failure context operation={operation} service_pid={} unvalidated=true",
+        service.child.id(),
+    );
+    match records {
+        Ok(records) => {
+            for record in records {
+                let _ = writeln!(output, "{record}");
+            }
+        }
+        Err(_) => {
+            let _ = writeln!(output, "lifecycle RPC failure context unavailable");
+        }
+    }
+}
+
+fn recent_rpc_failure_rows(stderr: &fs::File) -> Result<Vec<String>, Box<dyn Error>> {
+    use std::os::unix::fs::FileExt;
+
+    let length = stderr.metadata()?.len();
+    let start = length.saturating_sub(MAX_CAMPAIGN_SERVICE_STDERR_BYTES);
+    let mut bytes = vec![0; usize::try_from(length - start)?];
+    let mut read = 0;
+    while read < bytes.len() {
+        // Positional reads preserve the live service's shared capture cursor.
+        // The frozen window bounds total input even if the writer keeps growing.
+        let count = stderr.read_at(&mut bytes[read..], start + u64::try_from(read)?)?;
+        if count == 0 {
+            break;
+        }
+        read += count;
+    }
+    bytes.truncate(read);
+
+    // A clipped first line and an unfinished final write are not complete rows.
+    let begin = if start == 0 {
+        0
+    } else {
+        bytes
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(bytes.len(), |index| index + 1)
+    };
+    let end = bytes
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |index| index + 1);
+    let complete = bytes.get(begin..end).unwrap_or_default();
+
+    recent_matching_lines_bounded(
+        std::io::Cursor::new(complete),
+        "CRUCIBLE-CAMPAIGN-RPC-FAILURE-V1 ",
+        32,
+        511,
+    )
+}
+
+fn create_lifecycle_campaign(
+    fixture: &FlightFixture,
+    compiled: &Value,
+) -> Result<(), Box<dyn Error>> {
+    let generator = crucible_campaign::CandidateGeneratorSpec::new(
+        crucible_campaign::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+        crucible_campaign::CandidateGeneratorAlgorithm::All,
+    )?;
+    let root = fixture._temporary.path();
+    let specification = root.join("lifecycle-all-generator.bin");
+    fs::write(&specification, generator.canonical_bytes())?;
+    fs::set_permissions(&specification, fs::Permissions::from_mode(0o600))?;
+
+    // All is a policy-bound request. Import its canonical body before create,
+    // and select it without publishing a branch ahead of the manual choices.
+    let original_manifest = json_path(compiled, "manifest")?;
+    let manifest = root.join("lifecycle-import.toml");
+    fs::write(
+        &manifest,
+        format!(
+            "{}\n[[generator]]\nspecification = {:?}\n",
+            fs::read_to_string(original_manifest)?,
+            specification,
+        ),
+    )?;
+    fs::set_permissions(&manifest, fs::Permissions::from_mode(0o600))?;
+    let choices = format!(
+        "\n[[choices]]\nselector = \"network.recovery-policy\"\ngenerator = {:?}\nrequired = true\n",
+        generator.id()?.to_string(),
+    );
+    create_guest_choice_campaign_with_policy_choices(
+        fixture,
+        compiled,
+        "qemu-11.1.1-crucible",
+        None,
+        &manifest,
+        &choices,
+        &["scenario-complete"],
+    )
 }
 
 fn prepare_steering_policy(
@@ -463,10 +553,18 @@ fn wait_for_public_request_observation(
             }
             let explanation =
                 parse_json_output(explanation_output, "explain public request attempt")?;
-            if !explanation["observation"].is_null()
-                && explanation["runtime"]["phase"] == "completed"
-            {
-                return Ok(Some(explanation));
+            match request_observation::classify(request, &attempt, value, &explanation)? {
+                request_observation::Observation::Completed => return Ok(Some(explanation)),
+                request_observation::Observation::Pending => {}
+                request_observation::Observation::TerminalFailure { execution } => {
+                    return Err(request_observation::failure_message(
+                        request,
+                        &attempt,
+                        execution,
+                        &service.stderr_tail(),
+                    )
+                    .into());
+                }
             }
         }
         Ok(None)
@@ -608,6 +706,79 @@ fn acceptance_count_minimum(count: &Value) -> Result<u64, Box<dyn Error>> {
 }
 
 #[cfg(test)]
+mod rpc_failure_tests {
+    use super::*;
+
+    const PREFIX: &str = "CRUCIBLE-CAMPAIGN-RPC-FAILURE-V1 ";
+
+    fn record(index: usize) -> String {
+        format!("{PREFIX}kind=request operation=GetCampaign request={index:064x} failure=not-found")
+    }
+
+    #[test]
+    fn rpc_failure_capture_reads_only_recent_complete_rows_without_moving_the_writer()
+    -> Result<(), Box<dyn Error>> {
+        let mut stderr = NamedTempFile::new()?;
+        writeln!(stderr, "{}", record(99))?;
+        stderr.write_all(&vec![
+            b'x';
+            usize::try_from(MAX_CAMPAIGN_SERVICE_STDERR_BYTES)?
+        ])?;
+        writeln!(stderr)?;
+        let recent: Vec<_> = (0..2).map(record).collect();
+        for row in &recent {
+            writeln!(stderr, "{row}")?;
+        }
+        write!(stderr, "{}", record(100))?;
+        stderr.as_file_mut().seek(SeekFrom::Start(11))?;
+
+        let captured = recent_rpc_failure_rows(stderr.as_file())?;
+
+        assert_eq!(captured, recent);
+        assert_eq!(stderr.as_file_mut().stream_position()?, 11);
+        assert!(captured.iter().all(|row| row.len() <= 511));
+        Ok(())
+    }
+
+    #[test]
+    fn rpc_failure_capture_refuses_clipped_and_oversized_records() -> Result<(), Box<dyn Error>> {
+        let mut stderr = NamedTempFile::new()?;
+        let clipped = record(0);
+        let complete = record(1);
+        let unfinished = record(2);
+        let fixed = clipped.len() + complete.len() + unfinished.len() + 3;
+        let padding = usize::try_from(MAX_CAMPAIGN_SERVICE_STDERR_BYTES)? - fixed;
+        let tail = format!(
+            "{clipped}\n{complete}\n{}\n{unfinished}",
+            "x".repeat(padding)
+        );
+        assert_eq!(
+            tail.len(),
+            usize::try_from(MAX_CAMPAIGN_SERVICE_STDERR_BYTES)?
+        );
+        // The retained window starts with the prefix in the middle of an
+        // unrelated original line; treating that fragment as a row is wrong.
+        write!(stderr, "unrelated-original-line:{tail}")?;
+
+        assert_eq!(recent_rpc_failure_rows(stderr.as_file())?, [complete]);
+
+        let exact = format!("{PREFIX}{}", "x".repeat(511 - PREFIX.len()));
+        fs::write(stderr.path(), format!("{exact}\n"))?;
+        assert_eq!(
+            recent_rpc_failure_rows(stderr.as_file())?.as_slice(),
+            std::slice::from_ref(&exact)
+        );
+        fs::write(stderr.path(), format!("{exact}x\n"))?;
+        assert!(recent_rpc_failure_rows(stderr.as_file()).is_err());
+
+        let recent: Vec<_> = (0..35).map(record).collect();
+        fs::write(stderr.path(), format!("{}\n", recent.join("\n")))?;
+        assert_eq!(recent_rpc_failure_rows(stderr.as_file())?, recent[3..]);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
 mod retry_tests {
     use super::*;
     use std::os::unix::process::ExitStatusExt;
@@ -706,9 +877,11 @@ mod retry_tests {
 
         assert!(submissions > 1);
         assert!(error.to_string().contains("stdout=`last response`"));
-        assert!(error
-            .to_string()
-            .contains("campaign service is temporarily unavailable"));
+        assert!(
+            error
+                .to_string()
+                .contains("campaign service is temporarily unavailable")
+        );
     }
 
     #[test]

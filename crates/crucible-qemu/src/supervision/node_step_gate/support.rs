@@ -87,9 +87,36 @@ pub(super) fn advance_to_busy_ceiling(
     }
 }
 
+/// Retries only an effect-free unavailable publication under the original budget.
+fn prime_publication_operation<T>(
+    hot_path: &mut QemuMappedQuantumShmemHotPath,
+    deadline: &HostSupervisionDeadline,
+    prime_ceiling: u64,
+    operation: &'static str,
+    mut perform: impl FnMut(
+        &mut QemuMappedQuantumShmemHotPath,
+    ) -> Result<T, crate::QemuNodeChannelError>,
+) -> Result<T, QemuLiveNodeStepGateError> {
+    while let Some(remaining) = deadline
+        .remaining()
+        .filter(|remaining| !remaining.is_zero())
+    {
+        match perform(hot_path) {
+            Ok(value) => return Ok(value),
+            Err(source) if source.is_publication_unavailable() => {
+                thread::sleep(PRIME_POLL_INTERVAL.min(remaining));
+            }
+            Err(source) => return Err(QemuLiveNodeStepGateError::prime(operation, source)),
+        }
+    }
+    Err(QemuLiveNodeStepGateError::PrimeStalled {
+        ceiling_icount: prime_ceiling,
+    })
+}
+
 fn drive_mapped_prime_chain(
     setup: &crate::QemuHostPluginSetup,
-    timeout: Duration,
+    deadline: &HostSupervisionDeadline,
     hot_path: &mut QemuMappedQuantumShmemHotPath,
     prime_ceiling: u64,
     block: Option<&mut QemuLiveBlockIoServicer>,
@@ -101,15 +128,22 @@ fn drive_mapped_prime_chain(
             retired: prime_ceiling,
         },
     };
-    let pending = QemuShmemHotPathChannel::start_quantum(
+    let pending = prime_publication_operation(
         hot_path,
-        horizon,
-        crate::QemuQuantumStopCondition::Ceiling,
-    )
-    .map_err(|source| QemuLiveNodeStepGateError::prime("start priming quantum", source))?;
+        deadline,
+        prime_ceiling,
+        "start priming quantum",
+        |hot_path| {
+            QemuShmemHotPathChannel::start_quantum(
+                hot_path,
+                horizon,
+                crate::QemuQuantumStopCondition::Ceiling,
+            )
+        },
+    )?;
     poll_mapped_prime_chain(
         setup,
-        timeout,
+        deadline,
         hot_path,
         pending,
         prime_ceiling,
@@ -120,7 +154,7 @@ fn drive_mapped_prime_chain(
 
 fn poll_mapped_prime_chain(
     setup: &crate::QemuHostPluginSetup,
-    timeout: Duration,
+    deadline: &HostSupervisionDeadline,
     hot_path: &mut QemuMappedQuantumShmemHotPath,
     initial_pending: crate::QemuNodePendingQuantum,
     prime_ceiling: u64,
@@ -133,16 +167,29 @@ fn poll_mapped_prime_chain(
         },
     };
     let mut pending = Some(initial_pending);
-    let deadline = HostSupervisionDeadline::start(timeout);
     let mut emitted_frames = Vec::new();
     let mut next_progress_icount = 250_000_000_u64;
     while deadline.has_time_remaining() {
+        // Acquire before effects, then preserve the wake-before-fresh-read
+        // ordering of ordinary priming on the coherent path.
+        prime_publication_operation(
+            hot_path,
+            deadline,
+            prime_ceiling,
+            "acquire priming publication",
+            QemuShmemHotPathChannel::current_icount,
+        )?;
         setup
             .signal_plugin_wake()
             .map_err(|source| QemuLiveNodeStepGateError::prime("wake priming guest", source))?;
-        let current = QemuShmemHotPathChannel::current_icount(hot_path)
-            .map_err(|source| QemuLiveNodeStepGateError::prime("poll priming icount", source))?
-            .retired;
+        let current = prime_publication_operation(
+            hot_path,
+            deadline,
+            prime_ceiling,
+            "poll priming icount",
+            QemuShmemHotPathChannel::current_icount,
+        )?
+        .retired;
         if let Some(servicer) = servicers.block.as_deref_mut() {
             servicer
                 .service_fault_free_initialization(current)
@@ -173,11 +220,16 @@ fn poll_mapped_prime_chain(
         if let Some(completion) = completion {
             emitted_frames.extend(completion.emitted_frames);
             drop(pending.take());
-            let completed_current = QemuShmemHotPathChannel::current_icount(hot_path)
-                .map_err(|source| {
-                    QemuLiveNodeStepGateError::prime("read completed priming icount", source)
-                })?
-                .retired;
+            // The completion and drained frames remain owned here while a
+            // subsequent coherent read is temporarily unavailable.
+            let completed_current = prime_publication_operation(
+                hot_path,
+                deadline,
+                prime_ceiling,
+                "read completed priming icount",
+                QemuShmemHotPathChannel::current_icount,
+            )?
+            .retired;
             if report_progress && completed_current >= next_progress_icount {
                 tracing::debug!(
                     phase = "retained-capture",
@@ -190,19 +242,25 @@ fn poll_mapped_prime_chain(
             if completed_current >= prime_ceiling {
                 return Ok(emitted_frames);
             }
-            pending = Some(
-                QemuShmemHotPathChannel::start_quantum(
-                    hot_path,
-                    horizon,
-                    crate::QemuQuantumStopCondition::Ceiling,
-                )
-                .map_err(|source| {
-                    QemuLiveNodeStepGateError::prime("reissue priming quantum", source)
-                })?,
-            );
+            pending = Some(prime_publication_operation(
+                hot_path,
+                deadline,
+                prime_ceiling,
+                "reissue priming quantum",
+                |hot_path| {
+                    QemuShmemHotPathChannel::start_quantum(
+                        hot_path,
+                        horizon,
+                        crate::QemuQuantumStopCondition::Ceiling,
+                    )
+                },
+            )?);
         }
-        if deadline.has_time_remaining() {
-            thread::sleep(PRIME_POLL_INTERVAL);
+        if let Some(remaining) = deadline
+            .remaining()
+            .filter(|remaining| !remaining.is_zero())
+        {
+            thread::sleep(PRIME_POLL_INTERVAL.min(remaining));
         }
     }
     Err(QemuLiveNodeStepGateError::PrimeStalled {
@@ -417,3 +475,7 @@ pub(super) use tail::{
 #[cfg(test)]
 #[path = "support/tests.rs"]
 mod tests;
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "support/publication_tests.rs"]
+mod publication_tests;

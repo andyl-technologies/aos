@@ -211,12 +211,41 @@ impl CampaignRepository {
         roots: impl IntoIterator<Item = ContentId>,
         anchors: &BTreeSet<ContentId>,
         choice_cache: &mut ChoiceValidationCache,
+        collected: Option<&mut BTreeSet<ContentId>>,
+        collected_exact_leaves: Option<&mut BTreeSet<ContentId>>,
+    ) -> Result<usize, CampaignRepositoryError> {
+        self.verify_campaign_closures_with_planner_context(
+            roots,
+            anchors,
+            choice_cache,
+            collected,
+            collected_exact_leaves,
+            None,
+        )
+    }
+
+    /// Authenticates every reachable object before any semantic planner reuse.
+    ///
+    /// # Errors
+    ///
+    /// Returns original store, codec, closure-bound, child, record, or trie
+    /// integrity errors; cached tuples never replace fresh byte authentication.
+    pub(super) fn verify_campaign_closures_with_planner_context(
+        &self,
+        roots: impl IntoIterator<Item = ContentId>,
+        anchors: &BTreeSet<ContentId>,
+        choice_cache: &mut ChoiceValidationCache,
         mut collected: Option<&mut BTreeSet<ContentId>>,
         mut collected_exact_leaves: Option<&mut BTreeSet<ContentId>>,
+        mut planner_context: Option<&mut PlannerValidationContext>,
     ) -> Result<usize, CampaignRepositoryError> {
         let mut stack = roots.into_iter().map(|id| (id, false)).collect::<Vec<_>>();
         let mut visited = BTreeSet::new();
-        let mut verified_merkle_positions = BTreeSet::new();
+        let mut verified_merkle_positions = if anchors.is_empty() {
+            VerifiedMerklePositions::structure()
+        } else {
+            VerifiedMerklePositions::objects()
+        };
 
         while let Some((id, exact_leaf)) = stack.pop() {
             if anchors.contains(&id) {
@@ -248,11 +277,7 @@ impl CampaignRepository {
                         .verify_closure_objects_cached(id, &mut verified_merkle_positions)?
                 };
                 if let Some(objects) = collected.as_deref_mut() {
-                    objects.extend(
-                        verified_merkle_positions
-                            .iter()
-                            .map(|(node, _prefix)| *node),
-                    );
+                    objects.extend(verified_merkle_positions.ids());
                 }
                 if visited
                     .len()
@@ -265,6 +290,8 @@ impl CampaignRepository {
                 continue;
             }
 
+            // Semantic reuse never anchors or skips a closure object: its
+            // original bytes and children are authenticated on this fresh read.
             let handle = self.blobs.read(id, None)?;
             if exact_leaf {
                 // Exact-root choice and replay evidence use Observation identities
@@ -320,7 +347,7 @@ impl CampaignRepository {
                     self.read_policy(id)?;
                 }
                 crate::CampaignRecordKind::Fact => {
-                    self.read_fact(id)?;
+                    self.read_fact_with_planner_context(id, planner_context.as_deref_mut())?;
                 }
                 crate::CampaignRecordKind::CandidateGeneratorSpec => {
                     self.read_generator(id)?;
@@ -367,10 +394,10 @@ impl CampaignRepository {
                     )?;
                 }
                 crate::CampaignRecordKind::PlannerStep => {
-                    self.read_planner_step(id)?;
+                    self.read_planner_step_with_context(id, planner_context.as_deref_mut())?;
                 }
                 crate::CampaignRecordKind::RetainedPlannerRequest => {
-                    self.read_planner_request(id)?;
+                    self.read_planner_request_with_context(id, planner_context.as_deref_mut())?;
                 }
                 crate::CampaignRecordKind::ExpansionState => {
                     self.read_expansion_state(id)?;

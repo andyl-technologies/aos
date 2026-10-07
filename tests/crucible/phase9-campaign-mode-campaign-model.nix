@@ -123,6 +123,8 @@
       import base64
       import shlex
 
+      ${builtins.readFile ./_phase9-campaign-mode-libtest.py}
+
       mode = ${builtins.toJSON mode}
       expected_toplevel = ${builtins.toJSON (toString fleet.machineSystems.primary.config.system.build.toplevel)}
       composition_toplevel = ${builtins.toJSON (toString toplevel)}
@@ -151,38 +153,43 @@
           primary.fail("command -v crucible")
 
       commands = [
-          (${builtins.toJSON "${executor}/bin/campaign-lib"}, []),
-          (${builtins.toJSON "${executor}/bin/gate-campaign-model"}, []),
+          (
+              ${builtins.toJSON "${executor}/bin/campaign-lib"},
+              [], "campaign_lib", None,
+          ),
+          (
+              ${builtins.toJSON "${executor}/bin/gate-campaign-model"},
+              [], "campaign_model_integration", None,
+          ),
           (
               ${builtins.toJSON "${executor}/bin/crucible-lib"},
               ["--exact", "model::measurement::runtime::tests::model_sources_project_exact_replay_samples"],
+              "model_sample_projection", 1,
           ),
           (
               ${builtins.toJSON "${executor}/bin/daemon-lib"},
               ["--exact", "crucible_measurement::evidence::tests::v2_publication_round_trips_and_rederives_guest_and_model_samples"],
+              "mixed_guest_model_raw_replay", 1,
           ),
           (
               ${builtins.toJSON "${executor}/bin/daemon-lib"},
               ["--exact", "crucible_measurement::tests::verified_crucible_aggregate_drives_exact_campaign_objective"],
+              "verified_model_owned_objective", 1,
           ),
       ]
       transcripts = []
-      for executable, arguments in commands:
-          command = " ".join(
-              [shlex.quote(executable)]
-              + [shlex.quote(argument) for argument in arguments]
-              + ["--test-threads=1"]
+      evidence = []
+      for executable, arguments, evidence_key, expected_count in commands:
+          command, transcript, passed_evidence = run_campaign_mode_test(
+              executable, arguments, evidence_key, expected_count, primary.succeed
           )
-          transcripts.append(primary.succeed(command, timeout=900))
+          transcripts.append(transcript)
+          evidence.append(passed_evidence)
 
       raw_result = "\n".join([
           "PASS",
           "gate=gate:campaign-model",
-          "campaign_lib=PASS",
-          "campaign_model_integration=PASS",
-          "model_sample_projection=PASS",
-          "mixed_guest_model_raw_replay=PASS",
-          "verified_model_owned_objective=PASS",
+          *evidence,
           f"campaign_mode={mode}",
           f"campaign_configuration_identity={identity}",
           f"campaign_toplevel={composition_toplevel}",

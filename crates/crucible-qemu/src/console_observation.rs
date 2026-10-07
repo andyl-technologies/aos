@@ -95,6 +95,13 @@ impl QemuConsoleObservationSpool {
         Ok(())
     }
 
+    /// Copies an untimed tail without waiting for or draining the staging buffer.
+    pub(crate) fn try_diagnostic_tail(&self) -> Option<Vec<u8>> {
+        let bytes = self.bytes.try_lock().ok()?;
+        let start = bytes.len().saturating_sub(4096);
+        Some(bytes[start..].to_vec())
+    }
+
     /// Takes every byte staged for the completed boundary.
     pub(crate) fn take(&self) -> Result<Vec<u8>, QemuConsoleObservationSpoolError> {
         let mut bytes = self
@@ -149,6 +156,10 @@ mod tests {
             spool.append(&[0x00]),
             Err(QemuConsoleObservationSpoolError::Capacity { .. })
         ));
+        assert_eq!(
+            spool.try_diagnostic_tail(),
+            Some(retained[retained.len() - 4096..].to_vec())
+        );
         assert_eq!(spool.take()?, retained);
         Ok(())
     }
@@ -185,7 +196,80 @@ mod tests {
         reader.drain_available()?;
 
         assert!(observed_backpressure);
+        assert_eq!(
+            spool.try_diagnostic_tail(),
+            Some(payload[payload.len() - 4096..].to_vec())
+        );
+        assert_eq!(
+            spool.try_diagnostic_tail(),
+            Some(payload[payload.len() - 4096..].to_vec())
+        );
         assert_eq!(spool.take()?, payload);
+        assert_eq!(spool.try_diagnostic_tail(), Some(Vec::new()));
         Ok(())
+    }
+
+    #[test]
+    fn diagnostic_tail_retains_panic_context_after_a_long_stack()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut writer, output) = UnixStream::pair()?;
+        let spool = QemuConsoleObservationSpool::new();
+        let mut reader = QemuConsoleObservationReader::new(output, spool.clone())?;
+        let heading = b"Linux OUT probe: selection reply sequence 1 does not match request sequence 2\r\nKernel panic - not syncing: Attempted to kill init!\r\n";
+        let stack = b"[    0.461032] entry_SYSCALL_64_after_hwframe+0x77/0x7f\r\n".repeat(40);
+        let mut payload = vec![b'x'; 4096];
+        payload.extend_from_slice(heading);
+        payload.extend_from_slice(&stack);
+        payload.extend_from_slice(b"[    0.461054] Kernel Offset: 0x36000000\r\n");
+
+        writer.write_all(&payload)?;
+        reader.drain_available()?;
+        let tail = spool
+            .try_diagnostic_tail()
+            .ok_or("diagnostic spool unavailable")?;
+
+        assert!(stack.len() > 1024);
+        assert_eq!(tail.len(), 4096);
+        assert!(tail.windows(heading.len()).any(|bytes| bytes == heading));
+        assert!(
+            !tail[tail.len() - 1024..]
+                .windows(heading.len())
+                .any(|bytes| bytes == heading)
+        );
+        assert_eq!(spool.try_diagnostic_tail(), Some(tail));
+        assert_eq!(spool.take()?, payload);
+        assert_eq!(spool.try_diagnostic_tail(), Some(Vec::new()));
+        Ok(())
+    }
+
+    #[test]
+    fn diagnostic_tail_does_not_wait_for_a_busy_spool() -> Result<(), Box<dyn std::error::Error>> {
+        let spool = QemuConsoleObservationSpool::new();
+        spool.append(b"retained")?;
+        let guard = spool.bytes.lock().map_err(|_| "unexpected poison")?;
+
+        assert_eq!(spool.try_diagnostic_tail(), None);
+        drop(guard);
+        assert_eq!(spool.try_diagnostic_tail(), Some(b"retained".to_vec()));
+        assert_eq!(spool.take()?, b"retained");
+        Ok(())
+    }
+
+    #[test]
+    fn diagnostic_tail_refuses_a_poisoned_spool() {
+        let spool = QemuConsoleObservationSpool::new();
+        let shared = spool.clone();
+        let poisoned = std::thread::spawn(move || -> Result<(), &'static str> {
+            let _guard = shared.bytes.lock().map_err(|_| "unexpected setup poison")?;
+            panic!("deliberately poison the diagnostic spool");
+        })
+        .join();
+
+        assert!(poisoned.is_err());
+        assert_eq!(spool.try_diagnostic_tail(), None);
+        assert!(matches!(
+            spool.take(),
+            Err(QemuConsoleObservationSpoolError::Poisoned)
+        ));
     }
 }

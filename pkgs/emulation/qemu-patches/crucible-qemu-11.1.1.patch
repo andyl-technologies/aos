@@ -1,6 +1,6 @@
-From 33343f63cb5e8749caadcb251c6b8a90ed0482cf Mon Sep 17 00:00:00 2001
+From b3fece0fb940570d33234dc7df3e2a8e20046516 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Sat, 3 Oct 2026 07:08:17 +0000
+Date: Tue, 6 Oct 2026 09:09:58 -0700
 Subject: [PATCH] Integrate deterministic execution and private fork I/O
  custody
 
@@ -30,6 +30,20 @@ publication to the existing paused owner. Preserve the original request
 counters, stop-clearing rearm, flush and callback ownership checks.
 Exercise reader-before-publication and reader-after-publication ordering,
 no-request behavior, and nested next-generation exactly-once completion.
+
+Preserve plugin fatal shutdown as a failed process exit through the normal
+runstate path, while retaining clean quit and the original vCPU kick.
+
+Expose optional pending-selectable resume observations at the original
+stop, preparation, consumption and callback seams. Keep independently
+sampled native state advisory, retain original errno and default paths,
+and leave process protocols, admission, clocks and deadlines unchanged.
+
+Retain the selected observer's authentic declarations, setter and body in
+production-body fixtures. Exercise its default NULL path, original stop
+transitions, errno preservation and unregister behavior with explicit
+external CPU/BQL providers. Preserve all native operations and existing
+causal negative controls.
 
 Avoid empty fault-queue mutex and clock work with an atomically published
 pending count, retaining lifecycle and custom deadlines. Observe instruction
@@ -58621,7 +58635,7 @@ index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..36c355bf303715c91112dcceb32fb779
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..3ccf8615b0e87c58b038b7b9e4ea9872d9164145 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..4ba0c2175581a7d4eb33708838b02fc3b10419d4 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,326 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -60449,6 +60463,26 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..3ccf8615b0e87c58b038b7b9e4ea9872
  /**
   * qemu_plugin_scoreboard_new() - alloc a new scoreboard
   *
+@@ -1363,6 +3160,19 @@ void qemu_plugin_u64_set(qemu_plugin_u64 entry, unsigned int vcpu_index,
+ QEMU_PLUGIN_API
+ uint64_t qemu_plugin_u64_sum(qemu_plugin_u64 entry);
+ 
++/* Optional GPL-local diagnostics. Scalar data never grants native ownership.
++ * Phase numbers 1..7 are the prepare-start entry/return, stopped, resume-pending,
++ * resume-consumed and original vCPU-resume callback entry/return seams.
++ * UINT32_MAX means the original owner could not supply a CPU/runstate view.
++ * Flags: bit0 stop, bit1 stopped, bit2 halted, bit3 running. */
++typedef void (*qemu_plugin_crucible_selectable_resume_observer)(
++    uint32_t phase, uint64_t generation, uint32_t stop_state,
++    uint32_t runstate, uint32_t cpu, uint32_t flags, int32_t result);
++
++QEMU_PLUGIN_API
++void qemu_plugin_crucible_set_selectable_resume_observer(
++    qemu_plugin_crucible_selectable_resume_observer observer);
++
+ #ifdef __cplusplus
+ } /* extern "C" */
+ #endif
 diff --git a/include/qemu/accel.h b/include/qemu/accel.h
 index 6f65f1cb89a0dbd3d4a0ef1766c4e06e59fffb7e..8d6cafe7b71144a9e3c9d8849f4bbe94e74d3ea3 100644
 --- a/include/qemu/accel.h
@@ -62232,7 +62266,7 @@ index 8c1241a2c11c289bc3c69fff66ab67d06e9f257c..0c821e747558eabaeb83af16c23b3c0f
  
  #endif
 diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
-index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..7b65b1d13903e1103be776a058e4bdb8bd685002 100644
+index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..af0b59ae300443c93eda4a01039695b0ec47196b 100644
 --- a/include/qemu/plugin.h
 +++ b/include/qemu/plugin.h
 @@ -9,11 +9,13 @@
@@ -62261,7 +62295,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..7b65b1d13903e1103be776a058e4bdb8
  /*
   * Construct a qemu_plugin_meminfo_t.
   */
-@@ -183,6 +190,97 @@ void qemu_plugin_flush_cb(void);
+@@ -183,6 +190,100 @@ void qemu_plugin_flush_cb(void);
  
  void qemu_plugin_atexit_cb(void);
  
@@ -62324,6 +62358,9 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..7b65b1d13903e1103be776a058e4bdb8
 +void qemu_plugin_crucible_vmstop_request_stopped(int flush_status);
 +int qemu_plugin_crucible_vmstop_flush_status(void);
 +void qemu_plugin_crucible_vmstop_request_complete(void);
++/* Process-private, scalar-only advisory observer; no scheduling authority. */
++void qemu_plugin_crucible_observe_selectable_resume(unsigned int phase,
++                                                   int result);
 +bool qemu_plugin_crucible_vmstop_resume_consume(void);
 +int qemu_plugin_crucible_lifecycle_complete_terminal_exit(
 +    const char *action_sha256, const char *evidence_sha256,
@@ -62359,7 +62396,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..7b65b1d13903e1103be776a058e4bdb8
  void qemu_plugin_add_dyn_cb_arr(GArray *arr);
  
  static inline void qemu_plugin_disable_mem_helpers(CPUState *cpu)
-@@ -237,6 +335,11 @@ static inline enum qemu_plugin_cb_flags qemu_plugin_get_cb_flags(void)
+@@ -237,6 +338,11 @@ static inline enum qemu_plugin_cb_flags qemu_plugin_get_cb_flags(void)
  static inline void qemu_plugin_add_opts(void)
  { }
  
@@ -62371,7 +62408,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..7b65b1d13903e1103be776a058e4bdb8
  static inline void qemu_plugin_opt_parse(const char *optstr,
                                           QemuPluginList *head)
  {
-@@ -306,6 +409,186 @@ static inline void qemu_plugin_flush_cb(void)
+@@ -306,6 +412,192 @@ static inline void qemu_plugin_flush_cb(void)
  static inline void qemu_plugin_atexit_cb(void)
  { }
  
@@ -62515,7 +62552,13 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..7b65b1d13903e1103be776a058e4bdb8
 +}
 +
 +static inline void qemu_plugin_crucible_vmstop_request_complete(void)
-+{ }
++{
++}
++
++static inline void qemu_plugin_crucible_observe_selectable_resume(
++    unsigned int phase, int result)
++{
++}
 +
 +static inline bool qemu_plugin_crucible_vmstop_resume_consume(void)
 +{
@@ -75296,7 +75339,7 @@ index 9e9941fe73e77a7b3bcc3ca1ab7ad4bec58f0151..66e2d8cd64d01e2304aa51675bfe4959
  
  static int net_slirp_init(NetClientState *peer, const char *model,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index fbf905cd63e4cc109748b379f4209f6ad6547c2c..61a4fba453ae6308f01eba6d175ddaf93cf4b51d 100644
+index fbf905cd63e4cc109748b379f4209f6ad6547c2c..d92a30a04d8c8ca0e7d03a8ed732e0d15372d053 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -11,12 +11,40 @@
@@ -76261,7 +76304,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..61a4fba453ae6308f01eba6d175ddaf9
          return &has_control;
      }
      return NULL;
-@@ -123,9 +1054,1908 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
+@@ -123,9 +1054,1964 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
  void qemu_plugin_update_ns(const void *handle, int64_t new_time)
  {
      if (handle == &has_control) {
@@ -76991,6 +77034,17 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..61a4fba453ae6308f01eba6d175ddaf9
 +static __thread bool qemu_plugin_crucible_idle_wait_issued;
 +static __thread QemuPluginCrucibleIdleCallbackDisposition
 +    qemu_plugin_crucible_idle_callback_disposition;
++static qemu_plugin_crucible_selectable_resume_observer
++    qemu_plugin_crucible_selectable_resume_observer_cb;
++
++/* Diagnostic only: the fixture's loaded GPL plugin remains resident until exit.
++ * No pointer enters IPC, and this observer changes no execution registration. */
++void qemu_plugin_crucible_set_selectable_resume_observer(
++    qemu_plugin_crucible_selectable_resume_observer observer)
++{
++    qatomic_set(&qemu_plugin_crucible_selectable_resume_observer_cb, observer);
++}
++
 +static int qemu_plugin_crucible_vmstop_state;
 +static int qemu_plugin_crucible_vmstop_flush_result;
 +/* Every successful native admission owns a distinct process-local stop. */
@@ -77004,6 +77058,42 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..61a4fba453ae6308f01eba6d175ddaf9
 +    QEMU_PLUGIN_CRUCIBLE_VMSTOP_STOPPED,
 +    QEMU_PLUGIN_CRUCIBLE_VMSTOP_RESUME_PENDING,
 +};
++
++/* Copies only lifecycle state under its original owner; never a clock or PC. */
++void qemu_plugin_crucible_observe_selectable_resume(unsigned int phase,
++                                                   int result)
++{
++    qemu_plugin_crucible_selectable_resume_observer observer = qatomic_read(
++        &qemu_plugin_crucible_selectable_resume_observer_cb);
++    CPUState *cpu = NULL;
++    unsigned int runstate = UINT32_MAX;
++    unsigned int flags = UINT32_MAX;
++    int saved_errno;
++
++    if (!observer) {
++        return;
++    }
++    saved_errno = errno;
++    if (bql_locked()) {
++        runstate = runstate_get();
++        cpu = qemu_plugin_crucible_resume_callback_cpu;
++        if (!cpu && first_cpu && first_cpu->stopped &&
++            !qatomic_read(&first_cpu->running)) {
++            cpu = first_cpu;
++        }
++    }
++    if (cpu) {
++        flags = (unsigned int)cpu->stop |
++                ((unsigned int)cpu->stopped << 1) |
++                ((unsigned int)cpu->halted << 2) |
++                ((unsigned int)qatomic_read(&cpu->running) << 3);
++    }
++    observer(phase,
++             qatomic_read(&qemu_plugin_crucible_vmstop_generation_value),
++             qatomic_read(&qemu_plugin_crucible_vmstop_state), runstate,
++             cpu ? cpu->cpu_index : UINT32_MAX, flags, result);
++    errno = saved_errno;
++}
 +
 +/* Never samples a clock or another executing CPU's architecture state. */
 +static void qemu_plugin_trace_stop_context(CrucibleStopContextPhase phase)
@@ -77280,6 +77370,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..61a4fba453ae6308f01eba6d175ddaf9
 +        qatomic_cmpxchg(&qemu_plugin_crucible_vmstop_state,
 +                        QEMU_PLUGIN_CRUCIBLE_VMSTOP_ADMITTED,
 +                        QEMU_PLUGIN_CRUCIBLE_VMSTOP_STOPPED);
++        qemu_plugin_crucible_observe_selectable_resume(3, flush_status);
 +        qemu_plugin_trace_stop_context(CRUCIBLE_STOP_PUBLISHED);
 +        if (qemu_plugin_crucible_rr_control_boundary_pending()) {
 +            /* A reader during admission still names the running RR owner. */
@@ -77307,6 +77398,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..61a4fba453ae6308f01eba6d175ddaf9
 +                       QEMU_PLUGIN_CRUCIBLE_VMSTOP_RESUME_PENDING) ==
 +        QEMU_PLUGIN_CRUCIBLE_VMSTOP_STOPPED) {
 +        qatomic_set(&qemu_plugin_crucible_vmstop_flush_result, 0);
++        qemu_plugin_crucible_observe_selectable_resume(4, 0);
 +    }
 +}
 +
@@ -77318,6 +77410,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..61a4fba453ae6308f01eba6d175ddaf9
 +        QEMU_PLUGIN_CRUCIBLE_VMSTOP_RESUME_PENDING;
 +
 +    if (consumed) {
++        qemu_plugin_crucible_observe_selectable_resume(5, 0);
 +        qemu_plugin_crucible_vmstop_cold_admitted = false;
 +        qemu_plugin_crucible_vmstop_cold_generation = 0;
 +        qemu_plugin_rearm_deferred_control_boundary();
@@ -77563,8 +77656,12 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..61a4fba453ae6308f01eba6d175ddaf9
 +
 +void qemu_plugin_request_shutdown(int failure)
 +{
-+    qemu_system_shutdown_request(failure ? SHUTDOWN_CAUSE_HOST_ERROR :
-+                                           SHUTDOWN_CAUSE_HOST_QMP_QUIT);
++    if (failure) {
++        qemu_system_shutdown_request_with_code(SHUTDOWN_CAUSE_HOST_ERROR,
++                                              EXIT_FAILURE);
++    } else {
++        qemu_system_shutdown_request(SHUTDOWN_CAUSE_HOST_QMP_QUIT);
++    }
 +    if (first_cpu) {
 +        qemu_cpu_kick(first_cpu);
 +    }
@@ -77939,10 +78036,12 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..61a4fba453ae6308f01eba6d175ddaf9
 +        g_assert(qemu_plugin_crucible_resume_callback_depth == 0);
 +        qemu_plugin_crucible_resume_callback_cpu = cpu;
 +        qemu_plugin_crucible_resume_callback_depth++;
++        qemu_plugin_crucible_observe_selectable_resume(6, 0);
 +        qemu_plugin_crucible_exact_boundary_enter();
 +        cb(cpu->cpu_index, qemu_plugin_icount_raw(),
 +           qemu_plugin_vcpu_idle_resume_userdata);
 +        qemu_plugin_crucible_exact_boundary_leave();
++        qemu_plugin_crucible_observe_selectable_resume(7, 0);
 +        qemu_plugin_crucible_resume_callback_depth--;
 +        qemu_plugin_crucible_resume_callback_cpu = NULL;
 +    }
@@ -120813,7 +120912,7 @@ index 9919b46230f1caf8be1a1b6ef00acd94678437ce..5688cd190ad09880d4faa1af38d86d39
           * cpu_exit() is not enough to kick a halted CPU out of
           * qemu_tcg_wait_io_event.  async_run_on_cpu, instead,
 diff --git a/system/cpus.c b/system/cpus.c
-index 97e5a5edee23b70d8bd170c2b984568f4e804672..5b2752bcf8f2bf39dfe0bd675ce6bb260fabb9c5 100644
+index 97e5a5edee23b70d8bd170c2b984568f4e804672..72897eb332e6eb15d505232926b29ec68ef1e358 100644
 --- a/system/cpus.c
 +++ b/system/cpus.c
 @@ -25,11 +25,13 @@
@@ -121142,26 +121241,42 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..5b2752bcf8f2bf39dfe0bd675ce6bb26
      if (qemu_in_vcpu_thread()) {
          qemu_system_vmstop_request_prepare();
          qemu_system_vmstop_request(state);
-@@ -768,6 +1020,14 @@ int vm_prepare_start(bool step_pending)
+@@ -768,8 +1020,21 @@ int vm_prepare_start(bool step_pending)
      RunState state = vm_was_suspended ? RUN_STATE_SUSPENDED : RUN_STATE_RUNNING;
      RunState requested;
  
++    qemu_plugin_crucible_observe_selectable_resume(1, 0);
++
 +    if (qemu_crucible_cold_stop_transaction_active()) {
 +        qemu_crucible_cold_stop_competing_stop();
++        qemu_plugin_crucible_observe_selectable_resume(2, -1);
 +        return -1;
 +    }
 +    if (qemu_plugin_crucible_vmstop_admission_pending()) {
++        qemu_plugin_crucible_observe_selectable_resume(2, -1);
 +        return -1;
 +    }
 +
      qemu_vmstop_requested(&requested);
      if (runstate_is_running() && requested == RUN_STATE__MAX) {
++        qemu_plugin_crucible_observe_selectable_resume(2, -1);
          return -1;
-@@ -797,9 +1057,11 @@ int vm_prepare_start(bool step_pending)
+     }
+ 
+@@ -781,6 +1046,7 @@ int vm_prepare_start(bool step_pending)
+     if (runstate_is_running()) {
+         qapi_event_send_stop();
+         qapi_event_send_resume();
++        qemu_plugin_crucible_observe_selectable_resume(2, -1);
+         return -1;
+     }
+ 
+@@ -797,9 +1063,12 @@ int vm_prepare_start(bool step_pending)
      runstate_set(state);
      vm_state_notify(1, state);
      vm_was_suspended = false;
 +    qemu_plugin_crucible_vmstop_request_complete();
++    qemu_plugin_crucible_observe_selectable_resume(2, ret);
      return ret;
  }
  
@@ -121169,7 +121284,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..5b2752bcf8f2bf39dfe0bd675ce6bb26
  void vm_start(void)
  {
      if (!vm_prepare_start(false)) {
-@@ -820,6 +1082,10 @@ void vm_resume(RunState state)
+@@ -820,6 +1089,10 @@ void vm_resume(RunState state)
     current state is forgotten forever */
  int vm_stop_force_state(RunState state)
  {
@@ -121180,7 +121295,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..5b2752bcf8f2bf39dfe0bd675ce6bb26
      if (runstate_is_live(runstate_get())) {
          return vm_stop(state);
      } else {
-@@ -928,4 +1194,3 @@ void qmp_inject_nmi(Error **errp)
+@@ -928,4 +1201,3 @@ void qmp_inject_nmi(Error **errp)
  {
      nmi_monitor_handle(monitor_get_cpu_index(monitor_cur()), errp);
  }
@@ -157472,10 +157587,10 @@ index 0000000000000000000000000000000000000000..a52e32aabb49f817afba9fdeddbdc3f4
 +    main()
 diff --git a/tests/unit/test-crucible-control-deferred.py b/tests/unit/test-crucible-control-deferred.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..41bbef9142c500adb2e4a176079d1571e48adf63
+index 0000000000000000000000000000000000000000..43083592abb007944b9036c44d0d44a397821953
 --- /dev/null
 +++ b/tests/unit/test-crucible-control-deferred.py
-@@ -0,0 +1,433 @@
+@@ -0,0 +1,434 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise control ownership across production TX stop and advance settlement.
 +
@@ -157857,9 +157972,10 @@ index 0000000000000000000000000000000000000000..41bbef9142c500adb2e4a176079d1571
 +            "static bool qemu_plugin_quiesced_control_boundary_available(void)\n{",
 +        ],
 +    }
-+    return "\n\n".join(definition((ROOT / path).read_text(), signature)
-+                        for path, signatures in selections.items()
-+                        for signature in signatures)
++    bodies = [definition((ROOT / path).read_text(), signature)
++              for path, signatures in selections.items()
++              for signature in signatures]
++    return SUPPORT["selectable_resume_support"]() + "\n\n" + "\n\n".join(bodies)
 +
 +
 +def main():
@@ -170860,10 +170976,10 @@ index 0000000000000000000000000000000000000000..92f7e7b7c4fdbe109ae0754186357da2
 +    main()
 diff --git a/tests/unit/test-crucible-net-output-stop.py b/tests/unit/test-crucible-net-output-stop.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..2f8c065358238a2d4da1221cef0d3efdffa3f177
+index 0000000000000000000000000000000000000000..5a64c59ff6b56fe08fd154feef1f30ee1cadf5f7
 --- /dev/null
 +++ b/tests/unit/test-crucible-net-output-stop.py
-@@ -0,0 +1,681 @@
+@@ -0,0 +1,769 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise production TX, VM-stop, clock completion, and RR parking bodies.
 +
@@ -170897,6 +171013,31 @@ index 0000000000000000000000000000000000000000..2f8c065358238a2d4da1221cef0d3efd
 +            if depth == 0:
 +                return source[start:index + 1]
 +    raise AssertionError(f"unterminated definition: {signature}")
++
++
++def selectable_resume_support():
++    """Retain the actual observer implementation, including its NULL fast path.
++
++    CPU topology and BQL remain the calling fixture's external providers. These
++    bodies do not establish a native lifecycle owner or a translated guest.
++    """
++    api = (ROOT / "plugins/api-system.c").read_text()
++    header = (ROOT / "include/plugins/qemu-plugin.h").read_text()
++    declarations = []
++    for source, prefix in (
++        (header, "typedef void (*qemu_plugin_crucible_selectable_resume_observer)("),
++        (api, "static __thread CPUState *qemu_plugin_crucible_resume_callback_cpu"),
++        (api, "static qemu_plugin_crucible_selectable_resume_observer\n"),
++    ):
++        start = source.index(prefix)
++        end = source.index(";", start) + 1
++        declarations.append(source[start:end])
++
++    bodies = [definition(api, signature) for signature in (
++        "void qemu_plugin_crucible_set_selectable_resume_observer(",
++        "void qemu_plugin_crucible_observe_selectable_resume(unsigned int phase,",
++    )]
++    return "\n\n".join(declarations + bodies)
 +
 +
 +PRELUDE = r"""
@@ -170941,6 +171082,7 @@ index 0000000000000000000000000000000000000000..2f8c065358238a2d4da1221cef0d3efd
 +    struct CPUState *next;
 +    int cpu_index, exception_index;
 +    bool running, stop, stopped, unplug, exit_request;
++    bool halted;
 +    void *halt_cond;
 +} CPUState;
 +typedef union { unsigned long host_ulong; } run_on_cpu_data;
@@ -171058,7 +171200,8 @@ index 0000000000000000000000000000000000000000..2f8c065358238a2d4da1221cef0d3efd
 +};
 +static void qemu_plugin_trace_stop_context(int phase) { }
 +
-+static bool bql_locked(void) { return locked; }
++static unsigned observer_owner_reads;
++static bool bql_locked(void) { observer_owner_reads++; return locked; }
 +static int icount_enabled(void) { return count_mode; }
 +static int64_t icount_get_raw(void) { return raw_icount; }
 +static uint64_t qemu_plugin_icount_raw(void) { return raw_icount; }
@@ -171342,12 +171485,73 @@ index 0000000000000000000000000000000000000000..2f8c065358238a2d4da1221cef0d3efd
 +    qemu_plugin_control_boundary_cb = control_callback;
 +}
 +
++static unsigned observer_phases[3], observer_calls;
++
++static void record_selectable_resume(uint32_t phase, uint64_t generation,
++    uint32_t stop_state, uint32_t state, uint32_t index, uint32_t flags,
++    int32_t result)
++{
++    g_assert_cmpuint(observer_calls, <, G_N_ELEMENTS(observer_phases));
++    observer_phases[observer_calls++] = phase;
++    g_assert_cmpuint(generation, ==, 17);
++    g_assert_cmpuint(state, ==, RUN_STATE_RUNNING);
++    g_assert_cmpuint(index, ==, 7);
++    g_assert_cmpuint(flags, ==, 6);
++    g_assert_cmpint(result, ==, phase == 3 ? -EIO : 0);
++    g_assert_cmpuint(stop_state, ==, phase == 3 ?
++        QEMU_PLUGIN_CRUCIBLE_VMSTOP_STOPPED : phase == 4 ?
++        QEMU_PLUGIN_CRUCIBLE_VMSTOP_RESUME_PENDING :
++        QEMU_PLUGIN_CRUCIBLE_VMSTOP_IDLE);
++    errno = EIO;
++}
++
++static void test_selectable_resume_observer(void)
++{
++    uint64_t original_generation = qemu_plugin_crucible_vmstop_generation_value;
++    unsigned before;
++
++    reset();
++    before = observer_owner_reads;
++    errno = ERANGE;
++    qemu_plugin_crucible_observe_selectable_resume(3, -EIO);
++    g_assert_cmpuint(observer_owner_reads, ==, before);
++    g_assert_cmpint(errno, ==, ERANGE);
++    g_assert_cmpint(qemu_plugin_crucible_vmstop_state, ==,
++                    QEMU_PLUGIN_CRUCIBLE_VMSTOP_IDLE);
++
++    /* Execute the original transition calls with modeled CPU/BQL providers. */
++    cpu.cpu_index = 7;
++    cpu.stopped = cpu.halted = true;
++    qemu_plugin_crucible_vmstop_generation_value = 17;
++    qemu_plugin_crucible_vmstop_state = QEMU_PLUGIN_CRUCIBLE_VMSTOP_ADMITTED;
++    qemu_plugin_crucible_set_selectable_resume_observer(record_selectable_resume);
++    qemu_plugin_crucible_vmstop_request_stopped(-EIO);
++    g_assert_cmpint(errno, ==, ERANGE);
++    qemu_plugin_crucible_vmstop_request_complete();
++    g_assert_cmpint(errno, ==, ERANGE);
++    g_assert_true(qemu_plugin_crucible_vmstop_resume_consume());
++    g_assert_cmpint(errno, ==, ERANGE);
++    g_assert_cmpuint(observer_calls, ==, 3);
++    for (unsigned index = 0; index < 3; index++) {
++        g_assert_cmpuint(observer_phases[index], ==, index + 3);
++    }
++
++    qemu_plugin_crucible_set_selectable_resume_observer(NULL);
++    before = observer_owner_reads;
++    qemu_plugin_crucible_observe_selectable_resume(7, 0);
++    g_assert_cmpuint(observer_owner_reads, ==, before);
++    g_assert_cmpuint(observer_calls, ==, 3);
++    qemu_plugin_crucible_vmstop_generation_value = original_generation;
++    puts("PASS native selectable observer: actual NULL/transition/unregister bodies; external CPU/BQL, errno retained");
++}
++
 +int main(void)
 +{
 +    char frame[] = "abc";
 +    struct iovec invalid = {.iov_base = NULL, .iov_len = 3};
 +    uint64_t generation;
 +
++    test_selectable_resume_observer();
 +    reset();
 +    generation = qemu_plugin_crucible_vmstop_generation_value;
 +    g_assert_cmpint(qemu_plugin_request_vmstop(), ==, -EPERM);
@@ -171509,7 +171713,7 @@ index 0000000000000000000000000000000000000000..2f8c065358238a2d4da1221cef0d3efd
 +    ])
 +    bodies.append(definition((ROOT / "accel/tcg/tcg-accel-ops-rr.c").read_text(),
 +                             "static void rr_crucible_sim_park_vmstop(void)"))
-+    production = "\n\n".join(bodies)
++    production = selectable_resume_support() + "\n\n" + "\n\n".join(bodies)
 +    if arguments.negative_control == "callback-scope":
 +        scoped = definition(sources["net/net.c"],
 +                            "static ssize_t crucible_net_tx_submit(")
@@ -180633,10 +180837,10 @@ index 0000000000000000000000000000000000000000..99c5e4e0e5e6c2b1687a34c93c5d3c2d
 +}
 diff --git a/tests/unit/test-crucible-stop-context.py b/tests/unit/test-crucible-stop-context.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..2b3644a16e99286fd2e8cee7280baa7a55b5c501
+index 0000000000000000000000000000000000000000..c79ac6a24be0aaffb571ba4e5fec4682e7870bda
 --- /dev/null
 +++ b/tests/unit/test-crucible-stop-context.py
-@@ -0,0 +1,402 @@
+@@ -0,0 +1,404 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise original stop, rearm and registered reader diagnostic call sites.
 +
@@ -180654,8 +180858,9 @@ index 0000000000000000000000000000000000000000..2b3644a16e99286fd2e8cee7280baa7a
 +import subprocess
 +
 +ROOT = Path(__file__).resolve().parents[2]
-+definition = runpy.run_path(str(Path(__file__).with_name(
-+    "test-crucible-net-output-stop.py")))["definition"]
++SUPPORT = runpy.run_path(str(Path(__file__).with_name(
++    "test-crucible-net-output-stop.py")))
++definition = SUPPORT["definition"]
 +
 +PRELUDE = r"""
 +#include <errno.h>
@@ -181025,7 +181230,8 @@ index 0000000000000000000000000000000000000000..2b3644a16e99286fd2e8cee7280baa7a
 +    elif arguments.negative_control == "dedup":
 +        production = production.replace("    if (!emit) {\n        return;\n    }", "    (void)emit;", 1)
 +    generated = arguments.output_dir / "stop-context.c"
-+    generated.write_text(PRELUDE + production + CHECKS)
++    generated.write_text(PRELUDE + SUPPORT["selectable_resume_support"]() +
++                         production + CHECKS)
 +    binary = arguments.output_dir / "stop-context"
 +    command = [os.environ.get("CC", "cc"), *shlex.split(os.environ.get("CFLAGS", "")),
 +               "-Wno-missing-prototypes", "-Wno-unused-function", "-Wno-unused-variable",

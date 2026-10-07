@@ -588,6 +588,14 @@ where
         self.inner.pending_selectable_request_time(pending)
     }
 
+    fn pending_selectable_request_is_committed_source(
+        &self,
+        pending: &QemuNodeSelectablePendingRequest,
+    ) -> Result<bool, SchedulerError> {
+        self.inner
+            .pending_selectable_request_is_committed_source(pending)
+    }
+
     fn apply_selectable_reply(
         &mut self,
         parent: &Configuration,
@@ -598,6 +606,13 @@ where
     ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         self.inner
             .apply_selectable_reply(parent, decision, selected, pending, reply)
+    }
+
+    fn publish_released_host_outcomes(
+        &mut self,
+        configuration: &Configuration,
+    ) -> Result<Option<QuantumOutcome>, SchedulerError> {
+        self.inner.publish_released_host_outcomes(configuration)
     }
 
     fn capture_attempt_checkpoint(

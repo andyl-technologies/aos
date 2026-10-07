@@ -21,7 +21,7 @@
 //! service(guest_icount):
 //!   ring pair = region.node_directed_ring_pair_mut(vm, vm->BLK, BLK->vm)
 //!   process_shmem_inbox(request ring)  -> COMPUTE responses into in-flight queue
-//!   advance_to_shmem(guest_icount, response ring) -> DELIVER due responses
+//!   advance_to_mapped_ring(guest_icount, response ring) -> DELIVER due responses
 //!   report { processed, delivered, next_completion_icount }
 //! ```
 //!
@@ -84,6 +84,9 @@ use crucible_shmem::{
 use thiserror::Error;
 
 use crate::QemuLiveBlockIoServicerCheckpoint;
+
+// One immutable device borrow captures the deadline and its sorted reply head.
+type CompletionHeadObservation = (Option<u64>, Option<(crucible_shmem::FrameDeliveryKey, u32)>);
 
 /// In-flight request-queue capacity for the servicer's I/O core.
 const SERVICER_INBOX_CAPACITY: u64 = 16;
@@ -998,7 +1001,10 @@ impl QemuLiveBlockIoServicer {
                 self.vm_slot,
             )
             .map_err(|source| QemuLiveBlockIoServicerError::RegionAccess { source })?;
-        let node = pair.node_slot.snapshot();
+        let node = pair
+            .node_slot
+            .try_snapshot()
+            .ok_or(QemuLiveBlockIoServicerError::CheckpointNotQuiescent)?;
         if !checkpoint_boundary_is_quiescent(node.status, node.device_io_active, pause_requested) {
             return Err(QemuLiveBlockIoServicerError::CheckpointNotQuiescent);
         }
@@ -1144,7 +1150,10 @@ impl QemuLiveBlockIoServicer {
                 self.vm_slot,
             )
             .map_err(|source| QemuLiveBlockIoServicerError::RegionAccess { source })?;
-        let node = pair.node_slot.snapshot();
+        let node = pair
+            .node_slot
+            .try_snapshot()
+            .ok_or(QemuLiveBlockIoServicerError::CheckpointNotQuiescent)?;
         if !checkpoint_boundary_is_quiescent(node.status, node.device_io_active, pause_requested) {
             return Err(QemuLiveBlockIoServicerError::CheckpointNotQuiescent);
         }
@@ -1404,12 +1413,7 @@ impl QemuLiveBlockIoServicer {
             .map_err(|source| QemuLiveBlockIoServicerError::RegionAccess { source })?;
         let mut device = device.lock()?;
         let delivery = device
-            .advance_to_shmem(
-                guest_icount,
-                pair.second.header,
-                pair.second.entries,
-                pair.node_slot,
-            )
+            .advance_to_mapped_ring(guest_icount, pair.second, pair.node_slot)
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
         *frames_delivered += delivery.delivered;
         let next_completion_icount = device.next_exact_local_event();
@@ -1880,6 +1884,26 @@ impl QemuLiveBlockIoServicer {
     #[must_use]
     pub const fn frames_delivered(&self) -> usize {
         self.frames_delivered
+    }
+
+    /// Observes the deadline and its actual sorted response head under one device borrow.
+    ///
+    /// The returned identity is host diagnostic evidence only. It never consumes a
+    /// response or substitutes a later request for the minimum's original owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original device-lock error when its authoritative owner is poisoned.
+    pub(crate) fn completion_head_observation(
+        &self,
+    ) -> Result<CompletionHeadObservation, QemuLiveBlockIoServicerError> {
+        let device = self.device.lock()?;
+        let deadline = device.next_exact_local_event();
+        let head = device
+            .core()
+            .next_pending_response()
+            .map(|pending| (pending.key, pending.response.request_id));
+        Ok((deadline, head))
     }
 
     /// Returns the device's next completion icount, when a response is in flight.

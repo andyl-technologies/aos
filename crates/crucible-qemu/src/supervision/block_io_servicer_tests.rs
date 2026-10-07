@@ -661,3 +661,76 @@ fn world_bound_queue_retains_original_key_through_codec_restore_and_private_clon
         before
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn world_bound_block_reply_uses_reserved_transport_source_without_changing_queue_key() {
+    let (file, bytes, unbound) = checkpoint_fixture();
+    drop(unbound);
+    let binding = declared_world_binding("disk-a");
+    let mut servicer = QemuLiveBlockIoServicer::from_shmem_fd_with_base_and_latency_and_binding(
+        file.as_fd(),
+        bytes,
+        0,
+        BaseImage::new(deterministic_base_image(4096)),
+        BlockLatency::new(0, 0, 0, 0, 0),
+        binding.clone(),
+    )
+    .unwrap_or_else(|error| panic!("bound block servicer: {error}"));
+    let mut region = mmap_setup_region(file.as_fd(), bytes)
+        .unwrap_or_else(|error| panic!("original ring mapping: {error}"));
+    let request = BlockRequest::read(7, 0, 8)
+        .encode()
+        .unwrap_or_else(|error| panic!("actual request wire: {error}"));
+    let frame = crucible_shmem::FrameEntry::new(0, 0, 7, &request)
+        .unwrap_or_else(|error| panic!("actual request frame: {error}"));
+    {
+        let pair = region
+            .node_directed_ring_pair_mut(0, 0, SLOT_BLK_IO as u32, SLOT_BLK_IO as u32, 0)
+            .unwrap_or_else(|error| panic!("original block pair: {error}"));
+        pair.first
+            .header
+            .enqueue(pair.first.entries, &frame)
+            .unwrap_or_else(|error| panic!("publish request: {error}"));
+    }
+
+    let intake = servicer
+        .process_one_storage_request()
+        .unwrap_or_else(|error| panic!("actual request intake: {error}"));
+    assert_eq!(intake.processed, 1);
+    let checkpoint = servicer
+        .checkpoint(ContentHash::from_bytes(b"wire source regression"))
+        .unwrap_or_else(|error| panic!("original queue checkpoint: {error}"));
+    assert_eq!(checkpoint.device.core.src_node, binding.source_node());
+    assert_eq!(
+        checkpoint.device.core.inflight[0].key.src_node,
+        binding.source_node()
+    );
+    assert_ne!(binding.source_node(), SLOT_BLK_IO as u32);
+
+    let delivered = servicer
+        .advance_storage_to(0)
+        .unwrap_or_else(|error| panic!("actual response publication: {error}"));
+    assert_eq!(delivered.delivered, 1);
+    let pair = region
+        .node_directed_ring_pair_mut(0, 0, SLOT_BLK_IO as u32, SLOT_BLK_IO as u32, 0)
+        .unwrap_or_else(|error| panic!("original block response pair: {error}"));
+    let reply = pair
+        .second
+        .header
+        .dequeue(pair.second.entries)
+        .unwrap_or_else(|error| panic!("original response ring: {error}"))
+        .unwrap_or_else(|| panic!("missing response"));
+    assert_eq!(reply.src_node, pair.second.descriptor.src_slot);
+    assert_eq!(
+        reply.delivery_icount,
+        checkpoint.device.core.inflight[0].key.delivery_icount
+    );
+    assert_eq!(reply.seq, checkpoint.device.core.inflight[0].key.seq);
+    assert_eq!(
+        reply
+            .payload()
+            .unwrap_or_else(|error| panic!("response payload: {error}")),
+        checkpoint.device.core.inflight[0].response.payload
+    );
+}

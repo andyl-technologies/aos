@@ -26,6 +26,7 @@ use crate::qemu_campaign_lifecycle::{
     GuardedCampaignReplayClosure, GuardedCampaignReplaySelection,
 };
 
+mod contract_context;
 mod network_inputs;
 
 use network_inputs::{ReplayStep, authenticated_replay_steps};
@@ -679,9 +680,10 @@ fn recorded_guest_reply(
         || discovery.opportunity() != recorded.opportunity()
         || discovery.domain() != recorded.domain()
     {
-        return Err(invalid_replay_selection(
-            "physical guest request differs from the authenticated replay choice",
-        ));
+        return Err(invalid_replay_selection(format!(
+            "physical guest request differs from the authenticated replay choice; {}",
+            contract_context::ReplayContractContext::new(current, recorded, &discovery, request),
+        )));
     }
 
     let selection = recorded.selection();

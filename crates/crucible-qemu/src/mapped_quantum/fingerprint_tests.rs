@@ -85,3 +85,54 @@ fn black_box_fingerprint_rejects_incomplete_samples() {
     empty.vcpu_count = 0;
     assert!(black_box_execution_fingerprint(&node, &empty).is_err());
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn borrowed_fingerprint_reader_distinguishes_busy_from_absent()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::supervision::host_io_runtime::tests::publication_access::MappedPublication;
+    use std::os::unix::fs::FileExt;
+
+    let mut mapped = MappedPublication::new()?;
+    let absent = mapped
+        .channel
+        .with_hot_path("fingerprint_sample", |hot_path| {
+            QemuShmemHotPathChannel::fingerprint_sample(hot_path)
+        })
+        .unwrap_err();
+    assert!(absent.is_retryable() && !absent.is_publication_unavailable());
+    mapped.file.write_all_at(
+        &1_u32.to_ne_bytes(),
+        mapped.layout.fingerprint_sample_off
+            + crucible_shmem::FINGERPRINT_SAMPLE_SLOT_GEN_OFFSET as u64,
+    )?;
+
+    let busy = mapped
+        .channel
+        .with_hot_path("fingerprint_sample", |hot_path| {
+            QemuShmemHotPathChannel::fingerprint_sample(hot_path)
+        })
+        .unwrap_err();
+    assert!(busy.is_retryable() && busy.is_publication_unavailable());
+    assert_eq!(
+        mapped
+            .producer
+            .fingerprint_sample(0)?
+            .capture_request_generation(),
+        0
+    );
+    mapped.file.write_all_at(
+        &0_u32.to_ne_bytes(),
+        mapped.layout.fingerprint_sample_off
+            + crucible_shmem::FINGERPRINT_SAMPLE_SLOT_GEN_OFFSET as u64,
+    )?;
+    let original = sample();
+    mapped.producer.fingerprint_sample(0)?.publish(&original)?;
+    let read = mapped
+        .channel
+        .with_hot_path("fingerprint_sample", |hot_path| {
+            QemuShmemHotPathChannel::fingerprint_sample(hot_path)
+        })?;
+    assert_eq!(read, original);
+    Ok(())
+}

@@ -67,6 +67,10 @@ impl QemuAsyncWait {
 pub enum QemuAsyncWaitOutcome {
     /// The awaited child event completed within its budget.
     Completed,
+    /// An advance poll yielded while its original watchdog remains live.
+    ///
+    /// This is host-liveness progress, not a completed quantum boundary.
+    Pending,
     /// The timeout budget expired.
     TimedOut,
 }
@@ -131,6 +135,19 @@ pub trait QemuAsyncNodeStepTarget: QemuAsyncCrashEscalationTarget {
         horizon: ExecutionHorizon,
     ) -> Result<Self::PendingQuantum, QemuNodeChannelError>;
 
+    /// Returns the original pre-publication node state carried by a quantum.
+    ///
+    /// Providers without a live start observation retain `None`. A live
+    /// observation with no deadline remains `Some` and must not be replaced by
+    /// a later guest pause observed after the start hook.
+    #[must_use]
+    fn advance_initial_state(
+        &self,
+        _pending: &Self::PendingQuantum,
+    ) -> Option<crate::QemuNodeIdleState> {
+        None
+    }
+
     /// Returns the plugin-publication fence carried by a pending quantum.
     #[must_use]
     fn advance_completion_fence(
@@ -138,6 +155,26 @@ pub trait QemuAsyncNodeStepTarget: QemuAsyncCrashEscalationTarget {
         _pending: &Self::PendingQuantum,
     ) -> Option<QemuAdvanceCompletionFence> {
         None
+    }
+
+    /// Binds the live runtime's original clamp evidence to this pending quantum.
+    ///
+    /// # Errors
+    ///
+    /// Refuses evidence when the target cannot authenticate its mapped scope.
+    /// The default accepts absence for providers without a live clamp.
+    fn retain_completed_quantum_boundary(
+        &mut self,
+        _pending: &mut Self::PendingQuantum,
+        boundary: Option<crate::QemuCompletedQuantumBoundary>,
+    ) -> Result<(), QemuNodeChannelError> {
+        if boundary.is_some() {
+            return Err(QemuNodeChannelError::new(
+                "retain completed-quantum boundary",
+                "target cannot authenticate a live completed-clamp record",
+            ));
+        }
+        Ok(())
     }
 
     /// Finishes one quantum after the host-I/O runtime observed completion.
@@ -170,6 +207,8 @@ pub struct QemuAsyncQuantumCompletion {
     pub outcome: AdvanceOutcome,
     /// Attested node state at the completed quantum boundary.
     pub final_state: crate::QemuNodeIdleState,
+    /// Original accepted native clamp evidence, absent for modeled providers.
+    pub completed_boundary: Option<crate::QemuCompletedQuantumBoundary>,
     /// Scheduler-staged inbound frames consumed at this completed boundary.
     pub inbound_frames_consumed: usize,
     /// Guest-emitted frames drained while completing this quantum.
@@ -184,6 +223,7 @@ impl From<QemuQuantumReport> for QemuAsyncQuantumCompletion {
             ceiling: report.ceiling,
             outcome: report.outcome,
             final_state: report.final_state,
+            completed_boundary: None,
             inbound_frames_consumed: report.inbound_frames_consumed,
             emitted_frames: report.emitted_frames,
             operations: report.operations,
@@ -217,6 +257,8 @@ pub struct QemuAsyncNodeStepReport {
     pub outcome: QemuAsyncNodeStepOutcome,
     /// Attested state for a completed quantum, absent after a crash.
     pub final_state: Option<crate::QemuNodeIdleState>,
+    /// Original accepted native clamp evidence for a completed live step.
+    pub completed_boundary: Option<crate::QemuCompletedQuantumBoundary>,
     /// Scheduler-staged inbound frames consumed at this completed boundary.
     pub inbound_frames_consumed: usize,
     /// Guest-emitted frames drained at this completed boundary.
@@ -259,6 +301,7 @@ pub struct QemuAsyncLifecycleAwaitReport {
 mod error;
 pub use error::{QemuAsyncDriverError, QemuAsyncDriverRuntimeError, QemuAsyncDriverTargetError};
 
+mod acquisition;
 mod driver;
 pub(crate) use driver::run_bounded_qemu_node_step_with_start_hook;
 pub use driver::{await_bounded_lifecycle_event, run_bounded_qemu_node_step};

@@ -988,7 +988,9 @@ mod tests {
             "candidate-active": false,
         });
 
-        assert!(parse_checkpoint_epoch_state(QmpCommandKind::QueryCheckpointEpoch, &value).is_err());
+        assert!(
+            parse_checkpoint_epoch_state(QmpCommandKind::QueryCheckpointEpoch, &value).is_err()
+        );
     }
 
     #[test]

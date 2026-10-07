@@ -418,6 +418,7 @@ impl QemuFaultCommandApis {
 
 #[cfg(test)]
 extern "C" fn test_dispatch_node_boundary(_raw_icount: u64) -> c_int {
+    test_support::record_node_dispatch();
     TEST_DISPATCH_RESULT_PENDING.with(|staged| {
         if let Some((commands, capture_seed)) = staged.take() {
             TEST_DISPATCH_RESULTS.with(|results| {

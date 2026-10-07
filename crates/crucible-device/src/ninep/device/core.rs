@@ -408,6 +408,48 @@ impl NinepDevice {
             .deliver_selected_to_shmem(at, selected, expected_payload, outbox, outbox_entries)
     }
 
+    /// Publishes due 9p replies on the original reserved mapped transport ring.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a foreign producer before effects and preserves the exact
+    /// publication count for all original delivery failures.
+    pub fn advance_to_mapped_ring_with_commit_status(
+        &mut self,
+        limit: u64,
+        ring: crucible_shmem::MappedDirectedRingMut<'_>,
+        consumer_slot: &NodeSlot,
+    ) -> Result<ShmemDeliveryResult, crate::ShmemDeliveryFailure> {
+        let expected = crucible_shmem::SLOT_9P_IO as u32;
+        if ring.descriptor.src_slot != expected {
+            return Err(crate::ShmemDeliveryFailure {
+                published: 0,
+                source: DeviceError::ShmemResponseSource {
+                    expected,
+                    actual: ring.descriptor.src_slot,
+                },
+            });
+        }
+
+        self.core
+            .advance_to_mapped_ring_with_commit_status(limit, ring, consumer_slot)
+    }
+
+    /// Publishes due 9p replies on the original reserved mapped transport ring.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a foreign producer and retains the original delivery error.
+    pub fn advance_to_mapped_ring(
+        &mut self,
+        limit: u64,
+        ring: crucible_shmem::MappedDirectedRingMut<'_>,
+        consumer_slot: &NodeSlot,
+    ) -> Result<ShmemDeliveryResult, DeviceError> {
+        self.advance_to_mapped_ring_with_commit_status(limit, ring, consumer_slot)
+            .map_err(|failure| failure.source)
+    }
+
     /// Pops the next delivered response, returning its raw 9p reply frame.
     ///
     /// Returns `None` when no response has been made visible yet. The payload is

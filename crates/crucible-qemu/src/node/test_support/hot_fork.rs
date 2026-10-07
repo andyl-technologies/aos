@@ -586,6 +586,7 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
         self.current_icount = final_state.current_icount;
 
         Ok(QemuAsyncQuantumCompletion {
+            completed_boundary: None,
             ceiling: Icount { retired: horizon },
             outcome,
             final_state,

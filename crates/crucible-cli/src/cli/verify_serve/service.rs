@@ -422,6 +422,9 @@ pub(crate) fn open_local_campaign_service(
     if let Some(lifecycle) = campaign_debug_lifecycle {
         prepared = prepared.with_campaign_debug_lifecycle(lifecycle);
     }
+    let diagnostic_maximum_events = packaged_executor
+        .as_ref()
+        .and_then(|packaged| packaged.diagnostic_maximum_events);
     let service = if let Some(packaged) = packaged_executor {
         prepared.bind_with_runtimes_and_executor(runtimes, packaged.executor)
     } else if runtimes.is_empty() {
@@ -430,6 +433,8 @@ pub(crate) fn open_local_campaign_service(
         prepared.bind_with_runtimes(runtimes)
     }
     .map_err(|error| serve_error(format!("campaign service bind error: {error}")))?;
+    let service =
+        service_diagnostics::attach_failure_diagnostics(service, diagnostic_maximum_events);
     Ok(Some(PreparedLocalCampaignService {
         service,
         socket_path: socket.clone(),

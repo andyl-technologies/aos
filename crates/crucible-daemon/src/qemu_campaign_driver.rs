@@ -1115,6 +1115,21 @@ pub trait QemuModeledAttemptLifecycle {
         Ok(VirtualTime { ticks })
     }
 
+    /// Authenticates an already committed held source independently of peer time.
+    ///
+    /// The default grants no early visibility. Implementations must validate
+    /// original ownership and the exact retained request without effects.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when original held ownership cannot be authenticated.
+    fn pending_selectable_request_is_committed_source(
+        &self,
+        _pending: &QemuNodeSelectablePendingRequest,
+    ) -> Result<bool, SchedulerError> {
+        Ok(false)
+    }
+
     /// Applies one exact host-authorized selectable reply at the scheduler frontier.
     ///
     /// # Errors
@@ -1230,6 +1245,13 @@ impl QemuModeledAttemptLifecycle for QemuFreshAttemptLifecycle<'_> {
         pending: &QemuNodeSelectablePendingRequest,
     ) -> Result<VirtualTime, SchedulerError> {
         QemuFreshAttemptLifecycle::pending_selectable_request_time(self, pending)
+    }
+
+    fn pending_selectable_request_is_committed_source(
+        &self,
+        pending: &QemuNodeSelectablePendingRequest,
+    ) -> Result<bool, SchedulerError> {
+        QemuFreshAttemptLifecycle::pending_selectable_request_is_committed_source(self, pending)
     }
 
     fn apply_selectable_reply(
@@ -2132,9 +2154,14 @@ fn resolve_pending_guest_choices_at_configuration(
             let boundary = lifecycle
                 .pending_selectable_request_time(&pending)
                 .map_err(classify_scheduler_error)?;
-            if frontier < boundary {
-                // The VM is physically parked ahead of the shared frontier.
-                // Leave the request owned by QEMU until peer nodes catch up.
+            if frontier < boundary
+                && !lifecycle
+                    .pending_selectable_request_is_committed_source(&pending)
+                    .map_err(classify_scheduler_error)?
+            {
+                // Uncommitted requests wait for peers. A canonical held source
+                // is already published and must be discovered before its reply
+                // can release those peers; neither clock is changed here.
                 continue;
             }
         }

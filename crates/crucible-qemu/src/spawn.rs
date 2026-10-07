@@ -1116,9 +1116,51 @@ pub(crate) fn guarded_qemu_process_command(
     for (key, value) in envs {
         command.env(key, value);
     }
-    // The stage minimum is diagnostic-only and cannot escape the existing
-    // witness opt-in. Invalid or noncanonical values leave stage notices off.
-    if envs.contains(&("CRUCIBLE_CONTROL_CALLBACK_WITNESS", "1")) {
+    // Aggregate diagnostics retain fixed failure observations without enabling
+    // the legacy callback stream or native trace selections.
+    const AGGREGATE_DIAGNOSTICS: &str = "CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS";
+    let aggregate = std::env::var(AGGREGATE_DIAGNOSTICS).ok().filter(|budget| {
+        budget
+            .parse::<u16>()
+            .is_ok_and(|budget| (1..=256).contains(&budget))
+    });
+    if let Some(budget) = &aggregate {
+        command.env(AGGREGATE_DIAGNOSTICS, budget);
+    }
+
+    // A bounded native final summary does not select routine trace producers.
+    if std::env::var("CRUCIBLE_NATIVE_CONTROL_DELIVERY_SUMMARY").as_deref() == Ok("1") {
+        command.env("CRUCIBLE_NATIVE_CONTROL_DELIVERY_SUMMARY", "1");
+    }
+
+    // This exact diagnostic opt-in reaches the plugin without inheriting other
+    // host environment or changing deterministic launch inputs.
+    // crucible-lint: allow host-nondeterminism-state -- a default-off observation flag cannot change control decisions.
+    if std::env::var("CRUCIBLE_TIME_OWNERSHIP_WITNESS").as_deref() == Ok("1") {
+        command.env("CRUCIBLE_TIME_OWNERSHIP_WITNESS", "1");
+    }
+    // The Linux fixture's exact opt-in reaches its bounded idle observer;
+    // aggregate diagnostics alone retain the original native I/O behavior.
+    // crucible-lint: allow host-nondeterminism-state -- a default-off observation flag cannot change control decisions.
+    if std::env::var("CRUCIBLE_OUT_RESUME_RUNTIME_TRACE").as_deref() == Ok("1") {
+        let minimum = std::env::var_os("CRUCIBLE_IDLE_PLAN_DIAGNOSTIC_MIN_PS");
+        let admitted = minimum.as_ref().is_none_or(|value| {
+            value.to_str().is_some_and(|text| {
+                text.parse::<u64>()
+                    .is_ok_and(|value| value <= i64::MAX as u64 && value.to_string() == text)
+            })
+        });
+        if admitted {
+            command.env("CRUCIBLE_OUT_RESUME_RUNTIME_TRACE", "1");
+            if let Some(minimum) = minimum {
+                command.env("CRUCIBLE_IDLE_PLAN_DIAGNOSTIC_MIN_PS", minimum);
+            }
+        }
+    }
+    // Aggregate mode uses this minimum for capped pending-return notices only;
+    // forwarding it does not enable the legacy callback or stage streams.
+    // Invalid or noncanonical values leave both filtered observations off.
+    if aggregate.is_some() || envs.contains(&("CRUCIBLE_CONTROL_CALLBACK_WITNESS", "1")) {
         const STAGE_MINIMUM: &str = "CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN";
         if let Ok(minimum) = std::env::var(STAGE_MINIMUM)
             && minimum

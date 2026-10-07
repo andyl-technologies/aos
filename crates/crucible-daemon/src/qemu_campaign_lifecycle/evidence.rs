@@ -239,6 +239,14 @@ where
         self.lifecycle.pending_selectable_request_time(pending)
     }
 
+    fn pending_selectable_request_is_committed_source(
+        &self,
+        pending: &QemuNodeSelectablePendingRequest,
+    ) -> Result<bool, SchedulerError> {
+        self.lifecycle
+            .pending_selectable_request_is_committed_source(pending)
+    }
+
     fn apply_selectable_reply(
         &mut self,
         parent: &Configuration,
@@ -255,6 +263,23 @@ where
         // has been recorded. They belong to the same exact evidence prefix.
         self.evidence.record_appended_entries(&entries)?;
         Ok(entries)
+    }
+
+    fn publish_released_host_outcomes(
+        &mut self,
+        configuration: &Configuration,
+    ) -> Result<Option<QuantumOutcome>, SchedulerError> {
+        let outcome = self
+            .lifecycle
+            .publish_released_host_outcomes(configuration)?;
+        if let Some(outcome) = &outcome {
+            self.evidence.record(
+                self.lifecycle.completed_quanta(),
+                outcome.frontier,
+                &outcome.event_log_entries,
+            )?;
+        }
+        Ok(outcome)
     }
 
     fn capture_attempt_checkpoint(

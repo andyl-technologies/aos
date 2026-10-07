@@ -55,7 +55,8 @@
       && base != ".crucible"
       && base != ".worktrees"
       && base != "target"
-      && base != "result"
+      # Nested source modules named result remain rebuild inputs.
+      && pathString != "${repoRootString}/result"
       # Process core dumps are generated diagnostics, never rebuild inputs.
       # Keep them out of the exported source even in a populated worktree.
       && builtins.match "core[.][0-9]+" base == null
@@ -225,6 +226,9 @@ in
           test -f "$source_root/build/aos/stdenv/phases.nix"
           test -f "$source_root/build/aos/pkgs/default.nix"
           test -f "$source_root/build/aos/pkgs/emulation/qemu.nix"
+          test -f "$source_root/build/aos/crates/crucible-daemon/src/executor_worker/result/operations.rs"
+          test ! -e "$source_root/build/aos/result"
+          test ! -L "$source_root/build/aos/result"
           test -f "$source_root/build/aos/crates/crucible-shmem/include/crucible_shmem_abi.h"
           test -f "$source_root/build/aos/LICENSES/GPL-2.0-or-later.txt"
           test -z "$(find "$source_root/build/aos" -type f -regex '.*/core[.][0-9]+' -print -quit)"

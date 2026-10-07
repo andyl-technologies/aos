@@ -93,14 +93,18 @@ impl QemuMappedQuantumShmemHotPath {
     /// # Errors
     ///
     /// Returns [`QemuMappedQuantumShmemHotPathError`] when the retained mapping
-    /// no longer validates or the configured VM slot has no fingerprint segment.
+    /// no longer validates, the configured VM slot has no fingerprint segment,
+    /// or its sample publication is temporarily unavailable.
     pub fn fingerprint_sample(
         &self,
     ) -> Result<Option<FingerprintSample>, QemuMappedQuantumShmemHotPathError> {
         self.region
             .fingerprint_sample(self.config.vm_slot)
-            .map(|slot| slot.snapshot())
-            .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionAccess { source })
+            .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionAccess { source })?
+            .snapshot()
+            .map_err(|source| {
+                QemuMappedQuantumShmemHotPathError::FingerprintPublicationUnavailable { source }
+            })
     }
 
     /// Returns whether the plugin published terminal `Done` for this VM slot.
@@ -112,8 +116,12 @@ impl QemuMappedQuantumShmemHotPath {
     pub fn plugin_teardown_done(&self) -> Result<bool, QemuMappedQuantumShmemHotPathError> {
         self.region
             .node_slot(self.config.vm_slot)
-            .map(|slot| slot.snapshot().status == STATUS_DONE)
-            .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionAccess { source })
+            .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionAccess { source })?
+            .try_snapshot()
+            .map(|snapshot| snapshot.status == STATUS_DONE)
+            .ok_or(QemuMappedQuantumShmemHotPathError::Quantum {
+                source: QemuQuantumError::PublicationUnavailable,
+            })
     }
 
     /// Binds one QEMU quantum channel to an owned mapped shared-memory region.
@@ -287,14 +295,21 @@ impl QemuMappedQuantumShmemHotPath {
         } = self;
         let view =
             mapped_view(region, config).map_err(|source| source.into_channel_error(operation))?;
-        let mut hot_path = QemuQuantumShmemHotPath::new_with_inbound_delivery_ledger(
+        QemuQuantumShmemHotPath::new_with_inbound_delivery_ledger(
             config.clone(),
             view,
             inbound_delivery_ledger,
             send_authorizer.as_ref(),
         )
-        .map_err(QemuNodeChannelError::from)?;
-        run(&mut hot_path)
+        .map_err(QemuNodeChannelError::from)
+        .and_then(|mut hot_path| run(&mut hot_path))
+        .map_err(|mut source| {
+            // Preserve the typed cause while identifying this mapped acquisition.
+            if source.is_publication_unavailable() {
+                source.operation = operation;
+            }
+            source
+        })
     }
 
     fn next_router_inbound_sequence(&self) -> Result<u32, QemuNodeChannelError> {
@@ -442,7 +457,9 @@ impl QemuMappedQuantumShmemHotPath {
             .map_err(|error| {
                 QemuNodeChannelError::new("reset coverage generation", error.to_string())
             })?;
-        let snapshot = slot.snapshot();
+        let snapshot = slot.try_snapshot().ok_or_else(|| {
+            QemuNodeChannelError::publication_unavailable("reset coverage generation")
+        })?;
         if snapshot.logical_time_restore_request != generation
             || snapshot.logical_time_restore_ack != generation
         {
@@ -760,14 +777,16 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
             assert_qemu_quantum_hot_path_is_shmem_only(&start_operations)
                 .map_err(QemuNodeChannelError::from)?;
             let completion_fence = pending.completion_fence;
+            let initial_state = pending.initial_state;
             let mapped = QemuMappedPendingQuantum {
                 pending,
                 start_operations,
             };
-            Ok(match completion_fence {
+            let token = match completion_fence {
                 Some(fence) => QemuNodePendingQuantum::new_with_completion_fence(mapped, fence),
                 None => QemuNodePendingQuantum::new(mapped),
-            })
+            };
+            Ok(token.with_initial_state(initial_state))
         })
     }
 
@@ -775,7 +794,29 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
         &mut self,
         pending: &mut QemuNodePendingQuantum,
     ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError> {
+        let completed_boundary = pending.completed_boundary;
         let pending = pending.downcast_mut::<QemuMappedPendingQuantum>("finish_quantum")?;
+        if let Some(boundary) = completed_boundary {
+            boundary.validate(
+                self.region.backing_identity(),
+                self.config.vm_slot,
+                &pending.pending,
+                self.region
+                    .node_slot(self.config.vm_slot)
+                    .map_err(|source| {
+                        QemuNodeChannelError::new(
+                            "validate completed-quantum boundary",
+                            source.to_string(),
+                        )
+                    })?
+                    .try_snapshot()
+                    .ok_or_else(|| {
+                        QemuNodeChannelError::publication_unavailable(
+                            "validate completed-quantum boundary",
+                        )
+                    })?,
+            )?;
+        }
         self.with_hot_path("finish_quantum", |hot_path| {
             let mut report = QemuQuantumShmemHotPath::poll_quantum(hot_path, &pending.pending)
                 .map_err(QemuNodeChannelError::from)?;
@@ -784,7 +825,9 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
             report.operations = operations;
             assert_qemu_quantum_hot_path_is_shmem_only(&report.operations)
                 .map_err(QemuNodeChannelError::from)?;
-            Ok(QemuAsyncQuantumCompletion::from(report))
+            let mut completion = QemuAsyncQuantumCompletion::from(report);
+            completion.completed_boundary = completed_boundary;
+            Ok(completion)
         })
     }
 
@@ -880,7 +923,7 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
 
     fn drain_observable_events(&mut self) -> Result<Vec<ObservableEvent>, QemuNodeChannelError> {
         let boundary = self.with_hot_path("observation boundary", |hot_path| {
-            Ok(hot_path.node_snapshot())
+            hot_path.node_snapshot().map_err(QemuNodeChannelError::from)
         })?;
         let mut events = self.drain_coverage_at_quantum_boundary(boundary.current_icount)?;
         self.drain_markers_at_quantum_boundary(boundary)?;
@@ -891,8 +934,9 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
 
     // crucible-lint: allow host-nondeterminism-state -- callers must validate this untrusted causal batch before another quantum.
     fn drain_rng_evidence(&mut self) -> Result<Vec<BackendRngEvidence>, QemuNodeChannelError> {
-        let boundary =
-            self.with_hot_path("causal boundary", |hot_path| Ok(hot_path.node_snapshot()))?;
+        let boundary = self.with_hot_path("causal boundary", |hot_path| {
+            hot_path.node_snapshot().map_err(QemuNodeChannelError::from)
+        })?;
         self.drain_markers_at_quantum_boundary(boundary)?;
         Ok(std::mem::take(&mut self.pending_rng_evidence))
     }
@@ -901,7 +945,7 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
         &mut self,
     ) -> Result<Vec<SelectablePlanPendingRequest>, QemuNodeChannelError> {
         let boundary = self.with_hot_path("selectable boundary", |hot_path| {
-            Ok(hot_path.node_snapshot())
+            hot_path.node_snapshot().map_err(QemuNodeChannelError::from)
         })?;
         self.drain_markers_at_quantum_boundary(boundary)?;
         Ok(std::mem::take(&mut self.pending_selectable_requests))
@@ -952,7 +996,10 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
             ));
         }
         let boundary_tick_ps = self.with_hot_path("selectable reply boundary", |hot_path| {
-            Ok(hot_path.node_snapshot().current_icount)
+            Ok(hot_path
+                .node_snapshot()
+                .map_err(QemuNodeChannelError::from)?
+                .current_icount)
         })?;
         let stopped_tick_ps = pending
             .trap_tick_ps()
@@ -1010,7 +1057,11 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
     fn deliver_frame(&mut self, input: BackendInput) -> Result<(), QemuNodeChannelError> {
         let delivery_icount = self.with_hot_path("delivery icount", |hot_path| {
             Ok(Icount {
-                retired: hot_path.node_snapshot().current_icount.saturating_add(1),
+                retired: hot_path
+                    .node_snapshot()
+                    .map_err(QemuNodeChannelError::from)?
+                    .current_icount
+                    .saturating_add(1),
             })
         })?;
         self.deliver_frame_at(input, delivery_icount)
@@ -1052,12 +1103,13 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
 
     fn execution_fingerprint(&mut self) -> Result<ExecutionFingerprint, QemuNodeChannelError> {
         let current_icount = self.with_hot_path("execution_fingerprint", |hot_path| {
-            Ok(hot_path.node_snapshot().current_icount)
+            Ok(hot_path
+                .node_snapshot()
+                .map_err(QemuNodeChannelError::from)?
+                .current_icount)
         })?;
         let sample = QemuMappedQuantumShmemHotPath::fingerprint_sample(self)
-            .map_err(|source| {
-                QemuNodeChannelError::new("execution_fingerprint", source.to_string())
-            })?
+            .map_err(|source| source.into_channel_error("execution_fingerprint"))?
             .ok_or_else(|| {
                 QemuNodeChannelError::retryable(
                     "execution_fingerprint",
@@ -1087,7 +1139,7 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
 
     fn fingerprint_sample(&mut self) -> Result<FingerprintSample, QemuNodeChannelError> {
         QemuMappedQuantumShmemHotPath::fingerprint_sample(self)
-            .map_err(|source| QemuNodeChannelError::new("fingerprint_sample", source.to_string()))?
+            .map_err(|source| source.into_channel_error("fingerprint_sample"))?
             .ok_or_else(|| {
                 QemuNodeChannelError::retryable(
                     "fingerprint_sample",

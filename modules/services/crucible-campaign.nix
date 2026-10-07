@@ -117,6 +117,8 @@ in {
     }
     (lib.mkIf cfg.enable {
       environment.systemPackages = [pkgs.crucible];
+      # Bootstrap authenticates the policy inode and refuses symlinks.
+      environment.etc."crucible/campaign-policy.toml".mode = "0444";
       environment.etc."crucible/campaign-policy.toml".text = ''
         schema = "crucible.campaign-local-policy"
         version = 1

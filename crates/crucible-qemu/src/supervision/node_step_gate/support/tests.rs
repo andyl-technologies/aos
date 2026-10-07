@@ -225,6 +225,47 @@ fn diskless_launch_material_retains_firmware() {
 }
 
 #[test]
+fn diskless_linux_probe_preserves_distinct_kernel_initrd_and_bios_arguments() {
+    let kernel = "/nix/store/33333333333333333333333333333333-kernel/bzImage";
+    let initrd = "/nix/store/55555555555555555555555555555555-guest/initrd.img";
+    let firmware = "/nix/store/44444444444444444444444444444444-qemu/share/qemu/bios-256k.bin";
+    let config = QemuLiveNodeStepGateConfig::new(
+        "/nix/store/11111111111111111111111111111111-qemu/bin/qemu-system-x86_64",
+        "/nix/store/22222222222222222222222222222222-plugin/lib/crucible-plugin.so",
+        kernel,
+        firmware,
+        "/run/crucible",
+    )
+    .with_initrd(initrd)
+    .with_vm_shape(128, 1)
+    .with_whitebox(QemuLaunchPluginSwitch::On);
+    let profile = launch_profile_candidate(config.architecture)
+        .with_memory_mib(config.memory_mib)
+        .with_smp_vcpus(config.smp_vcpus)
+        .try_into_deterministic()
+        .unwrap_or_else(|error| panic!("launch profile: {error}"));
+    let vm = vm_launch_config(&config, "vm-a");
+    let plugin = live_node_plugin_base(&config).with_fault_target_node("vm-a");
+    let command = whitebox_probe_command(&config, &profile, &vm, plugin)
+        .unwrap_or_else(|error| panic!("Linux probe command: {error}"));
+
+    for (flag, value) in [
+        ("-kernel", kernel),
+        ("-initrd", initrd),
+        ("-bios", firmware),
+    ] {
+        let values: Vec<_> = command
+            .args()
+            .windows(2)
+            .filter(|pair| pair[0] == flag)
+            .map(|pair| pair[1].as_str())
+            .collect();
+        assert_eq!(values, [value], "actual launch argument {flag}");
+    }
+    assert!(!command.args().iter().any(|arg| arg == "-drive"));
+}
+
+#[test]
 fn campaign_marker_parking_survives_child_launch_profile_clone() {
     let base = QemuLiveNodeStepGateConfig::new(
         "/aos/bin/qemu-system-x86_64",
@@ -566,4 +607,91 @@ fn test_eventfd_identity(descriptor: std::os::fd::RawFd) -> Result<u64, std::io:
         .ok_or_else(|| std::io::Error::other("descriptor has no eventfd-id"))?;
 
     value.trim().parse::<u64>().map_err(std::io::Error::other)
+}
+
+#[test]
+fn aggregate_retention_admits_only_bounded_budget_into_actual_child_command() {
+    const PROBE: &str = "CRUCIBLE_TEST_AGGREGATE_BUDGET";
+    const BUDGET: &str = "CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS";
+    const NAME: &str = "supervision::node_step_gate::support::tests::aggregate_retention_admits_only_bounded_budget_into_actual_child_command";
+    let executable =
+        std::env::current_exe().unwrap_or_else(|error| panic!("test executable: {error}"));
+    let Ok(expected) = std::env::var(PROBE) else {
+        for setting in ["off", "1", "256", "0", "257", "invalid"] {
+            let mut command = std::process::Command::new(&executable);
+            command
+                .args(["--exact", NAME, "--nocapture"])
+                .env(PROBE, setting)
+                .env("CRUCIBLE_TEST_AMBIENT_SECRET", "must-not-inherit")
+                .env_remove(BUDGET)
+                .env_remove("CRUCIBLE_CONTROL_CALLBACK_WITNESS")
+                .env_remove("CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN");
+            if setting != "off" {
+                command.env(BUDGET, setting);
+            }
+            let output = command
+                .output()
+                .unwrap_or_else(|error| panic!("isolated environment test: {error}"));
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        }
+        return;
+    };
+    let admitted = matches!(expected.as_str(), "1" | "256");
+    let mut command = crate::spawn::guarded_qemu_process_command(
+        executable
+            .to_str()
+            .unwrap_or_else(|| panic!("UTF-8 test executable")),
+        &[
+            "--exact".to_owned(),
+            "supervision::node_step_gate::support::tests::aggregate_retention_cleared_child_probe"
+                .to_owned(),
+            "--ignored".to_owned(),
+            "--nocapture".to_owned(),
+        ],
+        &[],
+    );
+    let expected_env = if admitted {
+        vec![(
+            std::ffi::OsStr::new(BUDGET),
+            Some(std::ffi::OsStr::new(&expected)),
+        )]
+    } else {
+        Vec::new()
+    };
+    assert_eq!(command.get_envs().collect::<Vec<_>>(), expected_env);
+    command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let output = command
+        .output()
+        .unwrap_or_else(|error| panic!("actual cleared child command: {error}"));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let expected_value = if admitted { expected.as_str() } else { "off" };
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains(&format!("aggregate_budget={expected_value}"))
+    );
+}
+
+#[test]
+#[ignore = "exec probe launched only by the constructed child environment test"]
+fn aggregate_retention_cleared_child_probe() {
+    assert!(std::env::var_os("CRUCIBLE_TEST_AMBIENT_SECRET").is_none());
+    assert!(std::env::var_os("CRUCIBLE_TEST_AGGREGATE_BUDGET").is_none());
+    assert!(std::env::var_os("CRUCIBLE_CONTROL_CALLBACK_WITNESS").is_none());
+    assert!(std::env::var_os("CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN").is_none());
+    println!(
+        "aggregate_budget={}",
+        std::env::var("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS")
+            .unwrap_or_else(|_error| "off".to_owned())
+    );
 }

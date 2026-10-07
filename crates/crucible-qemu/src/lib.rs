@@ -82,6 +82,10 @@ mod qmp;
 mod quantum;
 mod quantum_boundary;
 mod realization;
+#[cfg(target_os = "linux")]
+// Opaque crate-local measurements keep host clock reads inside supervision.
+#[path = "supervision/replay_performance.rs"]
+mod replay_performance;
 mod shutdown;
 #[cfg(target_os = "linux")]
 mod spawn;
@@ -301,10 +305,10 @@ pub use qmp::{
 pub(crate) use qmp::{QmpCheckpointCapture, QmpCheckpointCaptureRequest};
 pub(crate) use qmp::{QmpCheckpointRestoreLayer, QmpCheckpointRestoreRequest};
 pub use quantum::{
-    QemuDeviceIoFreezeObservation, QemuDeviceIoFreezeReport, QemuInboundFrame, QemuOutboundFrame,
-    QemuPendingQuantum, QemuQuantumError, QemuQuantumOperation, QemuQuantumOperationPlane,
-    QemuQuantumReport, QemuQuantumShmemConfig, QemuQuantumShmemHotPath, QemuQuantumShmemView,
-    assert_qemu_quantum_hot_path_is_shmem_only,
+    QemuCompletedQuantumBoundary, QemuDeviceIoFreezeObservation, QemuDeviceIoFreezeReport,
+    QemuInboundFrame, QemuOutboundFrame, QemuPendingQuantum, QemuQuantumError,
+    QemuQuantumOperation, QemuQuantumOperationPlane, QemuQuantumReport, QemuQuantumShmemConfig,
+    QemuQuantumShmemHotPath, QemuQuantumShmemView, assert_qemu_quantum_hot_path_is_shmem_only,
 };
 pub use realization::{
     QemuBakedGenesisSnapshot, QemuReplayOracleEvidence, QemuReplayOracleMatch,

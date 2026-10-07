@@ -155,3 +155,68 @@ When the atomic integration patch starts creating or deleting a file, update thi
 same change. Preserve an explicit file notice and use QEMU's upstream `LICENSE`
 to classify an unmarked file; do not infer a blanket license from the artifact
 directory.
+
+## Test-only UART origin baseline
+
+`tests/crucible/native/uart-origin-baseline.c` is GPL-2.0-only, as stated in its
+SPDX header. The focused qualification builder copies it to
+`tests/unit/test-crucible-uart-origin-baseline.c` in its temporary QEMU build
+source. It includes the selected UART bodies and links native QEMU libraries;
+it is not an Apache host component. This build-only addition does not change
+the selected atomic patch inventory or install a patched emulator. The matching
+complete corresponding-source artifact retains the fixture and its builder.
+
+## Test-only plugin failed-exit unit
+
+`tests/crucible/native/plugin-failed-exit.c` and
+`tests/crucible/native/plugin-failed-exit-bodies.py` declare GPL-2.0-only.
+The private builder copies the C fixture to
+`tests/unit/test-crucible-plugin-failed-exit.c` and generates
+`tests/unit/plugin-failed-exit-bodies.inc` from verbatim selected plugin and
+runstate definitions, preserving their original QEMU file licenses. The
+extractor reuses `block-wait-completion-bodies.py`, whose license is declared
+below. These temporary test additions are absent from the atomic created-file
+inventory. The builder retains evidence, not an emulator or Apache host library;
+its complete matching corresponding-source artifact retains the fixtures,
+extractor and recipe. External services are labeled, and subprocess exit checks
+do not qualify a physical VM or the complete native runstate topology.
+
+## Test-only joined block-wait unit
+
+The private joined block-wait unit overlays these test-only files in its
+temporary QEMU build tree. Each checked-in fixture declares GPL-2.0-only:
+
+- `tests/crucible/native/block-wait-completion.c` is GPL-2.0-only and is copied
+  to `tests/unit/block-wait-completion.c`.
+- `tests/crucible/native/block-wait-completion.h` is GPL-2.0-only and is copied
+  to `tests/unit/block-wait-completion.h`.
+- `tests/crucible/native/block-wait-icount-provider.c` is GPL-2.0-only and is
+  copied to `stubs/icount.c`.
+- `tests/crucible/native/block-wait-completion-bodies.py` is GPL-2.0-only and
+  generates `tests/unit/block-wait-completion-bodies.inc` from selected QEMU
+  bodies.
+
+The generated definitions preserve their selected QEMU source licenses.
+`tests/crucible/native/block-wait-completion.nix` builds a private, non-distributable
+loadable unit for the GPL-side Rust plugin tests, not a standalone emulator or
+Apache host library. The unit uses explicit CPU, clock, and context providers;
+it does not qualify a physical guest or the complete TCG loop. This unit is not
+a publication root. Any distributed binary must retain the matching complete
+corresponding-source artifact, including these fixtures and builder.
+
+## Inactive bounded control-delivery diagnostic overlay
+
+`tests/crucible/native/control-delivery-summary/native-body.patch` preserves
+selected QEMU file notices and creates
+`accel/tcg/crucible-control-delivery-summary.c` with GPL-2.0-or-later licensing.
+The included implementation belongs to the GPL-compatible native process;
+its private RR helper declarations do not change the public shared-memory or
+control protocol. This inactive overlay does not change the selected atomic
+patch inventory or publish an emulator. Any later distributed native union
+must inventory the created file and retain matching complete source.
+
+The private controls `control-delivery-summary.c` and
+`control-delivery-summary.py` in that directory are GPL-2.0-or-later. They
+compile the actual diagnostic and selected cancellation bodies with explicit
+CPU, BQL and trace providers. They do not authenticate a physical guest,
+active-at-deadline state or the complete native delivery topology.

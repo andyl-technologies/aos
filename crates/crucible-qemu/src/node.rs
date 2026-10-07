@@ -41,6 +41,7 @@ use crucible_shmem::{
     SchedulerPreemptionCommand, SchedulerPreemptionKind as ShmemSchedulerPreemptionKind,
 };
 
+mod boundary_observation;
 mod channels;
 pub(crate) use channels::QemuQmpMachineControlChannel;
 pub use channels::{QemuNodePendingQuantum, QemuPluginIpcControlChannel, QemuShmemHotPathChannel};
@@ -552,6 +553,7 @@ pub struct QemuNode {
     last_observed_time: VirtualTime,
     last_step_ceiling: Option<Icount>,
     last_step_final_state: Option<QemuNodeIdleState>,
+    last_step_completed_boundary: Option<crate::QemuCompletedQuantumBoundary>,
     last_step_inbound_frames_consumed: usize,
     // Console polling proves availability only at the scheduler-requested boundary.
     console_observation_boundary: VirtualTime,
@@ -809,6 +811,7 @@ impl QemuNode {
             last_observed_time: VirtualTime::default(),
             last_step_ceiling: None,
             last_step_final_state: None,
+            last_step_completed_boundary: None,
             last_step_inbound_frames_consumed: 0,
             console_observation_boundary: VirtualTime::default(),
             gdbstub: None,
@@ -1188,6 +1191,21 @@ impl QemuNode {
         self
     }
 
+    /// Copies at most 4096 staged console bytes for untimed diagnosis.
+    ///
+    /// The tail covers bytes retained since the last successful observation
+    /// drain. It is advisory, incomplete, and has no scheduler timestamp or
+    /// canonical evidence authority. Reading it neither drains the spool nor
+    /// reads the console socket. Returns `None` when capture is absent or the
+    /// spool is busy or poisoned; it never waits for the spool lock.
+    #[must_use]
+    pub fn console_diagnostic_tail(&self) -> Option<Vec<u8>> {
+        self.console_observation
+            .as_ref()?
+            .spool
+            .try_diagnostic_tail()
+    }
+
     /// Retains setup-time observations for the first authoritative scheduler drain.
     #[must_use]
     pub(crate) fn with_priming_observable_events(
@@ -1204,11 +1222,8 @@ impl QemuNode {
 
     fn drain_scheduler_observable_events(&mut self) -> Result<Vec<ObservableEvent>, QemuNodeError> {
         let mut boundary_events = self
-            .channels
-            .shmem_hot_path
-            .drain_observable_events()
-            .map_err(|source| {
-                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
+            .read_boundary_observation("drain observable events", |channel| {
+                channel.drain_observable_events()
             })?;
         let mut events = std::mem::take(&mut self.pending_priming_observations);
         events.append(&mut boundary_events);
@@ -1683,12 +1698,9 @@ impl QemuNode {
         Vec<crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest>,
         QemuNodeError,
     > {
-        self.channels
-            .shmem_hot_path
-            .drain_pending_selectable_requests()
-            .map_err(|source| {
-                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
-            })
+        self.read_boundary_observation("drain pending selectable requests", |channel| {
+            channel.drain_pending_selectable_requests()
+        })
     }
 
     /// Enqueues one exact host-authorized selectable reply for the next quantum.
@@ -1941,6 +1953,7 @@ impl QemuNode {
         }
         self.last_step_ceiling = report.ceiling;
         self.last_step_final_state = report.final_state;
+        self.last_step_completed_boundary = report.completed_boundary;
         self.last_step_inbound_frames_consumed = report.inbound_frames_consumed;
         self.observe_network_output_batch(&report.emitted_frames)?;
         self.pending_network_outputs.extend(report.emitted_frames);
@@ -1987,6 +2000,16 @@ impl QemuNode {
     #[must_use]
     pub(crate) const fn last_step_final_state(&self) -> Option<QemuNodeIdleState> {
         self.last_step_final_state
+    }
+
+    /// Returns the original accepted native boundary of the last completed step.
+    ///
+    /// This immutable observation is distinct from [`Self::idle_state`], which
+    /// reads current scheduling state. Modeled providers, restored nodes and new
+    /// hot-fork owners have no native record until their own clamp completes.
+    #[must_use]
+    pub const fn completed_quantum_boundary(&self) -> Option<crate::QemuCompletedQuantumBoundary> {
+        self.last_step_completed_boundary
     }
 
     /// Returns the effective shared-memory ceiling from the last scheduler step.
@@ -2110,77 +2133,42 @@ impl QemuNode {
     pub fn execution_fingerprint(&mut self) -> Result<ExecutionFingerprint, QemuNodeError> {
         let timeout = self.async_policy.advance_completion_timeout;
         let deadline = HostSupervisionDeadline::start(timeout);
-        match self.channels.shmem_hot_path.execution_fingerprint() {
-            Ok(fingerprint) => return Ok(fingerprint),
-            Err(source) if source.is_retryable() => {
-                let remaining = deadline.remaining().ok_or_else(|| {
-                    QemuNodeError::from_channel(
-                        QemuNodeChannelPlane::ShmemHotPath,
-                        QemuNodeChannelError::bounded_await_timeout(
-                            "execution_fingerprint",
-                            format!(
-                                "plugin did not publish the current black-box fingerprint within {timeout:?}: {}",
-                                source.message
-                            ),
-                            timeout,
-                        ),
-                    )
-                })?;
-                self.host_io_runtime
-                    .publish_current_execution_fingerprint(remaining)
-                    .map_err(|source| {
-                        QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(
-                            source,
-                        ))
-                    })?;
-            }
-            Err(source) => {
-                return Err(QemuNodeError::from_channel(
-                    QemuNodeChannelPlane::ShmemHotPath,
-                    source,
-                ));
-            }
-        }
+        let mut capture_requested = false;
         loop {
             match self.channels.shmem_hot_path.execution_fingerprint() {
+                // Preserve the original coherent first-attempt semantics,
+                // including a completed sample when the budget is zero.
                 Ok(fingerprint) => return Ok(fingerprint),
-                Err(source) if source.is_retryable() && deadline.has_time_remaining() => {
-                    match self.child.try_wait_natural_exit() {
-                        Ok(None) => std::thread::sleep(Duration::from_millis(1)),
-                        Ok(Some(status)) => {
-                            return Err(QemuNodeError::from_channel(
-                                QemuNodeChannelPlane::ShmemHotPath,
-                                QemuNodeChannelError::new(
-                                    "execution_fingerprint",
-                                    format!(
-                                        "QEMU exited with {status} before publishing the current black-box fingerprint"
-                                    ),
-                                ),
-                            ));
-                        }
-                        Err(error) => {
-                            return Err(QemuNodeError::from_channel(
-                                QemuNodeChannelPlane::ShmemHotPath,
-                                QemuNodeChannelError::new(
-                                    "execution_fingerprint",
-                                    format!("poll QEMU while awaiting fingerprint: {error}"),
-                                ),
-                            ));
-                        }
-                    }
-                }
                 Err(source) if source.is_retryable() => {
-                    return Err(QemuNodeError::from_channel(
-                        QemuNodeChannelPlane::ShmemHotPath,
-                        QemuNodeChannelError::bounded_await_timeout(
-                            "execution_fingerprint",
-                            format!(
-                                "plugin did not publish the current black-box fingerprint within {timeout:?}: {}",
-                                source.message
+                    // Check the actual owner even at the timeout boundary.
+                    self.require_live_fingerprint_child()?;
+                    let remaining = deadline.remaining().ok_or_else(|| {
+                        QemuNodeError::from_channel(
+                            QemuNodeChannelPlane::ShmemHotPath,
+                            QemuNodeChannelError::bounded_await_timeout(
+                                "execution_fingerprint",
+                                format!(
+                                    "plugin did not publish the current black-box fingerprint within {timeout:?}: {}",
+                                    source.message
+                                ),
+                                timeout,
                             ),
-                            timeout,
-                        ),
-                    ));
+                        )
+                    })?;
+                    if !source.is_publication_unavailable() && !capture_requested {
+                        // Only coherent absence or a stale sample authorizes
+                        // the existing capture. Busy reads have no effects.
+                        capture_requested = true;
+                        self.host_io_runtime
+                            .publish_current_execution_fingerprint(remaining)
+                            .map_err(|source| {
+                                QemuNodeError::from_async_driver(
+                                    crate::QemuAsyncDriverError::Runtime(source),
+                                )
+                            })?;
+                        continue;
+                    }
+                    std::thread::sleep(Duration::from_millis(1).min(remaining));
                 }
                 Err(source) => {
                     return Err(QemuNodeError::from_channel(
@@ -2189,6 +2177,28 @@ impl QemuNode {
                     ));
                 }
             }
+        }
+    }
+
+    fn require_live_fingerprint_child(&mut self) -> Result<(), QemuNodeError> {
+        match self.child.try_wait_natural_exit() {
+            Ok(None) => Ok(()),
+            Ok(Some(status)) => Err(QemuNodeError::from_channel(
+                QemuNodeChannelPlane::ShmemHotPath,
+                QemuNodeChannelError::new(
+                    "execution_fingerprint",
+                    format!(
+                        "QEMU exited with {status} before publishing the current black-box fingerprint"
+                    ),
+                ),
+            )),
+            Err(error) => Err(QemuNodeError::from_channel(
+                QemuNodeChannelPlane::ShmemHotPath,
+                QemuNodeChannelError::new(
+                    "execution_fingerprint",
+                    format!("poll QEMU while awaiting fingerprint: {error}"),
+                ),
+            )),
         }
     }
 
@@ -2264,6 +2274,7 @@ impl QemuNode {
         self.last_observed_time = checkpoint.last_observed_time;
         self.last_step_ceiling = None;
         self.last_step_final_state = None;
+        self.last_step_completed_boundary = None;
         self.last_step_inbound_frames_consumed = 0;
         self.console_observation_boundary = checkpoint.console_observation_boundary;
         self.pending_preemption = checkpoint.pending_preemption.clone();
@@ -2595,12 +2606,8 @@ impl SimulationBackend for QemuNode {
 
     // crucible-lint: allow host-nondeterminism-state -- the scheduler validates every returned conjecture before append.
     fn drain_rng_evidence(&mut self) -> Result<Vec<BackendRngEvidence>, BackendError> {
-        self.channels
-            .shmem_hot_path
-            .drain_rng_evidence()
-            .map_err(|source| {
-                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source).into()
-            })
+        self.read_boundary_observation("drain RNG evidence", |channel| channel.drain_rng_evidence())
+            .map_err(BackendError::from)
     }
 
     fn drain_network_outputs(&mut self) -> Result<Vec<BackendNetworkOutput>, BackendError> {

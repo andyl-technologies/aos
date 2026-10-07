@@ -26,6 +26,9 @@ use validation::{
     PlannerIssueProposalBasis,
 };
 
+#[cfg(test)]
+mod read_controls;
+
 impl CampaignRepository {
     pub(super) fn planner_search_candidate(
         &self,
@@ -138,7 +141,13 @@ impl CampaignRepository {
         &self,
         basis: &PlannerIssueBasis<'_>,
     ) -> Result<PlannerIssueProjection, CampaignRepositoryError> {
-        let projected = self.project_planner_issue(basis, IssueProjectionMode::Preflight)?;
+        // This pass owns its reads. Publication must authenticate independently.
+        let mut reads = MerkleValidationReads::default();
+        let projected = self.project_planner_issue_with_validation_reads(
+            basis,
+            IssueProjectionMode::Preflight,
+            Some(&mut reads),
+        )?;
         let proposals = u64::try_from(basis.proposals.len())
             .map_err(|_| integrity("campaign-budget-proposal-count-overflow"))?;
         self.ensure_budget_available(basis.snapshot, proposals, projected.attempts)?;
@@ -150,7 +159,13 @@ impl CampaignRepository {
         basis: &PlannerIssueBasis<'_>,
         prepared: &PlannerIssueProjection,
     ) -> Result<PlannerIssueProjection, CampaignRepositoryError> {
-        let published = self.project_planner_issue(basis, IssueProjectionMode::Publish)?;
+        // Never borrow the preflight reader, even for the same prior roots.
+        let mut reads = MerkleValidationReads::default();
+        let published = self.project_planner_issue_with_validation_reads(
+            basis,
+            IssueProjectionMode::Publish,
+            Some(&mut reads),
+        )?;
         if prepared.branch_requests != published.branch_requests
             || prepared.proposals != published.proposals
             || prepared.attempts != published.attempts
@@ -167,6 +182,25 @@ impl CampaignRepository {
         parent: &LoadedSnapshot,
         child: &LoadedSnapshot,
         step: &PlannerStep,
+        invocation: &PlannerInvocation,
+    ) -> Result<(), CampaignRepositoryError> {
+        self.validate_planner_issue_projection_with_validation_reads(
+            parent, child, step, invocation, None,
+        )
+    }
+
+    /// Recomputes an Issue with optional ancestry-only authenticated node reuse.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original record, basis, projection, or owner mismatch error.
+    pub(super) fn validate_planner_issue_projection_with_validation_reads(
+        &self,
+        parent: &LoadedSnapshot,
+        child: &LoadedSnapshot,
+        step: &PlannerStep,
+        invocation: &PlannerInvocation,
+        merkle_reads: Option<&mut MerkleValidationReads>,
     ) -> Result<(), CampaignRepositoryError> {
         let PlannerDisposition::Issue {
             selected,
@@ -185,15 +219,15 @@ impl CampaignRepository {
             .iter()
             .map(|id| self.decode_proposal(id.content_id()))
             .collect::<Result<Vec<_>, _>>()?;
-        let invocation = self.load_planner_invocation(step.invocation())?;
         let basis =
-            self.planner_issue_basis(parent, &invocation, *selected, &branch_requests, &proposals)?;
-        let projected = self.project_planner_issue(
+            self.planner_issue_basis(parent, invocation, *selected, &branch_requests, &proposals)?;
+        let projected = self.project_planner_issue_with_validation_reads(
             &basis,
             IssueProjectionMode::Validate {
                 target_exploration: child.snapshot.roots().exploration,
                 target_accounting: child.snapshot.roots().accounting,
             },
+            merkle_reads,
         )?;
         if projected.branch_requests != *issued_branch_requests
             || projected.proposals != *issued_proposals
@@ -207,11 +241,13 @@ impl CampaignRepository {
         Ok(())
     }
 
-    fn project_planner_issue(
+    fn project_planner_issue_with_validation_reads(
         &self,
         basis: &PlannerIssueBasis<'_>,
         mode: IssueProjectionMode,
+        merkle_reads: Option<&mut MerkleValidationReads>,
     ) -> Result<PlannerIssueProjection, CampaignRepositoryError> {
+        let mut merkle = MerkleReadSession::new(&self.merkle, merkle_reads);
         let snapshot = basis.snapshot;
         let invocation_id = basis.invocation_id;
         let invocation = basis.invocation;
@@ -227,8 +263,7 @@ impl CampaignRepository {
 
         let prior_exploration = snapshot.snapshot.roots().exploration;
         let prior_accounting = snapshot.snapshot.roots().accounting;
-        let frontier_index = self
-            .merkle
+        let frontier_index = merkle
             .get(prior_exploration, frontier_index_anchor_key())?
             .ok_or_else(|| integrity("current-campaign-frontier-index-is-missing"))?;
         let mut exploration_upserts = BTreeMap::new();
@@ -260,6 +295,7 @@ impl CampaignRepository {
                 map_key_content("exploration.branch-request", request_content),
                 request_content,
                 "planner-issue-reused-branch-request-slot",
+                &mut merkle,
             )?;
             if let CandidateSource::StatisticalFinite(source) = request.source() {
                 let expected_coordinate = self.next_statistical_coordinate(
@@ -267,6 +303,7 @@ impl CampaignRepository {
                     prior_exploration,
                     &exploration_upserts,
                     true,
+                    &mut merkle,
                 )?;
                 if expected_coordinate != Some(source.coordinate()) {
                     return Err(integrity("statistical-request-coordinate-is-not-next"));
@@ -277,6 +314,7 @@ impl CampaignRepository {
                     statistical_draw_request_key(source.coordinate()),
                     request_content,
                     "statistical-request-coordinate-is-already-published",
+                    &mut merkle,
                 )?;
             }
             if let CandidateSource::StatisticalSmc(source) = request.source() {
@@ -286,10 +324,10 @@ impl CampaignRepository {
                     smc_transition_request_key(source.stage(), source.slot()),
                     request_content,
                     "SMC request coordinate is already published",
+                    &mut merkle,
                 )?;
             }
-            if self
-                .merkle
+            if merkle
                 .get(frontier_index, frontier_index_order_key(request_id))?
                 .is_some()
             {
@@ -333,8 +371,12 @@ impl CampaignRepository {
             "exploration.branch-request",
             selected_request.id()?.content_id(),
         );
-        if self.overlay_get(prior_exploration, &exploration_upserts, selected_key)?
-            != Some(selected.source().content_id())
+        if self.overlay_get(
+            prior_exploration,
+            &exploration_upserts,
+            selected_key,
+            &mut merkle,
+        )? != Some(selected.source().content_id())
         {
             return Err(integrity(
                 "planner-issue-selected-request-is-not-authoritative",
@@ -382,6 +424,7 @@ impl CampaignRepository {
                 proposal,
                 proposal_content,
                 &proposals[..proposal_index],
+                &mut merkle,
             )?;
             proposal_ids.push(proposal_id);
         }
@@ -398,7 +441,7 @@ impl CampaignRepository {
         let mut next_ordinal = if proposals.is_empty() {
             None
         } else {
-            self.next_planner_issue_admission_ordinal(prior_accounting)?
+            self.next_planner_issue_admission_ordinal(prior_accounting, &mut merkle)?
         };
         let attempt_basis = PlannerIssueAttemptBasis {
             snapshot,
@@ -420,8 +463,7 @@ impl CampaignRepository {
                 IssueProjectionMode::Validate {
                     target_accounting, ..
                 } => {
-                    let content = self
-                        .merkle
+                    let content = merkle
                         .get(
                             target_accounting,
                             map_key_content(
@@ -444,6 +486,7 @@ impl CampaignRepository {
                 request_attempts,
                 next_ordinal,
                 proposal.policy(),
+                &mut merkle,
             )?;
             let admission_content = match mode {
                 IssueProjectionMode::Publish => {
@@ -502,6 +545,7 @@ impl CampaignRepository {
                     key,
                     value,
                     "planner-issue-reused-admission-slot",
+                    &mut merkle,
                 )?;
             }
             if let CandidateSource::StatisticalFinite(source) = selected_request.source() {
@@ -510,6 +554,7 @@ impl CampaignRepository {
                     prior_accounting,
                     &accounting_upserts,
                     false,
+                    &mut merkle,
                 )?;
                 if expected_coordinate != Some(source.coordinate()) {
                     return Err(integrity("statistical-proposal-coordinate-is-not-next"));
@@ -520,6 +565,7 @@ impl CampaignRepository {
                     statistical_draw_proposal_key(source.coordinate()),
                     proposal_id.content_id(),
                     "statistical-proposal-coordinate-is-already-admitted",
+                    &mut merkle,
                 )?;
             }
             if let CandidateSource::StatisticalSmc(source) = selected_request.source() {
@@ -529,6 +575,7 @@ impl CampaignRepository {
                     smc_transition_proposal_key(source.stage(), source.slot()),
                     proposal_id.content_id(),
                     "SMC proposal coordinate is already admitted",
+                    &mut merkle,
                 )?;
             }
         }
@@ -637,10 +684,20 @@ impl CampaignRepository {
             && (1..=MAX_SIMPLE_FINITE_ISSUE_PROPOSALS).contains(&proposals.len())
             && projections.len() == 1
             && feedback_projection.is_none();
-        let exploration =
-            self.finish_issue_root(prior_exploration, &exploration_upserts, mode, true)?;
-        let accounting =
-            self.finish_issue_root(prior_accounting, &accounting_upserts, mode, false)?;
+        let exploration = self.finish_issue_root(
+            prior_exploration,
+            &exploration_upserts,
+            mode,
+            true,
+            &mut merkle,
+        )?;
+        let accounting = self.finish_issue_root(
+            prior_accounting,
+            &accounting_upserts,
+            mode,
+            false,
+            &mut merkle,
+        )?;
 
         Ok(PlannerIssueProjection {
             exploration,
@@ -764,6 +821,7 @@ impl CampaignRepository {
         prior: ContentId,
         upserts: &BTreeMap<CampaignHash, ContentId>,
         request: bool,
+        merkle: &mut MerkleReadSession<'_>,
     ) -> Result<Option<u64>, CampaignRepositoryError> {
         let policy = self.read_policy(snapshot.snapshot.active_policy().content_id())?;
         let Some(design) = policy.statistical_sampling_design() else {
@@ -775,7 +833,7 @@ impl CampaignRepository {
             } else {
                 statistical_draw_proposal_key(coordinate)
             };
-            if self.overlay_get(prior, upserts, key)?.is_none() {
+            if self.overlay_get(prior, upserts, key, merkle)?.is_none() {
                 return Ok(Some(coordinate));
             }
         }
@@ -839,6 +897,7 @@ impl CampaignRepository {
         proposal: &Proposal,
         proposal_content: ContentId,
         previous_proposals: &[Proposal],
+        merkle: &mut MerkleReadSession<'_>,
     ) -> Result<(), CampaignRepositoryError> {
         let proposal_key = map_key_content("exploration.proposal", proposal_content);
         let ordinal_key = proposal_ordinal_key(proposal.request(), proposal.ordinal());
@@ -850,12 +909,13 @@ impl CampaignRepository {
                 key,
                 proposal_content,
                 "planner-issue-reused-proposal-slot",
+                merkle,
             )?;
         }
         if proposal.ordinal() > 1 {
             let prior_key = proposal_ordinal_key(proposal.request(), proposal.ordinal() - 1);
             let prior_content = self
-                .overlay_get(prior, upserts, prior_key)?
+                .overlay_get(prior, upserts, prior_key, merkle)?
                 .ok_or_else(|| integrity("planner-issue-skipped-proposal-ordinal"))?;
             // Preflight has not published earlier proposals in this Issue.
             // Their IDs were authenticated while building the overlay above.
@@ -890,12 +950,14 @@ impl CampaignRepository {
         request_attempts: u64,
         next_ordinal: Option<AdmissionOrdinal>,
         retention_policy: CampaignPolicyId,
+        merkle: &mut MerkleReadSession<'_>,
     ) -> Result<AttemptAdmission, CampaignRepositoryError> {
         if self
             .overlay_get(
                 prior,
                 upserts,
                 map_key_content("accounting.proposal-admission", proposal.content_id()),
+                merkle,
             )?
             .is_some()
         {
@@ -903,8 +965,8 @@ impl CampaignRepository {
         }
         let attempt_key = map_key_content("accounting.attempt", attempt.content_id());
         let basis_key = map_key_content("accounting.attempt-execution-basis", attempt.content_id());
-        let indexed_attempt = self.overlay_get(prior, upserts, attempt_key)?;
-        let indexed_basis = self.overlay_get(prior, upserts, basis_key)?;
+        let indexed_attempt = self.overlay_get(prior, upserts, attempt_key, merkle)?;
+        let indexed_basis = self.overlay_get(prior, upserts, basis_key, merkle)?;
         match (indexed_attempt, indexed_basis) {
             (None, None) => {
                 if request_attempts >= request.budget().maximum_attempts() {
@@ -1038,18 +1100,20 @@ impl CampaignRepository {
         prior: ContentId,
         upserts: &BTreeMap<CampaignHash, ContentId>,
         key: CampaignHash,
+        merkle: &mut MerkleReadSession<'_>,
     ) -> Result<Option<ContentId>, CampaignRepositoryError> {
         match upserts.get(&key).copied() {
             Some(value) => Ok(Some(value)),
-            None => Ok(self.merkle.get(prior, key)?),
+            None => Ok(merkle.get(prior, key)?),
         }
     }
 
     fn next_planner_issue_admission_ordinal(
         &self,
         accounting: ContentId,
+        merkle: &mut MerkleReadSession<'_>,
     ) -> Result<Option<AdmissionOrdinal>, CampaignRepositoryError> {
-        let Some(latest) = self.merkle.get(accounting, admission_sequence_key())? else {
+        let Some(latest) = merkle.get(accounting, admission_sequence_key())? else {
             return Ok(Some(AdmissionOrdinal::new(1)));
         };
         let admission = self.decode_attempt_admission(latest)?;
@@ -1071,8 +1135,9 @@ impl CampaignRepository {
         key: CampaignHash,
         value: ContentId,
         error: &'static str,
+        merkle: &mut MerkleReadSession<'_>,
     ) -> Result<(), CampaignRepositoryError> {
-        if upserts.contains_key(&key) || self.merkle.get(prior, key)?.is_some() {
+        if upserts.contains_key(&key) || merkle.get(prior, key)?.is_some() {
             return Err(integrity(error));
         }
         upserts.insert(key, value);
@@ -1085,6 +1150,7 @@ impl CampaignRepository {
         upserts: &BTreeMap<CampaignHash, ContentId>,
         mode: IssueProjectionMode,
         exploration: bool,
+        merkle: &mut MerkleReadSession<'_>,
     ) -> Result<ContentId, CampaignRepositoryError> {
         match mode {
             IssueProjectionMode::Preflight => Ok(prior),
@@ -1100,7 +1166,7 @@ impl CampaignRepository {
                 } else {
                     target_accounting
                 };
-                if !self.merkle.equals_after_upserts(prior, target, upserts)? {
+                if !merkle.equals_after_upserts(prior, target, upserts)? {
                     return Err(integrity("planner-issue-root-delta-mismatch"));
                 }
                 Ok(target)

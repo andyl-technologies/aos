@@ -16,6 +16,9 @@
     "storage_recovery_scheduler_observed_guest_progress=true"
     "storage_recovery_selected_outcome_preserved=true"
     "storage_recovery_derived_refs_preserved=2"
+    "storage_recovery_live_owner_gc_refused=true"
+    "storage_recovery_stopped_owner_gc_reclaimed_orphan=true"
+    "storage_recovery_gc_exact_checkpoint_preserved=true"
     "storage_recovery_final_guest_cleanup=true"
   ];
 in

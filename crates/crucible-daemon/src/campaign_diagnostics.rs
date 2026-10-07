@@ -3,11 +3,15 @@
 //! Diagnostics remain outside campaign semantic state and transport responses.
 //! A listener routes bounded, path-free records to an optional deployment sink
 //! after semantic failure validation. Request records carry only the public
-//! service operation, exact request digest, and stable failure vocabulary.
+//! service operation, exact request digest, stable failure vocabulary, and an
+//! optional closed category from the original invocation error.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use crucible_campaign::{CampaignHash, CampaignServiceFailure, CampaignServiceOperation};
+use crucible_campaign::{
+    CampaignHash, CampaignServiceFailure, CampaignServiceFailureCategory,
+    CampaignServiceFailureSource, CampaignServiceOperation,
+};
 
 /// One path-free operational diagnostic emitted by a campaign listener.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,6 +24,15 @@ pub enum CampaignServiceDiagnostic {
         request_digest: CampaignHash,
         /// Stable failure returned to the caller.
         failure: CampaignServiceFailure,
+    },
+    /// Original branch-admission cause, bound to the same validated failure.
+    RequestFailureSource {
+        /// Public operation selected by the decoded request.
+        operation: CampaignServiceOperation,
+        /// Digest of the original canonical request.
+        request_digest: CampaignHash,
+        /// Closed category obtained directly from that invocation's error.
+        category: CampaignServiceFailureCategory,
     },
     /// A connection was rejected or closed at an operational boundary.
     ConnectionFailure(CampaignConnectionDiagnostic),
@@ -54,6 +67,17 @@ pub trait CampaignServiceDiagnosticSink: Send + Sync {
     fn record(&self, diagnostic: CampaignServiceDiagnostic);
 }
 
+// Optional observer implementations cannot replace the original service refusal.
+pub(crate) fn original_failure_category(
+    error: &impl CampaignServiceFailureSource,
+) -> Option<CampaignServiceFailureCategory> {
+    catch_unwind(AssertUnwindSafe(|| {
+        error.campaign_service_failure_category()
+    }))
+    .ok()
+    .flatten()
+}
+
 pub(crate) fn route_campaign_service_diagnostic(
     sink: Option<&dyn CampaignServiceDiagnosticSink>,
     diagnostic: CampaignServiceDiagnostic,
@@ -66,6 +90,29 @@ pub(crate) fn route_campaign_service_diagnostic(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct PanickingCategory;
+
+    impl CampaignServiceFailureSource for PanickingCategory {
+        fn campaign_service_failure(&self) -> CampaignServiceFailure {
+            CampaignServiceFailure::Unavailable
+        }
+
+        fn campaign_service_failure_category(&self) -> Option<CampaignServiceFailureCategory> {
+            panic!("diagnostic category panic");
+        }
+    }
+
+    #[test]
+    fn panicking_category_preserves_original_refusal() {
+        let error = PanickingCategory;
+
+        assert_eq!(original_failure_category(&error), None);
+        assert_eq!(
+            error.campaign_service_failure(),
+            CampaignServiceFailure::Unavailable
+        );
+    }
 
     struct PanickingSink;
 

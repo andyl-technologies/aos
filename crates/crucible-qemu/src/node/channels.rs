@@ -463,6 +463,8 @@ pub trait QemuShmemHotPathChannel: Send {
 pub struct QemuNodePendingQuantum {
     token: Box<dyn Any>,
     completion_fence: Option<QemuAdvanceCompletionFence>,
+    initial_state: Option<QemuNodeIdleState>,
+    pub(crate) completed_boundary: Option<crate::QemuCompletedQuantumBoundary>,
 }
 
 impl QemuNodePendingQuantum {
@@ -473,8 +475,10 @@ impl QemuNodePendingQuantum {
         T: Any,
     {
         Self {
+            completed_boundary: None,
             token: Box::new(token),
             completion_fence: None,
+            initial_state: None,
         }
     }
 
@@ -485,8 +489,10 @@ impl QemuNodePendingQuantum {
         T: Any,
     {
         Self {
+            completed_boundary: None,
             token: Box::new(token),
             completion_fence: Some(fence),
+            initial_state: None,
         }
     }
 
@@ -494,6 +500,21 @@ impl QemuNodePendingQuantum {
     #[must_use]
     pub const fn completion_fence(&self) -> Option<QemuAdvanceCompletionFence> {
         self.completion_fence
+    }
+
+    /// Returns the coherent node state acquired before scheduler publication.
+    ///
+    /// `Some` retains the live channel's original observation, including an
+    /// observed absence of an idle deadline. `None` means this token's provider
+    /// supplied no start observation; it does not describe a live node state.
+    #[must_use]
+    pub const fn initial_state(&self) -> Option<QemuNodeIdleState> {
+        self.initial_state
+    }
+
+    pub(crate) const fn with_initial_state(mut self, state: QemuNodeIdleState) -> Self {
+        self.initial_state = Some(state);
+        self
     }
 
     /// Recovers the concrete token expected by the finishing channel.

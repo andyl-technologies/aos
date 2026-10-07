@@ -32,6 +32,8 @@ use crate::{
 };
 
 mod channel;
+mod completed_boundary;
+pub use completed_boundary::QemuCompletedQuantumBoundary;
 mod support;
 
 pub use support::QemuQuantumError;
@@ -295,6 +297,7 @@ pub struct QemuPendingQuantum {
     /// Fresh plugin publication required by delivery or next-idle semantics.
     pub completion_fence: Option<QemuAdvanceCompletionFence>,
     stop_condition: QemuQuantumStopCondition,
+    advance_publication_sequence: u64,
     operation_start: usize,
     inbound_consumption: QemuInboundConsumptionBaseline,
 }
@@ -398,10 +401,17 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         })
     }
 
-    /// Returns a stable snapshot of the bound node slot.
-    #[must_use]
-    pub fn node_snapshot(&self) -> NodeSlotSnapshot {
-        self.view.node_slot.snapshot()
+    /// Attempts one stable snapshot of the bound node slot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuQuantumError::PublicationUnavailable`] while either
+    /// publication is busy. The caller owns retries and its liveness budget.
+    pub fn node_snapshot(&self) -> Result<NodeSlotSnapshot, QemuQuantumError> {
+        self.view
+            .node_slot
+            .try_snapshot()
+            .ok_or(QemuQuantumError::PublicationUnavailable)
     }
 
     /// Arms the shared slot for a quiesced VMState restore without waking QEMU.
@@ -492,7 +502,7 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
     ) -> Result<QemuPendingQuantum, QemuQuantumError> {
         let operation_start = self.operation_log.len();
         self.record(QemuQuantumOperation::ReadNodeReport);
-        let initial_snapshot = self.view.node_slot.snapshot();
+        let initial_snapshot = self.node_snapshot()?;
         let initial_state = idle_state_from_snapshot(initial_snapshot);
         let initial_device_io_freeze = device_io_freeze_from_snapshot(initial_snapshot);
         let inbound_consumption = self.snapshot_inbound_consumption()?;
@@ -547,6 +557,7 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
                 stop_condition,
             }),
             stop_condition,
+            advance_publication_sequence: initial_snapshot.advance_publication_sequence,
             operation_start,
             inbound_consumption,
         })
@@ -577,7 +588,7 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         pending: &QemuPendingQuantum,
     ) -> Result<QemuQuantumReport, QemuQuantumError> {
         self.record(QemuQuantumOperation::ObservePluginReport);
-        let final_snapshot = self.view.node_slot.snapshot();
+        let final_snapshot = self.node_snapshot()?;
         let completed_clamp = completed_quantum_clamp_is_attested(pending, &final_snapshot);
         let mut final_state = idle_state_from_snapshot(final_snapshot);
         if completed_clamp
@@ -665,10 +676,10 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         self.finish_quantum(pending)
     }
 
-    fn current_icount_from_slot(&self) -> Icount {
-        Icount {
-            retired: self.view.node_slot.snapshot().current_icount,
-        }
+    fn current_icount_from_slot(&self) -> Result<Icount, QemuQuantumError> {
+        Ok(Icount {
+            retired: self.node_snapshot()?.current_icount,
+        })
     }
 
     fn drain_emitted_outbound(&mut self) -> Result<Vec<QemuNodeEmittedFrame>, QemuQuantumError> {
@@ -740,7 +751,7 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
             &frame.payload,
         )
         .map_err(|source| QemuQuantumError::FrameEntry { source })?;
-        let current_icount = self.view.node_slot.snapshot().current_icount;
+        let current_icount = self.node_snapshot()?.current_icount;
         validate_frame_delivery_is_future(&entry, current_icount)
             .map_err(|source| QemuQuantumError::Lookahead { source })?;
         Ok(entry)
@@ -753,15 +764,16 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         self.record(QemuQuantumOperation::EnqueueInboundFrame);
         self.record(QemuQuantumOperation::StoreSchedulerCeiling);
         self.record(QemuQuantumOperation::FutexWake);
-        let current_icount = self.view.node_slot.snapshot().current_icount;
-        let (max_advance_icount, stop_condition) = self
-            .view
-            .node_slot
-            .load_scheduler_advance()
-            .map_err(|source| QemuQuantumError::NodeSlot {
-                operation: "load scheduler advance for inbound wake",
-                source,
-            })?;
+        let snapshot = self.node_snapshot()?;
+        let current_icount = snapshot.current_icount;
+        let max_advance_icount = snapshot.max_advance_icount;
+        let stop_condition = crucible_shmem::AdvanceStopCondition::decode(
+            snapshot.advance_stop_condition,
+        )
+        .map_err(|source| QemuQuantumError::NodeSlot {
+            operation: "load scheduler advance for inbound wake",
+            source,
+        })?;
         let ceiling = authorize_advance_ceiling(current_icount, max_advance_icount, None)
             .map_err(|source| QemuQuantumError::Lookahead { source })?;
         self.view

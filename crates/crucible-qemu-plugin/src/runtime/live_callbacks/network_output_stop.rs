@@ -202,7 +202,10 @@ impl LiveVcpuTimeCallbackState {
             logical_icount,
             raw_icount,
             write_index,
-            context: context::ArmContext::new(self.control_callback_witness.is_enabled(), origin),
+            context: context::ArmContext::new(
+                self.control_callback_witness.is_stream_enabled(),
+                origin,
+            ),
         };
         *owner = Some(stop.clone());
         Ok(stop)

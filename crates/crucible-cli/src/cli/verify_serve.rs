@@ -8,6 +8,8 @@ pub(super) use artifact_capture::*;
 
 #[path = "verify_serve/packaged_executor.rs"]
 mod packaged_executor;
+#[path = "verify_serve/service_diagnostics.rs"]
+mod service_diagnostics;
 pub(crate) fn load_guarded_campaign_deployment(
     explicit: Option<&Path>,
 ) -> Result<packaged_executor::GuardedCampaignRunDeployment, CliError> {

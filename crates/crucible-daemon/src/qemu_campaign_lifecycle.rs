@@ -68,9 +68,11 @@ pub use interactive_session::{
 };
 
 mod failure_classification;
+mod guest_selectable;
 pub(crate) use failure_classification::{
     classify_production_lifecycle_failure, production_lifecycle_failure_class,
 };
+use guest_selectable::{apply_replayed_guest_selectables, publish_replayed_host_outcomes};
 
 mod remote_observation_resume;
 pub use remote_observation_resume::RemoteObservationResumeFactory;
@@ -369,6 +371,37 @@ pub trait QemuFreshAttemptLifecycleOwner {
         Ok(VirtualTime { ticks })
     }
 
+    /// Authenticates an already committed held source independently of peer time.
+    ///
+    /// The default grants no early visibility. Implementations must validate
+    /// original ownership and the exact retained request without effects.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when original held ownership cannot be authenticated.
+    fn pending_selectable_request_is_committed_source(
+        &self,
+        _pending: &QemuNodeSelectablePendingRequest,
+    ) -> Result<bool, SchedulerError> {
+        Ok(false)
+    }
+
+    /// Publishes an already committed held suffix without another guest RUN.
+    ///
+    /// Owners without retained host outcomes return `None`. Implementations
+    /// authenticate the released configuration and preserve failed publication
+    /// for ordered retirement; this hook grants no new execution authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when original ownership or publication guards refuse.
+    fn publish_released_host_outcomes(
+        &mut self,
+        _configuration: &Configuration,
+    ) -> Result<Option<QuantumOutcome>, SchedulerError> {
+        Ok(None)
+    }
+
     /// Applies one exact semantic reply at the authoritative scheduler frontier.
     ///
     /// # Errors
@@ -568,6 +601,13 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
         ProductionVmLifecycleLoop::pending_selectable_request_time(self, pending)
     }
 
+    fn pending_selectable_request_is_committed_source(
+        &self,
+        pending: &QemuNodeSelectablePendingRequest,
+    ) -> Result<bool, SchedulerError> {
+        ProductionVmLifecycleLoop::pending_selectable_request_is_committed_source(self, pending)
+    }
+
     fn apply_selectable_reply(
         &mut self,
         parent: &Configuration,
@@ -579,6 +619,13 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
         ProductionVmLifecycleLoop::apply_selectable_reply(
             self, parent, decision, selected, pending, reply,
         )
+    }
+
+    fn publish_released_host_outcomes(
+        &mut self,
+        configuration: &Configuration,
+    ) -> Result<Option<QuantumOutcome>, SchedulerError> {
+        ProductionVmLifecycleLoop::publish_released_host_outcomes(self, configuration)
     }
 
     fn capture_attempt_checkpoint(
@@ -840,49 +887,6 @@ impl QemuFreshAttemptLifecycle<'_> {
     /// Returns an error when queue state cannot be authenticated.
     pub fn campaign_network_queues_empty(&self) -> Result<bool, SchedulerError> {
         self.owner.campaign_network_queues_empty()
-    }
-
-    /// Drains node-qualified guest selectable requests at the paused boundary.
-    ///
-    /// The result remains untrusted guest input until the modeled driver binds
-    /// it to the scenario declaration and selects a legal value.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError`] when the live request stream is malformed.
-    pub fn drain_pending_selectable_requests(
-        &mut self,
-    ) -> Result<Vec<QemuNodeSelectablePendingRequest>, SchedulerError> {
-        self.owner.drain_pending_selectable_requests()
-    }
-
-    /// Projects a retained guest pause into the shared scheduler clock.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the pause overflows or its admitted mapping is absent.
-    pub fn pending_selectable_request_time(
-        &self,
-        pending: &QemuNodeSelectablePendingRequest,
-    ) -> Result<VirtualTime, SchedulerError> {
-        self.owner.pending_selectable_request_time(pending)
-    }
-
-    /// Applies one exact semantic reply at the authoritative scheduler frontier.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError`] when the live request/reply binding fails.
-    pub fn apply_selectable_reply(
-        &mut self,
-        parent: &Configuration,
-        decision: SelectionDecision,
-        selected: &Configuration,
-        pending: &QemuNodeSelectablePendingRequest,
-        reply: &SelectionReply,
-    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
-        self.owner
-            .apply_selectable_reply(parent, decision, selected, pending, reply)
     }
 
     /// Captures read-only production fault evidence at the current boundary.
@@ -2366,6 +2370,9 @@ pub(crate) fn materialize_start_from<F, D>(
         ));
     }
     if current == *target {
+        if publish_replayed_host_outcomes(lifecycle, target, &mut current, &mut replay)? {
+            replay.restored_configuration = Some(current);
+        }
         return Ok(replay);
     }
     if replay.terminal_verdict.is_some() {
@@ -2397,9 +2404,15 @@ pub(crate) fn materialize_start_from<F, D>(
         &mut replay,
     )?;
     append_start_replay_events(&mut replay, &initial_selection_entries)?;
+    publish_replayed_host_outcomes(lifecycle, target, &mut current, &mut replay)?;
     if current == *target {
         replay.restored_configuration = Some(current);
         return Ok(replay);
+    }
+    if replay.terminal_verdict.is_some() {
+        return Err(AttemptWorkerFailure::Terminal(
+            QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Terminated),
+        ));
     }
 
     loop {
@@ -2520,13 +2533,16 @@ pub(crate) fn materialize_start_from<F, D>(
         append_start_replay_events(&mut replay, &live_network_entries)?;
         append_start_replay_events(&mut replay, &selection_entries)?;
         replay.terminal_quiescence = outcome.scheduler_quiescence;
+        publish_replayed_host_outcomes(lifecycle, target, &mut next, &mut replay)?;
         current = next;
         if current == *target {
             replay.restored_configuration = Some(current);
-            replay.terminal_verdict = terminal;
+            if replay.terminal_verdict.is_none() {
+                replay.terminal_verdict = terminal;
+            }
             return Ok(replay);
         }
-        if terminal.is_some() {
+        if terminal.is_some() || replay.terminal_verdict.is_some() {
             return Err(AttemptWorkerFailure::Terminal(
                 QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Terminated),
             ));
@@ -2625,182 +2641,6 @@ fn authenticated_live_network_start_selection(
         CrucibleResolvedAttemptStart::Discover { .. }
         | CrucibleResolvedAttemptStart::Branch { .. } => None,
     }
-}
-
-fn apply_replayed_guest_selectables<F, D>(
-    lifecycle: &mut dyn QemuFreshAttemptLifecycleOwner,
-    context: &AttemptExecutionContext,
-    replay_context: GuestSelectableReplayContext<'_>,
-    current: &mut Configuration,
-    materialization: &mut QemuFreshStartMaterialization,
-) -> Result<Vec<SchedulerEventLogEntry>, AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>>
-{
-    let pending = lifecycle
-        .drain_pending_selectable_requests()
-        .map_err(map_start_replay_scheduler_failure)?;
-    let mut replayed = current.clone();
-    let mut replies = Vec::with_capacity(pending.len());
-    for pending in pending {
-        let discovery = resolve_guest_selectable(
-            replay_context.scenario,
-            replay_context.source,
-            pending.node(),
-            pending.pending(),
-        )
-        .map_err(start_replay_guest_selectable_failure)?;
-        materialization
-            .retain_replayed_discovery(discovery.clone())
-            .map_err(start_replay_guest_selectable_failure)?;
-        let Some(Decision::Selection(decision)) = replay_context
-            .target
-            .schedule
-            .decisions()
-            .get(replayed.schedule.len())
-        else {
-            return Err(AttemptWorkerFailure::Terminal(
-                QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::DivergedAt {
-                    reason: "pending guest selection",
-                    index: replayed.schedule.len(),
-                    expected: String::from("Selection"),
-                    observed: replay_decision_detail(
-                        replay_context
-                            .target
-                            .schedule
-                            .decisions()
-                            .get(replayed.schedule.len()),
-                    ),
-                }),
-            ));
-        };
-        let selection = decision
-            .selection()
-            .map_err(GuestSelectableError::Campaign)
-            .map_err(start_replay_guest_selectable_failure)?;
-        let expected_selection = replay_context
-            .start
-            .replay_selection(replayed.schedule.len());
-        let fingerprint = if context.guest_selectable_boundary_diagnostic_sample_permitted() {
-            lifecycle.sample_fingerprint(pending.node().clone()).ok()
-        } else {
-            None
-        };
-        record_guest_selectable_boundary_diagnostic(
-            context,
-            replay_context.attempt,
-            GuestSelectableBoundaryDiagnosticStage::Replay,
-            replayed.schedule.len(),
-            pending.node(),
-            pending.pending(),
-            &discovery,
-            expected_selection,
-            fingerprint,
-        );
-        let validation = match selection.origin() {
-            SelectionOrigin::Default | SelectionOrigin::LockedReplay => {
-                selection.validate_replay(discovery.opportunity(), discovery.domain())
-            }
-            SelectionOrigin::CampaignBranch { .. } => {
-                let parent =
-                    ConfigurationId::from_hash(CampaignHash::from_bytes(replayed.id().bytes));
-                selection.validate_branch_replay(
-                    discovery.opportunity(),
-                    discovery.domain(),
-                    discovery.opportunity().branch_point_id(parent),
-                )
-            }
-            SelectionOrigin::ModelSample(_) => {
-                return Err(start_replay_guest_selectable_failure(
-                    GuestSelectableError::Campaign(
-                        crucible_campaign::CampaignCodecError::InvalidValue {
-                            reason: "guest selectable replay does not admit model-sample provenance",
-                        },
-                    ),
-                ));
-            }
-        };
-        if let Err(error) = validation {
-            let attempt = replay_context.attempt.id().ok();
-            let mismatch = selection
-                .replay_mismatch(discovery.opportunity(), discovery.domain())
-                .ok()
-                .flatten();
-            let error = match (attempt, mismatch) {
-                (Some(attempt), Some(mismatch)) => {
-                    let request = pending.pending().request();
-                    let replayed_configuration =
-                        ConfigurationId::from_hash(CampaignHash::from_bytes(replayed.id().bytes));
-                    let expected_opportunity = expected_selection.map(|selection| {
-                        GuestSelectableReplayOpportunityContext::from_opportunity(
-                            selection.opportunity(),
-                        )
-                    });
-                    let correlation = GuestSelectableReplayCorrelation {
-                        phase: replay_context.phase,
-                        attempt_role: replay_context.attempt_role,
-                        attempt,
-                        replayed_configuration,
-                        decision_index: replayed.schedule.len(),
-                        node: pending.node().name.clone(),
-                        selectable: request.selectable_id().to_owned(),
-                        request_instance: request.instance_key().to_owned(),
-                        request_sequence: request.sequence(),
-                        request_icount: pending.pending().raw_icount(),
-                        request_vcpu_index: pending.pending().vcpu_index(),
-                        expected_opportunity,
-                        replayed_opportunity:
-                            GuestSelectableReplayOpportunityContext::from_opportunity(
-                                discovery.opportunity(),
-                            ),
-                    };
-                    GuestSelectableError::ReplayMismatch(Box::new(
-                        GuestSelectableReplayMismatch::new(correlation, mismatch, error),
-                    ))
-                }
-                _ => GuestSelectableError::Campaign(error),
-            };
-            return Err(start_replay_guest_selectable_failure(error));
-        }
-        let reply = selected_guest_reply(pending.pending(), &discovery, &selection)
-            .map_err(start_replay_guest_selectable_failure)?;
-        replies.push((pending, reply, decision.clone(), replayed.clone()));
-        replayed = crucible::try_step(&replayed, Decision::Selection(decision.clone())).map_err(
-            |error| {
-                AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
-                    QemuFreshStartReplayError::DivergedAt {
-                        reason: "selection schedule append",
-                        index: replayed.schedule.len(),
-                        expected: replay_decision_detail(Some(&Decision::Selection(
-                            decision.clone(),
-                        ))),
-                        observed: error.to_string(),
-                    },
-                ))
-            },
-        )?;
-    }
-    let mut selection_entries = Vec::new();
-    for (pending, reply, decision, parent) in replies {
-        let selected = crucible::try_step(&parent, Decision::Selection(decision.clone())).map_err(
-            |error| {
-                AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
-                    QemuFreshStartReplayError::DivergedAt {
-                        reason: "selection reply schedule append",
-                        index: parent.schedule.len(),
-                        expected: replay_decision_detail(Some(&Decision::Selection(
-                            decision.clone(),
-                        ))),
-                        observed: error.to_string(),
-                    },
-                ))
-            },
-        )?;
-        let entries = lifecycle
-            .apply_selectable_reply(&parent, decision, &selected, &pending, &reply)
-            .map_err(map_start_replay_scheduler_failure)?;
-        selection_entries.extend(entries);
-    }
-    *current = replayed;
-    Ok(selection_entries)
 }
 
 fn start_replay_guest_selectable_failure<F, D>(

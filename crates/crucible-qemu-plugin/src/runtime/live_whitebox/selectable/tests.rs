@@ -728,3 +728,69 @@ fn selectable_prefix_is_disjoint_from_marker_frames() -> Result<(), Box<dyn std:
     assert!(!super::super::is_setup_complete_marker(&test_done));
     Ok(())
 }
+
+#[test]
+fn late_registration_retains_original_identity_and_catalog()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut state = live_state(&cold_plan()?, reply_input())?;
+    state.register_selectable(
+        &registration(1)?,
+        SelectableCallbackCoordinate::new(10, 500, 0),
+    )?;
+    state.freeze()?;
+    let before = state.catalog().to_plan()?;
+
+    let encoded = registration(2)?.encode()?;
+    let original = SelectableRegister::decode(&encoded)?;
+    let Err(failure) =
+        state.register_selectable(&original, SelectableCallbackCoordinate::new(50, 2_537, 1))
+    else {
+        panic!("the original frozen catalog must refuse registration");
+    };
+
+    assert_eq!(state.catalog().to_plan()?, before);
+    assert!(
+        failure
+            .to_string()
+            .contains("kind=register id=network.policy seq=2")
+    );
+    assert!(
+        failure
+            .to_string()
+            .contains("prev=1 done=none raw=50 ps=2537 vcpu=1")
+    );
+    Ok(())
+}
+
+#[test]
+fn late_registration_keeps_restored_request_and_completed_sequence()
+-> Result<(), Box<dyn std::error::Error>> {
+    let plan = restored_plan()?;
+    let mut state = live_state(&plan, reply_input())?;
+    state.restore_continuation()?;
+    let original = state.catalog().to_plan()?;
+
+    let Err(failure) = state.register_selectable(
+        &registration(5)?,
+        SelectableCallbackCoordinate::new(800, 40_037, 2),
+    ) else {
+        panic!("the restored frozen catalog must refuse registration");
+    };
+
+    assert_eq!(state.catalog().to_plan()?, original);
+    assert!(
+        failure
+            .to_string()
+            .contains("prev=4 done=8 raw=800 ps=40037 vcpu=2")
+    );
+    let Some(LiveWhiteboxError::LateSelectableRegistration { source, .. }) =
+        state.registration_failure
+    else {
+        panic!("the original late-registration source must be retained");
+    };
+    assert!(matches!(
+        *source,
+        SelectableCatalogError::RegistrationAfterFreeze
+    ));
+    Ok(())
+}

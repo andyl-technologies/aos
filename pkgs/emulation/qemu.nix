@@ -50,10 +50,23 @@
   enableLinuxUser ? pname == "qemu" && stdenv.hostPlatform.isLinux,
   testOnlyNonDistributable ? false,
   fullUpstreamTestSuiteOnly ? false,
+  clockAdapterUnitTestsOnly ? false,
   focusedUpstreamTest ? null,
   qemuTestRunner ? null,
   atomicPatch ? import ./qemu-patches/_atomic-patch.nix,
 }: let
+  clockUnitQualification = import ./_qemu-clock-unit-qualification.nix {
+    inherit lib applyCruciblePatch testOnlyNonDistributable fullUpstreamTestSuiteOnly enableLinuxUser;
+    enabled = clockAdapterUnitTestsOnly;
+    isNativeLinux = !stdenv.isCross && stdenv.hostPlatform.isLinux;
+    ninja =
+      if stdenv.isCross
+      then buildPackages.ninja
+      else ninja;
+    python3 = buildPython;
+    inherit qemuBuildIdentity qemuBuildIdentityMaterial;
+  };
+
   _testArtifactPolicy =
     if testOnlyNonDistributable && !applyCruciblePatch
     then throw "test-only QEMU artifacts require the tracked Crucible atomic patch"
@@ -257,7 +270,9 @@
   # The stock Linux package also executes foreign build tools. Keep Crucible's
   # system-emulator target set and its inertness reference unchanged.
   qemuTargetFlag =
-    if enableLinuxUser
+    if clockAdapterUnitTestsOnly
+    then clockUnitQualification.targetFlag
+    else if enableLinuxUser
     then "--target-list=x86_64-softmmu,aarch64-softmmu,i386-linux-user,x86_64-linux-user,aarch64-linux-user,riscv64-linux-user"
     else "--target-list=x86_64-softmmu,aarch64-softmmu";
   qemuTargetList = lib.removePrefix "--target-list=" qemuTargetFlag;
@@ -364,16 +379,18 @@
   sambaSmbdSourceHash = lib.optionalString (!isDarwinCross) samba-smbd.src.outputHash;
   sambaSmbdSourceHashAlgo =
     lib.optionalString (!isDarwinCross) samba-smbd.src.outputHashAlgo;
-  qemuConfigureIdentityMaterial = ''
-    ${builtins.concatStringsSep "\n" qemuConfigureIdentityFlags}
-    ${lib.optionalString (!isDarwinCross) ''
-      samba_smbd_version=${sambaSmbdVersion}
-      samba_smbd_source_hash_algo=${sambaSmbdSourceHashAlgo}
-      samba_smbd_source_hash=${sambaSmbdSourceHash}
-      samba_smbd_recipe_hash=${sambaSmbdRecipeHash}
-      samba_smbd_executable=${sambaSmbdExecutable}
-    ''}
-  '';
+  qemuConfigureIdentityMaterial =
+    ''
+      ${builtins.concatStringsSep "\n" qemuConfigureIdentityFlags}
+      ${lib.optionalString (!isDarwinCross) ''
+        samba_smbd_version=${sambaSmbdVersion}
+        samba_smbd_source_hash_algo=${sambaSmbdSourceHashAlgo}
+        samba_smbd_source_hash=${sambaSmbdSourceHash}
+        samba_smbd_recipe_hash=${sambaSmbdRecipeHash}
+        samba_smbd_executable=${sambaSmbdExecutable}
+      ''}
+    ''
+    + lib.optionalString clockAdapterUnitTestsOnly clockUnitQualification.identityMaterial;
   qemuConfigureFlagsHash = builtins.hashString "sha256" qemuConfigureIdentityMaterial;
   qemuConfigureFlagsScript = builtins.concatStringsSep " \\\n            " qemuConfigureFlags;
   qemuRuntimeDeps =
@@ -507,6 +524,7 @@ in
   assert _testArtifactPolicy == null;
   assert _fullTestSuitePolicy == null;
   assert _fullTestVmPolicy == null;
+  assert clockUnitQualification.policy == null;
     mkDerivation {
       inherit pname;
       inherit version;
@@ -623,6 +641,32 @@ in
               grep -q 'ldid -S"$ENTITLEMENT" "$SRC"' scripts/entitlement.sh
               ! grep -Eq '^(Rez|SetFile|codesign) ' scripts/entitlement.sh
             ''}
+            # Configure re-executes itself; Meson executes its helpers directly.
+            # Bind only build-time entry points to the declared build-host shell.
+            for build_script in \
+              configure \
+              scripts/git-submodule.sh \
+              scripts/hxtool \
+              scripts/make-config-poison.sh \
+              scripts/qemu-version.sh \
+              scripts/rust/rust_root_crate.sh \
+              scripts/entitlement.sh; do
+              case "$(head -n 1 "$build_script")" in
+                '#!/bin/sh'|'#! /bin/sh')
+                  shell_options=
+                  ;;
+                '#!/bin/sh -e')
+                  shell_options=' -e'
+                  ;;
+                *)
+                  printf 'Unexpected build-script shebang: %s\n' "$build_script" >&2
+                  exit 1
+                  ;;
+              esac
+
+              sed -i "1c#!${buildBash}/bin/bash$shell_options" "$build_script"
+              test "$(head -n 1 "$build_script")" = "#!${buildBash}/bin/bash$shell_options"
+            done
             # Patch Python shebangs for Nix sandbox
             find . -type f -name '*.py' | while read f; do
               if head -1 "$f" | grep -q '^#!'; then
@@ -714,7 +758,9 @@ in
             # resulting emulator binaries are byte-reproducible.
             export PYTHONHASHSEED=0
             ${
-              if focusedUpstreamTest != null
+              if clockAdapterUnitTestsOnly
+              then clockUnitQualification.buildScript
+              else if focusedUpstreamTest != null
               then ''
                 ${ninja}/bin/ninja -C build -j$NIX_BUILD_CORES \
                   qemu-img qemu-io qemu-nbd \
@@ -1531,7 +1577,9 @@ in
         {
           name = "check";
           script =
-            if runCrucibleChecks
+            if clockAdapterUnitTestsOnly
+            then clockUnitQualification.checkScript
+            else if runCrucibleChecks
             then ''
               ${python3}/bin/python3 tests/unit/test-crucible-rr-halted-neighbor.py \
                 > rr-halted-neighbor.result
@@ -1557,6 +1605,11 @@ in
               build/tests/unit/test-crucible-s390-tod-wide-clock --tap
               build/tests/unit/test-crucible-arm-timer-wide-clock --tap
               build/tests/unit/test-crucible-ich9-aux-wide-clock --tap
+              build/tests/unit/test-crucible-apic-timer-wide-clock --tap
+              build/tests/unit/test-crucible-rtc-timer-wide-clock --tap
+              build/tests/unit/test-crucible-pit-timer-wide-clock --tap
+              build/tests/unit/test-crucible-acpi-pm-wide-clock --tap
+              build/tests/unit/test-crucible-serial-kbd-timer-wide-clock --tap
               # A nested poll must retain the active BH until callback accounting ends.
               build/tests/unit/test-aio --tap -p /aio/bh/callback-delete/nested
               build/tests/unit/test-aio --tap -p /aio/bh/callback-delete/nested-oneshot
@@ -1685,6 +1738,17 @@ in
               if len(api_commands) != 1:
                   raise SystemExit("expected exactly one configured system API compile command")
 
+              # Retain genuine native actions separately from extracted-body
+              # fixture commands, including the actual system CPU object.
+              cpu_commands = [
+                  entry for entry in commands
+                  if entry["file"].endswith("/system/cpus.c")
+              ]
+              if len(cpu_commands) != 1:
+                  raise SystemExit("expected exactly one configured system CPU compile command")
+              (source_root / "native-control.compile-commands.json").write_text(
+                  json.dumps(api_commands + cpu_commands, indent=2) + "\n")
+
               entry = api_commands[0]
               command = shlex.split(entry["command"])
               flags = []
@@ -1721,11 +1785,29 @@ in
                           "--output-dir", str(source_root / f"{name}-proof"),
                       ], cwd=entry["directory"], env=environment,
                          stdout=result, check=True)
+              with (source_root / "control-continuation.result").open("w") as result:
+                  subprocess.run([
+                      sys.executable,
+                      "${../../tests/crucible/phase6-native-control-continuation.py}",
+                      "--qemu-source", str(source_root),
+                      "--output-dir", str(source_root / "control-continuation-proof"),
+                      "--case", "all",
+                  ], cwd=entry["directory"], env=environment,
+                     stdout=result, check=True)
               PYTHON
               cat net-output-stop.result lifecycle-projection.result \
                 control-deferred.result control-observer.result control-delivery.result \
                 stopped-control-rearm.result template-control-drain.result net-stop-chain.result \
-                aio-fork-custody.result stop-context.result
+                aio-fork-custody.result stop-context.result control-continuation.result
+              for case in reader-before-park reader-after-park reader-after-handoff \
+                idle-reader-before-park idle-reader-after-park \
+                sdk-reader-before-arm sdk-reader-arm-gap sdk-reader-after-futex \
+                two-epochs-after-return two-epochs-before-handoff; do
+                grep -Fxq "NATIVE_CONTROL_DELIVERY_PASS case=$case" control-continuation.result
+              done
+              test "$(grep -c '^NATIVE_CONTROL_DELIVERY_PASS ' control-continuation.result)" -eq 10
+              grep -Fxq 'CONDITIONAL_SETTLEMENT_REFUSAL_PASS: modeled bridge only; no native retry contract' \
+                control-continuation.result
               cat tcg-fast-paths.result
               grep -q '^PASS production TCG fast paths:' tcg-fast-paths.result
               cat mutex-owner-cache.result
@@ -4212,6 +4294,7 @@ in
         {
           name = "install";
           script = ''
+            ${lib.optionalString clockAdapterUnitTestsOnly (clockUnitQualification.installScript + "exit 0\n")}
             ${lib.optionalString fullUpstreamTestSuiteOnly "exit 0"}
             make install${lib.optionalString isDarwinCross ''
 
@@ -4298,10 +4381,12 @@ in
                 "$out/share/aos/crucible/procfd-flags.result"
               install -m 644 procfd-flags-proof/compile-command.json \
                 "$out/share/aos/crucible/procfd-flags.compile-command.json"
+              install -m 644 native-control.compile-commands.json \
+                "$out/share/aos/crucible/native-control.compile-commands.json"
               for name in net-output-stop lifecycle-projection control-deferred \
                 control-observer control-delivery stopped-control-rearm \
                 template-control-drain net-stop-chain aio-fork-custody stop-context \
-                tcg-fast-paths mutex-owner-cache snapshot-fast-path settle-prepark \
+                control-continuation tcg-fast-paths mutex-owner-cache snapshot-fast-path settle-prepark \
                 cold-fault-predicates lazy-memory-identity accel-classification \
                 fault-rule-presence rr-sim-barriers; do
                 install -m 644 "$name.result" \
@@ -4474,6 +4559,7 @@ in
       passthru = {
         standaloneRelease = !applyCruciblePatch && !testOnlyNonDistributable;
         inherit testOnlyNonDistributable;
+        inherit clockAdapterUnitTestsOnly;
         releaseVia =
           if applyCruciblePatch && !testOnlyNonDistributable
           then "crucible"

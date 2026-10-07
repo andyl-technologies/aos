@@ -2,7 +2,7 @@
 
 use super::*;
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ffi::CString;
 use std::fs::File;
 use std::io::Write as _;
@@ -15,13 +15,17 @@ use crucible_shmem::{
 };
 
 mod block_wait;
-mod fault_event_control;
+mod device_wait_observations;
+pub(super) mod fault_event_control;
+mod idle_plan_observations;
+mod native_block_wait;
 mod network_custody;
 mod network_output;
 mod preemption;
 mod preflight_cases;
 
 pub(super) extern "C" fn test_icount_raw() -> u64 {
+    TEST_ICOUNT_RAW_READS.set(TEST_ICOUNT_RAW_READS.get() + 1);
     TEST_ICOUNT_RAW.get()
 }
 
@@ -35,10 +39,12 @@ thread_local! {
     static TEST_QUEUED_ADVANCE_STATUS: Cell<std::os::raw::c_int> = const { Cell::new(0) };
     static TEST_REQUEST_VMSTOP_CALLS: Cell<u64> = const { Cell::new(0) };
     static TEST_REQUEST_VMSTOP_STATUS: Cell<std::os::raw::c_int> = const { Cell::new(0) };
+    static TEST_ICOUNT_RAW_READS: Cell<u64> = const { Cell::new(0) };
     static TEST_ICOUNT_RAW: Cell<u64> = const { Cell::new(0) };
     pub(super) static TEST_SIM_TICK: Cell<i64> = const { Cell::new(0) };
     static TEST_IDLE_WAKE_WAIT_CALLS: Cell<u64> = const { Cell::new(0) };
     static TEST_IDLE_WAKE_WAIT_STATUS: Cell<std::os::raw::c_int> = const { Cell::new(1) };
+    static TEST_IDLE_WAKE_WORK: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
     static TEST_FINGERPRINT_CAPTURE_COUNT: Cell<u64> = const { Cell::new(0) };
     pub(crate) static TEST_FINGERPRINT_CAPTURE_SEED: Cell<u64> = const { Cell::new(0x10) };
 }
@@ -54,7 +60,7 @@ static TEST_NESTED_PRODUCER_STATE: AtomicPtr<LiveVcpuTimeCallbackState> =
     AtomicPtr::new(std::ptr::null_mut());
 static TEST_NESTED_PRODUCER_DEFERRED: AtomicBool = AtomicBool::new(false);
 
-fn wait_for_fingerprint_sample(
+pub(super) fn wait_for_fingerprint_sample(
     slot: &FingerprintSampleSlot,
     capture_request: u32,
 ) -> crucible_shmem::FingerprintSample {
@@ -63,6 +69,9 @@ fn wait_for_fingerprint_sample(
         if slot.capture_request_generation() == acknowledged {
             return slot
                 .snapshot()
+                .unwrap_or_else(|error| {
+                    panic!("acknowledged fingerprint publication unavailable: {error}")
+                })
                 .unwrap_or_else(|| panic!("acknowledged fingerprint sample must be visible"));
         }
         std::thread::yield_now();
@@ -279,6 +288,10 @@ extern "C" fn test_wait_idle_wake(
     _expected: u32,
 ) -> std::os::raw::c_int {
     TEST_IDLE_WAKE_WAIT_CALLS.set(TEST_IDLE_WAKE_WAIT_CALLS.get() + 1);
+    let work = TEST_IDLE_WAKE_WORK.with_borrow_mut(Option::take);
+    if let Some(work) = work {
+        work();
+    }
     TEST_IDLE_WAKE_WAIT_STATUS.get()
 }
 

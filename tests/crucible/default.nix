@@ -461,6 +461,9 @@ in rec {
     qemuVcpuIntrospect = import ./phase2-qemu-vcpu-introspect.nix {inherit pkgs lib;};
     qemuPreemptionInject = import ./phase2-qemu-preemption-inject.nix {inherit pkgs lib;};
     qemuExactPreemptionLive = import ./phase2-qemu-exact-preemption-live.nix {inherit pkgs;};
+    qemuCrossTargetClockUnits = import ./phase2-qemu-cross-target-clock-units.nix {inherit pkgs;};
+    uartOriginBaseline = import ./native/uart-origin-baseline.nix {inherit pkgs;};
+    pluginFailedExit = import ./native/plugin-failed-exit.nix {inherit pkgs;};
     tcgPerformanceFixtures = import ./tcg-performance-fixtures.nix {inherit pkgs;};
     tcgPerformanceDeterminism = import ./tcg-performance.nix {inherit pkgs;};
     tcgLinuxBootPerformanceDeterminism = import ./tcg-linux-boot-performance.nix {inherit pkgs lib;};
@@ -484,6 +487,17 @@ in rec {
       import ./phase2-qemu-fingerprint-projection-manifest.nix {inherit pkgs lib;};
     qemuLivePluginInstall = import ./phase2-qemu-live-plugin-install.nix {inherit pkgs lib;};
     qemuLiveWhiteboxDoorbell = import ./phase2-qemu-live-whitebox-doorbell.nix {inherit pkgs lib;};
+    qemuWhiteboxOutResume = import ./phase2-qemu-whitebox-out-resume.nix {inherit pkgs lib;};
+    qemuLinuxWhiteboxOutResume = import ./phase2-qemu-linux-whitebox-out-resume.nix {inherit pkgs lib;};
+    qemuLinuxWhiteboxOutResumeDiagnostics = import ./phase2-qemu-linux-whitebox-out-resume.nix {
+      inherit pkgs lib;
+      runtimeDiagnostics = true;
+    };
+    qemuRomClampStress = import ./phase2-qemu-rom-clamp-stress.nix {inherit pkgs lib;};
+    qemuRomClampAckPollExperiment = import ./phase2-qemu-rom-clamp-stress.nix {
+      inherit pkgs lib;
+      ackPollExperiment = true;
+    };
     qemuLiveBlockRealization = import ./phase2-qemu-live-block-realization.nix {inherit pkgs lib;};
     qemuInstructionFaults = import ./phase2-qemu-instruction-faults.nix {inherit pkgs lib;};
     qemuInstructionResultEvidence = import ./phase2-qemu-instruction-faults.nix {
@@ -871,7 +885,10 @@ in rec {
     packagedCampaignVm = import ./phase4-packaged-campaign-vm.nix {inherit pkgs lib;};
     singleGuestBootVm = import ./phase4-single-guest-boot-vm.nix {inherit pkgs lib;};
     singleGuestMaterializationVm = import ./phase4-single-guest-materialization-vm.nix {inherit pkgs lib;};
+    singleGuestDeliveryDiagnosticsVm = import ./phase4-single-guest-delivery-diagnostics-vm.nix {inherit pkgs lib;};
     twoNodeHttpVm = import ./phase4-two-node-http-vm.nix {inherit pkgs lib;};
+    packagedCampaignEnvoyDirectVm = import ./phase4-packaged-campaign-envoy-direct-vm.nix {inherit pkgs lib;};
+    packagedCampaignEnvoyProxyVm = import ./phase4-packaged-campaign-envoy-proxy-vm.nix {inherit pkgs lib;};
     packagedCampaignChoiceVm = import ./phase4-packaged-campaign-choice-vm.nix {inherit pkgs lib;};
     packagedCampaignLifecycleVm = import ./phase4-packaged-campaign-lifecycle-vm.nix {inherit pkgs lib;};
     packagedCampaignEnvoyNetworkVm = import ./phase4-packaged-campaign-envoy-network-vm.nix {inherit pkgs lib;};
@@ -1561,8 +1578,22 @@ in rec {
       campaignExactMaintenanceTransfer = import ./phase5-campaign-exact-maintenance-transfer-vm.nix {
         inherit pkgs lib;
       };
+      campaignInterruptedTransfer = import ./phase5-campaign-interrupted-transfer-vm.nix {
+        inherit pkgs lib;
+      };
       campaignStorageRecovery = import ./phase5-campaign-storage-recovery-vm.nix {
         inherit pkgs lib;
+      };
+      campaignPackedMaintenance = import ./phase5-campaign-packed-maintenance-vm.nix {
+        inherit pkgs lib;
+      };
+      campaignTierMaintenance = import ./phase5-campaign-tier-maintenance-vm.nix {
+        inherit pkgs lib;
+      };
+      campaignTierMaintenanceIdleDiagnostics = import ./phase5-campaign-tier-maintenance-vm.nix {
+        inherit pkgs lib;
+        # The recorded idle edge defines a diagnostic window, not a policy bound.
+        idlePlanDiagnosticMinimumPs = 393994554800;
       };
       campaignPolicyTimeoutVm = import ./phase5-campaign-policy-timeout-vm.nix {
         inherit pkgs lib;
@@ -2748,6 +2779,9 @@ in rec {
       attrPath = "checks.crucible.phase7.qemuHotForkEquivalenceVm";
       taskIds = ["T-CAM-6.5" "T-CAM-7.6"];
     };
+    qemuHotForkSingleGuestEquivalenceVm = import ./phase7-qemu-hot-fork-single-guest-equivalence-vm.nix {
+      inherit pkgs lib;
+    };
     debuggerPackage = import ./phase7-debugger-package.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.debuggerPackage";
@@ -2960,6 +2994,15 @@ in rec {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.qemuRrControlBoundaryDeviceFlight";
     };
+    qemuGuestClockReadEquivalenceLive = phase7.productionRustPluginFlight.rawGate.passthru.guestClockReadEquivalence;
+    qemuGuestClockPublishedKernelRuntimeConversionLive = phase7.productionRustPluginFlight.rawGate.passthru.guestClockRuntimeConversion;
+    qemuTimeOwnershipLive = phase7.productionRustPluginFlight.rawGate.passthru.timeOwnershipDiagnostic;
+    qemuLinuxBootAckPollExperiment =
+      (import ./phase7-production-rust-plugin-flight.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase7.qemuLinuxBootAckPollExperiment";
+        ackPollExperiment = true;
+      }).passthru.linuxBootAckPollPair;
     qemuHostParallel = import ./phase7-qemu-host-parallel.nix {
       inherit pkgs lib;
       productionPluginFlight = phase7.productionRustPluginFlight.rawGate;
@@ -3136,6 +3179,18 @@ in rec {
     };
   };
   phase9 = {
+    # Select either existing mode adapter without pulling the full 54-run matrix:
+    # aos-dev build check crucible.phase9.campaignModeGates.divergence-bisect.disabled --no-out-link
+    # aos-dev build check crucible.phase9.campaignModeGates.divergence-bisect.enabled --no-out-link
+    # These retain each adapter's authentication. Cross-mode semantic comparison
+    # remains the responsibility of gates.campaignGateMatrix.
+    campaignModeGates =
+      lib.mapAttrs' (
+        gate: adapters:
+          lib.nameValuePair (lib.removePrefix "gate:" gate) adapters
+      )
+      campaignModeGateAdapters;
+    campaignModeLibtest = import ./phase9-campaign-mode-libtest.nix {inherit pkgs;};
     gates = rec {
       campaignGateMatrixContract = import ./phase9-campaign-gate-matrix-contract.nix {
         inherit pkgs;
@@ -3202,6 +3257,11 @@ in rec {
       };
       campaignMetadataMillion = import ./phase9-campaign-metadata-million.nix {
         inherit pkgs lib;
+      };
+      campaignAdmissionDiagnostic = import ./phase9-campaign-metadata-million.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase9.gates.campaignAdmissionDiagnostic";
+        diagnosticRequests = 16;
       };
       campaignPerformance = import ./phase9-campaign-performance.nix {
         inherit pkgs;

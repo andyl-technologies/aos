@@ -450,6 +450,21 @@ mod tests {
         assert_eq!(retained[0].coverage_ids.len(), 2);
 
         let descriptor = retained[0].descriptor.ok_or("missing descriptor")?;
+        let descriptor_path = store.object_path(&descriptor);
+        let descriptor_bytes = fs::read(&descriptor_path)?;
+        fs::remove_file(&descriptor_path)?;
+        assert!(matches!(
+            load_qemu_fuzz_corpus(directory.path()),
+            Err(CliError::Artifact(message))
+                if message.starts_with("open QEMU fuzz corpus data:")
+        ));
+
+        fs::write(&descriptor_path, &descriptor_bytes)?;
+        let restored = load_qemu_fuzz_corpus(directory.path())?;
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].artifact.id(), retained[0].artifact.id());
+        assert_eq!(restored[0].coverage_ids, retained[0].coverage_ids);
+
         fs::write(store.object_path(&descriptor), b"corrupt descriptor")?;
         assert!(load_qemu_fuzz_corpus(directory.path()).is_err());
         Ok(())

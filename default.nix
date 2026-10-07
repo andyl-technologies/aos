@@ -1579,6 +1579,7 @@ in rec {
     # Off-host config-eval preflight and flat-to-module parity gates.
     # (operability.md). Pure eval-time, next to checks.eval, cheap on every PR.
     config-eval = import ./lib/testing/config-eval.nix {inherit pkgs lib;};
+    headless-timeout = import ./lib/testing/headless-timeout.nix {inherit pkgs lib;};
     config-manifest = import ./lib/testing/config-manifest.nix {
       inherit pkgs lib;
       system = discoverSystems.server;

@@ -66,7 +66,24 @@ fn two_running_nodes_install_shutdown_reconcile_and_reuse_one_source_world() {
     };
     assert!(!factory.sources.available());
     assert_eq!(observations.finishes.load(Ordering::SeqCst), 0);
-    assert!(lifecycle.start_materialization().is_ok());
+    let before = lifecycle
+        .start_materialization()
+        .expect("adopted start")
+        .into_parts();
+    assert!(
+        lifecycle
+            .publish_released_host_outcomes(input.start().configuration())
+            .expect("adopted owner publication query")
+            .is_none()
+    );
+    assert_eq!(lifecycle.completed_quanta(), before.2);
+    assert_eq!(
+        lifecycle
+            .start_materialization()
+            .expect("unchanged adopted start")
+            .into_parts(),
+        before
+    );
     let first_directories = observations
         .prepared_run_directories
         .lock()

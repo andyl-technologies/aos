@@ -64,11 +64,9 @@ impl QemuLiveHostIoRuntime {
         // The producer releases the frame before publishing its output pause.
         // A head observed after an older slot snapshot must wait for that fresh
         // coherent publication, rather than rejecting a valid newer event.
-        let observed = self
-            .region
-            .node_slot(self.vm_slot)
-            .map_err(map_slot_error)?
-            .snapshot();
+        let Some(observed) = self.try_node_snapshot()? else {
+            return Ok(None);
+        };
         if observed.publish_gen != snapshot.publish_gen {
             return Ok(None);
         }
@@ -92,33 +90,66 @@ impl QemuLiveHostIoRuntime {
     pub(super) fn publish_device_completion_deadline(
         &self,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let observe = self.wait_observation.is_enabled();
+        let mut observation = super::device_wait_observation::DeviceDeadlines::default();
         let block = self
             .block
             .as_ref()
             .map(|block| {
                 if block.worker.work_in_flight() {
-                    return Ok(block.worker.published_completion_deadline());
+                    let deadline = block.worker.published_completion_deadline();
+                    if observe {
+                        observation.block =
+                            super::device_wait_observation::CompletionCandidate::worker(
+                                deadline,
+                                block.worker.in_flight_request_observation(),
+                            );
+                    }
+                    return Ok(deadline);
                 }
-                block
-                    .lock_servicer("inspect block completion deadline")?
-                    .next_completion_icount()
-                    .map_err(|source| {
+                let servicer = block.lock_servicer("inspect block completion deadline")?;
+                if observe {
+                    let (deadline, head) =
+                        servicer.completion_head_observation().map_err(|source| {
+                            QemuAsyncDriverRuntimeError::new(
+                                "inspect block completion deadline",
+                                source.to_string(),
+                            )
+                        })?;
+                    observation.block =
+                        super::device_wait_observation::CompletionCandidate::queued(deadline, head);
+                    Ok(deadline)
+                } else {
+                    servicer.next_completion_icount().map_err(|source| {
                         QemuAsyncDriverRuntimeError::new(
                             "inspect block completion deadline",
                             source.to_string(),
                         )
                     })
+                }
             })
             .transpose()?
             .flatten();
-        let ninep = self
-            .ninep
-            .as_ref()
-            .and_then(|ninep| ninep.servicer.next_completion_icount());
+        let ninep = self.ninep.as_ref().and_then(|ninep| {
+            if observe {
+                let (deadline, head) = ninep.servicer.completion_head_observation();
+                observation.ninep =
+                    super::device_wait_observation::CompletionCandidate::queued(deadline, head);
+                deadline
+            } else {
+                ninep.servicer.next_completion_icount()
+            }
+        });
         let accelerator = self
             .accelerator
             .as_ref()
             .and_then(QemuLiveAcceleratorServicer::next_completion_icount);
+        if observe {
+            observation.accelerator = accelerator;
+            self.wait_observation
+                .device_deadlines
+                .set(Some(observation));
+        }
         let deadline = [block, ninep, accelerator].into_iter().flatten().min();
         self.region
             .node_slot(self.vm_slot)

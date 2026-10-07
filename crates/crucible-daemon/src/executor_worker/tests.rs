@@ -21,6 +21,9 @@ use crate::{
     ExecutorCapacity, LocalExecutorSupervisor, MemoryAssignmentLedger,
 };
 
+#[cfg(unix)]
+mod setup_watchdog;
+
 #[test]
 fn assignment_host_watchdog_interrupts_the_same_execution_incarnation() {
     let cancellation = ExecutionCancellation::default();

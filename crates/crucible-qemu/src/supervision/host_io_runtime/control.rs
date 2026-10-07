@@ -12,6 +12,27 @@ pub(super) struct PendingControlBoundary {
 }
 
 impl QemuLiveHostIoRuntime {
+    /// Restores the one-millisecond ACK baseline for controlled comparisons.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn use_slow_clamp_ack_poll_for_test(&mut self) {
+        self.slow_clamp_ack_poll = true;
+    }
+
+    pub(super) fn clamp_ack_poll_interval(&self, remaining: Duration) -> Duration {
+        let cap = Duration::from_micros(100);
+        #[cfg(feature = "test-support")]
+        let cap = if self.slow_clamp_ack_poll {
+            Duration::from_millis(1)
+        } else {
+            cap
+        };
+        self.poll_interval.min(remaining).min(cap)
+    }
+
+    fn wait_for_clamp_ack_poll(&mut self, remaining: Duration) {
+        self.wait_for_poll_interval_capped(remaining, self.clamp_ack_poll_interval(remaining));
+    }
+
     /// Attaches an output-only QEMU console reader and its boundary spool.
     ///
     /// The stream is drained during every in-flight advance poll so guest
@@ -84,6 +105,45 @@ impl QemuLiveHostIoRuntime {
         })
     }
 
+    /// Re-notifies the original clamp after its consumer frees event capacity.
+    ///
+    /// Callback delivery can finish while event publication remains pending.
+    /// Actual event consumption gives that same request another opportunity
+    /// to settle. Device servicing already owns its progress notification.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original mapping or doorbell error without replacing the request.
+    pub(super) fn renotify_clamp_after_event_drain(
+        &mut self,
+        request: PendingControlBoundary,
+        drained_events: usize,
+        device_progress: bool,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        if drained_events == 0 || device_progress || request.generation & 1 != 0 {
+            return Ok(());
+        }
+        let Some(observed) = self.try_node_snapshot()? else {
+            return Ok(());
+        };
+        if observed.control_boundary_ack != request.generation
+            || observed.control_boundary_fault_command_frontier != request.fault_command_frontier
+            || observed.control_boundary_capture_request
+                != request.fingerprint_capture_request.unwrap_or(0)
+            || self
+                .region
+                .fault_command_write_index(self.vm_slot)
+                .map_err(map_slot_error)?
+                != request.fault_command_frontier
+        {
+            return Ok(());
+        }
+
+        // An ACK racing this write may leave one redundant doorbell. It never
+        // creates a new request or changes the bound producer/capture epoch.
+        self.write_wake_doorbell()
+    }
+
     /// Aborts a coordinated pause and wakes both plugin wait mechanisms.
     pub(super) fn abort_checkpoint_pause_with_wake(
         &mut self,
@@ -144,12 +204,21 @@ impl QemuLiveHostIoRuntime {
         &mut self,
         timeout: Duration,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
-        let snapshot = self
-            .region
-            .node_slot(self.vm_slot)
-            .map_err(map_slot_error)?
-            .snapshot();
-        self.clamp_completed_quantum(&snapshot, timeout)
+        let deadline = HostSupervisionDeadline::start(timeout);
+        // A coherent publication retains the original clamp behavior even for
+        // a zero budget. Only unavailable authority needs acquisition waiting.
+        let snapshot = match self.try_node_snapshot()? {
+            Some(snapshot) => snapshot,
+            None => self
+                .wait_node_snapshot(|| deadline.remaining())?
+                .ok_or_else(|| {
+                    QemuAsyncDriverRuntimeError::new(
+                        "fence priming handoff",
+                        "publication acquisition exhausted the handoff timeout",
+                    )
+                })?,
+        };
+        self.clamp_completed_quantum(&snapshot, deadline.remaining().unwrap_or_default())
     }
 
     /// Revokes the unused tail of a completed quantum before returning it.
@@ -197,7 +266,7 @@ impl QemuLiveHostIoRuntime {
         // state or changes the exact guest coordinate.
         let deadline = HostSupervisionDeadline::start(timeout);
         self.wait_observation.begin_clamp(timeout);
-        let mut last_observed_state;
+        let mut last_observed_state = None;
         let mut boundary_acknowledged = false;
         let initial_fault_event_indices = self.fault_event_ring_indices()?;
         let mut last_fault_event_indices;
@@ -209,19 +278,24 @@ impl QemuLiveHostIoRuntime {
         };
         let mut device_progress_observed = false;
         loop {
-            drained_fault_events += self.drain_fault_events_for_pump(
+            let drained_this_poll = self.drain_fault_events_for_pump(
                 self.fault_event_staging_limit,
                 &deadline,
                 timeout,
                 "acknowledge completed-quantum clamp",
             )?;
+            drained_fault_events += drained_this_poll;
             last_fault_event_indices = self.fault_event_ring_indices()?;
             self.service_console_output()?;
-            let observed = self
-                .region
-                .node_slot(self.vm_slot)
-                .map_err(map_slot_error)?
-                .snapshot();
+            let observed = match self.try_node_snapshot()? {
+                Some(observed) => observed,
+                None => {
+                    let Some(observed) = self.wait_node_snapshot(|| deadline.remaining())? else {
+                        break;
+                    };
+                    observed
+                }
+            };
             let block_progress = self.service_block_io(&observed)?;
             let ninep_progress = self.service_ninep_io(&observed)?;
             let accelerator_progress = self.service_accelerator_io(&observed)?;
@@ -232,7 +306,7 @@ impl QemuLiveHostIoRuntime {
             } else {
                 initial_idle_wake_icount
             };
-            last_observed_state = (observed, device_progress);
+            last_observed_state = Some((observed, device_progress));
             if device_progress {
                 self.publish_device_completion_deadline()?;
             }
@@ -258,12 +332,21 @@ impl QemuLiveHostIoRuntime {
                 device_progress,
                 &observed,
             ) {
+                self.completed_boundary = crate::QemuCompletedQuantumBoundary::accepted(
+                    self.region.backing_identity(),
+                    self.vm_slot,
+                    *snapshot,
+                    request.generation,
+                    request.fault_command_frontier,
+                    observed,
+                );
                 self.performance.finish(self.vm_slot, "acknowledged");
                 return Ok(());
             }
             let Some(remaining) = deadline.remaining() else {
                 break;
             };
+            self.renotify_clamp_after_event_drain(request, drained_this_poll, device_progress)?;
             self.observe_pending_wait(
                 "clamp-ack-pending",
                 &observed,
@@ -276,7 +359,7 @@ impl QemuLiveHostIoRuntime {
                 }),
                 remaining,
             );
-            self.wait_for_poll_interval(remaining);
+            self.wait_for_clamp_ack_poll(remaining);
         }
 
         let fault_command_indices = match self.region.fault_command_transport_mut(self.vm_slot) {
@@ -307,8 +390,7 @@ impl QemuLiveHostIoRuntime {
                 last_fault_event_indices.0,
                 last_fault_event_indices.1,
                 drained_fault_events,
-                {
-                    let (observed, device_progress) = last_observed_state;
+                last_observed_state.map_or_else(|| String::from("unavailable"), |(observed, device_progress)| {
                     format!(
                         "token {}, wake signal {}, publish generation {}, current icount {}, raw icount {}, max advance icount {}, idle wake icount {}, status {}, device I/O active {}, fault-command frontier {}, fingerprint capture request {}, device progress {device_progress}",
                         observed.control_boundary_ack,
@@ -323,7 +405,7 @@ impl QemuLiveHostIoRuntime {
                         observed.control_boundary_fault_command_frontier,
                         observed.control_boundary_capture_request,
                     )
-                }
+                })
             ),
         ))
     }

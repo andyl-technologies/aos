@@ -468,3 +468,39 @@ fn block_head_refuses_staged_guest_delivery_and_asynchronous_transport_events() 
     assert_eq!(fixture.inbound_header.read_index(), 0);
     assert_eq!(fixture.freeze.pending_requests(), 1);
 }
+
+#[test]
+fn transport_event_peek_rejects_world_source_and_preserves_original_reserved_source_check() {
+    let block = PluginBlockIo::new(2, 8, 9);
+    for source in [0, BLOCK_IO_SLOT_U32] {
+        let header = RingHeader::new();
+        let mut entries = empty_entries(4);
+        let response = frame(90, source, 0, &encoded_response(0, b"primary"));
+        enqueue(&header, &mut entries, response.clone());
+        let inbound = inbound_ring(9, 2, &header, &entries);
+
+        let result = block.peek_transport_event(&inbound, 90);
+
+        if source == BLOCK_IO_SLOT_U32 {
+            assert!(matches!(result, Ok(None)));
+        } else {
+            assert!(matches!(
+                result,
+                Err(BlockIoError::UnexpectedTransportEventSource {
+                    expected_src_node: BLOCK_IO_SLOT_U32,
+                    actual_src_node: 0,
+                    ..
+                })
+            ));
+        }
+        assert_eq!(header.read_index(), 0);
+        assert_eq!(
+            header
+                .peek(&entries)
+                .unwrap_or_else(|error| panic!("original head: {error}"))
+                .unwrap_or_else(|| panic!("retained head"))
+                .delivery_key(),
+            response.delivery_key()
+        );
+    }
+}

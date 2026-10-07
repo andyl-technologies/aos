@@ -29,6 +29,9 @@ use crate::{
 
 mod decode_budget;
 
+#[cfg(test)]
+mod diagnostic_budget_tests;
+
 use decode_budget::{
     MAX_SELECTED_ORIGIN_DECODE_BYTES, SelectedOriginDecodeBudget,
     decode_selected_origin_configuration,

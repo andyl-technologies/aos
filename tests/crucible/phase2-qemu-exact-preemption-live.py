@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import re
 import socket
 import subprocess
 import tempfile
@@ -42,7 +43,7 @@ class Qmp:
         self.connection.close()
 
 
-def common_command(binary, plugin, architecture):
+def common_command(binary, plugin, architecture, firmware=None):
     machine = "pc" if architecture == "x86" else "virt"
     command = [
         str(binary), "-machine", machine, "-m", "64M", "-smp", "2",
@@ -52,6 +53,8 @@ def common_command(binary, plugin, architecture):
     ]
     if architecture == "arm":
         command.extend(["-cpu", "max,pmu=off"])
+    if firmware is not None:
+        command.extend(["-bios", str(firmware)])
     command.extend(["-plugin", str(plugin)])
     return command
 
@@ -100,11 +103,14 @@ def wait_for_migration(qmp, label):
     raise TimeoutError(f"{label} migration did not complete")
 
 
-def snapshot_and_restore(arm_binary, plugin, directory):
+def snapshot_and_restore(arm_binary, plugin, directory, continuation=False):
     socket_path = directory / "source.sock"
     vmstate_path = directory / "pending.vmstate"
-    source_command = common_command(arm_binary, plugin, "arm")
+    firmware = instruction_firmware(directory, "arm") if continuation else None
+    source_command = common_command(arm_binary, plugin, "arm", firmware)
     source_command[-1] += ",mode=snapshot-source"
+    if continuation:
+        source_command[-1] += ",continuation=on"
     source_command.extend([
         "-qmp", f"unix:{socket_path},server=on,wait=off",
     ])
@@ -144,8 +150,10 @@ def snapshot_and_restore(arm_binary, plugin, directory):
             source.kill()
             source.communicate()
 
-    destination_command = common_command(arm_binary, plugin, "arm")
+    destination_command = common_command(arm_binary, plugin, "arm", firmware)
     destination_command[-1] += ",mode=snapshot-destination"
+    if continuation:
+        destination_command[-1] += ",continuation=on"
     destination_socket = directory / "destination.sock"
     destination_command.extend([
         "-incoming", f"file:{vmstate_path}",
@@ -177,13 +185,24 @@ def snapshot_and_restore(arm_binary, plugin, directory):
             f"snapshot destination exited {destination.returncode}:\n"
             f"{destination_output}"
         )
-    require_handoff(destination_output)
+    if continuation:
+        expected = ["PREEMPTION_HANDOFF from=0 to=1 raw=0 tick=10 retired=0",
+                    "PREEMPTION_HANDOFF from=1 to=0 raw=0 tick=10 retired=0"]
+        actual = [line for line in destination_output.splitlines()
+                  if line.startswith("PREEMPTION_HANDOFF ")]
+        if actual != expected:
+            raise AssertionError(f"restored RR ownership changed:\n{destination_output}")
+        require_continuation(destination_output, 1)
+        print("PASS continuation case=arm-restore pending-command=true")
+    else:
+        require_handoff(destination_output)
 
 
-def interrupt_at_exact_tick(x86_binary, plugin, directory):
+def interrupt_at_exact_tick(x86_binary, plugin, directory, continuation=False):
     socket_path = directory / "interrupt.sock"
-    command = common_command(x86_binary, plugin, "x86")
-    command[-1] += ",mode=interrupt"
+    firmware = instruction_firmware(directory, "x86") if continuation else None
+    command = common_command(x86_binary, plugin, "x86", firmware)
+    command[-1] += ",mode=continuation-interrupt" if continuation else ",mode=interrupt"
     command.extend(["-qmp", f"unix:{socket_path},server=on,wait=off"])
 
     process = subprocess.Popen(
@@ -206,15 +225,30 @@ def interrupt_at_exact_tick(x86_binary, plugin, directory):
             )
             if "IRR\t 32 " not in lapic:
                 raise AssertionError(f"vCPU 1 LAPIC did not receive vector 32:\n{lapic}")
-            qmp.command("quit")
+            qmp.command("cont" if continuation else "quit")
         finally:
             qmp.close()
         output, _ = process.communicate(timeout=10)
         if process.returncode != 0:
             raise AssertionError(f"interrupt run exited {process.returncode}:\n{output}")
-        require_rejections(output, 0)
+        if continuation:
+            require_continuation(output)
+            if "CONTINUATION_INPUT rc=0 raw=0 tick=1" not in output:
+                raise AssertionError(f"input was not admitted before its tick:\n{output}")
+            order = [output.index(marker) for marker in (
+                "CONTINUATION_INPUT rc=0 raw=0 tick=1",
+                "CONTINUATION_BOUNDARY index=1 raw=0 tick=10",
+                "PREEMPTION_INTERRUPT_BOUNDARY vcpu=0 raw=0 tick=10 vmstop=0",
+                "CONTINUATION_EXEC vcpu=0 number=1 raw=1 tick=99",
+            )]
+            if order != sorted(order):
+                raise AssertionError(f"due input crossed guest retirement:\n{output}")
+            print("PASS continuation case=x86-input vector=32 irr-confirmed=true")
+        else:
+            require_rejections(output, 0)
+            if "PREEMPTION_SUBMIT rc=0 raw=0 tick=0" not in output:
+                raise AssertionError(f"interrupt command was not admitted:\n{output}")
         for marker in (
-            "PREEMPTION_SUBMIT rc=0 raw=0 tick=0",
             "PREEMPTION_CONTROL_REQUEST rc=0",
             "PREEMPTION_INTERRUPT_BOUNDARY vcpu=0 raw=0 tick=10 vmstop=0",
         ):
@@ -224,6 +258,61 @@ def interrupt_at_exact_tick(x86_binary, plugin, directory):
         if process.poll() is None:
             process.kill()
             process.communicate()
+
+
+def instruction_firmware(directory, architecture):
+    """Create real reset instructions; guest execution owns retirement."""
+    path = directory / f"{architecture}.rom"
+    if architecture == "x86":
+        rom = bytearray(b"\xf4" * 65536)
+        # The reset vector executes NOP then JMP back to that NOP in real mode.
+        rom[65520:65523] = b"\x90\xeb\xfd"
+    else:
+        # AArch64 NOP followed by B to the NOP at the reset vector.
+        rom = bytearray(b"\x1f\x20\x03\xd5\xff\xff\xff\x17")
+    path.write_bytes(rom)
+    return path
+
+
+def require_continuation(output, first=0):
+    expected = [(0, 1), (0, 10), (0, 49), (1, 99), (1, 100),
+                (2, 150), (2, 151), (3, 201)]
+    records = re.findall(
+        r"CONTINUATION_BOUNDARY index=(\d+) raw=(\d+) tick=(\d+) executed=(\d+)",
+        output,
+    )
+    actual = [(int(index), int(raw), int(tick), int(executed))
+              for index, raw, tick, executed in records]
+    wanted = [(index, raw, tick, raw)
+              for index, (raw, tick) in enumerate(expected) if index >= first]
+    if actual != wanted:
+        raise AssertionError(f"fractional continuation changed:\n{output}")
+    if output.count("CONTINUATION_EXEC ") != 3:
+        raise AssertionError(f"real guest instructions were not executed:\n{output}")
+    if first == 0:
+        for name in ("continuation-past", "continuation-unpublished"):
+            marker = f"PREEMPTION_REJECT name={name} rc=-2 raw=0 tick=1"
+            if output.count(marker) != 1:
+                raise AssertionError(f"missing immutable refusal {name}:\n{output}")
+    print(output, end="")
+
+
+def fractional_continuation(binary, plugin, architecture, directory):
+    firmware = instruction_firmware(directory, architecture)
+    command = common_command(binary, plugin, architecture, firmware)
+    command[-1] += ",continuation=on"
+    try:
+        result = subprocess.run(command, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True,
+                                timeout=10, check=False)
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(f"{architecture} continuation timed out; "
+                           f"output={error.output!r}") from error
+    if result.returncode != 0:
+        raise AssertionError(f"{architecture} continuation exited {result.returncode}:\n"
+                             f"{result.stdout}")
+    require_continuation(result.stdout)
+    print(f"PASS continuation case={architecture}-direct")
 
 
 def main():
@@ -248,7 +337,12 @@ def main():
     with tempfile.TemporaryDirectory(prefix="crucible-exact-preemption-") as path:
         snapshot_and_restore(args.arm, args.plugin, Path(path))
         interrupt_at_exact_tick(args.x86, args.plugin, Path(path))
+        fractional_continuation(args.x86, args.plugin, "x86", Path(path))
+        fractional_continuation(args.arm, args.plugin, "arm", Path(path))
+        snapshot_and_restore(args.arm, args.plugin, Path(path), continuation=True)
+        interrupt_at_exact_tick(args.x86, args.plugin, Path(path), continuation=True)
     print("PASS exact preemption at 10 ps with raw 0, restored pending command, and LAPIC interrupt")
+    print("PASS fractional continuation with real retirement, restored command and due input")
 
 
 if __name__ == "__main__":

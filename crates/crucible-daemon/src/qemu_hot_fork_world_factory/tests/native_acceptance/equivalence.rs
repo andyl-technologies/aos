@@ -36,8 +36,12 @@ mod campaign_perf;
 mod child;
 #[path = "equivalence/evidence.rs"]
 mod evidence;
+#[path = "equivalence/performance_work.rs"]
+mod performance_work;
 #[path = "equivalence/siblings.rs"]
 mod siblings;
+#[path = "equivalence/source_watchdog.rs"]
+mod source_watchdog;
 
 use self::campaign_perf::measure_campaign_planner_queue_at_boundary;
 use self::child::{
@@ -308,20 +312,29 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
     .expect("build single-node equivalence scenario");
 
     let input = execution_input_for_scenario(source.clone());
-    let checkpoint_context = native_execution_context(&input, 0xa0);
-    let mut checkpoint_source = begin_fresh(
-        &paths,
-        "single-checkpoint-source",
-        7_000,
-        &source,
-        Arc::clone(&artifacts),
-        &checkpoint_context,
-    );
-    let checkpoint_boundary = drive_to_pending_boundary(
-        &mut checkpoint_source,
-        &source,
-        EquivalenceTopology::SingleNode,
-    );
+    let (checkpoint_context, (mut checkpoint_source, checkpoint_boundary)) =
+        source_watchdog::run_source_stage(
+            native_execution_context(&input, 0xa0),
+            source_watchdog::SOURCE_STAGE_HOST_WATCHDOG_MS,
+            |checkpoint_context| {
+                let mut checkpoint_source = begin_fresh(
+                    &paths,
+                    "single-checkpoint-source",
+                    7_000,
+                    &source,
+                    Arc::clone(&artifacts),
+                    checkpoint_context,
+                );
+                eprintln!("single-guest-equivalence phase=checkpoint-source-launched");
+                let checkpoint_boundary = drive_to_pending_boundary(
+                    &mut checkpoint_source,
+                    &source,
+                    EquivalenceTopology::SingleNode,
+                );
+                eprintln!("single-guest-equivalence phase=checkpoint-source-choice-reached");
+                (checkpoint_source, checkpoint_boundary)
+            },
+        );
     let checkpoints = checkpoint_store();
     let capture = QemuFreshAttemptLifecycleOwner::capture_attempt_checkpoint(
         &mut checkpoint_source,
@@ -337,6 +350,7 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
         .root();
     QemuFreshAttemptLifecycleOwner::shutdown(&mut checkpoint_source)
         .expect("shutdown single-node checkpoint source");
+    eprintln!("single-guest-equivalence phase=checkpoint-captured-source-stopped");
     let baked = capture_replay_genesis(
         &paths,
         "single-replay-genesis",
@@ -346,6 +360,8 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
         &input,
         0xa7,
     );
+
+    eprintln!("single-guest-equivalence phase=replay-genesis-captured");
 
     let thin_context = native_execution_context(&input, 0xa6);
     let mut thin_reference = begin_fresh(
@@ -371,6 +387,8 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
     QemuFreshAttemptLifecycleOwner::shutdown(&mut thin_reference)
         .expect("shutdown single-node thin reference");
 
+    eprintln!("single-guest-equivalence phase=thin-reference-complete");
+
     let execution_source_context = native_execution_context(&input, 0xa1);
     let mut execution_source = begin_fresh(
         &paths,
@@ -386,6 +404,7 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
         EquivalenceTopology::SingleNode,
     );
     assert_eq!(execution_boundary, checkpoint_boundary);
+    eprintln!("single-guest-equivalence phase=execution-source-choice-matched");
     let execution_world = execution_source
         .prepare_hot_fork_source_world()
         .expect("prepare single-node execution source");
@@ -403,6 +422,8 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
         topology: EquivalenceTopology::SingleNode,
     });
 
+    eprintln!("single-guest-equivalence phase=execution-hot-child-complete");
+
     let exact_input = execution_input_for_scenario_configuration(
         source.clone(),
         checkpoint_boundary.configuration.clone(),
@@ -419,6 +440,7 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
         },
         0xa8,
     );
+    eprintln!("single-guest-equivalence phase=exact-reference-checkpoint-promoted");
     let exact_context =
         native_execution_context(&exact_input, 0xa2).with_resume_checkpoint(Some(exact_checkpoint));
     let mut exact_reference = begin_exact(
@@ -452,6 +474,8 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
     QemuFreshAttemptLifecycleOwner::shutdown(&mut exact_reference)
         .expect("shutdown single-node exact reference");
 
+    eprintln!("single-guest-equivalence phase=exact-reference-complete");
+
     let (template_checkpoints, template_checkpoint) = promote_exact_checkpoint(
         &paths,
         "single-replay-oracle-template",
@@ -464,6 +488,7 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
         },
         0xa9,
     );
+    eprintln!("single-guest-equivalence phase=exact-template-checkpoint-promoted");
     let exact_template_context = native_execution_context(&exact_input, 0xa3)
         .with_resume_checkpoint(Some(template_checkpoint));
     let mut exact_template_source = begin_exact(
@@ -488,6 +513,7 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
         EquivalenceTopology::SingleNode,
     );
     assert_eq!(exact_template_boundary, checkpoint_boundary);
+    eprintln!("single-guest-equivalence phase=exact-template-choice-matched");
     let exact_world = exact_template_source
         .prepare_hot_fork_source_world()
         .expect("prepare single-node exact-restore source");
@@ -506,6 +532,8 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
         topology: EquivalenceTopology::SingleNode,
     });
 
+    eprintln!("single-guest-equivalence phase=exact-hot-child-complete");
+
     assert_continuation_equivalent("single-node exact restore", &exact, &thin);
     assert_continuation_equivalent(
         "single-node execution-created hot fork",
@@ -514,6 +542,7 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
     );
     assert_continuation_equivalent("single-node exact-created hot fork", &exact_hot, &thin);
 
+    eprintln!("single-guest-equivalence phase=all-continuations-equivalent");
     println!("hot_fork_equivalence=true");
     println!("topology=single-node");
     println!("state=block,ninep,guest-choice,measurement");
@@ -929,6 +958,16 @@ fn production_whole_world_survives_ten_thousand_lifecycles_without_leaks() {
 #[test]
 #[ignore = "requires the packaged patched QEMU, cgroup v2, and project quotas"]
 fn production_hot_fork_meets_whole_world_performance_ratchets() {
+    if let Ok(sample) = std::env::var("CRUCIBLE_CAMPAIGN_PERF_SAMPLE_ID") {
+        assert!(
+            sample.len() == 32
+                && sample
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        );
+        println!("\ncampaign_performance_sample_id={sample}");
+    }
+    let case_started = operational_monotonic_nanoseconds();
     const CORPUS_SIZE: usize = 3;
     const KNOWN_DIRTY_KIB: u64 = 1024 * 4;
     const DIRTY_OVERHEAD_KIB: u64 = 64 * 1024;
@@ -999,6 +1038,7 @@ fn production_hot_fork_meets_whole_world_performance_ratchets() {
     let mut hot_steady = 0_u64;
     let mut exact_steady = 0_u64;
     let mut campaign_planner_queue_samples = Vec::with_capacity(CORPUS_SIZE);
+    let mut retained_work = Vec::with_capacity(CORPUS_SIZE);
     let mut hot_guest_continuation_samples = Vec::with_capacity(CORPUS_SIZE);
     for index in 0..CORPUS_SIZE {
         let source_lane = format!("performance-source-{index}");
@@ -1020,8 +1060,11 @@ fn production_hot_fork_meets_whole_world_performance_ratchets() {
         assert_eq!(boundary, checkpoint_boundary);
         let campaign_sample =
             measure_campaign_planner_queue_at_boundary(&source, &input, &boundary, index);
-        campaign_planner_queue_samples.push(campaign_sample);
-        println!("corpus_{index}_campaign_planner_queue_ns={campaign_sample}");
+        campaign_planner_queue_samples.push(campaign_sample.nanoseconds);
+        println!(
+            "corpus_{index}_campaign_planner_queue_ns={}",
+            campaign_sample.nanoseconds
+        );
         let world = live_source
             .prepare_hot_fork_source_world()
             .expect("prepare performance source");
@@ -1120,6 +1163,7 @@ fn production_hot_fork_meets_whole_world_performance_ratchets() {
         println!("corpus_{index}_exact_guest_continuation_ns={exact_steady_sample}");
         assert_continuation_equivalent("performance exact restore", &hot, &exact_evidence);
         QemuFreshAttemptLifecycleOwner::shutdown(&mut exact).expect("shutdown exact corpus member");
+        retained_work.push((campaign_sample.work, hot, exact_evidence));
 
         println!("corpus_{index}_vm_pte_kib={}", measurement.vm_pte_kib);
         println!("corpus_{index}_vm_data_kib={}", measurement.vm_data_kib);
@@ -1196,6 +1240,15 @@ fn production_hot_fork_meets_whole_world_performance_ratchets() {
     println!("known_dirty_guest_pages=1024");
     println!("memory_metrics=VmPTE,VmData,AnonHugePages,numa_maps");
     println!("multi_node_launch_model=max-plus-bounded-orchestration");
+    let case_elapsed = operational_monotonic_nanoseconds()
+        .checked_sub(case_started)
+        .expect("performance case monotonic clock regressed");
+    println!("campaign_performance_case_elapsed_ns={case_elapsed}");
+
+    // Retain actual work after all original measured operations and assertions.
+    for (index, (planner, hot, exact)) in retained_work.iter().enumerate() {
+        performance_work::emit(index, planner.record(), hot, exact);
+    }
 }
 
 fn drive_fresh_source_to_semantic_depth(

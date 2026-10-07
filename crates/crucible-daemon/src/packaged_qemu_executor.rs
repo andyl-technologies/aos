@@ -95,7 +95,7 @@ mod exact_pin_materializer;
 mod hot_fork;
 mod status;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub use exact_pin_materializer::PackagedExactPinMaterializerError;
 use exact_pin_materializer::{

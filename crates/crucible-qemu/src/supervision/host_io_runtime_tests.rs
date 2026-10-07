@@ -3,11 +3,37 @@
 use super::control::PendingControlBoundary;
 use super::*;
 
+#[path = "host_io_runtime_tests/completed_boundary.rs"]
+pub(crate) mod completed_boundary;
+
+#[path = "host_io_runtime_tests/ack_poll.rs"]
+mod ack_poll;
+#[path = "host_io_runtime_tests/advance_liveness_tests.rs"]
+mod advance_liveness;
 #[cfg(target_os = "linux")]
 #[path = "host_io_runtime_tests/block_coordinator_tests.rs"]
 mod block_coordinator;
+#[cfg(target_os = "linux")]
+#[path = "host_io_runtime_tests/event_drain_continuation.rs"]
+mod event_drain_continuation;
 #[path = "host_io_runtime_tests/network_output.rs"]
 mod network_output;
+
+#[cfg(target_os = "linux")]
+#[path = "host_io_runtime_tests/publication_access.rs"]
+pub(crate) mod publication_access;
+
+#[cfg(target_os = "linux")]
+#[path = "host_io_runtime_tests/fingerprint_liveness.rs"]
+mod fingerprint_liveness;
+
+#[cfg(target_os = "linux")]
+#[path = "host_io_runtime_tests/publication_liveness.rs"]
+mod publication_liveness;
+
+#[cfg(target_os = "linux")]
+#[path = "host_io_runtime_tests/publication_owner.rs"]
+mod publication_owner;
 
 #[test]
 fn on_demand_fingerprint_host_waits_for_exact_capture_request_ack()
@@ -162,45 +188,6 @@ fn bounded_poll_attempts_tolerates_a_zero_interval() {
         bounded_poll_attempts(Duration::from_millis(1), Duration::ZERO),
         1000
     );
-}
-
-// crucible-lint: allow clippy-disallowed-method -- this test measures host wait liveness only; elapsed time never enters modeled state.
-#[allow(clippy::disallowed_methods)]
-#[test]
-fn advance_completion_poll_respects_elapsed_host_deadline() -> Result<(), Box<dyn std::error::Error>>
-{
-    use std::io::Write;
-    use std::os::fd::AsFd;
-    use std::time::Instant;
-
-    let allocation =
-        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 2))?;
-    let layout = allocation.layout();
-    let bytes = allocation.setup_region_bytes()?;
-    let mut shmem = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
-    shmem.write_all(&bytes)?;
-    let plugin = crucible_shmem::mmap_setup_region(shmem.as_fd(), layout.region_size)?;
-    let ceiling = authorize_advance_ceiling(0, 100, None)?;
-    let slot = plugin.node_slot(0)?;
-    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)?;
-    slot.publish_reached_icount(0)?;
-
-    let wake = tempfile::tempfile()?;
-    let mut runtime = QemuLiveHostIoRuntime::from_shmem_fd_with_poll_interval(
-        shmem.as_fd(),
-        wake.as_fd(),
-        layout.region_size,
-        0,
-        Duration::from_nanos(1),
-    )?;
-    let timeout = Duration::from_millis(30);
-    let started = Instant::now();
-
-    let outcome = runtime.await_child(QemuAsyncWait::AdvanceCompletion, timeout)?;
-
-    assert_eq!(outcome, QemuAsyncWaitOutcome::TimedOut);
-    assert!(started.elapsed() < Duration::from_secs(1));
-    Ok(())
 }
 
 #[test]
@@ -815,6 +802,14 @@ fn hot_fork_rejects_pending_on_demand_fingerprint_request() -> Result<(), Box<dy
 #[test]
 fn hot_fork_clone_reconstructs_private_host_devices_without_aliasing_source()
 -> Result<(), Box<dyn std::error::Error>> {
+    assert_private_host_device_clone(false)?;
+    #[cfg(feature = "test-support")]
+    assert_private_host_device_clone(true)?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn assert_private_host_device_clone(slow_baseline: bool) -> Result<(), Box<dyn std::error::Error>> {
     use std::os::fd::AsFd;
 
     let (source_region, child_region, region_len) = private_region_pair()?;
@@ -834,6 +829,10 @@ fn hot_fork_clone_reconstructs_private_host_devices_without_aliasing_source()
     .with_block_servicer(block, BlockIoDiagnostics::shared())?
     .with_ninep_servicer(ninep, NinepIoDiagnostics::shared())
     .with_accelerator_servicer(accelerator);
+    #[cfg(feature = "test-support")]
+    if slow_baseline {
+        source.use_slow_clamp_ack_poll_for_test();
+    }
     let binding = ContentHash::from_bytes(b"branch-private-host-io");
     let before = source.checkpoint_host_io(binding)?;
     let source_block = source
@@ -848,6 +847,19 @@ fn hot_fork_clone_reconstructs_private_host_devices_without_aliasing_source()
         None,
     )?;
 
+    let expected_ack_interval = if slow_baseline {
+        Duration::from_millis(1)
+    } else {
+        Duration::from_micros(100)
+    };
+    assert_eq!(
+        source.poll_intervals_for_test(Duration::from_secs(1)),
+        Some((Duration::from_millis(1), expected_ack_interval))
+    );
+    assert_eq!(
+        child.poll_intervals_for_test(Duration::from_secs(1)),
+        Some((Duration::from_millis(1), expected_ack_interval))
+    );
     assert_eq!(source.checkpoint_host_io(binding)?, before);
     assert_eq!(child.checkpoint_host_io(binding)?, before);
     let child_block = child

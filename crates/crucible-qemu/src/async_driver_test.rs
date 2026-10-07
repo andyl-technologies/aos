@@ -235,6 +235,7 @@ fn campaign_advance_can_outlive_multiple_host_poll_slices() {
     assert_eq!(runtime.awaits, 1);
     assert_eq!(runtime.repolls, 2);
     assert_eq!(runtime.renewals, 2);
+    assert_eq!(runtime.poll_slices, vec![None]);
     assert_eq!(runtime.armed_fences, vec![target.completion_fence]);
     assert_eq!(policy.handshake_timeout, Duration::from_millis(1));
     assert_eq!(policy.qmp_command_timeout, Duration::from_millis(2));
@@ -317,6 +318,7 @@ fn async_driver_rejects_qmp_or_plugin_ipc_in_quantum_hot_path() {
     let policy = QemuAsyncDriverPolicy::fast_test();
     let mut target = ScriptedTarget {
         completion: QemuAsyncQuantumCompletion {
+            completed_boundary: None,
             ceiling: Icount { retired: 0 },
             outcome: AdvanceOutcome::ReachedHorizon,
             final_state: QemuNodeIdleState {
@@ -462,6 +464,278 @@ fn async_driver_lifecycle_timeouts_crash_and_shutdown_for_each_wait_class() {
     }
 }
 
+#[test]
+fn bounded_pending_poll_does_not_finish_or_renew_the_quantum() {
+    let mut target = ScriptedTarget::completed();
+    let mut runtime = ScriptedRuntime::new([
+        QemuAsyncWaitOutcome::Pending,
+        QemuAsyncWaitOutcome::Pending,
+        QemuAsyncWaitOutcome::Completed,
+    ]);
+    let policy = QemuAsyncDriverPolicy::fast_test();
+    let report = run_bounded_qemu_node_step(
+        &mut target,
+        &mut runtime,
+        policy,
+        &QemuCrashDetector::new("vm-a"),
+        horizon(20),
+    )
+    .unwrap_or_else(|error| panic!("pending host polls must retain the original quantum: {error}"));
+
+    assert!(matches!(
+        report.outcome,
+        QemuAsyncNodeStepOutcome::Completed { .. }
+    ));
+    assert_eq!(target.started, vec![20]);
+    assert_eq!(target.finished, 1);
+    assert_eq!(runtime.awaits, 1);
+    assert_eq!(runtime.repolls, 2);
+    assert_eq!(runtime.renewals, 0);
+    assert_eq!(runtime.poll_slices, vec![Some(Duration::from_secs(1))]);
+}
+
+#[test]
+fn lifecycle_wait_refuses_a_pending_advance_poll_outcome() {
+    let mut target = ScriptedTarget::completed();
+    let mut runtime = ScriptedRuntime::new([QemuAsyncWaitOutcome::Pending]);
+    let error = match await_bounded_lifecycle_event(
+        &mut target,
+        &mut runtime,
+        QemuAsyncDriverPolicy::fast_test(),
+        &QemuCrashDetector::new("vm-a"),
+        QemuAsyncWait::Handshake,
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("a host poll yield cannot complete a lifecycle operation"),
+    };
+
+    assert!(matches!(error, QemuAsyncDriverError::Runtime(_)));
+    assert_eq!(target.shutdowns, 0);
+    assert_eq!(target.finished, 0);
+}
+
+#[cfg(target_os = "linux")]
+mod owned_child {
+    use super::*;
+    use crucible_shmem::MappedSetupRegion;
+    use std::io::{Read, Write};
+    use std::os::fd::AsFd;
+    use std::process::{Command, Stdio};
+
+    struct OwnedTarget {
+        child: crate::QemuNodeChild,
+        region: MappedSetupRegion,
+        started: usize,
+        finished: usize,
+        exit_checks: usize,
+    }
+
+    impl QemuAsyncCrashEscalationTarget for OwnedTarget {
+        fn shutdown_after_crash(
+            &mut self,
+        ) -> Result<QemuShutdownReport, QemuAsyncDriverTargetError> {
+            self.child
+                .force_kill_and_reap_failed_helper(Duration::from_secs(1))
+                .map_err(|error| {
+                    QemuAsyncDriverTargetError::new("reap owned fixture", error.to_string())
+                })?;
+            Ok(QemuShutdownReport {
+                attempts: Vec::new(),
+                failures: Vec::new(),
+                reaped: self.child.reaped(),
+                leaked: !self.child.reaped(),
+            })
+        }
+    }
+
+    impl QemuAsyncNodeStepTarget for OwnedTarget {
+        type PendingQuantum = ();
+
+        fn child_exit_status(
+            &mut self,
+        ) -> Result<Option<std::process::ExitStatus>, QemuAsyncDriverTargetError> {
+            self.exit_checks += 1;
+            self.child.try_wait_natural_exit().map_err(|error| {
+                QemuAsyncDriverTargetError::new("poll owned fixture", error.to_string())
+            })
+        }
+
+        fn start_quantum(&mut self, horizon: ExecutionHorizon) -> Result<(), QemuNodeChannelError> {
+            self.started += 1;
+            let ceiling =
+                crucible_shmem::authorize_advance_ceiling(0, horizon.icount.retired, None)
+                    .map_err(|error| {
+                        QemuNodeChannelError::new("authorize fixture advance", error.to_string())
+                    })?;
+            self.region
+                .node_slot(0)
+                .map_err(|error| QemuNodeChannelError::new("fixture slot", error.to_string()))?
+                .publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
+                .map(|_wake| ())
+                .map_err(|error| QemuNodeChannelError::new("fixture advance", error.to_string()))
+        }
+
+        fn finish_quantum(
+            &mut self,
+            _pending: &mut (),
+        ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError> {
+            self.finished += 1;
+            Err(QemuNodeChannelError::new(
+                "finish fixture",
+                "pending mapped slot has no completion",
+            ))
+        }
+    }
+
+    // The AOS-built Bash child uses only builtins and has no subprocess that
+    // could inherit a pipe or survive cleanup. A ready byte authenticates that
+    // the uniquely owned process is running before its release or watchdog.
+    fn fixture() -> Result<
+        (
+            OwnedTarget,
+            crate::QemuLiveHostIoRuntime,
+            std::process::ChildStdin,
+        ),
+        Box<dyn std::error::Error>,
+    > {
+        let mut child = Command::new("bash")
+            .args(["-c", "printf R; IFS= read -r release; exit 1"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()?;
+        let input = child.stdin.take().ok_or("fixture stdin missing")?;
+        let mut output = child.stdout.take().ok_or("fixture stdout missing")?;
+        let child = crate::QemuNodeChild::new(child);
+        let mut ready = [0_u8];
+        output.read_exact(&mut ready)?;
+        if ready != *b"R" {
+            return Err("fixture ready byte differs".into());
+        }
+
+        let allocation =
+            crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 2))?;
+        let layout = allocation.layout();
+        let mut shmem = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
+        shmem.write_all(&allocation.setup_region_bytes()?)?;
+        let region = crucible_shmem::mmap_setup_region(shmem.as_fd(), layout.region_size)?;
+        region.node_slot(0)?.publish_reached_icount(0)?;
+        let wake = tempfile::tempfile()?;
+        let runtime = crate::QemuLiveHostIoRuntime::from_shmem_fd(
+            shmem.as_fd(),
+            wake.as_fd(),
+            layout.region_size,
+            0,
+        )?;
+        Ok((
+            OwnedTarget {
+                child,
+                region,
+                started: 0,
+                finished: 0,
+                exit_checks: 0,
+            },
+            runtime,
+            input,
+        ))
+    }
+
+    // crucible-lint: allow clippy-disallowed-method -- elapsed host time only checks owned-process liveness; it does not enter virtual state.
+    #[allow(clippy::disallowed_methods)]
+    #[test]
+    fn early_owned_child_exit_is_observed_during_bounded_advance()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut target, mut runtime, mut release) = fixture()?;
+        release.write_all(b"exit\n")?;
+        let budget = Duration::from_secs(5);
+        let policy = QemuAsyncDriverPolicy::new(budget, budget, budget, budget);
+        let started = std::time::Instant::now();
+        let report = run_bounded_qemu_node_step(
+            &mut target,
+            &mut runtime,
+            policy,
+            &QemuCrashDetector::new("owned"),
+            horizon(100),
+        )?;
+
+        assert!(started.elapsed() < budget);
+        let QemuAsyncNodeStepOutcome::Crashed {
+            status: QemuNodeRunStatus::Crashed(status),
+            shutdown,
+        } = report.outcome
+        else {
+            panic!("owned exit must be a genuine crash");
+        };
+        let QemuCrashCause::UnexpectedChildExit(exit) = status.cause else {
+            panic!("owned exit must not be a watchdog timeout");
+        };
+        assert_eq!(exit.code, Some(1));
+        assert_eq!(exit.signal, None);
+        assert!(!exit.success);
+        assert!(shutdown.reaped && !shutdown.leaked);
+        assert!(target.child.reaped());
+        assert_eq!(target.started, 1);
+        assert_eq!(target.finished, 0);
+        assert!(report.completed_boundary.is_none());
+        assert!(report.final_state.is_none());
+        Ok(())
+    }
+
+    // crucible-lint: allow clippy-disallowed-method -- elapsed host time checks the original watchdog only, never virtual time or replay evidence.
+    #[allow(clippy::disallowed_methods)]
+    #[test]
+    fn live_owned_child_pending_advance_keeps_original_watchdog()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut target, mut runtime, _hold_open) = fixture()?;
+        let budget = Duration::from_millis(2250);
+        let policy = QemuAsyncDriverPolicy::new(budget, budget, budget, budget);
+        let started = std::time::Instant::now();
+        let report = run_bounded_qemu_node_step(
+            &mut target,
+            &mut runtime,
+            policy,
+            &QemuCrashDetector::new("owned"),
+            horizon(100),
+        )?;
+
+        assert!(started.elapsed() >= budget);
+        let QemuAsyncNodeStepOutcome::Crashed {
+            status: QemuNodeRunStatus::Crashed(status),
+            shutdown,
+        } = report.outcome
+        else {
+            panic!("live pending child must expire its original watchdog");
+        };
+        assert_eq!(
+            status.cause,
+            QemuCrashCause::BoundedAwaitTimeout(crate::QemuBoundedAwaitTimeout::new(
+                "advance completion",
+                budget
+            ))
+        );
+        assert!(target.exit_checks >= 3);
+        assert_eq!(target.finished, 0);
+        assert!(shutdown.reaped && !shutdown.leaked);
+        assert!(target.child.reaped());
+        assert!(report.completed_boundary.is_none());
+        let pending_poll_count = report
+            .async_operations
+            .iter()
+            .filter(|operation| {
+                matches!(
+                    operation,
+                    QemuAsyncDriverOperation::AwaitChild {
+                        outcome: QemuAsyncWaitOutcome::Pending,
+                        timeout,
+                        ..
+                    } if *timeout == budget
+                )
+            })
+            .count();
+        assert!(pending_poll_count >= 2);
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 struct ScriptedRuntime {
     outcomes: VecDeque<QemuAsyncWaitOutcome>,
@@ -470,6 +744,7 @@ struct ScriptedRuntime {
     repolls: usize,
     renewals: usize,
     armed_fences: Vec<Option<QemuAdvanceCompletionFence>>,
+    poll_slices: Vec<Option<Duration>>,
 }
 
 impl ScriptedRuntime {
@@ -481,11 +756,20 @@ impl ScriptedRuntime {
             repolls: 0,
             renewals: 0,
             armed_fences: Vec::new(),
+            poll_slices: Vec::new(),
         }
     }
 }
 
 impl QemuHostIoRuntime for ScriptedRuntime {
+    fn set_advance_completion_poll_slice(
+        &mut self,
+        slice: Option<Duration>,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.poll_slices.push(slice);
+        Ok(())
+    }
+
     fn renew_advance_completion_poll(
         &mut self,
         _timeout: Duration,
@@ -552,6 +836,7 @@ impl ScriptedTarget {
     fn completed() -> Self {
         Self {
             completion: QemuAsyncQuantumCompletion {
+                completed_boundary: None,
                 ceiling: Icount { retired: 0 },
                 outcome: AdvanceOutcome::ReachedHorizon,
                 final_state: QemuNodeIdleState {

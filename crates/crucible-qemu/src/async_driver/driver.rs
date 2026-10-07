@@ -63,13 +63,6 @@ where
         .map_err(QemuAsyncDriverError::Runtime)?;
     async_operations.push(QemuAsyncDriverOperation::YieldToControlPlane);
 
-    let mut pending = target
-        .start_quantum(horizon)
-        .map_err(QemuAsyncDriverError::Channel)?;
-    after_start(target, &mut pending).map_err(QemuAsyncDriverError::Channel)?;
-    runtime
-        .arm_advance_completion_fence(target.advance_completion_fence(&pending))
-        .map_err(QemuAsyncDriverError::Runtime)?;
     // Renewal is a liveness poll, not an attempt deadline. A short slice
     // observes child exit and an authored watchdog cancellation promptly.
     let wait_timeout = if policy.unbounded_advance_completion {
@@ -79,6 +72,30 @@ where
     } else {
         policy.timeout_for(QemuAsyncWait::AdvanceCompletion)
     };
+    runtime
+        .set_advance_completion_poll_slice(
+            (!policy.unbounded_advance_completion).then_some(Duration::from_secs(1)),
+        )
+        .map_err(QemuAsyncDriverError::Runtime)?;
+    runtime
+        .prepare_advance_completion(wait_timeout)
+        .map_err(QemuAsyncDriverError::Runtime)?;
+    let mut pending = match super::acquisition::acquire_quantum(
+        target,
+        runtime,
+        policy,
+        crash_detector,
+        horizon,
+        wait_timeout,
+    )? {
+        super::acquisition::Acquisition::Published(pending) => pending,
+        super::acquisition::Acquisition::Crashed(report) => return Ok(*report),
+    };
+    runtime.retain_advance_initial_state(target.advance_initial_state(&pending));
+    after_start(target, &mut pending).map_err(QemuAsyncDriverError::Channel)?;
+    runtime
+        .arm_advance_completion_fence(target.advance_completion_fence(&pending))
+        .map_err(QemuAsyncDriverError::Runtime)?;
     let mut first_wait = true;
     let completion = loop {
         let is_initial_wait = first_wait;
@@ -96,10 +113,7 @@ where
             timeout: wait_timeout,
             outcome: wait_outcome,
         });
-        if wait_outcome == QemuAsyncWaitOutcome::TimedOut {
-            if !policy.unbounded_advance_completion {
-                break None;
-            }
+        if wait_outcome != QemuAsyncWaitOutcome::Completed {
             if let Some(exit_status) = target
                 .child_exit_status()
                 .map_err(QemuAsyncDriverError::Target)?
@@ -113,6 +127,7 @@ where
                     ceiling: None,
                     outcome: QemuAsyncNodeStepOutcome::Crashed { status, shutdown },
                     final_state: None,
+                    completed_boundary: None,
                     inbound_frames_consumed: 0,
                     emitted_frames: Vec::new(),
                     yielded_before_quantum: true,
@@ -121,11 +136,22 @@ where
                     async_operations,
                 });
             }
+            if wait_outcome == QemuAsyncWaitOutcome::Pending {
+                // Keep the original deadline and pending quantum. A liveness
+                // yield neither renews the budget nor authenticates a boundary.
+                continue;
+            }
+            if !policy.unbounded_advance_completion {
+                break None;
+            }
             runtime
                 .renew_advance_completion_poll(wait_timeout)
                 .map_err(QemuAsyncDriverError::Runtime)?;
             continue;
         }
+        target
+            .retain_completed_quantum_boundary(&mut pending, runtime.completed_quantum_boundary())
+            .map_err(QemuAsyncDriverError::Channel)?;
         match target.finish_quantum(&mut pending) {
             Ok(completion) => {
                 break Some(completion);
@@ -145,6 +171,7 @@ where
             ceiling: None,
             outcome: QemuAsyncNodeStepOutcome::Crashed { status, shutdown },
             final_state: None,
+            completed_boundary: None,
             inbound_frames_consumed: 0,
             emitted_frames: Vec::new(),
             yielded_before_quantum: true,
@@ -166,6 +193,7 @@ where
             advance: completion.outcome,
         },
         final_state: Some(completion.final_state),
+        completed_boundary: completion.completed_boundary,
         inbound_frames_consumed: completion.inbound_frames_consumed,
         emitted_frames: completion.emitted_frames,
         yielded_before_quantum: true,
@@ -206,6 +234,14 @@ where
         timeout,
         outcome,
     }];
+    if outcome == QemuAsyncWaitOutcome::Pending {
+        return Err(QemuAsyncDriverError::Runtime(
+            QemuAsyncDriverRuntimeError::new(
+                "await lifecycle event",
+                "pending poll outcome is only valid for advance completion",
+            ),
+        ));
+    }
     if outcome == QemuAsyncWaitOutcome::TimedOut {
         async_operations.push(QemuAsyncDriverOperation::ShutdownAfterCrash);
         let status = crash_detector.bounded_await_timeout(wait.operation(), timeout);

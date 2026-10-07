@@ -6,10 +6,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crucible_campaign::{
-    AttemptQueue, AuthorizedPlannerService, BranchBudget, BranchRequest, BranchRequestCause,
-    CampaignCommandId, CampaignControlAction, CampaignPlannerDriver, CampaignPlannerStepOutcome,
-    CampaignRepository, CampaignSeed, CandidateSource, CanonicalFrontierPlanner, ControlRequest,
-    DaemonEpoch, PlannerClient, PlannerDisposition, PlanningBudget, WorkerSlotId,
+    AuthorizedPlannerService, BranchBudget, BranchRequest, BranchRequestCause, CampaignCommandId,
+    CampaignControlAction, CampaignPlannerDriver, CampaignPlannerStepOutcome, CampaignRepository,
+    CampaignSeed, CandidateSource, CanonicalFrontierPlanner, ControlRequest, PlannerClient,
+    PlannerDisposition, PlanningBudget,
 };
 use crucible_cas::content_store::{
     DirectoryRefBackend, ObjectKind, StoreGraph, StoreGraphConfig, StoreNodeId, StoreNodeSpec,
@@ -20,14 +20,52 @@ use crate::planner_process::{CanonicalPlannerProcessConfig, CanonicalPlannerProc
 
 use super::*;
 
+// Share the bounded actual page walk with the durable admission diagnostic.
+#[path = "../../../../../tests/support/campaign_queue_scan.rs"]
+mod campaign_queue_scan;
+
 const CAMPAIGN: &str = "native-performance-short-branch";
+
+pub(super) struct CampaignPlannerSample {
+    pub(super) nanoseconds: u64,
+    pub(super) work: CampaignPlannerWork,
+}
+
+/// Owns already accepted planner results until serialization after timing.
+pub(super) struct CampaignPlannerWork {
+    scenario: crucible_campaign::ScenarioArtifact,
+    genesis: crucible_campaign::ConfigurationArtifact,
+    parent: crucible_campaign::ConfigurationId,
+    request: BranchRequest,
+    proposal: crucible_campaign::Proposal,
+    snapshot: crucible_campaign::CampaignSnapshotId,
+    queue: campaign_queue_scan::QueueScanMeasurement,
+}
+
+impl CampaignPlannerWork {
+    pub(super) fn record(&self) -> serde_json::Value {
+        serde_json::json!({
+            "scenario_artifact": self.scenario.id().expect("scenario identity").to_text(),
+            "genesis_artifact": self.genesis.id().expect("genesis identity").to_text(),
+            "parent_configuration": self.parent.to_hex(),
+            "request_bytes": self.request.canonical_bytes(),
+            "proposal_bytes": self.proposal.canonical_bytes(),
+            "snapshot": self.snapshot.to_text(),
+            "queue_attempts": self.queue.attempts,
+            "queue_pages": self.queue.pages,
+            "queue_scanned_entries": self.queue.scanned_entries,
+            "queue_empty_pages": self.queue.empty_pages,
+            "ordered_attempts_digest": self.queue.ordered_attempts_digest.to_hex().as_str(),
+        })
+    }
+}
 
 pub(super) fn measure_campaign_planner_queue_at_boundary(
     source: &crucible::ScenarioDefForm,
     input: &CrucibleAttemptExecution,
     boundary: &BoundaryEvidence,
     index: usize,
-) -> u64 {
+) -> CampaignPlannerSample {
     let storage_root = PathBuf::from(
         std::env::var_os("CRUCIBLE_CAMPAIGN_PERF_STORAGE_ROOT")
             .expect("packaged campaign performance storage root"),
@@ -257,6 +295,7 @@ pub(super) fn measure_campaign_planner_queue_at_boundary(
     println!("corpus_{index}_campaign_request_setup_ns={setup_elapsed}");
     let started = operational_monotonic_nanoseconds();
     let CampaignPlannerStepOutcome::Advanced {
+        result,
         disposition: PlannerDisposition::Issue {
             issued_proposals, ..
         },
@@ -274,17 +313,12 @@ pub(super) fn measure_campaign_planner_queue_at_boundary(
         proposal.value(),
         &ChoiceValue::Integer(IntegerValue::Unsigned(7))
     );
-    let page = repository
-        .project_claimable_attempts(CAMPAIGN, None, 1)
-        .expect("project exact short branch");
-    assert_eq!(page.attempts().len(), 1);
-    let mut queue = AttemptQueue::new(DaemonEpoch::from_bytes([0x93; 16]).expect("queue epoch"), 1)
-        .expect("one worker slot");
-    let reservation = queue
-        .reserve_from_page(&page, WorkerSlotId::new(0))
-        .expect("reserve short branch")
-        .expect("short branch is claimable");
-    queue.release(reservation).expect("release short branch");
+    // Accounting pages may be empty before the one admitted attempt. Keep
+    // the complete page walk and real one-slot reservation in the numerator.
+    let queue_measurement =
+        campaign_queue_scan::scan_queue(&repository, CAMPAIGN, result.new_snapshot, 1, 10_000)
+            .expect("walk bounded exact short-branch queue");
+    assert_eq!(queue_measurement.attempts, 1);
     let elapsed = operational_monotonic_nanoseconds()
         .checked_sub(started)
         .expect("campaign planner/queue monotonic clock regressed");
@@ -298,7 +332,18 @@ pub(super) fn measure_campaign_planner_queue_at_boundary(
         storage_root.display()
     );
     println!("corpus_{index}_campaign_storage_physical_bytes={physical_bytes}");
-    elapsed
+    CampaignPlannerSample {
+        nanoseconds: elapsed,
+        work: CampaignPlannerWork {
+            scenario: scenario_artifact,
+            genesis: genesis_artifact,
+            parent: parent_artifact.configuration(),
+            request,
+            proposal,
+            snapshot: result.new_snapshot,
+            queue: queue_measurement,
+        },
+    }
 }
 
 fn command_id(index: usize, operation: &str) -> CampaignCommandId {

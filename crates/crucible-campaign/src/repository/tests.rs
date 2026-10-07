@@ -1373,6 +1373,7 @@ mod destructive_recovery;
 mod discovery;
 mod execution;
 mod planner_scan_index;
+mod planner_validation;
 mod proposal_head;
 mod request_budget_scale;
 mod savepoint;
