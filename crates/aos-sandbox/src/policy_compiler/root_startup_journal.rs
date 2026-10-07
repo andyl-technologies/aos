@@ -108,6 +108,21 @@ struct StartupSignerPinsV1 {
 }
 
 impl RootPolicyStartupJournalV1 {
+    /// Computes representation DATA from the exact native Root opening limits.
+    ///
+    /// The returned value retains its unpriced prerequisites and grants no open.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid limits or an unrepresentable checked extent.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn preopen_replay_extent(
+    ) -> Result<crate::journal::ProtectedJournalPreopenReplayExtentV1, JournalError> {
+        crate::journal::protected_journal_preopen_replay_extent_v1(
+            policy_authority_journal_limits(),
+        )
+    }
+
     /// Prearms vacant custody without opening storage or issuing authority.
     #[must_use]
     pub const fn new() -> Self {

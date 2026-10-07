@@ -18,6 +18,7 @@ mod git_evidence_credential;
 mod nix_offline_provision;
 pub(crate) mod images;
 mod nix_startup;
+mod root_startup;
 pub(crate) mod profile;
 mod service;
 mod storage_worker_origin;
@@ -43,6 +44,7 @@ use crate::immutable_image::RetainedImmutableFileV1;
 use profile::{CONTEXT, NormalRootProfileV1, UNIT};
 
 pub(crate) use client::OriginalNormalRootPeerV1;
+pub use root_startup::ProductionNormalRootInitialStartupV1;
 pub use client::{
     ControllerInitialCaptureFailureRefV1, ProductionControllerInitialCaptureAttemptV1,
     ControllerProfileAdmissionFailureV1, ProductionControllerSelectedProfileAdmissionV1,

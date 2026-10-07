@@ -5,7 +5,8 @@
 //! transferred to Controller.
 
 pub use aos_sandbox::normal_root::{
-    NormalRootStartupErrorV1, ProductionNormalRootStartupCaptureV1, ProductionNormalRootStartupV1,
+    NormalRootStartupErrorV1, ProductionNormalRootInitialStartupV1,
+    ProductionNormalRootStartupCaptureV1, ProductionNormalRootStartupV1,
 };
 
 pub(crate) fn recheck_optional(
