@@ -376,9 +376,6 @@ impl<C: Clock + BucketBinding + Clone + Sync + 'static> Fixture<C> {
         let counts = observer.snapshot();
         assert!(counts.node_gets > 0 && counts.node_puts > 0 && counts.node_decodes > 0);
 
-        self.fs
-            .report_raw_diagnostics("after-main-node-calibration-before-reopen");
-
         let reopened = FileBucket::open(
             config(self.bucket().root(), self.owner),
             self.fs.clone(),
@@ -386,8 +383,6 @@ impl<C: Clock + BucketBinding + Clone + Sync + 'static> Fixture<C> {
             MetadataValidator::new(ChunkProfile::cdc_1m([0; 32])),
         )
         .await?;
-        self.fs
-            .report_raw_diagnostics("after-reopen-before-fresh-node-calibration");
         let fresh = reopened.observe_metadata_for_tests()?;
         assert!(Arc::ptr_eq(&fresh, &reopened.observe_content_for_tests()));
         assert!(!Arc::ptr_eq(&fresh, &observer));
@@ -404,7 +399,6 @@ impl<C: Clock + BucketBinding + Clone + Sync + 'static> Fixture<C> {
         let counts = fresh.snapshot();
         assert!(counts.node_gets > 0 && counts.node_puts > 0 && counts.node_decodes > 0);
         drop(reopened);
-        self.fs.report_raw_diagnostics("calibration-before-reset");
         observer.reset();
         self.fs.reset();
         Ok(())
@@ -570,9 +564,6 @@ pub(super) struct Snapshot {
     pub(super) record: RefRecord,
     pub(super) commit: Vec<u8>,
     pub(super) state: PublicationState,
-    pub(super) selected_stamp: (u64, Digest),
-    pub(super) snapshot_pointer: terrane_core::gc::publication::PortableCurrent,
-    pub(super) control_identity: (u64, u64),
     pub(super) logical: BTreeMap<String, Option<Vec<u8>>>,
     pub(super) lineage_read: Option<RecordRead>,
     pub(super) guard_read: RecordRead,
@@ -644,9 +635,6 @@ impl Snapshot {
             record,
             commit,
             state: observed.state().clone(),
-            selected_stamp: observed.stamp(),
-            snapshot_pointer: observed.snapshot().clone(),
-            control_identity: observed.control_identity(),
             logical: observed.logical().clone(),
             lineage_read,
             guard_read,

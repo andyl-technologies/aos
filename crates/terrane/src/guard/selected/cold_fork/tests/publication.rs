@@ -68,28 +68,9 @@ async fn root_native_cold_fork_refuses_absent_context_before_node_io() -> TestRe
     assert!(
         matches!(before.state.branches.iter().find(|row| row.name == alias).map(|row| &row.selection), Some(CommittedSelection::Selected(selected)) if selected.as_ref() == &record)
     );
-    eprintln!(
-        "cold-raw-diagnostic stage=before-calibration state={:?} cap={:?} stamp={:?} pointer={:?} control={:?}",
-        before.state,
-        before.logical.get("CAPABILITIES"),
-        before.selected_stamp,
-        before.snapshot_pointer,
-        before.control_identity
-    );
-    fixture.fs.enable_raw_diagnostic();
     fixture
         .calibrate(Commit::decode(&before.commit)?.tree)
         .await?;
-    let calibrated = Snapshot::capture(&fixture, alias).await?;
-    eprintln!(
-        "cold-raw-diagnostic stage=after-calibration-before-fork state={:?} cap={:?} stamp={:?} pointer={:?} control={:?}",
-        calibrated.state,
-        calibrated.logical.get("CAPABILITIES"),
-        calibrated.selected_stamp,
-        calibrated.snapshot_pointer,
-        calibrated.control_identity
-    );
-    fixture.fs.enable_raw_diagnostic();
     let observer = fixture.bucket().observe_content_for_tests();
 
     let error = rejected(
@@ -107,17 +88,6 @@ async fn root_native_cold_fork_refuses_absent_context_before_node_io() -> TestRe
     assert_eq!(fixture.fs.successful_ref_ack(TARGET), 0);
     assert!(fixture.bucket().ref_get(TARGET).await?.is_none());
     let after = Snapshot::capture(&fixture, alias).await?;
-    fixture
-        .fs
-        .report_raw_diagnostics("after-fork-before-original-oracles");
-    eprintln!(
-        "cold-raw-diagnostic stage=after-fork state={:?} cap={:?} stamp={:?} pointer={:?} control={:?}",
-        after.state,
-        after.logical.get("CAPABILITIES"),
-        after.selected_stamp,
-        after.snapshot_pointer,
-        after.control_identity
-    );
     assert_eq!(after.state, before.state);
     assert_eq!(after.logical, before.logical);
     before.assert_source_unchanged(&fixture, alias).await?;
