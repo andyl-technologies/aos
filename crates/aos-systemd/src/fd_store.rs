@@ -563,7 +563,7 @@ async fn read_systemd_snapshot_from_original(
     }
     let service = zbus::Proxy::new(
         connection,
-        destination,
+        destination.to_owned(),
         unit_path,
         SYSTEMD_SERVICE_INTERFACE,
     )

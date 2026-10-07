@@ -380,7 +380,7 @@ pub(super) async fn observe_offline_nix(
             observation.absence[0] = Some(Error::Zbus(error));
             // Selected systemd propagates ENOENT as a method error, not a
             // successful string named `not-found`. Do not normalize other errors.
-            let file_state = zbus::Proxy::builder(&client.conn)
+            let file_state = zbus::proxy::Builder::<zbus::Proxy<'_>>::new(&client.conn)
                 .destination(owner.clone())?
                 .path("/org/freedesktop/systemd1")?
                 .interface("org.freedesktop.systemd1.Manager")?
