@@ -14,7 +14,7 @@ use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as
 use std::path::{Path, PathBuf};
 
 use crate::guest_root_label::verify_copied_guest_executable_labels_fd_v1;
-use crate::guest_root_publication::GuestRootPublicationProofV1;
+use aos_sandbox_agent::guest_root_publication::GuestRootPublicationProofV1;
 use crate::guest_root_tree::compare_guest_root_template_v1;
 
 const MARKER_DIRECTORY: &str = "etc/aos/sandbox-guest-root";

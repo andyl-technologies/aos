@@ -43,7 +43,7 @@ use aos_sandbox_agent::openssh_gate::{
     OpenSshGateBindingV1, OpenSshGateObserveRequestV1, OpenSshGateReadbackErrorV1,
     OpenSshGateReadbackV1, verify_openssh_gate_readback_v1,
 };
-use aos_sandbox_agent::openssh_gate_linux::expected_openssh_gate_config_v1;
+use aos_sandbox_agent::openssh_gate::expected_openssh_gate_config_v1;
 use aos_sandbox_agent::{AgentFrameV1, AgentProtocolError, decode_frame_v1, encode_frame_v1};
 use aos_sandbox_core::public_attach_grant::{
     PublicAttachGrantErrorV1, PublicAttachPendingGrantV1, verify_public_attach_pending_grant_v1,
@@ -1512,7 +1512,7 @@ mod tests {
     use ssh_key::{PublicKey, public::Ed25519PublicKey};
 
     use aos_sandbox_agent::openssh_gate::{OpenSshGatePhysicalStateV1, OpenSshGateReadbackV1};
-    use aos_sandbox_agent::openssh_gate_linux::expected_openssh_gate_config_v1;
+    use aos_sandbox_agent::openssh_gate::expected_openssh_gate_config_v1;
 
     use super::{
         DeploymentTrustV1, HostOpenSshAttachRouteErrorV1, ProtectedRouteV1, ROUTE_MAGIC,

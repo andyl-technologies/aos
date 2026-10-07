@@ -68,8 +68,8 @@ in mkDerivation {
   passthru.evidenceSources = [
     ./aos-sandbox-deployment-specimen-root.nix
     ../security/aos-installed-filter-collector/specimen.c
-    ../../crates/aos-sandbox-agent/src/guest_root_tree.rs
-    ../../crates/aos-sandbox-agent/src/bin/aos-sandbox-guest-root-tree-digest.rs
+    ../../crates/aos-sandbox-guest/src/guest_root_tree.rs
+    ../../crates/aos-sandbox-guest/src/bin/aos-sandbox-guest-root-tree-digest.rs
   ];
 
   meta = {

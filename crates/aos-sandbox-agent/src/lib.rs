@@ -1,71 +1,37 @@
 #![deny(missing_docs)]
 
-//! Defines the portable, node-internal AOS sandbox guest-agent contract.
+//! Portable wire contracts for the AOS sandbox Guest agent.
 //!
-//! The agent authenticates one exact incarnation handshake, accepts a bounded
-//! stop-and-wait operation stream, and provides independently buildable dormant
-//! guest artifacts. Durable reservation, reduction, and terminal commit
-//! authority live only in `aos-sandbox::runtime_execution`; this crate exports
-//! no generic persistence or reducer-completion hook.
+//! [`model`] and [`protocol`] own bounded incarnation handshakes and operation
+//! framing. [`launch`] encodes runtime-bound launch proposals without acquiring
+//! descriptors or authenticating their protected provenance. The OpenSSH modules
+//! validate signed gate, ticket, monitor and control messages; parsing those
+//! values never establishes physical process custody or effect authority.
+//! [`guest_root_publication`] describes assignment-bound root evidence, while
+//! [`runtime_argument_observation`] verifies signed argument-limit packets.
 //!
-//! [`protocol`] owns the exact `AOSAGE01` framing and allocation bounds;
-//! [`signed_outcome_packet`] carries its detached outcome signature on the
-//! Host/guest wire without changing the checkpoint frame.
-//! [`openssh_gate`] defines signed attach readback and the fixed bridge claim;
-//! Linux physical measurement and the forced-command binary own its guest
-//! enforcement path.
-//! [`guest_root_publication`], [`guest_root_tree`], [`guest_root_label`], and
-//! [`guest_root_marker`] define assignment-bound population evidence and
-//! physical tree and executable-label readback.
-//! [`runtime_argument_observation`] signs Guest-measured `ARG_MAX` under the
-//! provisioned agent key for protected Host verification.
-//! [`dormant_guest_agent`], [`dormant_root_builder`], and
-//! [`dormant_package`] provide independent, executable normal-source seams
-//! with an independently packaged but uninstalled binary. [`broker_adapter`]
-//! contains only a dormant, nonauthorizing projection for existing local
-//! protobuf messages.
+//! This crate owns no Linux entry point, filesystem population, process effects,
+//! gate installer or executable builder. Those owners live in `aos-sandbox-guest`.
+//! Durable execution admission and semantic commit remain with their respective
+//! protected runtime owners.
 
 pub mod broker_adapter;
-pub mod dormant_guest_agent;
-pub mod dormant_package;
-#[cfg(unix)]
-pub mod dormant_root_builder;
-#[cfg(target_os = "linux")]
 pub mod guest_attach_trust;
-#[cfg(target_os = "linux")]
-pub mod guest_root_label;
-#[cfg(target_os = "linux")]
-pub mod guest_root_marker;
-#[cfg(target_os = "linux")]
-pub mod guest_root_populate;
 pub mod guest_root_publication;
-#[cfg(unix)]
-pub mod guest_root_tree;
+pub mod launch;
 pub mod model;
 pub mod openssh_attach_certificate;
 pub mod openssh_consume;
 pub mod openssh_control;
 pub mod openssh_control_channel;
 pub mod openssh_gate;
-#[cfg(target_os = "linux")]
-pub mod openssh_gate_linux;
 pub mod openssh_monitor;
 pub mod openssh_session;
 pub mod openssh_ticket;
-#[cfg(target_os = "linux")]
-pub mod protected_entry;
 pub mod protocol;
-#[cfg(target_os = "linux")]
 pub mod runtime_argument_observation;
 pub mod signed_outcome_packet;
-pub use dormant_guest_agent::{
-    DormantGuestAgentMainErrorV1, DormantGuestAgentServiceV1, dormant_guest_agent_main_v1,
-};
-pub use dormant_package::{DormantGuestAgentPackageErrorV1, DormantGuestAgentPackageV1};
-#[cfg(unix)]
-pub use dormant_root_builder::{
-    DormantGuestRootBuildErrorV1, DormantGuestRootBuildPlanV1, build_dormant_guest_root_v1,
-};
+
 pub use model::{
     AgentExecutionOperationV1, AgentExecutionOutcomeV1, AgentExecutionPhaseV1, AgentFeatureSetV1,
     AgentFeatureV1, AgentHandshakeRequestV1, AgentHandshakeResponseV1, AgentNonceV1,
@@ -76,7 +42,6 @@ pub use protocol::{
     AgentFrameV1, AgentProtocolError, AgentSealedAuthorizeReferenceV1,
     MAX_AGENT_SEALED_SPEC_BYTES_V1, decode_frame_v1, encode_frame_v1,
 };
-#[cfg(target_os = "linux")]
 pub use runtime_argument_observation::{
     GuestRuntimeArgumentObservationErrorV1, GuestRuntimeArgumentObserveRequestV1,
     GuestRuntimeArgumentReadbackV1, verify_guest_runtime_argument_readback_v1,

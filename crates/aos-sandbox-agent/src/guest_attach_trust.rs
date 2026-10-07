@@ -16,7 +16,7 @@ use ssh_key::{Algorithm, PrivateKey, PublicKey};
 use zeroize::Zeroizing;
 
 use crate::model::AgentRuntimeBindingV1;
-use crate::protected_entry::encode_agent_runtime_binding_v1;
+use crate::launch::encode_agent_runtime_binding_v1;
 
 const MAGIC: &[u8; 8] = b"AOSGTR01";
 const MAX_PRIVATE_KEY_BYTES: usize = 16 * 1024;

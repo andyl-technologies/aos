@@ -14,7 +14,7 @@ use aos_sandbox_agent::AgentRuntimeBindingV1;
 use aos_sandbox_agent::openssh_gate::{
     OpenSshGateClaimV1, OpenSshGateObserveRequestV1, OpenSshGateReadbackV1,
 };
-use aos_sandbox_agent::openssh_gate_linux::{
+use crate::openssh_gate_linux::{
     OpenSshGatePhysicalErrorV1, RunningOpenSshGateV1, expected_openssh_gate_config_v1,
 };
 use aos_sandbox_core::ObjectDigest;
@@ -63,7 +63,7 @@ impl GuestOpenSshGate {
         self.observe(request, runtime, channel, ledger, deadline)?;
         install_original_ticket_v2(ticket_bytes)?;
         let readback = self.observe(request, runtime, channel, ledger, deadline)?;
-        let installed = aos_sandbox_agent::openssh_gate_linux::load_original_ticket_claim_v2()
+        let installed = crate::openssh_gate_linux::load_original_ticket_claim_v2()
             .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
         if installed != ticket_bytes {
             return Err(GuestProcessEffectErrorV1::LedgerConflict);
@@ -127,7 +127,7 @@ impl GuestOpenSshGate {
     pub(super) fn monitor_runtime_v2(
         &mut self,
     ) -> Result<
-        aos_sandbox_agent::openssh_gate_linux::OpenSshMonitorRuntimeV2,
+        crate::openssh_gate_linux::OpenSshMonitorRuntimeV2,
         GuestProcessEffectErrorV1,
     > {
         self.daemon
@@ -465,7 +465,7 @@ fn install_original_ticket_v2(bytes: &[u8]) -> Result<(), GuestProcessEffectErro
     // No rename/replacement path exists for a post-issuance sidecar.
     match fs::symlink_metadata(path) {
         Ok(_) => {
-            let previous = aos_sandbox_agent::openssh_gate_linux::load_original_ticket_claim_v2()
+            let previous = crate::openssh_gate_linux::load_original_ticket_claim_v2()
                 .map_err(|_| GuestProcessEffectErrorV1::UnprotectedLedger)?;
             return if previous == bytes {
                 Ok(())

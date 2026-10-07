@@ -13,6 +13,7 @@ kernel-tests = ["aos-sandbox-linux/kernel-tests"]
 aos-proto = { path = "../aos-proto" }
 aos-sandbox.workspace = true
 aos-sandbox-agent.workspace = true
+aos-sandbox-guest.workspace = true
 aos-sandbox-broker.workspace = true
 aos-sandbox-core = { path = "../aos-sandbox-core" }
 aos-sandbox-linux = { path = "../aos-sandbox-linux" }

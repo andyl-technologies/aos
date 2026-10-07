@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::{fmt::Write as _, io::Write as _};
 
-use aos_sandbox_agent::guest_root_tree::measure_offline_guest_root_template_v1;
+use aos_sandbox_guest::guest_root_tree::measure_offline_guest_root_template_v1;
 
 fn main() -> ExitCode {
     match run() {

@@ -162,7 +162,7 @@ impl AttachBridge {
 
     pub(super) fn bind_monitor_v2(
         &self,
-        runtime: aos_sandbox_agent::openssh_gate_linux::OpenSshMonitorRuntimeV2,
+        runtime: crate::openssh_gate_linux::OpenSshMonitorRuntimeV2,
         ticket: &[u8],
     ) -> Result<(), GuestProcessEffectErrorV1> {
         if self.server.is_finished() {

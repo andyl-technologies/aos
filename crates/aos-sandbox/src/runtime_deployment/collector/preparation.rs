@@ -1,15 +1,20 @@
 //! Passive original specimen-root custody before any resource-creation effect.
 //!
-//! This uses the existing complete Agent tree algorithm and safe descriptor-
+//! This uses the existing complete Guest tree algorithm and safe descriptor-
 //! relative resolver. It never calls a mount/namespace effect or labels an
 //! attached store descriptor detached. Actual DetachedMount cloning and the
 //! fixed network child still require the genuine floor-issued Prepared permit,
 //! which is unavailable until the separately reviewed Host055 physical join.
+//!
+//! The Controller-to-Guest dependency is a transitional observational edge:
+//! this collector reads physical root measurements, never Guest effect permits.
+//! A later integration-domain extraction can relocate the shared observation
+//! without putting Linux behavior back into the portable Agent wire crate.
 
 use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 
-use aos_sandbox_agent::guest_root_tree::compare_guest_root_template_v1;
+use aos_sandbox_guest::guest_root_tree::compare_guest_root_template_v1;
 use aos_sandbox_linux::inventory::MountId;
 use aos_sandbox_linux::path::{BeneathRoot, ResolveOptions, ResolvedPath};
 use rustix::fs::{Mode, OFlags, StatVfsMountFlags, fstat, fstatvfs, open};

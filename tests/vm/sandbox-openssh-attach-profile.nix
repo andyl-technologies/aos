@@ -12,7 +12,7 @@
     cargoRoot = "crates";
     buildType = "debug";
     cargoBuildCommands = [
-      "test --no-run --lib --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-agent"
+      "test --no-run --lib --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-guest"
     ];
     doCheck = false;
     installBins = false;
@@ -22,7 +22,7 @@
     postInstall = ''
       mkdir -p "$out/bin"
       count=0
-      for candidate in target/debug/deps/aos_sandbox_agent-*; do
+      for candidate in target/debug/deps/aos_sandbox_guest-*; do
         if [ -f "$candidate" ] && [ -x "$candidate" ]; then
           install -m 0755 "$candidate" "$out/bin/attach-profile-tests"
           count=$((count + 1))
@@ -64,7 +64,7 @@ in
       export AOS_ATTACH_PROFILE_PAM_DENY=${pkgs.linux-pam}/lib/security/pam_deny.so
       export AOS_ATTACH_PROFILE_PAM_PERMIT=${pkgs.linux-pam}/lib/security/pam_permit.so
       export AOS_ATTACH_PROFILE_BASH=${pkgs.bash}/bin/bash
-      test_name=openssh_attach_certificate::qualification::packaged_sshd_enforces_profile_and_confined_original_ticket_relay
+      test_name=openssh_attach_qualification::packaged_sshd_enforces_profile_and_confined_original_ticket_relay
       ${fixtures}/bin/attach-profile-tests --ignored --exact --list "$test_name" \
         | ${pkgs.grep}/bin/grep -Fxq "$test_name: test"
       ${fixtures}/bin/attach-profile-tests --ignored --exact "$test_name" \

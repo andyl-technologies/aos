@@ -8,7 +8,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use aos_sandbox_agent::dormant_root_builder::{
+use aos_sandbox_guest::dormant_root_builder::{
     ConcreteGuestRootBuildPlanV1, GuestExecutableInputV1, build_concrete_guest_root_v1,
 };
 use aos_sandbox_core::ObjectDigest;

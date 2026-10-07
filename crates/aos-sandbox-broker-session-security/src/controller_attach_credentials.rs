@@ -16,7 +16,7 @@ use std::path::Path;
 use aos_sandbox::attach_route_issuer::OpenSshAttachRouteIssuerV1;
 use aos_sandbox::public_attach_pending::PublicAttachPendingV1;
 use aos_sandbox_agent::openssh_gate::OpenSshGateBindingV1;
-use aos_sandbox_agent::openssh_gate_linux::expected_openssh_gate_config_v1;
+use aos_sandbox_agent::openssh_gate::expected_openssh_gate_config_v1;
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};

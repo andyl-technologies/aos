@@ -1,7 +1,7 @@
 //! Protected guest-agent executable with concrete local process effects.
 
-use aos_sandbox_agent::dormant_guest_agent_main_v1;
-use aos_sandbox_agent::protected_entry::ProtectedGuestAgentV1;
+use aos_sandbox_guest::dormant_guest_agent_main_v1;
+use aos_sandbox_guest::protected_entry::ProtectedGuestAgentV1;
 use aos_sandbox_guest::GuestProcessEffectsV1;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -10,7 +10,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if selected_arguments.next().is_some() {
             return Err("selected Host canary Agent accepts only its fixed switch".into());
         }
-        return aos_sandbox_agent::protected_entry::run_host_canary_readiness_v1();
+        return aos_sandbox_guest::protected_entry::run_host_canary_readiness_v1();
     }
 
     let effects = GuestProcessEffectsV1::open()?;

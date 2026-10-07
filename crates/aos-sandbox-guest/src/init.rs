@@ -19,8 +19,9 @@ use std::process::{Child, Command, Stdio};
 use aos_sandbox_agent::guest_attach_trust::{
     GuestAttachTrustRecordV1, MAX_GUEST_ATTACH_TRUST_BYTES,
 };
-use aos_sandbox_agent::protected_entry::{
-    GUEST_AGENT_PROVISIONING_BYTES_V1, validated_guest_agent_runtime_prefix_v1,
+use aos_sandbox_agent::launch::GUEST_AGENT_PROVISIONING_BYTES_V1;
+use aos_sandbox_guest::protected_entry::{
+    validated_guest_agent_runtime_prefix_v1,
     require_host_canary_challenge_v1,
 };
 use aos_sandbox_linux::immutable_file::SealedMemfdMapping;
@@ -57,7 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut canary = GuestCanaryReportV1::new();
     let canary_selected = canary.capture_original()?;
     aos_sandbox_linux::guest_confinement::prepare_guest_runtime_anchors()?;
-    aos_sandbox_agent::guest_root_label::label_fresh_guest_manager_before_v1()?;
+    aos_sandbox_guest::guest_root_label::label_fresh_guest_manager_before_v1()?;
 
     // Adopt original slots 6/7 before any startup duplicate can reuse them.
     // Their fixed originals remain live only through the one Agent spawn.
@@ -95,7 +96,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 None
             };
-            Ok::<_, aos_sandbox_agent::protected_entry::ProtectedGuestAgentErrorV1>(
+            Ok::<_, aos_sandbox_guest::protected_entry::ProtectedGuestAgentErrorV1>(
                 (runtime, channel),
             )
         },

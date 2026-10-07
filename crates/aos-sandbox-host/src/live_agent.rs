@@ -24,7 +24,7 @@ use aos_sandbox::runtime_execution::{
 use aos_sandbox_agent::guest_attach_trust::{
     GuestAttachTrustErrorV1, GuestAttachTrustRecordV1, MAX_GUEST_ATTACH_TRUST_BYTES,
 };
-use aos_sandbox_agent::protected_entry::GuestAgentLaunchRecordV1;
+use aos_sandbox_agent::launch::GuestAgentLaunchRecordV1;
 use aos_sandbox_agent::signed_outcome_packet::{
     MAX_SIGNED_AGENT_OUTCOME_PACKET_BYTES, SignedAgentOutcomePacketErrorV1,
 };

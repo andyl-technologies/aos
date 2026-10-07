@@ -18,9 +18,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sha2::{Digest as _, Sha256};
 use ssh_key::{LineEnding, PrivateKey, certificate::Builder, private::Ed25519Keypair};
 
-use super::*;
-use crate::openssh_gate::OpenSshGateBindingV1;
-use crate::openssh_gate_linux::{RunningOpenSshGateV1, expected_openssh_gate_config_v1};
+use aos_sandbox_agent::openssh_attach_certificate::*;
+use aos_sandbox_agent::openssh_gate::{OpenSshGateBindingV1, OpenSshGateClaimV1, expected_openssh_gate_config_v1};
+use aos_sandbox_core::public_attach_route::*;
+use ssh_key::{Algorithm, Certificate, HashAlg, PublicKey, certificate::CertType};
+use crate::openssh_gate_linux::RunningOpenSshGateV1;
 
 const DIRECTORY: &str = "/etc/aos/sandbox-attach";
 const FIXTURE_DIRECTORY: &str = "/run/aos-attach-profile-qualification";
@@ -68,6 +70,32 @@ impl Drop for OwnedProcess {
 
 fn key(seed: u8) -> PrivateKey {
     PrivateKey::new(Ed25519Keypair::from_seed(&[seed; 32]).into(), "").unwrap()
+}
+
+fn fixture_claim() -> OpenSshGateClaimV1 {
+    OpenSshGateClaimV1 {
+        binding: OpenSshGateBindingV1 {
+            attach_operation_id: [1; 16],
+            execution_id: [2; 16],
+            incarnation_id: [3; 16],
+            assignment_epoch: 4,
+            principal_id: [5; 16],
+            audit_id: [6; 16],
+            user: "aos_exec".to_owned(),
+            port: 2222,
+            host_public_key: key(7).public_key().to_openssh().unwrap(),
+            trusted_user_ca_public_key: key(8).public_key().to_openssh().unwrap(),
+            expires_at: 1300,
+            gate_config_digest: [9; 32],
+        },
+        route_digest: [10; 32],
+        runtime_identity: [11; 32],
+        process_pid: 12,
+        process_start_ticks: 13,
+        sshd_pid: 14,
+        sshd_start_ticks: 15,
+        pty: true,
+    }
 }
 
 fn protected_file(path: impl AsRef<Path>, bytes: &[u8], mode: u32) {

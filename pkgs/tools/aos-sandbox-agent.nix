@@ -40,7 +40,7 @@
     cargoRoot = "crates";
     checkType = "debug";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-guest --bin aos-sandbox-guest-agent --bin aos-sandbox-guest-exec --bin aos-sandbox-guest-init -p aos-sandbox-agent --bin aos-sandbox-exec-gate --bin aos-sandbox-guest-root-builder --bin aos-sandbox-guest-root-tree-digest"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-guest --bin aos-sandbox-guest-agent --bin aos-sandbox-guest-exec --bin aos-sandbox-guest-init --bin aos-sandbox-exec-gate --bin aos-sandbox-guest-root-builder --bin aos-sandbox-guest-root-tree-digest"
     ];
     buildDeps = [buildProtobuf];
     runtimeDeps = [];
@@ -50,7 +50,7 @@ in
     pname = "aos-sandbox-agent";
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
-    cargoFlags = "-p aos-sandbox-guest --bin aos-sandbox-guest-agent --bin aos-sandbox-guest-exec --bin aos-sandbox-guest-init -p aos-sandbox-agent --bin aos-sandbox-exec-gate --bin aos-sandbox-guest-root-builder --bin aos-sandbox-guest-root-tree-digest";
+    cargoFlags = "-p aos-sandbox-guest --bin aos-sandbox-guest-agent --bin aos-sandbox-guest-exec --bin aos-sandbox-guest-init --bin aos-sandbox-exec-gate --bin aos-sandbox-guest-root-builder --bin aos-sandbox-guest-root-tree-digest";
     doCheck = false;
     buildDeps = [buildProtobuf];
     runtimeDeps = [];

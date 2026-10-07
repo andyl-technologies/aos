@@ -3,7 +3,7 @@
 use std::fs;
 use std::os::unix::fs::{PermissionsExt as _, symlink};
 
-use aos_sandbox_agent::guest_root_tree::measure_offline_guest_root_template_v1;
+use aos_sandbox_guest::guest_root_tree::measure_offline_guest_root_template_v1;
 
 use super::*;
 

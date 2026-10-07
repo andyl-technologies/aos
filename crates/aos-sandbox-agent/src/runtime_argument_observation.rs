@@ -18,16 +18,22 @@ use aos_sandbox_core::{
     FeatureRef, IncarnationId, NamespaceGeneration, ObjectDigest, PayloadBootId, SandboxId,
     validate_required_features,
 };
-use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
+use ed25519_dalek::{Signature, VerifyingKey};
+#[cfg(test)]
+use ed25519_dalek::{Signer as _, SigningKey};
 use sha2::{Digest as _, Sha256};
 
 use crate::model::{AgentRuntimeBindingV1, AgentSessionBindingV1};
-use crate::protected_entry::encode_agent_runtime_binding_v1;
+use crate::launch::encode_agent_runtime_binding_v1;
 
 /// Versioned request prefix accepted by the provisioned Guest agent.
 pub const ARGUMENT_OBSERVE_REQUEST_MAGIC_V1: &[u8; 8] = b"AOSARQ01";
 const READBACK_MAGIC: &[u8; 8] = b"AOSARP01";
-const SIGNATURE_DOMAIN: &[u8] = b"aos.sandbox.guest-argument-readback.v1\0";
+/// Canonical signing domain for a Guest argument-limit claim.
+pub const GUEST_ARGUMENT_READBACK_SIGNATURE_DOMAIN_V1: &[u8] =
+    b"aos.sandbox.guest-argument-readback.v1\0";
+
+use GUEST_ARGUMENT_READBACK_SIGNATURE_DOMAIN_V1 as SIGNATURE_DOMAIN;
 const MAXIMUM_REQUEST_BYTES: usize = 512;
 const MAXIMUM_READBACK_BYTES: usize = MAXIMUM_REQUEST_BYTES + 82;
 
@@ -231,27 +237,6 @@ impl GuestRuntimeArgumentReadbackV1 {
     }
 }
 
-/// Measures and signs the Guest's current process `ARG_MAX`.
-///
-/// Only the provisioned Guest entry calls this function with its sealed launch
-/// key. No Host-supplied limit is accepted by the signing path.
-///
-/// # Errors
-///
-/// Returns [`GuestRuntimeArgumentObservationErrorV1`] if `sysconf` fails or
-/// reports an absent/nonpositive value.
-pub(crate) fn sign_current_guest_argument_readback_v1(
-    request: &GuestRuntimeArgumentObserveRequestV1,
-    signing_key: &SigningKey,
-) -> Result<Vec<u8>, GuestRuntimeArgumentObservationErrorV1> {
-    let measured = nix::unistd::sysconf(nix::unistd::SysconfVar::ARG_MAX)
-        .map_err(|_| GuestRuntimeArgumentObservationErrorV1::MeasurementUnavailable)?
-        .and_then(|value| u64::try_from(value).ok())
-        .filter(|value| *value > 0)
-        .ok_or(GuestRuntimeArgumentObservationErrorV1::MeasurementUnavailable)?;
-    sign_readback_with_limit(request, measured, signing_key)
-}
-
 /// Verifies a signed Guest measurement against the Host's exact current query.
 ///
 /// The caller must supply the verifying key from protected agent peer custody,
@@ -322,10 +307,18 @@ pub fn verify_guest_runtime_argument_readback_v1(
     })
 }
 
-fn sign_readback_with_limit(
+/// Encodes an unsigned, nonauthorizing Guest argument-limit claim.
+///
+/// The returned bytes carry a claimed limit, not a physical measurement or a
+/// verified readback. The protected Guest owner must independently measure the
+/// kernel limit before signing them under its provisioned key.
+///
+/// # Errors
+///
+/// Returns an error for a zero limit or an unrepresentable canonical request.
+pub fn encode_guest_argument_readback_subject_v1(
     request: &GuestRuntimeArgumentObserveRequestV1,
     measured: u64,
-    signing_key: &SigningKey,
 ) -> Result<Vec<u8>, GuestRuntimeArgumentObservationErrorV1> {
     if measured == 0 {
         return Err(GuestRuntimeArgumentObservationErrorV1::MeasurementUnavailable);
@@ -338,6 +331,16 @@ fn sign_readback_with_limit(
     packet.extend_from_slice(&request_length.to_be_bytes());
     packet.extend_from_slice(&request_bytes);
     packet.extend_from_slice(&measured.to_be_bytes());
+    Ok(packet)
+}
+
+#[cfg(test)]
+fn sign_readback_with_limit(
+    request: &GuestRuntimeArgumentObserveRequestV1,
+    measured: u64,
+    signing_key: &SigningKey,
+) -> Result<Vec<u8>, GuestRuntimeArgumentObservationErrorV1> {
+    let mut packet = encode_guest_argument_readback_subject_v1(request, measured)?;
     let mut message = Vec::with_capacity(SIGNATURE_DOMAIN.len() + packet.len());
     message.extend_from_slice(SIGNATURE_DOMAIN);
     message.extend_from_slice(&packet);
@@ -491,21 +494,5 @@ mod tests {
             ),
             Err(GuestRuntimeArgumentObservationErrorV1::InvalidProfile)
         );
-    }
-
-    #[test]
-    fn provisioned_guest_measures_a_positive_kernel_limit() {
-        let request = request();
-        let signing_key = SigningKey::from_bytes(&[12; 32]);
-        let packet = sign_current_guest_argument_readback_v1(&request, &signing_key)
-            .expect("kernel provides ARG_MAX");
-        let verified = verify_guest_runtime_argument_readback_v1(
-            &packet,
-            &request,
-            &signing_key.verifying_key(),
-        )
-        .expect("trusted Guest measurement");
-
-        assert!(verified.evidence().runtime_limit_bytes() > 0);
     }
 }

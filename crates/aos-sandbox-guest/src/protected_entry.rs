@@ -35,32 +35,36 @@ use ed25519_dalek::{Signer as _, SigningKey};
 use sha2::{Digest as _, Sha256};
 
 use crate::DormantGuestAgentServiceV1;
-use crate::model::{
+use crate::runtime_argument_observation::sign_current_guest_argument_readback_v1;
+#[cfg(test)]
+use aos_sandbox_agent::launch::GuestAgentLaunchRecordV1;
+use aos_sandbox_agent::launch::{
+    GUEST_AGENT_PROVISIONING_BYTES_V1, GUEST_AGENT_PROVISIONING_MAGIC_V1 as PROVISIONING_MAGIC,
+    encode_agent_runtime_binding_v1,
+};
+use aos_sandbox_agent::model::{
     AgentExecutionOperationV1, AgentExecutionOutcomeV1, AgentExecutionPhaseV1, AgentFeatureSetV1,
     AgentFeatureV1, AgentHandshakeRequestV1, AgentHandshakeResponseV1, AgentOperationRequestV1,
     AgentOperationSequenceV1, AgentRuntimeBindingV1, AgentSessionBindingV1, InvalidAgentModel,
 };
-use crate::openssh_gate::{
+use aos_sandbox_agent::openssh_gate::{
     OpenSshGateObserveRequestV1, OpenSshGateReadbackV1, sign_openssh_gate_readback_v1,
 };
-use crate::protocol::{
+use aos_sandbox_agent::protocol::{
     AgentFrameV1, AgentProtocolError, MAX_AGENT_FRAME_BYTES, MAX_AGENT_SEALED_SPEC_BYTES_V1,
     decode_frame_v1, encode_frame_v1,
 };
-use crate::runtime_argument_observation::{
+use aos_sandbox_agent::runtime_argument_observation::{
     ARGUMENT_OBSERVE_REQUEST_MAGIC_V1, GuestRuntimeArgumentObservationErrorV1,
-    GuestRuntimeArgumentObserveRequestV1, sign_current_guest_argument_readback_v1,
+    GuestRuntimeArgumentObserveRequestV1,
 };
-use crate::signed_outcome_packet::{
+use aos_sandbox_agent::signed_outcome_packet::{
     SignedAgentOutcomePacketErrorV1, SignedAgentOutcomePacketV1,
     encode_signed_agent_outcome_packet_v1,
 };
 
 const CHANNEL_DESCRIPTOR: i32 = 3;
 const PROVISIONING_DESCRIPTOR: i32 = 4;
-/// Exact length of the fully sealed `AOSAGP01` guest launch record.
-pub const GUEST_AGENT_PROVISIONING_BYTES_V1: usize = 258;
-const PROVISIONING_MAGIC: &[u8; 8] = b"AOSAGP01";
 const CREDENTIAL_PATH: &str = "/etc/aos/sandbox-agent/guest-executable-v1";
 const CREDENTIAL_MAGIC: &[u8; 8] = b"AOSGEX01";
 const CREDENTIAL_BYTES: usize = 104;
@@ -155,7 +159,7 @@ impl HostCanaryAgentReadinessV1 {
         let mask = provisioning.features.as_slice().iter().fold(0_u16, |mask, feature| {
             mask | (1_u16 << (*feature as u8 - 1))
         });
-        if mask != crate::guest_root_publication::CONCRETE_GUEST_FEATURE_MASK_V1 {
+        if mask != aos_sandbox_agent::guest_root_publication::CONCRETE_GUEST_FEATURE_MASK_V1 {
             return Err(ProtectedGuestAgentErrorV1::UnsupportedFeature.into());
         }
         aos_sandbox_linux::guest_confinement::require_guest_owner()?;
@@ -289,124 +293,6 @@ struct Provisioning {
     package_binding: ObjectDigest,
 }
 
-/// Builds the exact sealed launch record supplied to inherited FD 4.
-///
-/// The Host must publish the returned verifying key in its protected peer
-/// binding and deliver the encoded bytes through a fully sealed memfd.
-pub struct GuestAgentLaunchRecordV1 {
-    runtime: AgentRuntimeBindingV1,
-    channel: ObjectDigest,
-    instance: [u8; 16],
-    signing_key: SigningKey,
-    features: AgentFeatureSetV1,
-    package_binding: ObjectDigest,
-}
-
-impl GuestAgentLaunchRecordV1 {
-    /// Constructs one non-sentinel launch record for a protected Host owner.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProtectedGuestAgentErrorV1::InvalidProvisioning`] for a zero
-    /// channel, instance, signing seed, or package binding.
-    pub fn new(
-        runtime: AgentRuntimeBindingV1,
-        channel: ObjectDigest,
-        instance: [u8; 16],
-        signing_seed: [u8; 32],
-        features: AgentFeatureSetV1,
-        package_binding: ObjectDigest,
-    ) -> Result<Self, ProtectedGuestAgentErrorV1> {
-        if channel.as_bytes() == &[0; 32]
-            || instance == [0; 16]
-            || signing_seed == [0; 32]
-            || package_binding.as_bytes() == &[0; 32]
-        {
-            return Err(ProtectedGuestAgentErrorV1::InvalidProvisioning);
-        }
-        Ok(Self {
-            runtime,
-            channel,
-            instance,
-            signing_key: SigningKey::from_bytes(&signing_seed),
-            features,
-            package_binding,
-        })
-    }
-
-    /// Returns the public key the Host must bind to this exact channel.
-    #[must_use]
-    pub fn verifying_key_bytes(&self) -> [u8; 32] {
-        self.signing_key.verifying_key().to_bytes()
-    }
-
-    /// Returns the exact runtime for which this launch secret was minted.
-    #[must_use]
-    pub const fn runtime(&self) -> &AgentRuntimeBindingV1 {
-        &self.runtime
-    }
-
-    /// Returns the protected channel to which this launch secret is bound.
-    #[must_use]
-    pub const fn channel_binding(&self) -> ObjectDigest {
-        self.channel
-    }
-
-    /// Returns the one-time agent instance bound to this launch record.
-    #[must_use]
-    pub const fn agent_instance(&self) -> [u8; 16] {
-        self.instance
-    }
-
-    /// Returns the exact feature set supplied to the guest.
-    #[must_use]
-    pub const fn features(&self) -> &AgentFeatureSetV1 {
-        &self.features
-    }
-
-    /// Returns the guest package identity sealed into this launch record.
-    #[must_use]
-    pub const fn package_binding(&self) -> ObjectDigest {
-        self.package_binding
-    }
-
-    /// Encodes the canonical 258-byte `AOSAGP01` sealed-memfd payload.
-    #[must_use]
-    pub fn encode(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(GUEST_AGENT_PROVISIONING_BYTES_V1);
-        bytes.extend_from_slice(PROVISIONING_MAGIC);
-        bytes.extend_from_slice(&encode_agent_runtime_binding_v1(self.runtime));
-        bytes.extend_from_slice(self.channel.as_bytes());
-        bytes.extend_from_slice(&self.instance);
-        bytes.extend_from_slice(&self.signing_key.to_bytes());
-        let feature_mask = self
-            .features
-            .as_slice()
-            .iter()
-            .fold(0_u16, |mask, feature| {
-                mask | (1_u16 << (*feature as u8 - 1))
-            });
-        bytes.extend_from_slice(&feature_mask.to_be_bytes());
-        bytes.extend_from_slice(self.package_binding.as_bytes());
-        let checksum: [u8; 32] = Sha256::digest(&bytes).into();
-        bytes.extend_from_slice(&checksum);
-        bytes
-    }
-}
-
-/// Encodes the exact runtime prefix shared by sealed guest launch credentials.
-#[must_use]
-pub fn encode_agent_runtime_binding_v1(runtime: AgentRuntimeBindingV1) -> [u8; 104] {
-    let mut bytes = [0_u8; 104];
-    bytes[..16].copy_from_slice(runtime.sandbox().as_bytes());
-    bytes[16..32].copy_from_slice(runtime.incarnation().as_bytes());
-    bytes[32..40].copy_from_slice(&runtime.assignment_epoch().get().to_be_bytes());
-    bytes[40..72].copy_from_slice(runtime.assignment_digest().as_bytes());
-    bytes[72..80].copy_from_slice(&runtime.desired_generation().get().to_be_bytes());
-    bytes[80..88].copy_from_slice(&runtime.namespace_generation().get().to_be_bytes());
-    bytes[88..104].copy_from_slice(runtime.payload_boot_id());
-    bytes
-}
 
 /// Applies a previously decoded operation within the guest-local effect owner.
 ///
@@ -471,7 +357,7 @@ pub trait GuestOperationEffectsV1 {
     /// Rejects unsupported effects or missing exact live custody/current process.
     fn original_attach_v3(
         &mut self,
-        _action: crate::openssh_consume::OriginalAttachActionV3,
+        _action: aos_sandbox_agent::openssh_consume::OriginalAttachActionV3,
         _binding: [u8; 32],
         _authority_expires_at: i64,
         _effect_deadline_boottime_nanoseconds: u64,
@@ -483,7 +369,7 @@ pub trait GuestOperationEffectsV1 {
     ) -> Result<
         (
             OpenSshGateReadbackV1,
-            crate::openssh_consume::OriginalAttachObservationV3,
+            aos_sandbox_agent::openssh_consume::OriginalAttachObservationV3,
         ),
         ProtectedGuestAgentErrorV1,
     > {
@@ -497,7 +383,7 @@ pub trait GuestOperationEffectsV1 {
     /// topology, replay or ambiguous effects. Parsing supplies no permission.
     fn original_control_v5(
         &mut self,
-        _action: crate::openssh_control_channel::OriginalControlActionV5,
+        _action: aos_sandbox_agent::openssh_control_channel::OriginalControlActionV5,
         _binding: [u8; 32],
         _control: &[u8],
         _authority_expires_at: i64,
@@ -510,7 +396,7 @@ pub trait GuestOperationEffectsV1 {
     ) -> Result<
         (
             OpenSshGateReadbackV1,
-            crate::openssh_control_channel::OriginalControlObservationV5,
+            aos_sandbox_agent::openssh_control_channel::OriginalControlObservationV5,
         ),
         ProtectedGuestAgentErrorV1,
     > {
@@ -695,7 +581,7 @@ impl<Effects: GuestOperationEffectsV1> DormantGuestAgentServiceV1
                         return Err(ProtectedGuestAgentErrorV1::UnexpectedFrame);
                     }
                     let (action, custody, control, expiry, boottime_deadline, observe, ticket) =
-                        crate::openssh_control_channel::decode_original_control_request_v5(&bytes)
+                        aos_sandbox_agent::openssh_control_channel::decode_original_control_request_v5(&bytes)
                             .map_err(|_| ProtectedGuestAgentErrorV1::InvalidGateRequest)?;
                     if observe.session_binding != *binding.digest().as_bytes()
                         || observe.binding.incarnation_id
@@ -723,22 +609,22 @@ impl<Effects: GuestOperationEffectsV1> DormantGuestAgentServiceV1
                         || readback.channel_binding != *provisioning.channel.as_bytes()
                         || readback.binding != observe.binding
                         || (action
-                            == crate::openssh_control_channel::OriginalControlActionV5::Apply
+                            == aos_sandbox_agent::openssh_control_channel::OriginalControlActionV5::Apply
                             && (observation.phase
-                                != crate::openssh_control_channel::OriginalControlPhaseV5::Applied
+                                != aos_sandbox_agent::openssh_control_channel::OriginalControlPhaseV5::Applied
                                 || observation.binding != custody
                                 || observation.request != control))
                     {
                         return Err(ProtectedGuestAgentErrorV1::InvalidGateRequest);
                     }
-                    let physical = crate::openssh_ticket::sign_ticket_gate_readback_v2(
+                    let physical = aos_sandbox_agent::openssh_ticket::sign_ticket_gate_readback_v2(
                         &readback,
-                        crate::openssh_ticket::ticket_digest_v2(ticket),
+                        aos_sandbox_agent::openssh_ticket::ticket_digest_v2(ticket),
                         &provisioning.signing_key,
                     )
                     .map_err(|_| ProtectedGuestAgentErrorV1::InvalidGateRequest)?;
                     let response =
-                        crate::openssh_control_channel::sign_original_control_response_v5(
+                        aos_sandbox_agent::openssh_control_channel::sign_original_control_response_v5(
                             &observation,
                             &physical,
                             &provisioning.signing_key,
@@ -762,7 +648,7 @@ impl<Effects: GuestOperationEffectsV1> DormantGuestAgentServiceV1
                         effect_deadline_boottime_nanoseconds,
                         observe,
                         ticket,
-                    ) = crate::openssh_consume::decode_original_attach_request_v3(&bytes)
+                    ) = aos_sandbox_agent::openssh_consume::decode_original_attach_request_v3(&bytes)
                         .map_err(|_| ProtectedGuestAgentErrorV1::InvalidGateRequest)?;
                     if observe.session_binding != *binding.digest().as_bytes()
                         || observe.binding.incarnation_id
@@ -788,20 +674,20 @@ impl<Effects: GuestOperationEffectsV1> DormantGuestAgentServiceV1
                         || readback.route_digest != observe.route_digest
                         || readback.channel_binding != *provisioning.channel.as_bytes()
                         || readback.binding != observe.binding
-                        || (action == crate::openssh_consume::OriginalAttachActionV3::Consume
+                        || (action == aos_sandbox_agent::openssh_consume::OriginalAttachActionV3::Consume
                             && (observation.binding != custody
                                 || observation.phase
-                                    != crate::openssh_consume::OriginalAttachPhaseV3::Transferred))
+                                    != aos_sandbox_agent::openssh_consume::OriginalAttachPhaseV3::Transferred))
                     {
                         return Err(ProtectedGuestAgentErrorV1::InvalidGateRequest);
                     }
-                    let physical = crate::openssh_ticket::sign_ticket_gate_readback_v2(
+                    let physical = aos_sandbox_agent::openssh_ticket::sign_ticket_gate_readback_v2(
                         &readback,
-                        crate::openssh_ticket::ticket_digest_v2(ticket),
+                        aos_sandbox_agent::openssh_ticket::ticket_digest_v2(ticket),
                         &provisioning.signing_key,
                     )
                     .map_err(|_| ProtectedGuestAgentErrorV1::InvalidGateRequest)?;
-                    let response = crate::openssh_consume::encode_original_attach_response_v3(
+                    let response = aos_sandbox_agent::openssh_consume::encode_original_attach_response_v3(
                         &observation,
                         &physical,
                     )
@@ -818,7 +704,7 @@ impl<Effects: GuestOperationEffectsV1> DormantGuestAgentServiceV1
                         return Err(ProtectedGuestAgentErrorV1::UnexpectedFrame);
                     }
                     let (observe, ticket) =
-                        crate::openssh_ticket::decode_ticket_gate_request_v2(&bytes)
+                        aos_sandbox_agent::openssh_ticket::decode_ticket_gate_request_v2(&bytes)
                             .map_err(|_| ProtectedGuestAgentErrorV1::InvalidGateRequest)?;
                     if observe.session_binding != *binding.digest().as_bytes()
                         || observe.binding.incarnation_id
@@ -840,11 +726,11 @@ impl<Effects: GuestOperationEffectsV1> DormantGuestAgentServiceV1
                         || readback.route_digest != observe.route_digest
                         || readback.channel_binding != *provisioning.channel.as_bytes()
                         || readback.binding != observe.binding
-                        || digest != crate::openssh_ticket::ticket_digest_v2(ticket)
+                        || digest != aos_sandbox_agent::openssh_ticket::ticket_digest_v2(ticket)
                     {
                         return Err(ProtectedGuestAgentErrorV1::InvalidGateRequest);
                     }
-                    let packet = crate::openssh_ticket::sign_ticket_gate_readback_v2(
+                    let packet = aos_sandbox_agent::openssh_ticket::sign_ticket_gate_readback_v2(
                         &readback,
                         digest,
                         &provisioning.signing_key,

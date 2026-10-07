@@ -3,7 +3,7 @@
 //! This copier is only a physical effect primitive. Its privileged caller
 //! must authenticate the Storage Create intent, prove that the attached root
 //! is the intended fresh dataset, retain exclusive custody through copying,
-//! and publish [`crate::guest_root_publication::GuestRootPublicationProofV1`]
+//! and publish [`aos_sandbox_agent::guest_root_publication::GuestRootPublicationProofV1`]
 //! only after the returned tree digest has been read back.
 
 use std::fs::{self, File, Metadata, OpenOptions};

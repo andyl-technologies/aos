@@ -13,17 +13,14 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use aos_sandbox_core::public_attach_route::{
-    PUBLIC_ATTACH_CERTIFICATE_TYPE_V1, PUBLIC_ATTACH_GATE_PATH_V1, public_attach_force_command_v1,
-    valid_public_attach_user_v1,
-};
+use aos_sandbox_core::public_attach_route::PUBLIC_ATTACH_GATE_PATH_V1;
 use ed25519_dalek::SigningKey;
 use sha2::{Digest as _, Sha256};
 use ssh_key::{Algorithm, PrivateKey, PublicKey};
 
-use crate::openssh_gate::{
+use aos_sandbox_agent::openssh_gate::{
     OpenSshGateBindingV1, OpenSshGateClaimV1, OpenSshGatePhysicalStateV1, OpenSshGateReadbackV1,
-    sign_openssh_gate_readback_v1,
+    expected_openssh_gate_config_v1, sign_openssh_gate_readback_v1,
 };
 
 const SSHD_PATH: &str = "/usr/sbin/sshd";
@@ -642,35 +639,6 @@ impl Drop for RunningOpenSshGateV1 {
     }
 }
 
-/// Builds the only accepted sshd configuration for one attach route.
-///
-/// # Errors
-///
-/// Returns an error for invalid bounded route fields.
-pub fn expected_openssh_gate_config_v1(
-    binding: &OpenSshGateBindingV1,
-) -> Result<Vec<u8>, OpenSshGatePhysicalErrorV1> {
-    binding
-        .validate()
-        .map_err(|_| OpenSshGatePhysicalErrorV1::InvalidBinding)?;
-    if !valid_public_attach_user_v1(&binding.user) {
-        return Err(OpenSshGatePhysicalErrorV1::InvalidBinding);
-    }
-    let command = public_attach_force_command_v1(
-        &binding.attach_operation_id,
-        &binding.execution_id,
-        &binding.incarnation_id,
-        binding.assignment_epoch,
-        &binding.principal_id,
-        &binding.audit_id,
-    );
-    Ok(format!(
-        "Port {}\nHostKey {HOST_KEY_PATH}\nHostKeyAlgorithms ssh-ed25519\nPubkeyAuthentication yes\nPubkeyAcceptedAlgorithms {PUBLIC_ATTACH_CERTIFICATE_TYPE_V1}\nTrustedUserCAKeys {CA_PATH}\nAuthenticationMethods publickey\nAuthorizedPrincipalsFile none\nAuthorizedPrincipalsCommand {GATE_PATH} --authorized-principals %t %k\nAuthorizedPrincipalsCommandUser {}\nAuthorizedKeysFile none\nAuthorizedKeysCommand none\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nHostbasedAuthentication no\nPermitRootLogin no\nAllowUsers {}\nForceCommand {command}\nDisableForwarding yes\nPermitTTY yes\nPermitUserEnvironment no\nPermitUserRC no\nUsePAM no\nStrictModes yes\nLogLevel VERBOSE\n",
-        binding.port, binding.user, binding.user,
-    )
-    .into_bytes())
-}
-
 /// Loads the public root-installed claim for the unprivileged forced command.
 ///
 /// The guest process owner must independently check the claim against its
@@ -737,7 +705,8 @@ fn load_installed_gate_claim() -> Result<OpenSshGateClaimV1, OpenSshGatePhysical
     let config = read_protected_file(Path::new(CONFIG_PATH), 4096, false)?;
     let ca = read_protected_file(Path::new(CA_PATH), 256, false)?;
     let host_public = read_protected_file(Path::new(HOST_PUBLIC_KEY_PATH), 256, false)?;
-    if config.bytes != expected_openssh_gate_config_v1(&claim.binding)?
+    if config.bytes != expected_openssh_gate_config_v1(&claim.binding)
+            .map_err(|_| OpenSshGatePhysicalErrorV1::InvalidBinding)?
         || digest(&config.bytes) != claim.binding.gate_config_digest
         || ca.bytes != format!("{}\n", claim.binding.trusted_user_ca_public_key).as_bytes()
         || host_public.bytes != format!("{}\n", claim.binding.host_public_key).as_bytes()
@@ -765,7 +734,8 @@ fn check_installed_files(
 ) -> Result<InstalledGateFiles, OpenSshGatePhysicalErrorV1> {
     let config = read_protected_file(Path::new(CONFIG_PATH), 4096, false)?;
     if digest(&config.bytes) != binding.gate_config_digest
-        || config.bytes != expected_openssh_gate_config_v1(binding)?
+        || config.bytes != expected_openssh_gate_config_v1(binding)
+            .map_err(|_| OpenSshGatePhysicalErrorV1::InvalidBinding)?
     {
         return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
     }
@@ -853,7 +823,7 @@ fn read_protected_file(
 /// Rejects missing, writable, foreign, symlinked, oversized, or malformed data.
 pub fn load_original_ticket_claim_v2() -> Result<Vec<u8>, OpenSshGatePhysicalErrorV1> {
     let file = read_protected_file(
-        Path::new(crate::openssh_ticket::OPENSSH_TICKET_CLAIM_PATH_V2),
+        Path::new(aos_sandbox_agent::openssh_ticket::OPENSSH_TICKET_CLAIM_PATH_V2),
         aos_sandbox_core::public_attach_ticket::PUBLIC_ATTACH_TICKET_MAXIMUM_BYTES_V2 as u64,
         false,
     )?;

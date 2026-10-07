@@ -15,15 +15,15 @@ use std::os::unix::process::CommandExt as _;
 use std::os::unix::process::ExitStatusExt as _;
 
 use super::*;
-use crate::openssh_monitor::{
+use aos_sandbox_agent::openssh_monitor::{
     OPENSSH_MONITOR_BINDING_ACK_V2, OPENSSH_MONITOR_MAXIMUM_RECORD_BYTES_V2,
     OpenSshMonitorWitnessV2,
 };
-use crate::openssh_session::{
+use aos_sandbox_agent::openssh_session::{
     OpenSshSessionActionV4, OpenSshSessionReplyV4, OpenSshSessionRequestV4, OpenSshSessionStateV4,
     OriginalExecutionWaitStatusV4,
 };
-use crate::openssh_ticket::validate_original_ticket_certificate_v2;
+use aos_sandbox_agent::openssh_ticket::validate_original_ticket_certificate_v2;
 
 const SOCKET: &str = "/run/aos-sandbox-agent/exec-gate.sock";
 
@@ -86,7 +86,7 @@ pub(super) fn qualify_root_monitor_binding(ssh: &str, base: &OpenSshGateClaimV1,
     let ticket = fixture_ticket(base, original);
     let original_ticket_bytes = ticket.encode().unwrap();
     protected_file(
-        crate::openssh_ticket::OPENSSH_TICKET_CLAIM_PATH_V2,
+        aos_sandbox_agent::openssh_ticket::OPENSSH_TICKET_CLAIM_PATH_V2,
         &original_ticket_bytes,
         0o444,
     );
@@ -647,7 +647,7 @@ fn now() -> u64 {
 
 #[test]
 fn original_monitor_ticket_retains_pty_profile_and_denies_substitution() {
-    let claim = crate::openssh_attach_certificate::tests::claim();
+    let claim = fixture_claim();
     let original = certificate(with_command(builder(&claim, 1000, 1200), &claim));
     let ticket = fixture_ticket(&claim, &original);
     let original_ticket_bytes = ticket.encode().unwrap();

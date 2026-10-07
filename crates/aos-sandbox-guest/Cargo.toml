@@ -16,10 +16,30 @@ path = "src/exec_child.rs"
 name = "aos-sandbox-guest-init"
 path = "src/init.rs"
 
+[[bin]]
+name = "aos-sandbox-agent"
+path = "src/bin/aos-sandbox-agent.rs"
+
+[[bin]]
+name = "aos-sandbox-exec-gate"
+path = "src/bin/aos-sandbox-exec-gate.rs"
+
+[[bin]]
+name = "aos-sandbox-guest-root-builder"
+path = "src/bin/aos-sandbox-guest-root-builder.rs"
+
+[[bin]]
+name = "aos-sandbox-guest-root-tree-digest"
+path = "src/bin/aos-sandbox-guest-root-tree-digest.rs"
+
 [dependencies]
 aos-sandbox-agent.workspace = true
 aos-sandbox-core.workspace = true
 aos-sandbox-linux.workspace = true
+ed25519-dalek = { workspace = true, features = ["zeroize"] }
+nix = { version = "0.31.3", default-features = false, features = ["feature"] }
+ssh-key.workspace = true
+zeroize.workspace = true
 rustix = { workspace = true, features = ["fs", "process", "pty", "stdio", "termios", "thread", "time"] }
 serde.workspace = true
 serde_json.workspace = true

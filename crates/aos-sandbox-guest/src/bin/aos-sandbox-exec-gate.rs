@@ -18,7 +18,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use aos_sandbox_agent::openssh_attach_certificate::validate_openssh_attach_certificate_v1;
 use aos_sandbox_agent::openssh_gate::OpenSshGateClaimV1;
 #[cfg(target_os = "linux")]
-use aos_sandbox_agent::openssh_gate_linux::{
+use aos_sandbox_guest::openssh_gate_linux::{
     load_openssh_gate_claim_v1, load_unexpired_openssh_attach_profile_v5,
 };
 use aos_sandbox_core::public_attach_route::public_attach_force_command_v1;
@@ -98,7 +98,7 @@ fn emit_authorized_principal(arguments: &[OsString]) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Ok(_) => {
                 let ticket =
-                    aos_sandbox_agent::openssh_gate_linux::load_original_ticket_claim_v2().ok()?;
+                    aos_sandbox_guest::openssh_gate_linux::load_original_ticket_claim_v2().ok()?;
                 aos_sandbox_agent::openssh_ticket::validate_original_ticket_certificate_v2(
                     &claim,
                     &ticket,

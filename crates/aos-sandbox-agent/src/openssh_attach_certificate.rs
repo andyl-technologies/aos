@@ -132,9 +132,6 @@ pub(crate) fn checked_openssh_attach_certificate_v1(
 #[error("OpenSSH attach certificate profile was rejected")]
 pub struct OpenSshAttachCertificateErrorV1;
 
-#[cfg(all(test, target_os = "linux"))]
-mod qualification;
-
 #[cfg(test)]
 pub(crate) mod tests {
     use ssh_key::{PrivateKey, certificate::Builder, private::Ed25519Keypair};

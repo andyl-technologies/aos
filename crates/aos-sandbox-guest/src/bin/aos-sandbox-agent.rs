@@ -4,11 +4,11 @@
 //! the protected launcher's fixed inherited channel and sealed provisioning.
 
 #[cfg(not(target_os = "linux"))]
-use aos_sandbox_agent::DormantGuestAgentServiceV1;
-use aos_sandbox_agent::dormant_guest_agent_main_v1;
+use aos_sandbox_guest::DormantGuestAgentServiceV1;
+use aos_sandbox_guest::dormant_guest_agent_main_v1;
 
 #[cfg(target_os = "linux")]
-use aos_sandbox_agent::protected_entry::{ProtectedGuestAgentV1, RejectingGuestEffectsV1};
+use aos_sandbox_guest::protected_entry::{ProtectedGuestAgentV1, RejectingGuestEffectsV1};
 
 #[cfg(not(target_os = "linux"))]
 struct UnsupportedPlatform;

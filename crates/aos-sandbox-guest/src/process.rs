@@ -7,7 +7,7 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::time::Instant;
 
 use aos_sandbox_agent::openssh_gate::{OpenSshGateObserveRequestV1, OpenSshGateReadbackV1};
-use aos_sandbox_agent::protected_entry::{GuestOperationEffectsV1, ProtectedGuestAgentErrorV1};
+use crate::protected_entry::{GuestOperationEffectsV1, ProtectedGuestAgentErrorV1};
 use aos_sandbox_agent::{
     AgentExecutionOperationV1, AgentExecutionPhaseV1, AgentFeatureV1, AgentOperationRequestV1,
     AgentRuntimeBindingV1,

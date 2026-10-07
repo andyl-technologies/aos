@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use aos_sandbox_agent::openssh_consume::{
     OriginalAttachActionV3, OriginalAttachObservationV3, OriginalAttachPhaseV3,
 };
-use aos_sandbox_agent::openssh_gate_linux::OpenSshMonitorRuntimeV2;
+use crate::openssh_gate_linux::OpenSshMonitorRuntimeV2;
 use aos_sandbox_agent::openssh_monitor::{
     OPENSSH_MONITOR_BINDING_ACK_V2, OPENSSH_MONITOR_MAXIMUM_RECORD_BYTES_V2,
     OpenSshMonitorWitnessV2,
@@ -683,7 +683,7 @@ fn refresh_relay(
 }
 
 fn read_ticket() -> Result<Vec<u8>, Error> {
-    aos_sandbox_agent::openssh_gate_linux::load_original_ticket_claim_v2()
+    crate::openssh_gate_linux::load_original_ticket_claim_v2()
         .map_err(|_| Error::InvalidRequest)
 }
 

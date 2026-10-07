@@ -9,6 +9,11 @@
 //! signature = Ed25519("aos.sandbox.openssh-gate-readback.v1\0" || frame_without_signature)
 //! ```
 
+use aos_sandbox_core::public_attach_route::{
+    PUBLIC_ATTACH_CERTIFICATE_TYPE_V1, PUBLIC_ATTACH_GATE_PATH_V1,
+    public_attach_force_command_v1, valid_public_attach_user_v1,
+};
+
 use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -535,4 +540,33 @@ mod tests {
         trailing.push(0);
         assert!(decode_openssh_gate_bridge_request_v1(&trailing).is_err());
     }
+}
+
+/// Builds the only accepted sshd configuration for one attach route.
+///
+/// # Errors
+///
+/// Returns an error for invalid bounded route fields.
+pub fn expected_openssh_gate_config_v1(
+    binding: &OpenSshGateBindingV1,
+) -> Result<Vec<u8>, OpenSshGateReadbackErrorV1> {
+    binding
+        .validate()
+        .map_err(|_| OpenSshGateReadbackErrorV1::InvalidBinding)?;
+    if !valid_public_attach_user_v1(&binding.user) {
+        return Err(OpenSshGateReadbackErrorV1::InvalidBinding);
+    }
+    let command = public_attach_force_command_v1(
+        &binding.attach_operation_id,
+        &binding.execution_id,
+        &binding.incarnation_id,
+        binding.assignment_epoch,
+        &binding.principal_id,
+        &binding.audit_id,
+    );
+    Ok(format!(
+        "Port {}\nHostKey /etc/aos/sandbox-attach/host_key\nHostKeyAlgorithms ssh-ed25519\nPubkeyAuthentication yes\nPubkeyAcceptedAlgorithms {PUBLIC_ATTACH_CERTIFICATE_TYPE_V1}\nTrustedUserCAKeys /etc/aos/sandbox-attach/trusted_user_ca.pub\nAuthenticationMethods publickey\nAuthorizedPrincipalsFile none\nAuthorizedPrincipalsCommand {PUBLIC_ATTACH_GATE_PATH_V1} --authorized-principals %t %k\nAuthorizedPrincipalsCommandUser {}\nAuthorizedKeysFile none\nAuthorizedKeysCommand none\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nHostbasedAuthentication no\nPermitRootLogin no\nAllowUsers {}\nForceCommand {command}\nDisableForwarding yes\nPermitTTY yes\nPermitUserEnvironment no\nPermitUserRC no\nUsePAM no\nStrictModes yes\nLogLevel VERBOSE\n",
+        binding.port, binding.user, binding.user,
+    )
+    .into_bytes())
 }
