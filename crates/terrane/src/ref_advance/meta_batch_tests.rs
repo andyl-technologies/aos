@@ -11,7 +11,7 @@ use crate::{
     ref_advance::{AdvanceError, StagedUpload},
     repository::Error as RepositoryError,
     store::{
-        ContentStore, ContentUpload, CorruptSubject, EffectFault, InvalidReason, LocalFs,
+        Clock, ContentStore, ContentUpload, CorruptSubject, EffectFault, InvalidReason, LocalFs,
         MetaUpload, RefStore, StoreErrorKind, StoreFailure, TokioLocalFs,
     },
 };
@@ -690,9 +690,12 @@ async fn native_meta_batch_rechecks_current_original_and_deadline_before_ack() -
         let fixture = Fixture::with_clock(clock.clone()).await?;
         let (proposal, members) = request(Vec::new(), &[21])?;
         let before = fixture.snapshot().await?;
-        fixture.fs.arm(phase, Action::Expire(clock));
+        assert_eq!(clock.monotonic(), Duration::ZERO);
+        fixture.fs.arm(phase, Action::Expire(clock.clone()));
 
         let error = rejected(fixture.publish(proposal).await);
+
+        assert_eq!(clock.monotonic(), Duration::from_secs(31));
 
         if phase == Phase::Mutation {
             assert!(matches!(
@@ -702,11 +705,10 @@ async fn native_meta_batch_rechecks_current_original_and_deadline_before_ack() -
         } else {
             let failure = store_failure(&error);
             assert!(matches!(failure.kind(), StoreErrorKind::Denied { .. }));
-            assert!(matches!(
-                required(failure.source().ok_or("retained deadline source"))
-                    .downcast_ref::<AdvanceError>(),
-                Some(AdvanceError::Expired)
-            ));
+            // STORE-30 suppresses diagnostic detail for every denial, including
+            // a genuinely retained deadline refusal at the native worker.
+            assert!(failure.source().is_none());
+            assert_eq!(fixture.fs.observations().errors, vec![failure.to_string()]);
         }
         assert_eq!(fixture.fs.observations().reached, vec![phase]);
         if phase == Phase::Mutation {
