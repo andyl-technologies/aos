@@ -61,23 +61,18 @@
   focusedTests = features: tests: ''
     cargo test --frozen --offline -p terrane --no-default-features \
       --features ${features} --lib -- --list > "$TMPDIR/gc-tests.txt"
-    python3 - "$TMPDIR/gc-tests.txt" <<'PYTEST'
-    import sys
+    python3 ../tests/terrane/check_native_gate.py inventory \
+      "$TMPDIR/gc-tests.txt" '${builtins.toJSON tests}'
 
-    with open(sys.argv[1], encoding="utf-8") as test_list:
-        names = {line.strip() for line in test_list}
-
-    required = ${builtins.toJSON tests}
-    if len(required) != len(set(required)):
-        raise SystemExit("duplicate required collector test")
-
-    missing = [name for name in required if f"{name}: test" not in names]
-    if missing:
-        raise SystemExit(f"required collector tests are missing: {missing}")
-    PYTEST
     for test_name in ${builtins.concatStringsSep " " tests}; do
-      cargo test --frozen --offline -p terrane --no-default-features \
-        --features ${features} --lib "$test_name" -- --exact
+      if ! cargo test --frozen --offline -p terrane --no-default-features \
+        --features ${features} --lib "$test_name" -- --exact \
+        > "$TMPDIR/gc-test.log" 2>&1; then
+        cat "$TMPDIR/gc-test.log"
+        exit 1
+      fi
+      python3 ../tests/terrane/check_native_gate.py execution \
+        "$TMPDIR/gc-test.log" "[\"$test_name\"]"
     done
   '';
 in {

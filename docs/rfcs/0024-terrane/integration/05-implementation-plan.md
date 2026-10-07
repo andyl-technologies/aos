@@ -734,6 +734,12 @@ sync faults are mandatory. The existing idempotence failure and complete
 milestone floor remain open.
 Registry completeness and both required formatters pass for the new check
 definitions; neither missing-selector inventory is recorded as passing.
+The shared collector gate runner now checks each original execution report
+with the existing native checker: the exact named case must pass with nonzero
+passes and zero ignored tests before the gate writes its result. Required
+selectors and feature profiles stay fixed. Registry completeness and both
+mandatory formatters pass; this runner change establishes no collector runtime
+result on the incomplete trunk.
 
 The test-only bucket observer records actual typed Node/Commit get and put
 attempts before catalog lookup, admission or deduplication. The same per-bucket
