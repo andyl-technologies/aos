@@ -1,13 +1,15 @@
 //! Owns the once-only image-paid original Nix Start intake.
 //!
 //! ```text
-//! enrollment: Controller baseline=C-P-I, reserved=P+I
+//! enrollment: Controller baseline=C-P-I(-Q), reserved=P+I(+Q)
 //! intake:     same Controller head + AOSRSC06 purpose11, I permanently Committed
 //! ```
 //!
 //! The actual bank opening, receiving writers and profile remain resident.
 //! This interval pays only the bounded current-Start intake. It does not issue
 //! a compiled-policy operation loan, a Storage request or physical permission.
+//! Pure prearm precedes observations; the original FirstGlobal CPU association
+//! is historical, and fresh I CPU readback precedes replay and archive growth.
 
 use std::sync::{Arc, Mutex};
 
@@ -15,7 +17,8 @@ use aos_sandbox_core::{OperationId, RawPairedClockSample, ResourceDimension as D
 use aos_sandbox_linux::cgroup::FirstGlobalCpuReadbackV1;
 
 use super::service_interval::{
-    JournalShape, ObserverAdmission, ObserverLifetime, OriginalReceiver, capacity_for, multiply,
+    ControllerFirstGlobalPrefixAttemptV1, JournalShape, ObserverAdmission, ObserverLifetime,
+    OriginalControllerCpuContainment, OriginalReceiver, capacity_for, multiply,
 };
 use super::{
     AccountTransition, ClaimState, ControllerResourceBankOpeningV1, ResourceReservationErrorV1,
@@ -82,10 +85,12 @@ pub(crate) struct PaidNixStartOriginalsV1 {
 pub struct NixOriginalStartIntakeAttemptV1 {
     bank: Arc<Mutex<ControllerResourceBankOpeningV1>>,
     original: Option<Result<bootstrap::OriginalEnrollment, ResourceReservationErrorV1>>,
+    containment: Option<Result<(), ResourceReservationErrorV1>>,
     receiver: Option<Result<OriginalReceiver, ResourceReservationErrorV1>>,
     initial_clock: Option<Result<RawPairedClockSample, SourceGenesisErrorV1>>,
     preparation: Option<Result<(), ResourceReservationErrorV1>>,
     cpu: FirstGlobalCpuReadbackV1,
+    cpu_capture: Option<Result<(), NormalRootStartupErrorV1>>,
     append: ReturnedAppend,
     controller_post: Option<Result<(), JournalError>>,
     source_post: Option<Result<(), JournalError>>,
@@ -114,8 +119,10 @@ pub struct NixOriginalStartIntakeAttemptV1 {
 enum FailureSite {
     InitialClock,
     Original,
+    Containment,
     Receiver,
     Cpu,
+    CpuCapture,
     Append,
     Preparation,
     ControllerPost,
@@ -132,10 +139,12 @@ impl NixOriginalStartIntakeAttemptV1 {
         Self {
             bank,
             original: None,
+            containment: None,
             receiver: None,
             initial_clock: None,
             preparation: None,
             cpu: FirstGlobalCpuReadbackV1::default(),
+            cpu_capture: None,
             append: ReturnedAppend::new(),
             controller_post: None,
             source_post: None,
@@ -165,6 +174,8 @@ impl NixOriginalStartIntakeAttemptV1 {
     ///
     /// All returned native and independent post Results stay in this attempt.
     /// Failure, abandonment and Drop never return I to the Controller baseline.
+    /// A refused pure prearm enters no observations. The prior physical CPU
+    /// recipe is only historical containment; fresh I readback precedes growth.
     ///
     /// # Errors
     /// Refuses reentry, absent original enrollment/intake, insufficient complete
@@ -174,6 +185,7 @@ impl NixOriginalStartIntakeAttemptV1 {
         controller: &mut Journal,
         source: &mut ProtectedSourceDomainJournalOwnerV1,
         profile: &ProductionControllerNormalRootProfileV1,
+        prefix: Option<&ControllerFirstGlobalPrefixAttemptV1>,
     ) -> Result<(), ResourceReservationErrorV1> {
         if self.attempted {
             if let Some(lifetime) = &self.lifetime {
@@ -182,10 +194,28 @@ impl NixOriginalStartIntakeAttemptV1 {
             return Err(ResourceReservationErrorV1::Conflict);
         }
         self.attempted = true;
-        self.initial_clock = Some(crate::policy_compiler::observe_root_first_source_successor_clock_v2(None));
         self.original = Some(self.bank.lock()
             .map_err(|_| ResourceReservationErrorV1::EnrollmentUnavailable)
-            .and_then(|mut bank| bank.begin_nix_intake_once(controller)));
+            .and_then(|mut bank| bank.begin_nix_intake_once()));
+        if matches!(self.original, Some(Err(_))) {
+            self.first = Some(FailureSite::Original);
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        self.containment = Some((|| {
+            let original = self.original.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
+            let containment = prefix.ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?
+                .borrow_original_cpu_containment(&self.bank, profile)?;
+            containment.require_intake(original)
+        })());
+        if matches!(self.containment, Some(Err(_))) {
+            self.first = Some(FailureSite::Containment);
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+
+        // The genuine I minimum now owns every reached negative-prefix slot.
+        // No clock, path, profile, CPU or replay observation preceded admission.
+        self.initial_clock = Some(crate::policy_compiler::observe_root_first_source_successor_clock_v2(None));
         self.receiver = Some(OriginalReceiver::capture(controller, source, profile));
         self.preparation = Some(self.prepare_body(controller, source, profile));
         self.first = if matches!(self.initial_clock, Some(Err(_))) {
@@ -196,6 +226,8 @@ impl NixOriginalStartIntakeAttemptV1 {
             Some(FailureSite::Receiver)
         } else if self.cpu.failure().is_some() {
             Some(FailureSite::Cpu)
+        } else if matches!(self.cpu_capture, Some(Err(_))) {
+            Some(FailureSite::CpuCapture)
         } else if self.append.failure().is_some() {
             Some(FailureSite::Append)
         } else if matches!(self.preparation, Some(Err(_))) {
@@ -261,6 +293,17 @@ impl NixOriginalStartIntakeAttemptV1 {
         if clock.host_boot_id() != original.identity.boot {
             return Err(ResourceReservationErrorV1::Conflict);
         }
+        // This fixed cgroup/membership read needs no property archive rows.
+        // Keep its whole returned Result, then validate the fresh rate before
+        // metadata, replay, observer allocation or selected input growth.
+        self.cpu_capture = Some(profile.observe_first_global_cpu(&mut self.cpu));
+        if !matches!(self.cpu_capture, Some(Ok(()))) {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        let (quota, period) = self.cpu.quota_and_period().ok_or(ResourceReservationErrorV1::Conflict)?;
+        if period != 100_000 || quota > provision.get(D::CpuMicrosPerPeriod) {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
         let controller_shape = controller.first_global_allocation_shape_v1()?;
         let source_shape = source.journal().first_global_allocation_shape_v1()?;
         let fixed = fixed_demand(&controller_shape, &source_shape, provision)?;
@@ -276,11 +319,6 @@ impl NixOriginalStartIntakeAttemptV1 {
             self.lifetime.as_ref().ok_or(ResourceReservationErrorV1::Conflict)?,
         );
         profile.attach_nix_intake_observers(&admission)?;
-        profile.observe_first_global_cpu(&mut self.cpu)?;
-        let (quota, period) = self.cpu.quota_and_period().ok_or(ResourceReservationErrorV1::Conflict)?;
-        if period != 100_000 || quota > provision.get(D::CpuMicrosPerPeriod) {
-            return Err(ResourceReservationErrorV1::Conflict);
-        }
         profile.require_resource_producer()?;
         if self.bank.lock().map_err(|_| ResourceReservationErrorV1::EnrollmentUnavailable)?
             .first_global_original(controller)? != *original
@@ -398,8 +436,10 @@ impl NixOriginalStartIntakeAttemptV1 {
         match self.first? {
             FailureSite::InitialClock => self.initial_clock.as_ref()?.as_ref().err().map(|error| error as _),
             FailureSite::Original => self.original.as_ref()?.as_ref().err().map(|error| error as _),
+            FailureSite::Containment => self.containment.as_ref()?.as_ref().err().map(|error| error as _),
             FailureSite::Receiver => self.receiver.as_ref()?.as_ref().err().map(|error| error as _),
             FailureSite::Cpu => self.cpu.failure().map(|error| error as _),
+            FailureSite::CpuCapture => self.cpu_capture.as_ref()?.as_ref().err().map(|error| error as _),
             FailureSite::Append => self.append.failure(),
             FailureSite::Preparation => self.preparation.as_ref()?.as_ref().err().map(|error| error as _),
             FailureSite::ControllerPost => self.controller_post.as_ref()?.as_ref().err().map(|error| error as _),
@@ -449,7 +489,7 @@ impl<'original> NixOriginalStartIntakeLoanV1<'original> {
     pub(crate) fn require_open(&self) -> Result<(), ResourceReservationErrorV1> {
         self.profile.require_nix_intake_original(self.original.lifetime.as_ref()
             .ok_or(ResourceReservationErrorV1::Conflict)?)?;
-        self.original.append.require_committed()
+        self.original.append.require_committed().map(|_| ())
     }
 
     pub(crate) fn authorization_crossing(&mut self) -> Result<&mut RetainedAuthorizationTimeFloorV1, ResourceReservationErrorV1> {
@@ -496,7 +536,33 @@ fn fixed_demand(
     source: &JournalShape,
     provision: ResourceVector,
 ) -> Result<ResourceVector, ResourceReservationErrorV1> {
-    crate::production_operation_compiler::ControllerNixStartRecipeSelectorV2::original_start_intake_demand(
+    let whole = crate::production_operation_compiler::ControllerNixStartRecipeSelectorV2::original_start_intake_demand(
         controller, source, provision, std::mem::size_of::<Option<NixOriginalStartIntakeAttemptV1>>(),
-    )
+    )?;
+    // Rate, process and descriptor ceilings are shared by this one interval;
+    // retained negative-prefix owners coexist with the later whole recipe.
+    let retained_prefix = minimum_failure_demand()?
+        .with(D::CpuMicrosPerPeriod, 0)
+        .with(D::Pids, 0)
+        .with(D::OpenFiles, 0)
+        .with(D::ConcurrentOperations, 0);
+    Ok(whole.checked_add(retained_prefix)?)
+}
+
+pub(super) fn minimum_failure_demand() -> Result<ResourceVector, ResourceReservationErrorV1> {
+    // Reuse the proved clock/name/CPU/read-buffer recipe, not a second sampler
+    // or byte-to-CPU estimate. Price I's additional owner/guard slots separately.
+    let base = super::q04_intake::minimum_failure_demand()?;
+    let bytes = std::mem::size_of::<NixOriginalStartIntakeAttemptV1>()
+        .checked_add(std::mem::size_of::<OriginalControllerCpuContainment<'_>>())
+        .and_then(|bytes| bytes.checked_add(3 * 128))
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or(ResourceReservationErrorV1::Conflict)?;
+    let supplement = ResourceVector::ZERO
+        .with(D::MemoryBytes, bytes)
+        .with(D::MetadataEntries, bytes)
+        .with(D::PublicationStagingBytes, bytes)
+        .with(D::LogBytes, bytes)
+        .with(D::OutputBytes, bytes);
+    Ok(base.checked_add(supplement)?)
 }
