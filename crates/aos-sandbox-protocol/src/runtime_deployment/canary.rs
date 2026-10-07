@@ -207,7 +207,7 @@ impl CanaryPurposeV2 {
         let approval: [u8; 32] = array(bytes, 128)?;
         let approval_key = VerifyingKey::from_bytes(&approval).map_err(|_| DeploymentWireErrorV1)?;
         if bytes[12..16] != [0; 4] || bytes[424..432] != [0; 8]
-            || bytes[16..48] != Sha256::digest(signed_genesis).as_slice()
+            || &bytes[16..48] != Sha256::digest(signed_genesis).as_slice()
             || bytes[48..64] != genesis.node || bytes[64..80] != genesis.deployment
             || publisher != genesis.signer || approval_key.is_weak()
             || VerifyingKey::from_bytes(&publisher).map_err(|_| DeploymentWireErrorV1)?.is_weak()

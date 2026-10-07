@@ -354,7 +354,7 @@ fn update_record_ref(hasher: &mut Sha256, reference: super::model::RecordRefV2) 
 }
 
 /// Identifies the record kind selected by one exact namespace-40 key.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub enum RecordKindV2 {
     Acquisition,
     ProviderHead,

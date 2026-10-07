@@ -107,7 +107,9 @@ fn validate_preparation(
         }
         _ => return Err(invalid()),
     }
-    if record.encoded_len() > MAXIMUM_PREPARATION_BYTES_V1 {
+    let encoded_len = usize::try_from(record.encoded_len())
+        .map_err(|_| ProtocolValidationError::RequestTooLarge)?;
+    if encoded_len > MAXIMUM_PREPARATION_BYTES_V1 {
         return Err(ProtocolValidationError::RequestTooLarge);
     }
     Ok(())
@@ -200,7 +202,7 @@ pub fn decode_registration_response_v1(
         || marker[40..56] != row[24..40]
         || marker[56..88] != *original_plan_digest.as_bytes()
         || marker[88..120] == [0; 32]
-        || marker[120..152] != Sha256::digest(row).as_slice()
+        || &marker[120..152] != Sha256::digest(row).as_slice()
     {
         return Err(invalid());
     }

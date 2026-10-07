@@ -1385,6 +1385,10 @@ fn validate_outbound_carriers(
         BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
         | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
         | BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1
+        | BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_GIT_PROJECT_COVERAGE_V1
+        | BrokerMethod::BROKER_METHOD_MOUNT_READ_GIT_PROJECT_COVERAGE_V1
+        | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1
+        | BrokerMethod::BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1
         | BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2
         | BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2
         | BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2
@@ -2221,6 +2225,28 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn git_coverage_methods_remain_closed_to_legacy_carriers() {
+        let methods = [
+            BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_GIT_PROJECT_COVERAGE_V1,
+            BrokerMethod::BROKER_METHOD_MOUNT_READ_GIT_PROJECT_COVERAGE_V1,
+            BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1,
+            BrokerMethod::BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1,
+        ];
+
+        for method in methods {
+            for roles in [
+                &[][..],
+                &[BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_TARGET_ROOT][..],
+            ] {
+                assert_eq!(
+                    validate_outbound_carriers(method, roles),
+                    Err(ProtocolValidationError::DescriptorTableMismatch)
+                );
+            }
+        }
+    }
 
     #[test]
     fn nix_methods_remain_closed_to_legacy_carriers_and_protocols() {
