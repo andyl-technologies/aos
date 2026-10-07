@@ -51,24 +51,13 @@ pub(crate) fn admit_native_inventory(
             b"qemu_plugin_crucible_ram_owner_inventory_v1\0",
         )?)
     };
-    let mut owner_resources = RamControlOwnerInventory {
-        existing_tasks: 0,
-        existing_file_descriptors: 0,
-        registered_service_tasks: 0,
-        prospective_tasks: 1,
-        prospective_file_descriptors: 5,
-    };
-    let status = export(
-        &mut owner_resources.existing_tasks,
-        &mut owner_resources.existing_file_descriptors,
-        &mut owner_resources.registered_service_tasks,
-    );
-    if status != 0 {
-        return Err(RamError::Native {
-            operation: "authenticate pre-CPU owner inventory",
-            status,
-        });
-    }
+    let (owner_resources, operation) = export_owner_inventory(&controller, |inventory| {
+        export(
+            &mut inventory.existing_tasks,
+            &mut inventory.existing_file_descriptors,
+            &mut inventory.registered_service_tasks,
+        )
+    })?;
     let resources = controller
         .state
         .lock()
@@ -77,8 +66,6 @@ pub(crate) fn admit_native_inventory(
     if scratch > resources.staging_bytes {
         return Err(RamError::Invariant("RAM inventory staging not admitted"));
     }
-    let operation: Arc<dyn SourceOperation> =
-        Arc::from(controller.begin(SourceOperationClass::ControlSetup)?);
     let regions = read_regions()?;
     if regions.len() != region_count as usize {
         return Err(RamError::Invariant("native RAM inventory count changed"));
@@ -174,6 +161,43 @@ pub(crate) fn admit_native_inventory(
         inventory.regions.clear();
     }
     Ok(Some(allowance))
+}
+
+/// Keeps native census and subsequent grant installation under one setup start.
+///
+/// The native call remains on the pre-CPU main actor with BQL. It can block while
+/// draining native workers, so the independent host setup watchdog supplies
+/// process containment; these checks refuse a late success before publication.
+/// No controller lock is held while the exporter runs.
+///
+/// # Errors
+/// Refuses expired or unavailable original setup authority before export or
+/// publication, and preserves the original native status when export fails.
+pub(super) fn export_owner_inventory(
+    controller: &LivePagerController,
+    export: impl FnOnce(&mut RamControlOwnerInventory) -> c_int,
+) -> Result<(RamControlOwnerInventory, Arc<dyn SourceOperation>), RamError> {
+    let operation: Arc<dyn SourceOperation> =
+        Arc::from(controller.begin(SourceOperationClass::ControlSetup)?);
+    operation.wait_slice()?;
+
+    let mut inventory = RamControlOwnerInventory {
+        existing_tasks: 0,
+        existing_file_descriptors: 0,
+        registered_service_tasks: 0,
+        prospective_tasks: 1,
+        prospective_file_descriptors: 5,
+    };
+    let status = export(&mut inventory);
+    if status != 0 {
+        return Err(RamError::Native {
+            operation: "authenticate pre-CPU owner inventory",
+            status,
+        });
+    }
+    operation.wait_slice()?;
+
+    Ok((inventory, operation))
 }
 
 /// Returns the exact authenticated spill subset after native inventory grant.
