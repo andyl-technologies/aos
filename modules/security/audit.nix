@@ -129,9 +129,50 @@ in {
         2 = panic (halt the system — use for high-security environments)
       '';
     };
+
+    bounds = lib.mkOption {
+      type = lib.types.nullOr (lib.types.submodule {
+        options = {
+          maxLogFileMiB = lib.mkOption {
+            type = lib.types.addCheck lib.types.int (value: value > 0);
+            description = "Finite audit rotation target in MiB, not a hard filesystem quota.";
+          };
+          numLogs = lib.mkOption {
+            type = lib.types.addCheck lib.types.int (value: value >= 2 && value <= 99);
+            description = "Finite rotated audit file count; the active file and rotation overshoot remain separately charged.";
+          };
+          maximumRules = lib.mkOption {
+            type = lib.types.addCheck lib.types.int (value: value > 0);
+            description = "Maximum configured audit rule count before the rule loader runs.";
+          };
+          maximumRuleBytes = lib.mkOption {
+            type = lib.types.addCheck lib.types.int (value: value > 0);
+            description = "Maximum byte length of each configured audit rule.";
+          };
+          maximumBacklog = lib.mkOption {
+            type = lib.types.addCheck lib.types.int (value: value > 0);
+            description = "Maximum configured kernel audit queue entry count; kernel memory ownership is separate from auditd's cgroup.";
+          };
+        };
+      });
+      default = null;
+      description = "Optional image-selected audit input and retention bounds; absence preserves the ordinary audit configuration.";
+    };
   };
 
   config = lib.mkIf cfg.enable {
+    assertions = lib.optionals (cfg.bounds != null) [
+      {
+        assertion = builtins.length cfg.rules <= cfg.bounds.maximumRules
+          && builtins.all (rule: builtins.stringLength rule <= cfg.bounds.maximumRuleBytes) cfg.rules;
+        message = "Selected audit rules exceed the configured finite input bounds.";
+      }
+      {
+        assertion = cfg.backlogLimit > 0 && cfg.backlogLimit <= cfg.bounds.maximumBacklog;
+        message = "Selected audit backlog exceeds the configured finite queue bound.";
+      }
+    ];
+
     # Enable the kernel audit subsystem at boot. CONFIG_AUDITSYSCALL=y
     # compiles the code in, but syscall-level rules
     # (`-a always,exit -F arch=b64 -S …`) are only accepted by the
@@ -186,8 +227,8 @@ in {
         priority_boost = 4
         flush = INCREMENTAL_ASYNC
         freq = 50
-        num_logs = 5
-        max_log_file = 50
+        num_logs = ${toString (if cfg.bounds == null then 5 else cfg.bounds.numLogs)}
+        max_log_file = ${toString (if cfg.bounds == null then 50 else cfg.bounds.maxLogFileMiB)}
         max_log_file_action = ROTATE
         space_left = 75
         space_left_action = SYSLOG

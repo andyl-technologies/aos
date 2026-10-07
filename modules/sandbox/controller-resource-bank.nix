@@ -333,6 +333,10 @@ in {
   config = lib.mkIf (cfg.policy != null) {
     assertions = [
       {
+        assertion = cfg.parentEnclosure == null || config.aos.sandbox.resourceBank._parentImage != null;
+        message = "Selected parent enclosure requires its immutable image producer alongside the unchanged resource policy.";
+      }
+      {
         assertion = config.aos.security.selinux.enable
           && config.aos.security.selinux.mode == "enforcing"
           && config.aos.security.selinux.bootMode == "immutable-stage0";
