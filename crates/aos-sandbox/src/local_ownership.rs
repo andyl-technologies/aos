@@ -1,10 +1,13 @@
-//! Protected fixed-owner lease issuance for dormant multi-node coordination.
+//! Protected local lease issuance and retained recovery custody.
 //!
 //! The authority commits an unsigned claim before contacting its contained
 //! issuer, verifies the returned generation, nonce, interval, signatures, and
 //! exact prior-lease CAS against a live paired clock, and commits all returned
 //! artifacts before exposing them. An opaque recovery value names the durable
 //! intent across restart; retry always uses the original claim binding.
+//! This owner serves the local ownership daemon independently of coordinator
+//! transport. Existing protected file names and canonical records are retained;
+//! their historical coordinator spelling does not grant cross-host exclusivity.
 //!
 //! ```text
 //! bootstrap = "AOSMOL01" || policy-len:u32be || canonical-policy ||
@@ -19,8 +22,7 @@ use std::io::Read as _;
 use std::os::fd::AsFd as _;
 use std::path::Path;
 
-use aos_proto::aos::sandbox::coordinator::v1 as wire;
-use aos_sandbox_core::format::{decode_ownership_lease, decode_trust_policy};
+use aos_sandbox_core::format::decode_trust_policy;
 use aos_sandbox_core::{
     DecodeLimits, KeyUsage, MediaType, OwnershipLeaseTrustAnchor, PortableMediaType,
     RawClockProvenance, RawPairedClockSample, SignaturePurpose, descriptor_for_bytes,
@@ -83,42 +85,6 @@ impl ProtectedCommittedLeaseV1 {
         Self { response }
     }
 
-    /// Returns the generated, typed protobuf representation of the committed lease.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`super::InvalidMultiNodeProtocol::NonCanonicalFrame`] if the
-    /// protected canonical lease cannot be decoded exactly. This would indicate
-    /// protected-state corruption because the authority verifies it before commit.
-    pub fn protobuf(&self) -> Result<wire::AssignmentLease, super::InvalidMultiNodeProtocol> {
-        let lease = decode_ownership_lease(
-            self.response.lease(),
-            DecodeLimits {
-                maximum_bytes: self.response.lease().len(),
-                ..DecodeLimits::default()
-            },
-        )
-        .map_err(|_| super::InvalidMultiNodeProtocol::NonCanonicalFrame)?;
-        let assignment = lease.assignment();
-        Ok(wire::AssignmentLease {
-            sandbox_uid: assignment.sandbox().as_bytes().to_vec(),
-            incarnation_uid: assignment.incarnation().as_bytes().to_vec(),
-            assignment_epoch: assignment.epoch().get(),
-            assignment_sha256: assignment.digest().as_bytes().to_vec(),
-            node_uid: lease.node().as_bytes().to_vec(),
-            generation: lease.lease_generation(),
-            issued_at_unix_seconds: lease.authority_issued_seconds(),
-            expires_at_unix_seconds: lease.authority_expires_seconds(),
-            maximum_clock_skew_seconds: lease.maximum_clock_skew_seconds(),
-            renewal_nonce: lease.renewal_nonce().to_vec(),
-            canonical_lease: self.response.lease().to_vec(),
-            canonical_signature: self.response.signature().to_vec(),
-            canonical_receipt: self.response.receipt().to_vec(),
-            canonical_receipt_signature: self.response.receipt_signature().to_vec(),
-            ..Default::default()
-        })
-    }
-
     /// Returns the exact committed canonical lease bytes.
     #[must_use]
     pub fn lease(&self) -> &[u8] {
@@ -164,12 +130,12 @@ pub enum ProtectedLeaseIssueOutcomeV1 {
 /// generation from its caller. The ownership policy and exact issuer response
 /// are loaded from root-owned fixed files; the durable reducer independently
 /// verifies every response before making its bytes observable.
-pub struct ProtectedFixedMultiNodeLeaseOwnerV1 {
-    authority: ProtectedMultiNodeLeaseAuthorityV1<FixedProtectedOwnershipIssuerV1>,
+pub struct ProtectedFixedLocalLeaseOwnerV1 {
+    authority: ProtectedLocalLeaseAuthorityV1<FixedProtectedOwnershipIssuerV1>,
 }
 
-impl ProtectedFixedMultiNodeLeaseOwnerV1 {
-    /// Opens the complete fixed-root dormant ownership composition.
+impl ProtectedFixedLocalLeaseOwnerV1 {
+    /// Opens the complete fixed-root local ownership composition.
     ///
     /// # Errors
     ///
@@ -179,7 +145,7 @@ impl ProtectedFixedMultiNodeLeaseOwnerV1 {
     pub fn open_fixed_protected() -> Result<Self, ProtectedLeaseAuthorityErrorV1> {
         let (verifier, issuer) = load_fixed_ownership_bootstrap()?;
         Ok(Self {
-            authority: ProtectedMultiNodeLeaseAuthorityV1::open_fixed_protected(verifier, issuer)?,
+            authority: ProtectedLocalLeaseAuthorityV1::open_fixed_protected(verifier, issuer)?,
         })
     }
 
@@ -203,7 +169,7 @@ impl ProtectedFixedMultiNodeLeaseOwnerV1 {
     }
 }
 
-impl OwnershipProtocolRequestHandler for ProtectedFixedMultiNodeLeaseOwnerV1 {
+impl OwnershipProtocolRequestHandler for ProtectedFixedLocalLeaseOwnerV1 {
     fn authority(&self) -> &aos_sandbox_core::model::KeyReference {
         self.authority.durable.authority()
     }
@@ -213,7 +179,7 @@ impl OwnershipProtocolRequestHandler for ProtectedFixedMultiNodeLeaseOwnerV1 {
         session: &NegotiatedOwnershipSessionV1,
         request: &OwnershipRequestEnvelopeV1,
     ) -> Result<OwnershipResponseEnvelopeV1, OwnershipProtocolServiceError> {
-        let ProtectedMultiNodeLeaseAuthorityV1 {
+        let ProtectedLocalLeaseAuthorityV1 {
             durable,
             issuer,
             clock,
@@ -275,14 +241,14 @@ impl FixedProtectedOwnershipIssuerV1 {
 ///
 /// The issuer is deliberately private and has no signing method on this API.
 /// Claims can reach it only after durable admission and exact CAS validation.
-pub(crate) struct ProtectedMultiNodeLeaseAuthorityV1<I> {
+struct ProtectedLocalLeaseAuthorityV1<I> {
     durable: DurableOwnershipAuthority,
     issuer: I,
     clock: ProtectedLeaseClockV1,
 }
 
-impl<I: OwnershipAuthority> ProtectedMultiNodeLeaseAuthorityV1<I> {
-    /// Opens the dormant fixed-root owner with one protected verifier generation.
+impl<I: OwnershipAuthority> ProtectedLocalLeaseAuthorityV1<I> {
+    /// Opens the fixed-root owner with one protected verifier generation.
     ///
     /// This constructs no socket, listener, task, readiness marker, or service
     /// registration. The supplied issuer becomes inaccessible except through

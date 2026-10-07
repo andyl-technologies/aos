@@ -1,15 +1,18 @@
-//! Pure coordinator-to-node scheduling and reconciliation models.
+//! Protected inventory models and reserved coordinator integration.
 //!
-//! This module contains no production transport, service activation, or
-//! privileged effect implementation. Capability reports and node observations remain
-//! untrusted until an authenticated carrier and the relevant durable controller
-//! state validate them. In particular, an assignment or reconciliation value
-//! from this module never confers, renews, releases, or transfers ownership
-//! authority. Private sealed adapters bind authenticated peer, epoch, lease,
-//! signature, and replay facts to exact protected journal transactions; they
-//! expose no production activation. Dormant transport, lease authority, storage,
-//! and watch adapters are constructible only from explicit authenticated inputs
-//! and remain disconnected from listeners, routers, readiness, and dispatch.
+//! The local Controller consumes protected snapshot inventory during recovery.
+//! Capability reports and node observations remain untrusted until an
+//! authenticated carrier and the relevant durable state validate them. An
+//! assignment or reconciliation value never confers, renews, releases, or
+//! transfers ownership authority. Private sealed adapters bind authenticated
+//! peer, epoch, lease, signature and replay facts to exact protected journal
+//! transactions. This module owns no transport listener or service activation.
+//!
+//! The default local build retains the protected snapshot inventory and its
+//! existing typed replay dependencies. Placement, transport and ordered-watch
+//! adapters require `multi-node`. The fixed local lease issuer belongs to
+//! [`crate::local_ownership`]. Inventory codecs still depend on coordinator
+//! messages; this module is not yet a coordinator-free foundation.
 
 pub mod assignment;
 pub mod capability;
@@ -18,12 +21,15 @@ pub mod draining;
 pub mod evidence;
 mod evidence_authority;
 pub mod journal;
-mod lease_authority;
+#[cfg(all(feature = "multi-node", target_os = "linux"))]
+mod lease_protobuf;
+#[cfg(feature = "multi-node")]
 pub mod placement;
 mod protected_artifact_store;
 pub mod protocol;
 mod reducer_state;
 mod store_authority;
+#[cfg(feature = "multi-node")]
 pub mod watch_service;
 
 pub use assignment::{
@@ -51,6 +57,7 @@ pub use capability::{
     NodeCapabilitySnapshotV1, NodeProbeEvidenceV1, NodeProtocolOfferV1, NodeProtocolV1,
     hard_feature_fact_requirements_v1_0,
 };
+#[cfg(feature = "multi-node")]
 pub use carrier_authority::{
     DormantAuthenticatedCoordinatorNodeTransportV1, DormantCoordinatorNodeEncodingV1,
     DormantOutboundExchangeV1, DormantOutboundResponseV1, DormantTransportHandshakeV1,
@@ -74,10 +81,7 @@ pub use journal::{
     MultiNodeJournalRecordV1, MultiNodeJournalReducerV1, PartialEffectRecoveryV1,
     ProtectedJournalCheckpointV1, ProtectedJournalRecordV1,
 };
-pub use lease_authority::{
-    ProtectedCommittedLeaseV1, ProtectedFixedMultiNodeLeaseOwnerV1, ProtectedLeaseAuthorityErrorV1,
-    ProtectedLeaseIssueOutcomeV1, ProtectedLeaseRecoveryV1,
-};
+#[cfg(feature = "multi-node")]
 pub use placement::{
     AffinityPlacementV1, CandidateRejectionReasonV1, CandidateRejectionV1, InvalidPlacementInput,
     MAX_AFFINITY_PLACEMENTS, MAX_PLACEMENT_CANDIDATES, MAX_PLACEMENT_REQUIRED_FEATURES,
@@ -118,6 +122,7 @@ pub use store_authority::{
     ProtectedWatchArtifactRecoveryV1, ProtectedWatchBootstrapCommitOutcomeV1,
     ProtectedWatchCommitOutcomeV1, ProtectedWatchResyncRequiredV1,
 };
+#[cfg(feature = "multi-node")]
 pub use watch_service::{
     DormantOrderedWatchClientV1, DormantOrderedWatchServiceV1, DormantWatchClientOutcomeV1,
     DormantWatchReadOutcomeV1, MAX_DORMANT_WATCH_HISTORY,

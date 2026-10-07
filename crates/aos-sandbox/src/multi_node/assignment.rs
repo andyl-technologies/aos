@@ -24,6 +24,7 @@ use super::carrier_authority::AuthenticatedFrameSealV1;
 use super::evidence::AuthenticatedEvidenceContextV1;
 use super::evidence_authority::VerifierEvidenceGrantV1;
 use super::journal::{JournalEffectStateV1, MultiNodeJournalDomainV1, ProtectedJournalRecordV1};
+#[cfg(feature = "multi-node")]
 use super::placement::PlacementSelectionV1;
 
 /// Uses the core closed assignment transition vocabulary for node observations.
@@ -530,6 +531,7 @@ impl AssignmentIntentV1 {
     /// Returns [`InvalidAssignmentModel::PlacementMismatch`] when the
     /// deterministic selection names another node. The canonical manifest has
     /// already validated every assignment identity and derives its own digest.
+    #[cfg(feature = "multi-node")]
     pub fn new(
         assignment: CanonicalAssignmentManifestV1,
         desired_lifecycle: DesiredSandboxState,
@@ -1475,6 +1477,8 @@ impl AssignmentObservationReducerV1 {
 pub const MAX_SNAPSHOT_TRANSFER_CHUNKS: usize = 65_536;
 /// Maximum immutable dependencies admitted by one transfer manifest.
 pub const MAX_SNAPSHOT_TRANSFER_DEPENDENCIES: usize = 4_096;
+/// Maximum required features encoded in a snapshot transfer manifest.
+pub const MAX_SNAPSHOT_TRANSFER_REQUIRED_FEATURES: usize = 64;
 /// Maximum bytes in one independently verified snapshot chunk.
 pub const MAX_SNAPSHOT_TRANSFER_CHUNK_BYTES: u32 = 4 * 1024 * 1024;
 /// Maximum conservative canonical-wire charge for one complete manifest.
@@ -1907,7 +1911,7 @@ impl SnapshotTransferManifestV1 {
         }) {
             return Err(InvalidSnapshotTransfer::AuthorityBearingDependency);
         }
-        if required_features.len() > super::placement::MAX_PLACEMENT_REQUIRED_FEATURES
+        if required_features.len() > MAX_SNAPSHOT_TRANSFER_REQUIRED_FEATURES
             || !required_features.windows(2).all(|pair| pair[0] < pair[1])
             || aos_sandbox_core::validate_required_features(&required_features).is_err()
         {

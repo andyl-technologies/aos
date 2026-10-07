@@ -100,6 +100,8 @@ pub mod journal;
 pub mod lifecycle;
 mod lifecycle_authority;
 #[cfg(target_os = "linux")]
+pub mod local_ownership;
+#[cfg(target_os = "linux")]
 mod local_channel;
 #[cfg(target_os = "linux")]
 pub mod local_provisioning;

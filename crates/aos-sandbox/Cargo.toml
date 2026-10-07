@@ -5,6 +5,9 @@ edition = "2024"
 license.workspace = true
 
 [features]
+# Selects reserved remote placement, transport and watch adapters explicitly.
+# Local lease issuance and snapshot inventory remain available without it.
+multi-node = []
 # Compiles private fixed-helper mechanics without installing an authority caller.
 git-helper-mechanics = []
 # Run explicitly in the AOS kernel-test VM, outside the package-build sandbox.

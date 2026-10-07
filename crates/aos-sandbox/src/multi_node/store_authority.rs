@@ -33,10 +33,14 @@ use super::assignment::{
 };
 use super::capability::{NodeBootId, NodeBootLineageV1, NodeCapabilitySnapshotV1};
 use super::carrier_authority::{
-    AuthenticatedAssignmentCarrierContractV1, DormantAuthenticatedCoordinatorNodeTransportV1,
-    DormantOutboundExchangeV1, DormantOutboundResponseV1, DormantTransportHandshakeV1,
+    AuthenticatedAssignmentCarrierContractV1,
     issue_context_from_protected_bootstrap, issue_response_from_protected_channel,
     issue_session_from_protected_channel, verify_assignment_contract_from_protected_channel,
+};
+#[cfg(feature = "multi-node")]
+use super::carrier_authority::{
+    DormantAuthenticatedCoordinatorNodeTransportV1, DormantOutboundExchangeV1,
+    DormantOutboundResponseV1, DormantTransportHandshakeV1,
 };
 use super::draining::{
     DrainAssignmentPlanV1, DrainAssignmentStrategyV1, DrainDirectiveV1, DrainObservationV1,
@@ -49,6 +53,7 @@ use super::journal::{
     MultiNodeJournalCheckpointV1, MultiNodeJournalDomainV1, MultiNodeJournalRecordV1,
     MultiNodeJournalReducerV1, ProtectedJournalCheckpointV1, ProtectedJournalRecordV1,
 };
+#[cfg(feature = "multi-node")]
 use super::placement::PlacementCandidateV1;
 use super::protected_artifact_store::{
     ProtectedArtifactKindV1, ProtectedArtifactRecoveryV1, ProtectedArtifactStoreOutcomeV1,
@@ -1228,6 +1233,7 @@ impl ProtectedMultiNodeAuthorityOwnerV1 {
     ///
     /// Returns [`ProtectedMultiNodeUpdateErrorV1`] when protected time, trust
     /// state, the signature, or the exact handshake binding fails closed.
+    #[cfg(feature = "multi-node")]
     pub fn authenticate_dormant_transport(
         &mut self,
         handshake: DormantTransportHandshakeV1,
@@ -1251,6 +1257,7 @@ impl ProtectedMultiNodeAuthorityOwnerV1 {
     ///
     /// Returns [`ProtectedMultiNodeUpdateErrorV1`] when protected time or the
     /// authenticated session/request semantics are invalid.
+    #[cfg(feature = "multi-node")]
     pub fn prepare_dormant_exchange(
         &mut self,
         transport: &DormantAuthenticatedCoordinatorNodeTransportV1,
@@ -1273,6 +1280,7 @@ impl ProtectedMultiNodeAuthorityOwnerV1 {
     ///
     /// Returns [`ProtectedMultiNodeUpdateErrorV1`] unless the exact request is
     /// signed by the fixed pin and current under the protected clock.
+    #[cfg(feature = "multi-node")]
     pub fn accept_dormant_request(
         &mut self,
         transport: &DormantAuthenticatedCoordinatorNodeTransportV1,
@@ -1301,6 +1309,7 @@ impl ProtectedMultiNodeAuthorityOwnerV1 {
     ///
     /// Returns [`ProtectedMultiNodeUpdateErrorV1`] when the request is stale or
     /// the response is not its exact typed answer.
+    #[cfg(feature = "multi-node")]
     pub fn prepare_dormant_response(
         &mut self,
         transport: &DormantAuthenticatedCoordinatorNodeTransportV1,
@@ -1323,6 +1332,7 @@ impl ProtectedMultiNodeAuthorityOwnerV1 {
     ///
     /// Returns [`ProtectedMultiNodeUpdateErrorV1`] unless the fixed pin signed
     /// the canonical response and it exactly answers the retained request.
+    #[cfg(feature = "multi-node")]
     pub fn accept_dormant_response(
         &mut self,
         transport: DormantAuthenticatedCoordinatorNodeTransportV1,
@@ -1928,6 +1938,7 @@ impl ProtectedMultiNodeAuthorityOwnerV1 {
     /// Returns [`ProtectedMultiNodeUpdateErrorV1`] unless protected replay and
     /// a fresh clock sample prove that `response` is the current capability
     /// projection. The returned value remains scheduling evidence only.
+    #[cfg(feature = "multi-node")]
     pub fn issue_current_placement_candidate(
         &mut self,
         response: &NodeResponseEnvelopeV1,
@@ -3662,6 +3673,7 @@ impl ProtectedMultiNodeAuthorityOwnerV1 {
     /// Returns [`ProtectedMultiNodeUpdateErrorV1`] unless the selected event is
     /// carrier-authenticated, current, and exactly equals the protected current
     /// capability projection installed before the watch cursor.
+    #[cfg(feature = "multi-node")]
     pub fn issue_current_watch_placement_candidate(
         &mut self,
         response: &NodeResponseEnvelopeV1,

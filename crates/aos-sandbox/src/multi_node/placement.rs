@@ -25,9 +25,10 @@ use super::journal::{JournalEffectStateV1, MultiNodeJournalDomainV1, ProtectedJo
 /// Maximum candidate nodes considered by one placement decision.
 pub const MAX_PLACEMENT_CANDIDATES: usize = 4_096;
 /// Maximum complete affinity observations supplied to one placement decision.
-pub const MAX_AFFINITY_PLACEMENTS: usize = 4_096;
+pub const MAX_AFFINITY_PLACEMENTS: usize = super::reducer_state::MAX_ASSIGNMENT_AFFINITIES;
 /// Maximum required features accepted from one semantic placement request.
-pub const MAX_PLACEMENT_REQUIRED_FEATURES: usize = 64;
+pub const MAX_PLACEMENT_REQUIRED_FEATURES: usize =
+    super::assignment::MAX_SNAPSHOT_TRANSFER_REQUIRED_FEATURES;
 
 /// Couples one node snapshot to its authenticated controller receipt time.
 ///

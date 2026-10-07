@@ -13,7 +13,7 @@ use std::os::fd::OwnedFd;
 use std::path::Path;
 use std::time::Duration;
 
-use aos_sandbox::multi_node::ProtectedFixedMultiNodeLeaseOwnerV1;
+use aos_sandbox::local_ownership::ProtectedFixedLocalLeaseOwnerV1;
 use aos_sandbox::ownership_service::OwnershipProtocolRequestHandler;
 use aos_sandbox_linux::inherited_fd::claim_systemd_activation_descriptor_range;
 use aos_sandbox_linux::seqpacket::{RecordSubjectListener, SeqpacketError};
@@ -71,7 +71,7 @@ pub fn run_from_environment() -> Result<(), ProductionOwnershipAuthorityRuntimeE
     let (controller_uid, controller_gid) = controller_identity()?;
     let mut listener = adopt_listener()?;
     let secret = load_session_secret()?;
-    let mut owner = ProtectedFixedMultiNodeLeaseOwnerV1::open_fixed_protected()
+    let mut owner = ProtectedFixedLocalLeaseOwnerV1::open_fixed_protected()
         .map_err(|_| ProductionOwnershipAuthorityRuntimeErrorV1::ProtectedState)?;
 
     loop {

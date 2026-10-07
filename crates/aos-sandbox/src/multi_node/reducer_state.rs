@@ -37,6 +37,9 @@ use super::protocol::{
     stable_watch_event_uid,
 };
 
+/// Maximum complete affinity projections retained in an assignment record.
+pub const MAX_ASSIGNMENT_AFFINITIES: usize = 4_096;
+
 /// Retains an authority-neutral exact carrier/currentness commitment.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DurableEvidenceBindingV1 {
@@ -378,7 +381,7 @@ impl AssignmentJournalStateV1 {
                     || row.desired_generation > intent.desired_generation()
                     || row.assignment_digest != intent.assignment_digest()
             })
-            || affinities.len() > super::placement::MAX_AFFINITY_PLACEMENTS
+            || affinities.len() > MAX_ASSIGNMENT_AFFINITIES
             || !affinities
                 .windows(2)
                 .all(|pair| pair[0].sandbox < pair[1].sandbox)

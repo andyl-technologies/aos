@@ -26,7 +26,9 @@ mod sealed {
     pub trait Sealed {}
 }
 
+#[cfg(feature = "multi-node")]
 mod dormant_transport;
+#[cfg(feature = "multi-node")]
 pub use dormant_transport::{
     DormantAuthenticatedCoordinatorNodeTransportV1, DormantCoordinatorNodeEncodingV1,
     DormantOutboundExchangeV1, DormantOutboundResponseV1, DormantTransportHandshakeV1,
