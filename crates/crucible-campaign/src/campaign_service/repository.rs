@@ -94,14 +94,18 @@ pub(super) fn repository_service_failure(
 }
 
 pub(super) fn store_service_failure(error: &StoreError) -> CampaignServiceFailure {
-    match error {
+    match error.original_failure() {
         StoreError::Unauthorized => CampaignServiceFailure::BackendUnauthorized,
         StoreError::Quota => CampaignServiceFailure::ResourceExhausted,
         StoreError::NotFound { .. }
         | StoreError::Unavailable
         | StoreError::Io { .. }
         | StoreError::Supervision { .. }
-        | StoreError::StreamIo { .. } => CampaignServiceFailure::Unavailable,
+        | StoreError::StreamIo { .. }
+        | StoreError::DecodeAdmission { .. }
+        | StoreError::Allocation { .. }
+        | StoreError::SqliteDiagnostic { .. }
+        | StoreError::SqliteScope { .. } => CampaignServiceFailure::Unavailable,
         StoreError::Corrupt { .. }
         | StoreError::InvalidId
         | StoreError::InvalidRefName { .. }

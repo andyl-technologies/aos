@@ -200,6 +200,17 @@ fn ram_backing_failure_kind(error: &RamStoreError) -> crucible::BackendOperation
                 HostSupervisionError::Unavailable => Kind::Unavailable,
             };
         }
+        if let Some(store) = current.downcast_ref::<StoreError>()
+            && matches!(store.original_failure(), StoreError::Quota)
+        {
+            return Kind::CapacityExhausted;
+        }
+        if matches!(
+            current.downcast_ref::<RamStoreError>(),
+            Some(RamStoreError::Canceled)
+        ) {
+            return Kind::Canceled;
+        }
         cause = current.source();
     }
     match error {

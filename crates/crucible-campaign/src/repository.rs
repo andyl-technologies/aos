@@ -556,14 +556,18 @@ impl CampaignRepositoryError {
 }
 
 fn store_executor_rejection(error: &StoreError) -> ExecutorRejection {
-    match error {
+    match error.original_failure() {
         StoreError::NotFound { .. }
         | StoreError::Quota
         | StoreError::Unavailable
         | StoreError::Poisoned { .. }
         | StoreError::Io { .. }
         | StoreError::Supervision { .. }
-        | StoreError::StreamIo { .. } => ExecutorRejection::UnavailableInput,
+        | StoreError::StreamIo { .. }
+        | StoreError::DecodeAdmission { .. }
+        | StoreError::Allocation { .. }
+        | StoreError::SqliteDiagnostic { .. }
+        | StoreError::SqliteScope { .. } => ExecutorRejection::UnavailableInput,
         StoreError::Unauthorized => ExecutorRejection::Unauthorized,
         StoreError::Corrupt { .. }
         | StoreError::InvalidId

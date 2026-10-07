@@ -80,6 +80,39 @@ pub(super) fn write_gate(
     acquire(&WRITE_STAGING, operation)
 }
 
+pub(super) fn write_gate_with_boundary(
+    boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+) -> Result<MutexGuard<'static, ()>, StoreError> {
+    acquire_with_boundary(&WRITE_STAGING, boundary)
+}
+
+pub(super) fn read_gate_with_boundary(
+    boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+) -> Result<MutexGuard<'static, ()>, StoreError> {
+    acquire_with_boundary(&READ_STAGING, boundary)
+}
+
+fn acquire_with_boundary(
+    gate: &'static Mutex<()>,
+    boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+) -> Result<MutexGuard<'static, ()>, StoreError> {
+    loop {
+        boundary()?;
+        match gate.try_lock() {
+            Ok(guard) => {
+                boundary()?;
+                return Ok(guard);
+            }
+            Err(TryLockError::WouldBlock) => std::thread::yield_now(),
+            Err(TryLockError::Poisoned(_)) => {
+                return Err(StoreError::Poisoned {
+                    operation: "lock-private-sqlite-staging",
+                });
+            }
+        }
+    }
+}
+
 pub(super) fn read_gate(
     operation: &dyn SqliteCatalogOperation,
 ) -> Result<MutexGuard<'static, ()>, StoreError> {

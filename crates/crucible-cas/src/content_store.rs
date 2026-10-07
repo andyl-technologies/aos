@@ -23,6 +23,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 mod admin;
+mod batch;
 mod composition;
 mod compressed_directory;
 mod directory;
@@ -50,6 +51,7 @@ pub use admin::{
     RefInventoryGeneration, RefInventoryRecord, RefInventorySummary, RefPublicationGuard,
     RefStoreAdmin,
 };
+pub use batch::{OwnedBlobBytes, PutBatchReceipt};
 pub use compressed_directory::CompressedDirectoryBlobBackend;
 pub use directory::{
     DirectoryBlobAuthorities, DirectoryBlobBackend, DirectoryRefAuthorities, DirectoryRefBackend,
@@ -100,6 +102,7 @@ pub use s3_ref::{
 };
 pub use sqlite::{
     SqliteBlobBackend, SqliteCatalogOperation, SqliteCatalogOperationKind, SqliteCatalogSupervisor,
+    SqliteCommitOutcome, SqliteDiagnosticError, SqliteScopeError,
     minimum_sqlite_catalog_resident_bytes, minimum_sqlite_catalog_staging_bytes,
 };
 pub use write_back::{
@@ -387,6 +390,25 @@ pub trait BlobSource: Send + Sync {
     ///
     /// Returns a stable store error when the source cannot be reopened.
     fn open(&self) -> Result<Box<dyn Read + Send>, StoreError>;
+
+    /// Reads to authenticated EOF under an existing finite caller boundary.
+    ///
+    /// Implementations admit output before allocation, poll the same boundary
+    /// through their own bounded waits and chunks, and retain original credits
+    /// in the returned owner. Opaque sources do not grant this capability.
+    ///
+    /// # Errors
+    /// Returns a boundary, source, length or authentication failure, or
+    /// [`StoreError::Unsupported`] when checked reads are unavailable.
+    fn read_all_with_boundary(
+        &self,
+        _maximum: u64,
+        _boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<OwnedBlobBytes, StoreError> {
+        Err(StoreError::Unsupported {
+            capability: "supervised-blob-source",
+        })
+    }
 }
 
 /// Cloneable handle to a reopenable finite logical byte stream.
@@ -533,6 +555,37 @@ impl BlobHandle {
         read_handle_all(self, max_bytes)
     }
 
+    /// Reads the complete source using its bounded original-operation entry.
+    ///
+    /// # Errors
+    /// Returns unsupported dispatch, an original boundary failure, quota
+    /// refusal, or length/authentication failure before returning bytes.
+    pub fn read_all_with_boundary(
+        &self,
+        maximum: u64,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<OwnedBlobBytes, StoreError> {
+        boundary()?;
+        if self.logical_length > maximum {
+            return Err(StoreError::Quota);
+        }
+        let bytes = self.source.read_all_with_boundary(maximum, boundary)?;
+        boundary()?;
+        if bytes.len() as u64 != self.logical_length {
+            return Err(StoreError::InvalidSourceLength {
+                declared: self.logical_length,
+                observed: bytes.len() as u64,
+            });
+        }
+        if !self.self_authenticating
+            && let Some(id) = self.integrity_id
+        {
+            validate_bytes(id, &bytes)?;
+        }
+        boundary()?;
+        Ok(bytes)
+    }
+
     pub(crate) fn verified_as(&self, id: ContentId) -> Result<Self, StoreError> {
         if self.authenticated_id == Some(id) {
             return Ok(self.clone());
@@ -569,6 +622,25 @@ impl BytesBlobSource {
 }
 
 impl BlobSource for BytesBlobSource {
+    fn read_all_with_boundary(
+        &self,
+        maximum: u64,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<OwnedBlobBytes, StoreError> {
+        let mut reader = Cursor::new(self.bytes.as_ref());
+        batch::read_reader(
+            self.bytes.len() as u64,
+            maximum,
+            boundary,
+            &mut |output, _| {
+                reader.read(output).map_err(|source| StoreError::StreamIo {
+                    operation: "read-memory-batch-source",
+                    source,
+                })
+            },
+        )
+    }
+
     fn logical_length(&self) -> u64 {
         self.bytes.len() as u64
     }
@@ -923,6 +995,41 @@ pub enum StoreError {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
+    /// A checked operation's original metadata account refused admission.
+    ///
+    /// The inline cause avoids allocating another error wrapper after the
+    /// account has refused credit. Custody keeps the same account alive.
+    #[error("store metadata admission refused: {source}")]
+    DecodeAdmission {
+        /// Original typed account or resource-authority failure.
+        #[source]
+        source: crate::owned_decode::DecodeAdmissionError,
+        /// Existing account custody, shared without requesting new credit.
+        custody: Option<crate::owned_decode::DecodeCustody>,
+    },
+    /// A checked operation could not allocate already-admitted storage.
+    #[error("store allocation failed: {source}")]
+    Allocation {
+        /// Original allocator failure, retained without an additional Box.
+        #[source]
+        source: std::collections::TryReserveError,
+        /// Existing account custody for the failed allocation.
+        custody: Option<crate::owned_decode::DecodeCustody>,
+    },
+    /// A checked SQLite scope preserves work, cleanup and durable outcome.
+    #[error("{source}")]
+    SqliteScope {
+        /// Original typed causes and their linear allocation loan.
+        #[source]
+        source: SqliteScopeError,
+    },
+    /// A checked SQLite failure retains its prepaid diagnostic allocations.
+    #[error("checked SQLite operation failed: {source}")]
+    SqliteDiagnostic {
+        /// Original store failure and its same-account allocation loan.
+        #[source]
+        source: SqliteDiagnosticError,
+    },
     /// A composition graph had no route or usable child.
     #[error("store composition is invalid: {reason}")]
     InvalidComposition {
@@ -1004,6 +1111,36 @@ pub enum StoreError {
     /// An interrupted multipart upload could not be durably aborted.
     #[error("store multipart upload cleanup remains pending")]
     MultipartCleanupRequired,
+}
+
+impl StoreError {
+    /// Borrows the original work failure through retained SQLite carriers.
+    ///
+    /// The enclosing error continues to own diagnostic and cleanup credits.
+    /// A scope without a work failure remains the returned error, so cleanup
+    /// or restoration refusal is not misclassified as successful work.
+    #[must_use]
+    pub fn original_failure(&self) -> &Self {
+        let mut failure = self;
+        loop {
+            failure = match failure {
+                Self::SqliteDiagnostic { source } => source.failure(),
+                Self::SqliteScope { source } => match source.work_failure() {
+                    Some(work) => work,
+                    None => return failure,
+                },
+                Self::DecodeAdmission { source, .. } => {
+                    match std::error::Error::source(source)
+                        .and_then(|cause| cause.downcast_ref::<Self>())
+                    {
+                        Some(original) => original,
+                        None => return failure,
+                    }
+                }
+                _ => return failure,
+            };
+        }
+    }
 }
 
 /// Stable reason that a closed store graph failed admission.
@@ -1203,6 +1340,26 @@ pub trait ImmutableBlobBackend: Send + Sync {
             .iter()
             .map(|(id, source)| self.put_if_absent(*id, source))
             .collect()
+    }
+
+    /// Publishes a batch under the caller's existing finite operation boundary.
+    ///
+    /// Implementations poll the same callback through staging, bounded waits,
+    /// publication and completion. The caller installs its original metadata
+    /// account before entry; the returned owner retains the receipt allocation
+    /// credits. Unsupported facades do not silently fall back to opaque puts.
+    ///
+    /// # Errors
+    /// Returns an original boundary or store failure, or
+    /// [`StoreError::Unsupported`] if bounded batch dispatch is unavailable.
+    fn put_many_if_absent_with_boundary(
+        &self,
+        _objects: &[(ContentId, BlobHandle)],
+        _boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<PutBatchReceipt, StoreError> {
+        Err(StoreError::Unsupported {
+            capability: "supervised-immutable-batch",
+        })
     }
 
     /// Publishes authenticated bytes through an admitted physical repair capability.

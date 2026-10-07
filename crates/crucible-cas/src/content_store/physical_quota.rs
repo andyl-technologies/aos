@@ -19,8 +19,8 @@ use super::admin::PhysicalRepairAuthority;
 
 use super::{
     BackendCapabilities, BlobHandle, BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary,
-    BlobSource, BlobStoreAdmin, ByteRange, ContentId, ImmutableBlobBackend,
-    PlannedDeleteDisposition, PutReceipt, StoreError,
+    BlobSource, BlobStoreAdmin, ByteRange, ContentId, ImmutableBlobBackend, OwnedBlobBytes,
+    PlannedDeleteDisposition, PutBatchReceipt, PutReceipt, StoreError,
 };
 
 const MAX_PHYSICAL_QUOTA_POLICY_ID_BYTES: usize = 512;
@@ -280,6 +280,53 @@ impl PhysicalQuotaStore {
 }
 
 impl ImmutableBlobBackend for PhysicalQuotaStore {
+    fn put_many_if_absent_with_boundary(
+        &self,
+        objects: &[(ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<PutBatchReceipt, StoreError> {
+        boundary()?;
+        self.guard.verify()?;
+        let resources = self.operation_resources()?;
+        let account = super::batch::account()?;
+        let mut check = || {
+            boundary()?;
+            self.guard.verify()
+        };
+        let mut receipts = self
+            .child
+            .put_many_if_absent_with_boundary(objects, &mut check)?;
+        let mut growth_bytes = 0_u64;
+        for receipt in &receipts.receipts {
+            for placement in &receipt.placements {
+                let capacity = placement.backend.capacity();
+                if self.name.len() > capacity {
+                    // String::clone_from may geometrically grow its allocation.
+                    // Retain the replacement extent as well as the leaf's old
+                    // allocation until the final receipt owner closes.
+                    let replacement = capacity
+                        .checked_mul(2)
+                        .ok_or(StoreError::Quota)?
+                        .max(self.name.len())
+                        .max(8);
+                    growth_bytes = growth_bytes
+                        .checked_add(replacement as u64)
+                        .ok_or(StoreError::Quota)?;
+                }
+            }
+        }
+        receipts.retain_resources(&account, resources, growth_bytes)?;
+        for receipt in &mut receipts.receipts {
+            check()?;
+            for placement in &mut receipt.placements {
+                placement.backend.clone_from(&self.name);
+            }
+        }
+        check()?;
+        account.verify_live().map_err(super::batch::admission)?;
+        Ok(receipts)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -345,6 +392,18 @@ pub(super) const fn deferred_source_metadata_bytes() -> usize {
 }
 
 impl BlobSource for PhysicalQuotaBlobSource {
+    fn read_all_with_boundary(
+        &self,
+        maximum: u64,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<OwnedBlobBytes, StoreError> {
+        let mut check = || {
+            boundary()?;
+            self.guard.verify()
+        };
+        self.handle.read_all_with_boundary(maximum, &mut check)
+    }
+
     fn logical_length(&self) -> u64 {
         self.handle.logical_length()
     }

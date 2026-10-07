@@ -1,0 +1,126 @@
+//! Original-operation source reading through SQLite's bounded read gate.
+
+use super::*;
+
+struct ReadChunk {
+    bytes: Vec<u8>,
+    _credit: crate::owned_decode::DecodeScratch,
+}
+
+impl AuthenticatingSqliteReader {
+    pub(in super::super) fn read_with_boundary(
+        &mut self,
+        output: &mut [u8],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<usize, StoreError> {
+        busy::healthy(&self.quarantined)?;
+        let _staging = catalog::read_gate_with_boundary(boundary)?;
+        busy::healthy(&self.quarantined)?;
+        if output.is_empty() || self.finalized {
+            boundary()?;
+            return Ok(0);
+        }
+        self.scan_with_boundary(self.range.offset, boundary)?;
+        if self.output_offset < self.range.length {
+            let length = usize::try_from(
+                (self.range.length - self.output_offset)
+                    .min(output.len() as u64)
+                    .min(MAX_CHUNK_BYTES as u64),
+            )
+            .map_err(|_| StoreError::Quota)?;
+            let chunk = self.chunk_with_boundary(self.scan_offset, length, boundary)?;
+            output[..length].copy_from_slice(&chunk.bytes);
+            self.hasher.update(&chunk.bytes);
+            self.scan_offset += length as u64;
+            self.output_offset += length as u64;
+            boundary()?;
+            return Ok(length);
+        }
+        self.scan_with_boundary(self.logical_length, boundary)?;
+        if *self.hasher.finalize().as_bytes() != self.id.digest() {
+            return Err(StoreError::Corrupt { id: self.id });
+        }
+        self.finalized = true;
+        boundary()?;
+        Ok(0)
+    }
+
+    fn scan_with_boundary(
+        &mut self,
+        target: u64,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        while self.scan_offset < target {
+            let length = usize::try_from((target - self.scan_offset).min(MAX_CHUNK_BYTES as u64))
+                .map_err(|_| StoreError::Quota)?;
+            let chunk = self.chunk_with_boundary(self.scan_offset, length, boundary)?;
+            self.hasher.update(&chunk.bytes);
+            self.scan_offset += length as u64;
+        }
+        Ok(())
+    }
+
+    fn chunk_with_boundary(
+        &self,
+        offset: u64,
+        length: usize,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<ReadChunk, StoreError> {
+        boundary()?;
+        let credit = account()?
+            .reserve_scratch_array::<u8>(length)
+            .map_err(admission)?;
+        let mut connection = loop {
+            busy::healthy(&self.quarantined)?;
+            boundary()?;
+            match self.connection.try_lock() {
+                Ok(connection) => {
+                    busy::healthy(&self.quarantined)?;
+                    break connection;
+                }
+                Err(TryLockError::WouldBlock) => std::thread::yield_now(),
+                Err(TryLockError::Poisoned(_)) => {
+                    return Err(StoreError::Poisoned {
+                        operation: "lock-sqlite-blob-reader",
+                    });
+                }
+            }
+        };
+        boundary()?;
+        let sqlite_offset = i64::try_from(offset)
+            .ok()
+            .and_then(|offset| offset.checked_add(1))
+            .ok_or(StoreError::Quota)?;
+        let accepted = busy::with_zero(
+            &mut connection,
+            &self.quarantined,
+            boundary,
+            |connection, _, boundary| {
+                busy::retry(connection, false, &self.quarantined, boundary, |_| {
+                    let mut statement = connection
+                        .prepare_cached(diagnostic::SOURCE_SQL)
+                        .map_err(|source| database_error("prepare-sqlite-batch-source", source))?;
+                    with_id_text(self.id, |encoded| {
+                        statement
+                            .query_row(params![encoded, sqlite_offset, length as i64], |row| {
+                                row.get::<_, Vec<u8>>(0)
+                            })
+                            .optional()
+                            .map_err(|source| database_error("read-sqlite-batch-source", source))
+                    })
+                })
+            },
+        )?;
+        accepted.finish(|bytes| {
+            boundary()?;
+            let bytes = bytes.ok_or(StoreError::Corrupt { id: self.id })?;
+            if bytes.len() != length {
+                return Err(StoreError::Corrupt { id: self.id });
+            }
+            Ok(ReadChunk {
+                bytes,
+                _credit: credit,
+            })
+        })
+    }
+}

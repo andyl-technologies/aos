@@ -12,8 +12,8 @@ use std::collections::btree_map::Entry;
 use std::sync::Arc;
 
 use super::{
-    BackendCapabilities, BlobHandle, ByteRange, ContentId, ImmutableBlobBackend, PutReceipt,
-    StoreError,
+    BackendCapabilities, BlobHandle, ByteRange, ContentId, ImmutableBlobBackend, PutBatchReceipt,
+    PutReceipt, StoreError,
 };
 
 const MAX_NAMESPACE_ID_BYTES: usize = 512;
@@ -168,6 +168,26 @@ impl NamespacedStore {
 }
 
 impl ImmutableBlobBackend for NamespacedStore {
+    fn put_many_if_absent_with_boundary(
+        &self,
+        objects: &[(ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<PutBatchReceipt, StoreError> {
+        for (id, _) in objects {
+            boundary()?;
+            self.authorize(StoreNamespaceOperation::Put, *id)?;
+        }
+        let mut check = || {
+            boundary()?;
+            for (id, _) in objects {
+                self.authorize(StoreNamespaceOperation::Put, *id)?;
+            }
+            Ok(())
+        };
+        self.child
+            .put_many_if_absent_with_boundary(objects, &mut check)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }

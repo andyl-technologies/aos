@@ -749,7 +749,9 @@ fn map_checkpoint_selection_failure(
         | ExactCheckpointStoreError::InvalidLimit
         | ExactCheckpointStoreError::NativeRetirement(_) => CampaignServiceFailure::Unavailable,
         ExactCheckpointStoreError::Store(source)
-        | ExactCheckpointStoreError::Ram(RamStoreError::Store(source)) => match source {
+        | ExactCheckpointStoreError::Ram(RamStoreError::Store(source)) => match source
+            .original_failure()
+        {
             StoreError::Quota => CampaignServiceFailure::ResourceExhausted,
             StoreError::Supervision { .. }
             | StoreError::Unavailable
@@ -757,6 +759,10 @@ fn map_checkpoint_selection_failure(
             | StoreError::Poisoned { .. }
             | StoreError::Io { .. }
             | StoreError::StreamIo { .. }
+            | StoreError::DecodeAdmission { .. }
+            | StoreError::Allocation { .. }
+            | StoreError::SqliteDiagnostic { .. }
+            | StoreError::SqliteScope { .. }
             | StoreError::Unauthorized
             | StoreError::InvalidComposition { .. }
             | StoreError::InvalidGraph { .. }

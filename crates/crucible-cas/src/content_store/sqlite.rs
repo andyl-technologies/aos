@@ -27,7 +27,10 @@ use super::admin::{
 };
 use super::*;
 
+mod batch;
 mod catalog;
+pub use batch::busy::{SqliteCommitOutcome, SqliteScopeError};
+pub use batch::diagnostic::SqliteDiagnosticError;
 pub use catalog::{
     SqliteCatalogOperation, SqliteCatalogOperationKind, SqliteCatalogSupervisor,
     minimum_sqlite_catalog_staging_bytes,
@@ -102,7 +105,9 @@ pub struct SqliteBlobBackend {
     connection: Arc<Mutex<Connection>>,
     read_connection: Arc<Mutex<Connection>>,
     catalog_supervisor: Option<Arc<dyn SqliteCatalogSupervisor>>,
+    quarantined: Arc<std::sync::atomic::AtomicBool>,
     resident_lease: Option<Arc<dyn Send + Sync>>,
+    maximum_sqlite_heap_bytes: Option<u64>,
 }
 
 /// Bounds cached private SQLite backend and quota-facade Rust allocations.
@@ -121,6 +126,7 @@ pub fn minimum_sqlite_catalog_resident_bytes(name: &str, root: &Path) -> Result<
     let fixed = std::mem::size_of::<SqliteBlobBackend>()
         + 2 * std::mem::size_of::<usize>()
         + 2 * (std::mem::size_of::<Mutex<Connection>>() + 2 * std::mem::size_of::<usize>())
+        + std::mem::size_of::<(usize, usize, std::sync::atomic::AtomicBool)>()
         + super::physical_quota::facade_metadata_bytes()
         + 2 * catalog::MAX_BACKEND_NAME_BYTES;
     (fixed as u64)
@@ -345,6 +351,8 @@ impl SqliteBlobBackend {
             read_connection: Arc::new(Mutex::new(read_connection)),
             catalog_supervisor,
             resident_lease: None,
+            maximum_sqlite_heap_bytes,
+            quarantined: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
 
@@ -355,12 +363,16 @@ impl SqliteBlobBackend {
     }
 
     fn lock_connection(&self) -> Result<MutexGuard<'_, Connection>, StoreError> {
-        self.connection.lock().map_err(|_| StoreError::Poisoned {
+        batch::busy::healthy(&self.quarantined)?;
+        let connection = self.connection.lock().map_err(|_| StoreError::Poisoned {
             operation: "lock-sqlite-blob-connection",
-        })
+        })?;
+        batch::busy::healthy(&self.quarantined)?;
+        Ok(connection)
     }
 
     fn acquire_inventory_lock(&self) -> Result<File, StoreError> {
+        batch::busy::healthy(&self.quarantined)?;
         let path = self.root.join(LOCK_FILE);
         let file = open_inventory_lock(&path, false)?;
         flock(&file, FlockOperation::LockExclusive).map_err(|source| StoreError::Io {
@@ -368,6 +380,7 @@ impl SqliteBlobBackend {
             path,
             source: io::Error::from_raw_os_error(source.raw_os_error()),
         })?;
+        batch::busy::healthy(&self.quarantined)?;
         Ok(file)
     }
 
@@ -376,6 +389,7 @@ impl SqliteBlobBackend {
         id: ContentId,
         range: Option<ByteRange>,
     ) -> Result<BlobHandle, StoreError> {
+        batch::busy::healthy(&self.quarantined)?;
         let operation = self
             .catalog_supervisor
             .as_ref()
@@ -388,6 +402,7 @@ impl SqliteBlobBackend {
             .map_err(|_| StoreError::Poisoned {
                 operation: "lock-sqlite-blob-reader",
             })?;
+        batch::busy::healthy(&self.quarantined)?;
         let mut statement = connection
             .prepare_cached("SELECT length(body) FROM objects WHERE id = ?1")
             .map_err(|source| database_error("read-sqlite-blob-length", source))?;
@@ -422,6 +437,8 @@ impl SqliteBlobBackend {
             range,
             catalog_supervisor: self.catalog_supervisor.clone(),
             resident_lease: self.resident_lease.clone(),
+            maximum_sqlite_heap_bytes: self.maximum_sqlite_heap_bytes,
+            quarantined: self.quarantined.clone(),
             _source_lease: source_lease,
         });
         let handle = if range.offset == 0 && range.length == logical_length {
@@ -432,6 +449,7 @@ impl SqliteBlobBackend {
         if let Some(operation) = operation {
             operation.complete()?;
         }
+        batch::busy::healthy(&self.quarantined)?;
         Ok(handle)
     }
 }
@@ -521,6 +539,14 @@ fn reject_wal_database_header(path: &Path) -> Result<(), StoreError> {
 }
 
 impl ImmutableBlobBackend for SqliteBlobBackend {
+    fn put_many_if_absent_with_boundary(
+        &self,
+        objects: &[(ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<PutBatchReceipt, StoreError> {
+        self.put_batch_with_boundary(objects, boundary)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -539,6 +565,7 @@ impl ImmutableBlobBackend for SqliteBlobBackend {
     }
 
     fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        batch::busy::healthy(&self.quarantined)?;
         graph_object_count(objects)?;
         Ok(())
     }
@@ -559,6 +586,7 @@ impl ImmutableBlobBackend for SqliteBlobBackend {
     }
 
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
+        batch::busy::healthy(&self.quarantined)?;
         let operation = self
             .catalog_supervisor
             .as_ref()
@@ -587,6 +615,7 @@ impl ImmutableBlobBackend for SqliteBlobBackend {
                 if let Some(operation) = operation {
                     operation.complete()?;
                 }
+                batch::busy::healthy(&self.quarantined)?;
                 return Ok(sqlite_receipt(&self.name, id, logical_length));
             }
         }
@@ -634,6 +663,7 @@ impl ImmutableBlobBackend for SqliteBlobBackend {
         if let Some(operation) = operation {
             operation.complete()?;
         }
+        batch::busy::healthy(&self.quarantined)?;
         Ok(sqlite_receipt(&self.name, id, logical_length))
     }
 
@@ -641,6 +671,7 @@ impl ImmutableBlobBackend for SqliteBlobBackend {
         &self,
         objects: &[(ContentId, BlobHandle)],
     ) -> Result<Vec<PutReceipt>, StoreError> {
+        batch::busy::healthy(&self.quarantined)?;
         let operation = self
             .catalog_supervisor
             .as_ref()
@@ -714,6 +745,7 @@ impl ImmutableBlobBackend for SqliteBlobBackend {
         if let Some(operation) = operation {
             operation.complete()?;
         }
+        batch::busy::healthy(&self.quarantined)?;
         Ok(staged
             .into_iter()
             .map(|(id, bytes)| sqlite_receipt(&self.name, id, bytes.len() as u64))
@@ -723,6 +755,7 @@ impl ImmutableBlobBackend for SqliteBlobBackend {
 
 impl BlobStoreAdmin for SqliteBlobBackend {
     fn acquire_inventory_fence(&self) -> Result<Box<dyn BlobInventoryFence + '_>, StoreError> {
+        batch::busy::healthy(&self.quarantined)?;
         let operation = self
             .catalog_supervisor
             .as_ref()
@@ -759,6 +792,7 @@ impl BlobInventoryFence for SqliteInventoryFence<'_> {
         &mut self,
         visitor: &mut dyn FnMut(BlobInventoryRecord) -> Result<(), StoreError>,
     ) -> Result<BlobInventorySummary, StoreError> {
+        batch::busy::healthy(&self.backend.quarantined)?;
         let generation =
             persistent_inventory_generation(&self.backend.name, self.instance, self.generation)?;
         let mut inventory =
@@ -787,13 +821,16 @@ impl BlobInventoryFence for SqliteInventoryFence<'_> {
                 .map_err(|source| database_error("decode-sqlite-blob-length", source))?;
             let logical_length = u64::try_from(length).map_err(|_| StoreError::Corrupt { id })?;
             let record = BlobInventoryRecord::new(id, logical_length);
+            batch::busy::healthy(&self.backend.quarantined)?;
             visitor(record)?;
             inventory.push(record)?;
         }
+        batch::busy::healthy(&self.backend.quarantined)?;
         Ok(inventory.finish(self.backend.name.clone()))
     }
 
     fn delete_candidate(&mut self, id: ContentId) -> Result<PlannedDeleteDisposition, StoreError> {
+        batch::busy::healthy(&self.backend.quarantined)?;
         self.operation
             .as_deref()
             .map(|operation| operation.check())
@@ -810,6 +847,7 @@ impl BlobInventoryFence for SqliteInventoryFence<'_> {
             if self.backend.catalog_supervisor.is_none() {
                 checkpoint_reclaimed_pages(&self.connection)?;
             }
+            batch::busy::healthy(&self.backend.quarantined)?;
             return Ok(PlannedDeleteDisposition::AlreadyAbsent);
         }
         advance_metadata(&transaction)?;
@@ -820,6 +858,7 @@ impl BlobInventoryFence for SqliteInventoryFence<'_> {
         if self.backend.catalog_supervisor.is_none() {
             checkpoint_reclaimed_pages(&self.connection)?;
         }
+        batch::busy::healthy(&self.backend.quarantined)?;
         Ok(PlannedDeleteDisposition::Deleted)
     }
 
@@ -829,6 +868,7 @@ impl BlobInventoryFence for SqliteInventoryFence<'_> {
         id: ContentId,
         source: &BlobHandle,
     ) -> Result<PutReceipt, StoreError> {
+        batch::busy::healthy(&self.backend.quarantined)?;
         self.operation
             .as_deref()
             .map(|operation| operation.check())
@@ -856,6 +896,7 @@ impl BlobInventoryFence for SqliteInventoryFence<'_> {
             .map_err(|source| database_error("test-sqlite-repair-presence", source))?;
         if exists {
             authenticate_stored(&transaction, id)?;
+            batch::busy::healthy(&self.backend.quarantined)?;
             return Ok(sqlite_receipt(&self.backend.name, id, logical_length));
         }
 
@@ -885,6 +926,7 @@ impl BlobInventoryFence for SqliteInventoryFence<'_> {
             .commit()
             .map_err(|source| database_error("commit-sqlite-blob-repair", source))?;
         self.generation = self.generation.checked_add(1).ok_or(StoreError::Quota)?;
+        batch::busy::healthy(&self.backend.quarantined)?;
         Ok(sqlite_receipt(&self.backend.name, id, logical_length))
     }
 }
@@ -895,7 +937,9 @@ struct SqliteBlobSource {
     logical_length: u64,
     range: ByteRange,
     catalog_supervisor: Option<Arc<dyn SqliteCatalogSupervisor>>,
+    quarantined: Arc<std::sync::atomic::AtomicBool>,
     resident_lease: Option<Arc<dyn Send + Sync>>,
+    maximum_sqlite_heap_bytes: Option<u64>,
     _source_lease: Option<Arc<dyn Send + Sync>>,
 }
 
@@ -905,6 +949,34 @@ impl BlobSource for SqliteBlobSource {
     }
 
     fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
+        Ok(Box::new(self.reader()?))
+    }
+
+    fn read_all_with_boundary(
+        &self,
+        maximum: u64,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<OwnedBlobBytes, StoreError> {
+        batch::busy::healthy(&self.quarantined)?;
+        boundary()?;
+        let credit = batch::diagnostic::admit(self.maximum_sqlite_heap_bytes, None)?;
+        batch::diagnostic::retain_failure(credit, || {
+            let mut reader = self.reader()?;
+            let output = super::batch::read_reader(
+                self.range.length,
+                maximum,
+                boundary,
+                &mut |output, boundary| reader.read_with_boundary(output, boundary),
+            )?;
+            batch::busy::healthy(&self.quarantined)?;
+            Ok(output)
+        })
+    }
+}
+
+impl SqliteBlobSource {
+    fn reader(&self) -> Result<AuthenticatingSqliteReader, StoreError> {
+        batch::busy::healthy(&self.quarantined)?;
         let reader_lease = self
             .catalog_supervisor
             .as_ref()
@@ -916,7 +988,7 @@ impl BlobSource for SqliteBlobSource {
                 )
             })
             .transpose()?;
-        Ok(Box::new(AuthenticatingSqliteReader {
+        Ok(AuthenticatingSqliteReader {
             connection: self.connection.clone(),
             id: self.id,
             logical_length: self.logical_length,
@@ -930,9 +1002,10 @@ impl BlobSource for SqliteBlobSource {
             ),
             finalized: false,
             catalog_supervisor: self.catalog_supervisor.clone(),
+            quarantined: self.quarantined.clone(),
             _catalog_lease: self.resident_lease.clone(),
             _reader_lease: reader_lease,
-        }))
+        })
     }
 }
 
@@ -946,6 +1019,7 @@ struct AuthenticatingSqliteReader {
     hasher: blake3::Hasher,
     finalized: bool,
     catalog_supervisor: Option<Arc<dyn SqliteCatalogSupervisor>>,
+    quarantined: Arc<std::sync::atomic::AtomicBool>,
     _catalog_lease: Option<Arc<dyn Send + Sync>>,
     _reader_lease: Option<Arc<dyn Send + Sync>>,
 }
@@ -960,6 +1034,7 @@ impl AuthenticatingSqliteReader {
             .connection
             .lock()
             .map_err(|_| io::Error::other("SQLite blob connection lock poisoned"))?;
+        batch::busy::healthy(&self.quarantined).map_err(io::Error::other)?;
         let mut statement = connection
             .prepare_cached("SELECT substr(body, ?2, ?3) FROM objects WHERE id = ?1")
             .map_err(io::Error::other)?;
@@ -997,6 +1072,7 @@ impl AuthenticatingSqliteReader {
 
 impl Read for AuthenticatingSqliteReader {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        batch::busy::healthy(&self.quarantined).map_err(io::Error::other)?;
         let operation = self
             .catalog_supervisor
             .as_ref()
@@ -1014,6 +1090,7 @@ impl Read for AuthenticatingSqliteReader {
         {
             operation.complete().map_err(io::Error::other)?;
         }
+        batch::busy::healthy(&self.quarantined).map_err(io::Error::other)?;
         result
     }
 }
@@ -1053,29 +1130,60 @@ impl AuthenticatingSqliteReader {
 }
 
 fn authenticate_stored(connection: &Connection, id: ContentId) -> Result<(), StoreError> {
-    let length: Option<i64> = connection
-        .query_row(
-            "SELECT length(body) FROM objects WHERE id = ?1",
-            [id.encode()],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|source| database_error("read-sqlite-repair-length", source))?;
+    authenticate_stored_with_boundary(connection, id, &mut || Ok(()), None, None)
+}
+
+fn authenticate_stored_with_boundary(
+    connection: &Connection,
+    id: ContentId,
+    boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    account: Option<&crate::owned_decode::DecodeBudget>,
+    quarantined: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<(), StoreError> {
+    if account.is_some() != quarantined.is_some() {
+        return Err(StoreError::InvalidComposition {
+            reason: "checked SQLite authentication requires its original quarantine marker",
+        });
+    }
+    boundary()?;
+    let length: Option<i64> =
+        query_stored_with_boundary(connection, quarantined, boundary, || {
+            with_stored_id_text(id, account.is_some(), |encoded| {
+                connection
+                    .query_row(
+                        "SELECT length(body) FROM objects WHERE id = ?1",
+                        [encoded],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|source| database_error("read-sqlite-repair-length", source))
+            })
+        })?;
     let length = length.ok_or(StoreError::NotFound { id })?;
     let logical_length = u64::try_from(length).map_err(|_| StoreError::Corrupt { id })?;
     let mut hasher = content_hasher(id.kind(), id.schema_version(), logical_length);
     let mut offset = 0_u64;
     while offset < logical_length {
+        boundary()?;
         let chunk_length = usize::try_from((logical_length - offset).min(MAX_CHUNK_BYTES as u64))
             .map_err(|_| StoreError::Quota)?;
+        let _credit = account
+            .map(|account| account.reserve_scratch_array::<u8>(chunk_length))
+            .transpose()
+            .map_err(super::batch::admission)?;
         let sqlite_offset = i64::try_from(offset + 1).map_err(|_| StoreError::Quota)?;
-        let chunk: Vec<u8> = connection
-            .query_row(
-                "SELECT substr(body, ?2, ?3) FROM objects WHERE id = ?1",
-                params![id.encode(), sqlite_offset, chunk_length as i64],
-                |row| row.get(0),
-            )
-            .map_err(|source| database_error("read-sqlite-repair-body", source))?;
+        let chunk: Vec<u8> = query_stored_with_boundary(connection, quarantined, boundary, || {
+            with_stored_id_text(id, account.is_some(), |encoded| {
+                connection
+                    .query_row(
+                        "SELECT substr(body, ?2, ?3) FROM objects WHERE id = ?1",
+                        params![encoded, sqlite_offset, chunk_length as i64],
+                        |row| row.get(0),
+                    )
+                    .map_err(|source| database_error("read-sqlite-repair-body", source))
+            })
+        })?;
+        boundary()?;
         if chunk.len() != chunk_length {
             return Err(StoreError::Corrupt { id });
         }
@@ -1085,7 +1193,34 @@ fn authenticate_stored(connection: &Connection, id: ContentId) -> Result<(), Sto
     if *hasher.finalize().as_bytes() != id.digest() {
         return Err(StoreError::Corrupt { id });
     }
+    boundary()?;
     Ok(())
+}
+
+// Only actual SQL-step errors reach retry. Original callback failures cannot
+// be mistaken for BUSY or cause an already completed mutation to run again.
+fn query_stored_with_boundary<T>(
+    connection: &Connection,
+    quarantined: Option<&std::sync::atomic::AtomicBool>,
+    boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    mut query: impl FnMut() -> Result<T, StoreError>,
+) -> Result<T, StoreError> {
+    match quarantined {
+        Some(marker) => batch::busy::retry(connection, true, marker, boundary, |_| query()),
+        None => query(),
+    }
+}
+
+fn with_stored_id_text<T>(
+    id: ContentId,
+    checked: bool,
+    consume: impl FnOnce(&str) -> Result<T, StoreError>,
+) -> Result<T, StoreError> {
+    if checked {
+        super::batch::with_id_text(id, consume)
+    } else {
+        consume(&id.encode())
+    }
 }
 
 fn load_metadata(connection: &Connection) -> Result<([u8; 32], u64), StoreError> {

@@ -1588,6 +1588,19 @@ impl WriteBackRetentionAdmin for StoreGraph {
 }
 
 impl ImmutableBlobBackend for StoreGraph {
+    fn put_many_if_absent_with_boundary(
+        &self,
+        objects: &[(ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<PutBatchReceipt, StoreError> {
+        for (id, _) in objects {
+            boundary()?;
+            self.require_admitted(*id)?;
+        }
+        self.root
+            .put_many_if_absent_with_boundary(objects, boundary)
+    }
+
     fn name(&self) -> &str {
         self.root_id.as_str()
     }

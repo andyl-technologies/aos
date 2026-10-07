@@ -28,6 +28,27 @@ impl VerifiedStore {
 }
 
 impl ImmutableBlobBackend for VerifiedStore {
+    fn put_many_if_absent_with_boundary(
+        &self,
+        objects: &[(ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<PutBatchReceipt, StoreError> {
+        boundary()?;
+        let account = super::batch::account()?;
+        let _verified_credit = account
+            .reserve_scratch_array::<(ContentId, BlobHandle)>(objects.len())
+            .map_err(super::batch::admission)?;
+        let mut verified = Vec::new();
+        verified
+            .try_reserve_exact(objects.len())
+            .map_err(super::batch::allocation)?;
+        for (id, source) in objects {
+            verified.push((*id, super::batch::verify_source(*id, source, boundary)?));
+        }
+        self.child
+            .put_many_if_absent_with_boundary(&verified, boundary)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -213,6 +234,61 @@ impl DurabilityPolicyStore {
 }
 
 impl ImmutableBlobBackend for DurabilityPolicyStore {
+    fn put_many_if_absent_with_boundary(
+        &self,
+        objects: &[(ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<PutBatchReceipt, StoreError> {
+        for (id, _) in objects {
+            boundary()?;
+            self.requirement(*id)?;
+        }
+        let receipts = self
+            .child
+            .put_many_if_absent_with_boundary(objects, boundary)?;
+        if receipts.len() != objects.len() {
+            return Err(StoreError::InvalidComposition {
+                reason: "batch receipt count differs from input",
+            });
+        }
+        let account = super::batch::account()?;
+        for ((id, source), receipt) in objects.iter().zip(receipts.iter()) {
+            boundary()?;
+            if receipt.id != *id
+                || receipt
+                    .placements
+                    .iter()
+                    .any(|placement| placement.logical_length != source.logical_length())
+            {
+                return Err(StoreError::Corrupt { id: *id });
+            }
+            // The existing unique-placement check builds a temporary B-tree.
+            let bytes = crate::owned_decode::btree_entry_bytes::<&str, ()>()
+                .map_err(super::batch::admission)?
+                .checked_mul(receipt.placements.len() as u64)
+                .ok_or(StoreError::Quota)?;
+            let _placement_credit = account
+                .reserve_scratch_bytes(bytes)
+                .map_err(super::batch::admission)?;
+            let requirement = self.requirement(*id)?;
+            let observed = receipt.durable_placements();
+            if observed < usize::from(requirement.minimum_durable_placements()) {
+                return Err(StoreError::DurabilityUnsatisfied {
+                    id: *id,
+                    minimum_durable_placements: requirement.minimum_durable_placements(),
+                    observed_durable_placements: u16::try_from(observed).map_err(|_| {
+                        StoreError::InvalidComposition {
+                            reason: "durable placement count exceeds the graph bound",
+                        }
+                    })?,
+                });
+            }
+        }
+        boundary()?;
+        account.check().map_err(super::batch::admission)?;
+        Ok(receipts)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -469,6 +545,15 @@ impl ReadThroughStore {
 }
 
 impl ImmutableBlobBackend for ReadThroughStore {
+    fn put_many_if_absent_with_boundary(
+        &self,
+        objects: &[(ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<PutBatchReceipt, StoreError> {
+        self.source
+            .put_many_if_absent_with_boundary(objects, boundary)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
