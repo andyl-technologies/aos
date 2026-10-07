@@ -2048,6 +2048,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   frozen source, and core/default/native discovery contains 598/157/613 tests.
   This local gate result does not qualify an implementation merge on the trunk.
   T-DRV-2, ALG-32, task merges and T1 remain open.
+  The next native prerequisites explicitly require checked verification/rebuild
+  (DRV-16/17/25) and metadata-only checked side-record backfill (DRV-28).
+  Shared module declarations and owning checks now require three rebuild and
+  four backfill witnesses before their isolated implementations begin. Missing
+  witnesses fail discovery. These declarations establish no implementation or
+  gate pass; native recovery, backfill and expanded maintenance remain open.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
   codec, value-plus-object opaque keys and D-104's contextual primary/gap/route

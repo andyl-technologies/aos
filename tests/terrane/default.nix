@@ -231,6 +231,8 @@ in {
   integration.native-cold-fork-source = import ./native-cold-fork-source.nix {inherit sourceGate;};
   integration.native-content-observation = import ./native-content-observation.nix {inherit sourceGate;};
   integration.native-index-lookup = import ./native-index-lookup.nix {inherit sourceGate;};
+  integration.native-index-rebuild = import ./native-index-rebuild.nix {inherit sourceGate;};
+  integration.native-index-backfill = import ./native-index-backfill.nix {inherit sourceGate;};
   integration.native-memo-persistence = import ./native-memo-persistence.nix {inherit sourceGate;};
   integration.native-memo-retention = import ./native-memo-retention.nix {inherit sourceGate;};
   integration.native-source-preserving-retirement = import ./native-source-preserving-retirement.nix {inherit sourceGate;};

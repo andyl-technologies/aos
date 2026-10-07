@@ -18,6 +18,10 @@ pub(crate) use consumed::registration as consumed_registration;
 mod existing;
 mod history;
 #[cfg(feature = "std")]
+pub mod index_backfill;
+#[cfg(feature = "std")]
+pub mod index_maintenance;
+#[cfg(feature = "std")]
 mod join;
 #[cfg(feature = "std")]
 mod merge;
