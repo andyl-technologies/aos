@@ -1509,7 +1509,7 @@ diff --git a/src/core/manager.c b/src/core/manager.c
 diff --git a/src/core/manager.c b/src/core/manager.c
 --- a/src/core/manager.c
 +++ b/src/core/manager.c
-@@ -2127,6 +2127,10 @@
+@@ -2128,10 +2128,14 @@
  int manager_startup(Manager *m, FILE *serialization, FDSet *fds, Hashmap *named_listen_fds, const char *root) {
          int r;
  
@@ -1519,7 +1519,11 @@ diff --git a/src/core/manager.c b/src/core/manager.c
 +        if (r < 0)
 +                return r;
 +
-         r = manager_make_runtime_dir(m);
+         if (!MANAGER_IS_TEST_RUN(m)) {
+                 r = manager_make_runtime_dir(m);
+                 if (r < 0)
+                         return r;
+         }
 diff --git a/src/core/job.c b/src/core/job.c
 --- a/src/core/job.c
 +++ b/src/core/job.c
@@ -1648,7 +1652,7 @@ diff --git a/src/core/socket.c b/src/core/socket.c
 diff --git a/src/core/socket.c b/src/core/socket.c
 --- a/src/core/socket.c
 +++ b/src/core/socket.c
-@@ -2609,7 +2609,11 @@
+@@ -2610,12 +2610,16 @@
  static int socket_start(Unit *u) {
          Socket *s = ASSERT_PTR(SOCKET(u));
          int r;
@@ -1660,6 +1664,11 @@ diff --git a/src/core/socket.c b/src/core/socket.c
 +                return r;
 +
          r = unit_acquire_invocation_id(u);
+         if (r < 0)
+                 return r;
+ 
+         s->result = SOCKET_SUCCESS;
+         exec_command_reset_status_list_array(s->exec_command, _SOCKET_EXEC_COMMAND_MAX);
 diff --git a/src/core/dbus-service.c b/src/core/dbus-service.c
 --- a/src/core/dbus-service.c
 +++ b/src/core/dbus-service.c

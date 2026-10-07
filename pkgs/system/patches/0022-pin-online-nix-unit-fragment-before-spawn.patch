@@ -34,7 +34,7 @@ diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
              !strv_isempty(u->dropin_paths) || !isempty(u->source_path))
                  return -EPERM;
  
-@@ -6355,3 +6356,46 @@
+@@ -6332,6 +6334,49 @@
                           strjoina("/nix/store/", expected + strlen("/nix.lower/store/"))) ? 0 : -EPERM;
  }
  
@@ -81,6 +81,9 @@ diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
 +        return 0;
 +}
 +
+ int aos_fuse_worker_verify_loaded_fragment(const Unit *u) {
+         _cleanup_free_ char *expected = NULL;
+         struct stat st;
 @@ -6449,5 +6495,11 @@ int unit_load_fragment(Unit *u) {
          assert(u->load_state == UNIT_STUB);
          assert(u->id);
@@ -93,7 +96,7 @@ diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
 +
          if (u->transient) {
                  if (((aos_network_image_guard_active() && aos_network_protected_unit(u)) ||
-@@ -6475,4 +6527,22 @@ int unit_load_fragment(Unit *u) {
+@@ -6483,6 +6534,24 @@ int unit_load_fragment(Unit *u) {
          if (r < 0 && r != -ENOENT)
                  return r;
  
@@ -115,7 +118,9 @@ diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
 +                names = set_free(names);
 +        }
 +
-         if (((aos_network_image_guard_active() && aos_network_protected_name(u->id)) ||
+         if ((aos_network_image_guard_active() && aos_network_protected_name(u->id)) ||
+             aos_fuse_worker_protected_name(u->id)) {
+                 r = aos_network_image_fragment(u->id, &image_fragment, &image_fd, NULL);
 diff --git a/src/core/service.c b/src/core/service.c
 --- a/src/core/service.c
 +++ b/src/core/service.c
@@ -134,7 +139,7 @@ diff --git a/src/core/service.c b/src/core/service.c
 diff --git a/src/core/load-dropin.c b/src/core/load-dropin.c
 --- a/src/core/load-dropin.c
 +++ b/src/core/load-dropin.c
-@@ -38,3 +38,7 @@ static int process_deps(
+@@ -38,6 +38,10 @@ static int process_deps(
          if (r < 0)
                  return r;
  
@@ -142,7 +147,10 @@ diff --git a/src/core/load-dropin.c b/src/core/load-dropin.c
 +                return log_unit_error_errno(u, SYNTHETIC_ERRNO(EPERM),
 +                                            "Refusing online Nix dependency drop-ins: %m");
 +
-@@ -136,3 +140,7 @@ int unit_load_dropin(Unit *u) {
+         if (aos_own_launcher_protected_unit(u) && !strv_isempty(paths))
+                 return log_unit_error_errno(u, SYNTHETIC_ERRNO(EPERM),
+                                             "Refusing own-launcher dependency drop-ins: %m");
+@@ -140,6 +144,10 @@ int unit_load_dropin(Unit *u) {
          if (r <= 0)
                  return 0;
  
@@ -150,6 +158,9 @@ diff --git a/src/core/load-dropin.c b/src/core/load-dropin.c
 +                return log_unit_error_errno(u, SYNTHETIC_ERRNO(EPERM),
 +                                            "Refusing online Nix configuration drop-ins: %m");
 +
+         if (aos_own_launcher_protected_unit(u))
+                 return log_unit_error_errno(u, SYNTHETIC_ERRNO(EPERM),
+                                             "Refusing own-launcher configuration drop-ins: %m");
 diff --git a/src/core/dbus-unit.c b/src/core/dbus-unit.c
 --- a/src/core/dbus-unit.c
 +++ b/src/core/dbus-unit.c
