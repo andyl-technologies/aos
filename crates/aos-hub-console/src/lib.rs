@@ -29,6 +29,10 @@ mod publication_upload_model;
 #[path = "workflows/cache_objects/direct/pool.rs"]
 mod direct_upload_pool;
 
+#[cfg(any(target_arch = "wasm32", test))]
+#[path = "workflows/cache_objects/direct/lifecycle_model.rs"]
+mod cache_upload_lifecycle_model;
+
 #[cfg(target_arch = "wasm32")]
 pub mod app;
 #[cfg(target_arch = "wasm32")]

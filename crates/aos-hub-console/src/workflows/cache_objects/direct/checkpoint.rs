@@ -348,76 +348,83 @@ impl Checkpoint {
         Ok(transaction)
     }
 
-    /// Removes the active pointer only for the exact retained committed run.
+    /// Archives terminal history and clears only its exact active run atomically.
     ///
     /// # Errors
-    /// Returns an error if another run owns the pointer or its transaction fails.
+    /// Refuses unknown effects, concurrent pointer changes, contradictory history
+    /// or failed strict commit. Outstanding grant accounting remains separate.
     pub(super) async fn retire_active(
         &self,
         key: &str,
         expected: &ResumeHead,
     ) -> Result<(), String> {
+        use aos_proto_types::direct_upload::{encode_direct_control, MAX_DIRECT_CONTROL_BYTES};
+        use crate::cache_upload_lifecycle_model::retirement_ready;
+
+        let archive_key = format!("{}:{}:retired", expected.scope, expected.run_nonce);
+        let bytes = encode_direct_control(expected).map_err(|_| FAILURE.to_string())?;
+        let json = String::from_utf8(bytes).map_err(|_| FAILURE.to_string())?;
+        if key != format!("{}:active", expected.scope)
+            || key.len().checked_add(archive_key.len())
+                .and_then(|size| size.checked_add(json.len()))
+                .is_none_or(|size| size > MAX_DIRECT_CONTROL_BYTES)
+        {
+            return Err(FAILURE.to_string());
+        }
+
         let transaction = self.write_transaction()?;
-        let mut guard = WriteGuard {
-            transaction,
-            acknowledged: false,
-        };
+        let mut guard = WriteGuard { transaction, acknowledged: false };
         let mut wait = EventWait::new(
-            guard.transaction.unchecked_ref(),
-            "complete",
-            &["error", "abort"],
+            guard.transaction.unchecked_ref(), "complete", &["error", "abort"],
         )?;
-        let store = guard
-            .transaction
-            .object_store(STORE)
-            .map_err(|_| FAILURE.to_string())?;
-        let request = store
-            .get(&JsValue::from_str(key))
-            .map_err(|_| FAILURE.to_string())?;
-        let copy = request.clone();
-        let expected = expected.clone();
-        let key = key.to_string();
-        let transaction = guard.transaction.clone();
-        let sender = wait.sender.clone();
-        wait.add_on(
-            request.unchecked_into(),
-            "success",
-            Closure::wrap(Box::new(move |_: Event| {
+        let store = guard.transaction.object_store(STORE).map_err(|_| FAILURE.to_string())?;
+        // Both reads and writes stay inside this same strict transaction. The
+        // second callback queues history preservation and pointer retirement.
+        let reads = Rc::new(RefCell::new(RetirementReads::default()));
+        for (is_active, read_key) in [(true, key), (false, archive_key.as_str())] {
+            let request = store.get(&JsValue::from_str(read_key)).map_err(|_| FAILURE.to_string())?;
+            let copy = request.clone();
+            let reads = reads.clone();
+            let expected = expected.clone();
+            let store = store.clone();
+            let key = key.to_string();
+            let archive_key = archive_key.clone();
+            let json = json.clone();
+            let transaction = guard.transaction.clone();
+            let sender = wait.sender.clone();
+            wait.add_on(request.unchecked_into(), "success", Closure::wrap(Box::new(move |_: Event| {
                 let result = (|| {
-                    let Some(retained): Option<ResumeHead> = decode(copy.clone())? else {
+                    let value = decode::<ResumeHead>(copy.clone())?;
+                    let mut reads = reads.borrow_mut();
+                    if is_active { reads.active = Some(value); } else { reads.archived = Some(value); }
+                    let (Some(active), Some(archived)) = (&reads.active, &reads.archived) else {
                         return Ok(());
                     };
-                    if retained.scope != expected.scope
-                        || retained.run_nonce != expected.run_nonce
-                        || retained.intent != expected.intent
-                        || retained.principal_id != expected.principal_id
-                        || retained.deployment_id != expected.deployment_id
-                        || retained.session.as_ref().is_none_or(|status| {
-                            status.state
-                                != aos_proto_types::direct_upload::DirectSessionState::Committed
-                        })
-                    {
-                        return Err("The browser upload pointer belongs to another retained run"
-                            .to_string());
+                    if retirement_ready(&expected, active.as_ref(), archived.as_ref())? {
+                        store.put_with_key(&JsValue::from_str(&json), &JsValue::from_str(&archive_key))
+                            .map_err(|_| FAILURE.to_string())?;
+                        store.delete(&JsValue::from_str(&key)).map_err(|_| FAILURE.to_string())?;
                     }
-                    store
-                        .delete(&JsValue::from_str(&key))
-                        .map_err(|_| FAILURE.to_string())?;
                     Ok::<_, String>(())
                 })();
                 if let Err(error) = result {
                     let _ = transaction.abort();
-                    let completion = sender.borrow_mut().take();
-                    if let Some(sender) = completion {
-                        let _ = sender.send(Err(error));
-                    }
+                    if let Some(sender) = sender.borrow_mut().take() { let _ = sender.send(Err(error)); }
                 }
-            }) as Box<dyn FnMut(Event)>),
-        )?;
+            }) as Box<dyn FnMut(Event)>))?;
+        }
         wait.wait().await?;
         guard.acknowledged = true;
         Ok(())
     }
+
+}
+
+#[derive(Default)]
+struct RetirementReads {
+    // The outer option distinguishes a pending read from an absent record.
+    active: Option<Option<ResumeHead>>,
+    archived: Option<Option<ResumeHead>>,
 }
 
 fn decode<T: DeserializeOwned>(request: IdbRequest) -> Result<Option<T>, String> {

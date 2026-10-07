@@ -1293,12 +1293,7 @@
         "cache-objects",
         "registry-containers"
       ],
-      "web_method_exceptions": [
-        {
-          "method": "Abort",
-          "reason": "Explicit direct upload abort uses CLI controls; the browser uploader preserves pending effects for resume."
-        }
-      ],
+      "web_method_exceptions": [],
       "methods": [
         "GetCapabilities",
         "BeginBatch",

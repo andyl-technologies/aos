@@ -2,6 +2,7 @@
 
 pub(crate) mod checkpoint;
 mod driver;
+pub(crate) mod lifecycle;
 mod source;
 
 pub(crate) use driver::{upload, upload_target};

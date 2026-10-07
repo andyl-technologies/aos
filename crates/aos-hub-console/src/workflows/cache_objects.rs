@@ -4,11 +4,15 @@
 //! workflow shows NAR identity and recursively resolved closure presence without
 //! implying that one successful placement represents every route.
 
-use leptos::ev::{Event, SubmitEvent};
+use std::{cell::RefCell, rc::Rc};
+
+use futures::{channel::oneshot, future::AbortHandle};
+use leptos::ev::{Event, MouseEvent, SubmitEvent};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::components::{HashValue, HelpTooltip, InlineError, StatusBadge};
+use crate::cache_upload_lifecycle_model::run_owned;
 use crate::transport::ApiClient;
 
 pub(crate) mod direct;
@@ -35,43 +39,255 @@ pub(super) fn CacheObjects(client: ApiClient, cache_id: String) -> impl IntoView
     }
 }
 
+struct OwnedTransfer {
+    cache_id: String,
+    path: String,
+    cancellation: AbortHandle,
+    stopped: oneshot::Receiver<()>,
+}
+
+#[derive(Default)]
+struct LocalTransfers {
+    running: Option<OwnedTransfer>,
+    stop_unknown: bool,
+}
+
+#[derive(Clone, Copy)]
+enum UploadAction {
+    Pause,
+    Inspect,
+    Abort,
+    NewRun,
+}
+
+// The acknowledgement follows owned future drop; it says nothing about other
+// tabs or an already dispatched remote request.
+async fn pause_owned(
+    transfer: &Rc<RefCell<LocalTransfers>>,
+    cache_id: &str,
+    path: &str,
+) -> Result<(), String> {
+    if transfer.borrow().stop_unknown {
+        return Err("Local stop is unconfirmed. Reload this page before checking the saved original".into());
+    }
+    let owned = transfer.borrow_mut().running.take();
+    if let Some(owned) = owned {
+        if owned.cache_id != cache_id || owned.path != path {
+            transfer.borrow_mut().running = Some(owned);
+            return Err("Another selected upload is still running".into());
+        }
+        transfer.borrow_mut().stop_unknown = true;
+        owned.cancellation.abort();
+        owned.stopped.await.map_err(|_| {
+            "Local stop could not be confirmed. Original progress remains saved".to_string()
+        })?;
+        transfer.borrow_mut().stop_unknown = false;
+    }
+    Ok(())
+}
+
 #[component]
 fn ObjectUpload(client: ApiClient, cache_id: String) -> impl IntoView {
     let path = RwSignal::new(String::new());
     let status = RwSignal::new(None::<String>);
+    let status_positive = RwSignal::new(false);
+    let original_source = RwSignal::new(None::<(String, u64)>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    let action_busy = RwSignal::new(false);
+    let can_start_new = RwSignal::new(false);
+    let transfer = Rc::new(RefCell::new(LocalTransfers::default()));
+    let upload_client = client.clone();
+    let upload_cache = cache_id.clone();
+    let upload_transfer = transfer.clone();
+
     let on_file = move |event: Event| {
-        let input = event_target::<leptos::web_sys::HtmlInputElement>(&event);
-        let Some(file) = input.files().and_then(|files| files.get(0)) else {
+        if busy.get_untracked() || action_busy.get_untracked() { return; }
+        if upload_transfer.borrow().stop_unknown {
+            error.set(Some("Local stop is unconfirmed. Reload this page before checking the saved original".into()));
             return;
-        };
+        }
+        let input = event_target::<leptos::web_sys::HtmlInputElement>(&event);
+        let Some(file) = input.files().and_then(|files| files.get(0)) else { return; };
         let object_path = path.get_untracked().trim().to_string();
         if object_path.is_empty() {
             error.set(Some("Cache-relative object path is required".to_string()));
             return;
         }
-        let client = client.clone();
-        let cache_id = cache_id.clone();
+
+        let client = upload_client.clone();
+        let cache_id = upload_cache.clone();
+        let transfer = upload_transfer.clone();
+        let (cancellation, registration) = AbortHandle::new_pair();
+        let (stopped, acknowledged) = oneshot::channel();
+        transfer.borrow_mut().running = Some(OwnedTransfer {
+            cache_id: cache_id.clone(), path: object_path.clone(), cancellation, stopped: acknowledged,
+        });
+
         status.set(None);
+        original_source.set(None);
+        status_positive.set(false);
         error.set(None);
+        can_start_new.set(false);
         busy.set(true);
         spawn_local(async move {
-            match upload_cache_file(client, cache_id, object_path, file).await {
-                Ok(detail) => status.set(Some(detail)),
-                Err(detail) => error.set(Some(detail)),
+            let result = run_owned(upload_cache_file(client, cache_id, object_path, file), registration, stopped).await;
+            transfer.borrow_mut().running.take();
+            match result {
+                Ok(Ok(detail)) => { status_positive.set(true); status.set(Some(detail)); },
+                Ok(Err(detail)) => error.set(Some(detail)),
+                Err(_) => status.set(Some("This window's transfer paused. Check the saved original before continuing".into())),
             }
             busy.set(false);
         });
     };
 
+    let action = move |action: UploadAction| {
+        let client = client.clone();
+        let cache_id = cache_id.clone();
+        let transfer = transfer.clone();
+        move |_: MouseEvent| {
+            if action_busy.get_untracked()
+                || (matches!(action, UploadAction::Inspect) && busy.get_untracked())
+            { return; }
+
+            let object_path = path.get_untracked().trim().to_string();
+            if object_path.is_empty() {
+                error.set(Some("Cache-relative object path is required".into()));
+                return;
+            }
+
+            let client = client.clone();
+            let cache_id = cache_id.clone();
+            let transfer = transfer.clone();
+            action_busy.set(true);
+            status_positive.set(false);
+            error.set(None);
+            can_start_new.set(false);
+
+            spawn_local(async move {
+                let result: Result<direct::lifecycle::Observation, String> = async {
+                    match action {
+                        UploadAction::Pause => {
+                            pause_owned(&transfer, &cache_id, &object_path).await?;
+                            Ok(direct::lifecycle::Observation {
+                                message: "This window's transfer stopped. Check the original upload before continuing".into(),
+                                can_start_new: false,
+                                source: None,
+                            })
+                        }
+                        UploadAction::Inspect => {
+                            direct::lifecycle::inspect(client, cache_id, object_path).await
+                        }
+                        UploadAction::Abort => {
+                            pause_owned(&transfer, &cache_id, &object_path).await?;
+                            direct::lifecycle::abort(client, cache_id, object_path).await
+                        }
+                        UploadAction::NewRun => {
+                            pause_owned(&transfer, &cache_id, &object_path).await?;
+                            direct::lifecycle::start_new(client, cache_id, object_path).await?;
+                            Ok(direct::lifecycle::Observation {
+                                message: "Old history was kept. Choose a file to start a new upload".into(),
+                                can_start_new: false,
+                                source: None,
+                            })
+                        }
+                    }
+                }
+                .await;
+
+                match result {
+                    Ok(observation) => {
+                        original_source.set(observation.source);
+                        status.set(Some(observation.message));
+                        can_start_new.set(observation.can_start_new);
+                        status_positive.set(observation.can_start_new);
+                    }
+                    Err(detail) => error.set(Some(detail)),
+                }
+                action_busy.set(false);
+            });
+        }
+    };
+
+    let on_pause = action(UploadAction::Pause);
+    let on_inspect = action(UploadAction::Inspect);
+    let on_abort = action(UploadAction::Abort);
+    let on_new = action(UploadAction::NewRun);
+
     view! {
         <div class="editor-form">
-                <label><span>"Cache-relative path"</span><input required placeholder="nar/<hash>.nar.zst or <store-hash>.narinfo" prop:value=move || path.get() on:input=move |event| path.set(event_target_value(&event))/></label>
-                <label><span>"Exact object bytes"</span><input type="file" disabled=move || busy.get() on:change=on_file/></label>
+            <label>
+                <span>"Cache-relative path"</span>
+                <input
+                    required
+                    placeholder="nar/<hash>.nar.zst or <store-hash>.narinfo"
+                    disabled=move || busy.get() || action_busy.get()
+                    prop:value=move || path.get()
+                    on:input=move |event| {
+                        path.set(event_target_value(&event));
+                        can_start_new.set(false);
+                        original_source.set(None);
+                        status.set(None);
+                        error.set(None);
+                        status_positive.set(false);
+                    }
+                />
+            </label>
+            <label>
+                <span>"Exact object bytes"</span>
+                <input
+                    type="file"
+                    disabled=move || busy.get() || action_busy.get()
+                    on:change=on_file
+                />
+            </label>
         </div>
-        <p class="field-note">"Choosing a file starts the authenticated upload. Large objects use multipart storage automatically."</p>
-        {move || status.get().map(|value| view! { <StatusBadge state=value positive=true/> })}
+        <p class="field-note">
+            "Choose the same original file to resume saved progress. Pause affects this window only; stopping the original upload requires the Hub's confirmation."
+        </p>
+        <div class="form-actions">
+            <button
+                class="secondary-button"
+                type="button"
+                disabled=move || !busy.get() || action_busy.get()
+                on:click=on_pause
+            >
+                "Pause transfer"
+            </button>
+            <button
+                class="secondary-button"
+                type="button"
+                disabled=move || busy.get() || action_busy.get()
+                on:click=on_inspect
+            >
+                "Check saved upload"
+            </button>
+            <button
+                class="danger-button"
+                type="button"
+                disabled=move || action_busy.get()
+                on:click=on_abort
+            >
+                "Stop original upload"
+            </button>
+            <button
+                class="secondary-button"
+                type="button"
+                disabled=move || busy.get() || action_busy.get() || !can_start_new.get()
+                on:click=on_new
+            >
+                "Start a new upload"
+            </button>
+        </div>
+        {move || original_source.get().map(|(sha256, byte_size)| view! {
+            <p class="field-note">
+                "Saved original: "<HashValue value=sha256/>" · "{byte_size}" bytes"
+            </p>
+        })}
+        {move || status.get().map(|value| view! {
+            <StatusBadge state=value positive=status_positive.get()/>
+        })}
         {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
     }
 }

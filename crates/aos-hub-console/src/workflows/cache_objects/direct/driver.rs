@@ -679,7 +679,11 @@ async fn discovery(
     Ok(result)
 }
 
-async fn control<T: Serialize>(
+/// Sends exact control metadata under the retained actor and owner.
+///
+/// # Errors
+/// Refuses changed policy, unknown replies, failed item results or wrong correlation.
+pub(super) async fn control<T: Serialize>(
     client: &ApiClient,
     head: &ResumeHead,
     path: &str,
@@ -706,7 +710,11 @@ async fn control<T: Serialize>(
     Ok(reply)
 }
 
-fn one_status(reply: &DirectUploadResponse) -> Result<DirectSessionStatus, String> {
+/// Extracts the one original session from a validated control reply.
+///
+/// # Errors
+/// Refuses missing or additional sessions.
+pub(super) fn one_status(reply: &DirectUploadResponse) -> Result<DirectSessionStatus, String> {
     if reply.sessions.len() != 1 {
         return Err("The Hub returned an incomplete upload session".into());
     }
