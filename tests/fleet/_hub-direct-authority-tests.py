@@ -43,7 +43,7 @@ def write_private(path, body):
         output.write(body)
 
 
-def synthetic_files(root, hub, dedicated):
+def synthetic_files(root, hub, dedicated, recovery_policy=None):
     """Create public synthetic closed inputs, without a signing seed or key read."""
     authority = {"authority_id": "00000000-0000-4000-8000-000000000001",
         "guard_namespace_id": "synthetic-journal-namespace",
@@ -70,9 +70,53 @@ def synthetic_files(root, hub, dedicated):
         "renewal_key_file": str(root / "renewal.key"),
         "signing_seed_file": str(root / "signing-seed.key"),
         "signing_key_id": "synthetic-issuer-key", "tls": None}
+    if recovery_policy is not None:
+        configuration["format_version"] = 2
+        configuration["clock_recovery"] = recovery_policy
     write_private(root / "configuration.json", canonical(configuration))
     write_private(root / "publication.json", canonical(publication))
     return journal
+
+
+def synthetic_recovery_policy():
+    return {"version": 1, "reviewer_key_id": "synthetic-independent-reviewer",
+        "reviewer_public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "resource_qualification_digest": "4" * 64, "clock_qualification_digest": "5" * 64,
+        "maximum_review_seconds": "30", "clock_uncertainty": "1", "clock_commit_latency": "1"}
+
+
+class ClockRecoveryProvisioningTests(unittest.TestCase):
+    def validate(self, policy):
+        return AUTHORITY["validate_direct_clock_recovery_policy"](policy,
+            "synthetic-issuer-key", 1, 1, {"maximum_clock_uncertainty": "3"})
+
+    def test_closed_policy_keeps_typed_canonical_field_order(self):
+        policy = synthetic_recovery_policy()
+        actual = self.validate(dict(reversed(list(policy.items()))))
+        self.assertEqual(actual, policy)
+        self.assertEqual(list(actual), list(policy))
+
+    def test_same_reviewer_missing_pin_changed_clock_and_noncanonical_time_refuse(self):
+        for name, value in (("reviewer_key_id", "synthetic-issuer-key"),
+                ("resource_qualification_digest", ""), ("clock_uncertainty", "2"),
+                ("clock_commit_latency", "0"), ("maximum_review_seconds", "31"),
+                ("maximum_review_seconds", "030"), ("version", True)):
+            policy = synthetic_recovery_policy()
+            policy[name] = value
+            with self.assertRaises(ValueError):
+                self.validate(policy)
+        policy = synthetic_recovery_policy()
+        policy["extra"] = "not-selected"
+        with self.assertRaises(ValueError):
+            self.validate(policy)
+
+    def test_recovered_start_requires_fresh_label_exact_receipt_and_original_deadline(self):
+        for arguments in ({"clock_resolution_file": "/var/lib/hybrid-authority/cold-recovery/resolution.json"},
+                {"startup_label": "../reuse"}, {"recovery_expires_at": 10},
+                {"clock_resolution_file": "/unselected/receipt", "startup_label": "cold-recovered",
+                    "recovery_expires_at": 10, "recovery_uncertainty": 3}):
+            with self.assertRaises(ValueError):
+                AUTHORITY["start_external_issuer"](None, "unused", "unused", **arguments)
 
 
 class IssuerInitializationTests(unittest.TestCase):
@@ -140,6 +184,34 @@ class IssuerInitializationTests(unittest.TestCase):
             self.assertNotEqual(repeated.returncode, 0)
             self.assertEqual((journal.stat().st_dev, journal.stat().st_ino, journal.read_bytes()), before)
             self.assertTrue(all(b"dedicated private directory" not in reply for reply in self.driver_replies))
+
+    def test_actual_fresh_recovery_initialization_is_format3_with_no_legacy_adoption(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory).resolve()
+            os.chmod(parent, 0o700)
+            hub = parent / "hub"
+            hub.mkdir(mode=0o700)
+            root = parent / "recoverable"
+            root.mkdir(mode=0o700)
+            policy = synthetic_recovery_policy()
+            self.driver_replies = []
+            journal = synthetic_files(root, hub, True, policy)
+            AUTHORITY["private_guest_command"] = self.guest(directory)
+            AUTHORITY["initialize_external_issuer"](None, sys.executable, EXECUTABLE,
+                str(root / "configuration.json"), str(root / "publication.json"))
+            connection = sqlite3.connect('file:' + str(journal) + '?mode=ro', uri=True)
+            try:
+                self.assertEqual(connection.execute('PRAGMA user_version').fetchone()[0], 3)
+                retained = connection.execute('SELECT policy FROM clock_recovery_policy').fetchone()[0]
+                self.assertEqual(retained, canonical(policy))
+                self.assertEqual(connection.execute('SELECT COUNT(*) FROM clock_resolutions').fetchone()[0], 0)
+                self.assertEqual(connection.execute('SELECT COUNT(*) FROM clock_resolution_consumptions').fetchone()[0], 0)
+            finally:
+                connection.close()
+            repeated = subprocess.run([EXECUTABLE, "initialize", "--configuration",
+                str(root / "configuration.json"), "--publication", str(root / "publication.json")],
+                capture_output=True, timeout=15, check=False)
+            self.assertNotEqual(repeated.returncode, 0)
 
     def test_startup_launch_failure_retains_unknown_child_exit(self):
         with tempfile.TemporaryDirectory() as directory:

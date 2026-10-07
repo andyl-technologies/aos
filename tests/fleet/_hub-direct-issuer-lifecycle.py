@@ -117,14 +117,22 @@ def assert_direct_issuer_cold_head(before, after):
         "scope": "actual signed retained metadata head; not provider drain or unknown settlement"}
 
 
-def observe_direct_issuer_cold_refusal(native, tools, original, signed_head):
+def observe_direct_issuer_cold_refusal(native, tools, original, signed_head, *,
+                                       recovery_policy=None, issuer_public_key=None,
+                                       require_unused_resolution=False, label="cold-refusal"):
     """Retain the real unresolved-session refusal on the same used resource."""
+    if label not in {"cold-refusal", "cold-unreviewed"}:
+        raise ValueError("cold refusal label differs from its two fixed observations")
     observed = json.loads(direct_guest_python(native, tools["python"], """
         import hashlib, os, signal, sqlite3, stat, subprocess, time
         from pathlib import Path
 
         root = Path('/var/lib/hybrid-authority')
         expected = [selected['authority'], 'serve', '--configuration', str(root / 'configuration.json')]
+        if 'clockResolutionFile' in selected['original']:
+            if selected['original']['clockResolutionFile'] != str(root / 'cold-recovery' / 'resolution.json'):
+                raise ValueError('original recovered receipt coordinate differs')
+            expected += ['--clock-resolution', selected['original']['clockResolutionFile']]
         process_root = Path('/proc') / str(selected['original']['pid'])
         def pin(directory):
             metadata = directory.stat()
@@ -138,18 +146,45 @@ def observe_direct_issuer_cold_refusal(native, tools, original, signed_head):
             return lifetime
         def resource():
             values = {}
-            for name in ('configuration.json', 'signing-seed.key', 'publisher.key', 'renewal.key'):
+            for name in ('signing-seed.key', 'publisher.key', 'renewal.key'):
+                # Secret content never enters fixture memory, hashes or output.
+                metadata = (root / name).lstat()
+                if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid()
+                        or stat.S_IMODE(metadata.st_mode) != 0o600 or metadata.st_nlink != 1
+                        or not 0 < metadata.st_size <= 65536):
+                    raise ValueError('retained issuer key custody differs')
+                values[name] = {'device': metadata.st_dev, 'inode': metadata.st_ino,
+                    'bytes': metadata.st_size, 'mtimeNs': str(metadata.st_mtime_ns),
+                    'owner': metadata.st_uid, 'mode': stat.S_IMODE(metadata.st_mode), 'links': metadata.st_nlink}
+            for name in ('configuration.json', 'issuer-public-key.hex'):
                 descriptor = os.open(root / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
                 with os.fdopen(descriptor, 'rb') as source:
                     metadata = os.fstat(source.fileno())
                     if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid()
-                            or metadata.st_mode & 0o077 or metadata.st_size > 1048576):
+                            or stat.S_IMODE(metadata.st_mode) != 0o600 or metadata.st_nlink != 1
+                            or metadata.st_size > 1048576):
                         raise ValueError('retained issuer configuration/key custody differs')
-                    values[name] = hashlib.file_digest(source, 'sha256').hexdigest()
+                    body = source.read(1048577)
+                    values[name] = hashlib.sha256(body).hexdigest()
+                    if name == 'configuration.json':
+                        configuration = json.loads(body)
+                        if configuration['format_version'] != (2 if selected['recoveryPolicy'] is not None else 1):
+                            raise ValueError('configuration/journal format selection differs')
+                        if selected['recoveryPolicy'] is not None and (
+                                configuration['format_version'] != 2
+                                or configuration.get('clock_recovery') != selected['recoveryPolicy']):
+                            raise ValueError('actual fresh recovery policy differs from selected public pins')
+                    elif selected['issuerPublicKey'] is not None and body != selected['issuerPublicKey'].encode():
+                        raise ValueError('actual issuer public verifier changed')
             journal = (root / 'journal' / 'journal.sqlite').lstat()
-            if not stat.S_ISREG(journal.st_mode) or journal.st_uid != os.getuid():
+            parent = (root / 'journal').lstat()
+            if (not stat.S_ISREG(journal.st_mode) or journal.st_uid != os.getuid()
+                    or stat.S_IMODE(journal.st_mode) != 0o600 or journal.st_nlink != 1
+                    or not stat.S_ISDIR(parent.st_mode) or parent.st_uid != os.getuid()
+                    or stat.S_IMODE(parent.st_mode) != 0o700):
                 raise ValueError('retained issuer journal is not the original regular resource')
-            return {'files': values, 'journalDevice': journal.st_dev, 'journalInode': journal.st_ino}
+            return {'files': values, 'journalDevice': journal.st_dev, 'journalInode': journal.st_ino,
+                'journalParentDevice': parent.st_dev, 'journalParentInode': parent.st_ino}
         def history():
             # These are independent read-only bytes, not a permission clock or
             # an operator resolution. Serving retains its unresolved marker.
@@ -159,7 +194,7 @@ def observe_direct_issuer_cold_refusal(native, tools, original, signed_head):
                 connection.execute('BEGIN')
                 application = connection.execute('PRAGMA application_id').fetchone()[0]
                 version = connection.execute('PRAGMA user_version').fetchone()[0]
-                if application != 0x414f534a or version != 2:
+                if application != 0x414f534a or version != (3 if selected['recoveryPolicy'] is not None else 2):
                     raise ValueError('actual issuer SQL resource identity differs')
                 marker_size = connection.execute('SELECT length(marker) FROM installation_marker WHERE singleton=1').fetchone()[0]
                 sizes = connection.execute('SELECT length(publication),length(journal) FROM authority_state WHERE singleton=1').fetchone()
@@ -172,6 +207,18 @@ def observe_direct_issuer_cold_refusal(native, tools, original, signed_head):
                 publication, journal = connection.execute(
                     'SELECT publication,journal FROM authority_state WHERE singleton=1').fetchone()
                 floor, session = connection.execute('SELECT floor,session FROM authority_clock WHERE singleton=1').fetchone()
+                ceiling = None
+                if version == 3:
+                    ceiling = connection.execute('SELECT ceiling FROM authority_clock WHERE singleton=1').fetchone()[0]
+                    length = connection.execute('SELECT length(policy) FROM clock_recovery_policy WHERE singleton=1').fetchone()[0]
+                    if length > 32768:
+                        raise ValueError('retained recovery policy exceeds source bound')
+                    policy = connection.execute('SELECT policy FROM clock_recovery_policy WHERE singleton=1').fetchone()[0]
+                    if json.loads(policy) != selected['recoveryPolicy']:
+                        raise ValueError('retained immutable recovery policy differs')
+                    if selected['requireUnusedResolution'] and any(connection.execute('SELECT COUNT(*) FROM ' + table).fetchone()[0] != 0
+                            for table in ('clock_resolutions', 'clock_resolution_consumptions')):
+                        raise ValueError('positive cold scenario is not the first one-use resolution')
                 rows = connection.execute('SELECT generation,publication,receipt,operation FROM publication_receipts '
                     'ORDER BY generation LIMIT 1025').fetchall()
                 schema = connection.execute("SELECT type,name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY name").fetchall()
@@ -192,6 +239,7 @@ def observe_direct_issuer_cold_refusal(native, tools, original, signed_head):
                     'historySha256': hashlib.sha256(json.dumps(projected, separators=(',', ':')).encode()).hexdigest(),
                     'schemaSha256': hashlib.sha256(json.dumps(schema, separators=(',', ':')).encode()).hexdigest(),
                     'historyRows': len(rows), 'historyBytes': retained_bytes, 'clockFloor': floor,
+                    'clockCeiling': ceiling, 'journalFormat': version,
                     'clockSessionSha256': hashlib.sha256(session.encode()).hexdigest()}
             finally:
                 connection.close()
@@ -218,7 +266,7 @@ def observe_direct_issuer_cold_refusal(native, tools, original, signed_head):
             time.sleep(0.1)
         if resource() != retained or history() != retained_history:
             raise ValueError('issuer state changed during stop; no cold attempt launched')
-        log_path = root / 'cold-refusal.log'
+        log_path = root / (selected['label'] + '.log')
         descriptor = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, 'wb') as log:
             replacement = subprocess.Popen(expected, stdin=subprocess.DEVNULL,
@@ -247,8 +295,9 @@ def observe_direct_issuer_cold_refusal(native, tools, original, signed_head):
             exit_code = replacement.wait(timeout=10)
         except subprocess.TimeoutExpired:
             raise ValueError('cold startup remains live/unknown; no signal or automatic recovery')
-        body = log_path.read_bytes()
-        if (not exit_code or len(body) > 1048576
+        with log_path.open('rb') as log:
+            body = log.read(65537)
+        if (not exit_code or len(body) > 65536
                 or b'unresolved clock session requires explicit reviewed operator resolution' not in body
                 or resource() != retained or history() != retained_history):
             raise ValueError('cold startup has no exact unresolved-session refusal with retained history')
@@ -259,12 +308,14 @@ def observe_direct_issuer_cold_refusal(native, tools, original, signed_head):
             'executableSha256': selected['original']['executableSha256'],
             'logSha256': hashlib.sha256(body).hexdigest(), 'logBytes': len(body),
             'retainedResource': retained, 'retainedHistory': retained_history,
-            'positiveColdRecovery': 'unsupported',
+            'positiveColdRecovery': 'awaiting_independent_review' if selected['recoveryPolicy'] is not None else 'unsupported',
             'scope': 'actual unresolved-clock-session refusal; no clear, Initialize, recovery or provider settlement'}))
     """, {"authority": tools["authority"], "original": original,
             "signedJournal": signed_head["reply"]["current"]["journal"],
-            "signedInstallation": signed_head["reply"]["current"]["installation"]}, timeout=45))
-    retain_direct_flow("actual-issuer-cold-refusal.json", observed)
+            "signedInstallation": signed_head["reply"]["current"]["installation"],
+            "recoveryPolicy": recovery_policy, "issuerPublicKey": issuer_public_key,
+            "requireUnusedResolution": require_unused_resolution, "label": label}, timeout=45))
+    retain_direct_flow("actual-issuer-" + label + ".json", observed)
     return observed
 
 
@@ -272,7 +323,9 @@ def run_direct_issuer_terminal_refusal(native, worker, tools, helper, authority)
     """Stop the retained issuer only after the other runtime scenarios finish."""
     before = exchange_direct_issuer(native, worker, tools, helper,
         authority["exported"]["bootstrap"], {"kind": "current"}, "terminal-before-cold")
-    observed = observe_direct_issuer_cold_refusal(native, tools, authority["issuerProcess"], before)
+    observed = observe_direct_issuer_cold_refusal(native, tools, authority["issuerProcess"], before,
+        recovery_policy=authority.get("clockRecoveryPolicy"),
+        issuer_public_key=authority["exported"]["bootstrap"]["issuer_public_key"])
     authority["issuerProcessStopped"] = True
     return observed
 
@@ -297,4 +350,376 @@ def run_direct_issuer_lifecycle(native, worker, tools, helper, authority):
         "positiveColdRecovery": "unsupported",
         "scope": "actual two-cohort TTL while issuer remains live; terminal cold refusal follows other scenarios"}
     retain_direct_flow("actual-issuer-lifecycle.json", result)
+    return result
+
+
+def _run_direct_clock_operator(native, tools, operation, *, expires_at=None,
+                                uncertainty=None):
+    """Retain one bounded source-CLI outcome; failures never authorize a retry."""
+    root = "/var/lib/hybrid-authority/cold-recovery"
+    if operation == "inspect":
+        arguments = [tools["authority"], "inspect-clock-session", "--configuration",
+            "/var/lib/hybrid-authority/configuration.json", "--output", root + "/plan.json"]
+    elif operation == "resolve" and type(expires_at) is int and type(uncertainty) is int:
+        arguments = [tools["authority"], "resolve-clock-session", "--configuration",
+            "/var/lib/hybrid-authority/configuration.json", "--review", root + "/review.json",
+            "--output", root + "/resolution.json"]
+    else:
+        raise ValueError("clock operator operation or original deadline differs")
+    result = json.loads(direct_guest_python(native, tools["python"], """
+        import hashlib, os, subprocess, time
+        from pathlib import Path
+
+        root = Path('/var/lib/hybrid-authority/cold-recovery')
+        if selected['operation'] == 'inspect':
+            root.mkdir(mode=0o700, exist_ok=False)
+        descriptors = {}
+        for name in ('stdout', 'stderr'):
+            descriptors[name] = os.open(root / (selected['operation'] + '.' + name),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        process = None
+        category, exit_code = 'launch_unknown', None
+        started = time.time_ns()
+        try:
+            allowance = 5.0
+            if selected['expiresAt'] is not None:
+                allowance = min(allowance, selected['expiresAt'] - selected['uncertainty'] - time.time())
+                if allowance <= 0:
+                    raise ValueError('original review deadline elapsed')
+            deadline = time.monotonic() + allowance
+            with os.fdopen(descriptors.pop('stdout'), 'wb') as output, \
+                    os.fdopen(descriptors.pop('stderr'), 'wb') as error:
+                process = subprocess.Popen(selected['arguments'], stdin=subprocess.DEVNULL,
+                    stdout=output, stderr=error, start_new_session=True)
+                category = 'command_unknown'
+                while process.poll() is None:
+                    if (os.fstat(output.fileno()).st_size > 65536
+                            or os.fstat(error.fileno()).st_size > 65536):
+                        category = 'output_overflow_unknown'
+                        break
+                    if time.monotonic() >= deadline:
+                        category = 'deadline_unknown'
+                        break
+                    time.sleep(0.01)
+                if process.poll() is None:
+                    # Only this owned short-lived operator child is stopped.
+                    # A possible committed resolution remains unknown, never undone.
+                    process.terminate()
+                    try:
+                        process.wait(timeout=1)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=1)
+                else:
+                    category = 'success' if process.returncode == 0 else 'refused_or_unknown'
+                exit_code = process.returncode
+                output.flush()
+                error.flush()
+                os.fsync(output.fileno())
+                os.fsync(error.fileno())
+        except (OSError, ValueError):
+            pass
+        finally:
+            for descriptor in descriptors.values():
+                os.close(descriptor)
+        retained = {}
+        for name in ('stdout', 'stderr'):
+            with (root / (selected['operation'] + '.' + name)).open('rb') as source:
+                size = os.fstat(source.fileno()).st_size
+                body = source.read(65537)
+            retained[name] = {'bytes': size, 'inspectedBytes': len(body),
+                'sha256': hashlib.sha256(body).hexdigest() if size <= 65536 else None}
+            if size > 65536:
+                category = 'output_overflow_unknown'
+        if category == 'success' and any(value['bytes'] != 0 for value in retained.values()):
+            category = 'unexpected_output_unknown'
+        summary = {'version': 1, 'operation': selected['operation'], 'category': category,
+            'exitCode': exit_code, 'startedUnixNs': str(started),
+            'completedUnixNs': str(time.time_ns()), 'outputs': retained,
+            'scope': 'one source operator invocation; no retry or rollback on unknown'}
+        descriptor = os.open(root / (selected['operation'] + '-result.json'),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, 'w') as output:
+            json.dump(summary, output, separators=(',', ':'))
+            output.flush()
+            os.fsync(output.fileno())
+        print(json.dumps(summary))
+    """, {"operation": operation, "arguments": arguments,
+            "expiresAt": expires_at, "uncertainty": uncertainty}, timeout=10))
+    retain_direct_flow("issuer-clock-" + operation + ".json", result)
+    if result["category"] != "success" or result["exitCode"] != 0:
+        raise RuntimeError("clock operator has no positive acknowledgment; retained without retry")
+    return result
+
+
+def _assert_direct_clock_plan(plan, policy, before, refusal):
+    """Join the actual source-encoded original to independent retained facts."""
+    fields = {"version", "file", "expected_head", "expected_session", "expected_floor",
+        "expected_ceiling", "policy_digest", "successor_session", "nonce", "issued_at", "expires_at"}
+    history, resource = refusal["retainedHistory"], refusal["retainedResource"]
+    policy_bytes = json.dumps(policy, ensure_ascii=False, separators=(",", ":")).encode()
+    if (set(plan) != fields or type(plan["version"]) is not int or plan["version"] != 1
+            or plan["expected_head"] != before["reply"]["current"]
+            or plan["expected_floor"] != history["clockFloor"]
+            or plan["expected_ceiling"] != history["clockCeiling"]
+            or hashlib.sha256(plan["expected_session"].encode()).hexdigest() != history["clockSessionSha256"]
+            or plan["policy_digest"] != hashlib.sha256(policy_bytes).hexdigest()
+            or plan["file"] != {"device": str(resource["journalDevice"]),
+                "inode": str(resource["journalInode"]),
+                "parent_device": str(resource["journalParentDevice"]),
+                "parent_inode": str(resource["journalParentInode"])}):
+        raise ValueError("clock plan differs from the actual pinned inactive resource")
+    for name in ("expected_session", "successor_session", "nonce", "policy_digest"):
+        if not isinstance(plan[name], str) or not re.fullmatch(r"[0-9a-f]{64}", plan[name]):
+            raise ValueError("clock plan commitment differs from its source schema")
+    for name in ("expected_floor", "expected_ceiling", "issued_at", "expires_at"):
+        if not isinstance(plan[name], str) or not re.fullmatch(r"0|[1-9][0-9]{0,18}", plan[name]):
+            raise ValueError("clock plan time differs from its canonical source integer")
+        if int(plan[name]) > 2**63 - 1:
+            raise ValueError("clock plan time exceeds the shared signed integer range")
+    if (plan["successor_session"] == plan["expected_session"]
+            or not 0 < int(plan["expires_at"]) - int(plan["issued_at"]) <= int(policy["maximum_review_seconds"])
+            or int(plan["expected_ceiling"]) < int(plan["expected_floor"])):
+        raise ValueError("clock plan successor or finite lifetime differs")
+
+
+def _assert_direct_clock_review_bytes(review_bytes, plan_bytes, policy):
+    """Refuse changed/noncanonical signed wire bytes without rewriting them.
+
+    The plan is exact bounded output of the source inspect encoder. Embedding
+    those original bytes avoids reordering nested typed fields. Only the fixed
+    ClockRecoveryReview fields are encoded here, in their declared serde order;
+    the Rust resolver still authenticates signature and all semantic invariants.
+    """
+    review = json.loads(review_bytes)
+    if (not isinstance(review, dict)
+            or set(review) != {"version", "plan", "plan_digest", "reviewer_key_id", "signature"}
+            or type(review["version"]) is not int or review["version"] != 1
+            or review["plan"] != json.loads(plan_bytes)
+            or review["plan_digest"] != hashlib.sha256(plan_bytes).hexdigest()
+            or review["reviewer_key_id"] != policy["reviewer_key_id"]
+            or not isinstance(review["signature"], str)
+            or not re.fullmatch(r"[0-9a-f]{128}", review["signature"])):
+        raise ValueError("independent clock review changed the original, reviewer or signature shape")
+    def scalar(value):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
+    expected = (b'{"version":1,"plan":' + plan_bytes
+        + b',"plan_digest":' + scalar(review["plan_digest"])
+        + b',"reviewer_key_id":' + scalar(review["reviewer_key_id"])
+        + b',"signature":' + scalar(review["signature"]) + b'}')
+    if review_bytes != expected:
+        raise ValueError("independent clock review is not the exact canonical source wire encoding")
+    return review
+
+
+def _observe_direct_clock_recovery(native, tools, process, refusal, plan, review_digest):
+    """Read one positive consumption and original history under the live owner."""
+    result = json.loads(direct_guest_python(native, tools["python"], """
+        import hashlib, os, sqlite3, stat
+        from pathlib import Path
+
+        root = Path('/var/lib/hybrid-authority')
+        process = selected['process']
+        owner = Path('/proc') / str(process['pid'])
+        def pin():
+            fields = (owner / 'stat').read_text().rpartition(') ')[2].split()
+            if (fields[0] == 'Z' or fields[19] != process['startTicks']
+                    or owner.stat().st_uid != os.getuid()
+                    or os.readlink(owner / 'exe') != process['executable']):
+                raise ValueError('recovered issuer owner changed')
+            return fields[19]
+        pin()
+        resource = selected['resource']
+        for name, expected in resource['files'].items():
+            metadata = (root / name).lstat()
+            if isinstance(expected, dict):
+                actual = {'device': metadata.st_dev, 'inode': metadata.st_ino,
+                    'bytes': metadata.st_size, 'mtimeNs': str(metadata.st_mtime_ns),
+                    'owner': metadata.st_uid, 'mode': stat.S_IMODE(metadata.st_mode), 'links': metadata.st_nlink}
+                if not stat.S_ISREG(metadata.st_mode) or actual != expected:
+                    raise ValueError('original secret custody changed')
+            else:
+                descriptor = os.open(root / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                with os.fdopen(descriptor, 'rb') as source:
+                    opened = os.fstat(source.fileno())
+                    if (not stat.S_ISREG(opened.st_mode) or opened.st_uid != os.getuid()
+                            or stat.S_IMODE(opened.st_mode) != 0o600 or opened.st_nlink != 1
+                            or not 0 < opened.st_size <= 1048576
+                            or (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino)):
+                        raise ValueError('original public file custody changed')
+                    body = source.read(1048577)
+                    finished = os.fstat(source.fileno())
+                current = (root / name).lstat()
+                if ((finished.st_size, finished.st_mtime_ns) != (opened.st_size, opened.st_mtime_ns)
+                        or (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino)
+                        or len(body) != opened.st_size or hashlib.sha256(body).hexdigest() != expected):
+                    raise ValueError('original public configuration or verifier changed')
+        journal = root / 'journal' / 'journal.sqlite'
+        metadata, parent = journal.lstat(), journal.parent.lstat()
+        if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid()
+                or stat.S_IMODE(metadata.st_mode) != 0o600 or metadata.st_nlink != 1
+                or not stat.S_ISDIR(parent.st_mode) or parent.st_uid != os.getuid()
+                or stat.S_IMODE(parent.st_mode) != 0o700
+                or metadata.st_dev != resource['journalDevice'] or metadata.st_ino != resource['journalInode']
+                or parent.st_dev != resource['journalParentDevice'] or parent.st_ino != resource['journalParentInode']):
+            raise ValueError('original journal resource was replaced')
+        connection = sqlite3.connect('file:' + str(journal) + '?mode=ro', uri=True, timeout=2)
+        try:
+            connection.execute('BEGIN')
+            if (connection.execute('PRAGMA application_id').fetchone()[0] != 0x414f534a
+                    or connection.execute('PRAGMA user_version').fetchone()[0] != 3):
+                raise ValueError('recovered resource is not freshly initialized format 3')
+            floor, session, ceiling = connection.execute(
+                'SELECT floor,session,ceiling FROM authority_clock WHERE singleton=1').fetchone()
+            counts = [connection.execute('SELECT COUNT(*) FROM ' + table).fetchone()[0]
+                for table in ('clock_resolutions', 'clock_resolution_consumptions')]
+            review_length = connection.execute('SELECT length(review) FROM clock_resolutions WHERE plan_digest=?',
+                (selected['reviewDigest'],)).fetchone()[0]
+            if not 0 < review_length <= 32768:
+                raise ValueError('actual retained review exceeds source bound')
+            retained_review, previous, successor = connection.execute(
+                'SELECT review,previous_session,successor_session FROM clock_resolutions WHERE plan_digest=?',
+                (selected['reviewDigest'],)).fetchone()
+            if (counts != [1, 1] or len(retained_review) > 32768
+                    or json.loads(retained_review)['plan'] != selected['plan']
+                    or previous != selected['plan']['expected_session']
+                    or successor != session or successor != selected['plan']['successor_session']
+                    or connection.execute('SELECT plan_digest FROM clock_resolution_consumptions').fetchone()[0]
+                        != selected['reviewDigest']):
+                raise ValueError('actual one-use resolution/consumption differs from independent original')
+            sizes = connection.execute('SELECT length(publication),length(receipt),length(operation) '
+                'FROM publication_receipts LIMIT 1025').fetchall()
+            if len(sizes) > 1024 or sum(sum(row) for row in sizes) > 16777216:
+                raise ValueError('retained issuance history exceeds observation bounds')
+            rows = connection.execute('SELECT generation,publication,receipt,operation FROM publication_receipts '
+                'ORDER BY generation LIMIT 1025').fetchall()
+            projected = [[row[0], *[hashlib.sha256(value).hexdigest() for value in row[1:]]] for row in rows]
+            history_digest = hashlib.sha256(json.dumps(projected, separators=(',', ':')).encode()).hexdigest()
+            if (history_digest != selected['history']['historySha256']
+                    or int(floor) < int(selected['history']['clockFloor'])
+                    or int(ceiling) < int(selected['history']['clockCeiling'])):
+                raise ValueError('recovered issuer rolled back retained history or clock bounds')
+        finally:
+            connection.close()
+        pin()
+        print(json.dumps({'version': 1, 'pid': process['pid'], 'startTicks': process['startTicks'],
+            'journalDevice': metadata.st_dev, 'journalInode': metadata.st_ino,
+            'historySha256': history_digest, 'historyRows': len(rows),
+            'clockFloor': floor, 'clockCeiling': ceiling,
+            'successorSessionSha256': hashlib.sha256(session.encode()).hexdigest(),
+            'resolutionCount': counts[0], 'consumptionCount': counts[1],
+            'scope': 'actual one-use consumption and original history; no provider settlement'}))
+    """, {"process": process, "resource": refusal["retainedResource"],
+            "history": refusal["retainedHistory"], "plan": plan,
+            "reviewDigest": review_digest}, timeout=10))
+    retain_direct_flow("actual-issuer-cold-consumption.json", result)
+    return result
+
+
+def run_direct_issuer_cold_recovery(native, worker, tools, helper, authority,
+                                    recovery_policy, independent_review, *,
+                                    maximum_wait_seconds):
+    """Recover one fresh format-3 resource through an independent finite review.
+
+    The reviewer receives the exact canonical source plan and public policy bytes,
+    and returns canonical signed review bytes. It owns opaque source-CLI signing;
+    this fixture has no reviewer seed coordinate or signing implementation. The
+    callback must fail by its supplied monotonic deadline. No parent approval is
+    inferred, no plan is refreshed, and a failed/unknown resolution is not retried.
+    """
+    import time
+
+    bootstrap = authority["exported"]["bootstrap"]
+    timing = bootstrap["timing_profile"]
+    policy = validate_direct_clock_recovery_policy(recovery_policy, bootstrap["issuer_key_id"],
+        int(bootstrap["clock_uncertainty"]), int(authority["issuer"]["configuration"]["clock_commit_latency"]), timing)
+    uncertainty = int(policy["clock_uncertainty"]) + int(policy["clock_commit_latency"]) + 1
+    if (not callable(independent_review) or type(maximum_wait_seconds) is not int
+            or not 0 < maximum_wait_seconds <= int(timing["maximum_lifetime"]) + 2 * uncertainty + 1):
+        raise ValueError("cold recovery requires an independent reviewer and finite existing-lifetime wait")
+    before = exchange_direct_issuer(native, worker, tools, helper, bootstrap,
+        {"kind": "current"}, "cold-before")
+    refusal = observe_direct_issuer_cold_refusal(native, tools, authority["issuerProcess"], before,
+        recovery_policy=policy, issuer_public_key=bootstrap["issuer_public_key"],
+        require_unused_resolution=True, label="cold-unreviewed")
+    authority["issuerProcessStopped"] = True
+    eligible = max(int(refusal["retainedHistory"]["clockCeiling"]),
+        int(before["reply"]["current"]["journal"]["largest_issued_expiry"])) + uncertainty
+    waiting = json.loads(direct_guest_python(native, tools["python"], """
+        import time
+        deadline = time.monotonic() + selected['maximumWait']
+        while int(time.time()) < selected['eligibleAt']:
+            if time.monotonic() >= deadline:
+                raise ValueError('retained admission bounds outlive finite cold wait')
+            time.sleep(0.05)
+        print(json.dumps({'version': 1, 'observedAt': str(int(time.time())),
+            'earliestRequired': str(selected['eligibleAt'] - selected['uncertainty']),
+            'scope': 'actual Native clock; no manufactured future sample'}))
+    """, {"eligibleAt": eligible, "maximumWait": maximum_wait_seconds,
+            "uncertainty": uncertainty}, timeout=maximum_wait_seconds + 2))
+    retain_direct_flow("issuer-clock-eligible.json", waiting)
+
+    _run_direct_clock_operator(native, tools, "inspect")
+    root = "/var/lib/hybrid-authority/cold-recovery"
+    plan_bytes = read_direct_guest_file(native, tools["python"], root + "/plan.json", 32768)
+    plan = json.loads(plan_bytes)
+    _assert_direct_clock_plan(plan, policy, before, refusal)
+    # Convert remaining Native time to a local monotonic deadline. Host UTC is
+    # never compared with the VM clock, nor used as a fabricated permission sample.
+    sample_started = time.monotonic()
+    remaining = float(direct_guest_python(native, tools["python"], """
+        import time
+        print(max(0.0, selected['expiresAt'] - selected['uncertainty'] - time.time()))
+    """, {"expiresAt": int(plan["expires_at"]), "uncertainty": uncertainty}, timeout=2))
+    if remaining <= 0:
+        raise ValueError("actual clock plan expired before independent review")
+    review_deadline = sample_started + min(remaining, int(policy["maximum_review_seconds"]))
+    policy_bytes = json.dumps(policy, ensure_ascii=False, separators=(",", ":")).encode()
+    retain_direct_flow("issuer-clock-plan.json", plan)
+    review_bytes = independent_review(plan_bytes, policy_bytes, review_deadline)
+    if (time.monotonic() >= review_deadline or not isinstance(review_bytes, bytes)
+            or not 0 < len(review_bytes) <= 32768):
+        raise ValueError("independent clock review absent, expired or oversized")
+    review = _assert_direct_clock_review_bytes(review_bytes, plan_bytes, policy)
+    install_direct_guest_file(native, tools["python"], root + "/review.json", review_bytes)
+    retain_direct_flow("issuer-clock-review.json", review)
+    _run_direct_clock_operator(native, tools, "resolve", expires_at=int(plan["expires_at"]),
+        uncertainty=uncertainty)
+    resolution_bytes = read_direct_guest_file(native, tools["python"], root + "/resolution.json", 32768)
+    resolution = json.loads(resolution_bytes)
+    if (set(resolution) != {"version", "review", "observed_at", "uncertainty"}
+            or resolution["version"] != 1 or resolution["review"] != review
+            or resolution["uncertainty"] != str(uncertainty)
+            or int(resolution["observed_at"]) - uncertainty < eligible - uncertainty
+            or int(resolution["observed_at"]) + uncertainty >= int(plan["expires_at"])):
+        raise ValueError("actual resolution has no positive exact original and qualified interval")
+    retain_direct_flow("issuer-clock-resolution.json", resolution)
+    process = start_external_issuer(native, tools["python"], tools["authority"],
+        clock_resolution_file=root + "/resolution.json", startup_label="cold-recovered",
+        recovery_expires_at=int(plan["expires_at"]), recovery_uncertainty=uncertainty)
+    if (process["executableSha256"] != refusal["executableSha256"]
+            or (process["pid"], process["startTicks"]) == (refusal["oldPid"], refusal["oldStartTicks"])):
+        raise ValueError("recovered owner is not a fresh lifetime of the exact selected executable")
+    authority["issuerProcess"] = process
+    authority["issuerProcessStopped"] = False
+    authority["clockRecoveryPolicy"] = policy
+    consumption = _observe_direct_clock_recovery(native, tools, process, refusal, plan, review["plan_digest"])
+    after = exchange_direct_issuer(native, worker, tools, helper, bootstrap,
+        {"kind": "current"}, "cold-after")
+    continuity = assert_direct_issuer_cold_head(before, after)
+    issued, previous = [], after["verified"]["observedAtSeconds"]
+    for purpose in ("read", "write"):
+        exchange = exchange_direct_issuer(native, worker, tools, helper, bootstrap, {
+            "kind": "issue", "input": {"cohort": bootstrap[purpose + "_cohort"],
+                "requested_not_after": str(previous + int(timing["maximum_lifetime"]))},
+        }, "cold-recovered-" + purpose, previous)
+        issued.append(assert_direct_issuer_issue(exchange, bootstrap[purpose + "_cohort"], timing))
+        previous = exchange["verified"]["observedAtSeconds"]
+    result = {"version": 1, "positiveColdRecovery": "observed",
+        "oldProcess": {"pid": refusal["oldPid"], "startTicks": refusal["oldStartTicks"]},
+        "newProcess": process, "continuity": continuity, "consumption": consumption,
+        "issuedCohorts": issued, "planSha256": hashlib.sha256(plan_bytes).hexdigest(),
+        "resolutionSha256": hashlib.sha256(resolution_bytes).hexdigest(),
+        "scope": "one independently reviewed cold issuer recovery; no provider or full-fleet acceptance"}
+    retain_direct_flow("actual-issuer-cold-recovery.json", result)
     return result

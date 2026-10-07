@@ -16,13 +16,48 @@ import shlex
 import textwrap
 
 
+def validate_direct_clock_recovery_policy(policy, signing_key_id, uncertainty,
+                                          commit_latency, timing_profile):
+    """Check public selected structure; deployment qualification stays independent."""
+    fields = ("version", "reviewer_key_id", "reviewer_public_key",
+        "resource_qualification_digest", "clock_qualification_digest",
+        "maximum_review_seconds", "clock_uncertainty", "clock_commit_latency")
+    if not isinstance(policy, dict) or set(policy) != set(fields):
+        raise ValueError("clock recovery policy differs from the closed source schema")
+    if (type(policy["version"]) is not int or policy["version"] != 1
+            or not isinstance(policy["reviewer_key_id"], str)
+            or not 0 < len(policy["reviewer_key_id"].encode()) <= 255
+            or policy["reviewer_key_id"] == signing_key_id):
+        raise ValueError("clock recovery requires a distinct pinned independent reviewer")
+    for name in fields[2:5]:
+        if not isinstance(policy[name], str) or not re.fullmatch(r"[0-9a-f]{64}", policy[name]):
+            raise ValueError("clock recovery requires explicit qualification and verifier pins")
+    for name in fields[5:]:
+        value = policy[name]
+        if not isinstance(value, str) or not re.fullmatch(r"0|[1-9][0-9]{0,18}", value):
+            raise ValueError("clock recovery time must use canonical nonnegative decimal strings")
+        if int(value) > 2**63 - 1:
+            raise ValueError("clock recovery time exceeds the shared integer range")
+    total = uncertainty + commit_latency + 1
+    if (not 1 <= int(policy["maximum_review_seconds"]) <= 30
+            or int(policy["clock_uncertainty"]) != uncertainty
+            or int(policy["clock_commit_latency"]) != commit_latency
+            or commit_latency < 1 or total > 2**63 - 1
+            or total > int(timing_profile["maximum_clock_uncertainty"])):
+        raise ValueError("clock recovery time differs from the installed qualified interval")
+    # This order matches ClockRecoveryPolicy's typed serde encoding. Rust still
+    # validates the actual verifier and all signed documents at their boundaries.
+    return {name: policy[name] for name in fields}
+
+
 def provision_external_issuer(native, worker, python, openssl, installation,
                               timing_profile, clock_uncertainty, clock_commit_latency,
                               signing_key_id, renewal_key, certificate_file,
                               private_key_file, expected_server_name, *,
                               issuer_root="/var/lib/hybrid-authority",
                               worker_operator_root="/var/lib/hybrid-worker/operator",
-                              listen="127.0.0.1:8444", hub_root="/var/lib/aos-hub"):
+                              listen="127.0.0.1:8444", hub_root="/var/lib/aos-hub",
+                              clock_recovery_policy=None):
     """Generate Native-only keys under an independently selected installation."""
     if set(installation) != {
         "format_version", "authority", "issuer_resource_id", "runtime_identity",
@@ -68,6 +103,13 @@ def provision_external_issuer(native, worker, python, openssl, installation,
                 "private_key_file": private_key_file,
                 "expected_server_name": expected_server_name},
     }
+    if clock_recovery_policy is not None:
+        configuration["clock_recovery"] = validate_direct_clock_recovery_policy(
+            clock_recovery_policy, signing_key_id, clock_uncertainty,
+            clock_commit_latency, timing_profile)
+        # Only a new resource gets format 2 configuration / format 3 journal.
+        # The create-only root and genuine initializer forbid legacy adoption.
+        configuration["format_version"] = 2
     encoded_configuration = base64.b64encode(json.dumps(configuration).encode()).decode()
     encoded_renewal = base64.b64encode(renewal_key).decode()
     result = json.loads(private_guest_command(native, textwrap.dedent(f"""
@@ -291,10 +333,25 @@ def export_external_authority(worker, native, python, bootstrap_executable,
 
 def start_external_issuer(native, python, authority_executable, *,
                           issuer_root="/var/lib/hybrid-authority",
-                          qualification_observation_file=None):
+                          qualification_observation_file=None, clock_resolution_file=None,
+                          startup_label=None, recovery_expires_at=None,
+                          recovery_uncertainty=None):
     """Retain a safe startup result before requiring actual process observation."""
     arguments = [authority_executable, "serve", "--configuration",
                  issuer_root + "/configuration.json"]
+    if startup_label is not None and not re.fullmatch(r"[a-z][a-z0-9-]{0,31}", startup_label):
+        raise ValueError("issuer startup label differs from its fixed filename bound")
+    if clock_resolution_file is not None:
+        if (startup_label is None or clock_resolution_file != issuer_root + "/cold-recovery/resolution.json"
+                or type(recovery_expires_at) is not int or type(recovery_uncertainty) is not int
+                or recovery_uncertainty < 1):
+            raise ValueError("recovered startup requires an exact receipt and original review deadline")
+        arguments += ["--clock-resolution", clock_resolution_file]
+    elif recovery_expires_at is not None or recovery_uncertainty is not None:
+        raise ValueError("recovery deadline without explicit resolution")
+    prefix = startup_label + "-" if startup_label is not None else ""
+    log_name, summary_name, process_name = (prefix + name for name in
+        ("serve.log", "startup-result.json", "process.json"))
     if qualification_observation_file is not None:
         arguments += ["--qualification-observation", qualification_observation_file]
     result = json.loads(private_guest_command(native, textwrap.dedent(f"""
@@ -308,7 +365,9 @@ def start_external_issuer(native, python, authority_executable, *,
         log_created = False
         phase, category = 'launch', 'launch_failure'
         try:
-            descriptor = os.open(root / 'serve.log', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            if {clock_resolution_file is not None!r} and int(time.time()) + {recovery_uncertainty!r} >= {recovery_expires_at!r}:
+                raise ValueError('original clock recovery deadline elapsed before successor launch')
+            descriptor = os.open(root / {log_name!r}, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             log_created = True
             with os.fdopen(descriptor, 'wb') as log:
                 process = subprocess.Popen({arguments!r}, stdin=subprocess.DEVNULL,
@@ -328,6 +387,11 @@ def start_external_issuer(native, python, authority_executable, *,
                         'executable': executable, 'executableSha256': executable_digest,
                         'machineRole': 'native_metadata_issuer', 'listener': '127.0.0.1:8444',
                         'scope': 'process startup only; authenticated lease observations pending'}}
+                    if {clock_resolution_file is not None!r}:
+                        receipt['clockResolutionFile'] = {clock_resolution_file!r}
+                        if int(time.time()) + {recovery_uncertainty!r} >= {recovery_expires_at!r}:
+                            receipt = None
+                            raise ValueError('successor observation missed original review deadline')
                     phase, category = 'observed', 'process_observed'
         except (OSError, ValueError, IndexError):
             # Exception text and private logs never cross the guest boundary.
@@ -341,7 +405,7 @@ def start_external_issuer(native, python, authority_executable, *,
         try:
             if not log_created:
                 raise OSError('startup log was not created')
-            with open(root / 'serve.log', 'rb') as log:
+            with open(root / {log_name!r}, 'rb') as log:
                 log_bytes = os.fstat(log.fileno()).st_size
                 diagnostic = log.read(65536)
             overflow = log_bytes > 65536
@@ -375,13 +439,15 @@ def start_external_issuer(native, python, authority_executable, *,
                 output.flush()
                 os.fsync(output.fileno())
 
-        retain('startup-result.json', summary)
+        retain({summary_name!r}, summary)
         if receipt is not None:
-            retain('process.json', receipt)
+            retain({process_name!r}, receipt)
         print(json.dumps({{'summary': summary, 'process': receipt}}))
         NATIVE_ISSUER_PROCESS
     """), timeout=120))
     label = "issuer-startup-" + hashlib.sha256(os.fsencode(issuer_root)).hexdigest()[:16]
+    if startup_label is not None:
+        label += "-" + startup_label
     retain_direct_flow(label + ".json", result["summary"])
     if result["process"] is None:
         raise RuntimeError("issuer startup failed: " + result["summary"]["category"])
