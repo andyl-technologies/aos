@@ -29,6 +29,8 @@
     then "qemuMutexWaiterCounters"
     else if case == "tcg-page-collection"
     then "qemuTcgPageCollection"
+    else if case == "tcg-crossing-membership"
+    then "qemuTcgCrossingMembership"
     else throw "unsupported native cost proof: ${case}";
 in
   pkgs.mkDerivation {
