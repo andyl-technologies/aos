@@ -22,7 +22,7 @@ in {
       memoryMiB = 4096;
       varSizeMiB = 2048;
       packages = ["aos-test-agent"];
-      extraClosures = [pkgs.aos pkgs.aos.apm pkgs.bash pkgs.coreutils pkgs.jq pkgs.nix pkgs.util-linux];
+      extraClosures = [pkgs.aos pkgs.aos.apm pkgs.bash pkgs.coreutils pkgs.jq pkgs.nix pkgs.python3 pkgs.util-linux];
       metadata."host.nix" = ''
         { config, lib, ... }: {
           aos.getty.autologin.enable = lib.mkForce false;
@@ -50,6 +50,9 @@ in {
     import base64
     import json
     import shlex
+
+    exec(compile(${builtins.toJSON (builtins.readFile ./native-document-transport.py)},
+        "native-document-transport.py", "exec"), globals())
 
     AOS = "${pkgs.aos}/bin/aos"
     BASH = "${pkgs.bash}/bin/bash"
@@ -121,8 +124,10 @@ in {
         # Project only after the public CLI validates the retained document.
         # pipefail prevents an empty jq result from hiding a failed CLI read.
         pipeline = f"{command} | {JQ} -c {shlex.quote(projection)}"
-        return json.loads(builder.succeed(
-            f"{BASH} -o pipefail -c {shlex.quote(pipeline)}"
+        # Compress complete journals to avoid blocking the agent's console mirror
+        # before it sends a framed reply.
+        return json.loads(compressed_output(
+            builder, pipeline, shell=BASH, python="${pkgs.python3}/bin/python3"
         ))
 
 
