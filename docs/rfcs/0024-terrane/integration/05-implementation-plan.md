@@ -3383,7 +3383,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   verifies all 4,904 actual input files from the five hermetic derivations against
   the 5,958 frozen tracked images, including executable modes; complete tracked
   hashes, modes and mtimes remain unchanged. Corrected composed native build
-  and the ten local-deletion Nextest cases remain pending, separately from the
+  and all ten exact local-deletion Nextest cases also pass (run
+  `ba2643c2-41ca-403f-a86e-0a232640c0d8`): ten unique passes, zero failed,
+  ignored or unrun, and 620 cases outside the exact selection. Independent
+  review verifies the original runtime and terminal results, both evidence
+  seals and all 5,958 frozen tracked hashes, modes and mtimes. The corrected
+  ten-case run takes 1,413.847 seconds with unchanged limits and genuine
+  durability, cancellation and recovery assertions. It is separate from the
   historical pre-correction ten-case result. Full collector and current-trunk
   qualification remain pending. T-GC-1 stays open.
   The reviewed pure journal, marking, proof-context, checkpoint, retention and
