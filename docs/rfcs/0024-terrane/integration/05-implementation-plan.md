@@ -817,6 +817,28 @@ unchanged tracked images. The original wrong-profile discovery failure is retain
 its correction changes the harness only. Incomplete-path lint diagnostics are
 not suppressed, and no full native quality, task, cold-factory or T1 exit claim
 follows from this prerequisite.
+The next trunk prerequisite retains actual staging controls from metadata creation
+through final publication and completes Legacy history only after every signed
+requirement, Original and historical context verifies. Contextual Raw durability
+retains the actual closed Original scopes used by its submitted effect. Frozen
+`80c01962c0` passes five exact Legacy completion cases and the first three native
+metadata-batch cases: distinct members, canonical advisory Memo duplicates and
+existing/empty runs, and direct-container/actual-repair fallback. The next creator
+and catalog fault case fails because its expected native acknowledgment source
+is absent; ten later owning selectors and seven dependent phases are unrun.
+The positive duplicate fixture uses ordinary Memo data; Commit reoffers remain
+an explicit admission-denial case. Core no-std and both mandatory formatters pass
+on the same source. Strict profile quality stops in default on incomplete-path
+imports and unused interfaces; later profiles and private docs are unrun, with
+no diagnostic suppressed. Independent review verifies both preserved source-bound
+runs, all 5,644 unchanged source images and each derivation's 4,590 actual inputs.
+A separate frozen `a6e0d7afeb` qualification passes application compilation
+(107 test executables, 29 packages and 70 integration targets; no execution),
+registry completeness and both formatters. Its current-milestone aggregate fails
+explicitly at pending `algebra-fork`, ALG-32. The subsequent two-file owning-test
+correction is qualified only by the exact results above. No formal task merge,
+checkbox, exit gate or freeze advances.
+
 The focused separate-source requalification check is registered with twelve
 exact completion/refusal selectors; registry-complete and both required
 formatters pass. Its first private native compilation stops on two child-module
