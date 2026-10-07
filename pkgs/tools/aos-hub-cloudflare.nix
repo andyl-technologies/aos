@@ -59,6 +59,8 @@ assert observationTools == null || observationTools.passthru.selectedWorkerArtif
           cp ${./aos-hub-direct-qualification.mjs} \
             "$out/share/aos-hub/direct-qualification.mjs"
           cp ${./aos-hub-hosted-workload.py} "$out/share/aos-hub/hosted-workload.py"
+          cp ${./aos-hub-hosted-read.py} "$out/share/aos-hub/hosted-read.py"
+          cp ${./aos-hub-hosted-read.md} "$out/share/aos-hub/hosted-read.md"
           mkdir -p "$out/share/aos-hub/hosted-capture"
           # Individual Nix source paths have store-prefixed names; the tools load
           # these assets and parsers by their original filenames.
@@ -102,6 +104,8 @@ assert observationTools == null || observationTools.passthru.selectedWorkerArtif
             "$out/share/aos-hub/hosted-measurements/_hub-direct-runtime-observations.py"
           cp ${../../tests/fleet/_hub-direct-observations.py} \
             "$out/share/aos-hub/hosted-measurements/_hub-direct-observations.py"
+          cp ${../../tests/fleet/_hub-direct-read-parity.py} \
+            "$out/share/aos-hub/hosted-measurements/_hub-direct-read-parity.py"
           # The static-asset bundle Cloudflare serves from its CDN edge (the
           # `[assets]` directory the generated wrangler.toml points at). Copied
           # writable so `wrangler deploy`'s asset manifest pass can stat it.
@@ -151,6 +155,12 @@ assert observationTools == null || observationTools.passthru.selectedWorkerArtif
             --library-dir "$out/share/aos-hub/hosted-measurements"
           EOF
           chmod +x "$out/bin/aos-hub-hosted-workload"
+          cat > "$out/bin/aos-hub-hosted-read" <<EOF
+          #!${bash}/bin/bash
+          exec ${python3}/bin/python3 -B -E "$out/share/aos-hub/hosted-read.py" "\$@" \
+            --library-dir "$out/share/aos-hub/hosted-measurements"
+          EOF
+          chmod +x "$out/bin/aos-hub-hosted-read"
           cat > "$out/bin/aos-hub-hosted-capture-render" <<EOF
           #!${bash}/bin/bash
           if [ "\$#" -ne 1 ]; then
@@ -170,6 +180,9 @@ assert observationTools == null || observationTools.passthru.selectedWorkerArtif
       ./aos-hub-direct-sdk-conformance.mjs
       ./aos-hub-direct-qualification.mjs
       ./aos-hub-hosted-workload.py
+      ./aos-hub-hosted-read.py
+      ./aos-hub-hosted-read-tests.py
+      ./aos-hub-hosted-read.md
       ./aos-hub-hosted-capture/capture.mjs
       ./aos-hub-hosted-capture/sink.mjs
       ./aos-hub-hosted-capture/baseline-proxy.mjs
@@ -181,6 +194,7 @@ assert observationTools == null || observationTools.passthru.selectedWorkerArtif
       ../../tests/fleet/_hub-perf.py
       ../../tests/fleet/_hub-direct-runtime-observations.py
       ../../tests/fleet/_hub-direct-observations.py
+      ../../tests/fleet/_hub-direct-read-parity.py
     ];
 
     meta = {
