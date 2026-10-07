@@ -8,6 +8,10 @@
 //! Root construction, physical root measurement, sealed bootstrap, and the
 //! OpenSSH gate implementation also live here; `aos-sandbox-agent` owns their
 //! portable records and verification contracts without Linux dependencies.
+//!
+//! The Controller's passive specimen collector temporarily imports tree
+//! measurement here. That observational edge supplies no mount or exec permit;
+//! extracting the shared integration domain remains a separate change.
 
 pub mod dormant_guest_agent;
 pub mod dormant_package;

@@ -21,7 +21,6 @@ use ssh_key::{LineEnding, PrivateKey, certificate::Builder, private::Ed25519Keyp
 use aos_sandbox_agent::openssh_attach_certificate::*;
 use aos_sandbox_agent::openssh_gate::{OpenSshGateBindingV1, OpenSshGateClaimV1, expected_openssh_gate_config_v1};
 use aos_sandbox_core::public_attach_route::*;
-use ssh_key::{Algorithm, Certificate, HashAlg, PublicKey, certificate::CertType};
 use crate::openssh_gate_linux::RunningOpenSshGateV1;
 
 const DIRECTORY: &str = "/etc/aos/sandbox-attach";
