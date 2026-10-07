@@ -777,9 +777,19 @@ acquisition and adds exact same-holder read/recheck plumbing. Its frozen source
 `7433f151d7` compiles all default, Send and native test targets and passes four
 exact existing Original/consumed-context regressions with zero ignored cases.
 Both mandatory formatters pass, and independent review verifies every original
-terminal result and all 5,618 unchanged tracked images. Its retained receipt
-setter and actual factory consumer are still absent; no retained-positive,
-imported-context or complete collector result follows from these checks.
+terminal result and all 5,618 unchanged tracked images.
+The next trunk slice installs the genuine receipt only after the native held
+factory checks the consumed controls. Candidate publication rechecks its
+installed Original under that same receipt, then repeats current selection and
+time checks before the existing native dispatch. Frozen `68df745fb9` compiles
+default, Send and native test targets; passes the four Original/consumed-context
+regressions plus genuine ordered publication/reopen, rollback and final
+registration-refusal cases; and passes both mandatory formatters. All seven
+cases have exact named successes and zero ignored cases. Independent review
+verifies every one of twelve terminal results and 5,620 unchanged tracked
+images. The actual positive paths close native acknowledgment before their
+independent durable assertions. Imported/per-view factory completion, physical
+deletion, the complete collector and ALG-32 remain unqualified.
 The focused separate-source requalification check is registered with twelve
 exact completion/refusal selectors; registry-complete and both required
 formatters pass. Its first private native compilation stops on two child-module
