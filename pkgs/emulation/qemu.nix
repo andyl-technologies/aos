@@ -1784,6 +1784,8 @@ in
               cat placement-registration.result
               grep -Fxq 'placement registration: exact post-grant window, actual TID, refusal nonpublication and unchanged resume fences PASS' \
                 placement-registration.result
+              grep -Fxq 'write registration: original grant window, six null/partial slots, actual TID, unpublished refusals and release-published complete table PASS' \
+                placement-registration.result
               cp placement-registration.result "$out/share/aos/crucible/placement-registration.result"
               build/tests/unit/test-crucible-aio-retirement > aio-worker-retirement.result
               cat aio-worker-retirement.result

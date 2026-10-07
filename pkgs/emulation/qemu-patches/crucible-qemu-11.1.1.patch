@@ -1,4 +1,4 @@
-From 16f45d05f82e21240339743fbe79b249a711410a Mon Sep 17 00:00:00 2001
+From d3f2bdbb0ba4851e70c4c9ae9f19a6c88f268d6a Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Tue, 6 Oct 2026 07:05:00 +0000
 Subject: [PATCH] Integrate deterministic execution and authenticated paged RAM
@@ -120486,10 +120486,10 @@ index 0000000000000000000000000000000000000000..e8d98a0beb68a58aed72e673fb28070c
 +}
 diff --git a/plugins/crucible-paged-ram.c b/plugins/crucible-paged-ram.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..91172eb199fd4b80c63d964bee599d3d5d073196
+index 0000000000000000000000000000000000000000..36cc0187107fb1f3822893a8afcb152fce6b0e35
 --- /dev/null
 +++ b/plugins/crucible-paged-ram.c
-@@ -0,0 +1,1902 @@
+@@ -0,0 +1,1909 @@
 +/*
 + * Logical RAM observation and host paging ownership.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -120583,18 +120583,23 @@ index 0000000000000000000000000000000000000000..91172eb199fd4b80c63d964bee599d3d
 +
 +static int (*placement_boundary)(void);
 +
++/* Installation is confined to the observer's original sealed, applied grant.
++ * Neither callback registration nor this startup window implies a VMStop;
++ * the invocation paths retain their independent paused/capture fences. */
++static bool ram_callback_installation_window(void)
++{
++    return bql_locked() && admission_regions && admission_regions->len &&
++        admission_regions->len == admission.region_count &&
++        admission_grant_open && admission_grant_applied &&
++        admission_grant_owner == qemu_get_thread_id() &&
++        admission.topology_generation &&
++        admission.topology_generation == qatomic_read(&topology_generation);
++}
++
 +int qemu_plugin_crucible_register_ram_placement_v1(int (*callback)(void))
 +{
-+    /* The observer installs placement after applying the genuine grant to
-+     * this sealed inventory, before the startup window closes. Registration
-+     * does not require a VMStop; invocation retains its paused exact fence. */
 +    if (!callback || qatomic_load_acquire(&placement_boundary) ||
-+        !bql_locked() || !admission_regions || !admission_regions->len ||
-+        admission_regions->len != admission.region_count ||
-+        !admission_grant_open || !admission_grant_applied ||
-+        admission_grant_owner != qemu_get_thread_id() ||
-+        !admission.topology_generation ||
-+        admission.topology_generation != qatomic_read(&topology_generation)) {
++        !ram_callback_installation_window()) {
 +        return -EBUSY;
 +    }
 +    qatomic_store_release(&placement_boundary, callback);
@@ -121908,7 +121913,9 @@ index 0000000000000000000000000000000000000000..91172eb199fd4b80c63d964bee599d3d
 +    qemu_plugin_crucible_ram_write_finish_v1 scratch_release)
 +{
 +    if (!begin || !check || !finish || !progress || !scratch_reserve ||
-+        !scratch_release || admission_regions || write_prepare) {
++        !scratch_release || !ram_callback_installation_window() ||
++        qatomic_load_acquire(&write_prepare) || write_check || write_finish ||
++        write_progress || write_scratch_reserve || write_scratch_release) {
 +        return -EINVAL;
 +    }
 +    write_check = check;
@@ -184347,15 +184354,15 @@ index 0000000000000000000000000000000000000000..5de510d543012b6ea7ad7f47bb046431
 +}
 diff --git a/tests/unit/test-crucible-placement-registration.py b/tests/unit/test-crucible-placement-registration.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..d2461011fb3a117a8a32869f7017f831ea12adcb
+index 0000000000000000000000000000000000000000..b96d74842120a2a347f1cd7131399b40636776ad
 --- /dev/null
 +++ b/tests/unit/test-crucible-placement-registration.py
-@@ -0,0 +1,325 @@
+@@ -0,0 +1,546 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
-+"""Checks placement registration within the native post-grant startup window.
++"""Checks placement and write registration in the native post-grant window.
 +
-+The fixture extracts the production registrar, grant function, and before-resume
-+boundary. BQL, sealed-region construction, and run-state endpoints are explicit
++The fixture extracts both production registrars, their shared window helper,
++the grant function, and the before-resume boundary. BQL, sealed-region construction, and run-state endpoints are explicit
 +component inputs; grant application is the production function and thread IDs
 +come from real kernel threads. This does not qualify a translated guest.
 +"""
@@ -184395,6 +184402,7 @@ index 0000000000000000000000000000000000000000..d2461011fb3a117a8a32869f7017f831
 +#include <errno.h>
 +#include <glib.h>
 +#include <pthread.h>
++#include <sched.h>
 +#include <stdbool.h>
 +#include <stdint.h>
 +#include <stdio.h>
@@ -184446,6 +184454,12 @@ index 0000000000000000000000000000000000000000..d2461011fb3a117a8a32869f7017f831
 +static bool admission_grant_applied;
 +static uint64_t admission_grant_owner;
 +static int (*placement_boundary)(void);
++static qemu_plugin_crucible_ram_write_begin_v1 write_prepare;
++static qemu_plugin_crucible_ram_write_check_v1 write_check;
++static qemu_plugin_crucible_ram_write_finish_v1 write_finish;
++static qemu_plugin_crucible_ram_write_progress_v1 write_progress;
++static qemu_plugin_crucible_ram_write_scratch_v1 write_scratch_reserve;
++static qemu_plugin_crucible_ram_write_finish_v1 write_scratch_release;
 +"""
 +
 +TESTS = r"""
@@ -184486,6 +184500,12 @@ index 0000000000000000000000000000000000000000..d2461011fb3a117a8a32869f7017f831
 +    admission_grant_open = true;
 +    admission_grant_applied = false;
 +    placement_boundary = NULL;
++    write_prepare = NULL;
++    write_check = NULL;
++    write_finish = NULL;
++    write_progress = NULL;
++    write_scratch_reserve = NULL;
++    write_scratch_release = NULL;
 +    metadata_budget = 0;
 +    rust_metadata_budget = 0;
 +    boundary_entries = boundary_leaves = placement_calls = 0;
@@ -184509,6 +184529,66 @@ index 0000000000000000000000000000000000000000..d2461011fb3a117a8a32869f7017f831
 +    assert(!placement_calls && !boundary_entries && !boundary_leaves);
 +}
 +
++static unsigned write_callback_calls;
++
++static int begin_write(uint64_t generation, uint64_t scratch_token,
++                       const struct qemu_plugin_crucible_ram_write_coordinate_v1 *pages,
++                       size_t count, uint64_t *token)
++{
++    assert(generation && scratch_token && pages && count && token);
++    write_callback_calls++;
++    return -EIO;
++}
++
++static int check_write(uint64_t token, uint32_t ready)
++{
++    assert(token && ready);
++    write_callback_calls++;
++    return -EIO;
++}
++
++static int finish_write(uint64_t token)
++{
++    assert(token);
++    write_callback_calls++;
++    return -EIO;
++}
++
++static int progress_write(uint64_t token, uint64_t completed)
++{
++    assert(token && completed);
++    write_callback_calls++;
++    return -EIO;
++}
++
++static int reserve_scratch(uint64_t bytes, uint64_t *token)
++{
++    assert(bytes && token);
++    write_callback_calls++;
++    return -EIO;
++}
++
++static int register_write(void)
++{
++    return qemu_plugin_crucible_register_ram_write_preparation_v1(
++        begin_write, check_write, finish_write, progress_write,
++        reserve_scratch, finish_write);
++}
++
++static void assert_write_table_empty(void)
++{
++    assert(!qatomic_load_acquire(&write_prepare));
++    assert(!write_check && !write_finish && !write_progress);
++    assert(!write_scratch_reserve && !write_scratch_release);
++    assert(!write_callback_calls);
++}
++
++static void refuse_write_unpublished(void)
++{
++    assert(register_write() == -EINVAL);
++    assert_write_table_empty();
++}
++
 +static void *foreign_owner(void *opaque)
 +{
 +    uint64_t *actual_tid = opaque;
@@ -184518,6 +184598,7 @@ index 0000000000000000000000000000000000000000..d2461011fb3a117a8a32869f7017f831
 +    /* Even a modeled BQL endpoint cannot replace the real granting TID. */
 +    fixture_bql_owned = true;
 +    refused_unpublished();
++    refuse_write_unpublished();
 +    return NULL;
 +}
 +
@@ -184605,6 +184686,142 @@ index 0000000000000000000000000000000000000000..d2461011fb3a117a8a32869f7017f831
 +    refused_unpublished();
 +}
 +
++static void *observe_published_write_table(void *opaque)
++{
++    (void)opaque;
++    while (!qatomic_load_acquire(&write_prepare)) {
++        sched_yield();
++    }
++    /* Acquiring the begin publication must expose every preceding slot. */
++    assert(write_prepare == begin_write);
++    assert(write_check == check_write && write_finish == finish_write);
++    assert(write_progress == progress_write && write_scratch_reserve == reserve_scratch);
++    assert(write_scratch_release == finish_write);
++    return NULL;
++}
++
++static void test_write_registration(void)
++{
++    pthread_t reader;
++
++    sealed_startup_window();
++    refuse_write_unpublished();
++    apply_original_grant();
++
++    /* Startup installs placement and then the write table on this same grant.
++     * The signed16f registrar fails here solely because inventory is sealed. */
++    assert(qemu_plugin_crucible_register_ram_placement_v1(
++        placement_callback) == 0);
++    assert(pthread_create(&reader, NULL, observe_published_write_table, NULL) == 0);
++    assert(register_write() == 0);
++    assert(pthread_join(reader, NULL) == 0);
++    assert(qatomic_load_acquire(&write_prepare) == begin_write);
++    assert(write_check == check_write && write_finish == finish_write);
++    assert(write_progress == progress_write && write_scratch_reserve == reserve_scratch);
++    assert(write_scratch_release == finish_write && !write_callback_calls);
++    assert(register_write() == -EINVAL);
++    assert(qatomic_load_acquire(&write_prepare) == begin_write);
++    assert(write_check == check_write && write_finish == finish_write);
++    assert(write_progress == progress_write && write_scratch_reserve == reserve_scratch);
++    assert(write_scratch_release == finish_write && !write_callback_calls);
++}
++
++static void test_write_null_and_partial_table(void)
++{
++    sealed_startup_window();
++    apply_original_grant();
++
++    for (unsigned missing = 0; missing < 6; missing++) {
++        assert(qemu_plugin_crucible_register_ram_write_preparation_v1(
++            missing == 0 ? NULL : begin_write,
++            missing == 1 ? NULL : check_write,
++            missing == 2 ? NULL : finish_write,
++            missing == 3 ? NULL : progress_write,
++            missing == 4 ? NULL : reserve_scratch,
++            missing == 5 ? NULL : finish_write) == -EINVAL);
++        assert_write_table_empty();
++    }
++
++    /* Each existing slot independently refuses replacement. These modeled
++     * interrupted tables remain unchanged; no partial owner is repaired here. */
++    for (unsigned existing = 0; existing < 6; existing++) {
++        sealed_startup_window();
++        apply_original_grant();
++        switch (existing) {
++        case 0: write_prepare = begin_write; break;
++        case 1: write_check = check_write; break;
++        case 2: write_finish = finish_write; break;
++        case 3: write_progress = progress_write; break;
++        case 4: write_scratch_reserve = reserve_scratch; break;
++        case 5: write_scratch_release = finish_write; break;
++        default: assert(false);
++        }
++        assert(register_write() == -EINVAL);
++        assert(write_prepare == (existing == 0 ? begin_write : NULL));
++        assert(write_check == (existing == 1 ? check_write : NULL));
++        assert(write_finish == (existing == 2 ? finish_write : NULL));
++        assert(write_progress == (existing == 3 ? progress_write : NULL));
++        assert(write_scratch_reserve == (existing == 4 ? reserve_scratch : NULL));
++        assert(write_scratch_release == (existing == 5 ? finish_write : NULL));
++        assert(!write_callback_calls);
++    }
++}
++
++static void test_write_failed_windows(void)
++{
++    pthread_t worker;
++    uint64_t foreign_tid = 0;
++    uint64_t allowance = 0;
++
++    sealed_startup_window();
++    apply_original_grant();
++    admission_regions = NULL;
++    refuse_write_unpublished();
++    admission_regions = &sealed_regions;
++    sealed_regions.len = 0;
++    refuse_write_unpublished();
++    sealed_regions.len = 1;
++    admission.region_count = 2;
++    refuse_write_unpublished();
++    admission.region_count = 1;
++    fixture_bql_owned = false;
++    refuse_write_unpublished();
++    fixture_bql_owned = true;
++    assert(pthread_create(&worker, NULL, foreign_owner, &foreign_tid) == 0);
++    assert(pthread_join(worker, NULL) == 0);
++    assert(foreign_tid && !placement_boundary);
++    admission_grant_owner = 0;
++    refuse_write_unpublished();
++    admission_grant_owner = qemu_get_thread_id();
++    admission_grant_open = false;
++    refuse_write_unpublished();
++    admission_grant_open = true;
++    admission_grant_applied = false;
++    refuse_write_unpublished();
++    admission_grant_applied = true;
++    admission.topology_generation = topology_generation = 0;
++    refuse_write_unpublished();
++    admission.topology_generation = 7;
++    topology_generation = 8;
++    refuse_write_unpublished();
++
++    sealed_startup_window();
++    assert(qemu_plugin_crucible_ram_admission_grant_v1(
++        admission.topology_generation, admission.native_metadata_bytes,
++        &allowance) == -ENOSPC);
++    assert(!admission_grant_applied && !allowance);
++    refuse_write_unpublished();
++    admission_grant_open = false;
++    admission_grant_owner = 0;
++    refuse_write_unpublished();
++
++    sealed_startup_window();
++    apply_original_grant();
++    admission_grant_open = false;
++    admission_grant_owner = 0;
++    refuse_write_unpublished();
++}
++
 +static void test_resume_fences_unchanged(void)
 +{
 +    sealed_startup_window();
@@ -184634,8 +184851,12 @@ index 0000000000000000000000000000000000000000..d2461011fb3a117a8a32869f7017f831
 +{
 +    test_exact_post_grant_window();
 +    test_failed_windows();
++    test_write_registration();
++    test_write_null_and_partial_table();
++    test_write_failed_windows();
 +    test_resume_fences_unchanged();
 +    puts("placement registration: exact post-grant window, actual TID, refusal nonpublication and unchanged resume fences PASS");
++    puts("write registration: original grant window, six null/partial slots, actual TID, unpublished refusals and release-published complete table PASS");
 +    return 0;
 +}
 +"""
@@ -184650,16 +184871,23 @@ index 0000000000000000000000000000000000000000..d2461011fb3a117a8a32869f7017f831
 +    plugin = (args.source_root / "include/plugins/qemu-plugin.h").read_text()
 +    native = (args.source_root / "include/qemu/crucible-paged-ram.h").read_text()
 +    admission_type = definition(plugin, "struct qemu_plugin_crucible_ram_admission_v1 {") + ";"
++    coordinate_start = plugin.index("struct qemu_plugin_crucible_ram_write_coordinate_v1 {")
++    coordinate_end = plugin.index("QEMU_PLUGIN_API", coordinate_start)
++    admission_type += "\n\n" + plugin[coordinate_start:coordinate_end]
 +    prototypes = [
++        declaration(plugin, "int qemu_plugin_crucible_register_ram_write_preparation_v1("),
 +        declaration(plugin, "int qemu_plugin_crucible_register_ram_placement_v1("),
 +        declaration(plugin, "int qemu_plugin_crucible_ram_admission_grant_v1("),
 +        declaration(native, "int qemu_crucible_ram_placement_before_resume("),
 +    ]
 +    bodies = [definition(source, signature) for signature in [
++        "int qemu_plugin_crucible_register_ram_write_preparation_v1(",
 +        "int qemu_plugin_crucible_register_ram_placement_v1(",
 +        "int qemu_plugin_crucible_ram_admission_grant_v1(",
 +        "int qemu_crucible_ram_placement_before_resume(",
 +    ]]
++    if "static bool ram_callback_installation_window(" in source:
++        bodies.insert(0, definition(source, "static bool ram_callback_installation_window("))
 +    prelude = PRELUDE.replace("static GPtrArray sealed_regions", admission_type + "\n\nstatic GPtrArray sealed_regions")
 +
 +    args.output_dir.mkdir(parents=True, exist_ok=True)
