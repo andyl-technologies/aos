@@ -70,6 +70,10 @@ struct RefusingResources {
 }
 
 impl StorePhysicalQuotaGuard for RefusingResources {
+    fn decoded_metadata_limit(&self) -> Result<u64, StoreError> {
+        self.inner.decoded_metadata_limit()
+    }
+
     fn verify(&self) -> Result<(), StoreError> {
         self.inner.verify()
     }
