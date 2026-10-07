@@ -77,6 +77,13 @@ impl NixStartAdmissionCarrierV2 {
         self.original_generation
     }
 
+    /// Borrows the exact original assignment bytes as current-Nix comparison DATA.
+    ///
+    /// This supplies no live assignment, lease, Start or resource-bank authority.
+    pub(crate) fn original_assignment_manifest_data_v1(&self) -> &[u8] {
+        &self.assignment.assignment
+    }
+
     pub(crate) fn encode(&self) -> Result<Vec<u8>, NixStartAdmissionErrorV2> {
         self.validate()?;
         let mut writer = BoundedWriter {

@@ -666,6 +666,149 @@ pub(crate) fn retained_tree_inventory_data_v1(
     Ok(inventory)
 }
 
+type CurrentNixInventoryReplayV1 = Result<
+    BTreeMap<ProjectId, super::tree_lineage::ClosedTreeLineageHeadV1>,
+    HierarchyProtectedJournalErrorV1,
+>;
+
+/// Keeps a current-Nix Tree replay and its failed-result owner in one borrow.
+///
+/// The original journal remains available for independent name and watermark
+/// observations even when the native replay fails. No result installs a cache,
+/// supplies authenticated ancestry or exposes the borrowed journal or map.
+pub(crate) struct CurrentNixSourceInventoryAttemptV1<'journal> {
+    journal: &'journal Journal,
+    sequence: u64,
+    names: Result<crate::journal::ProtectedJournalNamesV1, crate::JournalError>,
+    replay: Option<CurrentNixInventoryReplayV1>,
+    name_post: Option<Result<(), crate::JournalError>>,
+    watermark_post: Option<Result<(), HierarchyProtectedJournalErrorV1>>,
+}
+
+/// Retains completed current-Nix replay payloads after their journal loan ends.
+///
+/// The actual replay, names and independent posts move without cloning. This
+/// archival DATA cannot recheck, lend or reconstruct the former journal owner.
+pub(crate) struct CurrentNixSourceInventoryDataV1 {
+    sequence: u64,
+    names: Result<crate::journal::ProtectedJournalNamesV1, crate::JournalError>,
+    replay: Option<CurrentNixInventoryReplayV1>,
+    name_post: Option<Result<(), crate::JournalError>>,
+    watermark_post: Option<Result<(), HierarchyProtectedJournalErrorV1>>,
+}
+
+fn current_nix_inventory_first_error<'original>(
+    names: &'original Result<crate::journal::ProtectedJournalNamesV1, crate::JournalError>,
+    replay: &'original Option<CurrentNixInventoryReplayV1>,
+    name_post: &'original Option<Result<(), crate::JournalError>>,
+    watermark_post: &'original Option<Result<(), HierarchyProtectedJournalErrorV1>>,
+) -> Option<&'original (dyn std::error::Error + 'static)> {
+    names.as_ref().err().map(|error| error as _)
+        .or_else(|| replay.as_ref().and_then(|r| r.as_ref().err()).map(|e| e as _))
+        .or_else(|| name_post.as_ref().and_then(|r| r.as_ref().err()).map(|e| e as _))
+        .or_else(|| watermark_post.as_ref().and_then(|r| r.as_ref().err()).map(|e| e as _))
+}
+
+impl CurrentNixSourceInventoryDataV1 {
+    /// Borrows the same retained replay or post failure after the loan ends.
+    pub(crate) fn first_error(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        current_nix_inventory_first_error(
+            &self.names, &self.replay, &self.name_post, &self.watermark_post,
+        )
+    }
+}
+
+impl CurrentNixSourceInventoryAttemptV1<'_> {
+    /// Ends the original loan while preserving all already returned payloads.
+    pub(crate) fn into_retained_data(self) -> CurrentNixSourceInventoryDataV1 {
+        CurrentNixSourceInventoryDataV1 {
+            sequence: self.sequence, names: self.names, replay: self.replay,
+            name_post: self.name_post, watermark_post: self.watermark_post,
+        }
+    }
+
+    pub(crate) fn first_error(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        current_nix_inventory_first_error(
+            &self.names, &self.replay, &self.name_post, &self.watermark_post,
+        )
+    }
+
+    /// Borrows the actual original physical-name observation as comparison DATA.
+    pub(crate) fn original_names_data(&self) -> Option<crate::journal::ProtectedJournalNamesV1> {
+        self.names.as_ref().ok().copied()
+    }
+
+    pub(crate) const fn original_sequence_data(&self) -> u64 {
+        self.sequence
+    }
+
+    /// Compares the exact original cut without replaying or repairing a failure.
+    ///
+    /// # Errors
+    /// Rejects changed original names/watermark or any retained earlier failure.
+    pub(crate) fn recheck(&self) -> Result<(), HierarchyProtectedJournalErrorV1> {
+        self.journal.validate_held_protected_names()?;
+        if self.first_error().is_some() || self.journal.snapshot_sequence() != self.sequence {
+            return Err(HierarchyProtectedJournalErrorV1::StaleAuthority);
+        }
+        Ok(())
+    }
+
+    /// Selects one original Nix target row and its immutable envelope heads.
+    ///
+    /// The tuple is DATA, not the replay map or an ancestry permission.
+    ///
+    /// # Errors
+    /// Rejects changed original custody, failed replay or an absent exact row.
+    pub(crate) fn original_nix_target_data(
+        &self,
+        project: ProjectId,
+        sandbox: SandboxId,
+    ) -> Result<
+        (super::model::SandboxTreeRecordV1, ObjectDigest, ObjectDigest),
+        HierarchyProtectedJournalErrorV1,
+    > {
+        self.recheck()?;
+        let heads = self.replay.as_ref().and_then(|r| r.as_ref().ok())
+            .ok_or(HierarchyProtectedJournalErrorV1::StaleAuthority)?;
+        let head = heads.get(&project)
+            .ok_or(HierarchyProtectedJournalErrorV1::NonCanonicalRecord)?;
+        let record = *head.tree.record(sandbox)
+            .ok_or(HierarchyProtectedJournalErrorV1::NonCanonicalRecord)?;
+        Ok((record, head.tree_head, head.lineage_head))
+    }
+}
+
+/// Captures one complete current-Nix replay beside the same original writer.
+pub(crate) fn capture_current_nix_inventory_v1(
+    source: &mut ProtectedSourceDomainJournalOwnerV1,
+) -> CurrentNixSourceInventoryAttemptV1<'_> {
+    let returned_names = source.fixed_physical_names_v1();
+    let journal = source.journal();
+    let sequence = journal.snapshot_sequence();
+    let replay = if returned_names.is_ok() {
+        Some(super::tree_lineage::replay_closed_tree_lineage_v1(journal))
+    } else {
+        None
+    };
+
+    // Both posts run after the whole replay result is parked, including Err.
+    let name_post = Some(journal.validate_held_protected_names());
+    let watermark_post = Some(if journal.snapshot_sequence() == sequence {
+        Ok(())
+    } else {
+        Err(HierarchyProtectedJournalErrorV1::StaleAuthority)
+    });
+    CurrentNixSourceInventoryAttemptV1 {
+        journal,
+        sequence,
+        names: returned_names,
+        replay,
+        name_post,
+        watermark_post,
+    }
+}
+
 /// Borrows one opaque evidence value at the exact owner snapshot which minted
 /// it.
 #[must_use = "protected-current evidence must remain tied to its owner borrow"]

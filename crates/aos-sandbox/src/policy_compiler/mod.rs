@@ -59,6 +59,18 @@ pub use git_coverage_enrollment::{
     GitCoverageNativeCutDataV1, RootGitCoverageEnrollmentOwnerV1,
 };
 mod model;
+#[cfg(target_os = "linux")]
+mod nix_current_preflight;
+#[cfg(target_os = "linux")]
+pub use nix_current_preflight::{
+    CURRENT_NIX_PREFLIGHT_CONTEXT_BYTES_V1, CURRENT_NIX_CONTROLLER_RECEIPT_BYTES_V1,
+    CURRENT_NIX_SOURCE_REQUEST_BYTES_V1, CURRENT_NIX_SOURCE_LEGACY_REPLY_BYTES_V1,
+    CURRENT_NIX_SOURCE_LEGACY_GENESIS_REPLY_BYTES_V1, CURRENT_NIX_SOURCE_RESOURCE_REPLY_BYTES_V1,
+    CurrentNixPreflightContextV1, CurrentNixPreflightDataErrorV1,
+    CurrentNixPreflightAttemptV1, CurrentNixPreflightOriginalsV1,
+    CurrentNixSourceIoCellV1,
+    VerifiedCurrentNixControllerReceiptV1, VerifiedCurrentNixSourceObservationV1,
+};
 mod namespace;
 mod owner_pin_transaction;
 mod project_admission_root;
@@ -118,6 +130,7 @@ pub use source_successor_readback::{
 };
 #[cfg(target_os = "linux")]
 pub use source_signer_readback::{
+    CurrentNixSourceObservationAttemptV1, observe_fixed_current_nix_source_into_v1,
     sign_fixed_source_first_successor_readback_v2,
     sign_fixed_source_project_continuation_readback_v3,
     sign_fixed_source_resource_successor_readback_v4,

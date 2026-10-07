@@ -11,11 +11,11 @@ use aos_sandbox_core::{ObjectDigest, ProjectId};
 use ed25519_dalek::SigningKey;
 use thiserror::Error;
 
-use crate::cache_residency::signer_mount::require_signer_mount;
+use crate::cache_residency::signer_mount::{SignerMountWitness, require_signer_mount};
 use crate::hierarchy::protected_journal::replay_project_ancestry_head_v1;
 use crate::journal::{
     Journal, JournalError, ProtectedJournalNamesV1, ReadOnlyProtectedJournal,
-    SourceDomainPolicyHoldV1,
+    RecoveryReport, SourceDomainPolicyHoldV1,
 };
 use crate::journal::{
     replay_source_domain_challenge_v1, replay_source_project_admission_challenge_v1,
@@ -42,6 +42,346 @@ use super::source_project_admission_readback::{
 };
 
 const SIGNER_SOURCE_VIEW: &str = "/run/aos/sandbox-source-signer-journal";
+
+#[cfg(target_os = "linux")]
+enum CurrentNixNativeObservationV1 {
+    Legacy([u8; super::source_successor_readback::SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2]),
+    Resource(Vec<u8>),
+}
+
+#[cfg(target_os = "linux")]
+impl CurrentNixNativeObservationV1 {
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Legacy(bytes) => bytes,
+            Self::Resource(bytes) => bytes,
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+enum CurrentNixSourceFailureSiteV1 {
+    Refusal, Context, InitialClock, InitialPair, Cut, Native, NativeNamePost,
+    NativeWatermarkPost, Preparation, SignatureClock, SignaturePair,
+    SignatureNamePost, SignatureWatermarkPost, Mount, MountBinding, View,
+    ViewNamePost, ViewMountPost, ViewMountBinding, FinalClock, FinalPair,
+    ResponseNamePost, ResponseWatermarkPost, ResponseMountPost, ResponseMountBinding,
+}
+
+/// Retains the complete Source16 observation attempt and its original causes.
+///
+/// This inert destination must precede the reader call. Every entered native,
+/// preparation and clock Result stays resident through independent posts,
+/// including failure. Neither a reply nor this owner issues currentness or a
+/// resource-bank loan. The actual service retains it through send/EOF debt.
+#[cfg(target_os = "linux")]
+pub struct CurrentNixSourceObservationAttemptV1 {
+    entered: bool,
+    first: Option<CurrentNixSourceFailureSiteV1>,
+    refusal: Option<super::CurrentNixPreflightDataErrorV1>,
+    context: Option<Result<(), super::CurrentNixPreflightDataErrorV1>>,
+    initial_clock: Option<Result<aos_sandbox_core::ownership_lease::RawPairedClockSample, crate::hierarchy::genesis_profile::SourceGenesisErrorV1>>,
+    initial_pair: Option<Result<(), super::CurrentNixPreflightDataErrorV1>>,
+    cut: Option<Result<(), super::CurrentNixPreflightDataErrorV1>>,
+    native: Option<Result<CurrentNixNativeObservationV1, SourceSignerReadbackErrorV1>>,
+    native_name_post: Option<Result<(), JournalError>>,
+    native_watermark_post: Option<Result<(), super::CurrentNixPreflightDataErrorV1>>,
+    preparation: Option<Result<Vec<u8>, super::CurrentNixPreflightDataErrorV1>>,
+    message: [u8; super::nix_current_preflight::SOURCE_SIGNATURE_DOMAIN.len() + super::CURRENT_NIX_SOURCE_RESOURCE_REPLY_BYTES_V1 - 64],
+    message_len: usize,
+    signature_clock: Option<Result<aos_sandbox_core::ownership_lease::RawPairedClockSample, crate::hierarchy::genesis_profile::SourceGenesisErrorV1>>,
+    signature_pair: Option<Result<(), super::CurrentNixPreflightDataErrorV1>>,
+    signature: Option<ed25519_dalek::Signature>,
+    signature_name_post: Option<Result<(), JournalError>>,
+    signature_watermark_post: Option<Result<(), super::CurrentNixPreflightDataErrorV1>>,
+    signer_uid: u32,
+    mount: Option<Result<SignerMountWitness, std::io::Error>>,
+    mount_binding: Option<Result<(), super::CurrentNixPreflightDataErrorV1>>,
+    view: Option<Result<(ReadOnlyProtectedJournal, RecoveryReport), JournalError>>,
+    view_name_post: Option<Result<(), JournalError>>,
+    view_mount_post: Option<Result<SignerMountWitness, std::io::Error>>,
+    view_mount_binding: Option<Result<(), super::CurrentNixPreflightDataErrorV1>>,
+    final_clock: Option<Result<aos_sandbox_core::ownership_lease::RawPairedClockSample, crate::hierarchy::genesis_profile::SourceGenesisErrorV1>>,
+    final_pair: Option<Result<(), super::CurrentNixPreflightDataErrorV1>>,
+    response_name_post: Option<Result<(), JournalError>>,
+    response_watermark_post: Option<Result<(), super::CurrentNixPreflightDataErrorV1>>,
+    response_mount_post: Option<Result<SignerMountWitness, std::io::Error>>,
+    response_mount_binding: Option<Result<(), super::CurrentNixPreflightDataErrorV1>>,
+}
+
+#[cfg(target_os = "linux")]
+impl CurrentNixSourceObservationAttemptV1 {
+    /// Prearms empty fixed slots without opening, observing or signing anything.
+    pub const fn empty() -> Self {
+        Self {
+            entered: false, first: None, refusal: None, context: None,
+            initial_clock: None, initial_pair: None, cut: None, native: None,
+            native_name_post: None, native_watermark_post: None, preparation: None,
+            message: [0; super::nix_current_preflight::SOURCE_SIGNATURE_DOMAIN.len() + super::CURRENT_NIX_SOURCE_RESOURCE_REPLY_BYTES_V1 - 64],
+            message_len: 0, signature_clock: None, signature_pair: None,
+            signature: None, signature_name_post: None, signature_watermark_post: None,
+            signer_uid: 0, mount: None, mount_binding: None, view: None,
+            view_name_post: None, view_mount_post: None, view_mount_binding: None,
+            final_clock: None, final_pair: None,
+            response_name_post: None, response_watermark_post: None,
+            response_mount_post: None, response_mount_binding: None,
+        }
+    }
+
+    /// Borrows the complete reply DATA only when every entered post succeeded.
+    pub fn reply_data(&self) -> Option<&[u8]> {
+        if self.first.is_some() || self.signature.is_none() {
+            return None;
+        }
+        self.preparation.as_ref().and_then(|r| r.as_ref().ok()).map(Vec::as_slice)
+    }
+
+    /// Borrows the actual earliest typed failure without cloning or replacing it.
+    pub fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        use CurrentNixSourceFailureSiteV1 as Site;
+        match self.first? {
+            Site::Refusal => self.refusal.as_ref().map(|e| e as _),
+            Site::Context => self.context.as_ref()?.as_ref().err().map(|e| e as _),
+            Site::InitialClock => self.initial_clock.as_ref()?.as_ref().err().map(|e| e as _),
+            Site::InitialPair => self.initial_pair.as_ref()?.as_ref().err().map(|e| e as _),
+            Site::Cut => self.cut.as_ref()?.as_ref().err().map(|e| e as _),
+            Site::Native => self.native.as_ref()?.as_ref().err().map(|e| e as _),
+            Site::NativeNamePost => self.native_name_post.as_ref()?.as_ref().err().map(|e| e as _),
+            Site::NativeWatermarkPost => self.native_watermark_post.as_ref()?.as_ref().err().map(|e| e as _),
+            Site::Preparation => self.preparation.as_ref()?.as_ref().err().map(|e| e as _),
+            Site::SignatureClock => self.signature_clock.as_ref()?.as_ref().err().map(|e| e as _),
+            Site::SignaturePair => self.signature_pair.as_ref()?.as_ref().err().map(|e| e as _),
+            Site::SignatureNamePost => self.signature_name_post.as_ref()?.as_ref().err().map(|e| e as _),
+            Site::SignatureWatermarkPost => self.signature_watermark_post.as_ref()?.as_ref().err().map(|e| e as _),
+            Site::Mount => self.mount.as_ref()?.as_ref().err().map(|e| e as _),
+            Site::MountBinding => self.mount_binding.as_ref()?.as_ref().err().map(|e| e as _),
+            Site::View => self.view.as_ref()?.as_ref().err().map(|e| e as _),
+            Site::ViewNamePost => self.view_name_post.as_ref()?.as_ref().err().map(|e| e as _),
+            Site::ViewMountPost => self.view_mount_post.as_ref()?.as_ref().err().map(|e| e as _),
+            Site::ViewMountBinding => self.view_mount_binding.as_ref()?.as_ref().err().map(|e| e as _),
+            Site::FinalClock => self.final_clock.as_ref()?.as_ref().err().map(|e| e as _),
+            Site::FinalPair => self.final_pair.as_ref()?.as_ref().err().map(|e| e as _),
+            Site::ResponseNamePost => self.response_name_post.as_ref()?.as_ref().err().map(|e| e as _),
+            Site::ResponseWatermarkPost => self.response_watermark_post.as_ref()?.as_ref().err().map(|e| e as _),
+            Site::ResponseMountPost => self.response_mount_post.as_ref()?.as_ref().err().map(|e| e as _),
+            Site::ResponseMountBinding => self.response_mount_binding.as_ref()?.as_ref().err().map(|e| e as _),
+        }
+    }
+
+    /// Parks independent posts on the same reader after the actual response attempt.
+    ///
+    /// This runs after either send outcome, before the service's final raw clock.
+    /// It neither replays the journal nor opens a replacement view.
+    ///
+    /// # Errors
+    /// Returns a marker for reused post slots or changed names, watermark or mount.
+    /// Every reached native Result remains in this original observation owner.
+    pub fn recheck_after_response_v1(
+        &mut self,
+        context: &super::CurrentNixPreflightContextV1,
+    ) -> Result<(), ()> {
+        use CurrentNixSourceFailureSiteV1 as Site;
+        use super::CurrentNixPreflightDataErrorV1 as DataError;
+        if self.response_mount_post.is_some() {
+            self.refusal = Some(DataError::Repeated);
+            self.failed(true, Site::Refusal);
+            return Err(());
+        }
+        if let Some(Ok((reader, _))) = self.view.as_mut() {
+            self.response_name_post = Some(reader.check_named_currentness());
+            self.response_watermark_post = Some(
+                if reader.journal_mut().snapshot_sequence() == context.source_sequence_data() {
+                    Ok(())
+                } else { Err(DataError::Changed) },
+            );
+        }
+        self.failed(matches!(self.response_name_post, Some(Err(_))), Site::ResponseNamePost);
+        self.failed(matches!(self.response_watermark_post, Some(Err(_))), Site::ResponseWatermarkPost);
+        self.response_mount_post = Some(require_signer_mount(
+            SIGNER_SOURCE_VIEW, PROTECTED_SOURCE_DOMAIN_ROOT, self.signer_uid,
+        ));
+        self.failed(matches!(self.response_mount_post, Some(Err(_))), Site::ResponseMountPost);
+        self.response_mount_binding = Some(match (&self.mount, &self.response_mount_post) {
+            (Some(Ok(original)), Some(Ok(later))) if original == later => Ok(()),
+            _ => Err(DataError::Changed),
+        });
+        self.failed(matches!(self.response_mount_binding, Some(Err(_))), Site::ResponseMountBinding);
+        if self.first.is_some() { Err(()) } else { Ok(()) }
+    }
+
+    fn failed(&mut self, failed: bool, site: CurrentNixSourceFailureSiteV1) {
+        if failed && self.first.is_none() {
+            self.first = Some(site);
+        }
+    }
+
+    fn prepare_reply(
+        &mut self, context: &super::CurrentNixPreflightContextV1,
+    ) -> Result<Vec<u8>, super::CurrentNixPreflightDataErrorV1> {
+        let native = self.native.as_ref().and_then(|r| r.as_ref().ok())
+            .ok_or(super::CurrentNixPreflightDataErrorV1::Changed)?.bytes();
+        let complete = 8 + super::CURRENT_NIX_PREFLIGHT_CONTEXT_BYTES_V1 + 4 + native.len() + 64;
+        if !matches!(complete, 3140 | 3316 | 3492) {
+            return Err(super::CurrentNixPreflightDataErrorV1::Changed);
+        }
+        let mut reply = Vec::new();
+        reply.try_reserve_exact(complete)?;
+        reply.extend_from_slice(super::nix_current_preflight::SOURCE_REPLY_MAGIC);
+        reply.extend_from_slice(context.bytes());
+        reply.extend_from_slice(&(native.len() as u32).to_be_bytes());
+        reply.extend_from_slice(native);
+        let domain = super::nix_current_preflight::SOURCE_SIGNATURE_DOMAIN;
+        self.message[..domain.len()].copy_from_slice(domain);
+        self.message[domain.len()..domain.len() + reply.len()].copy_from_slice(&reply);
+        self.message_len = domain.len() + reply.len();
+        Ok(reply)
+    }
+}
+
+/// Captures the distinct current-Nix Source purpose on the same fixed reader.
+///
+/// All preimage allocation precedes the final signature clock; the same signing
+/// primitive runs immediately after its pure pair comparison. The native inner
+/// successor packet supplies historical provenance only. Its actual full-family
+/// reader is reused, never rebranded as a current-Nix or paid owner.
+///
+/// # Errors
+/// Returns a marker on repeated entry, foreign original context, failed native
+/// view/replay/signature preparation or independent name/watermark/clock debt.
+/// The actual typed earliest error remains in `attempt`, including on `Err`.
+#[cfg(target_os = "linux")]
+pub fn observe_fixed_current_nix_source_into_v1(
+    attempt: &mut CurrentNixSourceObservationAttemptV1,
+    expected_controller_uid: u32,
+    context: &super::CurrentNixPreflightContextV1,
+    original: &super::RootFirstSourceSuccessorIntentV2,
+    signer_generation: u64,
+    signing_key: &SigningKey,
+) -> Result<(), ()> {
+    use CurrentNixSourceFailureSiteV1 as Site;
+    use super::CurrentNixPreflightDataErrorV1 as DataError;
+    if attempt.entered {
+        attempt.refusal = Some(DataError::Repeated);
+        attempt.failed(true, Site::Refusal);
+        return Err(());
+    }
+    attempt.entered = true;
+    attempt.context = Some(if expected_controller_uid != 0
+        && expected_controller_uid == original.source_uid()
+        && signer_generation != 0
+        && context.project_data() == original.project()
+        && matches!(context.recipe_data(), 3 | 4) == original.approval_packet().has_resource_authorization()
+    { Ok(()) } else { Err(DataError::Changed) });
+    attempt.failed(matches!(attempt.context, Some(Err(_))), Site::Context);
+
+    attempt.initial_clock = Some(super::observe_root_first_source_successor_clock_v2(None));
+    attempt.failed(matches!(attempt.initial_clock, Some(Err(_))), Site::InitialClock);
+    if let Some(Ok(native)) = attempt.initial_clock.as_ref() {
+        attempt.initial_pair = Some(context.require_original_kernel_sample_data_v1(*native));
+        attempt.failed(matches!(attempt.initial_pair, Some(Err(_))), Site::InitialPair);
+    }
+    if attempt.first.is_none() {
+        attempt.signer_uid = rustix::process::geteuid().as_raw();
+        attempt.mount = Some(require_signer_mount(
+            SIGNER_SOURCE_VIEW, PROTECTED_SOURCE_DOMAIN_ROOT, attempt.signer_uid,
+        ));
+        attempt.failed(matches!(attempt.mount, Some(Err(_))), Site::Mount);
+        attempt.mount_binding = Some(match attempt.mount.as_ref() {
+            Some(Ok(mount)) if mount.source_uid() == expected_controller_uid => Ok(()),
+            _ => Err(DataError::Changed),
+        });
+        attempt.failed(matches!(attempt.mount_binding, Some(Err(_))), Site::MountBinding);
+        // Park the complete open/replay Result before borrowing its reader.
+        // Its original reader and recovery report move infallibly into the
+        // destination after the independent posts, including on failure.
+        let mut view = if attempt.first.is_none() {
+            attempt.mount.as_ref().and_then(|r| r.as_ref().ok()).map(|mount| {
+                open_source_signer_bound_readback(attempt.signer_uid, *mount)
+            })
+        } else { None };
+        attempt.failed(matches!(view, Some(Err(_))), Site::View);
+        if let Some(Ok((readback, _))) = view.as_mut() {
+            let sequence = readback.journal_mut().snapshot_sequence();
+            let names = readback.physical_names_v1();
+            attempt.cut = Some(if sequence == context.source_sequence_data()
+                && names == original.source_names()
+            { Ok(()) } else { Err(DataError::Changed) });
+            attempt.failed(matches!(attempt.cut, Some(Err(_))), Site::Cut);
+            let nonce = context.root_nonce_data();
+            if attempt.first.is_none() {
+                attempt.native = Some(match context.recipe_data() {
+                1 => super::source_successor_readback::sign_source_first_successor_from_view_v2(
+                    readback, nonce, original, signer_generation, signing_key,
+                ).map(CurrentNixNativeObservationV1::Legacy),
+                2 => super::source_successor_readback::sign_source_project_continuation_from_view_v3(
+                    readback, nonce, original, signer_generation, signing_key,
+                ).map(CurrentNixNativeObservationV1::Legacy),
+                3 | 4 => super::source_successor_readback::sign_source_resource_successor_from_view(
+                    readback, nonce, original, signer_generation, signing_key,
+                    context.recipe_data() == 4,
+                ).map(CurrentNixNativeObservationV1::Resource),
+                _ => Err(SourceSignerReadbackErrorV1::Stale),
+                });
+                attempt.failed(matches!(attempt.native, Some(Err(_))), Site::Native);
+            }
+            attempt.native_name_post = Some(readback.check_named_currentness());
+            attempt.failed(matches!(attempt.native_name_post, Some(Err(_))), Site::NativeNamePost);
+            attempt.native_watermark_post = Some(if readback.journal_mut().snapshot_sequence() == sequence {
+                Ok(())
+            } else { Err(DataError::Changed) });
+            attempt.failed(matches!(attempt.native_watermark_post, Some(Err(_))), Site::NativeWatermarkPost);
+
+            if attempt.first.is_none() {
+                let preparation = attempt.prepare_reply(context);
+                attempt.preparation = Some(preparation);
+                attempt.failed(matches!(attempt.preparation, Some(Err(_))), Site::Preparation);
+            }
+            if attempt.first.is_none() {
+                attempt.signature_clock = Some(super::observe_root_first_source_successor_clock_v2(None));
+                attempt.failed(matches!(attempt.signature_clock, Some(Err(_))), Site::SignatureClock);
+                if let Some(Ok(native)) = attempt.signature_clock.as_ref() {
+                    attempt.signature_pair = Some(context.require_original_kernel_sample_data_v1(*native));
+                    attempt.failed(matches!(attempt.signature_pair, Some(Err(_))), Site::SignaturePair);
+                }
+                if attempt.first.is_none() {
+                    use ed25519_dalek::Signer as _;
+                    attempt.signature = Some(signing_key.sign(&attempt.message[..attempt.message_len]));
+                    if let (Some(Ok(reply)), Some(signature)) = (&mut attempt.preparation, &attempt.signature) {
+                        // Exact complete capacity was reserved before the clock.
+                        reply.extend_from_slice(&signature.to_bytes());
+                    }
+                }
+            }
+            attempt.signature_name_post = Some(readback.check_named_currentness());
+            attempt.failed(matches!(attempt.signature_name_post, Some(Err(_))), Site::SignatureNamePost);
+            attempt.signature_watermark_post = Some(if readback.journal_mut().snapshot_sequence() == sequence {
+                Ok(())
+            } else { Err(DataError::Changed) });
+            attempt.failed(matches!(attempt.signature_watermark_post, Some(Err(_))), Site::SignatureWatermarkPost);
+            attempt.view_name_post = Some(readback.check_named_currentness());
+            attempt.failed(matches!(attempt.view_name_post, Some(Err(_))), Site::ViewNamePost);
+        }
+        attempt.view_mount_post = Some(require_signer_mount(
+            SIGNER_SOURCE_VIEW, PROTECTED_SOURCE_DOMAIN_ROOT, attempt.signer_uid,
+        ));
+        attempt.failed(matches!(attempt.view_mount_post, Some(Err(_))), Site::ViewMountPost);
+        attempt.view_mount_binding = Some(match (&attempt.mount, &attempt.view_mount_post) {
+            (Some(Ok(original)), Some(Ok(later))) if original == later => Ok(()),
+            _ => Err(DataError::Changed),
+        });
+        attempt.failed(matches!(attempt.view_mount_binding, Some(Err(_))), Site::ViewMountBinding);
+        attempt.view = view;
+    }
+
+    attempt.final_clock = Some(super::observe_root_first_source_successor_clock_v2(None));
+    attempt.failed(matches!(attempt.final_clock, Some(Err(_))), Site::FinalClock);
+    if let Some(Ok(native)) = attempt.final_clock.as_ref() {
+        attempt.final_pair = Some(context.require_original_kernel_sample_data_v1(*native));
+        attempt.failed(matches!(attempt.final_pair, Some(Err(_))), Site::FinalPair);
+    }
+    if attempt.first.is_some() { Err(()) } else { Ok(()) }
+}
 
 /// Signs actual first-successor DATA through the existing fixed Source reader.
 ///
@@ -738,13 +1078,7 @@ pub(super) fn with_source_signer_journal_view<T>(
         return Err(SourceSignerReadbackErrorV1::View);
     }
 
-    let (mut readback, _) = Journal::open_read_only_protected_at_for_uid_bound(
-        Path::new(SIGNER_SOURCE_VIEW),
-        PROTECTED_SOURCE_DOMAIN_JOURNAL,
-        source_domain_journal_limits(),
-        signer_uid,
-        mount.root_identity(),
-    )?;
+    let (mut readback, _) = open_source_signer_bound_readback(signer_uid, mount)?;
     let packet = sign(&mut readback)?;
 
     readback.check_named_currentness()?;
@@ -755,6 +1089,22 @@ pub(super) fn with_source_signer_journal_view<T>(
         return Err(SourceSignerReadbackErrorV1::View);
     }
     Ok(packet)
+}
+
+// Both callers use the same fixed bounded opening and native replay engine.
+// The legacy wrapper still drops its recovery report at the original statement;
+// Source16 retains the complete returned tuple through response debt instead.
+fn open_source_signer_bound_readback(
+    signer_uid: u32,
+    mount: SignerMountWitness,
+) -> Result<(ReadOnlyProtectedJournal, RecoveryReport), JournalError> {
+    Journal::open_read_only_protected_at_for_uid_bound(
+        Path::new(SIGNER_SOURCE_VIEW),
+        PROTECTED_SOURCE_DOMAIN_JOURNAL,
+        source_domain_journal_limits(),
+        signer_uid,
+        mount.root_identity(),
+    )
 }
 
 fn replay_source_hold(
