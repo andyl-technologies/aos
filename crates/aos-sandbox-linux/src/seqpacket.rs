@@ -48,6 +48,24 @@ pub mod descriptor_subject;
 pub(crate) mod receive_custody;
 pub use receive_custody::RetainedSeqpacketReceiveErrorV1;
 
+/// Describes known source-level storage terms for an optional-descriptor receive.
+///
+/// These are logical payload and inline-owner sizes, not an allocation bound
+/// or admission permit. Vector capacities, allocator overhead, malformed
+/// ancillary storage, process observations and kernel resources remain
+/// unpriced. A caller must independently price those and its whole receiver.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OptionalDescriptorReceiveFootprintV1 {
+    /// Maximum requested payload bytes across the preview and consumed samples.
+    pub payload_bytes: usize,
+    /// Inline size of the existing original-endpoint attempt owner.
+    pub attempt_inline_bytes: usize,
+    /// Logical inline size of the two sample owners, excluding vector capacity.
+    pub sample_inline_bytes: usize,
+    /// Inline size of the complete returned success-or-failure slot.
+    pub result_inline_bytes: usize,
+}
+
 #[cfg(test)]
 mod process_tests;
 
@@ -827,6 +845,16 @@ impl SeqpacketSocket {
             return Err(error);
         }
         let profile = receive_custody::SubjectProfileV1::Descriptors { expected: expected_descriptors, allow_empty: false };
+        self.receive_descriptor_retaining_profile(maximum_bytes, profile)
+    }
+
+    // Both closed descriptor adapters use the same success-only transfer. The
+    // sole receive engine returns exactly preview/consumed samples on success.
+    fn receive_descriptor_retaining_profile(
+        &mut self,
+        maximum_bytes: usize,
+        profile: receive_custody::SubjectProfileV1,
+    ) -> Result<descriptor_subject::ReceivedDescriptorRecord, RetainedSeqpacketReceiveErrorV1> {
         let mut attempt = self.receive_retaining_attempt(maximum_bytes, profile)?;
         let message = &mut attempt.messages[1];
         let Some(subject) = message.subject.take() else {
@@ -941,6 +969,67 @@ impl SeqpacketSocket {
             self.fd.take();
         }
         result
+    }
+
+    /// Receives zero or one descriptor while retaining original failure custody.
+    ///
+    /// The existing strict engine owns both native samples, partial subjects,
+    /// ancillary data and the duplicate endpoint through borrowed validation.
+    /// Only a complete success transfers the consumed payload, subject and
+    /// descriptor table. The caller still validates the authenticated method's
+    /// descriptor roles; this carrier grants no receiving budget or authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns the existing owning receive error for invalid bounds, framing,
+    /// subject or native failures, including tables containing more than one
+    /// descriptor. Screened custody remains resident in that error; forbidden
+    /// or uninspected descriptors follow the existing disposal policy. Only an
+    /// initial nonconsuming EAGAIN or EINTR preserves the existing retry class.
+    pub fn receive_with_optional_descriptor_retaining(
+        &mut self,
+        maximum_bytes: usize,
+    ) -> Result<descriptor_subject::ReceivedDescriptorRecord, RetainedSeqpacketReceiveErrorV1> {
+        let profile = receive_custody::SubjectProfileV1::Descriptors {
+            expected: 1,
+            allow_empty: true,
+        };
+        self.receive_descriptor_retaining_profile(maximum_bytes, profile)
+    }
+
+    /// Describes only known storage terms of the retaining optional receive.
+    ///
+    /// The preview requests one payload byte and the consumed sample requests
+    /// at most `maximum_bytes`. Two logical sample owners and the complete
+    /// result slot are counted separately from the attempt owner. These terms
+    /// exclude allocation capacity and every unpriced cost documented on
+    /// [`OptionalDescriptorReceiveFootprintV1`]; they cannot establish fit.
+    /// Returns `None` for a zero bound or arithmetic overflow, without I/O.
+    #[must_use]
+    pub const fn optional_descriptor_receive_footprint_v1(
+        maximum_bytes: usize,
+    ) -> Option<OptionalDescriptorReceiveFootprintV1> {
+        if maximum_bytes == 0 {
+            return None;
+        }
+        let Some(payload_bytes) = maximum_bytes.checked_add(1) else {
+            return None;
+        };
+        let Some(sample_inline_bytes) = std::mem::size_of::<receive_custody::CapturedMessageV1>()
+            .checked_mul(2)
+        else {
+            return None;
+        };
+
+        Some(OptionalDescriptorReceiveFootprintV1 {
+            payload_bytes,
+            attempt_inline_bytes: std::mem::size_of::<receive_custody::ReceiveAttemptV1>(),
+            sample_inline_bytes,
+            result_inline_bytes: std::mem::size_of::<Result<
+                descriptor_subject::ReceivedDescriptorRecord,
+                RetainedSeqpacketReceiveErrorV1,
+            >>(),
+        })
     }
 
     /// Binds a descriptor record to this exact retained socket endpoint.
