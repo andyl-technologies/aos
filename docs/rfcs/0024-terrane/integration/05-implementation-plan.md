@@ -2032,14 +2032,21 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   mandatory formatters. All 4,878 actual hermetic input files independently match
   the frozen source. These witnesses cover durable Memo/output reopening,
   advisory loss, divergence/rebuild and genuine current/Original/trust checks.
-  Default package/full-suite and application compilation remain for composed
-  qualification; root-associated GC and the full derivation gate remain open.
+  The composed candidate `1bb5aa60d39a` additionally passes the required default
+  package build, fresh default Nextest discovery and all 157 default tests with
+  zero skipped, application test-target compilation and both formatters. Its
+  actual application input independently matches all 4,893 frozen files; the
+  three persistence images remain unchanged. This default suite executes no
+  native witnesses. Broader root-associated GC remains open.
   The shared normative `derivation-memo` gate now requires the twelve common
   codec/evaluation cases and eleven immutable loading/metadata cases together
   with the four actual native persistence cases and conditional-retention
   witness. All three inventories and all 28 exact positive executions are
-  mandatory. Missing implementations fail discovery; this registration and
-  the earlier separate leaf results do not establish a combined gate pass.
+  mandatory. Missing implementations fail discovery. The composed candidate
+  `d11adeabde58` passes the complete 28-case gate with zero failures or ignored
+  selected tests. All 4,893 actual hermetic input files independently match the
+  frozen source, and core/default/native discovery contains 598/157/613 tests.
+  This local gate result does not qualify an implementation merge on the trunk.
   T-DRV-2, ALG-32, task merges and T1 remain open.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
