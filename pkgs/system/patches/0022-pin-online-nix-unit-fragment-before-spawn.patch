@@ -34,7 +34,7 @@ diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
              !strv_isempty(u->dropin_paths) || !isempty(u->source_path))
                  return -EPERM;
  
-@@ -6332,6 +6334,49 @@
+@@ -6332,6 +6334,51 @@
                           strjoina("/nix/store/", expected + strlen("/nix.lower/store/"))) ? 0 : -EPERM;
  }
  
@@ -63,6 +63,7 @@ diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
 +}
 +
 +int aos_nix_verify_loaded_fragment(const Unit *u) {
++        const Service *s;
 +        const ExecContext *context;
 +        int r;
 +
@@ -73,7 +74,8 @@ diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
 +        r = aos_verify_loaded_image_fragment(u);
 +        if (r < 0)
 +                return r;
-+        context = &SERVICE(u)->exec_context;
++        s = (const Service*) u;
++        context = &s->exec_context;
 +        if (!strv_isempty(context->environment_files) ||
 +            !strv_isempty(context->pass_environment) ||
 +            !strv_isempty(context->exec_search_path))

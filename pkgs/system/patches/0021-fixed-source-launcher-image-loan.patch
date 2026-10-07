@@ -52,7 +52,7 @@ diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
 +
 +        if (u->type != UNIT_SERVICE)
 +                return false;
-+        s = SERVICE(u);
++        s = (const Service*) u;
 +        return s->aos_own_launcher_image || s->aos_own_launcher_fragment_pinned;
 +}
 +
@@ -92,7 +92,7 @@ diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
 +
 +        if (!aos_own_launcher_protected_unit(u))
 +                return 0;
-+        s = SERVICE(u);
++        s = (const Service*) u;
 +        if (!s->aos_own_launcher_image || !s->aos_own_launcher_fragment_pinned ||
 +            !aos_own_launcher_name(u->id) || !aos_network_image_guard_active() ||
 +            u->transient || u->load_state != UNIT_LOADED || !set_isempty(u->aliases) ||
