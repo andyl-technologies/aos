@@ -80,6 +80,10 @@ struct Rows {
     archive: Option<RootFirstSourceSuccessorArchiveV2>,
 }
 
+use super::super::nix_current_preflight::{
+    CurrentNixRootArchiveAttemptV1, CurrentNixRootArchiveDataV1,
+};
+
 // Both variants are authenticated comparison DATA. Selecting this codec does
 // not construct a writer, Root floor loan or original flight.
 enum SourceSuccessorComparisonV3 {
@@ -157,6 +161,94 @@ fn project_rows_v3(state: &State, selected: Option<ProjectId>) -> Result<Project
 }
 
 impl super::store::RootSourceGenesisAuthorityV1 {
+    // The fresh nonce was obtained by the same native opening, not supplied by
+    // the framing peer. This comparison DATA never lends the Root writer.
+    pub(in crate::policy_compiler) fn current_nix_challenge_data_v1(
+        &self,
+    ) -> Result<[u8; 16], SourceGenesisErrorV1> {
+        self.recheck()?;
+        Ok(self.nonce)
+    }
+
+    pub(in crate::policy_compiler) fn capture_current_nix_archive_into_v1(
+        &self,
+        attempt: &mut CurrentNixRootArchiveAttemptV1,
+        project: ProjectId,
+    ) -> Result<(), ()> {
+        if attempt.entered {
+            attempt.refusal = Some(SourceGenesisErrorV1::Conflict);
+            return Err(());
+        }
+        attempt.entered = true;
+        attempt.before = Some(self.recheck());
+        if matches!(attempt.before, Some(Ok(()))) {
+            let returned = self.successor_rows_for_project_v3(project).and_then(|rows| {
+                if rows.intent.is_some() { return Err(SourceGenesisErrorV1::Conflict); }
+                let archive = rows.archive.ok_or(SourceGenesisErrorV1::Conflict)?;
+                if archive.original.project() != project { return Err(SourceGenesisErrorV1::Conflict); }
+                let recipe = match (self.successor_recipe,
+                    archive.original.approval_packet().has_resource_authorization()) {
+                    (FirstSuccessorWireRecipeV3::StrictV2, false) => 1,
+                    (FirstSuccessorWireRecipeV3::MixedV3, false) => 2,
+                    (FirstSuccessorWireRecipeV3::StrictV2, true) => 3,
+                    (FirstSuccessorWireRecipeV3::MixedV3, true) => 4,
+                };
+                Ok(CurrentNixRootArchiveDataV1 {
+                    floor: archive.floor, original: archive.original,
+                    nonce: self.nonce, sequence: self.journal.snapshot_sequence(), recipe,
+                })
+            });
+            attempt.archive = Some(returned);
+        }
+        attempt.posts[0] = Some(self.recheck());
+        attempt.used_posts = 1;
+        if attempt.failure().is_some() { Err(()) } else { Ok(()) }
+    }
+
+    pub(in crate::policy_compiler) fn join_current_nix_controller_into_v1(
+        &self,
+        attempt: &mut CurrentNixRootArchiveAttemptV1,
+        context: &super::super::CurrentNixPreflightContextV1,
+        receipt: &[u8],
+    ) -> Result<(), ()> {
+        if attempt.used_posts != 1 || attempt.controller.is_some() || attempt.failure().is_some() {
+            attempt.refusal = Some(SourceGenesisErrorV1::Conflict);
+            return Err(());
+        }
+        attempt.controller = Some(super::super::VerifiedCurrentNixControllerReceiptV1::verify_data(
+            receipt, context, &self.pins.controller, self.controller_uid, self.source_uid,
+        ));
+        attempt.posts[1] = Some(self.recheck());
+        attempt.used_posts = 2;
+        if attempt.failure().is_some() { Err(()) } else { Ok(()) }
+    }
+
+    pub(in crate::policy_compiler) fn join_current_nix_source_into_v1(
+        &self,
+        attempt: &mut CurrentNixRootArchiveAttemptV1,
+        context: &super::super::CurrentNixPreflightContextV1,
+        reply: &[u8],
+    ) -> Result<(), ()> {
+        if attempt.used_posts != 2 || attempt.source.is_some() || attempt.failure().is_some() {
+            attempt.refusal = Some(SourceGenesisErrorV1::Conflict);
+            return Err(());
+        }
+        if let Some(Ok(archive)) = &attempt.archive {
+            attempt.source = Some(super::super::VerifiedCurrentNixSourceObservationV1::verify_data(
+                reply, context, &archive.original, &self.pins.source,
+            ));
+            if let Some(Ok(source)) = &attempt.source {
+                attempt.comparison = Some(source.require_original_root_archive_data_v1(
+                    context, archive.nonce, archive.sequence, archive.recipe,
+                    &archive.floor, &archive.original,
+                ).map_err(|_| SourceGenesisErrorV1::Stale));
+            }
+        }
+        attempt.posts[2] = Some(self.recheck());
+        attempt.used_posts = 3;
+        if attempt.failure().is_some() { Err(()) } else { Ok(()) }
+    }
+
     fn require_successor_recipe_v3(&self, recipe: FirstSuccessorWireRecipeV3) -> Result<(), SourceGenesisErrorV1> {
         if self.successor_recipe != recipe { return Err(SourceGenesisErrorV1::Conflict); }
         Ok(())

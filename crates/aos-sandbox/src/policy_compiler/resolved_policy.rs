@@ -67,6 +67,107 @@ impl PolicyStateLocationV1 {
     }
 }
 
+// Both callers use the same existing-only native opener. The ordinary caller
+// still drops its recovery report at its original destructuring statement.
+fn open_existing_policy_state() -> Result<(Journal, RecoveryReport), crate::JournalError> {
+    Journal::open_existing_protected_at_for_uid(
+        Path::new(PROTECTED_POLICY_ROOT),
+        POLICY_STATE_JOURNAL,
+        policy_state_journal_limits(),
+        0,
+    )
+}
+
+/// Parks one existing-only Policy open before its independent location post.
+///
+/// This private destination retains an already returned writer and complete
+/// recovery report on failure. It creates no structural or authenticated claim.
+pub(in crate::policy_compiler) struct CurrentNixPolicyOpeningV1 {
+    entered: bool,
+    refusal: Option<PolicyCompilerJournalErrorV1>,
+    native: Option<Result<(Journal, RecoveryReport), crate::JournalError>>,
+    location_post: Option<Result<(), crate::JournalError>>,
+    original_sequence: Option<u64>,
+    transferred: bool,
+}
+
+impl CurrentNixPolicyOpeningV1 {
+    pub(in crate::policy_compiler) const fn empty() -> Self {
+        Self {
+            entered: false, refusal: None, native: None,
+            location_post: None, original_sequence: None, transferred: false,
+        }
+    }
+
+    /// Opens once into a prearmed vacant destination without losing partial custody.
+    ///
+    /// # Errors
+    /// Retains the actual native or location failure and refuses reentry or an
+    /// occupied destination before opening another writer.
+    pub(in crate::policy_compiler) fn open_into(
+        &mut self,
+        destination: &mut Option<(PolicyCompilerStateReadbackOwnerV1, RecoveryReport)>,
+    ) -> Result<(), ()> {
+        if self.entered {
+            if self.refusal.is_none() {
+                self.refusal = Some(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
+            }
+            return Err(());
+        }
+        self.entered = true;
+        if destination.is_some() {
+            self.refusal = Some(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
+            return Err(());
+        }
+        self.native = Some(open_existing_policy_state());
+        let location = PolicyStateLocationV1::default();
+        if let Some(Ok((journal, _))) = &self.native {
+            self.original_sequence = Some(journal.snapshot_sequence());
+            self.location_post = Some(location.recheck(journal));
+        }
+        if self.failure().is_some() { return Err(()); }
+
+        // The exclusive destination was checked before the native open. No
+        // fallible work follows moving the same writer and complete report.
+        match self.native.take() {
+            Some(Ok((journal, report))) => {
+                *destination = Some((PolicyCompilerStateReadbackOwnerV1 { journal, location }, report));
+                self.transferred = true;
+                Ok(())
+            }
+            returned => {
+                self.native = returned;
+                self.refusal = Some(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
+                Err(())
+            }
+        }
+    }
+
+    /// Checks the same transferred writer's location and unchanged opening cut.
+    ///
+    /// # Errors
+    /// Retains the actual location failure or rejects a changed sequence. This
+    /// comparison opens no writer and authenticates no structural Policy claim.
+    pub(in crate::policy_compiler) fn recheck_transferred_original(
+        &self,
+        original: &PolicyCompilerStateReadbackOwnerV1,
+    ) -> Result<(), PolicyCompilerJournalErrorV1> {
+        original.location.recheck(&original.journal)?;
+        if !self.transferred
+            || self.original_sequence != Some(original.journal.snapshot_sequence())
+        {
+            return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
+        }
+        Ok(())
+    }
+
+    pub(in crate::policy_compiler) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        if let Some(Err(error)) = &self.native { return Some(error); }
+        if let Some(Err(error)) = &self.location_post { return Some(error); }
+        self.refusal.as_ref().map(|error| error as _)
+    }
+}
+
 impl PolicyCompilerStateReadbackOwnerV1 {
     /// Opens the fixed existing Policy writer without creating or repairing it.
     ///
@@ -77,12 +178,7 @@ impl PolicyCompilerStateReadbackOwnerV1 {
     ///
     /// Rejects missing, unsafe, unhealthy or already-held journal/lock names.
     pub fn open_existing_fixed_protected() -> Result<Self, PolicyCompilerJournalErrorV1> {
-        let (journal, _) = Journal::open_existing_protected_at_for_uid(
-            Path::new(PROTECTED_POLICY_ROOT),
-            POLICY_STATE_JOURNAL,
-            policy_state_journal_limits(),
-            0,
-        )?;
+        let (journal, _) = open_existing_policy_state()?;
         let location = PolicyStateLocationV1::default();
         location.recheck(&journal)?;
         Ok(Self { journal, location })

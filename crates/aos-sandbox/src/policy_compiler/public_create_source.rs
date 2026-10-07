@@ -920,7 +920,7 @@ pub(super) fn parentless_create_input_from_authenticated_layers_v1(
     deployment: &PolicyDeploymentSourcesV1,
 ) -> Result<PolicyCompilerInputV1, CurrentCreateCompilerInputErrorV1> {
     let project = ProjectPolicyInputV1::new(relation.project(), project_layer)?;
-    let request = RequestPolicyInputV1::new(inherited_create_request_layer()?)?;
+    let request = RequestPolicyInputV1::new(inherited_request_layer()?)?;
     Ok(PolicyCompilerInputV1::new(
         relation,
         deployment.node().clone(),
@@ -970,7 +970,7 @@ fn current_create_input_time() -> Result<i64, CurrentCreatePolicySourceErrorV1> 
 }
 
 #[cfg(target_os = "linux")]
-fn inherited_create_request_layer() -> Result<PolicyLayerV1, CurrentCreateCompilerInputErrorV1> {
+pub(super) fn inherited_request_layer() -> Result<PolicyLayerV1, CurrentCreateCompilerInputErrorV1> {
     let portable = PORTABLE_LIMIT_DIMENSIONS
         .into_iter()
         .map(|dimension| {
