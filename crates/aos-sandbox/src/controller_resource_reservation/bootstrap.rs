@@ -52,49 +52,242 @@ pub(super) fn observe_original_pair(
     policy_file: &std::fs::File,
     enrollment_file: &std::fs::File,
 ) -> Result<OriginalEnrollment, ResourceReservationErrorV1> {
-    let policy_metadata = policy_file.metadata()?;
-    let delivery_metadata = enrollment_file.metadata()?;
-    let seals = fcntl_get_seals(enrollment_file)?;
-    if !policy_metadata.is_file()
-        || ![codec::IMAGE_POLICY_BYTES as u64, codec::HOST_IMAGE_POLICY_BYTES as u64,
-            codec::FIRST_GLOBAL_IMAGE_POLICY_BYTES as u64, codec::NIX_INTAKE_IMAGE_POLICY_BYTES as u64,
-            codec::Q04_INTAKE_IMAGE_POLICY_BYTES as u64, codec::ROOT_IMAGE_POLICY_BYTES as u64]
-            .contains(&policy_metadata.len())
-        || policy_metadata.uid() != 0 || policy_metadata.gid() != 0
-        || policy_metadata.mode() & 0o222 != 0
-        || fstatfs(policy_file)?.f_type as u64 != 0xe0f5_e1e2
-        || fcntl_getfl(policy_file)? & OFlags::ACCMODE != OFlags::RDONLY
-        || !delivery_metadata.is_file() || delivery_metadata.len() != 152
-        || delivery_metadata.nlink() != 0 || delivery_metadata.uid() != 0
-        || fcntl_getfl(enrollment_file)? & OFlags::ACCMODE != OFlags::RDONLY
-        || !seals.contains(SealFlags::SEAL | SealFlags::GROW | SealFlags::SHRINK | SealFlags::WRITE)
-    {
-        return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
+    let mut observations = OriginalPairObservations::default();
+    observe_original_pair_into::<false>(policy_file, enrollment_file, &mut observations, None)
+}
+
+/// Retains the reached original pair observations without issuing a loan.
+///
+/// The caller holds both original files and this destination through any
+/// refusal. The six established image widths remain exact; the fixed buffer
+/// provides custody, not a funded receiving or physical-fit declaration.
+pub(super) struct OriginalEnrollmentPairAttemptV1 {
+    observations: OriginalPairObservations,
+    bytes: OriginalPairBytes,
+    entered: bool,
+    closed: Option<ResourceReservationErrorV1>,
+}
+
+impl OriginalEnrollmentPairAttemptV1 {
+    pub(super) fn new() -> Self {
+        Self {
+            observations: OriginalPairObservations::default(),
+            bytes: OriginalPairBytes {
+                policy: [0; codec::ROOT_IMAGE_POLICY_BYTES],
+                delivery: [0; 152],
+            },
+            entered: false,
+            closed: None,
+        }
     }
 
+    /// Observes the original pair once and borrows its earliest actual refusal.
+    ///
+    /// # Errors
+    ///
+    /// Retains failed native observations, partial reads and canonical causes.
+    /// A repeated entry closes the attempt without replacing earlier debt.
+    pub(super) fn observe_once(
+        &mut self,
+        policy: &std::fs::File,
+        delivery: &std::fs::File,
+    ) -> Result<&OriginalEnrollment, &(dyn std::error::Error + 'static)> {
+        if self.entered {
+            self.closed = Some(ResourceReservationErrorV1::Conflict);
+        } else {
+            self.entered = true;
+            self.observations.completion = Some(observe_original_pair_into::<true>(
+                policy,
+                delivery,
+                &mut self.observations,
+                Some(&mut self.bytes),
+            ));
+        }
+
+        if let Some(error) = self.failure() {
+            return Err(error);
+        }
+        self.observations
+            .completion
+            .as_ref()
+            .and_then(|result| result.as_ref().ok())
+            .ok_or(&PAIR_UNAVAILABLE as &(dyn std::error::Error + 'static))
+    }
+
+    /// Borrows the earliest reached native or canonical cause without retry.
+    pub(super) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.observations.failure()
+            .or_else(|| self.closed.as_ref().map(|error| error as _))
+    }
+}
+
+struct OriginalPairBytes {
+    policy: [u8; codec::ROOT_IMAGE_POLICY_BYTES],
+    delivery: [u8; 152],
+}
+
+#[derive(Default)]
+struct OriginalPairObservations {
+    policy_metadata: Option<std::io::Result<std::fs::Metadata>>,
+    delivery_metadata: Option<std::io::Result<std::fs::Metadata>>,
+    delivery_seals: Option<Result<SealFlags, rustix::io::Errno>>,
+    policy_filesystem: Option<Result<rustix::fs::StatFs, rustix::io::Errno>>,
+    policy_flags: Option<Result<OFlags, rustix::io::Errno>>,
+    delivery_flags: Option<Result<OFlags, rustix::io::Errno>>,
+    shape: Option<Result<(), ResourceReservationErrorV1>>,
+    policy_read: Option<std::io::Result<()>>,
+    delivery_read: Option<std::io::Result<()>>,
+    policy_decode: Option<Result<ImageBootstrapPolicy, ResourceReservationErrorV1>>,
+    delivery_decode: Option<Result<(EnrollmentIdentity, [u8; 16]), ResourceReservationErrorV1>>,
+    manifest: Option<[u8; 32]>,
+    // Only the returned boot Result is parked. The unchanged lower provider's
+    // procfs acquisition, temporary bytes and parser locals remain outside it.
+    boot: Option<Result<KernelBootId, aos_sandbox_linux::Error>>,
+    completion: Option<Result<OriginalEnrollment, ResourceReservationErrorV1>>,
+}
+
+impl OriginalPairObservations {
+    fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        // Vacant slots were never entered. The shape marker follows its native
+        // inputs; it must not replace their original IO or descriptor cause.
+        let causes: [Option<&(dyn std::error::Error + 'static)>; 13] = [
+            pair_failure(&self.policy_metadata),
+            pair_failure(&self.delivery_metadata),
+            pair_failure(&self.delivery_seals),
+            pair_failure(&self.policy_filesystem),
+            pair_failure(&self.policy_flags),
+            pair_failure(&self.delivery_flags),
+            pair_failure(&self.shape),
+            pair_failure(&self.policy_read),
+            pair_failure(&self.delivery_read),
+            pair_failure(&self.policy_decode),
+            pair_failure(&self.delivery_decode),
+            pair_failure(&self.boot),
+            pair_failure(&self.completion),
+        ];
+        causes.into_iter().flatten().next()
+    }
+}
+
+fn pair_failure<T, E: std::error::Error + 'static>(
+    result: &Option<Result<T, E>>,
+) -> Option<&(dyn std::error::Error + 'static)> {
+    result.as_ref()?.as_ref().err().map(|error| error as _)
+}
+
+#[derive(Debug)]
+struct PairUnavailable;
+
+impl std::fmt::Display for PairUnavailable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("original enrollment pair observation is unavailable")
+    }
+}
+
+impl std::error::Error for PairUnavailable {}
+
+static PAIR_UNAVAILABLE: PairUnavailable = PairUnavailable;
+
+// Both facades enter this one native/canonical schedule. The ordinary arm moves
+// an error out unchanged; the retained arm leaves the actual Result in its slot
+// and returns only a stopping marker. Successful metadata is borrowed in place.
+macro_rules! original_pair_outcome {
+    ($retained:expr, $slot:expr, $native:expr) => {{
+        let slot = &mut $slot;
+        *slot = Some($native);
+        if slot.as_ref().is_some_and(Result::is_err) {
+            if $retained {
+                return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
+            }
+            if let Some(Err(error)) = slot.take() {
+                return Err(error.into());
+            }
+        }
+        slot.as_ref()
+            .and_then(|result| result.as_ref().ok())
+            .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?
+    }};
+}
+
+fn observe_original_pair_into<const RETAINED: bool>(
+    policy_file: &std::fs::File,
+    enrollment_file: &std::fs::File,
+    observations: &mut OriginalPairObservations,
+    bytes: Option<&mut OriginalPairBytes>,
+) -> Result<OriginalEnrollment, ResourceReservationErrorV1> {
+    let policy_metadata = original_pair_outcome!(
+        RETAINED, observations.policy_metadata, policy_file.metadata()
+    );
+    let delivery_metadata = original_pair_outcome!(
+        RETAINED, observations.delivery_metadata, enrollment_file.metadata()
+    );
+    let seals = *original_pair_outcome!(
+        RETAINED, observations.delivery_seals, fcntl_get_seals(enrollment_file)
+    );
+    let policy_length = policy_metadata.len();
+
+    let shape = (|| {
+        if !policy_metadata.is_file()
+            || ![
+                codec::IMAGE_POLICY_BYTES as u64,
+                codec::HOST_IMAGE_POLICY_BYTES as u64,
+                codec::FIRST_GLOBAL_IMAGE_POLICY_BYTES as u64,
+                codec::NIX_INTAKE_IMAGE_POLICY_BYTES as u64,
+                codec::Q04_INTAKE_IMAGE_POLICY_BYTES as u64,
+                codec::ROOT_IMAGE_POLICY_BYTES as u64,
+            ].contains(&policy_length)
+            || policy_metadata.uid() != 0 || policy_metadata.gid() != 0
+            || policy_metadata.mode() & 0o222 != 0
+            || original_pair_outcome!(
+                RETAINED, observations.policy_filesystem, fstatfs(policy_file)
+            ).f_type as u64 != 0xe0f5_e1e2
+            || *original_pair_outcome!(
+                RETAINED, observations.policy_flags, fcntl_getfl(policy_file)
+            ) & OFlags::ACCMODE != OFlags::RDONLY
+            || !delivery_metadata.is_file() || delivery_metadata.len() != 152
+            || delivery_metadata.nlink() != 0 || delivery_metadata.uid() != 0
+            || *original_pair_outcome!(
+                RETAINED, observations.delivery_flags, fcntl_getfl(enrollment_file)
+            ) & OFlags::ACCMODE != OFlags::RDONLY
+            || !seals.contains(SealFlags::SEAL | SealFlags::GROW | SealFlags::SHRINK | SealFlags::WRITE)
+        {
+            return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
+        }
+        Ok(())
+    })();
+    original_pair_outcome!(RETAINED, observations.shape, shape);
+
     let (policy, identity, recipient_invocation, manifest) =
-        if policy_metadata.len() == codec::IMAGE_POLICY_BYTES as u64 {
-            read_original_pair::<{ codec::IMAGE_POLICY_BYTES }>(policy_file, enrollment_file)?
-        } else if policy_metadata.len() == codec::HOST_IMAGE_POLICY_BYTES as u64 {
-            read_original_pair::<{ codec::HOST_IMAGE_POLICY_BYTES }>(policy_file, enrollment_file)?
-        } else if policy_metadata.len() == codec::FIRST_GLOBAL_IMAGE_POLICY_BYTES as u64 {
-            read_original_pair::<{ codec::FIRST_GLOBAL_IMAGE_POLICY_BYTES }>(
-                policy_file, enrollment_file,
+        if policy_length == codec::IMAGE_POLICY_BYTES as u64 {
+            read_original_pair::<{ codec::IMAGE_POLICY_BYTES }, RETAINED>(
+                policy_file, enrollment_file, observations, bytes,
             )?
-        } else if policy_metadata.len() == codec::NIX_INTAKE_IMAGE_POLICY_BYTES as u64 {
-            read_original_pair::<{ codec::NIX_INTAKE_IMAGE_POLICY_BYTES }>(
-                policy_file, enrollment_file,
+        } else if policy_length == codec::HOST_IMAGE_POLICY_BYTES as u64 {
+            read_original_pair::<{ codec::HOST_IMAGE_POLICY_BYTES }, RETAINED>(
+                policy_file, enrollment_file, observations, bytes,
             )?
-        } else if policy_metadata.len() == codec::Q04_INTAKE_IMAGE_POLICY_BYTES as u64 {
-            read_original_pair::<{ codec::Q04_INTAKE_IMAGE_POLICY_BYTES }>(
-                policy_file, enrollment_file,
+        } else if policy_length == codec::FIRST_GLOBAL_IMAGE_POLICY_BYTES as u64 {
+            read_original_pair::<{ codec::FIRST_GLOBAL_IMAGE_POLICY_BYTES }, RETAINED>(
+                policy_file, enrollment_file, observations, bytes,
+            )?
+        } else if policy_length == codec::NIX_INTAKE_IMAGE_POLICY_BYTES as u64 {
+            read_original_pair::<{ codec::NIX_INTAKE_IMAGE_POLICY_BYTES }, RETAINED>(
+                policy_file, enrollment_file, observations, bytes,
+            )?
+        } else if policy_length == codec::Q04_INTAKE_IMAGE_POLICY_BYTES as u64 {
+            read_original_pair::<{ codec::Q04_INTAKE_IMAGE_POLICY_BYTES }, RETAINED>(
+                policy_file, enrollment_file, observations, bytes,
             )?
         } else {
-            read_original_pair::<{ codec::ROOT_IMAGE_POLICY_BYTES }>(policy_file, enrollment_file)?
+            read_original_pair::<{ codec::ROOT_IMAGE_POLICY_BYTES }, RETAINED>(
+                policy_file, enrollment_file, observations, bytes,
+            )?
         };
     if identity.node != policy.node || identity.epoch != policy.epoch
         || identity.manifest != manifest
-        || identity.boot != KernelBootId::current()?.into_bytes()
+        || identity.boot != original_pair_outcome!(
+            RETAINED, observations.boot, KernelBootId::current()
+        ).into_bytes()
     {
         return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
     }
@@ -102,22 +295,57 @@ pub(super) fn observe_original_pair(
 }
 
 // Reads both fixed-width records before decoding either, then hashes the policy.
-fn read_original_pair<const N: usize>(
+fn read_original_pair<const N: usize, const RETAINED: bool>(
     policy_file: &std::fs::File,
     enrollment_file: &std::fs::File,
+    observations: &mut OriginalPairObservations,
+    retained_bytes: Option<&mut OriginalPairBytes>,
 ) -> Result<
     (ImageBootstrapPolicy, EnrollmentIdentity, [u8; 16], [u8; 32]),
     ResourceReservationErrorV1,
 > {
-    let mut policy_bytes = [0; N];
-    let mut delivery_bytes = [0; 152];
-    policy_file.read_exact_at(&mut policy_bytes, 0)?;
-    enrollment_file.read_exact_at(&mut delivery_bytes, 0)?;
+    match retained_bytes {
+        Some(bytes) => read_original_pair_buffers::<RETAINED>(
+            policy_file, enrollment_file, observations,
+            &mut bytes.policy[..N], &mut bytes.delivery,
+        ),
+        None => {
+            let mut policy_bytes = [0; N];
+            let mut delivery_bytes = [0; 152];
+            read_original_pair_buffers::<RETAINED>(
+                policy_file, enrollment_file, observations,
+                &mut policy_bytes, &mut delivery_bytes,
+            )
+        }
+    }
+}
 
-    let policy = codec::decode_image_policy(&policy_bytes)?;
-    let (identity, recipient_invocation) = codec::decode_pid1_delivery(&delivery_bytes)?;
-    Ok((policy, identity, recipient_invocation,
-        <[u8; 32]>::from(Sha256::digest(policy_bytes))))
+fn read_original_pair_buffers<const RETAINED: bool>(
+    policy_file: &std::fs::File,
+    enrollment_file: &std::fs::File,
+    observations: &mut OriginalPairObservations,
+    policy_bytes: &mut [u8],
+    delivery_bytes: &mut [u8; 152],
+) -> Result<
+    (ImageBootstrapPolicy, EnrollmentIdentity, [u8; 16], [u8; 32]),
+    ResourceReservationErrorV1,
+> {
+    original_pair_outcome!(
+        RETAINED, observations.policy_read, policy_file.read_exact_at(policy_bytes, 0)
+    );
+    original_pair_outcome!(
+        RETAINED, observations.delivery_read, enrollment_file.read_exact_at(delivery_bytes, 0)
+    );
+
+    let policy = *original_pair_outcome!(
+        RETAINED, observations.policy_decode, codec::decode_image_policy(policy_bytes)
+    );
+    let (identity, recipient_invocation) = *original_pair_outcome!(
+        RETAINED, observations.delivery_decode, codec::decode_pid1_delivery(delivery_bytes)
+    );
+    let manifest = <[u8; 32]>::from(Sha256::digest(policy_bytes));
+    observations.manifest = Some(manifest);
+    Ok((policy, identity, recipient_invocation, manifest))
 }
 
 pub(super) struct EnrollmentTransition {
