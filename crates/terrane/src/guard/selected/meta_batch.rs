@@ -127,6 +127,7 @@ pub(super) async fn retain<'operation, 'held, 'guard, F, B, V, C, R, D>(
     crate::ref_advance::AdvanceError,
 >
 where
+    'held: 'operation,
     F: LocalFs + BucketBinding,
     B: Clock + BucketBinding,
     V: ContentValidator + BucketBinding,

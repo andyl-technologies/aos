@@ -248,11 +248,11 @@ where
 /// # Errors
 /// Preserves current-policy, original-context, storage and duration failures;
 /// rejects unknown retained history, stale selected configuration and epochs.
-pub(crate) async fn publish_candidate<F, B, V, C, R, D>(
+pub(crate) async fn publish_candidate<'held, F, B, V, C, R, D>(
     concrete: &Guard<FileBucket<F, B, V>, D>,
     authority: &OriginalAuthority,
-    coordinator: &crate::ref_advance::Coordinator<HeldBucket<'_, F, B, V, true>, C, R>,
-    observed: &SelectedObservation<'_>,
+    coordinator: &crate::ref_advance::Coordinator<HeldBucket<'held, F, B, V, true>, C, R>,
+    observed: &SelectedObservation<'held>,
     consumed: &ConsumedResolver,
     session: &mut crate::ref_advance::WriterSession,
     publication: &mut crate::ref_advance::RetainedPublication,
