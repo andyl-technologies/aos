@@ -425,6 +425,36 @@ Historical socket-receipt timings cannot replace measurements from native spawn
 through the authenticated stopped boundary. Passing deterministic identity checks
 alone does not satisfy this acceptance condition.
 
+- **[PERF-7]** Implementation completion MUST demonstrate performance parity
+  against the reviewed baseline. Comparisons MUST include host elapsed time and
+  process CPU time, with zero permitted regression margin. Resident execution,
+  sparse and dense fingerprint updates, fork and sibling divergence,
+  capture/restore, transfer/index/collection, and completed campaign throughput
+  MUST each have comparable evidence. A faster result in one workload MUST NOT
+  compensate for a regression in another. Smaller allocation peaks, fewer
+  operations, smaller stack frames, and deterministic guest time are supporting
+  evidence; none independently establishes host performance parity.
+
+Each comparison MUST declare its sampling plan, evaluator, workload, resource
+limits, timing interval, and cache conditions before execution. Baseline and
+candidate runs MUST use matched host/storage profiles and correctness witnesses.
+Fixed sample counts MUST NOT be extended or selectively shortened to obtain a
+pass. All attempts, failures, and producer runs MUST remain recorded; a failed
+attempt MUST NOT become a completed-throughput sample. A later correction requires
+a separately identified comparison and MUST retain the earlier failed evidence.
+Concurrent builds or unrelated load MUST be excluded from controlled timing
+runs. Observations already collected under such load remain recorded with that
+limitation and MUST NOT be pooled with a later controlled comparison.
+
+Residency comparisons MUST state the operational contract being compared.
+Fully resident execution establishes ordinary execution overhead; cold and warm
+backing-store cases establish paging costs; equal aggregate host resources and
+completed work establish campaign throughput. Extra admitted guests alone do
+not establish throughput parity. The unchanged virtual memory-access latency
+MUST NOT be reported as unchanged host access latency. Limits, deadlines, guest
+inputs, or correctness checks MUST NOT be relaxed to repair a performance
+failure.
+
 The existing campaign performance gate has no reviewed measured baseline pinned
 in source and explicitly reports `BLOCKED` in that case. This is a known evidence
 gap, not evidence that the paging design meets its throughput goals. Existing
