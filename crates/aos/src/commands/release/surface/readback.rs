@@ -23,6 +23,10 @@ use super::SurfaceObject;
 const DEPLOYMENT_ID_PATH: &str = "/.well-known/aos-deployment";
 const MAX_DEPLOYMENT_ID_BYTES: usize = 1024;
 const RANGE_PROBE_BYTES: usize = 64 * 1024;
+/// Whole-request deadline for small objects and probes.
+const BASE_REQUEST_SECS: u64 = 120;
+/// Slowest per-stream rate a full read-back may sustain before it fails.
+const MIN_READ_BACK_BYTES_PER_SEC: u64 = 256 * 1024;
 const PUBLIC_READ_BACK_CONCURRENCY: usize = 16;
 
 /// Static surface identity file at the read-back root.
@@ -33,7 +37,10 @@ pub(in crate::commands::release) fn public_client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(120))
+        // A stalled response fails after this long without a byte; the
+        // whole-request deadline is per request so large objects can finish.
+        .read_timeout(Duration::from_secs(BASE_REQUEST_SECS))
+        .timeout(Duration::from_secs(BASE_REQUEST_SECS))
         .build()
         .context("building public read-back client")
 }
@@ -196,7 +203,15 @@ async fn read_full(
     expected_size: u64,
     expected_sha256: &str,
 ) -> Result<(Vec<u8>, Vec<u8>)> {
-    let response = client.get(url.clone()).send().await?.error_for_status()?;
+    // Full read-backs run concurrently and include NARs of hundreds of MiB,
+    // so their deadline scales with the declared size.
+    let deadline = BASE_REQUEST_SECS.saturating_add(expected_size / MIN_READ_BACK_BYTES_PER_SEC);
+    let response = client
+        .get(url.clone())
+        .timeout(Duration::from_secs(deadline))
+        .send()
+        .await?
+        .error_for_status()?;
     let mut stream = response.bytes_stream();
     let mut digest = Sha256::new();
     let mut size = 0_u64;
