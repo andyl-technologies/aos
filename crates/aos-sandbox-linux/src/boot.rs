@@ -3,12 +3,20 @@
 //! Mount IDs are unique only for one running kernel. [`KernelBootId`] binds
 //! durable observations to `/proc/sys/kernel/random/boot_id`, preventing a
 //! broker restart after node reboot from adopting a numerically reused mount.
+//! The retained Root pair uses a separate original acquisition destination;
+//! it shares the UUID parser but never allocates an unbounded input vector.
+
+use std::error::Error as StdError;
+use std::fs::File;
+
+use rustix::fs::{Mode, OFlags, StatFs};
 
 use crate::{Error, Result};
 
 const BOOT_ID_PATH: &str = "/proc/sys/kernel/random/boot_id";
 const BOOT_ID_TEXT_BYTES: usize = 36;
 const BOOT_ID_FILE_MAXIMUM_BYTES: usize = BOOT_ID_TEXT_BYTES + 1;
+const ORIGINAL_BOOT_ID_BYTES: usize = BOOT_ID_FILE_MAXIMUM_BYTES + 1;
 
 /// Identifies one running Linux kernel instance.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -76,6 +84,172 @@ impl KernelBootId {
     #[must_use]
     pub const fn into_bytes(self) -> [u8; 16] {
         self.0
+    }
+}
+
+/// Retains one bounded original boot-ID acquisition for the Root startup pair.
+///
+/// The destination holds its original file, every reached native result and
+/// partial input through refusal. It accepts no imported descriptor or bytes
+/// and returns only borrowed canonical DATA, not currentness or authority.
+/// Its fixed storage bounds this input, not allocator/native cost, syscall
+/// latency, parser scratch, physical fit or the caller's unpaid obligations.
+pub struct RootOriginalKernelBootIdAttemptV1 {
+    open: Option<std::result::Result<File, rustix::io::Errno>>,
+    filesystem: Option<std::result::Result<StatFs, rustix::io::Errno>>,
+    bytes: [u8; ORIGINAL_BOOT_ID_BYTES],
+    reads: [Option<std::result::Result<usize, rustix::io::Errno>>; ORIGINAL_BOOT_ID_BYTES],
+    filled: usize,
+    eof: Option<usize>,
+    parsed: Option<Result<KernelBootId>>,
+    entered: bool,
+    refusal: Option<OriginalBootRefusalV1>,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum OriginalBootRefusalV1 {
+    #[error("original Root boot-ID acquisition was already entered")]
+    AlreadyEntered,
+    #[error("original Root boot-ID descriptor is not procfs")]
+    NonProcfs,
+    #[error("original Root boot-ID input exceeds 37 bytes")]
+    Oversized,
+    #[error("original Root boot-ID observation is incomplete or invalid")]
+    Unavailable,
+}
+
+impl RootOriginalKernelBootIdAttemptV1 {
+    /// Installs vacant native slots and fixed input storage without IO.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            open: None,
+            filesystem: None,
+            bytes: [0; ORIGINAL_BOOT_ID_BYTES],
+            reads: [None; ORIGINAL_BOOT_ID_BYTES],
+            filled: 0,
+            eof: None,
+            parsed: None,
+            entered: false,
+            refusal: None,
+        }
+    }
+
+    /// Observes once and borrows the canonical identity or earliest real cause.
+    ///
+    /// All results remain in this same destination. The caller must retain it
+    /// through failed custody; this type does not enforce terminal disposition.
+    /// At most 38 reads progress or stop. A returned zero establishes EOF;
+    /// filling all 38 bytes retains an oversize witness without claiming EOF.
+    ///
+    /// # Errors
+    ///
+    /// Borrows original open, filesystem, read or parser errors. This retained
+    /// arm additionally rejects non-procfs descriptors, oversize input and
+    /// reentry. EINTR and EAGAIN stop immediately; no retry or IO deadline is
+    /// supplied. The unchanged parser may allocate its fixed error message.
+    pub fn observe_once(
+        &mut self,
+    ) -> std::result::Result<&KernelBootId, &(dyn StdError + 'static)> {
+        if self.entered {
+            self.refusal
+                .get_or_insert(OriginalBootRefusalV1::AlreadyEntered);
+        } else {
+            self.entered = true;
+            self.refusal = self.observe_body().err();
+        }
+
+        if let Some(cause) = self.failure() {
+            return Err(cause);
+        }
+        self.parsed
+            .as_ref()
+            .filter(|_| self.eof.is_some())
+            .and_then(|result| result.as_ref().ok())
+            .ok_or(&OriginalBootRefusalV1::Unavailable as &(dyn StdError + 'static))
+    }
+
+    /// Borrows the earliest resident native or parser failure without IO.
+    #[must_use]
+    pub fn failure(&self) -> Option<&(dyn StdError + 'static)> {
+        if let Some(Err(cause)) = &self.open {
+            return Some(cause);
+        }
+        if let Some(Err(cause)) = &self.filesystem {
+            return Some(cause);
+        }
+        for result in &self.reads {
+            if let Some(Err(cause)) = result {
+                return Some(cause);
+            }
+        }
+        if let Some(Err(cause)) = &self.parsed {
+            return Some(cause);
+        }
+        self.refusal.as_ref().map(|cause| cause as _)
+    }
+
+    fn observe_body(&mut self) -> std::result::Result<(), OriginalBootRefusalV1> {
+        // The literal CStr avoids a path-string allocation. Every successful
+        // original lands in its resident slot before another native operation.
+        self.open = Some(
+            rustix::fs::open(
+                c"/proc/sys/kernel/random/boot_id",
+                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+                Mode::empty(),
+            )
+            .map(File::from),
+        );
+        let file = self.open
+            .as_ref()
+            .and_then(|result| result.as_ref().ok())
+            .ok_or(OriginalBootRefusalV1::Unavailable)?;
+
+        self.filesystem = Some(rustix::fs::fstatfs(file));
+        let filesystem = self.filesystem
+            .as_ref()
+            .and_then(|result| result.as_ref().ok())
+            .ok_or(OriginalBootRefusalV1::Unavailable)?;
+        // This is retained-arm strengthening only, not a claim that procfs or
+        // a canonical UUID proves the PID1 producer/recipient association.
+        if filesystem.f_type as u64 != 0x9fa0 {
+            return Err(OriginalBootRefusalV1::NonProcfs);
+        }
+
+        for index in 0..self.reads.len() {
+            let available = self.bytes.len() - self.filled;
+            self.reads[index] = Some(rustix::io::read(file, &mut self.bytes[self.filled..]));
+            let count = self.reads[index]
+                .as_ref()
+                .and_then(|result| result.as_ref().ok())
+                .copied()
+                .ok_or(OriginalBootRefusalV1::Unavailable)?;
+            if count > available {
+                return Err(OriginalBootRefusalV1::Unavailable);
+            }
+
+            if count == 0 {
+                self.eof = Some(index);
+                self.parsed = Some(KernelBootId::parse(&self.bytes[..self.filled]));
+                return if self.parsed.as_ref().is_some_and(Result::is_ok) {
+                    Ok(())
+                } else {
+                    Err(OriginalBootRefusalV1::Unavailable)
+                };
+            }
+
+            self.filled += count;
+            if self.filled == self.bytes.len() {
+                return Err(OriginalBootRefusalV1::Oversized);
+            }
+        }
+        Err(OriginalBootRefusalV1::Unavailable)
+    }
+}
+
+impl Default for RootOriginalKernelBootIdAttemptV1 {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

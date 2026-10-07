@@ -9,7 +9,7 @@
 use std::os::unix::fs::{FileExt as _, MetadataExt as _};
 
 use aos_sandbox_core::{ResourceAccount, ResourceCeilings, ResourceVector};
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_sandbox_linux::boot::{KernelBootId, RootOriginalKernelBootIdAttemptV1};
 use rustix::fs::{OFlags, SealFlags, fcntl_get_seals, fcntl_getfl, fstatfs};
 use sha2::{Digest as _, Sha256};
 
@@ -53,7 +53,7 @@ pub(super) fn observe_original_pair(
     enrollment_file: &std::fs::File,
 ) -> Result<OriginalEnrollment, ResourceReservationErrorV1> {
     let mut observations = OriginalPairObservations::default();
-    observe_original_pair_into::<false>(policy_file, enrollment_file, &mut observations, None)
+    observe_original_pair_into::<false>(policy_file, enrollment_file, &mut observations, None, None)
 }
 
 /// Retains the reached original pair observations without issuing a loan.
@@ -64,6 +64,7 @@ pub(super) fn observe_original_pair(
 pub(super) struct OriginalEnrollmentPairAttemptV1 {
     observations: OriginalPairObservations,
     bytes: OriginalPairBytes,
+    boot: RootOriginalKernelBootIdAttemptV1,
     entered: bool,
     closed: Option<ResourceReservationErrorV1>,
 }
@@ -76,6 +77,7 @@ impl OriginalEnrollmentPairAttemptV1 {
                 policy: [0; codec::ROOT_IMAGE_POLICY_BYTES],
                 delivery: [0; 152],
             },
+            boot: RootOriginalKernelBootIdAttemptV1::new(),
             entered: false,
             closed: None,
         }
@@ -101,6 +103,7 @@ impl OriginalEnrollmentPairAttemptV1 {
                 delivery,
                 &mut self.observations,
                 Some(&mut self.bytes),
+                Some(&mut self.boot),
             ));
         }
 
@@ -117,6 +120,8 @@ impl OriginalEnrollmentPairAttemptV1 {
     /// Borrows the earliest reached native or canonical cause without retry.
     pub(super) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.observations.failure()
+            .or_else(|| self.boot.failure())
+            .or_else(|| pair_failure(&self.observations.completion))
             .or_else(|| self.closed.as_ref().map(|error| error as _))
     }
 }
@@ -140,8 +145,8 @@ struct OriginalPairObservations {
     policy_decode: Option<Result<ImageBootstrapPolicy, ResourceReservationErrorV1>>,
     delivery_decode: Option<Result<(EnrollmentIdentity, [u8; 16]), ResourceReservationErrorV1>>,
     manifest: Option<[u8; 32]>,
-    // Only the returned boot Result is parked. The unchanged lower provider's
-    // procfs acquisition, temporary bytes and parser locals remain outside it.
+    // Ordinary acquisition keeps its original returned-result contract. Only
+    // the actual retained Root pair installs bounded original boot custody.
     boot: Option<Result<KernelBootId, aos_sandbox_linux::Error>>,
     completion: Option<Result<OriginalEnrollment, ResourceReservationErrorV1>>,
 }
@@ -150,7 +155,7 @@ impl OriginalPairObservations {
     fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
         // Vacant slots were never entered. The shape marker follows its native
         // inputs; it must not replace their original IO or descriptor cause.
-        let causes: [Option<&(dyn std::error::Error + 'static)>; 13] = [
+        let causes: [Option<&(dyn std::error::Error + 'static)>; 12] = [
             pair_failure(&self.policy_metadata),
             pair_failure(&self.delivery_metadata),
             pair_failure(&self.delivery_seals),
@@ -163,7 +168,6 @@ impl OriginalPairObservations {
             pair_failure(&self.policy_decode),
             pair_failure(&self.delivery_decode),
             pair_failure(&self.boot),
-            pair_failure(&self.completion),
         ];
         causes.into_iter().flatten().next()
     }
@@ -214,6 +218,7 @@ fn observe_original_pair_into<const RETAINED: bool>(
     enrollment_file: &std::fs::File,
     observations: &mut OriginalPairObservations,
     bytes: Option<&mut OriginalPairBytes>,
+    retained_boot: Option<&mut RootOriginalKernelBootIdAttemptV1>,
 ) -> Result<OriginalEnrollment, ResourceReservationErrorV1> {
     let policy_metadata = original_pair_outcome!(
         RETAINED, observations.policy_metadata, policy_file.metadata()
@@ -285,13 +290,29 @@ fn observe_original_pair_into<const RETAINED: bool>(
         };
     if identity.node != policy.node || identity.epoch != policy.epoch
         || identity.manifest != manifest
-        || identity.boot != original_pair_outcome!(
-            RETAINED, observations.boot, KernelBootId::current()
-        ).into_bytes()
+        || identity.boot != original_pair_boot::<RETAINED>(observations, retained_boot)?
     {
         return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
     }
     Ok(OriginalEnrollment { identity, policy, recipient_invocation })
+}
+
+// Both arms enter only after the same node/epoch/manifest short-circuit checks.
+// No ordinary caller constructs or enters the retained original boot attempt.
+fn original_pair_boot<const RETAINED: bool>(
+    observations: &mut OriginalPairObservations,
+    retained_boot: Option<&mut RootOriginalKernelBootIdAttemptV1>,
+) -> Result<[u8; 16], ResourceReservationErrorV1> {
+    if RETAINED {
+        let attempt = retained_boot.ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
+        return attempt.observe_once()
+            .map(|boot| boot.into_bytes())
+            .map_err(|_| ResourceReservationErrorV1::EnrollmentUnavailable);
+    }
+
+    Ok(original_pair_outcome!(
+        false, observations.boot, KernelBootId::current()
+    ).into_bytes())
 }
 
 // Reads both fixed-width records before decoding either, then hashes the policy.
