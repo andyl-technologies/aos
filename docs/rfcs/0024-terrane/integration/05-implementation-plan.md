@@ -759,6 +759,14 @@ reports to 4,909 actual Nix input files and the unchanged 5,963 tracked images.
 The foreign-dependency fixture forks its local source; cold reuse of its
 imported head and the raw-source full-admission fallback remain unqualified.
 
+The focused native graft-locality check now requires three actual publication
+cases and three structural cases, with exact discovery and non-ignored
+execution checks. Its private producer selects affected immutable graft entries
+from a separately prepared reverse map; the full preparation traversal remains
+explicitly charged. Exhaustive canonical-output comparison stays outside the
+measured maintenance. The new witnesses are committed but unexecuted; registry
+presence does not qualify DRV-29 or complete incremental maintenance.
+
 The test-only bucket observer records actual typed Node/Commit get and put
 attempts before catalog lookup, admission or deduplication. The same per-bucket
 observer follows clones and held adapters and can attach to the actual metadata
