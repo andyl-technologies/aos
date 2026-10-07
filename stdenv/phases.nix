@@ -537,6 +537,7 @@ in rec {
     buildType ? "release",
     checkType ? buildType,
     cargoTestFlags ? "",
+    cargoTestFlagSets ? [],
     buildFeatures ? [],
     buildNoDefaultFeatures ? false,
     installBins ? true,
@@ -579,6 +580,16 @@ in rec {
       if checkType == "release"
       then "--release"
       else "";
+
+    # Each selection is a separate Cargo graph, including its test dependencies.
+    effectiveTestFlagSets =
+      if cargoTestFlagSets == []
+      then [cargoTestFlags]
+      else if
+        builtins.isList cargoTestFlagSets
+        && builtins.all (flags: builtins.isString flags && builtins.match "[[:space:]]*" flags == null) cargoTestFlagSets
+      then cargoTestFlagSets
+      else throw "cargoTestFlagSets must contain nonempty test selections";
 
     gitSourceLines = builtins.concatStringsSep "" (
       builtins.map (
@@ -790,69 +801,73 @@ in rec {
               echo "skipping target runtime checks while cross-compiling for $AOS_TARGET_PLATFORM"
             else
               ${
-              if cargoNextest != null
-              then ''
-                ${
-                  if validatedNextestMaxTestThreads == null
-                  then ""
-                  else ''
-                    nextestTestThreads="$NIX_BUILD_CORES"
-                    if [ "$nextestTestThreads" -gt ${toString validatedNextestMaxTestThreads} ]; then
-                      nextestTestThreads=${toString validatedNextestMaxTestThreads}
-                    fi
-                  ''
-                }
-                ${
-                  if validatedNextestOpenFilesLimit == null
-                  then ""
-                  else ''
-                    # Nextest enumerates test binaries concurrently. Large
-                    # workspaces can exceed a conservative sandbox soft limit
-                    # without requiring more build or test parallelism.
-                    if ! ulimit -S -n ${toString validatedNextestOpenFilesLimit}; then
-                      echo "could not install the bounded Nextest open-file limit ${toString validatedNextestOpenFilesLimit}" >&2
-                      exit 1
-                    fi
-                    nextestOpenFilesLimit=$(ulimit -S -n)
-                    if [ "$nextestOpenFilesLimit" -lt ${toString validatedNextestOpenFilesLimit} ]; then
-                      echo "Nextest open-file soft limit is $nextestOpenFilesLimit, expected at least ${toString validatedNextestOpenFilesLimit}" >&2
-                      exit 1
-                    fi
-                  ''
-                }
-                # Nix may give builders a PTY. Animated progress then hides
-                # failures from streamed logs and repeats captured output.
-                cargo nextest run \
-                  --show-progress none \
-                  ${
-                  if checkType == "release"
-                  then "--cargo-profile release"
-                  else ""
-                } \
-                  --frozen \
-                  --offline \
-                  ${noDefaultFlag} \
-                  ${featuresFlag} \
-                  ${cargoTestFlags} \
-                  ${
-                  if validatedNextestMaxTestThreads == null
-                  then ""
-                  else ''--test-threads "$nextestTestThreads"''
-                } \
-                  ${nextestFlags}
-              ''
-              else ''
-                cargo test \
-                  ${checkProfileFlag} \
-                  --frozen \
-                  --offline \
-                  ${
-                  if !doParallelCheck
-                  then "-- --test-threads=1"
-                  else ""
-                } \
-                  ${cargoTestFlags}
-              ''
+              builtins.concatStringsSep "\n" (map (
+                  selectedTestFlags:
+                    if cargoNextest != null
+                    then ''
+                      ${
+                        if validatedNextestMaxTestThreads == null
+                        then ""
+                        else ''
+                          nextestTestThreads="$NIX_BUILD_CORES"
+                          if [ "$nextestTestThreads" -gt ${toString validatedNextestMaxTestThreads} ]; then
+                            nextestTestThreads=${toString validatedNextestMaxTestThreads}
+                          fi
+                        ''
+                      }
+                      ${
+                        if validatedNextestOpenFilesLimit == null
+                        then ""
+                        else ''
+                          # Nextest enumerates test binaries concurrently. Large
+                          # workspaces can exceed a conservative sandbox soft limit
+                          # without requiring more build or test parallelism.
+                          if ! ulimit -S -n ${toString validatedNextestOpenFilesLimit}; then
+                            echo "could not install the bounded Nextest open-file limit ${toString validatedNextestOpenFilesLimit}" >&2
+                            exit 1
+                          fi
+                          nextestOpenFilesLimit=$(ulimit -S -n)
+                          if [ "$nextestOpenFilesLimit" -lt ${toString validatedNextestOpenFilesLimit} ]; then
+                            echo "Nextest open-file soft limit is $nextestOpenFilesLimit, expected at least ${toString validatedNextestOpenFilesLimit}" >&2
+                            exit 1
+                          fi
+                        ''
+                      }
+                      # Nix may give builders a PTY. Animated progress then hides
+                      # failures from streamed logs and repeats captured output.
+                      cargo nextest run \
+                        --show-progress none \
+                        ${
+                        if checkType == "release"
+                        then "--cargo-profile release"
+                        else ""
+                      } \
+                        --frozen \
+                        --offline \
+                        ${noDefaultFlag} \
+                        ${featuresFlag} \
+                        ${selectedTestFlags} \
+                        ${
+                        if validatedNextestMaxTestThreads == null
+                        then ""
+                        else ''--test-threads "$nextestTestThreads"''
+                      } \
+                        ${nextestFlags}
+                    ''
+                    else ''
+                      cargo test \
+                        ${checkProfileFlag} \
+                        --frozen \
+                        --offline \
+                        ${
+                        if !doParallelCheck
+                        then "-- --test-threads=1"
+                        else ""
+                      } \
+                        ${selectedTestFlags}
+                    ''
+                )
+                effectiveTestFlagSets)
             }
             fi
           '';

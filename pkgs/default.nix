@@ -684,6 +684,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     "buildType"
     "checkType"
     "cargoTestFlags"
+    "cargoTestFlagSets"
     "buildFeatures"
     "buildNoDefaultFeatures"
     "installBins"
