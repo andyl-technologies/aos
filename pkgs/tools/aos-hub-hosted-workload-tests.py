@@ -71,6 +71,49 @@ class HostedTests(unittest.TestCase):
         with self.assertRaises(OSError):
             hosted.Evidence(self.root / "link", fresh=False)
 
+    def test_staged_probe_routes_actual_child_once_and_preserves_incomplete_exit(self):
+        driver_selection = self.root / "staged-selection.json"
+        driver_selection.write_text('{"syntheticPeer":true}')
+        driver_selection.chmod(0o600)
+        count = self.root / "staged-calls"
+        executable = self.peer(
+            "import json,sys\nfrom pathlib import Path\n"
+            f"with Path({str(count)!r}).open('a') as output: output.write('dispatch')\n"
+            "print(json.dumps({'arguments':sys.argv[1:]}))\nraise SystemExit(2)\n")
+        tool = {"file": "/nix/store/" + "a" * 32 + "-fixture/bin/aos-hub-direct-staged-races",
+                "sha256": "1" * 64}
+        selection = {"version": 1, "kind": "staged", "tool": tool,
+                     "inputs": {"selection-file": str(driver_selection),
+                                "output-dir": str(self.root / "staged-output")},
+                     "timeoutSeconds": 5}
+        selected = self.root / "probe-selection.json"
+        selected.write_text(json.dumps(selection))
+        selected.chmod(0o600)
+        arguments = [str(MODULE), "--probe-selection-file", str(selected),
+                     "--output-dir", str(self.root / "probe-evidence"),
+                     "--library-dir", str(LIBRARY)]
+        # The local peer exercises routing/status only; immutable package custody
+        # remains checked by selected_tool in ordinary invocations.
+        actual_run = subprocess.run
+        with patch.object(hosted, "selected_tool", return_value=tool), patch.object(
+                hosted.subprocess, "run", wraps=subprocess.run) as dispatch, patch.object(
+                sys, "argv", arguments):
+            # Keep the requested package locator intact while executing the owned
+            # source-built Python peer at the actual subprocess boundary.
+            def invoke(command, **options):
+                self.assertEqual(command, [tool["file"], str(driver_selection), selection["inputs"]["output-dir"]])
+                return actual_run([str(executable), *command[1:]], **options)
+
+            dispatch.side_effect = invoke
+            self.assertEqual(hosted.main(), 2)
+            self.assertEqual(dispatch.call_count, 1)
+        outcome = json.loads((self.root / "probe-evidence/outcome.json").read_text())
+        self.assertEqual(outcome, {"state": "probe_observed_incomplete", "exitCode": 2,
+                                  "automaticReplay": False, "acceptance": "not_granted"})
+        observed = json.loads((self.root / "probe-evidence/probe-stdout").read_text())
+        self.assertEqual(observed["arguments"], [str(driver_selection), selection["inputs"]["output-dir"]])
+        self.assertEqual(count.read_text(), "dispatch")
+
     def test_actual_fleet_latency_parser_and_targets(self):
         row = self.lib["parse_page_observations"](
             "0.100 200 0.020 0.040 0.010 0.050 0.110 1|||\n", 1)[0]

@@ -58,6 +58,8 @@ assert observationTools == null || observationTools.passthru.selectedWorkerArtif
             "$out/share/aos-hub/direct-sdk-conformance.mjs"
           cp ${./aos-hub-direct-qualification.mjs} \
             "$out/share/aos-hub/direct-qualification.mjs"
+          cp ${./aos-hub-direct-staged-races.mjs} \
+            "$out/share/aos-hub/direct-staged-races.mjs"
           cp ${./aos-hub-hosted-workload.py} "$out/share/aos-hub/hosted-workload.py"
           cp ${./aos-hub-hosted-read.py} "$out/share/aos-hub/hosted-read.py"
           cp ${./aos-hub-hosted-read.md} "$out/share/aos-hub/hosted-read.md"
@@ -149,6 +151,11 @@ assert observationTools == null || observationTools.passthru.selectedWorkerArtif
           exec ${nodejs}/bin/node "$out/share/aos-hub/direct-qualification.mjs" "\$@"
           EOF
           chmod +x "$out/bin/aos-hub-direct-qualification"
+          cat > "$out/bin/aos-hub-direct-staged-races" <<EOF
+          #!${bash}/bin/bash
+          exec ${nodejs}/bin/node "$out/share/aos-hub/direct-staged-races.mjs" "\$@"
+          EOF
+          chmod +x "$out/bin/aos-hub-direct-staged-races"
           cat > "$out/bin/aos-hub-hosted-workload" <<EOF
           #!${bash}/bin/bash
           exec ${python3}/bin/python3 "$out/share/aos-hub/hosted-workload.py" "\$@" \
@@ -179,6 +186,7 @@ assert observationTools == null || observationTools.passthru.selectedWorkerArtif
       ./aos-hub-cloudflare.nix
       ./aos-hub-direct-sdk-conformance.mjs
       ./aos-hub-direct-qualification.mjs
+      ./aos-hub-direct-staged-races.mjs
       ./aos-hub-hosted-workload.py
       ./aos-hub-hosted-read.py
       ./aos-hub-hosted-read-tests.py

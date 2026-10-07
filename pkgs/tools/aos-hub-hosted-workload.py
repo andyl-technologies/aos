@@ -201,7 +201,7 @@ def binding(path):
 
 
 def provider_probe(selection_file, evidence):
-    """Invoke one existing provider/SDK/queue probe once, without acceptance."""
+    """Invoke one selected production probe once, without acceptance."""
     selected = closed_json(private_bytes(selection_file, 256 * 1024))
     exact_fields(selected, {"version", "kind", "tool", "inputs", "timeoutSeconds"})
     if selected["version"] != 1 or type(selected["timeoutSeconds"]) is not int or not 1 <= selected["timeoutSeconds"] <= 3600:
@@ -213,23 +213,33 @@ def provider_probe(selection_file, evidence):
         "provider": {"config-file", "journal-directory", "output"},
         "sdk": {"endpoint", "account-id", "bucket", "control-key-file", "output-dir", "browser-origin"},
         "qualification": {"origin", "control-key-file", "identity-file", "manifest-file", "output-dir", "run-id"},
+        "staged": {"selection-file", "output-dir"},
     }
     if selected["kind"] not in fields:
         raise ValueError("Unknown production probe")
     exact_fields(inputs, fields[selected["kind"]])
     if any(not isinstance(value, str) or not value for value in inputs.values()):
         raise ValueError("Probe inputs must be explicit strings")
+    if selected["kind"] == "staged" and (
+            Path(tool["file"]).name != "aos-hub-direct-staged-races"
+            or Path(tool["file"]).parent.name != "bin"):
+        raise ValueError("Staged observations require the selected packaged driver")
     for name, value in inputs.items():
         if name.endswith("-file"):
-            private_bytes(value, 4 * 1024 * 1024)
+            private_bytes(value, 64 * 1024 if selected["kind"] == "staged" else 4 * 1024 * 1024)
     output = Path(inputs["output-dir"] if "output-dir" in inputs else inputs["output"])
     if not output.is_absolute() or output.exists():
         raise ValueError("Probe evidence output must be fresh")
     if "journal-directory" in inputs and Path(inputs["journal-directory"]).exists():
         raise ValueError("Provider journal must be fresh; unknown effects cannot be replayed")
     command = [tool["file"]] + (["run"] if selected["kind"] == "provider" else [])
-    for name, value in inputs.items():
-        command.extend(["--" + name, value])
+    if selected["kind"] == "staged":
+        # The existing driver has a positional closed-selection contract. It
+        # returns exit 2 for retained observations with missing acceptance joins.
+        command.extend([inputs["selection-file"], inputs["output-dir"]])
+    else:
+        for name, value in inputs.items():
+            command.extend(["--" + name, value])
     evidence.save("probe-pending.json", {"kind": selected["kind"], "tool": tool,
                                         "selectionSha256": hashlib.sha256(private_bytes(selection_file, 256 * 1024)).hexdigest()})
     with os.fdopen(os.open("probe-stdout", os.O_WRONLY | os.O_CREAT | os.O_EXCL,
@@ -241,8 +251,12 @@ def provider_probe(selection_file, evidence):
                                     timeout=selected["timeoutSeconds"], check=False)
         except subprocess.TimeoutExpired:
             return {"state": "probe_unknown", "automaticReplay": False, "acceptance": "not_granted"}
-    return {"state": "probe_observed" if result.returncode == 0 else "probe_failed_or_unknown",
-            "exitCode": result.returncode, "automaticReplay": False, "acceptance": "not_granted"}
+    if selected["kind"] == "staged":
+        state = "probe_observed_incomplete" if result.returncode == 2 else "probe_failed_or_unknown"
+    else:
+        state = "probe_observed" if result.returncode == 0 else "probe_failed_or_unknown"
+    return {"state": state, "exitCode": result.returncode,
+            "automaticReplay": False, "acceptance": "not_granted"}
 
 
 def corpus(selected):
@@ -1409,6 +1423,8 @@ def main():
             outcome = provider_probe(options.probe_selection_file, evidence)
             evidence.save("outcome.json", outcome)
             print(json.dumps(outcome))
+            if outcome["state"] == "probe_observed_incomplete":
+                return 2
             return 0 if outcome["state"] == "probe_observed" else 1
         selected, digest = binding(options.binding_file)
         lib = libraries(options.library_dir)
