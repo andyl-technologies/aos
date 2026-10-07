@@ -86,7 +86,11 @@ python3 -B tests/crucible/resident-performance-summary.py \
 
 The tools refuse changed bindings or incomplete/reordered observations. The
 summary repeats the independent original-driver oracle checks before applying
-the fixed verdict. The CSV is a compact projection of the unchanged raw receipt;
+the fixed verdict. The current command writes the complete summary and exits
+unsuccessfully for both a detected regression and unproved parity; only support
+for no regression returns success. Bind that evaluator's hash in each new plan.
+Historical plans and their retained evaluator identities remain unchanged.
+The CSV is a compact projection of the unchanged raw receipt;
 the raw receipt is the input to the evaluator.
 
 ## Scope

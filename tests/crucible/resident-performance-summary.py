@@ -4,6 +4,9 @@ This evaluates the measured component profile only. It retains every matched
 pair and reports wall and process CPU uncertainty separately from raw median
 and maximum checks. It does not qualify a managed deployment or whole-RAM
 canonical identity. Run with AOS-built Python.
+
+The command retains the complete summary before returning a failing exit status
+when a regression is detected or parity remains unproved.
 """
 
 import argparse
@@ -235,7 +238,8 @@ def main():
         json.dump(summary, output, indent=2)
         output.write("\n")
     print(json.dumps({"verdict": summary["verdict"], "output": str(args.output)}))
+    return 0 if summary["verdict"] == "no_regression_supported_for_measured_profile" else 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

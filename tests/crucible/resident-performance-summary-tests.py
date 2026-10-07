@@ -6,7 +6,11 @@ performance or deployment evidence. Run with AOS-built Python.
 
 import copy
 import importlib.util
+import json
 from pathlib import Path
+import subprocess
+import sys
+import tempfile
 import unittest
 
 
@@ -111,6 +115,77 @@ class PerformanceSummaryTests(unittest.TestCase):
         self.assertEqual(result["verdict"], "regression_detected")
         metric = result["groups"]["io-bios.bin/restored"]["process_cpu_seconds"]
         self.assertGreater(metric["normal_approximation_95_percent_ratio_interval"][0], 1)
+
+    def test_one_slower_family_or_metric_cannot_be_offset_by_faster_others(self):
+        for metric in ("wall_seconds", "process_cpu_seconds"):
+            with self.subTest(metric=metric):
+                data = fixture()
+                for row in data[2]:
+                    if (row["workload"], row["mode"], row["variant"]) != (
+                            "io-bios.bin", "cold", "current"):
+                        continue
+                    if metric == "wall_seconds":
+                        row["seconds"] = 11
+                    else:
+                        row["user_seconds"], row["system_seconds"] = 2.2, 0.55
+                        row["scheduling"]["after"]["process"].update(
+                            user_ticks=320, system_ticks=65)
+                        row["scheduling"]["delta"]["process_tick_delta"].update(
+                            user_ticks=220, system_ticks=55)
+
+                result = self.evaluate(data)
+                self.assertEqual(result["verdict"], "regression_detected")
+                self.assertEqual(result["groups"]["io-bios.bin/cold"][metric][
+                    "interval_classification"], "increase_supported")
+
+    def test_command_retains_complete_evidence_and_fails_without_parity(self):
+        cases = ((0.9, False, 0, "no_regression_supported_for_measured_profile"),
+                 (1.1, False, 1, "regression_detected"),
+                 (1.0, True, 1, "no_regression_not_demonstrated"))
+        for factor, outlier, status, verdict in cases:
+            with self.subTest(verdict=verdict), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                plan, manifest, rows, _ = fixture(factor)
+                if outlier:
+                    next(row for row in rows if row["variant"] == "current")["seconds"] = 100
+
+                # A local driver exercises the actual command's authenticated
+                # loading path without claiming native execution evidence.
+                driver = root / "driver.py"
+                driver.write_text(
+                    "def require_reference(row, stop, loop):\n"
+                    "    if row['witness']['raw_icount'] != stop:\n"
+                    "        raise ValueError('boundary differs')\n")
+                for variant in SUMMARY.VARIANTS:
+                    identity = {"path": str(driver), "sha256": SUMMARY.digest(driver)}
+                    plan["artifacts"][variant]["source_driver"] = identity
+                    manifest["artifacts"][variant]["source_driver"] = identity
+                    manifest["artifacts"][variant]["snapshot"] = identity
+
+                script = Path(SUMMARY.__file__).resolve()
+                plan["summary_evaluator_sha256"] = SUMMARY.digest(script)
+                plan_path = root / "plan.json"
+                plan_path.write_text(json.dumps(plan))
+                manifest["predeclared_plan"]["sha256"] = SUMMARY.digest(plan_path)
+                (root / "evidence.json").write_text(json.dumps(manifest))
+                (root / "samples.jsonl").write_text(
+                    "".join(json.dumps(row) + "\n" for row in rows))
+
+                output = root / "summary.json"
+                result = subprocess.run(
+                    [sys.executable, "-B", str(script), "--plan", str(plan_path),
+                     "--receipt", str(root), "--output", str(output)],
+                    capture_output=True, text=True, check=False)
+
+                self.assertEqual(result.returncode, status, result.stderr)
+                summary = json.loads(output.read_text())
+                self.assertEqual(summary["verdict"], verdict)
+                self.assertEqual(summary["sample_count"], 480)
+                self.assertEqual(summary["receipt_sha256"]["samples.jsonl"],
+                                 SUMMARY.digest(root / "samples.jsonl"))
+                for group in summary["groups"].values():
+                    for metric in group.values():
+                        self.assertEqual(len(metric["paired_ratios_current_over_baseline"]), 40)
 
     def test_large_observation_is_retained_and_cannot_be_removed_for_acceptance(self):
         data = fixture(1)
