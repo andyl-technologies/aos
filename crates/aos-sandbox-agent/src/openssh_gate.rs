@@ -10,8 +10,8 @@
 //! ```
 
 use aos_sandbox_core::public_attach_route::{
-    PUBLIC_ATTACH_CERTIFICATE_TYPE_V1, PUBLIC_ATTACH_GATE_PATH_V1,
-    public_attach_force_command_v1, valid_public_attach_user_v1,
+    PUBLIC_ATTACH_CERTIFICATE_TYPE_V1, PUBLIC_ATTACH_GATE_PATH_V1, public_attach_force_command_v1,
+    valid_public_attach_user_v1,
 };
 
 use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};

@@ -99,9 +99,9 @@ pub mod journal;
 pub mod lifecycle;
 mod lifecycle_authority;
 #[cfg(target_os = "linux")]
-pub mod local_ownership;
-#[cfg(target_os = "linux")]
 mod local_channel;
+#[cfg(target_os = "linux")]
+pub mod local_ownership;
 #[cfg(target_os = "linux")]
 pub mod local_provisioning;
 #[cfg(target_os = "linux")]
@@ -114,8 +114,6 @@ mod mount_inventory_snapshot;
 pub mod mount_manager_source_inventory;
 #[cfg(target_os = "linux")]
 pub mod mount_manager_startup;
-#[cfg(target_os = "linux")]
-pub mod source_provider_startup;
 #[cfg(target_os = "linux")]
 pub mod mount_observation_state;
 #[cfg(target_os = "linux")]
@@ -132,6 +130,8 @@ pub mod ownership_service;
 pub mod policy_compiler;
 #[cfg(target_os = "linux")]
 pub mod production_operation_compiler;
+#[cfg(target_os = "linux")]
+pub mod source_provider_startup;
 
 #[cfg(target_os = "linux")]
 pub use production_operation_compiler::{
@@ -176,11 +176,10 @@ pub mod tpm_nv_custody;
 
 #[cfg(target_os = "linux")]
 pub use controller_resource_reservation::{
-    ControllerResourceBankOpeningV1, ControllerResourceEnrollmentCaptureV1,
-    ControllerFirstGlobalPrefixAttemptV1,
-    NixOriginalStartIntakeAttemptV1, NixOriginalStartIntakeLoanV1,
-    ProjectPreparationReservationAttemptV1, StorageComponentEnvelopeLoanV1,
-    StorageComponentEnvelopeOriginalV1, StorageComponentPostV1,
+    ControllerFirstGlobalPrefixAttemptV1, ControllerResourceBankOpeningV1,
+    ControllerResourceEnrollmentCaptureV1, NixOriginalStartIntakeAttemptV1,
+    NixOriginalStartIntakeLoanV1, ProjectPreparationReservationAttemptV1,
+    StorageComponentEnvelopeLoanV1, StorageComponentEnvelopeOriginalV1, StorageComponentPostV1,
 };
 
 #[cfg(target_os = "linux")]
@@ -192,18 +191,17 @@ pub use controller_resource_reservation::{
 #[cfg(target_os = "linux")]
 pub use runtime_deployment::{
     HeldRuntimeDeploymentAppendComparisonV1, HeldRuntimeDeploymentMainComparisonV1,
-    HeldRuntimeDeploymentPairComparisonV1, RuntimeDeploymentNativeTransactionDataV1,
-    HostPhysicalInvocationErrorV1, HostPhysicalInvocationLeaseV1,
-    ProductionRuntimeDeploymentStartupCaptureV1, ProductionRuntimeDeploymentStartupPartsV1,
-    ProductionRuntimeDeploymentStartupV1, RuntimeDeploymentComparisonErrorV1,
-    RuntimeDeploymentComparisonOriginsV1, RuntimeDeploymentStartupErrorV1,
+    HeldRuntimeDeploymentPairComparisonV1, HostPhysicalInvocationErrorV1,
+    HostPhysicalInvocationLeaseV1, ProductionRuntimeDeploymentStartupCaptureV1,
+    ProductionRuntimeDeploymentStartupPartsV1, ProductionRuntimeDeploymentStartupV1,
+    RuntimeDeploymentComparisonErrorV1, RuntimeDeploymentComparisonOriginsV1,
+    RuntimeDeploymentNativeTransactionDataV1, RuntimeDeploymentStartupErrorV1,
 };
 
 #[cfg(target_os = "linux")]
 #[doc(hidden)]
 pub use runtime_deployment::{
-    RuntimeDeploymentStorageDeliveryReadbackV2,
-    observe_canary_storage_delivery_v2,
+    RuntimeDeploymentStorageDeliveryReadbackV2, observe_canary_storage_delivery_v2,
 };
 
 #[cfg(target_os = "linux")]
@@ -293,20 +291,18 @@ pub use journal::{
     Kind5ProtectedReadbackV4, MountBarrierIdleReplacementJournalAuthorityV4,
     MountDeadReplacementJournalAuthorityV4, MountManagerStartupPolicyReceiptV1,
     MountOriginalInventoryJournalAuthorityV6, MountOriginalNativeJournalAuthorityV5,
-    MountSourceAcquisitionJournalAuthorityV2,
-    MountSourceConsumptionCommitReceipt, MountSourceConsumptionCompanionProjectionV2,
-    MountSourceConsumptionJournalAuthorityV1, MountSourceConsumptionPreflight,
-    MountSourceMigrationJournalAuthorityV2, OriginalInventoryProtectedReadbackV6,
-    OriginalRootProtectedReadbackV5,
-    PreparedBarrierIdleReplacementV4, PreparedDeadReplacementV4,
+    MountSourceAcquisitionJournalAuthorityV2, MountSourceConsumptionCommitReceipt,
+    MountSourceConsumptionCompanionProjectionV2, MountSourceConsumptionJournalAuthorityV1,
+    MountSourceConsumptionPreflight, MountSourceMigrationJournalAuthorityV2,
+    OriginalInventoryProtectedReadbackV6, OriginalRootProtectedReadbackV5,
+    OriginalSourceProtectedReadbackV5, PreparedBarrierIdleReplacementV4, PreparedDeadReplacementV4,
     PreparedGlobalCapacityReservationV1, PreparedOriginalInventoryAppendV6,
-    PreparedOriginalRootAppendV5, ProtectedJournalAuthority,
+    PreparedOriginalRootAppendV5, PreparedOriginalSourceAppendV5, ProtectedJournalAuthority,
     ProtectedJournalLockCustodyV1, ProtectedJournalPreflight, ProtectedJournalSnapshot,
-    RecordNamespace, RecoveryReport, SourceProviderHeldReadOnlyJournalAuthorityV1,
-    OriginalSourceProtectedReadbackV5, PreparedOriginalSourceAppendV5,
-    SourceOriginalAppendSubjectV5, SourceOriginalChallengeCheckpointV5,
-    SourceOriginalChallengeHistoryViewV5, SourceOriginalNativeJournalAuthorityV5,
-    SourceOriginalPhysicalCutV5, SourceOriginalReplayViewV5,
+    RecordNamespace, RecoveryReport, SourceOriginalAppendSubjectV5,
+    SourceOriginalChallengeCheckpointV5, SourceOriginalChallengeHistoryViewV5,
+    SourceOriginalNativeJournalAuthorityV5, SourceOriginalPhysicalCutV5,
+    SourceOriginalReplayViewV5, SourceProviderHeldReadOnlyJournalAuthorityV1,
 };
 #[cfg(target_os = "linux")]
 pub use journal::{
@@ -314,11 +310,11 @@ pub use journal::{
     StorageNativeIssuanceHistoryDataV1, StorageNativeIssuanceHistoryErrorV1,
 };
 pub use lifecycle_authority::{
-    SnapshotDerivedStoragePreparationV3, prepare_snapshot_derived_storage_v3,
-    AtomicStorageLifecyclePublicationErrorV1, compile_atomic_storage_lifecycle_template_v1,
-    compile_storage_create_preparation_template_v1,
+    AtomicStorageLifecyclePublicationErrorV1, SnapshotDerivedStoragePreparationV3,
+    compile_atomic_storage_lifecycle_template_v1, compile_storage_create_preparation_template_v1,
     prepare_atomic_storage_lifecycle_authority_effect_v1,
     prepare_atomic_storage_lifecycle_publication_v1, prepare_runtime_lifecycle_authority_effect_v1,
+    prepare_snapshot_derived_storage_v3,
 };
 #[cfg(target_os = "linux")]
 pub use mount_attempt::{
@@ -371,14 +367,13 @@ pub use publication::{
 pub use reconciler::{
     AcceptOutcome, AuthorityBoundEffectPlanV1, AuthorityEffectAttemptTimingV1,
     AuthorityEffectObservationV1, EffectDomain, EffectFailure, EffectObservation, EffectPlan,
-    EffectReceipt, OperationPlan, OwnershipGateActivationOutcome, OwnershipGatePlanV1,
-    OwnershipGateStatusV1, PreparedAuthorityBrokerRequestV1, PreparedAuthorityEffectV1,
-    PublicMutationEffectV1, PublicOperationAdmissionV1, PublicOperationAuthorizationV1,
-    ReconcileOutcome, Reconciler, ReconcilerError, SingleNodeEffectExecutor,
-    OperatorStorageRepairReconcileV1,
-    UnfinishedOperationStateV1, ValidatedAuthorityEffectReceiptV1, ValidatedHostEffectReceiptV1,
-    ValidatedUnfinishedOperationV1, activated_ownership_gate_digest_from_journal_v1,
-    public_operation_resource_from_journal_v1,
+    EffectReceipt, OperationPlan, OperatorStorageRepairReconcileV1, OwnershipGateActivationOutcome,
+    OwnershipGatePlanV1, OwnershipGateStatusV1, PreparedAuthorityBrokerRequestV1,
+    PreparedAuthorityEffectV1, PublicMutationEffectV1, PublicOperationAdmissionV1,
+    PublicOperationAuthorizationV1, ReconcileOutcome, Reconciler, ReconcilerError,
+    SingleNodeEffectExecutor, UnfinishedOperationStateV1, ValidatedAuthorityEffectReceiptV1,
+    ValidatedHostEffectReceiptV1, ValidatedUnfinishedOperationV1,
+    activated_ownership_gate_digest_from_journal_v1, public_operation_resource_from_journal_v1,
 };
 #[cfg(target_os = "linux")]
 pub use resource_inventory::{

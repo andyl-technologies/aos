@@ -23,8 +23,8 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use ed25519_dalek::{Signer as _, SigningKey};
 use sha2::{Digest as _, Sha256};
 
-use crate::model::{AgentRuntimeBindingV1, AgentSessionBindingV1};
 use crate::launch::encode_agent_runtime_binding_v1;
+use crate::model::{AgentRuntimeBindingV1, AgentSessionBindingV1};
 
 /// Versioned request prefix accepted by the provisioned Guest agent.
 pub const ARGUMENT_OBSERVE_REQUEST_MAGIC_V1: &[u8; 8] = b"AOSARQ01";
