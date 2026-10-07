@@ -515,7 +515,14 @@ impl DirectUploadService {
                     match result {
                         Ok((record, permissions)) => {
                             if let Some(observation) = observation {
-                                observation.direct_authorize(context, session, *action, *complete_step, &record, &permissions);
+                                observation.direct_authorize(
+                                    context,
+                                    session,
+                                    *action,
+                                    *complete_step,
+                                    &record,
+                                    &permissions,
+                                );
                             }
                             // Freeze returns retained originals. Later complete phases
                             // acknowledge exact authorizations without repeating those

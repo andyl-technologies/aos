@@ -503,7 +503,8 @@ impl Database {
         mut target_statements: Vec<CheckedStatement>,
         now: i64,
     ) -> Result<()> {
-        let observation = crate::application_body_observation::sql_projection::dynamic::Started::new();
+        let observation =
+            crate::application_body_observation::sql_projection::dynamic::Started::new();
         evidence.validate_against(&record.admission, deployment)?;
         let complete = record
             .complete_intent
@@ -596,9 +597,17 @@ impl Database {
             )
             .expecting(1),
         );
-        self.direct_batch(&record).checked_batch(&statements).await?;
+        self.direct_batch(&record)
+            .checked_batch(&statements)
+            .await?;
         if let Some(observation) = observation {
-            observation.direct_commit(deployment, record, evidence, final_guards, Some(&statements));
+            observation.direct_commit(
+                deployment,
+                record,
+                evidence,
+                final_guards,
+                Some(&statements),
+            );
         }
         Ok(())
     }
@@ -955,10 +964,7 @@ mod sql_checkpoint_tests {
         assert!(raw.len() > 12 * 1024);
         assert!(raw.len() <= 64 * 1024);
         assert_eq!(value["checkpoints"].as_array().unwrap().len(), count);
-        for (record, checkpoint) in records
-            .iter()
-            .zip(value["checkpoints"].as_array().unwrap())
-        {
+        for (record, checkpoint) in records.iter().zip(value["checkpoints"].as_array().unwrap()) {
             assert_eq!(checkpoint["sessionId"], record.admission.session_id);
             assert_eq!(checkpoint["retainedOriginal"], false);
             assert_eq!(
@@ -969,7 +975,10 @@ mod sql_checkpoint_tests {
             );
             assert!(checkpoint.get("sqlReaderAuthority").is_none());
         }
-        eprintln!("actual_full_batch_projection_bytes={} checkpoints={count}", raw.len());
+        eprintln!(
+            "actual_full_batch_projection_bytes={} checkpoints={count}",
+            raw.len()
+        );
 
         let (_, overflow) = observe_with_sql_projection(async {
             for _ in 0..=count {

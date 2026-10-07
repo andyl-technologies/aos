@@ -12,15 +12,19 @@ use crate::clock::{observation_unix_nanos, Instant};
 use crate::db::{DirectUploadSessionRecord, RegistryPublicationRecord, RegistryRecord};
 use crate::direct_upload::{
     DirectCompleteStep, DirectCompletionEvidence, DirectDestinationBaselinePermission,
-    DirectFinalGuardRecord, DirectLogicalAction, DirectRequestContext,
-    DirectSessionAuthorization, DirectSessionState, WireInteger,
+    DirectFinalGuardRecord, DirectLogicalAction, DirectRequestContext, DirectSessionAuthorization,
+    DirectSessionState, WireInteger,
 };
 use serde::{Serialize, Serializer};
 
 const MAX_ORIGINAL_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize)]
-#[serde(tag = "operation", rename_all = "snake_case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "operation",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub(super) enum Observation {
     PublicationGet {
         publication_id: String,
@@ -64,9 +68,7 @@ impl Observation {
     pub(super) fn constructor(&self) -> &'static str {
         match self {
             Self::PublicationGet { .. } => "publication_get",
-            Self::DirectAuthorize { .. } | Self::DirectCommit { .. } => {
-                "direct_logical_validated"
-            }
+            Self::DirectAuthorize { .. } | Self::DirectCommit { .. } => "direct_logical_validated",
         }
     }
 }
@@ -92,7 +94,10 @@ impl Started {
             }
         };
 
-        Some(Self { before, start: Instant::now() })
+        Some(Self {
+            before,
+            start: Instant::now(),
+        })
     }
 
     /// Retains an actually authorized Get and its completed response image.
@@ -113,8 +118,12 @@ impl Started {
                 refs_digest: publication.refs_digest.clone(),
                 registry_scope_sha256: super::digest(&registry.scope_key),
                 actor: image(&(
-                    &claims.sub, &claims.owner_kind, claims.owner_id,
-                    &claims.owner_incarnation, &claims.scope, &claims.perms,
+                    &claims.sub,
+                    &claims.owner_kind,
+                    claims.owner_id,
+                    &claims.owner_incarnation,
+                    &claims.scope,
+                    &claims.perms,
                 ))?,
                 reply: image(reply)?,
             })
@@ -164,7 +173,9 @@ impl Started {
             let resulting_resource_version = if retained_original {
                 None
             } else {
-                Some(WireInteger::new(record.resource_version.get().checked_add(1)?))
+                Some(WireInteger::new(
+                    record.resource_version.get().checked_add(1)?,
+                ))
             };
             Some(Observation::DirectCommit {
                 session_id: record.admission.session_id.clone(),
@@ -188,9 +199,9 @@ impl Started {
 
     fn completed(self, observation: Option<Observation>) {
         let selection = observation.map(|observation| Selection::Dynamic { observation });
-        let Some(selection) = selection.filter(|selection| {
-            super::super::canonical(selection, MAX_BYTES).is_some()
-        }) else {
+        let Some(selection) =
+            selection.filter(|selection| super::super::canonical(selection, MAX_BYTES).is_some())
+        else {
             super::super::invalidate_sql_projection();
             return;
         };
@@ -217,7 +228,11 @@ struct CheckedImages<'a>(&'a [CheckedStatement]);
 impl Serialize for CheckedImages<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_seq(self.0.iter().map(|checked| {
-            (&checked.statement.sql, &checked.statement.params, checked.expected_rows)
+            (
+                &checked.statement.sql,
+                &checked.statement.params,
+                checked.expected_rows,
+            )
         }))
     }
 }

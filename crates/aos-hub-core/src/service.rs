@@ -29,38 +29,38 @@
 //! ```
 
 mod authentication;
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod identity_continuity_tests;
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod direct_oci_allocation_tests;
 mod container;
 mod container_admin;
 mod delivery_workflow;
 #[cfg(test)]
 mod delivery_workflow_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
-mod live_delivery_tests;
-mod hybrid_cache_upload;
-mod hybrid_publication_upload;
-#[cfg(test)]
-mod registry_accounting_tests;
+mod direct_oci_allocation_tests;
+mod direct_target;
 #[cfg(test)]
 mod external_copy_tests;
-mod direct_target;
+mod hybrid_cache_upload;
+mod hybrid_publication_upload;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod identity_continuity_tests;
 mod instance_settings;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod live_delivery_tests;
 mod oci_namespaces;
 mod publication_manifest;
+#[cfg(test)]
+mod registry_accounting_tests;
 mod registry_delete;
 mod registry_metadata;
 mod registry_policy;
 mod release_publication;
+#[cfg(test)]
+mod release_publication_tests;
 mod staged_releases;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod staged_releases_tests;
-#[cfg(test)]
-mod release_publication_tests;
-mod surface_topology;
 mod storage_authority;
+mod surface_topology;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
@@ -78,8 +78,8 @@ use crate::clock;
 use crate::db::{Database, IndexStatus, PlacementReadRequirement, RegistryRecord, SurfaceTarget};
 use crate::domain::iam::{self, claims_principal, token_allows};
 use crate::domain::{Permission, Principal, PrincipalKind, Role, Scope};
-use crate::jobs::Job;
 use crate::fetch::{SurfaceFetch, SurfaceProvider};
+use crate::jobs::Job;
 use crate::keymap;
 use crate::lease::PublishLease;
 use crate::placement_read::{self, PlacementReadOutcome};
@@ -2752,7 +2752,8 @@ impl CachedSession {
     /// The expiry recheck makes the short cache TTL safe: an entry that expires
     /// mid-window is never served, exactly as `validate_session` would reject it.
     fn into_resolved(self, secret: &str, now: i64) -> Option<crate::web::session::ResolvedSession> {
-        if self.expires_at <= now || self.session_id_hash != crate::auth::token::sha256_hex(secret) {
+        if self.expires_at <= now || self.session_id_hash != crate::auth::token::sha256_hex(secret)
+        {
             return None;
         }
         Some(crate::web::session::ResolvedSession {
@@ -10607,7 +10608,9 @@ impl RpcService {
             .as_deref()
             .is_some_and(|value| !crate::direct_upload::valid_direct_identity(value))
         {
-            return Err(RpcError::invalid("configured deployment identity is invalid"));
+            return Err(RpcError::invalid(
+                "configured deployment identity is invalid",
+            ));
         }
         self.deployment_id = deployment_id;
         Ok(self)
@@ -25265,7 +25268,8 @@ impl RpcService {
         auth: Option<&str>,
         req: pb::GetRegistryPublicationRequest,
     ) -> Result<pb::RegistryPublication, RpcError> {
-        let observation = crate::application_body_observation::sql_projection::dynamic::Started::new();
+        let observation =
+            crate::application_body_observation::sql_projection::dynamic::Started::new();
         let claims = self.require_claims(auth)?;
         let publication = self
             .db
@@ -25282,7 +25286,9 @@ impl RpcService {
         let scope = self.registry_scope(&registry).await?;
         self.require_permission(&claims, Permission::Publish, &scope)
             .await?;
-        let reply = self.registry_publication_response(&publication.publication_id, true).await?;
+        let reply = self
+            .registry_publication_response(&publication.publication_id, true)
+            .await?;
         if let Some(observation) = observation {
             observation.publication_get(&claims, &publication, &registry, &reply);
         }
@@ -30443,9 +30449,7 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("topology plan"))?;
-        if plan.plan_kind != plan_kind
-            || !Self::plan_actor_matches(&plan, &claims)
-        {
+        if plan.plan_kind != plan_kind || !Self::plan_actor_matches(&plan, &claims) {
             return Err(RpcError::FailedPrecondition(
                 "plan belongs to another actor or operation".to_string(),
             ));
@@ -37807,15 +37811,22 @@ pub(crate) mod cache_upload_tests {
             publication_id: publication_id.into(),
         };
         let raw = serde_json::to_vec(&request).unwrap();
-        let (shown, projection) = crate::application_body_observation::observe_with_sql_projection(async {
-            let encoder = crate::application_body_observation::rpc::request::<
-                pb::GetRegistryPublicationRequest, pb::RegistryPublication,
-            >(&request, &raw);
-            let shown = service.get_registry_publication(Some(&auth), request.clone()).await.unwrap();
-            let evidence = crate::application_body_observation::rpc::reply(encoder, &shown).unwrap();
-            assert_eq!(evidence.constructor, "publication_get");
-            shown
-        }).await;
+        let (shown, projection) =
+            crate::application_body_observation::observe_with_sql_projection(async {
+                let encoder = crate::application_body_observation::rpc::request::<
+                    pb::GetRegistryPublicationRequest,
+                    pb::RegistryPublication,
+                >(&request, &raw);
+                let shown = service
+                    .get_registry_publication(Some(&auth), request.clone())
+                    .await
+                    .unwrap();
+                let evidence =
+                    crate::application_body_observation::rpc::reply(encoder, &shown).unwrap();
+                assert_eq!(evidence.constructor, "publication_get");
+                shown
+            })
+            .await;
         let projection = serde_json::to_value(projection.unwrap()).unwrap();
         let checkpoints = projection["checkpoints"].as_array().unwrap();
         assert_eq!(checkpoints.len(), 1);
@@ -37823,12 +37834,16 @@ pub(crate) mod cache_upload_tests {
         assert_eq!(observed["operation"], "publication_get");
         assert_eq!(observed["publicationId"], publication_id);
         assert_eq!(observed["state"], "ready");
-        assert_eq!(observed["reply"]["sha256"],
-            crate::application_body_observation::image(&serde_json::to_vec(&shown).unwrap()).sha256);
+        assert_eq!(
+            observed["reply"]["sha256"],
+            crate::application_body_observation::image(&serde_json::to_vec(&shown).unwrap()).sha256
+        );
 
-        let (refused, refused_projection) = crate::application_body_observation::observe_with_sql_projection(async {
-            service.get_registry_publication(None, request).await
-        }).await;
+        let (refused, refused_projection) =
+            crate::application_body_observation::observe_with_sql_projection(async {
+                service.get_registry_publication(None, request).await
+            })
+            .await;
         assert!(refused.is_err());
         assert!(refused_projection.is_none());
         assert_eq!(shown.objects.len(), 2);
