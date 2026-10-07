@@ -140,6 +140,8 @@ in
     #          Mount/Source principals; no generic executable or unit selector.
     #   0022 — Pin every fixed online Nix command to the same physical EROFS
     #          fragment, excluding mutable aliases, environment and overrides.
+    #   0024 — Opt-in original PID1/component CPU, memory and PID enclosures
+    #          before generators; preserve finite contexts and checked originals.
     patches = [
       ./patches/0001-remove-usr-lib-unit-lookup-paths.patch
       ./patches/0002-add-prefix-to-conf-paths.patch
@@ -165,6 +167,7 @@ in
       ./patches/0021-nspawn-host-readiness-report.patch
       ./patches/0022-pin-online-nix-unit-fragment-before-spawn.patch
       ./patches/0023-controller-resource-enrollment.patch
+      ./patches/0024-component-parent-enclosure.patch
     ];
 
     buildDeps = [
