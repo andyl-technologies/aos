@@ -682,6 +682,20 @@ validator decodes through durable publication. This source is composed locally;
 the actual older selected missing-context fallback and source-preserving
 collection witnesses, full trunk gates and formal task merge remain open.
 
+The shared Guard-carry publication consumer now retains private old-selector
+and fresh-lineage bytes, verifies exact selected associations, installs each
+immutable output before selected publication, and includes it in the actual
+native durability seal. Foreign source Originals remain independent of the
+current destination backend registration; fresh lineage preserves its exact
+Original and changes only its Guard digest. Existing Guard producers still
+supply an empty carry list. On these frozen shared bytes, all six exact native
+checked-publication acknowledgment regressions, application test-target
+compilation and required formatting pass. All 4,557 hermetic input files match
+independent review. Strict default Clippy retains the prior 37 library and 22
+library-test errors; later profiles and rustdoc are unqualified. The real
+preservation producer, its positive/refusal witnesses and full trunk gates
+remain pending. This prerequisite closes no task or milestone.
+
 The test-only bucket observer records actual typed Node/Commit get and put
 attempts before catalog lookup, admission or deduplication. The same per-bucket
 observer follows clones and held adapters and can attach to the actual metadata
@@ -3287,9 +3301,17 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Actual Node reads, writes and decodes are calibrated after reopening;
   successful cold reuse produces a fresh signed Commit with the expected source
   tree and parent. All 4,904 actual hermetic input files independently match the
-  frozen source. Grace-window and retirement-fault regressions, required native
-  build and the ten local-deletion Nextest cases remain pending. These local
+  frozen source. Four exact grace-window regressions and the retirement-fault
+  case also pass on those same 4,904 independently reviewed input files.
+  Required native build and the ten local-deletion Nextest cases remain pending.
+  These local
   prerequisites do not qualify the complete collector gate or close T-GC-1.
+  Independent review identifies a GC-3/4/5 gap in that source qualifier: its
+  unbounded parent cutoff can make unrelated expired ancestral Chunks live.
+  It must instead use each source's independently qualified actual current-root
+  retention context while retaining full ordinary visitation of the source.
+  The cutoff correction and count-zero/duration witnesses remain pending;
+  the six-case result alone does not discharge those retention requirements.
   The reviewed pure journal, marking, proof-context, checkpoint, retention and
   grace-window bodies now replace their trunk declarations. All 27 adopted
   paths, including 16 independent hexadecimal witnesses, match the qualified

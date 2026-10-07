@@ -605,7 +605,10 @@ where
         sources: Vec::new(),
         next,
         changes: Vec::new(),
-        evidence: CheckedEvidence::Guard { snapshot },
+        evidence: CheckedEvidence::Guard {
+            snapshot,
+            carried: Vec::new(),
+        },
         final_check: Box::new(|| final_check.recheck()),
         effect_context: Some(GuardEffectContext {
             final_check: final_check.clone(),

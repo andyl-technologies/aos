@@ -29,7 +29,9 @@ pub(crate) mod effect_test_checks;
 
 use crate::bucket::publication::SelectedObservation;
 use crate::store::StoreFailure;
-use terrane_core::gc::publication::{LogicalChange, PublicationProof, PublicationState};
+use terrane_core::gc::publication::{
+    LogicalChange, PublicationProof, PublicationState, SourceLineage,
+};
 
 /// Retains genuine request checks for the final selected-slot dispatch.
 #[cfg(feature = "send")]
@@ -397,13 +399,42 @@ pub(crate) struct CheckedMutation<'operation, 'held> {
     effect_context: Option<native_guard::GuardEffectContext>,
 }
 
+/// Retains one exact old selector and newly checked immutable Guard-carry body.
+///
+/// Only the held Guard-carry producer initializes these private fields. The
+/// bytes are compared data, not a constructor for source or publication authority.
+pub(crate) struct GuardCarriedLineage {
+    previous: SourceLineage,
+    encoded: Vec<u8>,
+}
+
+impl GuardCarriedLineage {
+    /// Borrows the actual prior selected lineage checked by the held producer.
+    pub(crate) fn previous(&self) -> &SourceLineage {
+        &self.previous
+    }
+
+    /// Borrows the fresh canonical body bound to the new actual Guard snapshot.
+    pub(crate) fn lineage(&self) -> &[u8] {
+        &self.encoded
+    }
+}
+
 /// Distinguishes the privately checked kinds of repository publication.
 enum CheckedEvidence {
-    Guard { snapshot: Vec<u8> },
-    Candidate { snapshot: Vec<u8>, lineage: Vec<u8> },
+    Guard {
+        snapshot: Vec<u8>,
+        carried: Vec<GuardCarriedLineage>,
+    },
+    Candidate {
+        snapshot: Vec<u8>,
+        lineage: Vec<u8>,
+    },
     // Tags and notes retain the selected Guard without acquiring branch history
     // or candidate lineage. Their genuine request checks remain in the producer.
-    Advisory { snapshot: Vec<u8> },
+    Advisory {
+        snapshot: Vec<u8>,
+    },
 }
 
 impl<'operation, 'held> CheckedMutation<'operation, 'held> {
@@ -453,7 +484,7 @@ impl<'operation, 'held> CheckedMutation<'operation, 'held> {
     /// Borrows the complete independently checked canonical Guard bytes.
     pub(crate) fn guard_snapshot(&self) -> &[u8] {
         match &self.evidence {
-            CheckedEvidence::Guard { snapshot }
+            CheckedEvidence::Guard { snapshot, .. }
             | CheckedEvidence::Candidate { snapshot, .. }
             | CheckedEvidence::Advisory { snapshot } => snapshot,
         }
@@ -467,10 +498,21 @@ impl<'operation, 'held> CheckedMutation<'operation, 'held> {
         }
     }
 
+    /// Borrows the sealed Guard producer's complete carried-lineage output list.
+    ///
+    /// Candidate and advisory transitions carry no Guard-preservation outputs.
+    /// This accessor exposes data only; it cannot initialize private checks.
+    pub(crate) fn guard_carried_lineages(&self) -> &[GuardCarriedLineage] {
+        match &self.evidence {
+            CheckedEvidence::Guard { carried, .. } => carried,
+            CheckedEvidence::Candidate { .. } | CheckedEvidence::Advisory { .. } => &[],
+        }
+    }
+
     /// Returns the exact proof selector derived from the fixed checked bytes.
     pub(crate) fn proof(&self) -> PublicationProof {
         match &self.evidence {
-            CheckedEvidence::Guard { snapshot } => {
+            CheckedEvidence::Guard { snapshot, .. } => {
                 PublicationProof::Guard(*blake3::hash(snapshot).as_bytes())
             }
             CheckedEvidence::Candidate { lineage, .. } => {

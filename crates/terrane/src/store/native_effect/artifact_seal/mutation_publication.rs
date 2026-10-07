@@ -230,6 +230,16 @@ pub(in super::super) fn mutation_plan(
             lineage.to_vec(),
         ));
     }
+    for carried in checked.guard_carried_lineages() {
+        let lineage = carried.lineage();
+        proofs.push((
+            control.join(format!(
+                "publication/lineage/{}",
+                blake3::hash(lineage).to_hex()
+            )),
+            lineage.to_vec(),
+        ));
+    }
     let (sender, receiver) = mpsc::channel();
     Ok((
         Plan::SealMutationPublication(Box::new(MutationRequest {

@@ -91,10 +91,10 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                     || checked.lineage().is_some()
                     || !checked.changes().is_empty()
                     || next.branches != current.state.branches
-                    || !next.sources.is_empty()
                 {
                     return Err(corrupt());
                 }
+                self.verify_guard_carry(&checked).await?;
             }
             PublicationProof::Candidate(expected) => {
                 if current.state.guard != next.guard {
@@ -134,6 +134,91 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             source.revalidate_against(expected).await?;
         }
         Ok(receipt(selected))
+    }
+
+    // Fixed source associations supplement the sealed producer's complete actual
+    // trust/Original/interpretation checks; they never qualify decoded evidence.
+    async fn verify_guard_carry(
+        &self,
+        checked: &CheckedMutation<'_, '_>,
+    ) -> Result<(), StoreFailure> {
+        let observed = checked.observed();
+        let carried = checked.guard_carried_lineages();
+        if carried.len() != checked.next().sources.len() {
+            return Err(corrupt());
+        }
+        if carried.is_empty() {
+            return Ok(());
+        }
+
+        let context = checked.effect_context().ok_or_else(super::unsupported)?;
+        let previous_guard = self
+            .selected_guard_snapshot_record(observed)
+            .await?
+            .ok_or_else(corrupt)?;
+        let previous_bytes = previous_guard.bytes().ok_or_else(corrupt)?;
+        let previous_digest = digest(previous_bytes);
+        if observed.state().guard != Some(previous_digest)
+            || !context.selected_reads().iter().any(|read| {
+                read.record().path() == previous_guard.path()
+                    && read.record().bytes() == previous_guard.bytes()
+                    && read.owner() == observed.configured_operator_uid()
+            })
+        {
+            return Err(corrupt());
+        }
+
+        let guard = digest(checked.guard_snapshot());
+        for (next_source, output) in checked.next().sources.iter().zip(carried) {
+            if next_source.name != output.previous().name
+                || next_source.digest != digest(output.lineage())
+                || !observed.state().sources.contains(output.previous())
+            {
+                return Err(corrupt());
+            }
+            let previous = self
+                .selected_lineage_record(observed, &next_source.name)
+                .await?
+                .ok_or_else(corrupt)?;
+            let bytes = previous.bytes().ok_or_else(corrupt)?;
+            if digest(bytes) != output.previous().digest
+                || !context.selected_reads().iter().any(|read| {
+                    read.record().path() == previous.path()
+                        && read.record().bytes() == previous.bytes()
+                        && read.owner() == observed.configured_operator_uid()
+                })
+            {
+                return Err(corrupt());
+            }
+
+            let mut expected = CheckedLineage::decode(bytes).map_err(|_| corrupt())?;
+            let fresh = CheckedLineage::decode(output.lineage()).map_err(|_| corrupt())?;
+            let key = format!("{}:record", next_source.name);
+            let record = observed
+                .logical()
+                .get(&key)
+                .and_then(Option::as_deref)
+                .ok_or_else(corrupt)?;
+            let record = RefRecord::decode(record).map_err(|_| corrupt())?;
+            if expected.source_name != next_source.name
+                || expected.source != record
+                || expected.guard_digest != previous_digest
+                || expected.loss_generation != observed.state().loss_generation
+            {
+                return Err(corrupt());
+            }
+            expected
+                .check_guard_snapshot(previous_bytes)
+                .map_err(|_| corrupt())?;
+            expected.guard_digest = guard;
+            if fresh != expected {
+                return Err(corrupt());
+            }
+            fresh
+                .check_guard_snapshot(checked.guard_snapshot())
+                .map_err(|_| corrupt())?;
+        }
+        Ok(())
     }
 
     async fn verify_candidate_change(

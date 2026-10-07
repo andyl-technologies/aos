@@ -477,6 +477,20 @@ pub(crate) async fn publish_checked<F: LocalFs + BucketBinding>(
             )
             .await?;
     }
+    for carried in checked.guard_carried_lineages() {
+        checked.recheck_before_slot()?;
+        let lineage = carried.lineage();
+        frame
+            .install(
+                fs,
+                &control,
+                &format!("publication/lineage/{}", hex(&digest(lineage))),
+                lineage,
+                FencePolicy::ProtectedRecord { owner },
+                Mutability::Immutable,
+            )
+            .await?;
+    }
     let nonce: [u8; 32] = fs
         .random_bytes(32)
         .await
