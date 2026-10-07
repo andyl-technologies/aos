@@ -482,6 +482,7 @@
   bootstrapControls = writeFixture "hub-hybrid-fleet-bootstrap-controls" (builtins.readFile ./_hub-direct-controls.py);
   bootstrapFlow = writeFixture "hub-hybrid-fleet-bootstrap-flow" (builtins.readFile ./_hub-direct-bootstrap.py);
   authorityFlow = writeFixture "hub-hybrid-fleet-authority-flow" (builtins.readFile ./_hub-direct-authority.py);
+  mixedAdmission = writeFixture "hub-hybrid-fleet-mixed-admission" (builtins.readFile ./_hub-direct-mixed-admission.py);
   qualificationFlow = writeFixture "hub-hybrid-fleet-qualification-flow" (builtins.readFile ./_hub-direct-qualification.py);
   qualificationDriver = writeFixture "hub-hybrid-fleet-qualification-driver" (builtins.readFile ../../pkgs/tools/aos-hub-direct-qualification.mjs);
   issuerClockReviewer = writeFixture "hub-hybrid-fleet-issuer-clock-reviewer" (builtins.readFile ./_hub-direct-issuer-clock-reviewer.py);
@@ -672,6 +673,7 @@
         bootstrapControls
         bootstrapFlow
         authorityFlow
+        mixedAdmission
         qualificationFlow
         qualificationDriver
         managedFixtureModules
@@ -810,6 +812,7 @@ in {
       + builtins.readFile ./_hub-direct-shared-controls.py
       + builtins.readFile ./_hub-direct-prebody.py
       + builtins.readFile ./_hub-direct-publisher.py
+      + builtins.readFile ./_hub-direct-mixed-admission.py
       + builtins.readFile ./_hub-direct-qualification.py
       + builtins.readFile ./_hub-direct-queue-restart.py
       + builtins.readFile ./_hub-direct-runtime-observations.py

@@ -42,7 +42,7 @@ const canonicalHash = value => hash(Buffer.from(JSON.stringify(sorted(value))));
 async function privateFile(path, maximum = 262144) {
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   const stat = await handle.stat();
-  if (!stat.isFile() || stat.uid !== process.getuid() || (stat.mode & 0o077) !== 0 || stat.size > maximum) {
+  if (!stat.isFile() || stat.uid !== process.getuid() || (stat.mode & 0o077) !== 0 || stat.size > maximum || stat.nlink !== 1) {
     await handle.close();
     throw new Error("Private inputs must be owner-only regular files within bounds.");
   }
@@ -315,6 +315,109 @@ async function inspectOriginalObjects(objectIds, { deadline = Infinity, maximumP
   return receipts;
 }
 
+async function waitForMixedRelease(ready, stage = "admission") {
+  const selectedFile = resolve(required("--mixed-admission-file"));
+  const file = stage === "arm" ? resolve(output, "..", "mixed-arm-release.json") : selectedFile;
+  if (selectedFile !== resolve(output, "..", "mixed-admission-release.json")) {
+    throw new Error("Mixed release must use the exact owned invocation path.");
+  }
+  const deadline = Date.now() + 35000;
+  await save(stage === "arm" ? "mixed-arm-ready.json" : "mixed-admission-ready.json", ready);
+  while (Date.now() < deadline) {
+    if (cancelled) throw new Error("Cancelled before mixed metadata admission.");
+    let bytes;
+    try { bytes = await privateFile(file, 16384); } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      await new Promise(done => setTimeout(done, 25));
+      continue;
+    }
+    const release = JSON.parse(bytes);
+    if (bytes.toString("utf8") !== JSON.stringify(sorted(release))) {
+      throw new Error("Mixed release must have the exact compact canonical source encoding.");
+    }
+    if (Object.keys(release).sort().join(",") !== "heldReceiptSha256,readySha256,runId,version"
+        || release.version !== 1 || release.runId !== runId
+        || release.readySha256 !== canonicalHash(ready)
+        || !/^[a-f0-9]{64}$/.test(release.heldReceiptSha256)) {
+      throw new Error("Mixed owner release differs from this exact original Begin.");
+    }
+    await save(stage === "arm" ? "mixed-arm-release-observed.json" : "mixed-admission-release-observed.json", release);
+    return;
+  }
+  throw new Error("Mixed admission owner deadline elapsed; effects remain unknown.");
+}
+
+async function enqueueMixedWithAdmission(bulkObjects, metadataObjects) {
+  if (!bulkObjects.length || !metadataObjects.length) throw new Error("Mixed admission requires both classes.");
+  const first = bulkObjects[0];
+  const closedCapture = await control({ kind: "inspect", objectId: first.objectId, afterAttempt: 0 });
+  const closedPage = closedCapture.result;
+  if (closedPage.objectId !== first.objectId || canonicalHash(closedPage.original) !== canonicalHash(original)
+      || !closedPage.closed?.job || closedPage.attempts.length !== 0 || closedPage.nextAttempt !== null) {
+    throw new Error("Mixed source requires a fresh closed job before any verification Enqueue.");
+  }
+  const cohort = { version: 1, cohortNonce: randomBytes(32).toString("hex"), runId,
+    sourceDigest: identity.sourceDigest, scriptVersion: identity.scriptVersion,
+    originalSha256: canonicalHash(original), objectId: first.objectId,
+    expectedSourceSha256: first.expectedSha256, expectedSourceBytes: first.byteSize,
+    closedSha256: canonicalHash(closedPage.closed), jobProjectionSha256: canonicalHash(closedPage.closed.job),
+    inspectionSha256: closedCapture.responseSha256, inspectionFile: closedCapture.captureFile };
+  await waitForMixedRelease(cohort, "arm");
+  await control({ kind: "enqueue", objectIds: [first.objectId] });
+  const deadline = Date.now() + 35000;
+  let pending;
+  while (Date.now() < deadline) {
+    if (cancelled) throw new Error("Cancelled before observed bulk Begin.");
+    const capture = await control({ kind: "inspect", objectId: first.objectId, afterAttempt: 0 });
+    const page = capture.result;
+    if (page.objectId !== first.objectId || canonicalHash(page.original) !== canonicalHash(original)
+        || page.closed === null || !Array.isArray(page.attempts) || page.attempts.length > 1
+        || page.nextAttempt !== null && page.nextAttempt !== 1) {
+      throw new Error("Mixed bulk inspection differs from its original.");
+    }
+    const record = page.attempts[0];
+    if (record?.receipt) throw new Error("Bulk finished before mixed admission rendezvous.");
+    if (record) {
+      if (!/^[a-f0-9]{64}$/.test(record.attempt.nonce)) {
+        throw new Error("Mixed bulk Begin identity differs.");
+      }
+      // Begin precedes Capacity::acquire. The owner must separately join the
+      // exact held provider GET, which the actual integrity path reaches only
+      // after bulk capacity admission; Begin alone grants no release.
+      pending = { version: 1, cohortNonce: cohort.cohortNonce, runId, sourceDigest: identity.sourceDigest,
+        scriptVersion: identity.scriptVersion, originalSha256: canonicalHash(original),
+        objectId: first.objectId, expectedSourceSha256: first.expectedSha256,
+        expectedSourceBytes: first.byteSize, closedSha256: canonicalHash(page.closed),
+        jobProjectionSha256: canonicalHash(page.closed.job),
+        attemptNonce: record.attempt.nonce, attemptSha256: canonicalHash(record.attempt),
+        inspectionSha256: capture.responseSha256, inspectionFile: capture.captureFile };
+      break;
+    }
+    await new Promise(done => setTimeout(done, 25));
+  }
+  if (!pending) throw new Error("No unfinished bulk Begin before mixed cutoff.");
+  if (pending.closedSha256 !== cohort.closedSha256 || pending.jobProjectionSha256 !== cohort.jobProjectionSha256) {
+    throw new Error("Mixed Begin closed job changed after arming.");
+  }
+  await waitForMixedRelease(pending);
+  const metadata = metadataObjects[0];
+  // Preserve an actual object slot for this admission while the first bulk
+  // is held. Remaining originals still run once after the real metadata proof.
+  await control({ kind: "enqueue", objectIds: [metadata.objectId] });
+  await waitForObjects([metadata.objectId]);
+  const verified = await inspectOriginalObjects([metadata.objectId], { deadline: Date.now() + 30000, maximumPages: 128 });
+  const positive = verified.filter(item => item.receipt.verificationReplayed === false
+    && Number(item.receipt.objects.bulkActive) > 0
+    && item.receipt.providerAfter.metadataAdmissionsDuringBulk > item.receipt.attempt.providerBefore.metadataAdmissionsDuringBulk);
+  if (positive.length !== 1) throw new Error("Metadata lacks actual fresh admission under bulk.");
+  if (bulkObjects.length > 1) {
+    await control({ kind: "enqueue", objectIds: bulkObjects.slice(1).map(item => item.objectId) });
+  }
+  await save("mixed-admission-metadata-finish.json", { version: 1, runId,
+    readySha256: canonicalHash(pending), record: positive[0] });
+  await waitForObjects(bulkObjects.map(item => item.objectId));
+}
+
 async function waitForObjects(objectIds) {
   const selected = new Set(objectIds), deadline = Date.now() + wait * 1000;
   if (!selected.size || selected.size !== objectIds.length) {
@@ -401,8 +504,14 @@ try {
     const mixedObjects = bulkObjects.length ? [...bulkObjects, ...metadataObjects.slice(0, 1)] : [];
     if (mixedObjects.length) {
       const ids = mixedObjects.map(object => object.objectId);
-      await control({ kind: "enqueue", objectIds: ids });
-      await waitForObjects(ids);
+      if (options.has("--mixed-admission-file")) {
+        await enqueueMixedWithAdmission(bulkObjects, metadataObjects);
+      } else if (metadataObjects.length) {
+        throw new Error("Mixed qualification requires the explicitly wired source-owned admission barrier.");
+      } else {
+        await control({ kind: "enqueue", objectIds: ids });
+        await waitForObjects(ids);
+      }
     }
     const pureMetadata = bulkObjects.length ? metadataObjects.slice(1) : metadataObjects;
     if (pureMetadata.length) {

@@ -5,6 +5,8 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, createHmac } from "node:crypto";
 import { createServer } from "node:https";
+import { createServer as createHttpServer, request as httpRequest } from "node:http";
+import { createResponseHold } from "../../tests/fleet/_hub-direct-provider-response-hold.mjs";
 import { chmod, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
@@ -27,6 +29,11 @@ const keyFile = join(root, "control.key");
 await writeFile(keyFile, secret, { mode: 0o600 });
 const payload = Buffer.alloc(16 * 1024 * 1024 + 17, 0x36), payloadFile = join(root, "payload");
 await writeFile(payloadFile, payload, { mode: 0o600 });
+// These are protocol bytes, not a claim of narinfo semantic verification.
+const metadataPayload = Buffer.alloc(256 * 1024, 0x6d), metadataFile = join(root, "metadata-payload");
+await writeFile(metadataFile, metadataPayload, { mode: 0o600 });
+const sourceBytes = object => object.metadata ? metadataPayload : payload;
+const uploadedByObject = new Map(), uploadRoutes = new Set();
 const digest = bytes => createHash("sha256").update(bytes).digest("hex");
 // Production Grant replies pass through serde_json::Value's sorted maps.
 const sorted = value => Array.isArray(value) ? value.map(sorted)
@@ -37,7 +44,123 @@ const placement = { placementId: "1", placementFingerprint: "bb".repeat(32),
   bindingResourceVersion: "5", bindingWriteRevision: "6", profileFingerprint: "dd".repeat(32),
   privatePolicyDigest: "ee".repeat(32), checksumAlgorithm: "md5" };
 const mac = (domain, bytes) => createHmac("sha256", secret).update("aos-storage-work-v1\0").update(domain).update(bytes).digest("hex");
+const baselineDriver = process.argv[6];
 let scenario, child, origin, original, uploaded, receipt;
+let mixedFixture = null;
+const mixedEntries = new Map();
+let mixedDispatches = 0, mixedBulkActive = 0, mixedMetadataAdmissions = 0;
+
+async function verifyMixedObject(object) {
+  const before = { isolateId: "driver-isolate", dispatches: mixedDispatches,
+    metadataAdmissionsDuringBulk: mixedMetadataAdmissions };
+  const attempt = { nonce: digest(Buffer.from(object.objectId + "-attempt")),
+    startedAtMillis: String(Date.now()), providerBefore: before };
+  const entry = mixedEntries.get(object.objectId);
+  entry.attempt = attempt;
+  if (!object.metadata) mixedBulkActive += 1;
+  else if (mixedBulkActive > 0) mixedMetadataAdmissions += 1;
+  mixedDispatches += 1;
+  const observedObjects = { aggregateActive: mixedBulkActive + Number(object.metadata),
+    bulkActive: mixedBulkActive, metadataActive: Number(object.metadata) };
+  const observed = await new Promise((done, reject) => {
+    const outgoing = httpRequest({ host: "127.0.0.1", port: mixedFixture.listenerPort,
+      path: object.metadata ? "/metadata-payload" : "/bulk-payload", agent: false,
+      headers: { host: "s3.fleet.test", "if-match": '"actual-etag"',
+        authorization: "AWS4-HMAC-SHA256 Credential=test/20261002/garage/s3/aws4_request, "
+          + "SignedHeaders=host;if-match;x-amz-content-sha256;x-amz-date, Signature=" + "a".repeat(64),
+        "x-amz-date": "20261002T010000Z", "x-amz-content-sha256": digest(Buffer.alloc(0)) } }, incoming => {
+      assert.equal(incoming.statusCode, 200);
+      let byteSize = 0;
+      const hash = createHash("sha256");
+      incoming.on("data", block => { byteSize += block.length; hash.update(block); });
+      incoming.once("error", reject);
+      incoming.once("end", () => done({ sha256: hash.digest("hex"), byte_size: String(byteSize) }));
+    });
+    outgoing.once("error", reject); outgoing.end();
+  });
+  const expected = sourceBytes(object);
+  assert.equal(object.expectedSha256, digest(expected));
+  assert.equal(object.byteSize, String(expected.length));
+  assert.deepEqual(observed, { sha256: digest(expected), byte_size: String(expected.length) });
+  entry.receipt = { attempt, finishedAtMillis: String(Date.now()), queueName: object.metadata ? "driver-metadata" : "driver-bulk",
+    messageId: object.objectId, providerAfter: { isolateId: "driver-isolate", dispatches: mixedDispatches,
+      peakActive: 2, metadataAdmissionsDuringBulk: mixedMetadataAdmissions }, objects: observedObjects,
+    verificationReplayed: false, proof: observed };
+  if (!object.metadata) mixedBulkActive -= 1;
+}
+
+async function mixedPeer(action) {
+  if (action.kind === "enqueue") {
+    const objects = original.objects.filter(object => action.objectIds.includes(object.objectId));
+    if (scenario === "mixed-baseline" && objects.length === 2) {
+      // Actual old producer batch reaches a controlled metadata-first scheduler.
+      await verifyMixedObject(objects.find(object => object.metadata));
+      mixedFixture.tasks.push(verifyMixedObject(objects.find(object => !object.metadata)));
+    } else for (const object of objects) mixedFixture.tasks.push(verifyMixedObject(object));
+    return {};
+  }
+  if (action.kind === "status") return { original, objects: original.objects.map(object => ({
+    objectId: object.objectId, closed: true, verified: mixedEntries.get(object.objectId).receipt !== null,
+    attemptCount: mixedEntries.get(object.objectId).attempt ? 1 : 0 })) };
+  const entry = mixedEntries.get(action.objectId);
+  return { original, objectId: action.objectId, closed: entry.closed,
+    attempts: action.afterAttempt === 0 && entry.attempt ? [{ attempt: entry.attempt, receipt: entry.receipt }] : [], nextAttempt: null };
+}
+
+async function pumpMixed(output) {
+  let arm, ready, resumed = false;
+  const timeout = Date.now() + 15000;
+  const json = async name => {
+    try { return JSON.parse(await readFile(join(output, name))); }
+    catch (error) { if (error.code !== "ENOENT") throw error; return null; }
+  };
+  const save = (name, value) => writeFile(resolve(output, "..", name), JSON.stringify(sorted(value)), { mode: 0o600, flag: "wx" });
+  while (Date.now() < timeout) {
+    const arming = await json("mixed-arm-ready.json");
+    if (arming && !arm) {
+      arm = { version: 1, kind: "arm_mixed_read", cohortNonce: arming.cohortNonce,
+        bindings: Object.fromEntries(["runId", "objectId", "originalSha256", "closedSha256", "jobProjectionSha256"].map(key => [key, arming[key]])),
+        selection: { target: "/bulk-payload", host: "s3.fleet.test", etag: '"actual-etag"' },
+        expectedSourceSha256: digest(payload), expectedSourceBytes: String(payload.length),
+        expectedPrefixSha256: digest(payload.subarray(0, 65536)), selectionContextSha256: digest(Buffer.from(JSON.stringify(sorted(arming)))),
+        selectionDeadlineUnixMillis: Date.now() + 15000, pauseMillis: 15000 };
+      assert.equal((await mixedFixture.listener.command(arm)).status, "armed");
+      await save("mixed-arm-release.json", { version: 1, runId: arming.runId,
+        readySha256: digest(Buffer.from(JSON.stringify(sorted(arming)))), heldReceiptSha256: digest(Buffer.from(JSON.stringify(arm))) });
+    }
+    const candidate = await json("mixed-admission-ready.json");
+    const command = arm && { version: 1, kind: "mixed_state", cohortNonce: arm.cohortNonce, bindings: arm.bindings };
+    if (candidate && !ready) {
+      const state = await mixedFixture.listener.command(command);
+      if (state.state === "held") {
+        assert.equal(mixedEntries.get(candidate.objectId).attempt.nonce, candidate.attemptNonce);
+        assert.equal(mixedBulkActive, 1);
+        assert.equal(state.receipt.downstreamOfferedBytes, "0");
+        await mixedFixture.listener.command({ ...command, kind: "bind_mixed_begin", beginNonce: candidate.attemptNonce });
+        await save("mixed-admission-release.json", { version: 1, runId: candidate.runId,
+          readySha256: digest(Buffer.from(JSON.stringify(sorted(candidate)))), heldReceiptSha256: state.receiptFile.sha256 });
+        ready = candidate;
+      }
+    }
+    const finish = await json("mixed-admission-metadata-finish.json");
+    if (finish && !resumed) {
+      const state = await mixedFixture.listener.command(command);
+      assert.equal(state.state, "held");
+      assert.equal(finish.record.receipt.objects.bulkActive, 1);
+      assert.equal(finish.record.object.metadata, true);
+      assert.equal(finish.record.receipt.proof.sha256, digest(metadataPayload));
+      assert.equal(finish.record.receipt.proof.byte_size, String(metadataPayload.length));
+      assert.equal((await mixedFixture.listener.command({ ...command, kind: "resume_mixed_read",
+        beginNonce: ready.attemptNonce, heldReceiptSha256: state.receiptFile.sha256,
+        metadataReceiptSha256: digest(Buffer.from(JSON.stringify(sorted(finish.record.receipt)))) })).status, "resume_dispatched");
+      resumed = true;
+    }
+    if (resumed && (await mixedFixture.listener.command(command)).state === "eof") return;
+    if (child.exitCode !== null) throw new Error("actual producer exited before mixed stream EOF");
+    await new Promise(done => setTimeout(done, 5));
+  }
+  throw new Error("controlled mixed pump deadline");
+}
 const calls = [], partOrder = [];
 const server = createServer({ cert: await readFile(cert), key: await readFile(privateKey) }, async (request, response) => {
   try {
@@ -45,11 +168,19 @@ const server = createServer({ cert: await readFile(cert), key: await readFile(pr
     for await (const chunk of request) chunks.push(chunk);
     const bytes = Buffer.concat(chunks);
     if (request.url.startsWith("/part/")) {
-      const number = Number(request.url.split("/").at(-1));
+      const match = /^\/part\/([a-f0-9]{64})\/([1-9][0-9]*)$/.exec(request.url);
+      assert.ok(match);
+      assert.equal(uploadRoutes.has(request.url), false);
+      uploadRoutes.add(request.url);
+      const object = original.objects.find(candidate => candidate.objectId === match[1]);
+      assert.ok(object);
+      const expected = sourceBytes(object), number = Number(match[2]);
       assert.equal(request.headers["content-length"], String(bytes.length));
       assert.equal(request.headers["content-md5"], createHash("md5").update(bytes).digest("base64"));
       const offset = (number - 1) * 8 * 1024 * 1024;
-      assert.equal(digest(bytes), digest(payload.subarray(offset, offset + bytes.length)));
+      assert.equal(bytes.length, Math.min(8 * 1024 * 1024, expected.length - offset));
+      assert.equal(digest(bytes), digest(expected.subarray(offset, offset + bytes.length)));
+      uploadedByObject.set(object.objectId, (uploadedByObject.get(object.objectId) ?? 0) + bytes.length);
       if (number === 1) await new Promise(done => setTimeout(done, 50));
       uploaded += bytes.length; partOrder.push(number);
       response.writeHead(200, { etag: `"part-${number}"` }); response.end(); return;
@@ -62,11 +193,17 @@ const server = createServer({ cert: await readFile(cert), key: await readFile(pr
     }
     if (scenario === "cancel" && action.kind === "clock") { child.kill("SIGTERM"); await new Promise(done => setTimeout(done, 30)); }
     let result = {}, responseStatus = 200;
-    switch (action.kind) {
+    if (scenario.startsWith("mixed-") && ["enqueue", "status", "inspect"].includes(action.kind)) {
+      result = await mixedPeer(action);
+    } else switch (action.kind) {
       case "start":
         original = { version: 1, runId: control.runId, sourceDigest: control.sourceDigest, scriptVersion: control.scriptVersion,
           deploymentId: "driver-test", publicOrigin: origin, executionKind: "hosted", objects: action.objects,
           bulkQueueName: "driver-bulk", metadataQueueName: "driver-metadata", material: { profile: { checksumAlgorithm: "md5" } } };
+        if (scenario.startsWith("mixed-")) for (const object of original.objects) {
+          mixedEntries.set(object.objectId, { attempt: null, receipt: null,
+            closed: { settlementMillis: "5", job: { objectId: object.objectId, fixture: "authenticated local peer only" } } });
+        }
         result = { original }; break;
       case "clock": result = { kind: "clock", observedAtMillis: String(Date.now()),
         uncertaintySeconds: scenario === "clock-wrong-uncertainty" ? "2" : "1", nonce: control.nonce }; break;
@@ -75,10 +212,12 @@ const server = createServer({ cert: await readFile(cert), key: await readFile(pr
       case "begin": break;
       case "grant": result = { grants: action.parts.map(part => ({ sessionId: "session", logicalFingerprint: "aa".repeat(32),
         placement,
-        grantId: "cc".repeat(32), grantRevision: "1", part, method: "PUT", url: `${origin}/part/${part.partNumber}`,
+        grantId: "cc".repeat(32), grantRevision: "1", part, method: "PUT", url: `${origin}/part/${action.objectId}/${part.partNumber}`,
         requiredHeaders: [{ name: "content-md5", value: part.checksum.value }] })) }; break;
       case "report": {
-        assert.equal(action.reports.length, 3);
+        const object = original.objects.find(candidate => candidate.objectId === action.objectId);
+        assert.ok(object);
+        assert.equal(action.reports.length, Math.ceil(sourceBytes(object).length / (8 * 1024 * 1024)));
         for (const report of action.reports) {
           const fields = Object.keys(placement);
           const part = report.observed.part;
@@ -98,7 +237,14 @@ const server = createServer({ cert: await readFile(cert), key: await readFile(pr
         }
         break;
       }
-      case "close": assert.equal(uploaded, payload.length); assert.equal(action.deferEnqueue, true); break;
+      case "close": {
+        const object = original.objects.find(candidate => candidate.objectId === action.objectId);
+        assert.ok(object);
+        assert.equal(uploadedByObject.get(object.objectId), sourceBytes(object).length);
+        if (!scenario.startsWith("mixed-")) assert.equal(uploaded, payload.length);
+        assert.equal(action.deferEnqueue, true);
+        break;
+      }
       case "enqueue": {
         if (scenario.startsWith("requeue-refused")) {
           responseStatus = 409;
@@ -147,15 +293,29 @@ await writeFile(identityFile, JSON.stringify({ sourceDigest: "ab".repeat(32), sc
 await writeFile(manifestFile, JSON.stringify({ provider: { kind: "managed" }, objects: [{ file: payloadFile, metadata: false }] }), { mode: 0o600 });
 async function run(name, mode, phase = "run") {
   scenario = mode; calls.length = 0; partOrder.length = 0; uploaded = 0; receipt = null;
+  uploadedByObject.clear(); uploadRoutes.clear();
   const output = join(root, name); await mkdir(output, { mode: 0o700 });
-  child = spawn(process.execPath, [driver, "--origin", origin, "--control-key-file", keyFile,
+  if (mode.startsWith("mixed-")) {
+    mixedEntries.clear(); mixedFixture.gets.clear();
+    mixedDispatches = 0; mixedBulkActive = 0; mixedMetadataAdmissions = 0;
+    await writeFile(manifestFile, JSON.stringify({ provider: { kind: "managed" }, objects: [
+      { file: payloadFile, metadata: false }, { file: metadataFile, metadata: true }] }), { mode: 0o600 });
+  }
+  child = spawn(process.execPath, [mode === "mixed-baseline" ? baselineDriver : driver, "--origin", origin, "--control-key-file", keyFile,
     "--identity-file", identityFile, "--manifest-file", manifestFile, "--output-dir", output,
-    "--wait-seconds", "0", ...(phase === "clock" ? ["--phase", "clock", "--run-id", "ef".repeat(32),
+    "--wait-seconds", mode.startsWith("mixed-") ? "15" : "0",
+    ...(mode === "mixed-barrier" ? ["--mixed-admission-file", resolve(output, "..", "mixed-admission-release.json")] : []), ...(phase === "clock" ? ["--phase", "clock", "--run-id", "ef".repeat(32),
       "--clock-uncertainty-seconds", "1"] : phase === "requeue"
       ? ["--phase", "requeue", "--run-id", original.runId] : [])],
     { env: { ...process.env, NODE_EXTRA_CA_CERTS: cert }, stdio: ["ignore", "pipe", "pipe"] });
+  let pumpError = null;
+  const pumping = mode === "mixed-barrier" ? pumpMixed(output).catch(error => {
+    pumpError = error; child.kill("SIGTERM");
+  }) : Promise.resolve();
   let logs = ""; child.stdout.on("data", bytes => { logs += bytes; }); child.stderr.on("data", bytes => { logs += bytes; });
   const exit = await new Promise((done, reject) => { child.once("error", reject); child.once("exit", done); });
+  await pumping;
+  if (pumpError) throw pumpError;
   await writeFile(join(root, `${name}.log`), logs, { mode: 0o600 });
   return { output, exit, logs };
 }
@@ -186,7 +346,7 @@ try {
   // real driver output. Only the guest transport is local to this regression.
   const retention = join(root, "retention"); await mkdir(retention, { mode: 0o700 });
   const collectorProgram = `
-import importlib.util, json, subprocess, sys
+import importlib.util, json, subprocess, sys, textwrap
 from pathlib import Path
 
 spec = importlib.util.spec_from_file_location('qualification_collector', sys.argv[1])
@@ -202,7 +362,15 @@ def local_guest_command(_worker, command, timeout=60):
         check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
     return result.stdout.decode()
 
+def local_guest_python(_worker, python, body, selected, timeout=60):
+    program = "import json\\nselected = json.loads(input())\\n" + textwrap.dedent(body)
+    result = subprocess.run([python, '-B', '-c', program],
+        input=json.dumps(selected).encode(), check=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+    return result.stdout.decode()
+
 module.private_guest_command = local_guest_command
+module.direct_guest_python = local_guest_python
 original = json.loads((Path(sys.argv[2]) / 'original.json').read_text())
 retained = module.retain_direct_qualification_files(None, sys.executable, sys.argv[2], original['runId'])
 assert any(item['name'] == '00010-expired-mutation-pending.json' for item in retained['files'])
@@ -210,9 +378,10 @@ assert retained['driverManifestPresent'] is True
 pending = Path(sys.argv[2]) / '00010-expired-mutation-pending.json'
 pending.rename(pending.with_name('00010-expired_mutation-pending.json'))
 try:
-    module.retain_direct_qualification_files(None, sys.executable, sys.argv[2], original['runId'])
+    module.retain_direct_qualification_files(None, sys.executable, sys.argv[2], original['runId'],
+        host_directory=retained['directory'])
 except subprocess.CalledProcessError as error:
-    assert b'qualification evidence inventory exceeds bounds' in error.stderr
+    assert b'qualification evidence filename refused' in error.stderr
 else:
     raise AssertionError('collector accepted an underscore evidence filename')
 finally:
@@ -315,6 +484,41 @@ print('PASS actual driver evidence accepted; old underscore filename refused by 
   assert.ok((await readdir(unknown.output)).some(name => name.endsWith("-unknown.json")));
   const cancelled = await run("cancelled", "cancel"); assert.notEqual(cancelled.exit, 0);
   assert.equal(calls.includes("begin"), false); assert.equal(calls.includes("grant"), false);
+  // Both runs use the actual producer and real loopback body streams.
+  // The historical producer is an explicit immutable source input, never a
+  // retagged qualification artifact. No rows are manually constructed.
+  assert.ok(baselineDriver?.startsWith("/nix/store/"));
+  const backend = createHttpServer((request, response) => {
+    assert.ok(request.url === "/bulk-payload" || request.url === "/metadata-payload");
+    assert.equal(request.method, "GET");
+    assert.equal(request.headers["if-match"], '"actual-etag"');
+    mixedFixture.gets.set(request.url, (mixedFixture.gets.get(request.url) ?? 0) + 1);
+    const bytes = request.url === "/metadata-payload" ? metadataPayload : payload;
+    response.writeHead(200, { etag: '"actual-etag"', "content-length": String(bytes.length) });
+    response.end(bytes);
+  });
+  await new Promise(done => backend.listen(0, "127.0.0.1", done));
+  const holdRoot = join(root, "mixed-holder"); await mkdir(holdRoot, { mode: 0o700 });
+  const listener = await createResponseHold(holdRoot, { listen: 0, upstream: backend.address().port });
+  mixedFixture = { listener, listenerPort: Number(listener.ready.listenAddress.split(":")[1]), tasks: [], gets: new Map() };
+  try {
+    const before = await run("mixed-baseline", "mixed-baseline");
+    assert.equal(before.exit, 0);
+    assert.equal(JSON.parse(await readFile(join(before.output, "mixed-load-raw.json"))).observations.samples.length, 0);
+    await Promise.all(mixedFixture.tasks);
+    assert.deepEqual(Object.fromEntries(mixedFixture.gets), { "/metadata-payload": 1, "/bulk-payload": 1 });
+    mixedFixture.tasks = [];
+    const after = await run("mixed-barrier", "mixed-barrier");
+    assert.equal(after.exit, 0);
+    await Promise.all(mixedFixture.tasks);
+    assert.deepEqual(Object.fromEntries(mixedFixture.gets), { "/bulk-payload": 1, "/metadata-payload": 1 });
+    const actual = JSON.parse(await readFile(join(after.output, "mixed-load-raw.json")));
+    assert.equal(actual.observations.samples.length, 1);
+    assert.ok(Number(actual.observations.samples[0].bulkActive) > 0);
+    assert.ok(Number(actual.observations.samples[0].metadataAdmissionsAfter) > Number(actual.observations.samples[0].metadataAdmissionsBefore));
+  } finally {
+    await listener.close(); backend.closeAllConnections(); await new Promise(done => backend.close(done));
+  }
   await chmod(keyFile, 0o644);
   const insecure = await run("insecure-key", "positive"); assert.notEqual(insecure.exit, 0); assert.equal(calls.length, 0);
   process.stdout.write(`PASS: actual HTTPS driver/stream/authentication/unknown/cancellation/private-file tests; retained ${root}\n`);

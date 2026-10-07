@@ -386,7 +386,7 @@ class EarlyProcessReceipt(unittest.TestCase):
             previous = Path.cwd()
             os.chdir(directory)
             run_id = "d" * 64
-            root = "/var/lib/hybrid-worker/external-oci/" + "e" * 32 + "/operator"
+            root = "/var/lib/hybrid-worker/operator"
             receipt = {"runId": run_id, "exitCode": 1, "timedOut": False,
                 "guestDirectory": root + "/prequalification-" + run_id}
             calls = []
@@ -422,14 +422,18 @@ class EarlyProcessReceipt(unittest.TestCase):
                 raise TimeoutError("controlled export interruption")
             try:
                 with patch.object(qualification.os, "urandom", return_value=bytes.fromhex(run_id)), \
-                        patch.object(qualification, "private_guest_command", return_value=json.dumps(receipt), create=True), \
+                        patch.object(qualification, "run_mixed_prequalification", return_value=receipt, create=True) as dispatch, \
                         patch.object(qualification, "direct_guest_python", read_output, create=True), \
                         patch.object(qualification, "retain_direct_qualification_files", retain):
                     with self.assertRaises(TimeoutError):
                         qualification.run_direct_prequalification(None, sys.executable, "unused-node", "unused-driver",
                             "https://fixture.test", "unused-key", "unused-identity", {},
                             [{"file": "/controlled/bulk", "metadata": False}] * 3,
-                            [{"file": "/controlled/metadata", "metadata": True}] * 4, operator_root=root)
+                            [{"file": "/controlled/metadata", "metadata": True}] * 4, operator_root=root,
+                            mixed_admission={"s3": None, "tools": {}, "identity": {}})
+                dispatch.assert_called_once()
+                self.assertEqual(dispatch.call_args.args[3], receipt["guestDirectory"])
+                self.assertEqual(dispatch.call_args.args[4], run_id)
                 self.assertEqual(calls, ["stdout.log", "stderr.log", "inventory"])
                 destination = qualification.qualification_retention_directory(run_id)
                 self.assertEqual(json.loads((destination / "fleet-process.json").read_bytes()), receipt)
@@ -565,6 +569,20 @@ class WorkerLogRetention(unittest.TestCase):
         unknown = self.observe()
         self.assertEqual(unknown, {"state": "unknown", "category": "worker_log_observation_unavailable"})
         self.assertNotIn("synthetic private", json.dumps(unknown))
+
+
+class ExplicitMixedCaller(unittest.TestCase):
+    def test_unwired_main_and_paired_callers_fail_before_guest_effect(self):
+        bulk = [{"file": "/private/bulk", "metadata": False}] * 3
+        metadata = [{"file": "/private/metadata", "metadata": True}] * 4
+        with self.assertRaisesRegex(ValueError, "explicitly owned mixed"):
+            qualification.run_direct_prequalification(None, "/nix/store/python", "/nix/store/node", "/nix/store/driver",
+                "https://worker.fleet.test", "/private/control", "/private/identity", {}, bulk, metadata)
+        with self.assertRaisesRegex(ValueError, "paired qualification"):
+            qualification.run_direct_prequalification(None, "/nix/store/python", "/nix/store/node", "/nix/store/driver",
+                "https://worker.fleet.test", "/private/control", "/private/identity", {}, bulk, metadata,
+                operator_root="/var/lib/hybrid-worker/external-oci/" + "a" * 32 + "/operator",
+                mixed_admission={"s3": None, "tools": {}, "identity": {}})
 
 
 if __name__ == "__main__":

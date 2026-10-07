@@ -233,6 +233,142 @@ export async function createResponseHold(root, ports = { listen: 3902, upstream:
   // the later small-body calibration or verification-timeout selection.
   let queuePause = null;
 
+  // Two independent main qualification cohorts (preflight and final) share
+  // this owner. Their consumed nonces remain recorded; no pause is rearmed.
+  const mixedCohorts = new Map();
+
+  function endMixed(selection, state, cause) {
+    if (['eof', 'cutoff', 'disconnected', 'refused', 'cancelled'].includes(selection.state)) return;
+    selection.state = state;
+    selection.terminalCause = cause;
+    selection.endedAtUnixMillis = Date.now();
+    selection.wake?.();
+    if (state !== 'eof') selection.cancel?.();
+  }
+
+
+  async function persistMixedTerminal(selection) {
+    if (selection.terminalPromise) return selection.terminalPromise;
+    if (!['eof', 'cutoff', 'disconnected', 'refused', 'cancelled'].includes(selection.state)) return;
+    const arm = selection.arm;
+    selection.terminalPromise = (async () => {
+      selection.terminalFile = await retain(root, `mixed-${arm.cohortNonce}-terminal.json`, encode({
+        version: 1, cohortNonce: arm.cohortNonce, bindings: arm.bindings,
+        heldReceiptFile: selection.receiptFile, beginNonce: selection.beginNonce,
+        metadataReceiptSha256: selection.metadataReceiptSha256, resumeAtUnixMillis: selection.resumeAtUnixMillis,
+        state: selection.state, terminalCause: selection.terminalCause,
+        endedAtUnixMillis: selection.endedAtUnixMillis, cutoffUnixMillis: selection.selectedAtUnixMillis === undefined ? null : selection.selectedAtUnixMillis + arm.pauseMillis,
+        upstreamComplete: selection.upstreamComplete, downstreamOfferedBytes: String(selection.offeredBytes),
+        remoteDrain: null }));
+    })();
+    return selection.terminalPromise;
+  }
+
+  async function pauseMixedRead(selection, response, reply, identity) {
+    const arm = selection.arm;
+    selection.state = 'receiving_prefix';
+    selection.cancel = () => { reply.destroy(); response.destroy(); };
+    const disconnected = () => {
+      if (!response.writableFinished) endMixed(selection, 'disconnected', 'downstream_close');
+    };
+    const upstreamError = () => endMixed(selection, 'disconnected', 'upstream_error');
+    const upstreamAborted = () => endMixed(selection, 'disconnected', 'upstream_aborted');
+    response.once('close', disconnected);
+    reply.once('error', upstreamError);
+    reply.once('aborted', upstreamAborted);
+    try {
+      requireFact(reply.statusCode === 200 && header(reply.rawHeaders, 'etag') === arm.selection.etag
+        && header(reply.rawHeaders, 'content-length') === arm.expectedSourceBytes
+        && header(reply.rawHeaders, 'transfer-encoding') === null,
+      'mixed upstream incarnation or framing differs');
+      const prefix = await new Promise((resolve_, reject) => {
+        const blocks = [];
+        let size = 0;
+        const clean = () => {
+          reply.off('readable', read);
+          reply.off('error', failed);
+          reply.off('end', ended);
+          reply.off('close', ended);
+        };
+        const failed = error => { clean(); reject(error); };
+        const ended = () => failed(new Error('mixed prefix ended early'));
+        const read = () => {
+          while (size < BODY_BOUND) {
+            const block = reply.read(BODY_BOUND - size);
+            if (block === null) break;
+            blocks.push(block);
+            size += block.length;
+          }
+          if (size === BODY_BOUND) { clean(); resolve_(Buffer.concat(blocks)); }
+        };
+        reply.on('readable', read);
+        reply.once('error', failed);
+        reply.once('end', ended);
+        reply.once('close', ended);
+        read();
+      });
+      requireFact(selection.state === 'receiving_prefix' && !reply.complete && !reply.readableEnded
+        && sha(prefix) === arm.expectedPrefixSha256, 'mixed prefix or stream lifetime differs');
+      const prefixFile = await retain(root, `mixed-${arm.cohortNonce}-prefix.private`, prefix);
+      selection.receipt = { version: 1, cohortNonce: arm.cohortNonce,
+        bindings: arm.bindings, identity,
+        owner: { pid: ready.pid, startTicks: ready.startTicks, ownerUid: ready.ownerUid,
+          configurationSha256: ready.configurationSha256, listenerSourceSha256: ready.listenerSourceSha256,
+          listenAddress: ready.listenAddress, upstreamAddress: ready.upstreamAddress },
+        selectionContextSha256: arm.selectionContextSha256,
+        sourceSha256: arm.expectedSourceSha256, sourceBytes: arm.expectedSourceBytes, prefixFile,
+        selectedAtUnixMillis: selection.selectedAtUnixMillis, heldAtUnixMillis: Date.now(),
+        cutoffUnixMillis: selection.selectedAtUnixMillis + arm.pauseMillis,
+        upstreamComplete: false, downstreamOfferedBytes: '0', remoteDrain: null };
+      selection.receiptFile = await retain(root, `mixed-${arm.cohortNonce}-held.json`, encode(selection.receipt));
+      requireFact(selection.state === 'receiving_prefix'
+        && Date.now() < selection.receipt.cutoffUnixMillis, 'mixed cutoff reached during retention');
+      selection.state = 'held';
+      await new Promise(resolve_ => { selection.wake = resolve_; });
+      selection.wake = null;
+      requireFact(selection.state === 'resuming' && Date.now() < selection.receipt.cutoffUnixMillis,
+        'mixed stream was not resumed before original cutoff');
+      response.writeHead(reply.statusCode, reply.rawHeaders);
+      const offer = async block => {
+        requireFact(selection.state === 'resuming'
+          && Date.now() < selection.receipt.cutoffUnixMillis
+          && selection.offeredBytes + block.length <= Number(arm.expectedSourceBytes),
+        'mixed stream exceeded original length or cutoff');
+        const accepted = response.write(block);
+        selection.offeredBytes += block.length;
+        if (!accepted) await new Promise((resolve_, reject) => {
+          const cleanup = () => { response.off('drain', drained); response.off('close', closed_); response.off('error', failed); };
+          const drained = () => { cleanup(); resolve_(); };
+          const failed = error => { cleanup(); reject(error); };
+          const closed_ = () => failed(new Error('mixed downstream closed under backpressure'));
+          response.once('drain', drained); response.once('close', closed_); response.once('error', failed);
+        });
+      };
+      await offer(prefix);
+      // The paused upstream is the original request. Slice bounded writes and
+      // await downstream pressure; no replacement GET or object-sized buffer.
+      for await (const block of reply) {
+        for (let offset = 0; offset < block.length; offset += BODY_BOUND) {
+          await offer(block.subarray(offset, offset + BODY_BOUND));
+        }
+      }
+      requireFact(reply.complete && reply.readableEnded && selection.state === 'resuming'
+        && selection.offeredBytes === Number(arm.expectedSourceBytes), 'mixed stream lacks exact upstream EOF');
+      selection.upstreamComplete = true;
+      response.end();
+      endMixed(selection, 'eof', 'upstream_eof');
+    } catch {
+      endMixed(selection, 'refused', 'stream_refused');
+    } finally {
+      response.off('close', disconnected);
+      reply.off('error', upstreamError);
+      reply.off('aborted', upstreamAborted);
+      selection.cancel = null;
+      selection.wake = null;
+      await persistMixedTerminal(selection);
+    }
+  }
+
   function endQueuePause(reason, cause = reason) {
     if (!queuePause || ['released', 'cutoff', 'disconnected', 'refused'].includes(queuePause.state)) return;
     // Keep the first observed cause before cancellation triggers other callbacks.
@@ -483,6 +619,7 @@ export async function createResponseHold(root, ports = { listen: 3902, upstream:
       let identity = null;
       let requestFile = null;
       let candidate = null;
+      let mixed = null;
       try {
         const firstMode = arm?.kind === 'arm_first_response';
         let firstSelected = false;
@@ -507,7 +644,26 @@ export async function createResponseHold(root, ports = { listen: 3902, upstream:
             queueSelected = false;
           }
         }
-        if (queueSelected) {
+        if (request.method === 'GET') {
+          for (const cohort of mixedCohorts.values()) {
+            if (cohort.state === 'armed' && Date.now() < cohort.arm.selectionDeadlineUnixMillis
+              && objectTarget(request.url).target === cohort.arm.selection.target
+              && header(request.rawHeaders, 'host') === cohort.arm.selection.host
+              && header(request.rawHeaders, 'if-match') === cohort.arm.selection.etag
+              && header(request.rawHeaders, 'range') === null) {
+              requireFact(!mixed, 'mixed selection is ambiguous');
+              mixed = cohort;
+            }
+          }
+        }
+        if (mixed) {
+          kind = 'mixed';
+          mixed.state = 'selected';
+          mixed.selectedAtUnixMillis = Date.now();
+          requireFact(Buffer.byteLength(JSON.stringify(request.rawHeaders)) <= HEADER_BOUND,
+            'mixed selected headers exceed bound');
+          identity = requestIdentity(request);
+        } else if (queueSelected) {
           kind = 'queue';
           // Reserve before opening the upstream; no second GET can become
           // another selected delivery while the prefix is read.
@@ -554,10 +710,13 @@ export async function createResponseHold(root, ports = { listen: 3902, upstream:
         const upstream = upstreamRequest({ hostname: '127.0.0.1', port: ports.upstream,
           method: request.method, path: request.url, headers: request.rawHeaders,
           setHost: false, maxHeaderSize: HEADER_BOUND, agent: false });
-        const cutoff = kind === 'queue' ? setTimeout(() => endQueuePause('cutoff'),
+        const cutoff = kind === 'mixed' ? setTimeout(() => endMixed(mixed, 'cutoff', 'owner_cutoff'),
+          Math.max(1, mixed.selectedAtUnixMillis + mixed.arm.pauseMillis - Date.now()))
+          : kind === 'queue' ? setTimeout(() => endQueuePause('cutoff'),
           Math.max(1, queuePause.selectedAtUnixMillis + queuePause.arm.pauseMillis - Date.now()))
           : kind && kind !== 'first' ? setTimeout(() => upstream.destroy(new Error('selected upstream deadline expired')),
             Math.max(1, (arm?.holdUntilUnixMillis ?? Date.now() + 30000) - Date.now())) : null;
+        if (kind === 'mixed') mixed.cancel = () => { upstream.destroy(); response.destroy(); };
         if (kind === 'queue') queuePause.cancel = () => { upstream.destroy(); response.destroy(); };
         upstream.once('error', error => response.destroy(error));
         response.once('close', () => upstream.destroy());
@@ -565,8 +724,12 @@ export async function createResponseHold(root, ports = { listen: 3902, upstream:
           await new Promise((resolve_, reject) => {
           upstream.once('error', reject);
           upstream.once('response', reply => {
-            reply.once('end', () => { if (cutoff) clearTimeout(cutoff); });
-            if (kind === 'queue') {
+            // Mixed ownership includes the last downstream pressure wait.
+            // Upstream EOF cannot release that original timer early.
+            reply.once('end', () => { if (cutoff && kind !== 'mixed') clearTimeout(cutoff); });
+            if (kind === 'mixed') {
+              pauseMixedRead(mixed, response, reply, identity).then(resolve_, reject);
+            } else if (kind === 'queue') {
               pauseQueueRead(response, reply, identity).then(resolve_, reject);
             } else if (kind === 'first') {
               firstSelectedResponse(response, reply, identity, requestFile, candidate)
@@ -588,11 +751,13 @@ export async function createResponseHold(root, ports = { listen: 3902, upstream:
           if (cutoff) clearTimeout(cutoff);
         }
       } catch (error) {
-        if (kind === 'queue') endQueuePause('refused');
+        if (kind === 'mixed' && mixed) endMixed(mixed, 'refused', 'dispatch_refused');
+        else if (kind === 'queue') endQueuePause('refused');
         else if (kind) await event('selected_refused', { phase: kind, reason: error.message,
           downstreamOfferedBytes: '0', remoteDrain: null });
         response.destroy();
       } finally {
+        if (kind === 'mixed' && mixed) await persistMixedTerminal(mixed);
         if (kind === 'calibration' || kind === 'first') calibrating = false;
       }
     })();
@@ -601,6 +766,74 @@ export async function createResponseHold(root, ports = { listen: 3902, upstream:
   }
 
   async function command(value) {
+    if (value?.kind === 'arm_mixed_read') {
+      requireFact(closed(value, ['version', 'kind', 'cohortNonce', 'bindings', 'selection',
+        'expectedSourceSha256', 'expectedSourceBytes', 'expectedPrefixSha256',
+        'selectionContextSha256', 'selectionDeadlineUnixMillis', 'pauseMillis'])
+        && value.version === 1 && HEX.test(value.cohortNonce) && !mixedCohorts.has(value.cohortNonce)
+        && mixedCohorts.size < 2
+        && closed(value.bindings, ['runId', 'objectId', 'originalSha256', 'closedSha256', 'jobProjectionSha256'])
+        && Object.values(value.bindings).every(item => typeof item === 'string' && HEX.test(item))
+        && closed(value.selection, ['target', 'host', 'etag'])
+        && typeof value.selection.target === 'string' && value.selection.target.startsWith('/')
+        && value.selection.target.length <= 8192 && !/[?#\x00-\x20\x7f]/.test(value.selection.target)
+        && typeof value.selection.host === 'string' && /^[a-z0-9.-]{1,253}$/.test(value.selection.host)
+        && strongEtag(value.selection.etag)
+        && HEX.test(value.expectedSourceSha256) && HEX.test(value.expectedPrefixSha256)
+        && HEX.test(value.selectionContextSha256)
+        && typeof value.expectedSourceBytes === 'string' && /^[1-9][0-9]{0,9}$/.test(value.expectedSourceBytes)
+        && Number(value.expectedSourceBytes) > BODY_BOUND && Number(value.expectedSourceBytes) <= 2147483648
+        && Number.isSafeInteger(value.selectionDeadlineUnixMillis) && value.selectionDeadlineUnixMillis > Date.now()
+        && value.selectionDeadlineUnixMillis - Date.now() <= 1200000
+        && Number.isSafeInteger(value.pauseMillis) && value.pauseMillis > 0 && value.pauseMillis <= 35000,
+      'mixed arm differs from one-use bounded selection');
+      requireFact(![...mixedCohorts.values()].some(item =>
+        ['armed', 'selected', 'receiving_prefix', 'held', 'resuming'].includes(item.state)),
+      'another mixed cohort still owns a response');
+      mixedCohorts.set(value.cohortNonce, { arm: structuredClone(value), state: 'armed',
+        receipt: null, receiptFile: null, terminalFile: null, terminalCause: null,
+        endedAtUnixMillis: null, beginNonce: null, metadataReceiptSha256: null,
+        resumeAtUnixMillis: null, offeredBytes: 0, upstreamComplete: false });
+      return { version: 1, status: 'armed', cohortNonce: value.cohortNonce };
+    }
+    if (['mixed_state', 'bind_mixed_begin', 'resume_mixed_read', 'cancel_mixed_read'].includes(value?.kind)) {
+      const fields = ['version', 'kind', 'cohortNonce', 'bindings'];
+      if (value.kind === 'bind_mixed_begin') fields.push('beginNonce');
+      if (value.kind === 'resume_mixed_read') fields.push('beginNonce', 'heldReceiptSha256', 'metadataReceiptSha256');
+      requireFact(closed(value, fields) && value.version === 1 && HEX.test(value.cohortNonce),
+        'mixed command schema differs');
+      const cohort = mixedCohorts.get(value.cohortNonce);
+      requireFact(cohort && JSON.stringify(value.bindings) === JSON.stringify(cohort.arm.bindings),
+        'mixed cohort or exact bindings differ');
+      if (cohort.state === 'armed' && Date.now() >= cohort.arm.selectionDeadlineUnixMillis
+        || ['selected', 'receiving_prefix', 'held', 'resuming'].includes(cohort.state)
+          && Date.now() >= cohort.selectedAtUnixMillis + cohort.arm.pauseMillis) {
+        endMixed(cohort, 'cutoff', 'owner_cutoff');
+      }
+      if (value.kind === 'bind_mixed_begin') {
+        requireFact(cohort.state === 'held' && cohort.beginNonce === null && HEX.test(value.beginNonce),
+          'mixed Begin binding was replayed or hold ended');
+        cohort.beginNonce = value.beginNonce;
+        return { version: 1, status: 'bound', cohortNonce: value.cohortNonce };
+      }
+      if (value.kind === 'resume_mixed_read') {
+        requireFact(cohort.state === 'held' && value.beginNonce === cohort.beginNonce && HEX.test(value.beginNonce)
+          && value.heldReceiptSha256 === cohort.receiptFile.sha256 && HEX.test(value.metadataReceiptSha256),
+        'mixed resume was replayed or receipt binding differs');
+        cohort.metadataReceiptSha256 = value.metadataReceiptSha256;
+        cohort.resumeAtUnixMillis = Date.now();
+        cohort.state = 'resuming';
+        cohort.wake?.();
+        return { version: 1, status: 'resume_dispatched', cohortNonce: value.cohortNonce,
+          remoteDrain: null };
+      }
+      if (value.kind === 'cancel_mixed_read') endMixed(cohort, 'cancelled', 'owner_cancel');
+      await persistMixedTerminal(cohort);
+      return { version: 1, state: cohort.state, cohortNonce: value.cohortNonce,
+        receipt: cohort.receipt, receiptFile: cohort.receiptFile, terminalFile: cohort.terminalFile,
+        beginNonce: cohort.beginNonce, endedAtUnixMillis: cohort.endedAtUnixMillis,
+        terminalCause: cohort.terminalCause };
+    }
     if (closed(value, ['version', 'kind']) && value.version === 1 && value.kind === 'queue_state') {
       if (queuePause?.state === 'armed' && Date.now() >= queuePause.arm.selectionDeadlineUnixMillis) {
         endQueuePause('cutoff');

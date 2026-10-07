@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
-import { createServer, request, ServerResponse } from 'node:http';
+import { createServer, request, ServerResponse, IncomingMessage, Agent } from 'node:http';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -641,4 +641,184 @@ test('downstream close during real held-event fsync remains ordered and observed
       ServerResponse.prototype.assignSocket = originalAssignSocket;
     }
   });
+});
+
+// Mixed-load pause is independent of the destructive restart rendezvous.
+// These local bytes/receipts exercise stream ownership, not Garage authority.
+function mixedArm(body, nonce = '1'.repeat(64), extra = {}) {
+  return { version: 1, kind: 'arm_mixed_read', cohortNonce: nonce,
+    bindings: { runId: '2'.repeat(64), objectId: '3'.repeat(64), originalSha256: '4'.repeat(64),
+      closedSha256: '5'.repeat(64), jobProjectionSha256: '6'.repeat(64) },
+    selection: { target: FIRST_TARGET, host: 's3.fleet.test', etag: '"actual-etag"' },
+    expectedSourceSha256: sha(body), expectedSourceBytes: String(body.length),
+    expectedPrefixSha256: sha(body.subarray(0, 65536)), selectionContextSha256: '7'.repeat(64),
+    selectionDeadlineUnixMillis: Date.now() + 10000, pauseMillis: 5000, ...extra };
+}
+
+function mixedCommand(arm, kind, extra = {}) {
+  return { version: 1, kind, cohortNonce: arm.cohortNonce, bindings: arm.bindings, ...extra };
+}
+
+async function awaitMixed(root, arm, predicate) {
+  const cutoff = Date.now() + 3000;
+  do {
+    const value = await control(root, mixedCommand(arm, 'mixed_state'));
+    if (predicate(value)) return value;
+    await delay(5);
+  } while (Date.now() < cutoff);
+  throw new Error('local mixed state deadline');
+}
+
+test('mixed same upstream resumes once with exact bytes, EOF and replay refusal', async () => {
+  const body = Buffer.alloc(16 * 1024 * 1024 + 17, 0x42);
+  await fixture(normal(body), async facts => {
+    const arm = mixedArm(body);
+    assert.equal((await control(facts.root, arm)).status, 'armed');
+    let finished = false;
+    const reading = read(facts.port, { target: FIRST_TARGET }).then(value => { finished = true; return value; });
+    const held = await awaitMixed(facts.root, arm, value => value.state === 'held');
+    assert.equal(finished, false);
+    assert.equal(held.receipt.downstreamOfferedBytes, '0');
+    assert.equal(held.receipt.identity.ifMatch, arm.selection.etag);
+    assert.equal(held.receipt.prefixFile.sha256, arm.expectedPrefixSha256);
+    const begin = '8'.repeat(64);
+    assert.equal((await control(facts.root, mixedCommand(arm, 'bind_mixed_begin', { beginNonce: begin }))).status, 'bound');
+    const resume = mixedCommand(arm, 'resume_mixed_read', { beginNonce: begin,
+      heldReceiptSha256: held.receiptFile.sha256, metadataReceiptSha256: '9'.repeat(64) });
+    assert.equal((await control(facts.root, resume)).status, 'resume_dispatched');
+    const result = await reading;
+    assert.equal(result.status, 200);
+    assert.equal(sha(result.body), sha(body));
+    const ended = await awaitMixed(facts.root, arm, value => value.terminalFile !== null);
+    assert.equal(ended.state, 'eof');
+    const terminal = JSON.parse(await fs.readFile(ended.terminalFile.path));
+    assert.equal(terminal.downstreamOfferedBytes, String(body.length));
+    assert.equal(terminal.upstreamComplete, true);
+    assert.equal(terminal.remoteDrain, null);
+    assert.equal(facts.received.length, 1);
+    assert.equal((await control(facts.root, resume)).status, 'refused');
+    assert.equal((await control(facts.root, arm)).status, 'refused');
+    assert.equal((await control(facts.root, { version: 1, kind: 'queue_state' })).state, 'absent');
+  });
+});
+
+test('mixed mismatched Begin or closed-job bindings cannot release an owned response', async () => {
+  const body = Buffer.alloc(16 * 1024 * 1024, 0x43);
+  await fixture(normal(body), async facts => {
+    const arm = mixedArm(body);
+    await control(facts.root, arm);
+    const reading = read(facts.port, { target: FIRST_TARGET }).then(() => 'unexpected', () => 'closed');
+    const held = await awaitMixed(facts.root, arm, value => value.state === 'held');
+    const begin = '8'.repeat(64);
+    await control(facts.root, mixedCommand(arm, 'bind_mixed_begin', { beginNonce: begin }));
+    const request = mixedCommand(arm, 'resume_mixed_read', { beginNonce: 'a'.repeat(64),
+      heldReceiptSha256: held.receiptFile.sha256, metadataReceiptSha256: '9'.repeat(64) });
+    assert.equal((await control(facts.root, request)).status, 'refused');
+    assert.equal((await control(facts.root, { ...request, beginNonce: begin,
+      bindings: { ...arm.bindings, closedSha256: 'b'.repeat(64) } })).status, 'refused');
+    assert.equal((await control(facts.root, mixedCommand(arm, 'mixed_state'))).state, 'held');
+    await control(facts.root, mixedCommand(arm, 'cancel_mixed_read'));
+    assert.equal(await reading, 'closed');
+    const ended = await awaitMixed(facts.root, arm, value => value.terminalFile !== null);
+    assert.equal(ended.state, 'cancelled');
+  });
+});
+
+test('mixed cutoff stays destructive and cannot be padded by late resume', async () => {
+  const body = Buffer.alloc(16 * 1024 * 1024, 0x44);
+  await fixture(normal(body), async facts => {
+    const arm = mixedArm(body, '1'.repeat(64), { pauseMillis: 150 });
+    await control(facts.root, arm);
+    const reading = read(facts.port, { target: FIRST_TARGET }).then(() => 'unexpected', () => 'closed');
+    const held = await awaitMixed(facts.root, arm, value => value.state === 'held');
+    const begin = '8'.repeat(64);
+    await control(facts.root, mixedCommand(arm, 'bind_mixed_begin', { beginNonce: begin }));
+    await delay(200);
+    assert.equal(await reading, 'closed');
+    const ended = await awaitMixed(facts.root, arm, value => value.terminalFile !== null);
+    assert.equal(ended.state, 'cutoff');
+    assert.equal((await control(facts.root, mixedCommand(arm, 'resume_mixed_read', { beginNonce: begin,
+      heldReceiptSha256: held.receiptFile.sha256, metadataReceiptSha256: '9'.repeat(64) }))).status, 'refused');
+  });
+});
+
+test('mixed fresh cohort bound is two and never resets consumed nonce history', async () => {
+  const body = Buffer.alloc(131072, 0x45);
+  await fixture(normal(body), async facts => {
+    for (const nonce of ['1'.repeat(64), 'a'.repeat(64)]) {
+      const arm = mixedArm(body, nonce);
+      assert.equal((await control(facts.root, arm)).status, 'armed');
+      assert.equal((await control(facts.root, mixedCommand(arm, 'cancel_mixed_read'))).state, 'cancelled');
+      assert.equal((await control(facts.root, arm)).status, 'refused');
+    }
+    assert.equal((await control(facts.root, mixedArm(body, 'b'.repeat(64)))).status, 'refused');
+  });
+});
+
+
+test('mixed upstream EOF cannot clear cutoff during the final downstream pressure wait', async () => {
+  const body = Buffer.alloc(16 * 1024 * 1024, 0x46);
+  const originalIterator = IncomingMessage.prototype[Symbol.asyncIterator];
+  const originalWrite = ServerResponse.prototype.write;
+  const originalEmit = ServerResponse.prototype.emit;
+  const stalled = new WeakSet();
+  let observedEof = false;
+  const agent = new Agent({ keepAlive: true });
+  try {
+    await fixture(normal(body), async facts => {
+      // One-block lookahead forces the genuine EOF event before the last
+      // bounded downstream offer; it never substitutes bytes or a new request.
+      IncomingMessage.prototype[Symbol.asyncIterator] = function () {
+        const iterator = originalIterator.call(this);
+        if (this.statusCode !== 200 || this.req?.path !== FIRST_TARGET) return iterator;
+        return (async function* () {
+          let pending = null;
+          for await (const block of iterator) {
+            if (pending !== null) yield pending;
+            pending = block;
+          }
+          observedEof = true;
+          if (pending !== null) yield pending;
+        })();
+      };
+      let offered = 0;
+      ServerResponse.prototype.write = function (block, ...arguments_) {
+        const result = originalWrite.call(this, block, ...arguments_);
+        if (this.socket?.localPort === facts.port && this.req.url === FIRST_TARGET) {
+          offered += Buffer.byteLength(block);
+          if (offered === body.length) { stalled.add(this); return false; }
+        }
+        return result;
+      };
+      ServerResponse.prototype.emit = function (name, ...arguments_) {
+        if (name === 'drain' && stalled.has(this)) return false;
+        return originalEmit.call(this, name, ...arguments_);
+      };
+      const arm = mixedArm(body, '1'.repeat(64), { pauseMillis: 1500 });
+      await control(facts.root, arm);
+      const reading = new Promise((resolve_, reject) => {
+        const outgoing = request({ host: '127.0.0.1', port: facts.port, path: FIRST_TARGET, agent,
+          headers: { ...headers, Connection: 'keep-alive' } }, incoming => {
+          incoming.resume(); incoming.once('end', resolve_); incoming.once('error', reject);
+        });
+        outgoing.once('error', reject); outgoing.end();
+      }).catch(() => {});
+      const held = await awaitMixed(facts.root, arm, value => value.state === 'held');
+      const beginNonce = '8'.repeat(64);
+      await control(facts.root, mixedCommand(arm, 'bind_mixed_begin', { beginNonce }));
+      await control(facts.root, mixedCommand(arm, 'resume_mixed_read', { beginNonce,
+        heldReceiptSha256: held.receiptFile.sha256, metadataReceiptSha256: '9'.repeat(64) }));
+      const ended = await awaitMixed(facts.root, arm, value => value.terminalFile !== null);
+      assert.equal(observedEof, true);
+      assert.equal(offered, body.length);
+      assert.equal(ended.state, 'cutoff');
+      assert.equal(ended.terminalCause, 'owner_cutoff');
+      await reading;
+    });
+  } finally {
+    IncomingMessage.prototype[Symbol.asyncIterator] = originalIterator;
+    ServerResponse.prototype.write = originalWrite;
+    ServerResponse.prototype.emit = originalEmit;
+    agent.destroy();
+  }
 });

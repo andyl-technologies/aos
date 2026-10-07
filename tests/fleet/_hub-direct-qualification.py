@@ -638,7 +638,8 @@ def retain_direct_qualification_worker_log(worker, python, process, operator_roo
 def run_direct_prequalification(worker, python, node, driver_file, origin,
                                 control_key_file, identity_file, selector,
                                 bulk_originals, metadata_originals, wait_seconds=600, *,
-                                operator_root="/var/lib/hybrid-worker/operator", worker_process=None):
+                                operator_root="/var/lib/hybrid-worker/operator", worker_process=None,
+                                mixed_admission=None):
     """Dispatch one fresh protected run and preserve terminal or incomplete facts."""
     if len(bulk_originals) != 3 or len(metadata_originals) != 4:
         raise ValueError("prequalification requires three bulk and four metadata originals")
@@ -648,6 +649,10 @@ def run_direct_prequalification(worker, python, node, driver_file, origin,
     if any(not isinstance(item["file"], str) or not item["file"].startswith("/")
            for item in originals):
         raise ValueError("qualification sources require explicit Worker file paths")
+    if mixed_admission is None or set(mixed_admission) != {"s3", "tools", "identity"}:
+        raise ValueError("prequalification requires an explicitly owned mixed admission caller")
+    if operator_root != "/var/lib/hybrid-worker/operator":
+        raise ValueError("paired qualification mixed admission is not yet wired")
     run_id = os.urandom(32).hex()
     if operator_root != "/var/lib/hybrid-worker/operator" and re.fullmatch(
             r"/var/lib/hybrid-worker/external-oci/[0-9a-f]{32}/operator", operator_root) is None:
@@ -663,49 +668,13 @@ def run_direct_prequalification(worker, python, node, driver_file, origin,
                  "--wait-seconds", str(wait_seconds)]
     worker_log_before = observe_direct_qualification_worker_log(
         worker, python, worker_process, operator_root)
-    receipt = json.loads(private_guest_command(worker, textwrap.dedent(f"""
-        {shlex.quote(python)} - <<'ACTUAL_PROTECTED_QUALIFICATION'
-        import base64, hashlib, json, os, subprocess
-        from pathlib import Path
-
-        def bounded_output_sha256(path):
-            with path.open('rb') as source:
-                body = source.read(65537)
-            return hashlib.sha256(body).hexdigest() if len(body) <= 65536 else None
-
-        root = Path({root!r})
-        root.mkdir(mode=0o700, exist_ok=False)
-        descriptor = os.open(root / 'manifest.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(descriptor, 'wb') as output:
-            output.write(base64.b64decode({encoded!r}, validate=True))
-            output.flush()
-            os.fsync(output.fileno())
-        environment = dict(os.environ)
-        environment['NODE_EXTRA_CA_CERTS'] = '/etc/ssl/certs/ca-certificates.crt'
-        os.umask(0o077)
-        timed_out = False
-        with (root / 'stdout.log').open('xb') as stdout, (root / 'stderr.log').open('xb') as stderr:
-            try:
-                result = subprocess.run({arguments!r}, env=environment, stdin=subprocess.DEVNULL,
-                    stdout=stdout, stderr=stderr, check=False, timeout={wait_seconds + 1500})
-                exit_code = result.returncode
-            except subprocess.TimeoutExpired:
-                # subprocess.run kills only its child and waits. Pending original
-                # intents remain unknown; no provider mutation is repeated.
-                timed_out = True
-                exit_code = None
-        print(json.dumps({{'version': 1, 'runId': {run_id!r}, 'exitCode': exit_code,
-            'timedOut': timed_out,
-            'machineRole': 'worker_operator', 'guestDirectory': str(root),
-            'driverSha256': hashlib.sha256(Path({driver_file!r}).read_bytes()).hexdigest(),
-            'stdoutSha256': bounded_output_sha256(root / 'stdout.log'),
-            'stderrSha256': bounded_output_sha256(root / 'stderr.log'),
-            'scope': 'isolated actual provider/queue prequalification; no acceptance'}}))
-        ACTUAL_PROTECTED_QUALIFICATION
-    """), timeout=wait_seconds + 1800))
+    arguments += ["--mixed-admission-file", root + "/mixed-admission-release.json"]
+    receipt = run_mixed_prequalification(worker, mixed_admission["s3"], mixed_admission["tools"],
+        root, run_id, arguments, encoded, originals, mixed_admission["identity"], worker_process,
+        wait_seconds)
     if receipt["runId"] != run_id or (
         type(receipt["exitCode"]) is not int
-        and not (receipt["timedOut"] is True and receipt["exitCode"] is None)
+        and not (receipt["exitCode"] is None and (receipt["timedOut"] is True or receipt.get("childReaped") is False))
     ):
         raise ValueError("qualification process receipt differs from its original")
     if receipt["guestDirectory"] != root:
@@ -715,7 +684,7 @@ def run_direct_prequalification(worker, python, node, driver_file, origin,
         worker, python, root, str(destination), receipt, operator_root=operator_root)
     retain_direct_qualification_output_report(destination, invocation_output)
     worker_log = None
-    if receipt["exitCode"] != 0:
+    if receipt["exitCode"] != 0 or receipt.get("ownerFailure") is not None:
         try:
             worker_log = retain_direct_qualification_worker_log(worker, python, worker_process,
                 operator_root, worker_log_before, destination, run_id)
@@ -732,6 +701,6 @@ def run_direct_prequalification(worker, python, node, driver_file, origin,
         output.write("\n")
         output.flush()
         os.fsync(output.fileno())
-    if receipt["exitCode"] != 0:
+    if receipt["exitCode"] != 0 or receipt.get("ownerFailure") is not None:
         raise RuntimeError("actual protected prequalification failed; originals and evidence retained")
     return result
