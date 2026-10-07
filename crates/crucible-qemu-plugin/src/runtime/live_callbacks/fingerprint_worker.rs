@@ -35,6 +35,9 @@ impl LiveFingerprintDigestWorker {
         let join = thread::Builder::new()
             .name("crucible-fingerprint-digest".to_owned())
             .spawn(move || {
+                let Ok(_identity) = quiescence.register_current(WORKER_FINGERPRINT) else {
+                    return;
+                };
                 loop {
                     let idle = quiescence.idle(WORKER_FINGERPRINT);
                     let Ok(work) = receiver.recv() else {

@@ -50,7 +50,7 @@ pub(super) fn prepared_report() -> Value {
         "acknowledged-proofs": 127,
         "missing-proofs": 0,
         "plugin-barrier": {
-            "schema-version": 6,
+            "schema-version": 7,
             "generation": 8,
             "registered": true,
             "manifest-consistent": true,

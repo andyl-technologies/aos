@@ -52,6 +52,24 @@ fn controller() -> Result<Option<Arc<LivePagerController>>, RamError> {
         .map_err(|_| RamError::Invariant("RAM controller publication poisoned"))
 }
 
+/// Begins the managed runtime's actual actor-publication Setup operation.
+///
+/// Returns `None` when this process has no managed RAM controller.
+///
+/// # Errors
+/// Refuses poisoned controller publication, exhausted admitted operation slots,
+/// or failure, cancellation, or expiry reported by the original operation factory.
+#[cfg(not(test))]
+pub(crate) fn runtime_setup_operation() -> Result<Option<Box<dyn SourceOperation>>, RamError> {
+    controller()?
+        .map(|controller| {
+            controller
+                .begin(SourceOperationClass::ControlSetup)
+                .map_err(RamError::from)
+        })
+        .transpose()
+}
+
 type NativeWorker = extern "C" fn(u32, u64, u64, u32) -> c_int;
 type NativeOwnerInventory = extern "C" fn(*mut u64, *mut u64, *mut u64) -> c_int;
 

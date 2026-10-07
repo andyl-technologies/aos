@@ -1249,6 +1249,9 @@ fn run_control_reader(
     teardown_sender: mpsc::Sender<LiveRuntimeTeardownTrigger>,
     workers: Arc<LiveWorkerQuiescence>,
 ) -> bool {
+    let Ok(_identity) = workers.register_current(WORKER_RUN_CONTROL) else {
+        return false;
+    };
     let idle = workers.idle(WORKER_RUN_CONTROL);
     let trigger = read_run_control_trigger(control);
     let pending = idle.received();
@@ -1265,6 +1268,9 @@ fn run_teardown_worker(
     request_shutdown: QemuRequestShutdownFn,
     workers: Arc<LiveWorkerQuiescence>,
 ) {
+    let Ok(_identity) = workers.register_current(WORKER_TEARDOWN) else {
+        return;
+    };
     let idle = workers.idle(WORKER_TEARDOWN);
     let trigger = match teardown_receiver.recv() {
         Ok(trigger) => trigger,
@@ -1560,6 +1566,11 @@ extern "C" fn crucible_qemu_plugin_hot_fork_barrier(
     // SAFETY: registration passes the stable pinned runtime-owner address, and
     // production retains that allocation for the QEMU process lifetime.
     let state = unsafe { &*userdata.cast::<OwnedCallbackRuntimeState>() };
+    if action != crate::QEMU_PLUGIN_HOT_FORK_BARRIER_RELEASE
+        && state.workers.identity_snapshot().is_err()
+    {
+        return -libc::EPROTO;
+    }
     let snapshot = collect_hot_fork_state_with_network_rx_check(
         state
             .live_vcpu_time
@@ -1628,7 +1639,7 @@ extern "C" fn crucible_qemu_plugin_hot_fork_barrier(
         Ok(snapshot) => snapshot,
         Err(status) => return status,
     };
-    if snapshot.hot_fork_held != workers.held {
+    if snapshot.hot_fork_held != workers.held || workers.identity_failed {
         return -libc::EPROTO;
     }
     let Ok(struct_size) =
@@ -1657,6 +1668,9 @@ extern "C" fn crucible_qemu_plugin_hot_fork_barrier(
             parked_worker_mask: workers.parked_mask,
             pending_worker_mask: workers.pending_mask,
             worker_operations_in_flight: workers.operations_in_flight,
+            worker_process_id: workers.process_id,
+            worker_membership_generation: workers.membership_generation,
+            worker_thread_ids: workers.thread_ids,
         });
     }
     0
@@ -1705,7 +1719,7 @@ extern "C" fn crucible_qemu_plugin_hot_fork_child_runtime(
             let private_ring_fd = unsafe { BorrowedFd::borrow_raw(plan.private_ring_fd) };
             // SAFETY: the process-lifetime owner was pinned before registration
             // and the mutable reference is not used to move it.
-            let state = unsafe { Pin::new_unchecked(state) };
+            let state = unsafe { Pin::new_unchecked(&mut *state) };
             state.prepare_hot_fork_child(private_ring_fd, identity, plan.into())
         }
         crate::QEMU_PLUGIN_HOT_FORK_CHILD_QUERY => Ok(state.hot_fork_child_snapshot()),
@@ -1727,10 +1741,7 @@ extern "C" fn crucible_qemu_plugin_hot_fork_child_runtime(
         return -libc::EOVERFLOW;
     };
     let workers_ready = snapshot.phase == CHILD_RUNTIME_WORKERS_HELD
-        && snapshot.workers.held
-        && snapshot.workers.parked_mask == snapshot.workers.worker_mask
-        && snapshot.workers.pending_mask == 0
-        && snapshot.workers.operations_in_flight == 0;
+        && state.workers.snapshot_ready(&snapshot.workers);
     let flags = (u32::from(snapshot.callbacks_held)
         * crate::QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_CALLBACKS_HELD)
         | (u32::from(snapshot.mapping_installed)
@@ -2573,6 +2584,12 @@ where
             }
             #[cfg(not(test))]
             let (control_reader, teardown_worker) = {
+                let startup = crate::paged_ram::controller::runtime_setup_operation()
+                    .unwrap_or_else(|source| {
+                        fatal_policy.terminate(PluginRuntimeInstallError::WorkerIdentityAdmission {
+                            source,
+                        })
+                    });
                 let teardown_handle =
                     match callbacks_registered.control_teardown_handle(args.slot()) {
                         Ok(handle) => handle,
@@ -2610,6 +2627,25 @@ where
                     Err(source) => fatal_policy
                         .terminate(PluginRuntimeInstallError::ControlWorkerSpawn { source }),
                 };
+                if let Some(operation) = startup {
+                    let workers = callbacks_registered.worker_quiescence();
+                    if let Err(source) = workers
+                        .wait_initial_ready(|| {
+                            operation
+                                .wait_slice()
+                                .map_err(crate::ram_error::RamError::from)
+                        })
+                        .and_then(|()| {
+                            operation
+                                .complete()
+                                .map_err(crate::ram_error::RamError::from)
+                        })
+                    {
+                        fatal_policy.terminate(
+                            PluginRuntimeInstallError::WorkerIdentityAdmission { source },
+                        );
+                    }
+                }
                 (Some(control_reader), Some(teardown_worker))
             };
             #[cfg(test)]
@@ -2875,6 +2911,12 @@ pub enum PluginRuntimeInstallError {
     /// The fixed plugin resource manifest could not be represented.
     #[error("plugin resource manifest shape is not representable")]
     ResourceManifestShape,
+    /// Actual process-lifetime actors could not be authenticated before native admission.
+    #[error("plugin worker identity admission failed: {source}")]
+    WorkerIdentityAdmission {
+        /// Original startup supervision or actor registration failure.
+        source: crate::ram_error::RamError,
+    },
     /// QEMU rejected the fixed plugin resource manifest.
     #[error("QEMU rejected the plugin resource manifest with status {status}")]
     ResourceManifestRejected {

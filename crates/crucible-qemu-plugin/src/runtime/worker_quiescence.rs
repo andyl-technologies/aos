@@ -3,12 +3,15 @@
 //! Each registered worker alternates between an idle safe point and one
 //! bounded operation. A hot-fork hold prevents a worker from entering its next
 //! operation, while operations admitted before the hold are allowed to drain.
-//! The coordinator reports fixed worker-class masks rather than host thread
-//! identities so the status remains deterministic and language-neutral.
+//! The private native barrier pairs sealed worker classes with their actual
+//! process-local thread identities. These operational facts never enter guest
+//! observations, semantic hashes, or modeled time.
 
 use std::sync::{Arc, Condvar, Mutex};
 
 use thiserror::Error;
+
+mod identity;
 
 pub(super) const WORKER_RUN_CONTROL: u64 = 1_u64 << 0;
 pub(super) const WORKER_TEARDOWN: u64 = 1_u64 << 1;
@@ -23,11 +26,21 @@ pub(super) struct WorkerQuiescenceSnapshot {
     pub(super) parked_mask: u64,
     pub(super) pending_mask: u64,
     pub(super) operations_in_flight: u64,
+    pub(super) process_id: u64,
+    pub(super) membership_generation: u64,
+    pub(super) thread_ids: [u64; 3],
+    pub(super) identity_failed: bool,
 }
 
 /// Failure to replace parked template workers with fresh fork-child workers.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 pub(super) enum WorkerForkChildResetError {
+    /// An ordinary process attempted to discard its live worker identities.
+    #[error("worker replacement requires an actual fork-child process")]
+    SameProcess,
+    /// The original worker membership epoch cannot advance safely.
+    #[error("worker membership generation exhausted")]
+    GenerationExhausted,
     /// The template worker set was not completely parked and empty.
     #[error("template worker set is not quiescent for fork-child replacement")]
     NotQuiescent {
@@ -42,6 +55,10 @@ struct WorkerQuiescenceState {
     parked_mask: u64,
     pending_mask: u64,
     active_mask: u64,
+    process_id: u64,
+    membership_generation: u64,
+    thread_ids: [u64; 3],
+    failure: Option<crate::ram_error::RamError>,
 }
 
 /// Process-lifetime owner of reversible worker admission and parking state.
@@ -63,6 +80,10 @@ impl LiveWorkerQuiescence {
                 parked_mask: 0,
                 pending_mask: 0,
                 active_mask: 0,
+                process_id: u64::from(std::process::id()),
+                membership_generation: 1,
+                thread_ids: [0; 3],
+                failure: None,
             }),
             released: Condvar::new(),
         })
@@ -119,10 +140,22 @@ impl LiveWorkerQuiescence {
             || snapshot.parked_mask != snapshot.worker_mask
             || snapshot.pending_mask != 0
             || snapshot.operations_in_flight != 0
+            || state.failure.is_some()
         {
             return Err(WorkerForkChildResetError::NotQuiescent { snapshot });
         }
 
+        let process_id = u64::from(std::process::id());
+        if state.process_id == process_id {
+            return Err(WorkerForkChildResetError::SameProcess);
+        }
+        state.membership_generation = state
+            .membership_generation
+            .checked_add(1)
+            .ok_or(WorkerForkChildResetError::GenerationExhausted)?;
+
+        state.process_id = process_id;
+        state.thread_ids = [0; 3];
         state.parked_mask = 0;
         state.pending_mask = 0;
         state.active_mask = 0;
@@ -132,10 +165,16 @@ impl LiveWorkerQuiescence {
     /// Returns whether every fresh child worker is parked behind the hold.
     pub(super) fn fork_child_workers_ready(&self) -> bool {
         let snapshot = self.snapshot();
+        self.snapshot_ready(&snapshot)
+    }
+
+    pub(super) fn snapshot_ready(&self, snapshot: &WorkerQuiescenceSnapshot) -> bool {
         snapshot.held
             && snapshot.parked_mask == snapshot.worker_mask
             && snapshot.pending_mask == 0
             && snapshot.operations_in_flight == 0
+            && self.identities_complete(snapshot)
+            && !snapshot.identity_failed
     }
 
     fn assert_worker(&self, worker: u64) {
@@ -156,6 +195,10 @@ impl LiveWorkerQuiescence {
             parked_mask: state.parked_mask,
             pending_mask: state.pending_mask,
             operations_in_flight: u64::from(state.active_mask.count_ones()),
+            process_id: state.process_id,
+            membership_generation: state.membership_generation,
+            thread_ids: state.thread_ids,
+            identity_failed: state.failure.is_some(),
         }
     }
 }
@@ -375,14 +418,22 @@ mod tests {
         let template_teardown = quiescence.idle(WORKER_TEARDOWN);
         let parked = quiescence.snapshot();
         assert_eq!(parked.parked_mask, WORKER_REQUIRED);
-        assert_eq!(quiescence.reset_fork_child_workers(), Ok(parked));
+        assert_eq!(
+            quiescence.reset_fork_child_workers(),
+            Err(WorkerForkChildResetError::SameProcess)
+        );
+
+        // Models only the copied parent PID; no real fork runs in this unit test.
+        quiescence.lock_state().process_id = u64::from(std::process::id()) + 1;
+        assert_eq!(quiescence.reset_fork_child_workers().map(|_| ()), Ok(()));
         assert!(!quiescence.fork_child_workers_ready());
 
         std::mem::forget(template_control);
         std::mem::forget(template_teardown);
         let _child_control = quiescence.idle(WORKER_RUN_CONTROL);
         let _child_teardown = quiescence.idle(WORKER_TEARDOWN);
-        assert!(quiescence.fork_child_workers_ready());
+        // Mask-only safe points cannot authenticate replacement actors.
+        assert!(!quiescence.fork_child_workers_ready());
         assert!(!quiescence.release().held);
     }
 }

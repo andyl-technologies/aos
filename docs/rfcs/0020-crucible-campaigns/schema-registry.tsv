@@ -42,7 +42,7 @@ crucible.qemu.hot-fork.template	29	crucible-qemu::qmp::hot_fork	process-protocol
 crucible.qemu.hot-fork.template-resource-stage	13	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
 crucible.qemu.hot-fork.fork	3	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-equivalence,gate:hot-fork-isolation
 crucible.qemu.hot-fork.plugin-resource-inventory	3	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
-crucible.qemu.hot-fork.plugin-barrier	6	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
+crucible.qemu.hot-fork.plugin-barrier	7	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
 crucible.qemu.hot-fork.child-runtime	4	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
 crucible.qemu.hot-fork.async-worker-barrier	3	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
 crucible.qemu.hot-fork.block-barrier	5	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation

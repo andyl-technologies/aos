@@ -1745,6 +1745,7 @@ in
                   "control-observer", "control-delivery",
                   "stopped-control-rearm", "template-control-drain", "net-stop-chain",
                   "aio-fork-custody", "stop-context", "ram-arena",
+                  "ram-worker-inventory",
                   "child-memory-limit",
                   "tcg-fast-paths",
                   "mutex-owner-cache",
@@ -1774,6 +1775,10 @@ in
               grep -Fxq 'RAM_ARENA_AUTHORITY_PASS: private/preallocated/partial geometry; shared and mutable readonly-file refusal; real sealed inode/COW authority; unmigratable ROMD producer dirty obligations' \
                 ram-arena.result
               cp ram-arena.result "$out/share/aos/crucible/ram-arena.result"
+              cat ram-worker-inventory.result
+              grep -Fxq 'strict worker inventory: exact union, unknown/duplicate/schema refusal, epochs and hold custody PASS' \
+                ram-worker-inventory.result
+              cp ram-worker-inventory.result "$out/share/aos/crucible/ram-worker-inventory.result"
               cat tcg-fast-paths.result
               grep -q '^PASS production TCG fast paths:' tcg-fast-paths.result
               cat mutex-owner-cache.result

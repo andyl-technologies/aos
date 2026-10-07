@@ -936,7 +936,7 @@ in
              select(has("in-flight"))] as $reports |
             ($reports | length) == 2 and $reports[0] == $reports[1] and
             $reports[0] == {
-              "schema-version": 6,
+              "schema-version": 7,
               "generation": 0,
               "registered": false,
               "manifest-consistent": false,
@@ -1152,7 +1152,7 @@ in
             $report."acknowledged-proofs" == 3 and
             $report."missing-proofs" == 124 and
             $report."plugin-barrier" == {
-              "schema-version": 6,
+              "schema-version": 7,
               "generation": 0,
               "registered": false,
               "manifest-consistent": false,
@@ -1312,7 +1312,7 @@ in
           child_runtime_unregistered_shape=true
           child_runtime_readiness_proof_acknowledged=false
           plugin_child_runtime_adapter_one_shot=true
-          plugin_barrier_schema_version=6
+          plugin_barrier_schema_version=7
           plugin_barrier_stable=true
           plugin_barrier_unregistered_shape=true
           plugin_mapping_dontfork_unregistered=false

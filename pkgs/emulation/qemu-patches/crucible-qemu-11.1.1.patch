@@ -1,4 +1,4 @@
-From 2f42a3b2c854df0eaea40f9d60f789240dbff0db Mon Sep 17 00:00:00 2001
+From e8c0b3207f8b69eb685b3c6c5284b9bc6b5a55c5 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Tue, 6 Oct 2026 07:05:00 +0000
 Subject: [PATCH] Integrate deterministic execution and authenticated paged RAM
@@ -60212,7 +60212,7 @@ index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..36c355bf303715c91112dcceb32fb779
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..779309802535d2fc2b4950d91821dfe4a5eb7aea 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..0aa882c7d399083e9d56597a53ec18748795e874 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,326 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -60542,7 +60542,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..779309802535d2fc2b4950d91821dfe4
  /**
   * qemu_plugin_uninstall() - Uninstall a plugin
   * @id: this plugin's opaque ID
-@@ -827,470 +1147,1950 @@ QEMU_PLUGIN_API
+@@ -827,470 +1147,1955 @@ QEMU_PLUGIN_API
  void qemu_plugin_update_ns(const void *handle, int64_t time);
  
  /**
@@ -60965,7 +60965,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..779309802535d2fc2b4950d91821dfe4
 +int qemu_plugin_crucible_register_resource_manifest(
 +    const struct qemu_plugin_crucible_resource_manifest *manifest);
 +
-+#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_STATUS_VERSION 6
++#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_STATUS_VERSION 7
 +#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_HOLD 1
 +#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY 2
 +#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_RELEASE 3
@@ -60991,6 +60991,11 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..779309802535d2fc2b4950d91821dfe4
 +    uint64_t parked_worker_mask;
 +    uint64_t pending_worker_mask;
 +    uint64_t worker_operations_in_flight;
++    /* Private actor identities, indexed by the three sealed worker-class bits.
++     * They describe actual entry registrations, not prospective capacity. */
++    uint64_t worker_process_id;
++    uint64_t worker_membership_generation;
++    uint64_t worker_thread_ids[3];
 +};
 +
 +typedef int (*qemu_plugin_crucible_hot_fork_barrier_cb_t)(
@@ -62813,7 +62818,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..779309802535d2fc2b4950d91821dfe4
  
  /**
   * qemu_plugin_scoreboard_new() - alloc a new scoreboard
-@@ -1363,6 +3163,347 @@ void qemu_plugin_u64_set(qemu_plugin_u64 entry, unsigned int vcpu_index,
+@@ -1363,6 +3168,347 @@ void qemu_plugin_u64_set(qemu_plugin_u64 entry, unsigned int vcpu_index,
  QEMU_PLUGIN_API
  uint64_t qemu_plugin_u64_sum(qemu_plugin_u64 entry);
  
@@ -78696,7 +78701,7 @@ index 9e9941fe73e77a7b3bcc3ca1ab7ad4bec58f0151..66e2d8cd64d01e2304aa51675bfe4959
  
  static int net_slirp_init(NetClientState *peer, const char *model,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index fbf905cd63e4cc109748b379f4209f6ad6547c2c..186b6983bb597b2349b19fddcf3dea5900810fb6 100644
+index fbf905cd63e4cc109748b379f4209f6ad6547c2c..2c7027329190a602d8c4b6f64fbfe46afaf4b565 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -11,12 +11,40 @@
@@ -78740,7 +78745,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..186b6983bb597b2349b19fddcf3dea59
  
  /*
   * In system mode we cannot trace the binary being executed so the
-@@ -101,14 +129,993 @@ const char *qemu_plugin_hwaddr_device_name(const struct qemu_plugin_hwaddr *h)
+@@ -101,14 +129,1027 @@ const char *qemu_plugin_hwaddr_device_name(const struct qemu_plugin_hwaddr *h)
   */
  static bool has_control;
  static Error *migration_blocker;
@@ -79254,6 +79259,10 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..186b6983bb597b2349b19fddcf3dea59
 +    uint64_t previous_parked_worker_mask;
 +    uint64_t previous_pending_worker_mask;
 +    uint64_t previous_worker_operations_in_flight;
++    uint64_t previous_worker_process_id;
++    uint64_t previous_worker_membership_generation;
++    uint64_t previous_worker_thread_ids[3];
++    bool worker_identities_valid;
 +    int result;
 +
 +    if (!inventory ||
@@ -79281,9 +79290,22 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..186b6983bb597b2349b19fddcf3dea59
 +        qemu_mutex_unlock(&qemu_plugin_crucible_barrier_operation_lock);
 +        return result;
 +    }
++    worker_identities_valid = status.worker_process_id == (uint64_t)getpid() &&
++        status.worker_membership_generation != 0;
++    for (size_t index = 0; index < ARRAY_SIZE(status.worker_thread_ids); index++) {
++        uint64_t thread_id = status.worker_thread_ids[index];
++
++        worker_identities_valid &= (thread_id != 0) ==
++            ((status.worker_mask & (UINT64_C(1) << index)) != 0);
++        for (size_t prior = 0; thread_id && prior < index; prior++) {
++            worker_identities_valid &=
++                thread_id != status.worker_thread_ids[prior];
++        }
++    }
 +    if (status.schema_version !=
 +            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_STATUS_VERSION ||
 +        status.struct_size != sizeof(status) || status.reserved != 0 ||
++        !worker_identities_valid ||
 +        (status.flags &
 +         ~QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_ALL) != 0 ||
 +        status.ring_count == 0 || status.rings_held > status.ring_count ||
@@ -79341,7 +79363,13 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..186b6983bb597b2349b19fddcf3dea59
 +    previous_worker_operations_in_flight =
 +        qemu_plugin_crucible_barrier_inventory.status
 +            .worker_operations_in_flight;
-+    qemu_plugin_crucible_barrier_inventory.status = status;
++    previous_worker_process_id =
++        qemu_plugin_crucible_barrier_inventory.status.worker_process_id;
++    previous_worker_membership_generation =
++        qemu_plugin_crucible_barrier_inventory.status.worker_membership_generation;
++    memcpy(previous_worker_thread_ids,
++           qemu_plugin_crucible_barrier_inventory.status.worker_thread_ids,
++           sizeof(previous_worker_thread_ids));
 +    if (previous_flags != status.flags ||
 +        previous_in_flight != status.in_flight ||
 +        previous_ring_count != status.ring_count ||
@@ -79354,9 +79382,20 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..186b6983bb597b2349b19fddcf3dea59
 +        previous_parked_worker_mask != status.parked_worker_mask ||
 +        previous_pending_worker_mask != status.pending_worker_mask ||
 +        previous_worker_operations_in_flight !=
-+            status.worker_operations_in_flight) {
++            status.worker_operations_in_flight ||
++        previous_worker_process_id != status.worker_process_id ||
++        previous_worker_membership_generation !=
++            status.worker_membership_generation ||
++        memcmp(previous_worker_thread_ids, status.worker_thread_ids,
++               sizeof(previous_worker_thread_ids))) {
++        if (qemu_plugin_crucible_barrier_inventory.generation == UINT64_MAX) {
++            qemu_mutex_unlock(&qemu_plugin_crucible_resource_lock);
++            qemu_mutex_unlock(&qemu_plugin_crucible_barrier_operation_lock);
++            return -EOVERFLOW;
++        }
 +        qemu_plugin_crucible_barrier_inventory.generation++;
 +    }
++    qemu_plugin_crucible_barrier_inventory.status = status;
 +    qemu_plugin_crucible_barrier_inventory.manifest_consistent =
 +        qemu_plugin_crucible_resource_inventory.registered &&
 +        qemu_plugin_crucible_resource_inventory.complete &&
@@ -79737,7 +79776,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..186b6983bb597b2349b19fddcf3dea59
          return &has_control;
      }
      return NULL;
-@@ -123,9 +1130,1908 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
+@@ -123,9 +1164,1908 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
  void qemu_plugin_update_ns(const void *handle, int64_t new_time)
  {
      if (handle == &has_control) {
@@ -132503,10 +132542,10 @@ index 0000000000000000000000000000000000000000..8856b8fa198d8fce86de3bca04d3c1b5
 +}
 diff --git a/system/crucible-ram-quiescence.c b/system/crucible-ram-quiescence.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..dc2746343876acb2e093b5673d410600ef37031d
+index 0000000000000000000000000000000000000000..d27ca9c06fffd9cb7fea17a610d061026eb6f106
 --- /dev/null
 +++ b/system/crucible-ram-quiescence.c
-@@ -0,0 +1,557 @@
+@@ -0,0 +1,674 @@
 +/*
 + * Physical RAM borrower owner closure
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -132551,6 +132590,13 @@ index 0000000000000000000000000000000000000000..dc2746343876acb2e093b5673d410600
 +    int64_t owner_thread_id;
 +    uint64_t service_generation;
 +    uint64_t plugin_generation;
++    uint64_t plugin_resource_generation;
++    uint64_t plugin_process_generation;
++    uint64_t plugin_id;
++    uint64_t plugin_worker_process_id;
++    uint64_t plugin_worker_membership_generation;
++    uint64_t plugin_worker_mask;
++    uint64_t plugin_worker_thread_ids[3];
 +    uint64_t rcu_generation;
 +    uint64_t async_generation;
 +    uint64_t block_generation;
@@ -132670,15 +132716,67 @@ index 0000000000000000000000000000000000000000..dc2746343876acb2e093b5673d410600
 +        status->worker_operations_in_flight == 0;
 +}
 +
++static int ram_owner_plugin_membership(
++    const QemuPluginCrucibleHotForkBarrierInventory *plugin, bool capture)
++{
++    QemuPluginCrucibleHotForkInventory resources;
++    const struct qemu_plugin_crucible_hot_fork_barrier_status *status =
++        &plugin->status;
++
++    qemu_plugin_crucible_hot_fork_inventory(&resources);
++    if (!ram_plugin_quiescent(plugin) || !resources.registered ||
++        !resources.complete || resources.generation == 0 ||
++        resources.manifest.process_generation == 0 ||
++        resources.manifest.plugin_id != plugin->plugin_id ||
++        resources.manifest.worker_mask != status->worker_mask ||
++        status->worker_process_id != (uint64_t)getpid() ||
++        status->worker_membership_generation == 0) {
++        return -ESTALE;
++    }
++    if (capture) {
++        owner_closure.plugin_generation = plugin->generation;
++        owner_closure.plugin_resource_generation = resources.generation;
++        owner_closure.plugin_process_generation =
++            resources.manifest.process_generation;
++        owner_closure.plugin_id = plugin->plugin_id;
++        owner_closure.plugin_worker_process_id = status->worker_process_id;
++        owner_closure.plugin_worker_membership_generation =
++            status->worker_membership_generation;
++        owner_closure.plugin_worker_mask = status->worker_mask;
++        memcpy(owner_closure.plugin_worker_thread_ids, status->worker_thread_ids,
++               sizeof(owner_closure.plugin_worker_thread_ids));
++        return 0;
++    }
++    if (owner_closure.plugin_generation != plugin->generation ||
++        owner_closure.plugin_resource_generation != resources.generation ||
++        owner_closure.plugin_process_generation !=
++            resources.manifest.process_generation ||
++        owner_closure.plugin_id != plugin->plugin_id ||
++        owner_closure.plugin_worker_process_id != status->worker_process_id ||
++        owner_closure.plugin_worker_membership_generation !=
++            status->worker_membership_generation ||
++        owner_closure.plugin_worker_mask != status->worker_mask ||
++        memcmp(owner_closure.plugin_worker_thread_ids, status->worker_thread_ids,
++               sizeof(owner_closure.plugin_worker_thread_ids))) {
++        return -ESTALE;
++    }
++    return 0;
++}
++
 +static bool ram_owner_thread_known(uint64_t thread_id)
 +{
 +    size_t matches = 0;
 +
 +    for (size_t index = 0; index < owner_closure.threads.thread_count; index++) {
-+        matches += owner_closure.threads.thread_ids[index] == thread_id;
++        matches += owner_closure.threads.thread_ids[index] > 0 &&
++            (uint64_t)owner_closure.threads.thread_ids[index] == thread_id;
 +    }
 +    for (size_t index = 0; index < RAM_SERVICE_WORKERS_MAX; index++) {
 +        matches += service_workers[index].thread_id == thread_id;
++    }
++    for (size_t index = 0;
++         index < ARRAY_SIZE(owner_closure.plugin_worker_thread_ids); index++) {
++        matches += owner_closure.plugin_worker_thread_ids[index] == thread_id;
 +    }
 +    return matches == 1;
 +}
@@ -132703,6 +132801,7 @@ index 0000000000000000000000000000000000000000..dc2746343876acb2e093b5673d410600
 +    for (size_t index = 0; index < RAM_SERVICE_WORKERS_MAX; index++) {
 +        expected += service_workers[index].thread_id != 0;
 +    }
++    expected += ctpop64(owner_closure.plugin_worker_mask);
 +    errno = 0;
 +    while ((entry = readdir(directory))) {
 +        char *end;
@@ -132796,22 +132895,45 @@ index 0000000000000000000000000000000000000000..dc2746343876acb2e093b5673d410600
 +int qemu_crucible_ram_owner_inventory(uint64_t *tasks, uint64_t *descriptors,
 +                                     uint64_t *service_tasks)
 +{
++    QemuPluginCrucibleHotForkBarrierInventory plugin;
 +    uint64_t services = 0;
++    uint64_t observed_tasks = 0;
++    uint64_t observed_descriptors = 0;
 +    int release;
 +    int result;
 +
 +    if (!tasks || !descriptors || !service_tasks || !bql_locked() ||
-+        owner_closure.token || owner_closure.threads.active) {
++        owner_closure.token || owner_closure.threads.active ||
++        owner_closure.plugin_owned || owner_closure.plugin_generation) {
 +        return -EBUSY;
 +    }
 +    *tasks = 0;
 +    *descriptors = 0;
 +    *service_tasks = 0;
 +
++    /* Initial admission runs before any vCPU under the boot fence. This is a
++     * plugin borrower hold, not a manufactured ordinary VMStop certificate. */
++    result = qemu_plugin_crucible_hot_fork_barrier(
++        QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY, &plugin);
++    if (result) {
++        return result;
++    }
++    owner_closure.plugin_owned =
++        !(plugin.status.flags & QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_HELD);
++    result = qemu_plugin_crucible_hot_fork_barrier(
++        QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_HOLD, &plugin);
++    if (!result) {
++        result = ram_owner_plugin_membership(&plugin, true);
++    }
++    if (result) {
++        goto release_plugin;
++    }
++
 +    pthread_mutex_lock(&service_lock);
 +    if (service_frozen || service_failed) {
 +        pthread_mutex_unlock(&service_lock);
-+        return -EBUSY;
++        result = -EBUSY;
++        goto release_plugin;
 +    }
 +    service_frozen = true;
 +    owner_closure.service_generation = service_generation;
@@ -132828,10 +132950,17 @@ index 0000000000000000000000000000000000000000..dc2746343876acb2e093b5673d410600
 +        result = ram_owner_descriptors(true);
 +    }
 +    if (!result) {
++        result = qemu_plugin_crucible_hot_fork_barrier(
++            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY, &plugin);
++    }
++    if (!result) {
++        result = ram_owner_plugin_membership(&plugin, false);
++    }
++    if (!result) {
 +        /* The report describes actual membership, not prospective capacity. */
-+        *tasks = owner_closure.threads.thread_count + services;
-+        *descriptors = owner_closure.descriptor_count;
-+        *service_tasks = services;
++        observed_tasks = owner_closure.threads.thread_count + services +
++            ctpop64(owner_closure.plugin_worker_mask);
++        observed_descriptors = owner_closure.descriptor_count;
 +    }
 +    if (owner_closure.threads.active) {
 +        release = qemu_thread_ram_pause_end(&owner_closure.threads);
@@ -132843,6 +132972,21 @@ index 0000000000000000000000000000000000000000..dc2746343876acb2e093b5673d410600
 +    pthread_mutex_lock(&service_lock);
 +    service_frozen = false;
 +    pthread_mutex_unlock(&service_lock);
++release_plugin:
++    if (owner_closure.plugin_owned) {
++        release = qemu_plugin_crucible_hot_fork_barrier(
++            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_RELEASE, &plugin);
++        if (release ||
++            (plugin.status.flags & QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_HELD)) {
++            /* Retain uncertain hold ownership; the process must be contained. */
++            return release ? release : -EBUSY;
++        }
++    }
++    if (!result) {
++        *tasks = observed_tasks;
++        *descriptors = observed_descriptors;
++        *service_tasks = services;
++    }
 +    memset(&owner_closure, 0, sizeof(owner_closure));
 +    return result;
 +}
@@ -132867,8 +133011,7 @@ index 0000000000000000000000000000000000000000..dc2746343876acb2e093b5673d410600
 +    }
 +    result = qemu_plugin_crucible_hot_fork_barrier(
 +        QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY, &plugin);
-+    if (result || !ram_plugin_quiescent(&plugin) ||
-+        plugin.generation != owner_closure.plugin_generation) {
++    if (result || ram_owner_plugin_membership(&plugin, false)) {
 +        return result ? result : -ESTALE;
 +    }
 +    qemu_rcu_hot_fork_barrier(QEMU_RCU_HOT_FORK_BARRIER_QUERY, &rcu);
@@ -132889,6 +133032,13 @@ index 0000000000000000000000000000000000000000..dc2746343876acb2e093b5673d410600
 +    }
 +    if (!result) {
 +        result = ram_owner_descriptors(false);
++    }
++    if (!result) {
++        result = qemu_plugin_crucible_hot_fork_barrier(
++            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY, &plugin);
++    }
++    if (!result) {
++        result = ram_owner_plugin_membership(&plugin, false);
 +    }
 +    return result;
 +}
@@ -132962,7 +133112,9 @@ index 0000000000000000000000000000000000000000..dc2746343876acb2e093b5673d410600
 +    QemuBlockBackendHotForkBarrierInventory block;
 +    int result;
 +
-+    if (!token || owner_closure.token || !ram_owner_paused()) {
++    if (!token || owner_closure.token || owner_closure.threads.active ||
++        owner_closure.plugin_owned || owner_closure.plugin_generation ||
++        !ram_owner_paused()) {
 +        return -EBUSY;
 +    }
 +    *token = 0;
@@ -133038,6 +133190,10 @@ index 0000000000000000000000000000000000000000..dc2746343876acb2e093b5673d410600
 +    owner_closure.plugin_generation = plugin.generation;
 +    if (!rcu.quiescent || !async.quiescent || !ram_plugin_quiescent(&plugin)) {
 +        result = -EAGAIN;
++        goto fail;
++    }
++    result = ram_owner_plugin_membership(&plugin, true);
++    if (result) {
 +        goto fail;
 +    }
 +    result = qemu_thread_ram_pause_begin(&owner_closure.threads);
@@ -185038,6 +185194,335 @@ index 0000000000000000000000000000000000000000..cd70e42217d46540d4048fc28bc16a08
 +    command = [*shlex.split(os.environ["CC"]),
 +               *shlex.split(os.environ.get("CFLAGS", "")),
 +               "-std=gnu11", "-Wall", "-Wextra", "-Werror", str(fixture),
++               "-o", str(binary), *shlex.split(os.environ.get("LDFLAGS", ""))]
++    (args.output_dir / "compile-command.json").write_text(json.dumps(command, indent=2) + "\n")
++    subprocess.run(command, check=True)
++    subprocess.run([str(binary)], cwd=args.output_dir, check=True, timeout=10)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/tests/unit/test-crucible-ram-worker-inventory.py b/tests/unit/test-crucible-ram-worker-inventory.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..c0b135ae090d450d291c2514f7cec64856b14443
+--- /dev/null
++++ b/tests/unit/test-crucible-ram-worker-inventory.py
+@@ -0,0 +1,323 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Exercises strict RAM membership with actual pthreads and /proc census.
++
++The fixture extracts the production private schema validator, membership proof,
++thread/descriptor census and initial inventory cleanup. Actors really register
++kernel TIDs and park. Native membership and plugin barrier callbacks are bounded
++fixture endpoints; this does not qualify a translated guest or VMStop fence.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import re
++import shlex
++import subprocess
++
++ROOT = Path(__file__).resolve().parents[2]
++
++
++def definition(source, signature):
++    start = source.index(signature)
++    opening = source.index("{", start)
++    depth = 0
++    for index in range(opening, len(source)):
++        depth += (source[index] == "{") - (source[index] == "}")
++        if depth == 0:
++            return source[start:index + 1]
++    raise AssertionError(signature)
++
++
++def declaration(header, signature):
++    start = header.index(signature)
++    return header[start:header.index(";", start) + 1]
++
++
++def aggregate(source, signature):
++    body = definition(source, signature)
++    start = source.index(signature)
++    return source[start:source.index(";", start + len(body)) + 1]
++
++
++PRELUDE = r"""
++#ifndef _GNU_SOURCE
++#define _GNU_SOURCE
++#endif
++#include <assert.h>
++#include <dirent.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <limits.h>
++#include <pthread.h>
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/stat.h>
++#include <sys/syscall.h>
++#include <unistd.h>
++#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
++#define ctpop64(v) __builtin_popcountll(v)
++#define qemu_mutex_lock pthread_mutex_lock
++#define qemu_mutex_unlock pthread_mutex_unlock
++static bool bql_locked(void) { return true; }
++"""
++
++ENDPOINTS = r"""
++_Static_assert(QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_STATUS_VERSION == 7,
++               "private barrier immediate schema cutover");
++_Static_assert(sizeof(struct qemu_plugin_crucible_hot_fork_barrier_status) == 128,
++               "fixed private barrier status extent");
++_Static_assert(offsetof(struct qemu_plugin_crucible_hot_fork_barrier_status,
++                       worker_process_id) == 88, "process offset");
++_Static_assert(offsetof(struct qemu_plugin_crucible_hot_fork_barrier_status,
++                       worker_membership_generation) == 96, "epoch offset");
++_Static_assert(offsetof(struct qemu_plugin_crucible_hot_fork_barrier_status,
++                       worker_thread_ids) == 104, "actor IDs offset");
++static pthread_mutex_t qemu_plugin_crucible_resource_lock = PTHREAD_MUTEX_INITIALIZER;
++static pthread_mutex_t qemu_plugin_crucible_barrier_operation_lock = PTHREAD_MUTEX_INITIALIZER;
++static QemuPluginCrucibleHotForkInventory qemu_plugin_crucible_resource_inventory;
++static QemuPluginCrucibleHotForkBarrierInventory qemu_plugin_crucible_barrier_inventory;
++static struct qemu_plugin_crucible_hot_fork_barrier_status actor_status;
++static int release_failure, release_calls;
++static int actor_barrier(uint32_t action,
++                         struct qemu_plugin_crucible_hot_fork_barrier_status *status,
++                         void *userdata)
++{
++    (void) userdata;
++    if (action == QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_HOLD) {
++        actor_status.flags = QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_HELD |
++            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_MAPPING_DONTFORK;
++        actor_status.rings_held = actor_status.ring_count;
++    } else if (action == QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_RELEASE) {
++        release_calls++;
++        if (release_failure) {
++            return release_failure;
++        }
++        actor_status.flags = 0;
++        actor_status.rings_held = 0;
++    }
++    *status = actor_status;
++    return 0;
++}
++static qemu_plugin_crucible_hot_fork_barrier_cb_t qemu_plugin_crucible_barrier_cb = actor_barrier;
++static void *qemu_plugin_crucible_barrier_userdata;
++static void qemu_plugin_crucible_hot_fork_inventory(QemuPluginCrucibleHotForkInventory *inventory)
++{
++    *inventory = qemu_plugin_crucible_resource_inventory;
++}
++static int qemu_thread_ram_pause_begin(QemuThreadRamPauseTransaction *transaction)
++{
++    transaction->thread_count = 1;
++    transaction->thread_ids[0] = syscall(SYS_gettid);
++    transaction->active = true;
++    return 0;
++}
++static int qemu_thread_ram_pause_end(QemuThreadRamPauseTransaction *transaction)
++{
++    transaction->active = false;
++    return 0;
++}
++"""
++
++TESTS = r"""
++typedef struct Actor {
++    pthread_t thread;
++    pthread_mutex_t lock;
++    pthread_cond_t changed;
++    uint64_t tid;
++    bool stop;
++} Actor;
++static void *actor_main(void *opaque)
++{
++    Actor *actor = opaque;
++    pthread_mutex_lock(&actor->lock);
++    actor->tid = syscall(SYS_gettid);
++    pthread_cond_signal(&actor->changed);
++    while (!actor->stop) {
++        pthread_cond_wait(&actor->changed, &actor->lock);
++    }
++    pthread_mutex_unlock(&actor->lock);
++    return NULL;
++}
++static void start_actor(Actor *actor)
++{
++    memset(actor, 0, sizeof(*actor));
++    assert(pthread_mutex_init(&actor->lock, NULL) == 0);
++    assert(pthread_cond_init(&actor->changed, NULL) == 0);
++    assert(pthread_create(&actor->thread, NULL, actor_main, actor) == 0);
++    pthread_mutex_lock(&actor->lock);
++    while (!actor->tid) {
++        pthread_cond_wait(&actor->changed, &actor->lock);
++    }
++    pthread_mutex_unlock(&actor->lock);
++}
++static void stop_actor(Actor *actor)
++{
++    pthread_mutex_lock(&actor->lock);
++    actor->stop = true;
++    pthread_cond_signal(&actor->changed);
++    pthread_mutex_unlock(&actor->lock);
++    assert(pthread_join(actor->thread, NULL) == 0);
++    pthread_mutex_destroy(&actor->lock);
++    pthread_cond_destroy(&actor->changed);
++}
++static void reset_inventory(Actor actors[3])
++{
++    memset(&owner_closure, 0, sizeof(owner_closure));
++    memset(&qemu_plugin_crucible_barrier_inventory, 0,
++           sizeof(qemu_plugin_crucible_barrier_inventory));
++    qemu_plugin_crucible_barrier_inventory.registered = true;
++    qemu_plugin_crucible_barrier_inventory.plugin_id = 41;
++    qemu_plugin_crucible_barrier_inventory.generation = 1;
++    qemu_plugin_crucible_resource_inventory = (QemuPluginCrucibleHotForkInventory) {
++        .registered = true, .complete = true, .generation = 1,
++        .manifest = { .plugin_id = 41, .process_generation = 1,
++                      .worker_mask = QEMU_PLUGIN_CRUCIBLE_WORKER_REQUIRED },
++    };
++    actor_status = (struct qemu_plugin_crucible_hot_fork_barrier_status) {
++        .schema_version = QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_STATUS_VERSION,
++        .struct_size = sizeof(actor_status), .ring_count = 1,
++        .worker_mask = QEMU_PLUGIN_CRUCIBLE_WORKER_REQUIRED,
++        .parked_worker_mask = QEMU_PLUGIN_CRUCIBLE_WORKER_REQUIRED,
++        .worker_process_id = getpid(), .worker_membership_generation = 3,
++        .worker_thread_ids = { actors[0].tid, actors[1].tid, 0 },
++    };
++    memset(service_workers, 0, sizeof(service_workers));
++    service_workers[0].thread_id = actors[2].tid;
++    service_generation = 1;
++    service_frozen = service_failed = false;
++    release_failure = release_calls = 0;
++}
++int main(void)
++{
++    Actor actors[3], unknown;
++    QemuPluginCrucibleHotForkBarrierInventory snapshot;
++    uint64_t tasks = 99, descriptors = 99, services = 99;
++    for (size_t i = 0; i < ARRAY_SIZE(actors); i++) {
++        start_actor(&actors[i]);
++    }
++    reset_inventory(actors);
++    assert(qemu_crucible_ram_owner_inventory(&tasks, &descriptors, &services) == 0);
++    assert(tasks == 4 && services == 1 && descriptors >= 3);
++    assert(release_calls == 1 && !actor_status.flags && !service_frozen);
++
++    reset_inventory(actors);
++    assert(qemu_plugin_crucible_hot_fork_barrier(QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_HOLD, &snapshot) == 0);
++    assert(qemu_crucible_ram_owner_inventory(&tasks, &descriptors, &services) == 0);
++    assert(release_calls == 0 && actor_status.flags && !service_frozen);
++
++    reset_inventory(actors);
++    start_actor(&unknown);
++    assert(qemu_crucible_ram_owner_inventory(&tasks, &descriptors, &services) == -ENOTSUP);
++    assert(!tasks && !descriptors && !services && release_calls == 1);
++    assert(!actor_status.flags && !service_frozen);
++    stop_actor(&unknown);
++
++    reset_inventory(actors);
++    service_workers[0].thread_id = actors[0].tid;
++    assert(qemu_crucible_ram_owner_inventory(&tasks, &descriptors, &services) == -ENOTSUP);
++    assert(!tasks && release_calls == 1);
++
++    reset_inventory(actors);
++    actor_status.worker_thread_ids[1] = actor_status.worker_thread_ids[0];
++    assert(qemu_crucible_ram_owner_inventory(&tasks, &descriptors, &services) == -EPROTO);
++    reset_inventory(actors);
++    actor_status.worker_thread_ids[1] = 0;
++    assert(qemu_crucible_ram_owner_inventory(&tasks, &descriptors, &services) == -EPROTO);
++    reset_inventory(actors);
++    actor_status.schema_version--;
++    assert(qemu_crucible_ram_owner_inventory(&tasks, &descriptors, &services) == -EPROTO);
++
++    reset_inventory(actors);
++    assert(qemu_plugin_crucible_hot_fork_barrier(QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_HOLD, &snapshot) == 0);
++    assert(ram_owner_plugin_membership(&snapshot, true) == 0);
++    actor_status.worker_membership_generation += 2;
++    assert(qemu_plugin_crucible_hot_fork_barrier(QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY, &snapshot) == 0);
++    assert(ram_owner_plugin_membership(&snapshot, false) == -ESTALE);
++    qemu_plugin_crucible_resource_inventory.generation++;
++    assert(ram_owner_plugin_membership(&snapshot, false) == -ESTALE);
++
++    reset_inventory(actors);
++    assert(qemu_plugin_crucible_hot_fork_barrier(QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY, &snapshot) == 0);
++    qemu_plugin_crucible_barrier_inventory.generation = UINT64_MAX;
++    uint64_t old_epoch = qemu_plugin_crucible_barrier_inventory.status.worker_membership_generation;
++    actor_status.worker_membership_generation++;
++    assert(qemu_plugin_crucible_hot_fork_barrier(QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY, &snapshot) == -EOVERFLOW);
++    assert(qemu_plugin_crucible_barrier_inventory.status.worker_membership_generation == old_epoch);
++    assert(qemu_plugin_crucible_hot_fork_barrier(QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY, &snapshot) == -EOVERFLOW);
++
++    reset_inventory(actors);
++    release_failure = -EIO;
++    assert(qemu_crucible_ram_owner_inventory(&tasks, &descriptors, &services) == -EIO);
++    assert(!tasks && !descriptors && !services && owner_closure.plugin_owned);
++    assert(qemu_crucible_ram_owner_inventory(&tasks, &descriptors, &services) == -EBUSY);
++    assert(owner_closure.plugin_owned && release_calls == 1);
++
++    for (size_t i = 0; i < ARRAY_SIZE(actors); i++) {
++        stop_actor(&actors[i]);
++    }
++    puts("strict worker inventory: exact union, unknown/duplicate/schema refusal, epochs and hold custody PASS");
++    return 0;
++}
++"""
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--output-dir", type=Path, required=True)
++    args = parser.parse_args()
++    source = (ROOT / "system/crucible-ram-quiescence.c").read_text()
++    api = (ROOT / "plugins/api-system.c").read_text()
++    plugin = (ROOT / "include/plugins/qemu-plugin.h").read_text()
++    inventory = (ROOT / "include/qemu/crucible-hot-fork-plugin.h").read_text()
++    thread = (ROOT / "include/qemu/thread.h").read_text()
++    owner = (ROOT / "include/system/crucible-ram-quiescence.h").read_text()
++    prototypes = [
++        declaration(inventory, "int qemu_plugin_crucible_hot_fork_barrier("),
++        declaration(owner, "int qemu_crucible_ram_owner_inventory("),
++    ]
++    constants = "\n".join(re.findall(
++        r"^#define (?:QEMU_PLUGIN_CRUCIBLE_(?:HOT_FORK_BARRIER|WORKER)[A-Z_]*|QEMU_RAM_PAUSE_MAX_THREADS|RAM_SERVICE_WORKERS_MAX|RAM_OWNER_DESCRIPTORS_MAX) .+$",
++        "\n".join([plugin, thread, source]).replace("\\\n", ""), re.MULTILINE,
++    ))
++    types = [aggregate(text, signature) for text, signature in [
++        (plugin, "struct qemu_plugin_crucible_resource_manifest {"),
++        (plugin, "struct qemu_plugin_crucible_hot_fork_barrier_status {"),
++        (inventory, "typedef struct QemuPluginCrucibleHotForkInventory {"),
++        (inventory, "typedef struct QemuPluginCrucibleHotForkBarrierInventory {"),
++        (thread, "typedef struct QemuThreadRamPauseTransaction {"),
++        (source, "typedef struct RamServiceWorker {"),
++        (source, "typedef struct RamOwnerDescriptor {"),
++        (source, "typedef struct RamOwnerClosure {"),
++    ]]
++    callback_start = plugin.index("typedef int (*qemu_plugin_crucible_hot_fork_barrier_cb_t)")
++    types.append(plugin[callback_start:plugin.index(";", callback_start) + 1])
++    globals_start = source.index("static pthread_mutex_t service_lock")
++    globals_end = source.index("static uint64_t owner_token_counter", globals_start)
++    globals_body = source[globals_start:globals_end]
++    bodies = [definition(source, signature) for signature in [
++        "static bool ram_plugin_quiescent(", "static int ram_owner_plugin_membership(",
++        "static bool ram_owner_thread_known(", "static int ram_owner_check_kernel_threads(",
++        "static int ram_owner_descriptors(", "int qemu_crucible_ram_owner_inventory(",
++    ]]
++    args.output_dir.mkdir(parents=True, exist_ok=True)
++    fixture = args.output_dir / "ram-worker-inventory.c"
++    binary = args.output_dir / "ram-worker-inventory"
++    fixture.write_text("\n\n".join([
++        PRELUDE, constants, *types, *prototypes, globals_body, ENDPOINTS,
++        definition(api, "int qemu_plugin_crucible_hot_fork_barrier("), *bodies, TESTS,
++    ]))
++    command = [*shlex.split(os.environ["CC"]), *shlex.split(os.environ.get("CFLAGS", "")),
++               "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-pthread", str(fixture),
 +               "-o", str(binary), *shlex.split(os.environ.get("LDFLAGS", ""))]
 +    (args.output_dir / "compile-command.json").write_text(json.dumps(command, indent=2) + "\n")
 +    subprocess.run(command, check=True)

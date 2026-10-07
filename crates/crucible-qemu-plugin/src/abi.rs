@@ -327,7 +327,7 @@ pub const QEMU_PLUGIN_HOT_FORK_BARRIER_QUERY: u32 = 2;
 /// Hot-fork barrier callback action that releases the reversible hold.
 pub const QEMU_PLUGIN_HOT_FORK_BARRIER_RELEASE: u32 = 3;
 /// Current fixed-layout callback, ring, worker, and mapping barrier schema.
-pub const QEMU_PLUGIN_HOT_FORK_BARRIER_STATUS_VERSION: u32 = 6;
+pub const QEMU_PLUGIN_HOT_FORK_BARRIER_STATUS_VERSION: u32 = 7;
 /// Callback-barrier status flag indicating that the reversible hold is active.
 pub const QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_HELD: u32 = 1_u32 << 0;
 /// Callback-barrier status flag indicating permanent teardown closure.
@@ -339,7 +339,7 @@ pub const QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_MAPPING_DONTFORK: u32 = 1_u32 << 2;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct QemuPluginHotForkBarrierStatus {
-    /// Status schema version, currently six.
+    /// Status schema version, currently seven.
     pub schema_version: u32,
     /// Exact C ABI structure size.
     pub struct_size: u32,
@@ -365,6 +365,12 @@ pub struct QemuPluginHotForkBarrierStatus {
     pub pending_worker_mask: u64,
     /// Checked count of worker operations admitted before the hold.
     pub worker_operations_in_flight: u64,
+    /// Actual creating process for the registered worker incarnations.
+    pub worker_process_id: u64,
+    /// Checked membership epoch changed by every worker entry, exit, and reset.
+    pub worker_membership_generation: u64,
+    /// Actual thread IDs indexed by RUN-control, teardown, and fingerprint roles.
+    pub worker_thread_ids: [u64; 3],
 }
 
 /// Plugin callback that changes or observes the callback-admission barrier.
