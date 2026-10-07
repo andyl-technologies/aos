@@ -4,7 +4,12 @@
 //! count, and the checks that make the wait bounded or an adversarial input.
 //! Additional sleeps and changed expressions remain visible to the lint.
 
+#[path = "operational_inputs.rs"]
+mod operational_inputs;
+
 pub(super) fn mask_operational_waits(package: &str, target: &str, code: &str) -> String {
+    let operational = operational_inputs::mask(package, target, code);
+    let code = operational.as_str();
     let (requirements, expressions): (&[&str], &[(&str, usize)]) = match (package, target) {
         ("crucible-daemon", "src/executor_pool/checkpoint") => (
             &[
