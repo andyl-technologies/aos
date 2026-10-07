@@ -102,6 +102,9 @@ static DirtyMemoryBlocks storage[DIRTY_MEMORY_NUM];
 static unsigned long bits[DIRTY_MEMORY_NUM][2];
 static unsigned reads[DIRTY_MEMORY_NUM];
 static unsigned rcu_scopes;
+static bool xen_active;
+static unsigned xen_calls;
+static ram_addr_t xen_start, xen_length;
 static unsigned global_dirty_tracking;
 static unsigned root_epochs;
 static unsigned checkpoint_epochs;
@@ -171,12 +174,12 @@ static void bitmap_set_atomic(unsigned long *bitmap, unsigned long first,
 
 static void qemu_crucible_ram_dirty_generation_advance(void) { root_epochs++; }
 static void qemu_crucible_checkpoint_dirty_generation_advance(void) { checkpoint_epochs++; }
-static bool xen_enabled(void) { return false; }
+static bool xen_enabled(void) { return xen_active; }
 static void xen_hvm_modified_memory(ram_addr_t start, ram_addr_t length)
 {
-    (void)start;
-    (void)length;
-    assert(false);
+    xen_calls++;
+    xen_start = start;
+    xen_length = length;
 }
 
 static int qemu_plugin_crucible_ram_physical_validate_v1(uint64_t token,
@@ -219,6 +222,9 @@ static void reset(void)
         paging_dirty_planes[client] = NULL;
     }
     global_dirty_tracking = root_epochs = checkpoint_epochs = rcu_scopes = 0;
+    xen_active = false;
+    xen_calls = 0;
+    xen_start = xen_length = 0;
     validations = starts = seals = 0;
     validation_status = second_validation_status = seal_status = 0;
     paging_topology_pinned = false;
@@ -264,12 +270,46 @@ int main(void)
                     (client != DIRTY_MEMORY_CRUCIBLE_RAM || active);
                 assert(bits[client][0] == (expected ? 128 : 0));
                 assert(bits[client][1] == (expected ? 1 : 0));
-                assert(reads[client] == (unsigned)expected);
+                unsigned filtered_mask = active ? mask : mask & 15;
+                bool entered = filtered_mask != 0;
+                bool header_expected = entered && (client < 4 || expected);
+                assert(reads[client] == (unsigned)header_expected);
             }
             assert(root_epochs == (unsigned)(active && (mask & 16)));
             assert(checkpoint_epochs == (unsigned)!!(mask & 8));
         }
     }
+
+    /* Unselected headers may be NULL; only selected bitmaps are dereferenced. */
+    reset();
+    global_dirty_tracking = GLOBAL_DIRTY_CRUCIBLE_CHECKPOINT;
+    ram_list.dirty_memory[DIRTY_MEMORY_CODE] = NULL;
+    ram_list.dirty_memory[DIRTY_MEMORY_CRUCIBLE_RAM] = NULL;
+    physical_memory_set_dirty_range(7 * 4096 + 3, 4096, 29);
+    for (unsigned client = 0; client < DIRTY_MEMORY_NUM; client++) {
+        bool selected = client == DIRTY_MEMORY_VGA ||
+            client == DIRTY_MEMORY_MIGRATION ||
+            client == DIRTY_MEMORY_CRUCIBLE_CHECKPOINT;
+        assert(bits[client][0] == (selected ? 128 : 0));
+        assert(bits[client][1] == (selected ? 1 : 0));
+        assert(reads[client] == (unsigned)(client < DIRTY_MEMORY_CRUCIBLE_RAM));
+    }
+    assert(root_epochs == 0 && checkpoint_epochs == 1 && rcu_scopes == 1);
+    assert(xen_calls == 0);
+
+    /* Xen's mask-zero path loads pointers but never touches any bitmap. */
+    reset();
+    xen_active = true;
+    for (unsigned client = 0; client < DIRTY_MEMORY_NUM; client++) {
+        ram_list.dirty_memory[client] = NULL;
+    }
+    physical_memory_set_dirty_range(7 * 4096 + 3, 4096, 0);
+    for (unsigned client = 0; client < DIRTY_MEMORY_NUM; client++) {
+        assert(bits[client][0] == 0 && bits[client][1] == 0);
+        assert(reads[client] == (unsigned)(client < DIRTY_MEMORY_CRUCIBLE_RAM));
+    }
+    assert(root_epochs == 0 && checkpoint_epochs == 0 && rcu_scopes == 1);
+    assert(xen_calls == 1 && xen_start == 7 * 4096 + 3 && xen_length == 4096);
 
     /* Activation before first capture arms native tracking and revalidates. */
     reset();

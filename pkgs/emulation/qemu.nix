@@ -1780,6 +1780,11 @@ in
               grep -Fxq 'strict worker inventory: exact union, unknown/duplicate/schema refusal, epochs and hold custody PASS' \
                 ram-worker-inventory.result
               cp ram-worker-inventory.result "$out/share/aos/crucible/ram-worker-inventory.result"
+              build/tests/unit/test-crucible-aio-retirement > aio-worker-retirement.result
+              cat aio-worker-retirement.result
+              grep -q '^AIO retirement: actual join, late unregister/kernel TID, nested/queued/active/completion/nonmain refusal, lazy recreation PASS;' \
+                aio-worker-retirement.result
+              cp aio-worker-retirement.result "$out/share/aos/crucible/aio-worker-retirement.result"
               cat tcg-fast-paths.result
               grep -q '^PASS production TCG fast paths:' tcg-fast-paths.result
               cat mutex-owner-cache.result

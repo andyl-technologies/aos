@@ -1,4 +1,4 @@
-From 94b0729c3f85e8f5fd64610069026e3b494d53b2 Mon Sep 17 00:00:00 2001
+From 2b4751f0ca8fe03f4852c453d5b4f09f0eab16ec Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Tue, 6 Oct 2026 07:05:00 +0000
 Subject: [PATCH] Integrate deterministic execution and authenticated paged RAM
@@ -132568,15 +132568,16 @@ index 0000000000000000000000000000000000000000..8856b8fa198d8fce86de3bca04d3c1b5
 +}
 diff --git a/system/crucible-ram-quiescence.c b/system/crucible-ram-quiescence.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..9572446420488cabd0ac9a36f5396716839950ea
+index 0000000000000000000000000000000000000000..5009a3167cad5e21a393dca04ccaa142afaa8502
 --- /dev/null
 +++ b/system/crucible-ram-quiescence.c
-@@ -0,0 +1,717 @@
+@@ -0,0 +1,726 @@
 +/*
 + * Physical RAM borrower owner closure
 + * SPDX-License-Identifier: GPL-2.0-or-later
 + */
 +#include "qemu/osdep.h"
++#include "qapi/error.h"
 +
 +#include <dirent.h>
 +
@@ -132963,6 +132964,7 @@ index 0000000000000000000000000000000000000000..9572446420488cabd0ac9a36f5396716
 +    uint64_t services = 0;
 +    uint64_t observed_tasks = 0;
 +    uint64_t observed_descriptors = 0;
++    Error *error = NULL;
 +    int release;
 +    int result;
 +
@@ -132974,6 +132976,13 @@ index 0000000000000000000000000000000000000000..9572446420488cabd0ac9a36f5396716
 +    *tasks = 0;
 +    *descriptors = 0;
 +    *service_tasks = 0;
++
++    /* Early block graph opening precedes icount and can create native workers.
++     * Retire only drained home-context pools before taking borrower holds. */
++    if (!qemu_aio_hot_fork_prepare_thread_pools(&error)) {
++        error_free(error);
++        return -EBUSY;
++    }
 +
 +    /* Initial admission runs before any vCPU under the boot fence. This is a
 +     * plugin borrower hold, not a manufactured ordinary VMStop certificate. */
@@ -133796,7 +133805,7 @@ index cd3193d170b2b5759cb34e4087a6d0ebfa805287..57459ab307b81deebd0b35fb15efef46
 +  ))
  endif
 diff --git a/system/physmem.c b/system/physmem.c
-index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd519e2618 100644
+index c21ea929153e5b67efa47432b1db0993e2690f9c..d1b8803775f6da5cd9402a9b2bf74fddbace558e 100644
 --- a/system/physmem.c
 +++ b/system/physmem.c
 @@ -48,6 +48,7 @@
@@ -134189,18 +134198,22 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
      if (!mask && !xen_enabled()) {
          return;
      }
-@@ -1025,7 +1342,9 @@ void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
+@@ -1024,9 +1341,13 @@ void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
+     page = start >> TARGET_PAGE_BITS;
  
      WITH_RCU_READ_LOCK_GUARD() {
-         for (i = 0; i < DIRTY_MEMORY_NUM; i++) {
--            blocks[i] = qatomic_rcu_read(&ram_list.dirty_memory[i]);
-+            if (mask & (1 << i)) {
-+                blocks[i] = qatomic_rcu_read(&ram_list.dirty_memory[i]);
-+            }
+-        for (i = 0; i < DIRTY_MEMORY_NUM; i++) {
++        for (i = 0; i < DIRTY_MEMORY_CRUCIBLE_RAM; i++) {
+             blocks[i] = qatomic_rcu_read(&ram_list.dirty_memory[i]);
          }
++        if (mask & (1 << DIRTY_MEMORY_CRUCIBLE_RAM)) {
++            blocks[DIRTY_MEMORY_CRUCIBLE_RAM] =
++                qatomic_rcu_read(&ram_list.dirty_memory[DIRTY_MEMORY_CRUCIBLE_RAM]);
++        }
  
          idx = page / DIRTY_MEMORY_BLOCK_SIZE;
-@@ -1046,6 +1365,16 @@ void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
+         offset = page % DIRTY_MEMORY_BLOCK_SIZE;
+@@ -1046,6 +1367,16 @@ void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
                  bitmap_set_atomic(blocks[DIRTY_MEMORY_CODE]->blocks[idx],
                                    offset, next - page);
              }
@@ -134217,7 +134230,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
  
              page = next;
              idx++;
-@@ -1248,7 +1577,8 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
+@@ -1248,7 +1579,8 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
                      nbits = ctpopl(temp);
                      qatomic_or(&blocks[DIRTY_MEMORY_VGA][idx][offset], temp);
  
@@ -134227,7 +134240,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
                          qatomic_or(
                                  &blocks[DIRTY_MEMORY_MIGRATION][idx][offset],
                                  temp);
-@@ -1257,6 +1587,18 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
+@@ -1257,6 +1589,18 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
                              total_dirty_pages += nbits;
                          }
                      }
@@ -134246,7 +134259,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
  
                      num_dirty += nbits;
  
-@@ -1280,9 +1622,15 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
+@@ -1280,9 +1624,15 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
          uint8_t clients = tcg_enabled() ? DIRTY_CLIENTS_ALL
                                          : DIRTY_CLIENTS_NOCODE;
  
@@ -134263,7 +134276,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
  
          /*
           * bitmap-traveling is faster than memory-traveling (for addr...)
-@@ -2031,6 +2379,11 @@ int qemu_ram_resize(RAMBlock *block, ram_addr_t newsize, Error **errp)
+@@ -2031,6 +2381,11 @@ int qemu_ram_resize(RAMBlock *block, ram_addr_t newsize, Error **errp)
           * sizes), however, we have to notify if the unaligned size changed.
           */
          if (unaligned_size != memory_region_size(block->mr)) {
@@ -134275,7 +134288,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
              memory_region_set_size(block->mr, unaligned_size);
              if (block->resized) {
                  block->resized(block->idstr, unaligned_size, block->host);
-@@ -2055,6 +2408,8 @@ int qemu_ram_resize(RAMBlock *block, ram_addr_t newsize, Error **errp)
+@@ -2055,6 +2410,8 @@ int qemu_ram_resize(RAMBlock *block, ram_addr_t newsize, Error **errp)
          return -EINVAL;
      }
  
@@ -134284,7 +134297,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
      /* Notify before modifying the ram block and touching the bitmaps. */
      if (block->host) {
          ram_block_notify_resize(block->host, oldsize, newsize);
-@@ -2062,6 +2417,7 @@ int qemu_ram_resize(RAMBlock *block, ram_addr_t newsize, Error **errp)
+@@ -2062,6 +2419,7 @@ int qemu_ram_resize(RAMBlock *block, ram_addr_t newsize, Error **errp)
  
      physical_memory_clear_dirty_range(block->offset, block->used_length);
      block->used_length = newsize;
@@ -134292,7 +134305,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
      physical_memory_set_dirty_range(block->offset, block->used_length,
                                          DIRTY_CLIENTS_ALL);
      memory_region_set_size(block->mr, unaligned_size);
-@@ -2105,6 +2461,14 @@ void qemu_ram_msync(RAMBlock *block, ram_addr_t start, ram_addr_t length)
+@@ -2105,6 +2463,14 @@ void qemu_ram_msync(RAMBlock *block, ram_addr_t start, ram_addr_t length)
      }
  }
  
@@ -134307,7 +134320,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
  /* Called with ram_list.mutex held */
  static void dirty_memory_extend(ram_addr_t new_ram_size)
  {
-@@ -2126,6 +2490,12 @@ static void dirty_memory_extend(ram_addr_t new_ram_size)
+@@ -2126,6 +2492,12 @@ static void dirty_memory_extend(ram_addr_t new_ram_size)
          old_blocks = qatomic_rcu_read(&ram_list.dirty_memory[i]);
          new_blocks = g_malloc(sizeof(*new_blocks) +
                                sizeof(new_blocks->blocks[0]) * new_num_blocks);
@@ -134320,7 +134333,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
  
          if (old_num_blocks) {
              memcpy(new_blocks->blocks, old_blocks->blocks,
-@@ -2134,12 +2504,16 @@ static void dirty_memory_extend(ram_addr_t new_ram_size)
+@@ -2134,12 +2506,16 @@ static void dirty_memory_extend(ram_addr_t new_ram_size)
  
          for (j = old_num_blocks; j < new_num_blocks; j++) {
              new_blocks->blocks[j] = bitmap_new(DIRTY_MEMORY_BLOCK_SIZE);
@@ -134338,7 +134351,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
          }
      }
  
-@@ -2156,6 +2530,8 @@ static void ram_block_add(RAMBlock *new_block, Error **errp)
+@@ -2156,6 +2532,8 @@ static void ram_block_add(RAMBlock *new_block, Error **errp)
      ram_addr_t ram_size;
      Error *err = NULL;
  
@@ -134347,7 +134360,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
      qemu_mutex_lock_ramlist();
      new_block->offset = find_ram_offset(new_block->max_length);
  
-@@ -2264,6 +2640,7 @@ static void ram_block_add(RAMBlock *new_block, Error **errp)
+@@ -2264,6 +2642,7 @@ static void ram_block_add(RAMBlock *new_block, Error **errp)
  
      /* Write list before version */
      qatomic_store_release(&ram_list.version, ram_list.version + 1);
@@ -134355,7 +134368,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
      qemu_mutex_unlock_ramlist();
  
      physical_memory_set_dirty_range(new_block->offset,
-@@ -2597,15 +2974,21 @@ void qemu_ram_free(RAMBlock *block)
+@@ -2597,15 +2976,21 @@ void qemu_ram_free(RAMBlock *block)
          return;
      }
  
@@ -134377,7 +134390,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
      qatomic_set(&ram_list.mru_block, NULL);
      /* Write list before version */
      qatomic_store_release(&ram_list.version, ram_list.version + 1);
-@@ -2688,6 +3071,12 @@ void qemu_ram_remap(ram_addr_t addr)
+@@ -2688,6 +3073,12 @@ void qemu_ram_remap(ram_addr_t addr)
                  qemu_ram_setup_dump(vaddr, page_size);
              }
  
@@ -134390,7 +134403,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
              break;
          }
      }
-@@ -3145,6 +3534,42 @@ static void invalidate_and_set_dirty(MemoryRegion *mr, hwaddr addr,
+@@ -3145,6 +3536,42 @@ static void invalidate_and_set_dirty(MemoryRegion *mr, hwaddr addr,
      physical_memory_set_dirty_range(addr, length, dirty_log_mask);
  }
  
@@ -134433,7 +134446,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
  void memory_region_flush_rom_device(MemoryRegion *mr, hwaddr addr, hwaddr size)
  {
      /*
-@@ -3230,7 +3655,8 @@ static bool flatview_access_allowed(MemoryRegion *mr, MemTxAttrs attrs,
+@@ -3230,7 +3657,8 @@ static bool flatview_access_allowed(MemoryRegion *mr, MemTxAttrs attrs,
  static MemTxResult flatview_write_continue_step(MemTxAttrs attrs,
                                                  const uint8_t *buf,
                                                  hwaddr len, hwaddr mr_addr,
@@ -134443,7 +134456,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
  {
      if (!flatview_access_allowed(mr, attrs, mr_addr, *l)) {
          return MEMTX_ACCESS_ERROR;
-@@ -3270,8 +3696,35 @@ static MemTxResult flatview_write_continue_step(MemTxAttrs attrs,
+@@ -3270,8 +3698,35 @@ static MemTxResult flatview_write_continue_step(MemTxAttrs attrs,
          uint8_t *ram_ptr = qemu_ram_ptr_length(mr->ram_block, mr_addr, l,
                                                 false, true);
  
@@ -134481,7 +134494,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
  
          return MEMTX_OK;
      }
-@@ -3282,14 +3735,15 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
+@@ -3282,14 +3737,15 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
                                             MemTxAttrs attrs,
                                             const void *ptr,
                                             hwaddr len, hwaddr mr_addr,
@@ -134500,7 +134513,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
  
          len -= l;
          buf += l;
-@@ -3300,7 +3754,8 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
+@@ -3300,7 +3756,8 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
          }
  
          l = len;
@@ -134510,7 +134523,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
      }
  
      return result;
-@@ -3312,21 +3767,24 @@ static MemTxResult flatview_write(FlatView *fv, hwaddr addr, MemTxAttrs attrs,
+@@ -3312,21 +3769,24 @@ static MemTxResult flatview_write(FlatView *fv, hwaddr addr, MemTxAttrs attrs,
  {
      hwaddr l;
      hwaddr mr_addr;
@@ -134538,7 +134551,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
  {
      if (!flatview_access_allowed(mr, attrs, mr_addr, *l)) {
          return MEMTX_ACCESS_ERROR;
-@@ -3365,6 +3823,26 @@ static MemTxResult flatview_read_continue_step(MemTxAttrs attrs, uint8_t *buf,
+@@ -3365,6 +3825,26 @@ static MemTxResult flatview_read_continue_step(MemTxAttrs attrs, uint8_t *buf,
  
          memcpy(buf, ram_ptr, *l);
  
@@ -134565,7 +134578,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
          return MEMTX_OK;
      }
  }
-@@ -3377,10 +3855,18 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
+@@ -3377,10 +3857,18 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
  {
      MemTxResult result = MEMTX_OK;
      uint8_t *buf = ptr;
@@ -134585,7 +134598,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
  
          len -= l;
          buf += l;
-@@ -3391,7 +3877,8 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
+@@ -3391,7 +3879,8 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
          }
  
          l = len;
@@ -134595,7 +134608,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
      }
  
      return result;
-@@ -3403,10 +3890,12 @@ static MemTxResult flatview_read(FlatView *fv, hwaddr addr,
+@@ -3403,10 +3892,12 @@ static MemTxResult flatview_read(FlatView *fv, hwaddr addr,
  {
      hwaddr l;
      hwaddr mr_addr;
@@ -134609,7 +134622,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
      if (!flatview_access_allowed(mr, attrs, mr_addr, l)) {
          return MEMTX_ACCESS_ERROR;
      }
-@@ -3456,6 +3945,73 @@ MemTxResult address_space_rw(const AddressSpace *as, hwaddr addr,
+@@ -3456,6 +3947,73 @@ MemTxResult address_space_rw(const AddressSpace *as, hwaddr addr,
      }
  }
  
@@ -134683,7 +134696,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
  MemTxResult address_space_set(const AddressSpace *as, hwaddr addr,
                                uint8_t c, hwaddr len, MemTxAttrs attrs)
  {
-@@ -3555,6 +4111,12 @@ typedef struct {
+@@ -3555,6 +4113,12 @@ typedef struct {
      MemoryRegion *mr;
      hwaddr addr;
      size_t len;
@@ -134696,7 +134709,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
      uint8_t buffer[];
  } BounceBuffer;
  
-@@ -3724,7 +4286,9 @@ void *address_space_map(AddressSpace *as,
+@@ -3724,7 +4288,9 @@ void *address_space_map(AddressSpace *as,
      fv = address_space_to_flatview(as);
      mr = flatview_translate(fv, addr, &xlat, &l, is_write, attrs);
  
@@ -134707,7 +134720,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
          size_t used = qatomic_read(&as->bounce_buffer_size);
          for (;;) {
              hwaddr alloc = MIN(as->max_bounce_buffer_size - used, l);
-@@ -3749,13 +4313,52 @@ void *address_space_map(AddressSpace *as,
+@@ -3749,13 +4315,52 @@ void *address_space_map(AddressSpace *as,
          bounce->mr = mr;
          bounce->addr = addr;
          bounce->len = l;
@@ -134764,7 +134777,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
          return bounce->buffer;
      }
  
-@@ -3763,7 +4366,12 @@ void *address_space_map(AddressSpace *as,
+@@ -3763,7 +4368,12 @@ void *address_space_map(AddressSpace *as,
      *plen = flatview_extend_translation(fv, addr, len, mr, xlat,
                                          l, is_write, attrs);
      fuzz_dma_read_cb(addr, *plen, mr);
@@ -134778,7 +134791,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
  }
  
  /* Unmaps a memory region previously mapped by address_space_map().
-@@ -3778,6 +4386,7 @@ void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len,
+@@ -3778,6 +4388,7 @@ void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len,
  
      mr = memory_region_from_host(buffer, &addr1);
      if (mr != NULL) {
@@ -134786,7 +134799,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
          if (is_write) {
              invalidate_and_set_dirty(mr, addr1, access_len);
          }
-@@ -3792,11 +4401,54 @@ void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len,
+@@ -3792,11 +4403,54 @@ void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len,
      BounceBuffer *bounce = container_of(buffer, BounceBuffer, buffer);
      assert(bounce->magic == BOUNCE_BUFFER_MAGIC);
  
@@ -134843,7 +134856,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
      qatomic_sub(&as->bounce_buffer_size, bounce->len);
      bounce->magic = ~BOUNCE_BUFFER_MAGIC;
      memory_region_unref(bounce->mr);
-@@ -3839,6 +4491,10 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
+@@ -3839,6 +4493,10 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
  
      assert(len > 0);
  
@@ -134854,7 +134867,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
      l = len;
      cache->fv = address_space_get_flatview(as);
      d = flatview_to_dispatch(cache->fv);
-@@ -3863,17 +4519,79 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
+@@ -3863,17 +4521,79 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
          l = flatview_extend_translation(cache->fv, addr, len, mr,
                                          cache->xlat, l, is_write,
                                          MEMTXATTRS_UNSPECIFIED);
@@ -134936,7 +134949,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
  void address_space_cache_invalidate(const MemoryRegionCache *cache,
                                      hwaddr addr,
                                      hwaddr access_len)
-@@ -3890,6 +4608,13 @@ void address_space_cache_destroy(MemoryRegionCache *cache)
+@@ -3890,6 +4610,13 @@ void address_space_cache_destroy(MemoryRegionCache *cache)
          return;
      }
  
@@ -134950,7 +134963,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
      if (xen_map_cache_enabled()) {
          xen_invalidate_map_cache_entry(cache->ptr);
      }
-@@ -3941,8 +4666,8 @@ static MemTxResult address_space_write_continue_cached(MemTxAttrs attrs,
+@@ -3941,8 +4668,8 @@ static MemTxResult address_space_write_continue_cached(MemTxAttrs attrs,
      const uint8_t *buf = ptr;
  
      for (;;) {
@@ -134961,7 +134974,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
  
          len -= l;
          buf += l;
-@@ -3968,7 +4693,8 @@ static MemTxResult address_space_read_continue_cached(MemTxAttrs attrs,
+@@ -3968,7 +4695,8 @@ static MemTxResult address_space_read_continue_cached(MemTxAttrs attrs,
      uint8_t *buf = ptr;
  
      for (;;) {
@@ -134971,7 +134984,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
          len -= l;
          buf += l;
          mr_addr += l;
-@@ -4070,6 +4796,36 @@ int cpu_memory_rw_debug(CPUState *cpu, vaddr addr,
+@@ -4070,6 +4798,36 @@ int cpu_memory_rw_debug(CPUState *cpu, vaddr addr,
      return 0;
  }
  
@@ -135008,7 +135021,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
  int qemu_ram_foreach_block(RAMBlockIterFunc func, void *opaque)
  {
      RAMBlock *block;
-@@ -4222,6 +4978,12 @@ int ram_block_discard_range(RAMBlock *rb, uint64_t offset, size_t length)
+@@ -4222,6 +4980,12 @@ int ram_block_discard_range(RAMBlock *rb, uint64_t offset, size_t length)
      if (rb->guest_memfd >= 0) {
          ret = ram_block_discard_guest_memfd_range(rb, offset, length);
      }
@@ -135021,7 +135034,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd
  
      return ret;
  }
-@@ -4492,3 +5254,51 @@ void ram_block_del_cpr_blocker(RAMBlock *rb)
+@@ -4492,3 +5256,51 @@ void ram_block_del_cpr_blocker(RAMBlock *rb)
  {
      migrate_del_blocker(&rb->cpr_blocker);
  }
@@ -156113,7 +156126,7 @@ index 656a47524708e2a0e524cd1ff25d7ae0fd06e659..21a5585d8f96f329c6cd08a7cd2bb561
      return g_test_run();
  }
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..b3ab201ebe36ed61c03825aa4ffb46162a4e768b 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..e4da9514848289b16c544a87dc67193b97ed1b1e 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -125,6 +125,10 @@ if have_block
@@ -156165,10 +156178,27 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..b3ab201ebe36ed61c03825aa4ffb4616
    if config_host_data.get('CONFIG_INOTIFY1')
      tests += {'test-util-filemonitor': []}
    endif
-@@ -207,3 +242,650 @@ foreach test_name, extra: tests
+@@ -207,3 +242,667 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
++
++if have_block and host_os == 'linux'
++  aio_retirement_test = executable(
++    'test-crucible-aio-retirement',
++    'test-crucible-aio-retirement.c',
++    genh,
++    dependencies: [qemuutil, testblock],
++    c_args: ['-Werror'],
++  )
++  test(
++    'test-crucible-aio-retirement',
++    aio_retirement_test,
++    env: test_env,
++    timeout: 30,
++    suite: ['unit'],
++  )
++endif
 +
 +if have_system and have_tcg and get_option('plugins')
 +  vcpu_service_time_test = executable(
@@ -162597,6 +162627,344 @@ index 0000000000000000000000000000000000000000..72fc11653613c99eabce0c7de40f446f
 +
 +if __name__ == "__main__":
 +    main()
+diff --git a/tests/unit/test-crucible-aio-retirement.c b/tests/unit/test-crucible-aio-retirement.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..07aaafd38409ec156ce72ca46fd135ed7105a0ee
+--- /dev/null
++++ b/tests/unit/test-crucible-aio-retirement.c
+@@ -0,0 +1,332 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* Exercises the actual pool implementation and actual QEMU pthread exit path.
++ * This component test is not a guest or whole-node resource qualification. */
++#include "qemu/osdep.h"
++#include "qapi/error.h"
++#include "qemu/main-loop.h"
++#include "qemu/notify.h"
++#include "qemu/thread.h"
++#include "qemu/atomic.h"
++#include "qemu/aiocb.h"
++#include "block/thread-pool.h"
++
++/* Exposes only file-private pool state to assertions; no alternate worker. */
++#include "../../util/thread-pool.c"
++
++static AioContext *home;
++static QemuMutex exit_lock;
++static QemuCond exit_changed;
++static bool exit_entered;
++static bool exit_allowed;
++static bool retirement_returned;
++static int64_t delayed_tid;
++static __thread Notifier exit_notifier;
++static int callbacks;
++
++static bool kernel_has_tid(int64_t tid)
++{
++    char path[64];
++    int length = snprintf(path, sizeof(path), "/proc/self/task/%" PRId64, tid);
++
++    g_assert_cmpint(length, >, 0);
++    g_assert_cmpint(length, <, sizeof(path));
++    return access(path, F_OK) == 0;
++}
++
++static bool registry_has_tid(int64_t tid)
++{
++    QemuThreadHotForkInventory inventory;
++    bool found = false;
++
++    qemu_thread_hot_fork_inventory(&inventory);
++    for (size_t i = 0; i < inventory.entry_count; i++) {
++        found |= inventory.entries[i].thread_id == tid;
++    }
++    qemu_thread_hot_fork_inventory_destroy(&inventory);
++    return found;
++}
++
++static void delay_exit(Notifier *notifier, void *data)
++{
++    (void)notifier;
++    (void)data;
++    qemu_mutex_lock(&exit_lock);
++    delayed_tid = qemu_get_thread_id();
++    exit_entered = true;
++    qemu_cond_broadcast(&exit_changed);
++    while (!exit_allowed) {
++        qemu_cond_wait(&exit_changed, &exit_lock);
++    }
++    qemu_mutex_unlock(&exit_lock);
++}
++
++static int register_delayed_exit(void *opaque)
++{
++    (void)opaque;
++    exit_notifier.notify = delay_exit;
++    qemu_thread_atexit_add(&exit_notifier);
++    return 17;
++}
++
++static int ordinary_work(void *opaque)
++{
++    return *(int *)opaque;
++}
++
++static void completed(void *opaque, int ret)
++{
++    *(int *)opaque = ret;
++    callbacks++;
++}
++
++static void nested_retirement(void *opaque, int ret)
++{
++    ThreadPoolAio *pool = aio_get_thread_pool(home);
++    Error *error = NULL;
++
++    g_assert_cmpint(ret, ==, 17);
++    /* The last completion has already left head, but dispatch still borrows. */
++    g_assert_true(QLIST_EMPTY(&pool->head));
++    g_assert_false(qemu_aio_hot_fork_prepare_thread_pools(&error));
++    g_assert_nonnull(error);
++    g_assert_true(aio_get_thread_pool(home) == pool);
++    error_free(error);
++    *(bool *)opaque = true;
++}
++
++static void *release_delayed_exit(void *opaque)
++{
++    ThreadPoolAio *pool = opaque;
++
++    qemu_mutex_lock(&exit_lock);
++    while (!exit_entered) {
++        qemu_cond_wait(&exit_changed, &exit_lock);
++    }
++    /* Logical zero occurs before this actual atexit callback and unregister. */
++    qemu_mutex_lock(&pool->lock);
++    g_assert_cmpint(pool->cur_threads, ==, 0);
++    qemu_mutex_unlock(&pool->lock);
++    g_assert_true(kernel_has_tid(delayed_tid));
++    g_assert_false(qatomic_read(&retirement_returned));
++    exit_allowed = true;
++    qemu_cond_broadcast(&exit_changed);
++    qemu_mutex_unlock(&exit_lock);
++    return NULL;
++}
++
++typedef struct BlockedWork {
++    QemuMutex lock;
++    QemuCond changed;
++    bool entered;
++    bool released;
++} BlockedWork;
++
++static int blocked_work(void *opaque)
++{
++    BlockedWork *work = opaque;
++
++    qemu_mutex_lock(&work->lock);
++    work->entered = true;
++    qemu_cond_signal(&work->changed);
++    while (!work->released) {
++        qemu_cond_wait(&work->changed, &work->lock);
++    }
++    qemu_mutex_unlock(&work->lock);
++    return 23;
++}
++
++typedef struct FinishWork {
++    ThreadPoolAio *pool;
++    int value;
++} FinishWork;
++
++static int finish_and_exit(void *opaque)
++{
++    FinishWork *work = opaque;
++
++    qemu_mutex_lock(&work->pool->lock);
++    work->pool->max_threads = 0;
++    qemu_mutex_unlock(&work->pool->lock);
++    return work->value;
++}
++
++static void assert_retirement_refused(ThreadPoolAio *pool)
++{
++    Error *error = NULL;
++
++    g_assert_false(qemu_aio_hot_fork_prepare_thread_pools(&error));
++    g_assert_nonnull(error);
++    g_assert_true(aio_get_thread_pool(home) == pool);
++    error_free(error);
++}
++
++static void refuse_actual_work(void)
++{
++    ThreadPoolAio *pool = aio_get_thread_pool(home);
++    BlockedWork work = { 0 };
++    int maximum = home->thread_pool_max;
++    int first_result = -1, second_result = -1;
++    FinishWork second_work = { .pool = pool, .value = 29 };
++    BlockAIOCB *first, *second;
++
++    qemu_mutex_init(&work.lock);
++    qemu_cond_init(&work.changed);
++    home->thread_pool_max = 1;
++    thread_pool_update_params(pool, home);
++    first = thread_pool_submit_aio(blocked_work, &work, completed, &first_result);
++    aio_poll(home, false);
++    qemu_mutex_lock(&work.lock);
++    while (!work.entered) {
++        qemu_cond_wait(&work.changed, &work.lock);
++    }
++    qemu_mutex_unlock(&work.lock);
++    g_assert_cmpint(qatomic_read(&((ThreadPoolElementAio *)first)->state),
++                    ==, THREAD_ACTIVE);
++    assert_retirement_refused(pool);
++
++    second = thread_pool_submit_aio(finish_and_exit, &second_work,
++                                    completed, &second_result);
++    g_assert_cmpint(qatomic_read(&((ThreadPoolElementAio *)second)->state),
++                    ==, THREAD_QUEUED);
++    assert_retirement_refused(pool);
++
++    qemu_mutex_lock(&work.lock);
++    work.released = true;
++    qemu_cond_signal(&work.changed);
++    qemu_mutex_unlock(&work.lock);
++
++    /* The worker exits only after both actual requests finish. Head still owns
++     * their undelivered completions, which must continue to refuse retirement. */
++    qemu_mutex_lock(&pool->lock);
++    while (pool->cur_threads != 0) {
++        qemu_cond_wait(&pool->worker_stopped, &pool->lock);
++    }
++    qemu_mutex_unlock(&pool->lock);
++    g_assert_cmpint(qatomic_read(&((ThreadPoolElementAio *)second)->state),
++                    ==, THREAD_DONE);
++    g_assert_cmpint(callbacks, ==, 0);
++    assert_retirement_refused(pool);
++    while (callbacks != 2) {
++        aio_poll(home, true);
++    }
++    g_assert_cmpint(first_result, ==, 23);
++    g_assert_cmpint(second_result, ==, second_work.value);
++    home->thread_pool_max = maximum;
++    thread_pool_update_params(pool, home);
++    qemu_cond_destroy(&work.changed);
++    qemu_mutex_destroy(&work.lock);
++    callbacks = 0;
++}
++
++static void run_retirement(void)
++{
++    ThreadPoolAio *pool = aio_get_thread_pool(home);
++    QemuThread releaser;
++    Error *error = NULL;
++    bool nested_seen = false;
++    int value = 19;
++    int result = -1;
++    int minimum = home->thread_pool_min;
++    int maximum = home->thread_pool_max;
++
++    refuse_actual_work();
++
++    /* The ordinary absence branch must not acquire the already-held mutex. */
++    qemu_mutex_lock(&pool->lock);
++    g_assert_false(qatomic_read(&pool->finished_workers_pending));
++    thread_pool_join_finished(pool);
++    qemu_mutex_unlock(&pool->lock);
++
++    thread_pool_submit_aio(ordinary_work, &value, completed, &result);
++    while (!callbacks) {
++        aio_poll(home, true);
++    }
++    g_assert_cmpint(result, ==, value);
++
++    value = 17;
++    thread_pool_submit_aio(ordinary_work, &value,
++                           nested_retirement, &nested_seen);
++    while (!nested_seen) {
++        aio_poll(home, true);
++    }
++    g_assert_true(QLIST_EMPTY(&pool->head));
++
++    callbacks = 0;
++    thread_pool_submit_aio(register_delayed_exit, NULL, completed, &result);
++    while (!callbacks) {
++        aio_poll(home, true);
++    }
++    g_assert_cmpint(result, ==, 17);
++
++    qemu_thread_create(&releaser, "exit-proof", release_delayed_exit, pool,
++                       QEMU_THREAD_JOINABLE);
++    g_assert_true(qemu_aio_hot_fork_prepare_thread_pools(&error));
++    qatomic_set(&retirement_returned, true);
++    g_assert_null(error);
++    qemu_thread_join(&releaser);
++    g_assert_false(registry_has_tid(delayed_tid));
++    g_assert_false(kernel_has_tid(delayed_tid));
++    g_assert_cmpint(home->thread_pool_min, ==, minimum);
++    g_assert_cmpint(home->thread_pool_max, ==, maximum);
++
++    /* Later ordinary I/O lazily recreates a real pool with unchanged policy. */
++    callbacks = 0;
++    result = -1;
++    thread_pool_submit_aio(ordinary_work, &value, completed, &result);
++    while (!callbacks) {
++        aio_poll(home, true);
++    }
++    g_assert_cmpint(result, ==, value);
++    g_assert_true(qemu_aio_hot_fork_prepare_thread_pools(&error));
++    g_assert_null(error);
++}
++
++static void reject_nonhome(void)
++{
++    AioContext *other = aio_context_new(&error_abort);
++    ThreadPoolAio *home_pool = aio_get_thread_pool(home);
++    ThreadPoolAio *other_pool = aio_get_thread_pool(other);
++    Error *error = NULL;
++
++    g_assert_false(qemu_aio_hot_fork_prepare_thread_pools(&error));
++    g_assert_nonnull(error);
++    g_assert_true(aio_get_thread_pool(home) == home_pool);
++    g_assert_true(aio_get_thread_pool(other) == other_pool);
++    error_free(error);
++    aio_context_unref(other);
++}
++
++static void *reject_foreign_caller(void *opaque)
++{
++    Error *error = NULL;
++
++    (void)opaque;
++    g_assert_false(qemu_aio_hot_fork_prepare_thread_pools(&error));
++    g_assert_nonnull(error);
++    error_free(error);
++    return NULL;
++}
++
++int main(int argc, char **argv)
++{
++    QemuThread foreign_caller;
++
++    (void)argc;
++    (void)argv;
++    /* One finite fixture process allowance; no per-stage renewal. */
++    alarm(30);
++    qemu_init_main_loop(&error_abort);
++    home = qemu_get_current_aio_context();
++    qemu_mutex_init(&exit_lock);
++    qemu_cond_init(&exit_changed);
++    qemu_thread_create(&foreign_caller, "foreign-proof", reject_foreign_caller,
++                       NULL, QEMU_THREAD_JOINABLE);
++    qemu_thread_join(&foreign_caller);
++    reject_nonhome();
++    run_retirement();
++    qemu_cond_destroy(&exit_changed);
++    qemu_mutex_destroy(&exit_lock);
++    printf("AIO retirement: actual join, late unregister/kernel TID, nested/queued/active/completion/nonmain refusal, lazy recreation PASS; worker-record=%zu pool=%zu\n",
++           sizeof(ThreadPoolWorker), sizeof(ThreadPoolAio));
++    return 0;
++}
 diff --git a/tests/unit/test-crucible-apic-timer-wide-clock.c b/tests/unit/test-crucible-apic-timer-wide-clock.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..387a4be7096bbc4208a63d0a84db7473b302dbc9
@@ -186522,10 +186890,10 @@ index 0000000000000000000000000000000000000000..ef4f6a3710b9620ed30ea671441d310e
 +    main()
 diff --git a/tests/unit/test-crucible-ram-worker-inventory.py b/tests/unit/test-crucible-ram-worker-inventory.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..226cea138201e71a1fc4749dac067533a5d5ef67
+index 0000000000000000000000000000000000000000..2661f1fdb4009cfd9b4858c24905c76a35037048
 --- /dev/null
 +++ b/tests/unit/test-crucible-ram-worker-inventory.py
-@@ -0,0 +1,469 @@
+@@ -0,0 +1,494 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercises strict RAM membership with actual pthreads and /proc census.
 +
@@ -186594,6 +186962,21 @@ index 0000000000000000000000000000000000000000..226cea138201e71a1fc4749dac067533
 +#define qemu_mutex_lock pthread_mutex_lock
 +#define qemu_mutex_unlock pthread_mutex_unlock
 +static bool bql_locked(void) { return true; }
++/* Pool retirement has its own actual-QEMU component fixture. */
++typedef struct Error { int unused; } Error;
++static bool pool_retirement_allowed = true;
++static unsigned pool_retirement_calls;
++static bool qemu_aio_hot_fork_prepare_thread_pools(Error **error)
++{
++    assert(*error == NULL);
++    pool_retirement_calls++;
++    if (!pool_retirement_allowed) {
++        *error = calloc(1, sizeof(**error));
++        assert(*error);
++    }
++    return pool_retirement_allowed;
++}
++static void error_free(Error *error) { free(error); }
 +"""
 +
 +ENDPOINTS = r"""
@@ -186612,12 +186995,13 @@ index 0000000000000000000000000000000000000000..226cea138201e71a1fc4749dac067533
 +static QemuPluginCrucibleHotForkInventory qemu_plugin_crucible_resource_inventory;
 +static QemuPluginCrucibleHotForkBarrierInventory qemu_plugin_crucible_barrier_inventory;
 +static struct qemu_plugin_crucible_hot_fork_barrier_status actor_status;
-+static int release_failure, release_calls;
++static int release_failure, release_calls, barrier_calls;
 +static int actor_barrier(uint32_t action,
 +                         struct qemu_plugin_crucible_hot_fork_barrier_status *status,
 +                         void *userdata)
 +{
 +    (void) userdata;
++    barrier_calls++;
 +    if (action == QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_HOLD) {
 +        actor_status.flags = QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_HELD |
 +            QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_MAPPING_DONTFORK;
@@ -186748,7 +187132,9 @@ index 0000000000000000000000000000000000000000..226cea138201e71a1fc4749dac067533
 +    service_workers[0].thread_id = actors[2].tid;
 +    service_generation = 1;
 +    service_frozen = service_failed = false;
-+    release_failure = release_calls = 0;
++    release_failure = release_calls = barrier_calls = 0;
++    pool_retirement_allowed = true;
++    pool_retirement_calls = 0;
 +    expected_preexisting_hold = false;
 +    diagnostic_writes = 0;
 +    diagnostic_write_failure = false;
@@ -186795,6 +187181,13 @@ index 0000000000000000000000000000000000000000..226cea138201e71a1fc4749dac067533
 +    for (size_t i = 0; i < ARRAY_SIZE(actors); i++) {
 +        start_actor(&actors[i]);
 +    }
++    reset_inventory(actors);
++    pool_retirement_allowed = false;
++    assert(qemu_crucible_ram_owner_inventory(&tasks, &descriptors, &services) == -EBUSY);
++    assert(pool_retirement_calls == 1 && barrier_calls == 0);
++    assert(!tasks && !descriptors && !services && !release_calls);
++    assert(!actor_status.flags && !service_frozen && !owner_closure.threads.active);
++
 +    reset_inventory(actors);
 +    saved = capture_diagnostic(&read_fd);
 +    assert(qemu_crucible_ram_owner_inventory(&tasks, &descriptors, &services) == 0);
@@ -197007,7 +197400,7 @@ index 1985843233efa577ce4c0228856514daa2830549..22dd5695d7f4409c79abf7546600cfca
  }
  
 diff --git a/util/async.c b/util/async.c
-index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae4d2bd3db 100644
+index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..0ad11a2e1fd3b5b65d6092f8998cca5c460e8b3a 100644
 --- a/util/async.c
 +++ b/util/async.c
 @@ -31,14 +31,188 @@
@@ -197846,7 +198239,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
      }
  
      aio_set_event_notifier(ctx, &ctx->notifier, NULL, NULL, NULL);
-@@ -420,38 +1055,115 @@ aio_ctx_finalize(GSource *source)
+@@ -420,38 +1055,118 @@ aio_ctx_finalize(GSource *source)
      aio_context_destroy(ctx);
      /* aio_context_destroy() still needs the lock */
      qemu_lockcnt_destroy(&ctx->list_lock);
@@ -197899,7 +198292,10 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
 +                   "the main AioContext");
 +        return false;
 +    }
-+    if (!qemu_async_worker_hot_fork_admission_try_begin()) {
++    /* A completion callback may have removed the last request while its outer
++     * dispatch still borrows the pool. Never retire from nested AIO admission. */
++    if (crucible_hot_fork_async_worker_admission_depth != 0 ||
++        !qemu_async_worker_hot_fork_admission_try_begin()) {
 +        error_setg(errp, "Crucible native workers must retire before AIO barriers");
 +        return false;
 +    }
@@ -197966,7 +198362,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
      return ctx->linux_aio;
  }
  
-@@ -464,6 +1176,12 @@ LinuxAioState *aio_get_linux_aio(AioContext *ctx)
+@@ -464,6 +1179,12 @@ LinuxAioState *aio_get_linux_aio(AioContext *ctx)
  
  void aio_notify(AioContext *ctx)
  {
@@ -197979,7 +198375,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
      /*
       * Write e.g. ctx->bh_list before writing ctx->notified.  Pairs with
       * smp_mb() in aio_notify_accept().
-@@ -481,6 +1199,13 @@ void aio_notify(AioContext *ctx)
+@@ -481,6 +1202,13 @@ void aio_notify(AioContext *ctx)
      }
  }
  
@@ -197993,7 +198389,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
  void aio_notify_accept(AioContext *ctx)
  {
      qatomic_set(&ctx->notified, false);
-@@ -545,6 +1270,7 @@ static void co_schedule_bh_cb(void *opaque)
+@@ -545,6 +1273,7 @@ static void co_schedule_bh_cb(void *opaque)
  
          /* Protected by write barrier in qemu_aio_coroutine_enter */
          qatomic_set(&co->scheduled, NULL);
@@ -198001,7 +198397,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
          qemu_aio_coroutine_enter(ctx, co);
      }
  }
-@@ -555,6 +1281,8 @@ AioContext *aio_context_new(Error **errp)
+@@ -555,6 +1284,8 @@ AioContext *aio_context_new(Error **errp)
      int ret;
      AioContext *ctx;
  
@@ -198010,7 +198406,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
      /*
       * ctx is freed by g_source_unref() (e.g. aio_context_unref()). ctx's
       * resources are freed as follows:
-@@ -582,6 +1310,7 @@ AioContext *aio_context_new(Error **errp)
+@@ -582,6 +1313,7 @@ AioContext *aio_context_new(Error **errp)
       * you add any new resources to AioContext, it's probably best to acquire
       * them before aio_context_setup().
       */
@@ -198018,7 +198414,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
      if (!aio_context_setup(ctx, errp)) {
          event_notifier_cleanup(&ctx->notifier);
          goto fail;
-@@ -617,17 +1346,21 @@ AioContext *aio_context_new(Error **errp)
+@@ -617,17 +1349,21 @@ AioContext *aio_context_new(Error **errp)
      ctx->thread_pool_max = THREAD_POOL_MAX_THREADS_DEFAULT;
  
      register_aiocontext(ctx);
@@ -198040,7 +198436,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
      trace_aio_co_schedule(ctx, co);
      const char *scheduled = qatomic_cmpxchg(&co->scheduled, NULL,
                                             __func__);
-@@ -638,6 +1371,7 @@ void aio_co_schedule(AioContext *ctx, Coroutine *co)
+@@ -638,6 +1374,7 @@ void aio_co_schedule(AioContext *ctx, Coroutine *co)
                  __func__, scheduled);
          abort();
      }
@@ -198048,7 +198444,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
  
      /* The coroutine might run and release the last ctx reference before we
       * invoke qemu_bh_schedule().  Take a reference to keep ctx alive until
-@@ -650,6 +1384,7 @@ void aio_co_schedule(AioContext *ctx, Coroutine *co)
+@@ -650,6 +1387,7 @@ void aio_co_schedule(AioContext *ctx, Coroutine *co)
      qemu_bh_schedule(ctx->co_schedule_bh);
  
      aio_context_unref(ctx);
@@ -198056,7 +198452,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
  }
  
  typedef struct AioCoRescheduleSelf {
-@@ -740,6 +1475,7 @@ void qemu_set_current_aio_context(AioContext *ctx)
+@@ -740,6 +1478,7 @@ void qemu_set_current_aio_context(AioContext *ctx)
  {
      assert(!get_my_aiocontext());
      set_my_aiocontext(ctx);
@@ -203441,10 +203837,136 @@ index acac9446ea980a9caf980fef38ba058c4dbd0578..f50751f4466e5a37ee659afa0352d347
  {
      atfork_depth++;
 diff --git a/util/thread-pool.c b/util/thread-pool.c
-index 4e75191c983e080a3df7f757c084f6d3edc7cd9f..4d005a8161d63ef506855e0585f450e667342249 100644
+index 4e75191c983e080a3df7f757c084f6d3edc7cd9f..35aa3421417b05a96efe6f3d3d531b1077d239c7 100644
 --- a/util/thread-pool.c
 +++ b/util/thread-pool.c
-@@ -346,6 +346,12 @@ ThreadPoolAio *thread_pool_new_aio(AioContext *ctx)
+@@ -58,6 +58,12 @@ struct ThreadPoolElementAio {
+     QLIST_ENTRY(ThreadPoolElementAio) all;
+ };
+ 
++typedef struct ThreadPoolWorker {
++    ThreadPoolAio *pool;
++    QemuThread thread;
++    QSLIST_ENTRY(ThreadPoolWorker) finished;
++} ThreadPoolWorker;
++
+ struct ThreadPoolAio {
+     AioContext *ctx;
+     QEMUBH *completion_bh;
+@@ -77,11 +83,41 @@ struct ThreadPoolAio {
+     int pending_threads; /* threads created but not running yet */
+     int min_threads;
+     int max_threads;
++
++    /* Finished handles stay owned until a real join proves native cleanup and
++     * kernel exit. The owner checks the atomic hint without taking a new lock. */
++    QSLIST_HEAD(, ThreadPoolWorker) finished_workers;
++    bool finished_workers_pending;
+ };
+ 
++/* The pool owner detaches the finished queue under the existing mutex, then
++ * joins without retaining a lock needed by worker exit or native unregister. */
++static void thread_pool_join_finished(ThreadPoolAio *pool)
++{
++    ThreadPoolWorker *worker;
++
++    if (!qatomic_read(&pool->finished_workers_pending)) {
++        return;
++    }
++    qemu_mutex_lock(&pool->lock);
++    worker = QSLIST_FIRST(&pool->finished_workers);
++    QSLIST_INIT(&pool->finished_workers);
++    qatomic_set(&pool->finished_workers_pending, false);
++    qemu_mutex_unlock(&pool->lock);
++
++    while (worker) {
++        ThreadPoolWorker *next = QSLIST_NEXT(worker, finished);
++
++        qemu_thread_join(&worker->thread);
++        g_free(worker);
++        worker = next;
++    }
++}
++
+ static void *worker_thread(void *opaque)
+ {
+-    ThreadPoolAio *pool = opaque;
++    ThreadPoolWorker *worker = opaque;
++    ThreadPoolAio *pool = worker->pool;
+ 
+     qemu_mutex_lock(&pool->lock);
+     pool->pending_threads--;
+@@ -123,6 +159,9 @@ static void *worker_thread(void *opaque)
+         qemu_mutex_lock(&pool->lock);
+     }
+ 
++    QSLIST_INSERT_HEAD(&pool->finished_workers, worker, finished);
++    qatomic_set(&pool->finished_workers_pending, true);
++    qemu_bh_schedule(pool->completion_bh);
+     pool->cur_threads--;
+     qemu_cond_signal(&pool->worker_stopped);
+ 
+@@ -137,7 +176,7 @@ static void *worker_thread(void *opaque)
+ 
+ static void do_spawn_thread(ThreadPoolAio *pool)
+ {
+-    QemuThread t;
++    ThreadPoolWorker *worker;
+ 
+     /* Runs with lock taken.  */
+     if (!pool->new_threads) {
+@@ -147,13 +186,17 @@ static void do_spawn_thread(ThreadPoolAio *pool)
+     pool->new_threads--;
+     pool->pending_threads++;
+ 
+-    qemu_thread_create(&t, "worker", worker_thread, pool, QEMU_THREAD_DETACHED);
++    worker = g_new0(ThreadPoolWorker, 1);
++    worker->pool = pool;
++    qemu_thread_create(&worker->thread, "worker", worker_thread, worker,
++                       QEMU_THREAD_JOINABLE);
+ }
+ 
+ static void spawn_thread_bh_fn(void *opaque)
+ {
+     ThreadPoolAio *pool = opaque;
+ 
++    thread_pool_join_finished(pool);
+     qemu_mutex_lock(&pool->lock);
+     do_spawn_thread(pool);
+     qemu_mutex_unlock(&pool->lock);
+@@ -180,6 +223,7 @@ static void thread_pool_completion_bh(void *opaque)
+     ThreadPoolAio *pool = opaque;
+     ThreadPoolElementAio *elem, *next;
+ 
++    thread_pool_join_finished(pool);
+     defer_call_begin(); /* cb() may use defer_call() to coalesce work */
+ 
+ restart:
+@@ -249,6 +293,7 @@ BlockAIOCB *thread_pool_submit_aio(ThreadPoolFunc *func, void *arg,
+ 
+     /* Assert that the thread submitting work is the same running the pool */
+     assert(pool->ctx == qemu_get_current_aio_context());
++    thread_pool_join_finished(pool);
+ 
+     req = qemu_aio_get(&thread_pool_aiocb_info, NULL, cb, opaque);
+     req->func = func;
+@@ -294,6 +339,7 @@ int coroutine_fn thread_pool_submit_co(ThreadPoolFunc *func, void *arg)
+ 
+ void thread_pool_update_params(ThreadPoolAio *pool, AioContext *ctx)
+ {
++    thread_pool_join_finished(pool);
+     qemu_mutex_lock(&pool->lock);
+ 
+     pool->min_threads = ctx->thread_pool_min;
+@@ -335,6 +381,7 @@ static void thread_pool_init_one(ThreadPoolAio *pool, AioContext *ctx)
+ 
+     QLIST_INIT(&pool->head);
+     QTAILQ_INIT(&pool->request_list);
++    QSLIST_INIT(&pool->finished_workers);
+ 
+     thread_pool_update_params(pool, ctx);
+ }
+@@ -346,6 +393,12 @@ ThreadPoolAio *thread_pool_new_aio(AioContext *ctx)
      return pool;
  }
  
@@ -203457,6 +203979,16 @@ index 4e75191c983e080a3df7f757c084f6d3edc7cd9f..4d005a8161d63ef506855e0585f450e6
  void thread_pool_free_aio(ThreadPoolAio *pool)
  {
      if (!pool) {
+@@ -370,6 +423,9 @@ void thread_pool_free_aio(ThreadPoolAio *pool)
+ 
+     qemu_mutex_unlock(&pool->lock);
+ 
++    /* Logical zero precedes qemu_thread_start cleanup. Join every owned handle
++     * before releasing the BHs, conditions, or pool they could still touch. */
++    thread_pool_join_finished(pool);
+     qemu_bh_delete(pool->completion_bh);
+     qemu_cond_destroy(&pool->request_cond);
+     qemu_cond_destroy(&pool->worker_stopped);
 diff --git a/util/trace-events b/util/trace-events
 index df549646d12fd29400cb551b8e7b5ff111a92083..9682b59078f3f311e24e46853f5bfe82c72391d9 100644
 --- a/util/trace-events

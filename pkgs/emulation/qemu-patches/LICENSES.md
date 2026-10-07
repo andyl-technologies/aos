@@ -64,6 +64,7 @@ The atomic integration patch creates these QEMU source files:
 | `tests/unit/test-crucible-procfd-flags.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-ram-arena.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-ram-worker-inventory.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-aio-retirement.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-dirty-iterator.c` | GPL-2.0-or-later | Explicit SPDX identifier; extracted bitmap and capture component fixture |
 | `tests/unit/test-crucible-dirty-iterator.py` | GPL-2.0-or-later | Explicit SPDX identifier; production-body extraction and differential proof |
 | `tests/unit/test-crucible-net-output-stop.py` | GPL-2.0-or-later | Explicit SPDX identifier |
