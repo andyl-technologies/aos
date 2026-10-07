@@ -2235,7 +2235,7 @@ impl ReadOnlyJournalOpenOriginalsV1 {
         });
         let (_, report) = prepare_opened_replay(
             file, limits, false,
-            OpenedReplayDestinationV1::ReadOnly(&mut self.replay, &mut self.scratch),
+            OpenedReplayDestinationV1::Retained(&mut self.replay, &mut self.scratch),
         )?;
 
         let opened_path = PathBuf::from(name);
@@ -2352,6 +2352,102 @@ pub(crate) struct ControllerJournalOpenOriginalsV1 {
     attempted: bool,
 }
 
+/// Retains the same writable opening with Journal-owned replay failure partials.
+///
+/// This is custody only. Transitive validator allocations remain outside this
+/// reservoir, and neither its presence nor its disposal proves paid receiving.
+pub(crate) struct ProtectedWriterOpenOriginalsV1 {
+    opening: ControllerJournalOpenOriginalsV1,
+    retention: WritableOpenRetentionV1,
+}
+
+impl ProtectedWriterOpenOriginalsV1 {
+    pub(crate) const fn new() -> Self {
+        Self {
+            opening: ControllerJournalOpenOriginalsV1::new(),
+            retention: WritableOpenRetentionV1 {
+                directory_error: None,
+                directory_native_error: None,
+                lock_native_error: None,
+                lock_claim_native_error: None,
+                file_native_error: None,
+                scratch: None,
+            },
+        }
+    }
+
+    pub(crate) fn open_once(&mut self, path: &Path, name: &str, limits: JournalLimits) {
+        if self.opening.attempted {
+            return;
+        }
+        self.opening.attempted = true;
+        self.opening.returned = Some(self.opening.open_inner(
+            path,
+            name,
+            limits,
+            0,
+            Some(&mut self.retention),
+        ));
+    }
+
+    pub(crate) fn journal_mut(&mut self) -> Option<&mut Journal> {
+        self.opening.journal_mut()
+    }
+
+    /// Observes names even when replay failed before Journal materialization.
+    pub(crate) fn check_named_currentness(
+        &self,
+        path: &Path,
+        name: &str,
+        limits: JournalLimits,
+    ) -> Result<(), JournalError> {
+        if let Some(journal) = &self.opening.journal {
+            // Name observation is independent of health, so an ambiguous
+            // append still gets its bookend before the health refusal.
+            journal.require_protected_names_current()?;
+            return journal.require_protected_location(path, name, 0, limits);
+        }
+
+        let directory = self.opening.protected.as_ref()
+            .map(|protected| &protected.directory)
+            .or(self.opening.directory.as_ref())
+            .ok_or(JournalError::ProtectedBoundary)?;
+        let current = resolve_protected_directory_from_root(path, 0)?;
+        let held = fstat(directory).map_err(rustix_io)?;
+        let named = fstat(&current).map_err(rustix_io)?;
+        if held.st_dev != named.st_dev || held.st_ino != named.st_ino {
+            return Err(JournalError::ProtectedBoundary);
+        }
+
+        let lock = self.opening.lock.as_ref().ok_or(JournalError::ProtectedBoundary)?;
+        let file = self.opening.file.as_ref().ok_or(JournalError::ProtectedBoundary)?;
+        require_protected_file_names_current(directory, name, 0, lock, file)
+    }
+
+    pub(crate) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.retention.directory_error.as_ref()
+            .map(|error| error as &(dyn std::error::Error + 'static))
+            .or_else(|| self.opening.failure())
+            .or_else(|| self.retention.directory_native_error.as_ref()
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.retention.lock_native_error.as_ref()
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.retention.lock_claim_native_error.as_ref()
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.retention.file_native_error.as_ref()
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+    }
+}
+
+struct WritableOpenRetentionV1 {
+    directory_error: Option<JournalError>,
+    directory_native_error: Option<rustix::io::Errno>,
+    lock_native_error: Option<rustix::io::Errno>,
+    lock_claim_native_error: Option<rustix::io::Errno>,
+    file_native_error: Option<rustix::io::Errno>,
+    scratch: Option<ReadOnlyReplayScratchV1>,
+}
+
 impl ControllerJournalOpenOriginalsV1 {
     pub(crate) const fn new() -> Self {
         Self {
@@ -2373,7 +2469,7 @@ impl ControllerJournalOpenOriginalsV1 {
             return;
         }
         self.attempted = true;
-        self.returned = Some(self.open_inner(path, name, limits, uid));
+        self.returned = Some(self.open_inner(path, name, limits, uid, None));
     }
 
     fn open_inner(
@@ -2382,10 +2478,22 @@ impl ControllerJournalOpenOriginalsV1 {
         name: &str,
         limits: JournalLimits,
         uid: u32,
+        mut retention: Option<&mut WritableOpenRetentionV1>,
     ) -> Result<RecoveryReport, JournalError> {
-        self.directory = Some(resolve_protected_directory_from_root_with_retention(
+        let directory = resolve_protected_directory_from_root_original(
             path, uid, Some(&mut self.ancestors),
-        )?);
+            retention.as_mut().map(|originals| &mut originals.directory_native_error),
+        );
+        self.directory = Some(match directory {
+            Ok(directory) => directory,
+            Err(error) => {
+                if let Some(originals) = retention.as_mut() {
+                    originals.directory_error = Some(error);
+                    return Err(JournalError::ProtectedBoundary);
+                }
+                return Err(error);
+            }
+        });
         validate_limits(limits)?;
         if name.len() > MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES {
             return Err(JournalError::ProtectedBoundary);
@@ -2394,13 +2502,17 @@ impl ControllerJournalOpenOriginalsV1 {
         let directory = self.directory.as_ref().ok_or(JournalError::ProtectedBoundary)?;
         validate_protected_fd(directory, uid, FileType::Directory, Mode::RWXU)?;
         let lock_name = format!("{name}.lock");
-        self.lock_open = Some(open_protected_file_into(
+        self.lock_open = Some(open_protected_file_into_original(
             directory, &lock_name, uid, true, false, false, &mut self.lock,
+            retention.as_mut().map(|originals| &mut originals.lock_native_error),
         ));
         require_controller_open_step(&self.lock_open)?;
         let lock = self.lock.as_ref().ok_or(JournalError::ProtectedBoundary)?;
         self.lock_claim = Some(flock(lock, FlockOperation::NonBlockingLockExclusive)
             .map_err(|error| {
+                if let Some(originals) = retention.as_mut() {
+                    originals.lock_claim_native_error = Some(error);
+                }
                 if error == rustix::io::Errno::WOULDBLOCK {
                     JournalError::AlreadyLocked
                 } else {
@@ -2410,8 +2522,9 @@ impl ControllerJournalOpenOriginalsV1 {
         require_controller_open_step(&self.lock_claim)?;
         self.compaction = Some(remove_stale_protected_compaction(directory, name));
         require_controller_open_step(&self.compaction)?;
-        self.file_open = Some(open_protected_file_into(
+        self.file_open = Some(open_protected_file_into_original(
             directory, name, uid, true, false, false, &mut self.file,
+            retention.as_mut().map(|originals| &mut originals.file_native_error),
         ));
         require_controller_open_step(&self.file_open)?;
         self.directory_sync = Some(fsync(directory).map_err(rustix_io));
@@ -2429,9 +2542,13 @@ impl ControllerJournalOpenOriginalsV1 {
                 selection,
         });
         let file = self.file.as_mut().ok_or(JournalError::ProtectedBoundary)?;
-        let (_, report) = prepare_opened_replay(
-            file, limits, true, OpenedReplayDestinationV1::Controller(&mut self.replay),
-        )?;
+        let destination = match retention {
+            Some(originals) => OpenedReplayDestinationV1::Retained(
+                &mut self.replay, &mut originals.scratch,
+            ),
+            None => OpenedReplayDestinationV1::Controller(&mut self.replay),
+        };
+        let (_, report) = prepare_opened_replay(file, limits, true, destination)?;
 
         // Every fallible native/replay operation precedes these infallible
         // moves. Partial files/replay remain parked on every earlier Err.
@@ -2530,11 +2647,12 @@ impl ControllerOpenedReplayV1 {
 enum OpenedReplayDestinationV1<'owner> {
     Ordinary,
     Controller(&'owner mut ControllerOpenedReplayV1),
-    ReadOnly(&'owner mut ControllerOpenedReplayV1, &'owner mut Option<ReadOnlyReplayScratchV1>),
+    Retained(&'owner mut ControllerOpenedReplayV1, &'owner mut Option<ReadOnlyReplayScratchV1>),
 }
 
-// One replay/repair recipe. Only the closed Controller arm parks its whole
-// native results; the ordinary arm expands to the former local expressions.
+// One replay/repair recipe. Selected destinations park native results, and
+// Retained additionally keeps Journal-owned failure partials. Ordinary recovery
+// uses the former local expressions and disposal order.
 fn prepare_opened_replay(
     file: &mut File,
     limits: JournalLimits,
@@ -2547,7 +2665,7 @@ fn prepare_opened_replay(
             Some(&mut originals.metadata), Some(&mut originals.replay),
             Some(&mut originals.truncate), Some(&mut originals.sync), Some(&mut originals.seek), None,
         ),
-        OpenedReplayDestinationV1::ReadOnly(originals, scratch) => (
+        OpenedReplayDestinationV1::Retained(originals, scratch) => (
             Some(&mut originals.metadata), Some(&mut originals.replay),
             Some(&mut originals.truncate), Some(&mut originals.sync), Some(&mut originals.seek), Some(scratch),
         ),
@@ -3183,28 +3301,13 @@ impl Journal {
             .protected
             .as_ref()
             .ok_or(JournalError::ProtectedBoundary)?;
-        let named_lock = open_read_only_protected_file(
-            &retained.directory,
-            &format!("{}.lock", retained.name),
-            retained.expected_uid,
-        )?;
-        let named_file = open_read_only_protected_file(
+        require_protected_file_names_current(
             &retained.directory,
             &retained.name,
             retained.expected_uid,
-        )?;
-        let held_lock = fstat(&self._lock).map_err(rustix_io)?;
-        let held_file = fstat(&self.file).map_err(rustix_io)?;
-        let current_lock = fstat(&named_lock).map_err(rustix_io)?;
-        let current_file = fstat(&named_file).map_err(rustix_io)?;
-        if held_lock.st_dev != current_lock.st_dev
-            || held_lock.st_ino != current_lock.st_ino
-            || held_file.st_dev != current_file.st_dev
-            || held_file.st_ino != current_file.st_ino
-        {
-            return Err(JournalError::StaleAuthoritySnapshot);
-        }
-        Ok(())
+            &self._lock,
+            &self.file,
+        )
     }
 
     #[cfg(test)]
@@ -10436,6 +10539,21 @@ fn open_protected_file_into(
     truncate: bool,
     original: &mut Option<File>,
 ) -> Result<(), JournalError> {
+    open_protected_file_into_original(
+        directory, name, expected_uid, create, exclusive, truncate, original, None,
+    )
+}
+
+fn open_protected_file_into_original(
+    directory: &File,
+    name: &str,
+    expected_uid: u32,
+    create: bool,
+    exclusive: bool,
+    truncate: bool,
+    original: &mut Option<File>,
+    native_error: Option<&mut Option<rustix::io::Errno>>,
+) -> Result<(), JournalError> {
     if original.is_some() {
         return Err(JournalError::ProtectedBoundary);
     }
@@ -10462,7 +10580,12 @@ fn open_protected_file_into(
         create_mode,
         ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
     )
-    .map_err(protected_open_error)?
+    .map_err(|error| {
+        if let Some(slot) = native_error {
+            *slot = Some(error);
+        }
+        protected_open_error(error)
+    })?
     .into());
     validate_protected_fd(
         original.as_ref().ok_or(JournalError::ProtectedBoundary)?,
@@ -10483,6 +10606,33 @@ fn open_read_only_protected_file(
         Some(Ok(file)) => Ok(file),
         _ => Err(JournalError::ProtectedBoundary),
     }
+}
+
+fn require_protected_file_names_current(
+    directory: &File,
+    name: &str,
+    expected_uid: u32,
+    lock: &File,
+    file: &File,
+) -> Result<(), JournalError> {
+    let named_lock = open_read_only_protected_file(
+        directory,
+        &format!("{name}.lock"),
+        expected_uid,
+    )?;
+    let named_file = open_read_only_protected_file(directory, name, expected_uid)?;
+    let held_lock = fstat(lock).map_err(rustix_io)?;
+    let held_file = fstat(file).map_err(rustix_io)?;
+    let current_lock = fstat(&named_lock).map_err(rustix_io)?;
+    let current_file = fstat(&named_file).map_err(rustix_io)?;
+    if held_lock.st_dev != current_lock.st_dev
+        || held_lock.st_ino != current_lock.st_ino
+        || held_file.st_dev != current_file.st_dev
+        || held_file.st_ino != current_file.st_ino
+    {
+        return Err(JournalError::StaleAuthoritySnapshot);
+    }
+    Ok(())
 }
 
 fn open_read_only_protected_file_original(

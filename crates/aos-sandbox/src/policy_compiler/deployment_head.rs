@@ -727,7 +727,7 @@ pub fn admit_fixed_policy_deployment_head_v1(
     admit_deployment_head_in_journal(&mut journal, packet, verified, verifying_key)
 }
 
-fn admit_deployment_head_in_journal(
+pub(super) fn admit_deployment_head_in_journal(
     journal: &mut Journal,
     packet: &[u8],
     verified: PolicyDeploymentHeadV1,
