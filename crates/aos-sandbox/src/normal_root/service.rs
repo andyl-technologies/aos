@@ -384,7 +384,10 @@ pub(crate) fn first_global_observer_demand_v1(
         .with(D::MemoryBytes, memory)
         // Sequential joined workers contribute one peak task in fixed_demand,
         // not one permanently live task for every archived observation.
-        .with(D::OpenFiles, 3)
+        // Each retained row owns poll, registry clone, waker, signal receiver
+        // and socket FDs. Conservatively charge the process-global signal pair
+        // per row rather than assuming a separately paid global origin.
+        .with(D::OpenFiles, 7)
         .with(D::MetadataEntries, cells)
         .with(D::NetworkBytes, traffic)
         .with(D::PublicationStagingBytes, memory)
