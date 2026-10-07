@@ -93,7 +93,12 @@ impl RemoteStorageWorkClient {
             .to_str()
             .context("semantic observation signature malformed")?
             .to_owned();
-        let reply_bytes = crate::storage_work::read_inventory_response(response, MAX_OBSERVATION_REPLY_BYTES, &mut outbound).await?;
+        let reply_bytes = crate::storage_work::read_inventory_response(
+            response,
+            MAX_OBSERVATION_REPLY_BYTES,
+            &mut outbound,
+        )
+        .await?;
         let reply = authenticate_reply(&self.key, &reply_mac, &reply_bytes, &body)?;
         request.validate(&self.deployment_id, clock())?;
         // Observe again after validation CPU. This is only the original local

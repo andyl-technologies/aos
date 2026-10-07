@@ -71,7 +71,12 @@ impl RemoteStorageWorkClient {
             .context("frozen cleanup reply signature absent")?
             .to_str()?
             .to_owned();
-        let body = crate::storage_work::read_inventory_response(response, MAX_FROZEN_CLEANUP_BYTES, &mut outbound).await?;
+        let body = crate::storage_work::read_inventory_response(
+            response,
+            MAX_FROZEN_CLEANUP_BYTES,
+            &mut outbound,
+        )
+        .await?;
         let now = aos_hub_core::clock::now_unix_secs();
         let reply = verify_storage_frozen_cleanup_custody_reply(
             &self.key, &signature, &body, &request, now,

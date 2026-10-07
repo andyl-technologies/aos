@@ -22,9 +22,7 @@ use aos_hub_core::storage_authority::{
 
 use super::telemetry::context::ControlObservation;
 use super::telemetry::{ExchangeTelemetry, STORAGE_CALL_ID_HEADER};
-use super::{
-    HybridSurfaceFetch, HybridSurfaceWrites, RemoteStorageWorkClient,
-};
+use super::{HybridSurfaceFetch, HybridSurfaceWrites, RemoteStorageWorkClient};
 
 pub(super) mod observation;
 
@@ -130,9 +128,12 @@ impl RemoteStorageWorkClient {
             .context("external OCI reply original deadline expired")?;
         let bytes = tokio::time::timeout(
             std::time::Duration::from_secs(remaining as u64),
-            crate::storage_work::read_inventory_observed_response(response, MAX_EXTERNAL_OCI_REPLY_BYTES, &mut outbound, |length| {
-                exchange.observe_body(length)
-            }),
+            crate::storage_work::read_inventory_observed_response(
+                response,
+                MAX_EXTERNAL_OCI_REPLY_BYTES,
+                &mut outbound,
+                |length| exchange.observe_body(length),
+            ),
         )
         .await
         .context("external OCI reply deadline expired; effects remain unknown")??;
@@ -513,9 +514,12 @@ impl HybridSurfaceFetch {
                 .context("OCI source reply signature absent")?
                 .to_str()?
                 .to_owned();
-            let body = crate::storage_work::read_inventory_observed_response(response, MAX_OCI_SOURCE_BYTES, &mut outbound, |length| {
-                exchange.observe_body(length)
-            })
+            let body = crate::storage_work::read_inventory_observed_response(
+                response,
+                MAX_OCI_SOURCE_BYTES,
+                &mut outbound,
+                |length| exchange.observe_body(length),
+            )
             .await?;
             let reply = OciSourceReply::authenticate(
                 &lookup,

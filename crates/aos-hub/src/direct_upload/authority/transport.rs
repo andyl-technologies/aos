@@ -274,7 +274,9 @@ async fn post_exchange(
     let mut outbound = crate::outbound_inventory::Observation::start(
         crate::outbound_inventory::Owner::DirectAuthority,
         crate::outbound_inventory::Image::Nonsecret(&signed.body),
-        observation.as_ref().map(|observation| observation.call_id()),
+        observation
+            .as_ref()
+            .map(|observation| observation.call_id()),
     );
     let mut request = http
         .post(format!("{origin}{path}"))

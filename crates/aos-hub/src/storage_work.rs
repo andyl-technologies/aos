@@ -1163,7 +1163,8 @@ async fn read_inventory_observed_response(
     let result = read_observed_response_chunks(response, maximum, |chunk| {
         outbound.exposed(chunk);
         observe_chunk(chunk.len());
-    }).await;
+    })
+    .await;
     if result.is_ok() {
         outbound.eof();
     }

@@ -32,10 +32,7 @@ use aos_hub_core::{
 };
 use base64::Engine as _;
 
-use super::{
-    HybridSurfaceWrites, RemoteStorageWorkClient,
-    telemetry::ExchangeTelemetry,
-};
+use super::{HybridSurfaceWrites, RemoteStorageWorkClient, telemetry::ExchangeTelemetry};
 
 mod context;
 
@@ -186,9 +183,14 @@ impl RemoteStorageWorkClient {
             .to_str()
             .inspect_err(|_| exchange.finish("invalid_result"))?
             .to_owned();
-        let body = crate::storage_work::read_inventory_observed_response(response, MAX_EXTERNAL_COPY_CONTROL_BYTES, &mut outbound, |length| {
-            exchange.observe_body(length);
-        })
+        let body = crate::storage_work::read_inventory_observed_response(
+            response,
+            MAX_EXTERNAL_COPY_CONTROL_BYTES,
+            &mut outbound,
+            |length| {
+                exchange.observe_body(length);
+            },
+        )
         .await
         .inspect_err(|_| exchange.finish("response_read_failed"))?;
         Ok((body, signature))

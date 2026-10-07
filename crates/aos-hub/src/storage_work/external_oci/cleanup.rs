@@ -169,9 +169,12 @@ impl HybridSurfaceWrites {
                 .context("OCI cleanup positive guard signature absent")?
                 .to_str()?
                 .to_owned();
-            let body = crate::storage_work::read_inventory_observed_response(response, MAX_OCI_CLEANUP_BYTES, &mut outbound, |length| {
-                exchange.observe_body(length)
-            })
+            let body = crate::storage_work::read_inventory_observed_response(
+                response,
+                MAX_OCI_CLEANUP_BYTES,
+                &mut outbound,
+                |length| exchange.observe_body(length),
+            )
             .await?;
             let reply = OciCleanupReply::authenticate(&request, &runtime.guard, &signature, &body)
                 .inspect_err(|_| exchange.finish("invalid_result"))?;

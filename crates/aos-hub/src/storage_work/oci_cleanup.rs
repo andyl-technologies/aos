@@ -249,9 +249,12 @@ async fn exchange_cleanup(
         })
         .inspect_err(|_| exchange.finish("invalid_result"))?
         .to_owned();
-    let bytes = super::read_inventory_observed_response(response, MAX_MANAGED_OCI_CLEANUP_BYTES, &mut outbound, |length| {
-        exchange.observe_body(length)
-    })
+    let bytes = super::read_inventory_observed_response(
+        response,
+        MAX_MANAGED_OCI_CLEANUP_BYTES,
+        &mut outbound,
+        |length| exchange.observe_body(length),
+    )
     .await
     .inspect_err(|_| exchange.finish("response_read_failed"))?;
     let reply = ManagedOciCleanupReply::authenticate(request, guard, &signature, &bytes)

@@ -7,7 +7,7 @@ use aos_hub_core::{
 };
 use std::time::Duration;
 
-use crate::storage_work::{telemetry::ExchangeTelemetry, RemoteStorageWorkClient};
+use crate::storage_work::{RemoteStorageWorkClient, telemetry::ExchangeTelemetry};
 
 impl RemoteStorageWorkClient {
     pub(in crate::storage_work) async fn exchange_oci_projection(
@@ -101,13 +101,18 @@ impl RemoteStorageWorkClient {
                 .context("OCI projection signature invalid")
                 .inspect_err(|_| exchange.finish("invalid_result"))?
                 .to_owned();
-            let bytes = crate::storage_work::read_inventory_observed_response(response, MAX_OCI_PROJECTION_BYTES, &mut outbound, |length| {
-                exchange.observe_body(length);
-                tracing::trace!(
-                    chunk_bytes = length,
-                    "OCI projection response chunk observed"
-                );
-            })
+            let bytes = crate::storage_work::read_inventory_observed_response(
+                response,
+                MAX_OCI_PROJECTION_BYTES,
+                &mut outbound,
+                |length| {
+                    exchange.observe_body(length);
+                    tracing::trace!(
+                        chunk_bytes = length,
+                        "OCI projection response chunk observed"
+                    );
+                },
+            )
             .await
             .inspect_err(|_| exchange.finish("response_read_failed"))?;
             let latest_now = u64::try_from(aos_hub_core::clock::now_unix_secs())?

@@ -107,7 +107,12 @@ impl RemoteStorageWorkClient {
             .to_str()
             .context("custody reply signature malformed")?
             .to_owned();
-        let body = crate::storage_work::read_inventory_response(response, MAX_BINDING_CUSTODY_BYTES, &mut outbound).await?;
+        let body = crate::storage_work::read_inventory_response(
+            response,
+            MAX_BINDING_CUSTODY_BYTES,
+            &mut outbound,
+        )
+        .await?;
         Ok((signature, body))
     }
 
