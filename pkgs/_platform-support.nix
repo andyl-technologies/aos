@@ -1098,6 +1098,7 @@ let
     "tools/crucible/_cargo-deps-hash.nix" = "target-independent-source";
     "tools/crucible/_cargo-source.nix" = "mixed-source";
     "tools/crucible/_control-protocol-version.nix" = "target-independent-source";
+    "tools/crucible/_native-cli-tests.nix" = "target-independent-source";
     "tools/crucible/_packages.nix" = "target-independent-source";
     "tools/crucible/_release-manifest.nix" = "linux-only-release-helper";
     "tools/crucible/_source.nix" = "mixed-source";
