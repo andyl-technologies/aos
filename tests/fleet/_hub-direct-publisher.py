@@ -383,6 +383,33 @@ def direct_client_observations(stderr):
     return observations
 
 
+def direct_metadata_fanout(invocations, publication_label):
+    """Select metadata overlap from one successful publication invocation.
+
+    The caller selects the publication that owns the complete metadata corpus.
+    Bulk overlap and peaks from separate invocations cannot satisfy this gate.
+    """
+    for index, invocation in enumerate(invocations):
+        if (invocation["label"] != publication_label
+                or invocation["terminalCountersAvailable"] is not True
+                or type(invocation["result"]["exitCode"]) is not int
+                or invocation["result"]["exitCode"] != 0
+                or invocation["result"]["timedOut"] is not False):
+            continue
+
+        observations = direct_client_observations(invocation["stderr"])
+        if len(observations) != 1:
+            raise ValueError("metadata overlap requires one terminal record per invocation")
+        observed = observations[0]
+        peaks = {name: observed[name] for name in
+                 ("max_active_metadata_files", "max_active_metadata_requests")}
+        if all(value is not None and value >= 2 for value in peaks.values()):
+            return {"invocationIndex": index, "publicationLabel": publication_label,
+                    "peaks": peaks}
+
+    return None
+
+
 def assert_direct_client_activity(observations, source_report):
     """Require actual multipart overlap and batch controls from the real client."""
     assert len(observations) == 1, "each preserved invocation has its own counters"

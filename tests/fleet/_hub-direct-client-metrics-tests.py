@@ -22,6 +22,11 @@ def summary(peaks=None):
     return "Direct upload client: " + " ".join(fields)
 
 
+def invocation(peaks=None, label="a", exit_code=0, timed_out=False, available=True):
+    return {"label": label, "result": {"exitCode": exit_code, "timedOut": timed_out},
+            "terminalCountersAvailable": available, "stderr": summary(peaks)}
+
+
 class ClientFanoutCompatibility(unittest.TestCase):
     def test_legacy_17_retains_counters_and_marks_fanout_unknown(self):
         actual = publisher.direct_client_observations(summary())[0]
@@ -68,6 +73,42 @@ class ClientFanoutCompatibility(unittest.TestCase):
         for line in malformed:
             with self.subTest(line=line), self.assertRaises(ValueError):
                 publisher.direct_client_observations(line)
+
+
+class MetadataFanoutQualification(unittest.TestCase):
+    def test_selects_one_successful_full_corpus_invocation(self):
+        records = [invocation([2, 4, 2, 3], exit_code=1),
+                   invocation([2, 4, 2, 4])]
+
+        observed = publisher.direct_metadata_fanout(records, "a")
+
+        self.assertEqual(observed, {
+            "invocationIndex": 1, "publicationLabel": "a",
+            "peaks": {"max_active_metadata_files": 2, "max_active_metadata_requests": 4},
+        })
+
+    def test_bulk_overlap_or_separate_peaks_do_not_satisfy_metadata_overlap(self):
+        records = [invocation([8, 8, 2, 1]), invocation([8, 8, 1, 2]),
+                   invocation([8, 8, 8, 8], label="b")]
+
+        self.assertIsNone(publisher.direct_metadata_fanout(records, "a"))
+
+    def test_unknown_failed_or_interrupted_invocations_cannot_qualify(self):
+        records = [invocation(), invocation(["unavailable"] * 4),
+                   invocation([2, 4, 2, 4], exit_code=1),
+                   invocation([2, 4, 2, 4], timed_out=True),
+                   invocation([2, 4, 2, 4], timed_out=None),
+                   invocation([2, 4, 2, 4], exit_code=False),
+                   invocation([2, 4, 2, 4], available=False)]
+
+        self.assertIsNone(publisher.direct_metadata_fanout(records, "a"))
+
+    def test_duplicate_terminal_records_are_refused(self):
+        record = invocation([2, 4, 2, 4])
+        record["stderr"] += "\n" + summary([2, 4, 2, 4])
+
+        with self.assertRaises(ValueError):
+            publisher.direct_metadata_fanout([record], "a")
 
 
 if __name__ == "__main__":

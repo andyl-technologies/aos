@@ -802,6 +802,7 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
                 for counter in direct_client_observations(invocation["stderr"])]
     aggregate = {name: sum(counter[name] for counter in counters) for name in DIRECT_CLIENT_COUNTERS}
     aggregate["max_provider_active"] = max(counter["max_provider_active"] for counter in counters)
+    metadata_fanout = direct_metadata_fanout(concurrent["invocations"], "a")
     events = direct_runtime_observations(worker_log.read_text(), identity["identity"]["sourceDigest"])
     runtime = summarize_direct_runtime(events)
     native_observations = native_control_observations(native_log.read_text())
@@ -892,6 +893,7 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
         "workerStorageLogWindow": worker_storage_window,
         "boundaryProxyLifetimes": proxy_lifetimes,
         "clientAggregate": aggregate, "clientMetricsCoverage": concurrent["metricsCoverage"],
+        "metadataFanoutInvocation": metadata_fanout,
         "sparseRecovery": concurrent["sparseRecovery"],
         "runtime": runtime, "nativeBoundary": native_summary,
         "baselinePageP95Seconds": baseline_first[94], "loadedPageP95Seconds": loaded_p95,
@@ -911,6 +913,7 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
         "scope": "actual External emulator publication; independent hosted qualification remains separate",
     }
     retain_direct_flow("actual-publication-measurements.json", summary)
+    assert metadata_fanout is not None, "full metadata corpus has no successful parallel invocation"
     if concurrent["sparseRecovery"]["terminalCountersUnavailable"]:
         summary["recoveredActivityEvidence"] = assert_direct_recovered_activity(
             aggregate, corpus, concurrent["sparseRecovery"], original_mapping,
