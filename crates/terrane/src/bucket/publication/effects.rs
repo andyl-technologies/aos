@@ -134,7 +134,7 @@ fn unsupported() -> StoreFailure {
 
 fn io_failure(error: std::io::Error) -> StoreFailure {
     if error.kind() == std::io::ErrorKind::Unsupported {
-        unsupported()
+        StoreFailure::with_source(StoreErrorKind::Unsupported, error)
     } else {
         StoreFailure::with_source(StoreErrorKind::Unavailable { retry_after: None }, error)
     }
