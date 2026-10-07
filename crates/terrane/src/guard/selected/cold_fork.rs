@@ -693,3 +693,7 @@ fn check_originals(
         .find(|row| row.commit == lineage.commit_id)
         .ok_or_else(invalid)
 }
+
+#[cfg(all(test, feature = "tokio", feature = "surface-sdk"))]
+#[path = "cold_fork/tests/mod.rs"]
+mod tests;
