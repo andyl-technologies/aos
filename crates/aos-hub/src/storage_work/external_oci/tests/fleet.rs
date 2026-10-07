@@ -33,6 +33,9 @@ use super::super::{ExternalOciRuntime, RemoteStorageWorkClient};
 #[path = "fleet/background.rs"]
 mod background;
 
+#[path = "fleet/pack_memory.rs"]
+mod pack_memory;
+
 const MAX_INPUT_BYTES: u64 = 64 * 1024;
 const MAX_EXECUTABLE_BYTES: u64 = 512 * 1024 * 1024;
 const FIXTURE_ROOT: &str = "/var/lib/hybrid-native/external-oci";

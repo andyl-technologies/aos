@@ -1045,3 +1045,20 @@ fn validate_pullthrough_loose(bytes: &[u8], oid: aos_registry_surface::object::O
     );
     Ok(())
 }
+
+/// Drives one already admitted metadata original through normal persistence.
+///
+/// # Errors
+///
+/// Returns an error if normal batch or persistence work fails, or if it
+/// produces an unexpected result count.
+#[cfg(test)]
+pub(crate) async fn pack_memory_metadata_phase(
+    db: &Database,
+    work: &RemoteStorageWorkClient,
+    item: aos_hub_core::mirror_batch::MirrorBatchItem,
+) -> Result<MirrorProgress> {
+    let mut results = batch::run(db, work, vec![item], None).await;
+    ensure!(results.len() == 1, "metadata phase result count differs");
+    results.pop().context("metadata phase result absent")?.1
+}
