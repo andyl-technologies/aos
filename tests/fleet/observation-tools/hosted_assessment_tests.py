@@ -198,6 +198,49 @@ class AssessmentTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             adapter.read(reference)
 
+    def test_client_v2_source_records_retain_timing_without_loaded_or_wire_claim(self):
+        row = dict(self.client(), version=2, monotonicElapsedNs="30",
+                   offeredFirstElapsedNs="10", offeredLastElapsedNs="20")
+        pending = dict(row, outcome="pending", completedAtMillis=None, offered=None,
+                       reply=None, status=None, etagSha256=None, monotonicElapsedNs="1",
+                       offeredFirstElapsedNs=None, offeredLastElapsedNs=None)
+        raw = b"".join(b"direct_upload_part_application_observation " + json.dumps(value).encode()
+                       + b"\n" for value in (pending, row))
+        observed = adapter.application_records(self.private(raw),
+            "direct_upload_part_application_observation ", adapter.CLIENT_FIELDS)
+        result = adapter.client_summary(observed)
+
+        self.assertEqual(result["uniqueAcknowledgedOfferedBytes"], "8")
+        self.assertEqual(result["processLocalOfferingIntervals"], [{"processId": 456,
+            "attemptOrdinal": 1, "monotonicElapsedNs": "30",
+            "offeredFirstElapsedNs": "10", "offeredLastElapsedNs": "20"}])
+        self.assertIsNone(result["wireBytes"])
+        self.assertIsNone(result["providerConsumedBytes"])
+        self.assertIsNone(adapter.client_summary([self.client()])["processLocalOfferingIntervals"])
+        missing = dict(row, monotonicElapsedNs=None, offeredFirstElapsedNs=None, offeredLastElapsedNs=None)
+        self.assertIsNone(adapter.client_summary([missing])["processLocalOfferingIntervals"][0]["monotonicElapsedNs"])
+
+    def test_client_v2_closed_shape_version_clock_and_original_substitution_refuse(self):
+        row = dict(self.client(), version=2, monotonicElapsedNs="30",
+                   offeredFirstElapsedNs="10", offeredLastElapsedNs="20")
+        changes = ({"version": True}, {"version": 3}, {"monotonicElapsedNs": True},
+                   {"monotonicElapsedNs": "01"}, {"offeredFirstElapsedNs": "21"},
+                   {"offeredLastElapsedNs": "31"}, {"fakeHttpBytes": 8})
+        for change in changes:
+            changed = dict(row, **change)
+            with self.assertRaises(ValueError, msg=str(change)):
+                adapter.application_records(self.private(
+                    b"direct_upload_part_application_observation " + json.dumps(changed).encode()),
+                    "direct_upload_part_application_observation ", adapter.CLIENT_FIELDS)
+        absent = dict(row)
+        del absent["offeredLastElapsedNs"]
+        with self.assertRaises(ValueError):
+            adapter.client_summary([absent])
+        pending = dict(row, outcome="pending", completedAtMillis=None, offered=None,
+                       reply=None, status=None, etagSha256=None)
+        with self.assertRaises(ValueError):
+            adapter.client_summary([pending, dict(row, originalSha256="a" * 64)])
+
     def test_actual_native_attempt_parser_and_clock_process_bracket(self):
         wrapper_tests = runpy.run_path(str(ROOT / "native_auth_tests.py"))
         fixture = wrapper_tests["ContextTests"]()

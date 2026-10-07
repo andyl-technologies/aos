@@ -519,8 +519,13 @@ def application_records(reference, marker, expected_fields):
         if encoded[end:] and not encoded[end:].startswith(" span="):
             raise ValueError("Application observation suffix differs")
         value = READERS["closed_json"](encoded[:end])
-        closed(value, expected_fields)
-        if len(encoded[:end].encode()) > 4096 or value["version"] != 1:
+        if expected_fields == CLIENT_FIELDS:
+            client_record_shape(value)
+        else:
+            closed(value, expected_fields)
+            if type(value["version"]) is not int or value["version"] != 1:
+                raise ValueError("Application version differs")
+        if len(encoded[:end].encode()) > 4096:
             raise ValueError("Application record bound differs")
         digest(value["observerSourceSha256"])
         if type(value["attemptOrdinal"]) is not int or value["attemptOrdinal"] < 0:
@@ -535,8 +540,25 @@ CLIENT_FIELDS = {"version", "purpose", "observerSourceSha256", "processId", "att
                  "startedAtMillis", "completedAtMillis", "sessionSha256", "originalSha256",
                  "clientOperationSha256", "placementSha256", "partSha256", "providerOriginSha256",
                  "providerPathSha256", "offered", "reply", "status", "etagSha256", "outcome"}
+CLIENT_TIMING_FIELDS = {"monotonicElapsedNs", "offeredFirstElapsedNs", "offeredLastElapsedNs"}
 SDK_FIELDS = {"version", "purpose", "observerSourceSha256", "sourceDigest", "isolateSha256",
               "attemptOrdinal", "atMillis", "operation", "keySha256", "original", "outcome"}
+
+
+def client_record_shape(row):
+    """Retain declared v2 process-local facts; missing facts do not become zero."""
+    version = row.get("version") if isinstance(row, dict) else None
+    if type(version) is not int or version not in (1, 2):
+        raise ValueError("Client application version differs")
+    closed(row, CLIENT_FIELDS | (CLIENT_TIMING_FIELDS if version == 2 else set()))
+    if version == 1:
+        return
+    values = {name: None if row[name] is None else decimal(row[name]) for name in CLIENT_TIMING_FIELDS}
+    first, last = values["offeredFirstElapsedNs"], values["offeredLastElapsedNs"]
+    elapsed = values["monotonicElapsedNs"]
+    if (first is not None and last is not None and first > last
+            or elapsed is not None and any(value is not None and value > elapsed for value in (first, last))):
+        raise ValueError("Client process-local offering interval differs")
 
 
 def client_summary(rows):
@@ -546,6 +568,7 @@ def client_summary(rows):
     offered_attempt_bytes = 0
     unresolved = []
     for row in rows:
+        client_record_shape(row)
         if row["purpose"] != "upload_part" or row["outcome"] not in {"pending", "accepted", "refused", "unknown"}:
             raise ValueError("Client application purpose differs")
         identity = (row["processId"], row["attemptOrdinal"])
@@ -594,10 +617,15 @@ def client_summary(rows):
         if key in accepted and accepted[key] != facts:
             raise ValueError("Same original part offered different bytes")
         accepted[key] = facts
+    timed = [{"processId": row["processId"], "attemptOrdinal": row["attemptOrdinal"],
+              **{name: row[name] for name in CLIENT_TIMING_FIELDS}}
+             for row in attempts.values() if row["version"] == 2]
     return {"attempts": len(attempts), "uniqueAcceptedPartCommitments": len(accepted),
             "uniqueAcknowledgedOfferedBytes": str(sum(item[0] for item in accepted.values())),
             "allAttemptOfferedBytes": str(offered_attempt_bytes), "unresolvedAttempts": unresolved,
             "providerConsumedBytes": None, "wireBytes": None, "settlement": "not_observed",
+            "processLocalOfferingIntervals": timed or None,
+            "loadedOverlap": "independent_process_lifetime_and_clock_calibration_required",
             "mapping": "independent_authenticated_original_geometry_and_binding_required"}
 
 
