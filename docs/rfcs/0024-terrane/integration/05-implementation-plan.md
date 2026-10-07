@@ -143,11 +143,14 @@ reload rules. Its first focused run passes 15 of 21 cases; the remaining
 failures lead to ordinary scalar, genuine producer-input and canonical
 ancestor-scope corrections. The subsequent 25-case run passes 24 cases and
 fails the Fold inspector's CBOR-null opcode assertion. Correcting that assertion
-to the decoder's actual byte on `44972fa5c5` passes the exact Fold case; this
-is separate execution evidence, not a new complete 25-case run. All ten cold
-cases pass on that source, covering the original eight and two independent
-current-registration cases. Full SDK, strict profiles and task gates remain
-pending.
+to the decoder's actual byte on `44972fa5c5` passes the exact Fold case.
+The subsequent full SDK run on `876e80f048` passes 465 of 477 tests with no
+skips. All 25 Recorded, historical, Fold and current-context cases, and all ten
+cold cases, pass within that same run. The twelve remaining failures include
+two Active fixtures, portable-copy admission, metadata callback accounting,
+physical retirement and ordinary publication/provenance cases. Strict profiles
+and task gates remain pending; the combined Core and runtime source has not
+yet been compiled.
 Private backfill on `4f4bd8083f` now passes all four exact cases, including
 the formerly expired completeness case. All six publication batch cases also
 pass. The finite qualification then stops on the first missing-pack recovery
