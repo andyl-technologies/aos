@@ -1589,7 +1589,7 @@ index 1875ce0a5113b3918bef098de25b767086b56dd4..6740e74cd6a29c6852e492e5bca9cfe1
 +        return Err(crate::Error::InvalidReply);
 +    }
 +
-+    let split = super::Split::new(
++    let split: super::BoxedSplit = super::Split::new(
 +        Box::new(LauncherUnixReadHalf { stream: stream.clone(), custody: custody.clone() }),
 +        Box::new(LauncherUnixWriteHalf { stream, custody: custody.clone() }),
 +    );

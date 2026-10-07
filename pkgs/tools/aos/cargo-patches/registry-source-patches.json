@@ -65,7 +65,7 @@
     "version": "5.15.0",
     "archiveSha256": "c3bcbf15c8708d7fc1be0c993622e0a5cbd5e8b52bfa40afa4c3e0cd8d724ac1",
     "patch": "pkgs/tools/aos/cargo-patches/zbus-5.15.0-zero-incoming-fds.patch",
-    "patchSha256": "21f970a9cbc92de31aec161b750497216836e6080ee6c70c3a585b041ef534fc",
+    "patchSha256": "760c4ad4830d5983e18d652cfd789299265b3ec5eeb47a441550dbdb98ad9c93",
     "files": [
       {
         "path": "src/connection/builder.rs",
@@ -85,7 +85,7 @@
       {
         "path": "src/connection/socket/unix.rs",
         "beforeSha256": "2874cd10639951c02322d0ce544039332146ad945c707cebeb1e2ff7a59dfdb7",
-        "afterSha256": "60f09e0fd0ccf4b6784f17175fa03e3ca3aa8c2326783f9da9535700e4eed172"
+        "afterSha256": "e2ea2bed6926947b86246f039967274e605265e8c4e32d26f7f3f2746235b37d"
       },
       {
         "path": "src/connection/handshake/common.rs",
