@@ -2,7 +2,7 @@ diff --git a/src/core/aos-resource-enrollment.h b/src/core/aos-resource-enrollme
 new file mode 100644
 --- /dev/null
 +++ b/src/core/aos-resource-enrollment.h
-@@ -0,0 +1,21 @@
+@@ -0,0 +1,24 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +#pragma once
 +
@@ -17,6 +17,9 @@ new file mode 100644
 +int aos_resource_deliver_component(Service *service);
 +int aos_resource_prepare_root_exec(Service *service, ExecCommand *command, ExecFlags flags);
 +int aos_resource_enforce_root_limits(Service *service);
++int aos_resource_prepare_controller_exec(Service *service, ExecCommand *command, ExecFlags flags);
++int aos_resource_enforce_controller_cpu(Service *service, int prepare_result);
++bool aos_resource_controller_protected_unit(const Unit *unit);
 +bool aos_resource_root_selected_name(const char *name);
 +bool aos_resource_root_protected_unit(const Unit *unit);
 +FixedCgroupSpawnOriginal *aos_resource_root_spawn_original(Unit *unit);
@@ -28,7 +31,7 @@ diff --git a/src/core/aos-resource-enrollment.c b/src/core/aos-resource-enrollme
 new file mode 100644
 --- /dev/null
 +++ b/src/core/aos-resource-enrollment.c
-@@ -0,0 +1,626 @@
+@@ -0,0 +1,891 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +
 +#include <fcntl.h>
@@ -62,6 +65,9 @@ new file mode 100644
 +#define AOS_RESOURCE_ROOT_POLICY_BYTES 1832U
 +#define AOS_RESOURCE_ROOT_POLICY_BODY 1800U
 +#define AOS_RESOURCE_ROOT_OFFSET 1624U
++#define AOS_RESOURCE_CONTROLLER_PREFIX_OFFSET 1096U
++#define AOS_RESOURCE_CONTROLLER_CGROUP "/aos.slice/aos-control.slice/aos-sandboxd.service"
++#define AOS_RESOURCE_CONTROLLER_CGROUP_FILE "/sys/fs/cgroup" AOS_RESOURCE_CONTROLLER_CGROUP
 +#define AOS_RESOURCE_VECTOR_BYTES (22U * 8U)
 +#define AOS_RESOURCE_COMPONENTS_OFFSET (40U + 3U * AOS_RESOURCE_VECTOR_BYTES)
 +#define AOS_RESOURCE_CONCURRENT_OPERATIONS 21U
@@ -84,6 +90,42 @@ new file mode 100644
 +        bool attempted;
 +} AosResourceDelivery;
 +
++/* The first observations and the later-command check have separate storage.
++ * A failed check freezes both: no command reopens or reinstalls this owner. */
++typedef struct AosResourceControllerCPUCheck {
++        struct stat cgroup_stat;
++        struct statfs cgroup_statfs;
++        struct stat current_cgroup_stat;
++        struct stat control_stat;
++        struct statfs control_statfs;
++        struct stat current_control_stat;
++        int prepare_result;
++        int cgroup_stat_result;
++        int cgroup_statfs_result;
++        int current_cgroup_stat_result;
++        int control_stat_result;
++        int control_statfs_result;
++        int current_control_stat_result;
++        ssize_t read_length;
++        int read_result;
++        uint8_t readback[128];
++} AosResourceControllerCPUCheck;
++
++typedef struct AosResourceControllerCPU {
++        sd_id128_t invocation;
++        bool prepared;
++        bool attempted;
++        int first_error;
++        int fragment_result;
++        int cgroup_fd;
++        int control_fd;
++        int control_open_result;
++        ssize_t write_length;
++        int write_result;
++        AosResourceControllerCPUCheck first;
++        AosResourceControllerCPUCheck later;
++} AosResourceControllerCPU;
++
 +typedef struct AosResourceEnrollment {
 +        Manager *manager;
 +        int policy_fd;
@@ -104,6 +146,7 @@ new file mode 100644
 +        AosResourceDelivery storage_delivery;
 +        AosResourceDelivery host_delivery;
 +        AosResourceDelivery root_delivery;
++        AosResourceControllerCPU controller_cpu;
 +        int root_cgroup_fd;
 +        int root_control_fds[3];
 +        int root_write_results[3];
@@ -141,6 +184,17 @@ new file mode 100644
 +        .storage_delivery = AOS_RESOURCE_DELIVERY_EMPTY,
 +        .host_delivery = AOS_RESOURCE_DELIVERY_EMPTY,
 +        .root_delivery = AOS_RESOURCE_DELIVERY_EMPTY,
++        .controller_cpu = {
++                .cgroup_fd = -EBADF,
++                .control_fd = -EBADF,
++                .control_open_result = -EBADF,
++                .write_length = -EBADF,
++                .write_result = -EBADF,
++                .first.read_length = -EBADF,
++                .first.read_result = -EBADF,
++                .later.read_length = -EBADF,
++                .later.read_result = -EBADF,
++        },
 +        .root_cgroup_fd = -EBADF,
 +        .root_control_fds = { -EBADF, -EBADF, -EBADF },
 +        .root_write_results = { -EBADF, -EBADF, -EBADF },
@@ -285,6 +339,218 @@ new file mode 100644
 +               enrollment.policy_bytes == AOS_RESOURCE_ROOT_POLICY_BYTES;
 +}
 +
++static bool controller_prefix_family(void) {
++        return enrollment.policy_bytes == AOS_RESOURCE_FIRST_GLOBAL_POLICY_BYTES ||
++               enrollment.policy_bytes == AOS_RESOURCE_NIX_INTAKE_POLICY_BYTES ||
++               enrollment.policy_bytes == AOS_RESOURCE_Q04_INTAKE_POLICY_BYTES ||
++               enrollment.policy_bytes == AOS_RESOURCE_ROOT_POLICY_BYTES;
++}
++
++bool aos_resource_controller_protected_unit(const Unit *unit) {
++        const char *alias;
++        bool selected = streq_ptr(unit->id, "aos-sandboxd.service");
++
++        SET_FOREACH(alias, unit->aliases)
++                if (streq_ptr(alias, "aos-sandboxd.service"))
++                        selected = true;
++        /* An unavailable original after reexec or failed enrollment refuses
++         * selected commands and overrides instead of entering ordinary mode. */
++        return selected &&
++               (controller_prefix_family() || (enrollment.attempted && !enrollment.admitted)) &&
++               (enrollment.controller_cpu.prepared || aos_network_image_guard_active());
++}
++
++static int controller_cpu_refuse(int error) {
++        AosResourceControllerCPU *original = &enrollment.controller_cpu;
++
++        if (original->first_error == 0)
++                original->first_error = error;
++        return refuse(original->first_error);
++}
++
++/* These kernels share only native control I/O and exact material comparison.
++ * Their callers select policy and retain every descriptor and observation. */
++static int resource_control_readback(
++                int fd,
++                const char *expected,
++                uint8_t *readback,
++                size_t capacity,
++                ssize_t *read_length,
++                int *read_result) {
++        size_t length = strlen(expected);
++        ssize_t returned;
++
++        returned = pread(fd, readback, capacity, 0);
++        *read_length = returned;
++        *read_result = returned < 0 ? -errno :
++                (returned == (ssize_t) length && memcmp(readback, expected, length) == 0 ? 0 : -EPERM);
++        return *read_result;
++}
++
++static int resource_control_install(
++                int fd,
++                const char *expected,
++                ssize_t *write_length,
++                int *write_result) {
++        size_t length = strlen(expected);
++        ssize_t returned;
++
++        returned = write(fd, expected, length);
++        *write_length = returned;
++        *write_result = returned < 0 ? -errno : (returned == (ssize_t) length ? 0 : -EIO);
++        return *write_result;
++}
++
++int aos_resource_prepare_controller_exec(Service *service, ExecCommand *command, ExecFlags flags) {
++        Unit *unit = UNIT(service);
++        AosResourceControllerCPU *original = &enrollment.controller_cpu;
++        const ExecContext *context = &service->exec_context;
++        const CGroupContext *cgroup = &service->cgroup_context;
++        uint64_t cpu = policy_u64(enrollment.policy + AOS_RESOURCE_CONTROLLER_PREFIX_OFFSET);
++
++        if (!aos_resource_controller_protected_unit(unit))
++                return 0;
++        if (original->first_error < 0)
++                return refuse(original->first_error);
++        if (!enrollment.admitted || enrollment.manager != unit->manager ||
++            !controller_prefix_family() || enrollment.policy_fd < 0 ||
++            sd_id128_is_null(enrollment.boot) || sd_id128_is_null(enrollment.invocation) ||
++            sd_id128_is_null(unit->invocation_id) || !streq_ptr(unit->id, "aos-sandboxd.service"))
++                return controller_cpu_refuse(enrollment.first_error < 0 ? enrollment.first_error : -EOWNERDEAD);
++
++        /* Pre-start legitimately precedes main capsule delivery. This distinct
++         * invocation slot cannot prepopulate the main delivery owner. */
++        if (original->prepared) {
++                if (!sd_id128_equal(original->invocation, unit->invocation_id))
++                        return controller_cpu_refuse(-EOWNERDEAD);
++        } else {
++                original->prepared = true;
++                original->invocation = unit->invocation_id;
++        }
++
++        original->fragment_result = aos_resource_verify_component_fragment(unit);
++        if (original->fragment_result < 0)
++                return controller_cpu_refuse(original->fragment_result);
++        /* P constrains CPU only. The image's C memory, tasks and NOFILE remain
++         * authoritative; legitimate sandboxed control commands use this gate. */
++        if (cpu == 0 || cpu % 1000 != 0 || cpu > UINT64_MAX / 10 ||
++            cgroup->cpu_quota_per_sec_usec != cpu * 10 || cgroup->cpu_quota_period_usec != 100000 ||
++            !FLAGS_SET(flags, EXEC_APPLY_SANDBOXING) ||
++            FLAGS_SET(command->flags, EXEC_COMMAND_FULLY_PRIVILEGED) ||
++            service->permissions_start_only || context->pam_name != NULL ||
++            cgroup->delegate || !isempty(cgroup->delegate_subgroup) ||
++            !context->no_new_privileges || context->capability_bounding_set != 0 ||
++            context->capability_ambient_set != 0)
++                return controller_cpu_refuse(-EPERM);
++        return 0;
++}
++
++static int controller_cpu_check(AosResourceControllerCPUCheck *check, CGroupRuntime *runtime) {
++        AosResourceControllerCPU *original = &enrollment.controller_cpu;
++
++        check->cgroup_stat_result = fstat(original->cgroup_fd, &check->cgroup_stat) < 0 ? -errno : 0;
++        check->cgroup_statfs_result = fstatfs(original->cgroup_fd, &check->cgroup_statfs) < 0 ? -errno : 0;
++        /* cg_get_path resolves this fixed hierarchy under /sys/fs/cgroup.
++         * Observe its current inode without reopening or replacing any OFD. */
++        check->current_cgroup_stat_result = fstatat(AT_FDCWD, AOS_RESOURCE_CONTROLLER_CGROUP_FILE,
++                                                   &check->current_cgroup_stat, AT_SYMLINK_NOFOLLOW) < 0 ? -errno : 0;
++        check->control_stat_result = fstat(original->control_fd, &check->control_stat) < 0 ? -errno : 0;
++        check->control_statfs_result = fstatfs(original->control_fd, &check->control_statfs) < 0 ? -errno : 0;
++        check->current_control_stat_result = fstatat(original->cgroup_fd, "cpu.max",
++                                                    &check->current_control_stat, AT_SYMLINK_NOFOLLOW) < 0 ? -errno : 0;
++        if (check->cgroup_stat_result < 0)
++                return check->cgroup_stat_result;
++        if (check->cgroup_statfs_result < 0)
++                return check->cgroup_statfs_result;
++        if (check->current_cgroup_stat_result < 0)
++                return check->current_cgroup_stat_result;
++        if (check->control_stat_result < 0)
++                return check->control_stat_result;
++        if (check->control_statfs_result < 0)
++                return check->control_statfs_result;
++        if (check->current_control_stat_result < 0)
++                return check->current_control_stat_result;
++
++        if (check->cgroup_statfs.f_type != 0x63677270 ||
++            check->control_statfs.f_type != 0x63677270 ||
++            !S_ISDIR(check->cgroup_stat.st_mode) ||
++            check->cgroup_stat.st_uid != 0 || check->cgroup_stat.st_gid != 0 ||
++            !S_ISDIR(check->current_cgroup_stat.st_mode) ||
++            check->current_cgroup_stat.st_uid != 0 || check->current_cgroup_stat.st_gid != 0 ||
++            check->current_cgroup_stat.st_dev != check->cgroup_stat.st_dev ||
++            check->current_cgroup_stat.st_ino != check->cgroup_stat.st_ino ||
++            runtime->cgroup_id == 0 || runtime->cgroup_id != check->cgroup_stat.st_ino ||
++            !S_ISREG(check->control_stat.st_mode) ||
++            check->control_stat.st_uid != 0 || check->control_stat.st_gid != 0 ||
++            check->control_stat.st_dev != check->cgroup_stat.st_dev ||
++            !S_ISREG(check->current_control_stat.st_mode) ||
++            check->current_control_stat.st_uid != 0 || check->current_control_stat.st_gid != 0 ||
++            check->current_control_stat.st_dev != check->control_stat.st_dev ||
++            check->current_control_stat.st_ino != check->control_stat.st_ino)
++                return -EPERM;
++        if (check == &original->later &&
++            (check->cgroup_stat.st_dev != original->first.cgroup_stat.st_dev ||
++             check->cgroup_stat.st_ino != original->first.cgroup_stat.st_ino ||
++             check->control_stat.st_dev != original->first.control_stat.st_dev ||
++             check->control_stat.st_ino != original->first.control_stat.st_ino))
++                return -EOWNERDEAD;
++        return 0;
++}
++
++int aos_resource_enforce_controller_cpu(Service *service, int prepare_result) {
++        Unit *unit = UNIT(service);
++        AosResourceControllerCPU *original = &enrollment.controller_cpu;
++        AosResourceControllerCPUCheck *check;
++        CGroupRuntime *runtime;
++        char expected[128];
++        bool first;
++        int r;
++
++        if (!aos_resource_controller_protected_unit(unit))
++                return prepare_result;
++        if (original->first_error < 0)
++                return refuse(original->first_error);
++        if (!original->prepared || !enrollment.admitted || enrollment.manager != unit->manager ||
++            !sd_id128_equal(original->invocation, unit->invocation_id))
++                return controller_cpu_refuse(-EOWNERDEAD);
++
++        first = !original->attempted;
++        original->attempted = true;
++        check = first ? &original->first : &original->later;
++        check->prepare_result = prepare_result;
++        if (prepare_result < 0)
++                return controller_cpu_refuse(prepare_result);
++        runtime = unit_get_cgroup_runtime(unit);
++        if (!runtime || !streq_ptr(runtime->cgroup_path, AOS_RESOURCE_CONTROLLER_CGROUP))
++                return controller_cpu_refuse(-EPERM);
++
++        if (first) {
++                original->cgroup_fd = cg_path_open(runtime->cgroup_path);
++                if (original->cgroup_fd < 0)
++                        return controller_cpu_refuse(original->cgroup_fd);
++                original->control_fd = openat(original->cgroup_fd, "cpu.max", O_RDWR | O_CLOEXEC | O_NOFOLLOW);
++                original->control_open_result = original->control_fd < 0 ? -errno : 0;
++                if (original->control_open_result < 0)
++                        return controller_cpu_refuse(original->control_open_result);
++        }
++        r = controller_cpu_check(check, runtime);
++        if (r < 0)
++                return controller_cpu_refuse(r);
++        snprintf(expected, sizeof(expected), "%" PRIu64 " 100000\n",
++                 policy_u64(enrollment.policy + AOS_RESOURCE_CONTROLLER_PREFIX_OFFSET));
++        if (first) {
++                r = resource_control_install(original->control_fd, expected,
++                                             &original->write_length, &original->write_result);
++                if (r < 0)
++                        return controller_cpu_refuse(r);
++        }
++        r = resource_control_readback(original->control_fd, expected, check->readback,
++                                      sizeof(check->readback), &check->read_length, &check->read_result);
++        if (r < 0)
++                return controller_cpu_refuse(r);
++        return 0;
++}
++
 +bool aos_resource_host_selected_name(const char *name) {
 +        /* manager_startup establishes this original before enumeration. A
 +         * lookup never opens/reparses policy or initializes an issuer. */
@@ -395,9 +661,6 @@ new file mode 100644
 +        snprintf(expected[1], sizeof(expected[1]), "%" PRIu64 "\n", policy_u64(root + 16));
 +        snprintf(expected[2], sizeof(expected[2]), "%" PRIu64 " 100000\n", policy_u64(root));
 +        for (unsigned i = 0; i < 3; i++) {
-+                size_t length = strlen(expected[i]);
-+                ssize_t returned;
-+
 +                enrollment.root_control_fds[i] = openat(enrollment.root_cgroup_fd, controls[i], O_RDWR | O_CLOEXEC | O_NOFOLLOW);
 +                if (enrollment.root_control_fds[i] < 0)
 +                        return refuse(enrollment.root_limit_error = -errno);
@@ -408,17 +671,13 @@ new file mode 100644
 +                    enrollment.root_control_stats[i].st_dev != enrollment.root_cgroup_stat.st_dev ||
 +                    enrollment.root_control_stats[i].st_uid != 0 || enrollment.root_control_stats[i].st_gid != 0)
 +                        return refuse(enrollment.root_limit_error = -EPERM);
-+                returned = write(enrollment.root_control_fds[i], expected[i], length);
-+                enrollment.root_write_lengths[i] = returned;
-+                r = returned < 0 ? -errno : (returned == (ssize_t) length ? 0 : -EIO);
-+                enrollment.root_write_results[i] = r;
++                r = resource_control_install(enrollment.root_control_fds[i], expected[i],
++                                             &enrollment.root_write_lengths[i], &enrollment.root_write_results[i]);
 +                if (r < 0)
 +                        return refuse(enrollment.root_limit_error = r);
-+                returned = pread(enrollment.root_control_fds[i], enrollment.root_readback[i], sizeof(enrollment.root_readback[i]), 0);
-+                enrollment.root_read_lengths[i] = returned;
-+                r = returned < 0 ? -errno :
-+                    (returned == (ssize_t) length && memcmp(enrollment.root_readback[i], expected[i], length) == 0 ? 0 : -EPERM);
-+                enrollment.root_read_results[i] = r;
++                r = resource_control_readback(enrollment.root_control_fds[i], expected[i], enrollment.root_readback[i],
++                                              sizeof(enrollment.root_readback[i]), &enrollment.root_read_lengths[i],
++                                              &enrollment.root_read_results[i]);
 +                if (r < 0)
 +                        return refuse(enrollment.root_limit_error = r);
 +        }
@@ -570,6 +829,11 @@ new file mode 100644
 +            !service->aos_resource_delivery || sd_id128_is_null(*original) ||
 +            !sd_id128_equal(*original, unit->invocation_id))
 +                return SD_ID128_NULL;
++        if (aos_resource_controller_protected_unit(unit) &&
++            (!enrollment.controller_cpu.attempted || enrollment.controller_cpu.first_error < 0 ||
++             enrollment.controller_cpu.first.read_result != 0 ||
++             !sd_id128_equal(enrollment.controller_cpu.invocation, unit->invocation_id)))
++                return SD_ID128_NULL;
 +        return enrollment.invocation;
 +}
 +
@@ -589,6 +853,10 @@ new file mode 100644
 +                return refuse(r);
 +        if (sd_id128_is_null(unit->invocation_id))
 +                return refuse(-ENODATA);
++        if (aos_resource_controller_protected_unit(unit) &&
++            (!enrollment.controller_cpu.prepared || enrollment.controller_cpu.first_error < 0 ||
++             !sd_id128_equal(enrollment.controller_cpu.invocation, unit->invocation_id)))
++                return controller_cpu_refuse(-EOWNERDEAD);
 +        if (!sd_id128_is_null(*original)) {
 +                /* A new invocation must recover the previous native owner;
 +                 * restart cannot reconstruct original custody from bytes. */
@@ -662,13 +930,17 @@ diff --git a/src/core/dbus-unit.c b/src/core/dbus-unit.c
  #include "format-util.h"
 +#include "aos-resource-enrollment.h"
  #include "install.h"
-@@ -2594,4 +2594,8 @@ int bus_unit_set_properties(
+@@ -2594,4 +2594,12 @@ int bus_unit_set_properties(
          assert(u);
          assert(message);
  
 +        if (aos_resource_root_protected_unit(u))
 +                return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_ACCESS_DENIED,
 +                                         "Original Root does not accept property overrides");
++
++        if (aos_resource_controller_protected_unit(u))
++                return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_ACCESS_DENIED,
++                                         "Original Controller does not accept property overrides");
 +
          /* Reject in-memory control overrides before the first setter runs. */
 diff --git a/src/core/load-dropin.c b/src/core/load-dropin.c
@@ -678,7 +950,7 @@ diff --git a/src/core/load-dropin.c b/src/core/load-dropin.c
  /* SPDX-License-Identifier: LGPL-2.1-or-later */
 +#include "aos-resource-enrollment.h"
  
-@@ -36,4 +36,8 @@ static int process_deps(Unit *u, UnitDependency dependency, const char *dir_suffix) {
+@@ -36,4 +36,12 @@ static int process_deps(Unit *u, UnitDependency dependency, const char *dir_suffix) {
          if (r < 0)
                  return r;
  
@@ -686,14 +958,22 @@ diff --git a/src/core/load-dropin.c b/src/core/load-dropin.c
 +                return log_unit_error_errno(u, SYNTHETIC_ERRNO(EPERM),
 +                                            "Refusing original Root dependency drop-ins: %m");
 +
++        if (aos_resource_controller_protected_unit(u) && !strv_isempty(paths))
++                return log_unit_error_errno(u, SYNTHETIC_ERRNO(EPERM),
++                                            "Refusing original Controller dependency drop-ins: %m");
++
          if (aos_nix_protected_unit(u) && !strv_isempty(paths))
-@@ -124,4 +124,8 @@ int unit_load_dropin(Unit *u) {
+@@ -124,4 +124,12 @@ int unit_load_dropin(Unit *u) {
          if (r <= 0)
                  return 0;
  
 +        if (aos_resource_root_protected_unit(u))
 +                return log_unit_error_errno(u, SYNTHETIC_ERRNO(EPERM),
 +                                            "Refusing original Root configuration drop-ins: %m");
++
++        if (aos_resource_controller_protected_unit(u))
++                return log_unit_error_errno(u, SYNTHETIC_ERRNO(EPERM),
++                                            "Refusing original Controller configuration drop-ins: %m");
 +
          if (aos_nix_protected_unit(u))
 diff --git a/src/core/unit.c b/src/core/unit.c
@@ -703,9 +983,10 @@ diff --git a/src/core/unit.c b/src/core/unit.c
  /* SPDX-License-Identifier: LGPL-2.1-or-later */
 +#include "aos-resource-enrollment.h"
  
-@@ -1820,3 +1820,3 @@ static int aos_network_unit_environment(Unit *u, char ***ret) {
+@@ -1820,3 +1820,4 @@ static int aos_network_unit_environment(Unit *u, char ***ret) {
 -            !aos_nix_protected_unit(u))
-+            !aos_nix_protected_unit(u) && !aos_resource_root_protected_unit(u))
++            !aos_nix_protected_unit(u) && !aos_resource_root_protected_unit(u) &&
++            !aos_resource_controller_protected_unit(u))
                  return manager_get_effective_environment(u->manager, ret);
  
 diff --git a/src/basic/process-util.h b/src/basic/process-util.h
@@ -1033,7 +1314,7 @@ diff --git a/src/core/service.c b/src/core/service.c
 diff --git a/src/core/service.c b/src/core/service.c
 --- a/src/core/service.c
 +++ b/src/core/service.c
-@@ -2108,3 +2108,17 @@
+@@ -2108,3 +2108,21 @@
          assert(ret_pid);
  
 +        r = aos_resource_require_unit(UNIT(s));
@@ -1043,6 +1324,10 @@ diff --git a/src/core/service.c b/src/core/service.c
 +        r = aos_resource_prepare_root_exec(s, c, exec_params.flags);
 +        if (r < 0)
 +                return log_unit_error_errno(UNIT(s), r, "Refusing unbounded original Root command: %m");
++
++        r = aos_resource_prepare_controller_exec(s, c, exec_params.flags);
++        if (r < 0)
++                return log_unit_error_errno(UNIT(s), r, "Refusing unbounded original Controller command: %m");
 +
 +        if (c == s->exec_command[SERVICE_EXEC_START] && FLAGS_SET(exec_params.flags, EXEC_PASS_FDS)) {
 +                r = aos_resource_deliver_component(s);
@@ -1054,8 +1339,9 @@ diff --git a/src/core/service.c b/src/core/service.c
 diff --git a/src/core/service.c b/src/core/service.c
 --- a/src/core/service.c
 +++ b/src/core/service.c
-@@ -2114,6 +2114,10 @@
+@@ -2114,6 +2114,11 @@
          r = unit_prepare_exec(UNIT(s)); /* This realizes the cgroup, among other things */
++        r = aos_resource_enforce_controller_cpu(s, r);
          if (r < 0)
                  return r;
 +        r = aos_resource_enforce_root_limits(s);
