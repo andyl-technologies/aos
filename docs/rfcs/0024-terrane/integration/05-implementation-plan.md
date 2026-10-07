@@ -766,6 +766,13 @@ from a separately prepared reverse map; the full preparation traversal remains
 explicitly charged. Exhaustive canonical-output comparison stays outside the
 measured maintenance. The new witnesses are committed but unexecuted; registry
 presence does not qualify DRV-29 or complete incremental maintenance.
+The first owning attempt stops at a test-helper lifetime error, before discovery
+or execution. Its exact signature correction preserves the constructor and all
+oracles. The corrected attempt discovers 620 tests, then its first required
+native case returns `Advance(Expired)` in 46.11 seconds; the other five cases
+and all later checks remain unrun. The actual commit timer starts after the
+preparation baseline, so moving fixture `begin` alone would not establish an
+expiry fix. Original reports remain preserved; diagnostic tracing is pending.
 
 The test-only bucket observer records actual typed Node/Commit get and put
 attempts before catalog lookup, admission or deduplication. The same per-bucket
@@ -2156,6 +2163,15 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   the first runtime refuses commit on refs/heads/_/main with zero passes.
   Remaining runtime cases and quality/application checks are unexecuted. Genuine
   request and authorization tracing remains pending; no grant is widened.
+  The reviewed unchanged-owner producer subsequently passes the exact native
+  reuse and evidence-gap cases. Its original current-policy negative used
+  Admin plus Commit, which lawfully authorizes publication under AUTH-22.
+  After correcting that fixture to Read only, reuse and gap cases again pass,
+  while the current/final case returns `Absent(Commit)` in 31.78 seconds.
+  The fourth case and later quality/application checks remain unrun. Independent
+  review verifies all 50 preserved artifacts and 4,911 actual Nix source inputs.
+  The error alone does not distinguish body absence from PROV-15 trust masking;
+  a separate diagnostic must identify the actual failing stage and Commit role.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
   codec, value-plus-object opaque keys and D-104's contextual primary/gap/route
@@ -3436,6 +3452,16 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   head's foreign used views, followed by a zero-TreeNode fork of that same head.
   Its named selector must execute and pass without ignored tests. Missing
   inventory fails explicitly; registration establishes no runtime result.
+  Its first runtime stops at unavailable filesystem xattr reads in the native
+  test wrapper. After delegating those reads to the actual filesystem, genuine
+  imported publication and retirement execute, but the witness incorrectly
+  requires the seeded orphan to be the first eligible catalog pack. That exact
+  case fails with zero passes in 233.74 seconds, before the cold fork. A reviewed
+  fixture correction bounds distinct native-acknowledged retirements by the
+  actual inventory, preserves every per-step source/control invariant, and
+  still requires the exact seeded orphan and final loss count. Corrected
+  execution remains pending; both original failures and dependent unrun checks
+  remain recorded. Neither result qualifies imported-head cold reuse.
   The reviewed pure journal, marking, proof-context, checkpoint, retention and
   grace-window bodies now replace their trunk declarations. All 27 adopted
   paths, including 16 independent hexadecimal witnesses, match the qualified
