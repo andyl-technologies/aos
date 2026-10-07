@@ -795,6 +795,19 @@ exact completion/refusal selectors; registry-complete and both required
 formatters pass. Its first private native compilation stops on two child-module
 path locators before discovery or execution. A locator-only correction is
 reviewed; no source-completion or whole ALG-32 result is claimed.
+After the locator and borrowed-fixture corrections, the private source
+`5eb449d15e81` compiles and discovers all twelve exact selectors among 642
+native tests. Raw full admission, older-lineage requalification followed by a
+separate zero-Node fork, and unchanged-context refusal pass. The last case
+requires exactly one actual root-directory sync, zero publication acknowledgments
+and the original complete state, source, log, incarnation and control assertions.
+The fourth case passes its first ACL denial and zero-ack assertions, then fails
+because it expects zero filesystem effects and observes one. Its later state
+assertions, five remaining refusal subcases, eight remaining selectors and all
+dependent checks are unrun. Independent review verifies all twenty preserved
+artifacts, 4,917 actual Nix input images and 5,971 unchanged tracked hashes,
+modes and mtimes. The exact refusal path remains under review; this result
+does not qualify the twelve-case gate or advance ALG-32.
 
 The focused native graft-locality check now requires three actual publication
 cases and three structural cases, with exact discovery and non-ignored
@@ -824,6 +837,14 @@ Both mandatory formatters pass. Independent review verifies all fourteen
 terminal results and 5,620 unchanged tracked images. The original fixture
 visibility failure is preserved. No measured speedup, expiry fix, DRV-29 gate
 or task completion follows until the owning locality cases are qualified.
+The isolated writer adopts the same coalescing algorithm while preserving its
+additional pair predicates and executor operations. Frozen `9a29ff12cc32`
+discovers all six owning selectors among 624 native tests, then the first
+actual publication case returns `Advance(Expired)` in 40.85 seconds. The other
+five cases and all dependent checks remain unrun. Independent review verifies
+all 5,975 sealed content artifacts, 4,904 actual Nix input images and 5,958
+unchanged tracked byte/executable-mode images. The earlier predicate passes
+remain scoped to the trunk prerequisite; no speedup or expiry fix is established.
 
 The test-only bucket observer records actual typed Node/Commit get and put
 attempts before catalog lookup, admission or deduplication. The same per-bucket
@@ -2223,6 +2244,26 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   review verifies all 50 preserved artifacts and 4,911 actual Nix source inputs.
   The error alone does not distinguish body absence from PROV-15 trust masking;
   a separate diagnostic must identify the actual failing stage and Commit role.
+  The isolated backfill subsequently preserves physical Commit presence while
+  exercising the exact policy-masked absence, and offers one final catalog
+  variant for each evidence-gap refusal. Its fourth fixture initially violates
+  TREE-17's ascending entry order; sorting only that fixture repairs construction
+  without changing its native completeness assertions. Frozen `8fed7955e56a`
+  passes reuse, evidence-gap and current-policy cases, then the completeness case
+  returns `Advance(Expired)` in 55.97 seconds. Historical, quality, application
+  and formatting checks remain unrun. Independent review verifies all 54
+  preserved artifacts, 4,911 actual Nix input images and 5,965 frozen inputs.
+  An owned-only trace first fails compilation in the shared Cargo target, before
+  execution. Its separately qualified private Nix input compiles the actual Core
+  source and executes only the same completeness case, which returns
+  `Advance(Expired)` in 50.82 seconds. The trace brackets 30.05 seconds between
+  candidate-evidence completion and scope exit, with no durable-upload marker.
+  This measures the upload-loop interval, without identifying an individual
+  put, syscall or the earlier failure's cause. All 32 original artifacts,
+  4,911 actual input images and 5,965 frozen inputs are independently verified.
+  The diagnostic is then restored byte-for-byte in a normal commit. The private
+  source adopts the separately qualified physical-predicate coalescing while
+  preserving its pair checks; changed-source qualification remains pending.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
   codec, value-plus-object opaque keys and D-104's contextual primary/gap/route
