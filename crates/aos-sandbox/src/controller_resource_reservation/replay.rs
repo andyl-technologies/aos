@@ -137,7 +137,8 @@ pub(super) fn validate(state: &State) -> Result<Option<EnrollmentIdentity>, Reso
                     ClaimPurpose::Snapshot | ClaimPurpose::ProjectPreparation
                         | ClaimPurpose::Q04Preparation | ClaimPurpose::HostControlInterval
                         | ClaimPurpose::ControllerFirstGlobalPrefix
-                        | ClaimPurpose::NixOriginalStartIntake | ClaimPurpose::Q04OriginalIntake => false,
+                        | ClaimPurpose::NixOriginalStartIntake | ClaimPurpose::Q04OriginalIntake
+                        | ClaimPurpose::RootReceiving => false,
                 };
                 if !purpose_matches {
                     return Err(ResourceReservationErrorV1::CorruptLedger);
@@ -209,6 +210,33 @@ pub(super) fn validate(state: &State) -> Result<Option<EnrollmentIdentity>, Reso
                 let prefix = codec::decode_claim(record_bytes(state, CLAIM_PREFIX, prefix_id)
                     .ok_or(ResourceReservationErrorV1::CorruptLedger)?)?;
                 require_first_global_prefix(state, parent, prefix)?;
+            }
+            if claim.purpose == ClaimPurpose::RootReceiving {
+                let expected_id = super::bootstrap::account_id(claim.enrollment,
+                    b"root-receiving-v1");
+                if claim.id != expected_id
+                    || claim.account != super::bootstrap::account_id(claim.enrollment, b"components")
+                    || parent.kind != AccountKind::Components
+                    || parent.enrollment != claim.enrollment
+                {
+                    return Err(ResourceReservationErrorV1::CorruptLedger);
+                }
+                super::root_component::require_service_envelope(claim.amount)?;
+                // R is a distinct retained row in the same K account as H.
+                // Complete replay sums both claims against K only once.
+                let host_id = super::bootstrap::account_id(claim.enrollment, b"host-component-v2");
+                let host_claim_id = super::bootstrap::account_id(claim.enrollment, &host_id);
+                let host = codec::decode_claim(record_bytes(state, CLAIM_PREFIX, host_claim_id)
+                    .ok_or(ResourceReservationErrorV1::CorruptLedger)?)?;
+                require_host_component(state, host)?;
+                finite_ceilings(parent)?.checked_sub(host.amount)?.checked_sub(claim.amount)?;
+                let q04_id = super::bootstrap::account_id(claim.enrollment,
+                    b"controller-q04-original-intake-v1");
+                let q04 = codec::decode_claim(record_bytes(state, CLAIM_PREFIX, q04_id)
+                    .ok_or(ResourceReservationErrorV1::CorruptLedger)?)?;
+                if q04.purpose != ClaimPurpose::Q04OriginalIntake {
+                    return Err(ResourceReservationErrorV1::CorruptLedger);
+                }
             }
         }
     }

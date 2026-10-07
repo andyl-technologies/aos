@@ -141,6 +141,63 @@ impl Drop for ControllerResourceInitialActivationTableV1 {
     }
 }
 
+/// Retains the original Root's complete four-role descriptor prefix.
+///
+/// This shares the fixed duplication engine with the other initial tables.
+/// Names and entries remain DATA until the original Root authenticates them.
+/// Failed capture retains every successful duplicate and native error until
+/// process termination; neither drop nor another wrapper rearms observation.
+#[must_use]
+pub struct RootInitialActivationTableV1 {
+    original: FixedInitialActivationTable<4>,
+}
+
+impl RootInitialActivationTableV1 {
+    /// Creates fixed resident slots before any inherited-table observation.
+    pub const fn new() -> Self {
+        Self {
+            original: FixedInitialActivationTable::new(),
+        }
+    }
+
+    /// Captures the actual original entries 3 through 6 exactly once.
+    ///
+    /// # Errors
+    ///
+    /// Retains the first duplication, flag or complete-table refusal.
+    pub fn observe_once(&mut self) -> std::result::Result<(), &Error> {
+        self.original.observe_once(
+            4,
+            "Root initial table",
+            "count exceeds four slots",
+            "observation is closed",
+        )
+    }
+
+    /// Borrows the permanently retained original observation failure.
+    pub fn failure(&self) -> Option<&Error> {
+        self.original.failure()
+    }
+
+    /// Moves only a complete four-slot prefix without another observation.
+    #[must_use]
+    pub fn take_completed_entries(&mut self) -> Option<[Option<OwnedFd>; 4]> {
+        self.original.take_completed_entries()
+    }
+}
+
+impl Default for RootInitialActivationTableV1 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for RootInitialActivationTableV1 {
+    fn drop(&mut self) {
+        self.original.abort_if_armed();
+    }
+}
+
 struct AbortInitialCaptureUnwind;
 
 /// Retains Storage's fixed listener, image and resource-enrollment prefix.

@@ -12,6 +12,8 @@ mod bootstrap;
 mod replay;
 mod grant;
 mod component;
+mod root_component;
+pub(crate) use root_component::RootReceivingOriginalV1;
 mod preparation;
 mod q04;
 mod settlement;
@@ -149,6 +151,7 @@ struct ImageBootstrapPolicy {
     first_global_prefix: Option<ResourceVector>,
     nix_original_start_intake: Option<ResourceVector>,
     q04_original_intake: Option<ResourceVector>,
+    root_receiving: Option<ResourceVector>,
 }
 
 // Both image-owned vectors are subdivisions of Components, not Node issuers.
@@ -255,6 +258,15 @@ impl ImageBootstrapPolicy {
                 }
             }
         }
+        if let Some(root) = self.root_receiving {
+            let host = self.host.ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
+            self.q04_original_intake
+                .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
+            self.components.checked_sub(host.service)?.checked_sub(host.control)?
+                .checked_sub(root)?;
+            root_component::require_service_envelope(root)?;
+        }
+
         Ok(())
     }
 }
@@ -303,6 +315,7 @@ enum ClaimPurpose {
     ControllerFirstGlobalPrefix,
     NixOriginalStartIntake,
     Q04OriginalIntake,
+    RootReceiving,
 }
 
 /// Compares the original fixed Host policy and PID1 delivery as borrowed DATA.

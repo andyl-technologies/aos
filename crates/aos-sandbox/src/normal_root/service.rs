@@ -575,6 +575,15 @@ pub(super) fn decode(
     unit: &[OwnedValue],
     profile_path: &str,
 ) -> Result<ServiceObservationV1, NormalRootStartupErrorV1> {
+    decode_with_resource_pair(service, unit, profile_path, false)
+}
+
+fn decode_with_resource_pair(
+    service: &[OwnedValue],
+    unit: &[OwnedValue],
+    profile_path: &str,
+    resource_delivery: bool,
+) -> Result<ServiceObservationV1, NormalRootStartupErrorV1> {
     let [
         cgroup,
         open_files,
@@ -599,7 +608,11 @@ pub(super) fn decode(
         || bool::try_from(nnp).ok() != Some(true)
         || u32::try_from(maximum).ok() != Some(0)
         || u32::try_from(stored).ok() != Some(0)
-        || !exact_open_files(open_files, extras, profile_path)
+        || !(if resource_delivery {
+            exact_resource_open_files(open_files, extras, profile_path)
+        } else {
+            exact_open_files(open_files, extras, profile_path)
+        })
     {
         return Err(NormalRootStartupErrorV1::Service);
     }
@@ -647,6 +660,33 @@ fn exact_open_files(open_files: &OwnedValue, extras: &OwnedValue, profile_path: 
         extras,
         [("/proc/1/exe", PID1_FD_NAME), (profile_path, PROFILE_FD_NAME)],
     )
+}
+
+fn exact_resource_open_files(open_files: &OwnedValue, extras: &OwnedValue, profile_path: &str) -> bool {
+    let Value::Array(open_files) = &**open_files else {
+        return false;
+    };
+    let Value::Array(extras) = &**extras else {
+        return false;
+    };
+    extras.element_signature() == Value::from("").value_signature()
+        && super::client::valid_resource_delivery_names(extras.inner(), true)
+        && systemd_property_data::exact_readonly_open_file_entries(
+            open_files.inner(),
+            [("/proc/1/exe", PID1_FD_NAME), (profile_path, PROFILE_FD_NAME)],
+        )
+}
+
+// This only compares already-retained property DATA. The original Root must
+// supply a complete admission before any archive/read/runtime is constructed.
+pub(super) fn decode_root_resource(
+    service: &[OwnedValue],
+    unit: &[OwnedValue],
+    profile_path: &str,
+) -> Result<(ServiceObservationV1, [u8; 16]), NormalRootStartupErrorV1> {
+    let (producer, common) = service.split_last().ok_or(NormalRootStartupErrorV1::Service)?;
+    let observed = decode_with_resource_pair(common, unit, profile_path, true)?;
+    Ok((observed, decode_resource_producer(producer)?))
 }
 
 pub(super) fn require_same(

@@ -6,6 +6,8 @@
   ...
 }: let
   cfg = config.aos.sandbox.policyAuthority;
+  resourcePolicy = config.aos.sandbox.resourceBank.policy;
+  rootReceiving = if resourcePolicy == null then null else resourcePolicy.rootReceiving;
   controller = config.aos.sandbox.controller;
   confined = config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0";
   normalUnit = config.systemd.services.aos-sandbox-policy-authorityd;
@@ -382,6 +384,15 @@ in {
         ++ lib.optional sourceSignerView.enable "aos-sandbox-source-signer-view.service";
       serviceConfig = {
         Type = "simple";
+        # The original PID1 owner additionally installs and reads these actual
+        # kernel bounds before exec. Unit text commits the expected envelope;
+        # mutable configuration alone cannot pay the first Root prefix.
+        MemoryMax = lib.mkIf (rootReceiving != null) rootReceiving.memory-bytes;
+        TasksMax = lib.mkIf (rootReceiving != null) rootReceiving.pids;
+        LimitNOFILE = lib.mkIf (rootReceiving != null) rootReceiving.open-files;
+        CPUAccounting = lib.mkIf (rootReceiving != null) true;
+        CPUQuotaPeriodSec = lib.mkIf (rootReceiving != null) "100ms";
+        CPUQuota = lib.mkIf (rootReceiving != null) "${toString (rootReceiving.cpu-micros-per-period / 1000)}%";
         # Recovery CLI uses the same ELF but never inherits this normal role.
         SELinuxContext = lib.mkIf confined "system_u:system_r:aos_sandbox_policy_authority_t";
         OpenFile = lib.mkIf confined [

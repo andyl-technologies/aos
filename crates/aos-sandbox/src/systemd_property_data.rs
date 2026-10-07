@@ -46,8 +46,19 @@ pub(crate) fn exact_readonly_open_file_pair(
         return false;
     }
 
+    exact_readonly_open_file_entries(open_files.inner(), expected)
+}
+
+/// Compares the same two borrowed readonly entries independently of extras.
+///
+/// The original caller owns its separate extra-descriptor policy. Repeated,
+/// missing, additional or foreign entries fail the existing pair comparison.
+pub(crate) fn exact_readonly_open_file_entries(
+    entries: &[Value<'_>],
+    expected: [(&str, &str); 2],
+) -> bool {
     let mut found = [false; 2];
-    for entry in open_files.inner() {
+    for entry in entries {
         let Value::Structure(entry) = entry else {
             return false;
         };
