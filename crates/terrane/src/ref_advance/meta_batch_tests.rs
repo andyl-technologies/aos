@@ -765,7 +765,7 @@ async fn native_meta_batch_cancelled_and_partial_runs_keep_native_receipts_hones
     };
     proposal.uploads.insert(0, chunk);
     proposal.uploads.push(StagedUpload::Meta {
-        kind: IdentityKind::Commit,
+        kind: IdentityKind::Memo,
         bytes: vec![0xff],
     });
     fixture.fs.reset();
