@@ -17,6 +17,10 @@ use terrane_core::gc::publication::PublicationProof;
 use terrane_core::bucket::BucketKey;
 use terrane_core::refs::{RefLogRecord, RefName};
 
+#[cfg(all(test, feature = "tokio", unix))]
+#[path = "capture/receipt_tests.rs"]
+mod receipt_tests;
+
 async fn backend<F: LocalFs + BucketBinding>(
     fs: &F,
     observed: &SelectedObservation<'_>,

@@ -7,7 +7,7 @@ use super::{
     StoreFailure, copy_parents, corrupt, io_failure, unsupported,
 };
 use crate::bucket::publication::receipts::RecordRead;
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 use terrane_core::bucket::BucketKey;
 use terrane_core::gc::publication::BackendBinding;
 
@@ -290,17 +290,44 @@ impl Frame {
     /// # Errors
     /// Rejects malformed or incomplete captured parent projections.
     pub(super) fn effect(&self, plan: Plan) -> Result<NativeFsEffect, StoreFailure> {
-        let mut names: Vec<_> = self
-            .names
-            .iter()
-            .map(|name| NamedFence {
+        // Repeated projection installs can capture the same name many times.
+        // Coalesce only identical predicates; distinct policy, descriptor,
+        // ancestry or incarnation observations still reach every native check.
+        let mut names = Vec::new();
+        let mut recorded_names: BTreeMap<&Path, Vec<&NamedFence>> = BTreeMap::new();
+        for name in &self.names {
+            let recorded = recorded_names.entry(name.path.as_path()).or_default();
+            if recorded.contains(&name) {
+                continue;
+            }
+            recorded.push(name);
+            names.push(NamedFence {
                 path: name.path.clone(),
                 stamp: name.stamp,
                 policy: name.policy,
                 parents: copy_parents(&name.parents),
                 descriptor: name.descriptor,
-            })
-            .collect();
+            });
+        }
+
+        let mut preimages = Vec::new();
+        let mut recorded_reads: BTreeMap<&Path, Vec<&ExactRead>> = BTreeMap::new();
+        for read in &self.reads {
+            let recorded = recorded_reads.entry(read.path.as_path()).or_default();
+            if recorded.contains(&read) {
+                continue;
+            }
+            recorded.push(read);
+            preimages.push(ExactRead {
+                path: read.path.clone(),
+                expected: read.expected.clone(),
+                identity: read.identity,
+                metadata: read.metadata,
+                policy: read.policy,
+                owner: read.owner,
+                parents: copy_parents(&read.parents),
+            });
+        }
         // Complete parent names also participate in the executor's final
         // fence after all exact reads. Unchanged leaf bytes cannot hide an
         // ancestor replacement or permission change during those reads.
@@ -330,19 +357,7 @@ impl Frame {
         Ok(NativeFsEffect {
             exclusions: Arc::clone(&self.exclusions),
             names,
-            preimages: self
-                .reads
-                .iter()
-                .map(|read| ExactRead {
-                    path: read.path.clone(),
-                    expected: read.expected.clone(),
-                    identity: read.identity,
-                    metadata: read.metadata,
-                    policy: read.policy,
-                    owner: read.owner,
-                    parents: copy_parents(&read.parents),
-                })
-                .collect(),
+            preimages,
             final_check: self.final_check.clone(),
             plan,
             #[cfg(test)]

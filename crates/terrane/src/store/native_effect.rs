@@ -50,7 +50,7 @@ impl NativeExclusion {
 
 use crate::selected_bridge::OwnedFinalCheck;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum FencePolicy {
     ProtectedAncestor { owner: u32 },
     NamespaceDirectory { owner: u32 },
@@ -109,6 +109,7 @@ impl FencePolicy {
     }
 }
 
+#[derive(PartialEq, Eq)]
 struct ParentFence {
     path: PathBuf,
     stamp: MetadataStamp,
@@ -170,6 +171,7 @@ fn check_parents(path: &std::path::Path, parents: &[ParentFence], owner: u32) ->
 }
 
 /// Records a physically checked name and, for coordination, its retained descriptor.
+#[derive(PartialEq, Eq)]
 struct NamedFence {
     path: PathBuf,
     stamp: MetadataStamp,
@@ -256,6 +258,7 @@ impl NamedFence {
 }
 
 /// Records an exact whole-value preimage for the final native dispatch.
+#[derive(PartialEq, Eq)]
 struct ExactRead {
     path: PathBuf,
     expected: Option<Vec<u8>>,
