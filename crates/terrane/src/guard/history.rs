@@ -1,5 +1,8 @@
 //! Authenticates stored commits against their signed original canonical root scope.
 
+#[cfg(feature = "std")]
+pub(super) mod completion;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use terrane_core::auth::RequestRoot;
@@ -57,7 +60,7 @@ impl<'a> HistoryObservation<'a> {
         Ok(())
     }
 
-    /// Loads and records the actual candidate only when a held trace is active.
+    /// Prepares the actual candidate without completing its signed history.
     ///
     /// # Errors
     /// Rejects invalid candidate witnesses, missing metadata, or trace contradictions.
@@ -77,21 +80,29 @@ impl<'a> HistoryObservation<'a> {
             )
             .await?;
             consumed.issuer(&admitted.commit)?;
-            consumed.view(admitted.commit.identity(), &evidence, minimum)?;
+            let pending = completion::PendingViewUse::prepare(
+                &admitted.completion_inputs,
+                &admitted.commit,
+                &evidence,
+            )?;
+            consumed.pending_view(&pending)?;
         }
         Ok(())
     }
+}
 
-    /// Validates recorded ordinary inputs before the final publication effect.
-    ///
-    /// # Errors
-    /// Rejects inconsistent canonical evidence or poisoned trace synchronization.
-    #[cfg(feature = "std")]
-    pub(crate) fn finish(self) -> Result<(), StoreFailure> {
-        if let Some(consumed) = self.consumed {
-            consumed.finish()?;
-        }
-        Ok(())
+/// Owns view inputs promoted only after the complete signed history succeeds.
+#[cfg(feature = "std")]
+pub(super) struct CompletedViewUse {
+    /// Retains all actual signed-view context and occurrence policies.
+    prepared: completion::PendingViewUse,
+}
+
+#[cfg(feature = "std")]
+impl CompletedViewUse {
+    /// Borrows owning completion data without exposing its constructor.
+    pub(super) fn prepared(&self) -> &completion::PendingViewUse {
+        &self.prepared
     }
 }
 
@@ -232,6 +243,8 @@ impl<S: Store, C: Clock> Guard<S, C> {
         let mut visited = BTreeSet::new();
         let mut locations = Vec::new();
         let mut domains = BTreeMap::new();
+        #[cfg(feature = "std")]
+        let mut prepared_views = BTreeMap::new();
         while let Some(identity) = pending.pop() {
             if !visited.insert(identity) {
                 continue;
@@ -240,7 +253,13 @@ impl<S: Store, C: Clock> Guard<S, C> {
             #[cfg(feature = "std")]
             if let Some(consumed) = observation.consumed {
                 consumed.issuer(&verified.commit)?;
-                consumed.view(identity, &verified.evidence, self.config().min_chunk_size)?;
+                let prepared = completion::PendingViewUse::prepare(
+                    &self.completion_inputs()?,
+                    &verified.commit,
+                    &verified.evidence,
+                )?;
+                consumed.pending_view(&prepared)?;
+                prepared_views.insert(identity, prepared);
             }
             domains.insert(identity, verified.evidence.default_domain.clone());
             pending.extend(verified.commit.commit().parents.iter().copied());
@@ -320,6 +339,16 @@ impl<S: Store, C: Clock> Guard<S, C> {
                     .map_err(|_| invalid())?;
             }
         }
+        // No prepared view becomes completed until the entire invocation has
+        // passed Original scope, entry-origin and attribute-producer verification.
+        #[cfg(feature = "std")]
+        if let Some(consumed) = observation.consumed {
+            let completed = prepared_views
+                .into_values()
+                .map(|prepared| CompletedViewUse { prepared })
+                .collect::<Vec<_>>();
+            consumed.complete_views(&completed)?;
+        }
         Ok(history)
     }
 
@@ -350,6 +379,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
             return Err(invalid());
         }
         if let Some(consumed) = observation.consumed {
+            consumed.check_completion_original(&checked)?;
             consumed.original(&checked)?;
         }
         let authority = baseline

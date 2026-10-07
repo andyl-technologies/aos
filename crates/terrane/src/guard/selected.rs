@@ -13,6 +13,9 @@ use terrane_core::gc::publication::{BackendBinding, RawDigest};
 
 use super::{CheckedEvidence, CheckedMutation};
 
+#[path = "selected/meta_batch.rs"]
+pub(crate) mod meta_batch;
+
 #[cfg(unix)]
 #[path = "selected/cold_fork.rs"]
 pub(crate) mod cold_fork;
@@ -59,6 +62,7 @@ pub(crate) struct GuardEffectContext {
 ///
 /// Only this producer binds records to actual backend observations. It grants
 /// no mutation, actor or trust authority and accepts no caller UID.
+#[derive(Clone)]
 pub(crate) struct SelectedControlRead {
     record: crate::bucket::publication::receipts::RecordRead,
     owner: u32,
@@ -320,19 +324,71 @@ where
     };
     let proof = observed.identity();
     let history = crate::guard::HistoryObservation::held(proof).tracked(consumed);
-    let next = coordinator
-        .stage_observed_ref(
-            session,
-            admitted,
-            started,
-            reason,
-            crate::ref_advance::PublicationObservation {
-                history,
-                original: Some(original),
+    let direct_container = admitted.uploads.iter().any(|upload| {
+        matches!(upload, crate::guard::StagedUpload::Meta { kind, .. }
+            if matches!(kind, terrane_core::identity::IdentityKind::Pack
+                | terrane_core::identity::IdentityKind::Index))
+    });
+    let publication_observation = crate::ref_advance::PublicationObservation {
+        history,
+        original: Some(original),
+    };
+    let (next, local_controls, early_controls) = if direct_container {
+        // Direct import/Index lanes retain their ordinary existing semantics.
+        // No early control lock or contextual batch is created for this attempt.
+        let next = coordinator
+            .stage_observed_ref(
+                session,
+                admitted,
+                started,
+                reason,
+                publication_observation,
+                retained_previous,
+            )
+            .await?;
+        (next, None, None)
+    } else {
+        let (immutable_context, local_controls) = meta_batch::retain(
+            meta_batch::ControlOwner {
+                concrete,
+                authority,
             },
-            retained_previous,
+            meta_batch::NativeSelection {
+                coordinator,
+                observed,
+                consumed,
+            },
+            meta_batch::CandidateRetention {
+                admitted,
+                original,
+                history,
+                started,
+                timing,
+                selected_reads: &selected_reads,
+            },
         )
         .await?;
+        let next = coordinator
+            .stage_observed_ref_native(
+                crate::ref_advance::NativeStage {
+                    session,
+                    admitted,
+                    started,
+                    reason,
+                    observation: publication_observation,
+                    retained_previous,
+                },
+                &immutable_context,
+            )
+            .await?;
+        let early_controls = immutable_context
+            .effect_context()
+            .controls()
+            .first()
+            .ok_or_else(invalid)?
+            .clone();
+        (next, Some(local_controls), Some(early_controls))
+    };
 
     // Durable content and log staging can publish lower logical revisions. The
     // candidate therefore binds the refreshed actual held selection, while its
@@ -392,11 +448,27 @@ where
         exclusion: mut controls,
         snapshot,
         used,
-    } = hold_consumed_controls(concrete, authority, held, observed, consumed).await?;
+    } = match local_controls {
+        Some(local) => {
+            refresh_consumed_controls(
+                concrete,
+                authority,
+                held,
+                observed,
+                consumed,
+                local.exclusion,
+            )
+            .await?
+        }
+        None => hold_consumed_controls(concrete, authority, held, observed, consumed).await?,
+    };
     coordinator.check_time(started)?;
     #[cfg(test)]
     trace.mark("selected-consumed-controls-held");
     let retained_controls = controls.retain_used(&used.controls).await?;
+    if let Some(early) = &early_controls {
+        meta_batch::check_continuity(early, &retained_controls)?;
+    }
     // The same held operation now owns the checked control receipt. Rechecking
     // its Original must read those exact records without reacquiring its lock.
     coordinator
@@ -497,9 +569,31 @@ where
     V: ContentValidator + BucketBinding,
 {
     observed.revalidate().await?;
-    let mut controls = guard
+    let controls = guard
         .hold_original_registration(authority, observed.identity())
         .await?;
+    refresh_consumed_controls(guard, authority, held, observed, consumed, controls).await
+}
+
+/// Revalidates consumed controls using the same actual acquired exclusion.
+///
+/// # Errors
+/// Preserves selected Guard/trust/pin checks without reacquiring the held lock.
+async fn refresh_consumed_controls<'guard, F, B, V, C, const WRITABLE: bool>(
+    guard: &'guard Guard<FileBucket<F, B, V>, C>,
+    authority: &OriginalAuthority,
+    held: &HeldBucket<'_, F, B, V, WRITABLE>,
+    observed: &SelectedObservation<'_>,
+    consumed: &ConsumedResolver,
+    controls: crate::guard::ControlExclusion<'guard, F>,
+) -> Result<LocalControlInputs<'guard, F>, StoreFailure>
+where
+    F: LocalFs + BucketBinding,
+    B: Clock + BucketBinding,
+    V: ContentValidator + BucketBinding,
+{
+    observed.revalidate().await?;
+    let mut controls = controls;
     let snapshot = consumed.snapshot_bytes()?;
     if held.selected_guard_snapshot(observed).await?.as_deref() != Some(snapshot.as_slice()) {
         return Err(StoreFailure::new(StoreErrorKind::Denied {

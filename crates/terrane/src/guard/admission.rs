@@ -37,6 +37,8 @@ pub(super) struct CandidateValidation {
 /// A signed commit bound to the exact current-policy record it may replace.
 pub(crate) struct AdmittedCommit {
     pub(crate) commit: VerifiedCommit,
+    /// Captures the actual constructor-selected ordinary interpretation and profile.
+    pub(super) completion_inputs: super::history::completion::LegacyInputs,
     pub(super) requirements: Vec<super::attributes::RequirementEvidence>,
     pub(super) admin_checks: Vec<AdminCheck>,
     pub(super) publication_reference: String,
@@ -492,6 +494,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
         )
         .map_err(|_| denied(reference, Verb::Commit))?;
         Ok(AdmittedCommit {
+            completion_inputs: self.completion_inputs()?,
             commit,
             requirements,
             admin_checks,

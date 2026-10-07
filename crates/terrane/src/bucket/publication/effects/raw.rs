@@ -275,6 +275,34 @@ pub(crate) async fn stage_container<F: LocalFs + BucketBinding>(
     observed.revalidate().await
 }
 
+/// Stages a genuine creator pair while retaining native current/control checks.
+///
+/// # Errors
+/// Refuses changed actual inputs, expiry, unsafe creator preimages or missing
+/// Pending/same-descriptor-seal/Committed acknowledgment; grants no GC authority.
+pub(crate) async fn stage_container_contextual<F: LocalFs + BucketBinding>(
+    fs: &F,
+    observed: &SelectedObservation<'_>,
+    artifacts: &ContainerArtifacts,
+    context: &crate::selected_bridge::native_guard::meta_batch::ImmutableEffectContext<'_, '_>,
+) -> Result<(), StoreFailure> {
+    context.check_selection(observed)?;
+    let (mut frame, control) =
+        super::contextual_frame(fs, observed, context.sources(), context.effect_context()).await?;
+    let root = observed.identity().root();
+    super::creation::stage_pair(fs, &mut frame, root, &control, artifacts).await?;
+    frame
+        .execute(
+            fs,
+            Plan::SyncDirectory {
+                path: root.to_owned(),
+            },
+        )
+        .await?;
+    observed.revalidate().await?;
+    context.recheck()
+}
+
 /// Selects a canonical backend-only raw mutation under its actual retained hold.
 ///
 /// The proof is fixed to Raw. This factory cannot install a Guard, create
@@ -289,6 +317,31 @@ pub(crate) async fn publish<F: LocalFs + BucketBinding>(
     observed: &SelectedObservation<'_>,
     mutation: &RawMutation,
 ) -> Result<super::CheckedPublication, StoreFailure> {
+    publish_inner(fs, observed, mutation, None).await
+}
+
+/// Executes the unchanged Raw transition under genuine native content checks.
+///
+/// # Errors
+/// Preserves Raw successor and durable acknowledgment failures and rejects
+/// changed current/control inputs or expiry at submitted effect boundaries.
+pub(crate) async fn publish_contextual<F: LocalFs + BucketBinding>(
+    fs: &F,
+    observed: &SelectedObservation<'_>,
+    mutation: &RawMutation,
+    context: &crate::selected_bridge::native_guard::meta_batch::ImmutableEffectContext<'_, '_>,
+) -> Result<super::CheckedPublication, StoreFailure> {
+    publish_inner(fs, observed, mutation, Some(context)).await
+}
+
+async fn publish_inner<F: LocalFs + BucketBinding>(
+    fs: &F,
+    observed: &SelectedObservation<'_>,
+    mutation: &RawMutation,
+    context: Option<
+        &crate::selected_bridge::native_guard::meta_batch::ImmutableEffectContext<'_, '_>,
+    >,
+) -> Result<super::CheckedPublication, StoreFailure> {
     if mutation.previous() != observed.state()
         || mutation.predecessor() != observed.stamp().1
         || mutation.previous_logical() != observed.logical()
@@ -298,10 +351,21 @@ pub(crate) async fn publish<F: LocalFs + BucketBinding>(
     {
         return Err(corrupt());
     }
-    let mut frame = backend(fs, observed).await?;
-    frame.writes = Some(super::CompletedWrites {
-        records: BTreeMap::new(),
-    });
+    let mut frame = match context {
+        Some(context) => {
+            context.check_selection(observed)?;
+            super::contextual_frame(fs, observed, context.sources(), context.effect_context())
+                .await?
+                .0
+        }
+        None => {
+            let mut frame = backend(fs, observed).await?;
+            frame.writes = Some(super::CompletedWrites {
+                records: BTreeMap::new(),
+            });
+            frame
+        }
+    };
     let root = observed.identity().root();
     let owner = frame.owner;
     let control = observed

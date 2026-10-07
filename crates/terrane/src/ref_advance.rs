@@ -50,6 +50,7 @@ mod domain_tests;
 mod original_tests;
 
 pub use crate::guard::{CommitRequest, StagedUpload};
+pub(crate) use coordinator::NativeStage;
 pub use coordinator::{
     AdvanceError, CommitTiming, Coordinator, FoldOutcome, TagAnnotation, WriterSession,
 };
@@ -61,3 +62,9 @@ pub(crate) use native::{
     FsRef, NativeTagRequest, PublicationBinding, PublicationClock, PublicationObservation,
     RetainedPublication,
 };
+
+#[cfg(all(test, feature = "tokio", unix))]
+mod legacy_completion_tests;
+
+#[cfg(all(test, feature = "tokio", unix))]
+mod meta_batch_tests;

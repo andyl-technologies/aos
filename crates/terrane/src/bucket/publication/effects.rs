@@ -34,7 +34,8 @@ mod creation;
 #[cfg(all(test, feature = "tokio", unix))]
 pub(crate) use raw::{backend_sync_for_test, gate_active_cap_probe_for_test};
 pub(crate) use raw::{
-    probe_active, publish as publish_raw, repair, stage_container, stage_ref_log,
+    probe_active, publish as publish_raw, publish_contextual as publish_raw_contextual, repair,
+    stage_container, stage_container_contextual, stage_ref_log,
 };
 
 use super::{
@@ -168,18 +169,20 @@ fn copy_parents(parents: &[ParentFence]) -> Vec<ParentFence> {
         .collect()
 }
 
-/// Publishes only fixed data carried by the genuine checked producer.
+/// Captures genuine controls and selected inputs without deriving new authority.
+///
+/// Both selected publication and native content staging retain the same exact
+/// physical evidence. The supplied context has only closed producer factories.
 ///
 /// # Errors
-/// Rejects absent native retention, changed physical/control preimages, expired
-/// authority and failed durable effects. An error after slot dispatch can mean
-/// that selection succeeded and its portable acknowledgment remains incomplete.
-pub(crate) async fn publish_checked<F: LocalFs + BucketBinding>(
+/// Preserves actual descriptor/owner/ancestor/record checks and refuses changed
+/// or unavailable selected/control inputs or expired retained request checks.
+async fn contextual_frame<F: LocalFs + BucketBinding>(
     fs: &F,
-    checked: &CheckedMutation<'_, '_>,
-) -> Result<CheckedPublication, StoreFailure> {
-    let context = checked.effect_context().ok_or_else(unsupported)?;
-    let observed = checked.observed();
+    observed: &SelectedObservation<'_>,
+    sources: &[&SelectedObservation<'_>],
+    context: &crate::selected_bridge::native_guard::GuardEffectContext,
+) -> Result<(Frame, PathBuf), StoreFailure> {
     if !observed.identity().writable() {
         return Err(unsupported());
     }
@@ -189,7 +192,7 @@ pub(crate) async fn publish_checked<F: LocalFs + BucketBinding>(
         return Err(corrupt());
     }
     let mut exclusions = vec![duplicate(observed.identity().retained_namespace()?)?];
-    for source in checked.sources() {
+    for source in sources {
         exclusions.push(duplicate(source.identity().retained_namespace()?)?);
     }
     let mut control_descriptors = Vec::with_capacity(controls.len());
@@ -243,7 +246,7 @@ pub(crate) async fn publish_checked<F: LocalFs + BucketBinding>(
         }
     }
     let control = frame.observation(fs, observed, 0).await?;
-    for (index, source) in checked.sources().iter().enumerate() {
+    for (index, source) in sources.iter().enumerate() {
         frame.observation(fs, source, index + 1).await?;
     }
     for retained in context.selected_reads() {
@@ -374,6 +377,24 @@ pub(crate) async fn publish_checked<F: LocalFs + BucketBinding>(
     {
         return Err(corrupt());
     }
+
+    Ok((frame, control))
+}
+
+/// Publishes only fixed data carried by the genuine checked producer.
+///
+/// # Errors
+/// Rejects absent native retention, changed physical/control preimages, expired
+/// authority and failed durable effects. An error after slot dispatch can mean
+/// that selection succeeded and its portable acknowledgment remains incomplete.
+pub(crate) async fn publish_checked<F: LocalFs + BucketBinding>(
+    fs: &F,
+    checked: &CheckedMutation<'_, '_>,
+) -> Result<CheckedPublication, StoreFailure> {
+    let context = checked.effect_context().ok_or_else(unsupported)?;
+    let observed = checked.observed();
+    let (mut frame, control) = contextual_frame(fs, observed, checked.sources(), context).await?;
+    let owner = frame.owner;
 
     if let Some(bytes) = checked.lineage() {
         use terrane_core::gc::publication::{CommittedSelection, evidence::CheckedLineage};

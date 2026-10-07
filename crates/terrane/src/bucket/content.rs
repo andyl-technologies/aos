@@ -1,5 +1,9 @@
 //! Validates opaque admissions and verifies complete bodies before ranged reads.
 
+mod meta_batch;
+
+pub(crate) use meta_batch::BatchOutcome;
+
 use super::catalog::{Catalog, registered};
 use super::{BucketBinding, FileBucket, files};
 use crate::pack::{
@@ -434,6 +438,26 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         held: &super::held::HeldBucket<'_, F, C, V, WRITABLE>,
         upload: ContentUpload<'_>,
     ) -> Result<Identity, StoreFailure> {
+        self.put_locked_contextual(held, upload, None).await
+    }
+
+    /// Retains an actual native publication context on ordinary fallback puts.
+    ///
+    /// # Errors
+    /// Preserves ordinary admission failures and rejects expired or changed
+    /// native current/control inputs before effects and acknowledgment.
+    pub(super) async fn put_locked_contextual<const WRITABLE: bool>(
+        &self,
+        held: &super::held::HeldBucket<'_, F, C, V, WRITABLE>,
+        upload: ContentUpload<'_>,
+        context: Option<
+            &crate::selected_bridge::native_guard::meta_batch::ImmutableEffectContext<'_, '_>,
+        >,
+    ) -> Result<Identity, StoreFailure> {
+        if let Some(context) = context {
+            held.retained_namespace()?;
+            context.recheck()?;
+        }
         #[cfg(all(test, feature = "tokio", unix))]
         self.inner.content_observation.put(match upload {
             ContentUpload::Chunk(_) => IdentityKind::Chunk,
@@ -444,8 +468,11 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             return Err(files::layout_corrupt());
         }
         let observed = held.observe_publication().await?;
+        if let Some(context) = context {
+            context.check_selection(&observed)?;
+        }
         self.write_layout_locked().await?;
-        let catalog = self.catalog().await?;
+        let catalog = self.catalog_observed(&observed).await?;
         let mut dictionaries = BTreeMap::new();
         let identity = match upload {
             ContentUpload::Chunk(chunk) => {
@@ -508,6 +535,10 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         if let ContentUpload::Meta(meta) = upload
             && meta.kind() == IdentityKind::Pack
         {
+            if context.is_some() {
+                return Err(StoreFailure::new(StoreErrorKind::Unsupported));
+            }
+            observed.revalidate().await?;
             return self
                 .import_pack(held, &observed, catalog, meta.bytes(), identity)
                 .await;
@@ -518,6 +549,10 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         if !self.is_excluded(&catalog, &identity)?
             && self.container(&catalog, &identity).await?.is_some()
         {
+            observed.revalidate().await?;
+            if let Some(context) = context {
+                context.recheck()?;
+            }
             return Ok(identity);
         }
 
@@ -525,6 +560,9 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         // never supplies evidence for a later nonfinal offer of the same bytes.
         if identity == empty_chunk()? {
             observed.revalidate().await?;
+            if let Some(context) = context {
+                context.recheck()?;
+            }
             return Ok(identity);
         }
         let placement = self
@@ -546,6 +584,9 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             observed.revalidate().await?;
             if let Some(placement) = &placement {
                 self.recheck_placement(placement).await?;
+            }
+            if let Some(context) = context {
+                context.recheck()?;
             }
             return Ok(identity);
         }
@@ -586,8 +627,25 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         let sealed = writer.seal().map_err(|_| invalid("STORE-33"))?;
         let artifacts =
             super::containers::admitted_artifacts(id, sealed.bytes(), sealed.index_object())?;
-        crate::store::native_publication_effects::stage_container(held.fs(), &observed, &artifacts)
-            .await?;
+        match context {
+            Some(context) => {
+                crate::store::native_publication_effects::stage_container_contextual(
+                    held.fs(),
+                    &observed,
+                    &artifacts,
+                    context,
+                )
+                .await?
+            }
+            None => {
+                crate::store::native_publication_effects::stage_container(
+                    held.fs(),
+                    &observed,
+                    &artifacts,
+                )
+                .await?
+            }
+        }
         let generation = catalog
             .capabilities
             .generation
@@ -597,28 +655,49 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         let index = PackIndexSnapshot::decode(sealed.index_object(), generation)
             .map_err(|_| files::layout_corrupt())?;
         self.verified_container(artifacts.inventory()).await?;
-        match placement.as_ref() {
-            Some(placement) => {
-                self.publish_pack_catalog_observed(
+        match context {
+            Some(context) => {
+                self.publish_pack_catalog_contextual(
                     held,
                     &observed,
-                    catalog,
-                    index,
-                    artifacts.inventory().clone(),
-                    Some(placement),
+                    super::catalog::CatalogAdmission {
+                        catalog,
+                        new: index,
+                        inventory: artifacts.inventory().clone(),
+                    },
+                    super::catalog::CatalogScope {
+                        placement: placement.as_ref(),
+                        context: Some(context),
+                    },
                 )
-                .await?;
+                .await?
             }
-            None => {
-                self.publish_pack_catalog(
-                    held,
-                    &observed,
-                    catalog,
-                    index,
-                    artifacts.inventory().clone(),
-                )
-                .await?;
-            }
+            None => match placement.as_ref() {
+                Some(placement) => {
+                    self.publish_pack_catalog_observed(
+                        held,
+                        &observed,
+                        catalog,
+                        index,
+                        artifacts.inventory().clone(),
+                        Some(placement),
+                    )
+                    .await?
+                }
+                None => {
+                    self.publish_pack_catalog(
+                        held,
+                        &observed,
+                        catalog,
+                        index,
+                        artifacts.inventory().clone(),
+                    )
+                    .await?
+                }
+            },
+        }
+        if let Some(context) = context {
+            context.recheck()?;
         }
         Ok(identity)
     }

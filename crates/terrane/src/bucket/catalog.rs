@@ -26,6 +26,39 @@ pub(super) struct Catalog {
     pub burns: Option<Vec<[u8; 16]>>,
 }
 
+/// Groups verified ordinary container admission outputs.
+pub(super) struct CatalogAdmission {
+    /// The complete verified predecessor catalog.
+    pub(super) catalog: Catalog,
+    /// The actual newly sealed detached index.
+    pub(super) new: PackIndexSnapshot,
+    /// The actual new pack/index inventory binding.
+    pub(super) inventory: PackInventoryEntry,
+}
+
+/// Groups one ordinary complete selected successor projection.
+struct CatalogSuccessor<'input> {
+    catalog: Catalog,
+    generation: u64,
+    shards: &'input [MergedShard],
+}
+
+/// Borrows optional actual repair and native operation observations.
+///
+/// Neither field is caller evidence: their closed producers retain the physical
+/// preimages and current controls independently of this grouping.
+pub(super) struct CatalogScope<'input, 'operation, 'held> {
+    /// The actual missing-placement observation, if ordinary repair is required.
+    pub(super) placement: Option<&'input super::missing_placement::Placement>,
+    /// The actual retained native publication context, when called beneath staging.
+    pub(super) context: Option<
+        &'input crate::selected_bridge::native_guard::meta_batch::ImmutableEffectContext<
+            'operation,
+            'held,
+        >,
+    >,
+}
+
 impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator + BucketBinding>
     FileBucket<F, C, V>
 {
@@ -263,11 +296,49 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         &self,
         held: &super::held::HeldBucket<'_, F, C, V, WRITABLE>,
         observed: &super::publication::SelectedObservation<'_>,
-        mut catalog: Catalog,
+        catalog: Catalog,
         new: PackIndexSnapshot,
         inventory: PackInventoryEntry,
         placement: Option<&super::missing_placement::Placement>,
     ) -> Result<(), StoreFailure> {
+        self.publish_pack_catalog_contextual(
+            held,
+            observed,
+            CatalogAdmission {
+                catalog,
+                new,
+                inventory,
+            },
+            CatalogScope {
+                placement,
+                context: None,
+            },
+        )
+        .await
+    }
+
+    /// Publishes the ordinary catalog successor with optional native checks.
+    ///
+    /// # Errors
+    /// Preserves all ordinary catalog/placement failures and actual native
+    /// expiry/control/acknowledgment refusal without changing Raw proof rules.
+    pub(super) async fn publish_pack_catalog_contextual<const WRITABLE: bool>(
+        &self,
+        held: &super::held::HeldBucket<'_, F, C, V, WRITABLE>,
+        observed: &super::publication::SelectedObservation<'_>,
+        admission: CatalogAdmission,
+        scope: CatalogScope<'_, '_, '_>,
+    ) -> Result<(), StoreFailure> {
+        let CatalogAdmission {
+            mut catalog,
+            new,
+            inventory,
+        } = admission;
+        let CatalogScope { placement, context } = scope;
+        if context.is_some() {
+            held.retained_namespace()?;
+        }
+
         self.write_layout_locked().await?;
         if self.physically_excluded(&catalog, new.header().id().as_bytes()) {
             // Even an exact artifact collision cannot re-admit an excluded
@@ -353,7 +424,14 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         // The existing raw transition still advances loss_generation and clears
         // carried sources when the exact selected Live row changes.
         self.publish_shards_held_with_placement(
-            held, observed, catalog, generation, &shards, placement,
+            held,
+            observed,
+            CatalogSuccessor {
+                catalog,
+                generation,
+                shards: &shards,
+            },
+            CatalogScope { placement, context },
         )
         .await
     }
@@ -394,19 +472,39 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         generation: u64,
         shards: &[MergedShard],
     ) -> Result<(), StoreFailure> {
-        self.publish_shards_held_with_placement(held, observed, catalog, generation, shards, None)
-            .await
+        self.publish_shards_held_with_placement(
+            held,
+            observed,
+            CatalogSuccessor {
+                catalog,
+                generation,
+                shards,
+            },
+            CatalogScope {
+                placement: None,
+                context: None,
+            },
+        )
+        .await
     }
 
     async fn publish_shards_held_with_placement<const WRITABLE: bool>(
         &self,
         held: &super::held::HeldBucket<'_, F, C, V, WRITABLE>,
         observed: &super::publication::SelectedObservation<'_>,
-        mut catalog: Catalog,
-        generation: u64,
-        shards: &[MergedShard],
-        placement: Option<&super::missing_placement::Placement>,
+        successor: CatalogSuccessor<'_>,
+        scope: CatalogScope<'_, '_, '_>,
     ) -> Result<(), StoreFailure> {
+        let CatalogSuccessor {
+            mut catalog,
+            generation,
+            shards,
+        } = successor;
+        let CatalogScope { placement, context } = scope;
+        if context.is_some() {
+            held.retained_namespace()?;
+        }
+
         if !std::ptr::eq(self, held.bucket())
             || observed
                 .logical()
@@ -534,7 +632,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                     .map_err(|_| files::malformed())?,
             ),
         });
-        held.publish_backend_raw_with_placement(observed, changes, placement)
+        held.publish_backend_raw_contextual(observed, changes, placement, context)
             .await?;
 
         // Retain the existing independent artifact identity verification at its

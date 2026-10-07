@@ -67,6 +67,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
             .await?;
         let timestamp = self.now(reference, Verb::Commit)?;
         Ok(AdmittedCommit {
+            completion_inputs: self.completion_inputs()?,
             commit: selected.commit,
             requirements,
             admin_checks,
@@ -117,6 +118,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
             policy.conflicted = selected.commit.commit().profile_pair.conflicted;
         }
         Ok(AdmittedCommit {
+            completion_inputs: self.completion_inputs()?,
             commit: selected.commit,
             requirements: Vec::new(),
             admin_checks: Vec::new(),

@@ -1,5 +1,9 @@
 //! Publishes immutable objects before create-once reflogs and whole-record CAS.
 
+mod meta_batch;
+
+pub(crate) use meta_batch::NativeStage;
+
 use std::fmt;
 use std::time::Duration;
 
@@ -12,6 +16,18 @@ use crate::guard::{AdmittedCommit, Guard, HistoryObservation, JoinKind, JoinRequ
 use crate::store::{
     Clock, ContentUpload, LocalFs, MetaUpload, RefLogAppendOutcome, Store, StoreFailure,
 };
+
+/// Groups the unchanged post-immutable publication boundaries.
+///
+/// This ordinary input carrier creates no authorization or native receipt.
+struct StageFinish<'input, 'view> {
+    session: &'input mut WriterSession,
+    admitted: &'input AdmittedCommit,
+    started: Duration,
+    reason: RefLogReason,
+    observation: super::PublicationObservation<'view>,
+    retained_previous: Option<&'input RefRecord>,
+}
 
 /// Bounds a publication attempt strictly inside its store's garbage-collection grace window.
 #[derive(Clone, Copy, Debug)]
@@ -163,6 +179,12 @@ impl WriterSession {
     pub fn scopes(&self) -> &[Vec<u8>] {
         &self.scopes
     }
+}
+
+enum StageDisposition {
+    Current,
+    PreserveLosing,
+    Fenced,
 }
 
 /// Coordinates guarded local repository operations through the canonical store traits.
@@ -628,12 +650,58 @@ impl<S: Store, C: Clock, F: LocalFs> Coordinator<S, C, F> {
             Some(started),
             "stage-entry",
         );
+        match self
+            .stage_start(
+                session,
+                admitted,
+                observation,
+                #[cfg(test)]
+                &mut trace,
+            )
+            .await?
+        {
+            StageDisposition::Fenced => return self.fence(session).await,
+            StageDisposition::PreserveLosing => {
+                self.publish_immutable_observed(admitted, started, observation.history)
+                    .await?;
+                return self.fence(session).await;
+            }
+            StageDisposition::Current => {}
+        }
+        #[cfg(test)]
+        trace.mark("stage-immutable-start");
+        self.publish_immutable_observed(admitted, started, observation.history)
+            .await?;
+        #[cfg(test)]
+        trace.mark("stage-immutable-durable");
+        self.stage_finish(
+            StageFinish {
+                session,
+                admitted,
+                started,
+                reason,
+                observation,
+                retained_previous,
+            },
+            #[cfg(test)]
+            &mut trace,
+        )
+        .await
+    }
+
+    async fn stage_start(
+        &self,
+        session: &WriterSession,
+        admitted: &mut AdmittedCommit,
+        observation: super::PublicationObservation<'_>,
+        #[cfg(test)] trace: &mut super::PhaseTrace<'_, C>,
+    ) -> Result<StageDisposition, AdvanceError> {
         let super::PublicationObservation {
             history: observation,
             original,
         } = observation;
         if admitted.expected != session.record {
-            return self.fence(session).await;
+            return Ok(StageDisposition::Fenced);
         }
         if let Some(original) = original {
             self.guard
@@ -655,21 +723,32 @@ impl<S: Store, C: Clock, F: LocalFs> Coordinator<S, C, F> {
             .await?;
         if current.record() != session.record.as_ref() {
             if Self::may_rebase(session, current.record()) {
-                // Preserve this checked losing candidate under the same live
-                // policy fence before returning it to ordered core merge.
                 admitted.observed_current = current.record().cloned();
-                self.publish_immutable_observed(admitted, started, observation)
-                    .await?;
+                return Ok(StageDisposition::PreserveLosing);
             }
-            return self.fence(session).await;
+            return Ok(StageDisposition::Fenced);
         }
-        #[cfg(test)]
-        trace.mark("stage-immutable-start");
-        self.publish_immutable_observed(admitted, started, observation)
-            .await?;
-        #[cfg(test)]
-        trace.mark("stage-immutable-durable");
+        Ok(StageDisposition::Current)
+    }
 
+    async fn stage_finish(
+        &self,
+        inputs: StageFinish<'_, '_>,
+        #[cfg(test)] trace: &mut super::PhaseTrace<'_, C>,
+    ) -> Result<RefRecord, AdvanceError> {
+        let StageFinish {
+            session,
+            admitted,
+            started,
+            reason,
+            observation,
+            retained_previous,
+        } = inputs;
+
+        let super::PublicationObservation {
+            history: observation,
+            original,
+        } = observation;
         // Capability expiry and current authority can change while immutable
         // content is becoming durable. Recheck before installing any log or
         // mutable ref; the exact-record CAS fences a concurrent later advance.
@@ -693,9 +772,9 @@ impl<S: Store, C: Clock, F: LocalFs> Coordinator<S, C, F> {
         trace.mark("stage-post-content-current-checked");
         self.revalidate_source_observed(admitted, observation)
             .await?;
-
         #[cfg(test)]
         trace.mark("stage-post-content-source-checked");
+
         let historical_previous = session.record.as_ref().or(retained_previous);
         let mut next = match historical_previous {
             Some(record) => record
@@ -784,7 +863,6 @@ impl<S: Store, C: Clock, F: LocalFs> Coordinator<S, C, F> {
         self.check_time(started)?;
         #[cfg(test)]
         trace.mark("stage-final-current-original-source-checked");
-        observation.finish()?;
         Ok(next)
     }
 
@@ -885,6 +963,30 @@ impl<S: Store, C: Clock, F: LocalFs> Coordinator<S, C, F> {
             Some(started),
             "immutable-entry",
         );
+        self.immutable_start(
+            admitted,
+            started,
+            observation,
+            #[cfg(test)]
+            &mut trace,
+        )
+        .await?;
+        for upload in &admitted.uploads {
+            self.store().put(upload.as_upload()?).await?;
+            self.check_time(started)?;
+        }
+        #[cfg(test)]
+        trace.mark("immutable-upload-bodies-durable");
+        self.immutable_commit(admitted, started).await
+    }
+
+    async fn immutable_start(
+        &self,
+        admitted: &AdmittedCommit,
+        started: Duration,
+        observation: HistoryObservation<'_>,
+        #[cfg(test)] trace: &mut super::PhaseTrace<'_, C>,
+    ) -> Result<(), AdvanceError> {
         self.check_time(started)?;
         self.revalidate_source_observed(admitted, observation)
             .await?;
@@ -898,12 +1000,14 @@ impl<S: Store, C: Clock, F: LocalFs> Coordinator<S, C, F> {
             .await?;
         #[cfg(test)]
         trace.mark("immutable-candidate-evidence-recorded");
-        for upload in &admitted.uploads {
-            self.store().put(upload.as_upload()?).await?;
-            self.check_time(started)?;
-        }
-        #[cfg(test)]
-        trace.mark("immutable-upload-bodies-durable");
+        Ok(())
+    }
+
+    async fn immutable_commit(
+        &self,
+        admitted: &AdmittedCommit,
+        started: Duration,
+    ) -> Result<(), AdvanceError> {
         let encoded = admitted
             .commit
             .commit()

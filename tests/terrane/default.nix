@@ -232,6 +232,8 @@ in {
   integration.native-guard-carry = import ./native-guard-carry.nix {inherit sourceGate;};
   integration.native-source-requalification = import ./native-source-requalification.nix {inherit sourceGate;};
   integration.native-missing-placement = import ./native-missing-placement.nix {inherit sourceGate;};
+  integration.native-legacy-completion = import ./native-legacy-completion.nix {inherit sourceGate;};
+  integration.native-meta-batch = import ./native-meta-batch.nix {inherit sourceGate;};
   integration.native-content-observation = import ./native-content-observation.nix {inherit sourceGate;};
   integration.native-index-loading = import ./native-index-loading.nix {inherit sourceGate;};
   integration.native-index-lookup = import ./native-index-lookup.nix {inherit sourceGate;};

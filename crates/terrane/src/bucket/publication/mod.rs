@@ -534,6 +534,24 @@ impl<
         changes: Vec<terrane_core::gc::publication::LogicalChange>,
         placement: Option<&super::missing_placement::Placement>,
     ) -> Result<SelectedReceipt, StoreFailure> {
+        self.publish_backend_raw_contextual(observed, changes, placement, None)
+            .await
+    }
+
+    /// Retains native publication checks on the unchanged ordinary Raw transition.
+    ///
+    /// # Errors
+    /// Preserves exact placement/preimage checks and refuses changed current
+    /// controls, elapsed time or missing executor-filled durable acknowledgment.
+    pub(in crate::bucket) async fn publish_backend_raw_contextual(
+        &self,
+        observed: &SelectedObservation<'_>,
+        changes: Vec<terrane_core::gc::publication::LogicalChange>,
+        placement: Option<&super::missing_placement::Placement>,
+        context: Option<
+            &crate::selected_bridge::native_guard::meta_batch::ImmutableEffectContext<'_, '_>,
+        >,
+    ) -> Result<SelectedReceipt, StoreFailure> {
         self.retained_namespace()?;
         if observed.identity.root() != self.root()
             || observed.identity.physical_identity() != self.physical_identity()
@@ -544,9 +562,25 @@ impl<
         if let Some(placement) = placement {
             mutation.retain_placement(placement);
         }
-        let acknowledgment =
-            crate::store::native_publication_effects::publish_raw(self.fs(), observed, &mutation)
-                .await?;
+        let acknowledgment = match context {
+            Some(context) => {
+                crate::store::native_publication_effects::publish_raw_contextual(
+                    self.fs(),
+                    observed,
+                    &mutation,
+                    context,
+                )
+                .await?
+            }
+            None => {
+                crate::store::native_publication_effects::publish_raw(
+                    self.fs(),
+                    observed,
+                    &mutation,
+                )
+                .await?
+            }
+        };
         let selected = self.selected_held().await?;
         let mut logical = observed.logical().clone();
         for change in mutation.changes() {

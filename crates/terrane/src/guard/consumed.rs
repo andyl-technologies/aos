@@ -4,31 +4,32 @@
 //! never accepts a caller dependency list, and does not mint publication authority.
 //! Selected Guard/revision and physical checks still belong to the held factory.
 
+mod view_interpretation;
+
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use terrane_core::gc::publication::evidence::{
-    AuthorityGrant, ConfiguredRegistryInputs, ConsumedRootLayer, ConsumedRootPolicy,
-    ConsumedViewPolicy, ControlKind, GuardSnapshot, IssuerRow, LineageUsedInputs,
+    AuthorityGrant, ConsumedViewPolicy, ControlKind, GuardSnapshot, IssuerRow, LineageUsedInputs,
     LocalOriginalRegistration, PhysicalRegistration, RequiredControlPin, SeededChunkProfile,
     TrustedGuardConfig,
 };
-use terrane_core::tree_format::Property;
-use terrane_core::{cbor, properties::PropertyName};
 
-use super::{Guard, OriginalAuthority, OriginalCommitContext, TreeEvidence, invalid};
+use super::{Guard, OriginalAuthority, OriginalCommitContext, invalid};
 use crate::store::StoreFailure;
 
 #[derive(Default)]
 struct Consumed {
     controls: BTreeMap<Vec<u8>, RequiredControlPin>,
     views: BTreeMap<[u8; 32], ConsumedViewPolicy>,
+    contexts: view_interpretation::ViewContextTrace,
     issuers: BTreeMap<(String, String), IssuerRow>,
 }
 
 /// Accumulates checked consumption inside a single actual held observation.
 pub(crate) struct ConsumedResolver {
     snapshot: GuardSnapshot,
+    completion_authority: OriginalAuthority,
     consumed: Mutex<Consumed>,
 }
 
@@ -43,23 +44,7 @@ impl ConsumedResolver {
     ) -> Result<Self, StoreFailure> {
         let config = guard.config();
         let profile = &config.chunk_profile;
-        let mut properties = PropertyName::ALL
-            .iter()
-            .map(|name| name.as_str().to_owned())
-            .collect::<Vec<_>>();
-        properties.sort();
-        let property_revision =
-            ConfiguredRegistryInputs::property_revision_for(&properties).map_err(|_| invalid())?;
-        let registries = ConfiguredRegistryInputs {
-            property_revision,
-            behavioral_properties: properties,
-            attribute_revision: 1,
-            selector_revision: 1,
-            tree_revision: 1,
-            chunk_revision: 1,
-            identity_profile: "terrane-v1".into(),
-            later_properties: Vec::new(),
-        };
+        let registries = guard.completion_inputs()?.registries;
         let configuration = TrustedGuardConfig {
             store_name: config.store_name.clone(),
             private_domain_hint: config.private_domain.clone(),
@@ -107,6 +92,7 @@ impl ConsumedResolver {
         };
         let resolver = Self {
             snapshot,
+            completion_authority: authority.clone(),
             consumed: Mutex::new(Consumed::default()),
         };
         resolver.snapshot_bytes()?;
@@ -193,46 +179,77 @@ impl ConsumedResolver {
         Ok(())
     }
 
-    /// Records canonical root policies actually traversed by signed-history checks.
+    /// Records prepared data without claiming signed-history completion.
     ///
     /// # Errors
-    /// Rejects malformed trees, contradictory repeated views or unavailable synchronization.
-    pub(crate) fn view(
+    /// Rejects contradictory repeated inputs or unavailable synchronization.
+    pub(super) fn pending_view(
         &self,
-        identity: [u8; 32],
-        evidence: &TreeEvidence,
-        minimum: u64,
+        pending: &super::history::completion::PendingViewUse,
     ) -> Result<(), StoreFailure> {
-        let roots = evidence
-            .occurrences(minimum)?
-            .into_iter()
-            .map(|occurrence| ConsumedRootPolicy {
-                root: occurrence.root,
-                path: occurrence.path,
-                layers: occurrence
-                    .layers
-                    .iter()
-                    .map(|(properties, overrides)| ConsumedRootLayer {
-                        properties: property_map(properties),
-                        overrides: property_map(overrides),
-                    })
-                    .collect(),
-            })
-            .collect();
-        let view = ConsumedViewPolicy {
-            view: identity,
-            default_domain: evidence.default_domain.clone(),
-            roots,
-        };
-        let mut consumed = self.consumed.lock().map_err(|_| unavailable())?;
-        if consumed
-            .views
-            .get(&identity)
-            .is_some_and(|old| old != &view)
-        {
-            return Err(invalid());
+        self.consumed
+            .lock()
+            .map_err(|_| unavailable())?
+            .contexts
+            .pending(pending)
+    }
+
+    /// Refuses unsupported foreign completion after real Original verification.
+    ///
+    /// # Errors
+    /// Refuses a genuine Original context outside this concrete local factory.
+    /// Ordinary Original/control consumption remains a separate operation.
+    pub(super) fn check_completion_original(
+        &self,
+        context: &OriginalCommitContext,
+    ) -> Result<(), StoreFailure> {
+        if context.baseline().authority() != &self.completion_authority {
+            return Err(StoreFailure::new(crate::store::StoreErrorKind::Unsupported));
         }
-        consumed.views.insert(identity, view);
+        Ok(())
+    }
+
+    /// Observes genuine completed contexts for finite native history fault tests.
+    ///
+    /// # Errors
+    /// Reports poisoned synchronization; this readonly observation completes nothing.
+    #[cfg(all(test, feature = "tokio", unix))]
+    pub(crate) fn observed_completed_view_contexts_for_tests(
+        &self,
+    ) -> Result<
+        Vec<terrane_core::gc::publication::evidence::ConsumedViewInterpretation>,
+        StoreFailure,
+    > {
+        Ok(self
+            .consumed
+            .lock()
+            .map_err(|_| unavailable())?
+            .contexts
+            .observed_completed())
+    }
+
+    /// Atomically consumes only the owning full-history completion results.
+    ///
+    /// # Errors
+    /// Rejects absent preparation, contradictory repeated views, or unavailable
+    /// synchronization without partially promoting this invocation's views.
+    pub(super) fn complete_views(
+        &self,
+        completed: &[super::history::CompletedViewUse],
+    ) -> Result<(), StoreFailure> {
+        let mut consumed = self.consumed.lock().map_err(|_| unavailable())?;
+        let mut contexts = consumed.contexts.clone();
+        let mut views = consumed.views.clone();
+        for view in completed {
+            contexts.complete(view)?;
+            let policy = view.prepared().policy();
+            if views.get(&policy.view).is_some_and(|old| old != policy) {
+                return Err(invalid());
+            }
+            views.insert(policy.view, policy.clone());
+        }
+        consumed.contexts = contexts;
+        consumed.views = views;
         Ok(())
     }
 
@@ -286,28 +303,29 @@ impl ConsumedResolver {
         Ok(())
     }
 
+    /// Copies only the actual recorded control pins for physical retention.
+    ///
+    /// This controls-only snapshot neither reads nor completes any pending view,
+    /// serializes consumed-view context, or creates LineageUsedInputs. It grants
+    /// no publication/actor/history authority. The actual held factory still
+    /// checks configured ownership, snapshot equality and every physical record.
+    /// Pins use the same canonical (kind, encoded owner, key) order as finish.
+    /// Final finish remains separate; this method supplies no completed-view evidence.
+    ///
+    /// # Errors
+    /// Rejects poisoned synchronization or an invalid recorded owner encoding.
+    pub(crate) fn control_pins(&self) -> Result<Vec<RequiredControlPin>, StoreFailure> {
+        let consumed = self.consumed.lock().map_err(|_| unavailable())?;
+        canonical_control_pins(&consumed)
+    }
+
     /// Validates recorded ordinary inputs without converting them to authority.
     ///
     /// # Errors
     /// Rejects invalid canonical records or poisoned synchronization.
     pub(crate) fn finish(&self) -> Result<LineageUsedInputs, StoreFailure> {
         let consumed = self.consumed.lock().map_err(|_| unavailable())?;
-        let mut keyed = consumed
-            .controls
-            .values()
-            .map(|pin| {
-                Ok((
-                    (
-                        pin.kind,
-                        pin.owner.encode().map_err(|_| invalid())?,
-                        pin.key.clone(),
-                    ),
-                    pin.clone(),
-                ))
-            })
-            .collect::<Result<Vec<_>, StoreFailure>>()?;
-        keyed.sort_by(|left, right| left.0.cmp(&right.0));
-        let controls = keyed.into_iter().map(|(_, pin)| pin).collect();
+        let controls = canonical_control_pins(&consumed)?;
         let inputs = LineageUsedInputs {
             issuers: consumed.issuers.values().cloned().collect(),
             disclosures: self.snapshot.disclosures.clone(),
@@ -315,11 +333,35 @@ impl ConsumedResolver {
             registries: self.snapshot.registries.clone(),
             configuration: self.snapshot.configuration.clone(),
             views: consumed.views.values().cloned().collect(),
-            view_interpretations: None,
+            view_interpretations: Some(consumed.contexts.finish()?),
         };
         inputs.encode().map_err(|_| invalid())?;
+        inputs
+            .check_supported_view_contexts()
+            .map_err(|_| invalid())?;
         Ok(inputs)
     }
+}
+
+// Keeps early physical-retention order identical to final lineage order while
+// leaving view completion, issuers, contexts and lineage validation to finish.
+fn canonical_control_pins(consumed: &Consumed) -> Result<Vec<RequiredControlPin>, StoreFailure> {
+    let mut keyed = consumed
+        .controls
+        .values()
+        .map(|pin| {
+            Ok((
+                (
+                    pin.kind,
+                    pin.owner.encode().map_err(|_| invalid())?,
+                    pin.key.clone(),
+                ),
+                pin.clone(),
+            ))
+        })
+        .collect::<Result<Vec<_>, StoreFailure>>()?;
+    keyed.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(keyed.into_iter().map(|(_, pin)| pin).collect())
 }
 
 /// Derives canonical local registration data from an already verified opaque authority.
@@ -337,16 +379,6 @@ pub(crate) fn registration(authority: &OriginalAuthority) -> PhysicalRegistratio
         coordination_inode: coordination.1,
         control: authority.control().as_os_str().as_encoded_bytes().to_vec(),
     })
-}
-
-fn property_map(properties: &[Property<'_>]) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    cbor::write_map(&mut bytes, properties.len());
-    for property in properties {
-        cbor::write_text(&mut bytes, property.name);
-        bytes.extend_from_slice(property.value);
-    }
-    bytes
 }
 
 fn unavailable() -> StoreFailure {

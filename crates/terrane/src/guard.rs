@@ -172,6 +172,8 @@ pub struct Guard<S, C> {
     keys: Vec<IssuerKey>,
     config: GuardConfig,
     #[cfg(feature = "std")]
+    interpretation: history::completion::InterpretationSelection,
+    #[cfg(feature = "std")]
     original_verifier: std::sync::RwLock<Option<original::OriginalVerifier>>,
     #[cfg(feature = "std")]
     original_baselines:
@@ -190,6 +192,8 @@ impl<S, C> Guard<S, C> {
             clock,
             keys,
             config,
+            #[cfg(feature = "std")]
+            interpretation: history::completion::InterpretationSelection::Legacy,
             #[cfg(feature = "std")]
             original_verifier: std::sync::RwLock::new(None),
             #[cfg(feature = "std")]

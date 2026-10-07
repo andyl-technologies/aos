@@ -5,6 +5,8 @@
     reason = "Single and paired held adapters are separately integrated ref coordinator prerequisites."
 )]
 
+pub(crate) use super::content::BatchOutcome;
+
 use super::{BucketBinding, FileBucket, files};
 use crate::store::{
     ByteRange, Capabilities, CapabilityReport, Clock, ContentStore, ContentUpload,
@@ -544,5 +546,43 @@ impl<
 
     async fn ref_watch(&self, _name: &str, _from_seq: u64) -> Result<Self::Watch, StoreFailure> {
         Err(StoreFailure::new(StoreErrorKind::Unsupported))
+    }
+}
+
+impl<F, C, V> HeldBucket<'_, F, C, V, true>
+where
+    F: LocalFs + BucketBinding,
+    C: Clock + BucketBinding,
+    V: ContentValidator + BucketBinding,
+{
+    /// Executes a metadata run beneath the actual held native publication.
+    ///
+    /// # Errors
+    /// Preserves ordinary validation and retained native publication failures.
+    pub(crate) async fn put_meta_batch(
+        &self,
+        uploads: &[crate::store::MetaUpload<'_>],
+        context: &crate::selected_bridge::native_guard::meta_batch::ImmutableEffectContext<'_, '_>,
+    ) -> Result<BatchOutcome, StoreFailure> {
+        self.retained_namespace()?;
+        self.bucket
+            .put_meta_batch_locked(self, uploads, context)
+            .await
+    }
+
+    /// Performs an ordinary fallback while retaining actual native checks.
+    ///
+    /// # Errors
+    /// Preserves ordinary failures; direct Pack import needs its separate context
+    /// path and is explicitly unsupported here until that path is implemented.
+    pub(crate) async fn put_contextual(
+        &self,
+        upload: ContentUpload<'_>,
+        context: &crate::selected_bridge::native_guard::meta_batch::ImmutableEffectContext<'_, '_>,
+    ) -> Result<Identity, StoreFailure> {
+        self.retained_namespace()?;
+        self.bucket
+            .put_locked_contextual(self, upload, Some(context))
+            .await
     }
 }
