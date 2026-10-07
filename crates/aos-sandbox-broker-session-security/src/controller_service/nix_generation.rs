@@ -2,7 +2,8 @@
 //!
 //! The attempt is a subslot of the actual Storage inventory Session owner. The
 //! selected caller commits I before current-Start growth, then archives every
-//! acquisition and independent closure result before projecting Retryable.
+//! acquisition, input-capture and independent closure result before projecting
+//! Retryable. Input capture does not invoke Root, Source16 or the compiler.
 //! The original generation tail remains private and uncalled until genuine
 //! current-policy operation payment exists. Intake pays neither Storage57 nor
 //! physical Clone, completed Start, public readiness or Drain.
@@ -65,6 +66,7 @@ pub(crate) struct NixGenerationAttemptV1 {
     intake: Option<aos_sandbox::NixOriginalStartIntakeAttemptV1>,
     intake_preparation: Option<Result<(), aos_sandbox::ResourceReservationErrorV1>>,
     intake_entry: Option<Result<(), aos_sandbox::ResourceReservationErrorV1>>,
+    intake_input: Option<Result<(), ()>>,
     intake_closure: Option<Result<(), aos_sandbox::ResourceReservationErrorV1>>,
 }
 
@@ -84,6 +86,7 @@ impl NixGenerationAttemptV1 {
             intake: None,
             intake_preparation: None,
             intake_entry: None,
+            intake_input: None,
             intake_closure: None,
         }
     }
@@ -202,7 +205,7 @@ pub(super) fn prepare(
     };
     attempt.intake = Some(aos_sandbox::NixOriginalStartIntakeAttemptV1::begin(Arc::clone(&bank)));
     let NixGenerationAttemptV1 {
-        intake, intake_preparation, intake_entry, intake_closure, first, ..
+        intake, intake_preparation, intake_entry, intake_input, intake_closure, first, ..
     } = attempt;
     let Some(intake) = intake.as_mut() else {
         return Err(EffectFailure::Permanent("original intake destination is unavailable".to_owned()));
@@ -234,15 +237,24 @@ pub(super) fn prepare(
             ));
         }
     };
-    let acquisition = selector.borrow_paid_current_retained_start_v2(journal, loan);
-    // Future current Root/Source preflight must reborrow this SAME assembled
-    // Current before closure. Intake is not an operation10 or Required47 loan.
-    *intake_closure = Some(acquisition.close_into_intake(&mut executor.source_domains));
+    let mut acquisition = selector.borrow_paid_current_retained_start_v2(journal, loan);
+    let mut input = aos_sandbox::policy_compiler::CurrentNixPreflightAttemptV1::empty();
+    *intake_input = acquisition.capture_current_nix_preflight_once(
+        &mut executor.source_domains, &mut input,
+    );
+
+    // Consume the external Source borrow before returning its owning native
+    // Results to the same Session I. Closure then runs independent posts and
+    // the unchanged original D clock LAST, even after input capture refusal.
+    let originals = input.into_retained_originals();
+    *intake_closure = Some(acquisition.close_with_input_into_intake(
+        &mut executor.source_domains, originals,
+    ));
     if matches!(intake_closure, Some(Err(_))) {
         *first = Some(GenerationFailureV1::IntakeResult);
     }
     Err(EffectFailure::Retryable(
-        "paid original Nix intake is retained; current-policy operation reservation remains required".to_owned(),
+        "paid original Nix input is retained; Root preflight and operation reservation remain required".to_owned(),
     ))
 }
 

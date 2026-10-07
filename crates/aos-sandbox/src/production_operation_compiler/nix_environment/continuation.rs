@@ -6,6 +6,8 @@
 //! assignment owner. Historical carrier data alone cannot construct this owner.
 //! The selected paid intake captures partial or assembled custody externally
 //! and archives it once after independent posts and original D clock LAST.
+//! Its input-only handoff short-borrows Current beside the external Source
+//! inventory; that borrow ends before the same intake's consuming closure.
 //! That prerequisite neither issues an operation reservation nor runs Storage57.
 //! No TLS evidence, broker session, physical floor or Resolve permission is
 //! created here. Future effect boundaries must join their own concrete owners.
@@ -108,6 +110,7 @@ pub struct CurrentRetainedNixStartV2<'current> {
     decision: CurrentCapabilityDecisionV1,
     acquisition_clock: Option<RawPairedClockSample>,
     failed: bool,
+    input_entered: bool,
     successor: Option<OriginalNixSuccessorV2>,
 }
 
@@ -188,6 +191,25 @@ impl<'current> PaidNixStartAcquisitionV1<'current> {
         if self.originals.first.is_some() { None } else { self.current.as_mut() }
     }
 
+    /// Short-borrows the same assembled Current for paid input capture.
+    ///
+    /// The external destination may borrow Source, never this acquisition.
+    /// `None` preserves a failed partial acquisition without adding input I/O;
+    /// the caller still consumes that original outcome into its paid intake.
+    ///
+    /// # Errors
+    /// A reached `Some(Err(()))` reports closed entry or a cause retained in
+    /// the destination. The marker cannot replace the actual input owner.
+    pub fn capture_current_nix_preflight_once<'source>(
+        &mut self,
+        source: &'source mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+        destination: &mut crate::policy_compiler::CurrentNixPreflightAttemptV1<'source>,
+    ) -> Option<Result<(), ()>> {
+        self.current_mut().map(|current| {
+            current.capture_current_nix_preflight_once(source, destination)
+        })
+    }
+
     /// Consumes the acquisition into its original intake's negative archive.
     ///
     /// Independent original posts run before the original Start clock LAST,
@@ -203,12 +225,37 @@ impl<'current> PaidNixStartAcquisitionV1<'current> {
         self,
         source: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
     ) -> Result<(), crate::ResourceReservationErrorV1> {
+        self.close_originals_into_intake(source, None)
+    }
+
+    /// Archives captured input originals before closing the same paid intake.
+    ///
+    /// The consumed payload holds no Source or Current borrow. Independent
+    /// Controller/Source/profile posts and the original D clock still run in
+    /// the existing closure, including after input capture failure.
+    ///
+    /// # Errors
+    /// Reports the retained acquisition, input, post or original-clock cause.
+    /// This never completes generation or lends operation/Storage authority.
+    pub fn close_with_input_into_intake(
+        self,
+        source: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+        input: crate::policy_compiler::CurrentNixPreflightOriginalsV1,
+    ) -> Result<(), crate::ResourceReservationErrorV1> {
+        self.close_originals_into_intake(source, Some(input))
+    }
+
+    fn close_originals_into_intake(
+        self,
+        source: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+        input: Option<crate::policy_compiler::CurrentNixPreflightOriginalsV1>,
+    ) -> Result<(), crate::ResourceReservationErrorV1> {
         let Self { current, mut originals, journal, intake } = self;
         let (journal, intake) = match current {
             Some(current) => {
                 let CurrentRetainedNixStartV2 {
                     journal, carrier, target, clock, decision, acquisition_clock,
-                    intake, selector: _, expected_plan: _, recipe: _, failed: _, successor: _,
+                    intake, selector: _, expected_plan: _, recipe: _, failed: _, input_entered: _, successor: _,
                 } = current;
                 originals.carrier = Some(Ok(carrier));
                 originals.target = Some(Ok(target));
@@ -224,7 +271,7 @@ impl<'current> PaidNixStartAcquisitionV1<'current> {
             // outcome; no public factory can manufacture a paid missing loan.
             return Err(crate::ResourceReservationErrorV1::Conflict);
         };
-        let mut closing = intake.begin_closing(journal, source);
+        let mut closing = intake.begin_closing(journal, source, input);
         match (originals.clock.as_mut(), originals.decision.as_ref(), originals.target.as_ref()) {
             (Some(Ok(clock)), Some(Ok(decision)), Some(Ok(target))) => {
                 originals.final_sample = Some(clock.sample()
@@ -460,7 +507,7 @@ impl ControllerNixStartRecipeSelectorV2 {
         let owner = CurrentRetainedNixStartV2 {
             selector: self, journal, expected_plan, carrier, recipe, target, clock, decision,
             acquisition_clock,
-            failed: false, successor: None, intake,
+            failed: false, input_entered: false, successor: None, intake,
         };
         let mut outcome = PaidNixStartAcquisitionV1 {
             current: Some(owner), originals, journal: None, intake: None,
@@ -599,6 +646,65 @@ impl ControllerNixStartRecipeSelectorV2 {
 }
 
 impl CurrentRetainedNixStartV2<'_> {
+    /// Captures the same paid current-Start and protected Source input once.
+    ///
+    /// The external destination retains the Source inventory, not this Current
+    /// borrow. Entered capture retains both actual Current rechecks, including
+    /// input refusal; a closed-I admission parks its original error without
+    /// any added Current or Source observation.
+    /// The genuine acquisition clock is optional only to preserve a refusing
+    /// missing-original outcome; no replacement sample or deadline is created.
+    /// This entry performs no Root flight, Source16, compiler or Storage work.
+    ///
+    /// # Errors
+    /// Returns a diagnostic marker for closed entry or a cause retained in
+    /// the destination. Reentry and absent intake close Current without I/O;
+    /// reached input failures retain both independent Current bookends.
+    pub(crate) fn capture_current_nix_preflight_once<'source>(
+        &mut self,
+        source: &'source mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+        destination: &mut crate::policy_compiler::CurrentNixPreflightAttemptV1<'source>,
+    ) -> Result<(), ()> {
+        // Latch before any fallible gate, evaluator or Source observation.
+        // A different empty destination cannot rearm this paid interval.
+        if self.input_entered {
+            self.failed = true;
+            return Err(());
+        }
+        self.input_entered = true;
+        let Some(intake) = self.intake.as_ref() else {
+            // Only the private paid-acquisition handoff reaches this entry.
+            // Do not turn an ordinary Current into a funded negative read.
+            self.failed = true;
+            return Err(());
+        };
+        if let Err(error) = intake.require_open() {
+            self.failed = true;
+            return destination.park_paid_entry_refusal(error);
+        }
+        let source_join = intake.require_original_source(source);
+        if destination.park_paid_source_result(source_join).is_err() {
+            self.failed = true;
+            return Err(());
+        }
+        let before = self.recheck();
+        let captured = destination.capture_current_originals_once(
+            self.journal, source, &self.carrier, self.target.binding(),
+            self.acquisition_clock, self.target.deadline_boottime_nanoseconds(), before,
+        );
+
+        // Keep the post independent of input/Source failure. The same existing
+        // evaluator retains its native floor crossing inside the paid intake.
+        let after = self.recheck();
+        let posted = destination.park_current_post(after);
+        if captured.is_err() || posted.is_err() {
+            self.failed = true;
+            Err(())
+        } else {
+            Ok(())
+        }
+    }
+
     /// Forms the existing-output Realize51 body beside the original Resolve.
     ///
     /// The predecessor is comparison DATA. The installed caller must continue
