@@ -110,7 +110,9 @@ in
       pname = "aos-sandboxd";
       inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
       cargoRoot = "crates";
-      cargoBuildCommands = roleBuildCommands ++ roleTestCommands;
+      # Only production build artifacts enter the installed executable set.
+      # Test targets are compiled by cargoArtifacts and each role's check selection.
+      cargoBuildCommands = roleBuildCommands;
       cargoFlags = "${controllerRoleFlags} -p aos-sandbox-services --bin aos-sandboxd";
       checkType = "debug";
       # The Controller role and retained integration suites keep their own tests.
