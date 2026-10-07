@@ -15,7 +15,7 @@ use std::sync::Arc as SetupGuard;
 
 use super::{
     AssociationView, BootstrapView, OriginalAuthority, OriginalCommitContext, RetainedBootstrap,
-    invalid, unavailable,
+    RetainedControls, invalid, unavailable,
 };
 use crate::bucket::held::{HeldIdentity, SingleHeld};
 use crate::bucket::{BucketBinding, FileBucket};
@@ -58,6 +58,7 @@ type CommitCheck = dyn for<'a> Fn(
         &'a RetainedBootstrap,
         AssociationView<'a>,
         Option<&'a HeldIdentity<'a>>,
+        Option<&'a RetainedControls>,
     ) -> CheckFuture<'a, OriginalCommitContext>
     + Send
     + Sync;
@@ -66,6 +67,7 @@ type CommitCheck = dyn for<'a> Fn(
     &'a RetainedBootstrap,
     AssociationView<'a>,
     Option<&'a HeldIdentity<'a>>,
+    Option<&'a RetainedControls>,
 ) -> CheckFuture<'a, OriginalCommitContext>;
 
 #[cfg(feature = "send")]
@@ -128,6 +130,7 @@ pub(in crate::guard) struct OriginalVerifier {
     commit: Arc<CommitCheck>,
     publication: Arc<PublicationCheck>,
     tag: Arc<TagCheck>,
+    retained: Option<RetainedControls>,
 }
 
 #[cfg(unix)]
@@ -255,6 +258,7 @@ impl<
                             },
                             &[],
                             Some(&proof),
+                            None,
                         )
                         .await?;
                     let consumed =
@@ -357,9 +361,13 @@ impl<
             })
         });
         let commit_guard = concrete;
-        let commit: Arc<CommitCheck> = Arc::new(move |baseline, view, held| {
+        let commit: Arc<CommitCheck> = Arc::new(move |baseline, view, held, retained| {
             let guard = Arc::clone(&commit_guard);
-            Box::pin(async move { guard.bind_original_commit_at(baseline, view, held).await })
+            Box::pin(async move {
+                guard
+                    .bind_original_commit_at(baseline, view, held, retained)
+                    .await
+            })
         });
         let mut installed = self.original_verifier.write().map_err(|_| unavailable())?;
         if installed
@@ -374,6 +382,7 @@ impl<
             commit,
             publication,
             tag,
+            retained: None,
         });
         Ok(())
     }
@@ -433,8 +442,13 @@ impl<S, C> Guard<S, C> {
         };
         let checked = match observation.identity() {
             Some(held) => {
-                self.check_original_commit_held(baseline, view, held)
-                    .await?
+                if self.original_verifier()?.retained.is_some() {
+                    self.recheck_original_commit_observed(baseline, view, held)
+                        .await?
+                } else {
+                    self.check_original_commit_held(baseline, view, held)
+                        .await?
+                }
             }
             None => self.check_original_commit(baseline, view).await?,
         };
@@ -613,7 +627,8 @@ impl<S, C> Guard<S, C> {
         if baseline.authority != verifier.authority {
             return Err(invalid());
         }
-        let checked = (verifier.commit)(baseline, view, held).await?;
+        let retained = held.and_then(|_| verifier.retained.as_ref());
+        let checked = (verifier.commit)(baseline, view, held, retained).await?;
         let mut installed = self.original_commits.write().map_err(|_| unavailable())?;
         if installed
             .get(&checked.commit)
@@ -622,6 +637,37 @@ impl<S, C> Guard<S, C> {
             return Err(invalid());
         }
         installed.insert(checked.commit, checked.clone());
+        Ok(checked)
+    }
+
+    /// Rechecks an installed local Original under its actual writable holder.
+    ///
+    /// No authority is installed or supplemented. Its exact previously checked
+    /// context must equal the fresh native binding before and after the await.
+    /// Without retained controls, the ordinary configuration exclusion is acquired.
+    ///
+    /// # Errors
+    /// Preserves readonly-holder refusal and rejects missing dispatch/context,
+    /// changed backend, protected records or physical receipts and I/O failures.
+    pub(crate) async fn recheck_original_commit_observed<'a>(
+        &self,
+        baseline: &'a RetainedBootstrap,
+        view: AssociationView<'a>,
+        held: &'a HeldIdentity<'a>,
+    ) -> Result<OriginalCommitContext, StoreFailure> {
+        if !held.writable() {
+            return Err(StoreFailure::new(StoreErrorKind::ReadOnly));
+        }
+        let existing = self.original_commit(view.commit)?;
+        let verifier = self.original_verifier()?;
+        if baseline.authority != verifier.authority {
+            return Err(invalid());
+        }
+        let checked =
+            (verifier.commit)(baseline, view, Some(held), verifier.retained.as_ref()).await?;
+        if existing != checked || self.original_commit(view.commit)? != checked {
+            return Err(invalid());
+        }
         Ok(checked)
     }
 }

@@ -160,7 +160,7 @@ impl<F: LocalFs + BucketBinding, B: Clock + BucketBinding, V: ContentValidator +
         control: &Path,
         registration: RegistrationView<'_>,
     ) -> Result<OriginalAuthority, StoreFailure> {
-        self.bind_original_records(namespace, control, registration, &[], None)
+        self.bind_original_records(namespace, control, registration, &[], None, None)
             .await
     }
 
@@ -191,7 +191,7 @@ impl<F: LocalFs + BucketBinding, B: Clock + BucketBinding, V: ContentValidator +
             control: &authority.control,
         };
         let expected = registration_bytes(&view);
-        self.bind_original_records(&namespace, &authority.control, view, &[], Some(held))
+        self.bind_original_records(&namespace, &authority.control, view, &[], Some(held), None)
             .await?;
 
         let owner = self
@@ -213,6 +213,7 @@ impl<F: LocalFs + BucketBinding, B: Clock + BucketBinding, V: ContentValidator +
         registration: RegistrationView<'_>,
         records: &[(String, Vec<u8>)],
         held: Option<&HeldIdentity<'_>>,
+        retained: Option<&RetainedControls>,
     ) -> Result<OriginalAuthority, StoreFailure> {
         use std::os::unix::fs::MetadataExt;
 
@@ -291,7 +292,16 @@ impl<F: LocalFs + BucketBinding, B: Clock + BucketBinding, V: ContentValidator +
         if directory.uid() != owner || directory.mode() & 0o777 != 0o700 {
             return Err(invalid());
         }
-        let mut configuration = control::ControlExclusion::acquire(fs, control, owner).await?;
+        let mut configuration = match retained {
+            Some(retained) => {
+                // Retained exclusion never replaces actual backend qualification.
+                if held.is_none() {
+                    return Err(invalid());
+                }
+                control::OriginalControls::retained(fs, control, owner, retained).await?
+            }
+            None => control::OriginalControls::acquire(fs, control, owner).await?,
+        };
         if configuration.read_record("registration.cbor").await?
             != registration_bytes(&registration)
         {
@@ -357,6 +367,7 @@ pub(crate) struct BootstrapView<'a> {
 }
 
 /// Supplies an untrusted immutable commit association decoded by protected storage.
+#[derive(Clone, Copy)]
 pub(crate) struct AssociationView<'a> {
     /// Exact immutable authored commit identity.
     pub commit: &'a terrane_core::identity::Digest,
@@ -497,6 +508,7 @@ impl<F: LocalFs + BucketBinding, B: Clock + BucketBinding, V: ContentValidator +
                 },
                 &[record],
                 None,
+                None,
             )
             .await?;
         Ok(RetainedBootstrap {
@@ -520,7 +532,8 @@ impl<F: LocalFs + BucketBinding, B: Clock + BucketBinding, V: ContentValidator +
         baseline: &RetainedBootstrap,
         view: AssociationView<'_>,
     ) -> Result<OriginalCommitContext, StoreFailure> {
-        self.bind_original_commit_at(baseline, view, None).await
+        self.bind_original_commit_at(baseline, view, None, None)
+            .await
     }
 
     async fn bind_original_commit_at(
@@ -528,6 +541,7 @@ impl<F: LocalFs + BucketBinding, B: Clock + BucketBinding, V: ContentValidator +
         baseline: &RetainedBootstrap,
         view: AssociationView<'_>,
         held: Option<&HeldIdentity<'_>>,
+        retained: Option<&RetainedControls>,
     ) -> Result<OriginalCommitContext, StoreFailure> {
         let authority = &baseline.authority;
         if view.id != authority.id()
@@ -569,6 +583,7 @@ impl<F: LocalFs + BucketBinding, B: Clock + BucketBinding, V: ContentValidator +
                 (format!("commit-{}.cbor", hex(view.commit)), bytes),
             ],
             held,
+            retained,
         )
         .await?;
         Ok(OriginalCommitContext {

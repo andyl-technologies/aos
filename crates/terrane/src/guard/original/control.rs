@@ -318,3 +318,136 @@ impl<'a, F: LocalFs + BucketBinding> ControlExclusion<'a, F> {
         Ok(())
     }
 }
+
+/// Reads exact Original controls under either acquired or genuine retained exclusion.
+/// Neither branch creates semantic authority; the native binder checks configured
+/// owner/backend/registration independently before consuming these reads.
+pub(super) enum OriginalControls<'a, F: LocalFs> {
+    /// Owns the ordinary freshly acquired administrative exclusion.
+    Acquired(ControlExclusion<'a, F>),
+    /// Borrows the genuine retained administrative exclusion and captured records.
+    Retained {
+        /// Actual binding used for fresh nofollow physical observations.
+        fs: &'a F,
+        /// Same acquired exclusion with original record and incarnation evidence.
+        receipt: &'a RetainedControls,
+    },
+}
+
+impl<'a, F: LocalFs + BucketBinding> OriginalControls<'a, F> {
+    /// Acquires ordinary protected exclusion for callers without a retained receipt.
+    ///
+    /// # Errors
+    /// Preserves unsafe paths, replaced identities and acquisition failures.
+    pub(super) async fn acquire(
+        fs: &'a F,
+        directory: &Path,
+        owner: u32,
+    ) -> Result<Self, StoreFailure> {
+        Ok(Self::Acquired(
+            ControlExclusion::acquire(fs, directory, owner).await?,
+        ))
+    }
+
+    /// Reuses real same-directory exclusion with independently configured ownership.
+    ///
+    /// # Errors
+    /// Refuses another directory/owner, empty exclusions and changed physical controls.
+    pub(super) async fn retained(
+        fs: &'a F,
+        directory: &Path,
+        owner: u32,
+        receipt: &'a RetainedControls,
+    ) -> Result<Self, StoreFailure> {
+        if receipt.directory != directory || receipt.owner != owner || receipt.exclusions.is_empty()
+        {
+            return Err(invalid());
+        }
+        let mut result = Self::Retained { fs, receipt };
+        result.revalidate().await?;
+        Ok(result)
+    }
+
+    /// Rechecks actual retained physical paths without acquiring another lock.
+    ///
+    /// # Errors
+    /// Refuses replaced ancestors, directory/lock identities or unsafe protection.
+    pub(super) async fn revalidate(&mut self) -> Result<(), StoreFailure> {
+        match self {
+            Self::Acquired(acquired) => acquired.revalidate().await,
+            Self::Retained { fs, receipt } => {
+                for ancestor in &receipt.ancestors {
+                    let metadata = fs
+                        .symlink_metadata(&ancestor.path)
+                        .await
+                        .map_err(io_failure)?;
+                    if !metadata.is_dir()
+                        || metadata.file_type().is_symlink()
+                        || (metadata.dev(), metadata.ino()) != ancestor.identity
+                        || metadata.uid() != ancestor.owner
+                        || metadata.mode() & 0o7777 != ancestor.mode
+                    {
+                        return Err(invalid());
+                    }
+                }
+                let metadata = fs
+                    .symlink_metadata(&receipt.directory)
+                    .await
+                    .map_err(io_failure)?;
+                if !metadata.is_dir()
+                    || metadata.file_type().is_symlink()
+                    || metadata.uid() != receipt.owner
+                    || metadata.mode() & 0o777 != 0o700
+                    || (metadata.dev(), metadata.ino()) != receipt.directory_identity
+                    || protected_file(
+                        *fs,
+                        &receipt.directory.join("retention.lock"),
+                        receipt.owner,
+                    )
+                    .await?
+                        != receipt.lock_identity
+                {
+                    return Err(invalid());
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Reads the actual exact protected record covered by the retained receipt.
+    ///
+    /// # Errors
+    /// Refuses missing captured records, unsafe selectors, changed bytes or incarnations.
+    pub(super) async fn read_record(&mut self, selector: &str) -> Result<Vec<u8>, StoreFailure> {
+        self.revalidate().await?;
+        let bytes = match self {
+            Self::Acquired(acquired) => acquired.read_record(selector).await?,
+            Self::Retained { fs, receipt } => {
+                let mut components = Path::new(selector).components();
+                if !matches!(components.next(), Some(Component::Normal(_)))
+                    || components.next().is_some()
+                {
+                    return Err(invalid());
+                }
+                let path = receipt.directory.join(selector);
+                let record = receipt
+                    .records
+                    .iter()
+                    .find(|record| record.path == path)
+                    .ok_or_else(invalid)?;
+                if protected_file(*fs, &path, receipt.owner).await? != record.identity {
+                    return Err(invalid());
+                }
+                let bytes = fs.read_nofollow(&path).await.map_err(io_failure)?;
+                if bytes != record.bytes
+                    || protected_file(*fs, &path, receipt.owner).await? != record.identity
+                {
+                    return Err(invalid());
+                }
+                bytes
+            }
+        };
+        self.revalidate().await?;
+        Ok(bytes)
+    }
+}
