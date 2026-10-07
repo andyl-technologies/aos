@@ -128,21 +128,28 @@ empty `terrane` binary.
 exact native Active completion cases pass on `4e6c14a7f3`. The eight-case native
 Legacy cold-fork gate now passes on `e2416dcdec`, including the exact fresh
 Commit catalog Raw-to-Candidate sequence; its earlier predecessor-revision
-failure is resolved. Recorded core changes on `36a3a8e57b` pass all 529 tests,
-twelve exact owning cases, strict Clippy, private rustdoc and the no-std gate.
+failure is resolved. Recorded core changes on `24e005497d` pass all 529 tests,
+fifteen exact owning cases, strict Clippy, private rustdoc and the no-std gate.
 The private memo fingerprint includes the complete verified evidence and both
 configured and occurrence selections without changing registered bytes.
+D-105's independent ordinary scalar revisions are now accepted without granting
+the exact 3/2/1 executable carrier profile. Unknown revisions and wrong
+vocabularies remain refused; the property gate requires the owning scalar check.
 The native Recorded implementation passes its production builds and all 132
 default tests. Its composed SDK run passes 367 of 477 tests and fails 110;
 historical and Recorded owning qualification remains incomplete. Review finds
 that per-view authoring inputs also changed the actual current Guard snapshot.
 A candidate separates constructor-selected current configuration from authoring
 inputs while retaining exact snapshot comparisons and checked reload rules.
-Private backfill on `ca3431c38c` compiles and
-passes three exact cases; the fourth fails with `Expired`, with subsequent
-phases unrun. D-111 preserves historical bytes while validating the independent
-current revision. Shared property/algebra gate mappings require actual owning
-witnesses and retain native Fold context coverage. No task merge, checkbox,
+Its first focused run passes 15 of 21 cases; the six remaining failures lead
+to ordinary scalar, genuine producer-input and canonical ancestor-scope
+corrections. Qualification of that composed correction is running.
+Private backfill on `4f4bd8083f` now passes all four exact cases, including
+the formerly expired completeness case. Subsequent publication and failure
+control qualification remains pending. D-111 preserves historical bytes while
+validating the independent current revision. Shared property/algebra gate
+mappings require actual owning witnesses and retain native Fold context coverage.
+No task merge, checkbox,
 milestone exit or freeze advances.
 
 An isolated instrumented run of the fourth private backfill case on
@@ -155,7 +162,8 @@ unobserved descriptor lifetimes. A reviewed candidate appends the already
 closed signed Commit to the final metadata run, preserving actual pack/index
 durability before Commit catalog admission, all post-publication checks and
 ordinary separate Commit publication for fallback and final Chunk barriers.
-Its new qualification remains pending; no deadline or failure oracle changes.
+All four backfill cases pass on the amended producer; subsequent qualification
+remains pending. No deadline or failure oracle changes.
 The shared `chunk-codec` gate now additionally requires the exact native
 dictionary-preload consumer witness, alongside its existing reader coverage.
 

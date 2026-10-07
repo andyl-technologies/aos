@@ -15,6 +15,7 @@ in {
     ${runTests "properties::depth_tests"}
     ${runTests "gc::publication::evidence::cbor::tests::guard::property_revisions_preserve_legacy_and_bind_index_roots_exactly -- --exact"}
     ${runTests "gc::publication::evidence::cbor::tests::guard::property_revision_vocabulary_mismatches_refuse -- --exact"}
+    ${runTests "gc::publication::evidence::validation::policy::active_tests::active_registry_supports_exact_three_two_one_without_relabeling_legacy -- --exact"}
     ${runTests "gc::publication::evidence::validation::policy::tests::later_property_names_remain_inert_under_their_recorded_revision -- --exact"}
     ${runTests "gc::publication::evidence::cbor::tests::lineage::enclosing_lineage_preserves_recorded_inert_property_names -- --exact"}
     ${runTests "indexing::tests::owner_bindings_require_canonical_noninherited_root_values -- --exact"}
