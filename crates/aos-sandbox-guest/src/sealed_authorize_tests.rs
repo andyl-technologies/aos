@@ -110,5 +110,5 @@ fn maximum_size_content_crosses_one_sealed_descriptor_not_a_large_datagram() {
         |bytes, _| ObjectDigest::from_bytes(Sha256::digest(bytes).into()),
     )
     .unwrap();
-    assert_eq!(actual_digest, reference.content_digest);
+    assert_eq!(actual_digest, reference.content_digest());
 }

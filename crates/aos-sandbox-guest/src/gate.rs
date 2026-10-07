@@ -10,12 +10,11 @@ use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use crate::openssh_gate_linux::{OpenSshGatePhysicalErrorV1, RunningOpenSshGateV1};
 use aos_sandbox_agent::AgentRuntimeBindingV1;
 use aos_sandbox_agent::openssh_gate::{
     OpenSshGateClaimV1, OpenSshGateObserveRequestV1, OpenSshGateReadbackV1,
-};
-use crate::openssh_gate_linux::{
-    OpenSshGatePhysicalErrorV1, RunningOpenSshGateV1, expected_openssh_gate_config_v1,
+    expected_openssh_gate_config_v1,
 };
 use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
@@ -126,10 +125,7 @@ impl GuestOpenSshGate {
 
     pub(super) fn monitor_runtime_v2(
         &mut self,
-    ) -> Result<
-        crate::openssh_gate_linux::OpenSshMonitorRuntimeV2,
-        GuestProcessEffectErrorV1,
-    > {
+    ) -> Result<crate::openssh_gate_linux::OpenSshMonitorRuntimeV2, GuestProcessEffectErrorV1> {
         self.daemon
             .monitor_runtime_v2(&self.claim)
             .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)
