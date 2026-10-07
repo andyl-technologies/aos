@@ -72,10 +72,152 @@ def native_sql_selectors(checkpoints):
             if int(index) > 2**31 - 1:
                 raise ValueError('Native SQL chunk exceeds production bound')
             chunks.add((row['publicationId'], int(index)))
+        elif kind == 'dynamic':
+            native_sql_dynamic_selectors([row])
         else:
             raise ValueError('Native SQL checkpoint kind is unsupported')
     return sorted(admissions), sorted(chunks)
 
+
+
+NATIVE_SQL_DYNAMIC_TABLES = (
+    'registry_publications', 'registries',
+    'direct_upload_completion_intents', 'direct_upload_completion_receipts',
+)
+
+
+def native_sql_dynamic_selectors(checkpoints):
+    """Select exact dynamic originals, never all objects in a publication."""
+    if not isinstance(checkpoints, list) or not 1 <= len(checkpoints) <= NATIVE_SQL_MAX_ROWS:
+        raise ValueError('Native SQL dynamic checkpoint count exceeds source bound')
+    publications, sessions = set(), set()
+    for checkpoint in checkpoints:
+        if checkpoint.get('kind') != 'dynamic':
+            continue
+        value = checkpoint.get('observation')
+        if not isinstance(value, dict):
+            raise ValueError('Native SQL dynamic original is absent')
+        operation = value.get('operation')
+        if operation == 'publication_get':
+            native_sql_identifier(value.get('publicationId'))
+            publications.add(value['publicationId'])
+        elif operation in ('direct_authorize', 'direct_commit'):
+            native_sql_identifier(value.get('sessionId'))
+            sessions.add(value['sessionId'])
+        else:
+            raise ValueError('Native SQL dynamic operation is unsupported')
+    return sorted(publications), sorted(sessions)
+
+
+def native_sql_tables(checkpoints):
+    publications, sessions = native_sql_dynamic_selectors(checkpoints)
+    return NATIVE_SQL_TABLES + (NATIVE_SQL_DYNAMIC_TABLES if publications or sessions else ())
+
+
+def native_sql_codec_image(images, rows, evidence_sha256, read_image):
+    """Join one exact codec input family to its actual retained reader rows."""
+    extra = {'publications', 'dynamicSessions'} if 'publications' in rows else set()
+    native_sql_closed(images, {'admissions', 'chunks'} | extra)
+    candidates = [(images['admissions'], rows['admissions'], True)]
+    candidates.extend((reference, [row], False)
+                      for reference, row in zip(images['chunks'], rows['chunks'], strict=True))
+    if extra:
+        candidates.extend((reference, [row], False)
+                          for reference, row in zip(images['publications'], rows['publications'], strict=True))
+        candidates.append((images['dynamicSessions'], rows['dynamicSessions'], True))
+    matches = [item for item in candidates if item[0]['sha256'] == evidence_sha256]
+    if len(matches) != 1:
+        raise ValueError('Native SQL codec input lacks one exact reader image')
+    reference, expected, lines = matches[0]
+    raw = read_image(reference, NATIVE_SQL_MAX_OUTPUT)
+    parsed = ([native_sql_json(line) for line in raw.splitlines()] if lines
+              else [native_sql_json(raw)])
+    if parsed != expected:
+        raise ValueError('Native SQL Core-decoded input differs from retained reader rows')
+    return raw
+
+
+def native_sql_match_dynamic(checkpoint, originals):
+    """Compare source commitments to Core-validated original images only.
+
+    Omitted compact status, old authorization and executed checked statements
+    cannot be recreated by a later reader. Their absence is explicit.
+    """
+    selected = checkpoint['observation']
+    operation = selected['operation']
+    key = 'publicationId' if operation == 'publication_get' else 'sessionId'
+    candidates = [row['values'] for row in originals if row.get('kind') == 'dynamic'
+                  and row.get('values', {}).get('operation') == operation
+                  and row['values'].get(key) == selected[key]]
+    if len(candidates) != 1:
+        raise ValueError('Dynamic source operation lacks one Core-validated reader original')
+    row = candidates[0]
+    fields = {
+        'publication_get': ('publicationId', 'registryId', 'ordinal', 'manifestDigest',
+                            'refsDigest', 'registryScopeSha256', 'reply'),
+        'direct_authorize': ('sessionId', 'requestContext', 'selectedOriginal', 'action',
+                             'completeStep', 'admission', 'baselinePermissions'),
+        'direct_commit': ('sessionId', 'deploymentSha256', 'admission', 'completeOriginal',
+                          'completionEvidence', 'finalGuards'),
+    }[operation]
+    if any(row.get(field) != selected[field] for field in fields):
+        raise ValueError('Dynamic typed original differs from actual source commitment')
+    missing = ['prior_operation_authority_not_reconstructed_by_later_reader']
+    if operation == 'publication_get':
+        missing.append('source_actor_requires_independent_authenticated_context')
+    elif operation == 'direct_authorize':
+        if 'returnedStatus' in row:
+            if any(row.get(field) != selected[field] for field in
+                   ('returnedStatus', 'observedState', 'observedResourceVersion')):
+                raise ValueError('Dynamic actual returned status differs from source commitment')
+        else:
+            missing.append('compact_authorize_reply_omits_prior_full_status_and_version')
+    else:
+        expected = int(selected['expectedResourceVersion'])
+        actual = int(row['receiptResultingResourceVersion'])
+        reply = int(row['replyResourceVersion'])
+        if selected['retainedOriginal']:
+            if expected != reply:
+                raise ValueError('Retained Commit version differs from actual reply')
+        elif expected + 1 != actual or int(selected['resultingResourceVersion']) != actual or reply != actual:
+            raise ValueError('Checked Commit source CAS differs from retained receipt/reply')
+        missing.append('checked_statement_image_is_source_observation_not_reader_transaction_proof')
+    return {'kind': 'dynamic', 'readerTimeOriginal': row, 'missing': missing}
+
+
+def native_sql_dynamic_query(publications, sessions, deployment):
+    """Keep reader-time progress and original receipt documents distinct."""
+    publication_filter = ','.join(native_sql_identifier(key) for key in publications) or 'NULL'
+    session_filter = ','.join(native_sql_identifier(key) for key in sessions) or 'NULL'
+    return (
+        ",'publications',COALESCE((SELECT json_agg(row_to_json(p)) FROM (SELECT "
+        "p.publication_id AS \"publicationId\",p.registry_id::text AS \"registryId\","
+        "r.slug AS \"registrySlug\",p.ordinal::text AS ordinal,p.state,"
+        "p.manifest_digest AS \"manifestDigest\",p.refs_digest AS \"refsDigest\","
+        "r.scope_key AS \"registryScopeKey\" FROM registry_publications p "
+        "JOIN registries r ON r.id=p.registry_id WHERE p.publication_id IN ("
+        + publication_filter + ") ORDER BY p.publication_id) p),'[]'::json),"
+        "'dynamicSessions',COALESCE((SELECT json_agg(row_to_json(d)) FROM (SELECT "
+        "json_build_object('sessionId',s.session_id,'publicationId',s.publication_id,"
+        "'state',s.state,'admission',s.admission_json::json,"
+        "'resourceVersion',s.resource_version::text,'ownerScopeKey',s.owner_scope_key,"
+        "'cacheId',s.cache_id::text,'cacheTicketId',s.cache_ticket_id) AS original,"
+        "CASE WHEN i.session_id IS NULL THEN NULL ELSE json_build_object("
+        "'operationId',i.operation_id,'expectedResourceVersion',i.expected_resource_version::text,"
+        "'intentDigest',i.intent_digest,'intent',i.intent_json::json,'admittedAt',i.admitted_at::text) "
+        "END AS \"completeIntent\","
+        "CASE WHEN c.session_id IS NULL THEN NULL ELSE json_build_object("
+        "'operationId',c.operation_id,'logicalFingerprint',c.logical_fingerprint,"
+        "'evidenceDigest',c.evidence_digest,'evidence',c.evidence_json::json,"
+        "'finalGuards',c.final_guards_json::json,'committedAt',c.committed_at::text,"
+        "'resultingResourceVersion',c.resulting_resource_version::text) END AS \"completionReceipt\" "
+        "FROM direct_upload_sessions s LEFT JOIN direct_upload_completion_intents i "
+        "ON i.deployment_id=s.deployment_id AND i.session_id=s.session_id "
+        "LEFT JOIN direct_upload_completion_receipts c "
+        "ON c.deployment_id=s.deployment_id AND c.session_id=s.session_id "
+        "WHERE s.deployment_id='" + deployment + "' AND s.session_id IN ("
+        + session_filter + ") ORDER BY s.session_id) d),'[]'::json)"
+    )
 
 def native_sql_query(checkpoints, deployment, role):
     """Build one bounded read-only transaction, never a production mutation."""
@@ -84,13 +226,15 @@ def native_sql_query(checkpoints, deployment, role):
     if not isinstance(role, str) or not re.fullmatch('[a-z][a-z0-9_]{0,62}', role):
         raise ValueError('Native SQL reader role differs')
     admissions, chunks = native_sql_selectors(checkpoints)
+    publications, dynamic_sessions = native_sql_dynamic_selectors(checkpoints)
+    dynamic = native_sql_dynamic_query(publications, dynamic_sessions, deployment) if publications or dynamic_sessions else ''
     session_filter = ','.join(native_sql_identifier(key) for key in admissions) or 'NULL'
     chunk_filter = ' OR '.join('(c.publication_id=' + native_sql_identifier(key)
         + ' AND c.chunk_index=' + str(index) + ')' for key, index in chunks) or 'FALSE'
     privileges = ','.join("json_build_object('table','" + table
         + "','select',has_table_privilege(current_user,'" + table
         + "','SELECT'),'mutate',has_table_privilege(current_user,'" + table
-        + "','INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'))" for table in NATIVE_SQL_TABLES)
+        + "','INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'))" for table in native_sql_tables(checkpoints))
     query = (
         "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY; "
         "SET LOCAL statement_timeout='15s'; SET LOCAL lock_timeout='5s'; "
@@ -114,7 +258,7 @@ def native_sql_query(checkpoints, deployment, role):
         "s.manifest_digest AS \"manifestDigest\",s.lease_expires_at::text AS \"leaseExpiresAt\" "
         "FROM registry_publication_manifest_chunks c JOIN registry_publication_manifest_sessions s "
         "ON s.publication_id=c.publication_id WHERE " + chunk_filter
-        + " ORDER BY c.publication_id,c.chunk_index) c),'[]'::json))::text; COMMIT;"
+        + " ORDER BY c.publication_id,c.chunk_index) c),'[]'::json)" + dynamic + ")::text; COMMIT;"
     )
     if len(query.encode()) > 32 * 1024:
         raise ValueError('Native SQL query exceeds bound')
@@ -170,8 +314,10 @@ def native_sql_rows(raw, selection, checkpoints, *, server_address='127.0.0.1', 
     if not 0 < len(raw) <= NATIVE_SQL_MAX_OUTPUT or len(raw.splitlines()) != 1:
         raise ValueError('Native SQL output bound or framing differs')
     value = native_sql_json(raw)
+    publications, dynamic_sessions = native_sql_dynamic_selectors(checkpoints)
+    dynamic_fields = {'publications', 'dynamicSessions'} if publications or dynamic_sessions else set()
     native_sql_closed(value, {'database', 'databaseOid', 'serverPort', 'serverAddress', 'user', 'backendPid', 'readOnly', 'isolation',
-        'snapshot', 'snapshotAt', 'observedAt', 'role', 'privileges', 'admissions', 'chunks'})
+        'snapshot', 'snapshotAt', 'observedAt', 'role', 'privileges', 'admissions', 'chunks'} | dynamic_fields)
     if type(managed_socket) is not bool:
         raise ValueError('Native SQL selected transport differs')
     if managed_socket and (server_address is not None or server_port is not None):
@@ -188,8 +334,8 @@ def native_sql_rows(raw, selection, checkpoints, *, server_address='127.0.0.1', 
     native_sql_closed(value['role'], {'superuser', 'createDb', 'createRole', 'bypassRls'})
     if any(flag is not False for flag in value['role'].values()):
         raise ValueError('Native SQL reader has elevated privileges')
-    if (not isinstance(value['privileges'], list) or len(value['privileges']) != len(NATIVE_SQL_TABLES)
-            or {row.get('table') for row in value['privileges']} != set(NATIVE_SQL_TABLES)):
+    if (not isinstance(value['privileges'], list) or len(value['privileges']) != len(native_sql_tables(checkpoints))
+            or {row.get('table') for row in value['privileges']} != set(native_sql_tables(checkpoints))):
         raise ValueError('Native SQL privilege coverage differs')
     for row in value['privileges']:
         native_sql_closed(row, {'table', 'select', 'mutate'})
@@ -206,6 +352,13 @@ def native_sql_rows(raw, selection, checkpoints, *, server_address='127.0.0.1', 
             or sorted(row.get('sessionId') for row in value['admissions']) != admissions
             or sorted((row.get('publicationId'), row.get('chunkIndex')) for row in value['chunks']) != chunks):
         raise ValueError('Native SQL original coverage differs')
+    if dynamic_fields:
+        if (not isinstance(value['publications'], list) or not isinstance(value['dynamicSessions'], list)
+                or len(value['publications']) != len(publications)
+                or len(value['dynamicSessions']) != len(dynamic_sessions)
+                or sorted(row.get('publicationId') for row in value['publications']) != publications
+                or sorted(row.get('original', {}).get('sessionId') for row in value['dynamicSessions']) != dynamic_sessions):
+            raise ValueError('Native SQL dynamic original coverage differs')
     return value
 
 
@@ -336,6 +489,11 @@ def native_sql_collect(selection, checkpoints):
                     'chunks': [retain('chunk-%02d.codec.json' % index,
                         json.dumps(row, separators=(',', ':')).encode())
                         for index, row in enumerate(rows['chunks'])]}
+    if 'publications' in rows:
+        codec_images['publications'] = [retain('publication-%02d.codec.json' % index,
+            json.dumps(row, separators=(',', ':')).encode()) for index, row in enumerate(rows['publications'])]
+        codec_images['dynamicSessions'] = retain('dynamic-sessions.codec.jsonl', b''.join(
+            json.dumps(row, separators=(',', ':')).encode() + b'\n' for row in rows['dynamicSessions']))
     return {'rows': rows, 'receipt': receipt, 'codecImages': codec_images,
             'scope': 'independent reader-time snapshot; prior IAM/lease/current fence not reconstructed',
             'objectPayloadBytes': None}
@@ -463,6 +621,9 @@ print(json.dumps(native_sql_collect(selection, selected['checkpoints'])))
         images = []
         references = [result['receipt']['query'], result['receipt']['rows'],
                       result['codecImages']['admissions'], *result['codecImages']['chunks']]
+        if 'publications' in result['codecImages']:
+            references.extend(result['codecImages']['publications'])
+            references.append(result['codecImages']['dynamicSessions'])
         for position, reference in enumerate(references):
             if not reference['file'].startswith(root + '/'):
                 raise ValueError('SQL image escaped the selected Database private root')

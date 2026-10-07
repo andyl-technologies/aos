@@ -38,6 +38,7 @@ fn capture(path: &str, request: &[u8], response: &[u8], label: &str) -> Capture 
         storage_work_selection: None,
         empty_response_observation: None,
         immutable_projection: None,
+        publication_phases: None,
     }
 }
 
@@ -49,6 +50,54 @@ fn selection(captures: Vec<Capture>) -> Selection {
         issuer_verifier: None,
         captures,
     }
+}
+
+#[test]
+fn publication_phase_decoder_accepts_partial_error_without_classifying_the_reply() {
+    use aos_hub_core::application_body_observation::{image, publication::Summary};
+    use sha2::{Digest as _, Sha256};
+    let original = aos_proto_types::CommitRegistryPublicationRequest {
+        publication_id: "original-publication".into(),
+    };
+    let request = serde_json::to_vec(&original).unwrap();
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let mut producer = Sha256::new();
+    for (name, bound) in [
+        ("crates/aos-hub-core/src/application_body_observation/publication.rs", 1024 * 1024),
+        ("crates/aos-hub-core/src/application_body_observation.rs", 1024 * 1024),
+        ("crates/aos-hub-core/src/service.rs", 2 * 1024 * 1024),
+        ("crates/aos-hub-core/src/db/mod.rs", 2 * 1024 * 1024),
+        ("crates/aos-hub-core/src/db/publication_delivery.rs", 1024 * 1024),
+    ] {
+        let raw = fs::read(source.join(name)).unwrap();
+        assert!(raw.len() <= bound);
+        producer.update(raw);
+    }
+    // This is a synthetic DTO fixture using the actual producer's source hash;
+    // it does not claim a runtime operation or independently authenticated log.
+    let summary: Summary = serde_json::from_value(serde_json::json!({
+        "version":1, "producerSha256":hex::encode(producer.finalize()),
+        "publicationId":original.publication_id, "request":image(&request),
+        "sourceBeforeUnixNanos":"100", "sourceAfterUnixNanos":"200", "sourceElapsedNanos":"100",
+        "terminalOutcome":"returned_error", "phases":[],
+    })).unwrap();
+    let mut selected = capture("/aos.hub.v1.PublishService/CommitRegistryPublication",
+        &request, b"unclassified returned error", "publication-phase-error");
+    selected.status = 412;
+    selected.publication_phases = Some(reference(&summary.encoded().unwrap(), "publication-phase-summary"));
+    let (observed, _) = inspect(selection(vec![selected])).unwrap();
+    assert_eq!(observed[0].class, "publication_phases_with_unclassified_reply");
+    let projected = observed[0].publication_phases.as_ref().unwrap();
+    assert!(projected["objectPayloadBytes"].is_null());
+    assert_eq!(projected["sqlReaderAuthority"], "not_checked");
+    assert!(observed[0].immutable_projection.is_none());
+
+    let foreign = aos_proto_types::CommitRegistryPublicationRequest { publication_id: "foreign-publication".into() };
+    let mut selected = capture("/aos.hub.v1.PublishService/CommitRegistryPublication",
+        &serde_json::to_vec(&foreign).unwrap(), b"unclassified returned error", "publication-phase-foreign");
+    selected.status = 412;
+    selected.publication_phases = Some(reference(&summary.encoded().unwrap(), "publication-phase-summary-foreign"));
+    assert!(inspect(selection(vec![selected])).is_err());
 }
 
 #[test]

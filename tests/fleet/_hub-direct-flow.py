@@ -84,7 +84,7 @@ def direct_prequalification_worker(native, worker, tools, original_configuration
             observation_label="worker-prequalification")
         private_guest_command(native, "systemctl restart aos-hub.service", timeout=60)
         refusal = wait_fixture_tls_response(native, tools["curl"], tools["python"],
-            tools["nativeOriginUrl"] + "/healthz", "GET", {"401"},
+            tools["nativeOriginUrl"] + "/-/health", "GET", {"401"},
             "native-prequalification-unsigned-refusal", 90)
         if base64.b64decode(refusal["body_base64"], validate=True) != b"":
             raise ValueError("Native unsigned transport refusal body differs")

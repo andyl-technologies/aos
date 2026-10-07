@@ -26632,6 +26632,9 @@ impl RpcService {
         auth: Option<&str>,
         req: pb::CommitRegistryPublicationRequest,
     ) -> Result<pb::RegistryPublication, RpcError> {
+        use crate::application_body_observation::publication::{self as publication_observation, Phase};
+        publication_observation::begin(&req);
+        let result = async {
         let claims = self.require_claims(auth)?;
         let publication = self
             .db
@@ -26648,6 +26651,9 @@ impl RpcService {
         let scope = self.registry_scope(&registry).await?;
         self.require_permission(&claims, Permission::Publish, &scope)
             .await?;
+        publication_observation::completed(&req.publication_id, Phase::Authorized, 0,
+            &(&claims.sub, &claims.owner_kind, claims.owner_id, &claims.owner_incarnation,
+              &claims.scope, &claims.perms, registry.id, &scope));
         if let Some(state) = self
             .db
             .staged_publication_state(&req.publication_id)
@@ -26672,15 +26678,21 @@ impl RpcService {
                 )
                 .await
                 .map_err(RpcError::internal)?;
+            publication_observation::completed(&req.publication_id, Phase::ReadyEvidenceRestored, 0,
+                &publication.state);
             self.db
                 .refresh_registry_publication_delivery_manifests(&req.publication_id)
                 .await
                 .map_err(RpcError::internal)?;
+            publication_observation::completed(&req.publication_id, Phase::DeliveryRefreshed, 0, &req.publication_id);
             self.refresh_registry_index_after_publication(&registry, &req.publication_id)
                 .await;
-            return self
-                .registry_publication_response(&req.publication_id, true)
-                .await;
+            publication_observation::completed(&req.publication_id, Phase::IndexRefreshReturned, 0, &req.publication_id);
+            let response = self.registry_publication_response(&req.publication_id, true).await?;
+            publication_observation::completed(&req.publication_id, Phase::ResponseMaterialized, 0,
+                &(&response.publication_id, &response.state, &response.manifest_digest,
+                  &response.refs_digest, response.objects.len(), response.placements.len()));
+            return Ok(response);
         }
         let immutable_complete = self
             .db
@@ -26698,6 +26710,8 @@ impl RpcService {
             ));
         }
 
+        publication_observation::completed(&req.publication_id, Phase::CompletenessChecked, 0,
+            &(immutable_complete, pointers_complete, &publication.manifest_digest, &publication.refs_digest));
         if publication.state == "preparing" {
             // A publication whose exact objects already exist needs no upload
             // request. Open its pointer phase here so reuse-only generations
@@ -26746,6 +26760,8 @@ impl RpcService {
             ));
         }
 
+        publication_observation::completed(&req.publication_id, Phase::PointerPhaseOpened, 0,
+            &publication.state);
         for progress in self
             .db
             .registry_publication_placement_records(&req.publication_id)
@@ -26776,6 +26792,8 @@ impl RpcService {
                     )
                     .await
                     .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+                publication_observation::completed(&req.publication_id, Phase::PointerAdvanceBegun, 1,
+                    &(placement.id, placement.resource_version, placement.watermark_resource_version));
             }
             let watermark_version = placement.watermark_resource_version.ok_or_else(|| {
                 RpcError::FailedPrecondition("placement has no publication watermark".into())
@@ -26790,6 +26808,8 @@ impl RpcService {
                 )
                 .await
                 .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+            publication_observation::completed(&req.publication_id, Phase::PointerAdvanceFinalized, 1,
+                &(placement.id, placement.resource_version, watermark_version));
         }
         self.db
             .promote_registry_publication_mutable_objects(&req.publication_id)
@@ -26810,6 +26830,7 @@ impl RpcService {
                 "publication could not become ready".into(),
             ));
         }
+        publication_observation::completed(&req.publication_id, Phase::PublicationReady, 0, &req.publication_id);
         let state = self
             .db
             .registry_publication_state(registry.id)
@@ -26824,15 +26845,27 @@ impl RpcService {
             )
             .await
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+        publication_observation::completed(&req.publication_id, Phase::CurrentHeadSet, 0,
+            &(registry.id, state.resource_version, &req.publication_id));
         self.db
             .refresh_registry_publication_delivery_manifests(&req.publication_id)
             .await
             .map_err(RpcError::internal)?;
+        publication_observation::completed(&req.publication_id, Phase::DeliveryRefreshed, 0, &req.publication_id);
         self.lease.release(registry.id, &req.publication_id).await;
+        publication_observation::completed(&req.publication_id, Phase::LeaseReleaseReturned, 0,
+            &(registry.id, &req.publication_id));
         self.refresh_registry_index_after_publication(&registry, &req.publication_id)
             .await;
-        self.registry_publication_response(&req.publication_id, true)
-            .await
+        publication_observation::completed(&req.publication_id, Phase::IndexRefreshReturned, 0, &req.publication_id);
+        let response = self.registry_publication_response(&req.publication_id, true).await?;
+        publication_observation::completed(&req.publication_id, Phase::ResponseMaterialized, 0,
+                &(&response.publication_id, &response.state, &response.manifest_digest,
+                  &response.refs_digest, response.objects.len(), response.placements.len()));
+        Ok(response)
+        }.await;
+        publication_observation::returned(result.is_ok());
+        result
     }
 
     /// Aborts an incomplete publication without exposing any of its objects.
@@ -37757,6 +37790,23 @@ pub(crate) mod cache_upload_tests {
             )
             .await
             .unwrap();
+            if path == "nar/reused.nar.zst" {
+                let request = pb::CommitRegistryPublicationRequest { publication_id: publication_id.into() };
+                let (refused, sql, summary) = crate::application_body_observation::observe_with_publication_phases(
+                    service.commit_registry_publication(Some(&auth), request.clone()),
+                ).await;
+                assert!(matches!(refused, Err(RpcError::FailedPrecondition(_))));
+                assert!(sql.is_none());
+                let summary = summary.unwrap();
+                summary.validate_original(&request).unwrap();
+                assert_eq!(summary.terminal_outcome(),
+                    crate::application_body_observation::publication::TerminalOutcome::ReturnedError);
+                let encoded = serde_json::to_value(summary).unwrap();
+                assert_eq!(encoded["phases"].as_array().unwrap().len(), 1);
+                assert_eq!(encoded["phases"][0]["phase"], "authorized");
+                assert!(db.registry_publication(publication_id).await.unwrap().unwrap().state == "preparing");
+            }
+
             let object = db
                 .surface_object_named(SurfaceTarget::Registry(registry_id), path)
                 .await
@@ -37775,15 +37825,21 @@ pub(crate) mod cache_upload_tests {
             .unwrap();
         }
 
-        let committed = service
-            .commit_registry_publication(
-                Some(&auth),
-                pb::CommitRegistryPublicationRequest {
-                    publication_id: publication_id.into(),
-                },
-            )
-            .await
-            .unwrap();
+        let request = pb::CommitRegistryPublicationRequest { publication_id: publication_id.into() };
+        let (committed, sql, summary) = crate::application_body_observation::observe_with_publication_phases(
+            service.commit_registry_publication(Some(&auth), request.clone()),
+        ).await;
+        let committed = committed.unwrap();
+        assert!(sql.is_none());
+        let summary = summary.unwrap();
+        summary.validate_original(&request).unwrap();
+        assert_eq!(summary.terminal_outcome(),
+            crate::application_body_observation::publication::TerminalOutcome::ReturnedSuccess);
+        let encoded = serde_json::to_value(summary).unwrap();
+        let phases = encoded["phases"].as_array().unwrap();
+        assert!(phases.iter().any(|phase| phase["phase"] == "mutable_objects_promoted"
+            && phase["completedItems"] == "1"));
+        assert!(phases.iter().any(|phase| phase["phase"] == "response_materialized"));
 
         let usage = db.org_usage(org_id).await.unwrap();
         assert_eq!((usage.used_bytes, usage.object_count), (16, 2));

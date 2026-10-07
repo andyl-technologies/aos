@@ -272,7 +272,7 @@ def observe_managed_companion_listener(machine, tools, process, origin, configur
         configuration=None if selected['configuration'] is None else Path(selected['configuration']).read_bytes()
         result=subprocess.run(selected['curl']+['--silent','--show-error','--max-time','5',
             '--max-filesize','262144','--output',str(root/'body'),
-            '--dump-header',str(root/'headers'),'--write-out','%{http_code}',selected['origin']+'/healthz'],
+            '--dump-header',str(root/'headers'),'--write-out','%{http_code}',selected['origin']+'/-/health'],
             stdin=subprocess.DEVNULL,capture_output=True,timeout=8,check=False)
         for name in ('body','headers'):
             os.chmod(root/name,0o600)

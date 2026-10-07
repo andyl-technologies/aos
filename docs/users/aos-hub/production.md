@@ -44,7 +44,7 @@ Bind the native service to loopback and set its public origin:
 
 Terminate TLS in a reverse proxy or load balancer that preserves the original
 `Host` header, supports streaming bodies, allows the required upload size and
-duration, and probes `/healthz` on the private listener.
+duration, and probes `/-/health` on the private listener.
 
 The native server does not currently trust forwarded client-address headers.
 Its pre-authentication rate limiter therefore sees the proxy peer rather than
@@ -54,10 +54,18 @@ proxy, and do not trust arbitrary forwarding headers at the edge.
 Verify the public path, not only loopback:
 
 ```sh
-curl -fsS http://127.0.0.1:8420/healthz
-curl -fsS https://hub.example.com/healthz
+curl -fsS http://127.0.0.1:8420/-/health
+curl -fsS https://hub.example.com/-/health
 curl -fsS https://hub.example.com/metrics | sed -n '1,40p'
 ```
+
+The canonical Native health endpoint is `/-/health`; `/healthz` remains a
+local compatibility alias. The handler checks database reachability and returns
+the current registry count. In hybrid mode, health uses the same signed ingress
+and configured public control authority as other Native control routes. An
+unsigned request to the Native origin is refused; use the public Worker route
+or an independently authenticated operator probe. Sign the exact `/-/health`
+path before sending it, with an empty GET body.
 
 Restrict `/metrics` at the proxy if operational inventory should not be public.
 The application route itself does not require authentication.
@@ -156,7 +164,7 @@ test -f /var/lib/aos-hub/secret.key
 # Snapshot or copy the complete state and bound storage here.
 
 systemctl start aos-hub.service
-curl -fsS http://127.0.0.1:8420/healthz
+curl -fsS http://127.0.0.1:8420/-/health
 ```
 
 If the service cannot stop, use SQLite's online-backup mechanism and a storage
@@ -167,7 +175,7 @@ Test restoration on an isolated listener. Restore service-account ownership,
 start a compatible Hub build, and verify:
 
 ```sh
-curl -fsS http://127.0.0.1:8420/healthz
+curl -fsS http://127.0.0.1:8420/-/health
 aos-hub --root /var/lib/aos-hub org list
 aos-hub --root /var/lib/aos-hub registry list
 aos-hub --root /var/lib/aos-hub cache list
@@ -252,7 +260,7 @@ aos-hub --root /var/lib/aos-hub \
 
 For the native server, collect:
 
-- `/healthz` availability and latency;
+- `/-/health` availability and latency;
 - registry states, especially `failed` and persistent `stale`;
 - webhook pending and failed counts;
 - cache objects, bytes, GC runs, and reclaimed bytes;
@@ -270,8 +278,8 @@ systemctl show aos-hub.service \
   -p ActiveState -p SubState -p NRestarts -p Result
 ```
 
-The Worker does not expose native `/healthz` or `/metrics`. Use Workers Logs and
-metrics plus public and authenticated application probes.
+A Worker-only installation does not expose native `/-/health` or `/metrics`.
+Use Workers Logs and metrics plus public and authenticated application probes.
 
 ## Upgrade and roll back
 

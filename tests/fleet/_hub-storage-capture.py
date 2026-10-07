@@ -156,7 +156,7 @@ def finish_native_copy_capture(native, tools, selected):
         with os.fdopen(descriptor, 'wb') as output, os.fdopen(errors, 'wb') as error:
             result = subprocess.run(['journalctl', '--no-pager', '--output=json',
                 '--output-fields=__REALTIME_TIMESTAMP,_PID,_EXE,_SYSTEMD_UNIT,MESSAGE',
-                r'--grep=^\\[INFO\\] message=(external_copy_authenticated|oci_projection_authenticated|external_oci_authenticated|mirror_guard_authenticated|storage_final_sql_checked|external_oci_admission_actor_checked|native_application_sql_projection) ',
+                r'--grep=^\\[INFO\\] message=(external_copy_authenticated|oci_projection_authenticated|external_oci_authenticated|mirror_guard_authenticated|storage_final_sql_checked|external_oci_admission_actor_checked|native_application_sql_projection|native_application_publication_phases) ',
                 '--unit=aos-hub.service', '--after-cursor=' + selected['journalCursor']],
                 stdout=output, stderr=error, check=False, timeout=45)
             output.flush()

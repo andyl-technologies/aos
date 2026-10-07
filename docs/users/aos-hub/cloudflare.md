@@ -192,9 +192,9 @@ with `--head-sampling-rate`, disable it with `--no-observability`, or request
 Logpush with `--logpush`. The Logpush flag configures the Worker integration;
 it does not create the destination that receives those logs.
 
-The Worker does not expose the native server's `/healthz` or `/metrics`
-endpoints. Use Workers Logs and metrics for runtime signals, plus an
-application-level probe of a public Hub route.
+A Worker-only installation does not expose the Native server's `/-/health`
+(`/healthz` compatibility alias) or `/metrics` endpoints. Use Workers Logs and
+metrics for runtime signals, plus an application-level probe of a public Hub route.
 
 After an install or update, open the Hub, sign in, read a public registry, and
 exercise an authenticated operation. The repository builds the packaged Worker

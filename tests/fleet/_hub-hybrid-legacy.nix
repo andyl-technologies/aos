@@ -662,12 +662,12 @@
 
   worker.wait_until_succeeds(
       f"{CURL} -sS -o /dev/null -w '%{{http_code}}' "
-      "https://aos.staging.andyl.org/healthz | "
+      "https://aos.staging.andyl.org/-/health | "
       f"{GREP} -qx 401",
       timeout=180,
   )
   client.wait_until_succeeds(
-      f"{CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' https://aos.andyl.org/healthz",
+      f"{CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' https://aos.andyl.org/-/health",
       timeout=180,
   )
   client.succeed(
@@ -2749,7 +2749,7 @@
   """), timeout=60)
   native.succeed("systemctl start aos-hub.service")
   client.wait_until_succeeds(
-      f"{CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' https://aos.andyl.org/healthz",
+      f"{CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' https://aos.andyl.org/-/health",
       timeout=180,
   )
 

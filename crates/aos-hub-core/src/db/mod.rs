@@ -7776,7 +7776,16 @@ impl Database {
                 )
                 .unchecked(),
             ])
-            .await
+            .await?;
+        if let Ok(count) = u64::try_from(expected) {
+            crate::application_body_observation::publication::completed(
+                publication_id,
+                crate::application_body_observation::publication::Phase::MutableObjectsPromoted,
+                count,
+                &(publication_id, expected),
+            );
+        }
+        Ok(())
     }
 
     /// Attaches one same-registry, content-exact object snapshot to a preparing publication.

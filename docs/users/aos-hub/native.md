@@ -192,7 +192,7 @@ link-local, and metadata addresses.
 Probe liveness and database access at:
 
 ```sh
-curl -fsS http://127.0.0.1:8420/healthz
+curl -fsS http://127.0.0.1:8420/-/health
 ```
 
 Prometheus metrics are served at `/metrics`. They cover indexing, webhooks,
@@ -206,7 +206,7 @@ For an AOS module deployment, update the containing system variant or sysroot
 generation and deploy it through the normal AOS image or userspace-generation
 workflow. The unit remains pinned to its old Nix store path until that system
 generation changes. After either update path, watch `aos-hub.service` and verify
-`/healthz` before returning traffic.
+`/-/health` before returning traffic.
 
 Native magic-link mail currently writes links to the service log rather than
 delivering mail. Use password, passkey, or OIDC sign-in for production until an

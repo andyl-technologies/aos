@@ -238,6 +238,56 @@ impl Window {
         Some(aos_hub_core::application_body_observation::image(&raw))
     }
 
+    fn publication_phases(
+        &self,
+        member: &Member,
+    ) -> Option<aos_hub_core::application_body_observation::EncodedImage> {
+        let summary = member.publication_summary.as_ref()?;
+        summary.encoded()?;
+        let status = member.status.filter(|_| member.returned)?;
+        // This independent child preserves successful earlier phases even on
+        // an error response. No typed evidence or SQL authority is attached.
+        let child = PublicationPhaseReceipt {
+            version: 1,
+            event: "publication_phases",
+            window_id: &self.policy.window_id,
+            policy_sha256: &self.policy_sha256,
+            producer_sha256: source_sha256(),
+            admission_ordinal: member.ordinal.to_string(),
+            method: &member.method,
+            path_sha256: &member.path_sha256,
+            request_id: &member.request_id,
+            transport_call_id: &member.transport_call_id,
+            status,
+            handler_returned: member.returned,
+            request_consumed: member.request.receipt(),
+            reply_offered: member.reply.receipt(),
+            request_trailers: member.request.trailers,
+            reply_trailers: member.reply.trailers,
+            summary,
+        };
+        let raw = serde_json::to_vec(&child).ok()?;
+        if raw.len() > MAX_SQL_EVENT_BYTES {
+            return None;
+        }
+        let encoded = std::str::from_utf8(&raw).ok()?;
+        #[cfg(test)]
+        if let Ok(mut records) = self.records.lock() {
+            if records.len() < 128 {
+                records.push(serde_json::from_slice(&raw).ok()?);
+            }
+        }
+        #[cfg(test)]
+        if let Ok(mut records) = self.raw_records.lock() {
+            if records.len() < 128 {
+                records.push(encoded.to_owned());
+            }
+        }
+        let _subscriber = tracing::dispatcher::set_default(&self.dispatcher);
+        tracing::info!("native_application_publication_phases {encoded}");
+        Some(aos_hub_core::application_body_observation::image(&raw))
+    }
+
     fn finish(&self, member: &Member) {
         let Ok(mut counters) = self.counters.lock() else {
             return;
@@ -261,6 +311,7 @@ impl Window {
         let sql_projection = typed_evidence
             .as_ref()
             .and_then(|evidence| self.sql_projection(member, evidence));
+        let publication_phases = self.publication_phases(member);
         let record = MemberReceipt {
             version: 1,
             event: "member",
@@ -283,6 +334,7 @@ impl Window {
             reply_trailers: member.reply.trailers,
             typed_evidence,
             sql_projection,
+            publication_phases,
         };
         let Ok(raw) = serde_json::to_vec(&record) else {
             counters.overflow = true;
@@ -333,6 +385,8 @@ struct MemberReceipt<'a> {
     typed_evidence: Option<aos_hub_core::application_body_observation::BodyEvidence>,
     #[serde(skip_serializing_if = "Option::is_none")]
     sql_projection: Option<aos_hub_core::application_body_observation::EncodedImage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    publication_phases: Option<aos_hub_core::application_body_observation::EncodedImage>,
 }
 
 #[derive(Serialize)]
@@ -351,6 +405,28 @@ struct SqlProjectionReceipt<'a> {
     status: u16,
     typed_evidence: &'a aos_hub_core::application_body_observation::BodyEvidence,
     projection: &'a SqlProjection,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PublicationPhaseReceipt<'a> {
+    version: u8,
+    event: &'static str,
+    window_id: &'a str,
+    policy_sha256: &'a str,
+    producer_sha256: &'a str,
+    admission_ordinal: String,
+    method: &'a str,
+    path_sha256: &'a str,
+    request_id: &'a Option<String>,
+    transport_call_id: &'a Option<String>,
+    status: u16,
+    handler_returned: bool,
+    request_consumed: FrameReceipt,
+    reply_offered: FrameReceipt,
+    request_trailers: bool,
+    reply_trailers: bool,
+    summary: &'a aos_hub_core::application_body_observation::publication::Summary,
 }
 
 fn matched_evidence(
@@ -396,6 +472,7 @@ struct Member {
     returned: bool,
     typed_evidence: Option<aos_hub_core::application_body_observation::BodyEvidence>,
     sql_projection: Option<SqlProjection>,
+    publication_summary: Option<aos_hub_core::application_body_observation::publication::Summary>,
     request: ObservedFrames,
     reply: ObservedFrames,
 }
@@ -437,13 +514,14 @@ async fn observe(State(window): State<Arc<Window>>, request: Request, next: Next
         returned: false,
         typed_evidence: None,
         sql_projection: None,
+        publication_summary: None,
         request: ObservedFrames::default(),
         reply: ObservedFrames::default(),
     }));
     let (parts, body) = request.into_parts();
     let request = Request::from_parts(parts, tap(body, &member, false));
-    let (mut response, projection) =
-        aos_hub_core::application_body_observation::observe_with_sql_projection(next.run(request))
+    let (mut response, projection, publication_summary) =
+        aos_hub_core::application_body_observation::observe_with_publication_phases(next.run(request))
             .await;
     if let Some(projection) = projection.filter(|projection| {
         response
@@ -461,6 +539,7 @@ async fn observe(State(window): State<Arc<Window>>, request: Request, next: Next
             .get::<aos_hub_core::application_body_observation::BodyEvidence>()
             .cloned();
         state.sql_projection = response.extensions().get::<SqlProjection>().cloned();
+        state.publication_summary = publication_summary;
     }
     let (parts, body) = response.into_parts();
     Response::from_parts(parts, tap(body, &member, true))
@@ -732,6 +811,7 @@ mod sql_checkpoint_tests {
             returned: true,
             typed_evidence: Some(evidence),
             sql_projection: Some(projection),
+            publication_summary: None,
             request: request_frames,
             reply: reply_frames,
         }

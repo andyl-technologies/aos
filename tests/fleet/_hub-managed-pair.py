@@ -433,7 +433,7 @@ def await_managed_tls(machine, tools, origin):
                 raise ValueError('Managed TLS listener did not answer within its startup bound')
             time.sleep(1)
     """, {"curl": shlex.split(tools["curl"]),
-        "url": origin + ("/_internal/storage/v1/capabilities" if origin == WORKER_ORIGIN else "/healthz"),
+        "url": origin + ("/_internal/storage/v1/capabilities" if origin == WORKER_ORIGIN else "/-/health"),
         "method": "POST" if origin == WORKER_ORIGIN else "GET",
         "expectedStatus": "401" if origin == WORKER_ORIGIN else "200"}, timeout=75))
 

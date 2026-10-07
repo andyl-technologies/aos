@@ -47,6 +47,7 @@ struct Capture {
     storage_work_selection: Option<StorageSelection>,
     empty_response_observation: Option<EmptyResponse>,
     immutable_projection: Option<projection::Selection>,
+    publication_phases: Option<BodyFile>,
 }
 
 #[derive(Deserialize)]
@@ -111,6 +112,8 @@ struct Observation {
     storage_work: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     immutable_projection: Option<projection::Observation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    publication_phases: Option<Value>,
 }
 
 fn body(bytes: &[u8]) -> BodyObservation {
@@ -199,8 +202,36 @@ fn inspect(selection: Selection) -> Result<(Vec<Observation>, usize)> {
             control: None,
             storage_work: None,
             immutable_projection: None,
+            publication_phases: None,
         };
-        if capture.control_selection.is_some() || capture.storage_work_selection.is_some() {
+        if let Some(reference) = &capture.publication_phases {
+            ensure!(capture.method == "POST" && capture.phase.is_none()
+                && capture.procedure == "/aos.hub.v1.PublishService/CommitRegistryPublication"
+                && capture.immutable_projection.is_none()
+                && capture.control_selection.is_none() && capture.storage_work_selection.is_none(),
+                "publication phase capture selection differs");
+            let original: aos_proto_types::CommitRegistryPublicationRequest = public_rpc::exact(&request)?;
+            let raw = files::read(reference, &mut selected_bytes)?;
+            ensure!(raw.len() <= 16 * 1024, "publication phase summary exceeds bound");
+            let summary: aos_hub_core::application_body_observation::publication::Summary =
+                serde_json::from_slice(&raw)?;
+            ensure!(summary.encoded().as_deref() == Some(raw.as_slice()), "noncanonical publication summary");
+            summary.validate_original(&original)?;
+            use aos_hub_core::application_body_observation::publication::TerminalOutcome;
+            ensure!(match summary.terminal_outcome() {
+                TerminalOutcome::ReturnedSuccess => capture.status == 200,
+                TerminalOutcome::ReturnedError => (400..600).contains(&capture.status),
+                TerminalOutcome::Incomplete => false,
+            }, "publication handler outcome differs from actual status");
+            observation.class = "publication_phases_with_unclassified_reply";
+            observation.publication_phases = Some(serde_json::json!({
+                "summarySha256":files::digest(&raw), "summaryByteSize":raw.len().to_string(),
+                "requestSha256":files::digest(&request), "handlerStatus":capture.status,
+                "objectPayloadBytes":null, "sqlReaderAuthority":"not_checked",
+                "missing":["independent_source_log_authentication_and_sql_custody",
+                    "unclassified_reply_no_atomicity_or_visibility_claim"],
+            }));
+        } else if capture.control_selection.is_some() || capture.storage_work_selection.is_some() {
             storage::classify(
                 &capture,
                 &request,

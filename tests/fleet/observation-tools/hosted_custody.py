@@ -363,19 +363,16 @@ def cloud_sql(selection, checkpoint, codec, readers, source_contract, runtime, v
     # connector instance, backend PID, transaction and window to these bytes.
     # Their independent verification cannot be supplied by selected JSON flags.
     images = selection['codecImages']
-    closed(images, {'admissions', 'chunks'})
-    references = [images['admissions']] + images['chunks']
-    matches = [ref for ref in references if ref['sha256'] == codec['codecProjection']['sqlEvidenceSha256']]
-    if len(matches) != 1:
-        raise ValueError('Managed SQL codec image is missing or duplicated')
-    raw = readers['read_ref'](matches[0], 512 * 1024)
-    parsed = ([readers['closed_json'](line) for line in raw.splitlines()]
-              if rows['admissions'] else [readers['closed_json'](raw)])
-    if parsed != (rows['admissions'] or rows['chunks']):
-        raise ValueError('Managed SQL Core-decoded rows differ from actual reader bytes')
+    source_contract['native_sql_codec_image'](images, rows,
+        codec['codecProjection']['sqlEvidenceSha256'], readers['read_ref'])
+    dynamic = [source_contract['native_sql_match_dynamic'](operation,
+        codec['codecProjection'].get('sqlOriginals', []))
+        for operation in checkpoint['checkpoints'] if operation['kind'] == 'dynamic']
     return {'class': 'matched_managed_reader_time_codec_images', 'rawRowsSha256': sha(rows_raw),
             'readerBackendPid': rows['backendPid'], 'readerSnapshot': rows['snapshot'],
+            'dynamicOriginals': dynamic,
             'objectPayloadBytes': None,
             'missing': ['source_operation_to_reader_time_immutable_original_and_current_fence_join',
                         'prior_operation_iam_or_lease_not_reconstructed_by_later_reader',
-                        'native_instance_body_window_and_independent_database_clock_custody']}
+                        'native_instance_body_window_and_independent_database_clock_custody']
+                + [item for match in dynamic for item in match['missing']]}

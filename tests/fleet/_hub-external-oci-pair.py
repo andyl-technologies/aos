@@ -346,7 +346,7 @@ def await_external_oci_tls(machine, tools, origin):
                 raise ValueError('Dedicated External TLS listener did not become ready')
             time.sleep(1)
     """, {"curl": shlex.split(tools["curl"]), "url": origin + (
-        "/_internal/storage/v1/capabilities" if worker else "/healthz"),
+        "/_internal/storage/v1/capabilities" if worker else "/-/health"),
         "method": "POST" if worker else "GET", "status": "401" if worker else "200"}, timeout=75))
 
 

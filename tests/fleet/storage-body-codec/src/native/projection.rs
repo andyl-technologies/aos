@@ -24,6 +24,8 @@
 //! }
 //! ```
 
+mod dynamic;
+
 use super::{public_rpc::exact, Capture};
 use crate::files::{self, BodyFile};
 use anyhow::{ensure, Result};
@@ -42,6 +44,11 @@ use std::collections::BTreeMap;
     deny_unknown_fields
 )]
 pub(super) enum Selection {
+    Dynamic {
+        operation: String,
+        original_request: BodyFile,
+        sql_originals: BodyFile,
+    },
     PublicationAppend {
         original_request: BodyFile,
         immutable_chunk_receipt: BodyFile,
@@ -65,7 +72,7 @@ pub(super) struct Observation {
     reply_control_bytes: String,
     object_payload_bytes: Option<String>,
     sql_reader_authority: &'static str,
-    missing: [&'static str; 1],
+    missing: Vec<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     sql_originals: Option<Vec<ReaderOriginal>>,
 }
@@ -115,6 +122,7 @@ struct AdmissionRow {
     rename_all_fields = "camelCase"
 )]
 enum ReaderOriginal {
+    Dynamic { values: serde_json::Value },
     Admission {
         session_id: String,
         admission: aos_hub_core::application_body_observation::EncodedImage,
@@ -225,7 +233,7 @@ fn reader_originals(kind: &str, sql: &[u8]) -> Result<Option<Vec<ReaderOriginal>
             "SQL owner is not the actual publication original"
         );
         ensure!(
-            rows.len() < 32,
+            rows.len() < MAX_DIRECT_BATCH_ITEMS,
             "SQL admission reader exceeds source checkpoint bound"
         );
         let scope = row
@@ -262,6 +270,23 @@ pub(super) fn inspect(
     consumed: &mut usize,
 ) -> Result<Observation> {
     let (kind, original_sha, sql_sha, count, sql_originals) = match selection {
+        Selection::Dynamic { operation, original_request, sql_originals } => {
+            let original = files::read(original_request, consumed)?;
+            let sql = files::read(sql_originals, consumed)?;
+            ensure!(sql.len() <= 512 * 1024 && original == request, "dynamic original or reader bound differs");
+            let rows = if operation == "publication_get" {
+                dynamic::publication_get(capture, request, reply, &sql)?
+            } else {
+                dynamic::logical(operation, capture, request, reply, &sql)?
+            };
+            let kind = match operation.as_str() {
+                "publication_get" => "publication_get",
+                "direct_authorize" => "direct_authorize",
+                "direct_commit" => "direct_commit",
+                _ => anyhow::bail!("unsupported dynamic operation"),
+            };
+            (kind, files::digest(&original), files::digest(&sql), rows.len(), Some(rows))
+        }
         Selection::PublicationAppend {
             original_request,
             immutable_chunk_receipt,
@@ -313,7 +338,7 @@ pub(super) fn inspect(
         reply_control_bytes: reply.len().to_string(),
         object_payload_bytes: None,
         sql_reader_authority: "not_checked_join_measured_read_only_source_process_and_window",
-        missing: ["independent_sql_reader_custody_and_temporal_current_fences"],
+        missing: vec!["independent_sql_reader_custody_and_temporal_current_fences"],
         sql_originals,
     })
 }

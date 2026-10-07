@@ -16,6 +16,7 @@ import stat
 
 MARKER = 'native_application_body_inventory '
 SQL_MARKER = 'native_application_sql_projection '
+PHASE_MARKER = 'native_application_publication_phases '
 MAX_SQL_CHILD = 96 * 1024
 MAX_SQL_PROJECTION = 64 * 1024
 MAX_SQL_CHECKPOINTS = 64
@@ -142,8 +143,20 @@ def validate(messages, policy, selected_producer, parse_json):
     members, seen, chain = [], set(), bytes(32)
     begun, ended, end = False, False, None
     children = []
+    phase_children = []
     child_bytes = 0
     for message, _timestamp in messages:
+        if isinstance(message, str) and PHASE_MARKER in message:
+            if message.count(PHASE_MARKER) != 1:
+                raise ValueError('Ambiguous publication phase marker')
+            phase_raw = message.split(PHASE_MARKER, 1)[1].encode()
+            if len(phase_raw) > MAX_SQL_CHILD or child_bytes + len(phase_raw) > 64 * 1024 * 1024:
+                raise ValueError('Publication phase capture exceeds existing child/corpus bound')
+            phase_child = parse_json(phase_raw)
+            if isinstance(phase_child, dict) and phase_child.get('windowId') == policy['windowId']:
+                phase_children.append((phase_child, phase_raw))
+                child_bytes += len(phase_raw)
+            continue
         if isinstance(message, str) and SQL_MARKER in message:
             if message.count(SQL_MARKER) != 1:
                 raise ValueError('Ambiguous SQL child marker')
@@ -180,6 +193,13 @@ def validate(messages, policy, selected_producer, parse_json):
             names = names | {'queryClass'}
             if row['queryClass'] not in ('absent', 'present'):
                 raise ValueError('Inventory query presence differs')
+        if kind == 'member' and 'publicationPhases' in row:
+            names = names | {'publicationPhases'}
+            closed(row['publicationPhases'], IMAGE)
+            decimal(row['publicationPhases']['byteSize'])
+            digest(row['publicationPhases']['sha256'])
+            if decimal(row['publicationPhases']['byteSize']) > MAX_SQL_CHILD:
+                raise ValueError('Publication phase child image exceeds source bound')
         closed(row, names)
         if (type(row['version']) is not int or row['version'] != 1
                 or row['policySha256'] != policy_sha
@@ -240,8 +260,225 @@ def validate(messages, policy, selected_producer, parse_json):
         if pending or incomplete or end['overflow']:
             missing.append('unsettled_unread_failed_overflow_or_trailer_frames')
     return {'inventoryComplete': not missing, 'members': members, 'missing': missing,
-            'chainSha256': chain.hex(), 'nativeBulkBytes': None, 'sqlChildren': children}
+            'chainSha256': chain.hex(), 'nativeBulkBytes': None, 'sqlChildren': children,
+            'publicationPhaseChildren': phase_children}
 
+
+
+
+def source_leaf_bound(path):
+    """Allow only the two named existing giant producer source files."""
+    return (2 * 1024 * 1024 if path in (
+        'crates/aos-hub-core/src/service.rs', 'crates/aos-hub-core/src/db/mod.rs')
+        else 1024 * 1024)
+
+
+def encoded_image(value):
+    closed(value, IMAGE)
+    decimal(value['byteSize'])
+    digest(value['sha256'])
+
+
+def dynamic_observation(value):
+    """Check the finite producer DTO without inventing independent authority."""
+    families = {
+        'publication_get': {'publicationId', 'registryId', 'ordinal', 'state',
+            'manifestDigest', 'refsDigest', 'registryScopeSha256', 'actor', 'reply'},
+        'direct_authorize': {'sessionId', 'requestContext', 'selectedOriginal', 'action',
+            'completeStep', 'admission', 'returnedStatus', 'baselinePermissions',
+            'observedState', 'observedResourceVersion'},
+        'direct_commit': {'sessionId', 'deploymentSha256', 'admission', 'completeOriginal',
+            'completionEvidence', 'finalGuards', 'expectedResourceVersion',
+            'resultingResourceVersion', 'checkedStatements', 'checkedStatementCount', 'retainedOriginal'},
+    }
+    if not isinstance(value, dict) or value.get('operation') not in families:
+        raise ValueError('Unsupported dynamic operation')
+    operation = value['operation']
+    closed(value, families[operation] | {'operation'})
+    images = {
+        'publication_get': ('actor', 'reply'),
+        'direct_authorize': ('requestContext', 'selectedOriginal', 'admission', 'returnedStatus', 'baselinePermissions'),
+        'direct_commit': ('admission', 'completeOriginal', 'completionEvidence', 'finalGuards'),
+    }
+    for field in images[operation]:
+        encoded_image(value[field])
+    identifier = 'publicationId' if operation == 'publication_get' else 'sessionId'
+    if not isinstance(value[identifier], str) or not re.fullmatch('[A-Za-z0-9_-]{1,64}', value[identifier]):
+        raise ValueError('Dynamic original identity differs')
+    if operation == 'publication_get':
+        if decimal(value['registryId']) == 0 or decimal(value['ordinal']) == 0:
+            raise ValueError('Dynamic publication scalar differs')
+        for field in ('manifestDigest', 'refsDigest', 'registryScopeSha256'):
+            digest(value[field])
+        if value['state'] not in ('preparing', 'writing_pointers', 'ready', 'failed', 'retired'):
+            raise ValueError('Dynamic publication state differs')
+    elif operation == 'direct_authorize':
+        if value['action'] not in ('grant_parts', 'report_parts', 'complete', 'abort', 'status'):
+            raise ValueError('Dynamic action differs')
+        if value['completeStep'] not in (None, 'freeze', 'baseline', 'promote'):
+            raise ValueError('Dynamic Complete step differs')
+        if (value['completeStep'] is not None) != (value['action'] == 'complete'):
+            raise ValueError('Dynamic action/step differs')
+        if decimal(value['observedResourceVersion']) == 0 or value['observedState'] not in (
+                'creating', 'staged_verified', 'committed', 'aborting',
+                'aborted', 'blocked_unknown'):
+            raise ValueError('Dynamic source status differs')
+    else:
+        digest(value['deploymentSha256'])
+        expected = decimal(value['expectedResourceVersion'])
+        retained = boolean(value['retainedOriginal'])
+        count = value['checkedStatementCount']
+        if expected == 0 or type(count) is not int or count < 0:
+            raise ValueError('Dynamic checked batch scalar differs')
+        if retained:
+            if value['resultingResourceVersion'] is not None or value['checkedStatements'] is not None or count != 0:
+                raise ValueError('Retained Commit invents a new checked batch')
+        else:
+            encoded_image(value['checkedStatements'])
+            if count == 0 or decimal(value['resultingResourceVersion']) != expected + 1:
+                raise ValueError('Checked Commit resulting version differs')
+
+
+def publication_phases(member, children, source, read_source, report=None, manifest=None):
+    """Retain partial phase facts joined to actual member bytes; never qualify them."""
+    expected = member.get('publicationPhases')
+    if expected is None:
+        return None
+    candidates = [(value, raw) for value, raw in children
+                  if value.get('admissionOrdinal') == member['admissionOrdinal']]
+    if len(candidates) != 1:
+        raise ValueError('Publication phase child missing or duplicated')
+    child, raw = candidates[0]
+    joined = {'admissionOrdinal', 'method', 'pathSha256', 'requestId', 'transportCallId',
+              'status', 'handlerReturned', 'requestConsumed', 'replyOffered',
+              'requestTrailers', 'replyTrailers'}
+    closed(child, BASE | joined | {'summary'})
+    if (sha(raw) != expected['sha256'] or str(len(raw)) != expected['byteSize']
+            or child['event'] != 'publication_phases'
+            or any(child[field] != member[field] for field in joined | (BASE - {'event'}))
+            or not member['handlerReturned']):
+        raise ValueError('Publication phase actual member/raw bytes differ')
+    summary = child['summary']
+    # Preserve the actual nested encoding for the independent Core invocation.
+    # JSON formatting must not be replaced by a Python reserialization.
+    nested_start = raw.find(b'"summary":')
+    if nested_start < 0:
+        raise ValueError('Publication summary source field absent')
+    nested = raw[nested_start + len(b'"summary":'):].decode()
+    decoded, end = json.JSONDecoder().raw_decode(nested)
+    summary_raw = nested[:end].encode()
+    if decoded != summary or len(summary_raw) > 16 * 1024:
+        raise ValueError('Publication summary exceeds source bound')
+    closed(summary, {'version', 'producerSha256', 'publicationId', 'request',
+        'sourceBeforeUnixNanos', 'sourceAfterUnixNanos', 'sourceElapsedNanos', 'terminalOutcome', 'phases'})
+    paths = ('crates/aos-hub-core/src/application_body_observation/publication.rs',
+             'crates/aos-hub-core/src/application_body_observation.rs',
+             'crates/aos-hub-core/src/service.rs', 'crates/aos-hub-core/src/db/mod.rs',
+             'crates/aos-hub-core/src/db/publication_delivery.rs')
+    actual_source = sha(b''.join(read_source(Path(source) / name, source_leaf_bound(name)) for name in paths))
+    if (type(summary['version']) is not int or summary['version'] != 1
+            or summary['producerSha256'] != actual_source
+            or summary['terminalOutcome'] not in ('returned_success', 'returned_error', 'incomplete')
+            or not isinstance(summary['phases'], list) or len(summary['phases']) > 16):
+        raise ValueError('Publication phase source/schema/bound differs')
+    encoded_image(summary['request'])
+    if not isinstance(summary['publicationId'], str) or not re.fullmatch('[A-Za-z0-9_-]{1,64}', summary['publicationId']):
+        raise ValueError('Publication phase selected original differs')
+    before = decimal(summary['sourceBeforeUnixNanos'])
+    after = summary['sourceAfterUnixNanos']
+    if summary['terminalOutcome'] == 'incomplete':
+        if after is not None or summary['sourceElapsedNanos'] is not None:
+            raise ValueError('Incomplete publication phase invents terminal clocks')
+    elif after is None or summary['sourceElapsedNanos'] is None or decimal(after) < before:
+        raise ValueError('Publication phase original clock differs')
+    else:
+        decimal(summary['sourceElapsedNanos'])
+    status = member['status']
+    if ((summary['terminalOutcome'] == 'returned_success' and status != 200)
+            or (summary['terminalOutcome'] == 'returned_error'
+                and (type(status) is not int or not 400 <= status < 600))):
+        raise ValueError('Publication returned outcome differs from actual handler status')
+    allowed = {'authorized', 'completeness_checked', 'pointer_phase_opened', 'pointer_advance_begun',
+        'pointer_advance_finalized', 'mutable_objects_promoted', 'publication_ready', 'current_head_set',
+        'delivery_refreshed', 'lease_release_returned', 'index_refresh_returned',
+        'ready_evidence_restored', 'response_materialized'}
+    seen = set()
+    for phase in summary['phases']:
+        closed(phase, {'phase', 'completedCalls', 'completedItems', 'chainSha256',
+                      'firstCompletedUnixNanos', 'lastCompletedUnixNanos'})
+        if phase['phase'] not in allowed or phase['phase'] in seen or decimal(phase['completedCalls']) == 0:
+            raise ValueError('Publication phase kind/count duplicated or unsupported')
+        seen.add(phase['phase'])
+        decimal(phase['completedItems']); digest(phase['chainSha256'])
+        first, last = decimal(phase['firstCompletedUnixNanos']), decimal(phase['lastCompletedUnixNanos'])
+        if first < before or last < first or (after is not None and last > decimal(after)):
+            raise ValueError('Publication phase lies outside actual source bracket')
+    missing = ['independent_typed_original_auth_sql_and_full_body_coverage',
+               'phase_counts_do_not_prove_atomic_commit_or_publication_visibility']
+    request = member['requestConsumed']
+    if (not frame(request) or summary['request'] != {
+            'sha256': request['exposedSha256'], 'byteSize': request['exposedBytes']}):
+        missing.append('partial_or_different_actual_request_encoding')
+    if not frame(member['replyOffered']) or member['requestTrailers'] or member['replyTrailers']:
+        missing.append('incomplete_or_trailer_body_frames')
+    codec = publication_phase_codec(member, summary_raw, report, manifest)
+    if codec is None:
+        missing.append('missing_independent_Core_publication_summary_original_validation')
+    return {'rawChildSha256': sha(raw), 'rawChildByteSize': str(len(raw)), 'summary': summary,
+            'coreProjection': codec, 'objectPayloadBytes': None,
+            'readerAuthority': 'not_checked', 'missing': missing}
+
+
+def publication_phase_codec(member, summary_raw, report, manifest):
+    """Join a real Core result while leaving reply/body/authority unclassified."""
+    if report is None or manifest is None or member['requestId'] is None:
+        return None
+    if (report['version'] != 1 or report['codecRevision'] != manifest['codecRevision']
+            or report['selectedSourceDigest'] != manifest['sourceDigest']):
+        raise ValueError('Publication phase Core runtime differs')
+    rows = [row for row in report['captures']
+            if row['requestIdSha256'] == sha(member['requestId'].encode())]
+    selected = [row for row in manifest['captures'] if row['requestId'] == member['requestId']]
+    if not rows or not selected:
+        return None
+    if len(rows) != 1 or len(selected) != 1:
+        raise ValueError('Publication phase Core selected ownership differs')
+    row, capture = rows[0], selected[0]
+    projection = row.get('publicationPhases')
+    if projection is None:
+        return None
+    closed(projection, {'summarySha256', 'summaryByteSize', 'requestSha256',
+                       'handlerStatus', 'objectPayloadBytes', 'sqlReaderAuthority', 'missing'})
+    if (row['class'] != 'publication_phases_with_unclassified_reply'
+            or row['procedure'] != '/aos.hub.v1.PublishService/CommitRegistryPublication'
+            or sha(row['procedure'].encode()) != member['pathSha256']
+            or row['method'] != member['method'] or row['phase'] is not None
+            or capture['status'] != member['status'] or capture['method'] != member['method']
+            or capture['procedure'] != row['procedure'] or capture['phase'] is not None
+            or projection['summarySha256'] != sha(summary_raw)
+            or projection['summaryByteSize'] != str(len(summary_raw))
+            or capture.get('publicationPhases', {}).get('sha256') != sha(summary_raw)
+            or capture.get('publicationPhases', {}).get('byteSize') != str(len(summary_raw))
+            or projection['handlerStatus'] != member['status']
+            or projection['objectPayloadBytes'] is not None or projection['sqlReaderAuthority'] != 'not_checked'
+            or projection['missing'] != ['independent_source_log_authentication_and_sql_custody',
+                'unclassified_reply_no_atomicity_or_visibility_claim']):
+        raise ValueError('Publication phase Core original/member projection differs')
+    for direction, frame_name in (('request', 'requestConsumed'), ('response', 'replyOffered')):
+        image = row[direction]
+        closed(image, {'sha256', 'byteSize', 'typedSemanticSha256'})
+        selected_image = capture['bodies'][direction]
+        if (image['sha256'] != selected_image['sha256'] or image['byteSize'] != selected_image['byteSize']
+                or image['typedSemanticSha256'] != image['sha256']):
+            raise ValueError('Publication selected original image differs')
+        if (not frame(member[frame_name]) or member['requestTrailers'] or member['replyTrailers']):
+            return None
+        if (image['sha256'] != member[frame_name]['exposedSha256']
+                or image['byteSize'] != member[frame_name]['exposedBytes']):
+            raise ValueError('Publication Core input differs from actual consumed/offered frames')
+    if projection['requestSha256'] != row['request']['sha256']:
+        raise ValueError('Publication Core original request differs')
+    return projection
 
 
 def sql_child(member, children, source, read_source):
@@ -278,8 +515,11 @@ def sql_child(member, children, source, read_source):
         'crates/aos-hub-core/src/application_body_observation/rpc.rs',
         'crates/aos-hub-core/src/db/direct_upload.rs',
         'crates/aos-hub-core/src/db/publication_admission.rs',
+        'crates/aos-hub-core/src/application_body_observation/sql_projection/dynamic.rs',
+        'crates/aos-hub-core/src/direct_upload/service.rs',
+        'crates/aos-hub-core/src/service.rs',
     )
-    actual_source = sha(b''.join(read_source(Path(source) / path, 1024 * 1024) for path in paths))
+    actual_source = sha(b''.join(read_source(Path(source) / path, source_leaf_bound(path)) for path in paths))
     if (type(projection['version']) is not int or projection['version'] != 1
             or projection['producerSha256'] != actual_source
             or not isinstance(projection['checkpoints'], list)
@@ -306,6 +546,7 @@ def sql_child(member, children, source, read_source):
             'expectedResourceVersion', 'expectedAdmittedObjectCount', 'expectedLeaseExpiresAt'},
         'manifest_append_retained_receipt': {'publicationId', 'registryId', 'leaseTokenSha256',
             'manifestDigest', 'chunkIndex', 'chunkDigest', 'objectCount', 'observedSessionResourceVersion'},
+        'dynamic': {'observation'},
     }
     for checkpoint in projection['checkpoints']:
         kind = checkpoint.get('kind')
@@ -313,16 +554,25 @@ def sql_child(member, children, source, read_source):
             raise ValueError('Unsupported SQL checkpoint kind')
         closed(checkpoint, common | fields[kind])
         kinds.add(kind)
+        if kind == 'dynamic':
+            dynamic_observation(checkpoint['observation'])
         for key in ('sourceBeforeUnixNanos', 'sourceAfterUnixNanos', 'sourceElapsedNanos'):
             decimal(checkpoint[key])
         if decimal(checkpoint['sourceAfterUnixNanos']) < decimal(checkpoint['sourceBeforeUnixNanos']):
             raise ValueError('SQL operation source clock rolled back')
     constructor = member['typedEvidence']['constructor'] if member['typedEvidence'] else None
-    allowed = ({'admission_checked_transaction'} if constructor == 'direct_logical_validated'
+    allowed = ({'admission_checked_transaction', 'dynamic'} if constructor == 'direct_logical_validated'
                else {'manifest_append_checked_transaction', 'manifest_append_retained_receipt'}
-               if constructor == 'publication_manifest_append' else set())
+               if constructor == 'publication_manifest_append' else {'dynamic'} if constructor == 'publication_get' else set())
     if not kinds <= allowed or not allowed:
         raise ValueError('SQL checkpoint actual encoder constructor differs')
+    for checkpoint in projection['checkpoints']:
+        if checkpoint['kind'] == 'dynamic':
+            operation = checkpoint['observation']['operation']
+            expected_constructor = ('publication_get' if operation == 'publication_get'
+                                    else 'direct_logical_validated')
+            if constructor != expected_constructor:
+                raise ValueError('Dynamic checkpoint actual operation/constructor differs')
     return {'rawChildSha256': sha(raw), 'rawChildByteSize': str(len(raw)),
             'checkpoints': projection['checkpoints'], 'objectPayloadBytes': None,
             'readerAuthority': 'not_checked',
@@ -468,20 +718,13 @@ def sql_reader_projection(checkpoint, codec, selected, readers, source, read_sou
     if rows != bundle['rows']:
         raise ValueError('SQL selected rows differ from actual raw output')
     images = bundle['codecImages']
-    closed(images, {'admissions', 'chunks'})
-    candidates = [images['admissions']] + images['chunks']
-    matches = [ref for ref in candidates if ref['sha256'] == codec['codecProjection']['sqlEvidenceSha256']]
-    if len(matches) != 1:
-        raise ValueError('Typed SQL codec is not bound to one actual reader image')
-    codec_raw = read_image(matches[0], 512 * 1024)
-    if rows['admissions']:
-        parsed = [readers['closed_json'](line) for line in codec_raw.splitlines()]
-        if parsed != rows['admissions']:
-            raise ValueError('Core-decoded admissions differ from retained raw SQL rows')
-    elif len(rows['chunks']) != 1 or readers['closed_json'](codec_raw) != rows['chunks'][0]:
-        raise ValueError('Core-decoded chunk differs from retained raw SQL row')
+    namespace['native_sql_codec_image'](images, rows,
+        codec['codecProjection']['sqlEvidenceSha256'], read_image)
     matched = []
     for operation in checkpoint['checkpoints']:
+        if operation['kind'] == 'dynamic':
+            matched.append(namespace['native_sql_match_dynamic'](operation, original_images))
+            continue
         admission = operation['kind'] == 'admission_checked_transaction'
         candidates = [row for row in original_images if (
             row.get('kind') == 'admission' and admission and row.get('sessionId') == operation['sessionId'])
@@ -509,7 +752,8 @@ def sql_reader_projection(checkpoint, codec, selected, readers, source, read_sou
             'readerSnapshot': rows['snapshot'], 'objectPayloadBytes': None,
             'missing': ['independent_collector_invocation_and_database_instance_custody',
                         'prior_operation_iam_or_lease_not_reconstructed_by_later_reader',
-                        'cross_machine_clock_uncertainty_and_original_authenticated_body_join']}
+                        'cross_machine_clock_uncertainty_and_original_authenticated_body_join']
+                + [item for match in matched for item in match.get('missing', [])]}
 
 def source_asset(member, source, read_source):
     """Match only a concrete source-embedded public asset, never dynamic HTML."""
@@ -609,9 +853,16 @@ def codec_projection(member, report, manifest, authentication, source, read_sour
                  'crates/aos-hub-core/src/application_body_observation/rpc.rs',
                  'crates/aos-hub-core/src/connect.rs')
         constructor, phase = 'publication_manifest_append', None
-    elif projection['kind'] == 'direct_logical_admission':
+    elif projection['kind'] == 'publication_get':
+        files = ('crates/aos-hub-core/src/application_body_observation.rs',
+                 'crates/aos-hub-core/src/application_body_observation/rpc.rs',
+                 'crates/aos-hub-core/src/connect.rs')
+        constructor, phase = 'publication_get', None
+    elif projection['kind'] in ('direct_logical_admission', 'direct_authorize', 'direct_commit'):
         files = ('crates/aos-hub/src/direct_upload/mod.rs',)
-        constructor, phase = 'direct_logical_validated', 'admission'
+        constructor, phase = 'direct_logical_validated', {
+            'direct_logical_admission': 'admission', 'direct_authorize': 'authorize',
+            'direct_commit': 'commit'}[projection['kind']]
     else:
         raise ValueError('Unsupported immutable codec projection')
     expected = sha(b''.join(read_source(Path(source) / path, 1024 * 1024) for path in files))
@@ -703,6 +954,7 @@ def project_members(result, selection, sidecar, policy, source, readers, read_so
         if len(request_ids) != len(set(request_ids)):
             raise ValueError('Native inventory request ownership is ambiguous')
     children = result.pop('sqlChildren', [])
+    phase_children = result.pop('publicationPhaseChildren', [])
     projections = []
     for member in result['members']:
         projection = source_asset(member, source, read_source)
@@ -719,9 +971,13 @@ def project_members(result, selection, sidecar, policy, source, readers, read_so
         reader_projection = (sql_reader_projection(checkpoint, projection,
             selection.get('sqlReaderObservation'), readers, source, read_source, sidecar)
             if projection is not None and 'codecProjection' in projection else None)
+        phases = publication_phases(member, phase_children, source, read_source, codec_report, manifest)
         projections.append({'admissionOrdinal': member['admissionOrdinal'],
+                            'publicationPhases': phases,
                             'projection': projection, 'sqlCheckpoint': checkpoint,
                             'sqlReaderProjection': reader_projection})
+        if phases is not None:
+            result['missing'].extend(phases['missing'])
         if reader_projection is not None:
             result['missing'].extend(reader_projection['missing'])
         if checkpoint is not None:

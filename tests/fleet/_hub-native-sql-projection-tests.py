@@ -186,6 +186,75 @@ class Collector(unittest.TestCase):
         with self.assertRaises(ValueError):
             collector.native_sql_checkpoints(messages, maximum=32)
 
+    def test_dynamic_reader_retains_one_full_batch_and_refuses_missing_originals(self):
+        checkpoints = [{'kind': 'dynamic', 'observation': {
+            'operation': 'direct_authorize', 'sessionId': 'session-' + str(index)}}
+            for index in range(64)]
+        query = collector.native_sql_query(checkpoints, 'synthetic', 'synthetic_reader')
+        self.assertEqual(query.count('BEGIN TRANSACTION'), 1)
+        self.assertIn('direct_upload_completion_intents', query)
+        self.assertIn('direct_upload_completion_receipts', query)
+        self.assertNotIn('UPDATE ', query)
+        rows = fixture_rows()
+        rows['admissions'] = []
+        rows['publications'] = []
+        rows['dynamicSessions'] = [{'original': {'sessionId': 'session-' + str(index)}}
+                                   for index in range(64)]
+        rows['privileges'] = [{'table': table, 'select': True, 'mutate': False}
+                              for table in collector.native_sql_tables(checkpoints)]
+        self.assertEqual(collector.native_sql_rows(json.dumps(rows).encode(), self.selection, checkpoints), rows)
+        for changed in (rows['dynamicSessions'][:-1], rows['dynamicSessions'] + [rows['dynamicSessions'][0]]):
+            with self.assertRaises(ValueError):
+                collector.native_sql_rows(json.dumps({**rows, 'dynamicSessions': changed}).encode(),
+                                          self.selection, checkpoints)
+        with self.assertRaises(ValueError):
+            collector.native_sql_query(checkpoints + [checkpoints[0]], 'synthetic', 'synthetic_reader')
+        with self.assertRaises(ValueError):
+            collector.native_sql_query([{'kind': 'dynamic', 'observation': {
+                'operation': 'other', 'sessionId': 'session-0'}}], 'synthetic', 'synthetic_reader')
+
+    def test_dynamic_original_match_preserves_omitted_status_and_checked_replay_distinction(self):
+        image = {'sha256': 'a' * 64, 'byteSize': '23'}
+        source = {'operation': 'direct_authorize', 'sessionId': 'session',
+                  'requestContext': image, 'selectedOriginal': image, 'action': 'complete',
+                  'completeStep': 'promote', 'admission': image, 'baselinePermissions': image,
+                  'returnedStatus': image, 'observedState': 'staged_verified', 'observedResourceVersion': '2'}
+        values = {key: value for key, value in source.items()
+                  if key not in ('returnedStatus', 'observedState', 'observedResourceVersion')}
+        values.update(readerState='committed', readerResourceVersion='3')
+        result = collector.native_sql_match_dynamic({'observation': source}, [{'kind': 'dynamic', 'values': values}])
+        self.assertIn('compact_authorize_reply_omits_prior_full_status_and_version', result['missing'])
+        with self.assertRaises(ValueError):
+            collector.native_sql_match_dynamic({'observation': source}, [
+                {'kind': 'dynamic', 'values': {**values, 'selectedOriginal': {'sha256': 'b' * 64, 'byteSize': '23'}}}])
+
+        commit = {'operation': 'direct_commit', 'sessionId': 'session', 'deploymentSha256': 'c' * 64,
+                  'admission': image, 'completeOriginal': image, 'completionEvidence': image,
+                  'finalGuards': image, 'expectedResourceVersion': '2', 'resultingResourceVersion': '3',
+                  'retainedOriginal': False}
+        retained = {key: value for key, value in commit.items()
+                    if key not in ('expectedResourceVersion', 'resultingResourceVersion', 'retainedOriginal')}
+        retained.update(receiptResultingResourceVersion='3', replyResourceVersion='3')
+        collector.native_sql_match_dynamic({'observation': commit}, [{'kind': 'dynamic', 'values': retained}])
+        replay = {**commit, 'expectedResourceVersion': '3', 'resultingResourceVersion': None, 'retainedOriginal': True}
+        collector.native_sql_match_dynamic({'observation': replay}, [{'kind': 'dynamic', 'values': retained}])
+        with self.assertRaises(ValueError):
+            collector.native_sql_match_dynamic({'observation': {**commit, 'expectedResourceVersion': '3'}},
+                                              [{'kind': 'dynamic', 'values': retained}])
+
+    def test_dynamic_codec_image_requires_actual_reader_family_bytes(self):
+        row = {'original': {'sessionId': 'session'}, 'completeIntent': None, 'completionReceipt': None}
+        raw = json.dumps(row).encode() + b'\n'
+        reference = {'file': 'private-row', 'sha256': collector.native_sql_digest(raw), 'byteSize': str(len(raw))}
+        empty = {'file': 'private-empty', 'sha256': collector.native_sql_digest(b''), 'byteSize': '0'}
+        images = {'admissions': empty, 'chunks': [], 'publications': [], 'dynamicSessions': reference}
+        rows = {'admissions': [], 'chunks': [], 'publications': [], 'dynamicSessions': [row]}
+        self.assertEqual(collector.native_sql_codec_image(images, rows, reference['sha256'],
+            lambda selected, maximum: raw), raw)
+        with self.assertRaises(ValueError):
+            collector.native_sql_codec_image(images, {**rows, 'dynamicSessions': []}, reference['sha256'],
+                                            lambda selected, maximum: raw)
+
 
 if __name__ == '__main__':
     unittest.main()

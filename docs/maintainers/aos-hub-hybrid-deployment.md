@@ -333,10 +333,14 @@ Native-only indexing uses `HUB_TOPOLOGY=native` and its local storage adapter.
 
 Only after those probes and recovery checks pass, render the same profile with
 both `--domain "$probe_hostname"` and `--domain "$public_hostname"`, then
-deploy it. This is the public cutover. Immediately verify public `/healthz`,
-`/login`, and an authenticated `/-/instance` page. If qualification fails,
-keep or return the public route to the previous deployment. Do not point a
-Worker-only HubDb deployment at this PostgreSQL state, or switch a Native
+deploy it. This is the public cutover. Immediately verify public `/-/health`,
+`/login`, and an authenticated `/-/instance` page. The health probe must
+reach the Native handler through signed hybrid ingress under the configured
+public authority. Direct origin probes need a valid ingress assertion for an
+empty `GET /-/health`; neither an unsigned transport refusal nor an intermediary
+404 establishes Native health. `/healthz` remains a local compatibility alias.
+If qualification fails, keep or return the public route to the previous deployment.
+Do not point a Worker-only HubDb deployment at this PostgreSQL state, or switch a Native
 service to hybrid as an implicit data migration. For a fresh staging reset,
 retain the old environment separately until its required data is republished
 or a restore has been verified.

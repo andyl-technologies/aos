@@ -33,9 +33,56 @@ fn member(window: &Arc<Window>) -> Arc<Mutex<Member>> {
         returned: true,
         typed_evidence: None,
         sql_projection: None,
+        publication_summary: None,
         request: ObservedFrames::default(),
         reply: ObservedFrames::default(),
     }))
+}
+
+#[test]
+fn returned_error_phase_child_matches_actual_frames_without_success_evidence() {
+    // The bridge fixture's summary is explicitly synthetic. Core's separate
+    // operation tests validate actual summaries against their typed original.
+    let selected_window = window();
+    let selected = member(&selected_window);
+    let request = b"{\"publicationId\":\"synthetic-publication\"}";
+    let error = b"unclassified returned error";
+    {
+        let mut selected = selected.lock().unwrap();
+        selected.status = Some(412);
+        selected.path_sha256 = hex::encode(Sha256::digest(
+            b"/aos.hub.v1.PublishService/CommitRegistryPublication"));
+        selected.request.observe(request);
+        selected.request.eof = true;
+        selected.reply.observe(error);
+        selected.reply.eof = true;
+        selected.publication_summary = Some(serde_json::from_value(serde_json::json!({
+            "version":1, "producerSha256":"a".repeat(64), "publicationId":"synthetic-publication",
+            "request":aos_hub_core::application_body_observation::image(request),
+            "sourceBeforeUnixNanos":"100", "sourceAfterUnixNanos":"200",
+            "sourceElapsedNanos":"100", "terminalOutcome":"returned_error", "phases":[],
+        })).unwrap());
+    }
+    drop(selected);
+    let raw = selected_window.raw_records.lock().unwrap();
+    let child = raw.iter().find(|raw| serde_json::from_str::<serde_json::Value>(raw).unwrap()["event"]
+        == "publication_phases").unwrap();
+    let receipt: serde_json::Value = raw.iter().find_map(|raw| {
+        let value: serde_json::Value = serde_json::from_str(raw).unwrap();
+        (value["event"] == "member").then_some(value)
+    }).unwrap();
+    let decoded: serde_json::Value = serde_json::from_str(child).unwrap();
+    assert_eq!(receipt["publicationPhases"]["sha256"],
+        aos_hub_core::application_body_observation::image(child.as_bytes()).sha256);
+    assert_eq!(receipt["publicationPhases"]["byteSize"], child.len().to_string());
+    for field in ["admissionOrdinal", "status", "handlerReturned", "requestConsumed", "replyOffered"] {
+        assert_eq!(decoded[field], receipt[field]);
+    }
+    assert_eq!(decoded["status"], 412);
+    assert!(receipt["typedEvidence"].is_null());
+    assert!(receipt.get("sqlProjection").is_none());
+    assert!(decoded.get("sqlReaderAuthority").is_none());
+    assert!(decoded.get("objectPayloadBytes").is_none());
 }
 
 #[tokio::test]

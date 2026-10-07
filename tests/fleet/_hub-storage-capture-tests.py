@@ -84,6 +84,8 @@ class StorageCaptureTests(unittest.TestCase):
                 {"kind": "admission_checked_transaction", "sessionId": "session_1"}]}}
         sql_line = journal(source_child, event="native_application_sql_projection",
             MESSAGE="[INFO] message=native_application_sql_projection " + json.dumps(source_child))
+        phase_line = journal({'terminalOutcome': 'returned_error'}, event='native_application_publication_phases',
+            MESSAGE='[INFO] message=native_application_publication_phases ' + json.dumps({'terminalOutcome': 'returned_error'}))
         storage_line = journal(receipt())
         unrelated = journal({"irrelevant": True}, event="ordinary_application_event")
         argv_seen, process_reads = [], []
@@ -120,7 +122,7 @@ class StorageCaptureTests(unittest.TestCase):
                 # The generated argument's literal brackets and alternation use
                 # the same subset of ERE syntax here; source escapes are not
                 # interpreted a second time by this controlled journal.
-                for line in (sql_line, storage_line, unrelated):
+                for line in (sql_line, phase_line, storage_line, unrelated):
                     if re.search(pattern, json.loads(line)["MESSAGE"]):
                         options["stdout"].write((line + "\n").encode())
                 return types.SimpleNamespace(returncode=0)
@@ -142,7 +144,7 @@ class StorageCaptureTests(unittest.TestCase):
                     patch.object(capture, "retain_direct_log_window", retain_window, create=True):
                 retained_path, _ = capture.finish_native_copy_capture(None, {"python": "controlled"}, selected)
             raw = retained_path.read_text()
-            self.assertEqual(raw, sql_line + "\n" + storage_line + "\n")
+            self.assertEqual(raw, sql_line + "\n" + phase_line + "\n" + storage_line + "\n")
             self.assertNotIn("ordinary_application_event", raw)
             self.assertEqual(len(argv_seen), 1)
             self.assertEqual(len(process_reads), 2)

@@ -133,6 +133,59 @@ class InventoryReader(unittest.TestCase):
         self.assertIsNone(result['nativeBulkBytes'])
         self.assertIsNone(inventory.source_asset(result['members'][0], SOURCE, source_bytes))
 
+    def test_source_bound_allowance_is_exactly_two_named_giant_modules(self):
+        allowed = ('crates/aos-hub-core/src/service.rs', 'crates/aos-hub-core/src/db/mod.rs')
+        for name in allowed:
+            self.assertEqual(inventory.source_leaf_bound(name), 2 * 1024 * 1024)
+        for name in ('service.rs', 'db/mod.rs', 'crates/aos-hub-core/src/db/direct_upload.rs',
+                     'crates/aos-hub-core/src/service.rs/foreign'):
+            self.assertEqual(inventory.source_leaf_bound(name), 1024 * 1024)
+
+    def test_partial_publication_child_keeps_error_facts_without_metadata_or_sql_claims(self):
+        selected = copy.deepcopy(self.member)
+        selected['status'] = 412
+        selected['pathSha256'] = inventory.sha(b'/aos.hub.v1.PublishService/CommitRegistryPublication')
+        request = b'{"publicationId":"synthetic-publication"}'
+        selected['requestConsumed'] = synthetic_frame(request)
+        selected['replyOffered'] = synthetic_frame(b'unclassified error')
+        paths = ('crates/aos-hub-core/src/application_body_observation/publication.rs',
+                 'crates/aos-hub-core/src/application_body_observation.rs',
+                 'crates/aos-hub-core/src/service.rs', 'crates/aos-hub-core/src/db/mod.rs',
+                 'crates/aos-hub-core/src/db/publication_delivery.rs')
+        def synthetic_source(path, maximum):
+            self.assertEqual(maximum, inventory.source_leaf_bound(str(path)))
+            return str(path).encode()
+        summary = {'version': 1, 'producerSha256': inventory.sha(b''.join(name.encode() for name in paths)),
+                   'publicationId': 'synthetic-publication',
+                   'request': {'byteSize': str(len(request)), 'sha256': inventory.sha(request)},
+                   'sourceBeforeUnixNanos': '100', 'sourceAfterUnixNanos': '200',
+                   'sourceElapsedNanos': '100', 'terminalOutcome': 'returned_error',
+                   'phases': [{'phase': 'authorized', 'completedCalls': '1', 'completedItems': '0',
+                               'chainSha256': 'a' * 64, 'firstCompletedUnixNanos': '110',
+                               'lastCompletedUnixNanos': '110'}]}
+        fields = inventory.BASE | {'admissionOrdinal', 'method', 'pathSha256', 'requestId',
+                                  'transportCallId', 'status', 'handlerReturned', 'requestConsumed',
+                                  'replyOffered', 'requestTrailers', 'replyTrailers'}
+        child = {key: selected[key] for key in fields}
+        child.update(event='publication_phases', summary=summary)
+        raw = json.dumps(child, separators=(',', ':')).encode()
+        selected['publicationPhases'] = {'byteSize': str(len(raw)), 'sha256': inventory.sha(raw)}
+        result = inventory.publication_phases(selected, [(child, raw)], Path('.'), synthetic_source)
+        self.assertEqual(result['summary']['terminalOutcome'], 'returned_error')
+        self.assertIsNone(result['objectPayloadBytes'])
+        self.assertIsNone(result['coreProjection'])
+        self.assertEqual(result['readerAuthority'], 'not_checked')
+        self.assertIn('phase_counts_do_not_prove_atomic_commit_or_publication_visibility', result['missing'])
+        self.assertIsNone(selected['typedEvidence'])
+
+        for key, value in (('status', 200), ('handlerReturned', False), ('requestId', 'foreign')):
+            changed = {**selected, key: value}
+            with self.assertRaises(ValueError, msg=key):
+                inventory.publication_phases(changed, [(child, raw)], Path('.'), synthetic_source)
+        changed = {**selected, 'publicationPhases': {**selected['publicationPhases'], 'sha256': 'f' * 64}}
+        with self.assertRaises(ValueError):
+            inventory.publication_phases(changed, [(child, raw)], Path('.'), synthetic_source)
+
 
 class SelectedInventorySeam(unittest.TestCase):
     def test_missing_instance_custody_stays_null_and_validates_original_manifest(self):

@@ -77,6 +77,9 @@ impl std::fmt::Debug for PresignParams<'_> {
 mod direct;
 pub use direct::*;
 
+mod provider_readback;
+pub use provider_readback::{presign_bucket_readback, BucketReadback};
+
 mod stage_read;
 pub use stage_read::presign_closed_stage_read;
 

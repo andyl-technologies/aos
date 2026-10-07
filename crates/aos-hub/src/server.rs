@@ -656,6 +656,7 @@ async fn router_with_ports(
     // dispatcher rewrites a matched endpoint to the typed internal delivery
     // handler; this router owns only control-plane routes and console pages.
     let router = Router::new()
+        .route("/-/health", get(healthz))
         .route("/healthz", get(healthz))
         .route("/.well-known/aos-deployment", get(deployment_identity))
         .route("/metrics", get(metrics));
@@ -1359,6 +1360,89 @@ mod hybrid_ingress_tests {
 
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn canonical_health_preserves_alias_and_exact_signed_ingress() {
+        aos_hub_core::domain::iam::validate_org_slug("health").unwrap();
+
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let state = Arc::new(AppState::new(db, "https://hub.example.test".into()).await);
+        let key = Arc::new(HybridIngressKey::new([9; 32]).unwrap());
+        let work = Arc::new(
+            crate::storage_work::RemoteStorageWorkClient::new(
+                "https://worker.example.test",
+                "deployment-1".into(),
+                &[8; 32],
+            )
+            .unwrap(),
+        );
+        let app =
+            router_with_hybrid_ingress(state, Arc::clone(&key), "deployment-1".into(), work).await;
+        let now = aos_hub_core::clock::now_unix_secs();
+        let assertion = HybridIngressAssertion {
+            version: 1,
+            deployment_id: "deployment-1".into(),
+            issued_at: now,
+            expires_at: now + 30,
+            request_id: "canonical-health-request".into(),
+            scheme: "https".into(),
+            authority: "hub.example.test".into(),
+            method: "GET".into(),
+            path_and_query: "/-/health".into(),
+            body_sha256: hex::encode(Sha256::digest([])),
+            upload_phase: None,
+            client_ip: "192.0.2.7".into(),
+        };
+
+        for path in ["/-/health", "/healthz"] {
+            let mut selected = assertion.clone();
+            selected.path_and_query = path.into();
+            let request = axum::http::Request::builder()
+                .uri(path)
+                .header(HYBRID_INGRESS_HEADER, key.sign(&selected).unwrap())
+                .body(axum::body::Body::empty())
+                .unwrap();
+
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()["x-aos-hybrid-origin"], "1");
+            let body = axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap();
+            assert_eq!(body.as_ref(), b"ok (0 registries)\n");
+        }
+
+        let unsigned = axum::http::Request::builder()
+            .uri("/-/health")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(unsigned).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(!response.headers().contains_key("x-aos-hybrid-origin"));
+
+        // Changing the path after signing cannot turn the legacy alias into
+        // an authenticated canonical health request.
+        let mut alias = assertion.clone();
+        alias.path_and_query = "/healthz".into();
+        let substituted = axum::http::Request::builder()
+            .uri("/-/health")
+            .header(HYBRID_INGRESS_HEADER, key.sign(&alias).unwrap())
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(substituted).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(!response.headers().contains_key("x-aos-hybrid-origin"));
+
+        let mut foreign = assertion;
+        foreign.authority = "other.example.test".into();
+        let foreign = axum::http::Request::builder()
+            .uri("/-/health")
+            .header(HYBRID_INGRESS_HEADER, key.sign(&foreign).unwrap())
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = app.oneshot(foreign).await.unwrap();
+        assert_eq!(response.status(), StatusCode::MISDIRECTED_REQUEST);
     }
 
     #[tokio::test]

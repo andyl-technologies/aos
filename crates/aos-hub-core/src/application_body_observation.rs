@@ -6,27 +6,29 @@
 //! A disabled scope and every Wasm invocation preserve ordinary responses.
 
 use axum::response::Response;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::future::Future;
 use std::io::{self, Write};
 
 pub(crate) mod rpc;
 pub mod sql_projection;
+pub mod publication;
 
 #[derive(Default)]
 struct ObservationScope {
     checkpoints: Vec<sql_projection::Checkpoint>,
     constructor: Option<&'static str>,
     invalid: bool,
+    publication: Option<publication::Accumulator>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 tokio::task_local! { static ENABLED: std::cell::RefCell<ObservationScope>; }
 
 /// Commits to bytes from one actual source-selected encoder.
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EncodedImage {
     /// Decimal count of the complete canonical encoding.
     pub byte_size: String,
@@ -65,6 +67,18 @@ pub async fn observe<F: Future>(handler: F) -> F::Output {
 pub async fn observe_with_sql_projection<F: Future>(
     handler: F,
 ) -> (F::Output, Option<sql_projection::SqlProjection>) {
+    let (output, sql, _) = observe_with_publication_phases(handler).await;
+    (output, sql)
+}
+
+/// Retains independent bounded publication phases, including returned errors.
+///
+/// The phase summary does not require a successful response constructor. It
+/// grants no typed body evidence, SQL authority, visibility or atomicity. Wasm
+/// and disabled scopes preserve the ordinary response, with no summary.
+pub async fn observe_with_publication_phases<F: Future>(
+    handler: F,
+) -> (F::Output, Option<sql_projection::SqlProjection>, Option<publication::Summary>) {
     #[cfg(not(target_arch = "wasm32"))]
     {
         ENABLED
@@ -86,14 +100,17 @@ pub async fn observe_with_sql_projection<F: Future>(
                         })
                         .ok()
                         .flatten();
-                    (output, projection)
+                    let publication = ENABLED.try_with(|scope| {
+                        scope.try_borrow_mut().ok()?.publication.take()?.into_summary()
+                    }).ok().flatten();
+                    (output, projection, publication)
                 },
             )
             .await
     }
     #[cfg(target_arch = "wasm32")]
     {
-        (handler.await, None)
+        (handler.await, None, None)
     }
 }
 
@@ -175,6 +192,11 @@ pub(crate) fn canonical(value: &impl Serialize, maximum: u64) -> Option<EncodedI
     if !enabled() {
         return None;
     }
+    canonical_image(value, maximum)
+}
+
+// Validation remains usable outside an emission scope; this helper emits no record.
+fn canonical_image(value: &impl Serialize, maximum: u64) -> Option<EncodedImage> {
     let mut writer = HashWriter {
         digest: Sha256::new(),
         bytes: 0,

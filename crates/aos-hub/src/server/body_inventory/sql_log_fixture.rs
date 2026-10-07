@@ -103,6 +103,7 @@ pub(crate) fn emit_fixture_child(
         returned: true,
         typed_evidence: Some(evidence),
         sql_projection: Some(projection),
+        publication_summary: None,
         request: request_frames,
         reply: reply_frames,
     });

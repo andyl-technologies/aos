@@ -140,7 +140,7 @@ def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, s
         timeout=120,
     )
     try:
-        native.wait_until_succeeds(f"{curl} -fsS {native_origin}/healthz > /dev/null", timeout=180)
+        native.wait_until_succeeds(f"{curl} -fsS {native_origin}/-/health > /dev/null", timeout=180)
     except Exception:
         print("Native-only parity startup log:", native.succeed(
             f"tail -n 100 {native_root}/server.log 2>/dev/null || true"
