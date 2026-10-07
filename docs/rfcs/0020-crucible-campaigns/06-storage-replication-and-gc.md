@@ -581,12 +581,12 @@ only with a durable transfer journal whose protected roots participate in GC.
 `crucible serve --campaign-store PATH` loads the registered
 `crucible.campaign-repository-store` TOML deployment. The file is
 an absolute, lexically normalized, exact-owner mode-`0600` regular file of at
-most 256 KiB; unknown fields and schema versions other than 2 fail closed. The
+most 256 KiB; unknown fields and schema versions other than 3 fail closed. The
 current and only accepted schema's closed top-level fields are:
 
 ```toml
 schema = "crucible.campaign-repository-store"
-version = 2
+version = 3
 root = "profile"
 admitted_kinds = [
   "campaign-fact", "campaign-snapshot", "merkle-node", "scenario",
@@ -626,6 +626,12 @@ kind = "profile-validated"
 child = "leaf"
 policy = "crucible.campaign.object-profile.v1"
 ```
+
+The optional top-level `gc_mark_root` declares a separate administrative
+node for maintenance marks. It MUST name a `physical-quota` node whose
+child is a `directory`, independently admitted under its authored quota
+policy. Its branch is disjoint from the data route; declaring it does not
+redirect repository objects or make an unguarded leaf authoritative.
 
 `admitted_kinds` MUST contain every listed campaign kind exactly once so a
 successful startup cannot defer an unsupported repository operation until
@@ -669,6 +675,50 @@ at least 68 KiB of staging scratch. The authored resident allowance must also
 cover caller stack and runtime overhead. Binder clones and later verification
 retain the same finite original lifetime. CPU slots express nominal admitted
 capacity; this adapter does not enforce a whole-host CPU bandwidth ceiling.
+The service MUST also author all fourteen
+`physical_quota_service.host_operation_budgets.<class>` tables: `setup`,
+`quantum`, `page_in`, `writeback`, `fingerprint_initialization`,
+`fingerprint_update`, `quiescence`, `checkpoint_capture`,
+`checkpoint_publication`, `restore`, `fork_rearm`, `transfer`, `preparation`,
+and `cleanup`. Each table declares its polling interval and any progress or
+total timeout under the original finite service lifetime. Binding, inspection,
+and maintenance retain that original supervisor;
+they do not restart its deadline after namespace admission.
+
+For a remote-only data route, the following fragment adds an independent
+administrative directory to a complete schema-three deployment. The
+`gc_mark_root` and policy fields belong at the top level, before the node
+tables. The operator must install the exact project, byte and inode limits on
+this existing directory before admission; the complete eight-field service and
+fourteen-class roster above remain mandatory. This fragment does not constitute
+a standalone admitted service or redirect the data route.
+
+```toml
+gc_mark_root = "gc-marks"
+physical_quota_policies = ["native/gc-store"]
+
+[[nodes]]
+id = "gc-marks"
+[nodes.spec]
+kind = "physical-quota"
+child = "gc-mark-directory"
+policy = "native/gc-store"
+project_id = 66000
+maximum_physical_bytes = 2147483648
+maximum_inodes = 1048576
+
+[[nodes]]
+id = "gc-mark-directory"
+[nodes.spec]
+kind = "directory"
+root = "/var/lib/crucible/campaign-gc-marks"
+```
+
+The declared directory namespace must be disjoint from every data and
+administrative path. The physical-quota wrapper and its directory are retained
+solely for GC scratch and never participate in blob reads, placement inventory,
+archive extraction, or campaign object routing.
+
 An unused service contract or a missing contract for quota policies fails
 closed. The separate ref directory constructs the durable
 conditional directory backend and never enters the immutable graph. Graph
@@ -686,7 +736,7 @@ credentials in canonical graph identity. For example:
 
 ```toml
 schema = "crucible.campaign-repository-store"
-version = 2
+version = 3
 root = "profile"
 admitted_kinds = [
   "campaign-fact", "campaign-snapshot", "merkle-node", "scenario",
@@ -1254,8 +1304,8 @@ bound fails without reporting verification success. The result may disclose
 the graph configuration and aggregate per-leaf summaries but does not disclose
 the placement IDs or confer publication, ref, or deletion authority.
 
-The registered `crucible.content-store.graph-configuration` schema v11 freezes
-that identity basis. Every admitted graph emits the same current v11 domain;
+The registered `crucible.content-store.graph-configuration` schema v12 freezes
+that identity basis. Every admitted graph emits the same current v12 domain;
 node membership does not select a historical identity schema. Every persistent
 path is an absolute host-local Unix path; its opaque bytes, rather than a lossy
 Unicode rendering, enter the identity.
@@ -1264,8 +1314,10 @@ are ordered by ascending ASCII tag, nodes by ascending node ID, and ordered
 child lists retain their configured order. The canonical body is:
 
 ```text
-"crucible.content-store.graph-configuration.v11\0"
+"crucible.content-store.graph-configuration.v12\0"
 root_node_id:string_u16
+gc_mark_root_present:u8
+if gc_mark_root_present = 1: gc_mark_root_node_id:string_u16
 admitted_kind_count:u16be
 repeated admitted_kind_count times: object_kind_tag:string_u16
 node_count:u16be

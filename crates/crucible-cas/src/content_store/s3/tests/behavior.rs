@@ -511,6 +511,7 @@ fn graph_binds_exact_endpoint_capability_and_canonical_configuration() {
         .assert_value("S3 capability");
     let root = StoreNodeId::new("archive").assert_value("node");
     let config = StoreGraphConfig {
+        gc_mark_root: None,
         root: root.clone(),
         admitted_kinds: std::collections::BTreeSet::from([ObjectKind::Finding]),
         nodes: BTreeMap::from([(
@@ -543,7 +544,7 @@ fn graph_binds_exact_endpoint_capability_and_canonical_configuration() {
     assert_eq!(admin.s3_multipart_cleanup()[0].node().as_str(), "archive");
     assert_eq!(
         encode_hex(&graph.configuration_id().as_bytes()),
-        "92c25a713c145ececbeadfbba56dc54fc667410dbe14d7ad075d86dba745c777"
+        "4764502287640c1e6b4818928ca456600d39eb21745c1fae8622cf43ac8b7a92"
     );
 
     clients

@@ -975,7 +975,7 @@ mod tests {
         let raw = fixture.root.join("raw-store.toml");
         fs::write(&raw, format!(
             r#"schema = "crucible.campaign-repository-store"
-version = 2
+version = 3
 root = "primary"
 admitted_kinds = ["campaign-fact", "campaign-snapshot", "merkle-node", "scenario", "configuration", "policy", "exact-manifest", "ram-extent", "disk-extent", "device-state", "observation", "finding", "projection", "trace"]
 ref_directory = {:?}
@@ -1200,7 +1200,7 @@ campaign = "*"
                 &store,
                 format!(
                     r#"schema = "crucible.campaign-repository-store"
-version = 2
+version = 3
 root = "primary"
 admitted_kinds = ["campaign-fact", "campaign-snapshot", "merkle-node", "scenario", "configuration", "policy", "exact-manifest", "ram-extent", "disk-extent", "device-state", "observation", "finding", "projection", "trace"]
 ref_directory = {refs:?}

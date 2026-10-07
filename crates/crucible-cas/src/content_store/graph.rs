@@ -42,6 +42,7 @@ use super::write_back::{
 use super::*;
 
 mod format;
+mod gc_marks;
 mod verification;
 
 #[cfg(test)]
@@ -350,6 +351,11 @@ impl StoreNodeSpec {
 pub struct StoreGraphConfig {
     /// Root node serving the logical immutable-store contract.
     pub root: StoreNodeId,
+    /// Optional GC-only root owning one independent physical-quota directory.
+    ///
+    /// This root contributes physical resource admission and graph identity,
+    /// but serves no campaign object kind or blob-placement inventory.
+    pub gc_mark_root: Option<StoreNodeId>,
     /// Exact logical kinds admitted through the root.
     pub admitted_kinds: BTreeSet<ObjectKind>,
     /// Node definitions keyed by their validated operational IDs.
@@ -492,12 +498,21 @@ impl StoreWriteBackFlushSummary {
 /// inventory/deletion only when graph construction receives its separate
 /// strong administration capability; bounded unfinished-upload cleanup remains
 /// available independently and is not itself a physical GC fence.
+/// An explicitly declared GC-only root retains its physical quota and original
+/// allocation credits separately; it is never a campaign placement inventory.
 pub struct StoreGraphAdmin {
     configuration: StoreGraphConfigurationId,
     authority_identity: Arc<StoreGraphAuthorityIdentity>,
     physical: BTreeMap<StoreNodeId, StoreGraphPhysicalAuthority>,
+    gc_mark_root: Option<GcMarkRootAuthority>,
     packed_repack: BTreeMap<StoreNodeId, StoreGraphPackedRepackAuthority>,
     s3_multipart_cleanup: BTreeMap<StoreNodeId, Arc<S3MultipartCleanupAdmin>>,
+}
+
+struct GcMarkRootAuthority {
+    node: StoreNodeId,
+    backend: Arc<dyn ImmutableBlobBackend>,
+    resources: Arc<dyn Send + Sync>,
 }
 
 struct StoreGraphPhysicalAuthority {
@@ -615,6 +630,15 @@ impl StorePhysicalRepairReceipt {
 }
 
 impl StoreGraphAdmin {
+    /// Returns the explicitly declared GC-only physical quota boundary.
+    ///
+    /// This boundary remains charged and quota guarded, but is excluded from
+    /// [`Self::physical`] and its campaign blob-placement inventory.
+    #[must_use]
+    pub fn gc_mark_root_id(&self) -> Option<&StoreNodeId> {
+        self.gc_mark_root.as_ref().map(|root| &root.node)
+    }
+
     /// Returns the exact configuration identity shared with the admitted graph.
     #[must_use]
     pub const fn configuration_id(&self) -> StoreGraphConfigurationId {
@@ -630,7 +654,10 @@ impl StoreGraphAdmin {
         Arc::ptr_eq(&self.authority_identity, &graph.authority_identity)
     }
 
-    /// Returns the exact physical boundary count without allocating a roster.
+    /// Returns the campaign blob-inventory boundary count without allocation.
+    ///
+    /// An explicitly declared GC-only physical root remains separately owned
+    /// and is reported by [`Self::gc_mark_root_id`].
     #[must_use]
     pub fn physical_count(&self) -> usize {
         self.physical.len()
@@ -663,6 +690,11 @@ impl StoreGraphAdmin {
         node: &str,
         scope: &str,
     ) -> Result<Arc<dyn ImmutableBlobBackend>, StoreError> {
+        if let Some(root) = &self.gc_mark_root
+            && root.node.as_str() == node
+        {
+            return root.backend.metadata_resources()?.gc_mark_backend(scope);
+        }
         let authority = self
             .physical
             .iter()
@@ -1132,6 +1164,7 @@ pub struct StoreGraph {
     write_back: BTreeMap<StoreNodeId, Arc<WriteBackStore>>,
     namespace_authorizer: Option<Arc<dyn StoreNamespaceAuthorizer>>,
     profile_validation: bool,
+    _gc_mark_resources: Option<Arc<dyn Send + Sync>>,
 }
 
 impl StoreGraph {
@@ -1322,7 +1355,7 @@ impl StoreGraph {
     /// Returns [`StoreError::Unauthorized`] when a required capability is
     /// unavailable, or a graph/composition error when admission fails.
     pub fn build_with_admin_and_all_capabilities(
-        config: StoreGraphConfig,
+        mut config: StoreGraphConfig,
         keys: &StoreGraphKeyring,
         authorizers: &StoreGraphNamespaceAuthorizers,
         profilers: &StoreGraphObjectProfilers,
@@ -1362,6 +1395,11 @@ impl StoreGraph {
             &capabilities,
             &mut state,
         )?;
+        let gc_mark_root = config
+            .gc_mark_root
+            .take()
+            .map(|node| gc_marks::instantiate(node, &config.nodes, &capabilities, &mut state))
+            .transpose()?;
         validate_capability_edges(&config.nodes, &state.built)?;
         let mut description = Vec::with_capacity(config.nodes.len());
         for (id, spec) in &config.nodes {
@@ -1407,11 +1445,15 @@ impl StoreGraph {
                 write_back: state.write_back,
                 namespace_authorizer,
                 profile_validation,
+                _gc_mark_resources: gc_mark_root
+                    .as_ref()
+                    .map(|root| Arc::clone(&root.resources)),
             },
             StoreGraphAdmin {
                 configuration,
                 authority_identity,
                 physical,
+                gc_mark_root,
                 packed_repack: state.packed_repack,
                 s3_multipart_cleanup: state.s3_multipart_cleanup,
             },
@@ -1680,6 +1722,29 @@ fn validate_structure(config: &StoreGraphConfig) -> Result<(), StoreError> {
     let mut visiting = BTreeSet::new();
     let mut visited = BTreeSet::new();
     visit(&config.root, &config.nodes, 0, &mut visiting, &mut visited)?;
+    if let Some(root) = &config.gc_mark_root {
+        let child = match config.nodes.get(root) {
+            Some(StoreNodeSpec::PhysicalQuota { child, .. }) => child,
+            _ => {
+                return Err(invalid_graph(
+                    root.as_str(),
+                    GraphViolation::InvalidGcMarkRoot,
+                ));
+            }
+        };
+        if !matches!(
+            config.nodes.get(child),
+            Some(StoreNodeSpec::Directory { .. })
+        ) || visited.contains(root)
+            || visited.contains(child)
+        {
+            return Err(invalid_graph(
+                root.as_str(),
+                GraphViolation::InvalidGcMarkRoot,
+            ));
+        }
+        visit(root, &config.nodes, 0, &mut visiting, &mut visited)?;
+    }
     if visited.len() != config.nodes.len() {
         let unreachable = config
             .nodes
@@ -1692,11 +1757,19 @@ fn validate_structure(config: &StoreGraphConfig) -> Result<(), StoreError> {
 }
 
 fn validate_administrative_paths(config: &StoreGraphConfig) -> Result<(), StoreError> {
+    let mark_directory =
+        config
+            .gc_mark_root
+            .as_ref()
+            .and_then(|root| match config.nodes.get(root) {
+                Some(StoreNodeSpec::PhysicalQuota { child, .. }) => Some(child),
+                _ => None,
+            });
     let persistent = config
         .nodes
         .iter()
         .filter_map(|(id, node)| match node {
-            StoreNodeSpec::Directory { root } => Some((id, root, false)),
+            StoreNodeSpec::Directory { root } => Some((id, root, mark_directory == Some(id))),
             StoreNodeSpec::Sqlite { root } => Some((id, root, true)),
             StoreNodeSpec::CompressedDirectory { root, .. } => Some((id, root, true)),
             StoreNodeSpec::EncryptedDirectory { root, .. } => Some((id, root, true)),
@@ -1709,6 +1782,16 @@ fn validate_administrative_paths(config: &StoreGraphConfig) -> Result<(), StoreE
         .collect::<Vec<_>>();
     for left in 0..persistent.len() {
         let (node, path, _) = persistent[left];
+        if mark_directory.is_some()
+            && path
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return Err(invalid_graph(
+                node.as_str(),
+                GraphViolation::InvalidGcMarkRoot,
+            ));
+        }
         if path.as_os_str().as_bytes().len() > MAX_ADMINISTRATIVE_PATH_BYTES {
             return Err(invalid_graph(
                 node.as_str(),

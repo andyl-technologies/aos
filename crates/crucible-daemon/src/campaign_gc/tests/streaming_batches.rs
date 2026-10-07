@@ -9,6 +9,7 @@ fn larger_inventory_keeps_live_root_and_continues_in_a_fresh_batch() {
 
     let node = StoreNodeId::new("batch-primary").expect("physical node");
     let (graph, admin) = StoreGraph::build_with_admin(StoreGraphConfig {
+        gc_mark_root: None,
         root: node.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
         nodes: BTreeMap::from([(

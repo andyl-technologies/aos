@@ -470,7 +470,7 @@ impl DecodeBudget {
     }
 }
 
-fn btree_entry_bytes<K, V>() -> Result<u64, DecodeAdmissionError> {
+pub(crate) fn btree_entry_bytes<K, V>() -> Result<u64, DecodeAdmissionError> {
     use std::alloc::Layout;
 
     // alloc::collections::btree::node in the pinned toolchain: LeafNode has

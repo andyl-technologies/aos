@@ -470,6 +470,7 @@ fn packed_store_graph_is_admitted_and_requires_an_isolated_persistent_root() {
     let temp = TempDir::new().expect("temporary directory");
     let packed = node_id("packed");
     let (graph, admin) = StoreGraph::build_with_admin(StoreGraphConfig {
+        gc_mark_root: None,
         root: packed.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::RamExtent]),
         nodes: BTreeMap::from([(
@@ -512,6 +513,7 @@ fn packed_store_graph_is_admitted_and_requires_an_isolated_persistent_root() {
     let shared = temp.path().join("overlap");
     assert!(matches!(
         StoreGraph::build(StoreGraphConfig {
+            gc_mark_root: None,
             root: mirror.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::RamExtent]),
             nodes: BTreeMap::from([

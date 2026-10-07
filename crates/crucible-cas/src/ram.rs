@@ -30,6 +30,7 @@ use crate::content_store::{
 
 mod backing;
 mod codec;
+mod codec_ownership;
 pub use backing::maximum_encoded_ram_graph_bytes;
 mod inventory;
 mod metadata;
@@ -268,7 +269,7 @@ struct Work<'a> {
 struct PendingPublication {
     id: ContentId,
     source: BlobHandle,
-    envelope: ContentEnvelope,
+    envelope: codec_ownership::OwnedEnvelope,
 }
 
 impl<'a> Work<'a> {

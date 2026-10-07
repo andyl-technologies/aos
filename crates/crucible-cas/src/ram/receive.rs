@@ -16,7 +16,8 @@ use crucible_ram::{Limits, PageDigest, RegionDescriptor, RootRecord};
 use crate::content_envelope::ContentEnvelope;
 use crate::content_store::{ContentId, StoreError};
 
-use super::codec::{TreeNode, TreeRef, decode_root_envelope, validate_tree};
+use super::codec::{TreeNode, TreeRef, decode_root_envelope, object_limits, validate_tree};
+use super::codec_ownership::admission;
 use super::{
     LeasedRamRoot, RamClosureStored, RamRetention, RamStore, RamStoreError, RamTransferReport,
     Work, logical, valid_length,
@@ -246,7 +247,10 @@ impl<'a> RamTransferReceiver<'a> {
         request: RamTransferControl,
         exchange: &mut dyn FnMut(RamTransferMessage) -> Result<RamTransferMessage, RamStoreError>,
         work: &mut Work<'_>,
-    ) -> Result<(ContentEnvelope, bool), RamStoreError> {
+    ) -> Result<(super::codec_ownership::OwnedEnvelope, bool), RamStoreError> {
+        let account = self.store.object_account()?;
+        let _scope = account.enter();
+        let (maximum_bytes, maximum_children) = object_limits(id)?;
         self.retention.retain_object(id)?;
         match self.store.read_envelope(id, work) {
             Ok(envelope) => return Ok((envelope, true)),
@@ -262,9 +266,33 @@ impl<'a> RamTransferReceiver<'a> {
         }
         (work.boundary)()?;
         let mut response = exchange(self.message(request))?;
+        let mut _assembly_credit = None;
         let mut object = Vec::new();
         let mut declared = None;
         loop {
+            let chunk_bytes = match &response.control {
+                RamTransferControl::ObjectChunk { bytes, .. }
+                    if bytes.len() <= self.offer.limits.chunk_bytes as usize =>
+                {
+                    bytes.len()
+                }
+                _ => {
+                    return Err(RamStoreError::Invalid(
+                        "transfer response requires object chunk",
+                    ));
+                }
+            };
+            // A chunk frame contains bounded identity/header bytes and its
+            // payload. Four complete frames cover encoder body growth overlap
+            // plus the final length-prefixed copy, before either Vec allocates.
+            let encode_peak = chunk_bytes
+                .checked_add(256)
+                .and_then(|bytes| bytes.checked_mul(4))
+                .and_then(|bytes| bytes.checked_add(8))
+                .ok_or(RamStoreError::Limit("transfer frame allocation"))?;
+            let _wire_credit = account
+                .reserve_scratch_bytes(encode_peak as u64)
+                .map_err(admission)?;
             response.encode()?;
             if response.operation != self.operation {
                 return Err(RamStoreError::Invalid("transfer response operation"));
@@ -286,6 +314,7 @@ impl<'a> RamTransferReceiver<'a> {
                 || bytes.len() > self.offer.limits.chunk_bytes as usize
                 || declared.is_some_and(|expected| expected != length)
                 || length > MAX_TRANSFER_OBJECT_BYTES
+                || length > maximum_bytes
             {
                 return Err(RamStoreError::Invalid("transfer chunk identity or order"));
             }
@@ -297,8 +326,19 @@ impl<'a> RamTransferReceiver<'a> {
                 if self.received > self.offer.limits.bytes {
                     return Err(RamStoreError::Limit("transfer received bytes"));
                 }
-                object.reserve_exact(length as usize);
-                declared = Some(length);
+                let length = usize::try_from(length)
+                    .map_err(|_| RamStoreError::Limit("transfer object allocation"))?;
+                _assembly_credit = Some(
+                    account
+                        .reserve_scratch_bytes(length as u64)
+                        .map_err(admission)?,
+                );
+                object
+                    .try_reserve_exact(length)
+                    .map_err(|source| StoreError::Supervision {
+                        source: Box::new(source),
+                    })?;
+                declared = Some(length as u64);
             }
             work.visit(bytes.len() as u64)?;
             object.extend_from_slice(&bytes);
@@ -315,11 +355,15 @@ impl<'a> RamTransferReceiver<'a> {
         if !id.authenticates(&object) {
             return Err(StoreError::Corrupt { id }.into());
         }
-        let envelope = ContentEnvelope::from_canonical_bytes(&object)?;
+        let envelope =
+            ContentEnvelope::from_canonical_bytes_with_child_limit(&object, maximum_children)?;
         if envelope.schema_version() != 1 || envelope.content_id(id.kind()) != id {
             return Err(RamStoreError::Invalid("transfer canonical envelope"));
         }
-        Ok((envelope, false))
+        Ok((
+            super::codec_ownership::OwnedEnvelope::new(envelope, &account),
+            false,
+        ))
     }
 
     fn publish(

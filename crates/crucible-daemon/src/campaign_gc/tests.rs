@@ -1027,6 +1027,7 @@ fn policy_aware_gc_evicts_a_wrapped_read_through_cache_with_a_required_copy() {
     let cache = StoreNodeId::new("cache-compressed").expect("cache node");
     let source = StoreNodeId::new("required-source").expect("source node");
     let config = StoreGraphConfig {
+        gc_mark_root: None,
         root: root.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
         nodes: BTreeMap::from([
@@ -1289,6 +1290,7 @@ fn policy_aware_gc_refuses_same_path_source_and_cache_aliases() {
     let cache = StoreNodeId::new("aliased-cache").expect("cache node");
     let source = StoreNodeId::new("aliased-source").expect("source node");
     let (graph, admin) = StoreGraph::build_with_admin(StoreGraphConfig {
+        gc_mark_root: None,
         root: root.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
         nodes: BTreeMap::from([
@@ -1369,6 +1371,7 @@ fn required_graph_path_dominates_a_read_through_cache_role() {
     let cache = StoreNodeId::new("shared-cache").expect("cache node");
     let source = StoreNodeId::new("required-source").expect("source node");
     let (_, admin) = StoreGraph::build_with_admin(StoreGraphConfig {
+        gc_mark_root: None,
         root: root.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
         nodes: BTreeMap::from([
@@ -2343,6 +2346,7 @@ fn policy_aware_gc_retains_write_back_staging_until_durable_journal_completion()
     let staging = StoreNodeId::new("staging").expect("staging node");
     let destination = StoreNodeId::new("destination").expect("destination node");
     let config = StoreGraphConfig {
+        gc_mark_root: None,
         root: graph_root.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::ExactManifest, ObjectKind::Trace]),
         nodes: BTreeMap::from([
@@ -2559,6 +2563,7 @@ fn write_back_journal_roots_are_planned_and_revalidated_before_gc_deletion() {
     let archive = StoreNodeId::new("archive").expect("archive node");
     let graph = Arc::new(
         StoreGraph::build(StoreGraphConfig {
+            gc_mark_root: None,
             root: write_back.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
             nodes: BTreeMap::from([
@@ -2691,6 +2696,7 @@ fn write_back_roots_retain_exact_pending_objects_and_refs_retain_closures() {
     let destination = StoreNodeId::new("destination").expect("destination node");
     let graph = Arc::new(
         StoreGraph::build(StoreGraphConfig {
+            gc_mark_root: None,
             root: write_back.clone(),
             admitted_kinds: BTreeSet::from([
                 ObjectKind::ExactManifest,

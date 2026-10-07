@@ -493,7 +493,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
     let campaign_store = rows
         .get("crucible.campaign-repository-store")
         .unwrap_or_else(|| panic!("missing campaign repository-store deployment schema"));
-    assert_eq!(campaign_store[1], "2");
+    assert_eq!(campaign_store[1], "3");
     assert_eq!(campaign_store[2], "crucible-cli::campaign_store");
     assert_eq!(campaign_store[3], "deployment-config");
     let campaign_s3_credentials = rows
@@ -718,7 +718,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
             .get(schema)
             .unwrap_or_else(|| panic!("missing lower schema {schema}"));
         let expected_version = if schema == "crucible.content-store.graph-configuration" {
-            "11"
+            "12"
         } else {
             "1"
         };

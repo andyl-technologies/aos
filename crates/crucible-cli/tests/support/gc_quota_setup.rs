@@ -28,28 +28,13 @@ pub fn prepare(store: &Path) -> Result<Option<String>, Box<dyn Error>> {
         .parse::<u32>()?;
     let mut deployment = fs::read_to_string(store)?.parse::<toml::Table>()?;
     if deployment.contains_key("physical_quota_service") {
-        return Ok(deployment
-            .get("root")
-            .and_then(toml::Value::as_str)
-            .map(str::to_owned));
+        return Ok(Some(mark_node(&deployment)?));
     }
-    let root = deployment
-        .get("root")
-        .and_then(toml::Value::as_str)
-        .ok_or("fixture root is missing")?
-        .to_owned();
+    let mark_node = mark_node(&deployment)?;
     let nodes = deployment
         .get_mut("nodes")
         .and_then(toml::Value::as_array_mut)
         .ok_or("fixture nodes are missing")?;
-    let mark_node = if nodes
-        .iter()
-        .any(|node| node.get("id").and_then(toml::Value::as_str) == Some("read-source"))
-    {
-        String::from("read-source")
-    } else {
-        root
-    };
     let mut guarded = Vec::new();
     for node in nodes.iter_mut() {
         let table = node.as_table_mut().ok_or("fixture node is not a table")?;
@@ -120,6 +105,7 @@ file_descriptors = 256
     fs::write(store, toml::to_string(&deployment)?)?;
     Ok(Some(mark_node))
 }
+
 /// Authors the complete finite roster used by disposable maintenance fixtures.
 pub fn quota_budget_toml(prefix: &str, total_timeout_ms: u64) -> String {
     QUOTA_CLASS_NAMES.iter().map(|name| {
@@ -143,3 +129,163 @@ const QUOTA_CLASS_NAMES: [&str; 14] = [
     "preparation",
     "cleanup",
 ];
+
+/// Selects the fixture's explicitly declared mark leaf without redirecting data.
+///
+/// # Errors
+/// Refuses a missing graph root or a remote/composite node named as local marks.
+pub fn mark_node(deployment: &toml::Table) -> Result<String, Box<dyn Error>> {
+    let root = deployment
+        .get("root")
+        .and_then(toml::Value::as_str)
+        .ok_or("fixture root is missing")?;
+    let nodes = deployment
+        .get("nodes")
+        .and_then(toml::Value::as_array)
+        .ok_or("fixture nodes are missing")?;
+    if let Some(declared) = deployment.get("gc_mark_root") {
+        let declared = declared
+            .as_str()
+            .ok_or("fixture GC mark root must be a node ID string")?;
+        let marks = nodes
+            .iter()
+            .find(|node| node.get("id").and_then(toml::Value::as_str) == Some(declared))
+            .ok_or("fixture declared GC mark root is missing")?;
+        let kind = marks
+            .get("spec")
+            .and_then(|spec| spec.get("kind"))
+            .and_then(toml::Value::as_str)
+            .ok_or("fixture mark namespace kind is missing")?;
+        // Before operator projection this is the authored Directory. Projection
+        // keeps this declared ID on its genuine physical-quota wrapper.
+        if !matches!(kind, "directory" | "physical-quota") {
+            return Err("fixture marks require an explicitly declared local namespace".into());
+        }
+        return Ok(declared.to_owned());
+    }
+    if let Some(source) = nodes
+        .iter()
+        .find(|node| node.get("id").and_then(toml::Value::as_str) == Some("read-source"))
+    {
+        let remote = source
+            .get("spec")
+            .and_then(|spec| spec.get("kind"))
+            .and_then(toml::Value::as_str)
+            == Some("s3");
+        if remote
+            && nodes
+                .iter()
+                .any(|node| node.get("id").and_then(toml::Value::as_str) == Some("read-cache"))
+        {
+            // Composed S3 already owns this guarded local leaf. Marks borrow
+            // its namespace without adding a cache or changing any data route.
+            return Ok(String::from("read-cache"));
+        }
+        Ok(String::from("read-source"))
+    } else {
+        Ok(root.to_owned())
+    }
+}
+
+#[cfg(test)]
+mod mark_namespace_tests {
+    use super::*;
+
+    #[test]
+    fn remote_named_mark_namespace_is_refused() -> Result<(), Box<dyn Error>> {
+        let deployment = r#"
+root = "profile"
+gc_mark_root = "gc-marks"
+[[nodes]]
+id = "gc-marks"
+[nodes.spec]
+kind = "s3"
+"#
+        .parse::<toml::Table>()?;
+        assert!(mark_node(&deployment).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_mark_selection_does_not_mutate_the_remote_data_root() -> Result<(), Box<dyn Error>>
+    {
+        let deployment = r#"
+root = "profile"
+gc_mark_root = "gc-marks"
+[[nodes]]
+id = "gc-marks"
+[nodes.spec]
+kind = "directory"
+root = "/declared/marks"
+[[nodes]]
+id = "profile"
+[nodes.spec]
+kind = "s3"
+"#
+        .parse::<toml::Table>()?;
+        assert_eq!(mark_node(&deployment)?, "gc-marks");
+        assert_eq!(deployment["root"].as_str(), Some("profile"));
+        Ok(())
+    }
+
+    #[test]
+    fn declared_mark_root_does_not_fall_back_to_another_local_node() -> Result<(), Box<dyn Error>> {
+        let mut deployment = r#"
+root = "profile"
+gc_mark_root = "missing-marks"
+[[nodes]]
+id = "gc-marks"
+[nodes.spec]
+kind = "directory"
+root = "/declared/marks"
+"#
+        .parse::<toml::Table>()?;
+        assert!(mark_node(&deployment).is_err());
+
+        deployment.insert(String::from("gc_mark_root"), toml::Value::Integer(1));
+        assert!(mark_node(&deployment).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn declared_guarded_root_keeps_its_identity_after_projection() -> Result<(), Box<dyn Error>> {
+        let deployment = r#"
+root = "profile"
+gc_mark_root = "maintenance"
+[[nodes]]
+id = "maintenance"
+[nodes.spec]
+kind = "physical-quota"
+child = "raw-maintenance"
+[[nodes]]
+id = "raw-maintenance"
+[nodes.spec]
+kind = "directory"
+root = "/declared/marks"
+"#
+        .parse::<toml::Table>()?;
+        assert_eq!(mark_node(&deployment)?, "maintenance");
+        assert_eq!(deployment["root"].as_str(), Some("profile"));
+        Ok(())
+    }
+
+    #[test]
+    fn composed_remote_graph_selects_its_existing_local_cache() -> Result<(), Box<dyn Error>> {
+        let deployment = r#"
+root = "verified"
+[[nodes]]
+id = "read-source"
+[nodes.spec]
+kind = "s3"
+[[nodes]]
+id = "read-cache"
+[nodes.spec]
+kind = "packed"
+root = "/declared/cache"
+"#
+        .parse::<toml::Table>()?;
+        assert_eq!(mark_node(&deployment)?, "read-cache");
+        assert_eq!(deployment["root"].as_str(), Some("verified"));
+        Ok(())
+    }
+}

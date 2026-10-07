@@ -16,6 +16,8 @@ use crate::content_store::{
 
 use super::*;
 
+mod metadata_lifecycle;
+
 fn archive_offer(
     root: &LeasedRamRoot,
     chunk_bytes: u32,
@@ -1166,6 +1168,11 @@ impl ImmutableBlobBackend for OversizedBackend {
 #[test]
 fn oversized_ram_objects_are_rejected_before_opening_the_stream() {
     let directory = tempfile::tempdir().unwrap();
+    let quota = Arc::new(FixtureRamQuota(
+        crate::content_store::test_resources::FixtureResourceBudget::new(128, 256 << 20),
+    ));
+    let decoding = crate::owned_decode::DecodeBudget::for_store(quota).unwrap();
+    let _scope = decoding.enter();
     let backend: Arc<dyn ImmutableBlobBackend> =
         Arc::new(SqliteBlobBackend::open("oversized-test", directory.path()).unwrap());
     for (kind, maximum_bytes) in [

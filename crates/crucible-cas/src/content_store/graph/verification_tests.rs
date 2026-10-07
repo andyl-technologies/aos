@@ -251,6 +251,7 @@ fn verification_admin(
         })
         .collect();
     StoreGraphAdmin {
+        gc_mark_root: None,
         configuration: StoreGraphConfigurationId([0x31; 32]),
         authority_identity: Arc::new(StoreGraphAuthorityIdentity),
         physical,

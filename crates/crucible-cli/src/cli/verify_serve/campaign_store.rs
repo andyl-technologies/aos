@@ -51,7 +51,7 @@ use s3::{
 };
 
 const CAMPAIGN_STORE_SCHEMA: &str = "crucible.campaign-repository-store";
-const CAMPAIGN_STORE_VERSION_2: u32 = 2;
+const CAMPAIGN_STORE_VERSION_3: u32 = 3;
 const MAX_CAMPAIGN_STORE_DEPLOYMENT_BYTES: usize = 256 * 1024;
 const MAX_CAMPAIGN_STORE_KEY_BYTES: usize = 32;
 pub(super) const MAX_STORE_VERIFY_PLACEMENTS: u64 = MAX_STORE_GRAPH_VERIFY_PLACEMENTS;
@@ -79,6 +79,8 @@ struct CampaignStoreDeployment {
     schema: String,
     version: u32,
     root: String,
+    #[serde(default)]
+    gc_mark_root: Option<String>,
     admitted_kinds: Vec<String>,
     #[serde(default)]
     ref_directory: Option<PathBuf>,
@@ -433,7 +435,7 @@ fn load_campaign_repository_graph(
         .map_err(|error| campaign_store_error(format!("deployment is not UTF-8: {error}")))?;
     let mut deployment: CampaignStoreDeployment = toml::from_str(text)
         .map_err(|error| campaign_store_error(format!("invalid deployment: {error}")))?;
-    if deployment.schema != CAMPAIGN_STORE_SCHEMA || deployment.version != CAMPAIGN_STORE_VERSION_2
+    if deployment.schema != CAMPAIGN_STORE_SCHEMA || deployment.version != CAMPAIGN_STORE_VERSION_3
     {
         return Err(campaign_store_error("unsupported schema or version"));
     }
@@ -694,9 +696,15 @@ fn load_campaign_repository_graph(
 
     let root = StoreNodeId::new(deployment.root)
         .map_err(|error| campaign_store_error(format!("invalid root node ID: {error}")))?;
+    let gc_mark_root = deployment
+        .gc_mark_root
+        .map(StoreNodeId::new)
+        .transpose()
+        .map_err(|error| campaign_store_error(format!("invalid GC mark root ID: {error}")))?;
     let (graph, maintenance) = StoreGraph::build_with_admin_and_all_capabilities(
         StoreGraphConfig {
             root,
+            gc_mark_root,
             admitted_kinds,
             nodes,
         },
@@ -729,7 +737,7 @@ fn resolve_ref_backend(
         (Some(path), None) => Ok(ResolvedRefBackend::Directory(path)),
         (None, Some(refs)) => Ok(ResolvedRefBackend::S3(refs.resolve()?)),
         _ => Err(campaign_store_error(
-            "version-two deployment requires exactly one of ref_directory or s3_ref",
+            "version-three deployment requires exactly one of ref_directory or s3_ref",
         )),
     }
 }
@@ -1124,6 +1132,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn current_store_schema_rejects_predecessor_and_unguarded_gc_root() {
+        let fixture = StoreDeploymentFixture::new();
+        let deployment = fixture.write_deployment("");
+        let current = fs::read_to_string(&deployment).expect("read current deployment");
+        fs::write(
+            &deployment,
+            current.replacen("version = 3", "version = 2", 1),
+        )
+        .expect("write predecessor deployment");
+        let error = match load_campaign_repository_graph(&deployment) {
+            Err(error) => error,
+            Ok(_) => panic!("predecessor schema must be refused"),
+        };
+        assert!(error.to_string().contains("unsupported schema or version"));
+
+        let deployment = fixture.write_deployment("gc_mark_root = \"encrypted\"");
+        let error = match load_campaign_repository_graph(&deployment) {
+            Err(error) => error,
+            Ok(_) => panic!("GC role must require an independently guarded directory"),
+        };
+        assert!(error.to_string().contains("GC mark root"));
+    }
+
+    #[test]
     fn strict_composed_store_loads_and_reauthenticates_encryption_on_restart() {
         let fixture = StoreDeploymentFixture::new();
         let deployment = fixture.write_deployment("");
@@ -1189,7 +1221,7 @@ mod tests {
             &deployment,
             format!(
                 r#"schema = "crucible.campaign-repository-store"
-version = 2
+version = 3
 root = "sqlite"
 admitted_kinds = {}
 ref_directory = {:?}
@@ -1608,7 +1640,7 @@ campaign = "*"
                 &deployment,
                 format!(
                     r#"schema = "crucible.campaign-repository-store"
-version = 2
+version = 3
 root = "profile"
 admitted_kinds = {kinds}
 ref_directory = {refs:?}
@@ -1690,7 +1722,7 @@ session_token = "campaign-session-token"
                 &deployment,
                 format!(
                     r#"schema = "crucible.campaign-repository-store"
-version = 2
+version = 3
 root = "profile"
 admitted_kinds = {kinds}
 

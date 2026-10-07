@@ -5,6 +5,8 @@
 //! its canonical bytes are exposed to an object-chunk sender.
 
 use crate::content_store::ContentId;
+use crate::owned_decode::DecodeCustody;
+use std::sync::Arc;
 
 use super::codec::{TreeNode, TreeRef};
 use super::{LeasedRamRoot, RamStore, RamStoreError, Work, valid_length};
@@ -33,10 +35,19 @@ pub enum RamObjectCoordinate {
 }
 
 /// Canonical authenticated bytes for one root-bound transfer response.
+///
+/// Clones share the immutable body and its original metadata credit. The credit
+/// remains live after the supplying store closes, until the final clone drops.
 #[derive(Clone, Debug)]
 pub struct RamObjectRecord {
     id: ContentId,
-    canonical: Vec<u8>,
+    canonical: Arc<CanonicalObject>,
+}
+
+#[derive(Debug)]
+struct CanonicalObject {
+    bytes: Vec<u8>,
+    _custody: DecodeCustody,
 }
 
 impl RamObjectRecord {
@@ -47,7 +58,7 @@ impl RamObjectRecord {
 
     /// Returns the bounded canonical plaintext object bytes.
     pub fn canonical_bytes(&self) -> &[u8] {
-        &self.canonical
+        &self.canonical.bytes
     }
 }
 
@@ -80,6 +91,8 @@ impl RamStore {
         coordinate: &RamObjectCoordinate,
         work: &mut Work<'_>,
     ) -> Result<RamObjectRecord, RamStoreError> {
+        let account = self.object_account()?;
+        let _scope = account.enter();
         let id = match coordinate {
             RamObjectCoordinate::Root => {
                 let (record, catalogs) = self.read_root(root.object_id(), work)?;
@@ -121,7 +134,18 @@ impl RamStore {
             }
         };
         let canonical = self.read_envelope(id, work)?.canonical_bytes();
-        Ok(RamObjectRecord { id, canonical })
+        account.check().map_err(super::codec_ownership::admission)?;
+        crate::owned_decode::charge_bytes(
+            (std::mem::size_of::<CanonicalObject>() + 2 * std::mem::size_of::<usize>()) as u64,
+        )
+        .map_err(super::codec_ownership::admission)?;
+        Ok(RamObjectRecord {
+            id,
+            canonical: Arc::new(CanonicalObject {
+                bytes: canonical,
+                _custody: account.custody(),
+            }),
+        })
     }
 
     fn transfer_catalog(

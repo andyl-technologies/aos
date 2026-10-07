@@ -41,6 +41,7 @@ pub(super) fn measure_campaign_planner_queue_at_boundary(
     let root = StoreNodeId::new("campaign-primary").expect("campaign store node");
     // Match the deployed campaign graph's admitted kinds and durable leaf.
     let blobs = StoreGraph::build(StoreGraphConfig {
+        gc_mark_root: None,
         root: root.clone(),
         admitted_kinds: BTreeSet::from([
             ObjectKind::CampaignFact,

@@ -1642,6 +1642,7 @@ mod tests {
         let leaf = StoreNodeId::new("sqlite-batch-leaf").expect("leaf ID");
         let database_root = root.path().join("blobs");
         let (graph, _) = StoreGraph::build_with_admin(StoreGraphConfig {
+            gc_mark_root: None,
             root: leaf.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
             nodes: BTreeMap::from([(

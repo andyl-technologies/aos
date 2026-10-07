@@ -109,6 +109,7 @@ fn gc_requires_current_selection_and_ignores_stale_record_after_unpin() {
     let temp = tempfile::tempdir().expect("exact-pin GC root");
     let node = StoreNodeId::new("durable").expect("store node");
     let (graph, admin) = StoreGraph::build_with_admin(StoreGraphConfig {
+        gc_mark_root: None,
         root: node.clone(),
         admitted_kinds: BTreeSet::from([
             ObjectKind::CampaignFact,

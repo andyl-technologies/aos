@@ -96,6 +96,7 @@ fn physical_quota_drift_stops_global_gc_before_deletion() {
         .expect("quota binder");
     let (graph, admin) = StoreGraph::build_with_admin_and_all_capabilities(
         StoreGraphConfig {
+            gc_mark_root: None,
             root: physical.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
             nodes: BTreeMap::from([

@@ -553,6 +553,7 @@ fn build_mirrored_graph(root: &Path) -> (StoreGraph, StoreGraphAdmin) {
         ObjectKind::RamTree,
     ]);
     let config = StoreGraphConfig {
+        gc_mark_root: None,
         root: durability.clone(),
         admitted_kinds: admitted.clone(),
         nodes: BTreeMap::from([

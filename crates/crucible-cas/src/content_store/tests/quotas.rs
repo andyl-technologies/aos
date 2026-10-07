@@ -198,6 +198,7 @@ fn physical_quota_binds_exact_leaf_limits_and_survives_restart_and_admin() {
         StorePhysicalQuotaPolicyId::new("host/ext4/campaign-store").expect("physical quota policy");
     let object_root = temp.path().join("objects");
     let config = |root: PathBuf, maximum_physical_bytes| StoreGraphConfig {
+        gc_mark_root: None,
         root: physical.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
         nodes: BTreeMap::from([
@@ -316,7 +317,7 @@ fn physical_quota_binds_exact_leaf_limits_and_survives_restart_and_admin() {
     .expect("golden physical quota graph");
     assert_eq!(
         encode_hex(&golden.configuration_id().as_bytes()),
-        "3c76577dc61b54a6a611a127cf3187dd8a0e55cda80c5e61b0e697867d48c225"
+        "02740e8d4155393174a0938c00b5cf7ee17ce7ae02a5e38cace00d770e3c3fac"
     );
 }
 
@@ -327,6 +328,7 @@ fn physical_quota_admission_rejects_invalid_shared_and_nonleaf_children() {
     let directory = node_id("directory");
     let policy = StorePhysicalQuotaPolicyId::new("host/ext4").expect("quota policy");
     let config = |project_id, maximum_physical_bytes, maximum_inodes| StoreGraphConfig {
+        gc_mark_root: None,
         root: physical.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
         nodes: BTreeMap::from([
@@ -361,6 +363,7 @@ fn physical_quota_admission_rejects_invalid_shared_and_nonleaf_children() {
     let metrics = node_id("metrics");
     assert!(matches!(
         StoreGraph::build(StoreGraphConfig {
+            gc_mark_root: None,
             root: physical.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
             nodes: BTreeMap::from([
@@ -397,6 +400,7 @@ fn physical_quota_admission_rejects_invalid_shared_and_nonleaf_children() {
     let mirror = node_id("mirror");
     assert!(matches!(
         StoreGraph::build(StoreGraphConfig {
+            gc_mark_root: None,
             root: mirror.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
             nodes: BTreeMap::from([
@@ -446,6 +450,7 @@ fn physical_quota_binding_precedes_allocating_leaf_construction() {
         .expect("physical quota capability");
     let result = StoreGraph::build_with_admin_and_all_capabilities(
         StoreGraphConfig {
+            gc_mark_root: None,
             root: physical.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
             nodes: BTreeMap::from([
@@ -493,6 +498,7 @@ fn logical_and_physical_quotas_compose_without_an_admin_bypass() {
         .expect("physical quota capability");
     let (graph, admin) = StoreGraph::build_with_admin_and_all_capabilities(
         StoreGraphConfig {
+            gc_mark_root: None,
             root: logical.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
             nodes: BTreeMap::from([
@@ -559,6 +565,7 @@ fn sqlite_physical_quota_binds_the_database_and_wal_root() {
         .expect("physical quota capability");
     let (graph, admin) = StoreGraph::build_with_admin_and_all_capabilities(
         StoreGraphConfig {
+            gc_mark_root: None,
             root: physical.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
             nodes: BTreeMap::from([
@@ -625,6 +632,7 @@ fn logical_quota_reclaims_accounting_through_graph_admin_and_survives_restart() 
     let state_root = temp.path().join("quota-state");
     let object_root = temp.path().join("objects");
     let config = || StoreGraphConfig {
+        gc_mark_root: None,
         root: quota.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
         nodes: BTreeMap::from([
@@ -730,6 +738,7 @@ fn dirty_logical_quota_state_recovers_from_the_owned_child_inventory() {
     let state_root = temp.path().join("quota-state");
     let object_root = temp.path().join("objects");
     let config = || StoreGraphConfig {
+        gc_mark_root: None,
         root: quota.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
         nodes: BTreeMap::from([
@@ -784,6 +793,7 @@ fn dirty_logical_quota_state_recovers_from_the_owned_child_inventory() {
     drop(restarted);
 
     let changed = StoreGraphConfig {
+        gc_mark_root: None,
         root: quota.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
         nodes: BTreeMap::from([
@@ -813,6 +823,7 @@ fn concurrent_logical_quota_instances_share_one_durable_admission_lock() {
     let quota = node_id("quota");
     let directory = node_id("directory");
     let config = || StoreGraphConfig {
+        gc_mark_root: None,
         root: quota.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
         nodes: BTreeMap::from([
@@ -868,6 +879,7 @@ fn logical_quota_admission_rejects_unbounded_shared_and_nonleaf_children() {
     let quota = node_id("quota");
     let directory = node_id("directory");
     let config = |maximum_objects, maximum_logical_bytes| StoreGraphConfig {
+        gc_mark_root: None,
         root: quota.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
         nodes: BTreeMap::from([
@@ -900,6 +912,7 @@ fn logical_quota_admission_rejects_unbounded_shared_and_nonleaf_children() {
 
     assert!(matches!(
         StoreGraph::build(StoreGraphConfig {
+            gc_mark_root: None,
             root: quota.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
             nodes: BTreeMap::from([
@@ -929,6 +942,7 @@ fn logical_quota_admission_rejects_unbounded_shared_and_nonleaf_children() {
     let metrics = node_id("metrics");
     assert!(matches!(
         StoreGraph::build(StoreGraphConfig {
+            gc_mark_root: None,
             root: quota.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
             nodes: BTreeMap::from([
@@ -963,6 +977,7 @@ fn logical_quota_admission_rejects_unbounded_shared_and_nonleaf_children() {
 
     assert!(matches!(
         StoreGraph::build(StoreGraphConfig {
+            gc_mark_root: None,
             root: quota.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
             nodes: BTreeMap::from([
@@ -992,6 +1007,7 @@ fn logical_quota_admission_rejects_unbounded_shared_and_nonleaf_children() {
     let mirror = node_id("mirror");
     assert!(matches!(
         StoreGraph::build(StoreGraphConfig {
+            gc_mark_root: None,
             root: mirror.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
             nodes: BTreeMap::from([

@@ -425,10 +425,6 @@ impl BlobHandle {
         Self::new(Arc::new(BytesBlobSource::new(bytes.into())))
     }
 
-    pub(crate) fn from_authenticated_bytes(id: ContentId, bytes: Arc<[u8]>) -> Self {
-        Self::authenticated(id, Arc::new(BytesBlobSource { bytes }))
-    }
-
     pub(crate) fn authenticated(id: ContentId, source: Arc<dyn BlobSource>) -> Self {
         let logical_length = source.logical_length();
         Self {
@@ -1052,6 +1048,8 @@ pub enum GraphViolation {
     InvalidPhysicalQuotaBounds,
     /// A physical quota does not exclusively own one persistent physical leaf.
     InvalidPhysicalQuotaChild,
+    /// The GC-only root does not independently own one quota-guarded directory.
+    InvalidGcMarkRoot,
     /// An S3 leaf has an invalid bucket, prefix, object bound, or part geometry.
     InvalidS3Configuration,
     /// A journal and another persistent graph path overlap lexically.
@@ -1093,6 +1091,7 @@ impl fmt::Display for GraphViolation {
             Self::InvalidPhysicalQuotaChild => {
                 "physical quota must exclusively own a persistent physical leaf"
             }
+            Self::InvalidGcMarkRoot => "GC mark root must independently own a quota directory",
             Self::InvalidS3Configuration => "invalid S3 leaf configuration",
             Self::OverlappingAdministrativePath => "overlapping administrative path",
             Self::RelativeAdministrativePath => "relative administrative path",

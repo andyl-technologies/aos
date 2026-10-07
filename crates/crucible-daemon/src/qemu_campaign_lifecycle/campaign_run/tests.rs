@@ -1947,6 +1947,7 @@ fn terminal_discovery_selection_survives_gc_restart_and_replay() {
     let journal_root = temp.path().join("gc-journal");
     let store_node = StoreNodeId::new("guarded-campaign-run-directory").expect("store node");
     let graph_config = || StoreGraphConfig {
+        gc_mark_root: None,
         root: store_node.clone(),
         admitted_kinds: campaign_object_kinds(),
         nodes: BTreeMap::from([(

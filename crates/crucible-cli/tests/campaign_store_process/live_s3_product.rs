@@ -6,7 +6,7 @@ use super::*;
 #[ignore = "requires an exclusive HTTPS Garage service and its process control"]
 fn public_worked_network_survives_live_s3_outage_and_credential_expiry()
 -> Result<(), Box<dyn Error>> {
-    let fixture = FlightFixture::new()?;
+    let fixture = FlightFixture::new_native()?;
     let endpoint = std::env::var("CRUCIBLE_S3_TEST_ENDPOINT")?;
     let bucket = std::env::var("CRUCIBLE_S3_TEST_BUCKET")?;
     let prefix = std::env::var("CRUCIBLE_S3_TEST_PREFIX")?;
@@ -153,7 +153,7 @@ fn public_worked_network_survives_live_s3_outage_and_credential_expiry()
 #[ignore = "requires an exclusive HTTPS Garage service and its process control"]
 fn public_paused_composed_campaign_survives_s3_outage_repack_archive_and_gc()
 -> Result<(), Box<dyn Error>> {
-    let source = FlightFixture::new()?;
+    let source = FlightFixture::new_native()?;
     let destination = archive_transfer::packed_archive_fixture()?;
     let endpoint = std::env::var("CRUCIBLE_S3_TEST_ENDPOINT")?;
     let bucket = std::env::var("CRUCIBLE_S3_TEST_BUCKET")?;
@@ -315,7 +315,7 @@ fn write_composed_store(
         &fixture.store,
         format!(
             r#"schema = "crucible.campaign-repository-store"
-version = 2
+version = 3
 root = "verified"
 admitted_kinds = ["campaign-fact", "campaign-snapshot", "merkle-node", "scenario", "configuration", "policy", "exact-manifest", "ram-extent", "disk-extent", "device-state", "observation", "finding", "projection", "trace"]
 ref_directory = {refs:?}
@@ -442,15 +442,24 @@ pub(super) fn write_store(
     credentials: &Path,
 ) -> Result<(), Box<dyn Error>> {
     let refs = fixture._temporary.path().join("refs");
+    let marks = fixture._temporary.path().join("gc-marks");
+    fs::create_dir(&marks)?;
     let objects = format!("{prefix}/product-{}", std::process::id());
     fs::write(
         &fixture.store,
         format!(
             r#"schema = "crucible.campaign-repository-store"
-version = 2
+version = 3
 root = "profile"
+gc_mark_root = "gc-marks"
 admitted_kinds = ["campaign-fact", "campaign-snapshot", "merkle-node", "scenario", "configuration", "policy", "exact-manifest", "ram-extent", "disk-extent", "device-state", "observation", "finding", "projection", "trace"]
 ref_directory = {refs:?}
+
+[[nodes]]
+id = "gc-marks"
+[nodes.spec]
+kind = "directory"
+root = {marks:?}
 
 [[s3_endpoints]]
 id = "live-product"

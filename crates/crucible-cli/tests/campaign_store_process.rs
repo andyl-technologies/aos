@@ -704,7 +704,7 @@ impl ComposedFlightFixture {
             &base.store,
             format!(
                 r#"schema = "crucible.campaign-repository-store"
-version = 2
+version = 3
 root = "profile"
 admitted_kinds = ["campaign-fact", "campaign-snapshot", "merkle-node", "scenario", "configuration", "policy", "exact-manifest", "ram-extent", "disk-extent", "device-state", "observation", "finding", "projection", "trace"]
 ref_directory = {refs:?}
@@ -926,6 +926,7 @@ root = {write_destination_root:?}
         }
 
         let mut config = crucible_cas::content_store::StoreGraphConfig {
+            gc_mark_root: None,
             root: profile.clone(),
             admitted_kinds: BTreeSet::from(all_campaign_object_kinds()),
             nodes: BTreeMap::from([
@@ -1071,7 +1072,7 @@ impl FlightFixture {
             &self.store,
             format!(
                 r#"schema = "crucible.campaign-repository-store"
-version = 2
+version = 3
 root = "bounded-primary"
 admitted_kinds = ["campaign-fact", "campaign-snapshot", "merkle-node", "scenario", "configuration", "policy", "exact-manifest", "ram-extent", "disk-extent", "device-state", "observation", "finding", "projection", "trace"]
 ref_directory = {refs:?}
@@ -1301,7 +1302,7 @@ campaign = "*"
             &store,
             format!(
                 r#"schema = "crucible.campaign-repository-store"
-version = 2
+version = 3
 root = "primary"
 admitted_kinds = ["campaign-fact", "campaign-snapshot", "merkle-node", "scenario", "configuration", "policy", "exact-manifest", "ram-extent", "disk-extent", "device-state", "observation", "finding", "projection", "trace"]
 ref_directory = {refs:?}
@@ -1441,23 +1442,14 @@ root = {objects:?}
     }
 
     fn gc_mark_node(&self) -> String {
-        fs::read_to_string(&self.store)
-            .ok()
-            .and_then(|text| text.parse::<toml::Table>().ok())
-            .and_then(|table| {
-                table
-                    .get("root")
-                    .and_then(toml::Value::as_str)
-                    .map(str::to_owned)
-            })
-            .map(|root| {
-                if root == "profile" {
-                    String::from("read-source")
-                } else {
-                    root
-                }
-            })
-            .unwrap_or_else(|| String::from("primary"))
+        // A malformed fixture is an invalid test input, never another namespace.
+        let text = fs::read_to_string(&self.store)
+            .unwrap_or_else(|error| panic!("read fixture GC mark declaration: {error}"));
+        let deployment = text
+            .parse::<toml::Table>()
+            .unwrap_or_else(|error| panic!("parse fixture GC mark declaration: {error}"));
+        gc_quota::mark_node(&deployment)
+            .unwrap_or_else(|error| panic!("select fixture GC mark namespace: {error}"))
     }
 
     fn gc_command(&self, operation: &str) -> Command {

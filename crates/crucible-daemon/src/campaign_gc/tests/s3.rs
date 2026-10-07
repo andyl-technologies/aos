@@ -439,6 +439,7 @@ impl StoreS3ObjectScan for MemoryS3Scan<'_> {
 fn graph_config(endpoint: StoreS3EndpointId) -> StoreGraphConfig {
     let root = StoreNodeId::new("s3-primary").expect("S3 node");
     StoreGraphConfig {
+        gc_mark_root: None,
         root: root.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::RamExtent, ObjectKind::Trace]),
         nodes: BTreeMap::from([(
@@ -488,6 +489,7 @@ fn write_back_graph_config(endpoint: StoreS3EndpointId, root: &Path) -> StoreGra
     let staging = StoreNodeId::new("staging").expect("staging node");
     let destination = StoreNodeId::new("s3-primary").expect("S3 node");
     StoreGraphConfig {
+        gc_mark_root: None,
         root: write_back.clone(),
         admitted_kinds: BTreeSet::from([
             ObjectKind::CampaignFact,

@@ -1456,6 +1456,7 @@ fn external_graph_store(
 ) -> (CampaignLocalRepositoryStore, Arc<StoreGraph>) {
     let root = StoreNodeId::new("campaign-external").expect("external graph node");
     let (graph, maintenance) = StoreGraph::build_with_admin(StoreGraphConfig {
+        gc_mark_root: None,
         root: root.clone(),
         admitted_kinds: BTreeSet::from([
             ObjectKind::Scenario,
@@ -1833,6 +1834,7 @@ fn external_store_rejects_foreign_graph_maintenance_authority() {
     let directory = tempdir().expect("external store directory");
     let node = StoreNodeId::new("campaign-memory").expect("memory graph node");
     let config = StoreGraphConfig {
+        gc_mark_root: None,
         root: node.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
         nodes: BTreeMap::from([(
@@ -1869,6 +1871,7 @@ fn managed_service_retains_ref_maintenance_authority_for_its_lifetime() {
     let (directory, config) = fixture();
     let root = StoreNodeId::new("campaign-maintained").expect("maintained graph node");
     let (graph, maintenance) = StoreGraph::build_with_admin(StoreGraphConfig {
+        gc_mark_root: None,
         root: root.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
         nodes: BTreeMap::from([(
@@ -1910,6 +1913,7 @@ fn managed_store_maintenance_flushes_write_back_and_stops_promptly() {
     let destination = StoreNodeId::new("maintained-destination").expect("destination node");
     let destination_root = directory.path().join("maintained-destination");
     let (graph, maintenance) = StoreGraph::build_with_admin(StoreGraphConfig {
+        gc_mark_root: None,
         root: write_back.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
         nodes: BTreeMap::from([
@@ -2005,6 +2009,7 @@ fn managed_store_maintenance_failure_stops_the_service_with_exact_operation() {
     let root = StoreNodeId::new("failing-maintenance-s3").expect("S3 node");
     let (graph, maintenance) = StoreGraph::build_with_admin_and_all_capabilities(
         StoreGraphConfig {
+            gc_mark_root: None,
             root: root.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
             nodes: BTreeMap::from([(
@@ -2071,6 +2076,7 @@ fn managed_store_maintenance_round_robins_and_resumes_exact_s3_cursors() {
     let second = StoreNodeId::new("paged-s3-b").expect("second S3 node");
     let (graph, maintenance) = StoreGraph::build_with_admin_and_all_capabilities(
         StoreGraphConfig {
+            gc_mark_root: None,
             root: root.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
             nodes: BTreeMap::from([

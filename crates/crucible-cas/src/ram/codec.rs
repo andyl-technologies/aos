@@ -16,7 +16,9 @@ use std::collections::BTreeSet;
 use crucible_ram::{Limits, NodeDigest, PageDigest, RootRecord};
 
 use crate::content_envelope::{ContentChild, ContentEnvelope};
-use crate::content_store::{BlobHandle, ContentId, ObjectKind, StoreError};
+use crate::content_store::{ContentId, ObjectKind, StoreError};
+
+use super::codec_ownership::{OwnedEnvelope, admission, encoded_source};
 
 use super::{
     MAX_RAM_OBJECT_BYTES, PendingPublication, RamRetention, RamStore, RamStoreError, Work,
@@ -29,6 +31,15 @@ pub(super) const ROOT_SCHEMA: &str = "crucible.ram.root";
 pub(super) const SCHEMA_VERSION: u32 = 1;
 const MAX_CAPTURE_BATCH_OBJECTS: usize = 64;
 const MAX_CAPTURE_BATCH_BYTES: u64 = 4 * 1024 * 1024;
+
+pub(super) fn object_limits(id: ContentId) -> Result<(u64, usize), RamStoreError> {
+    match id.kind() {
+        ObjectKind::ExactManifest => Ok((MAX_RAM_OBJECT_BYTES, Limits::default().max_regions)),
+        ObjectKind::RamTree => Ok((4096, 2)),
+        ObjectKind::RamExtent => Ok((8192, 0)),
+        _ => Err(RamStoreError::Invalid("RAM object kind")),
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct TreeRef {
@@ -52,14 +63,17 @@ impl RamStore {
         retention: &dyn RamRetention,
         work: &mut Work<'_>,
     ) -> Result<ContentId, RamStoreError> {
+        let account = self.object_account()?;
+        let _scope = account.enter();
         let bytes = envelope.canonical_bytes();
+        account.check().map_err(admission)?;
         let id = envelope.content_id(kind);
         work.visit(bytes.len() as u64)?;
 
         // The operation's GC fence must precede publication. Registering this
         // exact expected ID also protects crash recovery before a put completes.
         retention.retain_object(id)?;
-        let source = BlobHandle::from_bytes(bytes);
+        let source = encoded_source(bytes, &account)?;
         if let Some(pending) = &work.pending {
             if let Some(existing) = pending.iter().find(|existing| existing.id == id) {
                 if existing.envelope != *envelope {
@@ -80,10 +94,18 @@ impl RamStore {
                 self.flush_capture_batch(work)?;
             }
             if let Some(pending) = &mut work.pending {
+                // A pending canonical envelope is a distinct owned copy. Its
+                // conservative closed-schema loan precedes that copy and stays
+                // with it until batch publication and authentication finish.
+                let clone_bytes = ContentEnvelope::decoding_memory_bound(
+                    source.logical_length() as usize,
+                    envelope.children().len(),
+                )?;
+                crate::owned_decode::charge_bytes(clone_bytes).map_err(admission)?;
                 pending.push(PendingPublication {
                     id,
                     source,
-                    envelope: envelope.clone(),
+                    envelope: OwnedEnvelope::new(envelope.clone(), &account),
                 });
                 return Ok(id);
             }
@@ -104,6 +126,12 @@ impl RamStore {
         };
         if !pending.is_empty() {
             (work.boundary)()?;
+            let account = self.object_account()?;
+            let _scope = account.enter();
+            crate::owned_decode::charge_array::<(ContentId, crate::content_store::BlobHandle)>(
+                pending.len(),
+            )
+            .map_err(admission)?;
             let objects = pending
                 .iter()
                 .map(|object| (object.id, object.source.clone()))
@@ -155,19 +183,16 @@ impl RamStore {
         &self,
         id: ContentId,
         work: &mut Work<'_>,
-    ) -> Result<ContentEnvelope, RamStoreError> {
+    ) -> Result<OwnedEnvelope, RamStoreError> {
+        let account = self.object_account()?;
+        let _scope = account.enter();
         if id.schema_version() != SCHEMA_VERSION {
             return Err(RamStoreError::Invalid("RAM storage schema"));
         }
         // Page and binary-tree lookups run under bounded page-in scratch. A
         // malformed small-object identity must not borrow the root decoder's
         // larger catalog allocation merely by declaring a large body/table.
-        let (maximum_bytes, maximum_children) = match id.kind() {
-            ObjectKind::ExactManifest => (MAX_RAM_OBJECT_BYTES, Limits::default().max_regions),
-            ObjectKind::RamTree => (4096, 2),
-            ObjectKind::RamExtent => (8192, 0),
-            _ => return Err(RamStoreError::Invalid("RAM object kind")),
-        };
+        let (maximum_bytes, maximum_children) = object_limits(id)?;
         (work.boundary)()?;
         let source = self.backend.read(id, None)?;
         if source.logical_length() > maximum_bytes {
@@ -183,7 +208,7 @@ impl RamStore {
         if envelope.schema_version() != SCHEMA_VERSION {
             return Err(RamStoreError::Invalid("RAM envelope schema"));
         }
-        Ok(envelope)
+        Ok(OwnedEnvelope::new(envelope, &account))
     }
 
     pub(super) fn put_page(

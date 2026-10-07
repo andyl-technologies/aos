@@ -436,6 +436,7 @@ mod tests {
         let destination = StoreNodeId::new("destination").expect("destination node");
         let destination_root = temp.path().join("destination");
         let (graph, admin) = StoreGraph::build_with_admin(StoreGraphConfig {
+            gc_mark_root: None,
             root: write_back.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
             nodes: BTreeMap::from([

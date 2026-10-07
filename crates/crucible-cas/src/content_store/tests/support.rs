@@ -271,6 +271,7 @@ pub(super) fn write_back_graph_config(
     let staging = node_id("staging");
     let destination = node_id("destination");
     StoreGraphConfig {
+        gc_mark_root: None,
         root: write_back.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
         nodes: BTreeMap::from([

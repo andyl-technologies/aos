@@ -284,6 +284,7 @@ fn compressed_graph_admin_drives_plaintext_accounted_gc_across_restart() {
     let journal_root = temp.path().join("journal");
     let compressed_node = StoreNodeId::new("compressed-primary").expect("compressed node");
     let graph_config = || StoreGraphConfig {
+        gc_mark_root: None,
         root: compressed_node.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::RamExtent, ObjectKind::Trace]),
         nodes: BTreeMap::from([(
@@ -417,6 +418,7 @@ fn run_encrypted_graph_gc_restart(compressed: bool) {
     let encrypted_node = StoreNodeId::new("encrypted-primary").expect("encrypted node");
     let key_id = StoreEncryptionKeyId::new("gc-key-1").expect("GC key ID");
     let graph_config = || StoreGraphConfig {
+        gc_mark_root: None,
         root: encrypted_node.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::RamExtent, ObjectKind::Trace]),
         nodes: BTreeMap::from([(
@@ -555,6 +557,7 @@ fn logical_quota_graph_gc_reclaims_admission_capacity_across_restart() {
     let quota_node = StoreNodeId::new("quota-primary").expect("quota node");
     let directory_node = StoreNodeId::new("directory-child").expect("directory child");
     let graph_config = || StoreGraphConfig {
+        gc_mark_root: None,
         root: quota_node.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::RamExtent, ObjectKind::Trace]),
         nodes: BTreeMap::from([
@@ -674,6 +677,7 @@ fn packed_graph_admin_drives_restart_safe_logical_gc_without_deleting_live_pack_
     let journal_root = temp.path().join("journal");
     let packed_node = StoreNodeId::new("packed-primary").expect("packed node");
     let graph_config = || StoreGraphConfig {
+        gc_mark_root: None,
         root: packed_node.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::RamExtent, ObjectKind::Trace]),
         nodes: BTreeMap::from([(
@@ -747,6 +751,7 @@ fn packed_graph_admin_drives_restart_safe_logical_gc_without_deleting_live_pack_
 
     let verified = StoreNodeId::new("verified-root").expect("verified root");
     let (different_graph, different_admin) = StoreGraph::build_with_admin(StoreGraphConfig {
+        gc_mark_root: None,
         root: verified.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::RamExtent, ObjectKind::Trace]),
         nodes: BTreeMap::from([

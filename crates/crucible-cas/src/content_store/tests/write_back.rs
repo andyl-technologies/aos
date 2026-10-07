@@ -170,6 +170,7 @@ fn write_back_bounds_and_durable_child_requirements_fail_closed() {
     let destination = node_id("destination");
     assert!(matches!(
         StoreGraph::build(StoreGraphConfig {
+            gc_mark_root: None,
             root: root.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
             nodes: BTreeMap::from([
@@ -207,6 +208,7 @@ fn write_back_bounds_and_durable_child_requirements_fail_closed() {
     let outer_destination = node_id("outer-destination");
     assert!(matches!(
         StoreGraph::build(StoreGraphConfig {
+            gc_mark_root: None,
             root: outer.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
             nodes: BTreeMap::from([
@@ -263,6 +265,7 @@ fn write_back_journal_paths_cannot_overlap_blob_or_other_journal_roots() {
     let staging_root = temp.path().join("staging");
     assert!(matches!(
         StoreGraph::build(StoreGraphConfig {
+            gc_mark_root: None,
             root: write_back.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
             nodes: BTreeMap::from([

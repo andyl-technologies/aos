@@ -382,6 +382,7 @@ impl CampaignLocalServiceConfig {
         let root = StoreNodeId::new("campaign-primary")
             .map_err(|_| CampaignLocalServiceError::InvalidRepositoryStore)?;
         let (graph, maintenance) = StoreGraph::build_with_admin(StoreGraphConfig {
+            gc_mark_root: None,
             root: root.clone(),
             admitted_kinds: BTreeSet::from(CAMPAIGN_REPOSITORY_OBJECT_KINDS),
             nodes: BTreeMap::from([(root, StoreNodeSpec::Sqlite { root: object_root })]),

@@ -11,6 +11,7 @@ fn verification_evidence_bounds_source_passes_through_a_mirror_graph() {
     let directory = node_id("directory");
     let memory = node_id("memory");
     let graph = StoreGraph::build(StoreGraphConfig {
+        gc_mark_root: None,
         root: root.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
         nodes: BTreeMap::from([
@@ -74,6 +75,7 @@ fn physical_repair_restores_only_missing_or_corrupt_authenticated_placements() {
     let source = node_id("source");
     let target = node_id("target");
     let (_graph, maintenance) = StoreGraph::build_with_admin(StoreGraphConfig {
+        gc_mark_root: None,
         root: mirror.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
         nodes: BTreeMap::from([

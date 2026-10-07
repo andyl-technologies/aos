@@ -16,7 +16,7 @@ use std::path::Path;
 
 #[path = "gc_quota_setup.rs"]
 mod setup;
-pub use setup::{prepare, quota_budget_toml};
+pub use setup::{mark_node, prepare, quota_budget_toml};
 
 /// Retains a genuine inspection scope through decoding a persisted GC journal.
 pub struct Inspection {
@@ -55,18 +55,10 @@ pub fn inspection(store: &Path, scope: &str) -> Result<Inspection, Box<dyn Error
         .get("nodes")
         .and_then(toml::Value::as_array)
         .ok_or("inspection nodes missing")?;
-    let root = deployment
-        .get("root")
-        .and_then(toml::Value::as_str)
-        .ok_or("inspection root missing")?;
-    let selected = if root == "profile" {
-        "read-source"
-    } else {
-        root
-    };
+    let selected = mark_node(&deployment)?;
     let node = nodes
         .iter()
-        .find(|node| node.get("id").and_then(toml::Value::as_str) == Some(selected))
+        .find(|node| node.get("id").and_then(toml::Value::as_str) == Some(selected.as_str()))
         .ok_or("inspection node missing")?;
     let spec = node
         .get("spec")
@@ -93,7 +85,7 @@ pub fn inspection(store: &Path, scope: &str) -> Result<Inspection, Box<dyn Error
             .and_then(toml::Value::as_integer)
             .ok_or("inspection project missing")?,
     )?;
-    let binder = crucible_daemon::LinuxProjectQuotaBinder::new(quota_service_config(
+    let configuration = quota_service_config(
         Duration::from_secs(300),
         crucible_api::host_operational::HostResourceVector {
             resident_peak_bytes: 134217728,
@@ -105,19 +97,18 @@ pub fn inspection(store: &Path, scope: &str) -> Result<Inspection, Box<dyn Error
             task_slots: 1,
             file_descriptors: 256,
         },
-    )?)?;
+    )?;
+    let operation = configuration
+        .supervisor
+        .begin(crucible_api::host_operational::HostOperationClass::Writeback)?;
+    let binder = crucible_daemon::LinuxProjectQuotaBinder::new(configuration)?;
     let quota = binder.bind(Path::new(directory), project, 2147483648, 1048576)?;
     let resources = quota.reserve_resources(0, std::mem::size_of::<Inspection>() as u64 + 512)?;
-    let operation =
-        crucible_daemon::campaign_store_composition::CampaignArchiveHostOperation::start(
-            crucible_api::host_operational::HostOperationClass::Writeback,
-            Duration::from_secs(300),
-        )?;
     let marks = Arc::clone(&quota).gc_mark_backend(scope)?;
     Ok(Inspection {
         marks,
         boundary: Box::new(move || {
-            operation.boundary().map_err(|source| {
+            operation.wait_slice().map(|_| ()).map_err(|source| {
                 crucible_daemon::campaign_store_composition::StoreError::Supervision {
                     source: Box::new(source),
                 }
@@ -266,6 +257,7 @@ pub fn contains_stopped_leaf(
     };
     let graph = StoreGraph::build_with_all_capabilities(
         StoreGraphConfig {
+            gc_mark_root: None,
             root: physical.clone(),
             admitted_kinds: BTreeSet::from([content.kind()]),
             nodes: BTreeMap::from([
@@ -312,4 +304,37 @@ pub fn quota_service_config(
         resources,
     )
     .map_err(Into::into)
+}
+
+#[cfg(test)]
+mod mark_guard_tests {
+    use super::*;
+
+    #[test]
+    fn inspection_refuses_unwrapped_mark_namespace_before_binding() -> Result<(), Box<dyn Error>> {
+        let temporary = tempfile::tempdir()?;
+        let store = temporary.path().join("store.toml");
+        fs::write(
+            &store,
+            r#"
+root = "profile"
+gc_mark_root = "gc-marks"
+[[nodes]]
+id = "gc-marks"
+[nodes.spec]
+kind = "directory"
+root = "/declared/marks"
+"#,
+        )?;
+
+        let failure = match inspection(&store, "unguarded-marks") {
+            Ok(_) => return Err("unguarded mark namespace unexpectedly admitted".into()),
+            Err(failure) => failure,
+        };
+        assert_eq!(
+            failure.to_string(),
+            "GC inspection requires the real guarded physical node"
+        );
+        Ok(())
+    }
 }

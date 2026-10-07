@@ -217,6 +217,7 @@ struct CorpusMeasurement {
 fn sqlite_blob_graph(root: &Path) -> Result<(Arc<StoreGraph>, StoreGraphAdmin), Box<dyn Error>> {
     let leaf = StoreNodeId::new("campaign-million-blobs")?;
     let (graph, maintenance) = StoreGraph::build_with_admin(StoreGraphConfig {
+        gc_mark_root: None,
         root: leaf.clone(),
         admitted_kinds: BTreeSet::from(CAMPAIGN_OBJECT_KINDS),
         nodes: BTreeMap::from([(

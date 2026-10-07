@@ -12,10 +12,18 @@ use super::admin::{
 };
 use super::*;
 
+#[cfg(test)]
+mod tests;
+
 static MEMORY_INVENTORY_INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 static MEMORY_REF_INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Bounded process-local logical-object store used by tests and hot caches.
+///
+/// Writes under an original decode account retain their independently admitted
+/// copy until the final map, source, or reader owner closes. A map deletion does
+/// not discharge a borrowed immutable body. Unscoped component/offline use
+/// remains bounded by the logical ceiling and grants no native admission.
 #[derive(Debug)]
 pub struct MemoryBlobBackend {
     name: String,
@@ -26,9 +34,114 @@ pub struct MemoryBlobBackend {
 
 #[derive(Debug)]
 struct MemoryBlobState {
-    objects: BTreeMap<ContentId, Arc<[u8]>>,
+    objects: BTreeMap<ContentId, Arc<MemoryObject>>,
     logical_bytes: u64,
     generation: u64,
+}
+
+#[derive(Debug)]
+struct MemoryObject {
+    bytes: Vec<u8>,
+    custody: crate::owned_decode::DecodeCustody,
+}
+
+impl std::ops::Deref for MemoryObject {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+struct MemoryObjectSource {
+    object: Arc<MemoryObject>,
+    _credit: Option<crate::owned_decode::DecodeScratch>,
+}
+
+struct SharedMemoryObject(Arc<MemoryObject>);
+
+impl AsRef<[u8]> for SharedMemoryObject {
+    fn as_ref(&self) -> &[u8] {
+        &self.0.bytes
+    }
+}
+
+struct MemoryObjectReader {
+    reader: std::io::Cursor<SharedMemoryObject>,
+    _credit: Option<crate::owned_decode::DecodeScratch>,
+}
+
+impl std::io::Read for MemoryObjectReader {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        self.reader.read(bytes)
+    }
+}
+
+fn memory_admission(source: crate::owned_decode::DecodeAdmissionError) -> StoreError {
+    StoreError::Supervision {
+        source: Box::new(source),
+    }
+}
+
+impl BlobSource for MemoryObjectSource {
+    fn logical_length(&self) -> u64 {
+        self.object.bytes.len() as u64
+    }
+
+    fn open(&self) -> Result<Box<dyn std::io::Read + Send>, StoreError> {
+        let _scope = self.object.custody.enter();
+        let account = crate::owned_decode::current_child_budget().map_err(memory_admission)?;
+        let credit = account
+            .as_ref()
+            .map(|budget| {
+                budget.reserve_scratch_bytes(std::mem::size_of::<MemoryObjectReader>() as u64)
+            })
+            .transpose()
+            .map_err(memory_admission)?;
+        Ok(Box::new(MemoryObjectReader {
+            reader: std::io::Cursor::new(SharedMemoryObject(Arc::clone(&self.object))),
+            _credit: credit,
+        }))
+    }
+}
+
+fn memory_object(bytes: Vec<u8>) -> Result<Arc<MemoryObject>, StoreError> {
+    // Move the admitted input vector into one immutable body. A whole B-tree
+    // node per insertion conservatively covers the retained map slot, and the
+    // Arc header/body is admitted before construction. Readers share that body.
+    crate::owned_decode::charge_bytes(
+        (std::mem::size_of::<MemoryObject>()
+            + 2 * std::mem::size_of::<usize>()
+            + 11 * std::mem::size_of::<(ContentId, Arc<MemoryObject>)>()
+            + 16 * std::mem::size_of::<usize>()) as u64,
+    )
+    .map_err(memory_admission)?;
+    Ok(Arc::new(MemoryObject {
+        bytes,
+        custody: crate::owned_decode::current_custody().unwrap_or_default(),
+    }))
+}
+
+fn memory_handle(id: ContentId, object: Arc<MemoryObject>) -> Result<BlobHandle, StoreError> {
+    let _scope = object.custody.enter();
+    let account = crate::owned_decode::current_child_budget().map_err(memory_admission)?;
+    let credit = account
+        .as_ref()
+        .map(|budget| {
+            budget.reserve_scratch_bytes(
+                (std::mem::size_of::<MemoryObjectSource>() + 2 * std::mem::size_of::<usize>())
+                    as u64,
+            )
+        })
+        .transpose()
+        .map_err(memory_admission)?;
+    Ok(BlobHandle::authenticated(
+        id,
+        Arc::new(MemoryObjectSource {
+            object,
+            _credit: credit,
+        }),
+    ))
 }
 
 impl MemoryBlobBackend {
@@ -112,10 +225,14 @@ impl ImmutableBlobBackend for MemoryBlobBackend {
             .cloned()
             .ok_or(StoreError::NotFound { id })?;
         validate_bytes(id, &bytes)?;
-        BlobHandle::from_authenticated_bytes(id, bytes).slice(range)
+        memory_handle(id, bytes)?.slice(range)
     }
 
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
+        let account = crate::owned_decode::current_child_budget().map_err(memory_admission)?;
+        let _scope = account
+            .as_ref()
+            .map(crate::owned_decode::DecodeBudget::enter);
         let logical_length = source.logical_length();
         if logical_length > self.max_logical_bytes {
             source.verified_as(id)?;
@@ -139,8 +256,10 @@ impl ImmutableBlobBackend for MemoryBlobBackend {
             if next_logical_bytes > self.max_logical_bytes {
                 return Err(StoreError::Quota);
             }
-            state.generation = state.generation.checked_add(1).ok_or(StoreError::Quota)?;
-            state.objects.insert(id, Arc::from(bytes));
+            let generation = state.generation.checked_add(1).ok_or(StoreError::Quota)?;
+            let object = memory_object(bytes)?;
+            state.objects.insert(id, object);
+            state.generation = generation;
             state.logical_bytes = next_logical_bytes;
         }
         Ok(PutReceipt::one(
@@ -205,6 +324,11 @@ impl BlobInventoryFence for MemoryBlobInventoryFence<'_> {
         let bytes = self.state.objects.remove(&id).ok_or(StoreError::Poisoned {
             operation: "memory-delete-candidate",
         })?;
+        if self.state.objects.is_empty() {
+            // Removal can leave an allocated empty root node. Release it while
+            // the removed object's conservative map-node credit still lives.
+            self.state.objects = BTreeMap::new();
+        }
         let logical_length = u64::try_from(bytes.len()).map_err(|_| StoreError::Quota)?;
         self.state.logical_bytes =
             self.state
@@ -223,6 +347,10 @@ impl BlobInventoryFence for MemoryBlobInventoryFence<'_> {
         id: ContentId,
         source: &BlobHandle,
     ) -> Result<PutReceipt, StoreError> {
+        let account = crate::owned_decode::current_child_budget().map_err(memory_admission)?;
+        let _scope = account
+            .as_ref()
+            .map(crate::owned_decode::DecodeBudget::enter);
         let logical_length = source.logical_length();
         let bytes = read_handle_all(source, self.max_logical_bytes)?;
         validate_bytes(id, &bytes)?;
@@ -237,12 +365,14 @@ impl BlobInventoryFence for MemoryBlobInventoryFence<'_> {
             if next_logical_bytes > self.max_logical_bytes {
                 return Err(StoreError::Quota);
             }
-            self.state.generation = self
+            let generation = self
                 .state
                 .generation
                 .checked_add(1)
                 .ok_or(StoreError::Quota)?;
-            self.state.objects.insert(id, Arc::from(bytes));
+            let object = memory_object(bytes)?;
+            self.state.objects.insert(id, object);
+            self.state.generation = generation;
             self.state.logical_bytes = next_logical_bytes;
         }
         Ok(PutReceipt::one(

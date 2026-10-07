@@ -74,6 +74,7 @@ fn sqlite_leaf_preserves_authenticated_objects_and_physical_gc_after_restart() {
     let temporary = TempDir::new().expect("SQLite graph root");
     let leaf = node("sqlite");
     let config = StoreGraphConfig {
+        gc_mark_root: None,
         root: leaf.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
         nodes: BTreeMap::from([(
@@ -89,6 +90,7 @@ fn sqlite_leaf_preserves_authenticated_objects_and_physical_gc_after_restart() {
     let (graph, admin) = StoreGraph::build_with_admin(config.clone()).expect("SQLite graph");
     let sqlite_configuration = graph.configuration_id();
     let directory = StoreGraph::build(StoreGraphConfig {
+        gc_mark_root: None,
         root: node("sqlite"),
         admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
         nodes: BTreeMap::from([(
@@ -507,6 +509,7 @@ fn graph_config(root: &std::path::Path, order: [TransparentLayer; 3]) -> StoreGr
     }
 
     StoreGraphConfig {
+        gc_mark_root: None,
         root: child,
         admitted_kinds: admitted,
         nodes,

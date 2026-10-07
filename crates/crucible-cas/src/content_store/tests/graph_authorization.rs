@@ -6,6 +6,7 @@ use super::*;
 fn store_graph_configuration_identity_is_canonical_and_complete() {
     let root = node_id("root");
     let config = |maximum| StoreGraphConfig {
+        gc_mark_root: None,
         root: root.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::Finding, ObjectKind::Trace]),
         nodes: BTreeMap::from([(
@@ -29,7 +30,7 @@ fn store_graph_configuration_identity_is_canonical_and_complete() {
     assert_ne!(first.configuration_id(), changed.configuration_id());
     assert_eq!(
         encode_hex(&first.configuration_id().as_bytes()),
-        "b5d72c74a91d3eea5cf688a42d79dfdbddb9dc4fc0c6fd20cb8f42dcb9d772dd"
+        "f116e3b8957d8eaf897c34084ecbcf17788cca0137ea57392acd76ab82035200"
     );
 }
 
@@ -54,6 +55,7 @@ fn namespaced_graph_authorizes_every_operation_before_child_access() {
     let namespaced = node_id("namespaced");
     let memory = node_id("memory");
     let config = |namespace| StoreGraphConfig {
+        gc_mark_root: None,
         root: namespaced.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
         nodes: BTreeMap::from([
@@ -80,6 +82,7 @@ fn namespaced_graph_authorizes_every_operation_before_child_access() {
     let bypass = node_id("bypass");
     assert!(matches!(
         StoreGraph::build(StoreGraphConfig {
+            gc_mark_root: None,
             root: bypass.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
             nodes: BTreeMap::from([
@@ -112,6 +115,7 @@ fn namespaced_graph_authorizes_every_operation_before_child_access() {
     let nested = node_id("nested-namespace");
     assert!(matches!(
         StoreGraph::build(StoreGraphConfig {
+            gc_mark_root: None,
             root: namespaced.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
             nodes: BTreeMap::from([
@@ -216,7 +220,7 @@ fn namespaced_graph_authorizes_every_operation_before_child_access() {
     assert_ne!(graph.configuration_id(), alternate.configuration_id());
     assert_eq!(
         encode_hex(&graph.configuration_id().as_bytes()),
-        "24af313c4576e05b17da6745dc1ecabc020deab10d7d1fe9877f07babc4d8071"
+        "84c16934ce1b118073deda1f59767236e1928939d0d6c1a96be46cd9a48a9b75"
     );
 }
 
@@ -234,6 +238,7 @@ fn profile_graph_derives_authenticated_classes_without_caller_hints() {
     let profile = node_id("profile");
     let memory = node_id("memory");
     let config = |policy| StoreGraphConfig {
+        gc_mark_root: None,
         root: profile.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
         nodes: BTreeMap::from([
@@ -323,12 +328,13 @@ fn profile_graph_derives_authenticated_classes_without_caller_hints() {
     assert_ne!(graph.configuration_id(), other.configuration_id());
     assert_eq!(
         encode_hex(&graph.configuration_id().as_bytes()),
-        "c198ff2a2f52c3db30492d38fe125240834876b6ec7ded78d60ac541f9e8cce4"
+        "c4ab7535ae7a62eb39146c06ff71cdcf920a2eeffa73abee289764e1c81ed183"
     );
 
     let bypass = node_id("bypass");
     assert!(matches!(
         StoreGraph::build(StoreGraphConfig {
+            gc_mark_root: None,
             root: bypass.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
             nodes: BTreeMap::from([
@@ -381,6 +387,7 @@ fn profile_and_namespace_boundaries_compose_at_the_graph_root() {
         .expect("namespace capability");
     let graph = StoreGraph::build_with_all_capabilities(
         StoreGraphConfig {
+            gc_mark_root: None,
             root: profile.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
             nodes: BTreeMap::from([
@@ -435,6 +442,7 @@ fn profile_graph_validates_deferred_transfer_and_root_inventory() {
         .expect("profile capability");
     let graph = StoreGraph::build_with_all_capabilities(
         StoreGraphConfig {
+            gc_mark_root: None,
             root: profile.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
             nodes: BTreeMap::from([
@@ -533,6 +541,7 @@ fn namespaced_graph_authorizes_deferred_transfer_and_root_inventory() {
         .expect("namespace capability");
     let graph = StoreGraph::build_with_authorizers(
         StoreGraphConfig {
+            gc_mark_root: None,
             root: namespaced.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
             nodes: BTreeMap::from([

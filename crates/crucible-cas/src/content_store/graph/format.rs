@@ -6,14 +6,21 @@ use std::path::Path;
 use super::{StoreGraphConfig, StoreNodeId, StoreNodeSpec, invalid_graph};
 use crate::content_store::{GraphViolation, StoreError};
 
-const GRAPH_CONFIGURATION_V11_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v11\0";
+const GRAPH_CONFIGURATION_V12_MAGIC: &[u8] = b"crucible.content-store.graph-configuration.v12\0";
 
 pub(super) fn canonical_graph_configuration(
     config: &StoreGraphConfig,
 ) -> Result<Vec<u8>, StoreError> {
     let mut bytes = Vec::new();
-    bytes.extend_from_slice(GRAPH_CONFIGURATION_V11_MAGIC);
+    bytes.extend_from_slice(GRAPH_CONFIGURATION_V12_MAGIC);
     encode_node_id(&mut bytes, &config.root)?;
+    match &config.gc_mark_root {
+        None => bytes.push(0),
+        Some(root) => {
+            bytes.push(1);
+            encode_node_id(&mut bytes, root)?;
+        }
+    }
     encode_count(&mut bytes, config.admitted_kinds.len())?;
     let mut admitted_kinds = config
         .admitted_kinds
