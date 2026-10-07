@@ -172,6 +172,12 @@ application compilation and both formatters are unrun. The test-only diagnostic
 allowance on `7a959cccb6` passes default and std-send Clippy/private docs.
 Native Clippy stops on four mechanical batch-test helper diagnostics; native
 docs, application compilation and both formatters remain unrun in that attempt.
+The reviewed mechanical helper correction on `c735446b74` passes Clippy and
+private documentation in all three profiles, the mandatory application
+test-target compilation, Rust formatting and repository formatting. Its actual
+Nix source matches the frozen candidate throughout. The preceding 28 runtime
+passes remain evidence from `a6470b4450`; runtime tests are not replayed in the
+quality run, and combined qualification remains open.
 D-111 preserves historical bytes while validating the independent current
 revision. Shared property/algebra gate
 mappings require actual owning witnesses and retain native Fold context coverage.
