@@ -790,6 +790,33 @@ verifies every one of twelve terminal results and 5,620 unchanged tracked
 images. The actual positive paths close native acknowledgment before their
 independent durable assertions. Imported/per-view factory completion, physical
 deletion, the complete collector and ALG-32 remain unqualified.
+The next trunk slice implements ordinary read-only immutable index loading,
+address and contextual physical checks, independent canonical namespace
+reconstruction and exhaustive owner/primary/route/gap relationship verification.
+Its supported executable profile is explicitly property 3, attribute 2 and
+tree 1; unsupported active attribute-1 input refuses before storage reads.
+This provides data preparation, not current authorization or completed history.
+Frozen `90d2b2c474` passes the seven exact non-ignored
+`integration.native-index-loading` cases, Core no-std and strict Core all-target
+Clippy/private rustdoc. Native profile quality stops in the default profile on
+unused incomplete paths and two concrete lint findings; later profiles and its
+application, registry and formatting suffix are unrun. Independent review verifies
+all preserved artifacts, 4,578 actual source inputs for each source-bound phase
+and 5,632 unchanged tracked images. The original pre-build metadata-driver failure
+is preserved separately.
+A separate two-file correction uses `Option::and` for the same held-only
+retained-control selection and the standard no-op waker for the non-Send lease
+fixture. Frozen `d4f753f08a` compiles default, Send and native test targets, then
+passes seven index cases, seven actual Original/current/consumed cases and the
+non-Send lease case in their supported profiles, with exact discovery and zero
+ignored cases. Application compilation, registry completeness and both mandatory
+formatters pass. The full current-milestone aggregate exits 1 at the explicitly
+pending `algebra-fork` gate, ALG-32. Independent review verifies all ninety
+preserved artifacts, both source-bound phases' 4,578 actual inputs and all 5,632
+unchanged tracked images. The original wrong-profile discovery failure is retained;
+its correction changes the harness only. Incomplete-path lint diagnostics are
+not suppressed, and no full native quality, task, cold-factory or T1 exit claim
+follows from this prerequisite.
 The focused separate-source requalification check is registered with twelve
 exact completion/refusal selectors; registry-complete and both required
 formatters pass. Its first private native compilation stops on two child-module
@@ -808,6 +835,20 @@ dependent checks are unrun. Independent review verifies all twenty preserved
 artifacts, 4,917 actual Nix input images and 5,971 unchanged tracked hashes,
 modes and mtimes. The exact refusal path remains under review; this result
 does not qualify the twelve-case gate or advance ALG-32.
+The later private source `a774b698788b` qualifies all twelve owning source
+requalification cases, thirteen cold-fork regressions and four Guard regressions,
+each exactly discovered among 642 tests with named successes and zero ignored
+cases. The final required-index refusal reaches its real unavailable auxiliary
+pack read, retains the exact primary Node error, performs no publication
+acknowledgment, requires only the actual root-directory sync, and passes the
+complete original unchanged-state/source/control assertions. Strict all-target
+Clippy and private rustdoc pass for default, Send and native profiles; application
+compilation and both mandatory formatters pass. Independent review verifies all
+78 original artifacts, all five derivations' 4,917 actual source inputs and all
+5,971 unchanged tracked hashes, modes and mtimes. Earlier failed attempts remain
+preserved. The foreign-dependency Guard case still forks the local source;
+imported-head reuse, source-preserving retirement, composed trunk qualification
+and complete ALG-32 remain separate obligations. This is no formal task merge.
 
 The focused native graft-locality check now requires three actual publication
 cases and three structural cases, with exact discovery and non-ignored
@@ -2263,7 +2304,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   4,911 actual input images and 5,965 frozen inputs are independently verified.
   The diagnostic is then restored byte-for-byte in a normal commit. The private
   source adopts the separately qualified physical-predicate coalescing while
-  preserving its pair checks; changed-source qualification remains pending.
+  preserving its pair checks. Frozen `4d451aafc23d` passes all eight actual
+  physical-predicate/exclusion regressions and the reuse, evidence-gap and
+  current/final owning backfill cases, with exact discovery among 636 tests and
+  zero ignored cases. Completeness still returns `Advance(Expired)` in 50.80
+  seconds; historical, quality, application and formatting checks remain unrun.
+  Independent review verifies all 74 preserved artifacts, both derivations'
+  4,912 actual source inputs and 5,966 unchanged tracked byte/executable/symlink
+  images. Coalescing has not established an expiry fix or completed DRV-28.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
   codec, value-plus-object opaque keys and D-104's contextual primary/gap/route
