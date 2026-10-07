@@ -60,7 +60,13 @@ async fn native_active_completion_verifies_indexed_owner_before_selected_ack() -
         );
         assert_eq!(context.registries.behavioral_properties.len(), 35);
         assert_eq!(context.original_root, owner);
-        let actual = concrete.verified_tree(context.view).await?;
+        // Original verification must reuse the live namespace exclusion.
+        let actual = concrete
+            .verified_tree_observed(
+                context.view,
+                crate::guard::HistoryObservation::held(observed.identity()),
+            )
+            .await?;
         assert_eq!(actual.commit.commit().tree, context.original_root);
         assert!(
             lineage
