@@ -207,7 +207,9 @@ pub(super) fn prepare(
     let Some(intake) = intake.as_mut() else {
         return Err(EffectFailure::Permanent("original intake destination is unavailable".to_owned()));
     };
-    *intake_preparation = Some(intake.prepare_once(journal, &mut executor.source_domains, &profile));
+    *intake_preparation = Some(intake.prepare_once(
+        journal, &mut executor.source_domains, &profile, executor.first_global_prefix.as_ref(),
+    ));
     if matches!(intake_preparation, Some(Err(_))) {
         *first = Some(GenerationFailureV1::IntakeResult);
         return Err(EffectFailure::Retryable(

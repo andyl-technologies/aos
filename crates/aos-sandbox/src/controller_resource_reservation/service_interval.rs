@@ -91,6 +91,34 @@ pub(super) struct OriginalReceiver {
     source_sequence: u64,
 }
 
+// This lends the original physical association, not FirstGlobal payment or
+// fresh currentness. Its closed archive is neither consulted nor reopened.
+pub(super) struct OriginalControllerCpuContainment<'original> {
+    prefix: &'original ControllerFirstGlobalPrefixAttemptV1,
+}
+
+impl OriginalControllerCpuContainment<'_> {
+    pub(super) fn require_intake(
+        &self,
+        original: &bootstrap::OriginalEnrollment,
+    ) -> Result<(), ResourceReservationErrorV1> {
+        let held = self.prefix.original.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
+        let (quota, period) = self.prefix.cpu.quota_and_period()
+            .ok_or(ResourceReservationErrorV1::Conflict)?;
+        let provision = original.policy.nix_original_start_intake
+            .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
+        let prefix = original.policy.first_global_prefix
+            .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
+        if held != original || period != 100_000 || quota > provision.get(D::CpuMicrosPerPeriod)
+            || prefix.get(D::CpuMicrosPerPeriod) > provision.get(D::CpuMicrosPerPeriod)
+        {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        Ok(())
+    }
+}
+
 impl OriginalReceiver {
     // This borrows the originally priced Source owner; it grants neither a
     // fresh receiver nor payment. The selected caller must own its Result.
@@ -264,6 +292,30 @@ impl Drop for FirstGlobalPrefixLoan<'_> {
 }
 
 impl ControllerFirstGlobalPrefixAttemptV1 {
+    pub(super) fn borrow_original_cpu_containment<'original>(
+        &'original self,
+        bank: &Arc<Mutex<ControllerResourceBankOpeningV1>>,
+        profile: &ProductionControllerNormalRootProfileV1,
+    ) -> Result<OriginalControllerCpuContainment<'original>, ResourceReservationErrorV1> {
+        if !Arc::ptr_eq(&self.bank, bank) || self.failure().is_some()
+            || self.cpu.failure().is_some() || !matches!(self.cpu_post, Some(Ok(())))
+            || !matches!(self.controller_post, Some(Ok(())))
+            || !matches!(self.source_post, Some(Ok(())))
+            || !matches!(self.profile_post, Some(Ok(())))
+            || !matches!(self.final_clock_check, Some(Ok(())))
+            || !self.observer_lifetime.as_ref().is_some_and(|lifetime| !lifetime.is_open())
+        {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        let receiver = self.receiver.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(ResourceReservationErrorV1::Conflict)?;
+        if receiver.profile_object != std::ptr::from_ref(profile) as usize {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        self.append.require_committed()?;
+        Ok(OriginalControllerCpuContainment { prefix: self })
+    }
+
     /// Prearms custody on the real executor before any added startup selector.
     ///
     /// This allocation-free constructor is inert. It cannot manufacture a loan

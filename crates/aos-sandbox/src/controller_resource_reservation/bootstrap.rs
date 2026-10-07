@@ -482,17 +482,27 @@ impl ControllerResourceBankOpeningV1 {
         Ok(original)
     }
 
-    pub(super) fn begin_nix_intake_once(
-        &mut self,
-        journal: &Journal,
-    ) -> Result<OriginalEnrollment, ResourceReservationErrorV1> {
+    pub(super) fn begin_nix_intake_once(&mut self) -> Result<OriginalEnrollment, ResourceReservationErrorV1> {
         if self.nix_intake_attempted {
             return Err(ResourceReservationErrorV1::Conflict);
         }
         // Arm in the actual bank owner, not only a disposable caller attempt.
         // Failed intake and dropped attempts cannot retry a Reserved row.
         self.nix_intake_attempted = true;
-        self.first_global_original(journal)
+        if self.failure().is_some() || !matches!(self.native, Some(Ok(_)))
+            || !matches!(self.readback, Some(Ok(())))
+        {
+            return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
+        }
+        let original = self.observed.as_ref().and_then(|result| result.as_ref().ok())
+            .copied().ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
+        let provision = original.policy.nix_original_start_intake
+            .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
+        provision.checked_sub(super::nix_intake::minimum_failure_demand()?)?;
+
+        // This is the held successful enrollment, not fresh replay or PID1
+        // currentness. Even the first clock/name observation needs this I.
+        Ok(original)
     }
 
     /// Reports only the already-held image family's prefix selection DATA.
