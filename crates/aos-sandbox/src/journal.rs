@@ -241,7 +241,7 @@ impl Default for JournalLimits {
     }
 }
 
-/// Carries configured journal representation DATA before a protected open.
+/// Carries configured initial-replay representation DATA before a protected open.
 ///
 /// These separate terms describe logical bytes and inline representations, not
 /// allocator RAM, a service budget, a paid loan, or permission to open. They may
@@ -266,26 +266,14 @@ pub(crate) struct ProtectedJournalPreopenReplayExtentV1 {
     pub(crate) reached_materialized_cell_bytes: usize,
     /// Bounds committed transactions reached before the count check can refuse.
     pub(crate) source_transactions: usize,
-    /// Covers resident, independent replay and logical comparison representations.
+    /// Covers conservative inline cache copies, including the pending marker.
     pub(crate) source_cache_copies: usize,
-    /// Bounds occupied historical references per cache, apart from logical charge.
-    pub(crate) source_historical_references: usize,
-    /// Bounds occupied cut/admission map cells, including transaction growth.
-    pub(crate) source_cut_map_cells: usize,
     /// Bounds original checkpoint rows from this configured native file.
     pub(crate) source_checkpoint_rows: usize,
     /// Covers this file's original checkpoint rows and one independent copy.
     pub(crate) source_checkpoint_representation_bytes: usize,
-    /// Bounds the cache's maintained logical retained charge, not its metadata.
-    pub(crate) source_retained_charge_ceiling_bytes: usize,
-    /// Covers the retained-charge overshoot reached before a final cut refusal.
-    pub(crate) source_reached_retained_charge_bytes: usize,
-    /// Preserves the two logical comparison charges and six physical copies.
-    pub(crate) source_replay_copy_charge_bytes: usize,
-    /// Covers uncapped occupied cache, cut, history and retirement descriptors.
+    /// Covers initial cache owners whose physical-history collections stay empty.
     pub(crate) source_cache_metadata_bytes: usize,
-    /// Covers uncapped State descriptors in original cuts and admission maps.
-    pub(crate) source_cut_map_cell_bytes: usize,
     /// Covers inline native opener, replay, metadata, result and error owners.
     pub(crate) native_owner_result_bytes: usize,
     /// Requires independent bounds for all representations not priced here.
@@ -295,28 +283,31 @@ pub(crate) struct ProtectedJournalPreopenReplayExtentV1 {
 /// Identifies obligations that configured journal limits alone cannot price.
 ///
 /// Collection spare capacity, BTree nodes, Arc control blocks and allocator
-/// overhead need an allocator bound. Decoder/validator temporaries, nested
-/// retained Source DATA and owning error payloads need their own bounds. Native
-/// descriptors, kernel state, path/name allocations and service work also need
-/// bounds. The parser checks initial file metadata, so growing input needs
-/// independently enforced containment or a stable-prefix prerequisite. An
-/// external challenge Journal's cached witness requires that actual Journal's
-/// extent; this file's limits cannot stand in for its history.
+/// overhead need separate conservative service provision and physical backstops.
+/// Decoder/validator temporaries and owning error payloads need their own bounds,
+/// as do native descriptors, kernel state, path/name allocations and service work.
+/// The parser checks initial file metadata, so growing input needs independently
+/// enforced containment or a stable-prefix prerequisite. Initial replay has no
+/// external challenge witness; the legacy marker name does not add the separate
+/// later replay's external-history demand to this phase.
 ///
 /// The ordinary read-only opener drops its local files and partial replay on
 /// failure. This marker neither retains those locals nor changes their lifetime.
 #[cfg(target_os = "linux")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ProtectedJournalPreopenUnpricedPrerequisitesV1 {
-    /// Requires allocator, decoder/error, native/path and external-history bounds.
+    /// Requires conservative allocator, decoder/error and native/containment bounds.
     AllocatorDecoderErrorsNativePathsAndExternalChallenges,
 }
 
-/// Computes partial representation DATA from the exact configured open limits.
+/// Computes partial initial-replay DATA from the exact configured open limits.
 ///
-/// The common parser can reach Source namespaces in any protected journal, so
-/// Source terms remain present for Root and Policy limits as well. No Journal,
-/// path, descriptor, authority or payer is inspected or constructed.
+/// The writable and retained read-only initial openers pass no Source challenge
+/// history. The common parser still accepts and validates its existing families;
+/// Source dependencies become pending before physical-cache retention. Independent
+/// checkpoint collection, compaction materialization and first-successor clones
+/// remain covered. Later challenge-bearing replay has its separate existing
+/// demand. No Journal, path, descriptor, authority or payer is constructed.
 ///
 /// # Errors
 ///
@@ -326,8 +317,6 @@ pub(crate) enum ProtectedJournalPreopenUnpricedPrerequisitesV1 {
 pub(crate) fn protected_journal_preopen_replay_extent_v1(
     limits: JournalLimits,
 ) -> Result<ProtectedJournalPreopenReplayExtentV1, JournalError> {
-    use aos_sandbox_source_provider_ledger::ledger::source_capacity::OriginalSourceRetirementComparisonV5;
-
     validate_limits(limits)?;
     let limit = || JournalError::LimitExceeded("protected journal pre-open replay extent");
     let physical = usize::try_from(limits.maximum_journal_bytes).map_err(|_| limit())?;
@@ -336,13 +325,6 @@ pub(crate) fn protected_journal_preopen_replay_extent_v1(
         .ok_or_else(limit)?.min(frames);
     let source_checkpoint_rows = frames;
     let source_cache_copies = 3_usize;
-    let pairs = source_transactions.checked_mul(source_transactions).ok_or_else(limit)?;
-    let source_historical_references = pairs.checked_mul(2).ok_or_else(limit)?;
-    let reached_rows = limits.maximum_materialized_records
-        .checked_add(limits.maximum_records_per_transaction).ok_or_else(limit)?;
-    let source_cut_map_cells = source_transactions.checked_mul(4)
-        .and_then(|maps| maps.checked_mul(source_cache_copies))
-        .and_then(|maps| maps.checked_mul(reached_rows)).ok_or_else(limit)?;
     let map_entry = std::mem::size_of::<((RecordNamespace, Vec<u8>), Vec<u8>)>();
 
     // BEGIN trusts the bounded declared count before reading its records;
@@ -363,44 +345,17 @@ pub(crate) fn protected_journal_preopen_replay_extent_v1(
     let reached_materialized_cell_bytes = limits.maximum_records_per_transaction
         .checked_mul(map_entry).and_then(|bytes| bytes.checked_mul(2)).ok_or_else(limit)?;
 
-    // The retained_bytes invariant bounds only its maintained logical charge.
-    // It does not cap descriptors, spare capacity, nested decoded owners or
-    // failed comparisons. Those terms stay separate, or explicitly unpriced.
-    let source_retained_charge_ceiling_bytes = limits.maximum_materialized_bytes;
-    // retain_admission may consume the preflight headroom before the final cut
-    // charge. Its retained bytes and the two bounded cut payloads coexist even
-    // when the subsequent ceiling check refuses the updated charge.
-    let source_reached_retained_charge_bytes = limits.maximum_materialized_bytes.checked_mul(3)
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<source_original_native::SourceOriginalPhysicalCutV5>()))
-        .ok_or_else(limit)?;
-    let source_replay_copy_charge_bytes = limits.maximum_materialized_bytes.checked_mul(2)
-        .and_then(|bytes| bytes.checked_add(physical.checked_mul(6)?)).ok_or_else(limit)?;
+    // This runs independently of the optional external challenge witness.
+    // Retain its committed-frame rows even when Source replay remains pending.
     let source_checkpoint_representation_bytes = source_checkpoint_rows
         .checked_mul(std::mem::size_of::<source_original_native::SourceOriginalChallengeCheckpointV5>())
         .and_then(|bytes| bytes.checked_add(physical))
         .and_then(|bytes| bytes.checked_mul(2)).ok_or_else(limit)?;
-    let origin_cut_descriptor = std::mem::size_of::<source_original_native::SourceOriginalAdmissionDataV5>()
-        .checked_add(std::mem::size_of::<source_original_native::SourceOriginalPhysicalCutV5>())
-        .ok_or_else(limit)?;
-    let historical_descriptor = source_release_historical_descriptor_bytes_v1()?;
-    let source_cache_metadata_bytes = source_transactions
-        .checked_mul(origin_cut_descriptor)
-        .and_then(|bytes| bytes.checked_add(source_historical_references
-            .checked_mul(historical_descriptor)?))
-        .and_then(|bytes| bytes.checked_add(source_transactions.checked_add(pairs)?
-            .checked_mul(std::mem::size_of::<OriginalSourceRetirementComparisonV5>())?))
-        .and_then(|bytes| bytes.checked_add(source_transactions
-            .checked_mul(std::mem::size_of::<(aos_sandbox_core::ObjectDigest, usize)>())?))
-        .and_then(|bytes| bytes.checked_add(source_transactions
-            .checked_mul(limits.maximum_records_per_transaction)?
-            .checked_mul(std::mem::size_of::<JournalRecord>())?))
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<source_original_native::replay::SourceOriginalReplayCacheV5>()))
-        .and_then(|bytes| bytes.checked_mul(source_cache_copies))
-        .ok_or_else(limit)?;
-    let source_cut_map_cell_bytes = source_cut_map_cells.checked_mul(map_entry)
-        .and_then(|bytes| bytes.checked_add(source_transactions.checked_mul(4)?
-            .checked_mul(source_cache_copies)?
-            .checked_mul(std::mem::size_of::<BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>>())?))
+    // replay_transaction(None) returns before origins, cuts, retirements or
+    // their maps are retained. observe_compaction likewise only sets pending;
+    // its temporary prospective map remains in the native replay allowance.
+    let source_cache_metadata_bytes = std::mem::size_of::<source_original_native::replay::SourceOriginalReplayCacheV5>()
+        .checked_mul(source_cache_copies)
         .ok_or_else(limit)?;
 
     // Price simultaneous inline representations conservatively. Ordinary
@@ -427,15 +382,9 @@ pub(crate) fn protected_journal_preopen_replay_extent_v1(
         reached_materialized_cell_bytes,
         source_transactions,
         source_cache_copies,
-        source_historical_references,
-        source_cut_map_cells,
         source_checkpoint_rows,
         source_checkpoint_representation_bytes,
-        source_retained_charge_ceiling_bytes,
-        source_reached_retained_charge_bytes,
-        source_replay_copy_charge_bytes,
         source_cache_metadata_bytes,
-        source_cut_map_cell_bytes,
         native_owner_result_bytes,
         unpriced: ProtectedJournalPreopenUnpricedPrerequisitesV1::AllocatorDecoderErrorsNativePathsAndExternalChallenges,
     })
