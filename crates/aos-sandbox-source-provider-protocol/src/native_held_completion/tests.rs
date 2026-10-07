@@ -567,13 +567,18 @@ fn native_full_join_preserves_original_two_zero_fields() {
     assert!(fixture.full_scope.require_root_prefix(&changed).is_err());
     for index in 0..5 {
         let mut changed = fixture.root_scope;
-        match index {
-            0 => changed.flight = d(1),
-            1 => changed.original_source_session = d(1),
-            2 => changed.mount_attempt = d(1),
-            3 => changed.provider_acquisition = d(1),
-            _ => changed.original_root_request = d(1),
-        }
+        let known_field = match index {
+            0 => &mut changed.flight,
+            1 => &mut changed.original_source_session,
+            2 => &mut changed.mount_attempt,
+            3 => &mut changed.provider_acquisition,
+            _ => &mut changed.original_root_request,
+        };
+        // A fixed replacement can equal a fixture field and test no mutation.
+        let mut different_bytes = *known_field.as_bytes();
+        different_bytes[0] ^= 1;
+        *known_field = ObjectDigest::from_bytes(different_bytes);
+
         assert!(
             fixture.full_scope.require_root_prefix(&changed).is_err(),
             "known field {index}"
