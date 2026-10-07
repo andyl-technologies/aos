@@ -57,6 +57,39 @@ pub(crate) fn observation_unix_micros() -> Option<u128> {
     }
 }
 
+/// Returns an observational Unix timestamp in nanoseconds when the clock is valid.
+///
+/// Native observations retain the system clock's nanosecond precision. Worker
+/// observations express the host JavaScript clock's millisecond resolution in
+/// nanoseconds. This timestamp supplies no clock qualification or authority.
+#[must_use]
+pub(crate) fn observation_unix_nanos() -> Option<u128> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|duration| duration.as_nanos())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        observation_nanos_from_millis(js_sys::Date::now())
+    }
+}
+
+/// Validates the exact JavaScript date range before converting timestamp units.
+#[cfg(any(target_arch = "wasm32", test))]
+fn observation_nanos_from_millis(millis: f64) -> Option<u128> {
+    if !millis.is_finite()
+        || !(0.0..=8_640_000_000_000_000.0).contains(&millis)
+        || millis.fract() != 0.0
+    {
+        return None;
+    }
+
+    (millis as u128).checked_mul(1_000_000)
+}
+
 /// Suspends the current task for at least `duration` without blocking its
 /// runtime thread.
 ///
@@ -149,5 +182,41 @@ mod tests {
             .as_micros();
 
         assert!((before..=after).contains(&observed));
+    }
+
+    #[test]
+    fn observation_timestamp_retains_native_nanosecond_precision() {
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let observed = super::observation_unix_nanos().unwrap();
+        let after = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+
+        assert!((before..=after).contains(&observed));
+    }
+
+    #[test]
+    fn observation_nanoseconds_validate_javascript_millisecond_range() {
+        assert_eq!(super::observation_nanos_from_millis(0.0), Some(0));
+        assert_eq!(super::observation_nanos_from_millis(1.0), Some(1_000_000));
+        assert_eq!(
+            super::observation_nanos_from_millis(8_640_000_000_000_000.0),
+            Some(8_640_000_000_000_000_000_000)
+        );
+
+        for invalid in [
+            f64::NAN,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            -1.0,
+            0.5,
+            8_640_000_000_000_001.0,
+        ] {
+            assert_eq!(super::observation_nanos_from_millis(invalid), None);
+        }
     }
 }

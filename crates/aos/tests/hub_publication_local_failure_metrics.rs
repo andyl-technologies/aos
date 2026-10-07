@@ -74,7 +74,9 @@ fn local_inventory_errors_report_zero_without_contacting_the_hub() -> Result<()>
             reports[0],
             "caps=0 begin=0 status=0 grant=0 report=0 complete=0 abort=0 identity=0 \
              manifest_begin=0 manifest_append=0 manifest_seal=0 commit=0 metadata_read=0 \
-             provider_attempts=0 provider_successes=0 acknowledged_bytes=0 max_provider_active=0"
+             provider_attempts=0 provider_successes=0 acknowledged_bytes=0 max_provider_active=0 \
+             max_active_bulk_files=0 max_bulk_part_requests_per_file=0 max_active_metadata_files=0 \
+             max_active_metadata_requests=0"
         );
         assert_eq!(listener.accept().unwrap_err().kind(), ErrorKind::WouldBlock);
     }

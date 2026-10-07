@@ -10,13 +10,13 @@
 //! ```
 
 use super::{canonical, BodyEvidence, EncodedImage};
+use crate::clock::{observation_unix_nanos, Instant};
 use crate::db::{
     DirectSqlOwner, DirectUploadSessionRecord, RegistryPublicationManifestSessionRecord,
 };
 use crate::direct_upload::WireInteger;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub(crate) const MAX_CHECKPOINTS: usize = 32;
 const MAX_BYTES: u64 = 12 * 1024;
@@ -163,15 +163,6 @@ pub(crate) struct Pending {
     start: Instant,
 }
 
-fn time() -> Option<u128> {
-    Some(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .ok()?
-            .as_nanos(),
-    )
-}
-
 fn digest(value: &str) -> String {
     super::image(value.as_bytes()).sha256
 }
@@ -260,7 +251,7 @@ impl Pending {
     }
 
     fn new(selection: Selection) -> Option<Self> {
-        let before = match (canonical(&selection, MAX_BYTES), time()) {
+        let before = match (canonical(&selection, MAX_BYTES), observation_unix_nanos()) {
             (Some(_), Some(before)) => before,
             _ => {
                 super::invalidate_sql_projection();
@@ -276,7 +267,7 @@ impl Pending {
 
     /// Records only a real successful completion, never a pending/failed batch.
     pub(crate) fn completed(self) {
-        let Some(after) = time().filter(|after| *after >= self.before) else {
+        let Some(after) = observation_unix_nanos().filter(|after| *after >= self.before) else {
             super::invalidate_sql_projection();
             return;
         };
