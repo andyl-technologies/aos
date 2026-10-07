@@ -124,17 +124,19 @@ empty `terrane` binary.
 
 ### T1 — Local repository
 
-**Status:** In progress; nine of twenty-two T1 tasks are complete. The latest
-owning qualification freezes `4e6c14a7f3`: all ten exact native Active completion
-cases pass with zero ignored cases. The first of eight native cold cases fails
-at the Candidate predecessor comparison: actual revision 8 versus calibrated
-revision 7, with all other state fields equal. The remaining seven cold cases
-are unrun. Both actual Nix inputs match all 4,610 included frozen images;
-all 5,664 source images and filesystem metadata remain unchanged. The
-Recorded per-view interpretation implementation and its stronger owning
-witnesses remain under review and unqualified. D-111 clarifies independent
-current-revision validation without changing registered historical bytes.
-No task merge, checkbox, milestone exit or freeze advances.
+**Status:** In progress; nine of twenty-two T1 tasks are complete. All ten
+exact native Active completion cases pass on `4e6c14a7f3`. The eight-case native
+Legacy cold-fork gate now passes on `e2416dcdec`, including the exact fresh
+Commit catalog Raw-to-Candidate sequence; its earlier predecessor-revision
+failure is resolved. Recorded core changes on `3d757f4fdf` pass all 529 tests,
+twelve exact owning cases, strict Clippy, private rustdoc and the no-std gate.
+The native Recorded implementation and historical/merge witnesses are being
+composed and remain unqualified. Private backfill on `ca3431c38c` compiles and
+passes three exact cases; the fourth fails with `Expired`, with subsequent
+phases unrun. D-111 preserves historical bytes while validating the independent
+current revision. Shared property/algebra gate mappings require actual owning
+witnesses and retain native Fold context coverage. No task merge, checkbox,
+milestone exit or freeze advances.
 
 The preceding completed full qualification records candidate
 `21981e66f440`, which combines the reviewed immutable owner completion and
