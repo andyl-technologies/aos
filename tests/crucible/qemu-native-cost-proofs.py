@@ -68,10 +68,11 @@ def run_fixture(command, directory, negative=False):
         json.dumps({"returncode": completed.returncode}, indent=2) + "\n"
     )
     if negative:
-        executable_name = (
-            "mutex-waiter-counters" if "mutex-waiter" in command[1]
-            else "page-collection"
-        )
+        executable_name = {
+            "test-crucible-mutex-waiter-counters.py": "mutex-waiter-counters",
+            "test-crucible-tcg-page-collection.py": "page-collection",
+            "test-crucible-tcg-crossing-membership.py": "crossing-membership",
+        }[Path(command[1]).name]
         if not (directory / executable_name).is_file():
             raise AssertionError("negative control did not compile its native executable")
         if completed.returncode == 0:
@@ -87,7 +88,7 @@ def run_fixture(command, directory, negative=False):
             native_stderr = retained_stderr.read_text()
         elif (directory / "stderr.txt").is_file():
             if "SIGABRT" not in completed.stderr:
-                raise AssertionError("negative native page child did not abort")
+                raise AssertionError("negative native fixture child did not abort")
             native_stderr = (directory / "stderr.txt").read_text()
         if not re.search(
             r"assertion failed|Assertion .* failed|should (?:not )?be",
@@ -138,6 +139,16 @@ def check_mutex(args, baseline_root):
     }
 
 
+def diagnostic_counts(stderr, label):
+    """Read named native counters without discarding any retained diagnostics."""
+    prefix = f"{label}: "
+    lines = [line for line in stderr.splitlines() if line.startswith(prefix)]
+    if len(lines) != 1:
+        raise AssertionError(f"expected one native diagnostic for {label}")
+    return {key: int(value) for key, value in
+            (field.split("=", 1) for field in lines[0][len(prefix):].split())}
+
+
 def check_pages(args, baseline_root):
     """Compare exact native lock traces against the retained production body."""
     fixture = args.source_root / "tests/unit/test-crucible-tcg-page-collection.py"
@@ -165,9 +176,13 @@ def check_pages(args, baseline_root):
     labels = [line.split(":", 1)[0] for line in positive.stdout.splitlines()[:-1]]
     if labels != expected_labels:
         raise AssertionError("native page collection case coverage differs")
-    if "single-page: tree-lookups=65 trees=1 entries=1" not in baseline.stderr.splitlines():
+    baseline_counts = diagnostic_counts(baseline.stderr, "single-page")
+    positive_counts = diagnostic_counts(positive.stderr, "single-page")
+    if any(baseline_counts.get(key) != value for key, value in
+           {"tree-lookups": 65, "trees": 1, "entries": 1}.items()):
         raise AssertionError("baseline redundant page lookup witness differs")
-    if "single-page: tree-lookups=0 trees=0 entries=0" not in positive.stderr.splitlines():
+    if any(positive_counts.get(key) != 0 for key in
+           ("tree-lookups", "trees", "entries", "memberships")):
         raise AssertionError("inline page allocation and lookup witness differs")
 
     negatives = [
@@ -192,6 +207,7 @@ def check_pages(args, baseline_root):
         "single_page_optimized_trees": 0,
         "single_page_baseline_heap_entries": 1,
         "single_page_optimized_heap_entries": 0,
+        "single_page_optimized_membership_visits": 0,
         "inline_capacity": 4,
         "compiled_causal_negatives": negatives,
         "precise_smc_cleanup": ["inline", "spill"],
@@ -199,9 +215,74 @@ def check_pages(args, baseline_root):
     }
 
 
+def check_crossing_membership(args, baseline_root):
+    """Require native mutation bookkeeping and fresh discovery after retry."""
+    collection_fixture = args.source_root / "tests/unit/test-crucible-tcg-page-collection.py"
+    fixture = args.source_root / "tests/unit/test-crucible-tcg-crossing-membership.py"
+    baseline_dir = args.output_dir / "reference"
+    baseline = run_fixture(
+        [sys.executable, str(collection_fixture), "--source-root", str(baseline_root),
+         "--output-dir", str(baseline_dir)], baseline_dir,
+    )
+    positive = run_fixture(
+        [sys.executable, str(fixture), "--source-root", str(args.source_root),
+         "--output-dir", str(args.output_dir)], args.output_dir,
+    )
+    baseline_lines = baseline.stdout.splitlines()
+    positive_lines = positive.stdout.splitlines()
+    if (len(baseline_lines) != 22 or baseline_lines[-1] != "page-collection: passed"
+            or positive_lines[:len(baseline_lines)] != baseline_lines):
+        raise AssertionError("membership proof native collection traces differ from baseline")
+    if positive_lines[-1] != "crossing-membership: passed":
+        raise AssertionError("native crossing membership success marker absent")
+
+    expected_labels = [
+        "mixed-crossing", "last-crossing-removed", "membership-tags-aliases-mixed",
+        "membership-native-qht-rollback", "retained-invalid",
+        "membership-native-retained-invalid", "sticky-unknown", "after-flush",
+        "membership-saturation-empty-flush", "retry-list-mutated",
+        "membership-retry-fresh-count", "membership-retained-fork-copy",
+    ]
+    labels = [line.split(":", 1)[0]
+              for line in positive_lines[len(baseline_lines):-1]]
+    if labels != expected_labels:
+        raise AssertionError("native membership mutation coverage differs")
+    for label in ("single-page", "last-crossing-removed", "after-flush"):
+        if diagnostic_counts(positive.stderr, label).get("memberships") != 0:
+            raise AssertionError(f"zero crossing count still scanned memberships: {label}")
+    if diagnostic_counts(positive.stderr, "sticky-unknown").get("memberships", 0) <= 0:
+        raise AssertionError("saturated crossing count skipped required discovery")
+
+    negatives = [
+        "omit-increment", "premature-zero", "wrap-count", "miss-empty-reset",
+        "miss-flush-reset", "decrement-hash-only", "cache-across-retry",
+    ]
+    for mutation in negatives:
+        directory = args.output_dir / f"negative-{mutation}"
+        negative = run_fixture(
+            [sys.executable, str(fixture), "--source-root", str(args.source_root),
+             "--output-dir", str(directory), "--negative", mutation],
+            directory, negative=True,
+        )
+        if "crossing-membership: passed" in negative.stdout:
+            raise AssertionError("membership causal negative emitted the success marker")
+    return {
+        "lock_trace_equal": True,
+        "inherited_collection_cases": len(baseline_lines) - 1,
+        "membership_observation_labels": labels,
+        "compiled_causal_negatives": negatives,
+        "zero_count_skips_membership_walk": True,
+        "saturated_count_retains_membership_walk": True,
+        "ordinary_process_fork_copy": True,
+        "full_hot_fork_lifecycle": False,
+        "scope": "extracted-production-membership-mutations-with-explicit-external-providers",
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--case", choices=["mutex-waiter-counters", "tcg-page-collection"],
+    parser.add_argument("--case", choices=["mutex-waiter-counters", "tcg-page-collection",
+                                          "tcg-crossing-membership"],
                         required=True)
     parser.add_argument("--source-root", type=Path, required=True)
     parser.add_argument("--baseline-manifest", type=Path, required=True)
@@ -212,10 +293,12 @@ def main():
     args.output_dir = args.output_dir.resolve()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     baseline_root, manifest = reconstruct_baseline(args)
-    result = (
-        check_mutex(args, baseline_root) if args.case == "mutex-waiter-counters"
-        else check_pages(args, baseline_root)
-    )
+    check = {
+        "mutex-waiter-counters": check_mutex,
+        "tcg-page-collection": check_pages,
+        "tcg-crossing-membership": check_crossing_membership,
+    }[args.case]
+    result = check(args, baseline_root)
     result.update({
         "status": "PASS",
         "reference_revision": manifest["revision"],

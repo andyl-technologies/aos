@@ -1764,10 +1764,11 @@ in
               for name, source_file in (
                   ("mutex-waiter-counters", "/util/qemu-thread-posix.c"),
                   ("tcg-page-collection", "/accel/tcg/tb-maint.c"),
+                  ("tcg-crossing-membership", "/accel/tcg/tb-maint.c"),
               ):
                   entries = [entry for entry in commands
                              if entry["file"].endswith(source_file)]
-                  if name == "tcg-page-collection":
+                  if source_file == "/accel/tcg/tb-maint.c":
                       # This target-neutral unit is compiled for both shared
                       # libraries; its system definition owns PageDesc locks.
                       entries = [entry for entry in entries
@@ -1799,7 +1800,7 @@ in
                       ], cwd=entry["directory"], env=environment,
                          stdout=result, check=True)
               PYTHON
-              for name in mutex-waiter-counters tcg-page-collection; do
+              for name in mutex-waiter-counters tcg-page-collection tcg-crossing-membership; do
                 cat "$name.result"
                 grep -Fxq "PASS production $name: differential observations and compiled causal negatives" \
                   "$name.result"
@@ -4381,7 +4382,7 @@ in
                 install -m 644 "$name-proof/compile-command.json" \
                   "$out/share/aos/crucible/$name.compile-command.json"
               done
-              for name in mutex-waiter-counters tcg-page-collection; do
+              for name in mutex-waiter-counters tcg-page-collection tcg-crossing-membership; do
                 install -m 644 "$name.result" \
                   "$out/share/aos/crucible/$name.result"
                 cp -R "$name-proof" "$out/share/aos/crucible/$name-proof"

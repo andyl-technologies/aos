@@ -4,7 +4,7 @@
   revision = "33343f63cb5e8749caadcb251c6b8a90ed0482cf";
   tree = "4f24df196ef8364bf75a61fd22b7f6e054f9fa4c";
   patch = ./_fixtures/native-costs-baseline-reconstruction.patch;
-  patchSha256 = "233da2c0995e013c411d6d36f702376de61a48efcff3bcb65c335dfeb7d88e96";
+  patchSha256 = "aa62bbdda6c96625777b01d6207e0a7033f43fd13db8d051ab01c76864c8593c";
   files = {
     "include/qemu/qtree.h" = "b48246fba9dc199cfc3c77678ed7421d75c4f4c267c6ff42d669110b54ed871b";
     "include/qemu/compiler.h" = "9640b9e818058e7872f42dbdba89b2605a6c66b7ccb7ce0a3836d1a902787f24";
