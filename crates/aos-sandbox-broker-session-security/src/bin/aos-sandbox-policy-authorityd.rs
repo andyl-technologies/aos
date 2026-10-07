@@ -5567,14 +5567,39 @@ mod tests {
 fn read_bounded(path: &Path, maximum: u64) -> io::Result<Vec<u8>> {
     let file = File::open(path)?;
     let mut bytes = Vec::new();
-    file.take(maximum + 1).read_to_end(&mut bytes)?;
+    read_bounded_into(file, maximum, &mut bytes)?;
+    Ok(bytes)
+}
+
+// Both an ordinary owned File and a selected original borrowed File use this
+// same Read/size kernel. It does not grant payment or erase partial bytes.
+fn read_bounded_into(
+    file: impl Read,
+    maximum: u64,
+    bytes: &mut Vec<u8>,
+) -> io::Result<()> {
+    file.take(maximum + 1).read_to_end(bytes)?;
     if bytes.is_empty() || u64::try_from(bytes.len()).unwrap_or(u64::MAX) > maximum {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "credential size",
         ));
     }
-    Ok(bytes)
+    Ok(())
+}
+
+// The prospective selected startup owner supplies thirteen fixed destinations.
+// These slots are inert until its complete prefix recipe admits the read. A
+// native open/read or reservation cause is retained, never replaced by the
+// pair classifier's coarse refusal. Vec capacity, not wire length, is charged.
+#[derive(Default)]
+struct RootCredentialReadOriginal {
+    file: Option<io::Result<File>>,
+    bytes: Vec<u8>,
+    reservation: Option<Result<(), std::collections::TryReserveError>>,
+    read: Option<io::Result<()>>,
+    admitted_capacity: usize,
+    attempted: bool,
 }
 
 fn read_optional_cache_pin(root: &Path) -> io::Result<Option<Vec<u8>>> {

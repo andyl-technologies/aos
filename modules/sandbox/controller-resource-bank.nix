@@ -99,21 +99,28 @@
         default = null;
         description = "Full once-only original Q04 intake subdivision paying bounded observations before Project preparation.";
       };
+      rootReceiving = lib.mkOption {
+        type = lib.types.nullOr vectorType;
+        default = null;
+        description = "Finite original Root service and receiving-prefix subdivision inside Components, alongside Host.";
+      };
     };
   };
 
   policy = pkgs.runCommand "aos-controller-resource-bootstrap-policy-v1" {
     nativeBuildInputs = [pkgs.python3 pkgs.coreutils];
     policyJson = builtins.toJSON (
-      if cfg.policy.q04OriginalIntake != null
+      if cfg.policy.rootReceiving != null
       then cfg.policy
+      else if cfg.policy.q04OriginalIntake != null
+      then builtins.removeAttrs cfg.policy ["rootReceiving"]
       else if cfg.policy.nixOriginalStartIntake != null
-      then builtins.removeAttrs cfg.policy ["q04OriginalIntake"]
+      then builtins.removeAttrs cfg.policy ["q04OriginalIntake" "rootReceiving"]
       else if cfg.policy.firstGlobalPrefix != null
-      then builtins.removeAttrs cfg.policy ["nixOriginalStartIntake" "q04OriginalIntake"]
+      then builtins.removeAttrs cfg.policy ["nixOriginalStartIntake" "q04OriginalIntake" "rootReceiving"]
       else if cfg.policy.hostService == null && cfg.policy.hostControl == null
-      then builtins.removeAttrs cfg.policy ["hostService" "hostControl" "firstGlobalPrefix" "nixOriginalStartIntake" "q04OriginalIntake"]
-      else builtins.removeAttrs cfg.policy ["firstGlobalPrefix" "nixOriginalStartIntake" "q04OriginalIntake"]
+      then builtins.removeAttrs cfg.policy ["hostService" "hostControl" "firstGlobalPrefix" "nixOriginalStartIntake" "q04OriginalIntake" "rootReceiving"]
+      else builtins.removeAttrs cfg.policy ["firstGlobalPrefix" "nixOriginalStartIntake" "q04OriginalIntake" "rootReceiving"]
     );
     dimensionJson = builtins.toJSON dimensions;
     controllerMinimumJson = builtins.toJSON controllerMinimum;
@@ -140,11 +147,13 @@
     prefix_fields = host_fields | {"firstGlobalPrefix"}
     intake_fields = prefix_fields | {"nixOriginalStartIntake"}
     q04_fields = intake_fields | {"q04OriginalIntake"}
-    q04_selected = set(policy) == q04_fields
-    intake_selected = set(policy) in (intake_fields, q04_fields)
-    prefix_selected = set(policy) in (prefix_fields, intake_fields, q04_fields)
-    host_selected = set(policy) in (host_fields, prefix_fields, intake_fields, q04_fields)
-    if set(policy) not in (legacy_fields, host_fields, prefix_fields, intake_fields, q04_fields):
+    root_fields = q04_fields | {"rootReceiving"}
+    root_selected = set(policy) == root_fields
+    q04_selected = set(policy) in (q04_fields, root_fields)
+    intake_selected = set(policy) in (intake_fields, q04_fields, root_fields)
+    prefix_selected = set(policy) in (prefix_fields, intake_fields, q04_fields, root_fields)
+    host_selected = set(policy) in (host_fields, prefix_fields, intake_fields, q04_fields, root_fields)
+    if set(policy) not in (legacy_fields, host_fields, prefix_fields, intake_fields, q04_fields, root_fields):
         raise ValueError("resource policy must contain its complete fixed schema")
 
     def identity(name):
@@ -262,7 +271,22 @@
             raise ValueError("the Q04 intake does not cover the installed original Controller CPU rate")
         q04_vectors = (q04,)
 
-    magic = b"AOSRSB05" if q04_selected else (b"AOSRSB04" if intake_selected else (b"AOSRSB03" if prefix_selected else (b"AOSRSB02" if host_selected else b"AOSRSB01")))
+    root_vectors = ()
+    if root_selected:
+        root = vector("rootReceiving")
+        if any(host_service[index] + host_control[index] + root[index] > components[index] for index in range(22)):
+            raise ValueError("the disjoint Host and Root subdivisions exceed Components")
+        if any(root[dimensions.index(name)] == 0 for name in (
+            "cpu-micros-per-period", "memory-bytes", "pids", "open-files", "concurrent-operations"
+        )):
+            raise ValueError("the original Root service envelope is incomplete")
+        if root[0] % 1000 != 0 or root[0] > ((1 << 64) - 1) // 10:
+            raise ValueError("the Root 100ms CPU rate must convert exactly without overflow")
+        if root[1] % 4096 != 0 or root[2] < 2 or root[3] < 80:
+            raise ValueError("the Root peak service bounds cannot contain the fixed capture and worker")
+        root_vectors = (root,)
+
+    magic = b"AOSRSB06" if root_selected else (b"AOSRSB05" if q04_selected else (b"AOSRSB04" if intake_selected else (b"AOSRSB03" if prefix_selected else (b"AOSRSB02" if host_selected else b"AOSRSB01"))))
     body = magic + identity("node") + identity("epoch")
     for values in (capacity, baseline, controller, components):
         body += struct.pack(">22Q", *values)
@@ -274,8 +298,10 @@
         body += struct.pack(">22Q", *values)
     for values in q04_vectors:
         body += struct.pack(">22Q", *values)
+    for values in root_vectors:
+        body += struct.pack(">22Q", *values)
     encoded = body + hashlib.sha256(body).digest()
-    if len(encoded) != (1656 if q04_selected else (1480 if intake_selected else (1304 if prefix_selected else (1128 if host_selected else 776)))):
+    if len(encoded) != (1832 if root_selected else (1656 if q04_selected else (1480 if intake_selected else (1304 if prefix_selected else (1128 if host_selected else 776))))):
         raise ValueError("native bootstrap policy width changed")
     Path(sys.argv[1]).write_bytes(encoded)
     PY
@@ -338,6 +364,13 @@ in {
         assertion = cfg.policy.q04OriginalIntake == null
           || cfg.policy.nixOriginalStartIntake != null;
         message = "V5 Q04 intake extends the complete disjoint Controller image family.";
+      }
+      {
+        assertion = cfg.policy.rootReceiving == null
+          || (cfg.policy.q04OriginalIntake != null
+            && config.aos.sandbox.policyAuthority.enable
+            && config.aos.sandbox.policyAuthority.package == pkgs.aos-sandboxd);
+        message = "V6 original Root receiving requires the complete V5 family and the selected confined Root service.";
       }
     ];
     aos.sandbox.resourceBank._imagePolicy = policy;

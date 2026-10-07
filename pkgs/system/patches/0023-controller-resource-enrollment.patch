@@ -2,18 +2,25 @@ diff --git a/src/core/aos-resource-enrollment.h b/src/core/aos-resource-enrollme
 new file mode 100644
 --- /dev/null
 +++ b/src/core/aos-resource-enrollment.h
-@@ -0,0 +1,14 @@
+@@ -0,0 +1,21 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +#pragma once
 +
 +#include "manager.h"
 +#include "unit.h"
 +#include "service.h"
++#include "process-util.h"
 +
 +/* This is original PID1 custody, not a serialized reservation receipt. */
 +int aos_resource_enrollment_begin(Manager *manager, bool restoring);
 +int aos_resource_require_unit(Unit *unit);
 +int aos_resource_deliver_component(Service *service);
++int aos_resource_prepare_root_exec(Service *service, ExecCommand *command, ExecFlags flags);
++int aos_resource_enforce_root_limits(Service *service);
++bool aos_resource_root_selected_name(const char *name);
++bool aos_resource_root_protected_unit(const Unit *unit);
++FixedCgroupSpawnOriginal *aos_resource_root_spawn_original(Unit *unit);
++int aos_resource_root_cgroup_fd(Unit *unit);
 +sd_id128_t aos_resource_unit_producer(Service *service);
 +int aos_resource_job_acquire(Unit *unit);
 +void aos_resource_job_release(bool charged);
@@ -21,16 +28,19 @@ diff --git a/src/core/aos-resource-enrollment.c b/src/core/aos-resource-enrollme
 new file mode 100644
 --- /dev/null
 +++ b/src/core/aos-resource-enrollment.c
-@@ -0,0 +1,435 @@
+@@ -0,0 +1,626 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +
 +#include <fcntl.h>
 +#include <sys/stat.h>
 +#include <sys/vfs.h>
++#include <sys/resource.h>
 +#include <unistd.h>
 +
 +#include "aos-resource-enrollment.h"
 +#include "alloc-util.h"
++#include "cgroup-util.h"
++#include "cgroup.h"
 +#include "fd-util.h"
 +#include "initrd-util.h"
 +#include "load-fragment.h"
@@ -49,6 +59,9 @@ new file mode 100644
 +#define AOS_RESOURCE_NIX_INTAKE_POLICY_BODY 1448U
 +#define AOS_RESOURCE_Q04_INTAKE_POLICY_BYTES 1656U
 +#define AOS_RESOURCE_Q04_INTAKE_POLICY_BODY 1624U
++#define AOS_RESOURCE_ROOT_POLICY_BYTES 1832U
++#define AOS_RESOURCE_ROOT_POLICY_BODY 1800U
++#define AOS_RESOURCE_ROOT_OFFSET 1624U
 +#define AOS_RESOURCE_VECTOR_BYTES (22U * 8U)
 +#define AOS_RESOURCE_COMPONENTS_OFFSET (40U + 3U * AOS_RESOURCE_VECTOR_BYTES)
 +#define AOS_RESOURCE_CONCURRENT_OPERATIONS 21U
@@ -79,16 +92,34 @@ new file mode 100644
 +        bool admitted;
 +        sd_id128_t boot;
 +        sd_id128_t invocation;
-+        uint8_t policy[AOS_RESOURCE_Q04_INTAKE_POLICY_BYTES];
++        uint8_t policy[AOS_RESOURCE_ROOT_POLICY_BYTES];
 +        size_t policy_bytes;
 +        uint64_t job_limit;
 +        uint64_t jobs;
 +        sd_id128_t controller_invocation;
 +        sd_id128_t storage_invocation;
 +        sd_id128_t host_invocation;
++        sd_id128_t root_invocation;
 +        AosResourceDelivery controller_delivery;
 +        AosResourceDelivery storage_delivery;
 +        AosResourceDelivery host_delivery;
++        AosResourceDelivery root_delivery;
++        int root_cgroup_fd;
++        int root_control_fds[3];
++        int root_write_results[3];
++        int root_read_results[3];
++        ssize_t root_write_lengths[3];
++        ssize_t root_read_lengths[3];
++        struct stat root_cgroup_stat;
++        struct statfs root_cgroup_statfs;
++        struct stat root_control_stats[3];
++        int root_cgroup_stat_result;
++        int root_cgroup_statfs_result;
++        int root_control_stat_results[3];
++        uint8_t root_readback[3][128];
++        int root_limit_error;
++        bool root_limits_attempted;
++        FixedCgroupSpawnOriginal root_spawn;
 +} AosResourceEnrollment;
 +
 +/* The existing root PID1 is the only issuer. This original owner is neither
@@ -109,6 +140,17 @@ new file mode 100644
 +        .controller_delivery = AOS_RESOURCE_DELIVERY_EMPTY,
 +        .storage_delivery = AOS_RESOURCE_DELIVERY_EMPTY,
 +        .host_delivery = AOS_RESOURCE_DELIVERY_EMPTY,
++        .root_delivery = AOS_RESOURCE_DELIVERY_EMPTY,
++        .root_cgroup_fd = -EBADF,
++        .root_control_fds = { -EBADF, -EBADF, -EBADF },
++        .root_write_results = { -EBADF, -EBADF, -EBADF },
++        .root_read_results = { -EBADF, -EBADF, -EBADF },
++        .root_write_lengths = { -EBADF, -EBADF, -EBADF },
++        .root_read_lengths = { -EBADF, -EBADF, -EBADF },
++        .root_cgroup_stat_result = -EBADF,
++        .root_cgroup_statfs_result = -EBADF,
++        .root_control_stat_results = { -EBADF, -EBADF, -EBADF },
++        .root_spawn = { .pidfd = -EBADF, .duplicate_pidfd = -EBADF },
 +};
 +
 +static uint64_t policy_u64(const uint8_t *bytes) {
@@ -141,7 +183,8 @@ new file mode 100644
 +            (st.st_size != AOS_RESOURCE_POLICY_BYTES && st.st_size != AOS_RESOURCE_HOST_POLICY_BYTES &&
 +             st.st_size != AOS_RESOURCE_FIRST_GLOBAL_POLICY_BYTES &&
 +             st.st_size != AOS_RESOURCE_NIX_INTAKE_POLICY_BYTES &&
-+             st.st_size != AOS_RESOURCE_Q04_INTAKE_POLICY_BYTES) ||
++             st.st_size != AOS_RESOURCE_Q04_INTAKE_POLICY_BYTES &&
++             st.st_size != AOS_RESOURCE_ROOT_POLICY_BYTES) ||
 +            st.st_uid != 0 || st.st_gid != 0 || (st.st_mode & 0222) != 0 ||
 +            fs.f_type != AOS_RESOURCE_EROFS_MAGIC)
 +                return -EPERM;
@@ -159,16 +202,18 @@ new file mode 100644
 +                        return -EBADMSG;
 +                used += returned;
 +        }
++        bool root_receiving = enrollment.policy_bytes == AOS_RESOURCE_ROOT_POLICY_BYTES;
 +        bool q04_intake = enrollment.policy_bytes == AOS_RESOURCE_Q04_INTAKE_POLICY_BYTES;
 +        bool nix_intake = enrollment.policy_bytes == AOS_RESOURCE_NIX_INTAKE_POLICY_BYTES;
 +        bool first_global = enrollment.policy_bytes == AOS_RESOURCE_FIRST_GLOBAL_POLICY_BYTES;
 +        bool host_policy = enrollment.policy_bytes == AOS_RESOURCE_HOST_POLICY_BYTES;
-+        size_t body_bytes = q04_intake ? AOS_RESOURCE_Q04_INTAKE_POLICY_BODY :
++        size_t body_bytes = root_receiving ? AOS_RESOURCE_ROOT_POLICY_BODY :
++                            q04_intake ? AOS_RESOURCE_Q04_INTAKE_POLICY_BODY :
 +                            nix_intake ? AOS_RESOURCE_NIX_INTAKE_POLICY_BODY :
 +                            first_global ? AOS_RESOURCE_FIRST_GLOBAL_POLICY_BODY :
 +                            (host_policy ? AOS_RESOURCE_HOST_POLICY_BODY : AOS_RESOURCE_POLICY_BODY);
-+        const char *magic = q04_intake ? "AOSRSB05" : (nix_intake ? "AOSRSB04" :
-+                            first_global ? "AOSRSB03" : (host_policy ? "AOSRSB02" : "AOSRSB01"));
++        const char *magic = root_receiving ? "AOSRSB06" : (q04_intake ? "AOSRSB05" : (nix_intake ? "AOSRSB04" :
++                            first_global ? "AOSRSB03" : (host_policy ? "AOSRSB02" : "AOSRSB01")));
 +        if (memcmp(enrollment.policy, magic, 8) != 0)
 +                return -EBADMSG;
 +        sha256_direct(enrollment.policy, body_bytes, digest);
@@ -236,7 +281,8 @@ new file mode 100644
 +        return enrollment.policy_bytes == AOS_RESOURCE_HOST_POLICY_BYTES ||
 +               enrollment.policy_bytes == AOS_RESOURCE_FIRST_GLOBAL_POLICY_BYTES ||
 +               enrollment.policy_bytes == AOS_RESOURCE_NIX_INTAKE_POLICY_BYTES ||
-+               enrollment.policy_bytes == AOS_RESOURCE_Q04_INTAKE_POLICY_BYTES;
++               enrollment.policy_bytes == AOS_RESOURCE_Q04_INTAKE_POLICY_BYTES ||
++               enrollment.policy_bytes == AOS_RESOURCE_ROOT_POLICY_BYTES;
 +}
 +
 +bool aos_resource_host_selected_name(const char *name) {
@@ -246,6 +292,154 @@ new file mode 100644
 +               host_policy_family() &&
 +               streq_ptr(name, "aos-sandbox-hostd.service") &&
 +               aos_network_image_guard_active();
++}
++
++bool aos_resource_root_selected_name(const char *name) {
++        /* Selection survives refusal. Losing the original issuer must not
++         * reclassify this fixed unit as mutable or ordinarily funded. */
++        return enrollment.policy_bytes == AOS_RESOURCE_ROOT_POLICY_BYTES &&
++               streq_ptr(name, "aos-sandbox-policy-authorityd.service") &&
++               aos_network_image_guard_active();
++}
++
++bool aos_resource_root_protected_unit(const Unit *unit) {
++        const char *alias;
++        bool selected = aos_resource_root_selected_name(unit->id);
++
++        SET_FOREACH(alias, unit->aliases)
++                if (aos_resource_root_selected_name(alias))
++                        selected = true;
++        return selected;
++}
++
++/* R is the image's once-only subdivision of the existing Components grant.
++ * These fixed owner slots are armed before any Root command can run. A dead
++ * or uncertain invocation cannot receive another envelope by restarting. */
++int aos_resource_prepare_root_exec(Service *service, ExecCommand *command, ExecFlags flags) {
++        const ExecContext *context = &service->exec_context;
++        const CGroupContext *cgroup = &service->cgroup_context;
++        const struct rlimit *nofile = context->rlimit[RLIMIT_NOFILE];
++        const uint8_t *root = enrollment.policy + AOS_RESOURCE_ROOT_OFFSET;
++        uint64_t cpu, memory, tasks, files;
++        int r;
++
++        if (!aos_resource_root_selected_name(UNIT(service)->id))
++                return 0;
++        if (enrollment.root_limits_attempted)
++                return refuse(-EOWNERDEAD);
++        enrollment.root_limits_attempted = true;
++
++        r = aos_resource_verify_component_fragment(UNIT(service));
++        if (r < 0)
++                return refuse(enrollment.root_limit_error = r);
++        cpu = policy_u64(root);
++        memory = policy_u64(root + 8);
++        tasks = policy_u64(root + 16);
++        files = policy_u64(root + 24);
++        if (cpu == 0 || cpu > UINT64_MAX / 10 || memory == 0 || memory % 4096 != 0 ||
++            tasks == 0 || tasks == UINT64_MAX || files < 80 || files >= RLIM_INFINITY ||
++            policy_u64(root + AOS_RESOURCE_CONCURRENT_OPERATIONS * 8U) == 0 ||
++            command != service->exec_command[SERVICE_EXEC_START] ||
++            !FLAGS_SET(flags, EXEC_APPLY_SANDBOXING | EXEC_PASS_FDS) ||
++            FLAGS_SET(flags, EXEC_IS_CONTROL) ||
++            FLAGS_SET(command->flags, EXEC_COMMAND_FULLY_PRIVILEGED) ||
++            context->pam_name != NULL || service->permissions_start_only ||
++            !strv_isempty(context->environment_files) || !strv_isempty(context->pass_environment) ||
++            !strv_isempty(context->exec_search_path) ||
++            !nofile || nofile->rlim_cur != files || nofile->rlim_max != files ||
++            cgroup->memory_max != memory || cgroup->startup_memory_max_set ||
++            cgroup->tasks_max.scale != 0 || cgroup->tasks_max.value != tasks ||
++            cgroup->cpu_quota_per_sec_usec != cpu * 10 ||
++            cgroup->cpu_quota_period_usec != 100000 ||
++            cgroup->delegate || !isempty(cgroup->delegate_subgroup) ||
++            !context->no_new_privileges || context->capability_bounding_set != 0 ||
++            context->capability_ambient_set != 0)
++                return refuse(enrollment.root_limit_error = -EPERM);
++        return 0;
++}
++
++int aos_resource_enforce_root_limits(Service *service) {
++        static const char *const controls[3] = { "memory.max", "pids.max", "cpu.max" };
++        CGroupRuntime *runtime;
++        char expected[3][128];
++        const uint8_t *root = enrollment.policy + AOS_RESOURCE_ROOT_OFFSET;
++        int r;
++
++        if (!aos_resource_root_selected_name(UNIT(service)->id))
++                return 0;
++        if (!enrollment.root_limits_attempted || enrollment.root_limit_error < 0 ||
++            enrollment.root_cgroup_fd >= 0)
++                return refuse(-EOWNERDEAD);
++        runtime = unit_get_cgroup_runtime(UNIT(service));
++        if (!runtime || !streq_ptr(runtime->cgroup_path, "/system.slice/aos-sandbox-policy-authorityd.service"))
++                return refuse(enrollment.root_limit_error = -EPERM);
++
++        /* unit_prepare_exec has realized the cgroup. Its ordinary setters log
++         * failures and continue, so this owner installs and checks each real
++         * kernel control before spawn. No mutable unit value is the proof. */
++        enrollment.root_cgroup_fd = cg_path_open(runtime->cgroup_path);
++        if (enrollment.root_cgroup_fd < 0)
++                return refuse(enrollment.root_limit_error = enrollment.root_cgroup_fd);
++        enrollment.root_cgroup_stat_result = fstat(enrollment.root_cgroup_fd, &enrollment.root_cgroup_stat) < 0 ? -errno : 0;
++        enrollment.root_cgroup_statfs_result = fstatfs(enrollment.root_cgroup_fd, &enrollment.root_cgroup_statfs) < 0 ? -errno : 0;
++        if (enrollment.root_cgroup_stat_result < 0)
++                return refuse(enrollment.root_limit_error = enrollment.root_cgroup_stat_result);
++        if (enrollment.root_cgroup_statfs_result < 0)
++                return refuse(enrollment.root_limit_error = enrollment.root_cgroup_statfs_result);
++        if (enrollment.root_cgroup_statfs.f_type != 0x63677270 ||
++            !S_ISDIR(enrollment.root_cgroup_stat.st_mode) ||
++            enrollment.root_cgroup_stat.st_uid != 0 || enrollment.root_cgroup_stat.st_gid != 0 ||
++            runtime->cgroup_id == 0 || enrollment.root_cgroup_stat.st_ino != runtime->cgroup_id)
++                return refuse(enrollment.root_limit_error = -EPERM);
++        snprintf(expected[0], sizeof(expected[0]), "%" PRIu64 "\n", policy_u64(root + 8));
++        snprintf(expected[1], sizeof(expected[1]), "%" PRIu64 "\n", policy_u64(root + 16));
++        snprintf(expected[2], sizeof(expected[2]), "%" PRIu64 " 100000\n", policy_u64(root));
++        for (unsigned i = 0; i < 3; i++) {
++                size_t length = strlen(expected[i]);
++                ssize_t returned;
++
++                enrollment.root_control_fds[i] = openat(enrollment.root_cgroup_fd, controls[i], O_RDWR | O_CLOEXEC | O_NOFOLLOW);
++                if (enrollment.root_control_fds[i] < 0)
++                        return refuse(enrollment.root_limit_error = -errno);
++                enrollment.root_control_stat_results[i] = fstat(enrollment.root_control_fds[i], &enrollment.root_control_stats[i]) < 0 ? -errno : 0;
++                if (enrollment.root_control_stat_results[i] < 0)
++                        return refuse(enrollment.root_limit_error = enrollment.root_control_stat_results[i]);
++                if (!S_ISREG(enrollment.root_control_stats[i].st_mode) ||
++                    enrollment.root_control_stats[i].st_dev != enrollment.root_cgroup_stat.st_dev ||
++                    enrollment.root_control_stats[i].st_uid != 0 || enrollment.root_control_stats[i].st_gid != 0)
++                        return refuse(enrollment.root_limit_error = -EPERM);
++                returned = write(enrollment.root_control_fds[i], expected[i], length);
++                enrollment.root_write_lengths[i] = returned;
++                r = returned < 0 ? -errno : (returned == (ssize_t) length ? 0 : -EIO);
++                enrollment.root_write_results[i] = r;
++                if (r < 0)
++                        return refuse(enrollment.root_limit_error = r);
++                returned = pread(enrollment.root_control_fds[i], enrollment.root_readback[i], sizeof(enrollment.root_readback[i]), 0);
++                enrollment.root_read_lengths[i] = returned;
++                r = returned < 0 ? -errno :
++                    (returned == (ssize_t) length && memcmp(enrollment.root_readback[i], expected[i], length) == 0 ? 0 : -EPERM);
++                enrollment.root_read_results[i] = r;
++                if (r < 0)
++                        return refuse(enrollment.root_limit_error = r);
++        }
++        /* With sandboxing mandatory and PAM absent, exec_invoke's existing
++         * setrlimit_closest_all applies both finite NOFILE limits before exec.
++         * Its only fallback clamps downward; every other failure stops exec. */
++        return 0;
++}
++
++FixedCgroupSpawnOriginal *aos_resource_root_spawn_original(Unit *unit) {
++        if (!aos_resource_root_selected_name(unit->id) ||
++            !enrollment.admitted || enrollment.manager != unit->manager ||
++            enrollment.root_limit_error < 0 || enrollment.root_cgroup_fd < 0 ||
++            enrollment.root_read_results[0] != 0 || enrollment.root_read_results[1] != 0 ||
++            enrollment.root_read_results[2] != 0)
++                return NULL;
++        return &enrollment.root_spawn;
++}
++
++int aos_resource_root_cgroup_fd(Unit *unit) {
++        return aos_resource_root_spawn_original(unit) ? enrollment.root_cgroup_fd : -EPERM;
 +}
 +
 +static bool selected_unit(const Unit *unit) {
@@ -302,6 +496,8 @@ new file mode 100644
 +        if (host_policy_family() &&
 +            streq_ptr(unit->id, "aos-sandbox-hostd.service"))
 +                return &enrollment.host_invocation;
++        if (aos_resource_root_selected_name(unit->id))
++                return &enrollment.root_invocation;
 +        return NULL;
 +}
 +
@@ -313,6 +509,8 @@ new file mode 100644
 +        if (host_policy_family() &&
 +            streq_ptr(unit->id, "aos-sandbox-hostd.service"))
 +                return &enrollment.host_delivery;
++        if (aos_resource_root_selected_name(unit->id))
++                return &enrollment.root_delivery;
 +        return NULL;
 +}
 +
@@ -457,12 +655,173 @@ new file mode 100644
 +        /* Only the freed local Job slot is reusable. Neither fixed envelope
 +         * nor a durable project claim is refunded by object destruction. */
 +}
+diff --git a/src/core/dbus-unit.c b/src/core/dbus-unit.c
+--- a/src/core/dbus-unit.c
++++ b/src/core/dbus-unit.c
+@@ -22,2 +22,3 @@
+ #include "format-util.h"
++#include "aos-resource-enrollment.h"
+ #include "install.h"
+@@ -2594,4 +2594,8 @@ int bus_unit_set_properties(
+         assert(u);
+         assert(message);
+ 
++        if (aos_resource_root_protected_unit(u))
++                return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_ACCESS_DENIED,
++                                         "Original Root does not accept property overrides");
++
+         /* Reject in-memory control overrides before the first setter runs. */
+diff --git a/src/core/load-dropin.c b/src/core/load-dropin.c
+--- a/src/core/load-dropin.c
++++ b/src/core/load-dropin.c
+@@ -1,2 +1,3 @@
+ /* SPDX-License-Identifier: LGPL-2.1-or-later */
++#include "aos-resource-enrollment.h"
+ 
+@@ -36,4 +36,8 @@ static int process_deps(Unit *u, UnitDependency dependency, const char *dir_suffix) {
+         if (r < 0)
+                 return r;
+ 
++        if (aos_resource_root_protected_unit(u) && !strv_isempty(paths))
++                return log_unit_error_errno(u, SYNTHETIC_ERRNO(EPERM),
++                                            "Refusing original Root dependency drop-ins: %m");
++
+         if (aos_nix_protected_unit(u) && !strv_isempty(paths))
+@@ -124,4 +124,8 @@ int unit_load_dropin(Unit *u) {
+         if (r <= 0)
+                 return 0;
+ 
++        if (aos_resource_root_protected_unit(u))
++                return log_unit_error_errno(u, SYNTHETIC_ERRNO(EPERM),
++                                            "Refusing original Root configuration drop-ins: %m");
++
+         if (aos_nix_protected_unit(u))
+diff --git a/src/core/unit.c b/src/core/unit.c
+--- a/src/core/unit.c
++++ b/src/core/unit.c
+@@ -1,2 +1,3 @@
+ /* SPDX-License-Identifier: LGPL-2.1-or-later */
++#include "aos-resource-enrollment.h"
+ 
+@@ -1820,3 +1820,3 @@ static int aos_network_unit_environment(Unit *u, char ***ret) {
+-            !aos_nix_protected_unit(u))
++            !aos_nix_protected_unit(u) && !aos_resource_root_protected_unit(u))
+                 return manager_get_effective_environment(u->manager, ret);
+ 
+diff --git a/src/basic/process-util.h b/src/basic/process-util.h
+--- a/src/basic/process-util.h
++++ b/src/basic/process-util.h
+@@ -243,1 +243,23 @@
++/* Native custody of one fixed-cgroup spawn, never serialized authority. */
++typedef struct FixedCgroupSpawnOriginal {
++        bool attempted;
++        int pidfd;
++        int duplicate_pidfd;
++        int sigfill_result;
++        int attr_result;
++        int cgroup_result;
++        int flags_result;
++        int mask_result;
++        int spawn_result;
++        int pidref_result;
++} FixedCgroupSpawnOriginal;
++
++int posix_spawn_wrapper_fixed_cgroup(
++                const char *path,
++                char * const *argv,
++                char * const *envp,
++                int original_cgroup_fd,
++                FixedCgroupSpawnOriginal *original,
++                PidRef *ret_pidref);
++
+ int posix_spawn_wrapper(
+diff --git a/src/basic/process-util.c b/src/basic/process-util.c
+--- a/src/basic/process-util.c
++++ b/src/basic/process-util.c
+@@ -2129,1 +2129,55 @@
++int posix_spawn_wrapper_fixed_cgroup(
++                const char *path,
++                char * const *argv,
++                char * const *envp,
++                int original_cgroup_fd,
++                FixedCgroupSpawnOriginal *original,
++                PidRef *ret_pidref) {
++        posix_spawnattr_t attr;
++        sigset_t mask;
++
++        assert(path);
++        assert(argv);
++        assert(original);
++        assert(ret_pidref);
++
++        if (original->attempted || original_cgroup_fd < 0)
++                return -EOWNERDEAD;
++        original->attempted = true;
++        original->sigfill_result = sigfillset(&mask) < 0 ? -errno : 0;
++        if (original->sigfill_result < 0)
++                return original->sigfill_result;
++        original->attr_result = posix_spawnattr_init(&attr);
++        if (original->attr_result != 0)
++                return -original->attr_result;
++        _unused_ _cleanup_(posix_spawnattr_destroyp) posix_spawnattr_t *attr_destructor = &attr;
++
++        /* A libc/kernel/privilege refusal occurs before any child runs.
++         * The ordinary wrapper and its fallback remain unchanged. */
++        original->cgroup_result = posix_spawnattr_setcgroup_np(&attr, original_cgroup_fd);
++        if (original->cgroup_result != 0)
++                return -original->cgroup_result;
++        original->flags_result = posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETCGROUP);
++        if (original->flags_result != 0)
++                return -original->flags_result;
++        original->mask_result = posix_spawnattr_setsigmask(&attr, &mask);
++        if (original->mask_result != 0)
++                return -original->mask_result;
++
++        original->spawn_result = pidfd_spawn(&original->pidfd, path, NULL, &attr, argv, envp);
++        if (original->spawn_result != 0)
++                return -original->spawn_result;
++        /* Preserve the original pidfd even if its normal unit handoff fails.
++         * A spawned but uncertain child stays charged and cannot be retried. */
++        original->duplicate_pidfd = fcntl(original->pidfd, F_DUPFD_CLOEXEC, 3);
++        if (original->duplicate_pidfd < 0) {
++                original->duplicate_pidfd = -errno;
++                return original->duplicate_pidfd;
++        }
++        original->pidref_result = pidref_set_pidfd_consume(ret_pidref, TAKE_FD(original->duplicate_pidfd));
++        if (original->pidref_result < 0)
++                return original->pidref_result;
++        return 1;
++}
++
+ int proc_dir_open(DIR **ret) {
+diff --git a/src/core/execute.c b/src/core/execute.c
+--- a/src/core/execute.c
++++ b/src/core/execute.c
+@@ -1,2 +1,3 @@
+ /* SPDX-License-Identifier: LGPL-2.1-or-later */
++#include "aos-resource-enrollment.h"
+ 
+@@ -581,2 +581,12 @@
+-        r = posix_spawn_wrapper(
++        FixedCgroupSpawnOriginal *root_spawn = aos_resource_root_spawn_original(unit);
++        if (aos_resource_root_protected_unit(unit) && !root_spawn)
++                return log_unit_error_errno(unit, SYNTHETIC_ERRNO(EPERM), "Missing original Root spawn custody");
++        if (root_spawn)
++                r = posix_spawn_wrapper_fixed_cgroup(
++                        FORMAT_PROC_FD_PATH(unit->manager->executor_fd),
++                        STRV_MAKE(unit->manager->executor_path, "--deserialize", serialization_fd_number,
++                                  "--log-level", max_log_levels, "--log-target", log_target_to_string(manager_get_executor_log_target(unit->manager))),
++                        environ, aos_resource_root_cgroup_fd(unit), root_spawn, &pidref);
++        else
++                r = posix_spawn_wrapper(
+                         FORMAT_PROC_FD_PATH(unit->manager->executor_fd),
 diff --git a/src/core/load-fragment.h b/src/core/load-fragment.h
 --- a/src/core/load-fragment.h
 +++ b/src/core/load-fragment.h
-@@ -17,2 +17,5 @@
+@@ -17,2 +17,6 @@
  int aos_nix_verify_loaded_fragment(const Unit *u);
 +bool aos_resource_host_selected_name(const char *name);
++bool aos_resource_root_selected_name(const char *name);
 +int aos_resource_open_image_policy(void);
 +int aos_resource_verify_component_fragment(const Unit *u);
  
@@ -519,7 +878,7 @@ diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
 @@ -6370,3 +6370,11 @@
 +int aos_resource_verify_component_fragment(const Unit *u) {
 +        if ((!STR_IN_SET(u->id, "aos-sandboxd.service", "aos-storaged.service") &&
-+             !aos_resource_host_selected_name(u->id)) ||
++             !aos_resource_host_selected_name(u->id) && !aos_resource_root_selected_name(u->id)) ||
 +            !aos_network_image_guard_active())
 +                return -EPERM;
 +        return aos_verify_loaded_image_fragment(u);
@@ -531,28 +890,33 @@ diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
 diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
 --- a/src/core/load-fragment.c
 +++ b/src/core/load-fragment.c
-@@ -6155,3 +6155,7 @@
+@@ -6155,3 +6155,9 @@
  static const char *aos_network_template_name(const char *name) {
 +        if (STR_IN_SET(name, "aos-sandboxd.service", "aos-storaged.service"))
 +                return name;
 +        if (aos_resource_host_selected_name(name))
++                return name;
++        if (aos_resource_root_selected_name(name))
 +                return name;
          if (aos_nix_protected_name(name))
                  return name;
 diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
 --- a/src/core/load-fragment.c
 +++ b/src/core/load-fragment.c
-@@ -6527,3 +6527,25 @@
+@@ -6527,3 +6527,28 @@
 +        if (aos_network_image_guard_active() &&
 +            (STR_IN_SET(u->id, "aos-sandboxd.service", "aos-storaged.service") ||
 +             set_contains(names, "aos-sandboxd.service") || set_contains(names, "aos-storaged.service") ||
 +             aos_resource_host_selected_name(u->id) ||
++             aos_resource_root_selected_name(u->id) ||
++             (aos_resource_root_selected_name("aos-sandbox-policy-authorityd.service") &&
++              set_contains(names, "aos-sandbox-policy-authorityd.service")) ||
 +             (aos_resource_host_selected_name("aos-sandbox-hostd.service") &&
 +              set_contains(names, "aos-sandbox-hostd.service")))) {
 +                const char *alias;
 +
 +                if ((!STR_IN_SET(u->id, "aos-sandboxd.service", "aos-storaged.service") &&
-+                     !aos_resource_host_selected_name(u->id)) || u->transient ||
++                     !aos_resource_host_selected_name(u->id) && !aos_resource_root_selected_name(u->id)) || u->transient ||
 +                    !set_isempty(u->aliases) || !isempty(u->source_path))
 +                        return -EPERM;
 +                SET_FOREACH(alias, names)
@@ -669,12 +1033,16 @@ diff --git a/src/core/service.c b/src/core/service.c
 diff --git a/src/core/service.c b/src/core/service.c
 --- a/src/core/service.c
 +++ b/src/core/service.c
-@@ -2108,3 +2108,13 @@
+@@ -2108,3 +2108,17 @@
          assert(ret_pid);
  
 +        r = aos_resource_require_unit(UNIT(s));
 +        if (r < 0)
 +                return log_unit_error_errno(UNIT(s), r, "Refusing unprepaid component command: %m");
++
++        r = aos_resource_prepare_root_exec(s, c, exec_params.flags);
++        if (r < 0)
++                return log_unit_error_errno(UNIT(s), r, "Refusing unbounded original Root command: %m");
 +
 +        if (c == s->exec_command[SERVICE_EXEC_START] && FLAGS_SET(exec_params.flags, EXEC_PASS_FDS)) {
 +                r = aos_resource_deliver_component(s);
@@ -683,6 +1051,20 @@ diff --git a/src/core/service.c b/src/core/service.c
 +        }
 +
          /* Every Exec* command crosses here, including privileged prestart,
+diff --git a/src/core/service.c b/src/core/service.c
+--- a/src/core/service.c
++++ b/src/core/service.c
+@@ -2114,6 +2114,10 @@
+         r = unit_prepare_exec(UNIT(s)); /* This realizes the cgroup, among other things */
+         if (r < 0)
+                 return r;
++        r = aos_resource_enforce_root_limits(s);
++        if (r < 0)
++                return log_unit_error_errno(UNIT(s), r, "Refusing ineffective original Root limits: %m");
++
+ 
+         assert(!s->exec_fd_event_source);
+ 
 diff --git a/src/core/service.h b/src/core/service.h
 --- a/src/core/service.h
 +++ b/src/core/service.h
