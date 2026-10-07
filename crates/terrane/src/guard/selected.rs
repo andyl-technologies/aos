@@ -397,6 +397,17 @@ where
     #[cfg(test)]
     trace.mark("selected-consumed-controls-held");
     let retained_controls = controls.retain_used(&used.controls).await?;
+    // The same held operation now owns the checked control receipt. Rechecking
+    // its Original must read those exact records without reacquiring its lock.
+    coordinator
+        .guard()
+        .retain_original_controls(&retained_controls)?;
+    coordinator
+        .guard()
+        .revalidate_original_context(original, history)
+        .await?;
+    observed.revalidate().await?;
+    coordinator.check_time(started)?;
     #[cfg(test)]
     trace.mark("selected-consumed-controls-retained");
     let digest = *blake3::hash(&snapshot).as_bytes();

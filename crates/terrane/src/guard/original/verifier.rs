@@ -640,6 +640,34 @@ impl<S, C> Guard<S, C> {
         Ok(checked)
     }
 
+    /// Retains genuine same-holder controls for subsequent observed Original checks.
+    ///
+    /// The native held factory independently checks the configured owner, exact
+    /// records and selected association before supplying this physical receipt.
+    /// This preserves exclusion only; it creates no Original or actor authority.
+    ///
+    /// # Errors
+    /// Rejects missing dispatch, another control directory, incompatible retained
+    /// owner/lock incarnations, or unavailable configuration synchronization.
+    pub(crate) fn retain_original_controls(
+        &self,
+        retained: &RetainedControls,
+    ) -> Result<(), StoreFailure> {
+        let mut installed = self.original_verifier.write().map_err(|_| unavailable())?;
+        let verifier = installed.as_mut().ok_or_else(invalid)?;
+        if retained.directory() != verifier.authority.control()
+            || verifier.retained.as_ref().is_some_and(|old| {
+                old.directory() != retained.directory()
+                    || old.owner() != retained.owner()
+                    || old.identities() != retained.identities()
+            })
+        {
+            return Err(invalid());
+        }
+        verifier.retained = Some(retained.clone());
+        Ok(())
+    }
+
     /// Rechecks an installed local Original under its actual writable holder.
     ///
     /// No authority is installed or supplemented. Its exact previously checked
