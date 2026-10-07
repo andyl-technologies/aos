@@ -12,6 +12,8 @@ mod image_stage;
 mod initrd_archive;
 #[path = "../initrd_store.rs"]
 mod initrd_store;
+#[path = "../recovery.rs"]
+mod recovery;
 
 #[path = "../store_closure.rs"]
 mod store_closure;
