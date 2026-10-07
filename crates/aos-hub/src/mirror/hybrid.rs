@@ -154,7 +154,10 @@ async fn admit_object_inner(
     selected.validate_current(db, work, registry).await?;
     if let Some(retained) = db.mirror_import_for_path(registry.id, path).await? {
         #[cfg(test)]
-        ensure!(!require_fresh, "metadata fixture path already has an original");
+        ensure!(
+            !require_fresh,
+            "metadata fixture path already has an original"
+        );
         if retained.state == "published" {
             let progress = retained
                 .progress
@@ -247,8 +250,12 @@ async fn admit_object_inner(
     };
     #[cfg(test)]
     if require_fresh {
-        ensure_fresh_metadata_original(&original, &retained.original, &retained.state,
-            retained.progress.as_ref())?;
+        ensure_fresh_metadata_original(
+            &original,
+            &retained.original,
+            &retained.state,
+            retained.progress.as_ref(),
+        )?;
     }
     // The winner's operation generation survives retries and competing leases.
     original.copy_operation_id = retained.original.copy_operation_id.clone();
@@ -1107,31 +1114,70 @@ pub(crate) async fn pack_memory_prepare_metadata(
     // Check both paths before the first admission. A raced winner is separately
     // refused by the fresh-only guard on the ordinary admission implementation.
     for (registry_id, path, _) in &objects {
-        ensure!(db.mirror_import_for_path(*registry_id, path).await?.is_none(),
-            "metadata fixture path already has an original");
+        ensure!(
+            db.mirror_import_for_path(*registry_id, path)
+                .await?
+                .is_none(),
+            "metadata fixture path already has an original"
+        );
     }
     let mut originals = Vec::with_capacity(2);
     for (registry_id, path, verification) in objects {
-        let registry = db.registry_by_id(registry_id).await?
+        let registry = db
+            .registry_by_id(registry_id)
+            .await?
             .context("actual metadata registry absent")?;
-        let selected = selection::Selection::capture(db, work, &registry,
-            db.registry_mirror(registry.id).await?.context("actual metadata mirror absent")?).await?;
-        ensure!(selected.external_destination.is_none(), "metadata fixture requires Managed writer");
-        let admitted = admit_object_inner(db, work, &registry, &path, verification,
-            Some(&selected), true).await?;
-        let Admission::Active { original, progress: None } = admitted else {
+        let selected = selection::Selection::capture(
+            db,
+            work,
+            &registry,
+            db.registry_mirror(registry.id)
+                .await?
+                .context("actual metadata mirror absent")?,
+        )
+        .await?;
+        ensure!(
+            selected.external_destination.is_none(),
+            "metadata fixture requires Managed writer"
+        );
+        let admitted = admit_object_inner(
+            db,
+            work,
+            &registry,
+            &path,
+            verification,
+            Some(&selected),
+            true,
+        )
+        .await?;
+        let Admission::Active {
+            original,
+            progress: None,
+        } = admitted
+        else {
             anyhow::bail!("metadata fixture admission was reused or ready");
         };
         originals.push(original);
     }
     for step in [MirrorStep::Status { destination: false }, MirrorStep::Begin] {
-        let items = originals.iter().cloned().map(|original|
-            aos_hub_core::mirror_batch::MirrorBatchItem { original, step: step.clone() }).collect();
+        let items = originals
+            .iter()
+            .cloned()
+            .map(|original| aos_hub_core::mirror_batch::MirrorBatchItem {
+                original,
+                step: step.clone(),
+            })
+            .collect();
         let results = batch::run(db, work, items, None).await;
-        ensure!(results.len() == 2, "metadata preparation returned another result count");
+        ensure!(
+            results.len() == 2,
+            "metadata preparation returned another result count"
+        );
         for (job_id, result) in results {
             let progress = result?;
-            let original = originals.iter().find(|original| original.job_id == job_id)
+            let original = originals
+                .iter()
+                .find(|original| original.job_id == job_id)
                 .context("metadata preparation returned another job")?;
             ensure_pack_memory_boundary(original, &progress, matches!(step, MirrorStep::Begin))?;
         }
@@ -1139,16 +1185,33 @@ pub(crate) async fn pack_memory_prepare_metadata(
     let mut items = Vec::with_capacity(2);
     for original in originals {
         db.validate_mirror_import_authority(&original).await?;
-        let retained = db.mirror_import(&original.job_id).await?
+        let retained = db
+            .mirror_import(&original.job_id)
+            .await?
             .context("prepared metadata original disappeared")?;
-        ensure!(retained.original == original, "prepared metadata original changed");
-        ensure_pack_memory_boundary(&original,
-            retained.progress.as_ref().context("prepared metadata progress absent")?, true)?;
+        ensure!(
+            retained.original == original,
+            "prepared metadata original changed"
+        );
+        ensure_pack_memory_boundary(
+            &original,
+            retained
+                .progress
+                .as_ref()
+                .context("prepared metadata progress absent")?,
+            true,
+        )?;
         db.validate_mirror_import_authority(&original).await?;
-        ensure!(work.mirror_managed_profile_digest()? == original.protected_profile_digest,
-            "prepared metadata profile changed");
+        ensure!(
+            work.mirror_managed_profile_digest()? == original.protected_profile_digest,
+            "prepared metadata profile changed"
+        );
         let item = aos_hub_core::mirror_batch::MirrorBatchItem {
-            original, step: MirrorStep::UploadParts { first_part: 1, maximum_parts: 1 },
+            original,
+            step: MirrorStep::UploadParts {
+                first_part: 1,
+                maximum_parts: 1,
+            },
         };
         // The ordinary batch preflight repeats the profile and all SQL fences
         // when this original later reaches its actual UploadParts dispatch.
@@ -1159,14 +1222,20 @@ pub(crate) async fn pack_memory_prepare_metadata(
 
 #[cfg(test)]
 fn validate_pack_memory_objects(objects: &[(i64, String, MirrorVerification); 2]) -> Result<()> {
-    ensure!(objects[0].0 == objects[1].0 && objects[0].1 != objects[1].1,
-        "metadata fixture requires one registry and two distinct paths");
+    ensure!(
+        objects[0].0 == objects[1].0 && objects[0].1 != objects[1].1,
+        "metadata fixture requires one registry and two distinct paths"
+    );
     for (registry, path, verification) in objects {
         verification.validate()?;
-        ensure!(*registry > 0 && !path.is_empty() && path.len() <= 512
-            && matches!(verification, MirrorVerification::Sha256 { size, .. }
+        ensure!(
+            *registry > 0
+                && !path.is_empty()
+                && path.len() <= 512
+                && matches!(verification, MirrorVerification::Sha256 { size, .. }
                 if (1..=256 * 1024).contains(size)),
-            "metadata fixture requires bounded fresh SHA256 originals");
+            "metadata fixture requires bounded fresh SHA256 originals"
+        );
     }
     Ok(())
 }
@@ -1178,12 +1247,19 @@ fn ensure_pack_memory_boundary(
     begun: bool,
 ) -> Result<()> {
     progress.validate(original)?;
-    ensure!(progress.stage_upload_id.is_some() == begun && progress.stage_parts.is_empty()
-        && progress.stage_object.is_none() && progress.verified.is_none()
-        && progress.destination_upload_id.is_none() && progress.destination_parts.is_empty()
-        && progress.destination.is_none() && progress.stage_closure.is_none()
-        && progress.stage_retention.is_none() && progress.destination_closure.is_none(),
-        "metadata preparation advanced beyond the selected first-part boundary");
+    ensure!(
+        progress.stage_upload_id.is_some() == begun
+            && progress.stage_parts.is_empty()
+            && progress.stage_object.is_none()
+            && progress.verified.is_none()
+            && progress.destination_upload_id.is_none()
+            && progress.destination_parts.is_empty()
+            && progress.destination.is_none()
+            && progress.stage_closure.is_none()
+            && progress.stage_retention.is_none()
+            && progress.destination_closure.is_none(),
+        "metadata preparation advanced beyond the selected first-part boundary"
+    );
     Ok(())
 }
 
@@ -1194,8 +1270,10 @@ fn ensure_fresh_metadata_original(
     state: &str,
     progress: Option<&MirrorProgress>,
 ) -> Result<()> {
-    ensure!(actual == expected && progress.is_none() && state == "admitted",
-        "metadata fixture did not win a fresh untouched admission");
+    ensure!(
+        actual == expected && progress.is_none() && state == "admitted",
+        "metadata fixture did not win a fresh untouched admission"
+    );
     Ok(())
 }
 

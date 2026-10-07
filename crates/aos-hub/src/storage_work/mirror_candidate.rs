@@ -30,7 +30,8 @@ impl RemoteStorageWorkClient {
         mut self,
         capture: buffer_capture::Capture,
     ) -> Result<Self> {
-        self.controlled_mirror.as_mut()
+        self.controlled_mirror
+            .as_mut()
             .ok_or_else(|| anyhow::anyhow!("candidate authority absent"))?
             .buffer_capture = Some(capture);
         Ok(self)

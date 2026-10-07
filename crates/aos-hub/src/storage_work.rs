@@ -984,7 +984,9 @@ impl RemoteStorageWorkClient {
             bail!("storage Worker returned HTTP {status}");
         }
         #[cfg(test)]
-        let candidate_buffer_header = self.controlled_mirror.as_ref()
+        let candidate_buffer_header = self
+            .controlled_mirror
+            .as_ref()
             .and_then(|candidate| candidate.buffer_capture.as_ref())
             .map(|_| mirror_candidate::buffer_capture::response_header(response.headers()));
         let body = read_observed_response_chunks(
@@ -1019,11 +1021,19 @@ impl RemoteStorageWorkClient {
             })?;
         #[cfg(test)]
         if let (Some(capture), Some(header)) = (
-            self.controlled_mirror.as_ref().and_then(|candidate| candidate.buffer_capture.as_ref()),
+            self.controlled_mirror
+                .as_ref()
+                .and_then(|candidate| candidate.buffer_capture.as_ref()),
             candidate_buffer_header,
         ) {
-            capture.observe(plan, observed_attempt.call_id(), header,
-                &candidate_request_hash, request_bytes, &body);
+            capture.observe(
+                plan,
+                observed_attempt.call_id(),
+                header,
+                &candidate_request_hash,
+                request_bytes,
+                &body,
+            );
         }
         exchange.finish("success");
         tracing::info!(
