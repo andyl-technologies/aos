@@ -118,12 +118,13 @@ async fn native_active_completion_checks_every_shared_graft_occurrence() -> Resu
     assert_eq!(lineage.used.views.len(), 1);
     let view = &lineage.used.views[0];
     assert_eq!(view.view, record.commit);
+    // The occurrence stack visits the right graft before the left graft.
     assert_eq!(
         view.roots
             .iter()
             .map(|root| root.path.as_slice())
             .collect::<Vec<_>>(),
-        vec![b"/".as_slice(), b"/left".as_slice(), b"/right".as_slice()]
+        vec![b"/".as_slice(), b"/right".as_slice(), b"/left".as_slice()]
     );
     assert_eq!(view.roots[1].root, view.roots[2].root);
     let context = lineage
