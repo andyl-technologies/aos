@@ -751,6 +751,14 @@ tracked images. The correction preserves genuine creator effects and requires
 the exact corrupted Pack or Index identity. Native rebuild, incremental
 maintenance, complete trunk qualification and formal task merges remain open.
 
+The corrected private Guard-carry source `f45d8ee00e9b` passes its four exact
+owning cases and thirteen cold-fork regressions, with zero ignored tests.
+Strict default, Send and native Clippy/private docs, application compilation
+and both mandatory formatters pass. Independent review binds the original
+reports to 4,909 actual Nix input files and the unchanged 5,963 tracked images.
+The foreign-dependency fixture forks its local source; cold reuse of its
+imported head and the raw-source full-admission fallback remain unqualified.
+
 The test-only bucket observer records actual typed Node/Commit get and put
 attempts before catalog lookup, admission or deduplication. The same per-bucket
 observer follows clones and held adapters and can attach to the actual metadata
@@ -3416,6 +3424,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   the explicit pending `algebra-fork` dependency (ALG-32); pending physical
   deletion and index-maintenance dependencies are also reported. This bounded
   root/grace qualification does not complete the collector or T1.
+  A focused integration check now requires genuine retirement carrying a local
+  head's foreign used views, followed by a zero-TreeNode fork of that same head.
+  Its named selector must execute and pass without ignored tests. Missing
+  inventory fails explicitly; registration establishes no runtime result.
   The reviewed pure journal, marking, proof-context, checkpoint, retention and
   grace-window bodies now replace their trunk declarations. All 27 adopted
   paths, including 16 independent hexadecimal witnesses, match the qualified
