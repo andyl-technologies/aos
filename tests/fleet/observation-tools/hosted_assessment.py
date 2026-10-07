@@ -766,12 +766,26 @@ def inbound_inventory(selection, manifest, codec_report=None, receiver_context=N
         PACKAGE_READER['installed_bytes'], manifest, codec_report, receiver_context)
 
 
+def outbound_inventory(selection, manifest):
+    """Consume the same held hosted export through the adjacent source reader."""
+    if selection.get('nativeOutboundInventory') is None:
+        return None
+    path = Path(__file__).resolve(strict=True).parent / 'native_outbound.py'
+    raw = PACKAGE_READER['installed_bytes'](path, MAX_JSON)
+    namespace = {'__file__': str(path), '__name__': 'selected_outbound_reader'}
+    exec(compile(raw, str(path), 'exec'), namespace)
+    return namespace['assess'](selection['nativeOutboundInventory'], SOURCE, READERS,
+                              PACKAGE_READER['installed_bytes'], manifest)
+
+
 def assess(selection):
     expected = {"version", "runtime", "runtimeProvenance", "bodyManifest", "observerExecutable", "authSidecar",
                        "capturePolicy", "captureExport", "sdkApplicationLog", "clientApplicationLog", "indexSnapshots",
                        "workloadWindows", "wireMetrics"}
     if 'nativeInventory' in selection:
         expected.add('nativeInventory')
+    if 'nativeOutboundInventory' in selection:
+        expected.add('nativeOutboundInventory')
     closed(selection, expected)
     if selection["version"] != 1:
         raise ValueError("Assessment version differs")
@@ -905,6 +919,10 @@ def assess(selection):
         # Router inventory does not cover Native outbound metadata or close
         # independent original/auth/SQL projections for dynamic bodies.
         body['missing'].append('independent_outbound_and_dynamic_member_projections')
+    selected_outbound = outbound_inventory(selection, manifest)
+    if selected_outbound is not None:
+        body['nativeOutboundInventory'] = selected_outbound
+        body['missing'].extend(selected_outbound['missing'])
     return {"version": 1, "hostedAcceptance": "incomplete", "applicationBodyAssessment": body,
             "applicationProviderLedger": provider, "indexParity": index_parity(selection["indexSnapshots"]),
             "wireMetrics": {"reference": selection["wireMetrics"], "assessment": "separate_unverified_aggregate"},

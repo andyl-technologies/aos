@@ -223,6 +223,65 @@ module.child_main(int(sys.argv[2]), int(sys.argv[3]))
         self.assertEqual(references["selection"]["authSidecar"]["file"], "original")
         self.assertEqual(json.loads(Path(observed[0]["authSidecar"]["file"]).read_bytes())["nativeLog"]["format"], "cloud_run")
 
+    def test_outbound_selection_is_rebound_to_same_live_export_without_acceptance(self):
+        policy_ref = {'file': 'outbound-policy'}
+        original_ref = {'file': 'original'}
+        references = {'selection': {'runtime': RUNTIME, 'authSidecar': original_ref,
+            'nativeOutboundInventory': {'policy': policy_ref, 'sidecar': original_ref}},
+            'original': {'nativeProcess': None}}
+        observed = []
+        supervisor = mock.Mock()
+        supervisor.failures.return_value = []
+        readers = {'fields': collector.closed, 'closed_json': collector.closed_json,
+            'read_ref': lambda reference, maximum: json.dumps(references[reference['file']]).encode(),
+            'hosted_collector': lambda: vars(collector),
+            'start_hosted_supervision': lambda *_: supervisor,
+            'hosted_custody': lambda: self.custody}
+        adapter = {'READERS': readers, 'assess': lambda selection: observed.append(selection)
+                   or {'hostedAcceptance': 'incomplete', 'nativeBulkBytes': None}}
+        package = {'runtime': RUNTIME, 'hostedCollectorTools': {'python': {}, 'collector': {}, 'trust': {}}}
+        cloud_run = {**self.policy, 'outboundPolicy': policy_ref}
+        plan = {'version': 1, 'runtime': RUNTIME, 'originalCutoff': {}, 'cloudRun': cloud_run,
+                'assessmentSelection': {'file': 'selection'}, 'outputDirectory': str(self.root / 'outbound')}
+        with mock.patch.dict(qualification, PACKAGE=package, installed_assessment=lambda: adapter,
+                original_deadline=lambda _: {'monotonic': float('inf'), 'unix': float('inf')},
+                collect_cloud_run=lambda *_: {'outboundPolicy': policy_ref, 'pages': []}):
+            result = qualification['assess_live'](plan, 7)
+
+        self.assertEqual(result['hostedAcceptance'], 'incomplete')
+        self.assertIsNone(result['nativeBulkBytes'])
+        self.assertEqual(observed[0]['nativeOutboundInventory']['sidecar'], observed[0]['authSidecar'])
+        self.assertEqual(observed[0]['nativeOutboundInventory']['policy'], policy_ref)
+        self.assertEqual(references['selection']['authSidecar'], original_ref)
+        for changed in ({**plan, 'outputDirectory': str(self.root / 'bad-policy'),
+                         'cloudRun': {**cloud_run, 'outboundPolicy': {'file': 'foreign'}}},):
+            with mock.patch.dict(qualification, installed_assessment=lambda: adapter,
+                    original_deadline=lambda _: {}):
+                with self.assertRaises(ValueError):
+                    qualification['assess_live'](changed, 7)
+            self.assertFalse(Path(changed['outputDirectory']).exists())
+
+    def test_outbound_assessment_handoff_preserves_unknown_total(self):
+        runtime = {'runtimeCodecRevision': 'fixture', 'workerSourceDigest': '1' * 64,
+                   'sourceArchiveSha256': '2' * 64, 'nativeExecutableSha256': '3' * 64}
+        selected = {name: None for name in ('runtimeProvenance', 'bodyManifest',
+            'observerExecutable', 'authSidecar', 'capturePolicy', 'captureExport',
+            'sdkApplicationLog', 'clientApplicationLog', 'indexSnapshots', 'wireMetrics')}
+        selected.update(version=1, runtime=runtime, workloadWindows=[],
+                        nativeOutboundInventory={'policy': 'fixture', 'sidecar': 'fixture'})
+        report = {'instances': {'fixture': {'dispatcherWindowComplete': True}},
+                  'missing': ['independent_outbound_auth_sql'], 'nativeBulkBytes': None}
+        with mock.patch.dict(assessment, RUNTIME=runtime, PACKAGE={'observerExecutable': None},
+                parsed=lambda *_: {'version': 1, **runtime, 'browserSource': {}},
+                observe=lambda *_: ({}, {}, None), outbound_inventory=lambda *_: report):
+            result = assessment['assess'](selected)
+
+        body = result['applicationBodyAssessment']
+        self.assertIs(body['nativeOutboundInventory'], report)
+        self.assertIsNone(body['nativeBulkBytes'])
+        self.assertEqual(result['hostedAcceptance'], 'incomplete')
+        self.assertIn('independent_outbound_auth_sql', body['missing'])
+
     def sender_rows(self, groups):
         reader = {"hosted_messages": lambda _: {"messages": groups}, "closed_json": collector.closed_json}
         with mock.patch.dict(assessment, READERS=reader,
@@ -335,6 +394,8 @@ module.child_main(int(sys.argv[2]), int(sys.argv[3]))
         tools = context["hostedCollectorTools"]
         self.assertEqual(tools["python"]["file"], str(python_alias.resolve(strict=True)))
         self.assertEqual(tools["trust"]["file"], str(trust))
+        for name in ('native_outbound.py', 'native_outbound_tests.py'):
+            self.assertTrue((output / 'libexec/aos-observation-tools' / name).is_file())
         package = source_functions("package_context.py", set(), {})
         raw = package["installed_bytes"](Path(tools["python"]["file"]))
         self.assertEqual(hashlib.sha256(raw).hexdigest(), tools["python"]["sha256"])

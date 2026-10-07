@@ -99,6 +99,31 @@ class HostedCustody(unittest.TestCase):
             self.exchange('logging_entries_list', dict(request, pageToken='synthetic-next'), {'entries': [entry]})]
         return spec
 
+    def test_outbound_policy_requires_exact_actual_revision_environment(self):
+        selected = self.logs()
+        selected['outboundPolicy'] = self.ref(b'{"version":1,"runId":"' + b'a' * 64
+            + b'","windowId":"' + b'b' * 32
+            + b'","startUnixMillis":"1000","endUnixMillis":"2000"}')
+        revision = parse(self.read(selected['revision']['response'], 1024 * 1024))
+        entry = {'name': 'AOS_NATIVE_OUTBOUND_INVENTORY',
+                 'value': self.read(selected['outboundPolicy'], 1024).decode()}
+        revision['containers'][0]['env'].append(entry)
+        selected['revision'] = self.exchange('cloud_run_revision',
+            {'name': selected['revisionName']}, revision)
+
+        result = custody.cloud_run(selected, self.readers, self.runtime, self.synthetic_verifier)
+        self.assertIsNone(result['nativeBulkBytes'])
+        self.assertIn('provider_export_completeness_and_clock_uncertainty', result['missing'])
+        for environment in (revision['containers'][0]['env'][:-1],
+                            revision['containers'][0]['env'] + [entry],
+                            revision['containers'][0]['env'][:-1] + [{**entry, 'value': '{}'}]):
+            changed = copy.deepcopy(revision)
+            changed['containers'][0]['env'] = environment
+            selected['revision'] = self.exchange('cloud_run_revision',
+                {'name': selected['revisionName']}, changed)
+            with self.assertRaises(ValueError):
+                custody.cloud_run(selected, self.readers, self.runtime, self.synthetic_verifier)
+
     def test_matched_export_preserves_raw_message_and_missing_authority(self):
         result = custody.cloud_run(self.logs(), self.readers, self.runtime, self.synthetic_verifier)
         self.assertEqual(result['messages'], {'synthetic-instance': [

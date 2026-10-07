@@ -66,6 +66,8 @@ def collect_cloud_run(supervisor, collector, custody, selected, authorization_fd
     """Collect exact resource and paginated log images for one selected window."""
     expected = {"runtime", "project", "location", "serviceName", "revisionName",
                 "imageDigest", "policy", "instances", "firstUnixMicros", "lastUnixMicros"}
+    if isinstance(selected, dict) and 'outboundPolicy' in selected:
+        expected.add('outboundPolicy')
     if not isinstance(selected, dict) or set(selected) != expected:
         raise ValueError("Qualification Cloud Run selection differs")
     if selected["runtime"] != PACKAGE["runtime"]:
@@ -136,6 +138,11 @@ def assess_live(specification, authorization_fd):
     if inventory is not None and inventory.get("sidecar") != selection["authSidecar"]:
         raise ValueError("Qualification inventory selects a different original sidecar")
 
+    outbound = selection.get('nativeOutboundInventory')
+    if outbound is not None and (outbound.get('sidecar') != selection['authSidecar']
+            or outbound.get('policy') != specification['cloudRun'].get('outboundPolicy')):
+        raise ValueError('Qualification outbound selection differs from the original export')
+
     output = Path(specification["outputDirectory"])
     if not output.is_absolute() or output.parent != output.parent.resolve(strict=True):
         raise ValueError("Qualification output parent is not canonical")
@@ -175,6 +182,9 @@ def assess_live(specification, authorization_fd):
         if inventory is not None:
             selected["nativeInventory"] = {
                 **inventory, "sidecar": selected["authSidecar"]}
+        if outbound is not None:
+            selected['nativeOutboundInventory'] = {
+                **outbound, 'sidecar': selected['authSidecar']}
         collector["remaining"](deadline)
         result = adapter["assess"](selected)
         collector["remaining"](deadline)

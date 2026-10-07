@@ -102,7 +102,8 @@ def cloud_run(selection, readers, runtime, verifier=None):
     """Read a selected revision export while retaining instance coverage gaps."""
     closed(selection, {'version', 'kind', 'runtime', 'serviceName', 'revisionName',
         'project', 'location', 'service', 'revision', 'imageDigest', 'policy',
-        'pages', 'instances', 'firstUnixMicros', 'lastUnixMicros'})
+        'pages', 'instances', 'firstUnixMicros', 'lastUnixMicros'}
+        | ({'outboundPolicy'} if 'outboundPolicy' in selection else set()))
     if type(selection['version']) is not int or selection['version'] != 1:
         raise ValueError('Hosted log version differs')
     if selection['kind'] != 'cloud_run' or selection['runtime'] != runtime:
@@ -145,6 +146,13 @@ def cloud_run(selection, readers, runtime, verifier=None):
     if len(policies) != 1 or policies[0] != {
             'name': 'AOS_NATIVE_BODY_INVENTORY', 'value': policy_raw.decode()}:
         raise ValueError('Hosted actual revision inventory policy differs')
+    if 'outboundPolicy' in selection:
+        outbound_raw = readers['read_ref'](selection['outboundPolicy'], 1024)
+        outbound = [row for row in environment
+                    if row.get('name') == 'AOS_NATIVE_OUTBOUND_INVENTORY']
+        if len(outbound) != 1 or outbound[0] != {
+                'name': 'AOS_NATIVE_OUTBOUND_INVENTORY', 'value': outbound_raw.decode()}:
+            raise ValueError('Hosted actual revision outbound policy differs')
     instances = selection['instances']
     if (not isinstance(instances, list) or not instances
             or len(set(instances)) != len(instances)
