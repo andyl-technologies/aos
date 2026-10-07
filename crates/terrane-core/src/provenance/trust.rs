@@ -231,15 +231,18 @@ impl TrustContext {
             });
             // Resolve each prefix independently: non-inheriting bindings apply
             // locally, while ancestor trust constraints remain conjoined.
-            let effective = crate::properties::resolve(
-                &layers,
-                crate::properties::Defaults {
-                    store: "provenance",
-                    private_domain: "private:provenance",
-                    home: "provenance",
-                },
-            )
-            .map_err(|_| Rejected)?;
+            let effective = self
+                .history
+                .view_selection(location.commit)?
+                .resolve(
+                    &layers,
+                    crate::properties::Defaults {
+                        store: "provenance",
+                        private_domain: "private:provenance",
+                        home: "provenance",
+                    },
+                )
+                .map_err(|_| Rejected)?;
             baseline = match effective.get(crate::properties::PropertyName::Baseline) {
                 Some(crate::properties::Value::Text(value)) => Some((*value).to_string()),
                 Some(crate::properties::Value::Unset) => self.baseline.clone(),

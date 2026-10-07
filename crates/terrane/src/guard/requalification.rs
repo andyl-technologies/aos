@@ -189,6 +189,9 @@ impl<S, C> Guard<S, C> {
         let retained = contexts.get(index).ok_or_else(invalid)?;
         let mode = match self.interpretation {
             InterpretationSelection::Legacy => ViewInterpretationMode::Legacy,
+            InterpretationSelection::Active => {
+                return Err(StoreFailure::new(StoreErrorKind::Unsupported));
+            }
         };
         let current = ConsumedViewInterpretation {
             view: view.view,

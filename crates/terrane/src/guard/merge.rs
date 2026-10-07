@@ -155,7 +155,9 @@ impl<S: Store, C: Clock> Guard<S, C> {
                         overrides,
                     })
                     .collect::<Vec<_>>();
-                let effective = properties::resolve(&layers, self.defaults_for(input))
+                let effective = self
+                    .semantic_selection()
+                    .resolve(&layers, self.defaults_for(input))
                     .map_err(|_| invalid())?;
                 domains
                     .bind_resolved(occurrence.root, &effective)

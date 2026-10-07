@@ -37,6 +37,8 @@ pub struct VerifiedHistory {
     nodes: BTreeMap<Digest, Vec<u8>>,
     roots: BTreeMap<Digest, BTreeSet<Digest>>,
     min_chunk_size: u64,
+    selected_current: crate::properties::selected::Selection,
+    view_selections: BTreeMap<Digest, crate::properties::selected::Selection>,
     usage: BTreeMap<Digest, tree_format::TreeUse>,
     pub(super) side_attributes: BTreeMap<
         super::side_attributes::SideAttributeKey,
@@ -61,6 +63,20 @@ impl VerifiedHistory {
 
     /// Creates a history using the configured chunk profile's minimum size.
     pub fn new(min_chunk_size: u64) -> Self {
+        Self::new_selected(
+            min_chunk_size,
+            crate::properties::selected::Selection::Legacy,
+        )
+    }
+
+    /// Captures explicitly configured current semantics for genuine verification.
+    ///
+    /// This selection is ordinary input; signatures, Original scope, namespace
+    /// relationships and current authority remain independently checked.
+    pub fn new_selected(
+        min_chunk_size: u64,
+        selected: crate::properties::selected::Selection,
+    ) -> Self {
         Self {
             commits: BTreeMap::new(),
             graph: CommitGraph::new(),
@@ -68,6 +84,8 @@ impl VerifiedHistory {
             roots: BTreeMap::new(),
             usage: BTreeMap::new(),
             min_chunk_size,
+            selected_current: selected,
+            view_selections: BTreeMap::new(),
             side_attributes: BTreeMap::new(),
             disclosure_boundaries: BTreeMap::new(),
             disclosure_parents: BTreeSet::new(),
@@ -83,7 +101,27 @@ impl VerifiedHistory {
     /// # Errors
     /// Returns [`Rejected`] for a cycle or conflicting immutable record.
     pub fn insert_commit(&mut self, commit: VerifiedCommit) -> Result<(), Rejected> {
+        self.insert_commit_selected(commit, self.selected_current)
+    }
+
+    /// Binds one actual authenticated view to its independently selected semantics.
+    ///
+    /// # Errors
+    /// Rejects a different selection for an already inserted view, conflicting
+    /// immutable data or cycles. This supplies no completion or Original authority.
+    pub fn insert_commit_selected(
+        &mut self,
+        commit: VerifiedCommit,
+        selected: crate::properties::selected::Selection,
+    ) -> Result<(), Rejected> {
         let identity = commit.identity();
+        if self
+            .view_selections
+            .get(&identity)
+            .is_some_and(|old| *old != selected)
+        {
+            return Err(Rejected);
+        }
         self.graph
             .insert(CommitParents {
                 identity,
@@ -91,7 +129,24 @@ impl VerifiedHistory {
             })
             .map_err(|_| Rejected)?;
         self.commits.insert(identity, commit);
+        self.view_selections.insert(identity, selected);
         Ok(())
+    }
+
+    /// Returns only the independently associated selection for this actual view.
+    ///
+    /// # Errors
+    /// Rejects an absent association; it never infers selection from stored bytes.
+    pub(super) fn view_selection(
+        &self,
+        view: Digest,
+    ) -> Result<crate::properties::selected::Selection, Rejected> {
+        self.view_selections.get(&view).copied().ok_or(Rejected)
+    }
+
+    /// Returns the explicitly configured input for unsigned authoring preparation.
+    pub(super) fn candidate_selection(&self) -> crate::properties::selected::Selection {
+        self.selected_current
     }
 
     /// Adds a complete canonical node witness for one root.

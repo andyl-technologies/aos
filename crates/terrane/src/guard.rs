@@ -205,6 +205,29 @@ impl<S, C> Guard<S, C> {
         }
     }
 
+    /// Creates an enforcement point with explicitly selected current active semantics.
+    ///
+    /// Actual full verification binds each reached signed view independently;
+    /// selection grants no current or Original authority.
+    #[cfg(feature = "std")]
+    pub fn new_active(store: S, clock: C, keys: Vec<IssuerKey>, config: GuardConfig) -> Self {
+        let mut guard = Self::new(store, clock, keys, config);
+        guard.interpretation = history::completion::InterpretationSelection::Active;
+        guard
+    }
+
+    /// Returns the actual constructor-selected semantic input without granting authority.
+    pub(crate) fn semantic_selection(&self) -> terrane_core::properties::selected::Selection {
+        #[cfg(feature = "std")]
+        {
+            self.interpretation.semantics()
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            terrane_core::properties::selected::Selection::Legacy
+        }
+    }
+
     pub(crate) fn store(&self) -> &S {
         &self.store
     }
@@ -241,8 +264,10 @@ impl<S: Store, C: Clock> Guard<S, C> {
                     overrides,
                 })
                 .collect::<Vec<_>>();
-            let effective =
-                properties::resolve(&layers, self.defaults_for(evidence)).map_err(|_| invalid())?;
+            let effective = self
+                .semantic_selection()
+                .resolve(&layers, self.defaults_for(evidence))
+                .map_err(|_| invalid())?;
             roots.push((
                 occurrence.path,
                 domain_label(&effective).map_err(|_| invalid())?.to_owned(),
@@ -363,7 +388,9 @@ impl<S: Store, C: Clock> Guard<S, C> {
                         overrides,
                     })
                     .collect::<Vec<_>>();
-                let policy = properties::resolve(&layers, self.defaults_for(evidence))
+                let policy = self
+                    .semantic_selection()
+                    .resolve(&layers, self.defaults_for(evidence))
                     .map_err(|_| denied(reference, verb))?;
                 self.check_acl(&verified, &policy, reference, verb)?;
                 domains.push(
@@ -510,7 +537,9 @@ impl<S: Store, C: Clock> Guard<S, C> {
                 overrides,
             })
             .collect::<Vec<_>>();
-        let effective = properties::resolve(&layers, self.defaults_for(&evidence))
+        let effective = self
+            .semantic_selection()
+            .resolve(&layers, self.defaults_for(&evidence))
             .map_err(|_| denied(reference, verb))?;
         let domain = domain_label(&effective).map_err(|_| denied(reference, verb))?;
         if domain != self.config.storage_domain

@@ -41,7 +41,7 @@ pub(crate) struct AdmittedCommit {
     #[cfg(unix)]
     pub(crate) cold_fork: Option<super::cold_fork::ColdForkBinding>,
     /// Captures the actual constructor-selected ordinary interpretation and profile.
-    pub(super) completion_inputs: super::history::completion::LegacyInputs,
+    pub(super) completion_inputs: super::history::completion::SelectedInputs,
     pub(super) requirements: Vec<super::attributes::RequirementEvidence>,
     pub(super) admin_checks: Vec<AdminCheck>,
     pub(super) publication_reference: String,
@@ -268,14 +268,16 @@ impl<S: Store, C: Clock> Guard<S, C> {
         }
         let tree = candidate.tree(candidate.root, self.config().min_chunk_size)?;
         let root_properties = tree.props().unwrap_or(&[]);
-        let effective = properties::resolve(
-            &[RootLayer {
-                properties: root_properties,
-                overrides: &[],
-            }],
-            self.defaults_for(&candidate),
-        )
-        .map_err(|_| denied(reference, Verb::Commit))?;
+        let effective = self
+            .semantic_selection()
+            .resolve(
+                &[RootLayer {
+                    properties: root_properties,
+                    overrides: &[],
+                }],
+                self.defaults_for(&candidate),
+            )
+            .map_err(|_| denied(reference, Verb::Commit))?;
         let root_bindings = self.authoring_roots(&candidate)?;
         let roots = root_bindings
             .iter()
@@ -300,14 +302,16 @@ impl<S: Store, C: Clock> Guard<S, C> {
             .map(|previous| previous.tree(previous.root, self.config().min_chunk_size))
             .transpose()?;
         if let (Some(previous_tree), Some(previous)) = (&previous_tree, &previous) {
-            let old_effective = properties::resolve(
-                &[RootLayer {
-                    properties: previous_tree.props().unwrap_or(&[]),
-                    overrides: &[],
-                }],
-                self.defaults_for(previous),
-            )
-            .map_err(|_| denied(reference, Verb::Commit))?;
+            let old_effective = self
+                .semantic_selection()
+                .resolve(
+                    &[RootLayer {
+                        properties: previous_tree.props().unwrap_or(&[]),
+                        overrides: &[],
+                    }],
+                    self.defaults_for(previous),
+                )
+                .map_err(|_| denied(reference, Verb::Commit))?;
             if !effective
                 .domain()
                 .map_err(|_| denied(reference, Verb::Commit))?
@@ -602,7 +606,9 @@ impl<S: Store, C: Clock> Guard<S, C> {
                     overrides,
                 })
                 .collect::<Vec<_>>();
-            let effective = properties::resolve(&layers, self.defaults_for(candidate))
+            let effective = self
+                .semantic_selection()
+                .resolve(&layers, self.defaults_for(candidate))
                 .map_err(|_| denied(reference, Verb::Commit))?;
             if domain_label(&effective).map_err(|_| denied(reference, Verb::Commit))?
                 != self.config().storage_domain
@@ -644,7 +650,10 @@ impl<S: Store, C: Clock> Guard<S, C> {
             let old_effective = old_layers
                 .as_ref()
                 .zip(previous)
-                .map(|(layers, previous)| properties::resolve(layers, self.defaults_for(previous)))
+                .map(|(layers, previous)| {
+                    self.semantic_selection()
+                        .resolve(layers, self.defaults_for(previous))
+                })
                 .transpose()
                 .map_err(|_| denied(reference, Verb::Commit))?;
             let changed_domain = old_effective.as_ref().is_some_and(|old| {
@@ -765,7 +774,9 @@ impl<S: Store, C: Clock> Guard<S, C> {
                         overrides,
                     })
                     .collect::<Vec<_>>();
-                let policy = properties::resolve(&target_layers, self.defaults_for(candidate))
+                let policy = self
+                    .semantic_selection()
+                    .resolve(&target_layers, self.defaults_for(candidate))
                     .map_err(|_| denied(reference, Verb::Commit))?;
                 grafts.push((
                     target.root,

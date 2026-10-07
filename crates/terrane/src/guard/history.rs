@@ -238,11 +238,14 @@ impl<S: Store, C: Clock> Guard<S, C> {
         identity: Digest,
         observation: HistoryObservation<'_>,
     ) -> Result<VerifiedHistory, StoreFailure> {
-        let mut history = VerifiedHistory::new(self.config().min_chunk_size);
+        let mut history =
+            VerifiedHistory::new_selected(self.config().min_chunk_size, self.semantic_selection());
         let mut pending = vec![identity];
         let mut visited = BTreeSet::new();
         let mut locations = Vec::new();
         let mut domains = BTreeMap::new();
+        #[cfg(feature = "std")]
+        let mut active_plans = Vec::new();
         #[cfg(feature = "std")]
         let mut prepared_views = BTreeMap::new();
         while let Some(identity) = pending.pop() {
@@ -260,6 +263,13 @@ impl<S: Store, C: Clock> Guard<S, C> {
                 )?;
                 consumed.pending_view(&prepared)?;
                 prepared_views.insert(identity, prepared);
+            }
+            #[cfg(feature = "std")]
+            if self.semantic_selection() == terrane_core::properties::selected::Selection::Active {
+                active_plans.push(completion::active::plan(
+                    &verified.evidence,
+                    &self.completion_inputs()?,
+                )?);
             }
             domains.insert(identity, verified.evidence.default_domain.clone());
             pending.extend(verified.commit.commit().parents.iter().copied());
@@ -337,6 +347,25 @@ impl<S: Store, C: Clock> Guard<S, C> {
                 history
                     .attribute_producer(&location, &name)
                     .map_err(|_| invalid())?;
+            }
+        }
+        #[cfg(feature = "std")]
+        for plan in &active_plans {
+            completion::active::check_relationships(
+                self.store(),
+                plan,
+                self.config().min_chunk_size,
+            )
+            .await?;
+        }
+        #[cfg(feature = "std")]
+        if self.semantic_selection() == terrane_core::properties::selected::Selection::Active {
+            // Active metadata awaits cannot preserve an earlier native check by
+            // assertion. Reread every actual reached Original association.
+            for view in domains.keys() {
+                let context = self.original_commit(view)?;
+                self.revalidate_original_context(&context, observation)
+                    .await?;
             }
         }
         // No prepared view becomes completed until the entire invocation has

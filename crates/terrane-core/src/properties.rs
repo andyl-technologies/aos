@@ -5,6 +5,8 @@
 //! callers remain responsible for fetching records and enforcing storage policy.
 
 mod registry;
+
+pub mod selected;
 mod validation;
 mod value;
 
@@ -137,6 +139,7 @@ pub struct Defaults<'a> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EffectiveProperties<'a> {
     values: Vec<(PropertyName, Value<'a>)>,
+    active_index_roots: Option<crate::indexing::IndexRoots<'a>>,
 }
 
 impl<'a> EffectiveProperties<'a> {
@@ -234,7 +237,10 @@ pub fn resolve_with_registry<'a>(
             }
         }
     }
-    let mut effective = EffectiveProperties { values };
+    let mut effective = EffectiveProperties {
+        values,
+        active_index_roots: None,
+    };
     if !wipe_set {
         let wipe = if matches!(effective.domain()?, Domain::Private(_)) {
             "zero"

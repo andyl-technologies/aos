@@ -190,23 +190,27 @@ impl<
             .await?;
         // FileBucket::clone shares its inner Arc. Cloning a separate Fs value
         // would not establish that the verifier observes this opened backend.
-        let concrete = Arc::new(Guard::new(
+        let mut captured = Guard::new(
             self.store.clone(),
             (),
             self.keys.clone(),
             self.config.clone(),
-        ));
+        );
+        captured.interpretation = self.interpretation;
+        let concrete = Arc::new(captured);
         {
             let namespace = SingleHeld::acquire(&self.store).await?;
             let destination = namespace.destination();
             let observed = destination.observe_publication().await?;
+            let mut setup = Guard::new(
+                self.store.clone(),
+                setup_clock,
+                self.keys.clone(),
+                self.config.clone(),
+            );
+            setup.interpretation = self.interpretation;
             crate::selected_bridge::native_guard::install_initial_guard(
-                SetupGuard::new(Guard::new(
-                    self.store.clone(),
-                    setup_clock,
-                    self.keys.clone(),
-                    self.config.clone(),
-                )),
+                SetupGuard::new(setup),
                 &authority,
                 &destination,
                 &observed,
@@ -431,7 +435,8 @@ impl<S, C> Guard<S, C> {
         clock: D,
     ) -> Result<Guard<crate::bucket::held::HeldBucket<'a, F, B, V, WRITABLE>, D>, StoreFailure>
     {
-        let guard = Guard::new(store, clock, self.keys.clone(), self.config.clone());
+        let mut guard = Guard::new(store, clock, self.keys.clone(), self.config.clone());
+        guard.interpretation = self.interpretation;
         *guard.original_verifier.write().map_err(|_| unavailable())? = self
             .original_verifier
             .read()

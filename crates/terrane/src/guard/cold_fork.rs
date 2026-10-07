@@ -58,6 +58,9 @@ pub(crate) fn with_occurrence_policy<S, C, T>(
         .collect::<Vec<_>>();
     match guard.interpretation {
         InterpretationSelection::Legacy => {}
+        InterpretationSelection::Active => {
+            return Err(StoreFailure::new(StoreErrorKind::Unsupported));
+        }
     }
     let policy = terrane_core::properties::resolve(
         &layers,
@@ -329,6 +332,9 @@ pub(crate) fn candidate_context<S, C>(
         mode: match guard.interpretation {
             InterpretationSelection::Legacy => {
                 terrane_core::gc::publication::evidence::ViewInterpretationMode::Legacy
+            }
+            InterpretationSelection::Active => {
+                return Err(StoreFailure::new(StoreErrorKind::Unsupported));
             }
         },
         registries: actual.registries,

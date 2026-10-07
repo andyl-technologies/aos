@@ -57,6 +57,35 @@ impl MetadataValidator {
         }
     }
 
+    // Immutable admission checks whether a physical auxiliary Node has any
+    // registered schema. Only the owner-bound loader selects and checks its
+    // actual role and relationships; admission grants neither.
+    fn registered_index_node(&self, bytes: &[u8], root: bool) -> bool {
+        use terrane_core::indexing::carrier::{Role, SemanticContext, validate_node};
+
+        #[cfg(all(test, feature = "tokio", unix))]
+        self.observe_node_decode();
+        let Ok(node) = tree_format::decode_node_for(
+            bytes,
+            root,
+            self.profile.minimum() as u64,
+            TreeUse::Index,
+        ) else {
+            return false;
+        };
+        let Ok(context) = SemanticContext::new(3, 2, 1) else {
+            return false;
+        };
+        [
+            Role::Primary,
+            Role::Gap,
+            Role::PresentRoute,
+            Role::MissingRoute,
+        ]
+        .into_iter()
+        .any(|role| validate_node(context, role, &node, root).is_ok())
+    }
+
     #[cfg(all(test, feature = "tokio", unix))]
     fn observe_node_decode(&self) {
         if let Some(observer) = self.observation.get() {
@@ -126,7 +155,9 @@ impl ContentValidator for MetadataValidator {
                         TreeUse::Ordinary,
                     )
                 })
-                .is_ok(),
+                .is_ok()
+                    || self.registered_index_node(upload.bytes(), true)
+                    || self.registered_index_node(upload.bytes(), false),
                 "TREE-25",
             ),
             IdentityKind::Commit => (Commit::decode(upload.bytes()).is_ok(), "REF-9"),

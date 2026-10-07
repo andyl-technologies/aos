@@ -53,6 +53,10 @@ fn revision_properties(revision: u64) -> Result<Vec<&'static str>, EvidenceError
             properties.push("index-roots");
             properties.sort_unstable();
         }
+        3 => {
+            properties.extend(["index-gaps", "index-roots"]);
+            properties.sort_unstable();
+        }
         _ => return Err(EvidenceError::UnsupportedRevision),
     }
     Ok(properties)
@@ -161,14 +165,20 @@ fn names(names: &[String]) -> Result<(), EvidenceError> {
 
 impl Validate for ConfiguredRegistryInputs {
     fn validate(&self) -> Result<(), EvidenceError> {
-        if [
-            self.attribute_revision,
-            self.selector_revision,
-            self.tree_revision,
-            self.chunk_revision,
-        ]
-        .iter()
-        .any(|revision| *revision != 1)
+        // Registered active3/2 execution is distinct from ordinary Legacy1/1.
+        // This validates semantics only; a genuine producer selects each view.
+        let supported_pair = matches!(
+            (self.property_revision, self.attribute_revision),
+            (1 | 2, 1) | (3, 2)
+        );
+        if !supported_pair
+            || [
+                self.selector_revision,
+                self.tree_revision,
+                self.chunk_revision,
+            ]
+            .iter()
+            .any(|revision| *revision != 1)
             || self.identity_profile != "terrane-v1"
         {
             return Err(EvidenceError::UnsupportedRevision);
@@ -219,8 +229,8 @@ pub(super) fn registry_structure(
     }
 
     // PROP-30 rejects unregistered property revisions as record data. Exact
-    // known vocabulary is independent of execution support: revision3 has
-    // 35 names even though this implementation does not yet interpret revision3.
+    // known vocabulary is independent of execution support: revision3 retains
+    // its exact 35-name fence, separately from the selected attribute pairing.
     let registered = match registries.property_revision {
         1 | 2 => revision_properties(registries.property_revision)?,
         3 => {
@@ -320,7 +330,16 @@ fn property_map_with_fence(
                 return Err(EvidenceError::Schema);
             }
             if behavioral && interpret_behavior {
-                validate_property(&Property { name, value })?;
+                match (registries.property_revision, name) {
+                    (2 | 3, "index-roots") => {
+                        crate::indexing::IndexRoots::decode_binding(value)
+                            .map_err(|_| EvidenceError::Schema)?;
+                    }
+                    (3, "index-gaps") => return Err(EvidenceError::Schema),
+                    _ => {
+                        validate_property(&Property { name, value })?;
+                    }
+                }
             }
         } else if REVISION_ONE_PROPERTIES.contains(&name) {
             // Nested records have no revision field. Their original behavioral
@@ -331,6 +350,10 @@ fn property_map_with_fence(
     decoder.finish()?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "policy/active_tests.rs"]
+mod active_tests;
 
 #[cfg(test)]
 mod tests {

@@ -17,6 +17,7 @@ pub(super) fn check(
     evidence: &TreeEvidence,
     defaults: Defaults<'_>,
     minimum: u64,
+    selection: properties::selected::Selection,
 ) -> Result<(), StoreFailure> {
     let signed = commit
         .commit()
@@ -25,19 +26,20 @@ pub(super) fn check(
         .as_deref()
         .ok_or_else(|| StoreFailure::new(StoreErrorKind::Unsupported))?;
     let tree = evidence.tree(evidence.root, minimum)?;
-    let resolved = properties::resolve(
-        &[RootLayer {
-            properties: tree.props().unwrap_or(&[]),
-            overrides: &[],
-        }],
-        defaults,
-    )
-    .map_err(|error| {
-        StoreFailure::with_source(
-            StoreErrorKind::Invalid(InvalidReason::MalformedRequest),
-            error,
+    let resolved = selection
+        .resolve(
+            &[RootLayer {
+                properties: tree.props().unwrap_or(&[]),
+                overrides: &[],
+            }],
+            defaults,
         )
-    })?;
+        .map_err(|error| {
+            StoreFailure::with_source(
+                StoreErrorKind::Invalid(InvalidReason::MalformedRequest),
+                error,
+            )
+        })?;
 
     let names = [
         PropertyName::Index,

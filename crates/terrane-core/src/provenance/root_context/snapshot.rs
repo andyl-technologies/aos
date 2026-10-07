@@ -172,6 +172,7 @@ fn state(
     path: Vec<u8>,
     layers: &[Vec<Property<'_>>],
     defaults: Defaults<'_>,
+    selection: properties::selected::Selection,
 ) -> Result<Root, Rejected> {
     let policy_layers: Vec<_> = layers
         .iter()
@@ -180,9 +181,12 @@ fn state(
             overrides: &[],
         })
         .collect();
-    let policy = properties::resolve(&policy_layers, defaults).map_err(|_| Rejected)?;
+    let policy = selection
+        .resolve(&policy_layers, defaults)
+        .map_err(|_| Rejected)?;
     if policy_layers.len() > 1 {
-        let parent = properties::resolve(&policy_layers[..policy_layers.len() - 1], defaults)
+        let parent = selection
+            .resolve(&policy_layers[..policy_layers.len() - 1], defaults)
             .map_err(|_| Rejected)?;
         if !policy
             .domain()
@@ -237,6 +241,7 @@ pub(super) fn complete(
     history: &VerifiedHistory,
     root: Digest,
     defaults: Defaults<'_>,
+    selection: properties::selected::Selection,
 ) -> Result<Snapshot, Rejected> {
     let private_domain = private_owner(root)?;
     let defaults = Defaults {
@@ -261,7 +266,7 @@ pub(super) fn complete(
         layers.push(properties(history, root, overrides)?);
         let mut absolute = vec![b'/'];
         absolute.extend_from_slice(&prefix);
-        let mut current = state(root, absolute.clone(), &layers, defaults)?;
+        let mut current = state(root, absolute.clone(), &layers, defaults, selection)?;
         for item in history.root_items(root)? {
             let mut entry = item.entry;
             if let EntryKind::Tree {
@@ -305,6 +310,7 @@ pub(super) fn at_path(
     root: Digest,
     path: &[u8],
     defaults: Defaults<'_>,
+    selection: properties::selected::Selection,
 ) -> Result<Root, Rejected> {
     let private_domain = private_owner(root)?;
     let defaults = Defaults {
@@ -329,7 +335,7 @@ pub(super) fn at_path(
         }
         layers.push(properties(history, root, overrides)?);
         if remaining.is_empty() {
-            return state(root, path.to_vec(), &layers, defaults);
+            return state(root, path.to_vec(), &layers, defaults, selection);
         }
         let mut selected = None;
         for end in

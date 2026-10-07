@@ -68,3 +68,6 @@ mod legacy_completion_tests;
 
 #[cfg(all(test, feature = "tokio", unix))]
 mod meta_batch_tests;
+
+#[cfg(all(test, feature = "tokio", feature = "surface-sdk", unix))]
+mod active_completion_tests;

@@ -183,8 +183,9 @@ fn fresh_plan(
     history: &VerifiedHistory,
     candidate: &Commit,
     defaults: Defaults<'_>,
+    selection: crate::properties::selected::Selection,
 ) -> Result<RootChangePlan, Rejected> {
-    let snapshot = snapshot::complete(history, candidate.tree, defaults)?;
+    let snapshot = snapshot::complete(history, candidate.tree, defaults, selection)?;
     Ok(RootChangePlan {
         candidate: candidate.tree,
         first_parent: candidate.parents.first().copied(),
@@ -212,7 +213,7 @@ pub fn derive_fresh_roots(
     candidate: &Commit,
     defaults: Defaults<'_>,
 ) -> Result<RootChangePlan, Rejected> {
-    fresh_plan(history, candidate, defaults)
+    fresh_plan(history, candidate, defaults, history.candidate_selection())
 }
 
 /// Derives unsigned authoring changes from the canonical ordinary first parent.
@@ -228,11 +229,20 @@ pub fn derive_root_changes(
     candidate: &Commit,
     defaults: Defaults<'_>,
 ) -> Result<RootChangePlan, Rejected> {
+    changes_selected(history, candidate, defaults, history.candidate_selection())
+}
+
+fn changes_selected(
+    history: &VerifiedHistory,
+    candidate: &Commit,
+    defaults: Defaults<'_>,
+    selection: crate::properties::selected::Selection,
+) -> Result<RootChangePlan, Rejected> {
     let Some(first_parent) = candidate.parents.first().copied() else {
-        return fresh_plan(history, candidate, defaults);
+        return fresh_plan(history, candidate, defaults, selection);
     };
     let previous = history.commit(&first_parent).ok_or(Rejected)?.commit().tree;
-    if previous == candidate.tree {
+    if previous == candidate.tree && history.view_selection(first_parent)? == selection {
         return Ok(RootChangePlan {
             candidate: candidate.tree,
             first_parent: Some(first_parent),
@@ -241,8 +251,13 @@ pub fn derive_root_changes(
             fresh: false,
         });
     }
-    let previous = snapshot::complete(history, previous, defaults)?;
-    let current = snapshot::complete(history, candidate.tree, defaults)?;
+    let previous = snapshot::complete(
+        history,
+        previous,
+        defaults,
+        history.view_selection(first_parent)?,
+    )?;
+    let current = snapshot::complete(history, candidate.tree, defaults, selection)?;
     let old_root = previous.roots.get(b"/".as_slice()).ok_or(Rejected)?;
     let new_root = current.roots.get(b"/".as_slice()).ok_or(Rejected)?;
     if old_root.implicit_owner() && new_root.implicit_owner() && old_root.domain != new_root.domain
@@ -396,9 +411,9 @@ fn verify_context(
         }
     }
     let mut plan = if audit_first {
-        fresh_plan(history, record, defaults)?
+        fresh_plan(history, record, defaults, history.view_selection(view)?)?
     } else {
-        derive_root_changes(history, record, defaults)?
+        changes_selected(history, record, defaults, history.view_selection(view)?)?
     };
     let bootstrap = original_bootstrap
         .map(|(authority, policy)| policy.validate(verified, authority))
@@ -419,7 +434,12 @@ fn verify_context(
     }
     if plan.fresh {
         let original = bootstrap.as_ref().ok_or(Rejected)?;
-        let current = snapshot::complete(history, record.tree, defaults)?;
+        let current = snapshot::complete(
+            history,
+            record.tree,
+            defaults,
+            history.view_selection(view)?,
+        )?;
         let main = current.roots.get(b"/".as_slice()).ok_or(Rejected)?;
         if bootstrap::widens(main.acl().ok_or(Rejected)?, &original.acl) {
             plan.required_admin
@@ -438,7 +458,13 @@ fn verify_context(
     }
     let mut claims = Vec::new();
     for claim in context.roots() {
-        let current = snapshot::at_path(history, record.tree, claim.path(), defaults);
+        let current = snapshot::at_path(
+            history,
+            record.tree,
+            claim.path(),
+            defaults,
+            history.view_selection(view)?,
+        );
         let prior = if audit_first {
             None
         } else {
@@ -447,7 +473,13 @@ fn verify_context(
                 .first()
                 .and_then(|parent| history.commit(parent))
                 .map(|parent| {
-                    snapshot::at_path(history, parent.commit().tree, claim.path(), defaults)
+                    snapshot::at_path(
+                        history,
+                        parent.commit().tree,
+                        claim.path(),
+                        defaults,
+                        history.view_selection(parent.identity())?,
+                    )
                 })
         };
         let current = current.ok().filter(|root| root.domain == claim.domain());
@@ -514,17 +546,27 @@ fn verify_context(
             paths.push(&required.path);
         }
         let authorized = paths.into_iter().any(|path| {
-            snapshot::at_path(history, tree, path, defaults).is_ok_and(|root| {
-                verified
-                    .authorize_original_roots(
-                        Verb::Admin,
-                        &[RequestRoot {
-                            path: &root.path,
-                            domain: &root.domain,
-                        }],
-                    )
-                    .is_ok()
-            })
+            let selected_view = match required.side {
+                RootSide::Candidate => view,
+                RootSide::Previous => match record.parents.first() {
+                    Some(parent) => *parent,
+                    None => return false,
+                },
+            };
+            history
+                .view_selection(selected_view)
+                .and_then(|selection| snapshot::at_path(history, tree, path, defaults, selection))
+                .is_ok_and(|root| {
+                    verified
+                        .authorize_original_roots(
+                            Verb::Admin,
+                            &[RequestRoot {
+                                path: &root.path,
+                                domain: &root.domain,
+                            }],
+                        )
+                        .is_ok()
+                })
         });
         if !authorized {
             return Err(Rejected);

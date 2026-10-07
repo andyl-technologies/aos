@@ -1,9 +1,11 @@
-//! Prepares unindexed Legacy view data without completing signed-history checks.
+//! Prepares explicitly selected view data without completing signed-history checks.
 //!
 //! Only the enclosing history owner promotes prepared data after every reached
-//! view's Original, entry-origin and attribute-producer verification succeeds.
+//! view's Original, entry-origin, attribute-producer and active relationships succeed.
 
 mod requirements;
+
+pub(in crate::guard) mod active;
 
 use terrane_core::gc::publication::evidence::{
     ConfiguredRegistryInputs, ConsumedRootLayer, ConsumedRootPolicy, ConsumedViewInterpretation,
@@ -23,11 +25,22 @@ use crate::store::{InvalidReason, StoreErrorKind, StoreFailure};
 pub(in crate::guard) enum InterpretationSelection {
     /// Selects the existing ordinary Legacy resolver, independently of lineage data.
     Legacy,
+    /// Selects current property3/attribute2/tree1 explicitly.
+    Active,
 }
 
-/// Captures the concrete selected Legacy profile before candidate staging.
+impl InterpretationSelection {
+    pub(in crate::guard) fn semantics(self) -> properties::selected::Selection {
+        match self {
+            Self::Legacy => properties::selected::Selection::Legacy,
+            Self::Active => properties::selected::Selection::Active,
+        }
+    }
+}
+
+/// Captures the concrete constructor-selected profile before candidate staging.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::guard) struct LegacyInputs {
+pub(in crate::guard) struct SelectedInputs {
     selection: InterpretationSelection,
     /// Retains the complete actual registered ordinary semantic inputs.
     pub(in crate::guard) registries: ConfiguredRegistryInputs,
@@ -41,20 +54,31 @@ impl<S, C> Guard<S, C> {
     ///
     /// # Errors
     /// Refuses an unregistered property vocabulary. This value grants no authority.
-    pub(in crate::guard) fn completion_inputs(&self) -> Result<LegacyInputs, StoreFailure> {
+    pub(in crate::guard) fn completion_inputs(&self) -> Result<SelectedInputs, StoreFailure> {
         let mut names = PropertyName::ALL
             .iter()
             .map(|name| name.as_str().to_owned())
             .collect::<Vec<_>>();
+        if self.interpretation == InterpretationSelection::Active {
+            names.extend(["index-roots".to_owned(), "index-gaps".to_owned()]);
+        }
         names.sort();
-        let property_revision =
-            ConfiguredRegistryInputs::property_revision_for(&names).map_err(malformed)?;
-        Ok(LegacyInputs {
+        let property_revision = match self.interpretation {
+            InterpretationSelection::Legacy => {
+                ConfiguredRegistryInputs::property_revision_for(&names).map_err(malformed)?
+            }
+            InterpretationSelection::Active => 3,
+        };
+        Ok(SelectedInputs {
             selection: self.interpretation,
             registries: ConfiguredRegistryInputs {
                 property_revision,
                 behavioral_properties: names,
-                attribute_revision: 1,
+                attribute_revision: if self.interpretation == InterpretationSelection::Active {
+                    2
+                } else {
+                    1
+                },
                 selector_revision: 1,
                 tree_revision: 1,
                 chunk_revision: 1,
@@ -87,10 +111,12 @@ impl PendingViewUse {
     /// Prepares every occurrence from actual addressed ordinary namespace evidence.
     ///
     /// # Errors
-    /// Refuses missing or contradictory signed requirements, required indexes,
-    /// any local active binding, or malformed namespace/property evidence.
+    /// Refuses missing or contradictory signed requirements, malformed namespace
+    /// or property evidence, and unsupported bindings. Legacy refuses required
+    /// indexes and local active bindings; Active defers actual relationships to
+    /// the owning full-history completion before promotion.
     pub(in crate::guard) fn prepare(
-        inputs: &LegacyInputs,
+        inputs: &SelectedInputs,
         commit: &VerifiedCommit,
         evidence: &TreeEvidence,
     ) -> Result<Self, StoreFailure> {
@@ -99,6 +125,7 @@ impl PendingViewUse {
         }
         let mode = match inputs.selection {
             InterpretationSelection::Legacy => ViewInterpretationMode::Legacy,
+            InterpretationSelection::Active => ViewInterpretationMode::Recorded,
         };
         let context = ConsumedViewInterpretation {
             view: commit.identity(),
@@ -117,7 +144,13 @@ impl PendingViewUse {
             private_domain: &evidence.default_domain,
             home: &inputs.home,
         };
-        requirements::check(commit, evidence, defaults, inputs.minimum)?;
+        requirements::check(
+            commit,
+            evidence,
+            defaults,
+            inputs.minimum,
+            inputs.selection.semantics(),
+        )?;
 
         // A valid owner-local binding still needs the real relationship loader.
         // No binding is ignored merely because the inherited Index result is empty.
@@ -129,13 +162,24 @@ impl PendingViewUse {
                 tree_format::TreeUse::Ordinary,
             )
             .map_err(malformed)?;
-            reject_bindings(node.props.as_deref().unwrap_or(&[]))?;
+            if inputs.selection == InterpretationSelection::Legacy {
+                reject_bindings(node.props.as_deref().unwrap_or(&[]))?;
+            } else {
+                active::check_namespace_node(&node, evidence.roots.contains(identity))?;
+            }
         }
         let mut roots = Vec::new();
         for occurrence in evidence.occurrences(inputs.minimum)? {
             for (properties, overrides) in &occurrence.layers {
-                reject_bindings(properties)?;
-                reject_bindings(overrides)?;
+                if inputs.selection == InterpretationSelection::Legacy {
+                    reject_bindings(properties)?;
+                    reject_bindings(overrides)?;
+                } else if overrides
+                    .iter()
+                    .any(|property| property.name == "index-roots")
+                {
+                    return Err(unsupported());
+                }
             }
             let layers = occurrence
                 .layers
@@ -145,9 +189,14 @@ impl PendingViewUse {
                     overrides,
                 })
                 .collect::<Vec<_>>();
-            let effective = properties::resolve(&layers, defaults).map_err(malformed)?;
+            let effective = inputs
+                .selection
+                .semantics()
+                .resolve(&layers, defaults)
+                .map_err(malformed)?;
             match effective.get(PropertyName::Index) {
                 Some(Value::Names(names)) if names.is_empty() => {}
+                Some(Value::Names(_)) if inputs.selection == InterpretationSelection::Active => {}
                 Some(Value::Names(_)) => return Err(unsupported()),
                 _ => return Err(invalid()),
             }

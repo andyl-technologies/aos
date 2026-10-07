@@ -292,7 +292,9 @@ impl<S: Store, C: Clock> Guard<S, C> {
                 overrides,
             })
             .collect::<Vec<_>>();
-        let policy = properties::resolve(&layers, self.defaults_for(&verified.evidence))
+        let policy = self
+            .semantic_selection()
+            .resolve(&layers, self.defaults_for(&verified.evidence))
             .map_err(|_| invalid())?;
         let domain = domain_label(&policy).map_err(|_| invalid())?.to_owned();
         if domain != self.config().storage_domain {
@@ -419,7 +421,9 @@ impl<S: Store, C: Clock> Guard<S, C> {
                 overrides,
             })
             .collect::<Vec<_>>();
-        let policy = properties::resolve(&layers, self.defaults_for(&snapshot.evidence))
+        let policy = self
+            .semantic_selection()
+            .resolve(&layers, self.defaults_for(&snapshot.evidence))
             .map_err(|_| invalid())?;
         let domain = domain_label(&policy).map_err(|_| invalid())?;
         let root_path = snapshot

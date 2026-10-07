@@ -1,7 +1,7 @@
 //! Checks D-110 ordinary data against fixed literals and independent inputs.
 //!
 //! Literal bytes come from the sealed normative proposal, not record codecs.
-//! The global registry decoder does not yet support property3/attribute2; context
+//! Registered execution includes exact property3/attribute2/tree1; context
 //! records reject unknown property revisions while preserving unsupported
 //! non-property semantic uints as ordinary data. No native
 //! producer, original/current authority or index relationship is certified.
@@ -168,10 +168,7 @@ fn explicit_modes_and_recorded_old_fences_match_independent_literals() {
         let bytes = hex_bytes(literal);
         assert_eq!(model.encode().unwrap(), bytes);
         assert_eq!(ConsumedViewInterpretation::decode(&bytes).unwrap(), model);
-        assert_eq!(
-            model.check_supported_interpretation(),
-            Err(EvidenceError::UnsupportedRevision)
-        );
+        assert_eq!(model.check_supported_interpretation(), Ok(()));
     }
     assert_ne!(
         hex_bytes(LEGACY_CURRENT_CONTEXT),
@@ -616,7 +613,7 @@ fn unknown_per_view_profiles_are_data_and_refuse_interpretation() {
     let mut profiles = Vec::new();
     let mut properties = baseline.clone();
     properties.registries = current_registries();
-    profiles.push(properties);
+    assert_eq!(properties.check_supported_interpretation(), Ok(()));
     let mut attributes = baseline.clone();
     attributes.registries.attribute_revision = 2;
     profiles.push(attributes);

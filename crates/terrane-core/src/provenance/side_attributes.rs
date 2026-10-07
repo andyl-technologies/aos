@@ -89,7 +89,10 @@ fn effective_domain(
             overrides: &[],
         })
         .collect();
-    let effective = properties::resolve(&layers, defaults).map_err(|_| Rejected)?;
+    let effective = history
+        .view_selection(view)?
+        .resolve(&layers, defaults)
+        .map_err(|_| Rejected)?;
     let Some(Value::Text(domain)) = effective.get(properties::PropertyName::Domain) else {
         return Err(Rejected);
     };
