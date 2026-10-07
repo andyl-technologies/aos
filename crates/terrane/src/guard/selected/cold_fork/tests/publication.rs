@@ -345,7 +345,8 @@ async fn root_native_cold_fork_refuses_changed_original_and_selected_controls() 
             .assert_head_and_history_unchanged(&fixture, SOURCE)
             .await?;
         let holder = crate::bucket::held::SingleHeld::acquire(fixture.bucket()).await?;
-        let observed = holder.destination().observe_publication().await?;
+        let held = holder.destination();
+        let observed = held.observe_publication().await?;
         assert_eq!(observed.state().branches, before.state.branches);
         assert_eq!(observed.state().sources, before.state.sources);
         assert_eq!(observed.state().guard, before.state.guard);
