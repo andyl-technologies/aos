@@ -780,6 +780,11 @@ Both mandatory formatters pass, and independent review verifies every original
 terminal result and all 5,618 unchanged tracked images. Its retained receipt
 setter and actual factory consumer are still absent; no retained-positive,
 imported-context or complete collector result follows from these checks.
+The focused separate-source requalification check is registered with twelve
+exact completion/refusal selectors; registry-complete and both required
+formatters pass. Its first private native compilation stops on two child-module
+path locators before discovery or execution. A locator-only correction is
+reviewed; no source-completion or whole ALG-32 result is claimed.
 
 The focused native graft-locality check now requires three actual publication
 cases and three structural cases, with exact discovery and non-ignored
@@ -794,7 +799,21 @@ oracles. The corrected attempt discovers 620 tests, then its first required
 native case returns `Advance(Expired)` in 46.11 seconds; the other five cases
 and all later checks remain unrun. The actual commit timer starts after the
 preparation baseline, so moving fixture `begin` alone would not establish an
-expiry fix. Original reports remain preserved; diagnostic tracing is pending.
+expiry fix. Original reports remain preserved. A later actual-put trace finds
+seven new placements and three verified existing objects: the puts total
+28.43 seconds, including 24.74 seconds in catalog publication groups. The
+seventh catalog publication completes before the unchanged next time check
+returns `Advance(Expired)`; no selected-ref acknowledgment follows. These
+intervals identify groups, not a particular syscall or a proven cause.
+A trunk prerequisite now coalesces only wholly equal captured physical
+predicates, preserving distinct policies, descriptors, ancestry, bytes and
+incarnations. Frozen `07929d45e2` compiles default, Send and native test targets,
+discovers the exact cases and passes four actual-held capture cases plus four
+existing native physical-fault/exclusion regressions with zero ignored cases.
+Both mandatory formatters pass. Independent review verifies all fourteen
+terminal results and 5,620 unchanged tracked images. The original fixture
+visibility failure is preserved. No measured speedup, expiry fix, DRV-29 gate
+or task completion follows until the owning locality cases are qualified.
 
 The test-only bucket observer records actual typed Node/Commit get and put
 attempts before catalog lookup, admission or deduplication. The same per-bucket
