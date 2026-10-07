@@ -1156,6 +1156,7 @@ let
   factoryInventory = {
     "boot/aos-uki.nix" = "linux-only-package-factory";
     "build-support/trivial-builders.nix" = "native-build-helper-factory";
+    "security/aos-nix-online-store-reader.nix" = "linux-only-package-factory";
     "system/dbus-conf.nix" = "target-independent-package-factory";
   };
 
@@ -1191,6 +1192,8 @@ let
     "networking/_envoy-config/types.nix" = "linux-only-config-source";
     "networking/_nginx-config/module.nix" = "linux-only-config-source";
     "networking/_openldap-config/module.nix" = "linux-only-config-source";
+    "networking/_samba-cross/aarch64-linux.answers" = "linux-only-build-source";
+    "networking/_samba-cross/heimdal-build-tools.nix" = "native-build-helper";
     "security/_aos-namespace-inspector-manager-query/broker-query.c" = "linux-only-build-source";
     "security/_aos-namespace-inspector-manager-query/fd-table.c" = "linux-only-build-source";
     "security/_aos-namespace-inspector-manager-query/helper.h" = "linux-only-build-source";
@@ -1213,6 +1216,8 @@ let
     "security/_aos-selinux-production-policy/context_plan_test.py" = "linux-only-test-source";
     "security/_aos-selinux-production-policy/effective_policy.py" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/effective_policy_test.py" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/git_read_delegation.fc" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/git_read_delegation.te" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/fuse_worker_policy.py" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/guest_file_policy.py" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/kernel-classmap.c" = "linux-only-build-source";
