@@ -6,8 +6,9 @@
 //! ```
 //!
 //! The actual bank opening, receiving writers and profile remain resident.
-//! This interval pays only the bounded current-Start intake. It does not issue
-//! a compiled-policy operation loan, a Storage request or physical permission.
+//! This interval prices the bounded current-Start and Source input capture.
+//! It does not issue a compiled-policy operation loan, a Storage request or
+//! physical permission.
 //! Pure prearm precedes observations; the original FirstGlobal CPU association
 //! is historical, and fresh I CPU readback precedes replay and archive growth.
 
@@ -31,6 +32,7 @@ use crate::controller::ControllerProtectedClockV1;
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
 use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use crate::normal_root::{NormalRootStartupErrorV1, ProductionControllerNormalRootProfileV1};
+use crate::policy_compiler::{CurrentNixPreflightAttemptV1, CurrentNixPreflightOriginalsV1};
 use crate::production_operation_compiler::{NixStartAdmissionCarrierV2, NixStartContinuationErrorV2};
 use crate::runtime_authority::RuntimeAuthorityBindingV1;
 use crate::runtime_scope::CurrentAssignmentTarget;
@@ -105,6 +107,7 @@ pub struct NixOriginalStartIntakeAttemptV1 {
     borrowed: bool,
     first: Option<FailureSite>,
     closed_start: Option<PaidNixStartOriginalsV1>,
+    closed_input: Option<CurrentNixPreflightOriginalsV1>,
     completion_controller: Option<Result<(), JournalError>>,
     completion_source: Option<Result<(), JournalError>>,
     completion_profile: Option<Result<(), NormalRootStartupErrorV1>>,
@@ -159,6 +162,7 @@ impl NixOriginalStartIntakeAttemptV1 {
             borrowed: false,
             first: None,
             closed_start: None,
+            closed_input: None,
             completion_controller: None,
             completion_source: None,
             completion_profile: None,
@@ -417,6 +421,17 @@ impl NixOriginalStartIntakeAttemptV1 {
     #[must_use]
     pub fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
         if self.first.is_none() {
+            // Added input posts may fail after acquisition. Preserve their
+            // chronology before scanning the retained time-floor crossings;
+            // the ordinary no-input projection below remains unchanged.
+            if let Some(input) = &self.closed_input {
+                if let Some(error) = self.closed_start.as_ref().and_then(PaidNixStartOriginalsV1::first_failure) {
+                    return Some(error);
+                }
+                if let Some(error) = input.failure() {
+                    return Some(error);
+                }
+            }
             if let Some(error) = self.authorization.iter().find_map(RetainedAuthorizationTimeFloorV1::failure) {
                 return Some(error);
             }
@@ -479,9 +494,12 @@ impl<'original> NixOriginalStartIntakeLoanV1<'original> {
         self,
         controller: &Journal,
         source: &mut ProtectedSourceDomainJournalOwnerV1,
+        input: Option<CurrentNixPreflightOriginalsV1>,
     ) -> NixIntakeClosingV1<'original> {
         // Consuming the only non-Clone loan makes a second closure impossible.
         // No public reborrow can create or replace these completion slots.
+        // Source's borrowed inventory has already become an owning payload.
+        self.original.closed_input = input;
         self.original.park_completion_posts(controller, source, self.profile);
         NixIntakeClosingV1 { loan: self }
     }
@@ -490,6 +508,17 @@ impl<'original> NixOriginalStartIntakeLoanV1<'original> {
         self.profile.require_nix_intake_original(self.original.lifetime.as_ref()
             .ok_or(ResourceReservationErrorV1::Conflict)?)?;
         self.original.append.require_committed().map(|_| ())
+    }
+
+    // The caller checks the original I admission first. Controller floor
+    // writes may have advanced its sequence; the priced Source cut may not.
+    pub(crate) fn require_original_source(
+        &self,
+        source: &mut ProtectedSourceDomainJournalOwnerV1,
+    ) -> Result<(), ResourceReservationErrorV1> {
+        self.original.receiver.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(ResourceReservationErrorV1::Conflict)?
+            .require_same_source(source)
     }
 
     pub(crate) fn authorization_crossing(&mut self) -> Result<&mut RetainedAuthorizationTimeFloorV1, ResourceReservationErrorV1> {
@@ -536,9 +565,15 @@ fn fixed_demand(
     source: &JournalShape,
     provision: ResourceVector,
 ) -> Result<ResourceVector, ResourceReservationErrorV1> {
-    let whole = crate::production_operation_compiler::ControllerNixStartRecipeSelectorV2::original_start_intake_demand(
-        controller, source, provision, std::mem::size_of::<Option<NixOriginalStartIntakeAttemptV1>>(),
-    )?;
+    // Quote both reached recipes before allocating either archive or entering
+    // the native I commit. No Root/Source16/compiler interval is included.
+    let owner_bytes = std::mem::size_of::<Option<NixOriginalStartIntakeAttemptV1>>()
+        .checked_add(std::mem::size_of::<Option<Result<(), ()>>>())
+        .ok_or(ResourceReservationErrorV1::Conflict)?;
+    let whole = crate::production_operation_compiler::ControllerNixStartRecipeSelectorV2::
+        original_start_intake_demand(controller, source, provision, owner_bytes)?;
+    let input = CurrentNixPreflightAttemptV1::input_capture_demand_v1(controller, source)?;
+
     // Rate, process and descriptor ceilings are shared by this one interval;
     // retained negative-prefix owners coexist with the later whole recipe.
     let retained_prefix = minimum_failure_demand()?
@@ -546,7 +581,7 @@ fn fixed_demand(
         .with(D::Pids, 0)
         .with(D::OpenFiles, 0)
         .with(D::ConcurrentOperations, 0);
-    Ok(whole.checked_add(retained_prefix)?)
+    Ok(whole.checked_add(input)?.checked_add(retained_prefix)?)
 }
 
 pub(super) fn minimum_failure_demand() -> Result<ResourceVector, ResourceReservationErrorV1> {
