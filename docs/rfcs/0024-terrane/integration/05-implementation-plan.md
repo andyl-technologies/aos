@@ -157,7 +157,14 @@ The composed Core library builds on `15798d9358`; mechanical test-helper ports
 on `ac3d8ffb2c` allow the full run to execute all 698 tests. It passes 683 and
 fails fifteen with no skips. The failures include historical defaults, selected
 property errors, affected-root policy flags and genuine history/evaluator
-fixtures. They remain under review. Runtime composition remains incomplete.
+fixtures. Reviewed corrections on `06f87a86e4` pass all 700 Core tests with no
+skips, strict all-target Clippy, private rustdoc and the no-default-features
+build. The registered `core-no-std` gate also passes through `aos-dev`; its
+actual Nix source matches all 348 committed Core/Cargo inputs. Empty owner
+defaults compare as the same namespace policy as absence, while explicit raw
+edits and nonempty binding changes remain changes. Genuine independently
+configured disclosure histories retain their original scope and role-refusal
+checks. Runtime composition and the combined trunk floor remain incomplete.
 Private backfill on `4f4bd8083f` passes all four exact cases, including
 the formerly expired completeness case. All six publication batch cases also
 pass. Its first finite qualification stops on missing-pack recovery with
