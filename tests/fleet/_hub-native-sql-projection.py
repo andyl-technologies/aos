@@ -163,7 +163,7 @@ def native_sql_private(path, maximum):
     return raw
 
 
-def native_sql_rows(raw, selection, checkpoints):
+def native_sql_rows(raw, selection, checkpoints, *, server_address='127.0.0.1', server_port=5432):
     """Check actual reader identity and exact selected coverage at reader time."""
     if not 0 < len(raw) <= NATIVE_SQL_MAX_OUTPUT or len(raw.splitlines()) != 1:
         raise ValueError('Native SQL output bound or framing differs')
@@ -172,7 +172,7 @@ def native_sql_rows(raw, selection, checkpoints):
         'snapshot', 'snapshotAt', 'observedAt', 'role', 'privileges', 'admissions', 'chunks'})
     if (value['database'] != selection['database'] or value['user'] != selection['role']
             or not isinstance(value['databaseOid'], str) or not re.fullmatch('[1-9][0-9]{0,9}', value['databaseOid'])
-            or value['serverAddress'] != '127.0.0.1' or type(value['serverPort']) is not int or value['serverPort'] != 5432
+            or value['serverAddress'] != server_address or type(value['serverPort']) is not int or value['serverPort'] != server_port
             or type(value['backendPid']) is not int or value['backendPid'] <= 1
             or value['readOnly'] != 'on' or value['isolation'] != 'repeatable read'):
         raise ValueError('Native SQL actual database/role/transaction differs')

@@ -22,7 +22,7 @@ def install(prepared, tool_source, codec, output, python, bash):
     for name in ('native_auth.py', 'hosted_assessment.py', 'package_context.py',
                  'native_auth_tests.py', 'hosted_assessment_tests.py', 'test_support.py',
                  'producer_inputs.py', 'render_private_wrapper.py', 'native_inventory.py',
-                 'native_inventory_tests.py'):
+                 'native_inventory_tests.py', 'hosted_custody.py', 'hosted_custody_tests.py'):
         shutil.copyfile(source / name, library / name)
     shutil.copytree(source / 'fixtures', library / 'fixtures')
     provenance = spec['runtimeProvenance']

@@ -120,8 +120,40 @@ def source_readers(held_log=None):
     return observations
 
 
+# A reviewed source-bound collector may supply this code hook. No selected
+# input, environment variable or arbitrary module path can install a verifier.
+HOSTED_EXPORT_VERIFIER = None
+
+
+def hosted_custody():
+    """Load only the adjacent immutable installed adapter, with held byte custody."""
+    path = Path(__file__).resolve(strict=True).parent / 'hosted_custody.py'
+    raw = PACKAGE_READER['installed_bytes'](path, 1024 * 1024)
+    namespace = {'__file__': str(path), '__name__': 'installed_hosted_custody'}
+    exec(compile(raw, str(path), 'exec'), namespace)
+    return namespace
+
+
+def hosted_messages(selected):
+    log = selected['nativeLog']
+    fields(log, {'format', 'selection'})
+    if log['format'] != 'cloud_run' or selected['nativeProcess'] is not None:
+        raise ValueError('Hosted log invents local Native process custody')
+    spec = closed_json(read_ref(log['selection'], 1024 * 1024))
+    return hosted_custody()['cloud_run'](spec, globals(), PACKAGE['runtime'],
+                                       HOSTED_EXPORT_VERIFIER)
+
+
 def ingress_events(selected):
     log = selected["nativeLog"]
+    if log is not None and log.get('format') == 'cloud_run':
+        result = hosted_messages(selected)
+        if result['messages'] is None or result['missing']:
+            return [], ';'.join(result['missing'])
+        observations = source_readers()
+        messages = [row for group in result['messages'].values() for row in group]
+        observations.__globals__['observed_native_messages'] = lambda *_: iter(messages)
+        return observations(None, None, None, selected['nativeSources']), None
     if log is None or selected["nativeProcess"] is None:
         return [], "missing_current_native_log_or_process"
     fields(log, {"reference", "format", "provenance", "epoch"})

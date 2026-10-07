@@ -336,6 +336,14 @@ def sql_reader_projection(checkpoint, codec, selected, readers, source, read_sou
     if original_images is None:
         return None
     collection = readers['closed_json'](readers['read_ref'](selected, 64 * 1024 * 1024))
+    if collection.get('kind') == 'cloud_sql':
+        path = Path(source) / 'tests/fleet/_hub-native-sql-projection.py'
+        namespace = {'__file__': str(path), '__name__': 'selected_managed_sql_contract'}
+        raw_source = read_source(path, 1024 * 1024)
+        exec(compile(raw_source, str(path), 'exec'), namespace)
+        return readers['hosted_custody']()['cloud_sql'](
+            collection, checkpoint, codec, readers, namespace,
+            readers['PACKAGE']['runtime'], readers['HOSTED_EXPORT_VERIFIER'])
     closed(collection, {'version', 'observations', 'objectPayloadBytes', 'missing'})
     if type(collection['version']) is not int or collection['version'] != 1 or collection['objectPayloadBytes'] is not None:
         raise ValueError('SQL reader collection schema differs')
@@ -629,6 +637,14 @@ def selected_messages(sidecar, readers):
     not invent host process facts for a provider-managed container instance.
     """
     log, process = sidecar.get('nativeLog'), sidecar.get('nativeProcess')
+    if log is not None and log.get('format') == 'cloud_run':
+        result = readers['hosted_messages'](sidecar)
+        if result['messages'] is None:
+            return None, ';'.join(result['missing'])
+        # A policy chain is scoped to an instance. Never concatenate chains from
+        # two managed instances into a manufactured single Native process.
+        return None, ';'.join(result['missing'] + [
+            'hosted_per_instance_chain_assessment_required'])
     if log is None or process is None:
         return None, 'missing_actual_native_instance_executable_and_window_custody'
     if log.get('format') not in ('plain', 'journal'):
@@ -686,6 +702,23 @@ def assess(selection, source, readers, read_source, manifest, codec_report=None)
     # actual selected manifest. Its authentication result is never inferred
     # from inventory or used as a blanket member classification.
     authentication = readers['assess'](sidecar, manifest)
+    if sidecar.get('nativeLog') is not None and sidecar['nativeLog'].get('format') == 'cloud_run':
+        hosted = readers['hosted_messages'](sidecar)
+        if hosted['messages'] is None:
+            return {'inventoryComplete': False, 'nativeBulkBytes': None,
+                    'inboundObjectPayloadBytes': None, 'members': [],
+                    'missing': hosted['missing']}
+        spec = readers['closed_json'](readers['read_ref'](
+            sidecar['nativeLog']['selection'], 1024 * 1024))
+        if readers['read_ref'](spec['policy'], 1024) != policy_raw:
+            raise ValueError('Hosted revision policy differs from assessment policy')
+        instances = {identifier: validate(rows, policy, producer(source, read_source),
+                     readers['closed_json']) for identifier, rows in hosted['messages'].items()}
+        return {'inventoryComplete': False, 'nativeBulkBytes': None,
+                'inboundObjectPayloadBytes': None, 'members': [], 'instances': instances,
+                'missing': hosted['missing'] + [
+                    'hosted_member_original_auth_sql_and_template_projection_join',
+                    'independent_native_outbound_original_auth_sql_and_body_coverage']}
     messages, missing = selected_messages(sidecar, readers)
     if messages is None:
         return {'inventoryComplete': False, 'nativeBulkBytes': None,
