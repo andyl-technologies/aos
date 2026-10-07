@@ -82,10 +82,11 @@ in {
     ${runTest "algebra::recipe::tests::merge_recipe_preserves_policy_order"}
     ${runTest "refs::codec::recipe_tests::commit_recipe_codec_preserves_registered_and_other_encodings"}
     ${runTest "refs::codec::recipe_tests::commit_recipe_codec_rejects_invalid_registered_arguments"}
-    ${runTest "algebra::trust::recorded_context_tests::trusted_recorded_context_recipe_keys_bind_complete_interpretations"}
-    ${runTest "provenance::trust::recorded_evaluation_tests::fold::recorded_fold_replays_original_view_interpretations_before_recipe_rebinding"}
+    ${runTest "provenance::trust::context::tests::recorded_execution::recorded_current_selection_has_distinct_memo_keys_with_identical_registered_bytes"}
+    ${runTest "provenance::trust::context::tests::recorded_execution::recorded_fold_recipe_binds_original_root_and_exact_contexts_on_verified_replay"}
     ${runNativeTest "guard::merge::recorded_tests::recorded_merge_input_configuration_requires_all_original_view_root_pairs"}
     ${runNativeTest "guard::merge::recorded_tests::recorded_merge_occurrences_preserve_per_view_fences_and_refuse_domain_ambiguity"}
+    ${runTest "provenance::trust::context::tests::recorded_execution::recorded_canonical_graft_domains_refuse_shared_root_ambiguity_in_both_orders"}
     ${runNativeTest "guard::merge::recorded_tests::recorded_merge_contexts_bind_original_interpretations_through_fold_replay"}
     printf 'PASS: merge, fold bindings, verified recipes and retained input interpretations\n' > "$out/result"
   '';

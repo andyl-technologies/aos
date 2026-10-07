@@ -40,9 +40,10 @@ in {
     ${runNativeTest "guard::view_selection::adapter_tests::adapter_configuration_preserves_legacy_and_explicit_modes"}
     ${runNativeTest "guard::view_selection::adapter_tests::adapter_configuration_retains_per_view_fences_and_refuses_missing_pairs"}
     ${runNativeTest "guard::view_selection::adapter_tests::adapter_configuration_preserves_recorded_graft_semantics"}
-    ${runNativeTest "guard::recorded_properties::historical_tests::historical_root_witnesses_retain_recorded_occurrence_interpretations"}
-    ${runNativeTest "guard::recorded_properties::historical_tests::historical_root_witnesses_use_one_candidate_interpretation_for_prior_comparison"}
-    ${runNativeTest "guard::recorded_properties::historical_tests::historical_scope_dispatch_preserves_checked_interpretations_and_refusals"}
+    ${runNativeTest "guard::view_selection::historical_tests::historical_root_witnesses_retain_recorded_occurrence_interpretations"}
+    ${runNativeTest "guard::view_selection::historical_tests::historical_root_witnesses_use_one_candidate_interpretation_for_prior_comparison"}
+    ${runTests "provenance::tests::root_context::recorded::historical_execution::recorded_removed_scope_uses_candidate_interpretation_of_raw_prior_roots -- --exact"}
+    ${runNativeTest "guard::view_selection::historical_tests::historical_scope_dispatch_preserves_checked_interpretations_and_refusals"}
     printf 'PASS: closed registry and view-path property resolution\n' > "$out/result"
   '';
 
