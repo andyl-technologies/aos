@@ -22,6 +22,8 @@ struct FixtureResourceCredit {
 }
 
 impl FixtureResourceBudget {
+    const MAXIMUM_RESIDENT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
     fn reserve(
         self: &Arc<Self>,
         descriptors: u64,
@@ -37,7 +39,7 @@ impl FixtureResourceBudget {
             .ok_or(StoreError::Quota)?;
         // Codec fixtures author finite modeled capacity independently from
         // the production kernel quota and native Service qualification.
-        if next_descriptors > 4096 || next_resident > 2 * 1024 * 1024 * 1024 {
+        if next_descriptors > 4096 || next_resident > Self::MAXIMUM_RESIDENT_BYTES {
             return Err(StoreError::Quota);
         }
         *used = (next_descriptors, next_resident);
@@ -320,6 +322,11 @@ impl ProductionRamCatalogProvider for FixtureRamCatalogProvider {
 }
 
 impl crucible_cas::content_store::StorePhysicalQuotaGuard for FixtureRamCatalogGuard {
+    fn decoded_metadata_limit(&self) -> Result<u64, crucible_cas::content_store::StoreError> {
+        self.verify()?;
+        Ok(FixtureResourceBudget::MAXIMUM_RESIDENT_BYTES)
+    }
+
     fn reserve_resources(
         &self,
         descriptors: u64,
