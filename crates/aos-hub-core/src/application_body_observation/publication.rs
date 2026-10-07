@@ -12,8 +12,8 @@
 
 use super::{canonical, canonical_image, EncodedImage};
 use crate::clock::{observation_unix_nanos, Instant};
-use aos_proto_types::CommitRegistryPublicationRequest;
 use anyhow::{ensure, Result};
+use aos_proto_types::CommitRegistryPublicationRequest;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -101,24 +101,39 @@ impl Summary {
     /// Rejects a foreign request/source, unsupported or duplicate phase, invalid
     /// decimal/count/time commitment, incomplete return fields or excess size.
     pub fn validate_original(&self, request: &CommitRegistryPublicationRequest) -> Result<()> {
-        ensure!(self.version == 1 && self.phases.len() <= MAX_PHASES && self.encoded().is_some(),
-            "publication phase schema/bound differs");
-        let image = canonical_image(request, 32 * 1024).ok_or_else(|| anyhow::anyhow!("publication original exceeds bound"))?;
-        ensure!(self.publication_id == request.publication_id
-            && self.request.byte_size == image.byte_size && self.request.sha256 == image.sha256
-            && self.producer_sha256 == producer_sha256(), "publication phase original/source differs");
+        ensure!(
+            self.version == 1 && self.phases.len() <= MAX_PHASES && self.encoded().is_some(),
+            "publication phase schema/bound differs"
+        );
+        let image = canonical_image(request, 32 * 1024)
+            .ok_or_else(|| anyhow::anyhow!("publication original exceeds bound"))?;
+        ensure!(
+            self.publication_id == request.publication_id
+                && self.request.byte_size == image.byte_size
+                && self.request.sha256 == image.sha256
+                && self.producer_sha256 == producer_sha256(),
+            "publication phase original/source differs"
+        );
         let before = decimal::<u128>(&self.source_before_unix_nanos)?;
         let after = match self.terminal_outcome {
             TerminalOutcome::Incomplete => {
-                ensure!(self.source_after_unix_nanos.is_none() && self.source_elapsed_nanos.is_none(),
-                    "incomplete phase summary invents a returned boundary");
+                ensure!(
+                    self.source_after_unix_nanos.is_none() && self.source_elapsed_nanos.is_none(),
+                    "incomplete phase summary invents a returned boundary"
+                );
                 None
             }
             TerminalOutcome::ReturnedSuccess | TerminalOutcome::ReturnedError => {
-                let after = decimal::<u128>(self.source_after_unix_nanos.as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("missing publication terminal clock"))?)?;
-                decimal::<u128>(self.source_elapsed_nanos.as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("missing publication elapsed clock"))?)?;
+                let after = decimal::<u128>(
+                    self.source_after_unix_nanos
+                        .as_deref()
+                        .ok_or_else(|| anyhow::anyhow!("missing publication terminal clock"))?,
+                )?;
+                decimal::<u128>(
+                    self.source_elapsed_nanos
+                        .as_deref()
+                        .ok_or_else(|| anyhow::anyhow!("missing publication elapsed clock"))?,
+                )?;
                 ensure!(after >= before, "publication source clock rolled backwards");
                 Some(after)
             }
@@ -127,15 +142,25 @@ impl Summary {
         for phase in &self.phases {
             ensure!(!seen.contains(&phase.phase), "duplicate publication phase");
             seen.push(phase.phase);
-            ensure!(decimal::<u64>(&phase.completed_calls)? > 0, "empty completed phase");
+            ensure!(
+                decimal::<u64>(&phase.completed_calls)? > 0,
+                "empty completed phase"
+            );
             decimal::<u64>(&phase.completed_items)?;
             let first = decimal::<u128>(&phase.first_completed_unix_nanos)?;
             let last = decimal::<u128>(&phase.last_completed_unix_nanos)?;
-            ensure!(first >= before && last >= first && after.is_none_or(|after| last <= after),
-                "phase boundary lies outside original source bracket");
-            ensure!(phase.chain_sha256.len() == 64 && phase.chain_sha256.bytes()
-                .all(|value| value.is_ascii_digit() || (b'a'..=b'f').contains(&value)),
-                "phase commitment differs");
+            ensure!(
+                first >= before && last >= first && after.is_none_or(|after| last <= after),
+                "phase boundary lies outside original source bracket"
+            );
+            ensure!(
+                phase.chain_sha256.len() == 64
+                    && phase
+                        .chain_sha256
+                        .bytes()
+                        .all(|value| value.is_ascii_digit() || (b'a'..=b'f').contains(&value)),
+                "phase commitment differs"
+            );
         }
         Ok(())
     }
@@ -155,7 +180,9 @@ impl Summary {
 }
 
 fn decimal<T: std::str::FromStr + ToString>(value: &str) -> Result<T> {
-    let parsed = value.parse::<T>().map_err(|_| anyhow::anyhow!("invalid phase decimal"))?;
+    let parsed = value
+        .parse::<T>()
+        .map_err(|_| anyhow::anyhow!("invalid phase decimal"))?;
     ensure!(parsed.to_string() == value, "noncanonical phase decimal");
     Ok(parsed)
 }
@@ -187,7 +214,8 @@ pub(crate) fn begin(request: &CommitRegistryPublicationRequest) {
             existing.invalid = true;
             return;
         }
-        let (Some(image), Some(before)) = (canonical(request, 32 * 1024), observation_unix_nanos()) else {
+        let (Some(image), Some(before)) = (canonical(request, 32 * 1024), observation_unix_nanos())
+        else {
             return;
         };
         scope.publication = Some(Accumulator {
@@ -224,11 +252,19 @@ pub(crate) fn completed<T: Serialize>(publication_id: &str, phase: Phase, items:
             accumulator.invalid = true;
             return;
         }
-        let (Some(image), Some(now)) = (canonical(values, 8 * 1024 * 1024), observation_unix_nanos()) else {
+        let (Some(image), Some(now)) =
+            (canonical(values, 8 * 1024 * 1024), observation_unix_nanos())
+        else {
             accumulator.invalid = true;
             return;
         };
-        if accumulator.summary.source_before_unix_nanos.parse::<u128>().ok().is_none_or(|before| now < before) {
+        if accumulator
+            .summary
+            .source_before_unix_nanos
+            .parse::<u128>()
+            .ok()
+            .is_none_or(|before| now < before)
+        {
             accumulator.invalid = true;
             return;
         }
@@ -257,7 +293,14 @@ pub(crate) fn completed<T: Serialize>(publication_id: &str, phase: Phase, items:
             }
         };
         let counts = entry.completed_calls.parse::<u64>().ok().and_then(|calls| {
-            Some((calls.checked_add(1)?, entry.completed_items.parse::<u64>().ok()?.checked_add(items)?))
+            Some((
+                calls.checked_add(1)?,
+                entry
+                    .completed_items
+                    .parse::<u64>()
+                    .ok()?
+                    .checked_add(items)?,
+            ))
         });
         let Some((calls, items)) = counts else {
             accumulator.invalid = true;
@@ -300,13 +343,18 @@ pub(crate) fn returned(success: bool) {
             accumulator.invalid = true;
             return;
         };
-        let before = accumulator.summary.source_before_unix_nanos.parse::<u128>().ok();
+        let before = accumulator
+            .summary
+            .source_before_unix_nanos
+            .parse::<u128>()
+            .ok();
         if before.is_none_or(|before| after < before) {
             accumulator.invalid = true;
             return;
         }
         accumulator.summary.source_after_unix_nanos = Some(after.to_string());
-        accumulator.summary.source_elapsed_nanos = Some(accumulator.start.elapsed().as_nanos().to_string());
+        accumulator.summary.source_elapsed_nanos =
+            Some(accumulator.start.elapsed().as_nanos().to_string());
         accumulator.summary.terminal_outcome = if success {
             TerminalOutcome::ReturnedSuccess
         } else {
@@ -334,11 +382,17 @@ mod tests {
         };
         let (result, sql, summary) = super::super::observe_with_publication_phases(async {
             begin(&original);
-            completed(&original.publication_id, Phase::Authorized, 0, &"actual selected actor image");
+            completed(
+                &original.publication_id,
+                Phase::Authorized,
+                0,
+                &"actual selected actor image",
+            );
             super::super::invalidate_sql_projection();
             returned(false);
             Err::<(), _>("later operation refused")
-        }).await;
+        })
+        .await;
 
         assert_eq!(result, Err("later operation refused"));
         assert!(sql.is_none());
@@ -349,7 +403,9 @@ mod tests {
         assert_eq!(summary.phases[0].phase, Phase::Authorized);
         assert_eq!(summary.phases[0].completed_items, "0");
 
-        let foreign = CommitRegistryPublicationRequest { publication_id: "foreign-publication".into() };
+        let foreign = CommitRegistryPublicationRequest {
+            publication_id: "foreign-publication".into(),
+        };
         assert!(summary.validate_original(&foreign).is_err());
         let mut changed = summary.clone();
         changed.producer_sha256 = "f".repeat(64);
@@ -358,14 +414,22 @@ mod tests {
 
     #[tokio::test]
     async fn repeated_actual_boundaries_are_counted_without_expanding_checkpoint_count() {
-        let original = CommitRegistryPublicationRequest { publication_id: "bounded-publication".into() };
+        let original = CommitRegistryPublicationRequest {
+            publication_id: "bounded-publication".into(),
+        };
         let (_, sql, summary) = super::super::observe_with_publication_phases(async {
             begin(&original);
             for index in 0..12_535_u64 {
-                completed(&original.publication_id, Phase::PointerAdvanceFinalized, 1, &index);
+                completed(
+                    &original.publication_id,
+                    Phase::PointerAdvanceFinalized,
+                    1,
+                    &index,
+                );
             }
             returned(true);
-        }).await;
+        })
+        .await;
 
         assert!(sql.is_none());
         let summary = summary.unwrap();
@@ -379,19 +443,23 @@ mod tests {
 
     #[tokio::test]
     async fn foreign_phase_or_restarted_original_never_produces_a_summary() {
-        let original = CommitRegistryPublicationRequest { publication_id: "original-publication".into() };
+        let original = CommitRegistryPublicationRequest {
+            publication_id: "original-publication".into(),
+        };
         let (_, _, foreign) = super::super::observe_with_publication_phases(async {
             begin(&original);
             completed("foreign-publication", Phase::Authorized, 0, &0);
             returned(false);
-        }).await;
+        })
+        .await;
         assert!(foreign.is_none());
 
         let (_, _, restarted) = super::super::observe_with_publication_phases(async {
             begin(&original);
             begin(&original);
             returned(true);
-        }).await;
+        })
+        .await;
         assert!(restarted.is_none());
     }
 }

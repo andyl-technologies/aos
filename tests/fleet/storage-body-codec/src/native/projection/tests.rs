@@ -457,24 +457,45 @@ fn dynamic_context(method: &str) -> DirectRequestContext {
         executor_public_origin: "https://executor.example.test".into(),
         public_authority: "hub.example.test".into(),
         foreground: DirectForegroundBudget {
-            invocation_id: "a".repeat(64), issued_at: WireInteger::new(100), expires_at: WireInteger::new(130),
+            invocation_id: "a".repeat(64),
+            issued_at: WireInteger::new(100),
+            expires_at: WireInteger::new(130),
         },
-        request_nonce: "b".repeat(64), request_body_sha256: "c".repeat(64),
-        public_method: "POST".into(), public_path: format!("/aos.hub.v1.DirectUploadService/{method}"),
-        issued_at: WireInteger::new(100), expires_at: WireInteger::new(130),
+        request_nonce: "b".repeat(64),
+        request_body_sha256: "c".repeat(64),
+        public_method: "POST".into(),
+        public_path: format!("/aos.hub.v1.DirectUploadService/{method}"),
+        issued_at: WireInteger::new(100),
+        expires_at: WireInteger::new(130),
     }
 }
 
-fn dynamic_record(admission: DirectUploadAdmission, state: DirectSessionState, version: u64) -> DirectUploadSessionRecord {
+fn dynamic_record(
+    admission: DirectUploadAdmission,
+    state: DirectSessionState,
+    version: u64,
+) -> DirectUploadSessionRecord {
     DirectUploadSessionRecord {
-        admission, owner_scope_key: "registry-scope".into(), owner: DirectSqlOwner::Publication,
-        state, resource_version: WireInteger::new(version), final_dependency_phase: None,
-        complete_intent: None, abort_intent: None, baselines: vec![], stage_evidence: None,
-        completion_evidence: None, final_guards: vec![],
+        admission,
+        owner_scope_key: "registry-scope".into(),
+        owner: DirectSqlOwner::Publication,
+        state,
+        resource_version: WireInteger::new(version),
+        final_dependency_phase: None,
+        complete_intent: None,
+        abort_intent: None,
+        baselines: vec![],
+        stage_evidence: None,
+        completion_evidence: None,
+        final_guards: vec![],
     }
 }
 
-fn dynamic_original(admission: &DirectUploadAdmission, state: &str, version: &str) -> serde_json::Value {
+fn dynamic_original(
+    admission: &DirectUploadAdmission,
+    state: &str,
+    version: &str,
+) -> serde_json::Value {
     serde_json::json!({"sessionId":admission.session_id, "publicationId":"a".repeat(32),
         "state":state, "admission":admission, "resourceVersion":version,
         "ownerScopeKey":"registry-scope", "cacheId":null, "cacheTicketId":null})
@@ -482,11 +503,18 @@ fn dynamic_original(admission: &DirectUploadAdmission, state: &str, version: &st
 
 #[test]
 fn dynamic_get_uses_actual_proto_original_and_separates_later_reader_state() {
-    let original = aos_proto_types::GetRegistryPublicationRequest { publication_id: "a".repeat(32) };
+    let original = aos_proto_types::GetRegistryPublicationRequest {
+        publication_id: "a".repeat(32),
+    };
     let reply = aos_proto_types::RegistryPublication {
-        publication_id: original.publication_id.clone(), registry: "registry".into(), ordinal: 1,
-        manifest_digest: "b".repeat(64), refs_digest: "c".repeat(64), default_commit: "d".repeat(64),
-        state: "preparing".into(), ..Default::default()
+        publication_id: original.publication_id.clone(),
+        registry: "registry".into(),
+        ordinal: 1,
+        manifest_digest: "b".repeat(64),
+        refs_digest: "c".repeat(64),
+        default_commit: "d".repeat(64),
+        state: "preparing".into(),
+        ..Default::default()
     };
     let sql = serde_json::json!({"publicationId":original.publication_id,"registryId":"1",
         "registrySlug":"registry","ordinal":"1","state":"ready",
@@ -494,14 +522,29 @@ fn dynamic_get_uses_actual_proto_original_and_separates_later_reader_state() {
     let selected = capture("/aos.hub.v1.PublishService/GetRegistryPublication", None);
     let request = serde_json::to_vec(&original).unwrap();
     let response = serde_json::to_vec(&reply).unwrap();
-    let values = dynamic::publication_get(&selected, &request, &response, &serde_json::to_vec(&sql).unwrap()).unwrap();
+    let values = dynamic::publication_get(
+        &selected,
+        &request,
+        &response,
+        &serde_json::to_vec(&sql).unwrap(),
+    )
+    .unwrap();
     let values = serde_json::to_value(values).unwrap();
     assert_eq!(values[0]["values"]["readerState"], "ready");
     assert!(values[0]["values"].get("actor").is_none());
-    for (field, value) in [("manifestDigest", serde_json::json!("e".repeat(64))),
-                           ("publicationId", serde_json::json!("foreign"))] {
-        let mut changed = sql.clone(); changed[field] = value;
-        assert!(dynamic::publication_get(&selected, &request, &response, &serde_json::to_vec(&changed).unwrap()).is_err());
+    for (field, value) in [
+        ("manifestDigest", serde_json::json!("e".repeat(64))),
+        ("publicationId", serde_json::json!("foreign")),
+    ] {
+        let mut changed = sql.clone();
+        changed[field] = value;
+        assert!(dynamic::publication_get(
+            &selected,
+            &request,
+            &response,
+            &serde_json::to_vec(&changed).unwrap()
+        )
+        .is_err());
     }
 }
 
@@ -510,34 +553,73 @@ fn dynamic_authorize_requires_original_action_and_actual_returned_status() {
     let admission = admission_fixture();
     let record = dynamic_record(admission.clone(), DirectSessionState::Creating, 1);
     let authorization = DirectSessionAuthorization {
-        session: DirectSessionRef { session_id: admission.session_id.clone(), logical_fingerprint: admission.logical_fingerprint.clone() },
-        operation_id: "d".repeat(64), expected_resource_version: None, complete_intent: None,
+        session: DirectSessionRef {
+            session_id: admission.session_id.clone(),
+            logical_fingerprint: admission.logical_fingerprint.clone(),
+        },
+        operation_id: "d".repeat(64),
+        expected_resource_version: None,
+        complete_intent: None,
     };
     let original = DirectLogicalRequestEnvelope {
         context: dynamic_context("StatusBatch"),
         request: DirectUploadLogicalRequest::Authorize {
-            action: DirectLogicalAction::Status, complete_step: None, stage_evidence: vec![],
-            retained_stage_digests: vec![], baseline_evidence: vec![], baseline_witnesses: vec![],
-            baseline_witness_refs: vec![], settled_placements: vec![], sessions: vec![authorization.clone()],
+            action: DirectLogicalAction::Status,
+            complete_step: None,
+            stage_evidence: vec![],
+            retained_stage_digests: vec![],
+            baseline_evidence: vec![],
+            baseline_witnesses: vec![],
+            baseline_witness_refs: vec![],
+            settled_placements: vec![],
+            sessions: vec![authorization.clone()],
         },
     };
-    let response = DirectLogicalReplyEnvelope { context: original.context.clone(), reply: DirectUploadLogicalReply {
-        admissions: vec![admission.clone()], sessions: vec![record.status("deployment").unwrap()],
-        session_summaries: vec![], authorizations: vec![authorization], baseline_permissions: vec![], errors: vec![],
-    }};
+    let response = DirectLogicalReplyEnvelope {
+        context: original.context.clone(),
+        reply: DirectUploadLogicalReply {
+            admissions: vec![admission.clone()],
+            sessions: vec![record.status("deployment").unwrap()],
+            session_summaries: vec![],
+            authorizations: vec![authorization],
+            baseline_permissions: vec![],
+            errors: vec![],
+        },
+    };
     let sql = serde_json::json!({"original":dynamic_original(&admission,"admitted","9"),
         "completeIntent":null,"completionReceipt":null});
     let selected = capture(&original.context.public_path, Some("authorize"));
     let request = encode_direct_control(&original).unwrap();
     let reply = encode_direct_control(&response).unwrap();
-    let rows = dynamic::logical("direct_authorize", &selected, &request, &reply, &serde_json::to_vec(&sql).unwrap()).unwrap();
+    let rows = dynamic::logical(
+        "direct_authorize",
+        &selected,
+        &request,
+        &reply,
+        &serde_json::to_vec(&sql).unwrap(),
+    )
+    .unwrap();
     let rows = serde_json::to_value(rows).unwrap();
     assert_eq!(rows[0]["values"]["observedResourceVersion"], "1");
     assert_eq!(rows[0]["values"]["readerResourceVersion"], "9");
-    let mut changed = response.clone(); changed.reply.authorizations[0].operation_id = "e".repeat(64);
-    assert!(dynamic::logical("direct_authorize", &selected, &request,
-        &encode_direct_control(&changed).unwrap(), &serde_json::to_vec(&sql).unwrap()).is_err());
-    assert!(dynamic::logical("direct_commit", &selected, &request, &reply, &serde_json::to_vec(&sql).unwrap()).is_err());
+    let mut changed = response.clone();
+    changed.reply.authorizations[0].operation_id = "e".repeat(64);
+    assert!(dynamic::logical(
+        "direct_authorize",
+        &selected,
+        &request,
+        &encode_direct_control(&changed).unwrap(),
+        &serde_json::to_vec(&sql).unwrap()
+    )
+    .is_err());
+    assert!(dynamic::logical(
+        "direct_commit",
+        &selected,
+        &request,
+        &reply,
+        &serde_json::to_vec(&sql).unwrap()
+    )
+    .is_err());
     assert!(dynamic::logical("direct_authorize", &selected, &request, &reply, b"").is_err());
 }
 
@@ -546,24 +628,46 @@ fn dynamic_commit_reuses_core_completion_guard_validators_and_retained_receipt()
     let admission = admission_fixture();
     let placement = &admission.placements[0];
     let complete = DirectCompleteRequest {
-        session: DirectSessionRef { session_id: admission.session_id.clone(), logical_fingerprint: admission.logical_fingerprint.clone() },
-        operation_id: "e".repeat(64), expected_resource_version: WireInteger::new(1),
-        manifests: vec![DirectManifestCommitment { placement: placement.public_ref("deployment").unwrap(),
-            manifest_digest: "f".repeat(64), part_count: 1 }],
+        session: DirectSessionRef {
+            session_id: admission.session_id.clone(),
+            logical_fingerprint: admission.logical_fingerprint.clone(),
+        },
+        operation_id: "e".repeat(64),
+        expected_resource_version: WireInteger::new(1),
+        manifests: vec![DirectManifestCommitment {
+            placement: placement.public_ref("deployment").unwrap(),
+            manifest_digest: "f".repeat(64),
+            part_count: 1,
+        }],
     };
     let evidence = DirectCompletionEvidence {
-        session_id: admission.session_id.clone(), logical_fingerprint: admission.logical_fingerprint.clone(),
-        operation_id: complete.operation_id.clone(), part_count: 1, sha256: admission.intent.expected_sha256.clone(),
-        byte_size: admission.intent.byte_size, projection: None,
+        session_id: admission.session_id.clone(),
+        logical_fingerprint: admission.logical_fingerprint.clone(),
+        operation_id: complete.operation_id.clone(),
+        part_count: 1,
+        sha256: admission.intent.expected_sha256.clone(),
+        byte_size: admission.intent.byte_size,
+        projection: None,
         placements: vec![DirectPlacementEvidence {
-            placement_id: placement.placement_id, placement_resource_version: placement.placement_resource_version,
-            write_spec_version: placement.write_spec_version, binding_id: placement.binding_id,
-            binding_resource_version: placement.binding_resource_version, binding_write_revision: placement.binding_write_revision,
+            placement_id: placement.placement_id,
+            placement_resource_version: placement.placement_resource_version,
+            write_spec_version: placement.write_spec_version,
+            binding_id: placement.binding_id,
+            binding_resource_version: placement.binding_resource_version,
+            binding_write_revision: placement.binding_write_revision,
             manifest: complete.manifests[0].clone(),
-            promotion_operation_id: direct_destination_promotion_operation_id(&complete.session, placement.placement_id,
-                &complete.operation_id).unwrap(),
-            staging_incarnation: DirectObjectIncarnation::ProviderVersion { version: "source-version".into() },
-            final_incarnation: DirectObjectIncarnation::ProviderVersion { version: "final-version".into() },
+            promotion_operation_id: direct_destination_promotion_operation_id(
+                &complete.session,
+                placement.placement_id,
+                &complete.operation_id,
+            )
+            .unwrap(),
+            staging_incarnation: DirectObjectIncarnation::ProviderVersion {
+                version: "source-version".into(),
+            },
+            final_incarnation: DirectObjectIncarnation::ProviderVersion {
+                version: "final-version".into(),
+            },
             final_etag: "\"actual-fixture-etag\"".into(),
         }],
     };
@@ -571,31 +675,59 @@ fn dynamic_commit_reuses_core_completion_guard_validators_and_retained_receipt()
     let guard = DirectFinalGuardRecord {
         version: 1,
         reservation: DirectDestinationBaselineBinding {
-            deployment_id: "deployment".into(), session: complete.session.clone(), admission_expires_at: admission.expires_at,
-            complete_operation_id: complete.operation_id.clone(), complete_intent_digest: complete.fingerprint().unwrap(),
-            placement: placement.public_ref("deployment").unwrap(), protected_profile_digest: placement.protected_profile_digest.clone(),
+            deployment_id: "deployment".into(),
+            session: complete.session.clone(),
+            admission_expires_at: admission.expires_at,
+            complete_operation_id: complete.operation_id.clone(),
+            complete_intent_digest: complete.fingerprint().unwrap(),
+            placement: placement.public_ref("deployment").unwrap(),
+            protected_profile_digest: placement.protected_profile_digest.clone(),
             final_key_digest: direct_destination_key_digest(&placement.final_key).unwrap(),
-            scope: DirectDestinationReservationScope::Managed { bucket_namespace: "permanent-bucket".into() },
+            scope: DirectDestinationReservationScope::Managed {
+                bucket_namespace: "permanent-bucket".into(),
+            },
             reservation_operation_id: evidence.placements[0].promotion_operation_id.clone(),
-            reservation_nonce: "6".repeat(64), reservation_revision: WireInteger::new(1),
+            reservation_nonce: "6".repeat(64),
+            reservation_revision: WireInteger::new(1),
         },
-        selected: DirectSelectedCompleteCommitment { version: 1, session: complete.session.clone(),
-            operation_id: complete.operation_id.clone(), expected_resource_version: complete.expected_resource_version,
-            complete_intent_digest: complete.fingerprint().unwrap(), manifest: complete.manifests[0].clone(),
-            protected_profile_digest: placement.protected_profile_digest.clone() },
-        sha256: evidence.sha256.clone(), byte_size: evidence.byte_size,
+        selected: DirectSelectedCompleteCommitment {
+            version: 1,
+            session: complete.session.clone(),
+            operation_id: complete.operation_id.clone(),
+            expected_resource_version: complete.expected_resource_version,
+            complete_intent_digest: complete.fingerprint().unwrap(),
+            manifest: complete.manifests[0].clone(),
+            protected_profile_digest: placement.protected_profile_digest.clone(),
+        },
+        sha256: evidence.sha256.clone(),
+        byte_size: evidence.byte_size,
         source_incarnation: evidence.placements[0].staging_incarnation.clone(),
-        final_incarnation: evidence.placements[0].final_incarnation.clone(), final_etag: evidence.placements[0].final_etag.clone(),
+        final_incarnation: evidence.placements[0].final_incarnation.clone(),
+        final_etag: evidence.placements[0].final_etag.clone(),
     };
-    guard.validate_for(&admission, &complete, &evidence, "deployment").unwrap();
+    guard
+        .validate_for(&admission, &complete, &evidence, "deployment")
+        .unwrap();
     let record = dynamic_record(admission.clone(), DirectSessionState::Committed, 3);
-    let original = DirectLogicalRequestEnvelope { context: dynamic_context("CompleteBatch"),
-        request: DirectUploadLogicalRequest::Commit { evidence: vec![evidence.clone()], final_guards: vec![],
-            final_guard_refs: vec![DirectFinalGuardRef::from_record(&guard).unwrap()] } };
-    let response = DirectLogicalReplyEnvelope { context: original.context.clone(), reply: DirectUploadLogicalReply {
-        admissions: vec![admission.clone()], sessions: vec![record.status("deployment").unwrap()], session_summaries: vec![],
-        authorizations: vec![], baseline_permissions: vec![], errors: vec![],
-    }};
+    let original = DirectLogicalRequestEnvelope {
+        context: dynamic_context("CompleteBatch"),
+        request: DirectUploadLogicalRequest::Commit {
+            evidence: vec![evidence.clone()],
+            final_guards: vec![],
+            final_guard_refs: vec![DirectFinalGuardRef::from_record(&guard).unwrap()],
+        },
+    };
+    let response = DirectLogicalReplyEnvelope {
+        context: original.context.clone(),
+        reply: DirectUploadLogicalReply {
+            admissions: vec![admission.clone()],
+            sessions: vec![record.status("deployment").unwrap()],
+            session_summaries: vec![],
+            authorizations: vec![],
+            baseline_permissions: vec![],
+            errors: vec![],
+        },
+    };
     let sql = serde_json::json!({"original":dynamic_original(&admission,"committed","3"),
         "completeIntent":{"operationId":complete.operation_id,"expectedResourceVersion":"1",
             "intentDigest":complete.fingerprint().unwrap(),"intent":complete,"admittedAt":"100"},
@@ -605,14 +737,31 @@ fn dynamic_commit_reuses_core_completion_guard_validators_and_retained_receipt()
     let selected = capture(&original.context.public_path, Some("commit"));
     let request = encode_direct_control(&original).unwrap();
     let reply = encode_direct_control(&response).unwrap();
-    let rows = dynamic::logical("direct_commit", &selected, &request, &reply, &serde_json::to_vec(&sql).unwrap()).unwrap();
+    let rows = dynamic::logical(
+        "direct_commit",
+        &selected,
+        &request,
+        &reply,
+        &serde_json::to_vec(&sql).unwrap(),
+    )
+    .unwrap();
     let rows = serde_json::to_value(rows).unwrap();
     assert_eq!(rows[0]["values"]["receiptResultingResourceVersion"], "3");
     assert!(rows[0]["values"].get("checkedStatements").is_none());
     for changed in [serde_json::json!(null), {
-        let mut foreign = sql["completionReceipt"].clone(); foreign["finalGuards"][0]["finalEtag"] = serde_json::json!("\"foreign\""); foreign
+        let mut foreign = sql["completionReceipt"].clone();
+        foreign["finalGuards"][0]["finalEtag"] = serde_json::json!("\"foreign\"");
+        foreign
     }] {
-        let mut row = sql.clone(); row["completionReceipt"] = changed;
-        assert!(dynamic::logical("direct_commit", &selected, &request, &reply, &serde_json::to_vec(&row).unwrap()).is_err());
+        let mut row = sql.clone();
+        row["completionReceipt"] = changed;
+        assert!(dynamic::logical(
+            "direct_commit",
+            &selected,
+            &request,
+            &reply,
+            &serde_json::to_vec(&row).unwrap()
+        )
+        .is_err());
     }
 }

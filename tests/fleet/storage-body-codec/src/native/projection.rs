@@ -122,7 +122,9 @@ struct AdmissionRow {
     rename_all_fields = "camelCase"
 )]
 enum ReaderOriginal {
-    Dynamic { values: serde_json::Value },
+    Dynamic {
+        values: serde_json::Value,
+    },
     Admission {
         session_id: String,
         admission: aos_hub_core::application_body_observation::EncodedImage,
@@ -270,10 +272,17 @@ pub(super) fn inspect(
     consumed: &mut usize,
 ) -> Result<Observation> {
     let (kind, original_sha, sql_sha, count, sql_originals) = match selection {
-        Selection::Dynamic { operation, original_request, sql_originals } => {
+        Selection::Dynamic {
+            operation,
+            original_request,
+            sql_originals,
+        } => {
             let original = files::read(original_request, consumed)?;
             let sql = files::read(sql_originals, consumed)?;
-            ensure!(sql.len() <= 512 * 1024 && original == request, "dynamic original or reader bound differs");
+            ensure!(
+                sql.len() <= 512 * 1024 && original == request,
+                "dynamic original or reader bound differs"
+            );
             let rows = if operation == "publication_get" {
                 dynamic::publication_get(capture, request, reply, &sql)?
             } else {
@@ -285,7 +294,13 @@ pub(super) fn inspect(
                 "direct_commit" => "direct_commit",
                 _ => anyhow::bail!("unsupported dynamic operation"),
             };
-            (kind, files::digest(&original), files::digest(&sql), rows.len(), Some(rows))
+            (
+                kind,
+                files::digest(&original),
+                files::digest(&sql),
+                rows.len(),
+                Some(rows),
+            )
         }
         Selection::PublicationAppend {
             original_request,

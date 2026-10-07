@@ -521,8 +521,10 @@ async fn observe(State(window): State<Arc<Window>>, request: Request, next: Next
     let (parts, body) = request.into_parts();
     let request = Request::from_parts(parts, tap(body, &member, false));
     let (mut response, projection, publication_summary) =
-        aos_hub_core::application_body_observation::observe_with_publication_phases(next.run(request))
-            .await;
+        aos_hub_core::application_body_observation::observe_with_publication_phases(
+            next.run(request),
+        )
+        .await;
     if let Some(projection) = projection.filter(|projection| {
         response
             .extensions()

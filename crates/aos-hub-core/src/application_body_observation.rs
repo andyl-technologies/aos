@@ -11,9 +11,9 @@ use sha2::{Digest as _, Sha256};
 use std::future::Future;
 use std::io::{self, Write};
 
+pub mod publication;
 pub(crate) mod rpc;
 pub mod sql_projection;
-pub mod publication;
 
 #[derive(Default)]
 struct ObservationScope {
@@ -78,7 +78,11 @@ pub async fn observe_with_sql_projection<F: Future>(
 /// and disabled scopes preserve the ordinary response, with no summary.
 pub async fn observe_with_publication_phases<F: Future>(
     handler: F,
-) -> (F::Output, Option<sql_projection::SqlProjection>, Option<publication::Summary>) {
+) -> (
+    F::Output,
+    Option<sql_projection::SqlProjection>,
+    Option<publication::Summary>,
+) {
     #[cfg(not(target_arch = "wasm32"))]
     {
         ENABLED
@@ -100,9 +104,17 @@ pub async fn observe_with_publication_phases<F: Future>(
                         })
                         .ok()
                         .flatten();
-                    let publication = ENABLED.try_with(|scope| {
-                        scope.try_borrow_mut().ok()?.publication.take()?.into_summary()
-                    }).ok().flatten();
+                    let publication = ENABLED
+                        .try_with(|scope| {
+                            scope
+                                .try_borrow_mut()
+                                .ok()?
+                                .publication
+                                .take()?
+                                .into_summary()
+                        })
+                        .ok()
+                        .flatten();
                     (output, projection, publication)
                 },
             )

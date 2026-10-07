@@ -51,7 +51,8 @@ fn returned_error_phase_child_matches_actual_frames_without_success_evidence() {
         let mut selected = selected.lock().unwrap();
         selected.status = Some(412);
         selected.path_sha256 = hex::encode(Sha256::digest(
-            b"/aos.hub.v1.PublishService/CommitRegistryPublication"));
+            b"/aos.hub.v1.PublishService/CommitRegistryPublication",
+        ));
         selected.request.observe(request);
         selected.request.eof = true;
         selected.reply.observe(error);
@@ -65,17 +66,35 @@ fn returned_error_phase_child_matches_actual_frames_without_success_evidence() {
     }
     drop(selected);
     let raw = selected_window.raw_records.lock().unwrap();
-    let child = raw.iter().find(|raw| serde_json::from_str::<serde_json::Value>(raw).unwrap()["event"]
-        == "publication_phases").unwrap();
-    let receipt: serde_json::Value = raw.iter().find_map(|raw| {
-        let value: serde_json::Value = serde_json::from_str(raw).unwrap();
-        (value["event"] == "member").then_some(value)
-    }).unwrap();
+    let child = raw
+        .iter()
+        .find(|raw| {
+            serde_json::from_str::<serde_json::Value>(raw).unwrap()["event"] == "publication_phases"
+        })
+        .unwrap();
+    let receipt: serde_json::Value = raw
+        .iter()
+        .find_map(|raw| {
+            let value: serde_json::Value = serde_json::from_str(raw).unwrap();
+            (value["event"] == "member").then_some(value)
+        })
+        .unwrap();
     let decoded: serde_json::Value = serde_json::from_str(child).unwrap();
-    assert_eq!(receipt["publicationPhases"]["sha256"],
-        aos_hub_core::application_body_observation::image(child.as_bytes()).sha256);
-    assert_eq!(receipt["publicationPhases"]["byteSize"], child.len().to_string());
-    for field in ["admissionOrdinal", "status", "handlerReturned", "requestConsumed", "replyOffered"] {
+    assert_eq!(
+        receipt["publicationPhases"]["sha256"],
+        aos_hub_core::application_body_observation::image(child.as_bytes()).sha256
+    );
+    assert_eq!(
+        receipt["publicationPhases"]["byteSize"],
+        child.len().to_string()
+    );
+    for field in [
+        "admissionOrdinal",
+        "status",
+        "handlerReturned",
+        "requestConsumed",
+        "replyOffered",
+    ] {
         assert_eq!(decoded[field], receipt[field]);
     }
     assert_eq!(decoded["status"], 412);

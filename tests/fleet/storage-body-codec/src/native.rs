@@ -205,24 +205,38 @@ fn inspect(selection: Selection) -> Result<(Vec<Observation>, usize)> {
             publication_phases: None,
         };
         if let Some(reference) = &capture.publication_phases {
-            ensure!(capture.method == "POST" && capture.phase.is_none()
-                && capture.procedure == "/aos.hub.v1.PublishService/CommitRegistryPublication"
-                && capture.immutable_projection.is_none()
-                && capture.control_selection.is_none() && capture.storage_work_selection.is_none(),
-                "publication phase capture selection differs");
-            let original: aos_proto_types::CommitRegistryPublicationRequest = public_rpc::exact(&request)?;
+            ensure!(
+                capture.method == "POST"
+                    && capture.phase.is_none()
+                    && capture.procedure == "/aos.hub.v1.PublishService/CommitRegistryPublication"
+                    && capture.immutable_projection.is_none()
+                    && capture.control_selection.is_none()
+                    && capture.storage_work_selection.is_none(),
+                "publication phase capture selection differs"
+            );
+            let original: aos_proto_types::CommitRegistryPublicationRequest =
+                public_rpc::exact(&request)?;
             let raw = files::read(reference, &mut selected_bytes)?;
-            ensure!(raw.len() <= 16 * 1024, "publication phase summary exceeds bound");
+            ensure!(
+                raw.len() <= 16 * 1024,
+                "publication phase summary exceeds bound"
+            );
             let summary: aos_hub_core::application_body_observation::publication::Summary =
                 serde_json::from_slice(&raw)?;
-            ensure!(summary.encoded().as_deref() == Some(raw.as_slice()), "noncanonical publication summary");
+            ensure!(
+                summary.encoded().as_deref() == Some(raw.as_slice()),
+                "noncanonical publication summary"
+            );
             summary.validate_original(&original)?;
             use aos_hub_core::application_body_observation::publication::TerminalOutcome;
-            ensure!(match summary.terminal_outcome() {
-                TerminalOutcome::ReturnedSuccess => capture.status == 200,
-                TerminalOutcome::ReturnedError => (400..600).contains(&capture.status),
-                TerminalOutcome::Incomplete => false,
-            }, "publication handler outcome differs from actual status");
+            ensure!(
+                match summary.terminal_outcome() {
+                    TerminalOutcome::ReturnedSuccess => capture.status == 200,
+                    TerminalOutcome::ReturnedError => (400..600).contains(&capture.status),
+                    TerminalOutcome::Incomplete => false,
+                },
+                "publication handler outcome differs from actual status"
+            );
             observation.class = "publication_phases_with_unclassified_reply";
             observation.publication_phases = Some(serde_json::json!({
                 "summarySha256":files::digest(&raw), "summaryByteSize":raw.len().to_string(),
