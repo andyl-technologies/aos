@@ -1,5 +1,8 @@
 //! Systemd and ESP implementations of provider-neutral image rollout platform effects.
 
+#[path = "boot_platform/success.rs"]
+mod success;
+
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{Read as _, Write as _};
@@ -373,16 +376,25 @@ fn apply(
         }
         (BootPlatformRole::Success, "mark") => {
             let stable = running_entry(rollout)?;
+            let status = success::query_status(&tools.bless_boot, BOOT_ROOT)?;
             with_writable_boot(&tools.mount, || {
-                run(
-                    &tools.bless_boot,
-                    &["--path", BOOT_ROOT, "good"],
-                    "marking the running boot successful",
-                )?;
-                run(
-                    &tools.bootctl,
-                    &["set-default", &stable],
-                    "publishing the stable boot default",
+                success::mark(
+                    status,
+                    || validate_clean_running_boot(rollout, &stable),
+                    || {
+                        run(
+                            &tools.bless_boot,
+                            &["--path", BOOT_ROOT, "good"],
+                            "marking the running boot successful",
+                        )
+                    },
+                    || {
+                        run(
+                            &tools.bootctl,
+                            &["set-default", &stable],
+                            "publishing the stable boot default",
+                        )
+                    },
                 )
             })?;
             success_observation(observation_schema, rollout)
@@ -810,6 +822,46 @@ fn running_entry(rollout: &RolloutRequest) -> Result<String> {
         bail!("running image is outside the checked rollout pair");
     };
     stable_entry(&installed_entry(identity)?)
+}
+
+// A clean status alone cannot distinguish an uncounted boot from a failed
+// counter-variable write. Require the actual stable payload and running root.
+fn validate_clean_running_boot(rollout: &RolloutRequest, stable: &str) -> Result<()> {
+    let state = image_state()?;
+    let candidate = generation_for(&state, &rollout.candidate)?;
+    let predecessor = generation_for(&state, &rollout.predecessor)?;
+    let (identity, generation) = if state.running == candidate.number {
+        (&rollout.candidate, candidate)
+    } else if state.running == predecessor.number {
+        (&rollout.predecessor, predecessor)
+    } else {
+        bail!("clean boot is outside the checked rollout pair");
+    };
+    let selected = firmware_entry("LoaderEntrySelected")?;
+    let current = fs::read_link("/run/current-system")?;
+    let active = aos_boot_identity::parse_normal(&fs::read_to_string("/proc/cmdline")?)?;
+    let slot = match active.slot {
+        aos_boot_identity::BootSlot::A => "A",
+        aos_boot_identity::BootSlot::B => "B",
+    };
+    success::validate_identity(
+        stable,
+        selected.as_deref(),
+        Path::new(&identity.toplevel),
+        &current,
+        generation.boot_provider_state.evidence.slot.as_deref(),
+        slot,
+    )?;
+
+    let manifest_path = retention_directory(rollout)?.join("manifest.json");
+    let retained: RetentionManifest = serde_json::from_slice(&fs::read(&manifest_path)?)?;
+    validate_retention(rollout, &manifest_path, &retained)?;
+    let digest = if state.running == candidate.number {
+        retained.candidate_sha256
+    } else {
+        retained.predecessor_sha256
+    };
+    success::validate_clean_payload(&Path::new(BOOT_ROOT).join("EFI/Linux"), stable, digest)
 }
 
 fn safe_entry_path(value: &str) -> Result<PathBuf> {
