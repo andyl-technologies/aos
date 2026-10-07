@@ -19,6 +19,7 @@ use sha2::{Digest as _, Sha256};
 use crate::journal::JournalError;
 
 mod client;
+mod input_origin;
 pub(super) mod root;
 
 pub(crate) use client::{
@@ -33,6 +34,10 @@ pub(crate) use root::{
 };
 pub(crate) use root::capacity_shape_digest as q04_capacity_shape_digest_v1;
 pub(crate) use root::root_consumed_gate_record as root_consumed_gate_v1;
+pub(crate) use input_origin::{
+    CONTROLLER_INPUT_ORIGIN_KEY, Q04OriginalInputDemandV1, Q04PreparedInputOriginV1,
+    cache_replay_cell_bytes, candidate_capacity, original_input_demand, require_origin_identity,
+};
 
 pub(crate) const IDENTITY_BYTES: usize = 680;
 pub(crate) const PHASE_BYTES: usize = 592;
@@ -213,6 +218,9 @@ pub enum CreateQ04ErrorV1 {
     /// The sole deterministic compiler rejected the retained original input.
     #[error(transparent)]
     Compilation(#[from] super::PolicyCompilationError),
+    /// The existing full original-input archive failed its sole codec.
+    #[error(transparent)]
+    InputOrigin(#[from] crate::publisher_policy::PublisherPolicyError),
     /// A purpose, identity, phase or original owner join changed.
     #[error("the original Q04 continuation cut changed")]
     ChangedCut,

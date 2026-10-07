@@ -1385,16 +1385,16 @@ impl RootSourceGenesisAuthorityV1 {
                 }
             }
             Q04ControllerPacketPositionV1::OriginalHeld { original_next } => {
-                // Legacy hold recipes contain three members. The resource
-                // family co-issues the six bank members in that SAME native
-                // transaction; both include the original begin/commit frames.
-                // This signed sequence join observes membership, not payment.
-                let members = if accepted.acceptance.resource_envelope().is_some() {
-                    3_usize.checked_add(crate::controller_resource_reservation::Q04_BANK_MEMBERS)
-                        .ok_or(CreateQ04ErrorV1::Bounds)?
-                } else { 3 };
-                let frames = u64::try_from(members).map_err(|_| CreateQ04ErrorV1::Bounds)?
-                    .checked_add(2).ok_or(CreateQ04ErrorV1::Bounds)?;
+                // The independently signed original sequence selects only
+                // the closed legacy 3/9-member or provenance 10-member family.
+                // Controller separately proves native whole membership; this
+                // Root join observes signed DATA, never payment or consumption.
+                let frames = held.journal_sequence().checked_sub(original_next)
+                    .ok_or(CreateQ04ErrorV1::ChangedCut)?;
+                let resource = accepted.acceptance.resource_envelope().is_some();
+                if !matches!((resource, frames), (false, 5) | (true, 11 | 12)) {
+                    return Err(CreateQ04ErrorV1::ChangedCut);
+                }
                 if current.journal_sequence() != original_next
                     || held.journal_sequence() != original_next.checked_add(frames)
                         .ok_or(CreateQ04ErrorV1::Bounds)?

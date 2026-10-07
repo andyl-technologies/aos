@@ -137,7 +137,7 @@ pub(super) fn validate(state: &State) -> Result<Option<EnrollmentIdentity>, Reso
                     ClaimPurpose::Snapshot | ClaimPurpose::ProjectPreparation
                         | ClaimPurpose::Q04Preparation | ClaimPurpose::HostControlInterval
                         | ClaimPurpose::ControllerFirstGlobalPrefix
-                        | ClaimPurpose::NixOriginalStartIntake => false,
+                        | ClaimPurpose::NixOriginalStartIntake | ClaimPurpose::Q04OriginalIntake => false,
                 };
                 if !purpose_matches {
                     return Err(ResourceReservationErrorV1::CorruptLedger);
@@ -195,6 +195,21 @@ pub(super) fn validate(state: &State) -> Result<Option<EnrollmentIdentity>, Reso
                     .ok_or(ResourceReservationErrorV1::CorruptLedger)?)?;
                 require_first_global_prefix(state, parent, prefix)?;
             }
+            if claim.purpose == ClaimPurpose::Q04OriginalIntake {
+                let expected_id = super::bootstrap::account_id(claim.enrollment,
+                    b"controller-q04-original-intake-v1");
+                if claim.id != expected_id
+                    || claim.account != super::bootstrap::account_id(claim.enrollment, b"controller")
+                    || parent.enrollment != claim.enrollment
+                {
+                    return Err(ResourceReservationErrorV1::CorruptLedger);
+                }
+                let prefix_id = super::bootstrap::account_id(claim.enrollment,
+                    b"controller-first-global-prefix-v1");
+                let prefix = codec::decode_claim(record_bytes(state, CLAIM_PREFIX, prefix_id)
+                    .ok_or(ResourceReservationErrorV1::CorruptLedger)?)?;
+                require_first_global_prefix(state, parent, prefix)?;
+            }
         }
     }
     Ok(enrollment)
@@ -216,11 +231,23 @@ fn require_first_global_prefix(
         b"controller-nix-original-start-intake-v1");
     if let Some(bytes) = record_bytes(state, CLAIM_PREFIX, intake_id) {
         let intake = codec::decode_claim(bytes)?;
-        let retained = ceiling.checked_sub(claim.amount)?.checked_sub(intake.amount)?;
+        let q04_id = super::bootstrap::account_id(identity, b"controller-q04-original-intake-v1");
+        let q04 = record_bytes(state, CLAIM_PREFIX, q04_id)
+            .map(codec::decode_claim).transpose()?;
+        if let Some(part) = q04 {
+            if part.purpose != ClaimPurpose::Q04OriginalIntake
+                || part.enrollment != identity || part.id != q04_id
+                || part.account != controller_id
+            {
+                return Err(ResourceReservationErrorV1::CorruptLedger);
+            }
+        }
+        let retained = ceiling.checked_sub(claim.amount)?.checked_sub(intake.amount)?
+            .checked_sub(q04.map_or(ResourceVector::ZERO, |part| part.amount))?;
         let mut committed = retained;
         let mut reserved = ResourceVector::ZERO;
         let mut generation = 1;
-        for part in [claim, intake] {
+        for part in [Some(claim), Some(intake), q04].into_iter().flatten() {
             match part.state {
                 ClaimState::Reserved => reserved = reserved.checked_add(part.amount)?,
                 ClaimState::Committed => {
@@ -245,6 +272,10 @@ fn require_first_global_prefix(
             return Err(ResourceReservationErrorV1::CorruptLedger);
         }
         return Ok(());
+    }
+    let q04_id = super::bootstrap::account_id(identity, b"controller-q04-original-intake-v1");
+    if record_bytes(state, CLAIM_PREFIX, q04_id).is_some() {
+        return Err(ResourceReservationErrorV1::CorruptLedger);
     }
     let retained = ceiling.checked_sub(claim.amount)?;
     let expected = match claim.state {

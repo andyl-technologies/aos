@@ -779,6 +779,16 @@ impl<'controller> HeldControllerSourceGenesisV1<'controller> {
             .snapshot_sequence())
     }
 
+    // Only the original Completed Q04 preparation borrower uses this costing
+    // view. It neither releases the writer nor turns extent DATA into payment.
+    pub(crate) fn q04_preparation_allocation_shape_v1(
+        &self,
+    ) -> Result<crate::controller_resource_reservation::service_interval::JournalShape, SourceGenesisErrorV1> {
+        self.recheck_current_admission()?;
+        Ok(self.journal.try_borrow().map_err(|_| SourceGenesisErrorV1::Stale)?
+            .first_global_allocation_shape_v1()?)
+    }
+
     pub(crate) const fn uid(&self) -> u32 {
         self.uid
     }

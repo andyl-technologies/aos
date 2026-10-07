@@ -17,6 +17,15 @@ mod q04;
 mod settlement;
 pub(crate) mod service_interval;
 mod nix_intake;
+mod q04_intake;
+
+pub(crate) fn require_q04_input_history_v1(
+    state: &std::collections::BTreeMap<(crate::RecordNamespace, Vec<u8>), Vec<u8>>,
+    identity: &crate::policy_compiler::create_q04::Q04CutIdentityV1,
+    bytes: Option<&[u8]>,
+) -> Result<(), ResourceReservationErrorV1> {
+    q04::require_input_history(state, identity, bytes)
+}
 
 pub(crate) use grant::ProjectResourceGrantAttemptV1;
 pub use service_interval::ControllerFirstGlobalPrefixAttemptV1;
@@ -139,6 +148,7 @@ struct ImageBootstrapPolicy {
     host: Option<HostComponentPolicy>,
     first_global_prefix: Option<ResourceVector>,
     nix_original_start_intake: Option<ResourceVector>,
+    q04_original_intake: Option<ResourceVector>,
 }
 
 // Both image-owned vectors are subdivisions of Components, not Node issuers.
@@ -221,6 +231,30 @@ impl ImageBootstrapPolicy {
                 }
             }
         }
+        if let Some(intake) = self.q04_original_intake {
+            intake.checked_sub(q04_intake::minimum_failure_demand()?)?;
+            let prefix = self.first_global_prefix
+                .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
+            if intake.get(aos_sandbox_core::ResourceDimension::CpuMicrosPerPeriod)
+                < prefix.get(aos_sandbox_core::ResourceDimension::CpuMicrosPerPeriod)
+            {
+                return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
+            }
+            let nix = self.nix_original_start_intake
+                .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
+            self.controller.checked_sub(prefix)?.checked_sub(nix)?.checked_sub(intake)?;
+            for dimension in [
+                aos_sandbox_core::ResourceDimension::CpuMicrosPerPeriod,
+                aos_sandbox_core::ResourceDimension::MemoryBytes,
+                aos_sandbox_core::ResourceDimension::Pids,
+                aos_sandbox_core::ResourceDimension::OpenFiles,
+                aos_sandbox_core::ResourceDimension::ConcurrentOperations,
+            ] {
+                if intake.get(dimension) == 0 {
+                    return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -268,6 +302,7 @@ enum ClaimPurpose {
     HostControlInterval,
     ControllerFirstGlobalPrefix,
     NixOriginalStartIntake,
+    Q04OriginalIntake,
 }
 
 /// Compares the original fixed Host policy and PID1 delivery as borrowed DATA.
@@ -388,7 +423,8 @@ impl Transition<'_> {
             let first_global = matches!(self.original,
                 TransitionOriginal::Account(original)
                     if matches!(original.claim.purpose,
-                        ClaimPurpose::ControllerFirstGlobalPrefix | ClaimPurpose::NixOriginalStartIntake));
+                        ClaimPurpose::ControllerFirstGlobalPrefix | ClaimPurpose::NixOriginalStartIntake
+                            | ClaimPurpose::Q04OriginalIntake));
             let observed = if first_global {
                 // This closed boot-lifetime subdivision has no inherited
                 // operation's 65-second recipe. Its boot-lifetime first use
@@ -484,7 +520,8 @@ impl AccountTransition {
             return Err(ResourceReservationErrorV1::Conflict);
         }
         if matches!(previous_claim.purpose,
-            ClaimPurpose::ControllerFirstGlobalPrefix | ClaimPurpose::NixOriginalStartIntake)
+            ClaimPurpose::ControllerFirstGlobalPrefix | ClaimPurpose::NixOriginalStartIntake
+                | ClaimPurpose::Q04OriginalIntake)
             && !committed
         {
             return Err(ResourceReservationErrorV1::Conflict);
@@ -664,7 +701,8 @@ impl AccountTransition {
         let head_bytes = codec::encode_head(self.after)?;
         let claim_bytes = codec::encode_claim(self.claim)?;
         if matches!(self.claim.purpose,
-            ClaimPurpose::ControllerFirstGlobalPrefix | ClaimPurpose::NixOriginalStartIntake)
+            ClaimPurpose::ControllerFirstGlobalPrefix | ClaimPurpose::NixOriginalStartIntake
+                | ClaimPurpose::Q04OriginalIntake)
             && crate::journal::encoded_transaction_append_bytes(transaction)?
                 != crate::Journal::first_global_prefix_append_bytes_v1()?
         {
@@ -780,7 +818,8 @@ impl ReturnedAppend {
                         crossing: match (original.original_clock, original.claim.cut) {
                             (Some(clock), ClaimCut::BootLifetime)
                                 if matches!(original.claim.purpose,
-                                    ClaimPurpose::ControllerFirstGlobalPrefix | ClaimPurpose::NixOriginalStartIntake) =>
+                                    ClaimPurpose::ControllerFirstGlobalPrefix | ClaimPurpose::NixOriginalStartIntake
+                                        | ClaimPurpose::Q04OriginalIntake) =>
                                 Some(NativeCrossing {
                                         original: clock,
                                         deadline: clock.boottime_nanoseconds(),

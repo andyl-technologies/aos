@@ -1,8 +1,9 @@
 //! Records terminal Q04 retention without refunding unsupported owner costs.
 //!
 //! The original preparation and compound grant remain immutable history. One
-//! exact terminal successor commits the full existing use C and advances its
-//! Sandbox head once. It creates no spare capacity or new operation authority.
+//! exact terminal successor commits the original use and advances its Sandbox
+//! head once. Legacy T01 keeps full C; T02 keeps the genuinely admitted U from
+//! Q02 without refund. Neither row constructs new operation authority.
 //! Source/Cache physical owners and remote retention lack a complete disposal
 //! recipe, so every resource dimension remains charged at its original value.
 //!
@@ -11,6 +12,7 @@
 //! AOSRST01 | original-id16 | co-issuance-sha32 | terminal-tx16
 //!          | Controller-names48 | terminal-NEXT8 | prior-end8 | Root-final32
 //!          | eight origins(id16, ordered-member-sha32, commit8, end8) | SHA32
+//! AOSRST02 | same fixed712 layout, closed only with AOSRSQ02 co-issuance
 //! ```
 //! A row is replay DATA. The same original native parser must independently
 //! verify its whole transaction, all eight origins and exact chronological cut.
@@ -42,6 +44,7 @@ struct NativeOrigin {
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(super) struct Binding {
+    input_origin: bool,
     original: [u8; 16],
     coissuance: [u8; 32],
     transaction: [u8; 16],
@@ -129,6 +132,7 @@ impl Q04TerminalDispositionV1 {
             .map_err(resource_error)?;
         transition.original_clock = Some(original.original_clock);
         let binding = Binding {
+            input_origin: q04::has_input_origin(original.binding),
             original: q04::original_claim(original.binding).id,
             coissuance: Sha256::digest(q04::encode(original.binding).map_err(resource_error)?).into(),
             transaction: transition.transaction_id,
@@ -190,7 +194,8 @@ pub(super) fn require_predecessor(
 }
 
 fn require_original(terminal: Binding, original: q04::Binding) -> Result<(), ResourceReservationErrorV1> {
-    if terminal.original != q04::original_claim(original).id
+    if terminal.input_origin != q04::has_input_origin(original)
+        || terminal.original != q04::original_claim(original).id
         || terminal.coissuance != <[u8; 32]>::from(Sha256::digest(q04::encode(original)?))
     {
         return Err(ResourceReservationErrorV1::CorruptLedger);
@@ -218,7 +223,7 @@ pub(super) fn encode(binding: Binding) -> Result<[u8; RECORD_BYTES], ResourceRes
         }
     }
     let mut bytes = [0; RECORD_BYTES];
-    bytes[..8].copy_from_slice(b"AOSRST01");
+    bytes[..8].copy_from_slice(if binding.input_origin { b"AOSRST02" } else { b"AOSRST01" });
     bytes[8..24].copy_from_slice(&binding.original);
     bytes[24..56].copy_from_slice(&binding.coissuance);
     bytes[56..72].copy_from_slice(&binding.transaction);
@@ -239,7 +244,8 @@ pub(super) fn encode(binding: Binding) -> Result<[u8; RECORD_BYTES], ResourceRes
 }
 
 pub(super) fn decode(bytes: &[u8]) -> Result<Binding, ResourceReservationErrorV1> {
-    if bytes.len() != RECORD_BYTES || bytes[..8] != *b"AOSRST01" {
+    if bytes.len() != RECORD_BYTES || ![b"AOSRST01".as_slice(), b"AOSRST02".as_slice()]
+        .contains(&bytes.get(..8).ok_or(ResourceReservationErrorV1::CorruptLedger)?) {
         return Err(ResourceReservationErrorV1::CorruptLedger);
     }
     let mut origins = [NativeOrigin {
@@ -258,6 +264,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Binding, ResourceReservationErrorV1
         };
     }
     let binding = Binding {
+        input_origin: bytes[..8] == *b"AOSRST02",
         original: fixed(&bytes[8..24])?, coissuance: fixed(&bytes[24..56])?,
         transaction: fixed(&bytes[56..72])?,
         names: ProtectedJournalNamesV1::from_bytes(&bytes[72..120])?,
@@ -369,9 +376,11 @@ impl<'state> NativeHistory<'state> {
                 {
                     return Err(ResourceReservationErrorV1::CorruptLedger);
                 }
-                if index == 0 && (transaction.records().len() != 3 + q04::BANK_MEMBERS
+                if index == 0 && (transaction.records().len() != 3 + q04::BANK_MEMBERS + usize::from(q04::has_input_origin(original))
                     || !matches_record(&transaction.records()[8], q04::PREFIX,
-                        terminal.original, &q04::encode(original)?))
+                        terminal.original, q04::encode(original)?.as_slice())
+                    || (q04::has_input_origin(original)
+                        && !q04::matches_origin_record(original, &transaction.records()[9])?))
                 {
                     return Err(ResourceReservationErrorV1::CorruptLedger);
                 }

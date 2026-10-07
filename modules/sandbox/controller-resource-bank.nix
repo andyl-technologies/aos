@@ -94,19 +94,26 @@
         default = null;
         description = "Full once-only original Nix Start intake subdivision; never an operation-effect payment.";
       };
+      q04OriginalIntake = lib.mkOption {
+        type = lib.types.nullOr vectorType;
+        default = null;
+        description = "Full once-only original Q04 intake subdivision paying bounded observations before Project preparation.";
+      };
     };
   };
 
   policy = pkgs.runCommand "aos-controller-resource-bootstrap-policy-v1" {
     nativeBuildInputs = [pkgs.python3 pkgs.coreutils];
     policyJson = builtins.toJSON (
-      if cfg.policy.nixOriginalStartIntake != null
+      if cfg.policy.q04OriginalIntake != null
       then cfg.policy
+      else if cfg.policy.nixOriginalStartIntake != null
+      then builtins.removeAttrs cfg.policy ["q04OriginalIntake"]
       else if cfg.policy.firstGlobalPrefix != null
-      then builtins.removeAttrs cfg.policy ["nixOriginalStartIntake"]
+      then builtins.removeAttrs cfg.policy ["nixOriginalStartIntake" "q04OriginalIntake"]
       else if cfg.policy.hostService == null && cfg.policy.hostControl == null
-      then builtins.removeAttrs cfg.policy ["hostService" "hostControl" "firstGlobalPrefix" "nixOriginalStartIntake"]
-      else builtins.removeAttrs cfg.policy ["firstGlobalPrefix" "nixOriginalStartIntake"]
+      then builtins.removeAttrs cfg.policy ["hostService" "hostControl" "firstGlobalPrefix" "nixOriginalStartIntake" "q04OriginalIntake"]
+      else builtins.removeAttrs cfg.policy ["firstGlobalPrefix" "nixOriginalStartIntake" "q04OriginalIntake"]
     );
     dimensionJson = builtins.toJSON dimensions;
     controllerMinimumJson = builtins.toJSON controllerMinimum;
@@ -132,10 +139,12 @@
     host_fields = legacy_fields | {"hostService", "hostControl"}
     prefix_fields = host_fields | {"firstGlobalPrefix"}
     intake_fields = prefix_fields | {"nixOriginalStartIntake"}
-    intake_selected = set(policy) == intake_fields
-    prefix_selected = set(policy) in (prefix_fields, intake_fields)
-    host_selected = set(policy) in (host_fields, prefix_fields, intake_fields)
-    if set(policy) not in (legacy_fields, host_fields, prefix_fields, intake_fields):
+    q04_fields = intake_fields | {"q04OriginalIntake"}
+    q04_selected = set(policy) == q04_fields
+    intake_selected = set(policy) in (intake_fields, q04_fields)
+    prefix_selected = set(policy) in (prefix_fields, intake_fields, q04_fields)
+    host_selected = set(policy) in (host_fields, prefix_fields, intake_fields, q04_fields)
+    if set(policy) not in (legacy_fields, host_fields, prefix_fields, intake_fields, q04_fields):
         raise ValueError("resource policy must contain its complete fixed schema")
 
     def identity(name):
@@ -223,7 +232,37 @@
             raise ValueError("the original Nix intake provision is incomplete")
         intake_vectors = (intake,)
 
-    magic = b"AOSRSB04" if intake_selected else (b"AOSRSB03" if prefix_selected else (b"AOSRSB02" if host_selected else b"AOSRSB01"))
+    q04_vectors = ()
+    if q04_selected:
+        q04 = vector("q04OriginalIntake")
+        if any(prefix[index] + intake[index] + q04[index] > controller[index] for index in range(22)):
+            raise ValueError("the disjoint Controller subdivisions exceed the once-paid envelope")
+        for name, minimum in controller_minimum.items():
+            index = dimensions.index(name)
+            if controller[index] - prefix[index] - intake[index] - q04[index] < minimum:
+                raise ValueError("the retained Controller service envelope is below its existing producer bound")
+        if any(q04[dimensions.index(name)] == 0 for name in (
+            "cpu-micros-per-period", "memory-bytes", "pids", "open-files", "concurrent-operations"
+        )):
+            raise ValueError("the original Q04 intake provision is incomplete")
+        # Rust checks actual inline owners, eleven fixed error slots, bounded
+        # journal names and both paired-clock samples against this provision.
+        # This is not a bound for successful capture or observer admission.
+        q04_failure = {
+            "memory-bytes": 2 * 1024 * 1024,
+            "open-files": 4,
+            "metadata-entries": 2 * 1024 * 1024,
+            "publication-staging-bytes": 2 * 1024 * 1024,
+            "log-bytes": 2 * 1024 * 1024,
+            "output-bytes": 2 * 1024 * 1024,
+        }
+        if any(q04[dimensions.index(name)] < minimum for name, minimum in q04_failure.items()):
+            raise ValueError("the original Q04 intake lacks its retained failure allowance")
+        if q04[dimensions.index("cpu-micros-per-period")] < prefix[dimensions.index("cpu-micros-per-period")]:
+            raise ValueError("the Q04 intake does not cover the installed original Controller CPU rate")
+        q04_vectors = (q04,)
+
+    magic = b"AOSRSB05" if q04_selected else (b"AOSRSB04" if intake_selected else (b"AOSRSB03" if prefix_selected else (b"AOSRSB02" if host_selected else b"AOSRSB01")))
     body = magic + identity("node") + identity("epoch")
     for values in (capacity, baseline, controller, components):
         body += struct.pack(">22Q", *values)
@@ -233,8 +272,10 @@
         body += struct.pack(">22Q", *values)
     for values in intake_vectors:
         body += struct.pack(">22Q", *values)
+    for values in q04_vectors:
+        body += struct.pack(">22Q", *values)
     encoded = body + hashlib.sha256(body).digest()
-    if len(encoded) != (1480 if intake_selected else (1304 if prefix_selected else (1128 if host_selected else 776))):
+    if len(encoded) != (1656 if q04_selected else (1480 if intake_selected else (1304 if prefix_selected else (1128 if host_selected else 776)))):
         raise ValueError("native bootstrap policy width changed")
     Path(sys.argv[1]).write_bytes(encoded)
     PY
@@ -292,6 +333,11 @@ in {
         assertion = cfg.policy.nixOriginalStartIntake == null
           || (cfg.policy.firstGlobalPrefix != null && onlineNix);
         message = "V4 original Nix intake requires its separate full subdivision and selected Nix Controller.";
+      }
+      {
+        assertion = cfg.policy.q04OriginalIntake == null
+          || cfg.policy.nixOriginalStartIntake != null;
+        message = "V5 Q04 intake extends the complete disjoint Controller image family.";
       }
     ];
     aos.sandbox.resourceBank._imagePolicy = policy;

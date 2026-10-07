@@ -38,6 +38,10 @@
 //! The 1480-byte `AOSRSB04` adds I at 1272..1448 and moves the checksum to
 //! 1448..1480. Its same-width `AOSRSC06` claims accept only purpose 11. P and I
 //! partition the original Controller envelope; neither family pays an operation.
+//!
+//! `AOSRSB05` is exactly 1656 bytes: the Q04 intake vector occupies
+//! 1448..1624 and the checksum occupies 1624..1656. `AOSRSC07` is the same
+//! 531-byte claim layout, admitting only purpose 12, Q04OriginalIntake.
 
 use aos_sandbox_core::{ResourceAccount, ResourceCeilings, ResourceDimension, ResourceLimit, ResourceVector};
 use sha2::{Digest as _, Sha256};
@@ -54,9 +58,30 @@ pub(super) const IMAGE_POLICY_BYTES: usize = 776;
 pub(super) const HOST_IMAGE_POLICY_BYTES: usize = 1128;
 pub(super) const FIRST_GLOBAL_IMAGE_POLICY_BYTES: usize = 1304;
 pub(super) const NIX_INTAKE_IMAGE_POLICY_BYTES: usize = 1480;
+pub(super) const Q04_INTAKE_IMAGE_POLICY_BYTES: usize = 1656;
 const IMAGE_POLICY_MAGIC: &[u8; 8] = b"AOSRSB01";
 
 pub(super) fn decode_image_policy(bytes: &[u8]) -> Result<ImageBootstrapPolicy, ResourceReservationErrorV1> {
+    if bytes.get(..8) == Some(b"AOSRSB05".as_slice()) {
+        require_record(bytes, Q04_INTAKE_IMAGE_POLICY_BYTES, b"AOSRSB05")?;
+        let policy = ImageBootstrapPolicy {
+            node: fixed(&bytes[8..24])?,
+            epoch: fixed(&bytes[24..40])?,
+            capacity: decode_vector(&bytes[40..216])?,
+            baseline: decode_vector(&bytes[216..392])?,
+            controller: decode_vector(&bytes[392..568])?,
+            components: decode_vector(&bytes[568..744])?,
+            host: Some(super::HostComponentPolicy {
+                service: decode_vector(&bytes[744..920])?,
+                control: decode_vector(&bytes[920..1096])?,
+            }),
+            first_global_prefix: Some(decode_vector(&bytes[1096..1272])?),
+            nix_original_start_intake: Some(decode_vector(&bytes[1272..1448])?),
+            q04_original_intake: Some(decode_vector(&bytes[1448..1624])?),
+        };
+        policy.validate()?;
+        return Ok(policy);
+    }
     if bytes.get(..8) == Some(b"AOSRSB04".as_slice()) {
         require_record(bytes, NIX_INTAKE_IMAGE_POLICY_BYTES, b"AOSRSB04")?;
         let policy = ImageBootstrapPolicy {
@@ -72,6 +97,7 @@ pub(super) fn decode_image_policy(bytes: &[u8]) -> Result<ImageBootstrapPolicy, 
             }),
             first_global_prefix: Some(decode_vector(&bytes[1096..1272])?),
             nix_original_start_intake: Some(decode_vector(&bytes[1272..1448])?),
+            q04_original_intake: None,
         };
         policy.validate()?;
         return Ok(policy);
@@ -91,6 +117,7 @@ pub(super) fn decode_image_policy(bytes: &[u8]) -> Result<ImageBootstrapPolicy, 
             }),
             first_global_prefix: Some(decode_vector(&bytes[1096..1272])?),
             nix_original_start_intake: None,
+            q04_original_intake: None,
         };
         policy.validate()?;
         return Ok(policy);
@@ -110,6 +137,7 @@ pub(super) fn decode_image_policy(bytes: &[u8]) -> Result<ImageBootstrapPolicy, 
             }),
             first_global_prefix: None,
             nix_original_start_intake: None,
+            q04_original_intake: None,
         };
         policy.validate()?;
         return Ok(policy);
@@ -125,6 +153,7 @@ pub(super) fn decode_image_policy(bytes: &[u8]) -> Result<ImageBootstrapPolicy, 
         host: None,
         first_global_prefix: None,
         nix_original_start_intake: None,
+        q04_original_intake: None,
     };
     policy.validate()?;
     Ok(policy)
@@ -211,6 +240,9 @@ pub(super) fn encode_claim(claim: Claim) -> Result<[u8; CLAIM_BYTES], ResourceRe
     if claim.purpose == ClaimPurpose::NixOriginalStartIntake {
         bytes[..8].copy_from_slice(b"AOSRSC06");
     }
+    if claim.purpose == ClaimPurpose::Q04OriginalIntake {
+        bytes[..8].copy_from_slice(b"AOSRSC07");
+    }
     if matches!(claim.purpose,
         ClaimPurpose::HostComponentBootstrap | ClaimPurpose::HostControlInterval)
     {
@@ -232,6 +264,7 @@ pub(super) fn encode_claim(claim: Claim) -> Result<[u8; CLAIM_BYTES], ResourceRe
         ClaimPurpose::HostControlInterval => 8,
         ClaimPurpose::ControllerFirstGlobalPrefix => 9,
         ClaimPurpose::NixOriginalStartIntake => 11,
+        ClaimPurpose::Q04OriginalIntake => 12,
     };
     bytes[185..201].copy_from_slice(&claim.operation);
     bytes[201..217].copy_from_slice(&claim.project);
@@ -263,7 +296,10 @@ pub(super) fn decode_claim(bytes: &[u8]) -> Result<Claim, ResourceReservationErr
     let host = bytes.get(..8) == Some(b"AOSRSC03".as_slice());
     let first_global = bytes.get(..8) == Some(b"AOSRSC04".as_slice());
     let intake = bytes.get(..8) == Some(b"AOSRSC06".as_slice());
-    if intake {
+    let q04_intake = bytes.get(..8) == Some(b"AOSRSC07".as_slice());
+    if q04_intake {
+        require_record(bytes, CLAIM_BYTES, b"AOSRSC07")?;
+    } else if intake {
         require_record(bytes, CLAIM_BYTES, b"AOSRSC06")?;
     } else if first_global {
         require_record(bytes, CLAIM_BYTES, b"AOSRSC04")?;
@@ -279,16 +315,17 @@ pub(super) fn decode_claim(bytes: &[u8]) -> Result<Claim, ResourceReservationErr
         child: fixed(&bytes[136..152])?,
         owner: fixed(&bytes[152..184])?,
         purpose: match bytes[184] {
-            1 if !host && !first_global && !intake => ClaimPurpose::ControllerBootstrap,
-            2 if !host && !first_global && !intake => ClaimPurpose::ComponentEnvelope,
-            3 if !host && !first_global && !intake => ClaimPurpose::InclusiveGrant,
-            4 if !host && !first_global && !intake => ClaimPurpose::Snapshot,
-            5 if !host && !first_global && !intake => ClaimPurpose::ProjectPreparation,
-            6 if !host && !first_global && !intake => ClaimPurpose::Q04Preparation,
+            1 if !host && !first_global && !intake && !q04_intake => ClaimPurpose::ControllerBootstrap,
+            2 if !host && !first_global && !intake && !q04_intake => ClaimPurpose::ComponentEnvelope,
+            3 if !host && !first_global && !intake && !q04_intake => ClaimPurpose::InclusiveGrant,
+            4 if !host && !first_global && !intake && !q04_intake => ClaimPurpose::Snapshot,
+            5 if !host && !first_global && !intake && !q04_intake => ClaimPurpose::ProjectPreparation,
+            6 if !host && !first_global && !intake && !q04_intake => ClaimPurpose::Q04Preparation,
             7 if host => ClaimPurpose::HostComponentBootstrap,
             8 if host => ClaimPurpose::HostControlInterval,
             9 if first_global => ClaimPurpose::ControllerFirstGlobalPrefix,
             11 if intake => ClaimPurpose::NixOriginalStartIntake,
+            12 if q04_intake => ClaimPurpose::Q04OriginalIntake,
             _ => return Err(ResourceReservationErrorV1::CorruptLedger),
         },
         operation: fixed(&bytes[185..201])?,
@@ -394,7 +431,8 @@ fn validate_claim(claim: Claim) -> Result<(), ResourceReservationErrorV1> {
         return Err(ResourceReservationErrorV1::CorruptLedger);
     }
     match (claim.purpose, claim.cut) {
-        (ClaimPurpose::ControllerFirstGlobalPrefix | ClaimPurpose::NixOriginalStartIntake,
+        (ClaimPurpose::ControllerFirstGlobalPrefix | ClaimPurpose::NixOriginalStartIntake
+            | ClaimPurpose::Q04OriginalIntake,
             ClaimCut::BootLifetime)
             if matches!(claim.state, ClaimState::Reserved | ClaimState::Committed)
             && claim.owner == claim.enrollment.manifest

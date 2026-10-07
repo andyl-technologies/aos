@@ -414,6 +414,16 @@ fn retain_derivation(
     Ok(origin)
 }
 
+// The actual Q04 caller has already authenticated its original input and
+// compiled this candidate under prepaid custody. This shares serialization
+// and cross-links; it issues no publisher revision or currentness authority.
+pub(super) fn retain_q04_original_derivation(
+    input: &PolicyCompilerInputV1,
+    candidate: &CompiledPolicyCandidateV1,
+) -> Result<RetainedPublisherCompilerOriginV3, PublisherPolicyError> {
+    retain_derivation(input, candidate)
+}
+
 fn take<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], PublisherPolicyError> {
     let end = offset
         .checked_add(N)
