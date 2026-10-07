@@ -3281,6 +3281,15 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   genuine loss-generation carry and atomic native acknowledgment before subsequent
   cold reuse. Missing witnesses fail discovery explicitly. Registration grants
   no collection or preservation authority and qualifies no task or gate.
+  The reviewed source-retirement candidate `b864eb16dc86`, composed with the
+  corrected protected-lineage regression oracle at `e425df68fc06`, now passes
+  all six exact native source-preserving retirement cases on its final bytes.
+  Actual Node reads, writes and decodes are calibrated after reopening;
+  successful cold reuse produces a fresh signed Commit with the expected source
+  tree and parent. All 4,904 actual hermetic input files independently match the
+  frozen source. Grace-window and retirement-fault regressions, required native
+  build and the ten local-deletion Nextest cases remain pending. These local
+  prerequisites do not qualify the complete collector gate or close T-GC-1.
   The reviewed pure journal, marking, proof-context, checkpoint, retention and
   grace-window bodies now replace their trunk declarations. All 27 adopted
   paths, including 16 independent hexadecimal witnesses, match the qualified
