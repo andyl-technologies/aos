@@ -216,6 +216,22 @@ in rec {
     qemuSimCorrectness = import ./phase1-qemu-sim-correctness.nix {inherit pkgs lib;};
     qemuSimBatchTcgExec = import ./phase1-qemu-sim-batch-tcg-exec.nix {inherit pkgs lib;};
     qemuTcgFastPaths = import ./phase1-qemu-tcg-fast-paths.nix {inherit pkgs;};
+    qemuMutexWaiterCounters = import ./phase1-qemu-native-costs.nix {
+      inherit pkgs;
+      case = "mutex-waiter-counters";
+    };
+    qemuTcgPageCollection = import ./phase1-qemu-native-costs.nix {
+      inherit pkgs;
+      case = "tcg-page-collection";
+    };
+    qemuTcgCrossingMembership = import ./phase1-qemu-native-costs.nix {
+      inherit pkgs;
+      case = "tcg-crossing-membership";
+    };
+    qemuTscSourceIndex = import ./phase1-qemu-native-costs.nix {
+      inherit pkgs;
+      case = "tsc-source-index";
+    };
     qemuSettlePrepark = import ./phase1-qemu-settle-prepark.nix {inherit pkgs;};
     qemuColdFaultPredicates = import ./phase1-qemu-cold-fault-predicates.nix {inherit pkgs;};
     qemuLazyMemoryIdentity = import ./phase1-qemu-lazy-memory-identity.nix {inherit pkgs;};
