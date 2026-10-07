@@ -21,20 +21,14 @@
 //! exposing Apply or directly performing netlink, nftables, or BPF work.
 //! [`worker_runtime`] and [`kernel_mutator`] provide the fixed one-shot
 //! preparation effect path; [`namespace_observer`] and [`preparation_runtime`]
-//! provide observation, durable commit, and publication. [`advanced_policy`]
-//! adds source-only compilation, replacement recovery, and a durable worker
-//! handoff without activating a worker. Public Apply remains unadvertised
-//! pending production service/controller composition, protected retention
-//! authorization, effect activation, and P0-06/MAC/VM qualification. The
-//! dormant fixed owner can now release move-only Arm, Renew, Disarm, and
-//! Destroy effect handoffs after exact protected checkpoint readback.
+//! provide observation, durable commit, and publication. [`lifecycle_state`]
+//! retains existing-resource operations, and [`lifecycle_worker_protocol`]
+//! releases ordered effect steps under the authenticated lifecycle dispatch.
+//! [`NetworkBrokerSessionRuntimeV1`] joins these owners for the separately
+//! packaged broker; the inventory-only [`service`] remains a narrower surface. The
+//! namespace inspector retains its separate deployment qualification gate.
 
 pub mod activation;
-#[allow(
-    dead_code,
-    reason = "advanced policy remains a dormant source-only integration seam"
-)]
-pub mod advanced_policy;
 pub mod allocation;
 pub mod authorization;
 pub mod broker;
@@ -133,9 +127,7 @@ pub use lifecycle_state::{
     NetworkLifecycleRecoveryEntryV1, NetworkLifecycleStateError, NetworkLifecycleStateStore,
 };
 pub use lifecycle_worker_protocol::{
-    AuthenticatedNetworkLifecycleWorkerDispatchV1, DormantNetworkLifecycleEffectHandoffV1,
-    DormantNetworkLifecycleEffectStepV1, DormantNetworkLifecycleOwnerErrorV1,
-    DormantNetworkLifecycleProtectedCommitV1, DormantNetworkLifecycleProtectedOwnerV1,
+    AuthenticatedNetworkLifecycleWorkerDispatchV1,
     MAXIMUM_NETWORK_LIFECYCLE_WORKER_REQUEST_BYTES, NetworkLifecycleAuthorizedStepV1,
     NetworkLifecycleDescriptorRoleV1, NetworkLifecycleExecutionAuthorizationV1,
     NetworkLifecycleExecutionStepV1, NetworkLifecycleWorkerDispatchV1,

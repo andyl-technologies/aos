@@ -17,10 +17,8 @@
 //! This module deliberately performs no syscall and launches no helper. It
 //! exposes a non-clone ordered-step authorization whose next visible step is
 //! returned only after another current-fence and effect-time check.
-//! Its dormant reducer defines bounded canonical recovery checkpoints, and the
-//! publicly re-exported opaque protected owner uses a crate-sealed adapter to
-//! require atomic protected write and exact readback. No production activation
-//! is introduced here.
+//! Durable admission and recovery belong to [`crate::lifecycle_state`]; this
+//! module only releases steps from that owner's authenticated dispatch.
 
 use aos_sandbox_broker::{
     BrokerAuthorizationFenceV1, BrokerEffectIntentV1, BrokerEffectStatusV1, BrokerLocalRecordDomain,
@@ -49,12 +47,6 @@ use aos_sandbox_linux::pidfd::NamespaceIdentity;
 
 mod codec;
 mod execution;
-mod reducer;
-pub use reducer::{
-    DormantNetworkLifecycleEffectHandoffV1, DormantNetworkLifecycleEffectStepV1,
-    DormantNetworkLifecycleOwnerErrorV1, DormantNetworkLifecycleProtectedCommitV1,
-    DormantNetworkLifecycleProtectedOwnerV1,
-};
 
 pub use codec::MAXIMUM_NETWORK_LIFECYCLE_WORKER_REQUEST_BYTES;
 use codec::{
