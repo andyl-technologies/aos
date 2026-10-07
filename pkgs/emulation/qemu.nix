@@ -1746,6 +1746,7 @@ in
                   "stopped-control-rearm", "template-control-drain", "net-stop-chain",
                   "aio-fork-custody", "stop-context", "ram-arena",
                   "ram-worker-inventory",
+                  "placement-registration",
                   "child-memory-limit",
                   "tcg-fast-paths",
                   "mutex-owner-cache",
@@ -1780,6 +1781,10 @@ in
               grep -Fxq 'strict worker inventory: exact union, unknown/duplicate/schema refusal, epochs and hold custody PASS' \
                 ram-worker-inventory.result
               cp ram-worker-inventory.result "$out/share/aos/crucible/ram-worker-inventory.result"
+              cat placement-registration.result
+              grep -Fxq 'placement registration: exact post-grant window, actual TID, refusal nonpublication and unchanged resume fences PASS' \
+                placement-registration.result
+              cp placement-registration.result "$out/share/aos/crucible/placement-registration.result"
               build/tests/unit/test-crucible-aio-retirement > aio-worker-retirement.result
               cat aio-worker-retirement.result
               grep -q '^AIO retirement: actual join, late unregister/kernel TID, nested/queued/active/completion/nonmain refusal, lazy recreation PASS;' \
