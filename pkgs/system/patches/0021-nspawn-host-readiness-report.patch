@@ -213,12 +213,16 @@ diff --git a/src/core/main.c b/src/core/main.c
 diff --git a/src/nspawn/nspawn-root-fd.h b/src/nspawn/nspawn-root-fd.h
 --- a/src/nspawn/nspawn-root-fd.h
 +++ b/src/nspawn/nspawn-root-fd.h
-@@ -18,3 +18,4 @@
+@@ -19,9 +19,11 @@
  int aos_root_directory_acquire(
                  bool with_attachment_anchor,
                  bool with_guest_agent,
 +                bool with_host_report,
-@@ -25,1 +26,2 @@
+                 int *ret_root_fd,
+                 int *ret_lock_fd,
+                 char **ret_path,
+                 int *ret_anchor_fd,
+                 int *ret_anchor_namespace_fd,
 -                int ret_guest_fds[3]);
 +                int ret_guest_fds[3],
 +                int *ret_host_report);
@@ -228,16 +232,22 @@ diff --git a/src/nspawn/nspawn-root-fd.c b/src/nspawn/nspawn-root-fd.c
 @@ -16,1 +16,2 @@
  #include "alloc-util.h"
 +#include "aos-host-readiness.h"
-@@ -277,3 +278,4 @@
+@@ -268,12 +269,14 @@
  int aos_root_directory_acquire(
                  bool with_attachment_anchor,
                  bool with_guest_agent,
 +                bool with_host_report,
-@@ -285,2 +287,3 @@
+                 int *ret_root_fd,
+                 int *ret_lock_fd,
+                 char **ret_path,
+                 int *ret_anchor_fd,
+                 int *ret_anchor_namespace_fd,
 -                int ret_guest_fds[3]) {
 +                int ret_guest_fds[3],
 +                int *ret_host_report) {
          _cleanup_strv_free_ char **names = NULL;
+         int expected, guest_base, n, r;
+ 
 @@ -298,2 +301,2 @@
          guest_base = with_attachment_anchor ? 3 : 1;
 -        expected = guest_base + (with_guest_agent ? 3 : 0);
@@ -308,14 +318,23 @@ diff --git a/src/nspawn/nspawn.c b/src/nspawn/nspawn.c
 +                        return r;
 +        } else
          /* This is intentionally the last nspawn setup operation before payload
-@@ -6472,2 +6492,3 @@
+@@ -6462,13 +6481,15 @@
+                 r = aos_root_directory_acquire(
                                  arg_aos_attachment_anchor_fd,
                                  arg_aos_guest_agent_fds,
 +                                arg_aos_host_report_selected,
-@@ -6479,1 +6500,2 @@
+                                 &aos_root_fd,
+                                 &aos_root_lock_fd,
+                                 &arg_directory,
+                                 &aos_attachment_anchor_fd,
+                                 &aos_attachment_anchor_namespace_fd,
 -                                arg_aos_guest_fds);
 +                                arg_aos_guest_fds,
 +                                &arg_aos_host_report.fd);
+                 if (r < 0) {
+                         log_error_errno(r, "Failed to acquire AOS root descriptor: %m");
+                         goto finish;
+                 }
 @@ -6698,1 +6720,16 @@
 +        if (arg_aos_host_report_selected) {
 +                if (!arg_aos_guest_agent_fds || !arg_aos_root_directory_fd ||
