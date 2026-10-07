@@ -430,6 +430,11 @@ enum CheckedEvidence {
         snapshot: Vec<u8>,
         lineage: Vec<u8>,
     },
+    SourceRequalification {
+        snapshot: Vec<u8>,
+        lineage: Vec<u8>,
+        history_reads: Vec<crate::bucket::publication::receipts::RecordRead>,
+    },
     // Tags and notes retain the selected Guard without acquiring branch history
     // or candidate lineage. Their genuine request checks remain in the producer.
     Advisory {
@@ -486,26 +491,45 @@ impl<'operation, 'held> CheckedMutation<'operation, 'held> {
         match &self.evidence {
             CheckedEvidence::Guard { snapshot, .. }
             | CheckedEvidence::Candidate { snapshot, .. }
+            | CheckedEvidence::SourceRequalification { snapshot, .. }
             | CheckedEvidence::Advisory { snapshot } => snapshot,
         }
     }
 
-    /// Borrows candidate lineage, absent for Guard and advisory transitions.
+    /// Borrows completed lineage for candidate or same-head source publication.
     pub(crate) fn lineage(&self) -> Option<&[u8]> {
         match &self.evidence {
             CheckedEvidence::Guard { .. } | CheckedEvidence::Advisory { .. } => None,
-            CheckedEvidence::Candidate { lineage, .. } => Some(lineage),
+            CheckedEvidence::Candidate { lineage, .. }
+            | CheckedEvidence::SourceRequalification { lineage, .. } => Some(lineage),
         }
     }
 
     /// Borrows the sealed Guard producer's complete carried-lineage output list.
     ///
-    /// Candidate and advisory transitions carry no Guard-preservation outputs.
+    /// Candidate, same-head source and advisory transitions carry no outputs.
     /// This accessor exposes data only; it cannot initialize private checks.
     pub(crate) fn guard_carried_lineages(&self) -> &[GuardCarriedLineage] {
         match &self.evidence {
             CheckedEvidence::Guard { carried, .. } => carried,
-            CheckedEvidence::Candidate { .. } | CheckedEvidence::Advisory { .. } => &[],
+            CheckedEvidence::Candidate { .. }
+            | CheckedEvidence::SourceRequalification { .. }
+            | CheckedEvidence::Advisory { .. } => &[],
+        }
+    }
+
+    /// Borrows genuine selected log-chain receipts for same-head requalification.
+    ///
+    /// Presence selects the private consumer route only. These ordinary read
+    /// records supply no source completion, permission or durable acknowledgment.
+    pub(crate) fn requalification_history_reads(
+        &self,
+    ) -> Option<&[crate::bucket::publication::receipts::RecordRead]> {
+        match &self.evidence {
+            CheckedEvidence::SourceRequalification { history_reads, .. } => Some(history_reads),
+            CheckedEvidence::Guard { .. }
+            | CheckedEvidence::Candidate { .. }
+            | CheckedEvidence::Advisory { .. } => None,
         }
     }
 
@@ -515,7 +539,8 @@ impl<'operation, 'held> CheckedMutation<'operation, 'held> {
             CheckedEvidence::Guard { snapshot, .. } => {
                 PublicationProof::Guard(*blake3::hash(snapshot).as_bytes())
             }
-            CheckedEvidence::Candidate { lineage, .. } => {
+            CheckedEvidence::Candidate { lineage, .. }
+            | CheckedEvidence::SourceRequalification { lineage, .. } => {
                 PublicationProof::Candidate(*blake3::hash(lineage).as_bytes())
             }
             CheckedEvidence::Advisory { .. } => PublicationProof::Raw,

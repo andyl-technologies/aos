@@ -215,6 +215,26 @@ impl<S, C, F> Coordinator<S, C, F> {
 }
 
 impl<S: Store, C: Clock, F: LocalFs> Coordinator<S, C, F> {
+    /// Requalifies one exact existing source through the closed native dispatcher.
+    ///
+    /// # Errors
+    /// Preserves complete source/current/Original refusals, missing native
+    /// dispatch, unchanged context, deadlines and uncertain durable publication.
+    pub(crate) async fn requalify_fork_source(
+        &self,
+        source: &str,
+        token: &[u8],
+        surface: &str,
+    ) -> Result<RefRecord, AdvanceError>
+    where
+        C: super::PublicationBinding,
+    {
+        let started = self.guard.clock().monotonic();
+        self.guard
+            .requalify_fork_source_native(source, token, surface, started, self.timing)
+            .await
+    }
+
     /// Creates an immutable tag from the exact currently authorized source head.
     ///
     /// # Errors

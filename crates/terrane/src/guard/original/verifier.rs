@@ -30,6 +30,10 @@ use crate::store::{
 };
 use terrane_core::refs::RefRecord;
 
+#[cfg(unix)]
+mod cold;
+mod requalification;
+
 // Retaining the actual injected clock does not strengthen generic Clock bounds.
 fn retain_clock(clock: &PublicationClock<'_>) -> Result<NativeEffectClock, StoreFailure> {
     clock.retain_native_clock().map_err(|failure| {
@@ -130,6 +134,9 @@ pub(in crate::guard) struct OriginalVerifier {
     commit: Arc<CommitCheck>,
     publication: Arc<PublicationCheck>,
     tag: Arc<TagCheck>,
+    requalification: Arc<requalification::RequalificationCheck>,
+    #[cfg(unix)]
+    preparation: Arc<cold::PreparationCheck>,
     retained: Option<RetainedControls>,
 }
 
@@ -275,19 +282,37 @@ impl<
                                 reason,
                                 timing,
                             };
-                            crate::selected_bridge::native_guard::publish_candidate(
-                                &concrete,
-                                &current_authority,
-                                &coordinator,
-                                &selected,
-                                &consumed,
-                                session,
-                                &mut publication,
-                            )
-                            .await
-                            .map(Some)
+                            if publication.admitted.cold_fork.is_some() {
+                                crate::selected_bridge::native_guard::cold_fork::publish(
+                                    &concrete,
+                                    &current_authority,
+                                    &coordinator,
+                                    &selected,
+                                    session,
+                                    &publication,
+                                )
+                                .await
+                                .map(Some)
+                            } else {
+                                crate::selected_bridge::native_guard::publish_candidate(
+                                    &concrete,
+                                    &current_authority,
+                                    &coordinator,
+                                    &selected,
+                                    &consumed,
+                                    session,
+                                    &mut publication,
+                                )
+                                .await
+                                .map(Some)
+                            }
                         }
                         PublicationMode::Immutable => {
+                            // A marked attempt cannot become an ordinary losing
+                            // traversal or silently lose its mandatory cold route.
+                            if admitted.cold_fork.is_some() {
+                                return Err(StoreFailure::new(StoreErrorKind::Unsupported).into());
+                            }
                             coordinator
                                 .guard()
                                 .revalidate_original_context(&original, observation)
@@ -360,6 +385,8 @@ impl<
                 .await
             })
         });
+        let requalification = requalification::factory(Arc::clone(&concrete), authority.clone());
+        let preparation = cold::factory(Arc::clone(&concrete), authority.clone());
         let commit_guard = concrete;
         let commit: Arc<CommitCheck> = Arc::new(move |baseline, view, held, retained| {
             let guard = Arc::clone(&commit_guard);
@@ -382,6 +409,8 @@ impl<
             commit,
             publication,
             tag,
+            requalification,
+            preparation,
             retained: None,
         });
         Ok(())

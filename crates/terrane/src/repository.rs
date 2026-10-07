@@ -126,6 +126,30 @@ where
             .map_err(Error::Advance)
     }
 
+    /// Requalifies an unchanged source through separate ordinary full verification.
+    ///
+    /// Current Fork authority is checked on every actual source occurrence.
+    /// Only fresh protected lineage and a publication revision are installed;
+    /// the signed Commit, whole head/log, Guard and loss generation stay unchanged.
+    /// A later fork independently qualifies this source through its final ACK.
+    ///
+    /// # Errors
+    /// Preserves current denial, incomplete signed history/profile/index/Original,
+    /// stale controls, deadlines and native durability failures. Unknown retained
+    /// history, absent native dispatch and byte-identical existing context return
+    /// Unsupported without claiming fresh qualification or acknowledgment.
+    pub async fn requalify_fork_source(
+        &self,
+        source: &str,
+        token: &[u8],
+        surface: &str,
+    ) -> Result<RefRecord, Error> {
+        self.coordinator
+            .requalify_fork_source(source, token, surface)
+            .await
+            .map_err(Error::Advance)
+    }
+
     /// Watches the current committed branch and every subsequent durable advance.
     ///
     /// Each event rechecks the exposure token and current ACL. Idle subscriptions
@@ -216,11 +240,17 @@ where
         Ok(self.publish_retained(session, prepared).await?.record)
     }
 
-    /// Forks a source reference into a new guarded reference without copying data.
+    /// Forks a source reference into a fresh signed guarded reference.
+    ///
+    /// Native preparation and final publication reuse only genuinely selected,
+    /// complete supported lineage. Missing per-view context requires separate
+    /// [`Self::requalify_fork_source`] before a later fork; no full walk fallback
+    /// runs within the native cold operation.
     ///
     /// # Errors
-    /// Rejects unauthorized source or destination access, an existing target,
-    /// unavailable source content, or a failed durable reference write.
+    /// Rejects absent or unsupported native source context, denied source Fork or
+    /// destination Commit/Admin, changed Original or selected controls, an existing
+    /// target, stale whole heads, expiry and failed or uncertain durable publication.
     pub async fn fork(
         &self,
         source: &str,

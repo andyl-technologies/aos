@@ -13,6 +13,10 @@ use terrane_core::gc::publication::{BackendBinding, RawDigest};
 
 use super::{CheckedEvidence, CheckedMutation};
 
+#[cfg(unix)]
+#[path = "selected/source_requalification.rs"]
+pub(crate) mod source_requalification;
+
 #[path = "selected/meta_batch.rs"]
 pub(crate) mod meta_batch;
 

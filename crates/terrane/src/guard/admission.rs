@@ -37,6 +37,9 @@ pub(super) struct CandidateValidation {
 /// A signed commit bound to the exact current-policy record it may replace.
 pub(crate) struct AdmittedCommit {
     pub(crate) commit: VerifiedCommit,
+    /// Routes only a genuinely cold-prepared candidate to mandatory fresh qualification.
+    #[cfg(unix)]
+    pub(crate) cold_fork: Option<super::cold_fork::ColdForkBinding>,
     /// Captures the actual constructor-selected ordinary interpretation and profile.
     pub(super) completion_inputs: super::history::completion::LegacyInputs,
     pub(super) requirements: Vec<super::attributes::RequirementEvidence>,
@@ -494,6 +497,8 @@ impl<S: Store, C: Clock> Guard<S, C> {
         )
         .map_err(|_| denied(reference, Verb::Commit))?;
         Ok(AdmittedCommit {
+            #[cfg(unix)]
+            cold_fork: None,
             completion_inputs: self.completion_inputs()?,
             commit,
             requirements,

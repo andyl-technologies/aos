@@ -34,6 +34,8 @@ pub(crate) use original::{
 #[cfg(feature = "std")]
 mod policy;
 mod read;
+#[cfg(feature = "std")]
+mod requalification;
 mod scope;
 mod snapshot;
 mod staged;

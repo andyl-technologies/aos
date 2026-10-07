@@ -30,6 +30,7 @@ pub(in super::super) struct MutationRequest {
     pointer: Vec<u8>,
     proofs: Vec<(PathBuf, Vec<u8>)>,
     selected_reads: Vec<(PathBuf, Vec<u8>, MetadataStamp, u32)>,
+    selected_payload_reads: Vec<(PathBuf, Vec<u8>, MetadataStamp, u32)>,
     writes: CompletedWrites,
     changes: Vec<(PathBuf, Option<Vec<u8>>)>,
     original_directories: Vec<(PathBuf, u32)>,
@@ -214,6 +215,36 @@ pub(in super::super) fn mutation_plan(
     }
     let (root, control, owner) =
         destination.ok_or_else(|| io::Error::other("checked mutation destination missing"))?;
+    let mut selected_payload_reads = Vec::new();
+    if let Some(reads) = checked.requalification_history_reads() {
+        for read in reads {
+            if !read.path().starts_with(&root) {
+                return Err(io::Error::other("source history payload scope differs").into());
+            }
+            let bytes = read
+                .bytes()
+                .ok_or_else(|| io::Error::other("source history bytes absent"))?;
+            let metadata = read
+                .metadata()
+                .ok_or_else(|| io::Error::other("source history metadata absent"))?;
+            let (_, write) = writes
+                .records()
+                .find(|(path, _)| path.as_path() == read.path())
+                .ok_or_else(|| io::Error::other("source history sync target absent"))?;
+            if write.root() != root.as_path()
+                || !matches!(write.policy(), FencePolicy::Payload { owner: actual } if actual == owner)
+                || write.expected() != Some(bytes)
+            {
+                return Err(io::Error::other("source history sync association differs").into());
+            }
+            selected_payload_reads.push((
+                read.path().to_owned(),
+                bytes.to_vec(),
+                MetadataStamp::checked(metadata)?,
+                owner,
+            ));
+        }
+    }
     let mut proofs = vec![(
         control.join(format!(
             "publication/guards/{}",
@@ -256,6 +287,7 @@ pub(in super::super) fn mutation_plan(
             scopes,
             proofs,
             selected_reads,
+            selected_payload_reads,
             writes: writes.clone(),
             changes: checked
                 .changes()
@@ -336,6 +368,17 @@ fn association(request: &MutationRequest, worker: &Worker) -> Result<(), NativeE
             return Err(
                 io::Error::other("checked mutation selected control preimage differs").into(),
             );
+        }
+    }
+    for (path, bytes, metadata, owner) in &request.selected_payload_reads {
+        let read = worker.projection.exact(path, Some(bytes))?;
+        if !path.starts_with(&request.root)
+            || *owner != request.owner
+            || read.metadata != Some(*metadata)
+            || read.identity != Some(metadata.identity)
+            || !matches!(read.policy, FencePolicy::Payload { owner: actual } if actual == *owner)
+        {
+            return Err(io::Error::other("checked source history payload preimage differs").into());
         }
     }
     worker.refresh(&[])

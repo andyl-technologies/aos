@@ -278,3 +278,20 @@ pub(super) fn check_continuity(
     }
     Ok(())
 }
+
+/// Consumes a real cold producer's early immutable frame without minting it.
+///
+/// The opaque input has no public or consumer constructor. Only actual source,
+/// fresh candidate, current and Original qualification initializes its fields.
+/// This adapter retains the same actual control receipts for metadata staging.
+#[cfg(unix)]
+pub(super) fn from_cold<'operation, 'held>(
+    inputs: super::cold_fork::ColdImmutableInputs,
+) -> ImmutableEffectContext<'operation, 'held> {
+    let (effect, selected) = inputs.into_parts();
+    ImmutableEffectContext {
+        effect,
+        selected,
+        sources: Vec::new(),
+    }
+}

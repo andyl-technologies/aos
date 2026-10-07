@@ -336,6 +336,63 @@ impl<
             })
     }
 
+    /// Retains complete exact log-chain reads for an unchanged selected source.
+    ///
+    /// The branch must already have this exact selected whole record. These
+    /// payload receipts preserve actual bytes/incarnations but grant no lineage,
+    /// source completion or current authority; Unknown history remains refused.
+    ///
+    /// # Errors
+    /// Rejects stale observations, non-branch or unknown/mismatched selection,
+    /// missing or inconsistent complete logs and originating exact read failures.
+    pub(crate) async fn selected_source_history_records(
+        &self,
+        observed: &SelectedObservation<'_>,
+        name: &str,
+        record: &terrane_core::refs::RefRecord,
+    ) -> Result<Vec<receipts::RecordRead>, StoreFailure> {
+        use terrane_core::gc::publication::CommittedSelection;
+        use terrane_core::refs::{RefClass, RefName, RefRecord};
+
+        self.check_observation(observed).await?;
+        let class = RefName::parse(name)
+            .map_err(|_| files::malformed())?
+            .class();
+        if !matches!(
+            class,
+            RefClass::Heads | RefClass::Jobs | RefClass::Conflicts | RefClass::Derived
+        ) {
+            return Err(unsupported());
+        }
+        let retained = observed
+            .state()
+            .branches
+            .iter()
+            .find(|row| row.name == name);
+        match retained.map(|row| &row.selection) {
+            Some(CommittedSelection::Selected(selected)) if selected.as_ref() == record => {}
+            Some(CommittedSelection::Unknown) | None => return Err(unsupported()),
+            _ => return Err(corrupt()),
+        }
+        let key =
+            terrane_core::bucket::BucketKey::ref_record(name).map_err(|_| files::malformed())?;
+        let current = observed
+            .logical()
+            .get(key.as_str())
+            .and_then(Option::as_deref)
+            .ok_or_else(corrupt)?;
+        if RefRecord::decode(current).map_err(|_| corrupt())? != *record {
+            return Err(corrupt());
+        }
+
+        let mut reads = Vec::new();
+        self.bucket()
+            .committed_logs_observed(name, record.clone(), &mut reads)
+            .await?;
+        self.check_observation(observed).await?;
+        Ok(reads)
+    }
+
     /// Returns the independently configured operator for this actual observation.
     ///
     /// This trusted configuration input grants no publication authority.

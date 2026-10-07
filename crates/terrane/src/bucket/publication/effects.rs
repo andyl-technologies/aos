@@ -396,7 +396,41 @@ pub(crate) async fn publish_checked<F: LocalFs + BucketBinding>(
     let (mut frame, control) = contextual_frame(fs, observed, checked.sources(), context).await?;
     let owner = frame.owner;
 
-    if let Some(bytes) = checked.lineage() {
+    if let Some(reads) = checked.requalification_history_reads() {
+        if reads.is_empty() {
+            return Err(corrupt());
+        }
+        for read in reads {
+            if !read.path().starts_with(observed.identity().root()) {
+                return Err(corrupt());
+            }
+            let bytes = read.bytes().ok_or_else(corrupt)?;
+            frame
+                .observed_read(
+                    fs,
+                    read.path(),
+                    Some(bytes),
+                    read.metadata(),
+                    FencePolicy::Payload { owner },
+                )
+                .await?;
+            // These are existing selected immutable logs, not a fabricated new
+            // candidate. Their actual bodies and directories also receive sync.
+            frame
+                .writes
+                .as_mut()
+                .ok_or_else(unsupported)?
+                .records
+                .insert(
+                    read.path().to_owned(),
+                    CompletedWrite {
+                        root: observed.identity().root().to_owned(),
+                        policy: FencePolicy::Payload { owner },
+                        expected: Some(bytes.to_vec()),
+                    },
+                );
+        }
+    } else if let Some(bytes) = checked.lineage() {
         use terrane_core::gc::publication::{CommittedSelection, evidence::CheckedLineage};
         use terrane_core::refs::RefLogRecord;
 

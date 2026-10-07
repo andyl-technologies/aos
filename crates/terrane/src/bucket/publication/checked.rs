@@ -112,7 +112,12 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                 {
                     return Err(corrupt());
                 }
-                self.verify_candidate_change(&checked, &lineage).await?;
+                if checked.requalification_history_reads().is_some() {
+                    self.verify_source_requalification(&checked, &lineage)
+                        .await?;
+                } else {
+                    self.verify_candidate_change(&checked, &lineage).await?;
+                }
             }
             _ => return Err(corrupt()),
         }
@@ -218,6 +223,64 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                 .check_guard_snapshot(checked.guard_snapshot())
                 .map_err(|_| corrupt())?;
         }
+        Ok(())
+    }
+
+    async fn verify_source_requalification(
+        &self,
+        checked: &CheckedMutation<'_, '_>,
+        lineage: &CheckedLineage,
+    ) -> Result<(), StoreFailure> {
+        let observed = checked.observed();
+        let reads = checked
+            .requalification_history_reads()
+            .ok_or_else(corrupt)?;
+        let digest = digest(checked.lineage().ok_or_else(corrupt)?);
+        let mut expected = observed.state().clone();
+        expected.revision = expected.revision.checked_add(1).ok_or_else(corrupt)?;
+        expected
+            .sources
+            .retain(|row| row.name != lineage.source_name);
+        expected
+            .sources
+            .push(terrane_core::gc::publication::SourceLineage {
+                name: lineage.source_name.clone(),
+                digest,
+            });
+        expected
+            .sources
+            .sort_by(|left, right| left.name.as_bytes().cmp(right.name.as_bytes()));
+        if !checked.changes().is_empty()
+            || !checked.sources().is_empty()
+            || checked.next() != &expected
+            || observed
+                .state()
+                .sources
+                .iter()
+                .any(|row| row.name == lineage.source_name && row.digest == digest)
+            || !lineage
+                .used
+                .check_supported_view_contexts()
+                .map_err(|_| corrupt())?
+        {
+            return Err(corrupt());
+        }
+        lineage
+            .check_guard_snapshot(checked.guard_snapshot())
+            .map_err(|_| corrupt())?;
+        let actual = self
+            .selected_source_history_records(observed, &lineage.source_name, &lineage.source)
+            .await?;
+        if actual.is_empty()
+            || reads.len() != actual.len()
+            || actual.iter().zip(reads).any(|(actual, retained)| {
+                actual.path() != retained.path() || actual.bytes() != retained.bytes()
+            })
+        {
+            return Err(corrupt());
+        }
+        // The native frame and ACK compare every retained original metadata
+        // preimage; these fresh reads cannot hide an equal-byte replacement.
         Ok(())
     }
 

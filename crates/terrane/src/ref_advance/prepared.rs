@@ -164,7 +164,10 @@ impl<S: Store, C: Clock, F: LocalFs> Coordinator<S, C, F> {
         session: &mut WriterSession,
         source: &str,
         request: CommitRequest,
-    ) -> Result<PreparedAdvance, AdvanceError> {
+    ) -> Result<PreparedAdvance, AdvanceError>
+    where
+        C: super::PublicationBinding,
+    {
         if session.class != RefClass::Heads {
             return Err(AdvanceError::InvalidRefClass);
         }
@@ -176,6 +179,12 @@ impl<S: Store, C: Clock, F: LocalFs> Coordinator<S, C, F> {
         let original = self.checked_preparation_baseline(session).await?;
         let started = self.guard().clock().monotonic();
         let terminal_secret = request.terminal_secret;
+        #[cfg(unix)]
+        let admitted = self
+            .guard()
+            .prepare_cold_fork_native(session, source, &original, request, started, self.timing)
+            .await?;
+        #[cfg(not(unix))]
         let admitted = self
             .guard()
             .admit_fork(source, session.reference(), session.epoch(), request)
