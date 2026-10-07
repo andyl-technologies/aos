@@ -80,7 +80,11 @@ fn reference_delta(full_input: bool) -> (Vec<u8>, Vec<u8>) {
         // result at 4 MiB despite the literal-command overhead.
         let mut available = MAX_PACK_OBJECT_BYTES - delta.len() - 4;
         while available > 0 {
-            let encoded = if available == 129 { 127 } else { available.min(128) };
+            let encoded = if available == 129 {
+                127
+            } else {
+                available.min(128)
+            };
             assert!(encoded >= 2);
             let literal_bytes = encoded - 1;
             delta.push(literal_bytes as u8);
@@ -96,7 +100,14 @@ fn reference_delta(full_input: bool) -> (Vec<u8>, Vec<u8>) {
     delta.push(0xf0); // Copy from offset zero, with all three size bytes present.
     delta.extend_from_slice(&(copied as u32).to_le_bytes()[..3]);
     output.resize(MAX_PACK_OBJECT_BYTES, b'a');
-    assert_eq!(delta.len(), if full_input { MAX_PACK_OBJECT_BYTES } else { 14 });
+    assert_eq!(
+        delta.len(),
+        if full_input {
+            MAX_PACK_OBJECT_BYTES
+        } else {
+            14
+        }
+    );
     (delta, output)
 }
 
@@ -124,7 +135,14 @@ fn pair(delta: Option<bool>, extra_byte: bool) -> PairFixture {
     }
     if extra_byte {
         let data = b"!";
-        append_entry(&mut pack, &mut entries, 3, data, hash_object(ObjectKind::Blob, data), None);
+        append_entry(
+            &mut pack,
+            &mut entries,
+            3,
+            data,
+            hash_object(ObjectKind::Blob, data),
+            None,
+        );
     }
 
     let checksum: [u8; 32] = Sha256::digest(&pack).into();
@@ -133,7 +151,10 @@ fn pair(delta: Option<bool>, extra_byte: bool) -> PairFixture {
     let mut index = MAGIC.to_vec();
     index.extend_from_slice(&2_u32.to_be_bytes());
     for byte in 0..256_u16 {
-        let count = entries.iter().filter(|entry| u16::from(entry.oid[0]) <= byte).count();
+        let count = entries
+            .iter()
+            .filter(|entry| u16::from(entry.oid[0]) <= byte)
+            .count();
         index.extend_from_slice(&(count as u32).to_be_bytes());
     }
     for entry in &entries {
@@ -161,33 +182,59 @@ fn pair(delta: Option<bool>, extra_byte: bool) -> PairFixture {
 fn semantic_limit_pair_returns_only_a_bounded_selection() {
     let fixture = pair(None, false);
     validate_against_pack(&fixture.path, &fixture.index, &fixture.pack).unwrap();
-    let verified = fixture.reader().finish(&[Selection {
-        oid: fixture.selected_oid,
-        range: Some(ContentRange { start: 0, end: 32 }),
-    }]).unwrap();
+    let verified = fixture
+        .reader()
+        .finish(&[Selection {
+            oid: fixture.selected_oid,
+            range: Some(ContentRange { start: 0, end: 32 }),
+        }])
+        .unwrap();
     assert_eq!(verified.inflated_entry_bytes, MAX_DECODED_PACK_BYTES as u64);
-    assert_eq!(verified.peak_decoded_graph_bytes, MAX_DECODED_PACK_BYTES as u64);
+    assert_eq!(
+        verified.peak_decoded_graph_bytes,
+        MAX_DECODED_PACK_BYTES as u64
+    );
     assert_eq!(verified.objects[0].content, vec![b'h'; 32]);
-    assert_eq!(verified.objects[0].object_size, MAX_PACK_OBJECT_BYTES as u64);
-    assert!(fixture.reader().finish(&[Selection { oid: fixture.selected_oid, range: None }]).is_err());
+    assert_eq!(
+        verified.objects[0].object_size,
+        MAX_PACK_OBJECT_BYTES as u64
+    );
+    assert!(fixture
+        .reader()
+        .finish(&[Selection {
+            oid: fixture.selected_oid,
+            range: None
+        }])
+        .is_err());
 }
 
 #[test]
 fn delta_input_and_replacement_fit_the_distinct_live_limit() {
     let fixture = pair(Some(true), false);
     validate_against_pack(&fixture.path, &fixture.index, &fixture.pack).unwrap();
-    let verified = fixture.reader().finish(&[Selection {
-        oid: fixture.selected_oid,
-        range: Some(ContentRange { start: 0, end: 32 }),
-    }]).unwrap();
+    let verified = fixture
+        .reader()
+        .finish(&[Selection {
+            oid: fixture.selected_oid,
+            range: Some(ContentRange { start: 0, end: 32 }),
+        }])
+        .unwrap();
     assert_eq!(verified.inflated_entry_bytes, MAX_DECODED_PACK_BYTES as u64);
-    assert_eq!(verified.peak_decoded_graph_bytes, MAX_LIVE_DECODED_PACK_BYTES as u64);
+    assert_eq!(
+        verified.peak_decoded_graph_bytes,
+        MAX_LIVE_DECODED_PACK_BYTES as u64
+    );
     assert_eq!(verified.objects[0].content, vec![b'z'; 32]);
 }
 
 #[test]
 fn delta_replacement_cannot_exceed_the_semantic_graph_limit() {
     let fixture = pair(Some(false), true);
-    assert!(fixture.reader().finish(&[]).unwrap_err().to_string().contains("remaining decoded-graph budget"));
+    assert!(fixture
+        .reader()
+        .finish(&[])
+        .unwrap_err()
+        .to_string()
+        .contains("remaining decoded-graph budget"));
     assert!(validate_against_pack(&fixture.path, &fixture.index, &fixture.pack).is_err());
 }

@@ -97,8 +97,12 @@ fn prior_twelve_mib_review_cannot_admit_the_current_parser_geometry() {
     }
     sign(&mut pack, &key);
 
-    let error = pack.verify(&mirror, &hex::encode(key.verifying_key().as_bytes()), 150).unwrap_err();
-    assert!(error.to_string().contains("geometry or prerequisite changed"));
+    let error = pack
+        .verify(&mirror, &hex::encode(key.verifying_key().as_bytes()), 150)
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("geometry or prerequisite changed"));
 }
 
 #[test]
