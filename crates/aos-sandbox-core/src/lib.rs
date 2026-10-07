@@ -23,6 +23,7 @@ pub mod crypto;
 pub mod format;
 pub mod guardian_binding;
 pub mod identity;
+pub mod journal_namespace;
 pub mod model;
 pub mod operator_recovery_effect;
 pub mod operator_recovery_effect_v2;
@@ -41,6 +42,7 @@ pub mod state;
 pub mod version;
 
 pub use assignment::CanonicalAssignmentManifestV1;
+pub use journal_namespace::RecordNamespace;
 pub use broker_authorization::{
     BrokerArgumentCommitment, BrokerAssignment, BrokerAudience, BrokerAuthorizationPlan,
     BrokerGrant, BrokerGrantTarget, BrokerPlanExpectation, BrokerPlanRequest,

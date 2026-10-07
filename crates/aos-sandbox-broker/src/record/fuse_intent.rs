@@ -36,7 +36,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<BrokerEffectIntentV1, Authorization
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::broker_authority::record::{
+    use crate::record::{
         AuthenticatedValueKind, BrokerEffectStatusV1, BrokerGrantTarget, NodeJournalMacKey,
         RecordNamespace, decode_effect, open, open_effect_intent, seal, seal_effect_intent,
     };

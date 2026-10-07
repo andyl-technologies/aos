@@ -50,7 +50,6 @@ pub mod attachment_state;
 #[cfg(target_os = "linux")]
 pub mod attachment_verification;
 pub mod authority;
-mod broker_authority;
 pub mod cache_residency;
 pub mod cli_model;
 pub mod client_state;
@@ -249,14 +248,6 @@ pub use authority::{
     AuthorizationPreparationError, BrokerPlanPreparation, PreparedSigningRequest,
     PublisherPlanPreparation, ReturnedSignature, SignedBrokerPlan, SignedPublisherPlan,
     SigningAuthority,
-};
-pub use broker_authority::{
-    AdmissionRequest, AuthorizationRecordError, BrokerAdmissionError, BrokerAuthority,
-    BrokerAuthorityConfigError,
-    BrokerAuthorizationFenceV1, BrokerDomain, BrokerEffectClockDispositionV1, BrokerEffectIntentV1,
-    BrokerEffectStatusV1, BrokerLocalRecordDomain, ProtectedBrokerAuthorityConfiguration,
-    ProtectedBrokerPublicCredentialRole, ProtectedBrokerPublicCredentialSnapshot,
-    ProtectedBrokerPublicCredentials, VerifiedBrokerAdmission,
 };
 pub use controller::{
     ActivatedOperationCompiler, ControllerQuantumReport, ControllerReconciliationStep,

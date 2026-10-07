@@ -6,8 +6,9 @@
 //! location-authenticated durable records that remain non-authorizing until
 //! committed by the caller.
 //!
-//! The admission, record and protected configuration types reexport the sole
-//! private Core engine and loader without exposing their private MAC machinery.
+//! Admission owns the common signature/lease intersection, configuration owns
+//! descriptor-relative protected credential loading, and records own the private
+//! location-bound MAC engine. Domain brokers retain semantic admission and effects.
 
 mod admission;
 mod config;
@@ -17,7 +18,7 @@ pub use admission::{
     AdmissionRequest, BrokerAdmissionError, BrokerAuthority, BrokerEffectClockDispositionV1,
     VerifiedBrokerAdmission,
 };
-pub use aos_sandbox::RecordNamespace;
+pub use aos_sandbox_core::RecordNamespace;
 pub use config::{
     BrokerAuthorityConfigError, ProtectedBrokerAuthorityConfiguration,
     ProtectedBrokerPublicCredentialRole, ProtectedBrokerPublicCredentialSnapshot,

@@ -861,7 +861,6 @@ dependencies = [
  "futures",
  "h2",
  "hex",
- "hmac 0.12.1",
  "http 1.4.1",
  "rand 0.9.4",
  "rcgen",
@@ -902,11 +901,11 @@ dependencies = [
 name = "aos-sandbox-broker"
 version = "0.1.0"
 dependencies = [
- "aos-sandbox",
  "aos-sandbox-core",
  "aos-sandbox-protocol",
  "ed25519-dalek",
  "hex",
+ "hmac 0.12.1",
  "rustix 1.1.4",
  "sha2 0.10.9",
  "tempfile",
