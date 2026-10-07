@@ -10,7 +10,6 @@ use std::io;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
 use std::path::Path;
-use std::sync::Arc;
 
 const NAME: &[u8] = b"crucible-spill-io";
 const UUID: &[u8] = b"crucible-spill-io-disposable-v1";
@@ -96,7 +95,7 @@ pub struct LinuxDeviceMapperFaultTarget {
     linear_parameters: [u8; 64],
     // The original catalog owns this operator I/O, independently of native
     // node task/FD limits. Its credit closes after the actual control FD.
-    _credit: Arc<dyn Send + Sync>,
+    _credit: crucible_ram::ResourceLoan,
 }
 
 impl LinuxDeviceMapperFaultTarget {
@@ -111,7 +110,7 @@ impl LinuxDeviceMapperFaultTarget {
     /// mounted device or UUID, and any noncanonical target geometry.
     pub fn open(
         mount: &Path,
-        credit: Arc<dyn Send + Sync>,
+        credit: crucible_ram::ResourceLoan,
         guard: &HostOperationGuard,
     ) -> io::Result<Self> {
         boundary(guard)?;

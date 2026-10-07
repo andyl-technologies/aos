@@ -40,7 +40,8 @@ pub(super) fn admit_catalog_service(
     identity.update(&catalog.project_id().to_be_bytes());
     let owner = *identity.finalize().as_bytes();
     let budgets = config.host_operation_budgets().ok_or(StoreError::Quota)?;
-    let supervisor = HostOperationSupervisor::new(budgets, None).map_err(|_| StoreError::Quota)?;
+    let supervisor = HostOperationSupervisor::new(budgets, None)
+        .map_err(crate::ProviderServiceAdmissionError::from)?;
     let custody = registry.capacity_custody()?;
     registry.reserve_service_with_assignment_headroom(
         owner,
@@ -245,7 +246,7 @@ impl PackagedRamCatalogConfig {
         &self,
         bytes: u64,
         supervisor: &crucible_linux_resource::host_supervision::HostOperationSupervisor,
-    ) -> Result<Arc<dyn Send + Sync>, StoreError> {
+    ) -> Result<crucible_cas::owned_decode::ResourceLoan, StoreError> {
         self.provider
             .admitted
             .get()
@@ -306,7 +307,7 @@ impl ProductionRamCatalogProvider for AdmittedCatalogProvider {
         &self,
         directory: &Path,
         bytes: u64,
-    ) -> Result<Arc<dyn Send + Sync>, StoreError> {
+    ) -> Result<crucible_cas::owned_decode::ResourceLoan, StoreError> {
         self.admitted
             .get()
             .ok_or(StoreError::Quota)?

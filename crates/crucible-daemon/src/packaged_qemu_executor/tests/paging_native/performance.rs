@@ -192,7 +192,7 @@ fn managed_tcg_performance_trial() {
                     config: config.clone(),
                     store,
                     sample: None,
-                    sample_resident: None,
+                    sample_resident: Default::default(),
                 },
             );
             let (queued, result) = worker.execute(queued).into_parts();
@@ -261,7 +261,7 @@ struct MeasurementModel {
     config: PackagedQemuExecutorConfig,
     store: CampaignExecutorStore,
     sample: Option<Value>,
-    sample_resident: Option<Arc<dyn Send + Sync>>,
+    sample_resident: crucible_cas::owned_decode::ResourceLoanSlot,
 }
 
 impl AttemptExecutionModel for MeasurementModel {
@@ -281,7 +281,7 @@ impl AttemptExecutionModel for MeasurementModel {
             evidence_bound(),
         )
         .expect("actual world partition and original native supervision");
-        self.sample_resident = Some(factory.evidence_custody());
+        self.sample_resident = factory.evidence_custody().into();
         self.sample = Some(
             measure(&self.trial, &mut factory, self.config.host.run_root())
                 .unwrap_or_else(|error| panic!("admitted performance trial failed: {error}")),

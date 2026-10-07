@@ -1,5 +1,7 @@
 //! Original-operation source reading through SQLite's bounded read gate.
 
+use crate::content_store::batch::admission_under;
+
 use super::*;
 
 struct ReadChunk {
@@ -10,6 +12,7 @@ struct ReadChunk {
 impl AuthenticatingSqliteReader {
     pub(in super::super) fn read_with_boundary(
         &mut self,
+        original: &crate::owned_decode::DecodeBudget,
         output: &mut [u8],
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<usize, StoreError> {
@@ -20,7 +23,7 @@ impl AuthenticatingSqliteReader {
             boundary()?;
             return Ok(0);
         }
-        self.scan_with_boundary(self.range.offset, boundary)?;
+        self.scan_with_boundary(original, self.range.offset, boundary)?;
         if self.output_offset < self.range.length {
             let length = usize::try_from(
                 (self.range.length - self.output_offset)
@@ -28,7 +31,7 @@ impl AuthenticatingSqliteReader {
                     .min(MAX_CHUNK_BYTES as u64),
             )
             .map_err(|_| StoreError::Quota)?;
-            let chunk = self.chunk_with_boundary(self.scan_offset, length, boundary)?;
+            let chunk = self.chunk_with_boundary(original, self.scan_offset, length, boundary)?;
             output[..length].copy_from_slice(&chunk.bytes);
             self.hasher.update(&chunk.bytes);
             self.scan_offset += length as u64;
@@ -36,7 +39,7 @@ impl AuthenticatingSqliteReader {
             boundary()?;
             return Ok(length);
         }
-        self.scan_with_boundary(self.logical_length, boundary)?;
+        self.scan_with_boundary(original, self.logical_length, boundary)?;
         if *self.hasher.finalize().as_bytes() != self.id.digest() {
             return Err(StoreError::Corrupt { id: self.id });
         }
@@ -47,13 +50,14 @@ impl AuthenticatingSqliteReader {
 
     fn scan_with_boundary(
         &mut self,
+        original: &crate::owned_decode::DecodeBudget,
         target: u64,
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<(), StoreError> {
         while self.scan_offset < target {
             let length = usize::try_from((target - self.scan_offset).min(MAX_CHUNK_BYTES as u64))
                 .map_err(|_| StoreError::Quota)?;
-            let chunk = self.chunk_with_boundary(self.scan_offset, length, boundary)?;
+            let chunk = self.chunk_with_boundary(original, self.scan_offset, length, boundary)?;
             self.hasher.update(&chunk.bytes);
             self.scan_offset += length as u64;
         }
@@ -62,14 +66,18 @@ impl AuthenticatingSqliteReader {
 
     fn chunk_with_boundary(
         &self,
+        original: &crate::owned_decode::DecodeBudget,
         offset: u64,
         length: usize,
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<ReadChunk, StoreError> {
         boundary()?;
-        let credit = account()?
+        original
+            .verify_live()
+            .map_err(|error| admission_under(original, error))?;
+        let credit = original
             .reserve_scratch_array::<u8>(length)
-            .map_err(admission)?;
+            .map_err(|error| admission_under(original, error))?;
         let mut connection = loop {
             busy::healthy(&self.quarantined)?;
             boundary()?;
@@ -92,6 +100,7 @@ impl AuthenticatingSqliteReader {
             .and_then(|offset| offset.checked_add(1))
             .ok_or(StoreError::Quota)?;
         let accepted = busy::with_zero(
+            original,
             &mut connection,
             &self.quarantined,
             boundary,

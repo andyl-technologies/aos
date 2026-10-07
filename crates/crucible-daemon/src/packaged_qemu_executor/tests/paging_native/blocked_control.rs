@@ -61,7 +61,7 @@ struct SourceGate {
     state: Mutex<GateState>,
     // The actual namespace loan precedes these allocations and outlives every
     // backing wrapper, including an uncertain source-worker terminal outcome.
-    _credit: Arc<dyn Send + Sync>,
+    _credit: crucible_cas::owned_decode::ResourceLoan,
 }
 
 // The decorator itself shares the precharged gate; no read clones the root or
@@ -98,7 +98,8 @@ impl QemuRamBacking for HeldBacking {
         &self,
         region: &str,
         page: u64,
-        boundary: &mut dyn FnMut() -> Result<(), QemuRamSourceError>,
+        boundary: &mut dyn FnMut()
+            -> Result<(), crucible_qemu::ram_source::QemuRamReadBoundaryError>,
     ) -> Result<(Vec<u8>, crucible_ram::PageProof), QemuRamSourceError> {
         let result = self.backing.read_page_with_proof(region, page, boundary)?;
         let action = self
@@ -130,7 +131,8 @@ impl SourceGate {
         action: Action,
         region_ordinal: usize,
         page_index: u64,
-        boundary: &mut dyn FnMut() -> Result<(), QemuRamSourceError>,
+        boundary: &mut dyn FnMut()
+            -> Result<(), crucible_qemu::ram_source::QemuRamReadBoundaryError>,
     ) -> Result<(), QemuRamSourceError> {
         boundary()?;
         let before = status(&self.registry, action.target);
@@ -263,13 +265,13 @@ impl SourceGate {
                 .lock()
                 .map_err(|_| QemuRamSourceError::Ownership)?
                 .evidence = Some(evidence);
-            return refusal;
+            return refusal.map_err(QemuRamSourceError::from);
         }
         self.state
             .lock()
             .map_err(|_| QemuRamSourceError::Ownership)?
             .evidence = Some(evidence);
-        boundary()
+        boundary().map_err(QemuRamSourceError::from)
     }
 }
 

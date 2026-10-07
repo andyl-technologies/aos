@@ -18,6 +18,7 @@ pub(in super::super) enum CliError {
     MetadataAdmission(crucible_session::engine::owned_decode::DecodeAdmissionError),
     LifecycleAdmission(Box<crucible_api::LifecycleApiError>),
     InputAuthority(Box<crucible_daemon::campaign_store_composition::StoreError>),
+    ProviderAdmission(crucible_daemon::ProviderServiceAdmissionError),
     ExecutionAdmission {
         context: &'static str,
         source: NativeExecutionAdmissionError,
@@ -46,7 +47,7 @@ impl CliError {
             Self::Identity(_) => 3,
             Self::EventEvidence { .. } => 4,
             Self::MetadataAdmission(_) => 4,
-            Self::InputAuthority(_) | Self::LifecycleAdmission(_) => 4,
+            Self::InputAuthority(_) | Self::LifecycleAdmission(_) | Self::ProviderAdmission(_) => 4,
             Self::ExecutionAdmission { .. } => 4,
             Self::SaveWorkflowTrace { source, .. } => source.exit_code(),
             Self::Outcome(BackendCommandStatus::Passed) => 0,
@@ -78,6 +79,9 @@ impl fmt::Display for CliError {
             }
             Self::LifecycleAdmission(source) => write!(formatter, "lifecycle admission: {source}"),
             Self::InputAuthority(source) => write!(formatter, "input resource authority: {source}"),
+            Self::ProviderAdmission(source) => {
+                write!(formatter, "input resource authority: {source}")
+            }
             Self::ExecutionAdmission { context, source } => {
                 write!(formatter, "{context}: {source}")
             }
@@ -106,6 +110,7 @@ impl Error for CliError {
             Self::MetadataAdmission(source) => Some(source),
             Self::LifecycleAdmission(source) => Some(source.as_ref()),
             Self::InputAuthority(source) => Some(source.as_ref()),
+            Self::ProviderAdmission(source) => Some(source),
             Self::ExecutionAdmission { source, .. } => Some(source),
             Self::SaveWorkflowTrace { source, .. } => Some(source.as_ref()),
             Self::Outcome(_) => None,

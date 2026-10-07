@@ -56,7 +56,10 @@ impl DecodeResourceAuthority for FiniteAuthority {
         Ok(())
     }
 
-    fn reserve(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, DecodeAdmissionError> {
+    fn reserve(
+        &self,
+        bytes: u64,
+    ) -> Result<crucible::owned_decode::ResourceLoan, DecodeAdmissionError> {
         let admitted = !self.0.leaf_visited.load(Ordering::Acquire)
             && self
                 .0
@@ -71,7 +74,7 @@ impl DecodeResourceAuthority for FiniteAuthority {
             return Err(DecodeAdmissionError::new(RefusedLeafAllocation));
         }
 
-        Ok(Arc::new(Credit {
+        Ok(crucible::owned_decode::ResourceLoan::new(Credit {
             account: Arc::clone(&self.0),
             bytes,
         }))

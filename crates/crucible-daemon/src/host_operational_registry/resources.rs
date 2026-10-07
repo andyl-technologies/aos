@@ -111,8 +111,13 @@ impl DecodeResourceAuthority for RegistryMetadataAuthority {
             .map_err(DecodeAdmissionError::new)
     }
 
-    fn reserve(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, DecodeAdmissionError> {
-        Ok(Arc::new(self.resources.reserve_metadata(bytes)?))
+    fn reserve(
+        &self,
+        bytes: u64,
+    ) -> Result<crucible_cas::owned_decode::ResourceLoan, DecodeAdmissionError> {
+        Ok(crucible_cas::owned_decode::ResourceLoan::new(
+            self.resources.reserve_metadata(bytes)?,
+        ))
     }
 }
 

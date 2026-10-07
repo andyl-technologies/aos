@@ -369,10 +369,10 @@ mod publication_tests {
                 &self,
                 _bytes: u64,
             ) -> Result<
-                Arc<dyn Send + Sync>,
+                crucible_cas::owned_decode::ResourceLoan,
                 crucible_session::engine::owned_decode::DecodeAdmissionError,
             > {
-                Ok(Arc::new(()))
+                Ok(crucible_cas::owned_decode::ResourceLoan::new(()))
             }
         }
 

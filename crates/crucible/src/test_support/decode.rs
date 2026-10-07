@@ -35,7 +35,10 @@ impl DecodeResourceAuthority for FixtureAuthority {
         Ok(())
     }
 
-    fn reserve(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, DecodeAdmissionError> {
+    fn reserve(
+        &self,
+        bytes: u64,
+    ) -> Result<crate::owned_decode::ResourceLoan, DecodeAdmissionError> {
         self.used
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
                 used.checked_add(bytes)
@@ -46,7 +49,7 @@ impl DecodeResourceAuthority for FixtureAuthority {
                     "finite component fixture metadata authority exhausted",
                 ))
             })?;
-        Ok(Arc::new(FixtureCredit {
+        Ok(crate::owned_decode::ResourceLoan::new(FixtureCredit {
             used: Arc::clone(&self.used),
             bytes,
         }))

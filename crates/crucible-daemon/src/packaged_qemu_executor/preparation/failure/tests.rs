@@ -32,7 +32,10 @@ impl DecodeResourceAuthority for Authority {
         Ok(())
     }
 
-    fn reserve(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, DecodeAdmissionError> {
+    fn reserve(
+        &self,
+        bytes: u64,
+    ) -> Result<crucible_cas::owned_decode::ResourceLoan, DecodeAdmissionError> {
         self.outstanding
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
                 used.checked_add(bytes)
@@ -40,7 +43,7 @@ impl DecodeResourceAuthority for Authority {
             })
             .map_err(|_| DecodeAdmissionError::new(std::io::Error::other("fixture exhausted")))?;
 
-        Ok(Arc::new(Lease {
+        Ok(crucible_cas::owned_decode::ResourceLoan::new(Lease {
             outstanding: Arc::clone(&self.outstanding),
             bytes,
         }))

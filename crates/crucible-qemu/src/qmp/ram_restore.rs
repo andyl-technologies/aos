@@ -204,7 +204,7 @@ pub(crate) fn fixture_source()
             &self,
             _: &str,
             _: u64,
-            _: &mut dyn FnMut() -> Result<(), crate::ram_source::QemuRamSourceError>,
+            _: &mut dyn FnMut() -> Result<(), crate::ram_source::QemuRamReadBoundaryError>,
         ) -> Result<(Vec<u8>, crucible_ram::PageProof), crate::ram_source::QemuRamSourceError>
         {
             Err(crate::ram_source::QemuRamSourceError::Backing(

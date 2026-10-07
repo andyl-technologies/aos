@@ -99,7 +99,7 @@ struct CompletionGate {
     // Arming occurs only after restore and cold-placement policy finish. Earlier
     // device pre-load reads remain ordinary authenticated source completions.
     state: Mutex<CompletionState>,
-    _credit: Arc<dyn Send + Sync>,
+    _credit: crucible_cas::owned_decode::ResourceLoan,
 }
 
 struct CompletionDecorator(Arc<CompletionGate>);
@@ -134,7 +134,8 @@ impl QemuRamBacking for ObservedBacking {
         &self,
         region_id: &str,
         page_index: u64,
-        boundary: &mut dyn FnMut() -> Result<(), QemuRamSourceError>,
+        boundary: &mut dyn FnMut()
+            -> Result<(), crucible_qemu::ram_source::QemuRamReadBoundaryError>,
     ) -> Result<(Vec<u8>, crucible_ram::PageProof), QemuRamSourceError> {
         let damage_storage = {
             let mut state = self
@@ -637,7 +638,7 @@ impl AttemptExecutionModel for CompletionModel<'_> {
                 cleanup
                     .wait_slice()
                     .map(|_| ())
-                    .map_err(QemuRamSourceError::from)
+                    .map_err(crucible_qemu::ram_source::QemuRamReadBoundaryError::from)
             });
             if let Err(error) = restore {
                 service.retain_after_unknown_cleanup();

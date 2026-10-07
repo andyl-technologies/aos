@@ -149,6 +149,7 @@ pub mod executor_supervisor;
 pub mod executor_worker;
 pub mod host_operational_registry;
 pub mod imported_checkpoint;
+mod provider_error_custody;
 pub use host_operational_registry::HostOperationalRegistry;
 pub mod finding_production_replay;
 pub mod finding_replay_capture_store;
@@ -347,12 +348,12 @@ pub use crucible_execution::{
 pub use crucible_measurement::{
     CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2,
     CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2, CrucibleMeasurementError,
-    CrucibleMeasurementEvidenceBytes, CrucibleMeasurementPublication, CrucibleMeasurementReplayEvidence,
-    CrucibleMeasurementStopEvidence, CrucibleObservationBoundaryEvidence,
-    MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES, derive_crucible_measurement_samples,
-    evaluate_crucible_measurement_publication, evaluate_crucible_objectives,
-    evaluate_crucible_observation_measurement_publication, project_crucible_objective_values,
-    verify_crucible_measurement_publication,
+    CrucibleMeasurementEvidenceBytes, CrucibleMeasurementPublication,
+    CrucibleMeasurementReplayEvidence, CrucibleMeasurementStopEvidence,
+    CrucibleObservationBoundaryEvidence, MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
+    derive_crucible_measurement_samples, evaluate_crucible_measurement_publication,
+    evaluate_crucible_objectives, evaluate_crucible_observation_measurement_publication,
+    project_crucible_objective_values, verify_crucible_measurement_publication,
 };
 pub use crucible_qemu::LinuxQemuAttemptHostConfig;
 pub use crucible_qemu_runner::{
@@ -575,6 +576,7 @@ pub use production_plugin_probe::{
 pub use production_qemu_config::{
     with_production_qemu_coverage, with_production_qemu_raw_root_image,
 };
+pub use provider_error_custody::ProviderServiceAdmissionError;
 pub use qemu_baked_genesis::{
     ProductionBakedGenesisCaptureError, ProductionBakedGenesisCheckpoint,
     ProductionBakedGenesisCheckpointError, ProductionBakedGenesisReplayCatalogError,

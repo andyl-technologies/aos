@@ -4,11 +4,18 @@
 //! wait. Statements close before each retry; cleanup and exact timeout restoration
 //! finish before a result escapes. An unwind quarantines without running SQL in Drop.
 
+use crate::content_store::batch::admission_under;
+
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use super::*;
+
+#[cfg(feature = "test-support")]
+mod scope_fault_fixture;
+#[cfg(feature = "test-support")]
+pub use scope_fault_fixture::SqliteScopeFaultObservation;
 
 /// Distinguishes durable commit from failure before or during publication.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,6 +42,7 @@ struct ScopeFailure {
     rollback: Option<rusqlite::Error>,
     restore: Option<rusqlite::Error>,
     outcome: SqliteCommitOutcome,
+    _diagnostic: Option<crate::owned_decode::DecodeScratch>,
 }
 
 impl SqliteScopeError {
@@ -103,10 +111,52 @@ impl std::error::Error for SqliteScopeError {
 pub(in crate::content_store) struct Accepted<T> {
     value: T,
     outcome: SqliteCommitOutcome,
+    diagnostic: Option<crate::owned_decode::DecodeScratch>,
     credit: crate::owned_decode::DecodeScratch,
 }
 
 impl<T> Accepted<T> {
+    pub(in crate::content_store) fn retain_diagnostic(
+        mut self,
+        credit: crate::owned_decode::DecodeScratch,
+    ) -> Self {
+        // Only the leaf's freshly returned token takes this existing bank.
+        self.diagnostic = Some(credit);
+        self
+    }
+
+    pub(in crate::content_store) fn release_diagnostic(&mut self) {
+        self.diagnostic = None;
+    }
+
+    pub(in crate::content_store) fn map<U>(
+        self,
+        map: impl FnOnce(T) -> Result<U, StoreError>,
+    ) -> Result<Accepted<U>, StoreError> {
+        let Self {
+            value,
+            outcome,
+            diagnostic,
+            credit,
+        } = self;
+        match map(value) {
+            Ok(value) => Ok(Accepted {
+                value,
+                outcome,
+                diagnostic,
+                credit,
+            }),
+            Err(error) => Err(scope_error(
+                Some(error),
+                None,
+                None,
+                outcome,
+                credit,
+                diagnostic,
+            )),
+        }
+    }
+
     pub(in crate::content_store) fn value(&self) -> &T {
         &self.value
     }
@@ -119,10 +169,18 @@ impl<T> Accepted<T> {
             let Self {
                 value,
                 outcome,
+                diagnostic,
                 credit,
             } = self;
             drop(value);
-            return Err(scope_error(Some(error), None, None, outcome, credit));
+            return Err(scope_error(
+                Some(error),
+                None,
+                None,
+                outcome,
+                credit,
+                diagnostic,
+            ));
         }
         Ok(self)
     }
@@ -134,11 +192,19 @@ impl<T> Accepted<T> {
         let Self {
             value,
             outcome,
+            diagnostic,
             credit,
         } = self;
         match finish(value) {
             Ok(value) => Ok(value),
-            Err(error) => Err(scope_error(Some(error), None, None, outcome, credit)),
+            Err(error) => Err(scope_error(
+                Some(error),
+                None,
+                None,
+                outcome,
+                credit,
+                diagnostic,
+            )),
         }
     }
 }
@@ -149,6 +215,7 @@ fn scope_error(
     restore: Option<rusqlite::Error>,
     outcome: SqliteCommitOutcome,
     credit: crate::owned_decode::DecodeScratch,
+    diagnostic: Option<crate::owned_decode::DecodeScratch>,
 ) -> StoreError {
     StoreError::SqliteScope {
         source: SqliteScopeError {
@@ -157,6 +224,7 @@ fn scope_error(
                 rollback,
                 restore,
                 outcome,
+                _diagnostic: diagnostic,
             }),
             _credit: credit,
         },
@@ -242,6 +310,7 @@ pub(in super::super) fn retry<T>(
 }
 
 pub(in crate::content_store::sqlite) fn with_zero<T>(
+    original: &crate::owned_decode::DecodeBudget,
     connection: &mut Connection,
     quarantined: &AtomicBool,
     boundary: &mut dyn FnMut() -> Result<(), StoreError>,
@@ -252,6 +321,7 @@ pub(in crate::content_store::sqlite) fn with_zero<T>(
     ) -> Result<T, StoreError>,
 ) -> Result<Accepted<T>, StoreError> {
     with_cleanup(
+        original,
         connection,
         quarantined,
         boundary,
@@ -264,6 +334,7 @@ pub(in crate::content_store::sqlite) fn with_zero<T>(
 // Private closures allow deterministic cleanup refusal tests. Production calls
 // above always use the fixed literal and the safe live-Connection restore API.
 fn with_cleanup<T>(
+    original: &crate::owned_decode::DecodeBudget,
     connection: &mut Connection,
     quarantined: &AtomicBool,
     boundary: &mut dyn FnMut() -> Result<(), StoreError>,
@@ -275,8 +346,14 @@ fn with_cleanup<T>(
     rollback: impl FnOnce(&Connection) -> rusqlite::Result<()>,
     restore: impl FnOnce(&Connection, Duration) -> rusqlite::Result<()>,
 ) -> Result<Accepted<T>, StoreError> {
+    original
+        .verify_live()
+        .map_err(|error| admission_under(original, error))?;
     healthy(quarantined)?;
     boundary()?;
+    original
+        .verify_live()
+        .map_err(|error| admission_under(original, error))?;
     if !connection.is_autocommit() {
         quarantined.store(true, Ordering::Release);
         return Err(StoreError::Unavailable);
@@ -290,7 +367,9 @@ fn with_cleanup<T>(
         .checked_add(42 + 8)
         .and_then(|bytes| u64::try_from(bytes).ok())
         .ok_or(StoreError::Quota)?;
-    let credit = account()?.reserve_scratch_bytes(bytes).map_err(admission)?;
+    let credit = original
+        .reserve_scratch_bytes(bytes)
+        .map_err(|error| admission_under(original, error))?;
     let saved: i64 = connection
         .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
         .map_err(|source| database_error("read-sqlite-busy-timeout", source))?;
@@ -360,6 +439,7 @@ fn with_cleanup<T>(
         Ok(value) if rollback.is_none() && restoration.is_none() => Ok(Accepted {
             value,
             outcome: progress.outcome,
+            diagnostic: None,
             credit,
         }),
         other => Err(scope_error(
@@ -368,6 +448,7 @@ fn with_cleanup<T>(
             restoration,
             progress.outcome,
             credit,
+            None,
         )),
     }
 }

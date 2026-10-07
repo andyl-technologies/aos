@@ -58,7 +58,7 @@ pub const MAX_CAMPAIGN_GC_MANIFEST_ENTRIES: usize = 65_536;
 ///
 /// Equality deliberately compares semantic records rather than account identity.
 #[derive(Clone)]
-pub(super) struct MetadataCredit(Arc<dyn Send + Sync>);
+pub(super) struct MetadataCredit(crucible_cas::owned_decode::ResourceLoan);
 
 impl std::fmt::Debug for MetadataCredit {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -76,7 +76,7 @@ impl PartialEq for MetadataCredit {
 impl Eq for MetadataCredit {}
 
 impl MetadataCredit {
-    pub(super) fn new(credit: Arc<dyn Send + Sync>) -> Self {
+    pub(super) fn new(credit: crucible_cas::owned_decode::ResourceLoan) -> Self {
         Self(credit)
     }
 }
@@ -417,7 +417,9 @@ impl CampaignGcCandidateManifest {
             })
             .ok_or(CampaignGcManifestError::CountOverflow)?;
         let labels = MetadataCredit::new(operation.reserve_bytes(labels as u64)?);
-        let credit = MetadataCredit::new(Arc::new((bodies, labels)));
+        let credit = MetadataCredit::new(crucible_cas::owned_decode::ResourceLoan::new((
+            bodies, labels,
+        )));
         let mut candidates = allocate_vector(count)?;
         for _ in 0..count {
             let backend = read_bounded_string(reader, MAX_CAMPAIGN_GC_BACKEND_ID_BYTES)?;

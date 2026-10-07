@@ -12,11 +12,13 @@ use crate::{
 use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 mod error;
 mod io_inventory;
+mod shared_cause;
 pub use error::{BackendError, BackendOperationalCause, BackendOperationalFailureKind};
 pub use io_inventory::{
     BackendIoComputedReply, BackendIoInventory, BackendIoInventoryAuthority, BackendIoNativeCap,
     BackendIoNativeCaps, BackendIoQueueSnapshot,
 };
+pub use shared_cause::SharedOperationalCause;
 
 /// Selects the implemented execution contract before scheduler dispatch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

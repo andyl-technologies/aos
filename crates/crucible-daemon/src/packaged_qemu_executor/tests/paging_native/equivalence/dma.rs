@@ -41,7 +41,7 @@ struct CompletionGate {
     completion: Condvar,
     // One admitted allocation precedes the Arc, Mutex and scalar evidence. Every
     // node and worker borrower retains it through actual completion and cleanup.
-    _credit: Arc<dyn Send + Sync>,
+    _credit: crucible_cas::owned_decode::ResourceLoan,
 }
 
 impl QemuTestBlockCompletionObserver for CompletionGate {
@@ -230,7 +230,7 @@ pub(crate) fn run(source: ScenarioDefForm, lifecycle: ProductionVmLifecycleConfi
                     // A small shared slot lets construction install the same real observer.
                     let gate_slot = Arc::new(GateSlot {
                         gate: Mutex::new(None),
-                        _credit: Arc::clone(&credit),
+                        _credit: credit.clone(),
                     });
                     let configured = if held {
                         original.with_block_completion_observer_for_test(gate_slot.clone())
@@ -268,7 +268,7 @@ pub(crate) fn run(source: ScenarioDefForm, lifecycle: ProductionVmLifecycleConfi
                                     released_generation: 0,
                                 }),
                                 completion: Condvar::new(),
-                                _credit: Arc::clone(&credit),
+                                _credit: credit.clone(),
                             }));
                     }
                     drop(initial);
@@ -324,7 +324,7 @@ pub(crate) fn run(source: ScenarioDefForm, lifecycle: ProductionVmLifecycleConfi
 
 struct GateSlot {
     gate: Mutex<Option<Arc<CompletionGate>>>,
-    _credit: Arc<dyn Send + Sync>,
+    _credit: crucible_cas::owned_decode::ResourceLoan,
 }
 
 impl GateSlot {

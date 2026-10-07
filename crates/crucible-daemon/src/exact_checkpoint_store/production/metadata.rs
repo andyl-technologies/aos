@@ -16,7 +16,7 @@ pub(super) fn array_bytes<T>(count: usize) -> Result<u64, ExactCheckpointStoreEr
 pub(super) fn reserve_metadata(
     authority: Option<&Arc<dyn StorePhysicalQuotaGuard>>,
     bytes: u64,
-) -> Result<Arc<dyn Send + Sync>, ExactCheckpointStoreError> {
+) -> Result<crucible_cas::owned_decode::ResourceLoan, ExactCheckpointStoreError> {
     let authority = authority.ok_or(ExactCheckpointStoreError::UnsupportedBackend {
         capability: "checkpoint-metadata-resources",
     })?;
@@ -28,7 +28,7 @@ pub(super) fn reserve_envelope_decode(
     authority: Option<&Arc<dyn StorePhysicalQuotaGuard>>,
     bytes: &[u8],
     child_limit: usize,
-) -> Result<Arc<dyn Send + Sync>, ExactCheckpointStoreError> {
+) -> Result<crucible_cas::owned_decode::ResourceLoan, ExactCheckpointStoreError> {
     // Every encoded child contains two u16 length prefixes. This upper bound
     // also covers malformed input before the public decoder validates fields.
     let children = child_limit.min(bytes.len() / 4);

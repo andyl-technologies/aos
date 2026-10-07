@@ -275,11 +275,11 @@ impl RefPublicationGuard for DirectoryRefPublicationGuard {}
 struct QuotaDirectoryRefs {
     child: DirectoryRefBackend,
     guard: Arc<dyn StorePhysicalQuotaGuard>,
-    _resources: Arc<dyn Send + Sync>,
+    _resources: crate::owned_decode::ResourceLoan,
 }
 
 impl QuotaDirectoryRefs {
-    fn operation_resources(&self) -> Result<Arc<dyn Send + Sync>, StoreError> {
+    fn operation_resources(&self) -> Result<crate::owned_decode::ResourceLoan, StoreError> {
         self.guard.verify()?;
         // Inventory/name locks, record/staging files and directory fsync can
         // overlap. Paths and bounded 256-byte records have geometric headroom.
@@ -378,7 +378,7 @@ impl RefStoreAdmin for QuotaDirectoryRefs {
 struct QuotaRefInventoryFence<'a> {
     child: Box<dyn RefInventoryFence + 'a>,
     guard: &'a dyn StorePhysicalQuotaGuard,
-    _resources: Arc<dyn Send + Sync>,
+    _resources: crate::owned_decode::ResourceLoan,
 }
 
 impl RefInventoryFence for QuotaRefInventoryFence<'_> {
@@ -396,7 +396,7 @@ impl RefInventoryFence for QuotaRefInventoryFence<'_> {
 struct QuotaRefPublicationGuard {
     _child: Box<dyn RefPublicationGuard>,
     _guard: Arc<dyn StorePhysicalQuotaGuard>,
-    _resources: Arc<dyn Send + Sync>,
+    _resources: crate::owned_decode::ResourceLoan,
 }
 
 impl RefPublicationGuard for QuotaRefPublicationGuard {}

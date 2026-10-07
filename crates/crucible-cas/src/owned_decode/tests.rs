@@ -37,7 +37,10 @@ impl DecodeResourceAuthority for Authority {
         Ok(())
     }
 
-    fn reserve(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, DecodeAdmissionError> {
+    fn reserve(
+        &self,
+        bytes: u64,
+    ) -> Result<crate::owned_decode::ResourceLoan, DecodeAdmissionError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.verify_live()?;
         if bytes == 0 {
@@ -48,7 +51,7 @@ impl DecodeResourceAuthority for Authority {
                 used.checked_add(bytes).filter(|next| *next <= self.maximum)
             })
             .map_err(|_| refusal("fixture original allowance exhausted"))?;
-        Ok(Arc::new(Credit {
+        Ok(crate::owned_decode::ResourceLoan::new(Credit {
             used: Arc::clone(&self.used),
             bytes,
         }))

@@ -788,10 +788,13 @@ mod tests {
             self.0.verify_live().map_err(DecodeAdmissionError::new)
         }
 
-        fn reserve(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, DecodeAdmissionError> {
+        fn reserve(
+            &self,
+            bytes: u64,
+        ) -> Result<crucible_cas::owned_decode::ResourceLoan, DecodeAdmissionError> {
             self.0
                 .reserve_resources(0, 0, bytes)
-                .map(|lease| Arc::new(lease) as Arc<dyn Send + Sync>)
+                .map(crucible_cas::owned_decode::ResourceLoan::new)
                 .map_err(DecodeAdmissionError::new)
         }
     }

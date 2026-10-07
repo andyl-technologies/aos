@@ -4,6 +4,7 @@
 #![allow(clippy::expect_used)]
 
 mod guarded_owner;
+mod provider_error_bootstrap;
 
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

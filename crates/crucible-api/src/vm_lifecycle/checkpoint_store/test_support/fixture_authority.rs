@@ -28,7 +28,8 @@ impl FixtureResourceBudget {
         self: &Arc<Self>,
         descriptors: u64,
         resident_bytes: u64,
-    ) -> Result<Arc<dyn Send + Sync>, crucible_cas::content_store::StoreError> {
+    ) -> Result<crucible_cas::owned_decode::ResourceLoan, crucible_cas::content_store::StoreError>
+    {
         use crucible_cas::content_store::StoreError;
 
         let mut used = self.0.lock().map_err(|_| StoreError::Unauthorized)?;
@@ -43,11 +44,13 @@ impl FixtureResourceBudget {
             return Err(StoreError::Quota);
         }
         *used = (next_descriptors, next_resident);
-        Ok(Arc::new(FixtureResourceCredit {
-            budget: self.clone(),
-            descriptors,
-            resident_bytes,
-        }))
+        Ok(crucible_cas::owned_decode::ResourceLoan::new(
+            FixtureResourceCredit {
+                budget: self.clone(),
+                descriptors,
+                resident_bytes,
+            },
+        ))
     }
 }
 
@@ -67,7 +70,8 @@ impl crucible_cas::content_store::SqliteCatalogSupervisor for FixtureCatalogSupe
     fn reserve_resident_bytes(
         &self,
         bytes: u64,
-    ) -> Result<Arc<dyn Send + Sync>, crucible_cas::content_store::StoreError> {
+    ) -> Result<crucible_cas::owned_decode::ResourceLoan, crucible_cas::content_store::StoreError>
+    {
         self.0.reserve(0, bytes)
     }
 
@@ -170,10 +174,13 @@ impl ProductionRamCatalogProvider for FixtureRamCatalogProvider {
         &self,
         _directory: &Path,
         _bytes: u64,
-    ) -> Result<Arc<dyn Send + Sync>, crucible_cas::content_store::StoreError> {
+    ) -> Result<crucible_cas::owned_decode::ResourceLoan, crucible_cas::content_store::StoreError>
+    {
         self.root_loans
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(Arc::new(FixtureRootCredit(self.root_loans.clone())))
+        Ok(crucible_cas::owned_decode::ResourceLoan::new(
+            FixtureRootCredit(self.root_loans.clone()),
+        ))
     }
 
     fn prepare_directory(
@@ -331,7 +338,8 @@ impl crucible_cas::content_store::StorePhysicalQuotaGuard for FixtureRamCatalogG
         &self,
         descriptors: u64,
         resident_bytes: u64,
-    ) -> Result<Arc<dyn Send + Sync>, crucible_cas::content_store::StoreError> {
+    ) -> Result<crucible_cas::owned_decode::ResourceLoan, crucible_cas::content_store::StoreError>
+    {
         self.verify()?;
         self.resources.reserve(descriptors, resident_bytes)
     }

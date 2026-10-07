@@ -80,7 +80,7 @@ impl StorePhysicalQuotaGuard for RecordingPhysicalQuotaGuard {
         &self,
         descriptors: u64,
         resident_bytes: u64,
-    ) -> Result<Arc<dyn Send + Sync>, StoreError> {
+    ) -> Result<crate::owned_decode::ResourceLoan, StoreError> {
         self.verify()?;
         self.resources.reserve(descriptors, resident_bytes)
     }

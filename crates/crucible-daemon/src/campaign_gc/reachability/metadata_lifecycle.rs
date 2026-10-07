@@ -51,14 +51,14 @@ impl StorePhysicalQuotaGuard for Resources {
         &self,
         descriptors: u64,
         bytes: u64,
-    ) -> Result<Arc<dyn Send + Sync>, StoreError> {
+    ) -> Result<crucible_cas::owned_decode::ResourceLoan, StoreError> {
         self.verify()?;
         let lease = self
             .allocator
             .reserve_resources(0, descriptors, bytes)
             .map_err(|_| StoreError::Quota)?;
         self.used.fetch_add(bytes, Ordering::AcqRel);
-        Ok(Arc::new(Credit {
+        Ok(crucible_cas::owned_decode::ResourceLoan::new(Credit {
             _lease: lease,
             used: Arc::clone(&self.used),
             bytes,

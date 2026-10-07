@@ -29,8 +29,11 @@ use super::*;
 
 mod admin_batch;
 mod batch;
+mod checked_reader;
 pub(super) use batch::busy::Accepted;
 mod catalog;
+#[cfg(feature = "test-support")]
+pub use batch::busy::SqliteScopeFaultObservation;
 pub use batch::busy::{SqliteCommitOutcome, SqliteScopeError};
 pub use batch::diagnostic::SqliteDiagnosticError;
 pub use catalog::{
@@ -114,7 +117,7 @@ pub struct SqliteBlobBackend {
     read_connection: Arc<Mutex<Connection>>,
     catalog_supervisor: Option<Arc<dyn SqliteCatalogSupervisor>>,
     quarantined: Arc<std::sync::atomic::AtomicBool>,
-    resident_lease: Option<Arc<dyn Send + Sync>>,
+    resident_lease: crate::owned_decode::ResourceLoanSlot,
     maximum_sqlite_heap_bytes: Option<u64>,
 }
 
@@ -221,7 +224,7 @@ impl SqliteBlobBackend {
             Some(maximum_sqlite_heap_bytes),
             Some(supervisor),
         )?;
-        backend.resident_lease = Some(resident_lease);
+        backend.resident_lease = resident_lease.into();
         let backend = Arc::new(backend);
         let store =
             super::physical_quota::PhysicalQuotaStore::new(name, backend.clone(), backend, guard)?;
@@ -385,7 +388,7 @@ impl SqliteBlobBackend {
             connection: Arc::new(Mutex::new(connection)),
             read_connection: Arc::new(Mutex::new(read_connection)),
             catalog_supervisor,
-            resident_lease: None,
+            resident_lease: Default::default(),
             maximum_sqlite_heap_bytes,
             quarantined: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
@@ -474,7 +477,9 @@ impl SqliteBlobBackend {
             resident_lease: self.resident_lease.clone(),
             maximum_sqlite_heap_bytes: self.maximum_sqlite_heap_bytes,
             quarantined: self.quarantined.clone(),
-            _source_lease: source_lease,
+            original: None,
+            _source_lease: source_lease.into(),
+            _source_credit: None,
         });
         let handle = if range.offset == 0 && range.length == logical_length {
             BlobHandle::authenticated(id, source)
@@ -576,10 +581,11 @@ fn reject_wal_database_header(path: &Path) -> Result<(), StoreError> {
 impl ImmutableBlobBackend for SqliteBlobBackend {
     fn put_many_if_absent_with_boundary(
         &self,
+        account: &crate::owned_decode::DecodeBudget,
         objects: &[(ContentId, BlobHandle)],
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<PutBatchReceipt, StoreError> {
-        self.put_batch_with_boundary(objects, boundary)
+        self.put_batch_with_boundary(account, objects, boundary)
     }
 
     fn name(&self) -> &str {
@@ -614,6 +620,16 @@ impl ImmutableBlobBackend for SqliteBlobBackend {
             Err(StoreError::NotFound { .. }) => Ok(false),
             Err(error) => Err(error),
         }
+    }
+
+    fn read_with_boundary(
+        &self,
+        account: &crate::owned_decode::DecodeBudget,
+        id: ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        checked_reader::lookup(self, account, id, range, boundary)
     }
 
     fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
@@ -980,12 +996,18 @@ struct SqliteBlobSource {
     range: ByteRange,
     catalog_supervisor: Option<Arc<dyn SqliteCatalogSupervisor>>,
     quarantined: Arc<std::sync::atomic::AtomicBool>,
-    resident_lease: Option<Arc<dyn Send + Sync>>,
+    resident_lease: crate::owned_decode::ResourceLoanSlot,
     maximum_sqlite_heap_bytes: Option<u64>,
-    _source_lease: Option<Arc<dyn Send + Sync>>,
+    original: Option<crate::owned_decode::DecodeBudget>,
+    _source_lease: crate::owned_decode::ResourceLoanSlot,
+    _source_credit: Option<crate::owned_decode::DecodeScratch>,
 }
 
 impl BlobSource for SqliteBlobSource {
+    fn checked_read_access(&self) -> super::CheckedReadAccess {
+        super::CheckedReadAccess::Owning
+    }
+
     fn logical_length(&self) -> u64 {
         self.range.length
     }
@@ -994,25 +1016,12 @@ impl BlobSource for SqliteBlobSource {
         Ok(Box::new(self.reader()?))
     }
 
-    fn read_all_with_boundary(
+    fn open_with_boundary(
         &self,
-        maximum: u64,
+        caller: &crate::owned_decode::DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
-    ) -> Result<OwnedBlobBytes, StoreError> {
-        batch::busy::healthy(&self.quarantined)?;
-        boundary()?;
-        let credit = batch::diagnostic::admit(self.maximum_sqlite_heap_bytes, None)?;
-        batch::diagnostic::retain_failure(credit, || {
-            let mut reader = self.reader()?;
-            let output = super::batch::read_reader(
-                self.range.length,
-                maximum,
-                boundary,
-                &mut |output, boundary| reader.read_with_boundary(output, boundary),
-            )?;
-            batch::busy::healthy(&self.quarantined)?;
-            Ok(output)
-        })
+    ) -> Result<super::CheckedReader, StoreError> {
+        checked_reader::open(self, caller, boundary)
     }
 }
 
@@ -1046,7 +1055,7 @@ impl SqliteBlobSource {
             catalog_supervisor: self.catalog_supervisor.clone(),
             quarantined: self.quarantined.clone(),
             _catalog_lease: self.resident_lease.clone(),
-            _reader_lease: reader_lease,
+            _reader_lease: reader_lease.into(),
         })
     }
 }
@@ -1062,8 +1071,8 @@ struct AuthenticatingSqliteReader {
     finalized: bool,
     catalog_supervisor: Option<Arc<dyn SqliteCatalogSupervisor>>,
     quarantined: Arc<std::sync::atomic::AtomicBool>,
-    _catalog_lease: Option<Arc<dyn Send + Sync>>,
-    _reader_lease: Option<Arc<dyn Send + Sync>>,
+    _catalog_lease: crate::owned_decode::ResourceLoanSlot,
+    _reader_lease: crate::owned_decode::ResourceLoanSlot,
 }
 
 impl AuthenticatingSqliteReader {
@@ -1210,9 +1219,12 @@ fn authenticate_stored_with_boundary(
         let chunk_length = usize::try_from((logical_length - offset).min(MAX_CHUNK_BYTES as u64))
             .map_err(|_| StoreError::Quota)?;
         let _credit = account
-            .map(|account| account.reserve_scratch_array::<u8>(chunk_length))
-            .transpose()
-            .map_err(super::batch::admission)?;
+            .map(|account| {
+                account
+                    .reserve_scratch_array::<u8>(chunk_length)
+                    .map_err(|error| super::batch::admission_under(account, error))
+            })
+            .transpose()?;
         let sqlite_offset = i64::try_from(offset + 1).map_err(|_| StoreError::Quota)?;
         let chunk: Vec<u8> = query_stored_with_boundary(connection, quarantined, boundary, || {
             with_stored_id_text(id, account.is_some(), |encoded| {
@@ -1378,8 +1390,11 @@ mod tests {
     struct TestCatalogOperation;
 
     impl SqliteCatalogSupervisor for TestCatalogSupervisor {
-        fn reserve_resident_bytes(&self, _bytes: u64) -> Result<Arc<dyn Send + Sync>, StoreError> {
-            Ok(Arc::new(()))
+        fn reserve_resident_bytes(
+            &self,
+            _bytes: u64,
+        ) -> Result<crate::owned_decode::ResourceLoan, StoreError> {
+            Ok(crate::owned_decode::ResourceLoan::new(()))
         }
 
         fn begin(
@@ -1421,7 +1436,7 @@ mod tests {
             &self,
             descriptors: u64,
             resident_bytes: u64,
-        ) -> Result<Arc<dyn Send + Sync>, StoreError> {
+        ) -> Result<crate::owned_decode::ResourceLoan, StoreError> {
             self.verify()?;
             self.resources.reserve(descriptors, resident_bytes)
         }

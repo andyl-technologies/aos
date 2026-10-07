@@ -28,10 +28,10 @@ impl StorePhysicalQuotaGuard for Resources {
         &self,
         descriptors: u64,
         resident_bytes: u64,
-    ) -> Result<Arc<dyn Send + Sync>, StoreError> {
+    ) -> Result<crucible_cas::owned_decode::ResourceLoan, StoreError> {
         self.0
             .reserve_resources(0, descriptors, resident_bytes)
-            .map(|loan| Arc::new(loan) as Arc<dyn Send + Sync>)
+            .map(crucible_cas::owned_decode::ResourceLoan::new)
             .map_err(|_| StoreError::Quota)
     }
 

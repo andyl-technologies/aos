@@ -43,6 +43,7 @@ tokio-rustls = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+crucible-cas = { workspace = true, features = ["test-support"] }
 rusqlite = { workspace = true }
 crucible = { path = "../crucible", features = ["test-double", "test-support"] }
 crucible-qemu = { path = "../crucible-qemu", features = ["test-support"] }

@@ -29,7 +29,7 @@ impl AdmittedRamRootMetadata {
 
 pub(super) struct RootMetadataResources {
     _authority: Arc<dyn StorePhysicalQuotaGuard>,
-    _credit: Arc<dyn Send + Sync>,
+    _credit: crate::owned_decode::ResourceLoan,
 }
 
 struct AdmittedRootLease {

@@ -11,7 +11,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 pub(crate) struct CatalogEvidenceSpool {
     file: Option<File>,
     _descriptors: HostServiceLease,
-    _metadata: Arc<dyn Send + Sync>,
+    _metadata: crucible_cas::owned_decode::ResourceLoan,
     operation: HostOperationGuard,
     authority: Arc<CatalogAuthority>,
     maximum_bytes: u64,
@@ -20,7 +20,7 @@ pub(crate) struct CatalogEvidenceSpool {
 }
 
 struct CatalogEvidenceCredit {
-    _metadata: Arc<dyn Send + Sync>,
+    _metadata: crucible_cas::owned_decode::ResourceLoan,
     _authority: Arc<CatalogAuthority>,
 }
 
@@ -29,7 +29,7 @@ impl CatalogService {
         &self,
         bytes: u64,
         supervisor: &HostOperationSupervisor,
-    ) -> Result<Arc<dyn Send + Sync>, StoreError> {
+    ) -> Result<crucible_cas::owned_decode::ResourceLoan, StoreError> {
         if bytes == 0 {
             return Err(StoreError::Quota);
         }
@@ -50,10 +50,12 @@ impl CatalogService {
         )?;
         operation.complete().map_err(sqlite_supervision_error)?;
 
-        Ok(Arc::new(CatalogEvidenceCredit {
-            _metadata: metadata,
-            _authority: self.authority.clone(),
-        }))
+        Ok(crucible_cas::owned_decode::ResourceLoan::new(
+            CatalogEvidenceCredit {
+                _metadata: metadata,
+                _authority: self.authority.clone(),
+            },
+        ))
     }
 
     pub(in crate::packaged_qemu_executor::ram_catalog) fn create_evidence_spool(

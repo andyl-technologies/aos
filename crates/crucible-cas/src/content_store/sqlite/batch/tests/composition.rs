@@ -58,8 +58,13 @@ fn checked_output_refuses_origin_revoked_at_eof_and_releases_raw_copy() {
     let used = guard.0.used.load(Ordering::SeqCst);
     let mut read_calls = 0;
 
-    let Err(error) =
-        crate::content_store::batch::read_reader(1, 1, &mut || Ok(()), &mut |output, _| {
+    let Err(error) = crate::content_store::batch::read_reader_under(
+        &account,
+        &account,
+        1,
+        1,
+        &mut || Ok(()),
+        &mut |output, _| {
             read_calls += 1;
             if read_calls == 1 {
                 output[0] = 7;
@@ -68,8 +73,8 @@ fn checked_output_refuses_origin_revoked_at_eof_and_releases_raw_copy() {
                 guard.0.revoked.store(true, Ordering::SeqCst);
                 Ok(0)
             }
-        })
-    else {
+        },
+    ) else {
         panic!("EOF cannot accept output after the real origin closes");
     };
 
@@ -95,12 +100,17 @@ fn quota_after_actual_commit_keeps_typed_category_and_diagnostic_credit() {
     let account = DecodeBudget::for_store(guard.clone()).expect("original finite bank");
     let _scope = account.enter();
     let baseline = guard.0.used.load(Ordering::SeqCst);
-    let credit = retained_diagnostic::admit(backend.maximum_sqlite_heap_bytes, Some(root.path()))
-        .expect("original diagnostic preloan");
+    let credit = retained_diagnostic::admit(
+        &account,
+        backend.maximum_sqlite_heap_bytes,
+        Some(root.path()),
+    )
+    .expect("original diagnostic preloan");
     let mut connection = backend.lock_connection().expect("actual connection");
 
     let error = retained_diagnostic::retain_failure(credit, || {
         let accepted = busy::with_zero(
+            &account,
             &mut connection,
             &backend.quarantined,
             &mut || guard.verify(),
@@ -124,7 +134,7 @@ fn quota_after_actual_commit_keeps_typed_category_and_diagnostic_credit() {
             let _competitor = guard.reserve_resources(0, guard.0.maximum - used - 1024)?;
             account
                 .reserve_scratch_bytes(2048)
-                .map_err(admission)
+                .map_err(|error| admission_under(&account, error))
                 .map(|_| ())
         })
     })

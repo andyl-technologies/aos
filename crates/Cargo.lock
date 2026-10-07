@@ -2428,6 +2428,7 @@ dependencies = [
 name = "crucible-linux-resource"
 version = "0.1.0"
 dependencies = [
+ "crucible-ram",
  "libc",
  "rustix 1.1.4",
  "tempfile",
@@ -2453,6 +2454,7 @@ dependencies = [
  "blake3",
  "ciborium",
  "crucible",
+ "crucible-cas",
  "crucible-device",
  "crucible-linux-resource",
  "crucible-protocol",

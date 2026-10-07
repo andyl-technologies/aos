@@ -3,6 +3,8 @@
 //! These types enforce their local invariants. The complete closed-graph
 //! admission validator remains required before the module becomes public.
 
+use super::batch::{admission_under, allocation_under};
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -30,23 +32,30 @@ impl VerifiedStore {
 impl ImmutableBlobBackend for VerifiedStore {
     fn put_many_if_absent_with_boundary(
         &self,
+        account: &crate::owned_decode::DecodeBudget,
         objects: &[(ContentId, BlobHandle)],
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<PutBatchReceipt, StoreError> {
+        account
+            .verify_live()
+            .map_err(|error| admission_under(account, error))?;
         boundary()?;
-        let account = super::batch::account()?;
+        account
+            .verify_live()
+            .map_err(|error| admission_under(account, error))?;
         let _verified_credit = account
             .reserve_scratch_array::<(ContentId, BlobHandle)>(objects.len())
-            .map_err(super::batch::admission)?;
+            .map_err(|error| admission_under(account, error))?;
         let mut verified = Vec::new();
         verified
             .try_reserve_exact(objects.len())
-            .map_err(super::batch::allocation)?;
+            .map_err(|error| allocation_under(account, error))?;
         for (id, source) in objects {
-            verified.push((*id, super::batch::verify_source(*id, source, boundary)?));
+            let source = super::batch::verify_source(account, *id, source, boundary)?;
+            verified.push((*id, source));
         }
         self.child
-            .put_many_if_absent_with_boundary(&verified, boundary)
+            .put_many_if_absent_with_boundary(account, &verified, boundary)
     }
 
     fn name(&self) -> &str {
@@ -67,6 +76,18 @@ impl ImmutableBlobBackend for VerifiedStore {
 
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
         self.child.contains(id)
+    }
+
+    fn read_with_boundary(
+        &self,
+        account: &crate::owned_decode::DecodeBudget,
+        id: ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        let blob = self.child.read_with_boundary(account, id, None, boundary)?;
+        let verified = super::batch::verify_source(account, id, &blob, boundary)?;
+        super::checked_reader::slice_handle(verified, range, account, boundary)
     }
 
     fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
@@ -236,57 +257,69 @@ impl DurabilityPolicyStore {
 impl ImmutableBlobBackend for DurabilityPolicyStore {
     fn put_many_if_absent_with_boundary(
         &self,
+        account: &crate::owned_decode::DecodeBudget,
         objects: &[(ContentId, BlobHandle)],
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<PutBatchReceipt, StoreError> {
+        account
+            .verify_live()
+            .map_err(|error| admission_under(account, error))?;
+        if objects.len() > 64 {
+            return Err(StoreError::Quota);
+        }
         for (id, _) in objects {
             boundary()?;
+            account
+                .verify_live()
+                .map_err(|error| admission_under(account, error))?;
             self.requirement(*id)?;
         }
+        // The actual checked publisher is a singleton physical placement.
+        // Admit the existing temporary uniqueness tree before child effects.
+        let placement_bytes = crate::owned_decode::btree_entry_bytes::<&str, ()>()
+            .map_err(|error| admission_under(account, error))?;
+        let _placement_credit = account
+            .reserve_scratch_bytes(placement_bytes)
+            .map_err(|error| admission_under(account, error))?;
         let receipts = self
             .child
-            .put_many_if_absent_with_boundary(objects, boundary)?;
-        if receipts.len() != objects.len() {
-            return Err(StoreError::InvalidComposition {
-                reason: "batch receipt count differs from input",
-            });
-        }
-        let account = super::batch::account()?;
-        for ((id, source), receipt) in objects.iter().zip(receipts.iter()) {
-            boundary()?;
-            if receipt.id != *id
-                || receipt
-                    .placements
-                    .iter()
-                    .any(|placement| placement.logical_length != source.logical_length())
-            {
-                return Err(StoreError::Corrupt { id: *id });
-            }
-            // The existing unique-placement check builds a temporary B-tree.
-            let bytes = crate::owned_decode::btree_entry_bytes::<&str, ()>()
-                .map_err(super::batch::admission)?
-                .checked_mul(receipt.placements.len() as u64)
-                .ok_or(StoreError::Quota)?;
-            let _placement_credit = account
-                .reserve_scratch_bytes(bytes)
-                .map_err(super::batch::admission)?;
-            let requirement = self.requirement(*id)?;
-            let observed = receipt.durable_placements();
-            if observed < usize::from(requirement.minimum_durable_placements()) {
-                return Err(StoreError::DurabilityUnsatisfied {
-                    id: *id,
-                    minimum_durable_placements: requirement.minimum_durable_placements(),
-                    observed_durable_placements: u16::try_from(observed).map_err(|_| {
-                        StoreError::InvalidComposition {
-                            reason: "durable placement count exceeds the graph bound",
-                        }
-                    })?,
+            .put_many_if_absent_with_boundary(account, objects, boundary)?;
+        receipts.check(|receipts| {
+            if receipts.len() != objects.len() {
+                return Err(StoreError::InvalidComposition {
+                    reason: "batch receipt count differs from input",
                 });
             }
-        }
-        boundary()?;
-        account.check().map_err(super::batch::admission)?;
-        Ok(receipts)
+            for ((id, source), receipt) in objects.iter().zip(receipts.iter()) {
+                boundary()?;
+                if receipt.id != *id
+                    || receipt.placements.len() != 1
+                    || receipt
+                        .placements
+                        .iter()
+                        .any(|placement| placement.logical_length != source.logical_length())
+                {
+                    return Err(StoreError::Corrupt { id: *id });
+                }
+                let requirement = self.requirement(*id)?;
+                let observed = receipt.durable_placements();
+                if observed < usize::from(requirement.minimum_durable_placements()) {
+                    return Err(StoreError::DurabilityUnsatisfied {
+                        id: *id,
+                        minimum_durable_placements: requirement.minimum_durable_placements(),
+                        observed_durable_placements: u16::try_from(observed).map_err(|_| {
+                            StoreError::InvalidComposition {
+                                reason: "durable placement count exceeds the graph bound",
+                            }
+                        })?,
+                    });
+                }
+            }
+            boundary()?;
+            account
+                .verify_live()
+                .map_err(|error| admission_under(account, error))
+        })
     }
 
     fn name(&self) -> &str {
@@ -547,11 +580,12 @@ impl ReadThroughStore {
 impl ImmutableBlobBackend for ReadThroughStore {
     fn put_many_if_absent_with_boundary(
         &self,
+        account: &crate::owned_decode::DecodeBudget,
         objects: &[(ContentId, BlobHandle)],
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<PutBatchReceipt, StoreError> {
         self.source
-            .put_many_if_absent_with_boundary(objects, boundary)
+            .put_many_if_absent_with_boundary(account, objects, boundary)
     }
 
     fn name(&self) -> &str {

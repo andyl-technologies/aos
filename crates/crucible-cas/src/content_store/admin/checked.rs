@@ -1,16 +1,16 @@
-//! Owning checked administrative outputs and their final acceptance custody.
+//! Owning checked outputs and their final acceptance custody.
+
+use crate::content_store::batch::admission_under;
 
 use std::ops::Deref;
-use std::sync::Arc;
 
 use crate::owned_decode::{DecodeBudget, DecodeScratch};
 
 use super::*;
-use crate::content_store::batch::admission;
 use crate::content_store::sqlite::Accepted;
 
 // Payload and resource owners close before their corresponding linear credits.
-struct CheckedReceipt<T> {
+pub(in crate::content_store) struct CheckedReceipt<T> {
     accepted: Accepted<T>,
     resources: Option<Box<Resources>>,
     credit: DecodeScratch,
@@ -18,7 +18,7 @@ struct CheckedReceipt<T> {
 
 struct Resources {
     _previous: Option<Box<Resources>>,
-    _resources: Arc<dyn Send + Sync>,
+    _resources: crate::owned_decode::ResourceLoan,
     _previous_credit: Option<DecodeScratch>,
 }
 
@@ -30,13 +30,15 @@ pub(in crate::content_store) struct PreparedResources {
 impl PreparedResources {
     pub(in crate::content_store) fn new(
         account: &DecodeBudget,
-        resources: Arc<dyn Send + Sync>,
+        resources: crate::owned_decode::ResourceLoan,
         additional_bytes: u64,
     ) -> Result<Self, StoreError> {
         let bytes = additional_bytes
             .checked_add(std::mem::size_of::<Resources>() as u64)
             .ok_or(StoreError::Quota)?;
-        let credit = account.reserve_scratch_bytes(bytes).map_err(admission)?;
+        let credit = account
+            .reserve_scratch_bytes(bytes)
+            .map_err(|error| admission_under(account, error))?;
         Ok(Self {
             node: Box::new(Resources {
                 _previous: None,
@@ -49,14 +51,30 @@ impl PreparedResources {
 }
 
 impl<T> CheckedReceipt<T> {
-    fn retain_resources(&mut self, mut prepared: PreparedResources) {
+    pub(in crate::content_store) fn new(accepted: Accepted<T>, credit: DecodeScratch) -> Self {
+        Self {
+            accepted,
+            resources: None,
+            credit,
+        }
+    }
+
+    pub(in crate::content_store) fn value(&self) -> &T {
+        self.accepted.value()
+    }
+
+    pub(in crate::content_store) fn release_diagnostic(&mut self) {
+        self.accepted.release_diagnostic();
+    }
+
+    pub(in crate::content_store) fn retain_resources(&mut self, mut prepared: PreparedResources) {
         let previous_credit = std::mem::replace(&mut self.credit, prepared.credit);
         prepared.node._previous = self.resources.take();
         prepared.node._previous_credit = Some(previous_credit);
         self.resources = Some(prepared.node);
     }
 
-    fn check(
+    pub(in crate::content_store) fn check(
         self,
         check: impl FnOnce(&mut T) -> Result<(), StoreError>,
     ) -> Result<Self, StoreError> {
@@ -65,7 +83,11 @@ impl<T> CheckedReceipt<T> {
             resources,
             credit,
         } = self;
+        // Keep this field-ordered owner intact across error and unwind. Separate
+        // locals would refund the latest credit before the resource chain drops.
+        let remaining = (resources, credit);
         let accepted = accepted.check(check)?;
+        let (resources, credit) = remaining;
         Ok(Self {
             accepted,
             resources,
@@ -86,11 +108,7 @@ impl DeleteBatchReceipt {
         accepted: Accepted<Vec<PlannedDeleteDisposition>>,
         credit: DecodeScratch,
     ) -> Self {
-        Self(CheckedReceipt {
-            accepted,
-            resources: None,
-            credit,
-        })
+        Self(CheckedReceipt::new(accepted, credit))
     }
 
     pub(in crate::content_store) fn check(
@@ -130,11 +148,7 @@ impl InventorySummaryReceipt {
         accepted: Accepted<BlobInventorySummary>,
         credit: DecodeScratch,
     ) -> Self {
-        Self(CheckedReceipt {
-            accepted,
-            resources: None,
-            credit,
-        })
+        Self(CheckedReceipt::new(accepted, credit))
     }
 
     pub(in crate::content_store) fn check(

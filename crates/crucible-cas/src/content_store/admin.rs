@@ -10,7 +10,7 @@
 use super::*;
 
 mod checked;
-pub(super) use checked::PreparedResources;
+pub(super) use checked::{CheckedReceipt, PreparedResources};
 pub use checked::{DeleteBatchReceipt, InventorySummaryReceipt};
 
 /// Exact digest of one stable physical blob inventory.

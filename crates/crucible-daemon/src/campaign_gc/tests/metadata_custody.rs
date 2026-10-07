@@ -82,7 +82,7 @@ impl StorePhysicalQuotaGuard for RefusingResources {
         &self,
         descriptors: u64,
         resident_bytes: u64,
-    ) -> Result<Arc<dyn Send + Sync>, StoreError> {
+    ) -> Result<crucible_cas::owned_decode::ResourceLoan, StoreError> {
         if self.refuse.load(Ordering::SeqCst) {
             return Err(StoreError::Quota);
         }

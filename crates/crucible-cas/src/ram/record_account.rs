@@ -90,7 +90,7 @@ pub(super) fn child_node_bytes() -> u64 {
 }
 
 fn receipt_bytes() -> u64 {
-    (4 * std::mem::size_of::<Arc<dyn Send + Sync>>()) as u64
+    (4 * std::mem::size_of::<crate::owned_decode::ResourceLoan>()) as u64
 }
 
 fn add(total: &mut u64, bytes: u64) -> Result<(), RamStoreError> {
@@ -107,25 +107,41 @@ pub(super) fn shared_extent<T>() -> Result<u64, RamStoreError> {
     Ok(layout.pad_to_align().size() as u64)
 }
 
-struct ReservoirOwner {
-    original: DecodeBudget,
-    // The sole physical loan closes after all original provenance and shared
-    // partition borrowers. It never owns the local account, avoiding a cycle.
-    _loan: DecodeScratch,
-}
-
 struct RecordAuthority {
     issued: Mutex<u64>,
     maximum: u64,
-    owner: Arc<ReservoirOwner>,
+    original: DecodeBudget,
+    owner: crate::owned_decode::ResourceLoan,
+}
+
+impl RecordAuthority {
+    fn new(original: &DecodeBudget, partition: u64) -> Result<Arc<Self>, RamStoreError> {
+        let control = crate::owned_decode::ResourceLoan::allocation_bytes::<DecodeScratch>()
+            + shared_extent::<Self>()?;
+        let total = partition
+            .checked_add(control)
+            .ok_or(RamStoreError::Limit("prepaid RAM allocation extent"))?;
+        let loan = original.reserve_scratch_bytes(total).map_err(admission)?;
+        let owner = crate::owned_decode::ResourceLoan::new(loan);
+
+        Ok(Arc::new(Self {
+            issued: Mutex::new(0),
+            maximum: partition,
+            original: original.clone(),
+            owner,
+        }))
+    }
 }
 
 impl DecodeResourceAuthority for RecordAuthority {
     fn verify_live(&self) -> Result<(), DecodeAdmissionError> {
-        self.owner.original.verify_live()
+        self.original.verify_live()
     }
 
-    fn reserve(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, DecodeAdmissionError> {
+    fn reserve(
+        &self,
+        bytes: u64,
+    ) -> Result<crate::owned_decode::ResourceLoan, DecodeAdmissionError> {
         self.verify_live()?;
         let mut issued = self
             .issued
@@ -162,25 +178,145 @@ impl RecordAccount {
         original: &DecodeBudget,
         plan: RecordAllocationPlan,
     ) -> Result<Self, RamStoreError> {
-        let control = shared_extent::<ReservoirOwner>()? + shared_extent::<RecordAuthority>()?;
-        let total = plan
-            .partition
-            .checked_add(control)
-            .ok_or(RamStoreError::Limit("prepaid RAM allocation extent"))?;
-        let loan = original.reserve_scratch_bytes(total).map_err(admission)?;
-        let owner = Arc::new(ReservoirOwner {
-            original: original.clone(),
-            _loan: loan,
-        });
-        let authority = Arc::new(RecordAuthority {
-            issued: Mutex::new(0),
-            maximum: plan.partition,
-            owner,
-        });
+        let authority = RecordAuthority::new(original, plan.partition)?;
         let codec = DecodeBudget::new(authority, plan.partition).map_err(admission)?;
         Ok(Self {
             codec,
             original: original.clone(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // crucible-lint: allow panic-shortcut -- finite component tests localize original-account ownership failures.
+    #![allow(clippy::unwrap_used)]
+
+    use std::error::Error;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::content_store::test_resources::FixtureResourceBudget;
+    use crate::owned_decode::{ResourceLoan, ResourceLoanSlot};
+
+    const MAXIMUM: u64 = 1024 * 1024;
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("original record authority is closed")]
+    struct OriginalClosed;
+
+    struct Original {
+        resources: FixtureResourceBudget,
+        calls: AtomicUsize,
+        verifications: AtomicUsize,
+        closed: AtomicBool,
+    }
+
+    impl Original {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                resources: FixtureResourceBudget::new(1, MAXIMUM),
+                calls: AtomicUsize::new(0),
+                verifications: AtomicUsize::new(0),
+                closed: AtomicBool::new(false),
+            })
+        }
+
+        fn used(&self) -> u64 {
+            self.resources.usage().unwrap().1
+        }
+    }
+
+    impl DecodeResourceAuthority for Original {
+        fn verify_live(&self) -> Result<(), DecodeAdmissionError> {
+            self.verifications.fetch_add(1, Ordering::SeqCst);
+            if self.closed.load(Ordering::SeqCst) {
+                return Err(DecodeAdmissionError::new(OriginalClosed));
+            }
+            Ok(())
+        }
+
+        fn reserve(&self, bytes: u64) -> Result<ResourceLoan, DecodeAdmissionError> {
+            self.verify_live()?;
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.resources
+                .reserve(0, bytes)
+                .map_err(DecodeAdmissionError::new)
+        }
+    }
+
+    #[test]
+    fn partition_borrower_keeps_actual_original_account_after_authority_closes() {
+        let original = Original::new();
+        let budget = DecodeBudget::new(original.clone(), MAXIMUM).unwrap();
+        let baseline = original.used();
+        let calls = original.calls.load(Ordering::SeqCst);
+        let authority = RecordAuthority::new(&budget, 4096).unwrap();
+        let control = ResourceLoan::allocation_bytes::<DecodeScratch>()
+            + shared_extent::<RecordAuthority>().unwrap();
+        assert_eq!(original.used(), baseline + 4096 + control);
+        assert_eq!(original.calls.load(Ordering::SeqCst), calls + 1);
+
+        let borrower = authority.reserve(64).unwrap();
+        let alias = borrower.clone();
+        assert_eq!(original.calls.load(Ordering::SeqCst), calls + 1);
+        drop(authority);
+        drop(budget);
+        assert_eq!(original.used(), baseline + 4096 + control);
+        drop(borrower);
+        assert_eq!(original.used(), baseline + 4096 + control);
+        drop(alias);
+        assert_eq!(original.used(), 0);
+
+        assert_eq!(std::mem::size_of::<ResourceLoan>(), 16);
+        assert_eq!(std::mem::size_of::<ResourceLoanSlot>(), 16);
+        // crucible-lint: allow direct-diagnostic -- records actual target layouts and admitted extents, without a native physical accounting claim.
+        eprintln!(
+            "record control: scratch={} scratch_arc={} authority={} authority_arc={} combined={control}",
+            std::mem::size_of::<DecodeScratch>(),
+            ResourceLoan::allocation_bytes::<DecodeScratch>(),
+            std::mem::size_of::<RecordAuthority>(),
+            shared_extent::<RecordAuthority>().unwrap(),
+        );
+    }
+
+    #[test]
+    fn canceled_original_under_unrelated_scope_refuses_before_partition_issue() {
+        let original = Original::new();
+        let budget = DecodeBudget::new(original.clone(), MAXIMUM).unwrap();
+        let authority = RecordAuthority::new(&budget, 4096).unwrap();
+        let unrelated = Original::new();
+        let unrelated_budget = DecodeBudget::new(unrelated.clone(), MAXIMUM).unwrap();
+        let unrelated_calls = unrelated.calls.load(Ordering::SeqCst);
+        let unrelated_checks = unrelated.verifications.load(Ordering::SeqCst);
+        let original_calls = original.calls.load(Ordering::SeqCst);
+        let original_checks = original.verifications.load(Ordering::SeqCst);
+        original.closed.store(true, Ordering::SeqCst);
+
+        let scope = unrelated_budget.enter();
+        let error = authority.reserve(64).unwrap_err();
+        assert!(
+            error
+                .source()
+                .unwrap()
+                .downcast_ref::<OriginalClosed>()
+                .is_some()
+        );
+        assert_eq!(*authority.issued.lock().unwrap(), 0);
+        assert_eq!(original.calls.load(Ordering::SeqCst), original_calls);
+        assert_eq!(
+            original.verifications.load(Ordering::SeqCst),
+            original_checks + 1
+        );
+        assert_eq!(unrelated.calls.load(Ordering::SeqCst), unrelated_calls);
+        assert_eq!(
+            unrelated.verifications.load(Ordering::SeqCst),
+            unrelated_checks
+        );
+        drop(scope);
+        drop(error);
+        drop(authority);
+        drop(budget);
+        assert_eq!(original.used(), 0);
     }
 }

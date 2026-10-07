@@ -97,6 +97,15 @@ pub(super) fn store_service_failure(error: &StoreError) -> CampaignServiceFailur
     match error.original_failure() {
         StoreError::Unauthorized => CampaignServiceFailure::BackendUnauthorized,
         StoreError::Quota => CampaignServiceFailure::ResourceExhausted,
+        StoreError::ProviderDiagnostic { source } => match source.kind() {
+            crucible_cas::content_store::ProviderFailureKind::Resources => {
+                CampaignServiceFailure::ResourceExhausted
+            }
+            crucible_cas::content_store::ProviderFailureKind::Supervision
+            | crucible_cas::content_store::ProviderFailureKind::PhysicalQuota => {
+                CampaignServiceFailure::Unavailable
+            }
+        },
         StoreError::NotFound { .. }
         | StoreError::Unavailable
         | StoreError::Io { .. }

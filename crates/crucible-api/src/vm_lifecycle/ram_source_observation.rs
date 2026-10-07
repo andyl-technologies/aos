@@ -121,7 +121,10 @@ mod tests {
             &self,
             region: &str,
             page: u64,
-            boundary: &mut dyn FnMut() -> Result<(), QemuRamSourceError>,
+            boundary: &mut dyn FnMut() -> Result<
+                (),
+                crucible_qemu::ram_source::QemuRamReadBoundaryError,
+            >,
         ) -> Result<(Vec<u8>, crucible_ram::PageProof), QemuRamSourceError> {
             self.0.read_page_with_proof(region, page, boundary)
         }
@@ -173,11 +176,11 @@ mod tests {
         let mut checked_original_boundary = false;
         let result = observed.read_page_with_proof(region.id(), 0, &mut || {
             checked_original_boundary = true;
-            Err(QemuRamSourceError::Canceled)
+            Err(crucible_qemu::ram_source::QemuRamReadBoundaryError::Canceled)
         });
 
         assert!(checked_original_boundary);
-        assert!(result.is_err());
+        assert!(matches!(result, Err(QemuRamSourceError::Canceled)));
     }
 
     #[test]

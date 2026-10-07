@@ -480,7 +480,7 @@ impl QemuRamBacking for Backing {
         &self,
         region: &str,
         index: u64,
-        boundary: &mut dyn FnMut() -> Result<(), QemuRamSourceError>,
+        boundary: &mut dyn FnMut() -> Result<(), crate::ram_source::QemuRamReadBoundaryError>,
     ) -> Result<(Vec<u8>, PageProof), QemuRamSourceError> {
         if let Some(entered) = &self.entered {
             let _ = entered.send(());

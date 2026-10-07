@@ -1379,13 +1379,13 @@ fn borrowed_selector_checks_match_authoring_projection() {
         fn reserve(
             &self,
             _bytes: u64,
-        ) -> Result<std::sync::Arc<dyn Send + Sync>, crate::owned_decode::DecodeAdmissionError>
+        ) -> Result<crate::owned_decode::ResourceLoan, crate::owned_decode::DecodeAdmissionError>
         {
             assert!(
                 !self.0.swap(true, std::sync::atomic::Ordering::SeqCst),
                 "borrowed selector validation requested owned projection storage",
             );
-            Ok(std::sync::Arc::new(()))
+            Ok(crate::owned_decode::ResourceLoan::new(()))
         }
     }
     let budget = crate::owned_decode::DecodeBudget::new(

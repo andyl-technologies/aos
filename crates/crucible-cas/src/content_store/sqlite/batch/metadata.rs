@@ -154,7 +154,7 @@ mod tests {
             drop(connection);
 
             backend
-                .put_many_if_absent_with_boundary(&inputs, &mut || Ok(()))
+                .put_many_if_absent_with_boundary(&account, &inputs, &mut || Ok(()))
                 .expect_err("metadata refusal rolls back newly staged rows");
             let connection = backend
                 .lock_connection()

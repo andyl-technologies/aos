@@ -775,7 +775,10 @@ mod tests {
             Ok(())
         }
 
-        fn reserve(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, DecodeAdmissionError> {
+        fn reserve(
+            &self,
+            bytes: u64,
+        ) -> Result<crucible_cas::owned_decode::ResourceLoan, DecodeAdmissionError> {
             self.0
                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
                     used.checked_add(bytes).filter(|used| *used <= 4096)
@@ -785,7 +788,7 @@ mod tests {
                         "finite fixture metadata exhausted",
                     ))
                 })?;
-            Ok(Arc::new(Receipt {
+            Ok(crucible_cas::owned_decode::ResourceLoan::new(Receipt {
                 used: self.0.clone(),
                 bytes,
             }))

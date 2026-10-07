@@ -33,6 +33,10 @@ mod codec;
 mod codec_ownership;
 mod record_account;
 pub use backing::maximum_encoded_ram_graph_bytes;
+mod failure_cause;
+pub use failure_cause::{
+    PreparedRamFailure, RamFailureAdmission, RamFailureCause, RamOperationFailure,
+};
 mod inventory;
 mod metadata;
 pub use metadata::AdmittedRamRootMetadata;

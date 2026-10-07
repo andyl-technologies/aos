@@ -89,7 +89,10 @@ struct ComponentSqliteSupervisor {
 }
 
 impl SqliteCatalogSupervisor for ComponentSqliteSupervisor {
-    fn reserve_resident_bytes(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, StoreError> {
+    fn reserve_resident_bytes(
+        &self,
+        bytes: u64,
+    ) -> Result<crucible_cas::owned_decode::ResourceLoan, StoreError> {
         self.resources.reserve_resources(0, bytes)
     }
 

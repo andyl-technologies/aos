@@ -151,22 +151,18 @@ impl crucible_qemu::ram_source::QemuRamBacking for ProductionPagedRamSource {
         &self,
         region_id: &str,
         page_index: u64,
-        boundary: &mut dyn FnMut() -> Result<(), crucible_qemu::ram_source::QemuRamSourceError>,
+        boundary: &mut dyn FnMut()
+            -> Result<(), crucible_qemu::ram_source::QemuRamReadBoundaryError>,
     ) -> Result<(Vec<u8>, crucible_ram::PageProof), crucible_qemu::ram_source::QemuRamSourceError>
     {
-        super::paged::with_ram_boundary(
-            boundary,
-            |ram_boundary| {
-                self.store
-                    .read_page_with_proof(&self.root, region_id, page_index, ram_boundary)
-            },
-            |error| crucible_qemu::ram_source::QemuRamSourceError::BackingFailure {
-                kind: ram_backing_failure_kind(&error),
-                source: crucible::BackendOperationalCause::new(error),
-            },
-        )
+        boundary::read_with_boundary(boundary, |ram_boundary| {
+            self.store
+                .read_page_with_proof(&self.root, region_id, page_index, ram_boundary)
+        })
     }
 }
+
+mod boundary;
 
 fn ram_backing_failure_kind(error: &RamStoreError) -> crucible::BackendOperationalFailureKind {
     use crucible::BackendOperationalFailureKind as Kind;
@@ -204,6 +200,21 @@ fn ram_backing_failure_kind(error: &RamStoreError) -> crucible::BackendOperation
             && matches!(store.original_failure(), StoreError::Quota)
         {
             return Kind::CapacityExhausted;
+        }
+        if let Some(resources) =
+            current.downcast_ref::<crucible_linux_resource::host_services::HostServiceError>()
+        {
+            return match resources {
+                crucible_linux_resource::host_services::HostServiceError::InvalidContract => {
+                    Kind::InvalidPolicy
+                }
+                crucible_linux_resource::host_services::HostServiceError::CapacityExhausted => {
+                    Kind::CapacityExhausted
+                }
+                crucible_linux_resource::host_services::HostServiceError::Unavailable => {
+                    Kind::Unavailable
+                }
+            };
         }
         if matches!(
             current.downcast_ref::<RamStoreError>(),

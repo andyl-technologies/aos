@@ -6,12 +6,13 @@ license.workspace = true
 publish = false
 
 [features]
-test-support = []
+test-support = ["dep:crucible-ram"]
 
 [lints]
 workspace = true
 
 [dependencies]
+crucible-ram = { path = "../crucible-ram", optional = true }
 libc = { workspace = true }
 rustix = { workspace = true, features = ["time"] }
 thiserror = { workspace = true }

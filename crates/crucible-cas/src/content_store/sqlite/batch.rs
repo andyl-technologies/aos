@@ -1,11 +1,11 @@
 //! Bounded SQLite batch publication under the existing caller operation.
 
+use crate::content_store::batch::{admission_under, allocation_under};
+
 use std::sync::TryLockError;
 
 use super::*;
-use crate::content_store::batch::{
-    account, admission, admit_receipts, allocation, read_source, with_id_text,
-};
+use crate::content_store::batch::{admit_receipts, read_source, with_id_text};
 
 pub(super) mod busy;
 pub(super) mod diagnostic;
@@ -15,12 +15,18 @@ mod reader;
 impl SqliteBlobBackend {
     pub(super) fn put_batch_with_boundary(
         &self,
+        account: &crate::owned_decode::DecodeBudget,
         objects: &[(ContentId, BlobHandle)],
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<PutBatchReceipt, StoreError> {
+        account
+            .verify_live()
+            .map_err(|error| admission_under(account, error))?;
         busy::healthy(&self.quarantined)?;
         boundary()?;
-        let account = account()?;
+        account
+            .verify_live()
+            .map_err(|error| admission_under(account, error))?;
         if objects.len() > MAX_BATCH_OBJECTS {
             return Err(StoreError::Quota);
         }
@@ -30,21 +36,21 @@ impl SqliteBlobBackend {
             .map(|supervisor| supervisor.begin(SqliteCatalogOperationKind::Write))
             .transpose()?;
         let _staging = catalog::write_gate_with_boundary(&mut || {
-            check_original(boundary, &account, operation.as_deref())
+            check_original(boundary, account, operation.as_deref())
         })?;
 
         // Sources may read this same database. Authenticate every source
         // before taking the inventory or write-connection lock.
         let _staged_credit = account
             .reserve_scratch_array::<(ContentId, OwnedBlobBytes)>(objects.len())
-            .map_err(admission)?;
-        let receipt_credit = admit_receipts(&account, objects.len(), self.name.len())?;
+            .map_err(|error| admission_under(account, error))?;
+        let receipt_credit = admit_receipts(account, objects.len(), self.name.len())?;
         let staged = {
-            let mut check = || check_original(boundary, &account, operation.as_deref());
+            let mut check = || check_original(boundary, account, operation.as_deref());
             let mut staged = Vec::new();
             staged
                 .try_reserve_exact(objects.len())
-                .map_err(allocation)?;
+                .map_err(|error| allocation_under(account, error))?;
             let mut total_bytes = 0_u64;
             for (id, source) in objects {
                 check()?;
@@ -55,14 +61,14 @@ impl SqliteBlobBackend {
                     return Err(StoreError::Quota);
                 }
                 let bytes =
-                    read_source(source, MAX_BATCH_BYTES, &mut check).map_err(
-                        |error| match error {
+                    read_source(account, source, MAX_BATCH_BYTES, &mut check).map_err(|error| {
+                        match error {
                             StoreError::InvalidSourceLength { .. } => {
                                 StoreError::Corrupt { id: *id }
                             }
                             other => other,
-                        },
-                    )?;
+                        }
+                    })?;
                 validate_bytes(*id, &bytes)?;
                 check()?;
                 staged.push((*id, bytes));
@@ -70,19 +76,23 @@ impl SqliteBlobBackend {
             staged
         };
 
-        let diagnostic_credit =
-            diagnostic::admit(self.maximum_sqlite_heap_bytes, Some(&self.root))?;
-        diagnostic::retain_failure(diagnostic_credit, || {
-            let _inventory_lock = self.inventory_lock_with_boundary(&mut || {
-                check_original(boundary, &account, operation.as_deref())
+        let mut diagnostic_credit = Some(diagnostic::admit(
+            account,
+            self.maximum_sqlite_heap_bytes,
+            Some(&self.root),
+        )?);
+        let result = (|| {
+            let _inventory_lock = self.inventory_lock_with_boundary(account, &mut || {
+                check_original(boundary, account, operation.as_deref())
             })?;
             let mut connection = self.connection_with_boundary(&mut || {
-                check_original(boundary, &account, operation.as_deref())
+                check_original(boundary, account, operation.as_deref())
             })?;
             let accepted = busy::with_zero(
+                account,
                 &mut connection,
                 &self.quarantined,
-                &mut || check_original(boundary, &account, operation.as_deref()),
+                &mut || check_original(boundary, account, operation.as_deref()),
                 |connection, progress, check| {
                     let shared: &Connection = connection;
                     let mut transaction =
@@ -117,7 +127,7 @@ impl SqliteBlobBackend {
                                 &transaction,
                                 *id,
                                 check,
-                                Some(&account),
+                                Some(account),
                                 Some(&self.quarantined),
                             )?;
                         } else {
@@ -162,12 +172,14 @@ impl SqliteBlobBackend {
                 },
             )?;
 
-            accepted.finish(|()| {
-                let mut check = || check_original(boundary, &account, operation.as_deref());
+            let accepted = accepted
+                .retain_diagnostic(diagnostic_credit.take().ok_or(StoreError::Unavailable)?);
+            let accepted = accepted.map(|()| {
+                let mut check = || check_original(boundary, account, operation.as_deref());
                 let mut receipts = Vec::new();
                 receipts
                     .try_reserve_exact(staged.len())
-                    .map_err(allocation)?;
+                    .map_err(|error| allocation_under(account, error))?;
                 for (id, bytes) in &staged {
                     check()?;
                     receipts.push(sqlite_receipt(&self.name, *id, bytes.len() as u64));
@@ -177,10 +189,21 @@ impl SqliteBlobBackend {
                     operation.complete()?;
                 }
                 boundary()?;
-                account.verify_live().map_err(admission)?;
+                account
+                    .verify_live()
+                    .map_err(|error| admission_under(account, error))?;
                 busy::healthy(&self.quarantined)?;
-                Ok(PutBatchReceipt::new(receipts, receipt_credit))
-            })
+                Ok(receipts)
+            })?;
+            Ok(PutBatchReceipt::new(
+                accepted,
+                receipt_credit,
+                account.clone(),
+            ))
+        })();
+        result.map_err(|error| match diagnostic_credit {
+            Some(credit) => diagnostic::retain_error(credit, error),
+            None => error,
         })
     }
 
@@ -209,10 +232,11 @@ impl SqliteBlobBackend {
 
     pub(super) fn inventory_lock_with_boundary(
         &self,
+        original: &crate::owned_decode::DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<File, StoreError> {
         boundary()?;
-        let path = diagnostic::lock_path(&self.root)?;
+        let path = diagnostic::lock_path(original, &self.root)?;
         let file = open_inventory_lock(&path, false)?;
         busy::healthy(&self.quarantined)?;
         loop {
@@ -248,7 +272,9 @@ fn check_original(
     operation: Option<&dyn SqliteCatalogOperation>,
 ) -> Result<(), StoreError> {
     boundary()?;
-    account.verify_live().map_err(admission)?;
+    account
+        .verify_live()
+        .map_err(|error| admission_under(account, error))?;
     if let Some(operation) = operation {
         operation.check()?;
     }

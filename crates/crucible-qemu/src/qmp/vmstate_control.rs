@@ -66,7 +66,7 @@ where
     pub(crate) fn performance_observation(
         &mut self,
         guard: &crucible_linux_resource::host_supervision::HostOperationGuard,
-        resident: std::sync::Arc<dyn Send + Sync>,
+        resident: crucible_ram::ResourceLoan,
     ) -> Result<super::QemuPerformanceObservation, QemuNodeChannelError> {
         self.client
             .performance_observation(guard, resident)

@@ -32,7 +32,7 @@ impl StorePhysicalQuotaGuard for TransferResources {
         &self,
         descriptors: u64,
         resident_bytes: u64,
-    ) -> Result<Arc<dyn Send + Sync>, StoreError> {
+    ) -> Result<crucible_cas::owned_decode::ResourceLoan, StoreError> {
         let mut usage = self.usage.lock().map_err(|_| StoreError::Quota)?;
         let next_descriptors = usage
             .0
@@ -46,11 +46,13 @@ impl StorePhysicalQuotaGuard for TransferResources {
             .ok_or(StoreError::Quota)?;
 
         *usage = (next_descriptors, next_resident_bytes);
-        Ok(Arc::new(TransferResourceLoan {
-            usage: self.usage.clone(),
-            descriptors,
-            resident_bytes,
-        }))
+        Ok(crucible_cas::owned_decode::ResourceLoan::new(
+            TransferResourceLoan {
+                usage: self.usage.clone(),
+                descriptors,
+                resident_bytes,
+            },
+        ))
     }
 
     fn verify(&self) -> Result<(), StoreError> {

@@ -14,6 +14,8 @@
 //! [`DirtyTracker`] retains separate fingerprint, checkpoint, paging, and transfer
 //! obligations. [`oracle`] independently reads all logical bytes and rebuilds
 //! the canonical commitment without using the persistent tree or dirty tracker.
+//! [`ResourceLoan`] keeps an original in-process resource loan alive through
+//! final shared allocation close; it has no encoded or guest-visible state.
 //!
 //! Identity snapshots do not retain storage leases or establish a coherent
 //! QEMU boundary. Callers must exclude writers while capturing bytes, retain
@@ -53,6 +55,7 @@ mod digest;
 mod dirty;
 mod error;
 pub mod oracle;
+mod resource_loan;
 mod snapshot;
 mod topology;
 mod tree;
@@ -68,6 +71,7 @@ pub use dirty::{
     TrackingLimits,
 };
 pub use error::RamError;
+pub use resource_loan::{ResourceLoan, ResourceLoanSlot};
 pub use snapshot::RamSnapshot;
 pub use topology::{Geometry, Limits, RegionClass, RegionDescriptor, Scope, Topology};
 pub use tree::RegionTree;

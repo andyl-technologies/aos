@@ -4,10 +4,12 @@
 //! same bank to the fence; failures transfer it to the original typed error and
 //! permanently consume checked reuse. No operation acquires another writer.
 
+use crate::content_store::batch::{admission_under, allocation_under};
+
 use rusqlite::types::ValueRef;
 
 use super::*;
-use crate::content_store::batch::{account, admission, allocation, with_id_text};
+use crate::content_store::batch::{account, with_id_text};
 use crate::owned_decode::{DecodeBudget, DecodeScratch};
 use batch::{busy, diagnostic, metadata};
 
@@ -34,14 +36,19 @@ fn acquire_owned<'a>(
     check(backend, &account, boundary)?;
     let credit = account
         .reserve_scratch_array::<CheckedFence<'_>>(1)
-        .map_err(admission)?;
-    let diagnostic = diagnostic::admit(backend.maximum_sqlite_heap_bytes, Some(&backend.root))?;
+        .map_err(|error| admission_under(&account, error))?;
+    let diagnostic = diagnostic::admit(
+        &account,
+        backend.maximum_sqlite_heap_bytes,
+        Some(&backend.root),
+    )?;
     let result = (|| {
         let mut original = || check(backend, &account, boundary);
         let staging = catalog::write_gate_with_boundary(&mut original)?;
-        let lock = backend.inventory_lock_with_boundary(&mut original)?;
+        let lock = backend.inventory_lock_with_boundary(&account, &mut original)?;
         let mut connection = backend.connection_with_boundary(&mut original)?;
         let accepted = busy::with_zero(
+            &account,
             &mut connection,
             &backend.quarantined,
             &mut original,
@@ -79,10 +86,14 @@ fn check(
     account: &DecodeBudget,
     boundary: &mut dyn FnMut() -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
-    account.verify_live().map_err(admission)?;
+    account
+        .verify_live()
+        .map_err(|error| admission_under(account, error))?;
     busy::healthy(&backend.quarantined)?;
     boundary()?;
-    account.verify_live().map_err(admission)?;
+    account
+        .verify_live()
+        .map_err(|error| admission_under(account, error))?;
     busy::healthy(&backend.quarantined)
 }
 
@@ -93,7 +104,7 @@ impl CheckedFence<'_> {
     ) -> Result<T, StoreError> {
         let _scope = self.account.enter();
         if let Err(source) = self.account.verify_live() {
-            return Err(self.retain_checked_failure(admission(source)));
+            return Err(self.retain_checked_failure(admission_under(&self.account, source)));
         }
         let diagnostic = self.diagnostic.take().ok_or(StoreError::Unsupported {
             capability: "consumed-checked-sqlite-inventory-fence",
@@ -142,12 +153,13 @@ impl BlobInventoryFence for CheckedFence<'_> {
             original()?;
             let credit = account
                 .reserve_scratch_bytes(backend.name.len() as u64)
-                .map_err(admission)?;
+                .map_err(|error| admission_under(account, error))?;
             let mut name = String::new();
             name.try_reserve_exact(backend.name.len())
-                .map_err(allocation)?;
+                .map_err(|error| allocation_under(account, error))?;
             name.push_str(&backend.name);
             let accepted = busy::with_zero(
+                account,
                 &mut inner.connection,
                 &backend.quarantined,
                 &mut original,
@@ -227,12 +239,13 @@ impl BlobInventoryFence for CheckedFence<'_> {
             }
             let credit = account
                 .reserve_scratch_array::<PlannedDeleteDisposition>(ids.len())
-                .map_err(admission)?;
+                .map_err(|error| admission_under(account, error))?;
             let mut dispositions = Vec::new();
             dispositions
                 .try_reserve_exact(ids.len())
-                .map_err(allocation)?;
+                .map_err(|error| allocation_under(account, error))?;
             let accepted = busy::with_zero(
+                account,
                 &mut inner.connection,
                 &backend.quarantined,
                 &mut original,

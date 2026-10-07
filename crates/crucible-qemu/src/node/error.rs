@@ -319,25 +319,30 @@ impl QemuNodeError {
 
 impl From<QemuNodeError> for BackendError {
     fn from(error: QemuNodeError) -> Self {
-        if let QemuNodeError::AsyncDriver {
-            source: QemuAsyncDriverError::OperationalHealth(source),
-        } = &error
-        {
-            return Self::RetainedOperationalFailure {
-                kind: source.operational_kind(),
-                source: BackendOperationalCause::new(source.clone()),
-            };
-        }
-        if let QemuNodeError::AsyncDriver {
-            source: QemuAsyncDriverError::Runtime(runtime),
-        } = &error
-            && let Some(source) = runtime.operational_supervision_source()
-        {
-            return Self::RetainedOperationalFailure {
-                kind: operational_failure_kind(source),
-                source: BackendOperationalCause::new(runtime.clone()),
-            };
-        }
+        let error = match error {
+            QemuNodeError::AsyncDriver {
+                source: QemuAsyncDriverError::OperationalHealth(source),
+            } => {
+                return Self::RetainedOperationalFailure {
+                    kind: source.operational_kind(),
+                    source: source.into_backend_cause(),
+                };
+            }
+            QemuNodeError::AsyncDriver {
+                source: QemuAsyncDriverError::Runtime(runtime),
+            } => {
+                if let Some(source) = runtime.operational_supervision_source() {
+                    return Self::RetainedOperationalFailure {
+                        kind: operational_failure_kind(source),
+                        source: BackendOperationalCause::new(runtime),
+                    };
+                }
+                QemuNodeError::AsyncDriver {
+                    source: QemuAsyncDriverError::Runtime(runtime),
+                }
+            }
+            error => error,
+        };
 
         match error {
             QemuNodeError::ResourceLimit {

@@ -753,6 +753,15 @@ fn map_checkpoint_selection_failure(
             .original_failure()
         {
             StoreError::Quota => CampaignServiceFailure::ResourceExhausted,
+            StoreError::ProviderDiagnostic { source } => match source.kind() {
+                crucible_cas::content_store::ProviderFailureKind::Resources => {
+                    CampaignServiceFailure::ResourceExhausted
+                }
+                crucible_cas::content_store::ProviderFailureKind::Supervision
+                | crucible_cas::content_store::ProviderFailureKind::PhysicalQuota => {
+                    CampaignServiceFailure::Unavailable
+                }
+            },
             StoreError::Supervision { .. }
             | StoreError::Unavailable
             | StoreError::Unsupported { .. }

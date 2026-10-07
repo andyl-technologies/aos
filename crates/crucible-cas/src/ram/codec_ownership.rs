@@ -149,6 +149,57 @@ impl Read for EncodedReader {
 }
 
 impl BlobSource for EncodedSource {
+    fn checked_read_access(&self) -> crate::content_store::CheckedReadAccess {
+        crate::content_store::CheckedReadAccess::Whole
+    }
+
+    fn open_with_boundary(
+        &self,
+        caller: &DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<crate::content_store::CheckedReader, StoreError> {
+        let original = self.0.original.clone();
+        let mut check =
+            || crate::content_store::checked_reader::check_pair(caller, &original, boundary);
+        check()?;
+        let credit = original
+            .reserve_scratch_array::<CheckedEncodedReader>(1)
+            .map_err(|error| crate::content_store::batch::admission_under(&original, error))?;
+        check()?;
+        Ok(crate::content_store::CheckedReader::admitted(
+            Box::new(CheckedEncodedReader {
+                reader: Cursor::new(SharedBytes(Arc::clone(&self.0))),
+                original,
+                caller: caller.clone(),
+                failed: false,
+            }),
+            credit,
+            crate::owned_decode::ResourceLoanSlot::default(),
+        ))
+    }
+
+    fn read_all_with_boundary(
+        &self,
+        caller: &DecodeBudget,
+        maximum: u64,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<crate::content_store::OwnedBlobBytes, StoreError> {
+        let mut reader = Cursor::new(self.0.bytes.as_slice());
+        crate::content_store::batch::read_reader_under(
+            &self.0.original,
+            caller,
+            self.logical_length(),
+            maximum,
+            boundary,
+            &mut |output, _| {
+                reader.read(output).map_err(|source| StoreError::StreamIo {
+                    operation: "read-encoded-batch-source",
+                    source,
+                })
+            },
+        )
+    }
+
     fn logical_length(&self) -> u64 {
         self.0.bytes.len() as u64
     }
@@ -196,4 +247,56 @@ pub(super) fn encoded_source(
         _custody: account.custody(),
     });
     Ok(BlobHandle::new(Arc::new(EncodedSource(body))))
+}
+
+struct CheckedEncodedReader {
+    reader: Cursor<SharedBytes>,
+    original: DecodeBudget,
+    caller: DecodeBudget,
+    failed: bool,
+}
+
+impl crate::content_store::checked_reader::AuditedCheckedBlobReader for CheckedEncodedReader {}
+
+impl crate::content_store::CheckedBlobReader for CheckedEncodedReader {
+    fn original_account(&self) -> &crate::owned_decode::DecodeBudget {
+        &self.original
+    }
+
+    fn read_with_boundary(
+        &mut self,
+        output: &mut [u8],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<usize, StoreError> {
+        if self.failed {
+            return Err(StoreError::Unsupported {
+                capability: "failed-checked-encoded-reader",
+            });
+        }
+        let result = (|| {
+            crate::content_store::checked_reader::check_pair(
+                &self.caller,
+                &self.original,
+                boundary,
+            )?;
+            let limit = output.len().min(64 * 1024);
+            let count =
+                self.reader
+                    .read(&mut output[..limit])
+                    .map_err(|source| StoreError::StreamIo {
+                        operation: "read-checked-encoded-source",
+                        source,
+                    })?;
+            crate::content_store::checked_reader::check_pair(
+                &self.caller,
+                &self.original,
+                boundary,
+            )?;
+            Ok(count)
+        })();
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
 }

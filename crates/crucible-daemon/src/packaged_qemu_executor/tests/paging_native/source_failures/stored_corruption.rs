@@ -26,7 +26,7 @@ struct DamagedObject {
     identity: ContentId,
     offset: u64,
     original: u8,
-    _credit: Arc<dyn Send + Sync>,
+    _credit: crucible_cas::owned_decode::ResourceLoan,
 }
 
 impl StoredCorruption {
@@ -43,7 +43,8 @@ impl StoredCorruption {
         backing: &dyn QemuRamBacking,
         region_id: &str,
         page_index: u64,
-        boundary: &mut dyn FnMut() -> Result<(), QemuRamSourceError>,
+        boundary: &mut dyn FnMut()
+            -> Result<(), crucible_qemu::ram_source::QemuRamReadBoundaryError>,
     ) -> Result<(ContentId, usize), QemuRamSourceError> {
         boundary()?;
         let authority = self
@@ -160,7 +161,8 @@ impl StoredCorruption {
     fn read_envelope(
         &self,
         id: ContentId,
-        boundary: &mut dyn FnMut() -> Result<(), QemuRamSourceError>,
+        boundary: &mut dyn FnMut()
+            -> Result<(), crucible_qemu::ram_source::QemuRamReadBoundaryError>,
     ) -> Result<ContentEnvelope, QemuRamSourceError> {
         boundary()?;
         let (maximum_bytes, maximum_children) = match id.kind() {
@@ -188,7 +190,8 @@ impl StoredCorruption {
 
     pub(super) fn restore_after_join(
         &self,
-        boundary: &mut dyn FnMut() -> Result<(), QemuRamSourceError>,
+        boundary: &mut dyn FnMut()
+            -> Result<(), crucible_qemu::ram_source::QemuRamReadBoundaryError>,
     ) -> Result<(), QemuRamSourceError> {
         let mut retained = self
             .damage

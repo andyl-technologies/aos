@@ -5,6 +5,10 @@
 //! together prove that SQL descriptors can close before exclusive retirement.
 
 use super::PackagedRamCatalogConfig;
+use crate::provider_error_custody::{
+    ProviderServiceAdmissionError, arc_allocation_bytes, check_provider_error_path,
+    lease_control_bytes, provider_diagnostic_bytes, retain_provider_cause,
+};
 use crucible_api::vm_lifecycle::{
     ProductionRamCatalogProvider, ProductionRamCatalogRetirement, ProductionRamCatalogStorage,
 };
@@ -104,17 +108,20 @@ struct CatalogAuthority {
     metadata_allocator: HostServiceAllocator,
     binding: Mutex<Option<LinuxProjectQuotaBinding>>,
     supervisor: HostOperationSupervisor,
+    diagnostic_occupied: AtomicBool,
     _root_resources: HostServiceLease,
     _sql_staging_resources: HostServiceLease,
     _sqlite_heap_resources: HostServiceLease,
+    _metadata_resources: crucible_cas::owned_decode::ResourceLoan,
+    // The original actor remains pinned through final constructor credit release.
     _custody: Arc<dyn Send + Sync>,
-    _metadata_resources: Arc<dyn Send + Sync>,
 }
 
 /// Keeps actual actor and quota custody independently of transient readers.
 pub(super) struct CatalogService {
-    authority: Arc<CatalogAuthority>,
+    // Cached material closes while its original authority credit is retained.
     catalogs: Arc<Mutex<CatalogCache>>,
+    authority: Arc<CatalogAuthority>,
 }
 
 enum CatalogEntry {
@@ -134,20 +141,20 @@ impl CatalogService {
         policy: PackagedRamCatalogConfig,
         custody: Arc<dyn Send + Sync>,
         supervisor: HostOperationSupervisor,
-    ) -> Result<Self, StoreError> {
+    ) -> Result<Self, ProviderServiceAdmissionError> {
         let resources = policy.resources();
         let audit = LinuxProjectQuotaBinding::maximum_audit_file_descriptors();
         if resources.file_descriptors < minimum_file_descriptors()
             || resources.staging_bytes < minimum_staging_bytes()
         {
-            return Err(StoreError::Quota);
+            return Err(StoreError::Quota.into());
         }
         let allocator = HostServiceAllocator::new(
             resources.task_slots,
             resources.file_descriptors,
             resources.resident_peak_bytes,
         )
-        .map_err(|_| StoreError::Quota)?;
+        .map_err(ProviderServiceAdmissionError::from)?;
         let metadata_allocator = HostServiceAllocator::new(
             1,
             1,
@@ -156,39 +163,36 @@ impl CatalogService {
                 .checked_sub(policy.maximum_sqlite_heap_bytes())
                 .ok_or(StoreError::Quota)?,
         )
-        .map_err(|_| StoreError::Quota)?;
+        .map_err(ProviderServiceAdmissionError::from)?;
+        let slots = usize::try_from((resources.file_descriptors - audit) / CATALOG_DESCRIPTORS)
+            .map_err(|_| StoreError::Quota)?;
+        let constructor_bytes = catalog_constructor_bytes(&policy, slots)?;
+        // One raw pair pays all covered bodies and controls before either shared
+        // lease exists. Earlier supervisor/allocator bootstrap is a separate prerequisite.
+        let (metadata, resident) =
+            metadata_allocator.reserve_paired_bytes(&allocator, constructor_bytes)?;
+        let metadata_resources =
+            crucible_cas::owned_decode::ResourceLoan::new(CatalogMetadataCredit {
+                _resident: resident,
+                _metadata: metadata,
+            });
         let root_resources = allocator
             .reserve_resources(
                 0,
                 audit,
                 LinuxProjectQuotaBinding::maximum_audit_scratch_bytes(),
             )
-            .map_err(|_| StoreError::Quota)?;
+            .map_err(ProviderServiceAdmissionError::from)?;
         let sql_staging_resources = allocator
             .reserve_resources(
                 0,
                 0,
                 crucible_cas::content_store::minimum_sqlite_catalog_staging_bytes(),
             )
-            .map_err(|_| StoreError::Quota)?;
+            .map_err(ProviderServiceAdmissionError::from)?;
         let sqlite_heap_resources = allocator
             .reserve_resources(0, 0, policy.maximum_sqlite_heap_bytes())
-            .map_err(|_| StoreError::Quota)?;
-        let slots = usize::try_from((resources.file_descriptors - audit) / CATALOG_DESCRIPTORS)
-            .map_err(|_| StoreError::Quota)?;
-        let metadata_bytes = slots
-            .checked_mul(std::mem::size_of::<Option<(PathBuf, CatalogEntry)>>())
-            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<CatalogAuthority>()))
-            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<CatalogService>()))
-            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Mutex<CatalogCache>>()))
-            .and_then(|bytes| bytes.checked_add(policy.root().as_os_str().len()))
-            .and_then(|bytes| bytes.checked_add(4 * std::mem::size_of::<usize>()))
-            .ok_or(StoreError::Quota)?;
-        let metadata_resources = reserve_metadata_credit(
-            &allocator,
-            &metadata_allocator,
-            u64::try_from(metadata_bytes).map_err(|_| StoreError::Quota)?,
-        )?;
+            .map_err(ProviderServiceAdmissionError::from)?;
         let entries = std::iter::repeat_with(|| None)
             .take(slots)
             .collect::<Vec<_>>()
@@ -207,6 +211,7 @@ impl CatalogService {
                 metadata_allocator,
                 binding: Mutex::new(None),
                 supervisor,
+                diagnostic_occupied: AtomicBool::new(false),
                 _root_resources: root_resources,
                 _sql_staging_resources: sql_staging_resources,
                 _sqlite_heap_resources: sqlite_heap_resources,
@@ -243,6 +248,31 @@ impl CatalogService {
         );
         Ok(())
     }
+}
+
+// Existing covered allocations only: fixed table, root clone, all four Arc
+// bodies/headers, five lease controls and one exclusive diagnostic peak.
+fn catalog_constructor_bytes(
+    policy: &PackagedRamCatalogConfig,
+    slots: usize,
+) -> Result<u64, StoreError> {
+    let mut bytes = slots
+        .checked_mul(std::mem::size_of::<Option<(PathBuf, CatalogEntry)>>())
+        .and_then(|bytes| bytes.checked_add(policy.root().as_os_str().len()))
+        .ok_or(StoreError::Quota)?;
+    for extent in [
+        arc_allocation_bytes::<CatalogAuthority>()?,
+        arc_allocation_bytes::<Mutex<CatalogCache>>()?,
+        arc_allocation_bytes::<CatalogService>()?,
+        arc_allocation_bytes::<CatalogMetadataCredit>()?,
+        lease_control_bytes()?
+            .checked_mul(5)
+            .ok_or(StoreError::Quota)?,
+        usize::try_from(provider_diagnostic_bytes()).map_err(|_| StoreError::Quota)?,
+    ] {
+        bytes = bytes.checked_add(extent).ok_or(StoreError::Quota)?;
+    }
+    u64::try_from(bytes).map_err(|_| StoreError::Quota)
 }
 
 /// Returns the secure namespace scratch plus actual shared SQL staging layouts.
@@ -302,6 +332,34 @@ impl CatalogAuthority {
             .map(|_| ())
             .map_err(sqlite_supervision_error)
     }
+
+    fn verify_funded(
+        &self,
+        permit: crucible_cas::content_store::ProviderDiagnosticPermit,
+    ) -> Result<crucible_cas::content_store::ProviderDiagnosticPermit, StoreError> {
+        let operation = match self.supervisor.begin(HostOperationClass::Writeback) {
+            Ok(operation) => operation,
+            Err(source) => return Err(retain_provider_cause(permit, source.into())),
+        };
+        let binding = loop {
+            if let Err(source) = operation.wait_slice() {
+                return Err(retain_provider_cause(permit, source.into()));
+            }
+            match self.binding.try_lock() {
+                Ok(binding) => break binding,
+                Err(TryLockError::WouldBlock) => std::thread::yield_now(),
+                Err(TryLockError::Poisoned(_)) => return Err(StoreError::Unauthorized),
+            }
+        };
+        let binding = binding.as_ref().ok_or(StoreError::Quota)?;
+        if let Err(source) = binding.verify() {
+            return Err(retain_provider_cause(permit, source.into()));
+        }
+        if let Err(source) = operation.complete() {
+            return Err(retain_provider_cause(permit, source.into()));
+        }
+        Ok(permit)
+    }
 }
 
 fn catalog_metadata_bytes(directory: &Path) -> Result<u64, StoreError> {
@@ -327,7 +385,7 @@ struct CatalogGuard {
     authority: Arc<CatalogAuthority>,
     closed: Arc<AtomicBool>,
     _resources: HostServiceLease,
-    _metadata: Arc<dyn Send + Sync>,
+    _metadata: crucible_cas::owned_decode::ResourceLoan,
 }
 
 impl StorePhysicalQuotaGuard for CatalogGuard {
@@ -347,7 +405,7 @@ impl StorePhysicalQuotaGuard for CatalogGuard {
         &self,
         descriptors: u64,
         resident_bytes: u64,
-    ) -> Result<Arc<dyn Send + Sync>, StoreError> {
+    ) -> Result<crucible_cas::owned_decode::ResourceLoan, StoreError> {
         self.verify()?;
         let resources = reserve_catalog_resources(
             &self.authority,
@@ -553,7 +611,7 @@ impl ProductionRamCatalogProvider for CatalogService {
         &self,
         directory: &Path,
         bytes: u64,
-    ) -> Result<Arc<dyn Send + Sync>, StoreError> {
+    ) -> Result<crucible_cas::owned_decode::ResourceLoan, StoreError> {
         if bytes == 0 {
             return Err(StoreError::Quota);
         }
@@ -586,7 +644,7 @@ struct CatalogMetadataCredit {
 
 struct CatalogResourceCredit {
     _descriptors: Option<HostServiceLease>,
-    _metadata: Arc<dyn Send + Sync>,
+    _metadata: crucible_cas::owned_decode::ResourceLoan,
     _authority: Arc<CatalogAuthority>,
     _closed: Option<Arc<AtomicBool>>,
 }
@@ -596,7 +654,7 @@ fn reserve_catalog_resources(
     closed: Option<Arc<AtomicBool>>,
     descriptors: u64,
     bytes: u64,
-) -> Result<Arc<dyn Send + Sync>, StoreError> {
+) -> Result<crucible_cas::owned_decode::ResourceLoan, StoreError> {
     authority.verify()?;
     let descriptors = reserve_catalog_descriptors(&authority.allocator, descriptors)?;
     let charged = bytes
@@ -606,12 +664,14 @@ fn reserve_catalog_resources(
     let metadata =
         reserve_metadata_credit(&authority.allocator, &authority.metadata_allocator, charged)?;
     authority.verify()?;
-    Ok(Arc::new(CatalogResourceCredit {
-        _descriptors: descriptors,
-        _metadata: metadata,
-        _authority: authority.clone(),
-        _closed: closed,
-    }))
+    Ok(crucible_cas::owned_decode::ResourceLoan::new(
+        CatalogResourceCredit {
+            _descriptors: descriptors,
+            _metadata: metadata,
+            _authority: authority.clone(),
+            _closed: closed,
+        },
+    ))
 }
 
 fn reserve_catalog_descriptors(
@@ -633,27 +693,41 @@ fn reserve_metadata_credit(
     resident: &HostServiceAllocator,
     metadata: &HostServiceAllocator,
     bytes: u64,
-) -> Result<Arc<dyn Send + Sync>, StoreError> {
+) -> Result<crucible_cas::owned_decode::ResourceLoan, StoreError> {
+    reserve_metadata_credit_raw(resident, metadata, bytes).map_err(|_| StoreError::Quota)
+}
+
+fn reserve_metadata_credit_raw(
+    resident: &HostServiceAllocator,
+    metadata: &HostServiceAllocator,
+    bytes: u64,
+) -> Result<
+    crucible_cas::owned_decode::ResourceLoan,
+    crucible_linux_resource::host_services::HostServiceError,
+> {
+    use crucible_linux_resource::host_services::HostServiceError;
+
     let charged = bytes
         .checked_add(std::mem::size_of::<CatalogMetadataCredit>() as u64)
         .and_then(|bytes| bytes.checked_add((2 * std::mem::size_of::<usize>()) as u64))
-        .ok_or(StoreError::Quota)?;
-    let metadata = metadata
-        .reserve_resources(0, 0, charged)
-        .map_err(|_| StoreError::Quota)?;
-    let resident = resident
-        .reserve_resources(0, 0, charged)
-        .map_err(|_| StoreError::Quota)?;
-    Ok(Arc::new(CatalogMetadataCredit {
-        _resident: resident,
-        _metadata: metadata,
-    }))
+        .ok_or(HostServiceError::CapacityExhausted)?;
+    let metadata = metadata.reserve_resources(0, 0, charged)?;
+    let resident = resident.reserve_resources(0, 0, charged)?;
+    Ok(crucible_cas::owned_decode::ResourceLoan::new(
+        CatalogMetadataCredit {
+            _resident: resident,
+            _metadata: metadata,
+        },
+    ))
 }
 
 struct CatalogSqliteSupervisor(Arc<CatalogAuthority>);
 
 impl SqliteCatalogSupervisor for CatalogSqliteSupervisor {
-    fn reserve_resident_bytes(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, StoreError> {
+    fn reserve_resident_bytes(
+        &self,
+        bytes: u64,
+    ) -> Result<crucible_cas::owned_decode::ResourceLoan, StoreError> {
         reserve_metadata_credit(&self.0.allocator, &self.0.metadata_allocator, bytes)
     }
 
@@ -701,10 +775,37 @@ fn sqlite_supervision_error(source: HostSupervisionError) -> StoreError {
 struct NamespaceGuard {
     authority: Arc<CatalogAuthority>,
     directory: PathBuf,
-    _resources: Arc<dyn Send + Sync>,
+    _resources: crucible_cas::owned_decode::ResourceLoan,
+}
+
+impl crucible_cas::content_store::ProviderDiagnosticStorage for NamespaceGuard {
+    fn try_occupy(&self) -> Result<(), StoreError> {
+        self.authority
+            .diagnostic_occupied
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| ())
+            .map_err(|_| StoreError::Unavailable)
+    }
+
+    fn release(&self) {
+        self.authority
+            .diagnostic_occupied
+            .store(false, Ordering::Release);
+    }
 }
 
 impl StorePhysicalQuotaGuard for NamespaceGuard {
+    fn begin_provider_diagnostic(
+        self: Arc<Self>,
+    ) -> Result<crucible_cas::content_store::ProviderDiagnosticPermit, StoreError> {
+        // Checkout has no lower callback: this bound is checked before a quota
+        // verifier can clone either diagnostic path into its first refusal.
+        check_provider_error_path(self.authority.policy.root())?;
+        check_provider_error_path(&self.directory)?;
+        let permit = crucible_cas::content_store::ProviderDiagnosticPermit::checkout(self.clone())?;
+        self.authority.verify_funded(permit)
+    }
+
     fn gc_mark_backend(
         self: Arc<Self>,
         scope: &str,
@@ -745,7 +846,7 @@ impl StorePhysicalQuotaGuard for NamespaceGuard {
         &self,
         descriptors: u64,
         resident_bytes: u64,
-    ) -> Result<Arc<dyn Send + Sync>, StoreError> {
+    ) -> Result<crucible_cas::owned_decode::ResourceLoan, StoreError> {
         reserve_catalog_resources(&self.authority, None, descriptors, resident_bytes)
     }
 }
@@ -754,10 +855,12 @@ struct CatalogRetirement {
     directory: PathBuf,
     active: PathBuf,
     retired: PathBuf,
-    authority: Arc<CatalogAuthority>,
     catalogs: Weak<Mutex<CatalogCache>>,
     quota: Mutex<Option<Arc<dyn StorePhysicalQuotaGuard>>>,
     finished: AtomicBool,
+    // The cache's final weak reference and quota material close while original
+    // constructor credit is still retained by this authority.
+    authority: Arc<CatalogAuthority>,
 }
 
 impl ProductionRamCatalogRetirement for CatalogRetirement {
@@ -851,6 +954,152 @@ mod tests {
 
         drop(descriptor);
         assert!(reserve_catalog_descriptors(&allocator, 1).is_ok());
+    }
+
+    #[test]
+    fn issuing_catalog_funds_original_cancellation_before_lower_binding_verification() {
+        use crucible_linux_resource::host_supervision::{
+            HostOperationBudget, HostOperationBudgets,
+        };
+
+        let resources = crucible_api::host_operational::HostResourceVector {
+            resident_peak_bytes: 128 << 20,
+            backing_peak_bytes: 512 << 20,
+            metadata_bytes: 64 << 20,
+            staging_bytes: 8 << 20,
+            paging_io_slots: 1,
+            cpu_slots: 1,
+            task_slots: 1,
+            file_descriptors: 128,
+        };
+        let policy =
+            PackagedRamCatalogConfig::new("/component/catalog", 30000, 1000, resources, 8 << 20)
+                .expect("explicit complete component catalog contract");
+        let slots = usize::try_from(
+            (resources.file_descriptors
+                - LinuxProjectQuotaBinding::maximum_audit_file_descriptors())
+                / CATALOG_DESCRIPTORS,
+        )
+        .expect("bounded catalog count");
+        let constructor_bytes =
+            catalog_constructor_bytes(&policy, slots).expect("complete constructor geometry");
+        eprintln!(
+            "catalog constructor: authority={} authority_arc={} cache_arc={} service_arc={} credit_arc={} entry={} table={} root={} controls={} diagnostic={} paired={constructor_bytes}",
+            std::mem::size_of::<CatalogAuthority>(),
+            arc_allocation_bytes::<CatalogAuthority>().expect("authority Arc"),
+            arc_allocation_bytes::<Mutex<CatalogCache>>().expect("cache Arc"),
+            arc_allocation_bytes::<CatalogService>().expect("service Arc"),
+            arc_allocation_bytes::<CatalogMetadataCredit>().expect("credit Arc"),
+            std::mem::size_of::<Option<(PathBuf, CatalogEntry)>>(),
+            slots * std::mem::size_of::<Option<(PathBuf, CatalogEntry)>>(),
+            policy.root().as_os_str().len(),
+            5 * lease_control_bytes().expect("control geometry"),
+            provider_diagnostic_bytes()
+        );
+        let supervisor = HostOperationSupervisor::new(
+            HostOperationBudgets {
+                classes: [HostOperationBudget::finite(std::time::Duration::from_secs(60));
+                    crucible_linux_resource::host_supervision::HOST_OPERATION_CLASS_COUNT],
+            },
+            Some(std::time::Duration::from_secs(60)),
+        )
+        .expect("same original finite roster");
+        let service = CatalogService::new(policy, Arc::new(()), supervisor.clone())
+            .expect("actual service diagnostic preadmission");
+        let namespace_credit = reserve_metadata_credit_raw(
+            &service.authority.allocator,
+            &service.authority.metadata_allocator,
+            (std::mem::size_of::<NamespaceGuard>()
+                + 2 * std::mem::size_of::<usize>()
+                + "/component/catalog/marks".len()) as u64,
+        )
+        .expect("actual original namespace handle metadata before allocation");
+        let guard = Arc::new(NamespaceGuard {
+            authority: service.authority.clone(),
+            directory: PathBuf::from("/component/catalog/marks"),
+            // This test performs no namespace I/O. Existing service admission
+            // owns its actual audit resources; no project-quota proof is claimed.
+            _resources: namespace_credit,
+        });
+        let retained = Arc::downgrade(&guard);
+        supervisor
+            .cancel()
+            .expect("cancel original service before first lower check");
+
+        let error = guard
+            .clone()
+            .begin_provider_diagnostic()
+            .expect_err("original cancellation");
+        let StoreError::ProviderDiagnostic { source } = &error else {
+            panic!("lost originally paid cancellation cause");
+        };
+        assert_eq!(
+            source.kind(),
+            crucible_cas::content_store::ProviderFailureKind::Supervision
+        );
+        let cause = std::error::Error::source(source)
+            .and_then(std::error::Error::source)
+            .and_then(|cause| cause.downcast_ref::<HostSupervisionError>());
+        assert!(matches!(cause, Some(HostSupervisionError::Terminal { .. })));
+        assert!(matches!(
+            guard.clone().begin_provider_diagnostic(),
+            Err(StoreError::Unavailable)
+        ));
+
+        drop(guard);
+        drop(service);
+        assert!(retained.upgrade().is_some());
+        drop(error);
+        assert!(retained.upgrade().is_none());
+    }
+
+    #[test]
+    fn initial_catalog_slot_refusal_is_inline_before_any_binding() {
+        use crucible_linux_resource::host_supervision::{
+            HostOperationBudget, HostOperationBudgets,
+        };
+        let resources = crucible_api::host_operational::HostResourceVector {
+            resident_peak_bytes: 128 << 20,
+            backing_peak_bytes: 512 << 20,
+            metadata_bytes: (8 << 20) + crate::provider_error_custody::provider_diagnostic_bytes()
+                - 1,
+            staging_bytes: 8 << 20,
+            paging_io_slots: 1,
+            cpu_slots: 1,
+            task_slots: 1,
+            file_descriptors: 128,
+        };
+        let policy =
+            PackagedRamCatalogConfig::new("/component/catalog", 30000, 1000, resources, 8 << 20)
+                .expect("explicit contract with insufficient initial diagnostic headroom");
+        let supervisor = HostOperationSupervisor::new(
+            HostOperationBudgets {
+                classes: [HostOperationBudget::finite(std::time::Duration::from_secs(60));
+                    crucible_linux_resource::host_supervision::HOST_OPERATION_CLASS_COUNT],
+            },
+            Some(std::time::Duration::from_secs(60)),
+        )
+        .expect("original finite roster");
+
+        let slots = usize::try_from(
+            (resources.file_descriptors
+                - LinuxProjectQuotaBinding::maximum_audit_file_descriptors())
+                / CATALOG_DESCRIPTORS,
+        )
+        .expect("bounded catalog count");
+        let exact =
+            catalog_constructor_bytes(&policy, slots).expect("complete constructor geometry");
+        let mut resources = resources;
+        resources.metadata_bytes = (8 << 20) + exact - 1;
+        let policy =
+            PackagedRamCatalogConfig::new("/component/catalog", 30000, 1000, resources, 8 << 20)
+                .expect("one byte below complete constructor geometry");
+        assert!(matches!(
+            CatalogService::new(policy, Arc::new(()), supervisor),
+            Err(ProviderServiceAdmissionError::Resources(
+                crucible_linux_resource::host_services::HostServiceError::CapacityExhausted
+            ))
+        ));
     }
 
     #[test]

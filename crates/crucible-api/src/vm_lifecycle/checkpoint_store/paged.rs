@@ -132,7 +132,7 @@ impl PagedRamCatalog {
                 directory,
                 fence: storage.retention_fence,
                 quota: storage.quota,
-                _root_credit: None,
+                _root_credit: Default::default(),
             }),
             provider: Arc::clone(provider),
         })
@@ -199,7 +199,7 @@ impl PagedRamCatalog {
             .provider
             .reserve_root_metadata(&self.retention.directory, bytes)?;
         let mut retention = self.retention.as_ref().clone();
-        retention._root_credit = Some(credit);
+        retention._root_credit = credit.into();
         Ok(Arc::new(retention))
     }
 
@@ -210,7 +210,7 @@ impl PagedRamCatalog {
     /// Refuses overflow, unavailable service capacity or closed catalog authority.
     pub(in crate::vm_lifecycle) fn reserve_record_decode(
         &self,
-    ) -> Result<Arc<dyn Send + Sync>, RamStoreError> {
+    ) -> Result<crucible_cas::owned_decode::ResourceLoan, RamStoreError> {
         let bytes = RootRecord::decoding_memory_bound(crucible_ram::Limits::default())
             .map_err(|error| RamStoreError::Logical(error.to_string()))?;
         self.provider
@@ -330,7 +330,7 @@ struct CatalogRetention {
     fence: Arc<File>,
     quota: Arc<dyn StorePhysicalQuotaGuard>,
     // Every root and its last deferred source retain the predecode credit.
-    _root_credit: Option<Arc<dyn Send + Sync>>,
+    _root_credit: crucible_cas::owned_decode::ResourceLoanSlot,
 }
 
 impl RamRetention for CatalogRetention {

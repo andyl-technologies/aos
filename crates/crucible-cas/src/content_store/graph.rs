@@ -1,5 +1,7 @@
 //! Closed, bounded, introspectable store-graph admission and construction.
 
+use super::batch::admission_under;
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
@@ -512,7 +514,7 @@ pub struct StoreGraphAdmin {
 struct GcMarkRootAuthority {
     node: StoreNodeId,
     backend: Arc<dyn ImmutableBlobBackend>,
-    resources: Arc<dyn Send + Sync>,
+    resources: crate::owned_decode::ResourceLoan,
 }
 
 struct StoreGraphPhysicalAuthority {
@@ -1164,7 +1166,7 @@ pub struct StoreGraph {
     write_back: BTreeMap<StoreNodeId, Arc<WriteBackStore>>,
     namespace_authorizer: Option<Arc<dyn StoreNamespaceAuthorizer>>,
     profile_validation: bool,
-    _gc_mark_resources: Option<Arc<dyn Send + Sync>>,
+    _gc_mark_resources: crate::owned_decode::ResourceLoanSlot,
 }
 
 impl StoreGraph {
@@ -1447,7 +1449,8 @@ impl StoreGraph {
                 profile_validation,
                 _gc_mark_resources: gc_mark_root
                     .as_ref()
-                    .map(|root| Arc::clone(&root.resources)),
+                    .map(|root| root.resources.clone())
+                    .into(),
             },
             StoreGraphAdmin {
                 configuration,
@@ -1590,15 +1593,22 @@ impl WriteBackRetentionAdmin for StoreGraph {
 impl ImmutableBlobBackend for StoreGraph {
     fn put_many_if_absent_with_boundary(
         &self,
+        original: &crate::owned_decode::DecodeBudget,
         objects: &[(ContentId, BlobHandle)],
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<PutBatchReceipt, StoreError> {
+        original
+            .verify_live()
+            .map_err(|error| admission_under(original, error))?;
         for (id, _) in objects {
             boundary()?;
+            original
+                .verify_live()
+                .map_err(|error| admission_under(original, error))?;
             self.require_admitted(*id)?;
         }
         self.root
-            .put_many_if_absent_with_boundary(objects, boundary)
+            .put_many_if_absent_with_boundary(original, objects, boundary)
     }
 
     fn name(&self) -> &str {
@@ -1629,6 +1639,18 @@ impl ImmutableBlobBackend for StoreGraph {
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
         self.require_admitted(id)?;
         self.root.contains(id)
+    }
+
+    fn read_with_boundary(
+        &self,
+        account: &crate::owned_decode::DecodeBudget,
+        id: ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        boundary()?;
+        self.require_admitted(id)?;
+        self.root.read_with_boundary(account, id, range, boundary)
     }
 
     fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {

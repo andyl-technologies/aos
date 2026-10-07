@@ -32,7 +32,7 @@ pub(in crate::packaged_qemu_executor::tests::paging_native) struct AdmittedFligh
     context: &'a AttemptExecutionContext,
     source: &'a ScenarioDefForm,
     catalog: &'a PackagedRamCatalogConfig,
-    _evidence_resident: Arc<dyn Send + Sync>,
+    _evidence_resident: crucible_cas::owned_decode::ResourceLoan,
 }
 
 impl<'a> AdmittedFlightFactory<'a> {
@@ -83,8 +83,8 @@ impl<'a> AdmittedFlightFactory<'a> {
     /// Retains this admitted fixture's evidence bank through the last sample.
     pub(in crate::packaged_qemu_executor::tests::paging_native) fn evidence_custody(
         &self,
-    ) -> Arc<dyn Send + Sync> {
-        Arc::clone(&self._evidence_resident)
+    ) -> crucible_cas::owned_decode::ResourceLoan {
+        self._evidence_resident.clone()
     }
 
     pub(in crate::packaged_qemu_executor::tests::paging_native) fn observation_guard(

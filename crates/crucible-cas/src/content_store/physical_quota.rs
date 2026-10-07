@@ -7,6 +7,8 @@
 //! facade, rejects physical allocation beyond the admitted byte or inode
 //! ceiling, including staging, compression, encryption, and pack slack.
 
+use super::batch::{admission_under, allocation_under};
+
 use super::ObjectKind;
 
 use std::collections::BTreeMap;
@@ -21,8 +23,7 @@ use crate::owned_decode::{DecodeBudget, DecodeScratch};
 use super::{
     BackendCapabilities, BlobHandle, BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary,
     BlobSource, BlobStoreAdmin, ByteRange, ContentId, DeleteBatchReceipt, ImmutableBlobBackend,
-    InventorySummaryReceipt, OwnedBlobBytes, PlannedDeleteDisposition, PutBatchReceipt, PutReceipt,
-    StoreError,
+    InventorySummaryReceipt, PlannedDeleteDisposition, PutBatchReceipt, PutReceipt, StoreError,
 };
 
 const MAX_PHYSICAL_QUOTA_POLICY_ID_BYTES: usize = 512;
@@ -71,6 +72,25 @@ impl StorePhysicalQuotaPolicyId {
 
 /// Bound authority for one exact kernel-enforced physical quota incarnation.
 pub trait StorePhysicalQuotaGuard: Send + Sync {
+    /// Checks original provider authority using its own precharged error slot.
+    ///
+    /// The issuing provider occupies its slot before any lower check. Success
+    /// returns storage custody after the unchanged real checks accept; failure
+    /// retains its typed cause and original service together. No caller may
+    /// supply an unrelated permit or renew the original supervision.
+    ///
+    /// # Errors
+    /// Refuses an occupied slot, an unbounded diagnostic path, unsupported
+    /// genuine storage, or the original lower quota/supervision checks. Slot
+    /// and path-bound refusal creates no source body.
+    fn begin_provider_diagnostic(
+        self: Arc<Self>,
+    ) -> Result<super::ProviderDiagnosticPermit, StoreError> {
+        Err(StoreError::Unsupported {
+            capability: "precharged-provider-diagnostic",
+        })
+    }
+
     /// Returns the original authored Rust metadata subset available to decoders.
     ///
     /// SQLite allocator credits and native guest memory are excluded. A
@@ -117,7 +137,7 @@ pub trait StorePhysicalQuotaGuard: Send + Sync {
         &self,
         descriptors: u64,
         resident_bytes: u64,
-    ) -> Result<Arc<dyn Send + Sync>, StoreError>;
+    ) -> Result<crate::owned_decode::ResourceLoan, StoreError>;
 
     /// Reauthenticates the pinned root, hard limits, and current bounded usage.
     ///
@@ -216,8 +236,8 @@ pub(super) struct PhysicalQuotaStore {
     child_admin: Arc<dyn BlobStoreAdmin>,
     guard: Arc<dyn StorePhysicalQuotaGuard>,
     directory_costs: Option<DirectoryResourceCosts>,
-    _child_resources: Option<Arc<dyn Send + Sync>>,
-    _resources: Arc<dyn Send + Sync>,
+    _child_resources: crate::owned_decode::ResourceLoanSlot,
+    _resources: crate::owned_decode::ResourceLoan,
 }
 
 /// Audited additional allocations of the loose-directory implementation.
@@ -249,7 +269,7 @@ impl PhysicalQuotaStore {
             child_admin,
             guard,
             directory_costs: None,
-            _child_resources: None,
+            _child_resources: Default::default(),
             _resources: resources,
         })
     }
@@ -259,12 +279,15 @@ impl PhysicalQuotaStore {
         self
     }
 
-    pub(super) fn with_child_resources(mut self, resources: Arc<dyn Send + Sync>) -> Self {
-        self._child_resources = Some(resources);
+    pub(super) fn with_child_resources(
+        mut self,
+        resources: crate::owned_decode::ResourceLoan,
+    ) -> Self {
+        self._child_resources = resources.into();
         self
     }
 
-    fn operation_resources(&self) -> Result<Arc<dyn Send + Sync>, StoreError> {
+    fn operation_resources(&self) -> Result<crate::owned_decode::ResourceLoan, StoreError> {
         self.guard.reserve_resources(
             if self.directory_costs.is_some() { 6 } else { 0 },
             self.directory_costs
@@ -284,49 +307,99 @@ impl PhysicalQuotaStore {
 impl ImmutableBlobBackend for PhysicalQuotaStore {
     fn put_many_if_absent_with_boundary(
         &self,
+        account: &crate::owned_decode::DecodeBudget,
         objects: &[(ContentId, BlobHandle)],
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<PutBatchReceipt, StoreError> {
+        account
+            .verify_live()
+            .map_err(|error| admission_under(account, error))?;
+        if objects.len() > 64 {
+            return Err(StoreError::Quota);
+        }
         boundary()?;
+        account
+            .verify_live()
+            .map_err(|error| admission_under(account, error))?;
         self.guard.verify()?;
         let resources = self.operation_resources()?;
-        let account = super::batch::account()?;
+        let rewrite_names = self.name != self.child.name();
+        let name_bytes = if rewrite_names {
+            (self.name.len() as u64)
+                .checked_mul(objects.len() as u64)
+                .ok_or(StoreError::Quota)?
+        } else {
+            0
+        };
+        let prepared = PreparedResources::new(account, resources, name_bytes)?;
+        // Common managed leaves already use this facade's label. Different
+        // labels move pre-funded final strings rather than growing after COMMIT.
+        let _label_array = rewrite_names
+            .then(|| account.reserve_scratch_array::<String>(objects.len()))
+            .transpose()
+            .map_err(|error| admission_under(account, error))?;
+        let mut labels = if rewrite_names {
+            let mut labels = Vec::new();
+            labels
+                .try_reserve_exact(objects.len())
+                .map_err(|error| allocation_under(account, error))?;
+            for _ in objects {
+                let mut label = String::new();
+                label
+                    .try_reserve_exact(self.name.len())
+                    .map_err(|error| allocation_under(account, error))?;
+                label.push_str(&self.name);
+                labels.push(label);
+            }
+            Some(labels.into_iter())
+        } else {
+            None
+        };
         let mut check = || {
+            account
+                .verify_live()
+                .map_err(|error| admission_under(account, error))?;
             boundary()?;
-            self.guard.verify()
+            account
+                .verify_live()
+                .map_err(|error| admission_under(account, error))?;
+            self.guard.verify()?;
+            account
+                .verify_live()
+                .map_err(|error| admission_under(account, error))
         };
         let mut receipts = self
             .child
-            .put_many_if_absent_with_boundary(objects, &mut check)?;
-        let mut growth_bytes = 0_u64;
-        for receipt in &receipts.receipts {
-            for placement in &receipt.placements {
-                let capacity = placement.backend.capacity();
-                if self.name.len() > capacity {
-                    // String::clone_from may geometrically grow its allocation.
-                    // Retain the replacement extent as well as the leaf's old
-                    // allocation until the final receipt owner closes.
-                    let replacement = capacity
-                        .checked_mul(2)
-                        .ok_or(StoreError::Quota)?
-                        .max(self.name.len())
-                        .max(8);
-                    growth_bytes = growth_bytes
-                        .checked_add(replacement as u64)
-                        .ok_or(StoreError::Quota)?;
+            .put_many_if_absent_with_boundary(account, objects, &mut check)?;
+        receipts.retain_resources(prepared);
+        // Unconsumed prepared labels close inside the check, before a refused
+        // receipt releases the resources that fund those final strings.
+        receipts.check(move |receipts| {
+            if receipts.len() != objects.len() {
+                return Err(StoreError::InvalidComposition {
+                    reason: "physical leaf batch receipt count differs from input",
+                });
+            }
+            for receipt in receipts {
+                check()?;
+                // The checked producer is one physical SQLite leaf. Reject
+                // unexpected composition before consuming any prepared label.
+                if receipt.placements.len() != 1
+                    || receipt.placements[0].backend != self.child.name()
+                {
+                    return Err(StoreError::InvalidComposition {
+                        reason: "physical leaf batch placement is inconsistent",
+                    });
+                }
+                if let Some(labels) = &mut labels {
+                    receipt.placements[0].backend =
+                        labels.next().ok_or(StoreError::InvalidComposition {
+                            reason: "physical leaf batch label count is inconsistent",
+                        })?;
                 }
             }
-        }
-        receipts.retain_resources(&account, resources, growth_bytes)?;
-        for receipt in &mut receipts.receipts {
-            check()?;
-            for placement in &mut receipt.placements {
-                placement.backend.clone_from(&self.name);
-            }
-        }
-        check()?;
-        account.verify_live().map_err(super::batch::admission)?;
-        Ok(receipts)
+            check()
+        })
     }
 
     fn name(&self) -> &str {
@@ -352,6 +425,44 @@ impl ImmutableBlobBackend for PhysicalQuotaStore {
         self.child.contains(id)
     }
 
+    fn read_with_boundary(
+        &self,
+        account: &crate::owned_decode::DecodeBudget,
+        id: ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        let original = account.clone();
+        let mut check = || {
+            super::checked_reader::check(&original, boundary)?;
+            self.guard.verify()
+        };
+        check()?;
+        let costs = self.directory_costs;
+        let credit = original
+            .reserve_scratch_bytes(deferred_source_metadata_bytes() as u64)
+            .map_err(|error| super::batch::admission_under(&original, error))?;
+        let resources = self.guard.reserve_resources(
+            u64::from(costs.is_some()),
+            (deferred_source_metadata_bytes() as u64)
+                .checked_add(costs.map_or(0, |costs| costs.source_bytes))
+                .ok_or(StoreError::Quota)?,
+        )?;
+        let handle = self
+            .child
+            .read_with_boundary(&original, id, range, &mut check)?;
+        check()?;
+        let source = Arc::new(PhysicalQuotaBlobSource {
+            handle: handle.clone(),
+            guard: self.guard.clone(),
+            reader_bytes: costs.map_or(0, |costs| costs.reader_bytes),
+            original: Some(original),
+            _credit: Some(credit),
+            _resources: resources,
+        });
+        Ok(handle.with_observed_source(source))
+    }
+
     fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
         self.guard.verify()?;
         let costs = self.directory_costs;
@@ -366,6 +477,8 @@ impl ImmutableBlobBackend for PhysicalQuotaStore {
             handle: handle.clone(),
             guard: self.guard.clone(),
             reader_bytes: costs.map_or(0, |costs| costs.reader_bytes),
+            original: None,
+            _credit: None,
             _resources: resources,
         });
         Ok(handle.with_observed_source(source))
@@ -386,7 +499,9 @@ struct PhysicalQuotaBlobSource {
     handle: BlobHandle,
     guard: Arc<dyn StorePhysicalQuotaGuard>,
     reader_bytes: u64,
-    _resources: Arc<dyn Send + Sync>,
+    original: Option<crate::owned_decode::DecodeBudget>,
+    _credit: Option<crate::owned_decode::DecodeScratch>,
+    _resources: crate::owned_decode::ResourceLoan,
 }
 
 pub(super) const fn deferred_source_metadata_bytes() -> usize {
@@ -394,16 +509,53 @@ pub(super) const fn deferred_source_metadata_bytes() -> usize {
 }
 
 impl BlobSource for PhysicalQuotaBlobSource {
-    fn read_all_with_boundary(
+    fn checked_read_access(&self) -> super::CheckedReadAccess {
+        match self.handle.checked_read_access() {
+            super::CheckedReadAccess::Unsupported => super::CheckedReadAccess::Unsupported,
+            // This wrapper preserves physical checks only through its owning
+            // reader. A whole-only child still must support checked opening;
+            // otherwise the single owning attempt refuses without raw I/O.
+            _ => super::CheckedReadAccess::Owning,
+        }
+    }
+
+    fn open_with_boundary(
         &self,
-        maximum: u64,
+        caller: &crate::owned_decode::DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
-    ) -> Result<OwnedBlobBytes, StoreError> {
+    ) -> Result<super::CheckedReader, StoreError> {
+        let original = match &self.original {
+            Some(original) => original.clone(),
+            None => caller.clone(),
+        };
         let mut check = || {
-            boundary()?;
+            super::checked_reader::check_pair(caller, &original, boundary)?;
             self.guard.verify()
         };
-        self.handle.read_all_with_boundary(maximum, &mut check)
+        check()?;
+        let credit = original
+            .reserve_scratch_array::<PhysicalCheckedReader>(1)
+            .map_err(|error| super::batch::admission_under(&original, error))?;
+        let resources = self.guard.reserve_resources(
+            0,
+            (std::mem::size_of::<PhysicalCheckedReader>() as u64)
+                .checked_add(self.reader_bytes)
+                .ok_or(StoreError::Quota)?,
+        )?;
+        let reader = super::checked_reader::open_handle(&self.handle, caller, &mut check)?;
+        check()?;
+        Ok(super::CheckedReader::admitted(
+            Box::new(PhysicalCheckedReader {
+                reader,
+                guard: self.guard.clone(),
+                original,
+                caller: caller.clone(),
+                failed: false,
+                _source_resources: self._resources.clone(),
+            }),
+            credit,
+            resources.into(),
+        ))
     }
 
     fn logical_length(&self) -> u64 {
@@ -431,8 +583,8 @@ impl BlobSource for PhysicalQuotaBlobSource {
 struct PhysicalQuotaReader {
     reader: Box<dyn Read + Send>,
     guard: Arc<dyn StorePhysicalQuotaGuard>,
-    _source_resources: Arc<dyn Send + Sync>,
-    _resources: Arc<dyn Send + Sync>,
+    _source_resources: crate::owned_decode::ResourceLoan,
+    _resources: crate::owned_decode::ResourceLoan,
 }
 
 pub(super) const fn deferred_reader_metadata_bytes() -> usize {
@@ -457,10 +609,13 @@ impl BlobStoreAdmin for PhysicalQuotaStore {
     ) -> Result<Box<dyn BlobInventoryFence + '_>, StoreError> {
         let account = super::batch::account()?;
         boundary()?;
+        account
+            .verify_live()
+            .map_err(|error| admission_under(&account, error))?;
         self.guard.verify()?;
         let credit = account
             .reserve_scratch_array::<PhysicalQuotaInventoryFence<'_>>(1)
-            .map_err(super::batch::admission)?;
+            .map_err(|error| admission_under(&account, error))?;
         // The checked SQL child opens exactly one retained flock descriptor.
         // Opaque children still refuse their checked acquisition; no ordinary
         // acquisition is substituted after that refusal.
@@ -472,14 +627,23 @@ impl BlobStoreAdmin for PhysicalQuotaStore {
                     .map_or(0, |costs| costs.operation_bytes),
         )?;
         let mut original = || {
-            account.verify_live().map_err(super::batch::admission)?;
+            account
+                .verify_live()
+                .map_err(|error| admission_under(&account, error))?;
             boundary()?;
+            account
+                .verify_live()
+                .map_err(|error| admission_under(&account, error))?;
             self.guard.verify()?;
-            account.verify_live().map_err(super::batch::admission)
+            account
+                .verify_live()
+                .map_err(|error| admission_under(&account, error))
         };
-        let mut child = self
-            .child_admin
-            .acquire_inventory_fence_with_boundary(&mut original)?;
+        let mut child = {
+            let _scope = account.enter();
+            self.child_admin
+                .acquire_inventory_fence_with_boundary(&mut original)?
+        };
         if let Err(error) = original() {
             return Err(child.retain_checked_failure(error));
         }
@@ -509,7 +673,7 @@ struct PhysicalQuotaInventoryFence<'a> {
     store: &'a PhysicalQuotaStore,
     child: Box<dyn BlobInventoryFence + 'a>,
     checked_account: Option<DecodeBudget>,
-    _resources: Arc<dyn Send + Sync>,
+    _resources: crate::owned_decode::ResourceLoan,
     _checked_credit: Option<DecodeScratch>,
 }
 
@@ -531,15 +695,27 @@ impl BlobInventoryFence for PhysicalQuotaInventoryFence<'_> {
                     capability: "ordinary-fence-has-no-checked-origin",
                 })?;
             let _scope = account.enter();
-            account.verify_live().map_err(super::batch::admission)?;
+            account
+                .verify_live()
+                .map_err(|error| admission_under(account, error))?;
             boundary()?;
+            account
+                .verify_live()
+                .map_err(|error| admission_under(account, error))?;
             self.store.guard.verify()?;
             let prepared = PreparedResources::new(account, self._resources.clone(), 0)?;
             let mut original = || {
-                account.verify_live().map_err(super::batch::admission)?;
+                account
+                    .verify_live()
+                    .map_err(|error| admission_under(account, error))?;
                 boundary()?;
+                account
+                    .verify_live()
+                    .map_err(|error| admission_under(account, error))?;
                 self.store.guard.verify()?;
-                account.verify_live().map_err(super::batch::admission)
+                account
+                    .verify_live()
+                    .map_err(|error| admission_under(account, error))
             };
             let receipt = self
                 .child
@@ -564,8 +740,13 @@ impl BlobInventoryFence for PhysicalQuotaInventoryFence<'_> {
                     capability: "ordinary-fence-has-no-checked-origin",
                 })?;
             let _scope = account.enter();
-            account.verify_live().map_err(super::batch::admission)?;
+            account
+                .verify_live()
+                .map_err(|error| admission_under(account, error))?;
             boundary()?;
+            account
+                .verify_live()
+                .map_err(|error| admission_under(account, error))?;
             self.store.guard.verify()?;
             let prepared = PreparedResources::new(
                 account,
@@ -574,13 +755,20 @@ impl BlobInventoryFence for PhysicalQuotaInventoryFence<'_> {
             )?;
             let mut name = String::new();
             name.try_reserve_exact(self.store.name.len())
-                .map_err(super::batch::allocation)?;
+                .map_err(|error| allocation_under(account, error))?;
             name.push_str(&self.store.name);
             let mut original = || {
-                account.verify_live().map_err(super::batch::admission)?;
+                account
+                    .verify_live()
+                    .map_err(|error| admission_under(account, error))?;
                 boundary()?;
+                account
+                    .verify_live()
+                    .map_err(|error| admission_under(account, error))?;
                 self.store.guard.verify()?;
-                account.verify_live().map_err(super::batch::admission)
+                account
+                    .verify_live()
+                    .map_err(|error| admission_under(account, error))
             };
             let receipt = self
                 .child
@@ -644,3 +832,48 @@ impl BlobInventoryFence for PhysicalQuotaInventoryFence<'_> {
             .map(|receipt| self.store.rewrite_receipt(receipt))
     }
 }
+
+// Both child and physical source loans outlive every deferred checked read.
+struct PhysicalCheckedReader {
+    reader: super::CheckedReader,
+    guard: Arc<dyn StorePhysicalQuotaGuard>,
+    original: crate::owned_decode::DecodeBudget,
+    caller: crate::owned_decode::DecodeBudget,
+    failed: bool,
+    _source_resources: crate::owned_decode::ResourceLoan,
+}
+
+impl super::checked_reader::AuditedCheckedBlobReader for PhysicalCheckedReader {}
+
+impl super::CheckedBlobReader for PhysicalCheckedReader {
+    fn full_eof_identity(&self) -> Option<ContentId> {
+        self.reader.full_eof_identity()
+    }
+
+    fn original_account(&self) -> &crate::owned_decode::DecodeBudget {
+        &self.original
+    }
+
+    fn read_with_boundary(
+        &mut self,
+        output: &mut [u8],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<usize, StoreError> {
+        if self.failed {
+            return Err(super::checked_reader::failed());
+        }
+        let original = &self.original;
+        let mut check = || {
+            super::checked_reader::check_pair(&self.caller, original, boundary)?;
+            self.guard.verify()
+        };
+        let result = self.reader.read_with_boundary(output, &mut check);
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+}
+
+#[cfg(test)]
+mod checked_capability_tests;

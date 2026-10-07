@@ -452,9 +452,9 @@ impl GuardedCampaignRunDeployment {
             None,
             resources,
         )
-        .map_err(|source| CliError::InputAuthority(Box::new(source)))?;
+        .map_err(CliError::ProviderAdmission)?;
         let binder = crucible_daemon::LinuxProjectQuotaBinder::new(service)
-            .map_err(|source| CliError::InputAuthority(Box::new(source)))?;
+            .map_err(CliError::ProviderAdmission)?;
         binder
             .bind(
                 &self.policy.ram_catalog_root,

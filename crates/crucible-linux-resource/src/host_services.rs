@@ -133,6 +133,44 @@ impl HostServiceAllocator {
         descriptors: u64,
         resident_bytes: u64,
     ) -> Result<HostServiceLease, HostServiceError> {
+        self.reserve_completed(
+            tasks,
+            descriptors,
+            resident_bytes,
+            ServiceReservation::into_lease,
+        )
+    }
+
+    /// Reserves byte credit in both existing accounts before allocating leases.
+    ///
+    /// Both charges are admitted as stack-owned reservations. Only after the
+    /// second grant succeeds are their shared lease controls allocated. An
+    /// identical account is charged twice, under separate lock acquisitions.
+    /// This grants no capacity beyond either authored allocator ceiling.
+    ///
+    /// # Errors
+    /// Refuses empty requests, exhausted capacity, overflow, or poisoned
+    /// ownership. A second refusal releases the first charge without creating
+    /// either lease control or retaining an accounting lock during rollback.
+    pub fn reserve_paired_bytes(
+        &self,
+        other: &Self,
+        bytes: u64,
+    ) -> Result<(HostServiceLease, HostServiceLease), HostServiceError> {
+        let first = self.reserve_completed(0, 0, bytes, std::convert::identity)?;
+        let second = other.reserve_completed(0, 0, bytes, std::convert::identity)?;
+        Ok((first.into_lease(), second.into_lease()))
+    }
+
+    // Only the fixed lease and identity completions are used here. Their
+    // owner remains live before commit, through unlock, and into completion.
+    fn reserve_completed<T>(
+        &self,
+        tasks: u64,
+        descriptors: u64,
+        resident_bytes: u64,
+        complete: impl FnOnce(ServiceReservation) -> T,
+    ) -> Result<T, HostServiceError> {
         if tasks == 0 && descriptors == 0 && resident_bytes == 0 {
             return Err(HostServiceError::InvalidContract);
         }
@@ -159,16 +197,19 @@ impl HostServiceAllocator {
         {
             return Err(HostServiceError::CapacityExhausted);
         }
-        let reservation = Arc::new(ServiceReservation {
+        let reservation = ServiceReservation {
             capacity: Arc::clone(&self.capacity),
             tasks,
             descriptors,
             resident_bytes,
-        });
+        };
         used.tasks = new_tasks;
         used.descriptors = new_descriptors;
         used.resident_bytes = new_resident_bytes;
-        Ok(HostServiceLease { reservation })
+        // A returned owner may immediately roll back. It must never hold the
+        // mutex that its Drop needs to release its original charge.
+        drop(used);
+        Ok(complete(reservation))
     }
 }
 
@@ -178,6 +219,23 @@ struct ServiceReservation {
     tasks: u64,
     descriptors: u64,
     resident_bytes: u64,
+}
+
+impl ServiceReservation {
+    fn into_lease(self) -> HostServiceLease {
+        #[cfg(test)]
+        LEASE_CONTROL_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
+
+        HostServiceLease {
+            reservation: Some(Arc::new(self)),
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    // Witnesses the sole lease-control allocation site, isolated per test.
+    static LEASE_CONTROL_CONSTRUCTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 impl Drop for ServiceReservation {
@@ -198,13 +256,49 @@ impl Drop for ServiceReservation {
 }
 
 /// Retained service resource authority shared by all physical borrowers.
-#[derive(Clone, Debug)]
 #[must_use = "the lease must outlive every descriptor and worker it authorizes"]
 pub struct HostServiceLease {
-    reservation: Arc<ServiceReservation>,
+    reservation: Option<Arc<ServiceReservation>>,
+}
+
+impl Clone for HostServiceLease {
+    fn clone(&self) -> Self {
+        Self {
+            reservation: self.reservation.clone(),
+        }
+    }
+}
+
+impl std::fmt::Debug for HostServiceLease {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HostServiceLease")
+            .field("reservation", self.reservation())
+            .finish()
+    }
+}
+
+impl Drop for HostServiceLease {
+    fn drop(&mut self) {
+        if let Some(reservation) = self.reservation.take() {
+            // Every clone consumes its private Arc this way. The final owner
+            // extracts the charge only after the control allocation closes,
+            // so its original counters cannot be refunded before deallocation.
+            drop(Arc::into_inner(reservation));
+        }
+    }
 }
 
 impl HostServiceLease {
+    fn reservation(&self) -> &ServiceReservation {
+        // Only Drop takes this reference; neither the emptied wrapper nor an
+        // Arc or Weak reference to its reservation can escape to a caller.
+        match &self.reservation {
+            Some(reservation) => reservation,
+            None => unreachable!("a live service lease owns its reservation"),
+        }
+    }
+
     /// Returns the fixed lease value and shared reservation allocation payload.
     ///
     /// This includes the reservation's two Arc counters, but excludes allocator
@@ -218,16 +312,16 @@ impl HostServiceLease {
 
     /// Returns the independently admitted task charge shared by this lease.
     pub fn tasks(&self) -> u64 {
-        self.reservation.tasks
+        self.reservation().tasks
     }
 
     /// Returns the independently admitted descriptor charge shared by this lease.
     pub fn file_descriptors(&self) -> u64 {
-        self.reservation.descriptors
+        self.reservation().descriptors
     }
     /// Returns the independently admitted resident-byte charge shared by this lease.
     pub fn resident_bytes(&self) -> u64 {
-        self.reservation.resident_bytes
+        self.reservation().resident_bytes
     }
 }
 
@@ -237,6 +331,71 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn paired_refusal_allocates_neither_lease_control_and_restores_both_accounts() {
+        for short_first in [true, false] {
+            let first = HostServiceAllocator::new(1, 1, 16 - u64::from(short_first)).unwrap();
+            let second = HostServiceAllocator::new(1, 1, 16 - u64::from(!short_first)).unwrap();
+            LEASE_CONTROL_CONSTRUCTIONS.with(|count| count.set(0));
+
+            assert_eq!(
+                first.reserve_paired_bytes(&second, 16).unwrap_err(),
+                HostServiceError::CapacityExhausted
+            );
+            assert_eq!(LEASE_CONTROL_CONSTRUCTIONS.with(std::cell::Cell::get), 0);
+
+            assert!(
+                first
+                    .reserve_resources(0, 0, first.maximum_resident_bytes())
+                    .is_ok()
+            );
+            assert!(
+                second
+                    .reserve_resources(0, 0, second.maximum_resident_bytes())
+                    .is_ok()
+            );
+        }
+    }
+
+    #[test]
+    fn paired_controls_exist_only_after_both_charges_and_last_alias_releases() {
+        let first = HostServiceAllocator::new(1, 1, 16).unwrap();
+        let second = HostServiceAllocator::new(1, 1, 16).unwrap();
+        LEASE_CONTROL_CONSTRUCTIONS.with(|count| count.set(0));
+        let (first_lease, second_lease) = first.reserve_paired_bytes(&second, 16).unwrap();
+        assert_eq!(LEASE_CONTROL_CONSTRUCTIONS.with(std::cell::Cell::get), 2);
+        assert!(first.reserve_resources(0, 0, 1).is_err());
+        assert!(second.reserve_resources(0, 0, 1).is_err());
+        let first_alias = first_lease.clone();
+        let second_alias = second_lease.clone();
+        drop(first_lease);
+        drop(second_lease);
+        assert!(first.reserve_resources(0, 0, 1).is_err());
+        assert!(second.reserve_resources(0, 0, 1).is_err());
+        drop(first_alias);
+        drop(second_alias);
+        assert!(first.reserve_paired_bytes(&second, 16).is_ok());
+    }
+
+    #[test]
+    fn paired_identical_account_charges_twice_without_lock_or_alias_waiver() {
+        let account = HostServiceAllocator::new(1, 1, 31).unwrap();
+        LEASE_CONTROL_CONSTRUCTIONS.with(|count| count.set(0));
+        assert_eq!(
+            account.reserve_paired_bytes(&account, 16).unwrap_err(),
+            HostServiceError::CapacityExhausted
+        );
+        assert_eq!(LEASE_CONTROL_CONSTRUCTIONS.with(std::cell::Cell::get), 0);
+        assert!(account.reserve_resources(0, 0, 31).is_ok());
+
+        let account = HostServiceAllocator::new(1, 1, 32).unwrap();
+        let pair = account.reserve_paired_bytes(&account, 16).unwrap();
+        assert!(account.reserve_resources(0, 0, 1).is_err());
+        drop(pair);
+        assert!(account.reserve_resources(0, 0, 32).is_ok());
+        assert_eq!(std::mem::size_of::<ServiceReservation>(), 32);
+    }
 
     #[test]
     fn clones_keep_charge_until_the_last_physical_borrower_finishes() {

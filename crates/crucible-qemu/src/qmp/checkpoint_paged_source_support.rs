@@ -59,7 +59,7 @@ impl QemuRamBacking for ImmutableBacking {
         &self,
         region_id: &str,
         page_index: u64,
-        boundary: &mut dyn FnMut() -> Result<(), QemuRamSourceError>,
+        boundary: &mut dyn FnMut() -> Result<(), crate::ram_source::QemuRamReadBoundaryError>,
     ) -> Result<(Vec<u8>, PageProof), QemuRamSourceError> {
         boundary()?;
         let tree = self

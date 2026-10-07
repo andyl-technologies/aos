@@ -536,7 +536,7 @@ pub(crate) trait QemuQmpMachineControlChannel: Send {
     fn performance_observation(
         &mut self,
         _guard: &crucible_linux_resource::host_supervision::HostOperationGuard,
-        _resident: std::sync::Arc<dyn Send + Sync>,
+        _resident: crucible_ram::ResourceLoan,
     ) -> Result<crate::qmp::QemuPerformanceObservation, QemuNodeChannelError> {
         Err(QemuNodeChannelError::new(
             "performance observation",

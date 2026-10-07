@@ -5,6 +5,8 @@
 //! capability separately at construction. The capability remains operational:
 //! its policy and credentials do not enter content or graph identity.
 
+use super::batch::admission_under;
+
 use super::ObjectKind;
 
 use std::collections::BTreeMap;
@@ -170,22 +172,32 @@ impl NamespacedStore {
 impl ImmutableBlobBackend for NamespacedStore {
     fn put_many_if_absent_with_boundary(
         &self,
+        original: &crate::owned_decode::DecodeBudget,
         objects: &[(ContentId, BlobHandle)],
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<PutBatchReceipt, StoreError> {
+        original
+            .verify_live()
+            .map_err(|error| admission_under(original, error))?;
         for (id, _) in objects {
             boundary()?;
+            original
+                .verify_live()
+                .map_err(|error| admission_under(original, error))?;
             self.authorize(StoreNamespaceOperation::Put, *id)?;
         }
         let mut check = || {
             boundary()?;
+            original
+                .verify_live()
+                .map_err(|error| admission_under(original, error))?;
             for (id, _) in objects {
                 self.authorize(StoreNamespaceOperation::Put, *id)?;
             }
             Ok(())
         };
         self.child
-            .put_many_if_absent_with_boundary(objects, &mut check)
+            .put_many_if_absent_with_boundary(original, objects, &mut check)
     }
 
     fn name(&self) -> &str {
@@ -207,6 +219,18 @@ impl ImmutableBlobBackend for NamespacedStore {
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
         self.authorize(StoreNamespaceOperation::Contains, id)?;
         self.child.contains(id)
+    }
+
+    fn read_with_boundary(
+        &self,
+        account: &crate::owned_decode::DecodeBudget,
+        id: ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        boundary()?;
+        self.authorize(StoreNamespaceOperation::Read, id)?;
+        self.child.read_with_boundary(account, id, range, boundary)
     }
 
     fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {

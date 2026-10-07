@@ -12,6 +12,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
+use self::deadline::{OperationDecision, decide_operation, operation_status_from_decision};
+
+mod deadline;
+
 /// Number of classes in the fixed operational budget roster.
 pub const HOST_OPERATION_CLASS_COUNT: usize = 14;
 
@@ -1042,6 +1046,24 @@ impl HostOperationSupervisor {
         outer.state = state.cap_state;
         Ok(status)
     }
+
+    fn evaluate_decision(
+        &self,
+        state: &mut SupervisionState,
+        id: u64,
+    ) -> Result<OperationDecision, HostSupervisionError> {
+        let mut outer = self
+            .shared
+            .outer
+            .lock()
+            .map_err(|_| HostSupervisionError::Unavailable)?;
+        state.cap_revision = outer.revision;
+        state.cap_allowance = outer.allowance;
+        state.cap_state = outer.state;
+        let decision = evaluate_operation_decision(state, id, self.elapsed())?;
+        outer.state = state.cap_state;
+        Ok(decision)
+    }
 }
 
 /// Owned operation guard with live deadline recomputation and wakeable polling.
@@ -1068,11 +1090,11 @@ impl HostOperationGuard {
     /// Returns typed expiration or cancellation instead of a guest failure.
     pub fn wait_slice(&self) -> Result<Duration, HostSupervisionError> {
         let mut state = self.supervisor.lock()?;
-        let status = self.supervisor.evaluate(&mut state, self.id)?;
-        require_running(&status)?;
-        let poll = state.budgets.get(status.class).poll_interval;
-        Ok(status
-            .effective_deadline
+        let decision = self.supervisor.evaluate_decision(&mut state, self.id)?;
+        decision.require_running(self.id)?;
+        let poll = state.budgets.get(decision.class).poll_interval;
+        Ok(decision
+            .deadline
             .map_or(poll, |deadline| poll.min(deadline.remaining)))
     }
 
@@ -1083,11 +1105,11 @@ impl HostOperationGuard {
     /// Returns typed operational failure when a live allowance expires.
     pub fn wait_for_change(&self) -> Result<(), HostSupervisionError> {
         let mut state = self.supervisor.lock()?;
-        let status = self.supervisor.evaluate(&mut state, self.id)?;
-        require_running(&status)?;
-        let poll = state.budgets.get(status.class).poll_interval;
-        let slice = status
-            .effective_deadline
+        let decision = self.supervisor.evaluate_decision(&mut state, self.id)?;
+        decision.require_running(self.id)?;
+        let poll = state.budgets.get(decision.class).poll_interval;
+        let slice = decision
+            .deadline
             .map_or(poll, |deadline| poll.min(deadline.remaining));
         let waited = self
             .supervisor
@@ -1096,7 +1118,10 @@ impl HostOperationGuard {
             .wait_timeout(state, slice)
             .map_err(|_| HostSupervisionError::Unavailable)?;
         drop(waited);
-        require_running(&self.status()?)
+        let mut state = self.supervisor.lock()?;
+        self.supervisor
+            .evaluate_decision(&mut state, self.id)?
+            .require_running(self.id)
     }
 
     /// Records a strictly increasing count of completed required work units.
@@ -1109,7 +1134,9 @@ impl HostOperationGuard {
     pub fn progress(&self, completed_work_units: u64) -> Result<(), HostSupervisionError> {
         let mut state = self.supervisor.lock()?;
         let elapsed = self.supervisor.elapsed();
-        require_running(&self.supervisor.evaluate(&mut state, self.id)?)?;
+        self.supervisor
+            .evaluate_decision(&mut state, self.id)?
+            .require_running(self.id)?;
         let operation = state
             .operations
             .get_mut(&self.id)
@@ -1134,8 +1161,9 @@ impl HostOperationGuard {
     /// Returns failure when expiration or sticky cancellation wins completion.
     pub fn complete(&self) -> Result<HostOperationStatus, HostSupervisionError> {
         let mut state = self.supervisor.lock()?;
-        let status = self.supervisor.evaluate(&mut state, self.id)?;
-        require_running(&status)?;
+        self.supervisor
+            .evaluate_decision(&mut state, self.id)?
+            .require_running(self.id)?;
         let operation = state
             .operations
             .get_mut(&self.id)
@@ -1186,76 +1214,29 @@ fn evaluate_operation(
         .operations
         .get(&id)
         .ok_or(HostSupervisionError::Unavailable)?;
-    let deadline = effective_deadline(state, operation, elapsed);
-    let disposition = if operation.state != HostOperationState::Running {
-        operation.state
-    } else if operation.class != HostOperationClass::Cleanup
-        && state.cap_state != HostOperationState::Running
-    {
-        state.cap_state
-    } else if deadline
-        .as_ref()
-        .is_some_and(|deadline| deadline.remaining.is_zero())
-    {
-        HostOperationState::Expired
-    } else {
-        HostOperationState::Running
-    };
-    let status = HostOperationStatus {
-        operation_id: id,
-        class: operation.class,
-        started_policy_revision: operation.started_revision,
-        applied_policy_revision: state.policy_revision,
-        completed_work_units: operation.completed,
-        outstanding_work_units: operation.required.saturating_sub(operation.completed),
-        progress_kind: progress_kind(operation.class),
-        state: disposition,
-        effective_deadline: deadline,
-    };
+    let decision = decide_operation(state, operation, elapsed);
+    let status = operation_status_from_decision(state, id, operation, decision);
     if let Some(operation) = state.operations.get_mut(&id) {
-        operation.state = disposition;
+        operation.state = decision.state;
     }
     Ok(status)
 }
 
-fn effective_deadline(
-    state: &SupervisionState,
-    operation: &Operation,
+fn evaluate_operation_decision(
+    state: &mut SupervisionState,
+    id: u64,
     elapsed: Duration,
-) -> Option<HostEffectiveDeadline> {
-    let budget = state.budgets.get(operation.class);
-    let mut limits = Vec::with_capacity(3);
-    if let Some(allowance) = budget.progress_timeout {
-        limits.push((
-            allowance.saturating_sub(elapsed.saturating_sub(operation.last_progress)),
-            HostDeadlineSource::Progress(state.policy_revision),
-        ));
+) -> Result<OperationDecision, HostSupervisionError> {
+    refresh_cap(state, elapsed);
+    let operation = state
+        .operations
+        .get(&id)
+        .ok_or(HostSupervisionError::Unavailable)?;
+    let decision = decide_operation(state, operation, elapsed);
+    if let Some(operation) = state.operations.get_mut(&id) {
+        operation.state = decision.state;
     }
-    if let Some(allowance) = budget.total_timeout {
-        limits.push((
-            allowance.saturating_sub(elapsed.saturating_sub(operation.started)),
-            HostDeadlineSource::Total(state.policy_revision),
-        ));
-    }
-    if operation.class != HostOperationClass::Cleanup
-        && let Some(allowance) = state.cap_allowance
-    {
-        limits.push((
-            allowance.saturating_sub(elapsed),
-            HostDeadlineSource::Outer {
-                cap_id: state.cap_id,
-                revision: state.cap_revision,
-            },
-        ));
-    }
-    let remaining = limits.iter().map(|(remaining, _)| *remaining).min()?;
-    let mut sources = Vec::with_capacity(3);
-    sources.extend(
-        limits
-            .into_iter()
-            .filter_map(|(limit, source)| (limit == remaining).then_some(source)),
-    );
-    Some(HostEffectiveDeadline { remaining, sources })
+    Ok(decision)
 }
 
 fn progress_kind(class: HostOperationClass) -> HostProgressKind {

@@ -85,7 +85,7 @@ impl crate::content_store::StorePhysicalQuotaGuard for FixtureRamQuota {
         &self,
         descriptors: u64,
         resident_bytes: u64,
-    ) -> Result<Arc<dyn Send + Sync>, StoreError> {
+    ) -> Result<crate::owned_decode::ResourceLoan, StoreError> {
         self.0.reserve(descriptors, resident_bytes)
     }
 }
@@ -105,7 +105,10 @@ impl crate::content_store::SqliteCatalogOperation for FixtureCatalogOperation {
 }
 
 impl crate::content_store::SqliteCatalogSupervisor for FixtureCatalogSupervisor {
-    fn reserve_resident_bytes(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, StoreError> {
+    fn reserve_resident_bytes(
+        &self,
+        bytes: u64,
+    ) -> Result<crate::owned_decode::ResourceLoan, StoreError> {
         self.0.0.reserve(0, bytes)
     }
 

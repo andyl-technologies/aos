@@ -4,6 +4,8 @@
 //! connection must therefore have an actual native heap ceiling before this
 //! checked route reserves the possible Rust copy. Generic routes are unchanged.
 
+use crate::content_store::batch::{admission_under, allocation_under};
+
 use std::fmt;
 use std::mem::{align_of, size_of};
 
@@ -66,6 +68,7 @@ impl std::error::Error for SqliteDiagnosticError {
 }
 
 pub(in super::super) fn admit(
+    original: &crate::owned_decode::DecodeBudget,
     native_heap: Option<u64>,
     root: Option<&Path>,
 ) -> Result<DecodeScratch, StoreError> {
@@ -77,9 +80,9 @@ pub(in super::super) fn admit(
             capability: "sqlite-diagnostic-reviewed-version",
         });
     }
-    account()?
+    original
         .reserve_scratch_bytes(peak_bytes(heap, root)?)
-        .map_err(admission)
+        .map_err(|error| admission_under(original, error))
 }
 
 fn peak_bytes(native_heap: u64, root: Option<&Path>) -> Result<u64, StoreError> {
@@ -172,10 +175,13 @@ fn lock_path_capacity(root: &Path) -> Result<usize, StoreError> {
         .ok_or(StoreError::Quota)
 }
 
-pub(super) fn lock_path(root: &Path) -> Result<PathBuf, StoreError> {
+pub(super) fn lock_path(
+    original: &crate::owned_decode::DecodeBudget,
+    root: &Path,
+) -> Result<PathBuf, StoreError> {
     let mut path = PathBuf::new();
     path.try_reserve_exact(lock_path_capacity(root)?)
-        .map_err(allocation)?;
+        .map_err(|error| allocation_under(original, error))?;
     path.push(root);
     path.push(LOCK_FILE);
     Ok(path)

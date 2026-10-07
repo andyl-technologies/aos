@@ -251,7 +251,7 @@ pub trait ProductionRamCatalogProvider: Send + Sync {
         &self,
         directory: &Path,
         bytes: u64,
-    ) -> Result<Arc<dyn Send + Sync>, crucible_cas::content_store::StoreError>;
+    ) -> Result<crucible_cas::owned_decode::ResourceLoan, crucible_cas::content_store::StoreError>;
 
     /// Creates or authenticates a catalog directory within the exact quota root.
     ///

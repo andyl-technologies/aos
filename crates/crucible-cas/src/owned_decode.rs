@@ -5,6 +5,8 @@
 //! remains live in [`DecodeCustody`] until the decoded owner closes. Scoped
 //! routing lets compact codecs and nested JSON leaves share one account.
 
+pub use crucible_ram::{ResourceLoan, ResourceLoanSlot};
+
 use std::cell::RefCell;
 use std::error::Error;
 use std::fmt;
@@ -27,7 +29,10 @@ pub trait DecodeResourceAuthority: Send + Sync {
     ///
     /// # Errors
     /// Refuses expired, unavailable or exhausted original resource authority.
-    fn reserve(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, DecodeAdmissionError>;
+    fn reserve(
+        &self,
+        bytes: u64,
+    ) -> Result<crate::owned_decode::ResourceLoan, DecodeAdmissionError>;
 }
 
 /// Retains a typed operational or decoder-accounting refusal.
@@ -78,7 +83,7 @@ impl Error for AccountingRefusal {}
 
 struct State {
     used: u64,
-    receipts: Vec<Arc<dyn Send + Sync>>,
+    receipts: Vec<crate::owned_decode::ResourceLoan>,
     failure: Option<DecodeAdmissionError>,
 }
 
@@ -86,7 +91,7 @@ struct Account {
     state: Mutex<State>,
     authority: Arc<dyn DecodeResourceAuthority>,
     maximum: u64,
-    _initial: Arc<dyn Send + Sync>,
+    _initial: crate::owned_decode::ResourceLoan,
 }
 
 /// Shares one finite independently authored account across a complete decode.
@@ -157,7 +162,7 @@ impl DecodeBudget {
         if let Some(error) = &state.failure {
             return Err(error.clone());
         }
-        let receipt_growth = (4 * std::mem::size_of::<Arc<dyn Send + Sync>>()) as u64;
+        let receipt_growth = (4 * std::mem::size_of::<crate::owned_decode::ResourceLoan>()) as u64;
         let result = bytes
             .checked_add(receipt_growth)
             .and_then(|bytes| state.used.checked_add(bytes).map(|used| (bytes, used)))
@@ -273,9 +278,16 @@ impl DecodeBudget {
 /// guard releases only this temporary extent, never a retained field charge.
 #[must_use]
 pub struct DecodeScratch {
-    receipt: Option<Arc<dyn Send + Sync>>,
+    receipt: crate::owned_decode::ResourceLoanSlot,
     budget: DecodeBudget,
     bytes: u64,
+}
+
+impl DecodeScratch {
+    /// Borrows the original account that paid this allocation's retained loan.
+    pub(crate) fn original_account(&self) -> &DecodeBudget {
+        &self.budget
+    }
 }
 
 impl Drop for DecodeScratch {
@@ -314,7 +326,7 @@ impl DecodeBudget {
         }
         if bytes == 0 {
             return Ok(DecodeScratch {
-                receipt: None,
+                receipt: ResourceLoanSlot::default(),
                 budget: self.clone(),
                 bytes: 0,
             });
@@ -334,7 +346,7 @@ impl DecodeBudget {
             Ok((used, receipt)) => {
                 state.used = used;
                 Ok(DecodeScratch {
-                    receipt: Some(receipt),
+                    receipt: receipt.into(),
                     budget: self.clone(),
                     bytes,
                 })
@@ -530,7 +542,7 @@ pub fn charge_btree_set_entry<T>() -> Result<(), DecodeAdmissionError> {
 
 struct StoreAuthority {
     guard: Arc<dyn crate::content_store::StorePhysicalQuotaGuard>,
-    _resources: Arc<dyn Send + Sync>,
+    _resources: crate::owned_decode::ResourceLoan,
 }
 
 impl DecodeResourceAuthority for StoreAuthority {
@@ -538,7 +550,10 @@ impl DecodeResourceAuthority for StoreAuthority {
         self.guard.verify().map_err(DecodeAdmissionError::new)
     }
 
-    fn reserve(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, DecodeAdmissionError> {
+    fn reserve(
+        &self,
+        bytes: u64,
+    ) -> Result<crate::owned_decode::ResourceLoan, DecodeAdmissionError> {
         self.guard
             .reserve_resources(0, bytes)
             .map_err(DecodeAdmissionError::new)

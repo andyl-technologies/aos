@@ -23,7 +23,7 @@ pub struct Inspection {
     marks: std::sync::Arc<dyn crucible_daemon::campaign_store_composition::ImmutableBlobBackend>,
     boundary:
         Box<dyn FnMut() -> Result<(), crucible_daemon::campaign_store_composition::StoreError>>,
-    _resources: std::sync::Arc<dyn Send + Sync>,
+    _resources: crucible_cas::owned_decode::ResourceLoan,
 }
 
 impl Inspection {

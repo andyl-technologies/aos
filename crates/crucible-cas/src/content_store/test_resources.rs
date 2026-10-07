@@ -39,7 +39,7 @@ impl FixtureResourceBudget {
         &self,
         descriptors: u64,
         resident_bytes: u64,
-    ) -> Result<Arc<dyn Send + Sync>, StoreError> {
+    ) -> Result<crate::owned_decode::ResourceLoan, StoreError> {
         if descriptors == 0 && resident_bytes == 0 {
             return Err(StoreError::Quota);
         }
@@ -57,11 +57,13 @@ impl FixtureResourceBudget {
 
         usage.descriptors = next_descriptors;
         usage.resident_bytes = next_resident;
-        Ok(Arc::new(FixtureResourceLoan {
-            usage: Arc::clone(&self.usage),
-            descriptors,
-            resident_bytes,
-        }))
+        Ok(crate::owned_decode::ResourceLoan::new(
+            FixtureResourceLoan {
+                usage: Arc::clone(&self.usage),
+                descriptors,
+                resident_bytes,
+            },
+        ))
     }
 
     /// Returns currently retained component credits for lifetime assertions.
@@ -98,7 +100,7 @@ fn finite_fixture_loans_refuse_excess_and_retain_until_last_clone() -> Result<()
     let budget = FixtureResourceBudget::new(2, 4096);
     assert!(matches!(budget.reserve(0, 0), Err(StoreError::Quota)));
     let loan = budget.reserve(2, 4096)?;
-    let retained = Arc::clone(&loan);
+    let retained = loan.clone();
     assert!(matches!(budget.reserve(1, 0), Err(StoreError::Quota)));
     assert!(matches!(budget.reserve(0, 1), Err(StoreError::Quota)));
     assert!(matches!(

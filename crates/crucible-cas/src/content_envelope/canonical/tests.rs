@@ -17,7 +17,10 @@ impl DecodeResourceAuthority for Authority {
             .map_err(DecodeAdmissionError::new)
     }
 
-    fn reserve(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, DecodeAdmissionError> {
+    fn reserve(
+        &self,
+        bytes: u64,
+    ) -> Result<crate::owned_decode::ResourceLoan, DecodeAdmissionError> {
         self.0.reserve(0, bytes).map_err(DecodeAdmissionError::new)
     }
 }

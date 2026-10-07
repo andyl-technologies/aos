@@ -33,7 +33,10 @@ impl DecodeResourceAuthority for Authority {
         Ok(())
     }
 
-    fn reserve(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, DecodeAdmissionError> {
+    fn reserve(
+        &self,
+        bytes: u64,
+    ) -> Result<crate::owned_decode::ResourceLoan, DecodeAdmissionError> {
         let previous = self
             .used
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
@@ -43,7 +46,7 @@ impl DecodeResourceAuthority for Authority {
                 DecodeAdmissionError::new(std::io::Error::other("test authority exhausted"))
             })?;
         self.peak.fetch_max(previous + bytes, Ordering::SeqCst);
-        Ok(Arc::new(Credit {
+        Ok(crate::owned_decode::ResourceLoan::new(Credit {
             used: self.used.clone(),
             bytes,
         }))

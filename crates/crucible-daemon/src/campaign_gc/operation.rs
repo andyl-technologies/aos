@@ -13,7 +13,7 @@ use crucible_cas::content_store::{BlobHandle, ImmutableBlobBackend, StoreError, 
 pub struct CampaignGcOperationContext<'a> {
     marks: Arc<dyn ImmutableBlobBackend>,
     boundary: RefCell<&'a mut dyn FnMut() -> Result<(), StoreError>>,
-    _resources: Arc<dyn Send + Sync>,
+    _resources: crucible_cas::owned_decode::ResourceLoan,
 }
 
 impl<'a> CampaignGcOperationContext<'a> {
@@ -54,7 +54,7 @@ impl<'a> CampaignGcOperationContext<'a> {
     pub(super) fn reserve_array<T>(
         &self,
         count: usize,
-    ) -> Result<Arc<dyn Send + Sync>, StoreError> {
+    ) -> Result<crucible_cas::owned_decode::ResourceLoan, StoreError> {
         let bytes = count
             .checked_mul(std::mem::size_of::<T>())
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Vec<T>>()))
@@ -62,7 +62,10 @@ impl<'a> CampaignGcOperationContext<'a> {
         self.reserve_bytes(u64::try_from(bytes).map_err(|_| StoreError::Quota)?)
     }
 
-    pub(super) fn reserve_bytes(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, StoreError> {
+    pub(super) fn reserve_bytes(
+        &self,
+        bytes: u64,
+    ) -> Result<crucible_cas::owned_decode::ResourceLoan, StoreError> {
         self.reserve_resources(0, bytes)
     }
 
@@ -70,14 +73,16 @@ impl<'a> CampaignGcOperationContext<'a> {
         &self,
         descriptors: u64,
         bytes: u64,
-    ) -> Result<Arc<dyn Send + Sync>, StoreError> {
+    ) -> Result<crucible_cas::owned_decode::ResourceLoan, StoreError> {
         self.check()?;
         self.marks
             .metadata_resources()?
             .reserve_resources(descriptors, bytes)
     }
 
-    pub(super) fn reserve_root_accumulator(&self) -> Result<Arc<dyn Send + Sync>, StoreError> {
+    pub(super) fn reserve_root_accumulator(
+        &self,
+    ) -> Result<crucible_cas::owned_decode::ResourceLoan, StoreError> {
         // Every root can occupy each of four sets. Three complete key/link
         // slots per entry conservatively cover the standard B-tree's partially
         // occupied leaf/internal nodes and allocation headers. Manifest-owned

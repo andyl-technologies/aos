@@ -4,6 +4,8 @@ use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 
+use super::shared_cause::{ClosedOperationalCause, SharedOperationalCause};
+
 /// Shares an original operational cause through portable backend error boundaries.
 ///
 /// Type erasure is limited to this implementation-independent error boundary;
@@ -11,33 +13,70 @@ use std::sync::Arc;
 /// Clones share custody, including any native buffers or resource loans owned
 /// by that error, until the final clone closes. Equality identifies the same
 /// cause allocation and is never a guest identity or serialized state input.
-#[derive(Clone, Debug)]
 // crucible-lint: allow erased-error -- the pure backend boundary retains concrete driver causes and shared custody without implementation dependencies.
-pub struct BackendOperationalCause(Arc<dyn Error + Send + Sync>);
+pub struct BackendOperationalCause(Option<Arc<dyn ClosedOperationalCause>>);
 
 impl BackendOperationalCause {
     /// Retains an original typed cause without replacing it with diagnostics.
+    ///
+    /// The caller must fund the complete shared allocation and owned payloads
+    /// before construction. The final observer deallocates the shared control
+    /// before destroying the cause and releasing any original loans it retains.
     #[must_use]
     pub fn new<E: Error + Send + Sync + 'static>(source: E) -> Self {
-        Self(Arc::new(source))
+        SharedOperationalCause::new(source).into_backend_cause()
+    }
+
+    pub(super) fn from_shared<E: Error + Send + Sync + 'static>(source: Arc<E>) -> Self {
+        Self(Some(source))
+    }
+
+    fn shared(&self) -> &Arc<dyn ClosedOperationalCause> {
+        match &self.0 {
+            Some(shared) => shared,
+            None => unreachable!("a live backend cause owns its original error"),
+        }
+    }
+}
+
+impl Clone for BackendOperationalCause {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl Drop for BackendOperationalCause {
+    fn drop(&mut self) {
+        if let Some(shared) = self.0.take() {
+            shared.close();
+        }
+    }
+}
+
+impl fmt::Debug for BackendOperationalCause {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("BackendOperationalCause")
+            .field(self.shared().as_ref().original())
+            .finish()
     }
 }
 
 impl fmt::Display for BackendOperationalCause {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(formatter)
+        fmt::Display::fmt(self.shared().as_ref().original(), formatter)
     }
 }
 
 impl Error for BackendOperationalCause {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        Some(self.0.as_ref())
+        Some(self.shared().as_ref().original())
     }
 }
 
 impl PartialEq for BackendOperationalCause {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
+        Arc::ptr_eq(self.shared(), other.shared())
     }
 }
 

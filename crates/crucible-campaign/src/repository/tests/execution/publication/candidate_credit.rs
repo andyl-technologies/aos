@@ -36,7 +36,10 @@ impl DecodeResourceAuthority for MetadataAuthority {
         Ok(())
     }
 
-    fn reserve(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, DecodeAdmissionError> {
+    fn reserve(
+        &self,
+        bytes: u64,
+    ) -> Result<crucible_cas::owned_decode::ResourceLoan, DecodeAdmissionError> {
         let previous = self
             .0
             .used
@@ -46,10 +49,12 @@ impl DecodeResourceAuthority for MetadataAuthority {
             })
             .map_err(|_| DecodeAdmissionError::new(StoreError::Quota))?;
         self.0.peak.fetch_max(previous + bytes, Ordering::SeqCst);
-        Ok(Arc::new(MetadataLoan {
-            usage: Arc::clone(&self.0),
-            bytes,
-        }))
+        Ok(crucible_cas::owned_decode::ResourceLoan::new(
+            MetadataLoan {
+                usage: Arc::clone(&self.0),
+                bytes,
+            },
+        ))
     }
 }
 

@@ -5,7 +5,10 @@
 //! original operation rather than restarting its deadline.
 
 use std::cell::Cell;
-use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
+use std::sync::{Mutex, MutexGuard, TryLockError};
+
+#[cfg(test)]
+use std::sync::Arc;
 
 use crate::content_store::{ContentId, PlacementReceipt, PutReceipt, StoreError};
 
@@ -79,7 +82,10 @@ pub trait SqliteCatalogSupervisor: Send + Sync {
     ///
     /// # Errors
     /// Refuses exhausted resident entitlement or unavailable ownership.
-    fn reserve_resident_bytes(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, StoreError>;
+    fn reserve_resident_bytes(
+        &self,
+        bytes: u64,
+    ) -> Result<crate::owned_decode::ResourceLoan, StoreError>;
 
     /// Begins an original-start scope in the selected live operation class.
     ///
@@ -282,7 +288,10 @@ mod tests {
     struct BoundedSupervisor(Arc<ResidentBudget>);
 
     impl SqliteCatalogSupervisor for BoundedSupervisor {
-        fn reserve_resident_bytes(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, StoreError> {
+        fn reserve_resident_bytes(
+            &self,
+            bytes: u64,
+        ) -> Result<crate::owned_decode::ResourceLoan, StoreError> {
             let limit = self.0.limit.load(Ordering::Acquire);
             self.0
                 .used
@@ -290,7 +299,7 @@ mod tests {
                     used.checked_add(bytes).filter(|next| *next <= limit)
                 })
                 .map_err(|_| StoreError::Quota)?;
-            Ok(Arc::new(ResidentLoan {
+            Ok(crate::owned_decode::ResourceLoan::new(ResidentLoan {
                 budget: self.0.clone(),
                 bytes,
             }))
@@ -314,7 +323,7 @@ mod tests {
             &self,
             descriptors: u64,
             resident_bytes: u64,
-        ) -> Result<Arc<dyn Send + Sync>, StoreError> {
+        ) -> Result<crate::owned_decode::ResourceLoan, StoreError> {
             self.0.reserve(descriptors, resident_bytes)
         }
 

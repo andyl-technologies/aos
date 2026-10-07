@@ -332,12 +332,12 @@ pub struct LoadedProductionExactCheckpoint {
     ram_root_ids: Vec<ContentId>,
     ram_logical_bytes: u64,
     ram_root_resources: Option<Arc<dyn StorePhysicalQuotaGuard>>,
-    _metadata_credits: Vec<Arc<dyn Send + Sync>>,
+    _metadata_credits: Vec<crucible_cas::owned_decode::ResourceLoan>,
 }
 
 struct ChargedRamRootLease {
     lease: Arc<dyn RamRootLease>,
-    _credit: Arc<dyn Send + Sync>,
+    _credit: crucible_cas::owned_decode::ResourceLoan,
 }
 
 impl RamRootLease for ChargedRamRootLease {
@@ -348,7 +348,7 @@ impl RamRootLease for ChargedRamRootLease {
 
 fn reserve_ram_root_decode(
     authority: Option<&Arc<dyn StorePhysicalQuotaGuard>>,
-) -> Result<Arc<dyn Send + Sync>, ExactCheckpointStoreError> {
+) -> Result<crucible_cas::owned_decode::ResourceLoan, ExactCheckpointStoreError> {
     let authority = authority.ok_or(ExactCheckpointStoreError::UnsupportedBackend {
         capability: "decoded-ram-root-resources",
     })?;
@@ -425,7 +425,7 @@ impl LoadedProductionExactCheckpoint {
                 });
                 let lease = Arc::new(ChargedRamRootLease {
                     lease: identity_lease,
-                    _credit: Arc::clone(&inventory_credit),
+                    _credit: inventory_credit.clone(),
                 });
                 let (store, root) = self.open_paged_ram(sources.len(), lease, boundary)?;
                 binding
@@ -1270,7 +1270,9 @@ impl ExactCheckpointStore {
         let expected_objects = usize::try_from(body.object_count)
             .map_err(|_| invalid_root("production object count is not representable"))?;
         let inventory_bytes = array_bytes::<LoadedProductionExactCheckpoint>(1)?
-            .checked_add(array_bytes::<Arc<dyn Send + Sync>>(credit_count)?)
+            .checked_add(array_bytes::<crucible_cas::owned_decode::ResourceLoan>(
+                credit_count,
+            )?)
             .and_then(|bytes| bytes.checked_add(array_bytes::<Vec<u8>>(index_ids.len()).ok()?))
             .and_then(|bytes| {
                 bytes.checked_add(

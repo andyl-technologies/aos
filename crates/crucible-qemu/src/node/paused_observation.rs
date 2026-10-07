@@ -38,7 +38,7 @@ impl QemuNode {
     pub fn observe_performance_fixture(
         &mut self,
         guard: &crucible_linux_resource::host_supervision::HostOperationGuard,
-        resident: std::sync::Arc<dyn Send + Sync>,
+        resident: crucible_ram::ResourceLoan,
     ) -> Result<crate::qmp::QemuPerformanceObservation, QemuNodeError> {
         self.channels
             .qmp_machine_control

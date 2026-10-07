@@ -24,7 +24,10 @@ impl DecodeResourceAuthority for Authority {
         Ok(())
     }
 
-    fn reserve(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, DecodeAdmissionError> {
+    fn reserve(
+        &self,
+        bytes: u64,
+    ) -> Result<crate::owned_decode::ResourceLoan, DecodeAdmissionError> {
         self.0
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
                 used.checked_add(bytes)
@@ -33,7 +36,10 @@ impl DecodeResourceAuthority for Authority {
             .map_err(|_| {
                 DecodeAdmissionError::new(std::io::Error::other("fixture authority exhausted"))
             })?;
-        Ok(Arc::new(Credit(Arc::clone(&self.0), bytes)))
+        Ok(crate::owned_decode::ResourceLoan::new(Credit(
+            Arc::clone(&self.0),
+            bytes,
+        )))
     }
 }
 

@@ -13,6 +13,7 @@ test-support = ["crucible/test-double"]
 workspace = true
 
 [dependencies]
+crucible-cas = { workspace = true }
 crucible-ram = { workspace = true }
 blake3 = { workspace = true }
 crucible = { path = "../crucible" }

@@ -260,7 +260,10 @@ impl DecodeResourceAuthority for Authority {
         Ok(())
     }
 
-    fn reserve(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, DecodeAdmissionError> {
+    fn reserve(
+        &self,
+        bytes: u64,
+    ) -> Result<crate::owned_decode::ResourceLoan, DecodeAdmissionError> {
         if bytes == self.rejected_bytes {
             self.rejected.fetch_add(1, Ordering::SeqCst);
             return Err(DecodeAdmissionError::new(std::io::Error::other(
@@ -276,7 +279,7 @@ impl DecodeResourceAuthority for Authority {
                     "fixture finite allowance exhausted",
                 ))
             })?;
-        Ok(Arc::new(Credit {
+        Ok(crate::owned_decode::ResourceLoan::new(Credit {
             bytes,
             used: self.used.clone(),
         }))
@@ -288,8 +291,8 @@ fn original_material_refusal_prevents_program_publication() -> Result<(), Box<dy
     let nodes = vec![constant()];
     let exports = vec![id("enabled")];
     // The shared account also reserves its documented receipt-vector overlap.
-    let canonical_reservation =
-        CONSTANT_MATERIAL.len() as u64 + (4 * std::mem::size_of::<Arc<dyn Send + Sync>>()) as u64;
+    let canonical_reservation = CONSTANT_MATERIAL.len() as u64
+        + (4 * std::mem::size_of::<crate::owned_decode::ResourceLoan>()) as u64;
     let authority = Arc::new(Authority {
         rejected_bytes: canonical_reservation,
         rejected: AtomicU64::new(0),

@@ -213,8 +213,7 @@ fn pending_failure(cancel_pending: bool, await_failure: bool) -> Result<(), Box<
         if if cancel_pending {
             matches!(error.source_failure(), QemuRamSourceError::Canceled)
         } else {
-            matches!(error.source_failure(), QemuRamSourceError::WorkerFailed(source)
-                if matches!(source.as_ref(), QemuRamSourceError::Ownership))
+            matches!(error.source_failure(), QemuRamSourceError::Ownership)
         })
     );
     assert!(target.started);

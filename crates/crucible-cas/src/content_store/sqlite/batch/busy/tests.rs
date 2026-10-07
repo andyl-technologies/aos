@@ -1,6 +1,8 @@
 //! Real SQLite lock, durable-outcome, exact restoration and unwind proofs.
 
 use super::*;
+
+mod ram_cause;
 use crate::content_store::StorePhysicalQuotaGuard;
 use crate::owned_decode::DecodeBudget;
 
@@ -56,7 +58,7 @@ fn foreign_write_lock_polls_original_callback_and_restores_exact_timeout() {
     let mut checks = 0;
 
     let error = backend
-        .put_many_if_absent_with_boundary(&super::super::tests::objects(), &mut || {
+        .put_many_if_absent_with_boundary(&account, &super::super::tests::objects(), &mut || {
             checks += 1;
             guard.verify()?;
             if checks == 256 {
@@ -107,8 +109,12 @@ fn actual_commit_busy_cancellation_rolls_back_and_restores_without_new_work() {
     foreign
         .execute_batch("BEGIN; SELECT * FROM objects;")
         .expect("retained SHARED read lock");
-    let credit = diagnostic::admit(backend.maximum_sqlite_heap_bytes, Some(root.path()))
-        .expect("original diagnostic loan");
+    let credit = diagnostic::admit(
+        &account,
+        backend.maximum_sqlite_heap_bytes,
+        Some(root.path()),
+    )
+    .expect("original diagnostic loan");
     let mut connection = backend.lock_connection().expect("actual connection");
     connection
         .busy_timeout(Duration::from_millis(987))
@@ -117,6 +123,7 @@ fn actual_commit_busy_cancellation_rolls_back_and_restores_without_new_work() {
     let mut committing = false;
     let error = diagnostic::retain_failure(credit, || {
         with_zero(
+            &account,
             &mut connection,
             &backend.quarantined,
             &mut || guard.verify(),
@@ -194,8 +201,8 @@ fn only_base_busy_with_active_transaction_is_retryable() {
     let _scope = account.enter();
     let connection = backend.lock_connection().expect("actual connection");
     for (code, transactional) in [(6, false), (261, false), (517, false), (5, true)] {
-        let credit =
-            diagnostic::admit(backend.maximum_sqlite_heap_bytes, None).expect("original copy loan");
+        let credit = diagnostic::admit(&account, backend.maximum_sqlite_heap_bytes, None)
+            .expect("original copy loan");
         let mut statements = 0;
         let error = diagnostic::retain_failure(credit, || {
             retry(
@@ -231,11 +238,16 @@ fn committed_outcome_survives_final_receipt_failure_and_releases_last_credit() {
     }
     let (root, guard, backend, account) = backend();
     let entered = account.enter();
-    let credit = diagnostic::admit(backend.maximum_sqlite_heap_bytes, Some(root.path()))
-        .expect("original copy loan");
+    let credit = diagnostic::admit(
+        &account,
+        backend.maximum_sqlite_heap_bytes,
+        Some(root.path()),
+    )
+    .expect("original copy loan");
     let mut connection = backend.lock_connection().expect("actual connection");
     let error = diagnostic::retain_failure(credit, || {
         let accepted = with_zero(
+            &account,
             &mut connection,
             &backend.quarantined,
             &mut || guard.verify(),
@@ -308,14 +320,19 @@ fn dual_cleanup_failure_retains_causes_and_quarantines_every_alias() {
     let mut fence = backend
         .acquire_inventory_fence()
         .expect("previously issued fence");
-    let credit = diagnostic::admit(backend.maximum_sqlite_heap_bytes, Some(root.path()))
-        .expect("actual copy loan");
+    let credit = diagnostic::admit(
+        &account,
+        backend.maximum_sqlite_heap_bytes,
+        Some(root.path()),
+    )
+    .expect("actual copy loan");
     let mut connection = backend
         .read_connection
         .lock()
         .expect("distinct actual reader connection");
     let error = diagnostic::retain_failure(credit, || {
         with_cleanup(
+            &account,
             &mut connection,
             &backend.quarantined,
             &mut || guard.verify(),
@@ -360,7 +377,7 @@ fn dual_cleanup_failure_retains_causes_and_quarantines_every_alias() {
         Err(StoreError::Unavailable)
     ));
     assert!(matches!(
-        backend.put_many_if_absent_with_boundary(&[], &mut || guard.verify()),
+        backend.put_many_if_absent_with_boundary(&account, &[], &mut || guard.verify()),
         Err(StoreError::Unavailable)
     ));
 }
@@ -372,11 +389,16 @@ fn restore_failure_after_real_commit_never_erases_committed_outcome() {
     }
     let (root, guard, backend, account) = backend();
     let _scope = account.enter();
-    let credit = diagnostic::admit(backend.maximum_sqlite_heap_bytes, Some(root.path()))
-        .expect("actual copy loan");
+    let credit = diagnostic::admit(
+        &account,
+        backend.maximum_sqlite_heap_bytes,
+        Some(root.path()),
+    )
+    .expect("actual copy loan");
     let mut connection = backend.lock_connection().expect("actual connection");
     let error = diagnostic::retain_failure(credit, || {
         with_cleanup(
+            &account,
             &mut connection,
             &backend.quarantined,
             &mut || guard.verify(),
@@ -418,11 +440,16 @@ fn unwind_after_zero_quarantines_without_hidden_cleanup_or_timeout_reset() {
     let mut connection = backend
         .lock_connection()
         .expect("actual retained connection");
-    let credit = diagnostic::admit(backend.maximum_sqlite_heap_bytes, Some(root.path()))
-        .expect("actual copy loan");
+    let credit = diagnostic::admit(
+        &account,
+        backend.maximum_sqlite_heap_bytes,
+        Some(root.path()),
+    )
+    .expect("actual copy loan");
     let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _ = diagnostic::retain_failure(credit, || {
             with_zero(
+                &account,
                 &mut connection,
                 &backend.quarantined,
                 &mut || guard.verify(),
@@ -479,7 +506,7 @@ fn checked_source_foreign_exclusive_lock_uses_original_callback_and_timeout() {
     let mut checks = 0;
 
     let error = source
-        .read_all_with_boundary(1024, &mut || {
+        .read_all_with_boundary(&account, 1024, &mut || {
             checks += 1;
             guard.verify()?;
             if checks == 64 {
@@ -525,12 +552,17 @@ fn actual_base_busy_retry_keeps_transaction_and_commits_once_after_release() {
         .expect("held actual writer lock");
     let attempts = std::cell::Cell::new(0);
     let mut released = false;
-    let credit = diagnostic::admit(backend.maximum_sqlite_heap_bytes, Some(root.path()))
-        .expect("original copy loan");
+    let credit = diagnostic::admit(
+        &account,
+        backend.maximum_sqlite_heap_bytes,
+        Some(root.path()),
+    )
+    .expect("original copy loan");
     let mut connection = backend.lock_connection().expect("original connection");
 
     diagnostic::retain_failure(credit, || {
         with_zero(
+            &account,
             &mut connection,
             &backend.quarantined,
             &mut || guard.verify(),
@@ -595,11 +627,16 @@ fn successful_body_cannot_acknowledge_rows_that_cleanup_would_roll_back() {
     }
     let (root, guard, backend, account) = backend();
     let _scope = account.enter();
-    let credit = diagnostic::admit(backend.maximum_sqlite_heap_bytes, Some(root.path()))
-        .expect("original loan");
+    let credit = diagnostic::admit(
+        &account,
+        backend.maximum_sqlite_heap_bytes,
+        Some(root.path()),
+    )
+    .expect("original loan");
     let mut connection = backend.lock_connection().expect("actual connection");
     let error = diagnostic::retain_failure(credit, || {
         with_zero(
+            &account,
             &mut connection,
             &backend.quarantined,
             &mut || guard.verify(),
@@ -644,12 +681,17 @@ fn callback_busy_after_metadata_update_is_not_retried_as_sql() {
     }
     let (root, guard, backend, account) = backend();
     let _scope = account.enter();
-    let credit = diagnostic::admit(backend.maximum_sqlite_heap_bytes, Some(root.path()))
-        .expect("original loan");
+    let credit = diagnostic::admit(
+        &account,
+        backend.maximum_sqlite_heap_bytes,
+        Some(root.path()),
+    )
+    .expect("original loan");
     let mut connection = backend.lock_connection().expect("actual connection");
     let mut callbacks = 0;
     let error = diagnostic::retain_failure(credit, || {
         with_zero(
+            &account,
             &mut connection,
             &backend.quarantined,
             &mut || guard.verify(),
@@ -709,7 +751,7 @@ fn last_quarantine_owner_closes_before_original_backend_credit() {
     struct CreditObserver {
         marker: std::sync::Weak<AtomicBool>,
         released: Arc<AtomicBool>,
-        _original: Arc<dyn Send + Sync>,
+        _original: crate::owned_decode::ResourceLoan,
     }
 
     impl Drop for CreditObserver {
@@ -730,11 +772,12 @@ fn last_quarantine_owner_closes_before_original_backend_credit() {
             .resident_lease
             .take()
             .expect("actual original backend resident loan");
-        backend.resident_lease = Some(Arc::new(CreditObserver {
+        backend.resident_lease = crate::owned_decode::ResourceLoan::new(CreditObserver {
             marker: Arc::downgrade(&backend.quarantined),
             released: Arc::clone(&released),
             _original: original,
-        }));
+        })
+        .into();
 
         if last_owner == "backend" {
             drop(backend);

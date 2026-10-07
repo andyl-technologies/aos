@@ -14,6 +14,7 @@ use crate::owned_decode::DecodeBudget;
 
 use super::*;
 
+mod checked_sources;
 mod hash_reuse;
 mod record_prepay;
 
@@ -84,7 +85,7 @@ impl StorePhysicalQuotaGuard for ObservedQuota {
         &self,
         descriptors: u64,
         bytes: u64,
-    ) -> Result<Arc<dyn Send + Sync>, StoreError> {
+    ) -> Result<crate::owned_decode::ResourceLoan, StoreError> {
         self.verify()?;
         self.reservations.fetch_add(1, Ordering::SeqCst);
         let result = self.resources.reserve(descriptors, bytes);

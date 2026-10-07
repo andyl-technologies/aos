@@ -19,7 +19,7 @@ pub(in crate::packaged_qemu_executor) struct GuardedCampaignStorage {
     pub(in crate::packaged_qemu_executor) ref_admin:
         Arc<dyn crucible_cas::content_store::RefStoreAdmin>,
     pub(in crate::packaged_qemu_executor) quota: Arc<dyn StorePhysicalQuotaGuard>,
-    _resources: Arc<dyn Send + Sync>,
+    _resources: crucible_cas::owned_decode::ResourceLoan,
 }
 
 impl CatalogService {

@@ -15,7 +15,8 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use crucible_linux_resource::host_supervision::{
-    HostOperationClass, HostOperationGuard, HostOperationSupervisor, HostSupervisionError,
+    HostOperationClass, HostOperationGuard, HostOperationState, HostOperationSupervisor,
+    HostSupervisionError,
 };
 use crucible_protocol::ram_page::{
     RAM_PAGE_REQUEST_BYTES, RamPageBinding, RamPageProtocolError, RamPageRequest, RamPageResponse,
@@ -23,6 +24,9 @@ use crucible_protocol::ram_page::{
 };
 use crucible_ram::{PageProof, RootRecord, Scope};
 use thiserror::Error;
+
+mod worker_failure;
+pub use worker_failure::QemuRamWorkerFailure;
 
 const SOURCE_STACK_BYTES: usize = 256 * 1024;
 
@@ -55,7 +59,7 @@ pub trait QemuRamBacking: Send + Sync {
         &self,
         region_id: &str,
         page_index: u64,
-        boundary: &mut dyn FnMut() -> Result<(), QemuRamSourceError>,
+        boundary: &mut dyn FnMut() -> Result<(), QemuRamReadBoundaryError>,
     ) -> Result<(Vec<u8>, PageProof), QemuRamSourceError>;
 
     /// Takes one authored transport adversary after normal page authentication.
@@ -86,6 +90,48 @@ pub enum QemuRamResponseFault {
     StaleSourceGeneration,
 }
 
+/// Reports the actual native page worker's closed operational boundary refusal.
+#[derive(Debug, Error)]
+pub enum QemuRamReadBoundaryError {
+    /// Sticky source cancellation stopped the current backing read.
+    #[error("RAM source canceled")]
+    Canceled,
+    /// The same original page-in operation's supervision refused continuation.
+    #[error(transparent)]
+    Supervision(#[from] HostSupervisionError),
+}
+
+impl QemuRamReadBoundaryError {
+    /// Returns the original operational category without diagnostic parsing.
+    #[must_use]
+    pub fn operational_kind(&self) -> crucible::BackendOperationalFailureKind {
+        use crucible::BackendOperationalFailureKind as Kind;
+        match self {
+            Self::Canceled
+            | Self::Supervision(HostSupervisionError::Terminal {
+                state: HostOperationState::Canceled,
+            }) => Kind::Canceled,
+            Self::Supervision(
+                HostSupervisionError::DeadlineExpired { .. }
+                | HostSupervisionError::Terminal {
+                    state: HostOperationState::Expired,
+                },
+            ) => Kind::Expired,
+            Self::Supervision(HostSupervisionError::CapacityExhausted) => Kind::CapacityExhausted,
+            Self::Supervision(_) => Kind::Terminal,
+        }
+    }
+}
+
+impl From<QemuRamReadBoundaryError> for QemuRamSourceError {
+    fn from(source: QemuRamReadBoundaryError) -> Self {
+        match source {
+            QemuRamReadBoundaryError::Canceled => Self::Canceled,
+            QemuRamReadBoundaryError::Supervision(source) => Self::Supervision(source),
+        }
+    }
+}
+
 /// A typed operational source failure, separate from guest outcomes.
 #[derive(Debug, Error)]
 pub enum QemuRamSourceError {
@@ -103,6 +149,17 @@ pub enum QemuRamSourceError {
         /// Original store error without diagnostic conversion or clone loss.
         #[source]
         source: crucible::BackendOperationalCause,
+    },
+    /// Complete RAM storage and cleanup failure from a native backing read.
+    #[error("RAM backing lookup failed: {source}")]
+    RamBackingFailure {
+        /// Original first refusal category, or the complete storage category.
+        kind: crucible::BackendOperationalFailureKind,
+        /// Complete RAM error, including actual SQL outcome and cleanup causes.
+        #[source]
+        source: crucible_cas::ram::RamStoreError,
+        /// First original page worker boundary refusal, if storage also failed.
+        first: Option<QemuRamReadBoundaryError>,
     },
     /// A logical proof failed verification against the admitted root.
     #[error("RAM source proof validation failed: {0}")]
@@ -124,7 +181,7 @@ pub enum QemuRamSourceError {
     WorkerPanicked,
     /// The original completed worker failure remains shared by every observer.
     #[error("RAM source worker failed: {0}")]
-    WorkerFailed(#[source] Arc<QemuRamSourceError>),
+    WorkerFailed(#[source] QemuRamWorkerFailure),
     /// Explicit host service task or descriptor admission failed.
     #[error(transparent)]
     Services(#[from] crucible_linux_resource::host_services::HostServiceError),
@@ -137,9 +194,9 @@ pub struct QemuRamSourceService {
     backing: Arc<dyn QemuRamBacking>,
     cancellation: Arc<AtomicBool>,
     wake: UnixStream,
-    worker: Option<JoinHandle<Result<(), Arc<QemuRamSourceError>>>>,
+    worker: Option<JoinHandle<Result<(), QemuRamWorkerFailure>>>,
     supervisor: HostOperationSupervisor,
-    failure: Arc<Mutex<Option<Arc<QemuRamSourceError>>>>,
+    failure: Arc<Mutex<Option<QemuRamWorkerFailure>>>,
     service_lease: crucible_linux_resource::host_services::HostServiceLease,
     launch_join: Option<crate::launch_cleanup::LaunchSourceJoin>,
 }
@@ -197,11 +254,13 @@ impl QemuRamSourceService {
         // Three response envelopes cover the page, decoded/encoded proof and
         // transport overlap. The backing's predecode credit owns its retained
         // root; bounded CAS traversal scratch has a separate node entitlement.
+        let worker_metadata_bytes = QemuRamWorkerFailure::startup_metadata_bytes()?;
         let service_lease = services.reserve_resources(
             1,
             2,
             SOURCE_STACK_BYTES as u64
-                + 3 * crucible_protocol::ram_page::RAM_PAGE_MAX_RESPONSE_BYTES as u64,
+                + 3 * crucible_protocol::ram_page::RAM_PAGE_MAX_RESPONSE_BYTES as u64
+                + worker_metadata_bytes,
         )?;
         let worker_service_lease = service_lease.clone();
         let wake = socket.try_clone()?;
@@ -216,28 +275,23 @@ impl QemuRamSourceService {
             .map(crate::launch_cleanup::LaunchCleanup::source_join)
             .transpose()
             .map_err(|_| QemuRamSourceError::Ownership)?;
+        let worker_scope =
+            worker_failure::WorkerScope::new(worker_failure, worker_service_lease, cleanup);
         let worker = thread::Builder::new()
             .name("crucible-ram-source".to_owned())
             .stack_size(SOURCE_STACK_BYTES)
             .spawn(move || {
-                // This last borrower closes after the socket, backing read,
-                // and thread's service lease, even if the handle is detached.
-                let _cleanup = cleanup;
-                let _service_lease = worker_service_lease;
+                // The backing, cancellation and supervision arguments close
+                // before this stack owner, including on unwind. Its inventory
+                // control closes before its loan; cleanup remains last.
                 let result = serve_pages(
                     socket,
                     worker_backing,
                     binding,
                     worker_cancellation,
                     worker_supervisor,
-                )
-                .map_err(Arc::new);
-                if let Err(error) = &result
-                    && let Ok(mut failure) = worker_failure.lock()
-                {
-                    *failure = Some(Arc::clone(error));
-                }
-                result
+                );
+                worker_scope.finish(result)
             });
         let worker = match worker {
             Ok(worker) => worker,
@@ -281,7 +335,7 @@ impl QemuRamSourceService {
             QemuRamSourceError::Backing("source failure inventory unavailable".to_owned())
         })?;
         if let Some(error) = &*failure {
-            return Err(QemuRamSourceError::WorkerFailed(Arc::clone(error)));
+            return Err(QemuRamSourceError::WorkerFailed(error.clone()));
         }
         if self.cancellation.load(Ordering::Acquire) {
             return Err(QemuRamSourceError::Canceled);
@@ -459,7 +513,7 @@ fn serve_pages(
             .map_err(|_| QemuRamSourceError::Ownership)?;
         let mut boundary = || {
             if cancellation.load(Ordering::Acquire) {
-                return Err(QemuRamSourceError::Canceled);
+                return Err(QemuRamReadBoundaryError::Canceled);
             }
             operation.wait_slice()?;
             Ok(())

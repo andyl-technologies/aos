@@ -567,6 +567,7 @@ fn store_executor_rejection(error: &StoreError) -> ExecutorRejection {
         | StoreError::DecodeAdmission { .. }
         | StoreError::Allocation { .. }
         | StoreError::SqliteDiagnostic { .. }
+        | StoreError::ProviderDiagnostic { .. }
         | StoreError::SqliteScope { .. } => ExecutorRejection::UnavailableInput,
         StoreError::Unauthorized => ExecutorRejection::Unauthorized,
         StoreError::Corrupt { .. }

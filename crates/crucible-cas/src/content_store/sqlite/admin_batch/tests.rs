@@ -34,7 +34,7 @@ impl StorePhysicalQuotaGuard for Quota {
         &self,
         descriptors: u64,
         bytes: u64,
-    ) -> Result<Arc<dyn Send + Sync>, StoreError> {
+    ) -> Result<crate::owned_decode::ResourceLoan, StoreError> {
         self.verify()?;
         let loan = self.resources.reserve(descriptors, bytes)?;
         let (descriptors, bytes) = self.resources.usage()?;
@@ -57,7 +57,10 @@ struct Supervisor(Arc<Quota>);
 struct Operation(Arc<Quota>);
 
 impl SqliteCatalogSupervisor for Supervisor {
-    fn reserve_resident_bytes(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, StoreError> {
+    fn reserve_resident_bytes(
+        &self,
+        bytes: u64,
+    ) -> Result<crate::owned_decode::ResourceLoan, StoreError> {
         self.0.reserve_resources(0, bytes)
     }
 
@@ -492,15 +495,13 @@ fn late_actual_commit_failure_preserves_cached_generation_and_last_error_credit(
         Some(Arc::new(Supervisor(guard.clone()))),
     )
     .expect("private capped component leaf");
-    backend.resident_lease = Some(
-        guard
-            .reserve_resources(
-                0,
-                minimum_sqlite_catalog_resident_bytes("component", root.path())
-                    .expect("actual size"),
-            )
-            .expect("actual original lease"),
-    );
+    backend.resident_lease = guard
+        .reserve_resources(
+            0,
+            minimum_sqlite_catalog_resident_bytes("component", root.path()).expect("actual size"),
+        )
+        .expect("actual original lease")
+        .into();
     let ids = seeded(&backend, 1);
     let foreign =
         Connection::open(root.path().join(DATABASE_FILE)).expect("independent durable observer");

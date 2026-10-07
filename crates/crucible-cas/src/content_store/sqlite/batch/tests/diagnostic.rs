@@ -17,7 +17,7 @@ fn uncapped_checked_routes_refuse_without_changing_generic_routes() {
     let _scope = account.enter();
 
     assert!(matches!(
-        backend.put_many_if_absent_with_boundary(&inputs, &mut || Ok(())),
+        backend.put_many_if_absent_with_boundary(&account, &inputs, &mut || Ok(())),
         Err(StoreError::Unsupported {
             capability: "sqlite-diagnostic-native-heap-bound"
         })
@@ -32,7 +32,7 @@ fn uncapped_checked_routes_refuse_without_changing_generic_routes() {
         .expect("ordinary batch remains available");
     let source = backend.read(inputs[0].0, None).expect("ordinary source");
     assert!(matches!(
-        source.read_all_with_boundary(1024, &mut || Ok(())),
+        source.read_all_with_boundary(&account, 1024, &mut || Ok(())),
         Err(StoreError::Unsupported {
             capability: "sqlite-diagnostic-native-heap-bound"
         })
@@ -66,7 +66,7 @@ fn diagnostic_admission_precedes_sql_and_inventory_path_allocation() {
     let mut calls = 0;
 
     let error = backend
-        .put_many_if_absent_with_boundary(&[], &mut || {
+        .put_many_if_absent_with_boundary(&account, &[], &mut || {
             calls += 1;
             if calls > 16 {
                 Err(expired())
@@ -112,7 +112,7 @@ fn typed_sqlite_error_retains_its_actual_preloan_until_last_drop() {
     let baseline = guard.0.used.load(Ordering::SeqCst);
 
     let error = backend
-        .put_many_if_absent_with_boundary(&objects(), &mut || guard.verify())
+        .put_many_if_absent_with_boundary(&account, &objects(), &mut || guard.verify())
         .expect_err("real metadata decoder preserves original typed SQLite error");
     let StoreError::SqliteDiagnostic { source } = &error else {
         panic!("retained checked diagnostic");
@@ -181,7 +181,7 @@ fn hostile_schema_message_and_inventory_path_failure_keep_diagnostic_custody() {
             .expect("force genuine schema reload");
     }
     let error = backend
-        .put_many_if_absent_with_boundary(&objects(), &mut || guard.verify())
+        .put_many_if_absent_with_boundary(&account, &objects(), &mut || guard.verify())
         .expect_err("actual binding copies hostile schema message only after preloan");
     let StoreError::StreamIo { source, .. } = original_failure(&error) else {
         panic!("original SQLite cause");
@@ -199,7 +199,7 @@ fn hostile_schema_message_and_inventory_path_failure_keep_diagnostic_custody() {
 
     std::fs::remove_file(root.path().join(LOCK_FILE)).expect("test-only remove fence name");
     let error = backend
-        .put_many_if_absent_with_boundary(&[], &mut || guard.verify())
+        .put_many_if_absent_with_boundary(&account, &[], &mut || guard.verify())
         .expect_err("actual inventory open failure");
     assert!(
         matches!(original_failure(&error), StoreError::Io { path, .. } if path == &root.path().join(LOCK_FILE))
@@ -234,7 +234,7 @@ fn checked_sqlite_source_error_retains_original_credit_to_last_owner() {
     let baseline = guard.0.used.load(Ordering::SeqCst);
 
     let error = source
-        .read_all_with_boundary(1024, &mut || guard.verify())
+        .read_all_with_boundary(&account, 1024, &mut || guard.verify())
         .expect_err("binding source error remains typed and prepaid");
     let StoreError::StreamIo { source: io, .. } = original_failure(&error) else {
         panic!("original database source error");

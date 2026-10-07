@@ -23,7 +23,8 @@ use std::sync::Arc;
 use thiserror::Error;
 
 mod admin;
-mod batch;
+pub(crate) mod batch;
+pub(crate) mod checked_reader;
 mod composition;
 mod compressed_directory;
 mod directory;
@@ -35,6 +36,7 @@ mod namespace;
 mod packed;
 mod physical_quota;
 mod profile;
+mod provider_diagnostic;
 mod publication;
 mod quota;
 mod s3;
@@ -52,6 +54,7 @@ pub use admin::{
     RefInventorySummary, RefPublicationGuard, RefStoreAdmin,
 };
 pub use batch::{OwnedBlobBytes, PutBatchReceipt};
+pub use checked_reader::{CheckedBlobReader, CheckedReader};
 pub use compressed_directory::CompressedDirectoryBlobBackend;
 pub use directory::{
     DirectoryBlobAuthorities, DirectoryBlobBackend, DirectoryRefAuthorities, DirectoryRefBackend,
@@ -86,6 +89,10 @@ pub use profile::{
     ObjectProfile, Reconstructibility, RetentionRole, SensitivityClass, StoreGraphObjectProfilers,
     StoreObjectProfilePolicyId, StoreObjectProfiler,
 };
+pub use provider_diagnostic::{
+    ProviderDiagnosticError, ProviderDiagnosticPermit, ProviderDiagnosticStorage,
+    ProviderFailureKind,
+};
 pub use s3::{
     MAX_S3_COMMITTED_OBJECT_VISITS, MAX_S3_MULTIPART_LIST_ITEMS, S3BlobBackend,
     S3BlobBackendConfig, S3MultipartCleanupAdmin, StoreGraphS3Clients, StoreS3BlobAdminClient,
@@ -100,6 +107,8 @@ pub use s3_ref::{
     StoreS3RefCapability, StoreS3StrongCasClient, StoreS3VersionedObject,
     StoreS3VersionedObjectMetadata,
 };
+#[cfg(feature = "test-support")]
+pub use sqlite::SqliteScopeFaultObservation;
 pub use sqlite::{
     SqliteBlobAuthorities, SqliteBlobBackend, SqliteCatalogOperation, SqliteCatalogOperationKind,
     SqliteCatalogSupervisor, SqliteCommitOutcome, SqliteDiagnosticError, SqliteScopeError,
@@ -373,6 +382,21 @@ impl ByteRange {
     }
 }
 
+/// Selects a source's checked complete-read route without running it.
+///
+/// This operational selector grants no content identity or EOF authentication
+/// proof. Whole reads still validate their complete output; owning streams
+/// retain their original account and finish their own EOF contract.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckedReadAccess {
+    /// Provides no checked read capability.
+    Unsupported,
+    /// Implements synchronous checked whole reads, with optional owning opens.
+    Whole,
+    /// Implements an owning checked stream, including deferred EOF validation.
+    Owning,
+}
+
 /// Reopenable source of a finite logical byte stream.
 ///
 /// Reopenability lets composition layers retry or mirror a put without
@@ -381,6 +405,16 @@ impl ByteRange {
 /// bytes; a source may fail instead. Immutable backends independently
 /// authenticate each stream against its [`ContentId`].
 pub trait BlobSource: Send + Sync {
+    /// Declares its checked access contract without callbacks or effects.
+    ///
+    /// The default refuses checked dispatch. A source that declares `Whole`
+    /// implements checked complete reads; `Owning` implements checked opens.
+    /// Range wrappers declare owning access so hidden bytes authenticate before
+    /// the exposed range reaches EOF. Ordinary I/O never grants either mode.
+    fn checked_read_access(&self) -> CheckedReadAccess {
+        CheckedReadAccess::Unsupported
+    }
+
     /// Returns the exact number of logical bytes produced by each stream.
     fn logical_length(&self) -> u64;
 
@@ -391,22 +425,49 @@ pub trait BlobSource: Send + Sync {
     /// Returns a stable store error when the source cannot be reopened.
     fn open(&self) -> Result<Box<dyn Read + Send>, StoreError>;
 
+    /// Opens an owning reader under the caller's original finite boundary.
+    ///
+    /// # Errors
+    /// Returns an original admission or source failure, or unsupported when
+    /// the source cannot supervise its internal waits and EOF authentication.
+    fn open_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        _boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<CheckedReader, StoreError> {
+        original
+            .verify_live()
+            .map_err(|error| batch::admission_under(original, error))?;
+        Err(StoreError::Unsupported {
+            capability: "checked-blob-reader",
+        })
+    }
+
     /// Reads to authenticated EOF under an existing finite caller boundary.
     ///
     /// Implementations admit output before allocation, poll the same boundary
     /// through their own bounded waits and chunks, and retain original credits
-    /// in the returned owner. Opaque sources do not grant this capability.
+    /// in the returned owner. The caller supplies its saved account before any
+    /// callback; sources retain their independently admitted resource owners.
+    /// Opaque sources do not grant this capability.
     ///
     /// # Errors
     /// Returns a boundary, source, length or authentication failure, or
     /// [`StoreError::Unsupported`] when checked reads are unavailable.
     fn read_all_with_boundary(
         &self,
-        _maximum: u64,
-        _boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+        original: &crate::owned_decode::DecodeBudget,
+        maximum: u64,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<OwnedBlobBytes, StoreError> {
+        if self.checked_read_access() == CheckedReadAccess::Owning {
+            return checked_reader::read_all(self, original, maximum, boundary);
+        }
+        original
+            .verify_live()
+            .map_err(|error| batch::admission_under(original, error))?;
         Err(StoreError::Unsupported {
-            capability: "supervised-blob-source",
+            capability: "checked-whole-blob-read",
         })
     }
 }
@@ -503,6 +564,18 @@ impl BlobHandle {
         self.source.open()
     }
 
+    /// Opens a checked reader that authenticates length and identity at EOF.
+    ///
+    /// # Errors
+    /// Returns unsupported source dispatch, admission, or original boundary failure.
+    pub fn open_with_boundary(
+        &self,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<CheckedReader, StoreError> {
+        let original = batch::account()?;
+        checked_reader::open_handle(self, &original, boundary)
+    }
+
     /// Preserves this handle's original deferred-authentication error mapping.
     pub(crate) fn map_read_error(&self, operation: &'static str, error: io::Error) -> StoreError {
         map_stream_error(operation, self.integrity_id, error)
@@ -538,6 +611,7 @@ impl BlobHandle {
         let mut sliced = Self::new(Arc::new(RangeBlobSource {
             source: self.clone(),
             range,
+            _credit: None,
         }));
         sliced.integrity_id = self.integrity_id;
         sliced.self_authenticating = self.self_authenticating;
@@ -555,22 +629,45 @@ impl BlobHandle {
         read_handle_all(self, max_bytes)
     }
 
-    /// Reads the complete source using its bounded original-operation entry.
+    /// Reads the complete source using its saved caller account and boundary.
     ///
     /// # Errors
     /// Returns unsupported dispatch, an original boundary failure, quota
     /// refusal, or length/authentication failure before returning bytes.
     pub fn read_all_with_boundary(
         &self,
+        original: &crate::owned_decode::DecodeBudget,
         maximum: u64,
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<OwnedBlobBytes, StoreError> {
-        boundary()?;
+        checked_reader::check(original, boundary)?;
         if self.logical_length > maximum {
             return Err(StoreError::Quota);
         }
-        let bytes = self.source.read_all_with_boundary(maximum, boundary)?;
-        boundary()?;
+        match self.source.checked_read_access() {
+            CheckedReadAccess::Unsupported => {
+                return Err(StoreError::Unsupported {
+                    capability: "checked-blob-access",
+                });
+            }
+            CheckedReadAccess::Owning => {
+                let mut reader = checked_reader::open_handle(self, original, boundary)?;
+                return checked_reader::read_owned(
+                    &mut reader,
+                    original,
+                    self.logical_length,
+                    maximum,
+                    boundary,
+                );
+            }
+            CheckedReadAccess::Whole => {}
+        }
+
+        let bytes = self
+            .source
+            .read_all_with_boundary(original, maximum, boundary)?;
+        let payer = bytes.original_account();
+        checked_reader::check_pair(original, payer, boundary)?;
         if bytes.len() as u64 != self.logical_length {
             return Err(StoreError::InvalidSourceLength {
                 declared: self.logical_length,
@@ -582,7 +679,7 @@ impl BlobHandle {
         {
             validate_bytes(id, &bytes)?;
         }
-        boundary()?;
+        checked_reader::check_pair(original, payer, boundary)?;
         Ok(bytes)
     }
 
@@ -600,6 +697,27 @@ impl BlobHandle {
 }
 
 impl BlobSource for BlobHandle {
+    fn checked_read_access(&self) -> CheckedReadAccess {
+        self.source.checked_read_access()
+    }
+
+    fn open_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<CheckedReader, StoreError> {
+        checked_reader::open_handle(self, original, boundary)
+    }
+
+    fn read_all_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        maximum: u64,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<OwnedBlobBytes, StoreError> {
+        BlobHandle::read_all_with_boundary(self, original, maximum, boundary)
+    }
+
     fn logical_length(&self) -> u64 {
         self.logical_length
     }
@@ -622,14 +740,29 @@ impl BytesBlobSource {
 }
 
 impl BlobSource for BytesBlobSource {
+    fn checked_read_access(&self) -> CheckedReadAccess {
+        CheckedReadAccess::Whole
+    }
+
+    fn open_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<CheckedReader, StoreError> {
+        checked_reader::memory(self.bytes.clone(), original, boundary)
+    }
+
     fn read_all_with_boundary(
         &self,
+        original: &crate::owned_decode::DecodeBudget,
         maximum: u64,
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<OwnedBlobBytes, StoreError> {
         let mut reader = Cursor::new(self.bytes.as_ref());
-        batch::read_reader(
-            self.bytes.len() as u64,
+        batch::read_reader_under(
+            original,
+            original,
+            self.logical_length(),
             maximum,
             boundary,
             &mut |output, _| {
@@ -653,9 +786,22 @@ impl BlobSource for BytesBlobSource {
 struct RangeBlobSource {
     source: BlobHandle,
     range: ByteRange,
+    _credit: Option<crate::owned_decode::DecodeScratch>,
 }
 
 impl BlobSource for RangeBlobSource {
+    fn checked_read_access(&self) -> CheckedReadAccess {
+        CheckedReadAccess::Owning
+    }
+
+    fn open_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<CheckedReader, StoreError> {
+        checked_reader::range(&self.source, self.range, original, boundary)
+    }
+
     fn logical_length(&self) -> u64 {
         self.range.length
     }
@@ -995,6 +1141,13 @@ pub enum StoreError {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
+    /// A provider refusal retains its genuinely precharged diagnostic slot.
+    #[error("provider admission refused: {source}")]
+    ProviderDiagnostic {
+        /// Original typed cause, source allocation and exclusive slot custody.
+        #[source]
+        source: ProviderDiagnosticError,
+    },
     /// A checked operation's original metadata account refused admission.
     ///
     /// The inline cause avoids allocating another error wrapper after the
@@ -1314,6 +1467,24 @@ pub trait ImmutableBlobBackend: Send + Sync {
     /// or another backend failure.
     fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError>;
 
+    /// Looks up a deferred source under an existing original operation.
+    ///
+    /// # Errors
+    /// Returns original boundary, metadata admission, lookup or range errors.
+    /// Opaque backends refuse instead of substituting an unchecked lookup.
+    fn read_with_boundary(
+        &self,
+        account: &crate::owned_decode::DecodeBudget,
+        _id: ContentId,
+        _range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        checked_reader::check(account, boundary)?;
+        Err(StoreError::Unsupported {
+            capability: "checked-blob-metadata",
+        })
+    }
+
     /// Idempotently places canonical bytes under their expected logical ID.
     ///
     /// # Errors
@@ -1345,15 +1516,16 @@ pub trait ImmutableBlobBackend: Send + Sync {
     /// Publishes a batch under the caller's existing finite operation boundary.
     ///
     /// Implementations poll the same callback through staging, bounded waits,
-    /// publication and completion. The caller installs its original metadata
-    /// account before entry; the returned owner retains the receipt allocation
-    /// credits. Unsupported facades do not silently fall back to opaque puts.
+    /// publication and completion. The caller supplies its original metadata
+    /// account captured before callbacks; the returned owner retains the receipt
+    /// allocation credits. Unsupported facades do not silently fall back to opaque puts.
     ///
     /// # Errors
     /// Returns an original boundary or store failure, or
     /// [`StoreError::Unsupported`] if bounded batch dispatch is unavailable.
     fn put_many_if_absent_with_boundary(
         &self,
+        _original: &crate::owned_decode::DecodeBudget,
         _objects: &[(ContentId, BlobHandle)],
         _boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<PutBatchReceipt, StoreError> {

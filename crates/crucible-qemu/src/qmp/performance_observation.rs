@@ -4,6 +4,7 @@
 //! No caller-supplied monitor command, path, address, or output descriptor exists.
 
 use super::*;
+#[cfg(test)]
 use std::sync::Arc;
 
 const LINE_BYTES: usize = 32 * 1024;
@@ -18,14 +19,14 @@ pub struct QemuPerformanceObservation {
     pub finite_record: [u8; 16],
     /// Eight RAM bytes containing the finite ROM's saved ECX and EAX.
     pub finite_saved_registers: [u8; 8],
-    _resident: Arc<dyn Send + Sync>,
+    _resident: crucible_ram::ResourceLoan,
 }
 
 impl<S: QmpTimeoutStream> QmpClient<S> {
     pub(super) fn performance_observation(
         &mut self,
         guard: &HostOperationGuard,
-        resident: Arc<dyn Send + Sync>,
+        resident: crucible_ram::ResourceLoan,
     ) -> Result<QemuPerformanceObservation, QmpError> {
         if self.host_supervisor.is_none() {
             return Err(QmpError::InvalidBound {
@@ -42,7 +43,7 @@ impl<S: QmpTimeoutStream> QmpClient<S> {
     fn performance_observation_inner(
         &mut self,
         guard: &HostOperationGuard,
-        resident: Arc<dyn Send + Sync>,
+        resident: crucible_ram::ResourceLoan,
     ) -> Result<QemuPerformanceObservation, QmpError> {
         self.performance_paused(guard)?;
         let registers = self.performance_text("info registers", guard)?;
@@ -224,7 +225,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("cancel original component owner: {error}"));
 
         assert!(matches!(
-            client.performance_observation(&guard, Arc::new(())),
+            client.performance_observation(&guard, crucible_ram::ResourceLoan::new(())),
             Err(QmpError::OperationalSupervision { .. })
         ));
         assert_eq!(client.stream.get_ref().written.len(), written);
@@ -241,8 +242,13 @@ mod tests {
             json!({"return":"00005ff8: 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00"}),
             paused,
         ]);
-        let credit: Arc<dyn Send + Sync> = Arc::new(());
-        let weak = Arc::downgrade(&credit);
+        struct CreditMarker {
+            _marker: Arc<()>,
+        }
+
+        let marker = Arc::new(());
+        let weak = Arc::downgrade(&marker);
+        let credit = crucible_ram::ResourceLoan::new(CreditMarker { _marker: marker });
         let observed = client
             .performance_observation(&guard, credit)
             .unwrap_or_else(|error| panic!("fixed component response: {error}"));
@@ -278,7 +284,7 @@ mod tests {
 
         assert!(
             client
-                .performance_observation(&guard, Arc::new(()))
+                .performance_observation(&guard, crucible_ram::ResourceLoan::new(()))
                 .is_err()
         );
         assert_eq!(client.io_timeout_policy.max_line_bytes, original_limit);
@@ -299,7 +305,7 @@ mod tests {
             fixture(&[json!({"return":{"status":"running","running":true}})]);
         assert!(
             client
-                .performance_observation(&guard, Arc::new(()))
+                .performance_observation(&guard, crucible_ram::ResourceLoan::new(()))
                 .is_err()
         );
         assert!(

@@ -2146,6 +2146,9 @@ fn completion_validation_failure(error: CampaignRepositoryError) -> CompletionVa
 /// Failure to acquire or compose one packaged local QEMU executor.
 #[derive(Debug, thiserror::Error)]
 pub enum PackagedQemuExecutorError {
+    /// Original provider-service bootstrap refused before error erasure.
+    #[error(transparent)]
+    ProviderServiceAdmission(#[from] crate::ProviderServiceAdmissionError),
     /// A required mutable lifecycle copy lacks its original allocation custody.
     #[error(transparent)]
     LifecycleConfiguration(#[from] crucible_api::vm_lifecycle::ProductionVmLifecycleConfigCloneError),
