@@ -109,6 +109,8 @@ mod resource_read;
 mod resources;
 mod root_challenge_record;
 mod root_project_admission_proof;
+mod root_startup_journal;
+pub use root_startup_journal::{RootPolicyStartupDeploymentV1, RootPolicyStartupJournalV1};
 mod root_v8_released_proof;
 mod root_v8_settled_grant;
 mod source_genesis_readback;

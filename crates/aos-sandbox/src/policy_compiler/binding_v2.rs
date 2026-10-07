@@ -2336,6 +2336,12 @@ pub fn read_fixed_inert_closed_policy_binding_hold_v1()
         POLICY_AUTHORITY_JOURNAL,
         policy_authority_journal_limits(),
     )?;
+    read_inert_closed_policy_binding_hold_in_journal_v1(&mut journal)
+}
+
+pub(super) fn read_inert_closed_policy_binding_hold_in_journal_v1(
+    journal: &mut Journal,
+) -> Result<Option<ClosedPolicyRootCasObservationV2>, PolicyCompilerJournalErrorV1> {
     let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
     let (head, next_epoch, count) = current_root_binding_chain(&authority)?;
     Ok(current_hold(&authority, head, next_epoch, count)?

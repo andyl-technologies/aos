@@ -69,7 +69,8 @@ use aos_sandbox::policy_compiler::{
     ROOT_PROJECT_HISTORY_FLOOR_QUERY_MAGIC, ROOT_PROJECT_HISTORY_RETIRE_MAGIC,
     ROOT_PROJECT_NEGATIVE_INTENT_QUERY_MAGIC, ROOT_PROJECT_RESERVATION_CANCEL_MAGIC,
     ROOT_PROJECT_RESERVATION_CANCEL_QUERY_MAGIC, ROOT_SOURCE_GENESIS_QUERY_MAGIC_V1,
-    ROOT_V8_SETTLED_QUERY_MAGIC, RootV8HeldTerminalStepV1, SourceHoldReadbackChallengeV1,
+    ROOT_V8_SETTLED_QUERY_MAGIC, RootPolicyStartupDeploymentV1, RootPolicyStartupJournalV1,
+    RootV8HeldTerminalStepV1, SourceHoldReadbackChallengeV1,
     StagedClosedPolicyRootBaseV2, abandon_fixed_cache_signer_challenge_v2,
     abort_fixed_root_project_admission_v1, acknowledge_and_verify_fixed_closed_root_v8_terminal_v1,
     acknowledge_fixed_closed_root_effect_v1, acknowledge_fixed_closed_root_v8_effect_v1,
@@ -78,7 +79,7 @@ use aos_sandbox::policy_compiler::{
     admit_fixed_policy_deployment_head_v1, admit_fixed_policy_signer_pins_v1,
     admit_fixed_root_project_source_from_owner_proofs_v1, admit_fixed_source_hold_pin_v1,
     cancel_fixed_root_project_reservation_v1, compact_fixed_cache_signer_root_journal_v2,
-    decode_policy_deployment_sources_v1, encode_root_current_project_admission_stage_reply_v1,
+    encode_root_current_project_admission_stage_reply_v1,
     encode_root_project_admission_outcome_reply_v1, encode_root_project_admission_stage_reply_v1,
     encode_root_project_admission_terminal_reply_v1, encode_root_project_history_floor_reply_v1,
     encode_root_project_intent_replay_reply_v1, encode_root_project_intent_reply_v1,
@@ -109,7 +110,7 @@ use aos_sandbox::policy_compiler::{
     require_no_fixed_closed_policy_binding_hold_v1, retire_fixed_root_project_history_v1,
     stage_fixed_cache_signer_challenge_v2, stage_fixed_root_project_admission_v1,
     staged_closed_policy_signer_challenge_v2, verify_fixed_policy_cache_owner_readback_v2,
-    verify_policy_deployment_head_v1, verify_signed_project_policy_source_v1,
+    verify_signed_project_policy_source_v1,
     verify_signed_project_policy_source_v2, with_fixed_closed_cache_readback_session_v1,
     with_fixed_current_policy_head_lease_v1, with_fixed_explicit_closed_policy_binding_session_v2,
 };
@@ -584,10 +585,43 @@ fn run() -> Result<(), Box<dyn Error>> {
         require_absent_git_evidence_credential()?;
     }
 
+    // Only genuine normal startup consolidates these admissions under one
+    // writer. The retained opening is custody, not paid receiving or activation.
+    let mut startup_journal = startup.as_ref().map(|_| RootPolicyStartupJournalV1::new());
+    let binding_hold = match startup_journal.as_mut() {
+        Some(journal) => {
+            journal.open_once();
+            journal.read_binding_hold()
+        }
+        None => read_fixed_inert_closed_policy_binding_hold_v1(),
+    };
+    let binding_hold = match binding_hold {
+        Ok(hold) => hold,
+        Err(error) => {
+            // Even failed opening gets a post disposition before its reached
+            // originals are disposed. This does not establish Drained/refund.
+            let post = finish_startup_journal_names(&mut startup_journal);
+            if let Some(journal) = startup_journal.take() {
+                if journal.failure().is_some() {
+                    // No recovery path follows this error. Keep the posted
+                    // native reservoir through main's original diagnostic;
+                    // error disposal ends custody before ordinary process exit.
+                    return Err(journal.into_failure().into());
+                }
+                drop(journal);
+            }
+            post?;
+            return Err(error.into());
+        }
+    };
+
     // An unresolved CAS never reaches credential admission. Its isolated
     // service admits only historical replay and the qualified, nonauthorizing
     // Controller ACK exchange; Root validates the pinned signer before writing.
-    if read_fixed_inert_closed_policy_binding_hold_v1()?.is_some() {
+    if binding_hold.is_some() {
+        let post = finish_startup_journal_names(&mut startup_journal);
+        drop(startup_journal);
+        post?;
         require_absent_git_evidence_credential()?;
         return serve_held_binding_recovery(controller_uid, controller_gid, startup);
     }
@@ -618,13 +652,13 @@ fn run() -> Result<(), Box<dyn Error>> {
             backend: &backend,
             catalogs: &catalogs,
         };
-        let deployment = verify_policy_deployment_head_v1(
+        let deployment = RootPolicyStartupDeploymentV1::verify(
             &packet,
             &inputs,
             deployment_signer.verifying_key(),
+            deployment_signer.generation(),
             now_unix_seconds,
         )?;
-        let _typed_sources = decode_policy_deployment_sources_v1(&inputs, deployment)?;
         if let Some((project_packet, project_input)) = legacy_project.as_ref() {
             let project = verify_signed_project_policy_source_v1(
                 project_packet,
@@ -632,7 +666,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 project_signer.verifying_key(),
                 now_unix_seconds,
             )?;
-            if project.head().prerequisite_claims()[1] != deployment.packet_digest() {
+            if project.head().prerequisite_claims()[1] != deployment.head().packet_digest() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "project deployment head mismatch",
@@ -647,7 +681,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 project_signer.verifying_key(),
                 now_unix_seconds,
             )?;
-            if verified.head().prerequisite_claims()[1] != deployment.packet_digest()
+            if verified.head().prerequisite_claims()[1] != deployment.head().packet_digest()
                 || verified.head().deployment_signer_generation() != deployment_signer.generation()
                 || verified.head().project_signer_generation() != project_signer.generation()
             {
@@ -658,42 +692,66 @@ fn run() -> Result<(), Box<dyn Error>> {
                 .into());
             }
         }
-        admit_fixed_policy_signer_pins_v1(
-            deployment_signer.generation(),
-            deployment_signer.verifying_key(),
-            project_signer.generation(),
-            project_signer.verifying_key(),
-        )?;
-        admit_fixed_policy_deployment_head_v1(
-            &packet,
-            &inputs,
-            deployment_signer.verifying_key(),
-            now_unix_seconds,
-        )?;
+        let _legacy_sources = match startup_journal.as_mut() {
+            Some(journal) => {
+                journal.admit_signer_pins(
+                    deployment_signer.generation(),
+                    deployment_signer.verifying_key(),
+                    project_signer.generation(),
+                    project_signer.verifying_key(),
+                )?;
+                journal.admit_deployment_head(deployment)?;
+                None
+            }
+            None => {
+                admit_fixed_policy_signer_pins_v1(
+                    deployment_signer.generation(),
+                    deployment_signer.verifying_key(),
+                    project_signer.generation(),
+                    project_signer.verifying_key(),
+                )?;
+                admit_fixed_policy_deployment_head_v1(
+                    &packet,
+                    &inputs,
+                    deployment_signer.verifying_key(),
+                    now_unix_seconds,
+                )?;
+                Some(deployment.into_sources())
+            }
+        };
         let cache_pin = read_optional_cache_pin(root)?;
-        admit_fixed_cache_readback_pin_v1(
-            cache_pin.as_deref(),
-            deployment_signer.generation(),
-            deployment_signer.verifying_key(),
-            project_signer.generation(),
-            project_signer.verifying_key(),
-        )?;
+        match startup_journal.as_mut() {
+            Some(journal) => journal.admit_cache_pin(cache_pin.as_deref())?,
+            None => admit_fixed_cache_readback_pin_v1(
+                cache_pin.as_deref(),
+                deployment_signer.generation(),
+                deployment_signer.verifying_key(),
+                project_signer.generation(),
+                project_signer.verifying_key(),
+            )?,
+        }
         let controller_hold_pin = read_optional_pin(root, "controller-hold-public-key")?;
-        admit_fixed_controller_hold_pin_v1(
-            controller_hold_pin.as_deref(),
-            deployment_signer.generation(),
-            deployment_signer.verifying_key(),
-            project_signer.generation(),
-            project_signer.verifying_key(),
-        )?;
+        match startup_journal.as_mut() {
+            Some(journal) => journal.admit_controller_pin(controller_hold_pin.as_deref())?,
+            None => admit_fixed_controller_hold_pin_v1(
+                controller_hold_pin.as_deref(),
+                deployment_signer.generation(),
+                deployment_signer.verifying_key(),
+                project_signer.generation(),
+                project_signer.verifying_key(),
+            )?,
+        }
         let source_hold_pin = read_optional_pin(root, "source-hold-public-key")?;
-        admit_fixed_source_hold_pin_v1(
-            source_hold_pin.as_deref(),
-            deployment_signer.generation(),
-            deployment_signer.verifying_key(),
-            project_signer.generation(),
-            project_signer.verifying_key(),
-        )?;
+        match startup_journal.as_mut() {
+            Some(journal) => journal.admit_source_pin(source_hold_pin.as_deref())?,
+            None => admit_fixed_source_hold_pin_v1(
+                source_hold_pin.as_deref(),
+                deployment_signer.generation(),
+                deployment_signer.verifying_key(),
+                project_signer.generation(),
+                project_signer.verifying_key(),
+            )?,
+        }
 
         Ok(CurrentRootCredentials {
             packet,
@@ -710,9 +768,22 @@ fn run() -> Result<(), Box<dyn Error>> {
             source_hold_pin,
         })
     })();
+    let post = finish_startup_journal_names(&mut startup_journal);
+    if let Err(error) = post {
+        // A replaced or unhealthy writer never enters either listener. The
+        // original credential result is still resident at this classification.
+        drop(startup_journal);
+        return Err(error);
+    }
     let current = match current {
-        Ok(current) => current,
+        Ok(current) => {
+            drop(startup_journal);
+            current
+        }
         Err(error) => {
+            // Fixed recovery probes reopen authority.journal. End the startup
+            // flock after its post and error classification, before any probe.
+            drop(startup_journal);
             require_absent_git_evidence_credential()?;
             if fixed_root_project_admission_recovery_required_v1()?
                 || fixed_root_project_history_readback_available_v1()?
@@ -809,6 +880,22 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
     }
     Err(io::Error::new(io::ErrorKind::BrokenPipe, "authority listener ended").into())
+}
+
+fn finish_startup_journal_names(
+    journal: &mut Option<RootPolicyStartupJournalV1>,
+) -> Result<(), Box<dyn Error>> {
+    let Some(journal) = journal else {
+        return Ok(());
+    };
+    if journal.finish_names_once().is_err() {
+        let cause = journal
+            .failure()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "incomplete Root startup writer".to_owned());
+        return Err(io::Error::other(cause).into());
+    }
+    Ok(())
 }
 
 fn serve_held_binding_recovery(
