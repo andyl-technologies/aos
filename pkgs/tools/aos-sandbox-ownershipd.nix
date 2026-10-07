@@ -41,8 +41,9 @@
     cargoRoot = "crates";
     checkType = "debug";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-broker-session-security --bin aos-sandbox-ownershipd"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES --no-default-features --features aos-sandbox-services/ownership -p aos-sandbox-services --bin aos-sandbox-ownershipd"
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-broker-session-security --lib"
+      "test --no-run --frozen --offline -j$NIX_BUILD_CORES --no-default-features --features aos-sandbox-services/ownership -p aos-sandbox-services"
     ];
     buildDeps = [buildProtobuf];
     runtimeDeps = [];
@@ -52,9 +53,9 @@ in
     pname = "aos-sandbox-ownershipd";
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
-    cargoFlags = "-p aos-sandbox-broker-session-security --bin aos-sandbox-ownershipd";
+    cargoFlags = "--no-default-features --features aos-sandbox-services/ownership -p aos-sandbox-services --bin aos-sandbox-ownershipd";
     checkType = "debug";
-    cargoTestFlags = "-p aos-sandbox-broker-session-security --lib ownership_authority_";
+    cargoTestFlags = "--no-default-features --features aos-sandbox-services/ownership -p aos-sandbox-services -p aos-sandbox-broker-session-security ownership_authority_";
     cargoNextest = true;
     doCheck = true;
     buildDeps = [buildProtobuf];

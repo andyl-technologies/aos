@@ -6,6 +6,8 @@
   moduleSource = builtins.readFile ../../modules/sandbox/controller-service.nix;
   hostModuleSource = builtins.readFile ../../modules/sandbox/host-broker.nix;
   runtimeSource = builtins.readFile ../../crates/aos-sandbox-broker-session-security/src/controller_service.rs;
+  diagnosticSource = builtins.readFile ../../crates/aos-sandbox-services/src/controller/diagnostic.rs;
+  assemblySource = builtins.readFile ../../crates/aos-sandbox-services/src/controller.rs;
   journalSource = builtins.readFile ../../crates/aos-sandbox/src/controller_service/journal.rs;
   catalogReconciliationSource =
     builtins.readFile ../../crates/aos-sandbox/src/host_catalog_reconciliation.rs;
@@ -265,7 +267,8 @@ in
   assert requires "pending_host_catalog" runtimeSource;
   assert requires "pending_first_reconciliation_cycle" runtimeSource;
   assert requires ".reconcile_quantum()" runtimeSource;
-  assert requires "into_async_authenticated_listener(listener, 0)" runtimeSource;
+  assert requires "into_async_authenticated_listener(listener, 0)" diagnosticSource;
+  assert requires "ControllerServerAssembly for ControllerAssembly" assemblySource;
   assert requires ''/run/aos/sandboxd/diagnostics.sock'' runtimeSource;
   assert requires "root_diagnostic_response_discloses_no_catalog_or_resource_detail" runtimeSource;
   assert requires "durable_first_bind_is_idempotent_after_an_ambiguous_process_exit" journalSource;
@@ -273,9 +276,11 @@ in
   assert requires "ErrorCode::Unimplemented" runtimeSource;
   assert requiresAbsent "SemanticCapability" runtimeSource;
   assert requiresAbsent "aos.sandbox.controller.observation" runtimeSource;
+  assert import ./_cargo-test-selections.nix;
   assert requires ''--frozen --offline'' packageSource;
-  assert requires ''-p aos-sandbox-broker-session-security --bin aos-sandboxd'' packageSource;
-  assert requires ''cargoTestFlags = "-p aos-sandbox -p aos-sandbox-broker-session-security"'' packageSource;
+  assert requires ''-p aos-sandbox-services --bin aos-sandboxd'' packageSource;
+  assert requires "cargoTestFlags =" packageSource;
+  assert requires "-p aos-sandbox-services -p aos-sandbox -p aos-sandbox-broker-session-security" packageSource;
     pkgs.mkDerivation {
       pname = "sandbox-controller-service-source-contract";
       version = "0";

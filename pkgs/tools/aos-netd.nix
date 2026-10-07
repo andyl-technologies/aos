@@ -65,13 +65,14 @@
     cargoRoot = "crates";
     checkType = "debug";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-broker-session-security --bin aos-netd"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES --no-default-features --features aos-sandbox-services/network -p aos-sandbox-services --bin aos-netd"
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network --bin aos-sandbox-network-lifecycle-worker"
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network --bin aos-sandbox-network-namespace-inspector"
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network --bin aos-sandbox-network-worker"
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network --bin aos-sandbox-network-observation-worker"
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network --bin aos-sandbox-network-pin-worker"
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network"
+      "test --no-run --frozen --offline -j$NIX_BUILD_CORES --no-default-features --features aos-sandbox-services/network -p aos-sandbox-services"
     ];
     buildDeps = [buildProtobuf];
     runtimeDeps = [];
@@ -82,14 +83,14 @@ in
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-broker-session-security --bin aos-netd"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES --no-default-features --features aos-sandbox-services/network -p aos-sandbox-services --bin aos-netd"
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network --bin aos-sandbox-network-lifecycle-worker"
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network --bin aos-sandbox-network-namespace-inspector"
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network --bin aos-sandbox-network-worker"
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network --bin aos-sandbox-network-observation-worker"
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network --bin aos-sandbox-network-pin-worker"
     ];
-    cargoTestFlags = "-p aos-sandbox-network";
+    cargoTestFlags = "--no-default-features --features aos-sandbox-services/network -p aos-sandbox-services -p aos-sandbox-network";
     cargoNextest = true;
     doCheck = true;
     buildDeps = [buildProtobuf];

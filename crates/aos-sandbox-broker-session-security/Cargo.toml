@@ -3,14 +3,7 @@ name = "aos-sandbox-broker-session-security"
 version = "0.1.0"
 edition = "2024"
 license.workspace = true
-
-[[bin]]
-name = "aos-sandbox-nix-floor-provision"
-path = "src/bin/aos-sandbox-nix-floor-provision.rs"
-
-[[bin]]
-name = "aos-sandbox-runtime-publisher"
-path = "src/bin/aos-sandbox-runtime-publisher.rs"
+autobins = false
 
 [features]
 default = []
@@ -36,7 +29,6 @@ aos-systemd.workspace = true
 aos-sandbox-source-provider.workspace = true
 aos-sandbox-source-provider-protocol.workspace = true
 aos-sandbox-source-provider-security.workspace = true
-axum.workspace = true
 base64 = { workspace = true, optional = true }
 buffa.workspace = true
 connectrpc.workspace = true
@@ -51,72 +43,8 @@ thiserror.workspace = true
 tokio.workspace = true
 zeroize.workspace = true
 
-[[bin]]
-name = "aos-sandboxd"
-path = "src/bin/aos-sandboxd.rs"
-
-[[bin]]
-name = "aos-sandbox-nixd"
-path = "src/bin/aos-sandbox-nixd.rs"
-required-features = ["online-nix"]
-
-[[bin]]
-name = "aos-sandbox-git-gateway"
-path = "src/bin/aos-sandbox-git-gateway.rs"
-
-[[bin]]
-name = "aos-sandbox-entitlement-sign"
-path = "src/bin/aos-sandbox-entitlement-sign.rs"
-
-[[bin]]
-name = "aos-sandbox-policy-authorityd"
-path = "src/bin/aos-sandbox-policy-authorityd.rs"
-
-[[bin]]
-name = "aos-sandbox-cache-signerd"
-path = "src/bin/aos-sandbox-cache-signerd.rs"
-
-[[bin]]
-name = "aos-sandbox-source-signerd"
-path = "src/bin/aos-sandbox-source-signerd.rs"
-
-[[bin]]
-name = "aos-sandbox-policy-key-pin"
-path = "src/bin/aos-sandbox-policy-key-pin.rs"
-
-[[bin]]
-name = "aos-view-publisher"
-path = "src/bin/aos-view-publisher.rs"
-
-[[bin]]
-name = "aos-sandbox-hostd"
-path = "src/bin/aos-sandbox-hostd.rs"
-
-[[bin]]
-name = "aos-sandbox-host-phase0-probe"
-path = "src/bin/aos-sandbox-host-phase0-probe.rs"
-
-[[bin]]
-name = "aos-storaged"
-path = "src/bin/aos-storaged.rs"
-
-[[bin]]
-name = "aos-netd"
-path = "src/bin/aos-netd.rs"
-
-[[bin]]
-name = "aos-sandbox-mountd"
-path = "src/bin/aos-sandbox-mountd.rs"
-
-[[bin]]
-name = "aos-sandbox-ownershipd"
-path = "src/bin/aos-sandbox-ownershipd.rs"
-
-[[bin]]
-name = "aos-source-providerd"
-path = "src/bin/aos-source-providerd.rs"
-
 [dev-dependencies]
+axum.workspace = true
 aos-sandbox = { workspace = true, features = ["test-fixtures"] }
 async-trait.workspace = true
 hex.workspace = true

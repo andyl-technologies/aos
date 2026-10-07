@@ -22,7 +22,7 @@ use tokio::net::{UnixListener, UnixStream, unix::SocketAddr};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 
-use super::ControllerRuntimeError;
+use super::{ControllerRuntimeError, ControllerServerTerminal};
 
 const SOCKET: &str = "/run/aos/sandboxd/public.sock";
 const MAXIMUM_CONNECTIONS: usize = 32;
@@ -101,38 +101,30 @@ pub(super) fn bind_retained(
     uid: u32,
     partial: &mut PublicListenerStartupV1,
     destination: &mut Option<Option<PublicListener>>,
-    terminal: &super::ControllerWorkerCustodyV1,
+    terminal: &dyn ControllerServerTerminal,
 ) {
     if !partial.is_empty() || destination.is_some() {
-        terminal.terminate(super::ControllerResidentCauseV1::Closed(
-            "Controller public startup destination occupied",
-        ));
+        terminal.closed("Controller public startup destination occupied");
     }
 
     let acceptor = match PublicApiSessionAcceptor::from_systemd_credentials() {
         Ok(acceptor) => acceptor,
-        Err(cause) => terminal.terminate(super::ControllerResidentCauseV1::Runtime(
-            ControllerRuntimeError::PublicSession(cause),
-        )),
+        Err(cause) => terminal.runtime(ControllerRuntimeError::PublicSession(cause)),
     };
     partial.acceptor = Some(Arc::new(acceptor));
 
     let socket = match super::bind_controller_socket(std::path::Path::new(SOCKET), uid, 0o666) {
         Ok(socket) => socket,
-        Err(cause) => terminal.terminate(super::ControllerResidentCauseV1::Runtime(cause)),
+        Err(cause) => terminal.runtime(cause),
     };
     partial.registration = Some(tokio::net::UnixListenerRegistrationAttempt::new(socket));
 
     let Some(attempt) = partial.registration.as_mut() else {
-        terminal.terminate(super::ControllerResidentCauseV1::Closed(
-            "Controller public registration unavailable",
-        ));
+        terminal.closed("Controller public registration unavailable");
     };
     partial.listener = Some(match attempt.register() {
         Ok(listener) => listener,
-        Err(cause) => terminal.terminate(super::ControllerResidentCauseV1::Runtime(
-            ControllerRuntimeError::PublicServer(cause),
-        )),
+        Err(cause) => terminal.runtime(ControllerRuntimeError::PublicServer(cause)),
     });
     partial.capacity = Some(Arc::new(Semaphore::new(MAXIMUM_CONNECTIONS)));
     partial.handshakes = Some(JoinSet::new());
@@ -143,9 +135,7 @@ pub(super) fn bind_retained(
         || partial.handshakes.is_none()
         || destination.is_some()
     {
-        terminal.terminate(super::ControllerResidentCauseV1::Closed(
-            "Controller public startup incomplete",
-        ));
+        terminal.closed("Controller public startup incomplete");
     }
 
     // All four slots are occupied under this exclusive loan. Only infallible

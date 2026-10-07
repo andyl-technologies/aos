@@ -29,11 +29,44 @@
     inherit mkDerivation git aos-git-helper;
     coreutils = buildCoreutils;
   };
-  mechanicsFeature = "--features aos-sandbox/git-helper-mechanics";
   onlineSelected = nixOnlineStoreReader != null;
-  onlineFeature = lib.optionalString onlineSelected ",aos-sandbox-broker-session-security/online-nix";
-  selectedFeatures = mechanicsFeature + onlineFeature;
-  onlineBin = lib.optionalString onlineSelected " --bin aos-sandbox-nixd";
+  roleBins = {
+    controller = ["aos-sandboxd"];
+    git = ["aos-sandbox-git-gateway"];
+    entitlement = ["aos-sandbox-entitlement-sign"];
+    policy = ["aos-sandbox-policy-authorityd" "aos-sandbox-policy-key-pin"];
+    cache-signer = ["aos-sandbox-cache-signerd"];
+    source-signer = ["aos-sandbox-source-signerd"];
+    publisher = ["aos-view-publisher"];
+    nix-provision = ["aos-sandbox-nix-floor-provision"];
+    nix = ["aos-sandbox-nixd"];
+  };
+  serviceRoles =
+    [
+      "controller"
+      "git"
+      "entitlement"
+      "policy"
+      "cache-signer"
+      "source-signer"
+      "publisher"
+      "nix-provision"
+    ]
+    ++ lib.optional onlineSelected "nix";
+  roleFlags = role:
+    "--no-default-features --features aos-sandbox-services/${role}"
+    + lib.optionalString (role == "controller") ",aos-sandbox/git-helper-mechanics"
+    + lib.optionalString (onlineSelected && role == "controller") ",aos-sandbox-services/online-nix";
+  controllerRoleFlags = roleFlags "controller";
+
+  # Separate Cargo invocations prevent role features from unifying merely
+  # because these independently confined executables share an output package.
+  roleBuildCommands = map (role:
+    "build --release --frozen --offline -j$NIX_BUILD_CORES ${roleFlags role} -p aos-sandbox-services "
+    + lib.concatStringsSep " " (map (bin: "--bin ${bin}") roleBins.${role}))
+  serviceRoles;
+  roleTestCommands = map (role: "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${roleFlags role} -p aos-sandbox-services") serviceRoles;
+  coreTestCommand = "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${controllerRoleFlags} -p aos-sandbox -p aos-sandbox-broker-session-security";
   onlineInputs = lib.optionals onlineSelected [nixOnlineStoreReader aos-nix-runtime-tpm-helpers];
   src = import ./aos/_workspace-source.nix {inherit lib;};
   cargoDeps = fetchCargoVendor {
@@ -42,14 +75,16 @@
     sourceRoot = "source/crates";
     hash = import ./crucible/_cargo-deps-hash.nix;
   };
-  cargoEnv = {
-    PROTOC = "${buildProtobuf}/bin/protoc";
-    AOS_GIT_HELPER_SELECTION_HEADER = "${gitHelperImages}/selected-images.rs";
-  } // lib.optionalAttrs onlineSelected {
-    AOS_NIX_ONLINE_STORE_READER_HEADER = "${nixOnlineStoreReader}/selected-reader.rs";
-    AOS_NIX_CONTROLLER_TPM_HELPER = "${aos-nix-runtime-tpm-helpers}/libexec/aos-nix-controller-tpm-helper";
-    AOS_NIX_OWNER_TPM_HELPER = "${aos-nix-runtime-tpm-helpers}/libexec/aos-nix-owner-tpm-helper";
-  };
+  cargoEnv =
+    {
+      PROTOC = "${buildProtobuf}/bin/protoc";
+      AOS_GIT_HELPER_SELECTION_HEADER = "${gitHelperImages}/selected-images.rs";
+    }
+    // lib.optionalAttrs onlineSelected {
+      AOS_NIX_ONLINE_STORE_READER_HEADER = "${nixOnlineStoreReader}/selected-reader.rs";
+      AOS_NIX_CONTROLLER_TPM_HELPER = "${aos-nix-runtime-tpm-helpers}/libexec/aos-nix-controller-tpm-helper";
+      AOS_NIX_OWNER_TPM_HELPER = "${aos-nix-runtime-tpm-helpers}/libexec/aos-nix-owner-tpm-helper";
+    };
   cargoArtifactContract = {
     family = "aos-sandboxd-native";
     checkType = "debug";
@@ -65,51 +100,59 @@
     };
     cargoRoot = "crates";
     checkType = "debug";
-    cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES ${selectedFeatures} -p aos-sandbox-broker-session-security --bin aos-sandboxd --bin aos-sandbox-git-gateway --bin aos-sandbox-entitlement-sign --bin aos-sandbox-policy-authorityd --bin aos-sandbox-cache-signerd --bin aos-sandbox-source-signerd --bin aos-sandbox-policy-key-pin --bin aos-view-publisher --bin aos-sandbox-nix-floor-provision${onlineBin}"
-      "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${selectedFeatures} -p aos-sandbox -p aos-sandbox-broker-session-security"
-    ];
+    cargoBuildCommands = roleBuildCommands ++ roleTestCommands ++ [coreTestCommand];
     buildDeps = [buildProtobuf gitHelperImages] ++ onlineInputs;
     runtimeDeps = [aos-git-helper git] ++ onlineInputs;
   };
 in
   assert !onlineSelected || aos-nix-runtime-tpm-helpers != null;
-  mkCargoPackage {
-    pname = "aos-sandboxd";
-    inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
-    cargoRoot = "crates";
-    cargoFlags = "${selectedFeatures} -p aos-sandbox-broker-session-security --bin aos-sandboxd --bin aos-sandbox-git-gateway --bin aos-sandbox-entitlement-sign --bin aos-sandbox-policy-authorityd --bin aos-sandbox-cache-signerd --bin aos-sandbox-source-signerd --bin aos-sandbox-policy-key-pin --bin aos-view-publisher --bin aos-sandbox-nix-floor-provision${onlineBin}";
-    checkType = "debug";
-    # Keep the core suite when moving process ownership into the transport crate.
-    cargoTestFlags = "${selectedFeatures} -p aos-sandbox -p aos-sandbox-broker-session-security";
-    cargoNextest = true;
-    doCheck = true;
-    buildDeps = [buildProtobuf gitHelperImages] ++ onlineInputs;
-    runtimeDeps = [aos-git-helper git] ++ onlineInputs;
+    mkCargoPackage {
+      pname = "aos-sandboxd";
+      inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
+      cargoRoot = "crates";
+      cargoBuildCommands = roleBuildCommands ++ roleTestCommands;
+      cargoFlags = "${controllerRoleFlags} -p aos-sandbox-services --bin aos-sandboxd";
+      checkType = "debug";
+      # The Controller role and retained integration suites keep their own tests.
+      cargoTestFlags = "${controllerRoleFlags} -p aos-sandbox-services -p aos-sandbox -p aos-sandbox-broker-session-security";
+      cargoTestFlagSets =
+        [
+          "${controllerRoleFlags} -p aos-sandbox-services -p aos-sandbox -p aos-sandbox-broker-session-security"
+        ]
+        ++ map (role: "${roleFlags role} -p aos-sandbox-services")
+        (lib.filter (role: role != "controller") serviceRoles);
+      cargoNextest = true;
+      doCheck = true;
+      buildDeps = [buildProtobuf gitHelperImages] ++ onlineInputs;
+      runtimeDeps = [aos-git-helper git] ++ onlineInputs;
 
-    postInstall = ''
-      test -x "$out/bin/aos-sandboxd"
-      test -x "$out/bin/aos-sandbox-git-gateway"
-      test -x "$out/bin/aos-sandbox-entitlement-sign"
-      test -x "$out/bin/aos-sandbox-policy-authorityd"
-      test -x "$out/bin/aos-sandbox-cache-signerd"
-      test -x "$out/bin/aos-sandbox-source-signerd"
-      test -x "$out/bin/aos-sandbox-policy-key-pin"
-      test -x "$out/bin/aos-view-publisher"
-      test -x "$out/bin/aos-sandbox-nix-floor-provision"
-    '' + lib.optionalString onlineSelected ''
-      test -x "$out/bin/aos-sandbox-nixd"
-      test -f ${nixOnlineStoreReader}/selected-reader.rs
-    '';
+      postInstall =
+        ''
+          test -x "$out/bin/aos-sandboxd"
+          test -x "$out/bin/aos-sandbox-git-gateway"
+          test -x "$out/bin/aos-sandbox-entitlement-sign"
+          test -x "$out/bin/aos-sandbox-policy-authorityd"
+          test -x "$out/bin/aos-sandbox-cache-signerd"
+          test -x "$out/bin/aos-sandbox-source-signerd"
+          test -x "$out/bin/aos-sandbox-policy-key-pin"
+          test -x "$out/bin/aos-view-publisher"
+          test -x "$out/bin/aos-sandbox-nix-floor-provision"
+        ''
+        + lib.optionalString onlineSelected ''
+          test -x "$out/bin/aos-sandbox-nixd"
+          test -f ${nixOnlineStoreReader}/selected-reader.rs
+        '';
 
-    passthru = {
-      inherit cargoArtifacts cargoDeps cargoEnv;
-    } // lib.optionalAttrs onlineSelected {inherit nixOnlineStoreReader;};
+      passthru =
+        {
+          inherit cargoArtifacts cargoDeps cargoEnv;
+        }
+        // lib.optionalAttrs onlineSelected {inherit nixOnlineStoreReader;};
 
-    meta = {
-      description = "Unprivileged AOS sandbox node controller";
-      homepage = "https://github.com/andyl/andyl-os";
-      license = "Apache-2.0";
-      platforms = ["x86_64-linux" "aarch64-linux"];
-    };
-  }
+      meta = {
+        description = "Unprivileged AOS sandbox node controller";
+        homepage = "https://github.com/andyl/andyl-os";
+        license = "Apache-2.0";
+        platforms = ["x86_64-linux" "aarch64-linux"];
+      };
+    }

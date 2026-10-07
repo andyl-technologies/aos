@@ -37,7 +37,6 @@
 //! prefixes, nor establish funding, drain or readiness for those missing paths.
 
 use std::io::IoSlice;
-use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -46,13 +45,12 @@ use std::time::{Duration, Instant};
 
 use aos_proto::aos::sandbox::local::v1::{BrokerMethod, RuntimeAction};
 use aos_proto::aos::sandbox::v1::{
-    CacheServiceExt, CancelOperationRequest, CancelOperationResponse, CapabilityServiceExt,
-    DiscoveryService, DiscoveryServiceExt, Event, ExecutionServiceExt, FilesystemViewServiceExt,
+    CancelOperationRequest, CancelOperationResponse, DiscoveryService, Event,
     GetNodeCapabilitiesRequest, GetNodeCapabilitiesRequestView, GetNodeCapabilitiesResponse,
     GetOperationRequest, GetOperationResponse, GetPublicFeatureRegistryRequest,
     GetPublicFeatureRegistryResponse, NodeCapabilities, OpenSshAccessEndpoint, Operation,
-    OperationPhase, OperationService, OperationServiceExt, OperatorRecoveryAction,
-    OperatorServiceExt, PolicyPlan, SandboxServiceExt, SnapshotServiceExt, Timestamp, WatchRequest,
+    OperationPhase, OperationService, OperatorRecoveryAction,
+    PolicyPlan, Timestamp, WatchRequest,
 };
 use aos_sandbox_core::{
     AttachmentId, CapabilityId, NodeId, ObjectDigest, Operation as CapabilityOperation,
@@ -173,7 +171,9 @@ pub(crate) mod nix_generation;
 mod original_attach;
 mod operator_repair;
 mod create_q04;
-mod public_api;
+pub mod assembly;
+
+use assembly::{ControllerServerAssembly, ControllerServerTerminal};
 mod public_attach;
 mod public_hierarchy;
 mod public_services;
@@ -408,7 +408,7 @@ where
 /// Root, Nix selector or launch-image custody. Selected Publisher and partial
 /// worker startup also retain returned originals through intentional
 /// termination. Issue-only failures retain their original invocation.
-pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
+pub fn run_from_environment<A: ControllerServerAssembly>() -> Result<(), ControllerRuntimeError> {
     let configuration = RuntimeConfiguration::from_process()?;
     configuration.validate_process_identity()?;
     let mut startup = crate::production_startup::ControllerStartupContinuationV1::new(
@@ -423,13 +423,13 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
         return source_successor_issuance::run(&configuration, &mut startup);
     }
 
-    match run_ordinary_controller(configuration, &mut startup) {
+    match run_ordinary_controller::<A>(configuration, &mut startup) {
         Err(cause) if startup.must_retain_failure() => startup.fail_runtime(cause),
         result => result,
     }
 }
 
-fn run_ordinary_controller(
+fn run_ordinary_controller<A: ControllerServerAssembly>(
     configuration: RuntimeConfiguration,
     startup: &mut crate::production_startup::ControllerStartupContinuationV1,
 ) -> Result<(), ControllerRuntimeError> {
@@ -454,7 +454,7 @@ fn run_ordinary_controller(
     }
     let launch_image = startup.image_share();
     if startup.must_retain_failure() {
-        return run_retained_controller(
+        return run_retained_controller::<A>(
             configuration,
             startup,
             normal_root_profile,
@@ -510,7 +510,7 @@ fn run_ordinary_controller(
         .map_err(|_| ControllerRuntimeError::InvalidBrokerPlanCredential)?;
     let guest_root_pins = load_guest_root_template_pins_optional()
         .map_err(|_| ControllerRuntimeError::InvalidGuestRootCredential)?;
-    let listener = bind_diagnostic_socket(&configuration)?;
+    let listener = A::bind_socket(&configuration.diagnostic_socket, configuration.uid, 0o660)?;
     let sessions = Arc::new(Mutex::new(ControllerBrokerSessions {
         launch_image,
         nix_generation_enabled: configuration.nix_storage_generation_prepare,
@@ -577,9 +577,9 @@ fn run_ordinary_controller(
             normal_root_profile.as_deref(),
         )?;
     }
-    let listener = runtime.block_on(into_async_diagnostic_listener(listener))?;
+    let listener = runtime.block_on(A::diagnostic_listener(listener))?;
     let public_listener = if configuration.public_api {
-        Some(runtime.block_on(public_api::bind(configuration.uid))?)
+        Some(runtime.block_on(A::public_listener(configuration.uid))?)
     } else {
         None
     };
@@ -631,8 +631,8 @@ fn run_ordinary_controller(
         endpoint: ControllerEndpoint::RootDiagnostic,
     });
     let (public_application, application) =
-        controller_applications(public_service, diagnostic_service);
-    let result = runtime.block_on(serve_until_worker_failure(
+        A::applications(public_service, diagnostic_service);
+    let result = runtime.block_on(serve_until_worker_failure::<A>(
         listener,
         application,
         public_listener,
@@ -643,40 +643,13 @@ fn run_ordinary_controller(
     result
 }
 
-// Keeps the complete fixed public-first/diagnostic-second owning recipe together.
-fn controller_applications(
-    public_service: Arc<CapabilityService>,
-    diagnostic_service: Arc<CapabilityService>,
-) -> (axum::Router, axum::Router) {
-    let public_connect =
-        DiscoveryServiceExt::register(Arc::clone(&public_service), connectrpc::Router::new());
-    let public_connect = SandboxServiceExt::register(Arc::clone(&public_service), public_connect);
-    let public_connect = ExecutionServiceExt::register(Arc::clone(&public_service), public_connect);
-    let public_connect =
-        FilesystemViewServiceExt::register(Arc::clone(&public_service), public_connect);
-    let public_connect = SnapshotServiceExt::register(Arc::clone(&public_service), public_connect);
-    let public_connect =
-        CapabilityServiceExt::register(Arc::clone(&public_service), public_connect);
-    let public_connect = CacheServiceExt::register(Arc::clone(&public_service), public_connect);
-    let public_connect = OperatorServiceExt::register(Arc::clone(&public_service), public_connect);
-    let public_connect =
-        OperationServiceExt::register(public_service, public_connect).into_axum_service();
-    let public_application = axum::Router::new().fallback_service(public_connect);
-    let connect =
-        DiscoveryServiceExt::register(Arc::clone(&diagnostic_service), connectrpc::Router::new());
-    let connect = OperationServiceExt::register(diagnostic_service, connect).into_axum_service();
-    let application = axum::Router::new().fallback_service(connect);
-
-    (public_application, application)
-}
-
-fn run_retained_controller(
+fn run_retained_controller<A: ControllerServerAssembly>(
     configuration: RuntimeConfiguration,
     startup: &mut crate::production_startup::ControllerStartupContinuationV1,
     profile: Option<Arc<aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1>>,
     launch: Option<crate::production_startup::Pid1LaunchImageV1>,
 ) -> ! {
-    let mut parent = ControllerParentCustodyV1::new(profile, launch);
+    let mut parent = ControllerParentCustodyV1::<A>::new(profile, launch);
     let worker = Arc::clone(&parent.worker);
     let Ok(mut originals) = worker.originals.lock() else {
         worker.terminate(ControllerResidentCauseV1::Closed("Controller owner lock poisoned"));
@@ -848,7 +821,7 @@ fn run_retained_controller(
 
     begin!(Diagnostic);
     parent.diagnostic_registration = Some(tokio::net::UnixListenerRegistrationAttempt::new(
-        checked!(bind_diagnostic_socket(&configuration)),
+        checked!(A::bind_socket(&configuration.diagnostic_socket, configuration.uid, 0o660)),
     ));
     complete!(Diagnostic);
 
@@ -1319,7 +1292,7 @@ fn run_retained_controller(
         let runtime = required!(runtime.as_ref());
         let attempt = required!(diagnostic_registration.as_mut());
         runtime.block_on(async {
-            register_retained_diagnostic(attempt, diagnostic, worker.as_ref());
+            A::register_diagnostic(attempt, diagnostic, worker.as_ref());
         });
     }
     complete!(AsyncDiagnostic);
@@ -1333,7 +1306,7 @@ fn run_retained_controller(
             ..
         } = &mut parent;
         required!(runtime.as_ref()).block_on(async {
-            public_api::bind_retained(
+            A::bind_public_retained(
                 configuration.uid,
                 public_startup,
                 public,
@@ -1351,7 +1324,7 @@ fn run_retained_controller(
             worker.terminate(ControllerResidentCauseV1::GitRead);
         };
         originals.git_read = Some(git_read_inspection::GitReadWorkerInputsV1::new(
-            public.git_read_acceptor(),
+            A::git_read_acceptor(public),
             required!(parent.runtime.as_ref()).handle().clone(),
         ));
     }
@@ -1439,12 +1412,12 @@ fn run_retained_controller(
         endpoint: ControllerEndpoint::RootDiagnostic,
     });
     let (public_application, application) =
-        controller_applications(public_service, diagnostic_service);
+        A::applications(public_service, diagnostic_service);
     complete!(Applications);
 
     // Future construction is an infallible ownership park. Axum's unchanged
     // IntoFuture boxing happens during poll, an excluded provider boundary.
-    let public = std::pin::pin!(public_api::serve(
+    let public = std::pin::pin!(A::serve_public(
         required!(parent.public.take()),
         public_application,
     ));
@@ -1452,9 +1425,7 @@ fn run_retained_controller(
     let diagnostic_listener = required!(parent.diagnostic.take());
     let _diagnostic_input_unwind = AbortControllerCustodyUnwindV1;
     let diagnostic = std::pin::pin!(async move {
-        axum::serve(diagnostic_listener, application)
-            .await
-            .map_err(ControllerRuntimeError::DiagnosticServer)
+        A::serve_diagnostic(diagnostic_listener, application).await
     });
     let _diagnostic_unwind = AbortControllerCustodyUnwindV1;
 
@@ -1804,15 +1775,15 @@ enum ControllerMonitorOutcomeV1 {
 
 // Same parent frame owns these partial I/O returns independently of the worker
 // mutex. Selected termination intentionally precedes every normal field Drop.
-struct ControllerParentCustodyV1 {
+struct ControllerParentCustodyV1<A: ControllerServerAssembly> {
     worker: Arc<ControllerWorkerCustodyV1>,
     stage: ControllerParentStageV1,
     launch: Option<Option<crate::production_startup::Pid1LaunchImageV1>>,
     runtime: Option<tokio::runtime::Runtime>,
     diagnostic_registration: Option<tokio::net::UnixListenerRegistrationAttempt>,
-    diagnostic: Option<AuthenticatedDiagnosticListener>,
-    public_startup: public_api::PublicListenerStartupV1,
-    public: Option<Option<public_api::PublicListener>>,
+    diagnostic: Option<A::DiagnosticListener>,
+    public_startup: A::PublicStartup,
+    public: Option<Option<A::PublicListener>>,
     host: Option<Option<aos_sandbox::runtime_scope::HostServiceIdentity>>,
     mount: Option<Option<aos_sandbox::mount_preparation::MountServiceIdentity>>,
     resource_opening: Option<aos_sandbox::ControllerResourceBankOpeningV1>,
@@ -1830,7 +1801,7 @@ struct ControllerParentCustodyV1 {
     git_read: git_read_inspection::GitReadIngressV1,
 }
 
-impl ControllerParentCustodyV1 {
+impl<A: ControllerServerAssembly> ControllerParentCustodyV1<A> {
     fn new(
         profile: Option<Arc<aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1>>,
         launch: Option<crate::production_startup::Pid1LaunchImageV1>,
@@ -1850,7 +1821,7 @@ impl ControllerParentCustodyV1 {
             runtime: None,
             diagnostic_registration: None,
             diagnostic: None,
-            public_startup: public_api::PublicListenerStartupV1::new(),
+            public_startup: A::public_startup(),
             public: None,
             host: None,
             mount: None,
@@ -1871,7 +1842,7 @@ impl ControllerParentCustodyV1 {
     }
 }
 
-impl Drop for ControllerParentCustodyV1 {
+impl<A: ControllerServerAssembly> Drop for ControllerParentCustodyV1<A> {
     fn drop(&mut self) {
         self.worker.ended.store(true, Ordering::Release);
         std::process::abort();
@@ -1880,6 +1851,16 @@ impl Drop for ControllerParentCustodyV1 {
 
 // This fence is placed AFTER newly pinned futures or a worker owner loan so it
 // fires before their Drop. It cannot rescue already-unwound callee-local frames.
+impl ControllerServerTerminal for ControllerWorkerCustodyV1 {
+    fn runtime(&self, cause: ControllerRuntimeError) -> ! {
+        self.terminate(ControllerResidentCauseV1::Runtime(cause))
+    }
+
+    fn closed(&self, cause: &'static str) -> ! {
+        self.terminate(ControllerResidentCauseV1::Closed(cause))
+    }
+}
+
 struct AbortControllerCustodyUnwindV1;
 
 impl Drop for AbortControllerCustodyUnwindV1 {
@@ -1908,19 +1889,17 @@ fn complete_configured_source_genesis(
     Ok(())
 }
 
-async fn serve_until_worker_failure(
-    listener: AuthenticatedDiagnosticListener,
-    application: axum::Router,
-    public_listener: Option<public_api::PublicListener>,
-    public_application: axum::Router,
+async fn serve_until_worker_failure<A: ControllerServerAssembly>(
+    listener: A::DiagnosticListener,
+    application: A::Application,
+    public_listener: Option<A::PublicListener>,
+    public_application: A::Application,
     events: mpsc::Receiver<WorkerEvent>,
 ) -> Result<(), ControllerRuntimeError> {
     let worker = tokio::task::spawn_blocking(move || events.recv());
     tokio::select! {
-        result = public_api::serve(public_listener, public_application) => result,
-        result = axum::serve(listener, application) => {
-            result.map_err(ControllerRuntimeError::DiagnosticServer)
-        }
+        result = A::serve_public(public_listener, public_application) => result,
+        result = A::serve_diagnostic(listener, application) => result,
         result = worker => {
             match result.map_err(ControllerRuntimeError::WorkerJoin)? {
                 Ok(WorkerEvent::Fatal(message)) => Err(ControllerRuntimeError::Worker(message)),
@@ -1935,94 +1914,6 @@ async fn serve_until_worker_failure(
                 )),
             }
         }
-    }
-}
-
-// Called inside the existing runtime with only loans of the parent's fields.
-// Neither a returned error nor a registered listener crosses that runtime
-// return boundary before entering the same parent's resident destination.
-fn register_retained_diagnostic(
-    attempt: &mut tokio::net::UnixListenerRegistrationAttempt,
-    destination: &mut Option<AuthenticatedDiagnosticListener>,
-    terminal: &ControllerWorkerCustodyV1,
-) {
-    if destination.is_some() {
-        terminal.terminate(ControllerResidentCauseV1::Closed(
-            "Controller diagnostic destination occupied",
-        ));
-    }
-
-    let listener = match attempt.register() {
-        Ok(listener) => listener,
-        Err(cause) => terminal.terminate(ControllerResidentCauseV1::Runtime(
-            ControllerRuntimeError::DiagnosticSocketRuntime(cause),
-        )),
-    };
-    *destination = Some(AuthenticatedDiagnosticListener::new(listener, 0));
-}
-
-async fn into_async_diagnostic_listener(
-    listener: std::os::unix::net::UnixListener,
-) -> Result<AuthenticatedDiagnosticListener, ControllerRuntimeError> {
-    into_async_authenticated_listener(listener, 0).await
-}
-
-async fn into_async_authenticated_listener(
-    listener: std::os::unix::net::UnixListener,
-    expected_uid: u32,
-) -> Result<AuthenticatedDiagnosticListener, ControllerRuntimeError> {
-    let listener = tokio::net::UnixListener::from_std(listener)
-        .map_err(ControllerRuntimeError::DiagnosticSocketRuntime)?;
-    Ok(AuthenticatedDiagnosticListener::new(listener, expected_uid))
-}
-
-struct AuthenticatedDiagnosticListener {
-    listener: tokio::net::UnixListener,
-    expected_uid: u32,
-}
-
-impl AuthenticatedDiagnosticListener {
-    const fn new(listener: tokio::net::UnixListener, expected_uid: u32) -> Self {
-        Self {
-            listener,
-            expected_uid,
-        }
-    }
-}
-
-impl axum::serve::Listener for AuthenticatedDiagnosticListener {
-    type Io = tokio::net::UnixStream;
-    type Addr = tokio::net::unix::SocketAddr;
-
-    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
-        loop {
-            match self.listener.accept().await {
-                Ok((stream, address)) => match stream.peer_cred() {
-                    Ok(credentials) if credentials.uid() == self.expected_uid => {
-                        return (stream, address);
-                    }
-                    Ok(credentials) => {
-                        eprintln!(
-                            "aos-sandboxd: rejected diagnostic connection from UID {}",
-                            credentials.uid()
-                        );
-                    }
-                    Err(error) => {
-                        eprintln!(
-                            "aos-sandboxd: rejected diagnostic connection without peer credentials: {error}"
-                        );
-                    }
-                },
-                Err(error) => {
-                    eprintln!("aos-sandboxd: diagnostic socket accept failed: {error}");
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                }
-            }
-        }
-    }
-
-    fn local_addr(&self) -> std::io::Result<Self::Addr> {
-        self.listener.local_addr()
     }
 }
 
@@ -3843,47 +3734,6 @@ fn read_cache_replay_bundle() -> Result<Option<Vec<u8>>, ControllerRuntimeError>
         CredentialOwnerPolicyV1::RootOrCurrent,
     )
     .map_err(|_| ControllerRuntimeError::InvalidCacheReplayBundle)
-}
-
-fn bind_diagnostic_socket(
-    configuration: &RuntimeConfiguration,
-) -> Result<std::os::unix::net::UnixListener, ControllerRuntimeError> {
-    bind_controller_socket(&configuration.diagnostic_socket, configuration.uid, 0o660)
-}
-
-fn bind_controller_socket(
-    path: &Path,
-    uid: u32,
-    mode: u32,
-) -> Result<std::os::unix::net::UnixListener, ControllerRuntimeError> {
-    let parent = path
-        .parent()
-        .ok_or(ControllerRuntimeError::UnsafeDiagnosticSocket)?;
-    let parent_metadata = std::fs::symlink_metadata(parent)
-        .map_err(ControllerRuntimeError::DiagnosticSocketFilesystem)?;
-    if !parent_metadata.file_type().is_dir()
-        || parent_metadata.uid() != uid
-        || parent_metadata.permissions().mode() & 0o022 != 0
-    {
-        return Err(ControllerRuntimeError::UnsafeDiagnosticSocket);
-    }
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_socket() && metadata.uid() == uid => {
-            std::fs::remove_file(path)
-                .map_err(ControllerRuntimeError::DiagnosticSocketFilesystem)?;
-        }
-        Ok(_) => return Err(ControllerRuntimeError::UnsafeDiagnosticSocket),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(ControllerRuntimeError::DiagnosticSocketFilesystem(error)),
-    }
-    let listener = std::os::unix::net::UnixListener::bind(path)
-        .map_err(ControllerRuntimeError::DiagnosticSocketFilesystem)?;
-    listener
-        .set_nonblocking(true)
-        .map_err(ControllerRuntimeError::DiagnosticSocketFilesystem)?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
-        .map_err(ControllerRuntimeError::DiagnosticSocketFilesystem)?;
-    Ok(listener)
 }
 
 #[derive(Clone, Debug)]
@@ -7389,7 +7239,11 @@ fn timestamp(value: rustix::time::Timespec) -> Result<Timestamp, ConnectError> {
     Err(error)
 }
 
-struct CapabilityService {
+/// Handles Controller requests through the sole protected worker command channel.
+///
+/// Assembly may register this opaque handler, but cannot construct it, access
+/// its command channel, or substitute verified identity/admission evidence.
+pub struct CapabilityService {
     capabilities: Arc<Mutex<CapabilityState>>,
     commands: mpsc::SyncSender<ControllerCommand>,
     endpoint: ControllerEndpoint,
@@ -8312,7 +8166,6 @@ mod tests {
     )]
 
     use super::*;
-    use axum::serve::Listener as _;
     use buffa::Message as _;
 
     // These vectors exercise DATA/negative bookkeeping and actual std channel
@@ -8680,25 +8533,6 @@ mod tests {
         let mut expected = [0; 16];
         expected[0] = 9;
         assert_eq!(nonzero_lifecycle_id_from_digest(digest), expected);
-    }
-
-    fn diagnostic_configuration(directory: &tempfile::TempDir) -> RuntimeConfiguration {
-        RuntimeConfiguration {
-            uid: rustix::process::getuid().as_raw(),
-            gid: rustix::process::getgid().as_raw(),
-            state_directory: directory.path().join("state"),
-            diagnostic_socket: directory.path().join("diagnostics.sock"),
-            public_api: false,
-            publisher_ingress: false,
-            git_upload_bootstrap: false,
-            git_coverage: false,
-            git_read_inspection: None,
-            nix_start_admission: false,
-            nix_storage_generation_prepare: false,
-            nix_existing_outputs: false,
-            issue_source_successor: false,
-            create_q04_policy_subgate: false,
-        }
     }
 
     #[test]
@@ -9203,83 +9037,6 @@ mod tests {
             )),
             CycleFailure::Fatal(_)
         ));
-    }
-
-    #[test]
-    fn diagnostic_listener_is_registered_inside_the_async_runtime_with_root_policy() {
-        let directory = tempfile::tempdir().unwrap();
-        let configuration = diagnostic_configuration(&directory);
-        let listener = bind_diagnostic_socket(&configuration).unwrap();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-
-        let listener = runtime
-            .block_on(into_async_diagnostic_listener(listener))
-            .unwrap();
-
-        assert_eq!(listener.expected_uid, 0);
-        assert_eq!(
-            listener.local_addr().unwrap().as_pathname(),
-            Some(configuration.diagnostic_socket.as_path())
-        );
-    }
-
-    #[test]
-    fn diagnostic_listener_accepts_the_exact_authenticated_uid() {
-        let directory = tempfile::tempdir().unwrap();
-        let configuration = diagnostic_configuration(&directory);
-        let listener = bind_diagnostic_socket(&configuration).unwrap();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let mut listener = runtime
-            .block_on(into_async_authenticated_listener(
-                listener,
-                configuration.uid,
-            ))
-            .unwrap();
-
-        runtime.block_on(async {
-            let _client = tokio::net::UnixStream::connect(&configuration.diagnostic_socket)
-                .await
-                .unwrap();
-            tokio::time::timeout(Duration::from_secs(1), listener.accept())
-                .await
-                .unwrap();
-        });
-    }
-
-    #[test]
-    fn diagnostic_listener_rejects_every_other_uid() {
-        let directory = tempfile::tempdir().unwrap();
-        let configuration = diagnostic_configuration(&directory);
-        let listener = bind_diagnostic_socket(&configuration).unwrap();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let unexpected_uid = if configuration.uid == u32::MAX {
-            configuration.uid - 1
-        } else {
-            configuration.uid + 1
-        };
-        let mut listener = runtime
-            .block_on(into_async_authenticated_listener(listener, unexpected_uid))
-            .unwrap();
-
-        runtime.block_on(async {
-            let _client = tokio::net::UnixStream::connect(&configuration.diagnostic_socket)
-                .await
-                .unwrap();
-            assert!(
-                tokio::time::timeout(Duration::from_millis(50), listener.accept())
-                    .await
-                    .is_err()
-            );
-        });
     }
 
     #[test]

@@ -41,8 +41,9 @@
     cargoRoot = "crates";
     checkType = "debug";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-broker-session-security --bin aos-source-providerd"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES --no-default-features --features aos-sandbox-services/source-provider -p aos-sandbox-services --bin aos-source-providerd"
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-broker-session-security --lib"
+      "test --no-run --frozen --offline -j$NIX_BUILD_CORES --no-default-features --features aos-sandbox-services/source-provider -p aos-sandbox-services"
     ];
     buildDeps = [buildProtobuf];
     runtimeDeps = [];
@@ -52,9 +53,9 @@ in
     pname = "aos-source-providerd";
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
-    cargoFlags = "-p aos-sandbox-broker-session-security --bin aos-source-providerd";
+    cargoFlags = "--no-default-features --features aos-sandbox-services/source-provider -p aos-sandbox-services --bin aos-source-providerd";
     checkType = "debug";
-    cargoTestFlags = "-p aos-sandbox-broker-session-security --lib production_source_provider";
+    cargoTestFlags = "--no-default-features --features aos-sandbox-services/source-provider -p aos-sandbox-services -p aos-sandbox-broker-session-security production_source_provider";
     cargoNextest = true;
     doCheck = true;
     buildDeps = [buildProtobuf];

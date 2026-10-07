@@ -1,6 +1,7 @@
 //! Journal validation and public projections shared by controller services.
 //!
-//! Production process ownership lives in the broker-session-security crate,
+//! HTTP application assembly lives in the sandbox-services crate; protected
+//! runtime integration remains in the broker-session-security crate,
 //! above both the controller core and the authenticated broker transports.
 
 pub mod journal;

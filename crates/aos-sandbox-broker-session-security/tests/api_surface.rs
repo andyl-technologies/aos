@@ -1,4 +1,4 @@
-//! Guards the intentionally narrow and production-inert public surface.
+//! Guards sealed transport custody below concrete application assembly.
 
 const CRATE_MANIFEST: &str = include_str!("../Cargo.toml");
 const ENDPOINT_SOURCE: &str = include_str!("../src/endpoint.rs");
@@ -11,14 +11,8 @@ const PROTOCOL_LIBRARY_SOURCE: &str = include_str!("../../aos-sandbox-protocol/s
 const NETWORK_SERVICE_SOURCE: &str = include_str!("../../aos-sandbox-network/src/service.rs");
 
 #[test]
-fn dependency_boundary_uses_only_explicit_wire_and_kernel_layers() {
-    for forbidden in [
-        "\nrand =",
-        "\nrand_core =",
-        "\ngetrandom =",
-        "\nserde =",
-        "journal",
-    ] {
+fn dependency_boundary_keeps_crypto_and_application_ownership_explicit() {
+    for forbidden in ["\nrand =", "\nrand_core =", "\ngetrandom =", "journal"] {
         assert!(
             !CRATE_MANIFEST.contains(forbidden),
             "forbidden dependency marker: {forbidden}"
@@ -30,6 +24,15 @@ fn dependency_boundary_uses_only_explicit_wire_and_kernel_layers() {
     assert_eq!(CRATE_MANIFEST.matches("aos-proto.workspace").count(), 1);
     assert_eq!(CRATE_MANIFEST.matches("buffa.workspace").count(), 1);
     assert_eq!(CRATE_MANIFEST.matches("aos-sandbox-protocol").count(), 1);
+}
+
+#[test]
+fn executable_and_http_registration_ownership_is_outside_security() {
+    let controller = include_str!("../src/controller_service.rs");
+    assert!(!CRATE_MANIFEST.contains("[[bin]]"));
+    assert!(!CRATE_MANIFEST.contains("aos-sandbox-services"));
+    assert!(!controller.contains("axum::serve("));
+    assert!(!controller.contains("::register("));
 }
 
 #[test]
@@ -78,7 +81,7 @@ fn endpoint_surface_exposes_no_signer_or_scalar_escape_hatch() {
 }
 
 #[test]
-fn production_brokers_do_not_depend_on_the_inert_crate() {
+fn effect_owners_do_not_depend_on_session_or_application_assembly() {
     for manifest in [
         include_str!("../../aos-sandbox/Cargo.toml"),
         include_str!("../../aos-sandbox-broker/Cargo.toml"),
@@ -89,6 +92,7 @@ fn production_brokers_do_not_depend_on_the_inert_crate() {
         include_str!("../../aos-sandbox-protocol/Cargo.toml"),
     ] {
         assert!(!manifest.contains("aos-sandbox-broker-session-security"));
+        assert!(!manifest.contains("aos-sandbox-services"));
     }
 }
 

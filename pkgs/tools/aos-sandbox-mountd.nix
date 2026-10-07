@@ -44,9 +44,10 @@
     cargoRoot = "crates";
     checkType = "debug";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-broker-session-security --bin aos-sandbox-mountd"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES --no-default-features --features aos-sandbox-services/mount -p aos-sandbox-services --bin aos-sandbox-mountd"
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-mount --bin aos-sandbox-mount-helper"
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-mount"
+      "test --no-run --frozen --offline -j$NIX_BUILD_CORES --no-default-features --features aos-sandbox-services/mount -p aos-sandbox-services"
     ];
     buildDeps = [buildProtobuf];
     runtimeDeps = [];
@@ -57,11 +58,11 @@ in
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-broker-session-security --bin aos-sandbox-mountd"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES --no-default-features --features aos-sandbox-services/mount -p aos-sandbox-services --bin aos-sandbox-mountd"
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-mount --bin aos-sandbox-mount-helper"
     ];
     checkType = "debug";
-    cargoTestFlags = "-p aos-sandbox-mount";
+    cargoTestFlags = "--no-default-features --features aos-sandbox-services/mount -p aos-sandbox-services -p aos-sandbox-mount";
     cargoNextest = true;
     doCheck = true;
     buildDeps = [buildProtobuf elfutils];

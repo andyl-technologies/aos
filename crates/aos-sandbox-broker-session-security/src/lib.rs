@@ -14,10 +14,11 @@
 //! no detached signer, caller-built authenticated request, or raw channel
 //! authority is exposed.
 //!
-//! [`controller_service`] owns the unprivileged node-controller process above
-//! the controller core and this crate's protected transports. Sharing a crate
-//! does not combine processes: each broker and controller retains its separate
-//! executable, service identity, protected state, and systemd confinement.
+//! [`controller_service`] retains the protected Controller integration and
+//! reconciliation above the controller core. Executable entry points, HTTP
+//! listeners, and service registration live in `aos-sandbox-services`; its
+//! assembly port receives opaque handlers and negative-only terminal loans.
+//! Brokers and Controller retain separate identities, state, and confinement.
 //! [`cache_signer_exchange`] owns a separate Cache-only, nonauthorizing signer
 //! transport whose seed never enters the Controller or root process.
 //! [`source_signer_exchange`] owns the corresponding Source-only readback

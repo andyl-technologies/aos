@@ -2,7 +2,7 @@
 
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use aos_proto::aos::sandbox::v1::{DiscoveryServiceExt, GetPublicFeatureRegistryResponse};
@@ -14,8 +14,52 @@ use rcgen::{
 };
 use sha2::{Digest as _, Sha256};
 
-use super::super::{CapabilityService, CapabilityState, ControllerEndpoint};
 use super::{PublicApiPeer, bind_at, serve};
+
+// This transport fixture exposes only the canonical feature vocabulary. It
+// constructs no Controller state, admission witness, or production readiness.
+struct DiscoveryFixture;
+
+impl aos_proto::aos::sandbox::v1::DiscoveryService for DiscoveryFixture {
+    async fn get_public_feature_registry<'a>(
+        &'a self,
+        _context: connectrpc::RequestContext,
+        _request: connectrpc::ServiceRequest<
+            '_,
+            aos_proto::aos::sandbox::v1::GetPublicFeatureRegistryRequest,
+        >,
+    ) -> connectrpc::ServiceResult<
+        impl connectrpc::Encodable<GetPublicFeatureRegistryResponse> + Send + use<'a>,
+    > {
+        connectrpc::Response::ok(GetPublicFeatureRegistryResponse {
+            registry: Some(aos_sandbox::controller_query::public_feature_registry_v1()).into(),
+            ..Default::default()
+        })
+    }
+
+    async fn get_node_capabilities<'a>(
+        &'a self,
+        _context: connectrpc::RequestContext,
+        _request: connectrpc::ServiceRequest<
+            '_,
+            aos_proto::aos::sandbox::v1::GetNodeCapabilitiesRequest,
+        >,
+    ) -> connectrpc::ServiceResult<
+        impl connectrpc::Encodable<aos_proto::aos::sandbox::v1::GetNodeCapabilitiesResponse>
+        + Send
+        + use<'a>,
+    > {
+        connectrpc::Response::ok(aos_proto::aos::sandbox::v1::GetNodeCapabilitiesResponse {
+            capabilities: Some(aos_proto::aos::sandbox::v1::NodeCapabilities {
+                node_id: vec![7; 16],
+                capabilities: Vec::new(),
+                ..Default::default()
+            })
+            .into(),
+            ..Default::default()
+        })
+    }
+}
 
 const CHILD: &str = "AOS_PUBLIC_LISTENER_TEST_CHILD";
 const CLI_CHILD: &str = "AOS_PACKAGED_PUBLIC_CLI_TEST_CHILD";
@@ -106,7 +150,7 @@ fn registered_public_listener_uses_protected_credentials_and_real_http2() {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "controller_service::public_api::qualification_tests::registered_public_listener_child",
+            "controller::public_api::qualification_tests::registered_public_listener_child",
             "--nocapture",
             "--test-threads=1",
         ])
@@ -164,12 +208,7 @@ fn registered_public_listener_child() {
             let listener = bind_at(rustix::process::geteuid().as_raw(), &socket)
                 .await
                 .unwrap();
-            let (commands, _unused_receiver) = mpsc::sync_channel(1);
-            let service = Arc::new(CapabilityService {
-                capabilities: Arc::new(Mutex::new(CapabilityState::starting([7; 16]))),
-                commands,
-                endpoint: ControllerEndpoint::RegisteredPublic,
-            });
+            let service = Arc::new(DiscoveryFixture);
             let observed_peer = Arc::new(Mutex::new(None));
             let capture_peer = Arc::clone(&observed_peer);
             let application = axum::Router::new()
@@ -319,7 +358,7 @@ fn packaged_cli_uses_registered_public_transport() {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "controller_service::public_api::qualification_tests::packaged_cli_public_child",
+            "controller::public_api::qualification_tests::packaged_cli_public_child",
             "--nocapture",
             "--test-threads=1",
         ])
@@ -355,12 +394,7 @@ fn packaged_cli_public_child() {
             let listener = bind_at(rustix::process::geteuid().as_raw(), socket)
                 .await
                 .unwrap();
-            let (commands, _unused_receiver) = mpsc::sync_channel(1);
-            let service = Arc::new(CapabilityService {
-                capabilities: Arc::new(Mutex::new(CapabilityState::starting([7; 16]))),
-                commands,
-                endpoint: ControllerEndpoint::RegisteredPublic,
-            });
+            let service = Arc::new(DiscoveryFixture);
             let application = axum::Router::new().fallback_service(
                 DiscoveryServiceExt::register(service, connectrpc::Router::new())
                     .into_axum_service(),

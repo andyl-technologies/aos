@@ -12,7 +12,10 @@
   buildPackages,
 }: let
   version = "0.1.0";
-  buildProtobuf = if stdenv.isCross then buildPackages.protobuf else protobuf;
+  buildProtobuf =
+    if stdenv.isCross
+    then buildPackages.protobuf
+    else protobuf;
   src = import ./aos/_workspace-source.nix {inherit lib;};
   cargoDeps = fetchCargoVendor {
     inherit src;
@@ -42,32 +45,34 @@
     cargoRoot = "crates";
     checkType = "debug";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-broker-session-security --bin aos-sandbox-runtime-publisher"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES --no-default-features --features aos-sandbox-services/runtime-publisher -p aos-sandbox-services --bin aos-sandbox-runtime-publisher"
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-broker-session-security --lib"
+      "test --no-run --frozen --offline -j$NIX_BUILD_CORES --no-default-features --features aos-sandbox-services/runtime-publisher -p aos-sandbox-services"
     ];
     buildDeps = [buildProtobuf];
     runtimeDeps = runtime;
   };
-in mkCargoPackage {
-  pname = "aos-sandbox-runtime-publisher";
-  inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
-  cargoRoot = "crates";
-  cargoFlags = "-p aos-sandbox-broker-session-security --bin aos-sandbox-runtime-publisher";
-  checkType = "debug";
-  cargoTestFlags = "-p aos-sandbox-broker-session-security --lib";
-  cargoNextest = true;
-  doCheck = true;
-  buildDeps = [buildProtobuf];
-  runtimeDeps = runtime;
+in
+  mkCargoPackage {
+    pname = "aos-sandbox-runtime-publisher";
+    inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
+    cargoRoot = "crates";
+    cargoFlags = "--no-default-features --features aos-sandbox-services/runtime-publisher -p aos-sandbox-services --bin aos-sandbox-runtime-publisher";
+    checkType = "debug";
+    cargoTestFlags = "--no-default-features --features aos-sandbox-services/runtime-publisher -p aos-sandbox-services -p aos-sandbox-broker-session-security";
+    cargoNextest = true;
+    doCheck = true;
+    buildDeps = [buildProtobuf];
+    runtimeDeps = runtime;
 
-  postInstall = ''
-    test -x "$out/bin/aos-sandbox-runtime-publisher"
-  '';
+    postInstall = ''
+      test -x "$out/bin/aos-sandbox-runtime-publisher"
+    '';
 
-  passthru = {inherit cargoArtifacts cargoDeps cargoEnv;};
-  meta = {
-    description = "Fixed protected Host055 association publisher, not runtime admission";
-    license = "Apache-2.0";
-    platforms = ["x86_64-linux" "aarch64-linux"];
-  };
-}
+    passthru = {inherit cargoArtifacts cargoDeps cargoEnv;};
+    meta = {
+      description = "Fixed protected Host055 association publisher, not runtime admission";
+      license = "Apache-2.0";
+      platforms = ["x86_64-linux" "aarch64-linux"];
+    };
+  }
