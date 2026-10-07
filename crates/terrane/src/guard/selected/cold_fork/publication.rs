@@ -18,10 +18,10 @@ use terrane_core::refs::{RefClass, RefLogRecord, RefName};
 /// # Errors
 /// Refuses changed sources, profiles or controls, missing Original associations,
 /// denied original/current rights, stale heads, expiry and typed durable failures.
-pub(crate) async fn publish<'held, F, B, V, C, R, D>(
+pub(crate) async fn publish<'operation, 'held: 'operation, F, B, V, C, R, D>(
     concrete: &Guard<FileBucket<F, B, V>, D>,
     authority: &OriginalAuthority,
-    coordinator: &'held Coordinator<HeldBucket<'held, F, B, V, true>, C, R>,
+    coordinator: &'operation Coordinator<HeldBucket<'held, F, B, V, true>, C, R>,
     observed: &SelectedObservation<'held>,
     session: &mut WriterSession,
     publication: &RetainedPublication,
