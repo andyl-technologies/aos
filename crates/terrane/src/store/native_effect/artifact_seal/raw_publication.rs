@@ -17,6 +17,9 @@ pub(in super::super) struct RawRequest {
     root: PathBuf,
     control: PathBuf,
     owner: u32,
+    scopes: Vec<SyncScope>,
+    original_directories: Vec<(PathBuf, u32)>,
+    contextual: bool,
     registration: (PathBuf, Vec<u8>, MetadataStamp),
     slot_path: PathBuf,
     slot: Vec<u8>,
@@ -61,6 +64,17 @@ impl RawReceiver {
     }
 }
 
+/// Groups completed output data with its optional actual retained control context.
+///
+/// These borrows confer no authority and cannot populate the closed result.
+pub(in super::super) struct RawDurabilityInputs<'input> {
+    /// The actual producer's completed outputs and current Original records.
+    pub(in super::super) writes: &'input CompletedWrites,
+    /// The same closed control context used to build the submitted native Frame.
+    pub(in super::super) context:
+        Option<&'input crate::selected_bridge::native_guard::GuardEffectContext>,
+}
+
 /// Prepares a closed acknowledgment from actual held backend transition data.
 ///
 /// # Errors
@@ -72,8 +86,9 @@ pub(in super::super) fn raw_plan(
     slot: &PublicationCommit,
     transaction: &PublicationTransaction,
     snapshot: &[u8],
-    writes: &CompletedWrites,
+    durability: RawDurabilityInputs<'_>,
 ) -> Result<(Plan, RawReceiver), NativeEffectFailure> {
+    let RawDurabilityInputs { writes, context } = durability;
     let revision = observed
         .state()
         .revision
@@ -139,6 +154,38 @@ pub(in super::super) fn raw_plan(
     let root = observed.identity().root().to_owned();
     let owner = observed.configured_operator_uid();
     FencePolicy::ProtectedRecord { owner }.validate(metadata)?;
+    let mut scopes = vec![
+        SyncScope {
+            path: root.clone(),
+            owner,
+            protected: false,
+        },
+        SyncScope {
+            path: control.clone(),
+            owner,
+            protected: true,
+        },
+    ];
+    let mut original_directories = Vec::new();
+    if let Some(context) = context {
+        if context
+            .controls()
+            .first()
+            .is_none_or(|controls| controls.owner() != owner)
+        {
+            return Err(io::Error::other("raw contextual controls differ").into());
+        }
+        // Only the closed producer's actual retained controls extend durability
+        // boundaries. Completed-write data cannot introduce a new scope.
+        for controls in context.controls() {
+            scopes.push(SyncScope {
+                path: controls.directory().to_owned(),
+                owner: controls.owner(),
+                protected: true,
+            });
+            original_directories.push((controls.directory().to_owned(), controls.owner()));
+        }
+    }
     let (sender, receiver) = mpsc::channel();
     Ok((
         Plan::SealRawPublication(Box::new(RawRequest {
@@ -158,6 +205,9 @@ pub(in super::super) fn raw_plan(
             root,
             control,
             owner,
+            scopes,
+            original_directories,
+            contextual: context.is_some(),
             writes: writes.clone(),
             result: sender,
         })),
@@ -166,6 +216,13 @@ pub(in super::super) fn raw_plan(
 }
 
 fn association(request: &RawRequest, worker: &Worker) -> Result<(), NativeEffectFailure> {
+    if request.contextual && worker.projection.final_check.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "raw contextual acknowledgment lacks genuine final refresh",
+        )
+        .into());
+    }
     worker
         .projection
         .root(&request.root, request.owner, false)?;
@@ -250,23 +307,21 @@ fn targets(request: &RawRequest) -> io::Result<BTreeMap<PathBuf, Target>> {
         )?;
     }
     for (path, write) in request.writes.records() {
-        let (owner, protected, root) = match write.policy() {
-            FencePolicy::Payload { owner } if write.root() == request.root => {
-                (owner, false, &request.root)
-            }
-            FencePolicy::ProtectedRecord { owner } if write.root() == request.control => {
-                (owner, true, &request.control)
-            }
+        let (owner, protected) = match write.policy() {
+            FencePolicy::Payload { owner } => (owner, false),
+            FencePolicy::ProtectedRecord { owner } => (owner, true),
             _ => return Err(io::Error::other("raw completed output boundary differs")),
         };
-        if owner != request.owner {
-            return Err(io::Error::other("raw completed output owner differs"));
+        if !request.scopes.iter().any(|scope| {
+            scope.path == write.root() && scope.owner == owner && scope.protected == protected
+        }) {
+            return Err(io::Error::other("raw completed output boundary differs"));
         }
         insert_target(
             &mut result,
             path.clone(),
             Target {
-                root: root.clone(),
+                root: write.root().to_owned(),
                 owner,
                 protected,
                 expected: write.expected().map(<[u8]>::to_vec),
@@ -283,23 +338,11 @@ fn targets(request: &RawRequest) -> io::Result<BTreeMap<PathBuf, Target>> {
 /// backend association and actual descriptor/directory synchronization failure.
 pub(super) fn execute(request: RawRequest, mut worker: Worker) -> Result<(), NativeEffectFailure> {
     association(&request, &worker)?;
-    let scopes = [
-        SyncScope {
-            path: request.root.clone(),
-            owner: request.owner,
-            protected: false,
-        },
-        SyncScope {
-            path: request.control.clone(),
-            owner: request.owner,
-            protected: true,
-        },
-    ];
     synchronize(
         Inventory {
-            scopes: &scopes,
+            scopes: &request.scopes,
             targets: targets(&request)?,
-            original_directories: &[],
+            original_directories: &request.original_directories,
             #[cfg(all(test, feature = "tokio"))]
             completed_syncs: None,
         },

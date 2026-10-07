@@ -526,7 +526,10 @@ async fn publish_inner<F: LocalFs + BucketBinding>(
         &slot,
         &transaction,
         &snapshot_bytes,
-        frame.writes.as_ref().ok_or_else(unsupported)?,
+        super::super::artifact_seal::raw_publication::RawDurabilityInputs {
+            writes: frame.writes.as_ref().ok_or_else(unsupported)?,
+            context: context.map(|context| context.effect_context()),
+        },
     )
     .map_err(super::native_failure)?;
     frame.execute(fs, acknowledgment).await?;
