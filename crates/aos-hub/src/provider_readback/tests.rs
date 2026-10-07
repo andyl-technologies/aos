@@ -212,7 +212,9 @@ fn journal_is_create_only_private_and_refuses_symlink_parent() {
         .permissions(std::fs::Permissions::from_mode(0o700))
         .tempdir_in(".")
         .unwrap();
-    let journal = Journal::create(&directory.path().join("observations")).unwrap();
+    // Keep journal custody relative to the owned working directory.
+    let relative_parent = std::path::Path::new(directory.path().file_name().unwrap());
+    let journal = Journal::create(&relative_parent.join("observations")).unwrap();
     let observed = journal.write("intent.json", b"{}").unwrap();
     assert_eq!(observed["byteSize"], "2");
     assert!(journal.write("intent.json", b"changed").is_err());
@@ -230,7 +232,7 @@ fn journal_is_create_only_private_and_refuses_symlink_parent() {
         directory.path().join("alias"),
     )
     .unwrap();
-    assert!(Journal::create(&directory.path().join("alias/second")).is_err());
+    assert!(Journal::create(&relative_parent.join("alias/second")).is_err());
 }
 
 #[test]
@@ -244,7 +246,9 @@ fn elapsed_original_cutoff_cannot_be_renewed_after_durable_intent() {
         .permissions(std::fs::Permissions::from_mode(0o700))
         .tempdir_in(".")
         .unwrap();
-    let journal = Journal::create(&directory.path().join("observations")).unwrap();
+    // Keep journal custody relative to the owned working directory.
+    let relative_parent = std::path::Path::new(directory.path().file_name().unwrap());
+    let journal = Journal::create(&relative_parent.join("observations")).unwrap();
     journal.write("intent.json", b"{}").unwrap();
     std::thread::sleep(std::time::Duration::from_millis(1100));
     assert!(cutoff.remaining().is_err());
