@@ -326,6 +326,101 @@ class NativeHandlerTests(unittest.TestCase):
                 self.assertEqual(recovered.receipt["image_units"], {})
                 self.assertEqual(recovered.service("observe")["status"], "current")
 
+    def retained_service_with_new_image_projection(self, root, owner="image", bootstrap=False):
+        value, rendered, initial, calls, originals = self.projected_service(root)
+        value.update(activation_owner=owner, bootstrap=bootstrap)
+        value["lifecycle"]["description"] = "Retained predecessor service definition"
+        retained = handler_module.realize_service(value)
+        for name in rendered["units"]:
+            (initial.unit_directory / name).unlink()
+        initial.service("apply")
+
+        for name in rendered["units"]:
+            leaf = initial.unit_directory / name
+            self.assertEqual(leaf.read_bytes(), retained["units"][name].encode())
+            leaf.unlink()
+            leaf.symlink_to(projected_service_units / name)
+        return initial, retained, rendered, calls, originals
+
+    def test_selected_new_image_projection_restores_retained_service_bytes(self):
+        for owner, bootstrap in [("image", False), ("manager", False), ("ability", True)]:
+            with self.subTest(owner=owner), tempfile.TemporaryDirectory() as root:
+                initial, retained, rendered, calls, originals = self.retained_service_with_new_image_projection(
+                    root, owner, bootstrap,
+                )
+                before = list(calls)
+                recovered = handler_module.Handler(
+                    initial.invocation, "unused", initial.unit_directory, initial.state_directory,
+                    image_unit_directory=projected_service_units,
+                )
+                recovered.manager = active_bus_manager(calls)
+                name = rendered["resource"]
+                self.assertNotEqual(retained["units"][name].encode(), originals[name])
+
+                self.assertEqual(recovered.service("observe")["status"], "retry-safe")
+                recovered.service("apply")
+
+                self.assertEqual(recovered.service("observe")["status"], "current")
+                self.assertFalse(recovered.receipt["pending"])
+                self.assertEqual(recovered.receipt["image_units"], {})
+                for unit_name, text in retained["units"].items():
+                    leaf = recovered.unit_directory / unit_name
+                    self.assertFalse(leaf.is_symlink())
+                    self.assertEqual(leaf.read_bytes(), text.encode())
+                if owner != "ability":
+                    self.assertFalse(any(
+                        call[0] in {"start", "restart", "reload", "reload-or-restart"}
+                        for call in calls[len(before):]
+                    ))
+                self.assertEqual(originals, {
+                    unit_name: (projected_service_units / unit_name).read_bytes()
+                    for unit_name in originals
+                })
+
+    def test_new_image_projection_requires_selected_target_and_completed_receipt(self):
+        for change in ("missing-selection", "wrong-directory", "foreign-target", "pending", "removing", "dispatching", "receipt-kind", "receipt-hash", "ineligible"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as root:
+                initial, retained, rendered, calls, originals = self.retained_service_with_new_image_projection(root)
+                name = rendered["resource"]
+                leaf = initial.unit_directory / name
+                selected = projected_service_units
+                if change == "missing-selection":
+                    selected = None
+                elif change == "wrong-directory":
+                    selected = Path(root) / "unselected-units"
+                    selected.mkdir()
+                elif change == "foreign-target":
+                    # Another immutable fixture member is not the selected unit.
+                    leaf.unlink()
+                    leaf.symlink_to(projected_service_input)
+                elif change in {"pending", "removing", "dispatching"}:
+                    initial.save(dict(initial.receipt, **{change: True}))
+                elif change == "receipt-kind":
+                    initial.save(dict(initial.receipt, kind="not-service"))
+                elif change == "receipt-hash":
+                    initial.save(dict(initial.receipt, units=dict(initial.receipt["units"], **{name: "0" * 64})))
+                else:
+                    initial.value.update(activation_owner="ability", bootstrap=False)
+                saved_receipt = initial.receipt_path.read_bytes()
+                before = list(calls)
+                recovered = handler_module.Handler(
+                    initial.invocation, "unused", initial.unit_directory, initial.state_directory,
+                    image_unit_directory=selected,
+                )
+                recovered.manager = active_bus_manager(calls)
+
+                self.assertEqual(recovered.service("observe")["status"], "indeterminate")
+                with self.assertRaises((ValueError, OSError)):
+                    recovered.service("apply")
+
+                self.assertEqual(recovered.receipt_path.read_bytes(), saved_receipt)
+                self.assertTrue(leaf.is_symlink())
+                self.assertEqual(calls, before)
+                self.assertEqual(originals, {
+                    unit_name: (projected_service_units / unit_name).read_bytes()
+                    for unit_name in originals
+                })
+
     def test_completed_projection_refuses_unproven_receipt_or_alias(self):
         for change in ("pending", "pending-target", "removing", "dispatching", "receipt-kind", "receipt-hash", "ineligible", "foreign-target", "desired-hash"):
             with self.subTest(change=change), tempfile.TemporaryDirectory() as root:
