@@ -18,8 +18,8 @@ use crate::direct_upload::WireInteger;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
-pub(crate) const MAX_CHECKPOINTS: usize = 32;
-const MAX_BYTES: u64 = 12 * 1024;
+pub(crate) const MAX_CHECKPOINTS: usize = crate::direct_upload::MAX_DIRECT_BATCH_ITEMS;
+const MAX_BYTES: u64 = 64 * 1024;
 
 /// Retains bounded request-task checkpoints without granting SQL authority.
 #[derive(Clone, Debug, Serialize)]

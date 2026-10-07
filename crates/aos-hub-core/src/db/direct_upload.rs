@@ -906,6 +906,83 @@ mod sql_checkpoint_tests {
     }
 
     #[tokio::test]
+    async fn full_direct_batch_projection_retains_every_checked_original_without_splitting() {
+        let db = Database::open_in_memory().await.unwrap();
+        let original = original(&db).await;
+        let count = crate::direct_upload::MAX_DIRECT_BATCH_ITEMS;
+        assert_eq!(count, 64);
+
+        let (records, projection) = observe_with_sql_projection(async {
+            let mut records = Vec::new();
+            for index in 0..count {
+                let mut admission = original.admission.clone();
+                admission.session_id = format!("batch-session-{index:02}");
+                admission.intent.client_operation_id = format!("{index:064x}");
+                if let DirectUploadTarget::CacheObject { path, .. } = &mut admission.intent.target {
+                    *path = format!("batch-object-{index:02}");
+                }
+                admission.placements[0].final_key = format!("cache/batch-object-{index:02}");
+                admission.logical_fingerprint = admission.fingerprint("deployment").unwrap();
+                records.push(
+                    db.admit_direct_upload_checked(
+                        "deployment",
+                        &admission,
+                        &original.owner_scope_key,
+                        &original.owner,
+                        Vec::new(),
+                        11,
+                    )
+                    .await
+                    .unwrap(),
+                );
+            }
+            confirm_sql_constructor("direct_logical_validated");
+            records
+        })
+        .await;
+
+        let projection = projection.unwrap();
+        let raw = projection.encoded().unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        assert!(raw.len() > 12 * 1024);
+        assert!(raw.len() <= 64 * 1024);
+        assert_eq!(value["checkpoints"].as_array().unwrap().len(), count);
+        for (record, checkpoint) in records
+            .iter()
+            .zip(value["checkpoints"].as_array().unwrap())
+        {
+            assert_eq!(checkpoint["sessionId"], record.admission.session_id);
+            assert_eq!(checkpoint["retainedOriginal"], false);
+            assert_eq!(
+                checkpoint["admission"]["sha256"],
+                hex::encode(Sha256::digest(
+                    encode_direct_control(&record.admission).unwrap()
+                ))
+            );
+            assert!(checkpoint.get("sqlReaderAuthority").is_none());
+        }
+        eprintln!("actual_full_batch_projection_bytes={} checkpoints={count}", raw.len());
+
+        let (_, overflow) = observe_with_sql_projection(async {
+            for _ in 0..=count {
+                db.admit_direct_upload_checked(
+                    "deployment",
+                    &records[0].admission,
+                    &original.owner_scope_key,
+                    &original.owner,
+                    Vec::new(),
+                    12,
+                )
+                .await
+                .unwrap();
+            }
+            confirm_sql_constructor("direct_logical_validated");
+        })
+        .await;
+        assert!(overflow.is_none());
+    }
+
+    #[tokio::test]
     async fn admission_emits_only_after_actual_checked_success_and_labels_observed_rv() {
         let db = Database::open_in_memory().await.unwrap();
         let (record, projection) = observe_with_sql_projection(async {

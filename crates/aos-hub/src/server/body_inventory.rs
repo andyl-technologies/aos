@@ -27,7 +27,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::Instant;
 
 const MAX_PENDING: u64 = 4096;
-const MAX_SQL_EVENT_BYTES: usize = 16 * 1024;
+const MAX_SQL_EVENT_BYTES: usize = 96 * 1024;
 const MAX_WINDOW_MILLIS: u64 = 3_600_000;
 
 #[derive(Deserialize, Serialize)]
@@ -599,6 +599,14 @@ mod sql_checkpoint_tests {
         aos_hub_core::application_body_observation::BodyEvidence,
         Vec<u8>,
     ) {
+        actual_checkpoint_count(1).await
+    }
+
+    async fn actual_checkpoint_count(count: usize) -> (
+        SqlProjection,
+        aos_hub_core::application_body_observation::BodyEvidence,
+        Vec<u8>,
+    ) {
         let db = Database::open_in_memory().await.unwrap();
         let registry = db
             .register_registry("bridge-registry", &[], false)
@@ -633,17 +641,22 @@ mod sql_checkpoint_tests {
             object_kind: "immutable".into(),
         }];
         let ((evidence, reply), projection) = observe_with_sql_projection(async {
-            let session = db
-                .append_registry_publication_manifest_chunk(
-                    publication,
-                    "synthetic-private-lease",
-                    0,
-                    &"d".repeat(64),
-                    &objects,
-                    101,
-                )
-                .await
-                .unwrap();
+            let mut session = None;
+            for _ in 0..count {
+                session = Some(
+                    db.append_registry_publication_manifest_chunk(
+                        publication,
+                        "synthetic-private-lease",
+                        0,
+                        &"d".repeat(64),
+                        &objects,
+                        101,
+                    )
+                    .await
+                    .unwrap(),
+                );
+            }
+            let session = session.unwrap();
             let reply = serde_json::to_vec(&aos_proto_types::RegistryPublicationManifestSession {
                 publication_id: session.publication_id,
                 lease_token: session.lease_token,
@@ -746,6 +759,43 @@ mod sql_checkpoint_tests {
         assert!(!serde_json::to_string(&child["projection"])
             .unwrap()
             .contains("synthetic-private-lease"));
+    }
+
+    #[tokio::test]
+    async fn full_checkpoint_aggregate_emits_one_raw_child_with_exact_member_commitment() {
+        // This bridge fixture reuses actual retained SQL receipts. Admission's
+        // distinct 64-original checked operations are covered in Core's test.
+        let (projection, evidence, reply) = actual_checkpoint_count(64).await;
+        let projection_raw = projection.encoded().unwrap();
+        assert!(projection_raw.len() > 12 * 1024);
+        assert!(projection_raw.len() <= 64 * 1024);
+        let member = member(projection, evidence, &reply);
+        let window = Arc::clone(&member.window);
+        drop(member);
+
+        let raw = window.raw_records.lock().unwrap();
+        let children = raw
+            .iter()
+            .filter(|raw| {
+                serde_json::from_str::<serde_json::Value>(raw).unwrap()["event"] == "sql_projection"
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(children.len(), 1);
+        let child = children[0];
+        assert!(child.len() > 16 * 1024);
+        assert!(child.len() <= MAX_SQL_EVENT_BYTES);
+        let value: serde_json::Value = serde_json::from_str(child).unwrap();
+        assert_eq!(value["projection"]["checkpoints"].as_array().unwrap().len(), 64);
+        let member = raw
+            .iter()
+            .find_map(|raw| {
+                let value: serde_json::Value = serde_json::from_str(raw).unwrap();
+                (value["event"] == "member").then_some(value)
+            })
+            .unwrap();
+        assert_eq!(member["sqlProjection"]["sha256"], image(child.as_bytes()).sha256);
+        assert_eq!(member["sqlProjection"]["byteSize"], child.len().to_string());
+        eprintln!("actual_full_child_bytes={} checkpoints=64", child.len());
     }
 
     #[tokio::test]

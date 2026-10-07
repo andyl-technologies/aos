@@ -347,6 +347,31 @@ class SqlProjectionHandoff(unittest.TestCase):
         with self.assertRaises(ValueError):
             inventory.sql_child(member, [(changed, raw)], SOURCE, source_bytes)
 
+    def test_one_full_checkpoint_child_keeps_all_sixty_four_originals(self):
+        child = copy.deepcopy(self.child)
+        child['projection']['checkpoints'] = [
+            {**self.operation, 'chunkIndex': str(index)} for index in range(64)]
+        raw = json.dumps(child, separators=(',', ':')).encode()
+        member = copy.deepcopy(self.member)
+        member['sqlProjection'] = {'byteSize': str(len(raw)), 'sha256': inventory.sha(raw)}
+        result = inventory.sql_child(member, [(child, raw)], SOURCE, source_bytes)
+
+        self.assertEqual(len(result['checkpoints']), 64)
+        self.assertEqual(result['rawChildSha256'], inventory.sha(raw))
+        self.assertIsNone(result['objectPayloadBytes'])
+        self.assertTrue(result['missing'])
+        changed = copy.deepcopy(child)
+        changed['projection']['checkpoints'].append(copy.deepcopy(self.operation))
+        changed_raw = json.dumps(changed, separators=(',', ':')).encode()
+        member['sqlProjection'] = {'byteSize': str(len(changed_raw)),
+                                   'sha256': inventory.sha(changed_raw)}
+        with self.assertRaises(ValueError):
+            inventory.sql_child(member, [(changed, changed_raw)], SOURCE, source_bytes)
+
+        with self.assertRaises(ValueError):
+            inventory.validate([(inventory.SQL_MARKER + ' ' * (96 * 1024 + 1), None)],
+                               POLICY, self.producer, parse)
+
     def test_capped_direct_batch_has_no_child_and_never_infers_sixty_four_rows(self):
         member = copy.deepcopy(self.member)
         member.pop('sqlProjection')
@@ -354,7 +379,7 @@ class SqlProjectionHandoff(unittest.TestCase):
         self.assertIsNone(inventory.sql_child(member, [], SOURCE, source_bytes))
         self.assertIsNone(inventory.sql_reader_projection(None, None, None, {}, SOURCE, source_bytes, {}))
         changed = copy.deepcopy(self.child)
-        changed['projection']['checkpoints'] *= 33
+        changed['projection']['checkpoints'] *= 65
         raw = json.dumps(changed, separators=(',', ':')).encode()
         self.member['sqlProjection'] = {'byteSize': str(len(raw)), 'sha256': inventory.sha(raw)}
         with self.assertRaises(ValueError):

@@ -16,7 +16,9 @@ import stat
 
 MARKER = 'native_application_body_inventory '
 SQL_MARKER = 'native_application_sql_projection '
-MAX_SQL_CHILD = 16 * 1024
+MAX_SQL_CHILD = 96 * 1024
+MAX_SQL_PROJECTION = 64 * 1024
+MAX_SQL_CHECKPOINTS = 64
 MAX_RECORD = 4096
 MAX_MEMBERS = 262144
 BASE = {'version', 'event', 'windowId', 'policySha256', 'producerSha256'}
@@ -277,17 +279,17 @@ def sql_child(member, children, source, read_source):
     if (type(projection['version']) is not int or projection['version'] != 1
             or projection['producerSha256'] != actual_source
             or not isinstance(projection['checkpoints'], list)
-            or not 1 <= len(projection['checkpoints']) <= 32):
+            or not 1 <= len(projection['checkpoints']) <= MAX_SQL_CHECKPOINTS):
         raise ValueError('SQL checkpoint source/count differs')
     # The exact nested source image is already covered by the raw child hash.
-    # Enforce the source's 12 KiB aggregate without a Python reserialization.
+    # Enforce the source's 64 KiB aggregate without a Python reserialization.
     decoder = json.JSONDecoder()
     nested_start = raw.find(b'"projection":')
     if nested_start < 0:
         raise ValueError('SQL projection source field is absent')
     nested = raw[nested_start + len(b'"projection":'):].decode()
     decoded, end = decoder.raw_decode(nested)
-    if decoded != projection or len(nested[:end].encode()) > 12 * 1024:
+    if decoded != projection or len(nested[:end].encode()) > MAX_SQL_PROJECTION:
         raise ValueError('SQL checkpoint aggregate exceeds source bound')
     kinds = set()
     common = {'kind', 'sourceBeforeUnixNanos', 'sourceAfterUnixNanos', 'sourceElapsedNanos'}

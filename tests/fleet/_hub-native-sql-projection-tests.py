@@ -46,10 +46,44 @@ class Collector(unittest.TestCase):
         self.assertIn("'serverAddress',host(inet_server_addr())", query)
         self.assertNotIn('inet_server_addr()::text', query)
         self.assertNotIn('admission_json::json AS admission FROM', query)
-        for changed in ([{'kind': 'other'}], self.checkpoints * 33,
+        for changed in ([{'kind': 'other'}], self.checkpoints * 65,
                         [{'kind': 'admission_checked_transaction', 'sessionId': "x';DELETE"}]):
             with self.assertRaises(ValueError):
                 collector.native_sql_query(changed, 'synthetic-deployment', 'synthetic_reader')
+
+    def test_one_sixty_four_original_batch_is_collected_without_splitting(self):
+        checkpoints = [{'kind': 'admission_checked_transaction',
+                        'sessionId': 'synthetic-session-' + str(index)}
+                       for index in range(64)]
+        child = {'version': 1, 'event': 'sql_projection', 'status': 200,
+                 'projection': {'version': 1, 'checkpoints': checkpoints}}
+        raw = json.dumps(child).encode()
+        batches = collector.native_sql_checkpoints([
+            ('native_application_sql_projection ' + raw.decode(), None)])
+
+        self.assertEqual(len(batches), 1)
+        self.assertEqual(batches[0]['checkpoints'], checkpoints)
+        query = collector.native_sql_query(checkpoints, 'synthetic', 'synthetic_reader')
+        self.assertEqual(query.count('BEGIN TRANSACTION'), 1)
+        for checkpoint in checkpoints:
+            self.assertIn("'" + checkpoint['sessionId'] + "'", query)
+
+        selected = fixture_rows()
+        selected['admissions'] = [{'sessionId': item['sessionId']} for item in checkpoints]
+        self.assertEqual(collector.native_sql_rows(json.dumps(selected).encode(),
+                                                  self.selection, checkpoints), selected)
+        for rows in (selected['admissions'][:-1], selected['admissions'] + [selected['admissions'][0]]):
+            changed = {**selected, 'admissions': rows}
+            with self.assertRaises(ValueError):
+                collector.native_sql_rows(json.dumps(changed).encode(), self.selection, checkpoints)
+
+        child['projection']['checkpoints'] = checkpoints + [checkpoints[0]]
+        with self.assertRaises(ValueError):
+            collector.native_sql_checkpoints([
+                ('native_application_sql_projection ' + json.dumps(child), None)])
+        with self.assertRaises(ValueError):
+            collector.native_sql_checkpoints([
+                ('native_application_sql_projection ' + ' ' * (96 * 1024 + 1), None)])
 
     def test_actual_role_database_snapshot_and_row_coverage_refuse_substitution(self):
         original = fixture_rows()

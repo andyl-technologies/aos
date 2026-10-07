@@ -106,6 +106,25 @@ class HostedCustody(unittest.TestCase):
         self.assertTrue(result['missing'])
         self.assertIsNone(result['nativeBulkBytes'])
 
+    def test_full_sql_child_log_bound_preserves_received_bytes_without_authority(self):
+        spec = self.logs()
+        page = parse(self.read(spec['pages'][-1]['response'], custody.MAX_PAGE))
+        entry = page['entries'][0]
+        message = inventory.SQL_MARKER + json.dumps({'syntheticUnclassifiedBytes': 'x' * (96 * 1024 - 1024)})
+        self.assertGreater(len(message.encode()), 20 * 1024)
+        entry['textPayload'] = message
+        request = parse(self.read(spec['pages'][-1]['request'], custody.MAX_PAGE))
+        spec['pages'][-1] = self.exchange('logging_entries_list', request, page)
+        result = custody.cloud_run(spec, self.readers, self.runtime, self.synthetic_verifier)
+
+        self.assertEqual(result['messages']['synthetic-instance'][0][0], message)
+        self.assertIsNone(result['nativeBulkBytes'])
+        self.assertTrue(result['missing'])
+        entry['textPayload'] = 'x' * (100 * 1024 + 1)
+        spec['pages'][-1] = self.exchange('logging_entries_list', request, page)
+        with self.assertRaises(ValueError):
+            custody.cloud_run(spec, self.readers, self.runtime, self.synthetic_verifier)
+
     def test_json_cannot_assert_authenticated_transport(self):
         spec = self.logs()
         result = custody.cloud_run(spec, self.readers, self.runtime)

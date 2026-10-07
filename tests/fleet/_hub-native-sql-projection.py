@@ -23,7 +23,8 @@ NATIVE_SQL_TABLES = (
     'direct_upload_sessions', 'registry_publication_manifest_sessions',
     'registry_publication_manifest_chunks',
 )
-NATIVE_SQL_MAX_ROWS = 32
+NATIVE_SQL_MAX_ROWS = 64
+NATIVE_SQL_MAX_CHILD = 96 * 1024
 NATIVE_SQL_MAX_OUTPUT = 512 * 1024
 
 
@@ -496,7 +497,7 @@ def native_sql_checkpoints(messages, maximum=4096):
         if message.count(marker) != 1:
             raise ValueError('Ambiguous Native SQL source message')
         raw = message.split(marker, 1)[1].encode()
-        if len(raw) > 16 * 1024:
+        if len(raw) > NATIVE_SQL_MAX_CHILD:
             raise ValueError('Native SQL source child exceeds bound')
         child = native_sql_json(raw)
         projection = child['projection']
@@ -504,7 +505,7 @@ def native_sql_checkpoints(messages, maximum=4096):
                 or child['event'] != 'sql_projection' or child['status'] != 200
                 or type(projection['version']) is not int or projection['version'] != 1
                 or not isinstance(projection['checkpoints'], list)
-                or not 1 <= len(projection['checkpoints']) <= 32):
+                or not 1 <= len(projection['checkpoints']) <= NATIVE_SQL_MAX_ROWS):
             raise ValueError('Native SQL source aggregate differs')
         if len(values) >= maximum:
             raise ValueError('Native SQL selected child corpus exceeds collector bound')
