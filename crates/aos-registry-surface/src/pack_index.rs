@@ -19,6 +19,9 @@ mod stream;
 #[cfg(test)]
 mod projection_tests;
 
+#[cfg(test)]
+mod boundary_tests;
+
 /// Maximum pack-index size accepted by a publication.
 pub const MAX_PUBLISHED_PACK_INDEX_BYTES: u64 = 4 * 1024 * 1024;
 
@@ -30,11 +33,19 @@ pub const MAX_PUBLISHED_PACK_INDEX_BYTES: u64 = 4 * 1024 * 1024;
 pub const MAX_PUBLISHED_PACK_BYTES: u64 = 8 * 1024 * 1024;
 
 const MAX_PACK_OBJECT_BYTES: usize = 4 * 1024 * 1024;
-// Registry metadata is text and compresses about 2x in a pack, so the decoded
-// bound must exceed the encoded bound: an 8 MiB first-release pack with 2,144
-// package entries decodes to about 14 MiB. 32 MiB matches the decoded staging
-// revision bound the Hub already holds in memory.
-const MAX_DECODED_PACK_BYTES: usize = 32 * 1024 * 1024;
+/// Maximum aggregate inflated entries and retained resolved graph bytes.
+///
+/// Registry metadata compresses sufficiently that an admitted 8 MiB encoded
+/// pack can exceed 12 MiB after inflation. This bound matches the decoded
+/// staging revision limit and applies before and after each delta replacement.
+pub const MAX_DECODED_PACK_BYTES: usize = 32 * 1024 * 1024;
+
+/// Maximum simultaneously live decoded bytes during a delta replacement.
+///
+/// A delta's bounded input remains live while its result is constructed. The
+/// semantic graph still fits [`MAX_DECODED_PACK_BYTES`]; the additional 4 MiB
+/// covers only that one input, excluding index tables and allocator overhead.
+pub const MAX_LIVE_DECODED_PACK_BYTES: usize = MAX_DECODED_PACK_BYTES + MAX_PACK_OBJECT_BYTES;
 const MAX_PUBLISHED_PACK_OBJECTS: usize = 65_536;
 const MAX_DELTA_DEPTH: usize = 128;
 const HEADER_BYTES: usize = 8;
@@ -324,12 +335,16 @@ fn resolve_pack_entries_measured(
             unresolved_bytes = unresolved_bytes
                 .checked_sub(packed_data.len())
                 .context("decoded pack accounting underflows")?;
-            let retained_bytes = unresolved_bytes
+            let remaining_graph_bytes = unresolved_bytes
                 .checked_add(resolved_bytes)
-                .and_then(|total| total.checked_add(packed_data.len()))
                 .context("decoded pack accounting overflows")?;
+            let retained_bytes = remaining_graph_bytes
+                .checked_add(packed_data.len())
+                .context("decoded pack accounting overflows")?;
+            // Admit the replacement against the semantic graph, while the
+            // removed delta input remains separately bounded and measured.
             let delta_budget = MAX_DECODED_PACK_BYTES
-                .checked_sub(retained_bytes)
+                .checked_sub(remaining_graph_bytes)
                 .context("companion pack exceeds its aggregate decoded-size limit")?;
             let (kind, data) = match packed_kind {
                 PackedKind::Base(kind) => (kind, packed_data),
@@ -360,6 +375,9 @@ fn resolve_pack_entries_measured(
                     .checked_add(data.len())
                     .context("decoded pack accounting overflows")?,
             };
+            if live_bytes > MAX_LIVE_DECODED_PACK_BYTES {
+                bail!("companion pack exceeds its live decoded-size limit");
+            }
             peak_decoded_bytes = peak_decoded_bytes.max(live_bytes);
             resolved_bytes = resolved_bytes
                 .checked_add(data.len())

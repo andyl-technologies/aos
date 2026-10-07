@@ -295,7 +295,7 @@ pub(super) fn pack_artifact(
         memory_observation_sha256: "55".repeat(32),
         peak_worker_bytes: 64 * 1024 * 1024,
         memory_samples: 3,
-        peak_wasm_bytes: 32 * 1024 * 1024,
+        peak_wasm_bytes: 40 * 1024 * 1024,
         peak_js_sdk_bytes: 16 * 1024 * 1024,
         metadata_completed_during_inspection: 2,
         maximum_provider_requests: 3,

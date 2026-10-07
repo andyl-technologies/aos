@@ -66,7 +66,7 @@ fn artifact(mirror: &MirrorAcceptanceArtifact, key: &SigningKey) -> MirrorPackAc
         memory_observation_sha256: "55".repeat(32),
         peak_worker_bytes: 64 * 1024 * 1024,
         memory_samples: 3,
-        peak_wasm_bytes: 32 * 1024 * 1024,
+        peak_wasm_bytes: 40 * 1024 * 1024,
         peak_js_sdk_bytes: 16 * 1024 * 1024,
         metadata_completed_during_inspection: 2,
         maximum_provider_requests: 3,
@@ -85,6 +85,20 @@ fn artifact(mirror: &MirrorAcceptanceArtifact, key: &SigningKey) -> MirrorPackAc
 
 fn sign(artifact: &mut MirrorPackAcceptanceArtifact, key: &SigningKey) {
     artifact.signature = hex::encode(key.sign(&artifact.signing_bytes().unwrap()).to_bytes());
+}
+
+#[test]
+fn prior_twelve_mib_review_cannot_admit_the_current_parser_geometry() {
+    let (mirror, key) = signed_mirror();
+    let mut pack = artifact(&mirror, &key);
+    pack.geometry.decoded_graph_bytes = 12 * 1024 * 1024;
+    for pair in &mut pack.pairs {
+        pair.peak_decoded_graph_bytes = pack.geometry.decoded_graph_bytes;
+    }
+    sign(&mut pack, &key);
+
+    let error = pack.verify(&mirror, &hex::encode(key.verifying_key().as_bytes()), 150).unwrap_err();
+    assert!(error.to_string().contains("geometry or prerequisite changed"));
 }
 
 #[test]

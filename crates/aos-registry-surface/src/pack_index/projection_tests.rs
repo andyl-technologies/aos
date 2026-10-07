@@ -85,7 +85,7 @@ fn real_git_ofs_and_ref_delta_fixtures_match_every_split() {
             );
             assert_eq!(verified.pack.size, pack.len() as u64);
             assert_eq!(verified.index.size, index.len() as u64);
-            assert!(verified.peak_decoded_graph_bytes <= MAX_DECODED_PACK_BYTES as u64);
+            assert!(verified.peak_decoded_graph_bytes <= MAX_LIVE_DECODED_PACK_BYTES as u64);
             assert!(verified.peak_decoded_graph_bytes > verified.inflated_entry_bytes);
         }
     }
@@ -324,7 +324,7 @@ fn blob_pack(count: usize, object_size: usize, incompressible: bool) -> (String,
 
 #[test]
 fn enforces_decoded_object_graph_and_encoded_stream_bounds() {
-    for (count, size) in [(1, MAX_PACK_OBJECT_BYTES + 1), (4, MAX_PACK_OBJECT_BYTES)] {
+    for (count, size) in [(1, MAX_PACK_OBJECT_BYTES + 1), (9, MAX_PACK_OBJECT_BYTES)] {
         let (path, pack) = blob_pack(count, size, false);
         let mut reader = PairReader::new(&path).unwrap();
         assert!(pack

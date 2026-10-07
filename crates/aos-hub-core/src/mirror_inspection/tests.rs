@@ -65,6 +65,22 @@ fn real_pair_returns_selected_content_without_encoded_source_bodies() {
 }
 
 #[test]
+fn projection_counters_use_distinct_semantic_and_live_byte_bounds() {
+    let (mut projection, selections) = projection();
+    projection.inflated_entry_bytes =
+        aos_registry_surface::pack_index::MAX_DECODED_PACK_BYTES as u64;
+    projection.peak_decoded_graph_bytes =
+        aos_registry_surface::pack_index::MAX_LIVE_DECODED_PACK_BYTES as u64;
+    projection.validate(&projection.index.path, &selections).unwrap();
+
+    projection.inflated_entry_bytes += 1;
+    assert!(projection.validate(&projection.index.path, &selections).is_err());
+    projection.inflated_entry_bytes -= 1;
+    projection.peak_decoded_graph_bytes += 1;
+    assert!(projection.validate(&projection.index.path, &selections).is_err());
+}
+
+#[test]
 fn exact_source_and_whole_object_identity_refuse_substitution() {
     let (projection, selection) = projection();
     let mut changed = projection.clone();
@@ -88,7 +104,14 @@ fn exact_source_and_whole_object_identity_refuse_substitution() {
         .validate(&projection.index.path, &selection)
         .is_err());
     changed = projection.clone();
-    changed.peak_decoded_graph_bytes = 12 * 1024 * 1024 + 1;
+    changed.peak_decoded_graph_bytes =
+        aos_registry_surface::pack_index::MAX_LIVE_DECODED_PACK_BYTES as u64 + 1;
+    assert!(changed
+        .validate(&projection.index.path, &selection)
+        .is_err());
+    changed = projection.clone();
+    changed.inflated_entry_bytes =
+        aos_registry_surface::pack_index::MAX_DECODED_PACK_BYTES as u64 + 1;
     assert!(changed
         .validate(&projection.index.path, &selection)
         .is_err());

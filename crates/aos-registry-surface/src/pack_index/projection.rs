@@ -301,8 +301,9 @@ impl PairReader {
     /// Projects one decoded tree beside storage after complete pair validation.
     ///
     /// The callback borrows the verified whole tree within the existing 4 MiB
-    /// object and 12 MiB graph limits. This permits bounded names or cursor
-    /// projections from trees larger than the normal 128 KiB content result.
+    /// object, 32 MiB semantic graph and 36 MiB live decoded-byte limits.
+    /// This permits bounded names or cursor projections from trees larger than
+    /// the normal 128 KiB content result.
     /// The caller must enforce its projection's transport bound; this method
     /// does not enlarge [`Self::finish`] or [`Self::finish_available`] results.
     /// Missing OIDs return `tree: None` without invoking the callback.

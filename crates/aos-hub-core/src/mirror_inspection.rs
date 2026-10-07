@@ -381,8 +381,10 @@ impl MirrorPackProjection {
                 && self.pack_trailer_sha256 == path_digest
                 && self.pack.size <= 8 * 1024 * 1024
                 && self.index.size <= 4 * 1024 * 1024
-                && self.inflated_entry_bytes <= 12 * 1024 * 1024
-                && self.peak_decoded_graph_bytes <= 12 * 1024 * 1024
+                && self.inflated_entry_bytes
+                    <= aos_registry_surface::pack_index::MAX_DECODED_PACK_BYTES as u64
+                && self.peak_decoded_graph_bytes
+                    <= aos_registry_surface::pack_index::MAX_LIVE_DECODED_PACK_BYTES as u64
                 && self.objects.len() + self.missing_oids.len() == selections.len()
                 && self
                     .objects

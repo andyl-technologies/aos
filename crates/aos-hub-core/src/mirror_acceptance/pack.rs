@@ -5,6 +5,11 @@
 //! memory, capacity and release observations under a distinct signed purpose.
 //! Controlled reports remain evidence only.
 //!
+//! The semantic graph admits 32 MiB; a single delta input and its replacement
+//! may overlap within a 36 MiB live decoded-byte ceiling. That ceiling excludes
+//! index tables and allocator/SDK overhead. Approval requires fresh whole-worker
+//! observations below 128 MiB with the unchanged one-bulk/two-metadata admission.
+//!
 //! ```text
 //! pack artifact = SHA256(exact signed mirror artifact) + fixed parser geometry
 //!                 + measured pair/selection reports + independent review
@@ -65,7 +70,8 @@ impl MirrorPackGeometry {
         Self {
             pack_bytes: 8 * 1024 * 1024,
             index_bytes: 4 * 1024 * 1024,
-            decoded_graph_bytes: 12 * 1024 * 1024,
+            decoded_graph_bytes:
+                aos_registry_surface::pack_index::MAX_LIVE_DECODED_PACK_BYTES as u64,
             object_bytes: 4 * 1024 * 1024,
             objects: 65_536,
             selected_objects: 8,
