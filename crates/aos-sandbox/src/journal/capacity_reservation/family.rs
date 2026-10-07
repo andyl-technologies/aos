@@ -202,13 +202,55 @@ impl CanonicalCapacityFamily {
 pub(in crate::journal) fn canonical_reservations(
     state: &State,
 ) -> Result<Vec<CanonicalCapacityFamily>, JournalError> {
-    let mut families = Vec::new();
-    let mut identities = BTreeSet::new();
-    for ((namespace, key), value) in state {
-        if *namespace != RecordNamespace::GlobalCapacityReservation {
+    canonical_reservation_rows(state.iter().filter_map(|((namespace, key), value)| {
+        (*namespace == RecordNamespace::GlobalCapacityReservation)
+            .then_some((key.as_slice(), value.as_slice()))
+    }))
+}
+
+/// Validates every prospective floor without copying unrelated state payloads.
+///
+/// The projection borrows the original state and full transaction. It is DATA,
+/// not a partial transaction or an owner admission.
+///
+/// # Errors
+/// Rejects any malformed/unknown projected row or duplicate canonical identity.
+pub(in crate::journal) fn canonical_reservations_after(
+    state: &State,
+    transaction: &JournalTransaction,
+) -> Result<Vec<CanonicalCapacityFamily>, JournalError> {
+    let mut rows: BTreeMap<&[u8], &[u8]> = state
+        .iter()
+        .filter_map(|((namespace, key), value)| {
+            (*namespace == RecordNamespace::GlobalCapacityReservation)
+                .then_some((key.as_slice(), value.as_slice()))
+        })
+        .collect();
+
+    for record in transaction.records() {
+        if record.namespace() != RecordNamespace::GlobalCapacityReservation {
             continue;
         }
+        match record.value() {
+            Some(value) => {
+                rows.insert(record.key(), value);
+            }
+            None => {
+                rows.remove(record.key());
+            }
+        }
+    }
+    canonical_reservation_rows(rows)
+}
 
+// Both inputs preserve the full materialized map's capacity-key order. Decode
+// every row before a caller selects any family, including after an early Query.
+fn canonical_reservation_rows<'rows>(
+    rows: impl IntoIterator<Item = (&'rows [u8], &'rows [u8])>,
+) -> Result<Vec<CanonicalCapacityFamily>, JournalError> {
+    let mut families = Vec::new();
+    let mut identities = BTreeSet::new();
+    for (key, value) in rows {
         let family = CanonicalCapacityFamily::decode(key, value)?;
         if !identities.insert(family.identity()) {
             return Err(JournalError::MalformedRecord(
