@@ -14,6 +14,60 @@ let
   cargo = script selections;
   nextest = script (selections // {cargoNextest = "selected-nextest";});
   invalid = value: !(builtins.tryEval (script {cargoTestFlagSets = value;})).success;
+
+  lib = import ../../lib {system = "x86_64-linux";};
+  capturePackage = arguments: arguments // {outPath = "/test/${arguments.pname}";};
+  controllerPackage = online:
+    import ../../pkgs/tools/aos-sandboxd.nix ({
+        inherit lib;
+        mkCargoPackage = capturePackage;
+        mkCargoArtifacts = capturePackage;
+        mkCargoDummySource = _: "unused-dummy-source";
+        fetchCargoVendor = _: "unused-vendor";
+        mkDerivation = capturePackage;
+        coreutils = "unused-coreutils";
+        git = capturePackage {
+          pname = "git";
+          version = "2.55.0";
+        };
+        aos-git-helper = "unused-git-helper";
+        protobuf = "unused-protobuf";
+        stdenv = {
+          isCross = false;
+          hostPlatform.isDarwin = false;
+        };
+        buildPackages = {};
+      }
+      // lib.optionalAttrs online {
+        nixOnlineStoreReader = "unused-reader";
+        aos-nix-runtime-tpm-helpers = "unused-tpm-helpers";
+      });
+
+  controllerSelectionsRetained = online: let
+    package = controllerPackage online;
+    roles = ["controller" "git" "entitlement" "policy" "cache-signer" "source-signer" "publisher" "nix-provision"] ++ lib.optional online "nix";
+    selectedRoles = command:
+      lib.filter (role: matches ".*--features aos-sandbox-services/${role}([,[:space:]].*)?" command) roles;
+    independentRoles = commands:
+      lib.all (command: lib.length (selectedRoles command) == 1) commands
+      && lib.all (role: lib.length (lib.filter (command: builtins.elem role (selectedRoles command)) commands) == 1) roles;
+    artifactCommands = package.cargoArtifacts.cargoBuildCommands;
+    artifactBuilds = lib.filter (lib.hasPrefix "build ") artifactCommands;
+    artifactTests = lib.filter (lib.hasPrefix "test --no-run ") artifactCommands;
+    roleArtifactTests = lib.filter (lib.hasInfix "-p aos-sandbox-services") artifactTests;
+    coreArtifactTests = lib.filter (lib.hasInfix "-p aos-sandbox -p aos-sandbox-broker-session-security") artifactTests;
+  in
+    # Logged build executables are installed: test targets must stay in the
+    # artifact producer and independent check selections, never this list.
+    lib.all (lib.hasPrefix "build ") package.cargoBuildCommands
+    && independentRoles package.cargoBuildCommands
+    && artifactBuilds == package.cargoBuildCommands
+    && independentRoles roleArtifactTests
+    && lib.length coreArtifactTests == 1
+    && independentRoles package.cargoTestFlagSets
+    && lib.any (lib.hasInfix "-p aos-sandbox-services -p aos-sandbox -p aos-sandbox-broker-session-security") package.cargoTestFlagSets
+    && package.doCheck
+    && package.cargoNextest;
 in
   assert scalar == singleton;
   assert matches ".*AOS_CROSS_COMPILING.*" cargo;
@@ -28,4 +82,6 @@ in
   assert invalid [""];
   assert invalid [" \t\n"];
   assert invalid [1];
-  assert invalid "not-a-list"; true
+  assert invalid "not-a-list";
+  assert controllerSelectionsRetained false;
+  assert controllerSelectionsRetained true; true
