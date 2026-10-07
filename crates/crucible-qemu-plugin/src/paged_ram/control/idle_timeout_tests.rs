@@ -101,6 +101,8 @@ fn actual_request_after_idle_retries_restores_polling_and_parent_sequence() {
 }
 
 #[test]
+// crucible-lint: allow rust-allow -- The test checks one original finite transport deadline.
+// crucible-lint: allow clippy-disallowed-method -- Wall time only bounds the test's partial record.
 #[allow(
     clippy::disallowed_methods,
     reason = "finite component record deadline"

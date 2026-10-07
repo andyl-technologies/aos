@@ -1,4 +1,4 @@
-From e8c0b3207f8b69eb685b3c6c5284b9bc6b5a55c5 Mon Sep 17 00:00:00 2001
+From 94b0729c3f85e8f5fd64610069026e3b494d53b2 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Tue, 6 Oct 2026 07:05:00 +0000
 Subject: [PATCH] Integrate deterministic execution and authenticated paged RAM
@@ -64824,10 +64824,10 @@ index 0000000000000000000000000000000000000000..cbd838fd1869464a864c6accf040fee2
 +#endif /* QEMU_CRUCIBLE_IDLE_WAIT_H */
 diff --git a/include/qemu/crucible-paged-ram.h b/include/qemu/crucible-paged-ram.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..941452a6a740b1b2d8a5f2d9d7515bea0c7e384c
+index 0000000000000000000000000000000000000000..0d4b28f57a5f35fb299ea6b108ba91e20e7a5a6b
 --- /dev/null
 +++ b/include/qemu/crucible-paged-ram.h
-@@ -0,0 +1,88 @@
+@@ -0,0 +1,94 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +#ifndef QEMU_CRUCIBLE_PAGED_RAM_H
 +#define QEMU_CRUCIBLE_PAGED_RAM_H
@@ -64865,6 +64865,12 @@ index 0000000000000000000000000000000000000000..941452a6a740b1b2d8a5f2d9d7515bea
 +int qemu_crucible_ram_physical_graph_seal(uint64_t device_generation);
 +
 +#ifdef CONFIG_PLUGIN
++/* Finds one dirty target-page interval within a retained half-open RAM range.
++ * Zero returns an interval, one means clean, and negative values refuse it. */
++int qemu_crucible_ram_next_dirty_range(
++    ram_addr_t start, ram_addr_t end,
++    ram_addr_t *dirty_start, ram_addr_t *dirty_end);
++
 +void qemu_crucible_ram_dirty_generation_advance(void);
 +int qemu_crucible_ram_dirty_generation_capacity(uint64_t increments);
 +void qemu_crucible_ram_topology_changed(void);
@@ -65522,10 +65528,10 @@ index 758808b705e4b0bbbda1988c377f010ae179d3e1..bece818ef45e7be1e9c7dfcacfd5e3bf
  
  /*
 diff --git a/include/qemu/thread.h b/include/qemu/thread.h
-index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..11061310e7e0b300ca683ae3ab304fe1b9014ba6 100644
+index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..cace4d829612ea8c4fbd9f2078ceeb257b715fb8 100644
 --- a/include/qemu/thread.h
 +++ b/include/qemu/thread.h
-@@ -218,6 +218,181 @@ G_NORETURN void qemu_thread_exit(void *retval);
+@@ -218,6 +218,191 @@ G_NORETURN void qemu_thread_exit(void *retval);
  void qemu_thread_set_name(const char *name);
  const char *qemu_thread_get_name(void);
  
@@ -65567,6 +65573,14 @@ index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..11061310e7e0b300ca683ae3ab304fe1
 +/* Membership-only exclusion for physical RAM removal; never used for fork. */
 +#define QEMU_RAM_PAUSE_MAX_THREADS 4096
 +
++/* Fixed failure facts only; labels never grant membership authority. */
++typedef struct QemuThreadRamPauseRefusal {
++    int64_t thread_id;
++    uint32_t disposition;
++    char name_prefix_hex[33];
++    bool present;
++} QemuThreadRamPauseRefusal;
++
 +typedef struct QemuThreadRamPauseTransaction {
 +    uint64_t generation;
 +    int64_t process_id;
@@ -65574,6 +65588,8 @@ index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..11061310e7e0b300ca683ae3ab304fe1
 +    int64_t thread_ids[QEMU_RAM_PAUSE_MAX_THREADS];
 +    size_t thread_count;
 +    bool active;
++    /* A failed begin clears the transaction and preserves only this snapshot. */
++    QemuThreadRamPauseRefusal refusal;
 +} QemuThreadRamPauseTransaction;
 +
 +/* The caller already retains BQL and subsystem borrower barriers. */
@@ -120470,10 +120486,10 @@ index 0000000000000000000000000000000000000000..e8d98a0beb68a58aed72e673fb28070c
 +}
 diff --git a/plugins/crucible-paged-ram.c b/plugins/crucible-paged-ram.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..026a740e81109f745f1a4b0426ad9c54f6e80a67
+index 0000000000000000000000000000000000000000..b87943022f7beb2ecd7aab23c0b40223c05dd143
 --- /dev/null
 +++ b/plugins/crucible-paged-ram.c
-@@ -0,0 +1,1883 @@
+@@ -0,0 +1,1893 @@
 +/*
 + * Logical RAM observation and host paging ownership.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -120530,6 +120546,7 @@ index 0000000000000000000000000000000000000000..026a740e81109f745f1a4b0426ad9c54
 +static bool capture_active;
 +static uint32_t capture_region_cursor;
 +static uint64_t capture_page_cursor;
++static ram_addr_t capture_dirty_end;
 +static uint64_t replay_owner_thread;
 +static qemu_plugin_crucible_ram_root_observer_v1 root_observer;
 +static qemu_plugin_crucible_ram_operational_read_v1 operational_reader;
@@ -121714,6 +121731,7 @@ index 0000000000000000000000000000000000000000..026a740e81109f745f1a4b0426ad9c54
 +    capture_full = require_full;
 +    capture_region_cursor = 0;
 +    capture_page_cursor = 0;
++    capture_dirty_end = 0;
 +    capture_generation++;
 +    capture_dirty_generation = qatomic_read(&dirty_generation);
 +    capture_topology_generation = qatomic_read(&topology_generation);
@@ -121731,20 +121749,6 @@ index 0000000000000000000000000000000000000000..026a740e81109f745f1a4b0426ad9c54
 +        generation == capture_generation &&
 +        capture_topology_generation == qatomic_read(&topology_generation) &&
 +        capture_dirty_generation == qatomic_read(&dirty_generation);
-+}
-+
-+static bool capture_page_dirty(RAMBlock *block, uint64_t offset, size_t valid)
-+{
-+    ram_addr_t start = block->offset + offset;
-+    ram_addr_t end = start + valid;
-+
-+    for (ram_addr_t address = start & TARGET_PAGE_MASK;
-+         address < end; address += TARGET_PAGE_SIZE) {
-+        if (physical_memory_get_dirty_flag(address, DIRTY_MEMORY_CRUCIBLE_RAM)) {
-+            return true;
-+        }
-+    }
-+    return false;
 +}
 +
 +int qemu_plugin_crucible_ram_capture_read_page_v1(
@@ -121803,17 +121807,38 @@ index 0000000000000000000000000000000000000000..026a740e81109f745f1a4b0426ad9c54
 +    }
 +    while (capture_region_cursor < capture_regions->len) {
 +        CrucibleRamRegion *region = g_ptr_array_index(capture_regions, capture_region_cursor);
-+        uint64_t page_count = DIV_ROUND_UP(region->descriptor.logical_length, RAM_PAGE_BYTES);
++        uint64_t length = region->descriptor.logical_length;
++        uint64_t page_count = 1 + (length - 1) / RAM_PAGE_BYTES;
 +
 +        while (capture_page_cursor < page_count) {
-+            uint64_t page_index = capture_page_cursor++;
++            uint64_t page_index = capture_page_cursor;
 +            uint64_t offset = page_index * RAM_PAGE_BYTES;
-+            size_t valid = MIN((uint64_t)RAM_PAGE_BYTES,
-+                               region->descriptor.logical_length - offset);
++            size_t valid;
 +
-+            if (!capture_full && !capture_page_dirty(region->block, offset, valid)) {
-+                continue;
++            if (!capture_full) {
++                ram_addr_t dirty_start;
++                int status;
++
++                if (length > (ram_addr_t)-1 - region->block->offset) {
++                    return -EOVERFLOW;
++                }
++                if (region->block->offset + offset >= capture_dirty_end) {
++                    status = qemu_crucible_ram_next_dirty_range(
++                        region->block->offset + offset,
++                        region->block->offset + length,
++                        &dirty_start, &capture_dirty_end);
++                    if (status < 0) {
++                        return status;
++                    }
++                    if (status == 1) {
++                        break;
++                    }
++                    page_index = (dirty_start - region->block->offset) / RAM_PAGE_BYTES;
++                    offset = page_index * RAM_PAGE_BYTES;
++                }
 +            }
++            capture_page_cursor = page_index + 1;
++            valid = MIN((uint64_t)RAM_PAGE_BYTES, length - offset);
 +            memset(out, 0, sizeof(*out));
 +            out->region_index = capture_region_cursor;
 +            out->valid_length = valid;
@@ -121830,6 +121855,7 @@ index 0000000000000000000000000000000000000000..026a740e81109f745f1a4b0426ad9c54
 +        }
 +        capture_region_cursor++;
 +        capture_page_cursor = 0;
++        capture_dirty_end = 0;
 +    }
 +    return 1;
 +}
@@ -132542,10 +132568,10 @@ index 0000000000000000000000000000000000000000..8856b8fa198d8fce86de3bca04d3c1b5
 +}
 diff --git a/system/crucible-ram-quiescence.c b/system/crucible-ram-quiescence.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..d27ca9c06fffd9cb7fea17a610d061026eb6f106
+index 0000000000000000000000000000000000000000..9572446420488cabd0ac9a36f5396716839950ea
 --- /dev/null
 +++ b/system/crucible-ram-quiescence.c
-@@ -0,0 +1,674 @@
+@@ -0,0 +1,717 @@
 +/*
 + * Physical RAM borrower owner closure
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -132781,7 +132807,7 @@ index 0000000000000000000000000000000000000000..d27ca9c06fffd9cb7fea17a610d06102
 +    return matches == 1;
 +}
 +
-+static int ram_owner_check_kernel_threads(void)
++static int ram_owner_check_kernel_threads(uint64_t *refused_thread_id)
 +{
 +    DIR *directory = opendir("/proc/self/task");
 +    struct dirent *entry;
@@ -132812,6 +132838,9 @@ index 0000000000000000000000000000000000000000..d27ca9c06fffd9cb7fea17a610d06102
 +        }
 +        thread_id = strtoull(entry->d_name, &end, 10);
 +        if (!thread_id || *end || !ram_owner_thread_known(thread_id)) {
++            if (refused_thread_id) {
++                *refused_thread_id = thread_id;
++            }
 +            result = -ENOTSUP;
 +            goto out;
 +        }
@@ -132892,10 +132921,45 @@ index 0000000000000000000000000000000000000000..d27ca9c06fffd9cb7fea17a610d06102
 +    return result;
 +}
 +
++/* Called only after inventory-owned locks and borrower holds are released. */
++static void ram_owner_report_inventory_refusal(
++    const QemuThreadRamPauseRefusal *refusal, uint64_t kernel_thread_id)
++{
++    char diagnostic[192];
++    int printed;
++
++    if (refusal->present) {
++        printed = snprintf(diagnostic, sizeof(diagnostic),
++                           "crucible RAM inventory refusal: "
++                           "stage=native-disposition tid=%" PRId64
++                           " disposition=%u name-prefix-hex=%s\n",
++                           refusal->thread_id, refusal->disposition,
++                           refusal->name_prefix_hex);
++    } else if (kernel_thread_id) {
++        printed = snprintf(diagnostic, sizeof(diagnostic),
++                           "crucible RAM inventory refusal: "
++                           "stage=kernel-membership tid=%" PRIu64 "\n",
++                           kernel_thread_id);
++    } else {
++        return;
++    }
++
++    /* A bounded write can still block. Own no inventory lock or hold here;
++     * the original host Setup supervisor can contain/reap the whole process.
++     * Never change shared stderr flags or retry/renew the diagnostic attempt. */
++    if (printed > 0 && (size_t)printed < sizeof(diagnostic)) {
++        ssize_t written = write(STDERR_FILENO, diagnostic, printed);
++
++        (void)written;
++    }
++}
++
 +int qemu_crucible_ram_owner_inventory(uint64_t *tasks, uint64_t *descriptors,
 +                                     uint64_t *service_tasks)
 +{
 +    QemuPluginCrucibleHotForkBarrierInventory plugin;
++    QemuThreadRamPauseRefusal refusal = { 0 };
++    uint64_t refused_kernel_thread_id = 0;
 +    uint64_t services = 0;
 +    uint64_t observed_tasks = 0;
 +    uint64_t observed_descriptors = 0;
@@ -132943,8 +133007,10 @@ index 0000000000000000000000000000000000000000..d27ca9c06fffd9cb7fea17a610d06102
 +    pthread_mutex_unlock(&service_lock);
 +
 +    result = qemu_thread_ram_pause_begin(&owner_closure.threads);
-+    if (!result) {
-+        result = ram_owner_check_kernel_threads();
++    if (result) {
++        refusal = owner_closure.threads.refusal;
++    } else {
++        result = ram_owner_check_kernel_threads(&refused_kernel_thread_id);
 +    }
 +    if (!result) {
 +        result = ram_owner_descriptors(true);
@@ -132988,6 +133054,9 @@ index 0000000000000000000000000000000000000000..d27ca9c06fffd9cb7fea17a610d06102
 +        *service_tasks = services;
 +    }
 +    memset(&owner_closure, 0, sizeof(owner_closure));
++    if (result == -ENOTSUP) {
++        ram_owner_report_inventory_refusal(&refusal, refused_kernel_thread_id);
++    }
 +    return result;
 +}
 +
@@ -133028,7 +133097,7 @@ index 0000000000000000000000000000000000000000..d27ca9c06fffd9cb7fea17a610d06102
 +    result = block.quiescent && block.generation == owner_closure.block_generation ? 0 : -ESTALE;
 +    qemu_block_backend_hot_fork_barrier_inventory_destroy(&block);
 +    if (!result) {
-+        result = ram_owner_check_kernel_threads();
++        result = ram_owner_check_kernel_threads(NULL);
 +    }
 +    if (!result) {
 +        result = ram_owner_descriptors(false);
@@ -133198,7 +133267,7 @@ index 0000000000000000000000000000000000000000..d27ca9c06fffd9cb7fea17a610d06102
 +    }
 +    result = qemu_thread_ram_pause_begin(&owner_closure.threads);
 +    if (!result) {
-+        result = ram_owner_check_kernel_threads();
++        result = ram_owner_check_kernel_threads(NULL);
 +    }
 +    if (!result) {
 +        result = ram_owner_descriptors(true);
@@ -133727,7 +133796,7 @@ index cd3193d170b2b5759cb34e4087a6d0ebfa805287..57459ab307b81deebd0b35fb15efef46
 +  ))
  endif
 diff --git a/system/physmem.c b/system/physmem.c
-index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef1f386a8e 100644
+index c21ea929153e5b67efa47432b1db0993e2690f9c..dfa0d5a078a0ccd327c3888ab73058cd519e2618 100644
 --- a/system/physmem.c
 +++ b/system/physmem.c
 @@ -48,6 +48,7 @@
@@ -133746,7 +133815,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
  #ifndef _WIN32
  #include "qemu/mmap-alloc.h"
  #endif
-@@ -97,6 +99,164 @@
+@@ -97,6 +99,204 @@
   */
  RAMList ram_list = { .blocks = QLIST_HEAD_INITIALIZER(ram_list.blocks) };
  
@@ -133765,6 +133834,27 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
 +static uint64_t crucible_ram_caches;
 +static uint64_t crucible_ram_direct_caches;
 +
++static bool crucible_ram_borrow_counter_change(uint64_t *counter,
++                                              uint64_t previous, bool acquire)
++{
++    for (;;) {
++        uint64_t next;
++        uint64_t observed;
++
++        if ((acquire && previous == UINT64_MAX) ||
++            (!acquire && previous == 0)) {
++            qatomic_set(&crucible_ram_borrow_inconsistent, 1);
++            return false;
++        }
++        next = acquire ? previous + 1 : previous - 1;
++        observed = qatomic_cmpxchg(counter, previous, next);
++        if (observed == previous) {
++            return true;
++        }
++        previous = observed;
++    }
++}
++
 +static void crucible_ram_borrow_change(uint64_t *counter, bool acquire)
 +{
 +    uint64_t previous = qatomic_read(counter);
@@ -133773,24 +133863,43 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
 +        qatomic_set(&crucible_ram_borrow_inconsistent, 1);
 +        return;
 +    }
-+    for (;;) {
-+        uint64_t next;
-+        uint64_t observed;
-+
-+        if ((acquire && previous == UINT64_MAX) ||
-+            (!acquire && previous == 0)) {
-+            qatomic_set(&crucible_ram_borrow_inconsistent, 1);
-+            qatomic_dec(&crucible_ram_borrow_mutations);
-+            return;
-+        }
-+        next = acquire ? previous + 1 : previous - 1;
-+        observed = qatomic_cmpxchg(counter, previous, next);
-+        if (observed == previous) {
-+            break;
-+        }
-+        previous = observed;
++    if (crucible_ram_borrow_counter_change(counter, previous, acquire) &&
++        qatomic_fetch_inc(&crucible_ram_borrow_generation) == UINT64_MAX) {
++        qatomic_set(&crucible_ram_borrow_inconsistent, 1);
 +    }
-+    if (qatomic_fetch_inc(&crucible_ram_borrow_generation) == UINT64_MAX) {
++    qatomic_dec(&crucible_ram_borrow_mutations);
++}
++
++static void crucible_ram_cache_borrow_change(bool direct, bool acquire)
++{
++    uint64_t caches;
++    uint64_t direct_caches;
++    uint64_t changes = 0;
++
++    if (!direct) {
++        crucible_ram_borrow_change(&crucible_ram_caches, acquire);
++        return;
++    }
++    caches = qatomic_read(&crucible_ram_caches);
++    direct_caches = qatomic_read(&crucible_ram_direct_caches);
++    if (qatomic_fetch_inc(&crucible_ram_borrow_mutations) == UINT64_MAX) {
++        qatomic_set(&crucible_ram_borrow_inconsistent, 1);
++        return;
++    }
++    /* One cache owns both memberships. Publish every successful change even
++     * if the second counter fails: an observer may have read the sticky flag
++     * before that failure and must still see a changed generation afterward. */
++    if (crucible_ram_borrow_counter_change(&crucible_ram_caches,
++                                          caches, acquire)) {
++        changes = 1;
++        if (crucible_ram_borrow_counter_change(&crucible_ram_direct_caches,
++                                              direct_caches, acquire)) {
++            changes = 2;
++        }
++    }
++    if (changes &&
++        qatomic_fetch_add(&crucible_ram_borrow_generation, changes) >
++        UINT64_MAX - changes) {
 +        qatomic_set(&crucible_ram_borrow_inconsistent, 1);
 +    }
 +    qatomic_dec(&crucible_ram_borrow_mutations);
@@ -133911,7 +134020,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
  static MemoryRegion *system_memory;
  static MemoryRegion *system_io;
  
-@@ -174,6 +334,31 @@ typedef struct CPUAddressSpace {
+@@ -174,6 +374,31 @@ typedef struct CPUAddressSpace {
      MemoryListener tcg_as_listener;
  } CPUAddressSpace;
  
@@ -133943,7 +134052,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
  struct DirtyBitmapSnapshot {
      ram_addr_t start;
      ram_addr_t end;
-@@ -588,6 +773,58 @@ MemoryRegion *flatview_translate(FlatView *fv, hwaddr addr, hwaddr *xlat,
+@@ -588,6 +813,58 @@ MemoryRegion *flatview_translate(FlatView *fv, hwaddr addr, hwaddr *xlat,
      return mr;
  }
  
@@ -134002,7 +134111,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
  #ifdef CONFIG_TCG
  
  typedef struct TCGIOMMUNotifier {
-@@ -782,6 +1019,9 @@ void cpu_address_space_init(CPUState *cpu, int asidx,
+@@ -782,6 +1059,9 @@ void cpu_address_space_init(CPUState *cpu, int asidx,
          newas->tcg_as_listener.log_global_after_sync = tcg_log_global_after_sync;
          newas->tcg_as_listener.commit = tcg_commit;
          newas->tcg_as_listener.name = "tcg";
@@ -134012,7 +134121,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
          memory_listener_register(&newas->tcg_as_listener, as);
      }
  }
-@@ -929,11 +1169,26 @@ bool physical_memory_get_dirty_flag(ram_addr_t addr, unsigned client)
+@@ -929,11 +1209,26 @@ bool physical_memory_get_dirty_flag(ram_addr_t addr, unsigned client)
  
  bool physical_memory_is_clean(ram_addr_t addr)
  {
@@ -134044,7 +134153,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
  }
  
  static bool physical_memory_all_dirty(ram_addr_t start, ram_addr_t length,
-@@ -1006,6 +1261,14 @@ void physical_memory_set_dirty_flag(ram_addr_t addr, unsigned client)
+@@ -1006,6 +1301,14 @@ void physical_memory_set_dirty_flag(ram_addr_t addr, unsigned client)
      blocks = qatomic_rcu_read(&ram_list.dirty_memory[client]);
  
      set_bit_atomic(offset, blocks->blocks[idx]);
@@ -134059,7 +134168,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
  }
  
  void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
-@@ -1016,6 +1279,20 @@ void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
+@@ -1016,6 +1319,20 @@ void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
      unsigned long idx, offset, base;
      int i;
  
@@ -134080,7 +134189,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
      if (!mask && !xen_enabled()) {
          return;
      }
-@@ -1025,7 +1302,9 @@ void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
+@@ -1025,7 +1342,9 @@ void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
  
      WITH_RCU_READ_LOCK_GUARD() {
          for (i = 0; i < DIRTY_MEMORY_NUM; i++) {
@@ -134091,7 +134200,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
          }
  
          idx = page / DIRTY_MEMORY_BLOCK_SIZE;
-@@ -1046,6 +1325,16 @@ void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
+@@ -1046,6 +1365,16 @@ void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
                  bitmap_set_atomic(blocks[DIRTY_MEMORY_CODE]->blocks[idx],
                                    offset, next - page);
              }
@@ -134108,7 +134217,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
  
              page = next;
              idx++;
-@@ -1248,7 +1537,8 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
+@@ -1248,7 +1577,8 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
                      nbits = ctpopl(temp);
                      qatomic_or(&blocks[DIRTY_MEMORY_VGA][idx][offset], temp);
  
@@ -134118,7 +134227,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
                          qatomic_or(
                                  &blocks[DIRTY_MEMORY_MIGRATION][idx][offset],
                                  temp);
-@@ -1257,6 +1547,18 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
+@@ -1257,6 +1587,18 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
                              total_dirty_pages += nbits;
                          }
                      }
@@ -134137,7 +134246,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
  
                      num_dirty += nbits;
  
-@@ -1280,9 +1582,15 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
+@@ -1280,9 +1622,15 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
          uint8_t clients = tcg_enabled() ? DIRTY_CLIENTS_ALL
                                          : DIRTY_CLIENTS_NOCODE;
  
@@ -134154,7 +134263,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
  
          /*
           * bitmap-traveling is faster than memory-traveling (for addr...)
-@@ -2031,6 +2339,11 @@ int qemu_ram_resize(RAMBlock *block, ram_addr_t newsize, Error **errp)
+@@ -2031,6 +2379,11 @@ int qemu_ram_resize(RAMBlock *block, ram_addr_t newsize, Error **errp)
           * sizes), however, we have to notify if the unaligned size changed.
           */
          if (unaligned_size != memory_region_size(block->mr)) {
@@ -134166,7 +134275,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
              memory_region_set_size(block->mr, unaligned_size);
              if (block->resized) {
                  block->resized(block->idstr, unaligned_size, block->host);
-@@ -2055,6 +2368,8 @@ int qemu_ram_resize(RAMBlock *block, ram_addr_t newsize, Error **errp)
+@@ -2055,6 +2408,8 @@ int qemu_ram_resize(RAMBlock *block, ram_addr_t newsize, Error **errp)
          return -EINVAL;
      }
  
@@ -134175,7 +134284,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
      /* Notify before modifying the ram block and touching the bitmaps. */
      if (block->host) {
          ram_block_notify_resize(block->host, oldsize, newsize);
-@@ -2062,6 +2377,7 @@ int qemu_ram_resize(RAMBlock *block, ram_addr_t newsize, Error **errp)
+@@ -2062,6 +2417,7 @@ int qemu_ram_resize(RAMBlock *block, ram_addr_t newsize, Error **errp)
  
      physical_memory_clear_dirty_range(block->offset, block->used_length);
      block->used_length = newsize;
@@ -134183,7 +134292,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
      physical_memory_set_dirty_range(block->offset, block->used_length,
                                          DIRTY_CLIENTS_ALL);
      memory_region_set_size(block->mr, unaligned_size);
-@@ -2105,6 +2421,14 @@ void qemu_ram_msync(RAMBlock *block, ram_addr_t start, ram_addr_t length)
+@@ -2105,6 +2461,14 @@ void qemu_ram_msync(RAMBlock *block, ram_addr_t start, ram_addr_t length)
      }
  }
  
@@ -134198,7 +134307,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
  /* Called with ram_list.mutex held */
  static void dirty_memory_extend(ram_addr_t new_ram_size)
  {
-@@ -2126,6 +2450,12 @@ static void dirty_memory_extend(ram_addr_t new_ram_size)
+@@ -2126,6 +2490,12 @@ static void dirty_memory_extend(ram_addr_t new_ram_size)
          old_blocks = qatomic_rcu_read(&ram_list.dirty_memory[i]);
          new_blocks = g_malloc(sizeof(*new_blocks) +
                                sizeof(new_blocks->blocks[0]) * new_num_blocks);
@@ -134211,7 +134320,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
  
          if (old_num_blocks) {
              memcpy(new_blocks->blocks, old_blocks->blocks,
-@@ -2134,12 +2464,16 @@ static void dirty_memory_extend(ram_addr_t new_ram_size)
+@@ -2134,12 +2504,16 @@ static void dirty_memory_extend(ram_addr_t new_ram_size)
  
          for (j = old_num_blocks; j < new_num_blocks; j++) {
              new_blocks->blocks[j] = bitmap_new(DIRTY_MEMORY_BLOCK_SIZE);
@@ -134229,7 +134338,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
          }
      }
  
-@@ -2156,6 +2490,8 @@ static void ram_block_add(RAMBlock *new_block, Error **errp)
+@@ -2156,6 +2530,8 @@ static void ram_block_add(RAMBlock *new_block, Error **errp)
      ram_addr_t ram_size;
      Error *err = NULL;
  
@@ -134238,7 +134347,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
      qemu_mutex_lock_ramlist();
      new_block->offset = find_ram_offset(new_block->max_length);
  
-@@ -2264,6 +2600,7 @@ static void ram_block_add(RAMBlock *new_block, Error **errp)
+@@ -2264,6 +2640,7 @@ static void ram_block_add(RAMBlock *new_block, Error **errp)
  
      /* Write list before version */
      qatomic_store_release(&ram_list.version, ram_list.version + 1);
@@ -134246,7 +134355,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
      qemu_mutex_unlock_ramlist();
  
      physical_memory_set_dirty_range(new_block->offset,
-@@ -2597,15 +2934,21 @@ void qemu_ram_free(RAMBlock *block)
+@@ -2597,15 +2974,21 @@ void qemu_ram_free(RAMBlock *block)
          return;
      }
  
@@ -134268,7 +134377,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
      qatomic_set(&ram_list.mru_block, NULL);
      /* Write list before version */
      qatomic_store_release(&ram_list.version, ram_list.version + 1);
-@@ -2688,6 +3031,12 @@ void qemu_ram_remap(ram_addr_t addr)
+@@ -2688,6 +3071,12 @@ void qemu_ram_remap(ram_addr_t addr)
                  qemu_ram_setup_dump(vaddr, page_size);
              }
  
@@ -134281,7 +134390,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
              break;
          }
      }
-@@ -3145,6 +3494,42 @@ static void invalidate_and_set_dirty(MemoryRegion *mr, hwaddr addr,
+@@ -3145,6 +3534,42 @@ static void invalidate_and_set_dirty(MemoryRegion *mr, hwaddr addr,
      physical_memory_set_dirty_range(addr, length, dirty_log_mask);
  }
  
@@ -134324,7 +134433,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
  void memory_region_flush_rom_device(MemoryRegion *mr, hwaddr addr, hwaddr size)
  {
      /*
-@@ -3230,7 +3615,8 @@ static bool flatview_access_allowed(MemoryRegion *mr, MemTxAttrs attrs,
+@@ -3230,7 +3655,8 @@ static bool flatview_access_allowed(MemoryRegion *mr, MemTxAttrs attrs,
  static MemTxResult flatview_write_continue_step(MemTxAttrs attrs,
                                                  const uint8_t *buf,
                                                  hwaddr len, hwaddr mr_addr,
@@ -134334,7 +134443,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
  {
      if (!flatview_access_allowed(mr, attrs, mr_addr, *l)) {
          return MEMTX_ACCESS_ERROR;
-@@ -3270,8 +3656,35 @@ static MemTxResult flatview_write_continue_step(MemTxAttrs attrs,
+@@ -3270,8 +3696,35 @@ static MemTxResult flatview_write_continue_step(MemTxAttrs attrs,
          uint8_t *ram_ptr = qemu_ram_ptr_length(mr->ram_block, mr_addr, l,
                                                 false, true);
  
@@ -134372,7 +134481,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
  
          return MEMTX_OK;
      }
-@@ -3282,14 +3695,15 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
+@@ -3282,14 +3735,15 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
                                             MemTxAttrs attrs,
                                             const void *ptr,
                                             hwaddr len, hwaddr mr_addr,
@@ -134391,7 +134500,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
  
          len -= l;
          buf += l;
-@@ -3300,7 +3714,8 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
+@@ -3300,7 +3754,8 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
          }
  
          l = len;
@@ -134401,7 +134510,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
      }
  
      return result;
-@@ -3312,21 +3727,24 @@ static MemTxResult flatview_write(FlatView *fv, hwaddr addr, MemTxAttrs attrs,
+@@ -3312,21 +3767,24 @@ static MemTxResult flatview_write(FlatView *fv, hwaddr addr, MemTxAttrs attrs,
  {
      hwaddr l;
      hwaddr mr_addr;
@@ -134429,7 +134538,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
  {
      if (!flatview_access_allowed(mr, attrs, mr_addr, *l)) {
          return MEMTX_ACCESS_ERROR;
-@@ -3365,6 +3783,26 @@ static MemTxResult flatview_read_continue_step(MemTxAttrs attrs, uint8_t *buf,
+@@ -3365,6 +3823,26 @@ static MemTxResult flatview_read_continue_step(MemTxAttrs attrs, uint8_t *buf,
  
          memcpy(buf, ram_ptr, *l);
  
@@ -134456,7 +134565,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
          return MEMTX_OK;
      }
  }
-@@ -3377,10 +3815,18 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
+@@ -3377,10 +3855,18 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
  {
      MemTxResult result = MEMTX_OK;
      uint8_t *buf = ptr;
@@ -134476,7 +134585,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
  
          len -= l;
          buf += l;
-@@ -3391,7 +3837,8 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
+@@ -3391,7 +3877,8 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
          }
  
          l = len;
@@ -134486,7 +134595,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
      }
  
      return result;
-@@ -3403,10 +3850,12 @@ static MemTxResult flatview_read(FlatView *fv, hwaddr addr,
+@@ -3403,10 +3890,12 @@ static MemTxResult flatview_read(FlatView *fv, hwaddr addr,
  {
      hwaddr l;
      hwaddr mr_addr;
@@ -134500,7 +134609,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
      if (!flatview_access_allowed(mr, attrs, mr_addr, l)) {
          return MEMTX_ACCESS_ERROR;
      }
-@@ -3456,6 +3905,73 @@ MemTxResult address_space_rw(const AddressSpace *as, hwaddr addr,
+@@ -3456,6 +3945,73 @@ MemTxResult address_space_rw(const AddressSpace *as, hwaddr addr,
      }
  }
  
@@ -134574,7 +134683,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
  MemTxResult address_space_set(const AddressSpace *as, hwaddr addr,
                                uint8_t c, hwaddr len, MemTxAttrs attrs)
  {
-@@ -3555,6 +4071,12 @@ typedef struct {
+@@ -3555,6 +4111,12 @@ typedef struct {
      MemoryRegion *mr;
      hwaddr addr;
      size_t len;
@@ -134587,7 +134696,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
      uint8_t buffer[];
  } BounceBuffer;
  
-@@ -3724,7 +4246,9 @@ void *address_space_map(AddressSpace *as,
+@@ -3724,7 +4286,9 @@ void *address_space_map(AddressSpace *as,
      fv = address_space_to_flatview(as);
      mr = flatview_translate(fv, addr, &xlat, &l, is_write, attrs);
  
@@ -134598,7 +134707,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
          size_t used = qatomic_read(&as->bounce_buffer_size);
          for (;;) {
              hwaddr alloc = MIN(as->max_bounce_buffer_size - used, l);
-@@ -3749,13 +4273,52 @@ void *address_space_map(AddressSpace *as,
+@@ -3749,13 +4313,52 @@ void *address_space_map(AddressSpace *as,
          bounce->mr = mr;
          bounce->addr = addr;
          bounce->len = l;
@@ -134655,7 +134764,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
          return bounce->buffer;
      }
  
-@@ -3763,7 +4326,12 @@ void *address_space_map(AddressSpace *as,
+@@ -3763,7 +4366,12 @@ void *address_space_map(AddressSpace *as,
      *plen = flatview_extend_translation(fv, addr, len, mr, xlat,
                                          l, is_write, attrs);
      fuzz_dma_read_cb(addr, *plen, mr);
@@ -134669,7 +134778,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
  }
  
  /* Unmaps a memory region previously mapped by address_space_map().
-@@ -3778,6 +4346,7 @@ void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len,
+@@ -3778,6 +4386,7 @@ void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len,
  
      mr = memory_region_from_host(buffer, &addr1);
      if (mr != NULL) {
@@ -134677,7 +134786,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
          if (is_write) {
              invalidate_and_set_dirty(mr, addr1, access_len);
          }
-@@ -3792,11 +4361,54 @@ void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len,
+@@ -3792,11 +4401,54 @@ void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len,
      BounceBuffer *bounce = container_of(buffer, BounceBuffer, buffer);
      assert(bounce->magic == BOUNCE_BUFFER_MAGIC);
  
@@ -134734,7 +134843,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
      qatomic_sub(&as->bounce_buffer_size, bounce->len);
      bounce->magic = ~BOUNCE_BUFFER_MAGIC;
      memory_region_unref(bounce->mr);
-@@ -3839,6 +4451,10 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
+@@ -3839,6 +4491,10 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
  
      assert(len > 0);
  
@@ -134745,7 +134854,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
      l = len;
      cache->fv = address_space_get_flatview(as);
      d = flatview_to_dispatch(cache->fv);
-@@ -3863,17 +4479,82 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
+@@ -3863,17 +4519,79 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
          l = flatview_extend_translation(cache->fv, addr, len, mr,
                                          cache->xlat, l, is_write,
                                          MEMTXATTRS_UNSPECIFIED);
@@ -134760,10 +134869,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
      cache->len = l;
      cache->is_write = is_write;
 +    cache->crucible_borrow_registered = true;
-+    crucible_ram_borrow_change(&crucible_ram_caches, true);
-+    if (cache->ptr) {
-+        crucible_ram_borrow_change(&crucible_ram_direct_caches, true);
-+    }
++    crucible_ram_cache_borrow_change(cache->ptr != NULL, true);
      return l;
  }
  
@@ -134830,15 +134936,12 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
  void address_space_cache_invalidate(const MemoryRegionCache *cache,
                                      hwaddr addr,
                                      hwaddr access_len)
-@@ -3890,6 +4571,16 @@ void address_space_cache_destroy(MemoryRegionCache *cache)
+@@ -3890,6 +4608,13 @@ void address_space_cache_destroy(MemoryRegionCache *cache)
          return;
      }
  
 +    if (cache->crucible_borrow_registered) {
-+        crucible_ram_borrow_change(&crucible_ram_caches, false);
-+        if (cache->ptr) {
-+            crucible_ram_borrow_change(&crucible_ram_direct_caches, false);
-+        }
++        crucible_ram_cache_borrow_change(cache->ptr != NULL, false);
 +        cache->crucible_borrow_registered = false;
 +    } else {
 +        qatomic_set(&crucible_ram_borrow_inconsistent, 1);
@@ -134847,7 +134950,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
      if (xen_map_cache_enabled()) {
          xen_invalidate_map_cache_entry(cache->ptr);
      }
-@@ -3941,8 +4632,8 @@ static MemTxResult address_space_write_continue_cached(MemTxAttrs attrs,
+@@ -3941,8 +4666,8 @@ static MemTxResult address_space_write_continue_cached(MemTxAttrs attrs,
      const uint8_t *buf = ptr;
  
      for (;;) {
@@ -134858,7 +134961,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
  
          len -= l;
          buf += l;
-@@ -3968,7 +4659,8 @@ static MemTxResult address_space_read_continue_cached(MemTxAttrs attrs,
+@@ -3968,7 +4693,8 @@ static MemTxResult address_space_read_continue_cached(MemTxAttrs attrs,
      uint8_t *buf = ptr;
  
      for (;;) {
@@ -134868,7 +134971,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
          len -= l;
          buf += l;
          mr_addr += l;
-@@ -4070,6 +4762,36 @@ int cpu_memory_rw_debug(CPUState *cpu, vaddr addr,
+@@ -4070,6 +4796,36 @@ int cpu_memory_rw_debug(CPUState *cpu, vaddr addr,
      return 0;
  }
  
@@ -134905,7 +135008,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
  int qemu_ram_foreach_block(RAMBlockIterFunc func, void *opaque)
  {
      RAMBlock *block;
-@@ -4222,6 +4944,12 @@ int ram_block_discard_range(RAMBlock *rb, uint64_t offset, size_t length)
+@@ -4222,6 +4978,12 @@ int ram_block_discard_range(RAMBlock *rb, uint64_t offset, size_t length)
      if (rb->guest_memfd >= 0) {
          ret = ram_block_discard_guest_memfd_range(rb, offset, length);
      }
@@ -134918,6 +135021,58 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..a0a2c95ed019c5a78ba859b54d7b2bef
  
      return ret;
  }
+@@ -4492,3 +5254,51 @@ void ram_block_del_cpr_blocker(RAMBlock *rb)
+ {
+     migrate_del_blocker(&rb->cpr_blocker);
+ }
++
++#ifdef CONFIG_PLUGIN
++int qemu_crucible_ram_next_dirty_range(
++    ram_addr_t start, ram_addr_t end,
++    ram_addr_t *dirty_start, ram_addr_t *dirty_end)
++{
++    ram_addr_t page, last;
++
++    if (!dirty_start || !dirty_end || start >= end) {
++        return -EINVAL;
++    }
++    page = start >> TARGET_PAGE_BITS;
++    last = ((end - 1) >> TARGET_PAGE_BITS) + 1;
++    WITH_RCU_READ_LOCK_GUARD() {
++        DirtyMemoryBlocks *blocks =
++            qatomic_rcu_read(&ram_list.dirty_memory[DIRTY_MEMORY_CRUCIBLE_RAM]);
++
++        if (!blocks) {
++            return -ESTALE;
++        }
++        while (page < last) {
++            ram_addr_t index = page / DIRTY_MEMORY_BLOCK_SIZE;
++            unsigned long offset = page % DIRTY_MEMORY_BLOCK_SIZE;
++            unsigned long count = MIN(last - page,
++                                      DIRTY_MEMORY_BLOCK_SIZE - offset);
++            unsigned long found;
++
++            if ((ram_addr_t)(size_t)index != index) {
++                return -EOVERFLOW;
++            }
++            found = find_next_bit(blocks->blocks[(size_t)index],
++                                  offset + count, offset);
++            if (found < offset + count) {
++                ram_addr_t address = (page - offset + found) << TARGET_PAGE_BITS;
++
++                *dirty_start = MAX(start, address);
++                /* Clip before addition, including the final target page in
++                 * the address space; rounding end upward could overflow. */
++                *dirty_end = address + MIN((ram_addr_t)TARGET_PAGE_SIZE,
++                                          end - address);
++                return 0;
++            }
++            page += count;
++        }
++    }
++    return 1;
++}
++#endif
 diff --git a/system/qdev-monitor.c b/system/qdev-monitor.c
 index 00fed791cce124ed7b31b785f09d771dfef09390..8e14228aa2987df00f2fa35ee895d21bfa656887 100644
 --- a/system/qdev-monitor.c
@@ -167225,6 +167380,774 @@ index 0000000000000000000000000000000000000000..1b39a207022bf789fe4f6d0f4f22b5e8
 +    g_test_add_func("/cxl/timestamp/malformed", test_malformed_migration);
 +    return g_test_run();
 +}
+diff --git a/tests/unit/test-crucible-dirty-iterator.c b/tests/unit/test-crucible-dirty-iterator.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..510152e0dc0e3b69ff9c1647547197c369921fb3
+--- /dev/null
++++ b/tests/unit/test-crucible-dirty-iterator.c
+@@ -0,0 +1,564 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* Modeled bitmap/authority facts exercise extracted production capture bodies.
++ * They do not establish live paging, process admission or timing parity. */
++
++#include <assert.h>
++#include <errno.h>
++#include <limits.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#ifdef FIXTURE_RAM_ADDR_32
++typedef uint32_t ram_addr_t;
++#else
++typedef uint64_t ram_addr_t;
++#endif
++static unsigned target_page_bits;
++#define TARGET_PAGE_BITS target_page_bits
++#define TARGET_PAGE_SIZE (UINT64_C(1) << TARGET_PAGE_BITS)
++#define TARGET_PAGE_MASK (~(TARGET_PAGE_SIZE - 1))
++#define TARGET_PAGE_ALIGN(value) (((value) + TARGET_PAGE_SIZE - 1) & TARGET_PAGE_MASK)
++#define RAM_PAGE_BYTES 4096
++#define DIRTY_MEMORY_CRUCIBLE_RAM 0
++#define DIRTY_MEMORY_NUM 2
++#define DIRTY_MEMORY_BLOCK_SIZE (UINT64_C(256) * 1024 * 8)
++#define BITS_PER_LONG (sizeof(unsigned long) * CHAR_BIT)
++#define BIT_WORD(bit) ((bit) / BITS_PER_LONG)
++#define DIV_ROUND_UP(value, divisor) (((value) + (divisor) - 1) / (divisor))
++#define MIN(left, right) ((left) < (right) ? (left) : (right))
++#define MAX(left, right) ((left) > (right) ? (left) : (right))
++#define qatomic_read(pointer) (*(pointer))
++#define qatomic_rcu_read(pointer) (*(pointer))
++#define qatomic_load_acquire(pointer) (*(pointer))
++#define ctzl(value) __builtin_ctzl(value)
++
++typedef struct DirtyMemoryBlocks {
++    unsigned long *blocks[3];
++} DirtyMemoryBlocks;
++static struct { DirtyMemoryBlocks *dirty_memory[DIRTY_MEMORY_NUM]; } ram_list;
++static uint64_t word_loads, rcu_entries, rcu_exits;
++static unsigned rcu_depth;
++static bool authorized = true, fail_read, fail_rearm, change_on_read, change_on_word;
++static unsigned reads, protects, clears, dirty_tlb_resets;
++static uint64_t topology_generation = 7, dirty_generation = 11;
++static uint64_t capture_topology_generation, capture_dirty_generation;
++static uint64_t capture_generation = 19, capture_page_cursor;
++static ram_addr_t capture_dirty_end;
++static uint32_t capture_region_cursor;
++static bool capture_active, capture_full;
++
++typedef struct FixtureRcuGuard { bool active; } FixtureRcuGuard;
++
++static FixtureRcuGuard fixture_rcu_enter(void)
++{
++    assert(rcu_depth++ == 0);
++    rcu_entries++;
++    return (FixtureRcuGuard) { true };
++}
++
++static void fixture_rcu_leave(FixtureRcuGuard *guard)
++{
++    assert(rcu_depth-- == 1);
++    rcu_exits++;
++    guard->active = false;
++}
++
++#define WITH_RCU_READ_LOCK_GUARD() \
++    for (FixtureRcuGuard guard __attribute__((cleanup(fixture_rcu_leave))) = \
++         fixture_rcu_enter(); guard.active; guard.active = false)
++
++static inline unsigned long fixture_word(const unsigned long *pointer)
++{
++    assert(rcu_depth == 1);
++    word_loads++;
++    if (change_on_word) {
++        dirty_generation++;
++        change_on_word = false;
++    }
++    return *pointer;
++}
++
++typedef struct RAMBlock {
++    ram_addr_t offset, used_length;
++    uint8_t *host;
++} RAMBlock;
++typedef struct CrucibleRamRegion {
++    RAMBlock *block;
++    struct { uint64_t logical_length; } descriptor;
++} CrucibleRamRegion;
++typedef struct FixtureRegions {
++    unsigned len;
++    CrucibleRamRegion *entries[3];
++} FixtureRegions;
++static FixtureRegions regions;
++static FixtureRegions *capture_regions;
++#define g_ptr_array_index(array, index) ((array)->entries[(index)])
++
++typedef struct Error { int unused; } Error;
++static unsigned metadata_budget = 1, rust_metadata_budget = 1;
++static FixtureRegions *admission_regions = &regions;
++static struct { uint64_t topology_generation; } admission = { 7 };
++#define GLOBAL_DIRTY_CRUCIBLE_RAM 16
++static unsigned global_dirty_tracking = GLOBAL_DIRTY_CRUCIBLE_RAM;
++struct qemu_plugin_crucible_ram_capture_v1 {
++    uint32_t schema, region_count;
++    uint64_t topology_generation, capture_generation, metadata_budget_bytes;
++};
++
++static bool memory_global_dirty_log_start(unsigned flags, Error **error)
++{
++    assert(error && !*error && flags == GLOBAL_DIRTY_CRUCIBLE_RAM);
++    global_dirty_tracking |= flags;
++    return true;
++}
++
++static void error_free(Error *error) { assert(!error); }
++static void region_free(void *region) { (void)region; }
++static int capture_region_add(RAMBlock *block, void *opaque)
++{
++    (void)block;
++    (void)opaque;
++    return 0;
++}
++
++static FixtureRegions *g_ptr_array_new_with_free_func(void (*release)(void *))
++{
++    assert(release == region_free);
++    return &regions;
++}
++
++static int qemu_ram_foreach_block(int (*visit)(RAMBlock *, void *), void *opaque)
++{
++    assert(visit == capture_region_add && opaque == &regions);
++    return 0;
++}
++
++static int region_compare(const void *left, const void *right)
++{
++    const CrucibleRamRegion *a = *(CrucibleRamRegion *const *)left;
++    const CrucibleRamRegion *b = *(CrucibleRamRegion *const *)right;
++
++    return (a->block->offset > b->block->offset) -
++           (a->block->offset < b->block->offset);
++}
++
++static void g_ptr_array_sort(FixtureRegions *array,
++                              int (*compare)(const void *, const void *))
++{
++    assert(array == &regions && compare == region_compare);
++}
++
++struct qemu_plugin_crucible_ram_page_v1 {
++    uint32_t region_index, valid_length;
++    uint64_t page_index, page_version;
++};
++
++static bool capture_authorized(void)
++{
++    return authorized;
++}
++
++static void g_ptr_array_unref(FixtureRegions *array)
++{
++    assert(array == &regions);
++}
++
++static int operational_read(uintptr_t address, uint8_t *output, size_t valid)
++{
++    assert(address != 0 && valid > 0 && valid <= RAM_PAGE_BYTES);
++    assert(rcu_depth == 0);
++    reads++;
++    if (change_on_read) {
++        dirty_generation++;
++    }
++    if (fail_read) {
++        return -EIO;
++    }
++    memcpy(output, (const void *)address, valid);
++    return 0;
++}
++
++static int rearm(uint64_t generation)
++{
++    assert(generation == topology_generation && clears == 0);
++    protects++;
++    return fail_rearm ? -EIO : 0;
++}
++
++static int (*operational_rearm)(uint64_t) = rearm;
++
++static bool bitmap_test_and_clear_atomic(unsigned long *bitmap,
++                                         unsigned long start,
++                                         unsigned long count)
++{
++    bool changed = false;
++
++    assert(rcu_depth == 1);
++    clears++;
++    for (unsigned long bit = start; bit < start + count; bit++) {
++        unsigned long mask = 1UL << (bit % BITS_PER_LONG);
++        unsigned long *word = &bitmap[BIT_WORD(bit)];
++
++        changed |= (*word & mask) != 0;
++        *word &= ~mask;
++    }
++    return changed;
++}
++
++static void physical_memory_dirty_bits_cleared(ram_addr_t start, ram_addr_t length)
++{
++    assert(length > 0 && start <= UINT64_MAX - length);
++    dirty_tlb_resets++;
++}
++
++#ifdef FIXTURE_INDEX_32
++typedef uint32_t FixtureNativeSize;
++#define size_t FixtureNativeSize
++#else
++typedef size_t FixtureNativeSize;
++#endif
++
++unsigned long find_next_bit(const unsigned long *, unsigned long, unsigned long);
++bool physical_memory_get_dirty_flag(ram_addr_t, unsigned);
++int qemu_crucible_ram_next_dirty_range(ram_addr_t, ram_addr_t,
++                                      ram_addr_t *, ram_addr_t *);
++int old_capture_next_page(uint64_t, uint64_t *,
++                          struct qemu_plugin_crucible_ram_page_v1 *,
++                          uint8_t *, size_t);
++int qemu_plugin_crucible_ram_capture_next_page_v1(
++    uint64_t, uint64_t *, struct qemu_plugin_crucible_ram_page_v1 *,
++    uint8_t *, size_t);
++int qemu_plugin_crucible_ram_capture_finish_v1(uint64_t, uint32_t);
++int qemu_plugin_crucible_ram_capture_begin_v1(
++    uint32_t, struct qemu_plugin_crucible_ram_capture_v1 *);
++
++#include "extracted-production.h"
++
++#ifdef FIXTURE_INDEX_32
++#undef size_t
++#endif
++
++typedef int (*NextPage)(uint64_t, uint64_t *,
++                       struct qemu_plugin_crucible_ram_page_v1 *,
++                       uint8_t *, FixtureNativeSize);
++typedef struct OrderedCapture {
++    struct qemu_plugin_crucible_ram_page_v1 pages[8192];
++    uint64_t cursors[8192];
++    unsigned count;
++} OrderedCapture;
++static uint64_t cases, tuple_digest = UINT64_C(1469598103934665603);
++
++static void set_bit(uint64_t page)
++{
++    assert(page / DIRTY_MEMORY_BLOCK_SIZE < 3);
++    unsigned long *bitmap = ram_list.dirty_memory[0]->blocks[page / DIRTY_MEMORY_BLOCK_SIZE];
++    uint64_t bit = page % DIRTY_MEMORY_BLOCK_SIZE;
++
++    bitmap[BIT_WORD(bit)] |= 1UL << (bit % BITS_PER_LONG);
++}
++
++static void reset_capture(bool full)
++{
++    struct qemu_plugin_crucible_ram_capture_v1 output;
++
++    capture_active = false;
++    capture_dirty_end = (ram_addr_t)-1;
++    admission.topology_generation = topology_generation;
++    assert(qemu_plugin_crucible_ram_capture_begin_v1(full, &output) == 0);
++    assert(capture_dirty_end == 0 && output.capture_generation == capture_generation);
++    assert(output.schema == 1 && output.region_count == regions.len);
++    word_loads = rcu_entries = rcu_exits = 0;
++    reads = protects = clears = dirty_tlb_resets = 0;
++    fail_read = fail_rearm = change_on_read = change_on_word = false;
++}
++
++static OrderedCapture collect(NextPage next, bool full)
++{
++    OrderedCapture result = {0};
++    uint8_t bytes[RAM_PAGE_BYTES];
++    uint64_t cursor = 0;
++
++    reset_capture(full);
++    for (;;) {
++        struct qemu_plugin_crucible_ram_page_v1 page = {0};
++        int status = next(capture_generation, &cursor, &page, bytes, sizeof(bytes));
++
++        if (status == 1) {
++            break;
++        }
++        assert(status == 0 && result.count < 8192);
++        assert(cursor == result.count + 1);
++        assert(page.valid_length > 0 && page.valid_length <= RAM_PAGE_BYTES);
++        assert(memcmp(bytes, regions.entries[page.region_index]->block->host +
++                      page.page_index * RAM_PAGE_BYTES, page.valid_length) == 0);
++        result.pages[result.count] = page;
++        result.cursors[result.count++] = cursor;
++    }
++    assert(rcu_depth == 0 && rcu_entries == rcu_exits);
++    assert(reads == result.count);
++    return result;
++}
++
++static void compare(bool full)
++{
++    OrderedCapture old = collect(old_capture_next_page, full);
++    OrderedCapture actual = collect(qemu_plugin_crucible_ram_capture_next_page_v1, full);
++
++    assert(old.count == actual.count);
++    for (unsigned i = 0; i < old.count; i++) {
++        assert(old.pages[i].region_index == actual.pages[i].region_index);
++        assert(old.pages[i].page_index == actual.pages[i].page_index);
++        assert(old.pages[i].valid_length == actual.pages[i].valid_length);
++        assert(old.pages[i].page_version == actual.pages[i].page_version);
++        assert(old.cursors[i] == actual.cursors[i]);
++        tuple_digest = (tuple_digest ^ actual.pages[i].page_index) * UINT64_C(1099511628211);
++        tuple_digest = (tuple_digest ^ actual.pages[i].valid_length) * UINT64_C(1099511628211);
++        tuple_digest = (tuple_digest ^ actual.pages[i].region_index) * UINT64_C(1099511628211);
++    }
++    cases++;
++}
++
++static void clear_maps(void)
++{
++    for (unsigned i = 0; i < 3; i++) {
++        memset(ram_list.dirty_memory[0]->blocks[i], 0,
++               DIRTY_MEMORY_BLOCK_SIZE / CHAR_BIT);
++    }
++}
++
++static void matrix(void)
++{
++    RAMBlock blocks[3] = {{0}};
++    CrucibleRamRegion descriptors[3] = {{0}};
++    uint8_t backing[3][8 * RAM_PAGE_BYTES];
++
++    memset(backing, 0x65, sizeof(backing));
++    for (unsigned i = 0; i < 3; i++) {
++        blocks[i].host = backing[i];
++        descriptors[i].block = &blocks[i];
++        regions.entries[i] = &descriptors[i];
++    }
++    regions.len = 3;
++    for (unsigned bits = 10; bits <= 16; bits++) {
++        target_page_bits = bits;
++        for (unsigned alignment = 0; alignment < 3; alignment++) {
++            uint64_t start = 3 * TARGET_PAGE_SIZE + (alignment == 0 ? 0 :
++                             alignment == 1 ? 1 : TARGET_PAGE_SIZE - 1);
++
++            for (unsigned i = 0; i < 3; i++) {
++                blocks[i].offset = start + i * 8 * MAX(TARGET_PAGE_SIZE, RAM_PAGE_BYTES);
++                blocks[i].used_length = 5 * RAM_PAGE_BYTES + 1 + i * 997;
++                descriptors[i].descriptor.logical_length = blocks[i].used_length;
++            }
++            for (unsigned mask = 0; mask < 256; mask++) {
++                clear_maps();
++                for (unsigned i = 0; i < 3; i++) {
++                    for (unsigned bit = 0; bit < 8; bit++) {
++                        if (mask & (1U << bit)) {
++                            set_bit((blocks[i].offset >> bits) + bit);
++                        }
++                    }
++                }
++                compare(false);
++            }
++            compare(true);
++        }
++        /* A tiny partial region on either side of a bitmap-block boundary. */
++        regions.len = 2;
++        uint64_t boundary = DIRTY_MEMORY_BLOCK_SIZE << bits;
++        if (boundary <= (ram_addr_t)-1 - 2 * RAM_PAGE_BYTES) {
++            blocks[0].offset = boundary - 2 * RAM_PAGE_BYTES - 3;
++            blocks[0].used_length = 2 * RAM_PAGE_BYTES + 1;
++            blocks[1].offset = boundary + 3;
++            blocks[1].used_length = RAM_PAGE_BYTES + 1;
++            for (unsigned i = 0; i < 2; i++) {
++                descriptors[i].descriptor.logical_length = blocks[i].used_length;
++            }
++            clear_maps();
++            set_bit(DIRTY_MEMORY_BLOCK_SIZE - 1);
++            set_bit(DIRTY_MEMORY_BLOCK_SIZE);
++            compare(false);
++            compare(true);
++        }
++        blocks[0].offset = (BITS_PER_LONG - 1) * TARGET_PAGE_SIZE + 1;
++        blocks[0].used_length = 3 * RAM_PAGE_BYTES + 1;
++        blocks[1].offset = blocks[0].offset + blocks[0].used_length;
++        blocks[1].used_length = RAM_PAGE_BYTES + 1;
++        for (unsigned i = 0; i < 2; i++) {
++            descriptors[i].descriptor.logical_length = blocks[i].used_length;
++        }
++        clear_maps();
++        set_bit(BITS_PER_LONG - 1);
++        set_bit(BITS_PER_LONG);
++        compare(false);
++        compare(true);
++        regions.len = 3;
++    }
++    /* A larger-than-system-profile target page exercises interval expansion. */
++    target_page_bits = 24;
++    regions.len = 1;
++    blocks[0].offset = TARGET_PAGE_SIZE - 17;
++    blocks[0].used_length = 3 * RAM_PAGE_BYTES + 31;
++    descriptors[0].descriptor.logical_length = blocks[0].used_length;
++    clear_maps();
++    set_bit(0);
++    set_bit(1);
++    compare(false);
++    compare(true);
++}
++
++static void refusals_and_acknowledgement(void)
++{
++    uint8_t backing[8192] = {0};
++    RAMBlock block = { .offset = 0, .used_length = 8192, .host = backing };
++    CrucibleRamRegion region = { .block = &block, .descriptor.logical_length = 8192 };
++    struct qemu_plugin_crucible_ram_page_v1 page;
++    uint8_t bytes[RAM_PAGE_BYTES];
++    uint64_t cursor;
++    ram_addr_t start, end;
++
++    target_page_bits = 12;
++    regions.len = 1;
++    regions.entries[0] = &region;
++    clear_maps();
++    global_dirty_tracking = 0;
++    reset_capture(false);
++    assert(capture_full && global_dirty_tracking == GLOBAL_DIRTY_CRUCIBLE_RAM);
++    assert(qemu_plugin_crucible_ram_capture_finish_v1(capture_generation, 0) == 0);
++    set_bit(0);
++    reset_capture(false);
++    assert(qemu_crucible_ram_next_dirty_range(1, 1, &start, &end) == -EINVAL);
++    assert(qemu_crucible_ram_next_dirty_range(0, 1, NULL, &end) == -EINVAL);
++    assert(rcu_entries == 0);
++    cursor = 0;
++    assert(qemu_plugin_crucible_ram_capture_next_page_v1(
++               capture_generation + 1, &cursor, &page, bytes, sizeof(bytes)) == -ESTALE);
++    assert(cursor == 0 && reads == 0);
++    assert(qemu_plugin_crucible_ram_capture_finish_v1(capture_generation, 1) == -EBUSY);
++    assert(clears == 0 && protects == 0 && capture_active);
++
++    fail_read = true;
++    assert(qemu_plugin_crucible_ram_capture_next_page_v1(
++               capture_generation, &cursor, &page, bytes, sizeof(bytes)) == -EIO);
++    assert(cursor == 0 && ram_list.dirty_memory[0]->blocks[0][0] == 1);
++    assert(qemu_plugin_crucible_ram_capture_finish_v1(capture_generation, 0) == 0);
++    assert(clears == 0 && protects == 0);
++
++    reset_capture(false);
++    change_on_read = true;
++    cursor = 0;
++    assert(qemu_plugin_crucible_ram_capture_next_page_v1(
++               capture_generation, &cursor, &page, bytes, sizeof(bytes)) == -ESTALE);
++    assert(qemu_plugin_crucible_ram_capture_finish_v1(capture_generation, 0) == 0);
++    assert(clears == 0);
++
++#ifdef FIXTURE_COUNTED
++    for (unsigned mode = 0; mode < 2; mode++) {
++        NextPage next = mode ? qemu_plugin_crucible_ram_capture_next_page_v1 :
++                              old_capture_next_page;
++
++        reset_capture(false);
++        change_on_word = true;
++        cursor = 0;
++        assert(next(capture_generation, &cursor, &page, bytes, sizeof(bytes)) == -ESTALE);
++        assert(qemu_plugin_crucible_ram_capture_finish_v1(capture_generation, 1) < 0);
++        assert(clears == 0 && protects == 0);
++        assert(qemu_plugin_crucible_ram_capture_finish_v1(capture_generation, 0) == 0);
++        assert(ram_list.dirty_memory[0]->blocks[0][0] == 1);
++    }
++#endif
++
++    collect(qemu_plugin_crucible_ram_capture_next_page_v1, false);
++    fail_rearm = true;
++    assert(qemu_plugin_crucible_ram_capture_finish_v1(capture_generation, 1) == -EIO);
++    assert(capture_active && clears == 0 && ram_list.dirty_memory[0]->blocks[0][0] == 1);
++    fail_rearm = false;
++    assert(qemu_plugin_crucible_ram_capture_finish_v1(capture_generation, 1) == 0);
++    assert(protects == 2 && clears == 1 && dirty_tlb_resets == 1);
++    assert(ram_list.dirty_memory[0]->blocks[0][0] == 0);
++    assert(ram_list.dirty_memory[1]->blocks[0][0] == 0xf0f0UL);
++
++    /* Changed component backing without a notification stays unselected. The
++     * diagnostic oracle retains its independent recomputation; selection must
++     * never infer notifications from changed backing bytes. */
++    uint8_t original_backing[sizeof(backing)];
++
++    memcpy(original_backing, backing, sizeof(backing));
++    backing[0] = 0x66;
++    assert(memcmp(original_backing, backing, sizeof(backing)) != 0);
++    assert(collect(qemu_plugin_crucible_ram_capture_next_page_v1, false).count == 0);
++    assert(reads == 0);
++    assert(collect(old_capture_next_page, false).count == 0);
++    assert(reads == 0);
++    /* Full selection observes the actual changed bytes despite absent bits;
++     * an explicit notification then selects only the changed logical page. */
++    assert(collect(qemu_plugin_crucible_ram_capture_next_page_v1, true).count == 2);
++    assert(collect(old_capture_next_page, true).count == 2);
++    set_bit(0);
++    compare(false);
++    clear_maps();
++#ifdef FIXTURE_INDEX_32
++    target_page_bits = 10;
++    assert(qemu_crucible_ram_next_dirty_range(
++               UINT64_C(1) << 63, (UINT64_C(1) << 63) + 1,
++               &start, &end) == -EOVERFLOW);
++    assert(rcu_depth == 0 && rcu_entries == rcu_exits);
++    target_page_bits = 12;
++#endif
++    block.offset = (ram_addr_t)-1 - 4095;
++    reset_capture(false);
++    cursor = 0;
++    assert(qemu_plugin_crucible_ram_capture_next_page_v1(
++               capture_generation, &cursor, &page, bytes, sizeof(bytes)) == -EOVERFLOW);
++}
++
++static uint64_t clean_work(void)
++{
++    RAMBlock block = { .offset = 0, .used_length = 4096 * 4096, .host = (void *)0x100000 };
++    CrucibleRamRegion region = { .block = &block, .descriptor.logical_length = 4096 * 4096 };
++
++    target_page_bits = 12;
++    regions.len = 1;
++    regions.entries[0] = &region;
++    clear_maps();
++    collect(old_capture_next_page, false);
++    uint64_t old_rcu = rcu_entries, old_words = word_loads;
++
++    collect(qemu_plugin_crucible_ram_capture_next_page_v1, false);
++    assert(old_rcu == 4096 && rcu_entries == 1 && rcu_exits == 1);
++    if (word_loads) {
++        assert(old_words == 4096 && word_loads == 4096 / BITS_PER_LONG);
++    }
++    return word_loads;
++}
++
++int main(void)
++{
++    DirtyMemoryBlocks maps[DIRTY_MEMORY_NUM];
++
++    for (unsigned client = 0; client < DIRTY_MEMORY_NUM; client++) {
++        for (unsigned i = 0; i < 3; i++) {
++            maps[client].blocks[i] = calloc(DIRTY_MEMORY_BLOCK_SIZE / BITS_PER_LONG,
++                                          sizeof(unsigned long));
++            assert(maps[client].blocks[i] != NULL);
++        }
++        ram_list.dirty_memory[client] = &maps[client];
++    }
++    maps[1].blocks[0][0] = 0xf0f0UL;
++    matrix();
++    refusals_and_acknowledgement();
++    uint64_t work = clean_work();
++
++    printf("PASS cases=%llu tuples=%016llx work=%llu\n",
++           (unsigned long long)cases, (unsigned long long)tuple_digest,
++           (unsigned long long)work);
++    for (unsigned client = 0; client < DIRTY_MEMORY_NUM; client++) {
++        for (unsigned i = 0; i < 3; i++) {
++            free(maps[client].blocks[i]);
++        }
++    }
++    return 0;
++}
+diff --git a/tests/unit/test-crucible-dirty-iterator.py b/tests/unit/test-crucible-dirty-iterator.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..7399a3c2918f0348d3dcc9441ab586368e82178f
+--- /dev/null
++++ b/tests/unit/test-crucible-dirty-iterator.py
+@@ -0,0 +1,192 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Compare extracted native capture bodies using the real bitmap primitive.
++
++The old selector is a frozen test oracle from the identified source below.
++The new iterator, selector, validation and acknowledgement bodies are extracted
++from the source being tested. This proves component selection and lifetime
++invariants, not live paging admission or fingerprint performance parity.
++"""
++
++import argparse
++import hashlib
++import json
++import os
++from pathlib import Path
++import shlex
++import subprocess
++
++
++BASE_COMMIT = "e8c0b3207f8b69eb685b3c6c5284b9bc6b5a55c5"
++
++
++OLD_DIRTY = r"""static bool capture_page_dirty(RAMBlock *block, uint64_t offset, size_t valid)
++{
++    ram_addr_t start = block->offset + offset;
++    ram_addr_t end = start + valid;
++
++    for (ram_addr_t address = start & TARGET_PAGE_MASK;
++         address < end; address += TARGET_PAGE_SIZE) {
++        if (physical_memory_get_dirty_flag(address, DIRTY_MEMORY_CRUCIBLE_RAM)) {
++            return true;
++        }
++    }
++    return false;
++}"""
++
++
++OLD_NEXT = r"""int qemu_plugin_crucible_ram_capture_next_page_v1(
++    uint64_t generation, uint64_t *cursor,
++    struct qemu_plugin_crucible_ram_page_v1 *out,
++    uint8_t *bytes, size_t capacity)
++{
++    if (!cursor || !out || !bytes || capacity < RAM_PAGE_BYTES ||
++        !capture_valid(generation)) {
++        return -ESTALE;
++    }
++    while (capture_region_cursor < capture_regions->len) {
++        CrucibleRamRegion *region = g_ptr_array_index(capture_regions, capture_region_cursor);
++        uint64_t page_count = DIV_ROUND_UP(region->descriptor.logical_length, RAM_PAGE_BYTES);
++
++        while (capture_page_cursor < page_count) {
++            uint64_t page_index = capture_page_cursor++;
++            uint64_t offset = page_index * RAM_PAGE_BYTES;
++            size_t valid = MIN((uint64_t)RAM_PAGE_BYTES,
++                               region->descriptor.logical_length - offset);
++
++            if (!capture_full && !capture_page_dirty(region->block, offset, valid)) {
++                continue;
++            }
++            memset(out, 0, sizeof(*out));
++            out->region_index = capture_region_cursor;
++            out->valid_length = valid;
++            out->page_index = page_index;
++            out->page_version = capture_dirty_generation;
++            /* Operational read: no guest memory opportunity/controller hook. */
++            int status = operational_read(
++                (uintptr_t)region->block->host + offset, bytes, valid);
++            if (status != 0) {
++                return status;
++            }
++            *cursor += 1;
++            return capture_valid(generation) ? 0 : -ESTALE;
++        }
++        capture_region_cursor++;
++        capture_page_cursor = 0;
++    }
++    return 1;
++}"""
++
++
++def definition(text, name):
++    """Extract the exact named production function without a parser framework."""
++    start = text.index(name)
++    start = text.rfind("\n", 0, start) + 1
++    opening = text.index("{", start)
++    depth = 0
++    for index in range(opening, len(text)):
++        depth += (text[index] == "{") - (text[index] == "}")
++        if depth == 0:
++            return text[start:index + 1]
++    raise ValueError(f"unterminated production function: {name}")
++
++
++def counted_bitmap(body):
++    """Count every executed word load without replacing bitmap search logic."""
++    replacements = {
++        "*(p++)": "fixture_word(p++)",
++        "*(p+1)": "fixture_word(p+1)",
++        "*(p+2)": "fixture_word(p+2)",
++        "*(p+3)": "fixture_word(p+3)",
++        "*p;": "fixture_word(p);",
++    }
++    proof = {}
++    for before, after in replacements.items():
++        count = body.count(before)
++        if count == 0:
++            raise ValueError(f"reviewed bitmap load is absent: {before}")
++        proof[before] = count
++        body = body.replace(before, after)
++    return body, proof
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--source-root", type=Path,
++                        default=Path(__file__).resolve().parents[2])
++    parser.add_argument("--output-dir", type=Path, required=True)
++    arguments = parser.parse_args()
++    source = arguments.source_root
++    output = arguments.output_dir
++    output.mkdir(parents=True, exist_ok=True)
++
++    physmem = (source / "system/physmem.c").read_text()
++    capture = (source / "plugins/crucible-paged-ram.c").read_text()
++    bitops = (source / "util/bitops.c").read_text()
++    bodies = {
++        "bitmap": definition(bitops, "find_next_bit("),
++        "old_range_query": definition(physmem, "physical_memory_get_dirty("),
++        "old_flag_query": definition(physmem, "physical_memory_get_dirty_flag("),
++        "iterator": definition(physmem, "qemu_crucible_ram_next_dirty_range("),
++        "begin": definition(capture, "qemu_plugin_crucible_ram_capture_begin_v1("),
++        "valid": definition(capture, "capture_valid("),
++        "next": definition(capture, "qemu_plugin_crucible_ram_capture_next_page_v1("),
++        "clear": definition(capture, "capture_clear_dirty("),
++        "finish": definition(capture, "qemu_plugin_crucible_ram_capture_finish_v1("),
++        "old_dirty": OLD_DIRTY,
++        "old_next": OLD_NEXT,
++    }
++    header = "\n\n".join([
++        bodies["bitmap"], bodies["old_range_query"], bodies["old_flag_query"],
++        bodies["iterator"], bodies["begin"], bodies["valid"], OLD_DIRTY,
++        OLD_NEXT.replace("qemu_plugin_crucible_ram_capture_next_page_v1",
++                         "old_capture_next_page"),
++        bodies["next"], bodies["clear"], bodies["finish"],
++    ])
++    counted, load_proof = counted_bitmap(bodies["bitmap"])
++    fixture = source / "tests/unit/test-crucible-dirty-iterator.c"
++    compiler = shlex.split(os.environ.get("CC", "cc"))
++    flags = shlex.split(os.environ.get("CFLAGS", "-O2 -std=gnu11 -Wall -Wextra"))
++    links = shlex.split(os.environ.get("LDFLAGS", ""))
++    variants = []
++    commands = []
++    for role, bitmap, extra in (
++        ("unchanged-primitive", bodies["bitmap"], []),
++        ("counted-primitive", counted, []),
++        ("modeled-32-bit-index", counted, ["-DFIXTURE_INDEX_32"]),
++        ("modeled-32-bit-ram-address", counted, ["-DFIXTURE_RAM_ADDR_32"]),
++    ):
++        (output / "extracted-production.h").write_text(
++            "/* SPDX-License-Identifier: GPL-2.0-or-later */\n" +
++            ("#define FIXTURE_COUNTED 1\n" if role != "unchanged-primitive" else "") +
++            header.replace(bodies["bitmap"], bitmap, 1) + "\n")
++        executable = output / role
++        command = compiler + flags + extra + ["-I" + str(output), str(fixture),
++                                              "-o", str(executable)] + links
++        commands.append(command)
++        subprocess.run(command, check=True)
++        result = subprocess.run([str(executable)], check=True,
++                                text=True, capture_output=True)
++        print(role + ": " + result.stdout.strip())
++        variants.append({"role": role, "stdout": result.stdout.strip(),
++                         "executable_sha256": hashlib.sha256(
++                             executable.read_bytes()).hexdigest()})
++    if any(row["stdout"].split(" work=")[0] != variants[0]["stdout"].split(" work=")[0]
++           for row in variants[1:3]):
++        raise ValueError("instrumentation or index width changed ordered capture evidence")
++    proof = {
++        "baseline_commit": BASE_COMMIT,
++        "component_only": True,
++        "native_execution_qualified": False,
++        "production_body_sha256": {name: hashlib.sha256(body.encode()).hexdigest()
++                                   for name, body in bodies.items()},
++        "bitmap_load_substitutions": load_proof,
++        "variants": variants,
++    }
++    (output / "proof.json").write_text(json.dumps(proof, indent=2, sort_keys=True) + "\n")
++    (output / "compile-command.json").write_text(json.dumps(commands, indent=2) + "\n")
++    print("PASS production dirty iterator: ordered differential captures, "
++          "runtime page sizes, bitmap work counts, refusal and acknowledgement")
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-e1000-fingerprint.c b/tests/unit/test-crucible-e1000-fingerprint.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..a56f97cc637d959e34eacb00cb73c9e4be22e0fc
@@ -184808,16 +185731,17 @@ index 0000000000000000000000000000000000000000..49b54cb72fc04601b3021c5cdaf7fb62
 +}
 diff --git a/tests/unit/test-crucible-ram-arena.py b/tests/unit/test-crucible-ram-arena.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..cd70e42217d46540d4048fc28bc16a0858e78ea1
+index 0000000000000000000000000000000000000000..ef4f6a3710b9620ed30ea671441d310e30f95787
 --- /dev/null
 +++ b/tests/unit/test-crucible-ram-arena.py
-@@ -0,0 +1,390 @@
+@@ -0,0 +1,785 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercises native static RAM placement authority with real Linux mappings.
 +
 +Production admission functions execute against private/shared mmap, memfd
 +seals, descriptor identity and COW pages. The fixture models RAMBlock metadata;
 +it does not replace syscalls or claim to execute a complete translated guest.
++Borrow inventory tests retain production paired counter and startup refusal bodies.
 +Flash producer tests retain production dirty-mask and TCG invalidation routing;
 +translated-code invalidation and optional block I/O are fixture endpoints.
 +"""
@@ -185151,6 +186075,372 @@ index 0000000000000000000000000000000000000000..cd70e42217d46540d4048fc28bc16a08
 +"""
 +
 +
++
++BORROW_PRELUDE = r"""
++#include <assert.h>
++#include <errno.h>
++#include <pthread.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <sys/wait.h>
++#include <unistd.h>
++#include "qemu/crucible-paged-ram.h"
++#include "qemu/atomic.h"
++
++#define PHASE_MACHINE_READY 1
++static bool machine_ready;
++static bool phase_check(int phase)
++{
++    assert(phase == PHASE_MACHINE_READY);
++    return machine_ready;
++}
++
++static uint64_t native_counter_exchange(uint64_t *counter,
++                                        uint64_t previous, uint64_t next)
++{
++    return qatomic_cmpxchg(counter, previous, next);
++}
++
++static uint64_t native_read_u64(uint64_t *value)
++{
++    return qatomic_read(value);
++}
++
++static unsigned native_read_unsigned(unsigned *value)
++{
++    return qatomic_read(value);
++}
++
++static bool native_read_bool(bool *value)
++{
++    return qatomic_read(value);
++}
++
++static uint64_t observed_u64_read(uint64_t *value);
++static unsigned observed_unsigned_read(unsigned *value);
++#undef qatomic_read
++#define qatomic_read(value) _Generic((value), \
++    uint64_t *: observed_u64_read, unsigned *: observed_unsigned_read, \
++    bool *: native_read_bool)(value)
++
++static uint64_t observed_counter_exchange(uint64_t *counter,
++                                          uint64_t previous, uint64_t next);
++#undef qatomic_cmpxchg
++#define qatomic_cmpxchg(counter, previous, next) \
++    observed_counter_exchange(counter, previous, next)
++"""
++
++BORROW_TESTS = r"""
++static bool pause_cache_update;
++static int update_arrived[2], update_resume[2];
++static __thread bool pause_inventory_flag;
++static __thread bool pause_inventory_idle;
++static int inventory_arrived[2], inventory_resume[2];
++static int idle_arrived[2], idle_resume[2];
++
++static uint64_t observed_u64_read(uint64_t *value)
++{
++    uint64_t result = native_read_u64(value);
++
++    if (value == &crucible_ram_borrow_mutations && pause_inventory_idle) {
++        char signal = 'x';
++
++        pause_inventory_idle = false;
++        assert(write(idle_arrived[1], &signal, 1) == 1);
++        assert(read(idle_resume[0], &signal, 1) == 1);
++    }
++    return result;
++}
++
++static unsigned observed_unsigned_read(unsigned *value)
++{
++    unsigned result = native_read_unsigned(value);
++
++    if (value == &crucible_ram_borrow_inconsistent && pause_inventory_flag) {
++        char signal = 'x';
++
++        assert(write(inventory_arrived[1], &signal, 1) == 1);
++        assert(read(inventory_resume[0], &signal, 1) == 1);
++    }
++    return result;
++}
++
++static uint64_t observed_counter_exchange(uint64_t *counter,
++                                          uint64_t previous, uint64_t next)
++{
++    uint64_t result = native_counter_exchange(counter, previous, next);
++
++    if (counter == &crucible_ram_caches && result == previous &&
++        qatomic_read(&pause_cache_update)) {
++        char signal = 'x';
++
++        assert(write(update_arrived[1], &signal, 1) == 1);
++        assert(read(update_resume[0], &signal, 1) == 1);
++    }
++    return result;
++}
++
++static void reset_borrow_inventory(void)
++{
++    machine_ready = false;
++    pause_cache_update = false;
++    crucible_ram_paging_requested = 0;
++    crucible_ram_borrow_inconsistent = 0;
++    crucible_ram_borrow_generation = 1;
++    crucible_ram_borrow_mutations = 0;
++    crucible_ram_direct_maps = 0;
++    crucible_ram_bounce_maps = 0;
++    crucible_ram_caches = 0;
++    crucible_ram_direct_caches = 0;
++}
++
++static QemuCrucibleRamBorrowInventory inventory(void)
++{
++    QemuCrucibleRamBorrowInventory result;
++
++    qemu_crucible_ram_borrow_inventory(&result);
++    return result;
++}
++
++static void balanced_cache_membership(void)
++{
++    reset_borrow_inventory();
++    crucible_ram_cache_borrow_change(true, true);
++    QemuCrucibleRamBorrowInventory active = inventory();
++
++    assert(active.consistent && active.caches == 1 && active.direct_caches == 1);
++    assert(active.generation == 3);
++    assert(qemu_crucible_ram_paging_request() == -EBUSY);
++    crucible_ram_cache_borrow_change(true, false);
++    QemuCrucibleRamBorrowInventory released = inventory();
++    assert(released.consistent && released.caches == 0 && released.direct_caches == 0);
++    assert(released.generation == 5 && crucible_ram_borrow_mutations == 0);
++    assert(qemu_crucible_ram_paging_request() == 0);
++
++    /* The non-direct cache path remains a single original counter change. */
++    crucible_ram_cache_borrow_change(false, true);
++    assert(inventory().generation == 6 && inventory().caches == 1);
++    assert(inventory().direct_caches == 0);
++    crucible_ram_cache_borrow_change(false, false);
++    assert(inventory().generation == 7 && inventory().caches == 0);
++    puts("PASS paired cache memberships, original generation and prerequest refusal");
++}
++
++static void *acquire_one_cache(void *unused)
++{
++    (void)unused;
++    crucible_ram_cache_borrow_change(true, true);
++    return NULL;
++}
++
++static void mid_update_is_not_certifiable(void)
++{
++    reset_borrow_inventory();
++    assert(pipe(update_arrived) == 0 && pipe(update_resume) == 0);
++    pause_cache_update = true;
++    pthread_t worker;
++    assert(pthread_create(&worker, NULL, acquire_one_cache, NULL) == 0);
++    char signal;
++    assert(read(update_arrived[0], &signal, 1) == 1);
++
++    QemuCrucibleRamBorrowInventory staged = inventory();
++    assert(!staged.consistent && staged.caches == 1 && staged.direct_caches == 0);
++    assert(staged.generation == 1 && crucible_ram_borrow_mutations == 1);
++
++    qatomic_set(&pause_cache_update, false);
++    assert(write(update_resume[1], &signal, 1) == 1);
++    assert(pthread_join(worker, NULL) == 0);
++    assert(inventory().consistent && inventory().direct_caches == 1);
++    crucible_ram_cache_borrow_change(true, false);
++    assert(close(update_arrived[0]) == 0 && close(update_arrived[1]) == 0);
++    assert(close(update_resume[0]) == 0 && close(update_resume[1]) == 0);
++    puts("PASS real concurrent observer refuses inventory between paired writes");
++}
++
++static void *inventory_before_partial_failure(void *output)
++{
++    pause_inventory_flag = true;
++    pause_inventory_idle = true;
++    *(QemuCrucibleRamBorrowInventory *)output = inventory();
++    return NULL;
++}
++
++static void *release_one_direct_cache(void *unused)
++{
++    (void)unused;
++    crucible_ram_cache_borrow_change(true, false);
++    return NULL;
++}
++
++static void partial_failure_invalidates_an_earlier_observer(void)
++{
++    reset_borrow_inventory();
++    crucible_ram_cache_borrow_change(false, true);
++    assert(inventory().generation == 2);
++    assert(pipe(idle_arrived) == 0 && pipe(idle_resume) == 0);
++    assert(pipe(inventory_arrived) == 0 && pipe(inventory_resume) == 0);
++    assert(pipe(update_arrived) == 0 && pipe(update_resume) == 0);
++    pthread_t observer, writer;
++    QemuCrucibleRamBorrowInventory result;
++    assert(pthread_create(&observer, NULL, inventory_before_partial_failure, &result) == 0);
++    char signal;
++    assert(read(idle_arrived[0], &signal, 1) == 1);
++
++    /* Generation and idle were sampled before the writer started. Let the
++     * observer see the first changed membership and still-clear failure flag,
++     * then complete the second failure before its final generation check. */
++    qatomic_set(&pause_cache_update, true);
++    assert(pthread_create(&writer, NULL, release_one_direct_cache, NULL) == 0);
++    assert(read(update_arrived[0], &signal, 1) == 1);
++    assert(crucible_ram_caches == 0 && crucible_ram_borrow_mutations == 1);
++    assert(write(idle_resume[1], &signal, 1) == 1);
++    assert(read(inventory_arrived[0], &signal, 1) == 1);
++
++    qatomic_set(&pause_cache_update, false);
++    assert(write(update_resume[1], &signal, 1) == 1);
++    assert(pthread_join(writer, NULL) == 0);
++    assert(crucible_ram_caches == 0 && crucible_ram_direct_caches == 0);
++    assert(crucible_ram_borrow_inconsistent == 1);
++    assert(crucible_ram_borrow_mutations == 0);
++
++    assert(write(inventory_resume[1], &signal, 1) == 1);
++    assert(pthread_join(observer, NULL) == 0);
++    assert(!result.consistent);
++    assert(crucible_ram_borrow_generation == 3);
++    assert(close(idle_arrived[0]) == 0 && close(idle_arrived[1]) == 0);
++    assert(close(idle_resume[0]) == 0 && close(idle_resume[1]) == 0);
++    assert(close(inventory_arrived[0]) == 0 && close(inventory_arrived[1]) == 0);
++    assert(close(inventory_resume[0]) == 0 && close(inventory_resume[1]) == 0);
++    assert(close(update_arrived[0]) == 0 && close(update_arrived[1]) == 0);
++    assert(close(update_resume[0]) == 0 && close(update_resume[1]) == 0);
++    puts("PASS partial counter failure invalidates an observer after its clear-flag read");
++}
++
++static void *contend_cache_membership(void *unused)
++{
++    (void)unused;
++    for (unsigned index = 0; index < 1000; index++) {
++        crucible_ram_cache_borrow_change(true, true);
++        crucible_ram_cache_borrow_change(true, false);
++    }
++    return NULL;
++}
++
++static void real_concurrent_cache_memberships(void)
++{
++    reset_borrow_inventory();
++    pthread_t first, second;
++    assert(pthread_create(&first, NULL, contend_cache_membership, NULL) == 0);
++    assert(pthread_create(&second, NULL, contend_cache_membership, NULL) == 0);
++    assert(pthread_join(first, NULL) == 0 && pthread_join(second, NULL) == 0);
++
++    QemuCrucibleRamBorrowInventory result = inventory();
++    assert(result.consistent && result.caches == 0 && result.direct_caches == 0);
++    assert(result.generation == 8001 && crucible_ram_borrow_mutations == 0);
++    puts("PASS two real workers balance 2000 cache lifetime pairs");
++}
++
++static void counter_failures_are_sticky(void)
++{
++    for (unsigned direct = 0; direct < 2; direct++) {
++        reset_borrow_inventory();
++        if (direct) {
++            crucible_ram_direct_caches = UINT64_MAX;
++        } else {
++            crucible_ram_caches = UINT64_MAX;
++        }
++        crucible_ram_cache_borrow_change(true, true);
++        assert(!inventory().consistent && crucible_ram_borrow_mutations == 0);
++        assert(qemu_crucible_ram_paging_request() == -EBUSY);
++
++        reset_borrow_inventory();
++        crucible_ram_caches = direct ? 1 : 0;
++        crucible_ram_cache_borrow_change(true, false);
++        assert(!inventory().consistent && crucible_ram_borrow_mutations == 0);
++        assert(qemu_crucible_ram_paging_request() == -EBUSY);
++    }
++    reset_borrow_inventory();
++    crucible_ram_borrow_generation = UINT64_MAX - 2;
++    crucible_ram_cache_borrow_change(true, true);
++    assert(inventory().consistent && inventory().generation == UINT64_MAX);
++
++    for (unsigned distance = 0; distance < 2; distance++) {
++        reset_borrow_inventory();
++        crucible_ram_borrow_generation = UINT64_MAX - distance;
++        crucible_ram_cache_borrow_change(true, true);
++        assert(!inventory().consistent && crucible_ram_borrow_mutations == 0);
++        assert(qemu_crucible_ram_paging_request() == -EBUSY);
++    }
++    reset_borrow_inventory();
++    crucible_ram_borrow_mutations = UINT64_MAX;
++    crucible_ram_cache_borrow_change(true, true);
++    assert(!inventory().consistent && crucible_ram_caches == 0);
++    assert(qemu_crucible_ram_paging_request() == -EBUSY);
++    puts("PASS paired counter overflow, underflow and generation overflow remain sticky");
++}
++
++static void original_dma_and_single_counter_paths(void)
++{
++    reset_borrow_inventory();
++    crucible_ram_borrow_change(&crucible_ram_direct_maps, true);
++    assert(inventory().generation == 2 && inventory().direct_maps == 1);
++    assert(qemu_crucible_ram_paging_request() == -EBUSY);
++    crucible_ram_borrow_change(&crucible_ram_direct_maps, false);
++    crucible_ram_borrow_change(&crucible_ram_bounce_maps, true);
++    assert(inventory().generation == 4 && inventory().bounce_maps == 1);
++    crucible_ram_borrow_change(&crucible_ram_bounce_maps, false);
++    assert(inventory().generation == 5 && inventory().bounce_maps == 0);
++    assert(inventory().consistent && qemu_crucible_ram_paging_request() == 0);
++
++    reset_borrow_inventory();
++    crucible_ram_borrow_change(&crucible_ram_direct_maps, false);
++    assert(!inventory().consistent && crucible_ram_borrow_mutations == 0);
++    reset_borrow_inventory();
++    crucible_ram_borrow_generation = UINT64_MAX;
++    crucible_ram_borrow_change(&crucible_ram_bounce_maps, true);
++    assert(!inventory().consistent && crucible_ram_borrow_mutations == 0);
++    puts("PASS unchanged single-counter DMA lifetime and sticky failure semantics");
++}
++
++static void fork_preserves_original_live_memberships(void)
++{
++    reset_borrow_inventory();
++    crucible_ram_cache_borrow_change(true, true);
++    pid_t child = fork();
++    assert(child >= 0);
++    if (child == 0) {
++        assert(inventory().caches == 1 && inventory().direct_caches == 1);
++        assert(inventory().generation == 3);
++        assert(qemu_crucible_ram_paging_request() == -EBUSY);
++        crucible_ram_cache_borrow_change(true, false);
++        assert(inventory().generation == 5 && inventory().consistent);
++        assert(qemu_crucible_ram_paging_request() == 0);
++        _exit(0);
++    }
++    int status;
++    assert(waitpid(child, &status, 0) == child);
++    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
++    assert(inventory().caches == 1 && inventory().direct_caches == 1);
++    assert(inventory().generation == 3 && qemu_crucible_ram_paging_request() == -EBUSY);
++    crucible_ram_cache_borrow_change(true, false);
++    assert(inventory().consistent && inventory().caches == 0);
++    puts("PASS real fork retains startup refusal and independent child memberships");
++}
++
++int main(void)
++{
++    balanced_cache_membership();
++    mid_update_is_not_certifiable();
++    real_concurrent_cache_memberships();
++    partial_failure_invalidates_an_earlier_observer();
++    counter_failures_are_sticky();
++    original_dma_and_single_counter_paths();
++    fork_preserves_original_live_memberships();
++    return 0;
++}
++"""
++
 +def main() -> None:
 +    parser = argparse.ArgumentParser(description=__doc__)
 +    parser.add_argument("--output-dir", type=Path, required=True)
@@ -185199,21 +186489,49 @@ index 0000000000000000000000000000000000000000..cd70e42217d46540d4048fc28bc16a08
 +    subprocess.run(command, check=True)
 +    subprocess.run([str(binary)], cwd=args.output_dir, check=True, timeout=10)
 +
++    # Keep the actual counter storage and production functions together; the
++    # fixture hook only pauses a real atomic CAS for the concurrent observer.
++    borrow_storage = physical[physical.index("static unsigned crucible_ram_paging_requested;"):
++                              physical.index("static bool crucible_ram_borrow_counter_change(")]
++    borrow_bodies = [definition(physical, signature) for signature in [
++        "static bool crucible_ram_borrow_counter_change(",
++        "static void crucible_ram_borrow_change(",
++        "static void crucible_ram_cache_borrow_change(",
++        "bool qemu_crucible_ram_paging_requested(",
++        "int qemu_crucible_ram_paging_request(",
++        "void qemu_crucible_ram_borrow_inventory(",
++    ]]
++    borrow_fixture = args.output_dir / "ram-cache-borrows.c"
++    borrow_binary = args.output_dir / "ram-cache-borrows"
++    borrow_fixture.write_text("\n\n".join([
++        BORROW_PRELUDE, borrow_storage, *borrow_bodies, BORROW_TESTS,
++    ]))
++    borrow_command = [*shlex.split(os.environ["CC"]),
++                      *shlex.split(os.environ.get("CFLAGS", "")),
++                      "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-pthread",
++                      str(borrow_fixture), "-o", str(borrow_binary),
++                      *shlex.split(os.environ.get("LDFLAGS", ""))]
++    (args.output_dir / "borrow-compile-command.json").write_text(
++        json.dumps(borrow_command, indent=2) + "\n")
++    subprocess.run(borrow_command, check=True)
++    subprocess.run([str(borrow_binary)], cwd=args.output_dir, check=True, timeout=10)
++
++
 +
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/unit/test-crucible-ram-worker-inventory.py b/tests/unit/test-crucible-ram-worker-inventory.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..c0b135ae090d450d291c2514f7cec64856b14443
+index 0000000000000000000000000000000000000000..226cea138201e71a1fc4749dac067533a5d5ef67
 --- /dev/null
 +++ b/tests/unit/test-crucible-ram-worker-inventory.py
-@@ -0,0 +1,323 @@
+@@ -0,0 +1,469 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercises strict RAM membership with actual pthreads and /proc census.
 +
 +The fixture extracts the production private schema validator, membership proof,
 +thread/descriptor census and initial inventory cleanup. Actors really register
-+kernel TIDs and park. Native membership and plugin barrier callbacks are bounded
++kernel TIDs and park. Native registration and plugin barrier callbacks are bounded
 +fixture endpoints; this does not qualify a translated guest or VMStop fence.
 +"""
 +
@@ -185259,6 +186577,8 @@ index 0000000000000000000000000000000000000000..c0b135ae090d450d291c2514f7cec648
 +#include <errno.h>
 +#include <fcntl.h>
 +#include <limits.h>
++#include <inttypes.h>
++#include <glib.h>
 +#include <pthread.h>
 +#include <stdbool.h>
 +#include <stddef.h>
@@ -185319,18 +186639,46 @@ index 0000000000000000000000000000000000000000..c0b135ae090d450d291c2514f7cec648
 +{
 +    *inventory = qemu_plugin_crucible_resource_inventory;
 +}
-+static int qemu_thread_ram_pause_begin(QemuThreadRamPauseTransaction *transaction)
++static pthread_mutex_t qemu_hot_fork_thread_lock = PTHREAD_MUTEX_INITIALIZER;
++static GList *qemu_hot_fork_threads;
++static size_t qemu_hot_fork_thread_count;
++static size_t qemu_hot_fork_thread_overflow;
++static size_t qemu_hot_fork_thread_starts_in_flight;
++static uint64_t qemu_hot_fork_thread_generation = 1;
++static QemuHotForkThreadRecord coordinator;
++static GList coordinator_node;
++static QemuHotForkThreadRecord *qemu_hot_fork_current_thread;
++static int64_t qemu_get_thread_id(void) { return syscall(SYS_gettid); }
++static void qemu_hot_fork_register_coordinator(void)
 +{
-+    transaction->thread_count = 1;
-+    transaction->thread_ids[0] = syscall(SYS_gettid);
-+    transaction->active = true;
-+    return 0;
++    /* Registration is a fixture provider; the production pause policy below
++     * checks the actual calling thread and this explicit native record. */
++    assert(qemu_hot_fork_current_thread);
 +}
-+static int qemu_thread_ram_pause_end(QemuThreadRamPauseTransaction *transaction)
++
++static bool expected_preexisting_hold;
++static size_t diagnostic_writes;
++static bool diagnostic_write_failure;
++static ssize_t inventory_diagnostic_write(int fd, const void *buffer, size_t count)
 +{
-+    transaction->active = false;
-+    return 0;
++    /* Observe the exact emission boundary, not merely eventual cleanup. */
++    assert(pthread_mutex_trylock(&qemu_hot_fork_thread_lock) == 0);
++    pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++    assert(pthread_mutex_trylock(&service_lock) == 0);
++    pthread_mutex_unlock(&service_lock);
++    assert(!service_frozen && !owner_closure.threads.active);
++    assert(!owner_closure.plugin_owned && !owner_closure.plugin_generation);
++    assert(!!actor_status.flags == expected_preexisting_hold);
++    assert(fd == STDERR_FILENO && count < 192);
++    diagnostic_writes++;
++    if (diagnostic_write_failure) {
++        errno = EIO;
++        return -1;
++    }
++    return write(fd, buffer, count);
 +}
++#define write inventory_diagnostic_write
++
 +"""
 +
 +TESTS = r"""
@@ -185401,17 +186749,57 @@ index 0000000000000000000000000000000000000000..c0b135ae090d450d291c2514f7cec648
 +    service_generation = 1;
 +    service_frozen = service_failed = false;
 +    release_failure = release_calls = 0;
++    expected_preexisting_hold = false;
++    diagnostic_writes = 0;
++    diagnostic_write_failure = false;
++    coordinator = (QemuHotForkThreadRecord) {
++        .thread_id = qemu_get_thread_id(), .tracked = true,
++        .disposition = QEMU_THREAD_HOT_FORK_COORDINATOR,
++    };
++    coordinator_node = (GList) { .data = &coordinator };
++    qemu_hot_fork_threads = &coordinator_node;
++    qemu_hot_fork_current_thread = &coordinator;
++    qemu_hot_fork_thread_count = 1;
++}
++static int capture_diagnostic(int *read_fd)
++{
++    int channels[2];
++    int saved;
++
++    assert(pipe(channels) == 0);
++    saved = dup(STDERR_FILENO);
++    assert(saved >= 0 && dup2(channels[1], STDERR_FILENO) >= 0);
++    close(channels[1]);
++    *read_fd = channels[0];
++    return saved;
++}
++static size_t finish_diagnostic(int saved, int read_fd, char output[512])
++{
++    ssize_t length;
++
++    assert(dup2(saved, STDERR_FILENO) >= 0);
++    close(saved);
++    length = read(read_fd, output, 511);
++    assert(length >= 0);
++    output[length] = '\0';
++    close(read_fd);
++    return length;
 +}
 +int main(void)
 +{
 +    Actor actors[3], unknown;
 +    QemuPluginCrucibleHotForkBarrierInventory snapshot;
 +    uint64_t tasks = 99, descriptors = 99, services = 99;
++    char diagnostic[512];
++    int saved, read_fd;
 +    for (size_t i = 0; i < ARRAY_SIZE(actors); i++) {
 +        start_actor(&actors[i]);
 +    }
 +    reset_inventory(actors);
++    saved = capture_diagnostic(&read_fd);
 +    assert(qemu_crucible_ram_owner_inventory(&tasks, &descriptors, &services) == 0);
++    assert(finish_diagnostic(saved, read_fd, diagnostic) == 0);
++    assert(diagnostic_writes == 0);
 +    assert(tasks == 4 && services == 1 && descriptors >= 3);
 +    assert(release_calls == 1 && !actor_status.flags && !service_frozen);
 +
@@ -185422,10 +186810,72 @@ index 0000000000000000000000000000000000000000..c0b135ae090d450d291c2514f7cec648
 +
 +    reset_inventory(actors);
 +    start_actor(&unknown);
++    saved = capture_diagnostic(&read_fd);
 +    assert(qemu_crucible_ram_owner_inventory(&tasks, &descriptors, &services) == -ENOTSUP);
++    assert(finish_diagnostic(saved, read_fd, diagnostic) < 128);
++    assert(diagnostic_writes == 1);
++    assert(strstr(diagnostic, "stage=kernel-membership tid="));
++    assert(strchr(diagnostic, '\n') == diagnostic + strlen(diagnostic) - 1);
 +    assert(!tasks && !descriptors && !services && release_calls == 1);
 +    assert(!actor_status.flags && !service_frozen);
 +    stop_actor(&unknown);
++
++    reset_inventory(actors);
++    QemuHotForkThreadRecord unclassified = {
++        .thread_id = actors[0].tid, .tracked = true,
++        .disposition = QEMU_THREAD_HOT_FORK_UNCLASSIFIED,
++        .name = "worker\nbad-label",
++    };
++    GList unclassified_node = { .data = &unclassified, .next = &coordinator_node };
++    qemu_hot_fork_threads = &unclassified_node;
++    qemu_hot_fork_thread_count = 2;
++    saved = capture_diagnostic(&read_fd);
++    assert(qemu_crucible_ram_owner_inventory(&tasks, &descriptors, &services) == -ENOTSUP);
++    assert(finish_diagnostic(saved, read_fd, diagnostic) < 192);
++    assert(diagnostic_writes == 1);
++    assert(strstr(diagnostic, "stage=native-disposition tid="));
++    assert(strstr(diagnostic, " disposition=1 name-prefix-hex=776f726b65720a"));
++    assert(strchr(diagnostic, '\n') == diagnostic + strlen(diagnostic) - 1);
++    assert(!tasks && !descriptors && !services && release_calls == 1);
++    assert(!actor_status.flags && !service_frozen && !owner_closure.threads.active);
++
++    reset_inventory(actors);
++    qemu_hot_fork_threads = &unclassified_node;
++    qemu_hot_fork_thread_count = 2;
++    unclassified.thread_id = 0;
++    assert(qemu_plugin_crucible_hot_fork_barrier(
++        QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_HOLD, &snapshot) == 0);
++    expected_preexisting_hold = true;
++    saved = capture_diagnostic(&read_fd);
++    assert(qemu_crucible_ram_owner_inventory(&tasks, &descriptors, &services) == -ENOTSUP);
++    assert(finish_diagnostic(saved, read_fd, diagnostic) < 192);
++    assert(strstr(diagnostic, "stage=native-disposition tid=0 "));
++    assert(diagnostic_writes == 1 && release_calls == 0 && actor_status.flags);
++    assert(!tasks && !descriptors && !services && !service_frozen);
++
++    reset_inventory(actors);
++    start_actor(&unknown);
++    release_failure = -EIO;
++    saved = capture_diagnostic(&read_fd);
++    assert(qemu_crucible_ram_owner_inventory(&tasks, &descriptors, &services) == -EIO);
++    assert(finish_diagnostic(saved, read_fd, diagnostic) == 0);
++    assert(diagnostic_writes == 0 && owner_closure.plugin_owned);
++    assert(!tasks && !descriptors && !services && release_calls == 1);
++    assert(qemu_crucible_ram_owner_inventory(&tasks, &descriptors, &services) == -EBUSY);
++    assert(owner_closure.plugin_owned && release_calls == 1);
++    stop_actor(&unknown);
++
++    reset_inventory(actors);
++    qemu_hot_fork_threads = &unclassified_node;
++    qemu_hot_fork_thread_count = 2;
++    unclassified.thread_id = actors[0].tid;
++    diagnostic_write_failure = true;
++    saved = capture_diagnostic(&read_fd);
++    assert(qemu_crucible_ram_owner_inventory(&tasks, &descriptors, &services) == -ENOTSUP);
++    assert(finish_diagnostic(saved, read_fd, diagnostic) == 0);
++    assert(diagnostic_writes == 1 && release_calls == 1);
++    assert(!tasks && !descriptors && !services && !actor_status.flags);
++    assert(!service_frozen && !owner_closure.threads.active);
 +
 +    reset_inventory(actors);
 +    service_workers[0].thread_id = actors[0].tid;
@@ -185471,6 +186921,7 @@ index 0000000000000000000000000000000000000000..c0b135ae090d450d291c2514f7cec648
 +        stop_actor(&actors[i]);
 +    }
 +    puts("strict worker inventory: exact union, unknown/duplicate/schema refusal, epochs and hold custody PASS");
++    puts("RAM inventory refusal diagnostics: native disposition / kernel member, bounded single-line, silent success PASS");
 +    return 0;
 +}
 +"""
@@ -185485,13 +186936,17 @@ index 0000000000000000000000000000000000000000..c0b135ae090d450d291c2514f7cec648
 +    plugin = (ROOT / "include/plugins/qemu-plugin.h").read_text()
 +    inventory = (ROOT / "include/qemu/crucible-hot-fork-plugin.h").read_text()
 +    thread = (ROOT / "include/qemu/thread.h").read_text()
++    native_threads = (ROOT / "util/qemu-thread-posix.c").read_text()
 +    owner = (ROOT / "include/system/crucible-ram-quiescence.h").read_text()
 +    prototypes = [
 +        declaration(inventory, "int qemu_plugin_crucible_hot_fork_barrier("),
 +        declaration(owner, "int qemu_crucible_ram_owner_inventory("),
++        declaration(thread, "int qemu_thread_ram_pause_begin("),
++        declaration(thread, "int qemu_thread_ram_pause_validate("),
++        declaration(thread, "int qemu_thread_ram_pause_end("),
 +    ]
 +    constants = "\n".join(re.findall(
-+        r"^#define (?:QEMU_PLUGIN_CRUCIBLE_(?:HOT_FORK_BARRIER|WORKER)[A-Z_]*|QEMU_RAM_PAUSE_MAX_THREADS|RAM_SERVICE_WORKERS_MAX|RAM_OWNER_DESCRIPTORS_MAX) .+$",
++        r"^#define (?:QEMU_PLUGIN_CRUCIBLE_(?:HOT_FORK_BARRIER|WORKER)[A-Z_]*|QEMU_HOT_FORK_THREAD_NAME_MAX|QEMU_RAM_PAUSE_MAX_THREADS|RAM_SERVICE_WORKERS_MAX|RAM_OWNER_DESCRIPTORS_MAX) .+$",
 +        "\n".join([plugin, thread, source]).replace("\\\n", ""), re.MULTILINE,
 +    ))
 +    types = [aggregate(text, signature) for text, signature in [
@@ -185499,7 +186954,10 @@ index 0000000000000000000000000000000000000000..c0b135ae090d450d291c2514f7cec648
 +        (plugin, "struct qemu_plugin_crucible_hot_fork_barrier_status {"),
 +        (inventory, "typedef struct QemuPluginCrucibleHotForkInventory {"),
 +        (inventory, "typedef struct QemuPluginCrucibleHotForkBarrierInventory {"),
++        (thread, "typedef enum QemuThreadHotForkDisposition {"),
++        (thread, "typedef struct QemuThreadRamPauseRefusal {"),
 +        (thread, "typedef struct QemuThreadRamPauseTransaction {"),
++        (native_threads, "typedef struct QemuHotForkThreadRecord {"),
 +        (source, "typedef struct RamServiceWorker {"),
 +        (source, "typedef struct RamOwnerDescriptor {"),
 +        (source, "typedef struct RamOwnerClosure {"),
@@ -185512,14 +186970,20 @@ index 0000000000000000000000000000000000000000..c0b135ae090d450d291c2514f7cec648
 +    bodies = [definition(source, signature) for signature in [
 +        "static bool ram_plugin_quiescent(", "static int ram_owner_plugin_membership(",
 +        "static bool ram_owner_thread_known(", "static int ram_owner_check_kernel_threads(",
-+        "static int ram_owner_descriptors(", "int qemu_crucible_ram_owner_inventory(",
++        "static int ram_owner_descriptors(",
++        "static void ram_owner_report_inventory_refusal(",
++        "int qemu_crucible_ram_owner_inventory(",
 +    ]]
 +    args.output_dir.mkdir(parents=True, exist_ok=True)
 +    fixture = args.output_dir / "ram-worker-inventory.c"
 +    binary = args.output_dir / "ram-worker-inventory"
 +    fixture.write_text("\n\n".join([
 +        PRELUDE, constants, *types, *prototypes, globals_body, ENDPOINTS,
-+        definition(api, "int qemu_plugin_crucible_hot_fork_barrier("), *bodies, TESTS,
++        definition(api, "int qemu_plugin_crucible_hot_fork_barrier("),
++        *[definition(native_threads, signature) for signature in [
++            "int qemu_thread_ram_pause_begin(", "int qemu_thread_ram_pause_validate(",
++            "int qemu_thread_ram_pause_end(",
++        ]], *bodies, TESTS,
 +    ]))
 +    command = [*shlex.split(os.environ["CC"]), *shlex.split(os.environ.get("CFLAGS", "")),
 +               "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-pthread", str(fixture),
@@ -198325,7 +199789,7 @@ index d17135f585aef5fd0adf7a6e0f889eeebfade754..a8a35db75afbf1a9aca85b47b4c0a740
  
  void qemu_coroutine_enter(Coroutine *co)
 diff --git a/util/qemu-thread-posix.c b/util/qemu-thread-posix.c
-index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..a5f760d436d0832d46bb55fe862669ac9da699ff 100644
+index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..2b7523149b1ba10d3d80af0eb599c15c5aea107f 100644
 --- a/util/qemu-thread-posix.c
 +++ b/util/qemu-thread-posix.c
 @@ -22,6 +22,137 @@
@@ -199142,7 +200606,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..a5f760d436d0832d46bb55fe862669ac
      if (err && err != ETIMEDOUT) {
          error_exit(err, __func__);
      }
-@@ -379,19 +1086,989 @@ typedef struct {
+@@ -379,19 +1086,1008 @@ typedef struct {
      void *(*start_routine)(void *);
      void *arg;
      char *name;
@@ -199711,6 +201175,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..a5f760d436d0832d46bb55fe862669ac
 +{
 +    GList *node;
 +    bool owner_found = false;
++    QemuThreadRamPauseRefusal refusal = { 0 };
 +    int status;
 +
 +    if (!transaction || transaction->active) {
@@ -199741,9 +201206,26 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..a5f760d436d0832d46bb55fe862669ac
 +        case QEMU_THREAD_HOT_FORK_RCU_RESTART:
 +        case QEMU_THREAD_HOT_FORK_VCPU_RESTART:
 +            break;
-+        default:
++        default: {
++            static const char hex[] = "0123456789abcdef";
++            size_t length = 0;
++
++            /* Snapshot only the first refused member under the registry lock.
++             * The inventory caller emits it after releasing its owned holds. */
++            while (length < 16 && record->name[length]) {
++                unsigned char byte = record->name[length];
++
++                refusal.name_prefix_hex[2 * length] = hex[byte >> 4];
++                refusal.name_prefix_hex[2 * length + 1] = hex[byte & 15];
++                length++;
++            }
++            refusal.name_prefix_hex[2 * length] = '\0';
++            refusal.thread_id = record->thread_id;
++            refusal.disposition = record->disposition;
++            refusal.present = true;
 +            status = -ENOTSUP;
 +            goto fail;
++        }
 +        }
 +        if (record->thread_id <= 0 || !record->tracked) {
 +            status = -ESTALE;
@@ -199766,6 +201248,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..a5f760d436d0832d46bb55fe862669ac
 +fail:
 +    pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
 +    memset(transaction, 0, sizeof(*transaction));
++    transaction->refusal = refusal;
 +    return status;
 +}
 +
@@ -200132,7 +201615,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..a5f760d436d0832d46bb55fe862669ac
      g_free(qemu_thread_args->name);
      g_free(qemu_thread_args);
  
-@@ -410,9 +2087,11 @@ static void *qemu_thread_start(void *args)
+@@ -410,9 +2106,11 @@ static void *qemu_thread_start(void *args)
  #pragma GCC diagnostic ignored "-Wstringop-overflow"
  #endif
  
@@ -200144,7 +201627,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..a5f760d436d0832d46bb55fe862669ac
  
  #pragma GCC diagnostic pop
  
-@@ -450,12 +2129,16 @@ void qemu_thread_create(QemuThread *thread, const char *name,
+@@ -450,12 +2148,16 @@ void qemu_thread_create(QemuThread *thread, const char *name,
      qemu_thread_args->name = g_strdup(name);
      qemu_thread_args->start_routine = start_routine;
      qemu_thread_args->arg = arg;

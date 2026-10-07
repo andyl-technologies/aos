@@ -1750,6 +1750,7 @@ in
                   "tcg-fast-paths",
                   "mutex-owner-cache",
                   "snapshot-fast-path",
+                  "dirty-iterator",
                   "settle-prepark",
                   "cold-fault-predicates",
                   "lazy-memory-identity",
@@ -1785,6 +1786,8 @@ in
               grep -q '^PASS production mutex owner cache:' mutex-owner-cache.result
               cat snapshot-fast-path.result
               grep -q '^PASS production snapshot fast path:' snapshot-fast-path.result
+              cat dirty-iterator.result
+              grep -Fxq 'PASS production dirty iterator: ordered differential captures, runtime page sizes, bitmap work counts, refusal and acknowledgement' dirty-iterator.result
               cat settle-prepark.result
               grep -q '^PASS production settle prepark:' settle-prepark.result
               cat cold-fault-predicates.result
@@ -4408,7 +4411,7 @@ in
               for name in net-output-stop lifecycle-projection control-deferred \
                 control-observer control-delivery stopped-control-rearm \
                 template-control-drain net-stop-chain aio-fork-custody stop-context \
-                tcg-fast-paths mutex-owner-cache snapshot-fast-path settle-prepark \
+                tcg-fast-paths mutex-owner-cache snapshot-fast-path dirty-iterator settle-prepark \
                 cold-fault-predicates lazy-memory-identity accel-classification \
                 fault-rule-presence rr-sim-barriers; do
                 install -m 644 "$name.result" \
@@ -4416,6 +4419,8 @@ in
                 install -m 644 "$name-proof/compile-command.json" \
                   "$out/share/aos/crucible/$name.compile-command.json"
               done
+              install -m 644 dirty-iterator-proof/proof.json \
+                "$out/share/aos/crucible/dirty-iterator.proof.json"
               install -m 644 acpi-fingerprint-tests.tap \
                 "$out/share/aos/crucible/acpi-fingerprint-tests.tap"
               install -m 644 vga-fingerprint-tests.tap \
