@@ -15,6 +15,9 @@
   ...
 }: let
   cfg = config.aos.journald;
+  runtimeLimits =
+    lib.optionalString (cfg.runtimeMaxUse != null) "\nRuntimeMaxUse=${toString cfg.runtimeMaxUse}"
+    + lib.optionalString (cfg.runtimeMaxFileSize != null) "\nRuntimeMaxFileSize=${toString cfg.runtimeMaxFileSize}";
 in {
   options.aos.journald = {
     ## Journal storage mode (persistent, volatile, auto).
@@ -64,6 +67,18 @@ in {
       '';
     };
 
+    runtimeMaxUse = lib.mkOption {
+      type = lib.types.nullOr (lib.types.addCheck lib.types.int (value: value > 0));
+      default = null;
+      description = "Optional finite runtime journal retention target in bytes; not a filesystem quota or a reservation.";
+    };
+
+    runtimeMaxFileSize = lib.mkOption {
+      type = lib.types.nullOr (lib.types.addCheck lib.types.int (value: value > 0));
+      default = null;
+      description = "Optional finite runtime journal rotation target in bytes; active files and queued records require separate allowance.";
+    };
+
     ## Time interval for rate limiting.
     rateLimitInterval = lib.mkOption {
       type = lib.types.str;
@@ -110,7 +125,7 @@ in {
         Storage=${cfg.storage}
         MaxRetentionSec=${cfg.maxRetentionSec}
         SystemMaxUse=${cfg.maxUse}
-        SystemMaxFileSize=${cfg.systemMaxFileSize}
+        SystemMaxFileSize=${cfg.systemMaxFileSize}${runtimeLimits}
         RateLimitIntervalSec=${cfg.rateLimitInterval}
         RateLimitBurst=${toString cfg.rateLimitBurst}
         ForwardToSyslog=${
