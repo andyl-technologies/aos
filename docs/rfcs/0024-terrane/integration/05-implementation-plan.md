@@ -2016,6 +2016,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   preserves current selected observations and introduces no recipe or content
   roots. Registration and a formatted draft do not qualify DRV-19; compilation,
   native execution and integration remain pending.
+  The native persistence candidate `0090d143d50d` now passes all four exact
+  owning cases with zero failures or ignored tests, followed by strict all-target
+  Clippy and private rustdoc in default, Send and native configurations and both
+  mandatory formatters. All 4,878 actual hermetic input files independently match
+  the frozen source. These witnesses cover durable Memo/output reopening,
+  advisory loss, divergence/rebuild and genuine current/Original/trust checks.
+  Default package/full-suite and application compilation remain for composed
+  qualification; root-associated GC and the full derivation gate remain open.
   T-DRV-2, ALG-32, task merges and T1 remain open.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
@@ -3219,8 +3227,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   formatters, strict all-target Clippy and private rustdoc in default, Send and
   native configurations, and application test-target compilation. All 4,848 files
   in that actual quality input independently match the frozen source. The original
-  ten-case deletion check is running; its result and the complete gate remain
-  pending.
+  ten-case deletion check now passes all ten exact selectors with zero failures,
+  ignored or unrun cases, preserved at `bce511b1392d`. Each original case executes
+  one positive test against the same 571-test inventory. Its actual hermetic input
+  independently matches all 4,848 frozen files. Nextest qualification remains
+  pending: nine measured cases exceed its current 120-second default timeout.
+  No timer, assertion or timeout configuration has changed. Qualified destructive
+  source carry, broader collection scenarios and the complete gate remain open.
   The reviewed pure journal, marking, proof-context, checkpoint, retention and
   grace-window bodies now replace their trunk declarations. All 27 adopted
   paths, including 16 independent hexadecimal witnesses, match the qualified
