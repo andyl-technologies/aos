@@ -128,15 +128,36 @@ empty `terrane` binary.
 exact native Active completion cases pass on `4e6c14a7f3`. The eight-case native
 Legacy cold-fork gate now passes on `e2416dcdec`, including the exact fresh
 Commit catalog Raw-to-Candidate sequence; its earlier predecessor-revision
-failure is resolved. Recorded core changes on `3d757f4fdf` pass all 529 tests,
+failure is resolved. Recorded core changes on `36a3a8e57b` pass all 529 tests,
 twelve exact owning cases, strict Clippy, private rustdoc and the no-std gate.
-The native Recorded implementation and historical/merge witnesses are being
-composed and remain unqualified. Private backfill on `ca3431c38c` compiles and
+The private memo fingerprint includes the complete verified evidence and both
+configured and occurrence selections without changing registered bytes.
+The native Recorded implementation passes its production builds and all 132
+default tests. Its composed SDK run passes 367 of 477 tests and fails 110;
+historical and Recorded owning qualification remains incomplete. Review finds
+that per-view authoring inputs also changed the actual current Guard snapshot.
+A candidate separates constructor-selected current configuration from authoring
+inputs while retaining exact snapshot comparisons and checked reload rules.
+Private backfill on `ca3431c38c` compiles and
 passes three exact cases; the fourth fails with `Expired`, with subsequent
 phases unrun. D-111 preserves historical bytes while validating the independent
 current revision. Shared property/algebra gate mappings require actual owning
 witnesses and retain native Fold context coverage. No task merge, checkbox,
 milestone exit or freeze advances.
+
+An isolated instrumented run of the fourth private backfill case on
+`faf2f0adfa` still fails with `Expired`. It reaches both catalog ACKs and
+durable reflog staging, then observes 30.803 seconds against the unchanged
+30-second deadline. Within the instrumented paths, no plain-read acquisition
+entry overlaps a recorded same-root native holder lifetime. These observations
+do not establish the preceding uninstrumented failure's cause or exclude
+unobserved descriptor lifetimes. A reviewed candidate appends the already
+closed signed Commit to the final metadata run, preserving actual pack/index
+durability before Commit catalog admission, all post-publication checks and
+ordinary separate Commit publication for fallback and final Chunk barriers.
+Its new qualification remains pending; no deadline or failure oracle changes.
+The shared `chunk-codec` gate now additionally requires the exact native
+dictionary-preload consumer witness, alongside its existing reader coverage.
 
 The preceding completed full qualification records candidate
 `21981e66f440`, which combines the reviewed immutable owner completion and
