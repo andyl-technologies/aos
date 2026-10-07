@@ -2034,6 +2034,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   advisory loss, divergence/rebuild and genuine current/Original/trust checks.
   Default package/full-suite and application compilation remain for composed
   qualification; root-associated GC and the full derivation gate remain open.
+  The shared normative `derivation-memo` gate now requires the twelve common
+  codec/evaluation cases and eleven immutable loading/metadata cases together
+  with the four actual native persistence cases and conditional-retention
+  witness. All three inventories and all 28 exact positive executions are
+  mandatory. Missing implementations fail discovery; this registration and
+  the earlier separate leaf results do not establish a combined gate pass.
   T-DRV-2, ALG-32, task merges and T1 remain open.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
