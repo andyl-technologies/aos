@@ -15,7 +15,10 @@ async fn verify_fresh_and_refusal(first: SqlxBackend, second: SqlxBackend, old: 
         .await
         .unwrap();
     assert_eq!(marker.len(), 1);
-    assert_eq!(marker[0].get::<i64>(0).unwrap(), 8);
+    assert_eq!(
+        marker[0].get::<i64>(0).unwrap(),
+        i64::try_from(MIGRATIONS.len()).unwrap()
+    );
     let stamp = first
         .query("SELECT identity FROM hub_schema_identity", &[])
         .await

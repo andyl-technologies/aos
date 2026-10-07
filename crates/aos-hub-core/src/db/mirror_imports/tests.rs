@@ -728,16 +728,100 @@ async fn legacy_database_fingerprint(backend: &dyn Backend) -> String {
 }
 
 #[cfg(feature = "postgres")]
+async fn postgres_legacy_database_fingerprint(backend: &dyn Backend) -> String {
+    // Retain catalogue and every original row before the serving initializer
+    // refuses. Merely retaining schema_version would miss partial DDL or writes.
+    let mut catalogue = Vec::new();
+    for query in [
+        "SELECT c.oid::bigint,c.relname::text,c.relkind::text FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=current_schema() ORDER BY c.oid",
+        "SELECT table_name::text,column_name::text,ordinal_position::bigint,data_type::text,column_default::text,is_nullable::text FROM information_schema.columns WHERE table_schema=current_schema() ORDER BY table_name,ordinal_position",
+        "SELECT c.conname::text,pg_get_constraintdef(c.oid) FROM pg_constraint c JOIN pg_namespace n ON n.oid=c.connamespace WHERE n.nspname=current_schema() ORDER BY c.conname,c.oid",
+        "SELECT indexname::text,indexdef::text FROM pg_indexes WHERE schemaname=current_schema() ORDER BY indexname",
+        "SELECT sequencename::text,start_value,increment_by,min_value,max_value,cache_size,last_value FROM pg_sequences WHERE schemaname=current_schema() ORDER BY sequencename",
+    ] {
+        catalogue.push(backend.query(query, &[]).await.unwrap());
+    }
+
+    let tables = backend
+        .query(
+            "SELECT tablename::text FROM pg_tables WHERE schemaname=current_schema() ORDER BY tablename",
+            &[],
+        )
+        .await
+        .unwrap();
+    let mut payloads = Vec::new();
+    for table in tables {
+        let name: String = table.get(0).unwrap();
+        let quoted = name.replace('"', "\"\"");
+        let query = format!(
+            "SELECT to_jsonb(original)::text FROM \"{quoted}\" original ORDER BY to_jsonb(original)::text"
+        );
+        payloads.push((name, backend.query(&query, &[]).await.unwrap()));
+    }
+
+    serde_json::to_string(&(catalogue, payloads)).unwrap()
+}
+
+#[cfg(feature = "postgres")]
 #[tokio::test]
-#[ignore = "requires an isolated source-built PostgreSQL server and explicit test URL"]
-async fn live_postgres_generation_four_upgrade_and_exact_mirror_lifecycle() {
+#[ignore = "requires a dedicated disposable source-built PostgreSQL database and explicit test URL"]
+async fn live_postgres_generation_four_refusal_explicit_reset_and_exact_mirror_lifecycle() {
     let url = std::env::var("AOS_MIRROR_TEST_POSTGRES_URL")
         .expect("explicit isolated PostgreSQL test URL");
     let backend = crate::backend::SqlxBackend::connect_postgres(&url)
         .await
         .unwrap();
+    let selected_schema = backend
+        .query("SELECT current_schema()::text", &[])
+        .await
+        .unwrap();
+    assert_eq!(selected_schema[0].get::<String>(0).unwrap(), "public");
+    let relations = backend
+        .query(
+            "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=current_schema()",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        relations[0].get::<i64>(0).unwrap(),
+        0,
+        "the fixture requires its dedicated empty database"
+    );
+
     initialize_generation_four(&backend).await;
-    let db = Database::with_backend(Box::new(backend)).await.unwrap();
+    backend
+        .execute(
+            "INSERT INTO users(email,created_at) VALUES ('retained@example.test',1)",
+            &[],
+        )
+        .await
+        .unwrap();
+    let before = postgres_legacy_database_fingerprint(&backend).await;
+    let retained_backend = crate::backend::SqlxBackend::connect_postgres(&url)
+        .await
+        .unwrap();
+
+    let error = match Database::with_backend(Box::new(backend)).await {
+        Ok(_) => panic!("generation four must refuse serving"),
+        Err(error) => error,
+    };
+
+    assert!(format!("{error:#}").contains(crate::backend::schema_lineage::RESET_REQUIRED));
+    assert_eq!(
+        postgres_legacy_database_fingerprint(&retained_backend).await,
+        before
+    );
+
+    // This destructive reset is explicit and confined to the selected disposable
+    // test database. Production serving must never perform this reset itself.
+    retained_backend
+        .execute_batch("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+        .await
+        .unwrap();
+    let db = Database::with_backend(Box::new(retained_backend))
+        .await
+        .unwrap();
     let version: i64 = db
         .backend
         .query_opt("SELECT version FROM schema_version", &[])
@@ -746,7 +830,19 @@ async fn live_postgres_generation_four_upgrade_and_exact_mirror_lifecycle() {
         .unwrap()
         .get(0)
         .unwrap();
-    assert_eq!(version, 7);
+    assert_eq!(
+        version,
+        i64::try_from(super::super::MIGRATIONS.len()).unwrap()
+    );
+    let identity: String = db
+        .backend
+        .query_opt("SELECT identity FROM hub_schema_identity", &[])
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert_eq!(identity, crate::db::SCHEMA_IDENTITY);
     let original = original(&db).await;
     let progress = progress(&original);
     db.admit_mirror_import(&original, 1).await.unwrap();

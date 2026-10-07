@@ -801,6 +801,17 @@ async fn actual_postgres_capture_and_private_sqlite_readback_preserve_originals(
         .bind(vec![7_u8; 32]).execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO sessions(id_hash,user_id,created_at,last_seen_at,expires_at,last_authenticated_at) \
         VALUES ('pg-transient-NOT-EXPORTED',17017,1,1,2,1)").execute(&pool).await.unwrap();
+    // Count the actual selected source tables independently of the archive
+    // reader so additions to the current serving schema remain covered.
+    let expected_tables: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint FROM pg_catalog.pg_class c \
+         JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace \
+         WHERE n.nspname='public' AND c.relkind='r'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let expected_tables = u64::try_from(expected_tables).unwrap();
     let destination = f.directory.path().join("postgres-capture");
 
     let captured =
@@ -813,7 +824,8 @@ async fn actual_postgres_capture_and_private_sqlite_readback_preserve_originals(
     assert_eq!(captured.operation, "capture_postgres");
     assert_eq!(captured.source_engine, Some("postgresql"));
     assert_eq!(checked.source_engine, Some("postgresql"));
-    assert_eq!(captured.tables, 279);
+    assert_eq!(captured.tables, expected_tables);
+    assert_eq!(checked.tables, expected_tables);
     assert_eq!(checked.retained_rows, captured.retained_rows);
     assert!(captured.private_cells > 0);
     assert_eq!(captured.signed_root_profile, "framing_only");
