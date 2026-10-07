@@ -120,7 +120,10 @@ async fn source_error_and_partial_drop_keep_unknown_and_actual_prefix() {
     assert_eq!(record["reply"]["bytes"], 1);
     assert_eq!(record["reply"]["failed"], true);
     assert_eq!(record["outcome"], "unknown");
-    assert_eq!(record["offeredFirstElapsedNs"], record["offeredLastElapsedNs"]);
+    assert_eq!(
+        record["offeredFirstElapsedNs"],
+        record["offeredLastElapsedNs"]
+    );
 }
 
 #[tokio::test]
