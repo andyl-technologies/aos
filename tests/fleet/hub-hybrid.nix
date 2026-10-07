@@ -304,6 +304,9 @@
         # Native also retains the full Hub server and initializer payload.
         aos.image.budgets.maxRuntimeClosureMiB = lib.mkForce 1024;
 
+        # A bounded SQL child is at most 96 KiB, plus the Native log envelope.
+        aos.journald.lineMaxBytes = 128 * 1024;
+
         aos.registry-hub = {
           deploymentId = "fleet-hybrid-v1";
           externalUrl = "https://aos.andyl.org";

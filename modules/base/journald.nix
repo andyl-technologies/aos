@@ -64,6 +64,19 @@ in {
       '';
     };
 
+    ## Optional maximum size of one stdout/stderr journal entry.
+    lineMaxBytes = lib.mkOption {
+      type = lib.types.nullOr (
+        lib.types.addCheck lib.types.int (value: value >= 256 && value <= 1048576)
+      );
+      default = null;
+      description = ''
+        Maximum bytes retained in one stdout/stderr stream entry before
+        journald splits the line. Null preserves systemd's default. Explicit
+        bounds are limited to 256 bytes through 1 MiB.
+      '';
+    };
+
     ## Time interval for rate limiting.
     rateLimitInterval = lib.mkOption {
       type = lib.types.str;
@@ -118,7 +131,7 @@ in {
           then "yes"
           else "no"
         }
-        Compress=yes
+        ${lib.optionalString (cfg.lineMaxBytes != null) "LineMax=${toString cfg.lineMaxBytes}\n"}Compress=yes
       '';
     };
 
