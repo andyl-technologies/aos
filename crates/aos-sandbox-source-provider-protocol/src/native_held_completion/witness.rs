@@ -115,7 +115,7 @@ impl NativeHeldRecordFamilyV1 {
             Self::StorageIssuance => &[16, 32],
             Self::ProviderAttempt => &[16, 16, 16, 1, 16],
         };
-        let mut reader = Reader::new(subject);
+        let mut reader = Reader::new(subject, super::codec::read_error);
         for (index, width) in widths.iter().enumerate() {
             let field = reader.bytes(*width)?;
             if self == Self::ProviderAttempt && index == 3 {
@@ -211,7 +211,7 @@ impl NativeHeldByteWitnessV1 {
     ///
     /// Rejects wrong namespace/key family, noncanonical length or trailing bytes.
     pub fn from_canonical_bytes(family: NativeHeldRecordFamilyV1, bytes: &[u8]) -> Result<Self> {
-        let mut reader = Reader::new(bytes);
+        let mut reader = Reader::new(bytes, super::codec::read_error);
         let value = Self::decode(family, &mut reader)?;
         reader.finish()?;
         Ok(value)
@@ -506,7 +506,7 @@ impl NativeHeldOwnerWitnessV1 {
         if bytes.len() != expected {
             return Err(invalid("owner witness width"));
         }
-        let mut reader = Reader::new(bytes);
+        let mut reader = Reader::new(bytes, super::codec::read_error);
         if reader.u16()? != 1 {
             return Err(invalid("witness version"));
         }

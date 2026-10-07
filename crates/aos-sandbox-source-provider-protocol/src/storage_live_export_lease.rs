@@ -376,33 +376,33 @@ impl StorageLiveExportLeaseV1 {
         {
             return Err(StorageLiveExportLeaseErrorV1::Noncanonical);
         }
-        let mut cursor = Cursor::new(&bytes[HEADER_BYTES..]);
+        let mut cursor = Cursor::new(&bytes[HEADER_BYTES..], read_error);
         let source = StorageLiveExportSourceV1::new(
-            ObjectDigest::from_bytes(cursor.take()?),
-            cursor.take()?,
-            cursor.take()?,
-            cursor.take()?,
+            ObjectDigest::from_bytes(cursor.array()?),
+            cursor.array()?,
+            cursor.array()?,
+            cursor.array()?,
             cursor.u64()?,
-            ObjectDigest::from_bytes(cursor.take()?),
-            cursor.take()?,
-            ObjectDigest::from_bytes(cursor.take()?),
-            cursor.take()?,
+            ObjectDigest::from_bytes(cursor.array()?),
+            cursor.array()?,
+            ObjectDigest::from_bytes(cursor.array()?),
+            cursor.array()?,
             cursor.u64()?,
             cursor.u64()?,
             cursor.u64()?,
         )?;
         let consumer = StorageLiveExportConsumerV1::new(
-            ObjectDigest::from_bytes(cursor.take()?),
-            cursor.take()?,
-            cursor.take()?,
+            ObjectDigest::from_bytes(cursor.array()?),
+            cursor.array()?,
+            cursor.array()?,
             cursor.u64()?,
-            cursor.take()?,
+            cursor.array()?,
             cursor.u64()?,
             cursor.i64()?,
             cursor.i64()?,
         )?;
         let lease = Self { source, consumer };
-        if cursor.done() && lease.encode().as_slice() == bytes {
+        if cursor.is_empty() && lease.encode().as_slice() == bytes {
             Ok(lease)
         } else {
             Err(StorageLiveExportLeaseErrorV1::Noncanonical)
@@ -481,12 +481,12 @@ impl StorageLiveExportSignerV1 {
         if bytes.len() != SIGNER_BYTES {
             return Err(StorageLiveExportLeaseErrorV1::Noncanonical);
         }
-        let mut cursor = Cursor::new(bytes);
+        let mut cursor = Cursor::new(bytes, read_error);
         Self::new(
-            cursor.take()?,
+            cursor.array()?,
             cursor.u64()?,
-            ObjectDigest::from_bytes(cursor.take()?),
-            cursor.take()?,
+            ObjectDigest::from_bytes(cursor.array()?),
+            cursor.array()?,
             cursor.u64()?,
         )
     }
@@ -643,41 +643,10 @@ impl StorageLiveExportVerifierV1 {
     }
 }
 
-struct Cursor<'a> {
-    bytes: &'a [u8],
-    offset: usize,
-}
+type Cursor<'a> = aos_sandbox_core::bounded_codec::BoundedReader<'a, StorageLiveExportLeaseErrorV1>;
 
-impl<'a> Cursor<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
-    }
-
-    fn take<const N: usize>(&mut self) -> Result<[u8; N], StorageLiveExportLeaseErrorV1> {
-        let end = self
-            .offset
-            .checked_add(N)
-            .ok_or(StorageLiveExportLeaseErrorV1::Noncanonical)?;
-        let result = self
-            .bytes
-            .get(self.offset..end)
-            .and_then(|bytes| bytes.try_into().ok())
-            .ok_or(StorageLiveExportLeaseErrorV1::Noncanonical)?;
-        self.offset = end;
-        Ok(result)
-    }
-
-    fn u64(&mut self) -> Result<u64, StorageLiveExportLeaseErrorV1> {
-        Ok(u64::from_be_bytes(self.take()?))
-    }
-
-    fn i64(&mut self) -> Result<i64, StorageLiveExportLeaseErrorV1> {
-        Ok(i64::from_be_bytes(self.take()?))
-    }
-
-    const fn done(&self) -> bool {
-        self.offset == self.bytes.len()
-    }
+fn read_error(_: aos_sandbox_core::bounded_codec::ReadError) -> StorageLiveExportLeaseErrorV1 {
+    StorageLiveExportLeaseErrorV1::Noncanonical
 }
 
 #[cfg(test)]

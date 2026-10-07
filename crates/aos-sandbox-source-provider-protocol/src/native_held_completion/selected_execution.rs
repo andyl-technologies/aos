@@ -126,8 +126,8 @@ impl SourceSelectedNativeExecutionInputDataV1 {
         if bytes.len() != SOURCE_SELECTED_NATIVE_EXECUTION_INPUT_BYTES_V1 {
             return Err(invalid("selected execution input length"));
         }
-        let mut reader = Reader::new(bytes);
-        reader.header(MAGIC)?;
+        let mut reader = Reader::new(bytes, super::codec::read_error);
+        super::codec::read_header(&mut reader, MAGIC)?;
         if reader.u16()? != PROFILE {
             return Err(invalid("selected execution input profile"));
         }

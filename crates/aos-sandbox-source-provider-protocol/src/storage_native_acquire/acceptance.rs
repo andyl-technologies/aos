@@ -10,7 +10,7 @@ use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
 
 use super::request::SignedStorageNativeAcquireRequestV2;
 use super::topology::{native_nonrecursive_topology, require_profile_shape};
-use super::{Reader, StorageNativeAcquireErrorV2, digest, nonzero, versioned_header};
+use super::{read_versioned, StorageNativeAcquireErrorV2, digest, nonzero, versioned_header};
 use crate::{
     RECURSIVE_TOPOLOGY_PROOF_BYTES_V1, RecursiveTopologyProofV1,
     SIGNED_STORAGE_ZFS_HOLD_RECEIPT_BYTES_V1, SignedStorageZfsHoldReceiptV1,
@@ -144,12 +144,12 @@ impl StorageNativeAcceptanceV3 {
         if bytes.len() != STORAGE_NATIVE_ACCEPTANCE_BYTES_V3 {
             return Err(StorageNativeAcquireErrorV2::Noncanonical);
         }
-        let mut reader = Reader::versioned(bytes, MAGIC, VERSION)?;
-        let issuance_id = reader.take()?;
+        let mut reader = read_versioned(bytes, MAGIC, VERSION)?;
+        let issuance_id = reader.array()?;
         let request_digest = reader.digest()?;
         let receipt_digest = reader.digest()?;
         let descriptor = SourceRootObservationV1::new(
-            reader.take()?,
+            reader.array()?,
             reader.u64()?,
             reader.u64()?,
             reader.u64()?,
@@ -161,7 +161,7 @@ impl StorageNativeAcceptanceV3 {
         let topology =
             decode_recursive_topology_proof_v1(reader.bytes(RECURSIVE_TOPOLOGY_PROOF_BYTES_V1)?)
                 .map_err(|_| StorageNativeAcquireErrorV2::Noncanonical)?;
-        reader.done()?;
+        reader.finish()?;
         Self::new(
             issuance_id,
             request_digest,
@@ -343,10 +343,10 @@ impl StorageNativeAcquireReplyV3 {
         if bytes.len() != STORAGE_NATIVE_ACQUIRE_REPLY_BYTES_V3 {
             return Err(StorageNativeAcquireErrorV2::Noncanonical);
         }
-        let mut reader = Reader::versioned(bytes, REPLY_MAGIC, VERSION)?;
-        if reader.take::<2>()? != 1_u16.to_be_bytes()
-            || reader.take::<1>()? != [SourceProviderDescriptorRole::SourceRoot as u8]
-            || reader.take::<5>()? != [0; 5]
+        let mut reader = read_versioned(bytes, REPLY_MAGIC, VERSION)?;
+        if reader.array::<2>()? != 1_u16.to_be_bytes()
+            || reader.array::<1>()? != [SourceProviderDescriptorRole::SourceRoot as u8]
+            || reader.array::<5>()? != [0; 5]
         {
             return Err(StorageNativeAcquireErrorV2::Noncanonical);
         }
@@ -357,7 +357,7 @@ impl StorageNativeAcquireReplyV3 {
             reader.bytes(SIGNED_STORAGE_ZFS_HOLD_RECEIPT_BYTES_V1)?,
         )
         .map_err(|_| StorageNativeAcquireErrorV2::Noncanonical)?;
-        reader.done()?;
+        reader.finish()?;
         Self::new(acceptance, receipt)
     }
 

@@ -139,7 +139,7 @@ impl NativeHeldRecoveryQueryV1 {
         if bytes.len() != 144 {
             return Err(invalid("recovery query width"));
         }
-        let mut reader = Reader::new(bytes);
+        let mut reader = Reader::new(bytes, super::codec::read_error);
         let recovery_session = reader.digest()?;
         let nonce = reader.array()?;
         let sequence = reader.u64()?;
@@ -295,7 +295,7 @@ impl RootNativeRecoveryAssertionV1 {
                 "Root recovery assertion",
             ));
         }
-        let mut reader = Reader::new(bytes);
+        let mut reader = Reader::new(bytes, super::codec::read_error);
         if reader.u16()? != 1 {
             return Err(invalid("Root recovery version"));
         }
@@ -600,7 +600,7 @@ impl NativeHeldRecoveryFieldsV1 {
                 "owner recovery state",
             ));
         }
-        let mut reader = Reader::new(bytes);
+        let mut reader = Reader::new(bytes, super::codec::read_error);
         if reader.u16()? != 1 {
             return Err(invalid("owner recovery version"));
         }

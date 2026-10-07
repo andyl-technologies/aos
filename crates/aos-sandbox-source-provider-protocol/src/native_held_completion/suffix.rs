@@ -138,8 +138,8 @@ impl NativeHeldCompletionSuffixV1 {
         if bytes.len() > MAXIMUM_NATIVE_HELD_SUFFIX_BYTES_V1 {
             return Err(NativeHeldCompletionErrorV1::LimitExceeded("native suffix"));
         }
-        let mut reader = Reader::new(bytes);
-        reader.header(MAGIC)?;
+        let mut reader = Reader::new(bytes, super::codec::read_error);
+        super::codec::read_header(&mut reader, MAGIC)?;
         let owner = Owner::from_byte(reader.u8()?)?;
         let phase = reader.u8()?;
         reader.zeros(4)?;

@@ -145,8 +145,8 @@ impl RootNativeDispositionAssertionV1 {
         if bytes.len() != ROOT_NATIVE_DISPOSITION_ASSERTION_BYTES_V1 {
             return Err(invalid("Root assertion width"));
         }
-        let mut reader = Reader::new(bytes);
-        reader.header(b"AOSNDA01")?;
+        let mut reader = Reader::new(bytes, super::codec::read_error);
+        super::codec::read_header(&mut reader, b"AOSNDA01")?;
         let disposition = NativeHeldDispositionV1::from_byte(reader.u8()?)?;
         let observation = match reader.u8()? {
             1 => RootNativeObservationV1::PreparedOnly,
@@ -223,7 +223,7 @@ impl StorageNativeSettlementAssertionV1 {
         if bytes.len() != STORAGE_NATIVE_SETTLEMENT_ASSERTION_BYTES_V1 {
             return Err(invalid("Storage assertion width"));
         }
-        let mut reader = Reader::new(bytes);
+        let mut reader = Reader::new(bytes, super::codec::read_error);
         let disposition = read_settlement_header(&mut reader, b"AOSNSA01")?;
         let value = Self {
             disposition,
@@ -304,7 +304,7 @@ impl ProviderNativeSettlementAssertionV1 {
         if bytes.len() != PROVIDER_NATIVE_SETTLEMENT_ASSERTION_BYTES_V1 {
             return Err(invalid("Provider assertion width"));
         }
-        let mut reader = Reader::new(bytes);
+        let mut reader = Reader::new(bytes, super::codec::read_error);
         let disposition = read_settlement_header(&mut reader, b"AOSNPA01")?;
         let value = Self {
             disposition,
@@ -371,7 +371,7 @@ impl NativeHeldSettlementV1 {
         if bytes.len() != NATIVE_HELD_SETTLEMENT_BYTES_V1 {
             return Err(invalid("settlement width"));
         }
-        let mut reader = Reader::new(bytes);
+        let mut reader = Reader::new(bytes, super::codec::read_error);
         let disposition = NativeHeldDispositionV1::from_byte(reader.u8()?)?;
         if reader.u8()? != 1 {
             return Err(invalid("interest-active marker"));
@@ -419,7 +419,7 @@ fn read_settlement_header(
     reader: &mut Reader<'_>,
     magic: &[u8; 8],
 ) -> Result<NativeHeldDispositionV1> {
-    reader.header(magic)?;
+    super::codec::read_header(reader, magic)?;
     let disposition = NativeHeldDispositionV1::from_byte(reader.u8()?)?;
     if reader.u8()? != 1 {
         return Err(invalid("interest-active marker"));

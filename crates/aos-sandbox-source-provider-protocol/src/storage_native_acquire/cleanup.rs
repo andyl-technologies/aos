@@ -23,7 +23,7 @@ use ed25519_dalek::{Signer as _, SigningKey};
 
 use super::acceptance::{storage_signing_message, verify_storage_signature};
 use super::{
-    Reader, SignedStorageNativeAcquireRequestV2, StorageNativeAcceptanceV3,
+    read_record, SignedStorageNativeAcquireRequestV2, StorageNativeAcceptanceV3,
     StorageNativeAcquireErrorV2, digest, header, nonzero,
 };
 use crate::crypto::{decode_signer, encode_signer, sign_bytes, verify_bytes};
@@ -156,16 +156,16 @@ impl StorageNativeCleanupRequestV2 {
         if bytes.len() != QUERY_BYTES {
             return Err(StorageNativeAcquireErrorV2::Noncanonical);
         }
-        let mut reader = Reader::new(bytes, QUERY_MAGIC)?;
+        let mut reader = read_record(bytes, QUERY_MAGIC)?;
         let sequence = reader.u64()?;
         let session_binding = reader.digest()?;
-        let nonce = reader.take()?;
-        let reason = match reader.take::<1>()? {
+        let nonce = reader.array()?;
+        let reason = match reader.array::<1>()? {
             [1] => StorageNativeCleanupReasonV2::ReleaseRequested,
             [2] => StorageNativeCleanupReasonV2::CustodyLost,
             _ => return Err(StorageNativeAcquireErrorV2::Noncanonical),
         };
-        if reader.take::<7>()? != [0; 7] {
+        if reader.array::<7>()? != [0; 7] {
             return Err(StorageNativeAcquireErrorV2::Noncanonical);
         }
         let value = Self {
@@ -178,10 +178,10 @@ impl StorageNativeCleanupRequestV2 {
             receipt_digest: reader.digest()?,
             acquisition_id: reader.digest()?,
             descriptor_commitment: reader.digest()?,
-            provider_id: reader.take()?,
-            holder_id: reader.take()?,
+            provider_id: reader.array()?,
+            holder_id: reader.array()?,
         };
-        reader.done()?;
+        reader.finish()?;
         if value.sequence == 0
             || value.nonce == [0; 32]
             || value.provider_id == [0; 16]
@@ -383,23 +383,23 @@ impl StorageNativeCleanupReceiptV2 {
         if bytes.len() != RECEIPT_BYTES {
             return Err(StorageNativeAcquireErrorV2::Noncanonical);
         }
-        let mut reader = Reader::new(bytes, RECEIPT_MAGIC)?;
+        let mut reader = read_record(bytes, RECEIPT_MAGIC)?;
         let query_digest = reader.digest()?;
         let acceptance_digest = reader.digest()?;
         let observation_digest = reader.digest()?;
-        let disposition = match reader.take::<1>()? {
+        let disposition = match reader.array::<1>()? {
             [1] => StorageNativeCleanupDispositionV2::Retired,
             [2] => StorageNativeCleanupDispositionV2::Absent,
             _ => return Err(StorageNativeAcquireErrorV2::Noncanonical),
         };
-        if reader.take::<7>()? != [0; 7]
+        if reader.array::<7>()? != [0; 7]
             || !nonzero(query_digest)
             || !nonzero(acceptance_digest)
             || !nonzero(observation_digest)
         {
             return Err(StorageNativeAcquireErrorV2::Noncanonical);
         }
-        reader.done()?;
+        reader.finish()?;
         Ok(Self {
             query_digest,
             acceptance_digest,

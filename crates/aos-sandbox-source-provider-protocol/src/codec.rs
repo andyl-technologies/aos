@@ -203,7 +203,7 @@ fn decode_frame(bytes: &[u8]) -> Result<SourceProviderFrame, SourceProviderFrame
     if bytes.len() < FRAME_HEADER_BYTES || bytes.len() > MAXIMUM_FRAME_BYTES {
         return Err(SourceProviderFrameError::InvalidLength);
     }
-    let mut reader = Reader::new(bytes);
+    let mut reader = Reader::new(bytes, read_error);
     if reader.array::<8>()? != *FRAME_MAGIC {
         return Err(SourceProviderFrameError::InvalidFrame);
     }
@@ -225,7 +225,7 @@ fn decode_frame(bytes: &[u8]) -> Result<SourceProviderFrame, SourceProviderFrame
     if body_length == 0 || body_length > MAXIMUM_FRAME_BYTES - FRAME_HEADER_BYTES {
         return Err(SourceProviderFrameError::InvalidLength);
     }
-    let body = reader.take(body_length)?.to_vec();
+    let body = reader.bytes(body_length)?.to_vec();
     reader.finish()?;
     SourceProviderFrame::new(method, kind, body)
 }
@@ -461,20 +461,20 @@ pub fn decode_hello(bytes: &[u8]) -> Result<SourceProviderHelloV1, SourceProvide
     if bytes.len() != SOURCE_PROVIDER_HELLO_SUBJECT_BYTES {
         return Err(SourceProviderFrameError::InvalidLength);
     }
-    let mut reader = Reader::new(bytes);
+    let mut reader = Reader::new(bytes, read_error);
     let role = match reader.u8()? {
         1 => SourceProviderPeerRole::RootMount,
         2 => SourceProviderPeerRole::Provider,
         _ => return Err(SourceProviderFrameError::UnknownDiscriminant),
     };
-    reader.require_zeros(7)?;
+    reader.zeros(7)?;
     let nonce = reader.array::<32>()?;
     let process_instance = reader.array::<16>()?;
     let kernel_boot_id = reader.array::<16>()?;
     let traffic_signer =
-        decode_signer(reader.take(120)?).map_err(|_| SourceProviderFrameError::InvalidFrame)?;
+        decode_signer(reader.bytes(120)?).map_err(|_| SourceProviderFrameError::InvalidFrame)?;
     let expected_peer_traffic_signer =
-        decode_signer(reader.take(120)?).map_err(|_| SourceProviderFrameError::InvalidFrame)?;
+        decode_signer(reader.bytes(120)?).map_err(|_| SourceProviderFrameError::InvalidFrame)?;
     let route_id = reader.array::<16>()?;
     let route_generation = reader.u64()?;
     let route_digest = reader.digest()?;
@@ -482,7 +482,7 @@ pub fn decode_hello(bytes: &[u8]) -> Result<SourceProviderHelloV1, SourceProvide
     if has_client_digest > 1 {
         return Err(SourceProviderFrameError::UnknownDiscriminant);
     }
-    reader.require_zeros(7)?;
+    reader.zeros(7)?;
     let client_digest_bytes = reader.array::<32>()?;
     let client_hello_digest = if has_client_digest == 1 {
         Some(ObjectDigest::from_bytes(client_digest_bytes))
@@ -596,7 +596,7 @@ pub fn decode_acquire_request(
 fn decode_acquire_request_v1(
     bytes: &[u8],
 ) -> Result<AcquireSourceRequestV1, SourceProviderFrameError> {
-    let mut reader = Reader::new(bytes);
+    let mut reader = Reader::new(bytes, read_error);
     let session_binding = reader.digest()?;
     let sequence = reader.u64()?;
     let request_id = reader.array::<16>()?;
@@ -615,17 +615,17 @@ fn decode_acquire_request_v1(
 fn decode_acquire_request_tagged(
     bytes: &[u8],
 ) -> Result<AcquireSourceRequestV1, SourceProviderFrameError> {
-    let mut reader = Reader::new(bytes);
+    let mut reader = Reader::new(bytes, read_error);
     let native_catalog = match reader.u16()? {
         crate::ACQUIRE_SOURCE_REQUEST_VERSION_V2 => {
-            reader.require_zeros(6)?;
+            reader.zeros(6)?;
             None
         }
         crate::ACQUIRE_SOURCE_REQUEST_VERSION_V3 => {
             if reader.u8()? != NATIVE_ACQUIRE_CATALOG_KIND_V3 {
                 return Err(SourceProviderFrameError::UnknownDiscriminant);
             }
-            reader.require_zeros(5)?;
+            reader.zeros(5)?;
             Some(NativeAcquireCatalogBindingV3::new(
                 reader.digest()?,
                 reader.u64()?,
@@ -663,19 +663,19 @@ fn decode_acquire_request_tail(
     acquisition_sequence: Option<u64>,
     native_catalog: Option<NativeAcquireCatalogBindingV3>,
 ) -> Result<AcquireSourceRequestV1, SourceProviderFrameError> {
-    let prospective_apply_template = reader.sized_bytes(2 * 1024)?.to_vec();
+    let prospective_apply_template = sized_bytes(&mut reader, 2 * 1024)?.to_vec();
     let prospective_apply_template_digest = reader.digest()?;
     let source_use = match reader.u8()? {
         1 => SourceUseV1::MountCreate,
         _ => return Err(SourceProviderFrameError::UnknownDiscriminant),
     };
-    reader.require_zeros(7)?;
+    reader.zeros(7)?;
     let node_id = reader.array::<16>()?;
     let boot_id = reader.array::<16>()?;
     let holder_authority_id = reader.array::<16>()?;
     let holder_generation = reader.u64()?;
     let holder_authority_digest = reader.digest()?;
-    let binding = reader.sized_bytes(MAXIMUM_BINDING_BYTES)?.to_vec();
+    let binding = sized_bytes(&mut reader, MAXIMUM_BINDING_BYTES)?.to_vec();
     let binding_digest = reader.digest()?;
     let deadline_seconds = reader.i64()?;
     let requested_lease_seconds = reader.u64()?;
@@ -684,7 +684,7 @@ fn decode_acquire_request_tail(
     if source_flags & !0b11 != 0 {
         return Err(SourceProviderFrameError::NonzeroReserved);
     }
-    reader.require_zeros(3)?;
+    reader.zeros(3)?;
     let requested_maximum_submounts = reader.u32()?;
     reader.finish()?;
     let value = match acquisition_sequence {
@@ -767,10 +767,10 @@ pub fn encode_response_status(value: &SourceProviderResponseStatusV1) -> Vec<u8>
 pub fn decode_response_status(
     bytes: &[u8],
 ) -> Result<SourceProviderResponseStatusV1, SourceProviderFrameError> {
-    let mut reader = Reader::new(bytes);
+    let mut reader = Reader::new(bytes, read_error);
     let method = decode_method(reader.u8()?)?;
     let status = decode_status(reader.u8()?)?;
-    reader.require_zeros(6)?;
+    reader.zeros(6)?;
     let request_id = reader.array::<16>()?;
     let signed_request_digest = reader.digest()?;
     let provider_process_instance = reader.array::<16>()?;
@@ -868,15 +868,15 @@ fn decode_status_response(
     bytes: &[u8],
     maximum_result: usize,
 ) -> Result<(SignedSourceProviderStatusV1, Option<Vec<u8>>), SourceProviderFrameError> {
-    let mut reader = Reader::new(bytes);
-    let status_bytes = reader.sized_bytes(4 * 1024)?;
+    let mut reader = Reader::new(bytes, read_error);
+    let status_bytes = sized_bytes(&mut reader, 4 * 1024)?;
     let signed_status = SignedSourceProviderStatusV1::from_canonical_bytes(status_bytes)
         .map_err(|_| SourceProviderFrameError::InvalidFrame)?;
     let result_length = reader.u32()? as usize;
     let signed_result = if result_length == 0 {
         None
     } else if result_length <= maximum_result {
-        Some(reader.take(result_length)?.to_vec())
+        Some(reader.bytes(result_length)?.to_vec())
     } else {
         return Err(SourceProviderFrameError::InvalidLength);
     };
@@ -909,7 +909,7 @@ pub fn encode_release_request(value: &ReleaseSourceRequestV1) -> Vec<u8> {
 pub fn decode_release_request(
     bytes: &[u8],
 ) -> Result<ReleaseSourceRequestV1, SourceProviderFrameError> {
-    let mut reader = Reader::new(bytes);
+    let mut reader = Reader::new(bytes, read_error);
     let value = ReleaseSourceRequestV1::new(
         reader.digest()?,
         reader.u64()?,
@@ -960,7 +960,7 @@ pub fn encode_inventory_request(value: &InventorySourceRequestV1) -> Vec<u8> {
 pub fn decode_inventory_request(
     bytes: &[u8],
 ) -> Result<InventorySourceRequestV1, SourceProviderFrameError> {
-    let mut reader = Reader::new(bytes);
+    let mut reader = Reader::new(bytes, read_error);
     let session_binding = reader.digest()?;
     let sequence = reader.u64()?;
     let request_id = reader.array::<16>()?;
@@ -975,7 +975,7 @@ pub fn decode_inventory_request(
         0 | 1 => return Err(SourceProviderFrameError::InvalidFrame),
         _ => return Err(SourceProviderFrameError::UnknownDiscriminant),
     };
-    reader.require_zeros(7)?;
+    reader.zeros(7)?;
     let deadline_seconds = reader.i64()?;
     reader.finish()?;
     InventorySourceRequestV1::new(
@@ -1018,7 +1018,7 @@ pub fn encode_export_lease(value: &SourceExportLeaseV1) -> Vec<u8> {
 /// Returns [`SourceProviderFrameError`] for malformed, unknown, sentinel,
 /// reserved, or trailing proof/lease fields.
 pub fn decode_export_lease(bytes: &[u8]) -> Result<SourceExportLeaseV1, SourceProviderFrameError> {
-    let mut reader = Reader::new(bytes);
+    let mut reader = Reader::new(bytes, read_error);
     let lease_id = reader.array::<16>()?;
     let request_id = reader.array::<16>()?;
     let request_digest = reader.digest()?;
@@ -1080,18 +1080,18 @@ pub fn encode_provider_receipt(value: &SourceProviderReceiptV1) -> Vec<u8> {
 pub fn decode_provider_receipt(
     bytes: &[u8],
 ) -> Result<SourceProviderReceiptV1, SourceProviderFrameError> {
-    let mut reader = Reader::new(bytes);
+    let mut reader = Reader::new(bytes, read_error);
     let request_id = reader.array::<16>()?;
     let request_digest = reader.digest()?;
     let acquisition_id = reader.digest()?;
     let provider_process_instance = reader.array::<16>()?;
     let lease_digest = reader.digest()?;
-    let signed_export_lease = reader.sized_bytes(256 * 1024)?.to_vec();
+    let signed_export_lease = sized_bytes(&mut reader, 256 * 1024)?.to_vec();
     let descriptor_role = match reader.u8()? {
         1 => SourceProviderDescriptorRole::SourceRoot,
         _ => return Err(SourceProviderFrameError::UnknownDiscriminant),
     };
-    reader.require_zeros(7)?;
+    reader.zeros(7)?;
     let kernel_boot_id = reader.array::<16>()?;
     let device = reader.u64()?;
     let inode = reader.u64()?;
@@ -1138,7 +1138,7 @@ pub fn encode_release_receipt(value: &SourceReleaseReceiptV1) -> Vec<u8> {
 pub fn decode_release_receipt(
     bytes: &[u8],
 ) -> Result<SourceReleaseReceiptV1, SourceProviderFrameError> {
-    let mut reader = Reader::new(bytes);
+    let mut reader = Reader::new(bytes, read_error);
     let request_id = reader.array::<16>()?;
     let request_digest = reader.digest()?;
     let lease_id = reader.array::<16>()?;
@@ -1200,7 +1200,7 @@ pub fn encode_inventory(value: &SourceProviderInventoryV1) -> Vec<u8> {
 pub fn decode_inventory(
     bytes: &[u8],
 ) -> Result<SourceProviderInventoryV1, SourceProviderFrameError> {
-    let mut reader = Reader::new(bytes);
+    let mut reader = Reader::new(bytes, read_error);
     let request_id = reader.array::<16>()?;
     let request_digest = reader.digest()?;
     let holder_authority_id = reader.array::<16>()?;
@@ -1232,7 +1232,7 @@ pub fn decode_inventory(
             3 => InventoryLeaseStateV1::Released,
             _ => return Err(SourceProviderFrameError::UnknownDiscriminant),
         };
-        reader.require_zeros(7)?;
+        reader.zeros(7)?;
         entries.push(SourceProviderInventoryEntryV1::new(
             lease_id,
             lease_digest,
@@ -1241,7 +1241,7 @@ pub fn decode_inventory(
             decode_resource(&mut reader)?,
             reader.u8()?,
             {
-                reader.require_zeros(7)?;
+                reader.zeros(7)?;
                 reader.digest()?
             },
             reader.digest()?,
@@ -1336,7 +1336,7 @@ pub fn decode_recursive_topology_proof_v1(
     if bytes.len() != RECURSIVE_TOPOLOGY_PROOF_BYTES_V1 {
         return Err(SourceProviderFrameError::InvalidLength);
     }
-    let mut reader = Reader::new(bytes);
+    let mut reader = Reader::new(bytes, read_error);
     let topology = decode_topology(&mut reader)?;
     reader.finish()?;
     Ok(topology)
@@ -1440,7 +1440,7 @@ pub fn encode_provider_proof(value: &SourceProviderProofV1) -> Vec<u8> {
 pub fn decode_provider_proof(
     bytes: &[u8],
 ) -> Result<SourceProviderProofV1, SourceProviderFrameError> {
-    let mut reader = Reader::new(bytes);
+    let mut reader = Reader::new(bytes, read_error);
     let proof = decode_proof(&mut reader)?;
     reader.finish()?;
     Ok(proof)
@@ -1450,7 +1450,7 @@ fn decode_proof(
     reader: &mut Reader<'_>,
 ) -> Result<SourceProviderProofV1, SourceProviderFrameError> {
     let class = reader.u8()?;
-    reader.require_zeros(7)?;
+    reader.zeros(7)?;
     match class {
         1 => Ok(SourceProviderProofV1::ZfsHeldSnapshot {
             proof: ZfsHeldSnapshotProofV1::new(
@@ -1521,7 +1521,7 @@ fn decode_proof(
                 },
             )?,
             topology: {
-                reader.require_zeros(7)?;
+                reader.zeros(7)?;
                 decode_topology(reader)?
             },
         }),
@@ -1595,79 +1595,25 @@ impl Writer {
     }
 }
 
-struct Reader<'a> {
-    bytes: &'a [u8],
-    cursor: usize,
+type Reader<'a> = aos_sandbox_core::bounded_codec::BoundedReader<'a, SourceProviderFrameError>;
+
+fn read_error(error: aos_sandbox_core::bounded_codec::ReadError) -> SourceProviderFrameError {
+    use aos_sandbox_core::bounded_codec::ReadError;
+
+    match error {
+        ReadError::LengthOverflow | ReadError::Truncated => SourceProviderFrameError::InvalidLength,
+        ReadError::NonzeroReserved => SourceProviderFrameError::NonzeroReserved,
+        ReadError::TrailingBytes => SourceProviderFrameError::InvalidFrame,
+    }
 }
 
-impl<'a> Reader<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, cursor: 0 }
+fn sized_bytes<'a>(
+    reader: &mut Reader<'a>,
+    maximum: usize,
+) -> Result<&'a [u8], SourceProviderFrameError> {
+    let count = reader.u32()? as usize;
+    if count == 0 || count > maximum {
+        return Err(SourceProviderFrameError::InvalidLength);
     }
-
-    fn take(&mut self, count: usize) -> Result<&'a [u8], SourceProviderFrameError> {
-        let end = self
-            .cursor
-            .checked_add(count)
-            .ok_or(SourceProviderFrameError::InvalidLength)?;
-        let value = self
-            .bytes
-            .get(self.cursor..end)
-            .ok_or(SourceProviderFrameError::InvalidLength)?;
-        self.cursor = end;
-        Ok(value)
-    }
-
-    const fn remaining(&self) -> usize {
-        self.bytes.len() - self.cursor
-    }
-
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], SourceProviderFrameError> {
-        self.take(N)?
-            .try_into()
-            .map_err(|_| SourceProviderFrameError::InvalidLength)
-    }
-
-    fn u8(&mut self) -> Result<u8, SourceProviderFrameError> {
-        Ok(self.array::<1>()?[0])
-    }
-    fn u16(&mut self) -> Result<u16, SourceProviderFrameError> {
-        Ok(u16::from_be_bytes(self.array()?))
-    }
-    fn u32(&mut self) -> Result<u32, SourceProviderFrameError> {
-        Ok(u32::from_be_bytes(self.array()?))
-    }
-    fn u64(&mut self) -> Result<u64, SourceProviderFrameError> {
-        Ok(u64::from_be_bytes(self.array()?))
-    }
-    fn i64(&mut self) -> Result<i64, SourceProviderFrameError> {
-        Ok(i64::from_be_bytes(self.array()?))
-    }
-    fn digest(&mut self) -> Result<ObjectDigest, SourceProviderFrameError> {
-        Ok(ObjectDigest::from_bytes(self.array()?))
-    }
-
-    fn sized_bytes(&mut self, maximum: usize) -> Result<&'a [u8], SourceProviderFrameError> {
-        let count = self.u32()? as usize;
-        if count == 0 || count > maximum {
-            return Err(SourceProviderFrameError::InvalidLength);
-        }
-        self.take(count)
-    }
-
-    fn require_zeros(&mut self, count: usize) -> Result<(), SourceProviderFrameError> {
-        if self.take(count)?.iter().any(|byte| *byte != 0) {
-            Err(SourceProviderFrameError::NonzeroReserved)
-        } else {
-            Ok(())
-        }
-    }
-
-    fn finish(self) -> Result<(), SourceProviderFrameError> {
-        if self.cursor == self.bytes.len() {
-            Ok(())
-        } else {
-            Err(SourceProviderFrameError::InvalidFrame)
-        }
-    }
+    reader.bytes(count)
 }

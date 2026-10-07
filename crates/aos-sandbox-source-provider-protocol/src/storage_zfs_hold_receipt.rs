@@ -372,13 +372,13 @@ impl StorageZfsHoldReceiptV1 {
         {
             return Err(StorageZfsHoldReceiptErrorV1::Noncanonical);
         }
-        let mut cursor = Cursor::new(&bytes[16..]);
-        let challenge = cursor.take()?;
+        let mut cursor = Cursor::new(&bytes[16..], read_error);
+        let challenge = cursor.array()?;
         let attempt = digest(&mut cursor)?;
         let binding = digest(&mut cursor)?;
         let resource = SourceResourceV1::new(
             digest(&mut cursor)?,
-            cursor.take()?,
+            cursor.array()?,
             cursor.u64()?,
             digest(&mut cursor)?,
             cursor.u64()?,
@@ -388,12 +388,12 @@ impl StorageZfsHoldReceiptV1 {
         )
         .map_err(|_| StorageZfsHoldReceiptErrorV1::Noncanonical)?;
         let snapshot = ZfsHeldSnapshotProofV1::new(
-            cursor.take()?,
+            cursor.array()?,
             cursor.u64()?,
             cursor.u64()?,
             cursor.u64()?,
             cursor.u64()?,
-            cursor.take()?,
+            cursor.array()?,
             cursor.u64()?,
             digest(&mut cursor)?,
             digest(&mut cursor)?,
@@ -419,7 +419,7 @@ impl StorageZfsHoldReceiptV1 {
             cursor.i64()?,
             cursor.i64()?,
         )?;
-        if cursor.done() && receipt.encode() == bytes {
+        if cursor.is_empty() && receipt.encode() == bytes {
             Ok(receipt)
         } else {
             Err(StorageZfsHoldReceiptErrorV1::Noncanonical)
@@ -498,12 +498,12 @@ impl StorageZfsHoldSignerV1 {
         if bytes.len() != SIGNER_BYTES || bytes.get(..8) != Some(ROLE.as_slice()) {
             return Err(StorageZfsHoldReceiptErrorV1::Noncanonical);
         }
-        let mut cursor = Cursor::new(&bytes[8..]);
+        let mut cursor = Cursor::new(&bytes[8..], read_error);
         Self::new(
-            cursor.take()?,
+            cursor.array()?,
             cursor.u64()?,
             digest(&mut cursor)?,
-            cursor.take()?,
+            cursor.array()?,
             cursor.u64()?,
         )
     }
@@ -690,44 +690,13 @@ impl StorageZfsHoldVerifierV1 {
 }
 
 fn digest(cursor: &mut Cursor<'_>) -> Result<ObjectDigest, StorageZfsHoldReceiptErrorV1> {
-    Ok(ObjectDigest::from_bytes(cursor.take()?))
+    Ok(ObjectDigest::from_bytes(cursor.array()?))
 }
 
-struct Cursor<'a> {
-    bytes: &'a [u8],
-    offset: usize,
-}
+type Cursor<'a> = aos_sandbox_core::bounded_codec::BoundedReader<'a, StorageZfsHoldReceiptErrorV1>;
 
-impl<'a> Cursor<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
-    }
-
-    fn take<const N: usize>(&mut self) -> Result<[u8; N], StorageZfsHoldReceiptErrorV1> {
-        let end = self
-            .offset
-            .checked_add(N)
-            .ok_or(StorageZfsHoldReceiptErrorV1::Noncanonical)?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .and_then(|bytes| bytes.try_into().ok())
-            .ok_or(StorageZfsHoldReceiptErrorV1::Noncanonical)?;
-        self.offset = end;
-        Ok(value)
-    }
-
-    fn u64(&mut self) -> Result<u64, StorageZfsHoldReceiptErrorV1> {
-        Ok(u64::from_be_bytes(self.take()?))
-    }
-
-    fn i64(&mut self) -> Result<i64, StorageZfsHoldReceiptErrorV1> {
-        Ok(i64::from_be_bytes(self.take()?))
-    }
-
-    const fn done(&self) -> bool {
-        self.offset == self.bytes.len()
-    }
+fn read_error(_: aos_sandbox_core::bounded_codec::ReadError) -> StorageZfsHoldReceiptErrorV1 {
+    StorageZfsHoldReceiptErrorV1::Noncanonical
 }
 
 #[cfg(test)]

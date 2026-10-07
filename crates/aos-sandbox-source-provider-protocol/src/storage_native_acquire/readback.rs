@@ -44,7 +44,7 @@ use ed25519_dalek::{Signer as _, SigningKey};
 
 use super::acceptance::{storage_signing_message, verify_storage_signature};
 use super::{
-    Reader, STORAGE_NATIVE_ACCEPTANCE_BYTES_V3, SignedStorageNativeAcquireRequestV2,
+    read_versioned, STORAGE_NATIVE_ACCEPTANCE_BYTES_V3, SignedStorageNativeAcquireRequestV2,
     StorageNativeAcceptanceV3, StorageNativeAcquireErrorV2, digest, nonzero, versioned_header,
 };
 use crate::crypto::{decode_signer, encode_signer, sign_bytes, verify_bytes};
@@ -155,17 +155,17 @@ impl StorageNativeAcceptanceReadbackQueryV1 {
         if bytes.len() != QUERY_BYTES {
             return Err(StorageNativeAcquireErrorV2::Noncanonical);
         }
-        let mut reader = Reader::versioned(bytes, QUERY_MAGIC, VERSION)?;
+        let mut reader = read_versioned(bytes, QUERY_MAGIC, VERSION)?;
         let value = Self {
             carrier_binding: reader.digest()?,
-            nonce: reader.take()?,
+            nonce: reader.array()?,
             sequence: reader.u64()?,
-            provider_id: reader.take()?,
-            holder_id: reader.take()?,
+            provider_id: reader.array()?,
+            holder_id: reader.array()?,
             acquisition_id: reader.digest()?,
             request_digest: reader.digest()?,
         };
-        reader.done()?;
+        reader.finish()?;
         value.validate()?;
         Ok(value)
     }
@@ -389,11 +389,11 @@ impl SignedStorageNativeAcceptanceReadbackV1 {
         if bytes.len() != SIGNED_STORAGE_NATIVE_ACCEPTANCE_READBACK_BYTES_V1 {
             return Err(StorageNativeAcquireErrorV2::Noncanonical);
         }
-        let mut reader = Reader::versioned(&bytes[..ANSWER_BYTES], ANSWER_MAGIC, VERSION)?;
+        let mut reader = read_versioned(&bytes[..ANSWER_BYTES], ANSWER_MAGIC, VERSION)?;
         let query_digest = reader.digest()?;
         let observed_issuance_sequence = reader.u64()?;
-        let disposition = reader.take::<1>()?[0];
-        if reader.take::<7>()? != [0; 7] {
+        let disposition = reader.array::<1>()?[0];
+        if reader.array::<7>()? != [0; 7] {
             return Err(StorageNativeAcquireErrorV2::Noncanonical);
         }
         let payload = reader.bytes(STORAGE_NATIVE_ACCEPTANCE_BYTES_V3)?;
@@ -402,7 +402,7 @@ impl SignedStorageNativeAcceptanceReadbackV1 {
             NOT_FOUND if payload == [0; STORAGE_NATIVE_ACCEPTANCE_BYTES_V3] => None,
             _ => return Err(StorageNativeAcquireErrorV2::Noncanonical),
         };
-        reader.done()?;
+        reader.finish()?;
         let signer = StorageZfsHoldSignerV1::decode(&bytes[ANSWER_BYTES..ANSWER_BYTES + 88])
             .map_err(|_| StorageNativeAcquireErrorV2::Noncanonical)?;
         let signature = bytes[ANSWER_BYTES + 88..]

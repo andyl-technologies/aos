@@ -3,7 +3,7 @@
 use aos_sandbox_core::ObjectDigest;
 use ed25519_dalek::SigningKey;
 
-use super::{Reader, StorageNativeAcquireErrorV2, digest, header};
+use super::{read_record, StorageNativeAcquireErrorV2, digest, header};
 use crate::crypto::{decode_signer, encode_signer, sign_bytes, verify_bytes};
 use crate::{
     ACQUIRE_SOURCE_REQUEST_VERSION_V2, ACQUIRE_SOURCE_REQUEST_VERSION_V3, MAXIMUM_FRAME_BYTES,
@@ -214,15 +214,15 @@ impl SignedStorageNativeAcquireRequestV2 {
         if bytes.len() > MAXIMUM_SIGNED_STORAGE_NATIVE_ACQUIRE_REQUEST_BYTES_V2 {
             return Err(StorageNativeAcquireErrorV2::Noncanonical);
         }
-        let mut reader = Reader::new(bytes, MAGIC)?;
-        let claims_length = u32::from_be_bytes(reader.take()?) as usize;
+        let mut reader = read_record(bytes, MAGIC)?;
+        let claims_length = u32::from_be_bytes(reader.array()?) as usize;
         if claims_length > MAXIMUM_STORAGE_ZFS_HOLD_REQUEST_PACKET_BYTES_V1 {
             return Err(StorageNativeAcquireErrorV2::Noncanonical);
         }
         let claims =
             StorageZfsHoldTransportRequestV1::from_canonical_bytes(reader.bytes(claims_length)?)
                 .map_err(|_| StorageNativeAcquireErrorV2::Noncanonical)?;
-        let root_length = u32::from_be_bytes(reader.take()?) as usize;
+        let root_length = u32::from_be_bytes(reader.array()?) as usize;
         if root_length > MAXIMUM_FRAME_BYTES {
             return Err(StorageNativeAcquireErrorV2::Noncanonical);
         }
@@ -242,8 +242,8 @@ impl SignedStorageNativeAcquireRequestV2 {
         };
         let signer = decode_signer(reader.bytes(120)?)
             .map_err(|_| StorageNativeAcquireErrorV2::Noncanonical)?;
-        let signature = SourceProviderSignature::from_bytes(reader.take()?);
-        reader.done()?;
+        let signature = SourceProviderSignature::from_bytes(reader.array()?);
+        reader.finish()?;
         if signer.usage() != SourceProviderKeyUsageV1::ProviderOutcome
             || signer.authority_id() != request.claims.provider_acquisition().0
             || signature.as_bytes() == &[0; 64]

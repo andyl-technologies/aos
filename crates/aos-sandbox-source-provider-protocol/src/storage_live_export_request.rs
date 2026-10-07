@@ -373,44 +373,44 @@ impl SignedStorageLiveExportRequestV1 {
         if bytes.len() > MAXIMUM_FRAME_BYTES + NON_ROOT_BYTES {
             return Err(StorageLiveExportRequestErrorV1::Noncanonical);
         }
-        let mut reader = Reader::new(bytes);
-        if reader.take::<8>()? != *MAGIC
-            || u16::from_be_bytes(reader.take()?) != VERSION
-            || reader.take::<6>()? != [0; 6]
+        let mut reader = Reader::new(bytes, read_error);
+        if reader.array::<8>()? != *MAGIC
+            || u16::from_be_bytes(reader.array()?) != VERSION
+            || reader.array::<6>()? != [0; 6]
         {
             return Err(StorageLiveExportRequestErrorV1::Noncanonical);
         }
 
-        let plan_id = reader.take()?;
-        let protected_attempt_digest = digest(reader.take()?);
-        let normalized_intent_digest = digest(reader.take()?);
-        let effect_id = reader.take()?;
-        let backend_id = digest(reader.take()?);
+        let plan_id = reader.array()?;
+        let protected_attempt_digest = digest(reader.array()?);
+        let normalized_intent_digest = digest(reader.array()?);
+        let effect_id = reader.array()?;
+        let backend_id = digest(reader.array()?);
         let resource = SourceResourceV1::new(
-            digest(reader.take()?),
-            reader.take()?,
-            u64::from_be_bytes(reader.take()?),
-            digest(reader.take()?),
-            u64::from_be_bytes(reader.take()?),
-            digest(reader.take()?),
-            u64::from_be_bytes(reader.take()?),
-            digest(reader.take()?),
+            digest(reader.array()?),
+            reader.array()?,
+            u64::from_be_bytes(reader.array()?),
+            digest(reader.array()?),
+            u64::from_be_bytes(reader.array()?),
+            digest(reader.array()?),
+            u64::from_be_bytes(reader.array()?),
+            digest(reader.array()?),
         )
         .map_err(|_| StorageLiveExportRequestErrorV1::Noncanonical)?;
         let selector = StorageLiveExportSelectorV1::new(
-            reader.take()?,
-            u64::from_be_bytes(reader.take()?),
-            reader.take()?,
-            digest(reader.take()?),
+            reader.array()?,
+            u64::from_be_bytes(reader.array()?),
+            reader.array()?,
+            digest(reader.array()?),
         )?;
-        let issued_seconds = i64::from_be_bytes(reader.take()?);
-        let expires_seconds = i64::from_be_bytes(reader.take()?);
-        let root_length = u32::from_be_bytes(reader.take()?) as usize;
+        let issued_seconds = i64::from_be_bytes(reader.array()?);
+        let expires_seconds = i64::from_be_bytes(reader.array()?);
+        let root_length = u32::from_be_bytes(reader.array()?) as usize;
         if root_length == 0 || root_length > MAXIMUM_FRAME_BYTES {
             return Err(StorageLiveExportRequestErrorV1::Noncanonical);
         }
         let signed_root_request =
-            SignedSourceProviderRequestV1::from_canonical_bytes(reader.take_slice(root_length)?)
+            SignedSourceProviderRequestV1::from_canonical_bytes(reader.bytes(root_length)?)
                 .map_err(|_| StorageLiveExportRequestErrorV1::Noncanonical)?;
         let request = StorageLiveExportRequestV1::new(
             plan_id,
@@ -426,16 +426,16 @@ impl SignedStorageLiveExportRequestV1 {
         )?;
 
         let signer = SourceProviderSigningKeyV1::new(
-            reader.take()?,
-            u64::from_be_bytes(reader.take()?),
-            digest(reader.take()?),
-            reader.take()?,
-            u64::from_be_bytes(reader.take()?),
-            digest(reader.take()?),
+            reader.array()?,
+            u64::from_be_bytes(reader.array()?),
+            digest(reader.array()?),
+            reader.array()?,
+            u64::from_be_bytes(reader.array()?),
+            digest(reader.array()?),
             SourceProviderKeyUsageV1::ProviderOutcome,
         )
         .map_err(|_| StorageLiveExportRequestErrorV1::Noncanonical)?;
-        let signature = reader.take()?;
+        let signature = reader.array()?;
         if !reader.is_empty() {
             return Err(StorageLiveExportRequestErrorV1::Noncanonical);
         }
@@ -557,34 +557,11 @@ const fn digest(bytes: [u8; 32]) -> ObjectDigest {
     ObjectDigest::from_bytes(bytes)
 }
 
-struct Reader<'a> {
-    remaining: &'a [u8],
-}
+type Reader<'a> =
+    aos_sandbox_core::bounded_codec::BoundedReader<'a, StorageLiveExportRequestErrorV1>;
 
-impl<'a> Reader<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { remaining: bytes }
-    }
-
-    fn take<const N: usize>(&mut self) -> Result<[u8; N], StorageLiveExportRequestErrorV1> {
-        let bytes = self.take_slice(N)?;
-        bytes
-            .try_into()
-            .map_err(|_| StorageLiveExportRequestErrorV1::Noncanonical)
-    }
-
-    fn take_slice(&mut self, len: usize) -> Result<&'a [u8], StorageLiveExportRequestErrorV1> {
-        if self.remaining.len() < len {
-            return Err(StorageLiveExportRequestErrorV1::Noncanonical);
-        }
-        let (head, tail) = self.remaining.split_at(len);
-        self.remaining = tail;
-        Ok(head)
-    }
-
-    const fn is_empty(&self) -> bool {
-        self.remaining.is_empty()
-    }
+fn read_error(_: aos_sandbox_core::bounded_codec::ReadError) -> StorageLiveExportRequestErrorV1 {
+    StorageLiveExportRequestErrorV1::Noncanonical
 }
 
 #[cfg(test)]

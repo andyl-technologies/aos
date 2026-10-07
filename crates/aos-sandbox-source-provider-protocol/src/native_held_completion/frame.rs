@@ -286,15 +286,18 @@ impl PreparedNativeHeldControlV1 {
                 "control nesting",
             ));
         }
-        let mut reader = Reader::new(bytes);
-        reader.header(MAGIC)?;
+        let mut reader = Reader::new(bytes, super::codec::read_error);
+        super::codec::read_header(&mut reader, MAGIC)?;
         let kind = Kind::from_byte(reader.u8()?)?;
         if reader.u8()? != kind.sender() as u8 {
             return Err(invalid("fixed control sender"));
         }
         let payload_length = reader.u32()? as usize;
         reader.zeros(8)?;
-        let mut payload = Reader::new(reader.bytes(payload_length)?);
+        let mut payload = Reader::new(
+            reader.bytes(payload_length)?,
+            super::codec::read_error,
+        );
         let scope = NativeHeldScopeV1::decode(&mut payload)?;
         let predecessor = payload.digest()?;
         if payload.u64()? != kind.step() {

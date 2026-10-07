@@ -139,60 +139,32 @@ fn nonzero(digest: ObjectDigest) -> bool {
     digest.as_bytes() != &[0; 32]
 }
 
-struct Reader<'a> {
-    remaining: &'a [u8],
+type Reader<'a> = aos_sandbox_core::bounded_codec::BoundedReader<'a, StorageNativeAcquireErrorV2>;
+
+fn read_error(_: aos_sandbox_core::bounded_codec::ReadError) -> StorageNativeAcquireErrorV2 {
+    StorageNativeAcquireErrorV2::Noncanonical
 }
 
-impl<'a> Reader<'a> {
-    fn new(bytes: &'a [u8], magic: &[u8; 8]) -> Result<Self, StorageNativeAcquireErrorV2> {
-        Self::versioned(bytes, magic, VERSION)
+fn read_versioned<'a>(
+    bytes: &'a [u8],
+    magic: &[u8; 8],
+    version: u16,
+) -> Result<Reader<'a>, StorageNativeAcquireErrorV2> {
+    let mut reader = Reader::new(bytes, read_error);
+    if reader.array::<8>()? != *magic
+        || reader.array::<2>()? != version.to_be_bytes()
+        || reader.array::<6>()? != [0; 6]
+    {
+        return Err(StorageNativeAcquireErrorV2::Noncanonical);
     }
+    Ok(reader)
+}
 
-    fn versioned(
-        bytes: &'a [u8],
-        magic: &[u8; 8],
-        version: u16,
-    ) -> Result<Self, StorageNativeAcquireErrorV2> {
-        let mut reader = Self { remaining: bytes };
-        if reader.take::<8>()? != *magic
-            || reader.take::<2>()? != version.to_be_bytes()
-            || reader.take::<6>()? != [0; 6]
-        {
-            return Err(StorageNativeAcquireErrorV2::Noncanonical);
-        }
-        Ok(reader)
-    }
-
-    fn bytes(&mut self, count: usize) -> Result<&'a [u8], StorageNativeAcquireErrorV2> {
-        if count > self.remaining.len() {
-            return Err(StorageNativeAcquireErrorV2::Noncanonical);
-        }
-        let (head, tail) = self.remaining.split_at(count);
-        self.remaining = tail;
-        Ok(head)
-    }
-
-    fn take<const N: usize>(&mut self) -> Result<[u8; N], StorageNativeAcquireErrorV2> {
-        self.bytes(N)?
-            .try_into()
-            .map_err(|_| StorageNativeAcquireErrorV2::Noncanonical)
-    }
-
-    fn digest(&mut self) -> Result<ObjectDigest, StorageNativeAcquireErrorV2> {
-        Ok(ObjectDigest::from_bytes(self.take()?))
-    }
-
-    fn u64(&mut self) -> Result<u64, StorageNativeAcquireErrorV2> {
-        Ok(u64::from_be_bytes(self.take()?))
-    }
-
-    fn done(&self) -> Result<(), StorageNativeAcquireErrorV2> {
-        if self.remaining.is_empty() {
-            Ok(())
-        } else {
-            Err(StorageNativeAcquireErrorV2::Noncanonical)
-        }
-    }
+fn read_record<'a>(
+    bytes: &'a [u8],
+    magic: &[u8; 8],
+) -> Result<Reader<'a>, StorageNativeAcquireErrorV2> {
+    read_versioned(bytes, magic, VERSION)
 }
 
 #[cfg(test)]

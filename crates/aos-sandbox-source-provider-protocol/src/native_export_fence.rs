@@ -267,11 +267,11 @@ impl SourceProviderNativeExportFenceV1 {
         if bytes.len() != SOURCE_PROVIDER_NATIVE_EXPORT_FENCE_BYTES_V1 {
             return Err(SourceProviderSignatureError::InvalidEnvelope);
         }
-        let mut reader = Reader(bytes);
-        reader.header(SUBJECT_MAGIC, 1)?;
+        let mut reader = Reader::new(bytes, read_error);
+        read_header(&mut reader, SUBJECT_MAGIC, 1)?;
         let release = NativeExportFenceReleaseV1 {
-            provider: reader.authority()?,
-            holder: reader.authority()?,
+            provider: read_authority(&mut reader)?,
+            holder: read_authority(&mut reader)?,
             request_id: reader.array()?,
             signed_request_digest: reader.digest()?,
             typed_request_digest: reader.digest()?,
@@ -294,7 +294,7 @@ impl SourceProviderNativeExportFenceV1 {
         let native_request_digest = reader.digest()?;
         let signed_acceptance_digest = reader.digest()?;
         let acceptance = StorageNativeAcceptanceV3::from_canonical_bytes(
-            reader.take(crate::STORAGE_NATIVE_ACCEPTANCE_BYTES_V3)?,
+            reader.bytes(crate::STORAGE_NATIVE_ACCEPTANCE_BYTES_V3)?,
         )
         .map_err(|_| SourceProviderSignatureError::InvalidEnvelope)?;
         let cut = NativeExportFenceCutV1 {
@@ -395,11 +395,11 @@ impl SignedSourceProviderNativeExportFenceV1 {
         if bytes.len() != SIGNED_SOURCE_PROVIDER_NATIVE_EXPORT_FENCE_BYTES_V1 {
             return Err(SourceProviderSignatureError::InvalidEnvelope);
         }
-        let mut reader = Reader(bytes);
-        reader.header(SIGNED_MAGIC, 1)?;
-        let signer = crate::crypto::decode_signer(reader.take(120)?)?;
+        let mut reader = Reader::new(bytes, read_error);
+        read_header(&mut reader, SIGNED_MAGIC, 1)?;
+        let signer = crate::crypto::decode_signer(reader.bytes(120)?)?;
         let subject = SourceProviderNativeExportFenceV1::from_canonical_bytes(
-            reader.take(SOURCE_PROVIDER_NATIVE_EXPORT_FENCE_BYTES_V1)?,
+            reader.bytes(SOURCE_PROVIDER_NATIVE_EXPORT_FENCE_BYTES_V1)?,
         )?;
         let signature = SourceProviderSignature::from_bytes(reader.array()?);
         require_signer(&subject, &signer)?;
@@ -573,14 +573,16 @@ impl ReleaseSourceResponseV2 {
         if bytes.len() > MAXIMUM_NATIVE_RELEASE_RESPONSE_BYTES_V2 {
             return Err(SourceProviderSignatureError::InvalidEnvelope);
         }
-        let mut reader = Reader(bytes);
-        reader.header(RESPONSE_MAGIC, 2)?;
+        let mut reader = Reader::new(bytes, read_error);
+        read_header(&mut reader, RESPONSE_MAGIC, 2)?;
         let length = u32::from_be_bytes(reader.array()?) as usize;
         if length != SIGNED_SOURCE_PROVIDER_RESPONSE_STATUS_BYTES_V1 {
             return Err(SourceProviderSignatureError::InvalidEnvelope);
         }
-        let status = SignedSourceProviderStatusV1::from_canonical_bytes(reader.take(length)?)?;
-        let fence = SignedSourceProviderNativeExportFenceV1::from_canonical_bytes(reader.0)?;
+        let status = SignedSourceProviderStatusV1::from_canonical_bytes(reader.bytes(length)?)?;
+        let fence = SignedSourceProviderNativeExportFenceV1::from_canonical_bytes(
+            reader.bytes(reader.remaining())?,
+        )?;
         Self::new(status, fence)
     }
 }
@@ -698,7 +700,11 @@ fn header(magic: &[u8; 8], version: u16) -> Vec<u8> {
     bytes
 }
 
-struct Reader<'a>(&'a [u8]);
+type Reader<'a> = aos_sandbox_core::bounded_codec::BoundedReader<'a, SourceProviderSignatureError>;
+
+fn read_error(_: aos_sandbox_core::bounded_codec::ReadError) -> SourceProviderSignatureError {
+    SourceProviderSignatureError::InvalidEnvelope
+}
 
 /// Computes the unchanged native dispatch identity for exact cross-owner joins.
 ///
@@ -720,46 +726,21 @@ pub fn native_dispatch_backend_identity_v2(
         .into()
 }
 
-impl<'a> Reader<'a> {
-    fn take(&mut self, length: usize) -> Result<&'a [u8], SourceProviderSignatureError> {
-        if length > self.0.len() {
-            return Err(SourceProviderSignatureError::InvalidEnvelope);
-        }
-        let (value, rest) = self.0.split_at(length);
-        self.0 = rest;
-        Ok(value)
-    }
+fn read_authority(
+    reader: &mut Reader<'_>,
+) -> Result<SourceProviderAuthorityV1, SourceProviderSignatureError> {
+    SourceProviderAuthorityV1::new(reader.array()?, reader.u64()?, reader.digest()?)
+        .map_err(|_| SourceProviderSignatureError::InvalidEnvelope)
+}
 
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], SourceProviderSignatureError> {
-        self.take(N)?
-            .try_into()
-            .map_err(|_| SourceProviderSignatureError::InvalidEnvelope)
+fn read_header(
+    reader: &mut Reader<'_>,
+    magic: &[u8; 8],
+    version: u16,
+) -> Result<(), SourceProviderSignatureError> {
+    if reader.array::<8>()? != *magic || reader.u16()? != version || reader.array::<6>()? != [0; 6]
+    {
+        return Err(SourceProviderSignatureError::InvalidEnvelope);
     }
-
-    fn u64(&mut self) -> Result<u64, SourceProviderSignatureError> {
-        Ok(u64::from_be_bytes(self.array()?))
-    }
-
-    fn digest(&mut self) -> Result<ObjectDigest, SourceProviderSignatureError> {
-        Ok(ObjectDigest::from_bytes(self.array()?))
-    }
-
-    fn authority(&mut self) -> Result<SourceProviderAuthorityV1, SourceProviderSignatureError> {
-        SourceProviderAuthorityV1::new(self.array()?, self.u64()?, self.digest()?)
-            .map_err(|_| SourceProviderSignatureError::InvalidEnvelope)
-    }
-
-    fn header(
-        &mut self,
-        magic: &[u8; 8],
-        version: u16,
-    ) -> Result<(), SourceProviderSignatureError> {
-        if self.array::<8>()? != *magic
-            || u16::from_be_bytes(self.array()?) != version
-            || self.array::<6>()? != [0; 6]
-        {
-            return Err(SourceProviderSignatureError::InvalidEnvelope);
-        }
-        Ok(())
-    }
+    Ok(())
 }

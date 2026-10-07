@@ -17,6 +17,7 @@
 //! recovery contracts without selecting or activating an implementation.
 
 pub mod assignment;
+pub mod bounded_codec;
 pub mod broker_authorization;
 pub mod capability;
 pub mod crypto;
