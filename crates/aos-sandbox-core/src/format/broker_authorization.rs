@@ -637,12 +637,12 @@ mod tests {
         ));
 
         let mut unknown_audience = encode_broker_authorization_plan(&plan());
-        unknown_audience[2] = 5;
+        unknown_audience[2] = 23;
         assert!(matches!(
             decode_broker_authorization_plan(&unknown_audience, DecodeLimits::default()),
             Err(CanonicalCborError::UnknownRegistryValue {
                 registry: "broker audience",
-                value: 5,
+                value: 23,
                 ..
             })
         ));
