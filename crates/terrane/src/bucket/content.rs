@@ -103,7 +103,11 @@ fn empty_chunk() -> Result<Identity, StoreFailure> {
 impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator + BucketBinding>
     FileBucket<F, C, V>
 {
-    fn location<'a>(
+    /// Resolves the exact selected unexcluded Live member without reading its body.
+    ///
+    /// # Errors
+    /// Refuses malformed identities and returns absence for unserved placements.
+    pub(super) fn location<'a>(
         &self,
         catalog: &'a Catalog,
         identity: &Identity,
@@ -519,12 +523,44 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
 
         // Admission context is checked even on a dedup hit. Final admission
         // never supplies evidence for a later nonfinal offer of the same bytes.
-        if identity == empty_chunk()? || self.location(&catalog, &identity).is_ok() {
+        if identity == empty_chunk()? {
+            observed.revalidate().await?;
+            return Ok(identity);
+        }
+        let placement = self
+            .placement_observed(held, &observed, &catalog, &identity)
+            .await?;
+        if placement
+            .as_ref()
+            .is_none_or(|placement| !placement.is_missing())
+            && self.location(&catalog, &identity).is_ok()
+        {
+            let existing = self.verified_body(&catalog, &identity).await?;
+            if let ContentUpload::Meta(meta) = upload
+                && existing != meta.bytes()
+            {
+                return Err(corrupt(&identity));
+            }
+            // Chunk encodings may differ after complete plaintext identity
+            // verification; preserve the first verified selected encoding.
+            observed.revalidate().await?;
+            if let Some(placement) = &placement {
+                self.recheck_placement(placement).await?;
+            }
             return Ok(identity);
         }
         let id = PackId::generate(&self.inner.fs)
             .await
             .map_err(files::io_failure)?;
+        if catalog
+            .inventory
+            .as_ref()
+            .is_some_and(|entries| entries.iter().any(|entry| entry.pack_id == *id.as_bytes()))
+        {
+            // Secure entropy does not permit reuse of an already selected
+            // physical incarnation, even when its old artifacts are missing.
+            return Err(StoreFailure::new(StoreErrorKind::Unsupported));
+        }
         let writer = match upload {
             ContentUpload::Chunk(chunk) => {
                 let mut writer = PackWriter::new(id, PackClass::Data, false);
@@ -561,14 +597,29 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         let index = PackIndexSnapshot::decode(sealed.index_object(), generation)
             .map_err(|_| files::layout_corrupt())?;
         self.verified_container(artifacts.inventory()).await?;
-        self.publish_pack_catalog(
-            held,
-            &observed,
-            catalog,
-            index,
-            artifacts.inventory().clone(),
-        )
-        .await?;
+        match placement.as_ref() {
+            Some(placement) => {
+                self.publish_pack_catalog_observed(
+                    held,
+                    &observed,
+                    catalog,
+                    index,
+                    artifacts.inventory().clone(),
+                    Some(placement),
+                )
+                .await?;
+            }
+            None => {
+                self.publish_pack_catalog(
+                    held,
+                    &observed,
+                    catalog,
+                    index,
+                    artifacts.inventory().clone(),
+                )
+                .await?;
+            }
+        }
         Ok(identity)
     }
 

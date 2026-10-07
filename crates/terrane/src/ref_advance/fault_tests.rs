@@ -514,6 +514,7 @@ impl LocalFs for FaultFs {
                 crate::store::EffectFaultProbe::DirectorySync(_) => "directory sync",
                 crate::store::EffectFaultProbe::RenameNoReplace(_) => "create-once rename",
                 crate::store::EffectFaultProbe::Rename(_) => "replacing rename",
+                crate::store::EffectFaultProbe::SealRawPublication(_) => "raw publication",
                 crate::store::EffectFaultProbe::SealMutationPublication(_) => {
                     "checked mutation publication"
                 }

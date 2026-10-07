@@ -246,9 +246,27 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         &self,
         held: &super::held::HeldBucket<'_, F, C, V, WRITABLE>,
         observed: &super::publication::SelectedObservation<'_>,
+        catalog: Catalog,
+        new: PackIndexSnapshot,
+        inventory: PackInventoryEntry,
+    ) -> Result<(), StoreFailure> {
+        self.publish_pack_catalog_observed(held, observed, catalog, new, inventory, None)
+            .await
+    }
+
+    /// Publishes ordinary admission with an optional actual physical-loss observation.
+    ///
+    /// # Errors
+    /// Refuses any different old Live row, selected binding, excluded incarnation,
+    /// malformed successor or unacknowledged native durability.
+    pub(super) async fn publish_pack_catalog_observed<const WRITABLE: bool>(
+        &self,
+        held: &super::held::HeldBucket<'_, F, C, V, WRITABLE>,
+        observed: &super::publication::SelectedObservation<'_>,
         mut catalog: Catalog,
         new: PackIndexSnapshot,
         inventory: PackInventoryEntry,
+        placement: Option<&super::missing_placement::Placement>,
     ) -> Result<(), StoreFailure> {
         self.write_layout_locked().await?;
         if self.physically_excluded(&catalog, new.header().id().as_bytes()) {
@@ -261,6 +279,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         prefixes.extend(catalog.shards.iter().map(MergedShard::shard));
         prefixes.extend(new.entries().iter().map(|entry| entry.hash()[0]));
         let mut shards = Vec::new();
+        let mut replaced = false;
         for prefix in prefixes {
             let delta = MergedShard::rebuild(
                 prefix,
@@ -291,6 +310,19 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                         entry.insert(record);
                     }
                     std::collections::btree_map::Entry::Occupied(mut entry)
+                        if placement.is_some_and(|placement| placement.matches(entry.get())) =>
+                    {
+                        let placement = placement.ok_or_else(files::layout_corrupt)?;
+                        placement.check_replacement(observed, &catalog, entry.get())?;
+                        if entry.get().record.hash != record.record.hash
+                            || entry.get().record.kind != record.record.kind
+                        {
+                            return Err(files::layout_corrupt());
+                        }
+                        entry.insert(record);
+                        replaced = true;
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut entry)
                         if entry.get().state != RecordState::Quarantine as u8
                             && (entry.get().state == RecordState::Tombstone as u8
                                 || self.physically_excluded(&catalog, &entry.get().pack)) =>
@@ -314,9 +346,16 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                     .map_err(|_| files::layout_corrupt())?,
             );
         }
+        if placement.is_some() && !replaced {
+            return Err(files::layout_corrupt());
+        }
         self.add_inventory(&mut catalog, inventory)?;
-        self.publish_shards_held(held, observed, catalog, generation, &shards)
-            .await
+        // The existing raw transition still advances loss_generation and clears
+        // carried sources when the exact selected Live row changes.
+        self.publish_shards_held_with_placement(
+            held, observed, catalog, generation, &shards, placement,
+        )
+        .await
     }
 
     /// Adds a uniquely named container without replacing a different binding.
@@ -351,9 +390,22 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         &self,
         held: &super::held::HeldBucket<'_, F, C, V, WRITABLE>,
         observed: &super::publication::SelectedObservation<'_>,
+        catalog: Catalog,
+        generation: u64,
+        shards: &[MergedShard],
+    ) -> Result<(), StoreFailure> {
+        self.publish_shards_held_with_placement(held, observed, catalog, generation, shards, None)
+            .await
+    }
+
+    async fn publish_shards_held_with_placement<const WRITABLE: bool>(
+        &self,
+        held: &super::held::HeldBucket<'_, F, C, V, WRITABLE>,
+        observed: &super::publication::SelectedObservation<'_>,
         mut catalog: Catalog,
         generation: u64,
         shards: &[MergedShard],
+        placement: Option<&super::missing_placement::Placement>,
     ) -> Result<(), StoreFailure> {
         if !std::ptr::eq(self, held.bucket())
             || observed
@@ -364,6 +416,21 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         {
             return Err(files::layout_corrupt());
         }
+        let previous_manifest = if placement.is_none() {
+            None
+        } else {
+            let previous = catalog
+                .capabilities
+                .generation
+                .ok_or_else(files::layout_corrupt)?;
+            let key = registered(&format!("objects/index/{previous}/MANIFEST"))?;
+            let bytes = observed
+                .logical()
+                .get(key.as_str())
+                .and_then(Option::as_deref)
+                .ok_or_else(files::layout_corrupt)?;
+            Some(GenerationManifest::decode(bytes).map_err(|_| files::layout_corrupt())?)
+        };
         let mut entries = Vec::new();
         let mut changes = Vec::new();
         for shard in shards {
@@ -373,11 +440,54 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                 .map_err(|_| files::layout_corrupt())?
                 .terrane_v1_digest()
                 .map_err(|_| files::layout_corrupt())?;
+            let filter = previous_manifest.as_ref().and_then(|manifest| {
+                manifest
+                    .shards
+                    .iter()
+                    .find(|entry| {
+                        entry.shard == u64::from(shard.shard())
+                            && entry.index_hash == hash
+                            && entry.index_size == bytes.len() as u64
+                    })
+                    .and_then(|entry| entry.filter)
+            });
+            if let Some((filter_hash, filter_size)) = filter {
+                let previous = catalog
+                    .capabilities
+                    .generation
+                    .ok_or_else(files::layout_corrupt)?;
+                let old_key =
+                    registered(&format!("objects/index/{previous}/{}.flt", shard.shard()))?;
+                let filter_bytes = observed
+                    .logical()
+                    .get(old_key.as_str())
+                    .and_then(Option::as_ref)
+                    .ok_or_else(files::layout_corrupt)?
+                    .clone();
+                let identity = TERRANE_V1
+                    .from_digest(IdentityKind::Filter, &filter_hash)
+                    .map_err(|_| files::layout_corrupt())?;
+                if filter_bytes.len() as u64 != filter_size {
+                    return Err(files::layout_corrupt());
+                }
+                TERRANE_V1
+                    .verify(&identity, &filter_bytes)
+                    .map_err(|_| files::layout_corrupt())?;
+                changes.push(terrane_core::gc::publication::LogicalChange {
+                    key: registered(&format!("objects/index/{generation}/{}.flt", shard.shard()))?
+                        .as_str()
+                        .into(),
+                    expected: None,
+                    new: Some(filter_bytes),
+                });
+            }
+            // Filters are optional. Only the changed shard omits its obsolete
+            // filter; unchanged shard/filter bindings and bytes are preserved.
             entries.push(GenerationShard {
                 shard: u64::from(shard.shard()),
                 index_hash: hash,
                 index_size: bytes.len() as u64,
-                filter: None,
+                filter,
             });
             changes.push(terrane_core::gc::publication::LogicalChange {
                 key: registered(&format!("objects/index/{generation}/{}.idx", shard.shard()))?
@@ -398,7 +508,9 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             generation,
             shards: entries,
             written_at: timestamp,
-            cycle: 0,
+            cycle: previous_manifest
+                .as_ref()
+                .map_or(0, |manifest| manifest.cycle),
             inventory: catalog.inventory.clone(),
             exclusions: catalog.exclusions.clone(),
             burns: catalog.burns.clone(),
@@ -422,7 +534,8 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                     .map_err(|_| files::malformed())?,
             ),
         });
-        held.publish_backend_raw(observed, changes).await?;
+        held.publish_backend_raw_with_placement(observed, changes, placement)
+            .await?;
 
         // Retain the existing independent artifact identity verification at its
         // exact registered key after native durable installation and selection.

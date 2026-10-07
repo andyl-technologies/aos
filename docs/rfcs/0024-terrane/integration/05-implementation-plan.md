@@ -696,6 +696,27 @@ library-test errors; later profiles and rustdoc are unqualified. The real
 preservation producer, its positive/refusal witnesses and full trunk gates
 remain pending. This prerequisite closes no task or milestone.
 
+The ordinary missing-placement prerequisite now retains actual absent canonical
+artifact observations and ancestor identities through Raw publication, verifies
+present counterparts, and permits only an exact old Live-row replacement with a
+fresh pack identity. Corrupt, unavailable, excluded and quarantined evidence
+cannot become absence. The actual Raw executor owns the durability result;
+no-op success or swallowed synchronization cannot populate its receiver.
+Conservative loss-generation advancement and source clearing remain unchanged.
+On the frozen shared source, upload verification, all six checked-publication
+ACK regressions, application test-target compilation and both formatters pass.
+All 4,559 actual hermetic input files match independent review. Strict default
+Clippy retains exactly the prior 37 library and 22 library-test diagnostics;
+later profiles and docs remain unexecuted. The original added unused-wrapper
+diagnostic and incorrect ACK registry lookup are preserved before correction.
+The existing physical-exclusion idempotence fixture still returns Unsupported
+because it changes retirement associations through ordinary Raw publication;
+its remaining two selectors were unexecuted. Separate review finds that the
+trunk's stage-container path still lacks the genuine Pending/Committed creator
+producer. Its exact private implementation and seven actual repair witnesses
+are under review; their creator assertions remain mandatory. These bounded
+results qualify no complete repair, rebuild, task merge or milestone exit.
+
 The test-only bucket observer records actual typed Node/Commit get and put
 attempts before catalog lookup, admission or deduplication. The same per-bucket
 observer follows clones and held adapters and can attach to the actual metadata
@@ -2078,6 +2099,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   prerequisite files; later profiles and private rustdoc remain unqualified.
   The finite backfill implementation, composed quality checks and complete
   index-maintenance gate remain pending. No task or milestone status advances.
+  The isolated native backfill first fails compilation, then exposes a fixture
+  self-lock from an ordinary clone read while an exclusive holder is live.
+  Both original attempts remain preserved. After the owned compile and lock-order
+  corrections, the actual 632-test inventory contains all four witnesses;
+  the first runtime refuses commit on refs/heads/_/main with zero passes.
+  Remaining runtime cases and quality/application checks are unexecuted. Genuine
+  request and authorization tracing remains pending; no grant is widened.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
   codec, value-plus-object opaque keys and D-104's contextual primary/gap/route
@@ -3317,6 +3345,19 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   than revive unrelated chunks; count-zero and duration cases require actual
   reclaimability with eligible cold reuse. Missing corrected selectors fail
   explicitly. This registration establishes no corrected runtime result.
+  The original composed source subsequently passes native build and all ten
+  local-deletion Nextest cases (run
+  `90ce17ae-52db-491d-86c1-be04b44564ff`): ten passes, zero ignored or unrun,
+  616 outside the exact selection. Independent review verifies all 5,958 frozen
+  tracked images including modes and mtimes. Its known retention-cutoff gap
+  remains separate from that result. Corrected source `8aab7fbb83f0` passes all
+  nine registered preservation cases, including actual count-zero/duration
+  reclamation and live/expired job roots. Strict default/Send/native Clippy and
+  private docs, application compilation and both formatters also pass; all
+  4,898 actual hermetic input files match independent review. The corrected
+  source is now normally composed with the reviewed protected-lineage regression
+  oracle at `353006757eea`; every cutoff correction is preserved. Coherent
+  grace/fault and remaining collector qualification are pending. T-GC-1 stays open.
   The reviewed pure journal, marking, proof-context, checkpoint, retention and
   grace-window bodies now replace their trunk declarations. All 27 adopted
   paths, including 16 independent hexadecimal witnesses, match the qualified

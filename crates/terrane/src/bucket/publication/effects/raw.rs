@@ -304,6 +304,9 @@ pub(crate) async fn publish<F: LocalFs + BucketBinding>(
         return Err(corrupt());
     }
     let mut frame = backend(fs, observed).await?;
+    frame.writes = Some(super::CompletedWrites {
+        records: BTreeMap::new(),
+    });
     let root = observed.identity().root();
     let owner = frame.owner;
     let control = observed
@@ -324,6 +327,13 @@ pub(crate) async fn publish<F: LocalFs + BucketBinding>(
                 FencePolicy::Payload { owner },
             )
             .await?;
+    }
+    for (path, metadata) in mutation.parent_reads() {
+        let expected = super::MetadataStamp::checked(metadata).map_err(super::io_failure)?;
+        let (actual, actual_owner) = frame.parents.get(path).ok_or_else(corrupt)?;
+        if *actual_owner != owner || !actual.same_incarnation(expected) {
+            return Err(corrupt());
+        }
     }
     observed.revalidate().await?;
     frame
@@ -451,6 +461,27 @@ pub(crate) async fn publish<F: LocalFs + BucketBinding>(
             },
         )
         .await?;
+    let (acknowledgment, completed) = super::super::artifact_seal::raw_publication::raw_plan(
+        observed,
+        mutation,
+        &slot,
+        &transaction,
+        &snapshot_bytes,
+        frame.writes.as_ref().ok_or_else(unsupported)?,
+    )
+    .map_err(super::native_failure)?;
+    frame.execute(fs, acknowledgment).await?;
+    completed.take().map_err(|error| match error {
+        super::NativeEffectFailure::Rejected(error) => error,
+        super::NativeEffectFailure::Io(error) => {
+            let kind = if error.kind() == std::io::ErrorKind::Unsupported {
+                StoreErrorKind::Unsupported
+            } else {
+                StoreErrorKind::Unavailable { retry_after: None }
+            };
+            StoreFailure::with_source(kind, error)
+        }
+    })?;
     Ok(super::CheckedPublication {
         revision: slot.revision,
         digest: digest(&slot_bytes),

@@ -388,6 +388,7 @@ enum Plan {
     // into a protected creation-journal commitment.
     SealLeasePublication(Box<artifact_seal::lease_publication::LeaseRequest>),
     SealMutationPublication(Box<artifact_seal::mutation_publication::MutationRequest>),
+    SealRawPublication(Box<artifact_seal::raw_publication::RawRequest>),
     SealPendingCreation(Box<artifact_seal::PendingRequest>),
     SealArtifact(Box<artifact_seal::SealRequest>),
     CommitCreation(Box<artifact_seal::CommitRequest>),
@@ -592,6 +593,9 @@ pub(crate) enum EffectFaultProbe<'a> {
     /// Identifies durability of a genuinely checked Guard/ref selected slot.
     #[cfg(feature = "tokio")]
     SealMutationPublication(&'a std::path::Path),
+    /// Identifies actual backend-only raw selected publication acknowledgment.
+    #[cfg(feature = "tokio")]
+    SealRawPublication(&'a std::path::Path),
     /// Identifies durability of the exact selected collector lease slot.
     #[cfg(feature = "tokio")]
     SealLeasePublication(&'a std::path::Path),
@@ -701,6 +705,10 @@ impl NativeFsEffect {
             #[cfg(feature = "tokio")]
             Plan::SealMutationPublication(request) => {
                 EffectFaultProbe::SealMutationPublication(request.path())
+            }
+            #[cfg(feature = "tokio")]
+            Plan::SealRawPublication(request) => {
+                EffectFaultProbe::SealRawPublication(request.path())
             }
             #[cfg(feature = "tokio")]
             Plan::SealLeasePublication(request) => {
@@ -930,6 +938,7 @@ impl NativeFsEffect {
 
             match plan {
                 Plan::SealMutationPublication(_)
+                | Plan::SealRawPublication(_)
                 | Plan::SealLeasePublication(_)
                 | Plan::SealPendingCreation(_)
                 | Plan::SealArtifact(_)

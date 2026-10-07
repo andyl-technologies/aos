@@ -26,6 +26,7 @@ pub(crate) struct RawMutation {
     next: PublicationState,
     changes: Vec<LogicalChange>,
     reads: Vec<RecordRead>,
+    parents: Vec<(std::path::PathBuf, std::fs::Metadata)>,
 }
 
 impl RawMutation {
@@ -52,6 +53,20 @@ impl RawMutation {
     /// Borrows the canonical sorted raw logical changes.
     pub(crate) fn changes(&self) -> &[LogicalChange] {
         &self.changes
+    }
+
+    /// Retains original ordinary physical-loss observations without granting authority.
+    pub(in crate::bucket) fn retain_placement(
+        &mut self,
+        placement: &crate::bucket::missing_placement::Placement,
+    ) {
+        self.reads.extend_from_slice(placement.reads());
+        self.parents.extend_from_slice(placement.parents());
+    }
+
+    /// Borrows original payload ancestry for exact native Frame association.
+    pub(crate) fn parent_reads(&self) -> &[(std::path::PathBuf, std::fs::Metadata)] {
+        &self.parents
     }
 
     /// Borrows additional exact candidate reads captured during validation.
@@ -236,6 +251,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             next: state,
             changes,
             reads,
+            parents: Vec::new(),
         })
     }
 

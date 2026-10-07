@@ -519,13 +519,31 @@ impl<
         observed: &SelectedObservation<'_>,
         changes: Vec<terrane_core::gc::publication::LogicalChange>,
     ) -> Result<SelectedReceipt, StoreFailure> {
+        self.publish_backend_raw_with_placement(observed, changes, None)
+            .await
+    }
+
+    /// Retains actual ordinary data preimages through backend-only publication.
+    ///
+    /// # Errors
+    /// Refuses stale held selection, malformed changes, changed exact additional
+    /// reads or incomplete executor acknowledgment; creates no actor authority.
+    pub(in crate::bucket) async fn publish_backend_raw_with_placement(
+        &self,
+        observed: &SelectedObservation<'_>,
+        changes: Vec<terrane_core::gc::publication::LogicalChange>,
+        placement: Option<&super::missing_placement::Placement>,
+    ) -> Result<SelectedReceipt, StoreFailure> {
         self.retained_namespace()?;
         if observed.identity.root() != self.root()
             || observed.identity.physical_identity() != self.physical_identity()
         {
             return Err(corrupt());
         }
-        let mutation = self.prepare_raw(observed, changes).await?;
+        let mut mutation = self.prepare_raw(observed, changes).await?;
+        if let Some(placement) = placement {
+            mutation.retain_placement(placement);
+        }
         let acknowledgment =
             crate::store::native_publication_effects::publish_raw(self.fs(), observed, &mutation)
                 .await?;

@@ -20,6 +20,10 @@ mod publication_sync;
 #[path = "artifact_seal/mutation_publication.rs"]
 pub(super) mod mutation_publication;
 
+/// Closes actual backend-only raw selected publication durability.
+#[path = "artifact_seal/raw_publication.rs"]
+pub(super) mod raw_publication;
+
 /// Closes actual whole collector lease publication durability.
 #[path = "artifact_seal/lease_publication.rs"]
 pub(super) mod lease_publication;
@@ -435,6 +439,7 @@ impl Worker {
 pub(super) fn owns(plan: &Plan) -> bool {
     match plan {
         Plan::SealMutationPublication(_)
+        | Plan::SealRawPublication(_)
         | Plan::SealLeasePublication(_)
         | Plan::SealPendingCreation(_)
         | Plan::SealArtifact(_)
@@ -443,6 +448,7 @@ pub(super) fn owns(plan: &Plan) -> bool {
             matches!(
                 operation.as_ref(),
                 Plan::SealMutationPublication(_)
+                    | Plan::SealRawPublication(_)
                     | Plan::SealLeasePublication(_)
                     | Plan::SealPendingCreation(_)
                     | Plan::SealArtifact(_)
@@ -497,6 +503,7 @@ pub(super) fn execute(effect: NativeFsEffect) -> Result<(), NativeEffectFailure>
     worker.refresh(&[])?;
     match plan {
         Plan::SealMutationPublication(request) => mutation_publication::execute(*request, worker),
+        Plan::SealRawPublication(request) => raw_publication::execute(*request, worker),
         Plan::SealLeasePublication(request) => lease_publication::execute(*request, worker),
         Plan::SealPendingCreation(request) => pending::execute(*request, worker),
         Plan::SealArtifact(request) => seal(*request, worker),
